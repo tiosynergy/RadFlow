@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RadFlow — Реєстрація</title>
+<style>
+  :root{
+    --bg:#1c1c1e; --bg-elevated:#242426; --card:#2c2c2e; --card-hover:#323234; --card-2:#3a3a3c;
+    --border:#38383a; --border-strong:#48484a;
+    --text:#f5f5f7; --text-secondary:#aeaeb2; --text-muted:#8e8e93; --text-faint:#636366;
+    --blue:#0a84ff; --blue-bg:rgba(10,132,255,.15); --blue-bg-soft:rgba(10,132,255,.08);
+    --green:#30d158; --green-bg:rgba(48,209,88,.15); --red:#ff453a; --red-bg:rgba(255,69,58,.15);
+    --font:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Segoe UI",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--font);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;
+    letter-spacing:-.01em;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:18px 16px}
+  /* subtle ambient glow like the app */
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;
+    background:radial-gradient(60% 45% at 50% -5%, rgba(10,132,255,.10), transparent 70%)}
+  .topbar{display:flex;align-items:center;gap:12px;margin-bottom:13px;z-index:1}
+  .logo{display:flex;align-items:center;gap:8px;font-size:21px;font-weight:700;letter-spacing:-.02em;color:var(--blue)}
+  .logo .dot{width:9px;height:9px;border-radius:50%;background:var(--blue);box-shadow:0 0 10px var(--blue)}
+  .badge{display:flex;align-items:center;gap:7px;background:var(--green-bg);color:var(--green);font-size:12.5px;font-weight:500;padding:6px 12px;border-radius:20px}
+  .badge .pdot{width:7px;height:7px;border-radius:50%;background:var(--green)}
+  .card{width:100%;max-width:440px;background:var(--card);border:1px solid var(--border);border-radius:16px;
+    padding:20px 22px;box-shadow:0 12px 48px rgba(0,0,0,.5);z-index:1}
+  .head{text-align:center;margin-bottom:13px}
+  .head h1{font-size:20px;font-weight:650;letter-spacing:-.02em}
+  .head p{font-size:13px;color:var(--text-muted);margin-top:4px;line-height:1.45}
+
+  .rec{display:flex;align-items:center;justify-content:center;gap:6px;font-size:12px;color:var(--green);font-weight:600;margin-bottom:8px}
+  .social{display:flex;flex-direction:column;gap:7px}
+  .sbtn{height:42px;border:1px solid var(--border-strong);border-radius:10px;background:var(--card-2);cursor:pointer;
+    display:flex;align-items:center;justify-content:center;gap:10px;font-size:14px;font-weight:500;font-family:inherit;
+    color:var(--text);transition:background .12s,border-color .12s,transform .06s}
+  .sbtn:hover{background:var(--card-hover);border-color:#5a5a5e}
+  .sbtn:active{transform:scale(.99)}
+  .sbtn svg{width:18px;height:18px;flex-shrink:0}
+  .sbtn .xg{fill:var(--text)}
+  .divider{display:flex;align-items:center;gap:12px;margin:13px 0;color:var(--text-faint);font-size:12.5px}
+  .divider::before,.divider::after{content:"";height:1px;background:var(--border);flex:1}
+
+  .field{margin-bottom:9px}
+  .field label{display:block;font-size:12.5px;font-weight:600;margin-bottom:4px;color:var(--text-secondary)}
+  .field input{width:100%;height:40px;padding:0 13px;font-size:14px;color:var(--text);background:var(--bg-elevated);
+    border:1px solid var(--border-strong);border-radius:10px;outline:none;transition:border-color .12s,box-shadow .12s}
+  .field input::placeholder{color:var(--text-faint)}
+  .field input:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-bg)}
+  .field input.invalid{border-color:var(--red)}
+  .field input.invalid:focus{box-shadow:0 0 0 3px var(--red-bg)}
+  .hint{font-size:11.5px;color:var(--text-faint);margin-top:4px}
+  .err{font-size:12px;color:var(--red);margin-top:4px}
+  .check{display:flex;align-items:flex-start;gap:9px;margin:2px 0 12px}
+  .check input{width:17px;height:17px;margin-top:2px;accent-color:var(--blue);flex-shrink:0;cursor:pointer}
+  .check label{font-size:13px;color:var(--text-secondary);line-height:1.45;cursor:pointer}
+  .check a{color:#4da3ff;text-decoration:none}.check a:hover{text-decoration:underline}
+
+  .btn{width:100%;height:44px;border:none;border-radius:10px;background:var(--blue);color:#fff;font-size:15px;font-weight:600;
+    font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:background .12s,transform .06s}
+  .btn:hover:not(:disabled){background:#2a96ff}
+  .btn:active:not(:disabled){transform:scale(.99)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .alt{text-align:center;font-size:13.5px;color:var(--text-muted);margin-top:12px}
+  .alt a{color:#4da3ff;font-weight:500;text-decoration:none}.alt a:hover{text-decoration:underline}
+  .fineprint{font-size:11.5px;color:var(--text-faint);margin-top:13px;text-align:center;max-width:380px;line-height:1.45;z-index:1}
+
+  .success{text-align:center;padding:12px 0}
+  .success .ic{width:58px;height:58px;border-radius:50%;background:var(--green-bg);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:28px}
+  .success h2{font-size:21px;font-weight:700;letter-spacing:-.02em}
+  .success .sub{font-size:14px;color:var(--text-muted);margin-top:9px;display:flex;align-items:center;justify-content:center;gap:6px}
+  .success .btn{margin-top:22px;text-decoration:none}
+
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--card);
+    border:1px solid var(--border-strong);border-left:4px solid var(--red);border-radius:12px;padding:13px 18px;
+    box-shadow:0 12px 48px rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;max-width:360px;z-index:30}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast .tt{font-size:14px;font-weight:600}.toast .td{font-size:13px;color:var(--text-muted);margin-top:2px}
+  .fade{animation:fade .3s ease}@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="logo"><span class="dot"></span>RadFlow</div>
+    <span class="badge"><span class="pdot"></span>14 днів безкоштовно</span>
+  </div>
+
+  <div class="card" id="card">
+    <div class="head">
+      <h1>Створіть акаунт RadFlow</h1>
+      <p>Почніть автоматизувати роботу вашої клініки за 5 простих кроків</p>
+    </div>
+
+    <div class="rec">⚡ Найшвидший спосіб</div>
+    <div class="social">
+      <button type="button" class="sbtn" onclick="social('Google')">
+        <svg viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.4 29.3 35 24 35c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.5 5.1 29.5 3 24 3 12.9 3 4 11.9 4 23s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.3-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 13 24 13c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.5 5.1 29.5 3 24 3 16.3 3 9.7 7.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 43c5.2 0 9.9-2 13.5-5.2l-6.2-5.3C29.2 34.5 26.7 35 24 35c-5.3 0-9.6-2.6-11.3-7l-6.5 5C9.6 38.6 16.2 43 24 43z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4 5.5l6.2 5.3C39.9 36 44 30.6 44 23c0-1.3-.1-2.3-.4-3.5z"/></svg>
+        Продовжити з Google
+      </button>
+      <button type="button" class="sbtn" onclick="social('Facebook')">
+        <svg viewBox="0 0 24 24"><path fill="#1877F2" d="M24 12.07C24 5.4 18.63 0 12 0S0 5.4 0 12.07C0 18.1 4.39 23.1 10.13 24v-8.44H7.08v-3.49h3.05V9.41c0-3.02 1.79-4.69 4.53-4.69 1.31 0 2.69.24 2.69.24v2.97h-1.52c-1.49 0-1.96.93-1.96 1.89v2.25h3.33l-.53 3.49h-2.8V24C19.61 23.1 24 18.1 24 12.07z"/></svg>
+        Продовжити з Facebook
+      </button>
+      <button type="button" class="sbtn" onclick="social('X')">
+        <svg viewBox="0 0 24 24"><path class="xg" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+        Продовжити з X
+      </button>
+    </div>
+
+    <div class="divider">Або зареєструватися через email</div>
+
+    <form id="form" novalidate>
+      <div class="field">
+        <label for="login">Логін</label>
+        <input id="login" type="text" placeholder="Ваш логін" autocomplete="username" aria-invalid="false" />
+        <div class="err" id="err-login" role="alert"></div>
+      </div>
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" placeholder="you@clinic.ua" autocomplete="email" aria-invalid="false" />
+        <div class="err" id="err-email" role="alert"></div>
+      </div>
+      <div class="field">
+        <label for="phone">Номер телефону</label>
+        <input id="phone" type="tel" placeholder="+380 XX XXX XX XX" autocomplete="tel" inputmode="tel" aria-invalid="false" />
+        <div class="err" id="err-phone" role="alert"></div>
+      </div>
+      <div class="field">
+        <label for="password">Пароль</label>
+        <input id="password" type="password" placeholder="Пароль" autocomplete="new-password" aria-invalid="false" />
+        <div class="hint" id="hint-password">Мінімум 8 символів, одна велика буква, одна цифра</div>
+        <div class="err" id="err-password" role="alert"></div>
+      </div>
+      <div class="field">
+        <label for="password2">Повторити пароль</label>
+        <input id="password2" type="password" placeholder="Повторіть пароль" autocomplete="new-password" aria-invalid="false" />
+        <div class="err" id="err-password2" role="alert"></div>
+      </div>
+
+      <div class="check">
+        <input id="terms" type="checkbox" aria-invalid="false" />
+        <label for="terms">Я погоджуюсь з <a href="#">умовами користування</a> та <a href="#">політикою конфіденційності</a><div class="err" id="err-terms" role="alert"></div></label>
+      </div>
+
+      <button class="btn" id="submit" type="submit">Зареєструватися</button>
+      <p class="alt">Вже маєте акаунт? <a href="#">Увійти</a></p>
+    </form>
+  </div>
+
+  <p class="fineprint">Реєстрація безкоштовна. Картка не потрібна для 14-денного пробного періоду.</p>
+
+  <div class="toast" id="toast" role="alert">
+    <div class="tt">Помилка реєстрації</div>
+    <div class="td" id="toast-msg"></div>
+  </div>
+
+<script>
+const REQUIRED = "Це поле обов'язкове";
+const rules = {
+  login: (v) => (!v.trim() ? REQUIRED : v.trim().length < 3 ? "Логін має містити щонайменше 3 символи" : ""),
+  email: (v) => (!v.trim() ? REQUIRED : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim()) ? "Введіть коректну електронну адресу" : ""),
+  phone: (v) => (!v.trim() ? REQUIRED : !/^\+380\d{9}$/.test(v.replace(/[\s()-]/g, "")) ? "Введіть номер у форматі +380 XX XXX XX XX" : ""),
+  password: (v) => (!v ? REQUIRED : (v.length < 8 || !/[A-ZА-ЯЇІЄ]/.test(v) || !/\d/.test(v)) ? "Мінімум 8 символів, одна велика буква, одна цифра" : ""),
+  password2: (v) => (!v ? REQUIRED : v !== document.getElementById("password").value ? "Паролі не співпадають" : ""),
+  terms: () => (!document.getElementById("terms").checked ? "Потрібно прийняти умови" : ""),
+};
+const fields = ["login","email","phone","password","password2"];
+const form = document.getElementById("form");
+const submit = document.getElementById("submit");
+const touched = {};
+
+function validate(name) {
+  const msg = rules[name](name === "terms" ? "" : (document.getElementById(name).value || ""));
+  if (!touched[name]) return !msg;
+  const errEl = document.getElementById("err-" + name);
+  errEl.textContent = msg;
+  const input = document.getElementById(name);
+  if (input && input.classList) { input.classList.toggle("invalid", !!msg); input.setAttribute("aria-invalid", msg ? "true" : "false"); }
+  return !msg;
+}
+fields.forEach((name) => {
+  const input = document.getElementById(name);
+  input.addEventListener("input", () => { validate(name); if (name === "password") validate("password2"); });
+  input.addEventListener("blur", () => { touched[name] = true; validate(name); });
+});
+document.getElementById("terms").addEventListener("change", () => { touched.terms = true; validate("terms"); });
+
+function showToast(message) {
+  const t = document.getElementById("toast");
+  t.style.borderLeftColor = "var(--red)";
+  document.querySelector("#toast .tt").textContent = "Помилка реєстрації";
+  document.getElementById("toast-msg").textContent = message;
+  t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 3600);
+}
+function social(name) {
+  const t = document.getElementById("toast");
+  t.style.borderLeftColor = "var(--blue)";
+  document.querySelector("#toast .tt").textContent = "Реєстрація через " + name;
+  document.getElementById("toast-msg").textContent = "Демо: підключіть OAuth-провайдера " + name + ".";
+  t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 3200);
+}
+function registerUser(values) {
+  return new Promise((resolve) => setTimeout(() => {
+    if (values.email.toLowerCase() === "taken@radflow.ua") return resolve({ ok:false, field:"email", message:"Цей email вже зареєстрований" });
+    if (Math.random() < 0.07) return resolve({ ok:false, message:"Сталася помилка. Спробуйте ще раз" });
+    resolve({ ok:true });
+  }, 1200));
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  [...fields, "terms"].forEach((n) => (touched[n] = true));
+  const allValid = [...fields, "terms"].map(validate).every(Boolean);
+  if (!allValid) return;
+
+  const values = { login:login.value, email:email.value, phone:phone.value, password:password.value };
+  submit.disabled = true; submit.setAttribute("aria-busy","true");
+  submit.innerHTML = '<span class="spinner"></span>Реєструємо…';
+
+  const res = await registerUser(values);
+  if (res.ok) { renderSuccess(); return; }
+  submit.disabled = false; submit.setAttribute("aria-busy","false"); submit.innerHTML = "Зареєструватися";
+  if (res.field === "email") {
+    touched.email = true;
+    document.getElementById("err-email").textContent = res.message;
+    email.classList.add("invalid"); email.setAttribute("aria-invalid","true");
+  } else { showToast(res.message); }
+});
+
+function renderSuccess() {
+  document.getElementById("card").innerHTML = `
+    <div class="success fade">
+      <div class="ic">✅</div>
+      <h2>Акаунт створено!</h2>
+      <div class="sub">✉️ Лист з підтвердженням надіслано на вашу пошту.</div>
+      <a class="btn" href="#">Продовжити налаштування</a>
+    </div>`;
+}
+</script>
+</body>
+</html>
