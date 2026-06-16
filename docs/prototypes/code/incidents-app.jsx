@@ -1,18 +1,17 @@
 /* ===== RadFlow — Incident Management ===== */
-const { useState, useMemo } = React;
+const { useState, useMemo, useEffect } = React;
 
-const EQUIPMENT = [
-  { id: "mrt15", kind: "МРТ", name: "МРТ 1.5T", model: "Siemens Avanto", room: "Кабінет №1", count: 8, blocked: false },
-  { id: "ct64",  kind: "КТ",  name: "КТ 64-зрізів", model: "GE Optima", room: "Кабінет №2", count: 4, blocked: false },
-  { id: "mrt30", kind: "МРТ", name: "МРТ 3.0T", model: "Philips Ingenia", room: "Кабінет №3", count: 0, blocked: true, reason: "Технічне обслуговування" },
-];
-
-const AFFECTED = [
-  { time: "11:30", name: "Сидоренко Наталія Володимирівна", proc: "МРТ плечового суглоба" },
-  { time: "12:45", name: "Кравчук Дмитро Олександрович", proc: "МРТ черевної порожнини" },
-  { time: "14:10", name: "Савченко Богдан Юрійович", proc: "МРТ головного мозку" },
-  { time: "15:30", name: "Захарченко Артем Ігорович", proc: "МРТ колінного суглоба" },
-];
+/* Обладнання = реальні кабінети RadFlow (RF_ROOMS). Стан «заблоковано»
+   більше НЕ хардкодиться — він похідний від активного інциденту (rf_incident_v1),
+   тож за замовчуванням жоден апарат не заблоковано. */
+const RF_DAY_END_MIN = 17 * 60 + 30;
+function incNowMin() {
+  const n = new Date(); let m = Math.round((n.getHours() * 60 + n.getMinutes()) / 5) * 5;
+  if (m < 8 * 60) m = 8 * 60; if (m > RF_DAY_END_MIN) m = RF_DAY_END_MIN; return m;
+}
+function incDateVal(d) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
 
 const LOG = [
   { color: "red",    time: "30 травня, 09:42", title: "Заблоковано МРТ 3.0T (Кабінет №3)", sub: "Причина: Технічне обслуговування · Адміністратор: Оксана Мельник" },
@@ -22,73 +21,173 @@ const LOG = [
   { color: "blue",   time: "29 травня, 14:10", title: "Колл-лист WF-05 сформовано", sub: "12 записів на 30 травня · надіслано адміністратору" },
 ];
 
-/* ---------- Tab 1: Block equipment ---------- */
+/* ---------- Tab 1: Block equipment (єдине джерело — rf_incident_v1) ---------- */
+function useIncidents() {
+  const [list, setList] = useState(() => (window.getIncidents ? window.getIncidents() : []));
+  useEffect(() => {
+    function refresh(e) { if (e && e.type === "storage" && e.key && e.key !== window.RF_INC_KEY) return; setList(window.getIncidents ? window.getIncidents() : []); }
+    window.addEventListener("storage", refresh);
+    window.addEventListener("rf-incident-sync", refresh);
+    return () => { window.removeEventListener("storage", refresh); window.removeEventListener("rf-incident-sync", refresh); };
+  }, []);
+  return [list, setList];
+}
+
 function TabBlock({ toast }) {
-  const [equip, setEquip] = useState(EQUIPMENT.map((e) => ({ ...e })));
-  const [blocking, setBlocking] = useState(null); // equipment being blocked
+  const rooms = window.RF_ROOMS || {};
+  const roomKeys = Object.keys(rooms);
+  const [incList] = useIncidents();
+  const [blocking, setBlocking] = useState(null); // { roomKey } або { existing }
   const [success, setSuccess] = useState(null);
 
-  function confirmBlock(e, mode) {
-    setEquip((l) => l.map((x) => x.id === e.id ? { ...x, blocked: true, count: 0, reason: "Технічна несправність" } : x));
+  // активна черга сьогодні — для підрахунку записів на апарат
+  const queue = (window.getQueuePatients ? window.getQueuePatients() : (window.RF_PATIENTS || []));
+  const activeCount = (rk) => queue.filter((p) => p.room === rk && p.status !== "done" && p.status !== "noshow").length;
+  const incFor = (rk) => incList.filter((i) => i.roomKey === rk)[0] || null;
+
+  // Модалка передає вже зібраний інцидент (rfBuildIncident: сьогодні + наперед).
+  function confirmBlock(incident, isEdit) {
+    window.upsertIncident(incident);
     setBlocking(null);
-    setSuccess({ count: AFFECTED.length, mode });
-    toast(`${e.name} заблоковано · Smart Scheduler запущено`, "warning");
+    if (isEdit) {
+      toast(`Інцидент оновлено · ${incident.machineName} · ${window.rfIncPending(incident)} на обдзвін`, "info");
+    } else {
+      setSuccess(incident);
+      toast(`${incident.machineName} заблоковано · колл-лист: ${incident.patients.length} на обдзвін`, "warning");
+    }
   }
+  function unblock(roomKey) { if (window.removeIncident) window.removeIncident(roomKey); toast(`${(rooms[roomKey] || {}).name || "Апарат"} розблоковано · інцидент завершено`, "success"); }
 
   return (
     <div className="fade-in">
       <div className="info-banner orange">
         <span className="ib-ic">⚠</span>
-        <span className="ib-txt">Блокування апарату призупиняє нові записи та запускає процес автоматичного перерозподілу пацієнтів.</span>
+        <span className="ib-txt">Блокування апарату призупиняє нові записи та автоматично формує колл-лист пацієнтів із простою для перезапису. Можна заблокувати кілька апаратів одночасно.</span>
       </div>
-      <div className="sec-label">Оберіть апарат для блокування:</div>
-      <div className="equip-grid">
-        {equip.map((e) => (
-          <div key={e.id} className={"equip-card" + (e.blocked ? " blocked" : " selectable")}
-            onClick={() => !e.blocked && setBlocking(e)}>
-            <div className="equip-badge">
-              {e.blocked ? <span className="badge red">🔒 Заблоковано</span> : <span className="badge green"><span className="bdot"></span>Активний</span>}
-            </div>
-            <div className={"equip-tile " + (e.kind === "МРТ" ? "mrt" : "ct")}>{e.kind}</div>
-            <div className="equip-name">{e.name}</div>
-            <div className="equip-model">{e.model}</div>
-            <div className="equip-room">⌂ {e.room}</div>
-            {e.blocked && <div className="equip-reason">Причина: {e.reason}</div>}
-            <div className="equip-foot">
-              <span className="equip-count">Записів сьогодні: {e.count}</span>
-              {e.blocked
-                ? <button className="btn btn-green btn-sm" onClick={(ev) => { ev.stopPropagation(); setEquip(l => l.map(x => x.id===e.id?{...x,blocked:false}:x)); toast("Апарат розблоковано","success"); }}>Розблокувати</button>
-                : <span className="badge orange" style={{ background: "transparent", color: "var(--text-faint)" }}>Натисніть, щоб заблокувати →</span>}
-            </div>
+
+      {incList.map((inc) => (
+        <div className="active-inc" key={inc.roomKey}>
+          <div className="active-inc-head">
+            <span className="badge red">🔒 {inc.machineName} заблоковано</span>
+            <span className="active-inc-meta">{inc.reasonLabel} · простій {inc.windowLabel || (inc.fromLabel + "–" + inc.toLabel)}</span>
+            <button className="btn btn-secondary btn-sm" style={{ marginLeft: "auto" }} onClick={() => setBlocking({ existing: inc })}>✏ Редагувати</button>
+            <button className="btn btn-green btn-sm" onClick={() => unblock(inc.roomKey)}>🔓 Розблокувати</button>
           </div>
-        ))}
+          <div className="sec-label" style={{ marginTop: 4 }}>На обдзвін для перезапису: {window.rfIncPending(inc)} із {inc.patients.length}</div>
+          <div className="affected-list" style={{ maxHeight: 200, marginTop: 0 }}>
+            {inc.patients.length === 0
+              ? <div className="affected-row"><span className="an">У періоді простою активних записів не було</span></div>
+              : inc.patients.map((p) => {
+                  const m = (window.RF_INC_STATUS || {})[p.callStatus || "pending"] || { label: "" };
+                  return (
+                    <div className="affected-row" key={p.id}>
+                      <span className="at">{!p.isToday && <span className="bd-aff-day">{p.dayLabel}</span>}{p.time}</span><span className="an">{p.name} · <span style={{ color: "var(--text-muted)" }}>{p.proc}</span></span>
+                      <span className="as" style={{ color: p.callStatus === "rescheduled" ? "var(--green)" : p.callStatus === "refused" ? "var(--red)" : "var(--orange)" }}>{m.label}</span>
+                    </div>
+                  );
+                })}
+          </div>
+          <a href="radflow-call-list.html" className="btn btn-secondary btn-sm" style={{ marginTop: 10 }}>Відкрити колл-лист →</a>
+        </div>
+      ))}
+
+      <div className="sec-label">{incList.length ? "Заблокувати ще апарат:" : "Оберіть апарат для блокування:"}</div>
+      <div className="equip-grid">
+        {roomKeys.map((k) => {
+          const r = rooms[k];
+          const inc = incFor(k);
+          const blocked = !!inc;
+          return (
+            <div key={k} className={"equip-card" + (blocked ? " blocked" : " selectable")}
+              onClick={() => !blocked && setBlocking({ roomKey: k })}>
+              <div className="equip-badge">
+                {blocked ? <span className="badge red">🔒 Заблоковано</span> : <span className="badge green"><span className="bdot"></span>Активний</span>}
+              </div>
+              <div className={"equip-tile " + (r.kind === "МРТ" ? "mrt" : "ct")}>{r.kind}</div>
+              <div className="equip-name">{r.name}</div>
+              <div className="equip-model">{r.model}</div>
+              {blocked && <div className="equip-reason">Причина: {inc.reasonLabel}</div>}
+              <div className="equip-foot">
+                <span className="equip-count">Активних записів: {blocked ? 0 : activeCount(k)}</span>
+                {blocked
+                  ? <button className="btn btn-green btn-sm" onClick={(ev) => { ev.stopPropagation(); unblock(k); }}>Розблокувати</button>
+                  : <span className="badge orange" style={{ background: "transparent", color: "var(--text-faint)" }}>Натисніть, щоб заблокувати →</span>}
+              </div>
+            </div>
+          );
+        })}
       </div>
-      {blocking && <BlockModal equip={blocking} onClose={() => setBlocking(null)} onConfirm={confirmBlock} />}
-      {success && <SchedulerSuccessModal info={success} onClose={() => setSuccess(null)} />}
+      {blocking && <BlockModal init={blocking} onClose={() => setBlocking(null)} onConfirm={(incident) => confirmBlock(incident, !!blocking.existing)} />}
+      {success && <SchedulerSuccessModal incident={success} onClose={() => setSuccess(null)} />}
     </div>
   );
 }
 
-function BlockModal({ equip, onClose, onConfirm }) {
-  const [reason, setReason] = useState("tech");
-  const [mode, setMode] = useState("auto");
+function BlockModal({ init, onClose, onConfirm }) {
+  const rooms = window.RF_ROOMS;
+  const roomKeys = Object.keys(rooms);
+  const ed = (init && init.existing) ? init.existing : null;
   const reasons = [
-    { k: "tech", emoji: "🔧", t: "Технічна несправність" },
-    { k: "maint", emoji: "⚙️", t: "Планове ТО" },
-    { k: "other", emoji: "📝", t: "Інше" },
+    { k: "tech", emoji: "🔧", t: "Поломка обладнання", label: "Поломка обладнання", rk: "breakdown" },
+    { k: "maint", emoji: "⚙️", t: "Планове ТО", label: "Планове ТО", rk: "maintenance" },
+    { k: "other", emoji: "📝", t: "Інше", label: "Інше", rk: "other" },
   ];
+  const RKMAP = { breakdown: "tech", maintenance: "maint", other: "other" };
+  const [roomKey, setRoomKey] = useState(ed ? ed.roomKey : ((init && init.roomKey) || roomKeys[0]));
+  const [reason, setReason] = useState(ed ? (RKMAP[ed.reason] || "tech") : "tech");
+  const [durKey, setDurKey] = useState(ed ? ed.durKey : "");
+  const [startTime, setStartTime] = useState(ed ? ed.fromLabel : window.rfMinToTime(incNowMin()));
+  const [restoreDate, setRestoreDate] = useState(ed && ed.restoreDate ? ed.restoreDate : incDateVal(window.rfAddDays(window.rfToday(), 1)));
+  const reasonObj = reasons.find((r) => r.k === reason);
+  const room = rooms[roomKey];
+  const fromMin = window.rfTimeToMin(startTime);
+  const minRestore = incDateVal(window.rfAddDays(window.rfToday(), 1));
+  const DURATIONS = [
+    { k: "1h", label: "1 година" }, { k: "2h", label: "2 години" }, { k: "4h", label: "4 години" },
+    { k: "eod", label: "До кінця дня" }, { k: "restore", label: "До відновлення" },
+  ];
+  const inc = useMemo(
+    () => (durKey ? window.rfBuildIncident(roomKey, reasonObj.rk, reasonObj.label, fromMin, durKey, restoreDate) : null),
+    [roomKey, reason, durKey, fromMin, restoreDate]
+  );
+  const affected = inc ? inc.patients : [];
+  const todayCount = affected.filter((p) => p.isToday).length;
+  const futureCount = affected.length - todayCount;
+  const valid = roomKey && durKey && (durKey !== "restore" || restoreDate);
+
+  function confirm() {
+    let built = window.rfBuildIncident(roomKey, reasonObj.rk, reasonObj.label, fromMin, durKey, restoreDate);
+    if (ed) built = window.rfMergeIncidentStatuses(built, ed);
+    onConfirm(built);
+  }
+
   return (
-    <div className="overlay" onMouseDown={(e) => e.target.classList.contains("overlay") && onClose()}>
-      <div className="dialog fade-in" style={{ maxWidth: 560 }}>
+    <div className="overlay">
+      <div className="dialog fade-in" style={{ maxWidth: 600 }}>
         <div className="dlg-head">
-          <div className="dlg-title"><span className="tic" style={{ background: "var(--red-bg)", color: "var(--red)" }}>🔒</span>Блокування апарату</div>
+          <div className="dlg-title"><span className="tic" style={{ background: "var(--red-bg)", color: "var(--red)" }}>🔒</span>{ed ? "Редагувати інцидент" : "Блокування апарату"}</div>
           <button className="icon-btn" onClick={onClose}>✕</button>
         </div>
         <div className="dlg-body">
-          <div className="ctx-hint red" style={{ fontSize: 13 }}>⚠ Нові записи на <b>{equip.name} — {equip.model} ({equip.room})</b> будуть заблоковані. Існуючі записи потребуватимуть перерозподілу.</div>
+          <div className="ctx-hint red" style={{ fontSize: 13 }}>⚠ Нові записи на <b>{room.name} — {room.model}</b> буде призупинено. Пацієнти з простою автоматично потраплять у колл-лист на перезапис{ed ? " (статуси вже обдзвонених зберігаються)" : ""}.</div>
 
           <div className="fld">
-            <span className="fld-lab">Причина блокування</span>
+            <span className="fld-lab">Апарат *</span>
+            <div className="bd-rooms">
+              {roomKeys.map((k) => {
+                const r = rooms[k];
+                return (
+                  <button key={k} className={"bd-room" + (roomKey === k ? " active" : "")} onClick={() => setRoomKey(k)} title={r.name + " · " + r.model}>
+                    <span className={"bd-room-kind " + (r.kind === "МРТ" ? "mrt" : "ct")}>{r.kind}</span>
+                    <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.model}</span></span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="fld">
+            <span className="fld-lab">Причина блокування *</span>
             <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
               {reasons.map((r) => (
                 <button key={r.k} className={"res-opt" + (reason === r.k ? " sel red" : "")} onClick={() => setReason(r.k)} style={{ padding: "11px 13px" }}>
@@ -101,68 +200,75 @@ function BlockModal({ equip, onClose, onConfirm }) {
           </div>
 
           <div className="fld-row">
-            <label className="fld"><span className="fld-lab">Заблокувати з</span><input className="inp tabular" defaultValue="30.05.2026 09:42" /></label>
-            <label className="fld" style={{ maxWidth: 170 }}><span className="fld-lab">Тривалість</span>
-              <select className="inp"><option>До розблокування</option><option>2 години</option><option>1 день</option></select></label>
-          </div>
-
-          <div className="fld">
-            <span className="fld-lab">Записи, що потребують перенесення ({AFFECTED.length})</span>
-            <div className="affected-list" style={{ maxHeight: 150, marginTop: 0 }}>
-              {AFFECTED.map((a, i) => (
-                <div className="affected-row" key={i}>
-                  <span className="at">{a.time}</span><span className="an">{a.name}</span>
-                  <span className="as" style={{ color: "var(--orange)" }}>Потребує перенесення</span>
-                </div>
-              ))}
+            <label className="fld" style={{ maxWidth: 160 }}><span className="fld-lab">Початок простою</span>
+              <input className="inp tabular" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></label>
+            <div className="fld"><span className="fld-lab">Тривалість простою *</span>
+              <div className="bd-durs">
+                {DURATIONS.map((d) => (
+                  <button key={d.k} className={"bd-chip" + (durKey === d.k ? " active" : "")} onClick={() => setDurKey(d.k)}>{d.label}</button>
+                ))}
+              </div>
             </div>
           </div>
 
+          {durKey === "restore" && (
+            <label className="fld">
+              <span className="fld-lab">Очікувана дата відновлення * <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>— записи наперед до цієї дати теж підуть на обдзвін</span></span>
+              <input className="inp tabular" type="date" min={minRestore} value={restoreDate} onChange={(e) => setRestoreDate(e.target.value)} style={{ maxWidth: 200 }} />
+            </label>
+          )}
+
           <div className="fld">
-            <span className="fld-lab">Перерозподіл</span>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <button className={"res-opt" + (mode === "auto" ? " sel red" : "")} onClick={() => setMode("auto")} style={{ flexDirection: "column", alignItems: "flex-start", gap: 6, padding: "13px" }}>
-                <span style={{ fontSize: 18 }}>🤖</span>
-                <span className="res-title" style={{ fontSize: 13.5 }}>Автоматично</span>
-                <span className="res-sub">Smart Scheduler</span>
-              </button>
-              <button className={"res-opt" + (mode === "manual" ? " sel red" : "")} onClick={() => setMode("manual")} style={{ flexDirection: "column", alignItems: "flex-start", gap: 6, padding: "13px" }}>
-                <span style={{ fontSize: 18 }}>✋</span>
-                <span className="res-title" style={{ fontSize: 13.5 }}>Вручну</span>
-                <span className="res-sub">Ви обираєте слоти</span>
-              </button>
-            </div>
+            <span className="fld-lab">{durKey
+              ? (durKey === "restore"
+                  ? `На обдзвін: ${todayCount} сьогодні${futureCount ? " + " + futureCount + " наперед" : ""} = ${affected.length}`
+                  : (inc.openEnded ? `Записи на апараті — усі незавершені (${affected.length})` : `Записи у вікні ${inc.fromLabel}–${inc.toLabel} (${affected.length})`))
+              : "Оберіть тривалість, щоб побачити постраждалих"}</span>
+            {durKey && (
+              <div className="affected-list" style={{ maxHeight: 180, marginTop: 0 }}>
+                {affected.length === 0
+                  ? <div className="affected-row"><span className="an" style={{ color: "var(--green)" }}>✓ Активних записів немає</span></div>
+                  : affected.map((a) => (
+                      <div className="affected-row" key={a.id}>
+                        <span className="at">{!a.isToday && <span className="bd-aff-day">{a.dayLabel}</span>}{a.time}</span><span className="an">{a.name} · <span style={{ color: "var(--text-muted)" }}>{a.proc}</span></span>
+                        <span className="as" style={{ color: "var(--orange)" }}>→ обдзвін</span>
+                      </div>
+                    ))}
+              </div>
+            )}
           </div>
         </div>
         <div className="dlg-foot">
           <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
-          <button className="btn btn-danger" onClick={() => onConfirm(equip, mode)}>🔒 Заблокувати апарат</button>
+          <button className="btn btn-danger" disabled={!valid} onClick={confirm}>{ed ? "💾 Зберегти зміни" : "🔒 Заблокувати та сформувати обдзвін"}</button>
         </div>
       </div>
     </div>
   );
 }
 
-function SchedulerSuccessModal({ info, onClose }) {
+function SchedulerSuccessModal({ incident, onClose }) {
+  const n = incident.patients.length;
   return (
-    <div className="overlay" onMouseDown={(e) => e.target.classList.contains("overlay") && onClose()}>
+    <div className="overlay">
       <div className="dialog fade-in" style={{ maxWidth: 440, textAlign: "center" }}>
         <div className="dlg-body" style={{ padding: "32px 26px 22px", gap: 16 }}>
-          <div style={{ fontSize: 46 }}>⚡</div>
-          <div style={{ fontSize: 19, fontWeight: 700 }}>Smart Scheduler перерозподілив записи</div>
-          <div style={{ fontSize: 13.5, color: "var(--text-secondary)" }}>{info.count} записів автоматично перенесено на Кабінет №1 (МРТ 1.5T).</div>
+          <div style={{ fontSize: 46 }}>🔧</div>
+          <div style={{ fontSize: 19, fontWeight: 700 }}>{incident.machineName} заблоковано</div>
+          <div style={{ fontSize: 13.5, color: "var(--text-secondary)" }}>{incident.reasonLabel} · простій {incident.windowLabel || (incident.fromLabel + "–" + incident.toLabel)}</div>
           <div className="summary-box" style={{ textAlign: "left" }}>
-            <div className="summary-row"><span className="sk">Перенесено автоматично</span><span className="sv" style={{ color: "var(--green)" }}>{info.count} ✓</span></div>
-            <div className="summary-row"><span className="sk">Потребують уваги</span><span className="sv">0</span></div>
+            <div className="summary-row"><span className="sk">Записів у вікні простою</span><span className="sv">{n}</span></div>
+            <div className="summary-row"><span className="sk">Сформовано колл-лист</span><span className="sv" style={{ color: "var(--orange)" }}>{n} на обдзвін</span></div>
             <div className="summary-row"><span className="sk">Realtime-оновлення</span><span className="sv" style={{ color: "var(--green)" }}>✓ надіслано</span></div>
           </div>
           <div className="info-banner" style={{ margin: 0, textAlign: "left" }}>
             <span className="ib-ic" style={{ color: "var(--green)" }}>✓</span>
-            <span className="ib-txt">Усі ролі (Admin, Radiologist, CEO, Лікар) отримали Realtime-push.</span>
+            <span className="ib-txt">Дошка черги, колл-лист і всі ролі отримали Realtime-оновлення.</span>
           </div>
         </div>
-        <div className="dlg-foot" style={{ justifyContent: "center" }}>
-          <a href="radflow-queue-board.html" className="btn btn-green" style={{ minWidth: 220, justifyContent: "center" }}>Повернутися до Дошки черги</a>
+        <div className="dlg-foot" style={{ justifyContent: "center", gap: 10 }}>
+          <a href="radflow-call-list.html" className="btn btn-secondary">☎ До колл-листа</a>
+          <a href="radflow-queue-board.html" className="btn btn-green" style={{ justifyContent: "center" }}>До Дошки черги →</a>
         </div>
       </div>
     </div>
@@ -170,19 +276,38 @@ function SchedulerSuccessModal({ info, onClose }) {
 }
 
 /* ---------- Tab 2: Mass reschedule ---------- */
+const RESCHED_ROWS = [
+  { id: "rs1", time: "11:30", name: "Сидоренко Наталія", proc: "МРТ плечового суглоба", ok: true },
+  { id: "rs2", time: "12:45", name: "Кравчук Дмитро", proc: "МРТ черевної порожнини", ok: true },
+  { id: "rs3", time: "14:10", name: "Савченко Богдан", proc: "МРТ головного мозку", ok: true },
+  { id: "rs4", time: "15:30", name: "Захарченко Артем", proc: "МРТ колінного суглоба", ok: false },
+  { id: "rs5", time: "16:00", name: "Поліщук Вікторія", proc: "КТ нирок", ok: true },
+  { id: "rs6", time: "16:45", name: "Мельник Олена", proc: "КТ грудної клітки", ok: false },
+];
+
 function TabReschedule({ toast }) {
   const [src, setSrc] = useState("");
   const [tgt, setTgt] = useState("");
   const ready = src && tgt;
-  const rows = [
-    { time: "11:30", name: "Сидоренко Наталія", proc: "МРТ плечового суглоба", ok: true },
-    { time: "12:45", name: "Кравчук Дмитро", proc: "МРТ черевної порожнини", ok: true },
-    { time: "14:10", name: "Савченко Богдан", proc: "МРТ головного мозку", ok: true },
-    { time: "15:30", name: "Захарченко Артем", proc: "МРТ колінного суглоба", ok: false },
-    { time: "16:00", name: "Поліщук Вікторія", proc: "КТ нирок", ok: true },
-    { time: "16:45", name: "Мельник Олена", proc: "КТ грудної клітки", ok: false },
-  ];
-  const conflicts = rows.filter((r) => !r.ok).length;
+  const rows = RESCHED_ROWS;
+  /* К-02: вирішення конфлікту ПРЯМО тут — підбираємо слот вручну, не йдучи нікуди.
+     resolved[id] = { roomName, date, time } для тих, кому вже підібрали слот. */
+  const [resolved, setResolved] = useState({});
+  const [resched, setResched] = useState(null); // конфліктний рядок, якому підбираємо слот
+  const [done, setDone] = useState(false);
+
+  const conflictRows = rows.filter((r) => !r.ok);
+  const openConflicts = conflictRows.filter((r) => !resolved[r.id]).length;
+  const autoCount = rows.length - conflictRows.length;
+
+  function resolveSlot(row, slot) {
+    setResolved((m) => ({ ...m, [row.id]: { roomName: slot.roomName, date: slot.date, time: slot.time, dur: slot.dur } }));
+    if (window.addBookingRecord) window.addBookingRecord({ id: Date.now(), date: slot.date, time: slot.time, name: row.name, age: 40, phone: "", proc: row.proc, dur: slot.dur, room: slot.roomKey, status: "queued", call: "pending" });
+    setResched(null);
+    toast(`${row.name.split(" ").slice(0, 2).join(" ")} — слот підібрано: ${slot.roomName} · ${slot.date} ${slot.time}`, "success");
+  }
+
+  function reset() { setSrc(""); setTgt(""); setResolved({}); setDone(false); }
 
   return (
     <div className="fade-in">
@@ -210,30 +335,53 @@ function TabReschedule({ toast }) {
           <div className="summary-box">
             <div className="summary-row"><span className="sk">З дня → На день</span><span className="sv tabular">{src} → {tgt}</span></div>
             <div className="summary-row"><span className="sk">Записів для перенесення</span><span className="sv" style={{ color: "var(--orange)" }}>{rows.length}</span></div>
-            <div className="summary-row"><span className="sk">Конфліктних слотів</span><span className="sv" style={{ color: conflicts ? "var(--red)" : "var(--green)" }}>{conflicts}</span></div>
-            <div className="summary-row"><span className="sk">Автоматично перенесе</span><span className="sv" style={{ color: "var(--green)" }}>{rows.length - conflicts}</span></div>
+            <div className="summary-row"><span className="sk">Конфліктних слотів</span><span className="sv" style={{ color: openConflicts ? "var(--red)" : "var(--green)" }}>{openConflicts}</span></div>
+            <div className="summary-row"><span className="sk">Автоматично перенесе</span><span className="sv" style={{ color: "var(--green)" }}>{autoCount + (conflictRows.length - openConflicts)}</span></div>
           </div>
           <div className="affected-list">
-            {rows.map((r, i) => (
-              <div className="affected-row" key={i}>
-                <span className="at">{r.time}</span>
-                <span className="an">{r.name} · <span style={{ color: "var(--text-muted)" }}>{r.proc}</span></span>
-                <span className={"as " + (r.ok ? "ok" : "conflict")}>{r.ok ? "✓ Вільний слот" : "⚠️ Конфлікт"}</span>
-              </div>
-            ))}
+            {rows.map((r) => {
+              const fixed = resolved[r.id];
+              return (
+                <div className="affected-row" key={r.id} style={!r.ok && !fixed ? { background: "var(--red-bg)" } : null}>
+                  <span className="at">{r.time}</span>
+                  <span className="an">{r.name} · <span style={{ color: "var(--text-muted)" }}>{r.proc}</span></span>
+                  {r.ok ? (
+                    <span className="as ok">✓ Вільний слот</span>
+                  ) : fixed ? (
+                    <span className="as ok" title={fixed.roomName + " · " + fixed.date + " " + fixed.time}>✓ Слот підібрано · {fixed.time}</span>
+                  ) : (
+                    <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={() => setResched(r)}>🗓 Підібрати слот вручну</button>
+                  )}
+                </div>
+              );
+            })}
           </div>
-          {conflicts > 0 && (
+          {openConflicts > 0 && (
             <div className="info-banner orange" style={{ marginTop: 14 }}>
               <span className="ib-ic">⚠</span>
-              <span className="ib-txt">{conflicts} записи не вміщуються в обраний день. Їх буде виділено у список «Потребують уваги».</span>
+              <span className="ib-txt">{openConflicts} {openConflicts === 1 ? "запис не вміщується" : "записи(-ів) не вміщуються"} в обраний день. Підберіть слот вручну для кожного — кнопка «🗓 Підібрати слот вручну» праворуч від рядка.</span>
+            </div>
+          )}
+          {done && openConflicts === 0 && (
+            <div className="info-banner" style={{ marginTop: 14, borderColor: "var(--green)" }}>
+              <span className="ib-ic" style={{ color: "var(--green)" }}>✓</span>
+              <span className="ib-txt">Усі {rows.length} записів перенесено — конфліктів не лишилось.</span>
             </div>
           )}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
-            <button className="btn btn-ghost" onClick={() => { setSrc(""); setTgt(""); }}>Скинути</button>
-            <button className="btn btn-danger" onClick={() => toast(`Перенесено ${rows.length - conflicts} записів · ${conflicts} у списку «Потребують уваги»`, "warning")}>Перенести всі записи</button>
+            <button className="btn btn-ghost" onClick={reset}>Скинути</button>
+            <button className="btn btn-danger" disabled={done && openConflicts === 0}
+              onClick={() => {
+                setDone(true);
+                if (openConflicts > 0) toast(`Перенесено ${autoCount + (conflictRows.length - openConflicts)} записів · лишилось ${openConflicts} конфліктних — підберіть слот вручну нижче`, "warning");
+                else toast(`Усі ${rows.length} записів перенесено · 0 конфліктів`, "success");
+              }}>
+              {openConflicts > 0 ? `Перенести всі (${openConflicts} конфліктних лишиться)` : "Перенести всі записи"}
+            </button>
           </div>
         </div>
       )}
+      {resched && <RescheduleModal patient={{ name: resched.name, proc: resched.proc }} onClose={() => setResched(null)} onConfirm={(slot) => resolveSlot(resched, slot)} />}
     </div>
   );
 }

@@ -15,9 +15,20 @@
   <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
+  <!-- Дані (спільні з адмін-дошкою) -->
   <script src="queue-data.js"></script>
+  <script src="call-list-data.js"></script>
   <script src="radiologist-data.js"></script>
+  <script src="schedule.js"></script>
+  <script src="flow-sim.js"></script>
+
+  <!-- Спільна оболонка (Sidebar, Toasts, PageTopBar, LiveTimer, CitoBanner, useToasts) -->
   <script type="text/babel" src="rf-shell.jsx"></script>
+
+  <!-- ПЕРЕВИКОРИСТАННЯ admin-компонентів черги: StatsBar, QueueControls тощо -->
+  <script type="text/babel" src="queue-components.jsx"></script>
+
+  <!-- Сторінка радіолога -->
   <script type="text/babel" src="radiologist-app.jsx"></script>
 </body>
 </html>

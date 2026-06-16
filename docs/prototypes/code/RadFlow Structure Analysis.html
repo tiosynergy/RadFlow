@@ -1,0 +1,1435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RadFlow — Structure Analysis</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #0f0f11;
+    --bg2: #16161a;
+    --bg3: #1e1e24;
+    --border: rgba(255,255,255,0.07);
+    --border2: rgba(255,255,255,0.12);
+    --text: #e8e8f0;
+    --muted: #8888a0;
+    --faint: #444458;
+
+    --blue:   #4d8eff;
+    --green:  #34d17a;
+    --red:    #ff5050;
+    --orange: #ff9a3c;
+    --yellow: #ffd43b;
+    --purple: #b080ff;
+    --cyan:   #30d5c8;
+
+    --blue-bg:   rgba(77,142,255,0.10);
+    --green-bg:  rgba(52,209,122,0.10);
+    --red-bg:    rgba(255,80,80,0.10);
+    --orange-bg: rgba(255,154,60,0.10);
+    --yellow-bg: rgba(255,212,59,0.10);
+    --purple-bg: rgba(176,128,255,0.10);
+    --cyan-bg:   rgba(48,213,200,0.10);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* ── Layout ─────────────────────────────────── */
+  .layout { display: flex; min-height: 100vh; }
+
+  /* ── Sidebar ─────────────────────────────────── */
+  .nav {
+    width: 220px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    padding: 28px 0 40px;
+    display: flex;
+    flex-direction: column;
+  }
+  .nav-logo {
+    padding: 0 20px 24px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    text-decoration: none;
+  }
+  .nav-logo-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--blue);
+    box-shadow: 0 0 10px var(--blue);
+  }
+  .nav-logo-text {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.3px;
+  }
+  .nav-logo-badge {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    color: var(--muted);
+    margin-left: auto;
+  }
+  .nav-section-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--faint);
+    padding: 0 20px 6px;
+    margin-top: 16px;
+  }
+  .nav a {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 20px;
+    text-decoration: none;
+    color: var(--muted);
+    font-size: 13px;
+    transition: color .15s, background .15s;
+    border-left: 2px solid transparent;
+  }
+  .nav a:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+  .nav a.active { color: var(--blue); border-left-color: var(--blue); background: var(--blue-bg); }
+  .nav a .nav-ic { font-size: 12px; opacity: 0.7; }
+
+  /* ── Main ─────────────────────────────────── */
+  .main {
+    flex: 1;
+    min-width: 0;
+    padding: 48px 56px 80px;
+    max-width: 960px;
+  }
+
+  /* ── Section ─────────────────────────────────── */
+  .section { margin-bottom: 72px; }
+  .section-header {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 28px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-num {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--faint);
+    min-width: 28px;
+  }
+  .section-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.4px;
+  }
+
+  /* ── Hero ─────────────────────────────────── */
+  .hero {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 36px 40px;
+    margin-bottom: 40px;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: -60px; right: -60px;
+    width: 240px; height: 240px;
+    background: radial-gradient(circle, rgba(77,142,255,.12) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .hero-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--blue-bg);
+    border: 1px solid rgba(77,142,255,.25);
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--blue);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+  }
+  .hero h1 {
+    font-size: 32px;
+    font-weight: 600;
+    letter-spacing: -0.8px;
+    color: var(--text);
+    margin-bottom: 10px;
+  }
+  .hero h1 span { color: var(--blue); }
+  .hero-sub {
+    font-size: 15px;
+    color: var(--muted);
+    max-width: 540px;
+    line-height: 1.65;
+    margin-bottom: 24px;
+  }
+  .hero-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 11px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .chip.blue   { background: var(--blue-bg);   color: var(--blue);   border: 1px solid rgba(77,142,255,.2); }
+  .chip.green  { background: var(--green-bg);  color: var(--green);  border: 1px solid rgba(52,209,122,.2); }
+  .chip.orange { background: var(--orange-bg); color: var(--orange); border: 1px solid rgba(255,154,60,.2); }
+  .chip.purple { background: var(--purple-bg); color: var(--purple); border: 1px solid rgba(176,128,255,.2); }
+  .chip.red    { background: var(--red-bg);    color: var(--red);    border: 1px solid rgba(255,80,80,.2); }
+  .chip.cyan   { background: var(--cyan-bg);   color: var(--cyan);   border: 1px solid rgba(48,213,200,.2); }
+  .chip.gray   { background: rgba(136,136,160,.10); color: var(--muted); border: 1px solid rgba(136,136,160,.2); }
+
+  /* ── Grid cards ─────────────────────────────── */
+  .card-grid {
+    display: grid;
+    gap: 12px;
+  }
+  .card-grid.cols-2 { grid-template-columns: repeat(2, 1fr); }
+  .card-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px;
+    transition: border-color .2s;
+  }
+  .card:hover { border-color: var(--border2); }
+  .card-icon {
+    font-size: 18px;
+    margin-bottom: 10px;
+  }
+  .card-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 5px;
+  }
+  .card-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .card-desc {
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.55;
+  }
+  .card-footer {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-size: 11.5px;
+    color: var(--faint);
+    font-family: 'DM Mono', monospace;
+  }
+
+  /* ── Role cards ─────────────────────────────── */
+  .role-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+  .role-avatar {
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 17px;
+    flex-shrink: 0;
+  }
+  .role-info { flex: 1; min-width: 0; }
+  .role-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 3px;
+  }
+  .role-url {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--faint);
+    margin-bottom: 6px;
+  }
+  .role-desc {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .role-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .role-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.05);
+    color: var(--muted);
+  }
+
+  /* ── Status row ─────────────────────────────── */
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 16px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 6px;
+  }
+  .status-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-label {
+    font-weight: 600;
+    font-size: 13px;
+    min-width: 120px;
+  }
+  .status-en {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--faint);
+    min-width: 90px;
+  }
+  .status-desc {
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  .status-arrow {
+    color: var(--faint);
+    font-size: 11px;
+    margin-left: auto;
+    font-family: 'DM Mono', monospace;
+  }
+
+  /* ── File tree ─────────────────────────────── */
+  .file-tree {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .file-tree-header {
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--faint);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .file-tree-body { padding: 10px 0; }
+  .file-group-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--faint);
+    padding: 8px 18px 4px;
+  }
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 18px;
+    transition: background .15s;
+  }
+  .file-row:hover { background: rgba(255,255,255,0.03); }
+  .file-icon { font-size: 12px; opacity: 0.6; }
+  .file-name {
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    color: var(--text);
+  }
+  .file-size {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    color: var(--faint);
+    margin-left: auto;
+  }
+  .file-badge {
+    font-size: 10px;
+    padding: 1px 7px;
+    border-radius: 4px;
+    font-weight: 500;
+    margin-left: auto;
+  }
+  .file-badge.jsx { background: rgba(77,142,255,.15); color: var(--blue); }
+  .file-badge.js  { background: rgba(255,212,59,.12); color: var(--yellow); }
+  .file-badge.css { background: rgba(176,128,255,.12); color: var(--purple); }
+  .file-badge.html { background: rgba(52,209,122,.12); color: var(--green); }
+
+  /* ── Tech stack ─────────────────────────────── */
+  .tech-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 14px 18px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 6px;
+  }
+  .tech-icon {
+    width: 34px; height: 34px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    flex-shrink: 0;
+  }
+  .tech-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 3px;
+  }
+  .tech-desc {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .tech-layer {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    color: var(--faint);
+    margin-left: auto;
+    flex-shrink: 0;
+    padding-top: 2px;
+  }
+
+  /* ── Flow diagram ─────────────────────────────── */
+  .flow {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 20px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .flow-step {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .flow-arrow {
+    color: var(--faint);
+    font-size: 16px;
+  }
+
+  /* ── Info grid ─────────────────────────────── */
+  .info-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .info-cell {
+    background: var(--bg2);
+    padding: 16px 20px;
+  }
+  .info-cell-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 5px;
+  }
+  .info-cell-val {
+    font-size: 13px;
+    color: var(--text);
+    line-height: 1.5;
+  }
+  .info-cell-val.mono { font-family: 'DM Mono', monospace; font-size: 12px; color: var(--cyan); }
+
+  /* ── Table ─────────────────────────────── */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .data-table th {
+    text-align: left;
+    padding: 10px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--faint);
+    background: var(--bg3);
+    border-bottom: 1px solid var(--border);
+  }
+  .data-table td {
+    padding: 11px 14px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .data-table tr:last-child td { border-bottom: none; }
+  .data-table td:first-child { color: var(--text); font-weight: 500; }
+  .data-table .mono { font-family: 'DM Mono', monospace; font-size: 11.5px; color: var(--cyan); }
+
+  /* ── Design token grid ─────────────────────────────── */
+  .token-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 5px;
+  }
+  .token-swatch {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+  .token-name { font-family: 'DM Mono', monospace; font-size: 12px; color: var(--cyan); }
+  .token-hex { font-family: 'DM Mono', monospace; font-size: 11px; color: var(--faint); }
+  .token-role { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+  /* ── Callout ─────────────────────────────── */
+  .callout {
+    display: flex;
+    gap: 12px;
+    padding: 16px 18px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.6;
+    margin-bottom: 16px;
+  }
+  .callout.blue { background: var(--blue-bg); border: 1px solid rgba(77,142,255,.2); color: #8ab4ff; }
+  .callout.orange { background: var(--orange-bg); border: 1px solid rgba(255,154,60,.2); color: #ffb870; }
+  .callout.green { background: var(--green-bg); border: 1px solid rgba(52,209,122,.2); color: #70e09c; }
+  .callout-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+
+  /* ── Misc ─────────────────────────────── */
+  p { color: var(--muted); font-size: 13.5px; line-height: 1.7; margin-bottom: 16px; }
+  h3 { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 12px; margin-top: 24px; }
+  .mt8 { margin-top: 8px; }
+  .mt16 { margin-top: 16px; }
+  .mt24 { margin-top: 24px; }
+  .mb8 { margin-bottom: 8px; }
+  .gap6 { display: flex; flex-wrap: wrap; gap: 6px; }
+  .label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 10px;
+  }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--faint); border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- ── Sidebar nav ── -->
+  <nav class="nav">
+    <a class="nav-logo" href="#">
+      <span class="nav-logo-dot"></span>
+      <span class="nav-logo-text">RadFlow</span>
+      <span class="nav-logo-badge">v3.2</span>
+    </a>
+
+    <div class="nav-section-label">Overview</div>
+    <a href="#overview" class="active"><span class="nav-ic">◈</span> Product Overview</a>
+    <a href="#rbac"><span class="nav-ic">◈</span> Roles &amp; Access</a>
+
+    <div class="nav-section-label">Architecture</div>
+    <a href="#screens"><span class="nav-ic">◈</span> Screens &amp; Modules</a>
+    <a href="#statuses"><span class="nav-ic">◈</span> Status Model</a>
+    <a href="#files"><span class="nav-ic">◈</span> File Architecture</a>
+    <a href="#data"><span class="nav-ic">◈</span> Data Layer</a>
+
+    <div class="nav-section-label">Design &amp; Tech</div>
+    <a href="#design"><span class="nav-ic">◈</span> Design System</a>
+    <a href="#tech"><span class="nav-ic">◈</span> Tech Stack</a>
+    <a href="#realtime"><span class="nav-ic">◈</span> Real-time Sync</a>
+
+    <div class="nav-section-label">Workflows</div>
+    <a href="#flows"><span class="nav-ic">◈</span> Core Workflows</a>
+    <a href="#n8n"><span class="nav-ic">◈</span> Automation (n8n)</a>
+    <a href="#changelog"><span class="nav-ic">◈</span> Changelog v3.2</a>
+  </nav>
+
+  <!-- ── Main content ── -->
+  <main class="main">
+
+    <!-- Hero -->
+    <div class="hero" id="overview">
+      <div class="hero-tag">🏥 HealthTech · B2B SaaS · Stage 1 MVP</div>
+      <h1>RadFlow <span>Structure Analysis</span></h1>
+      <p class="hero-sub">Intelligent MRI/CT queue management platform for Ukrainian diagnostic clinics. Multi-tenant, role-based, real-time. As-built prototype v3.2 — June 7, 2026.</p>
+      <div class="hero-chips">
+        <span class="chip blue">React 18 + Babel</span>
+        <span class="chip green">Supabase + RLS</span>
+        <span class="chip purple">Next.js 14</span>
+        <span class="chip orange">n8n Automation</span>
+        <span class="chip cyan">GPT-4o mini</span>
+        <span class="chip gray">🇺🇦 Ukraine Market</span>
+      </div>
+    </div>
+
+    <!-- Product snapshot -->
+    <div class="section">
+      <div class="section-header">
+        <span class="section-num">01</span>
+        <span class="section-title">Product Overview</span>
+      </div>
+
+      <div class="info-grid" style="margin-bottom:20px">
+        <div class="info-cell">
+          <div class="info-cell-label">Product</div>
+          <div class="info-cell-val">RadFlow — Smart Queue for MRI &amp; CT Clinics</div>
+        </div>
+        <div class="info-cell">
+          <div class="info-cell-label">Category</div>
+          <div class="info-cell-val">B2B SaaS · HealthTech · Workflow / Queue Management</div>
+        </div>
+        <div class="info-cell">
+          <div class="info-cell-label">Business Model</div>
+          <div class="info-cell-val">Subscription per-device / per-clinic. Self-serve sign-up + 14-day trial + onboarding call for paid clients.</div>
+        </div>
+        <div class="info-cell">
+          <div class="info-cell-label">Stage</div>
+          <div class="info-cell-val">Stage 1 MVP — Smart queue, Call List, Referral Portal, AI price parsing</div>
+        </div>
+        <div class="info-cell">
+          <div class="info-cell-label">Market</div>
+          <div class="info-cell-val">Ukraine — private diagnostic centers, clinic networks, state hospitals with MRI/CT</div>
+        </div>
+        <div class="info-cell">
+          <div class="info-cell-label">Prototype Version</div>
+          <div class="info-cell-val mono">v3.2 — Booking Revamp · 7 June 2026</div>
+        </div>
+      </div>
+
+      <div class="callout blue">
+        <span class="callout-icon">ℹ</span>
+        <span>Stage 1 does <strong>not</strong> send automated SMS/Viber/Email to patients. Instead, the platform optimises manual outreach: incidents generate a prioritised <strong>Call List</strong> with recommended new time slots and call outcome logging. All marketing claims are scoped to this boundary.</span>
+      </div>
+
+      <div class="callout green">
+        <span class="callout-icon">⚡</span>
+        <span>Core design principle: <strong>every action ≤ 5 steps</strong>. Wizard reduced from 9 → 5 steps. Alternative paths and edge cases are Stage 2.</span>
+      </div>
+
+      <h3>Platform Formula</h3>
+      <div class="flow mt8">
+        <div class="flow-step" style="background:var(--blue-bg);color:var(--blue)">📋 Clinic signs up</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step" style="background:var(--purple-bg);color:var(--purple)">🤖 AI parses price list</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step" style="background:var(--green-bg);color:var(--green)">📅 Smart Scheduler builds slots</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step" style="background:var(--orange-bg);color:var(--orange)">🏥 Admin manages queue</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step" style="background:var(--cyan-bg);color:var(--cyan)">📊 CEO sees ROI analytics</div>
+      </div>
+    </div>
+
+    <!-- RBAC -->
+    <div class="section" id="rbac">
+      <div class="section-header">
+        <span class="section-num">02</span>
+        <span class="section-title">Roles &amp; Access Control (RBAC)</span>
+      </div>
+
+      <p>All roles share a single domain. Each clinic is an isolated <strong>Tenant</strong> with Row-Level Security in PostgreSQL. Mobile browser or desktop — one adaptive UI, no separate apps.</p>
+
+      <div class="card-grid" style="grid-template-columns:1fr 1fr; gap:10px">
+
+        <div class="role-card">
+          <div class="role-avatar" style="background:var(--blue-bg);color:var(--blue)">🗂</div>
+          <div class="role-info">
+            <div class="role-name">Administrator</div>
+            <div class="role-url">radflow.ua/admin</div>
+            <div class="role-desc">Full access: Wizard, schedule, Call List, queue board, staff, incidents. Primary daily operator.</div>
+            <div class="role-tags">
+              <span class="role-tag">Queue Board</span>
+              <span class="role-tag">Call List</span>
+              <span class="role-tag">Incidents</span>
+              <span class="role-tag">Setup Wizard</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="role-card">
+          <div class="role-avatar" style="background:var(--green-bg);color:var(--green)">🩺</div>
+          <div class="role-info">
+            <div class="role-name">Radiologist</div>
+            <div class="role-url">radflow.ua/queue</div>
+            <div class="role-desc">Own queue only. Can only see cabinets explicitly authorised by Admin. No access to finances or other radiologists' data.</div>
+            <div class="role-tags">
+              <span class="role-tag">My Queue</span>
+              <span class="role-tag">Patient Card</span>
+              <span class="role-tag">Authorized Cabinets</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="role-card">
+          <div class="role-avatar" style="background:var(--purple-bg);color:var(--purple)">📈</div>
+          <div class="role-info">
+            <div class="role-name">Head of Department</div>
+            <div class="role-url">radflow.ua/queue</div>
+            <div class="role-desc">Everything a Radiologist sees, plus department-level analytics and protocol review access.</div>
+            <div class="role-tags">
+              <span class="role-tag">Radiologist +</span>
+              <span class="role-tag">Analytics</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="role-card">
+          <div class="role-avatar" style="background:var(--cyan-bg);color:var(--cyan)">📊</div>
+          <div class="role-info">
+            <div class="role-name">CEO / Owner</div>
+            <div class="role-url">radflow.ua/ceo</div>
+            <div class="role-desc">Dashboard + reports only. Cannot see medical data. 3 KPI cards + chart + CSV export.</div>
+            <div class="role-tags">
+              <span class="role-tag">KPI Dashboard</span>
+              <span class="role-tag">CSV Export</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="role-card" style="grid-column: 1 / -1">
+          <div class="role-avatar" style="background:var(--orange-bg);color:var(--orange)">🔗</div>
+          <div class="role-info">
+            <div class="role-name">Referring Doctor (External)</div>
+            <div class="role-url">referral.radflow.ua</div>
+            <div class="role-desc">Separate subdomain. Can see free slots, submit referrals, and track their referral statuses (Pending → Completed / Not Completed). Sees only the clinic's own service catalogue.</div>
+            <div class="role-tags">
+              <span class="role-tag">Referral Portal</span>
+              <span class="role-tag">My Referrals</span>
+              <span class="role-tag">Slot Booking</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Screens & Modules -->
+    <div class="section" id="screens">
+      <div class="section-header">
+        <span class="section-num">03</span>
+        <span class="section-title">Screens &amp; Modules</span>
+      </div>
+
+      <div class="card-grid cols-2" style="gap:10px">
+
+        <div class="card">
+          <div class="card-icon">📋</div>
+          <div class="card-label">Admin · Core</div>
+          <div class="card-title">Daily Queue Board</div>
+          <div class="card-desc">Real-time colour-coded patient list. 7 independent cabinet queues (4 MRI + 3 CT). Per-cabinet active patient + live timer. Clickable stats bar as filter. CITO banner. Patient flow simulator toggle.</div>
+          <div class="card-footer">radflow-queue-board.html</div>
+        </div>
+
+        <div class="card">
+          <div class="card-icon">🩺</div>
+          <div class="card-label">Radiologist · Core</div>
+          <div class="card-title">Radiologist Office</div>
+          <div class="card-desc">Full mirror of Admin queue filtered to authorised cabinets. Same 5 statuses. Read-only call confirmation status. Real calendar panel. Per-cabinet equipment selector.</div>
+          <div class="card-footer">radflow-radiologist.html</div>
+        </div>
+
+        <div class="card">
+          <div class="card-icon">☎</div>
+          <div class="card-label">Admin · Daily Op</div>
+          <div class="card-title">Call List</div>
+          <div class="card-desc">Tomorrow's confirmation checklist. Built from the same deterministic schedule as the queue. Statuses: Confirmed / No Answer / Callback / Refused / Pending. Real-time sync with queue.</div>
+          <div class="card-footer">radflow-call-list.html</div>
+        </div>
+
+        <div class="card">
+          <div class="card-icon">⚠</div>
+          <div class="card-label">Admin · Incidents</div>
+          <div class="card-title">Incident Management</div>
+          <div class="card-desc">Block/unblock equipment, mass reschedule. Smart Scheduler auto-redistributes affected patients. Event log. Resolve in ≤5 min for full-day breakdown.</div>
+          <div class="card-footer">radflow-incidents.html</div>
+        </div>
+
+        <div class="card">
+          <div class="card-icon">🧙</div>
+          <div class="card-label">Admin · Onboarding</div>
+          <div class="card-title">Setup Wizard (5 steps)</div>
+          <div class="card-desc">Step 1: Clinic Profile → Step 2: Price List (AI parse) → Step 3: Equipment &amp; Rooms → Step 4: Schedule → Step 5: Staff + Go Live. Reduced from 9 → 5 steps vs v1.</div>
+          <div class="card-footer">radflow-setup-wizard.html</div>
+        </div>
+
+        <div class="card">
+          <div class="card-icon">🔗</div>
+          <div class="card-label">External · Stage 2</div>
+          <div class="card-title">Referral Portal</div>
+          <div class="card-desc">Separate subdomain for referring doctors. View available slots, submit referrals, track status updates in real time. Only shows the clinic's own nomenclature.</div>
+          <div class="card-footer">referral.radflow.ua</div>
+        </div>
+
+      </div>
+
+      <h3 class="mt24">Sidebar Navigation Structure</h3>
+      <div class="card" style="margin-top:8px">
+        <div class="card-grid cols-3" style="gap:0; border: 1px solid var(--border); border-radius:8px; overflow:hidden; background: var(--bg3)">
+          <div style="padding:16px; border-right:1px solid var(--border)">
+            <div class="label mb8">Cabinets</div>
+            <div style="font-size:12px; color:var(--muted); line-height:2">▦ All cabinets<br>№1 МРТ Siemens 1.5T<br>№2 КТ GE Optima<br>№3 МРТ Philips 3.0T<br>№4 МРТ Siemens Magnetom<br>№5 КТ Canon Aquilion<br>№6 КТ Toshiba Activion<br>№7 КТ Philips Incisive</div>
+          </div>
+          <div style="padding:16px; border-right:1px solid var(--border)">
+            <div class="label mb8">Operations</div>
+            <div style="font-size:12px; color:var(--muted); line-height:2">＋ New Booking<br>☎ Call List <span style="color:var(--orange)">(badge: 5)</span><br>⚠ Incident <span style="color:var(--red)">(badge: 1)</span><br>🩺 Referring Doctor<br>₴ Price List</div>
+          </div>
+          <div style="padding:16px">
+            <div class="label mb8">Settings</div>
+            <div style="font-size:12px; color:var(--muted); line-height:2">⚙ Setup Wizard<br><br></div>
+            <div class="label mb8" style="margin-top:16px">Right Panel</div>
+            <div style="font-size:12px; color:var(--muted); line-height:2">📅 Mini Calendar<br>📊 Cabinet Load<br>☎ Quick Call List</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status Model -->
+    <div class="section" id="statuses">
+      <div class="section-header">
+        <span class="section-num">04</span>
+        <span class="section-title">Patient Status Model</span>
+      </div>
+
+      <p>Both Admin and Radiologist share the <strong>same 5 statuses</strong>. Queue display order follows the real patient flow — not booking time.</p>
+
+      <h3>Study Statuses (Display Order)</h3>
+      <div class="mt8">
+        <div class="status-row">
+          <div class="status-dot" style="background:var(--blue)"></div>
+          <div class="status-label" style="color:var(--blue)">В кабінеті</div>
+          <div class="status-en">cabinet</div>
+          <div class="status-desc">Procedure in progress. Live cabinet timer running. Blocks "Call Next" for that cabinet.</div>
+          <div class="status-arrow">order: 0</div>
+        </div>
+        <div class="status-row">
+          <div class="status-dot" style="background:var(--yellow)"></div>
+          <div class="status-label" style="color:var(--yellow)">Очікує</div>
+          <div class="status-en">waiting</div>
+          <div class="status-desc">Patient has arrived, waiting to be called into cabinet.</div>
+          <div class="status-arrow">order: 1</div>
+        </div>
+        <div class="status-row">
+          <div class="status-dot" style="background:var(--muted)"></div>
+          <div class="status-label" style="color:var(--text)">В черзі</div>
+          <div class="status-en">queued</div>
+          <div class="status-desc">Booked for the day, has not yet arrived at the clinic.</div>
+          <div class="status-arrow">order: 2</div>
+        </div>
+        <div class="status-row">
+          <div class="status-dot" style="background:var(--green)"></div>
+          <div class="status-label" style="color:var(--green)">Виконано</div>
+          <div class="status-en">done</div>
+          <div class="status-desc">Procedure successfully completed via ADMIN-PROC-01 modal (Successful / Not Completed with reason).</div>
+          <div class="status-arrow">order: 3</div>
+        </div>
+        <div class="status-row">
+          <div class="status-dot" style="background:var(--red)"></div>
+          <div class="status-label" style="color:var(--red)">Не відбулось</div>
+          <div class="status-en">noshow</div>
+          <div class="status-desc">No-show or failure. Slot is freed. Reasons: equipment fault / patient refused / other.</div>
+          <div class="status-arrow">order: 4</div>
+        </div>
+      </div>
+
+      <h3 class="mt24">Call List Statuses</h3>
+      <div class="gap6 mt8">
+        <span class="chip green">✓ Confirmed</span>
+        <span class="chip gray">⏳ Pending</span>
+        <span class="chip orange">☏ No Answer</span>
+        <span class="chip blue">↩ Callback</span>
+        <span class="chip red">✗ Refused</span>
+      </div>
+
+      <h3 class="mt24">CITO Priority</h3>
+      <div class="callout orange mt8">
+        <span class="callout-icon">🚨</span>
+        <span><strong>CITO</strong> is the only priority flag (the "Urgent" status was removed in v3.1 for consistency). A CITO patient triggers a <strong>red banner</strong> on the Admin Queue Board and in the Radiologist Office simultaneously. CITO patients always appear at the top of their status group.</span>
+      </div>
+    </div>
+
+    <!-- File Architecture -->
+    <div class="section" id="files">
+      <div class="section-header">
+        <span class="section-num">05</span>
+        <span class="section-title">File Architecture</span>
+      </div>
+
+      <div class="file-tree">
+        <div class="file-tree-header">
+          <span>📁</span> RadFlow/ — prototype root
+        </div>
+        <div class="file-tree-body">
+
+          <div class="file-group-label">Pages (HTML shells)</div>
+          <div class="file-row"><span class="file-icon">📄</span><span class="file-name">radflow-queue-board.html</span><span class="file-badge html">HTML</span></div>
+          <div class="file-row"><span class="file-icon">📄</span><span class="file-name">radflow-radiologist.html</span><span class="file-badge html">HTML</span></div>
+          <div class="file-row"><span class="file-icon">📄</span><span class="file-name">radflow-call-list.html</span><span class="file-badge html">HTML</span></div>
+          <div class="file-row"><span class="file-icon">📄</span><span class="file-name">radflow-incidents.html</span><span class="file-badge html">HTML</span></div>
+          <div class="file-row"><span class="file-icon">📄</span><span class="file-name">radflow-setup-wizard.html</span><span class="file-badge html">HTML</span></div>
+
+          <div class="file-group-label">React Apps (JSX)</div>
+          <div class="file-row"><span class="file-icon">⚛</span><span class="file-name">queue-app.jsx</span><span class="file-size">734 lines</span><span class="file-badge jsx">JSX</span></div>
+          <div class="file-row"><span class="file-icon">⚛</span><span class="file-name">radiologist-app.jsx</span><span class="file-size">483 lines</span><span class="file-badge jsx">JSX</span></div>
+          <div class="file-row"><span class="file-icon">⚛</span><span class="file-name">call-list-app.jsx</span><span class="file-size">207 lines</span><span class="file-badge jsx">JSX</span></div>
+          <div class="file-row"><span class="file-icon">⚛</span><span class="file-name">incidents-app.jsx</span><span class="file-badge jsx">JSX</span></div>
+          <div class="file-row" style="padding-left:36px"><span class="file-icon">└</span><span class="file-name" style="color:var(--muted)">TabBlock (кілька активних інцидентів), BlockModal (апарат+причина+тривалість+дата відновлення), reads/writes rf_incident_v1</span></div>
+          <div class="file-row"><span class="file-icon">⚛</span><span class="file-name">wizard-app.jsx</span><span class="file-size">83 lines</span><span class="file-badge jsx">JSX</span></div>
+          <div class="file-row"><span class="file-icon">⚛</span><span class="file-name">wizard-steps.jsx</span><span class="file-badge jsx">JSX</span></div>
+
+          <div class="file-group-label">Shared Components (JSX)</div>
+          <div class="file-row"><span class="file-icon">⚛</span><span class="file-name">rf-shell.jsx</span><span class="file-size">171 lines</span><span class="file-badge jsx">JSX</span></div>
+          <div class="file-row" style="padding-left:36px"><span class="file-icon">└</span><span class="file-name" style="color:var(--muted)">Sidebar, useToasts, fmtTimer, RF_OPS</span></div>
+          <div class="file-row"><span class="file-icon">⚛</span><span class="file-name">queue-components.jsx</span><span class="file-badge jsx">JSX</span></div>
+          <div class="file-row" style="padding-left:36px"><span class="file-icon">└</span><span class="file-name" style="color:var(--muted)">StatsBar, QueueControls, MiniCalendar, QueueRow</span></div>
+
+          <div class="file-group-label">Data Layer (JS)</div>
+          <div class="file-row"><span class="file-icon">🗄</span><span class="file-name">queue-data.js</span><span class="file-size">88 lines</span><span class="file-badge js">JS</span></div>
+          <div class="file-row" style="padding-left:36px"><span class="file-icon">└</span><span class="file-name" style="color:var(--muted)">RF_PATIENTS, RF_ROOMS, rfToday, rfSortFlow, date helpers</span></div>
+          <div class="file-row"><span class="file-icon">🗄</span><span class="file-name">radiologist-data.js</span><span class="file-size">97 lines</span><span class="file-badge js">JS</span></div>
+          <div class="file-row" style="padding-left:36px"><span class="file-icon">└</span><span class="file-name" style="color:var(--muted)">RAD_PROFILE, getAuthorizedCabinets, RAD_CLINICAL, saveStudy</span></div>
+          <div class="file-row"><span class="file-icon">🗄</span><span class="file-name">call-list-data.js</span><span class="file-badge js">JS</span></div>
+          <div class="file-row" style="padding-left:36px"><span class="file-icon">└</span><span class="file-name" style="color:var(--muted)">getCallList, getCallStatusFor, saveCallStatus, CL_STATUS</span></div>
+          <div class="file-row" style="padding-left:36px"><span class="file-icon">└</span><span class="file-name" style="color:var(--muted)">Incident layer: getIncidents, upsertIncident, removeIncident, getIncidentForRoom, rfBuildIncident, rfIncidentAffected, rfMergeIncidentStatuses, rfIncPending, RF_INC_STATUS</span></div>
+          <div class="file-row"><span class="file-icon">🗄</span><span class="file-name">catalog-data.js</span><span class="file-size">192 lines</span><span class="file-badge js">JS</span></div>
+          <div class="file-row"><span class="file-icon">🗄</span><span class="file-name">userflow-data.js</span><span class="file-size">206 lines</span><span class="file-badge js">JS</span></div>
+
+          <div class="file-group-label">Simulation Engines (JS)</div>
+          <div class="file-row"><span class="file-icon">⚡</span><span class="file-name">schedule.js</span><span class="file-size">139 lines</span><span class="file-badge js">JS</span></div>
+          <div class="file-row" style="padding-left:36px"><span class="file-icon">└</span><span class="file-name" style="color:var(--muted)">getDayPatients(date) — deterministic, seeded by date</span></div>
+          <div class="file-row"><span class="file-icon">⚡</span><span class="file-name">flow-sim.js</span><span class="file-size">156 lines</span><span class="file-badge js">JS</span></div>
+          <div class="file-row" style="padding-left:36px"><span class="file-icon">└</span><span class="file-name" style="color:var(--muted)">Patient flow simulator, lead-lock, TICK_MS=12s</span></div>
+
+          <div class="file-group-label">Styles (CSS)</div>
+          <div class="file-row"><span class="file-icon">🎨</span><span class="file-name">radflow.css</span><span class="file-size">693 lines</span><span class="file-badge css">CSS</span></div>
+          <div class="file-row"><span class="file-icon">🎨</span><span class="file-name">radflow-screens.css</span><span class="file-badge css">CSS</span></div>
+          <div class="file-row"><span class="file-icon">🎨</span><span class="file-name">radflow-wizard.css</span><span class="file-badge css">CSS</span></div>
+          <div class="file-row"><span class="file-icon">🎨</span><span class="file-name">radiologist.css</span><span class="file-badge css">CSS</span></div>
+          <div class="file-row"><span class="file-icon">🎨</span><span class="file-name">radflow-docs.css</span><span class="file-badge css">CSS</span></div>
+
+          <div class="file-group-label">Documentation (HTML)</div>
+          <div class="file-row"><span class="file-icon">📚</span><span class="file-name">radflow-brief.html</span><span class="file-size">581 lines</span><span class="file-badge html">HTML</span></div>
+          <div class="file-row"><span class="file-icon">📚</span><span class="file-name">radflow-catalog.html</span><span class="file-badge html">HTML</span></div>
+          <div class="file-row"><span class="file-icon">📚</span><span class="file-name">RadFlow - User Flows v2.1.html</span><span class="file-badge html">HTML</span></div>
+          <div class="file-row"><span class="file-icon">📚</span><span class="file-name">radflow-user-scenario.html</span><span class="file-badge html">HTML</span></div>
+          <div class="file-row"><span class="file-icon">📄</span><span class="file-name">CHANGELOG.md</span><span class="file-badge gray">MD</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Data Layer -->
+    <div class="section" id="data">
+      <div class="section-header">
+        <span class="section-num">06</span>
+        <span class="section-title">Data Layer</span>
+      </div>
+
+      <h3>Shared Storage Keys (localStorage emulating Supabase)</h3>
+      <table class="data-table mt8" style="background:var(--bg2);border-radius:10px;overflow:hidden;border:1px solid var(--border)">
+        <thead>
+          <tr><th>Key</th><th>Contents</th><th>Consumers</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">rf_study_store_v1</td>
+            <td>Study statuses per patient ID (queued / waiting / cabinet / done / noshow)</td>
+            <td>queue-app, radiologist-app, flow-sim</td>
+          </tr>
+          <tr>
+            <td class="mono">rf_calllist_status_v1</td>
+            <td>Call confirmation statuses per patient ID (confirmed / noanswer / callback / refused)</td>
+            <td>call-list-app, queue-app, radiologist-app</td>
+          </tr>
+          <tr>
+            <td class="mono">rf_incident_v1</td>
+            <td><strong>Array</strong> of active equipment incidents (one per blocked room): roomKey, reason, windowLabel, durKey/restoreDate, and affected patients[] (today's unserved + future bookings up to restore date) with per-patient callStatus (pending / rescheduled / callback / refused). Migrates from the old single-object form.</td>
+            <td>queue-app, incidents-app, call-list-app, Sidebar badges</td>
+          </tr>
+          <tr>
+            <td class="mono">rf_sim_leader</td>
+            <td>Lead-lock: ID of the tab running the flow simulator</td>
+            <td>flow-sim (all tabs)</td>
+          </tr>
+          <tr>
+            <td class="mono">rf_sim_on</td>
+            <td>Boolean: simulator running (1) or paused (0)</td>
+            <td>flow-sim, queue-app header toggle</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3 class="mt24">Cross-Tab Sync Events</h3>
+      <table class="data-table mt8" style="background:var(--bg2);border-radius:10px;overflow:hidden;border:1px solid var(--border)">
+        <thead>
+          <tr><th>Event</th><th>Scope</th><th>Trigger</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">storage</td><td>Cross-tab</td><td>Any localStorage write — syncs study &amp; call statuses between all open tabs</td></tr>
+          <tr><td class="mono">rf-study-sync</td><td>Same-tab</td><td>Study status change within a single tab (avoids storage event not firing for same origin)</td></tr>
+          <tr><td class="mono">rf-call-sync</td><td>Same-tab</td><td>Call list status change within a single tab</td></tr>
+          <tr><td class="mono">rf-incident-sync</td><td>Same-tab</td><td>Equipment incident created / edited / resolved (rf_incident_v1) — refreshes banners, blocked rooms, call panels and badges</td></tr>
+          <tr><td class="mono">rf-sim-toggle</td><td>Same-tab</td><td>Flow simulator paused / resumed by user toggle</td></tr>
+        </tbody>
+      </table>
+
+      <h3 class="mt24">Schedule Generation Logic (schedule.js)</h3>
+      <div class="callout blue mt8">
+        <span class="callout-icon">🔢</span>
+        <span><code style="font-family:'DM Mono',monospace">getDayPatients(date)</code> uses a <strong>deterministic seeded PRNG (mulberry32)</strong> keyed by date. The same day always returns the same schedule — but different days return different queues. Sunday = closed, Saturday = reduced, weekday = full. Past days show completed statuses; future days show queued.</span>
+      </div>
+
+      <h3 class="mt24">Equipment Access Control</h3>
+      <div class="card mt8">
+        <div class="card-desc" style="font-family:'DM Mono',monospace; font-size:12px; line-height:1.8; color:var(--cyan)">
+          // Production (Supabase RLS):<br>
+          SELECT cabinet_id FROM radiologist_cabinets<br>
+          WHERE radiologist_id = auth.uid()<br><br>
+          // Prototype:<br>
+          window.RAD_PROFILE.cabinets = ["r1","r2","r3","r4"]<br>
+          window.getAuthorizedCabinets() // enforced in getRadiologistQueue()
+        </div>
+      </div>
+
+      <h3 class="mt24">Incident Management — Поломка / ТО (v3.6)</h3>
+      <div class="callout blue mt8">
+        <span class="callout-icon">🔧</span>
+        <span>Реєстрація поломки/ТО апарата автоматично формує <strong>колл-лист на перезапис</strong> і блокує кабінет. Кілька кабінетів можуть мати інциденти одночасно — <code style="font-family:'DM Mono',monospace">rf_incident_v1</code> зберігає масив, по одному інциденту на кабінет.</span>
+      </div>
+      <table class="data-table mt8" style="background:var(--bg2);border-radius:10px;overflow:hidden;border:1px solid var(--border)">
+        <thead><tr><th>Крок</th><th>Що відбувається</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Діалог</strong></td><td>Адмін обирає <em>апарат + причину (поломка / планове ТО) + початок + тривалість</em>. Тривалість «До відновлення» додає поле дати відновлення.</td></tr>
+          <tr><td><strong>Постраждалі</strong></td><td><code style="font-family:'DM Mono',monospace">rfBuildIncident()</code> → <code style="font-family:'DM Mono',monospace">rfIncidentAffected()</code>: усі незавершені записи апарата сьогодні <em>+</em> (для «До відновлення») майбутні записи по днях до дати відновлення (<code style="font-family:'DM Mono',monospace">getDayPatients</code>). Кожен запис має dayLabel/isToday.</td></tr>
+          <tr><td><strong>Збереження</strong></td><td><code style="font-family:'DM Mono',monospace">upsertIncident()</code> пише інцидент у масив (за roomKey) → подія <code style="font-family:'DM Mono',monospace">rf-incident-sync</code>.</td></tr>
+          <tr><td><strong>Відображення</strong></td><td>Дошка черги: банер + картка «🔒 Заблоковано» + панель «Обдзвін через простій» (на кожен інцидент) + позначки «🔧 Перезапис» у черзі. Сторінка «Інцидент»: активні блоки. Колл-лист + сайдбар: сумарні лічильники.</td></tr>
+          <tr><td><strong>Обдзвін</strong></td><td>Оператор фіксує статус кожного пацієнта: <em>Перезаписано / Передзвонити / Відмова</em> (<code style="font-family:'DM Mono',monospace">setIncidentCallStatus</code>). Лічильник «N на обдзвін» зменшується.</td></tr>
+          <tr><td><strong>Редагування</strong></td><td>«✏ Редагувати» перезбирає інцидент; <code style="font-family:'DM Mono',monospace">rfMergeIncidentStatuses()</code> зберігає вже зафіксовані статуси обдзвону.</td></tr>
+          <tr><td><strong>Розблокування</strong></td><td><code style="font-family:'DM Mono',monospace">removeIncident(roomKey)</code> — точково на кабінет; інші інциденти лишаються.</td></tr>
+        </tbody>
+      </table>
+      <div class="callout mt8">
+        <span class="callout-icon">🎯</span>
+        <span>Закриває евристики Нільсена: <strong>видимість статусу системи</strong> (банер + лічильник), <strong>відповідність реальному світу</strong> (термінологія простою/обдзвону), <strong>запобігання помилкам</strong> і <strong>контроль користувача</strong> (діалог з апаратом/тривалістю замість «німого» кліку).</span>
+      </div>
+    </div>
+
+    <!-- Design System -->
+    <div class="section" id="design">
+      <div class="section-header">
+        <span class="section-num">07</span>
+        <span class="section-title">Design System</span>
+      </div>
+
+      <p>Dark theme inspired by Apple's system UI. All tokens defined as CSS custom properties in <code style="font-family:'DM Mono',monospace; color:var(--cyan)">radflow.css</code>.</p>
+
+      <h3>Surfaces</h3>
+      <div class="mt8">
+        <div class="token-row"><div class="token-swatch" style="background:#1c1c1e"></div><div class="token-name">--bg</div><div class="token-hex">#1c1c1e</div><div class="token-role">Page background</div></div>
+        <div class="token-row"><div class="token-swatch" style="background:#242426"></div><div class="token-name">--bg-elevated</div><div class="token-hex">#242426</div><div class="token-role">Elevated surface, sidebar</div></div>
+        <div class="token-row"><div class="token-swatch" style="background:#2c2c2e"></div><div class="token-name">--card</div><div class="token-hex">#2c2c2e</div><div class="token-role">Cards, queue rows</div></div>
+        <div class="token-row"><div class="token-swatch" style="background:#3a3a3c"></div><div class="token-name">--card-2</div><div class="token-hex">#3a3a3c</div><div class="token-role">Expanded rows, modals</div></div>
+      </div>
+
+      <h3 class="mt24">Typography</h3>
+      <div class="mt8">
+        <div class="token-row"><div class="token-swatch" style="background:#f5f5f7"></div><div class="token-name">--text</div><div class="token-hex">#f5f5f7</div><div class="token-role">Primary text (Apple gray-white)</div></div>
+        <div class="token-row"><div class="token-swatch" style="background:#aeaeb2"></div><div class="token-name">--text-secondary</div><div class="token-hex">#aeaeb2</div><div class="token-role">Secondary labels</div></div>
+        <div class="token-row"><div class="token-swatch" style="background:#8e8e93"></div><div class="token-name">--text-muted</div><div class="token-hex">#8e8e93</div><div class="token-role">Captions, hints</div></div>
+      </div>
+
+      <h3 class="mt24">Status Accent Colors</h3>
+      <div class="mt8">
+        <div class="token-row"><div class="token-swatch" style="background:#0a84ff"></div><div class="token-name">--blue</div><div class="token-hex">#0a84ff</div><div class="token-role">В кабінеті · Primary action</div></div>
+        <div class="token-row"><div class="token-swatch" style="background:#30d158"></div><div class="token-name">--green</div><div class="token-hex">#30d158</div><div class="token-role">Виконано · Success</div></div>
+        <div class="token-row"><div class="token-swatch" style="background:#ff453a"></div><div class="token-name">--red</div><div class="token-hex">#ff453a</div><div class="token-role">Не відбулось · CITO · Error</div></div>
+        <div class="token-row"><div class="token-swatch" style="background:#ff9f0a"></div><div class="token-name">--orange</div><div class="token-hex">#ff9f0a</div><div class="token-role">Warning · Incidents · CT rooms</div></div>
+        <div class="token-row"><div class="token-swatch" style="background:#ffd60a"></div><div class="token-name">--yellow</div><div class="token-hex">#ffd60a</div><div class="token-role">Очікує · Pending</div></div>
+      </div>
+    </div>
+
+    <!-- Tech Stack -->
+    <div class="section" id="tech">
+      <div class="section-header">
+        <span class="section-num">08</span>
+        <span class="section-title">Tech Stack</span>
+      </div>
+
+      <h3>Prototype (As-Built)</h3>
+      <div class="mt8">
+        <div class="tech-row">
+          <div class="tech-icon" style="background:var(--blue-bg)">⚛</div>
+          <div>
+            <div class="tech-name">React 18.3.1 + Babel Standalone 7.29.0</div>
+            <div class="tech-desc">JSX compiled in-browser. Pinned versions with integrity hashes. Multi-file component architecture via window globals.</div>
+          </div>
+          <div class="tech-layer">Frontend</div>
+        </div>
+        <div class="tech-row">
+          <div class="tech-icon" style="background:var(--yellow-bg)">💾</div>
+          <div>
+            <div class="tech-name">localStorage + Custom Events</div>
+            <div class="tech-desc">Emulates Supabase Realtime. Shared stores (rf_study_store_v1, rf_calllist_status_v1, rf_incident_v1) + window events (storage, rf-study-sync, rf-call-sync, rf-incident-sync) for cross-tab and same-tab sync.</div>
+          </div>
+          <div class="tech-layer">Data / Sync</div>
+        </div>
+        <div class="tech-row">
+          <div class="tech-icon" style="background:var(--purple-bg)">🎨</div>
+          <div>
+            <div class="tech-name">CSS Custom Properties (Design Tokens)</div>
+            <div class="tech-desc">Full dark design system in radflow.css. Per-module stylesheets for wizard, radiologist, docs, screens.</div>
+          </div>
+          <div class="tech-layer">Styling</div>
+        </div>
+      </div>
+
+      <h3 class="mt24">Production Target</h3>
+      <div class="mt8">
+        <div class="tech-row">
+          <div class="tech-icon" style="background:var(--purple-bg)">▲</div>
+          <div>
+            <div class="tech-name">Next.js 14 (React) + Fastify (Node.js)</div>
+            <div class="tech-desc">SSR, RBAC middleware, TypeScript throughout. Single language stack.</div>
+          </div>
+          <div class="tech-layer">Full-stack</div>
+        </div>
+        <div class="tech-row">
+          <div class="tech-icon" style="background:var(--green-bg)">🛡</div>
+          <div>
+            <div class="tech-name">Supabase (PostgreSQL + Row-Level Security)</div>
+            <div class="tech-desc">Tenant isolation via tenant_id on every table. RLS policies enforce data boundaries. Supabase Auth for all roles.</div>
+          </div>
+          <div class="tech-layer">Database</div>
+        </div>
+        <div class="tech-row">
+          <div class="tech-icon" style="background:var(--cyan-bg)">⚡</div>
+          <div>
+            <div class="tech-name">Supabase Realtime (WebSocket)</div>
+            <div class="tech-desc">Live sync of study and call statuses between all roles across all tabs and devices — replaces the localStorage emulation.</div>
+          </div>
+          <div class="tech-layer">Real-time</div>
+        </div>
+        <div class="tech-row">
+          <div class="tech-icon" style="background:var(--orange-bg)">🔁</div>
+          <div>
+            <div class="tech-name">n8n (self-hosted)</div>
+            <div class="tech-desc">6 automation workflows: onboarding emails, staff invites, call list generation, referral confirmations.</div>
+          </div>
+          <div class="tech-layer">Automation</div>
+        </div>
+        <div class="tech-row">
+          <div class="tech-icon" style="background:var(--purple-bg)">🤖</div>
+          <div>
+            <div class="tech-name">OpenAI GPT-4o mini</div>
+            <div class="tech-desc">AI parsing of uploaded price lists (Word/Excel/PDF/URL). Extracts service names, durations, prices. Fallback: manual table if AI fails.</div>
+          </div>
+          <div class="tech-layer">AI</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Real-time Sync -->
+    <div class="section" id="realtime">
+      <div class="section-header">
+        <span class="section-num">09</span>
+        <span class="section-title">Real-time Sync Architecture</span>
+      </div>
+
+      <p>The prototype emulates Supabase Realtime using localStorage as a shared bus and custom window events for in-page propagation. All three primary views stay in sync without a server.</p>
+
+      <div class="flow" style="flex-direction:column; align-items:stretch; gap:10px; margin-bottom:20px">
+        <div style="display:flex; align-items:center; gap:10px">
+          <div class="flow-step" style="background:var(--blue-bg);color:var(--blue);flex:1">📋 Admin Queue Board</div>
+          <span class="flow-arrow">⇄</span>
+          <div class="flow-step" style="background:var(--green-bg);color:var(--green);flex:1">🩺 Radiologist Office</div>
+          <span class="flow-arrow">⇄</span>
+          <div class="flow-step" style="background:var(--orange-bg);color:var(--orange);flex:1">☎ Call List</div>
+        </div>
+        <div style="text-align:center; font-size:11px; color:var(--faint); font-family:'DM Mono',monospace; padding:4px 0">
+          Same-tab: CustomEvent('rf-study-sync') · CustomEvent('rf-call-sync')<br>
+          Cross-tab: window 'storage' event on localStorage writes
+        </div>
+      </div>
+
+      <h3>Flow Simulator (flow-sim.js)</h3>
+      <div class="callout blue mt8">
+        <span class="callout-icon">▶</span>
+        <span>Automatically advances patients through the queue: <strong>Queued → Waiting → In Cabinet → Done</strong> (10% chance of No-show). Steps every 12s (demo speed = 3× slower than original). A <strong>Lead-lock</strong> via localStorage ensures only one tab drives the simulation at a time — others are passive consumers. Toggle: "Flow: Live / Pause" in the Admin header.</span>
+      </div>
+
+      <table class="data-table mt16" style="background:var(--bg2);border-radius:10px;overflow:hidden;border:1px solid var(--border)">
+        <thead><tr><th>Parameter</th><th>Value</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">TICK_MS</td><td>12,000 ms</td><td>Simulation step interval</td></tr>
+          <tr><td class="mono">CABINET_DWELL_MS</td><td>36,000 ms</td><td>Time before auto-complete from cabinet</td></tr>
+          <tr><td class="mono">NOSHOW_PROB</td><td>0.10 (10%)</td><td>Probability of no-show on arrival</td></tr>
+          <tr><td class="mono">LEADER_KEY</td><td>rf_sim_leader</td><td>Tab claiming simulation control</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Core Workflows -->
+    <div class="section" id="flows">
+      <div class="section-header">
+        <span class="section-num">10</span>
+        <span class="section-title">Core Workflows</span>
+      </div>
+
+      <h3>Admin — Daily Workflow (3 steps)</h3>
+      <div class="flow mt8">
+        <div class="flow-step" style="background:var(--blue-bg);color:var(--blue)">1 · Open Queue Board</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step" style="background:var(--yellow-bg);color:var(--yellow)">2 · Call List (tomorrow)</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step" style="background:var(--green-bg);color:var(--green)">3 · New Booking / Reschedule</div>
+      </div>
+
+      <h3 class="mt24">Radiologist — Daily Workflow (5 steps)</h3>
+      <div class="flow mt8">
+        <div class="flow-step" style="background:var(--blue-bg);color:var(--blue)">1 · Open Queue</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step" style="background:var(--yellow-bg);color:var(--yellow)">2 · Call Next</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step" style="background:var(--purple-bg);color:var(--purple)">3 · Write Protocol</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step" style="background:var(--orange-bg);color:var(--orange)">4 · Sign</div>
+        <span class="flow-arrow">→</span>
+        <div class="flow-step" style="background:var(--green-bg);color:var(--green)">5 · Confirm Done</div>
+      </div>
+
+      <h3 class="mt24">Procedure Completion Modal (ADMIN-PROC-01)</h3>
+      <div class="info-grid mt8" style="grid-template-columns:1fr 1fr 1fr">
+        <div class="info-cell">
+          <div class="info-cell-label">Step 1</div>
+          <div class="info-cell-val">Open patient card (click row in queue)</div>
+        </div>
+        <div class="info-cell">
+          <div class="info-cell-label">Step 2</div>
+          <div class="info-cell-val">Choose: ● Successful / ○ Not Completed (+ reason dropdown)</div>
+        </div>
+        <div class="info-cell">
+          <div class="info-cell-label">Step 3</div>
+          <div class="info-cell-val">Confirm → all roles see updated status real-time</div>
+        </div>
+      </div>
+
+      <h3 class="mt24">Incident Response Timing</h3>
+      <table class="data-table mt8" style="background:var(--bg2);border-radius:10px;overflow:hidden;border:1px solid var(--border)">
+        <thead><tr><th>Scenario</th><th>Admin Actions</th><th>Target Time</th></tr></thead>
+        <tbody>
+          <tr><td>Single reschedule</td><td>Find booking → Reschedule → Pick new slot → Save</td><td>≤ 2 min</td></tr>
+          <tr><td>Equipment breakdown</td><td>Queue Board → Block Equipment → Reason → Cancel or reschedule all</td><td>≤ 5 min</td></tr>
+          <tr><td>No-show</td><td>Call List: mark "Did not arrive" → slot freed</td><td>1 click</td></tr>
+          <tr><td>Mass reschedule (full day)</td><td>"Move Day" → select alternative dates → confirm per patient or "All Together"</td><td>≤ 10 min</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- n8n Automation -->
+    <div class="section" id="n8n">
+      <div class="section-header">
+        <span class="section-num">11</span>
+        <span class="section-title">Automation Workflows (n8n)</span>
+      </div>
+
+      <p>6 self-hosted n8n workflows handle all async communication and scheduling triggers. Stage 1 has no automated patient messaging — all patient contact is manual via Call List.</p>
+
+      <table class="data-table mt8" style="background:var(--bg2);border-radius:10px;overflow:hidden;border:1px solid var(--border)">
+        <thead><tr><th>ID</th><th>Workflow</th><th>Trigger</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">WF-02</td><td>Onboarding email sequence (Day 0, 3, 7)</td><td>New clinic registration</td></tr>
+          <tr><td class="mono">WF-03</td><td>Staff invitation email</td><td>Admin adds radiologist</td></tr>
+          <tr><td class="mono">WF-04</td><td>Referral portal invite</td><td>Admin adds referring doctor</td></tr>
+          <tr><td class="mono">WF-05</td><td>Call List generation</td><td>Daily schedule compiled for next day</td></tr>
+          <tr><td class="mono">WF-06</td><td>Referral confirmation</td><td>Study status → Done/Not Completed</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Changelog -->
+    <div class="section" id="changelog">
+      <div class="section-header">
+        <span class="section-num">12</span>
+        <span class="section-title">What's New in v3.2 (Booking Revamp)</span>
+      </div>
+
+      <div class="callout blue" style="margin-bottom:20px">
+        <span class="callout-icon">➕</span>
+        <span>The <strong>New Booking modal</strong> was fully rebuilt into a two-column layout: a compact patient/study form on the left and a queue-synced <strong>Smart Scheduler</strong> (cabinet → calendar → slots) on the right. Saving a booking now writes into the live <code style="font-family:'DM Mono',monospace">RF_PATIENTS</code> master array and the shared study store — instantly visible to the flow simulator, radiologist, and CEO.</span>
+      </div>
+
+      <div class="card-grid cols-2" style="gap:8px; margin-bottom:28px">
+        <div class="card">
+          <div class="card-label">Layout</div>
+          <div class="card-title">Two-column booking</div>
+          <div class="card-desc">Left: patient + study fields. Right: Smart Scheduler. Modal height cut ~722→599px — fits without scrolling.</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Scheduler</div>
+          <div class="card-title">Cabinet · Calendar · Slots</div>
+          <div class="card-desc">Compact cabinet chips (filtered by MRI/CT), month-navigable calendar, and available-slot grid — all synced with the real queue for the chosen day.</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Contrast</div>
+          <div class="card-title">Contrast gates region</div>
+          <div class="card-desc">Contrast (Yes/No) is required and filters the study-region list; the region label shows «з контрастом» / «без контрасту» accordingly.</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Duration</div>
+          <div class="card-title">Editable study duration</div>
+          <div class="card-desc">Auto-filled from the region (e.g. 60 min), manually editable, and drives slot availability (block size = duration).</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Fields</div>
+          <div class="card-title">Expanded patient data</div>
+          <div class="card-desc">ПІБ, DOB (auto-age), gender ♂/♀, weight, phone + email, contraindication flag (Yes/No), and a multi-line notes field.</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Sync</div>
+          <div class="card-title">Live queue integration</div>
+          <div class="card-desc">New record pushed to RF_PATIENTS + rf_study_store_v1 — picked up in real time by simulator, radiologist office, and CEO dashboard.</div>
+        </div>
+      </div>
+
+      <div class="section-header" style="margin-top:8px">
+        <span class="section-num">12.1</span>
+        <span class="section-title" style="font-size:16px">Previously in v3.1 (As-Built Live)</span>
+      </div>
+
+      <div class="card-grid cols-2" style="gap:8px">
+        <div class="card">
+          <div class="card-label">Status Model</div>
+          <div class="card-title">Removed "Urgent" status</div>
+          <div class="card-desc">Only CITO remains as cross-role priority. Aligns radiologist and admin queue models.</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Architecture</div>
+          <div class="card-title">Radiologist mirrors Admin</div>
+          <div class="card-desc">Full parity: same 5 statuses, same sorted queue, same real calendar panel, equipment-access filter.</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Real-time</div>
+          <div class="card-title">Patient Flow Simulator</div>
+          <div class="card-desc">flow-sim.js with lead-lock. Auto-advances queue in demo. Toggle in admin header.</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Calendar</div>
+          <div class="card-title">Real calendar (system date)</div>
+          <div class="card-desc">Hardcoded "May 30" replaced. Current month, live clock, day progress bar, click any day to browse queue.</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Data</div>
+          <div class="card-title">One source of truth</div>
+          <div class="card-desc">Call List = tomorrow's queue from getDayPatients(). Call status sync between all three views.</div>
+        </div>
+        <div class="card">
+          <div class="card-label">UX</div>
+          <div class="card-title">Stats bar as filter</div>
+          <div class="card-desc">Large stat cards ARE the filter — duplicate pill filters removed. Active card highlighted.</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Queue Order</div>
+          <div class="card-title">Real patient flow order</div>
+          <div class="card-desc">In Cabinet → Waiting → Queued → Done → No-show. Within group: by time, CITO on top.</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Clinical</div>
+          <div class="card-title">Patient weight field</div>
+          <div class="card-desc">Optional "Weight, kg" in new booking. Shown in admin expanded row and radiologist patient card.</div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+  // Active nav highlighting on scroll
+  const sections = document.querySelectorAll('[id]');
+  const navLinks = document.querySelectorAll('.nav a[href^="#"]');
+
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const id = entry.target.id;
+        navLinks.forEach(l => l.classList.remove('active'));
+        const active = document.querySelector('.nav a[href="#' + id + '"]');
+        if (active) active.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-20% 0px -70% 0px' });
+
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

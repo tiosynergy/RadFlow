@@ -1,0 +1,77 @@
+/* ===== RadFlow — стартова сторінка (реєстрація). Перенесено з LandingPage/radflow-register-social-dark.html ===== */
+.reg-root {
+  --bg: #1c1c1e; --bg-elevated: #242426; --card: #2c2c2e; --card-hover: #323234; --card-2: #3a3a3c;
+  --border: #38383a; --border-strong: #48484a;
+  --text: #f5f5f7; --text-secondary: #aeaeb2; --text-muted: #8e8e93; --text-faint: #636366;
+  --blue: #0a84ff; --blue-bg: rgba(10,132,255,.15); --blue-bg-soft: rgba(10,132,255,.08);
+  --green: #30d158; --green-bg: rgba(48,209,88,.15); --red: #ff453a; --red-bg: rgba(255,69,58,.15);
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+
+  font-family: var(--font); background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased;
+  letter-spacing: -.01em; min-height: 100vh; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; padding: 18px 16px; position: relative;
+}
+.reg-root * { box-sizing: border-box; margin: 0; padding: 0; }
+/* subtle ambient glow like the app */
+.reg-root::before {
+  content: ""; position: fixed; inset: 0; pointer-events: none;
+  background: radial-gradient(60% 45% at 50% -5%, rgba(10,132,255,.10), transparent 70%);
+}
+.reg-root .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 13px; z-index: 1; }
+.reg-root .logo { display: flex; align-items: center; gap: 8px; font-size: 21px; font-weight: 700; letter-spacing: -.02em; color: var(--blue); }
+.reg-root .logo .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 10px var(--blue); }
+.reg-root .badge { display: flex; align-items: center; gap: 7px; background: var(--green-bg); color: var(--green); font-size: 12.5px; font-weight: 500; padding: 6px 12px; border-radius: 20px; }
+.reg-root .badge .pdot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.reg-root .card { width: 100%; max-width: 440px; background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; box-shadow: 0 12px 48px rgba(0,0,0,.5); z-index: 1; }
+.reg-root .head { text-align: center; margin-bottom: 13px; }
+.reg-root .head h1 { font-size: 20px; font-weight: 650; letter-spacing: -.02em; }
+.reg-root .head p { font-size: 13px; color: var(--text-muted); margin-top: 4px; line-height: 1.45; }
+
+.reg-root .rec { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; color: var(--green); font-weight: 600; margin-bottom: 8px; }
+.reg-root .social { display: flex; flex-direction: column; gap: 7px; }
+.reg-root .sbtn { height: 42px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--card-2); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 14px; font-weight: 500; font-family: inherit; color: var(--text); transition: background .12s, border-color .12s, transform .06s; }
+.reg-root .sbtn:hover { background: var(--card-hover); border-color: #5a5a5e; }
+.reg-root .sbtn:active { transform: scale(.99); }
+.reg-root .sbtn svg { width: 18px; height: 18px; flex-shrink: 0; }
+.reg-root .sbtn .xg { fill: var(--text); }
+.reg-root .divider { display: flex; align-items: center; gap: 12px; margin: 13px 0; color: var(--text-faint); font-size: 12.5px; }
+.reg-root .divider::before, .reg-root .divider::after { content: ""; height: 1px; background: var(--border); flex: 1; }
+
+.reg-root .field { margin-bottom: 9px; }
+.reg-root .field label { display: block; font-size: 12.5px; font-weight: 600; margin-bottom: 4px; color: var(--text-secondary); }
+.reg-root .field input { width: 100%; height: 40px; padding: 0 13px; font-size: 14px; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 10px; outline: none; transition: border-color .12s, box-shadow .12s; }
+.reg-root .field input::placeholder { color: var(--text-faint); }
+.reg-root .field input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-bg); }
+.reg-root .field input.invalid { border-color: var(--red); }
+.reg-root .field input.invalid:focus { box-shadow: 0 0 0 3px var(--red-bg); }
+.reg-root .hint { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; }
+.reg-root .err { font-size: 12px; color: var(--red); margin-top: 4px; }
+.reg-root .check { display: flex; align-items: flex-start; gap: 9px; margin: 2px 0 12px; }
+.reg-root .check input { width: 17px; height: 17px; margin-top: 2px; accent-color: var(--blue); flex-shrink: 0; cursor: pointer; }
+.reg-root .check label { font-size: 13px; color: var(--text-secondary); line-height: 1.45; cursor: pointer; }
+.reg-root .check a { color: #4da3ff; text-decoration: none; }
+.reg-root .check a:hover { text-decoration: underline; }
+
+.reg-root .btn { width: 100%; height: 44px; border: none; border-radius: 10px; background: var(--blue); color: #fff; font-size: 15px; font-weight: 600; font-family: inherit; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: background .12s, transform .06s; }
+.reg-root .btn:hover:not(:disabled) { background: #2a96ff; }
+.reg-root .btn:active:not(:disabled) { transform: scale(.99); }
+.reg-root .btn:disabled { opacity: .45; cursor: not-allowed; }
+.reg-root .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: reg-spin .7s linear infinite; }
+@keyframes reg-spin { to { transform: rotate(360deg); } }
+.reg-root .alt { text-align: center; font-size: 13.5px; color: var(--text-muted); margin-top: 12px; }
+.reg-root .alt a { color: #4da3ff; font-weight: 500; text-decoration: none; }
+.reg-root .alt a:hover { text-decoration: underline; }
+.reg-root .fineprint { font-size: 11.5px; color: var(--text-faint); margin-top: 13px; text-align: center; max-width: 380px; line-height: 1.45; z-index: 1; }
+
+.reg-root .success { text-align: center; padding: 12px 0; }
+.reg-root .success .ic { width: 58px; height: 58px; border-radius: 50%; background: var(--green-bg); display: flex; align-items: center; justify-content: center; margin: 0 auto 16px; font-size: 28px; }
+.reg-root .success h2 { font-size: 21px; font-weight: 700; letter-spacing: -.02em; }
+.reg-root .success .sub { font-size: 14px; color: var(--text-muted); margin-top: 9px; display: flex; align-items: center; justify-content: center; gap: 6px; }
+.reg-root .success .btn { margin-top: 22px; text-decoration: none; }
+
+.reg-root .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--card); border: 1px solid var(--border-strong); border-left: 4px solid var(--red); border-radius: 12px; padding: 13px 18px; box-shadow: 0 12px 48px rgba(0,0,0,.55); opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s; max-width: 360px; z-index: 30; }
+.reg-root .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.reg-root .toast .tt { font-size: 14px; font-weight: 600; }
+.reg-root .toast .td { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+.reg-root .fade { animation: reg-fade .3s ease; }
+@keyframes reg-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }

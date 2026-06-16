@@ -1,12 +1,37 @@
-/* ===== RadFlow — Radiologist workspace ===== */
+/* =====================================================================
+   RadFlow — Кабінет радіолога (Radiologist Office)  ·  v2
+   ---------------------------------------------------------------------
+   Призначення сторінки:
+     • Черга пацієнтів — той самий механізм/UI, що й у Адміністратора
+       (розгортувані рядки .qrow-item, спільні компоненти StatsBar та
+       QueueControls з queue-components.jsx, спільні дані getQueuePatients).
+     • КОНТРОЛЬ ДОСТУПУ ДО ОБЛАДНАННЯ: радіолог бачить ВИКЛЮЧНО кабінети,
+       видані йому Адміністратором (window.getAuthorizedCabinets()).
+       Черга жорстко фільтрується — дослідження неавторизованого
+       обладнання ніколи не потрапляють у вибірку.
+     • Дії в рядку — у межах ролі радіолога (зміна статусу дослідження,
+       примітки); адмін-дії (виклик у кабінет, новий запис) тут відсутні.
+
+   Залежності (підключаються в radflow-radiologist.html ДО цього файлу):
+     queue-data.js, radiologist-data.js, rf-shell.jsx, queue-components.jsx
+   ===================================================================== */
 const { useState, useEffect, useMemo, useRef } = React;
 
-const PRIORITY_ORDER = { cito: 0, urgent: 1, planned: 2 };
+/* ---------- Годинник у шапці (поточний час, оновлюється щосекунди) ---------- */
+function LiveClock() {
+  const [now, setNow] = useState(new Date());
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const time = now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return <span className="rad-clock tabular">🕐 {time}</span>;
+}
 
-/* ---------- Sidebar (radiologist) ---------- */
-function RadSidebar({ counts, roomFilter, setRoomFilter }) {
-  const rooms = window.RF_ROOMS;
-  const authorized = window.RAD_PROFILE.cabinets;
+/* ---------- Бічна панель: ідентичність + список авторизованих кабінетів ----------
+   Список кабінетів тут — це водночас відображення прав доступу і ЄДИНИЙ перемикач
+   («Усі кабінети» + кожен авторизований кабінет), керує roomFilter. */
+function RadSidebar({ counts, roomFilter, setRoomFilter, authorized, singleCabinet }) {
   return (
     <aside className="sidebar">
       <div className="sb-head">
@@ -15,17 +40,19 @@ function RadSidebar({ counts, roomFilter, setRoomFilter }) {
       </div>
       <nav className="sb-nav">
         <div className="sb-section">
-          <div className="sb-label">Робота</div>
-          <button className={"sb-item" + (roomFilter === "all" ? " active" : "")} onClick={() => setRoomFilter("all")}>
-            <span className="ic">▦</span>
-            <span className="sb-item-lab">Моя черга</span>
-            <span className="sb-badge dim">{counts.total}</span>
-          </button>
-        </div>
-        <div className="sb-section">
           <div className="sb-label">Авторизовані кабінети</div>
+          {/* «Усі кабінети» — перший пункт переліку (за кількох авторизованих) */}
+          {!singleCabinet && (
+            <button className={"sb-cab sb-cab-btn" + (roomFilter === "all" ? " active" : "")} onClick={() => setRoomFilter("all")}>
+              <span className="sb-cab-tile" style={{ background: "var(--card-hover)", color: "var(--text-secondary)" }}>▦</span>
+              <span className="sb-cab-meta">
+                <span className="sb-cab-name">Усі кабінети</span>
+                <span className="sb-cab-model">{authorized.length} апаратів · {counts.total} у черзі</span>
+              </span>
+            </button>
+          )}
           {authorized.map((k) => {
-            const r = rooms[k];
+            const r = window.RF_ROOMS[k];
             if (!r) return null;
             return (
               <button key={k} className={"sb-cab sb-cab-btn" + (roomFilter === k ? " active" : "")} onClick={() => setRoomFilter(k)}>
@@ -51,43 +78,63 @@ function RadSidebar({ counts, roomFilter, setRoomFilter }) {
   );
 }
 
-/* ---------- Queue list item ---------- */
-function RadQueueItem({ p, active, onSelect }) {
+/* ---------- Рядок черги — той самий механізм розгортання, що й у адміністратора ---------- */
+function RadQueueRow({ p, date, expanded, onToggle, store, onStatus, onSaveNotes, onReschedule, onEditStudies, readOnly }) {
   const meta = window.RF_STATUS_META[p.status];
   const cl = window.RAD_CLINICAL[p.id] || {};
-  const prio = window.RAD_PRIORITY[cl.priority] || window.RAD_PRIORITY.planned;
-  const type = window.studyType(p.proc);
-  const store = window.getStudyStore()[p.id];
-  const signed = store && store.protocol && store.protocol.signed;
+  const room = window.RF_ROOMS[p.room];
+  const isCito = window.isCito && window.isCito(p.id);
+  const g = window.radGender ? window.radGender(p.name) : null;
+  const st = window.getStudyStore()[p.id] || {};
+  const signed = st.protocol && st.protocol.signed;
+
   return (
-    <button className={"rq-item" + (active ? " active" : "") + " st-" + p.status} onClick={() => onSelect(p.id)}>
-      <span className="rq-time tabular">{p.time}</span>
-      <span className={"rq-tile " + (type === "МРТ" ? "mrt" : "ct")}>{type}</span>
-      <span className="rq-main">
-        <span className="rq-name">{p.name}</span>
-        <span className="rq-proc">{p.proc}</span>
-      </span>
-      <span className="rq-side">
-        {cl.priority && cl.priority !== "planned" && <span className={"rq-prio " + prio.cls}>{prio.label}</span>}
-        <span className={"badge " + meta.cls + " rq-badge"}>{meta.dot && <span className="pulse-dot" style={{ width: 5, height: 5 }}></span>}{signed ? "Підписано" : meta.label}</span>
-      </span>
-    </button>
+    <div className={"qrow-item " + p.status + (expanded ? " open" : "")} data-qrow={p.id}>
+      {/* шапка рядка — клік розгортає панель (як у адміністратора) */}
+      <div className="qrow" role="button" tabIndex={0} onClick={() => onToggle(p.id)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
+        <div className="q-time tabular">{p.time}<div className="td">{p.dur} хв</div></div>
+        <div className="q-pat">
+          <div className="nm">{isCito && <span className="cito-tag">CITO</span>}{p.name}</div>
+          <div className="det">{p.age} р.{g ? " · " + g.label : ""}</div>
+        </div>
+        <div className="q-proc">
+          <div className="pp">{p.proc}</div>
+          <div className="du">{room.kind}{cl.region ? " · " + cl.region : ""}</div>
+        </div>
+        <div className="q-room"><b>{room.name}</b>{room.model}</div>
+        <div className="rqrow-status">
+          <span className={"badge " + meta.cls}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }}></span>}{signed ? "Підписано" : meta.label}</span>
+        </div>
+        <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
+      </div>
+
+      {/* розгортувана панель — клінічний контекст + дії радіолога (статус, примітки) */}
+      <div className="qrow-detail-wrap">
+        <div className="qrow-detail-inner">
+          <div className="qrow-detail">
+            <PatientDetail patient={p} date={date} store={store} onStatus={onStatus} onSaveNotes={onSaveNotes} onReschedule={onReschedule} onEditStudies={onEditStudies} embedded readOnly={readOnly} />
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
-/* ---------- Patient detail ---------- */
+/* ---------- Деталі дослідження (вміст розгортуваної панелі) ---------- */
+/* Статуси повністю відповідають головній черзі Адміністратора (5 статусів) */
 const RAD_STATUSES = [
-  { key: "waiting", label: "Очікує", cls: "gray" },
+  { key: "queued", label: "В черзі", cls: "gray" },
+  { key: "waiting", label: "Очікує", cls: "yellow" },
   { key: "cabinet", label: "В кабінеті", cls: "blue" },
   { key: "done", label: "Виконано", cls: "green" },
   { key: "noshow", label: "Не відбулось", cls: "red" },
 ];
 
-function PatientDetail({ patient, store, onStatus, onSaveNotes, toast }) {
+function PatientDetail({ patient, date, store, onStatus, onSaveNotes, onReschedule, onEditStudies, embedded, readOnly }) {
   const cl = window.RAD_CLINICAL[patient.id] || {};
   const doc = (window.RF_DOCTORS || []).find((d) => d.id === cl.docId);
   const room = window.RF_ROOMS[patient.room];
-  const prio = window.RAD_PRIORITY[cl.priority] || window.RAD_PRIORITY.planned;
   const meta = window.RF_STATUS_META[patient.status];
 
   const saved = store[patient.id] || {};
@@ -102,25 +149,35 @@ function PatientDetail({ patient, store, onStatus, onSaveNotes, toast }) {
 
   return (
     <div className="pd">
-      {/* header */}
+      {/* власна шапка прихована у вбудованому режимі — назву й статус показує сам рядок черги */}
+      {!embedded && (
       <div className="pd-head">
         <div className="pd-h-left">
           <div className="pd-name">{patient.name}</div>
           <div className="pd-sub">{patient.age} р. · {patient.phone}</div>
         </div>
         <div className="pd-h-right">
-          {cl.priority && <span className={"rq-prio " + prio.cls}>{prio.label}</span>}
           <span className={"badge " + meta.cls}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }}></span>}{meta.label}</span>
         </div>
       </div>
+      )}
 
-      {/* clinical info grid */}
+      {/* клінічна інформація */}
       <div className="pd-grid">
         <Info label="Процедура" value={patient.proc} wide />
         <Info label="Кабінет / Апарат" value={room.name + " · " + room.model} />
+        {date && <Info label="Дата" value={window.rfFmtFull ? window.rfFmtFull(date) : ""} />}
         <Info label="Час · Тривалість" value={patient.time + " · " + patient.dur + " хв"} />
         <Info label="Контраст" value={cl.contrast ? "З контрастом" : "Без контрасту"} />
-        <Info label="Вага пацієнта" value={(cl.weight || "—") + " кг"} />
+        <Info label="Вага пацієнта" value={(patient.weight || cl.weight) ? (patient.weight || cl.weight) + " кг" : "—"} />
+        <Info label="Дзвінок-підтвердження" value={(() => {
+          // лише відображення — радіолог не може змінювати статус дзвінка (керує адмін/колл-лист)
+          const cs = window.getCallStatusFor ? window.getCallStatusFor(patient.id, patient.call) : patient.call;
+          const m = (window.CL_STATUS && cs) ? window.CL_STATUS[cs] : null;
+          return m
+            ? <span className={"qd-call " + m.cls} title="Статус підтвердження по колл-листу (лише перегляд)">{m.icon} {m.label}</span>
+            : <span className="qd-call gray">○ Не дзвонили</span>;
+        })()} />
         <Info label="Лікар-направник" value={
           doc
             ? <span className="pd-doc"><span>{doc.name} · {doc.spec}</span><a className="pd-doc-phone" href={"tel:" + doc.phone.replace(/\s/g, "")}>☎ {doc.phone}</a></span>
@@ -128,20 +185,28 @@ function PatientDetail({ patient, store, onStatus, onSaveNotes, toast }) {
         } wide />
       </div>
 
-      {/* status control — радіолог змінює статус дослідження */}
-      <div className="pd-status-ctrl">
-        <span className="pd-field-lab">Статус дослідження</span>
-        <div className="status-seg">
-          {RAD_STATUSES.map((s) => (
-            <button key={s.key} className={"ss-btn " + s.cls + (patient.status === s.key ? " active" : "")} onClick={() => onStatus(patient.id, s.key)}>
-              <span className={"ss-dot " + s.cls}></span>{s.label}
-            </button>
-          ))}
+      {/* керування статусом — лише для сьогоднішньої черги (інші дні — перегляд) */}
+      {!readOnly && (
+        <div className="pd-status-ctrl">
+          <span className="pd-field-lab">Статус дослідження</span>
+          <div className="status-seg">
+            {RAD_STATUSES.map((s) => {
+              const lockDone = s.key === "done" && patient.status !== "cabinet"; // завершити можна лише з кабінету
+              return (
+                <button key={s.key} disabled={lockDone}
+                  className={"ss-btn " + s.cls + (patient.status === s.key ? " active" : "") + (lockDone ? " locked" : "")}
+                  title={lockDone ? "«Виконано» доступне лише коли пацієнт у кабінеті" : ""}
+                  onClick={() => { if (!lockDone) onStatus(patient.id, s.key); }}>
+                  <span className={"ss-dot " + s.cls}></span>{s.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* live timer when in cabinet */}
-      {patient.status === "cabinet" && (
+      {/* живий таймер, поки пацієнт у кабінеті */}
+      {!readOnly && patient.status === "cabinet" && (
         <div className="pd-timer-card">
           <LiveTimer enteredAt={Date.now() - (patient.secondsInCabinet || 0) * 1000}>{(sec) => {
             const over = sec > patient.dur * 60;
@@ -150,137 +215,245 @@ function PatientDetail({ patient, store, onStatus, onSaveNotes, toast }) {
         </div>
       )}
 
-      {/* notes */}
+      {/* дослідження + перенесення на новий слот — доступні прямо з черги радіолога */}
+      {(onEditStudies || (onReschedule && patient.status !== "done" && patient.status !== "noshow")) && (
+        <div className="pd-status-ctrl" style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span className="pd-field-lab" style={{ margin: 0 }}>Дії</span>
+          {onEditStudies && <button className="btn btn-secondary btn-sm" onClick={() => onEditStudies(patient)}>🩻 Дослідження</button>}
+          {onReschedule && patient.status !== "done" && patient.status !== "noshow" && (
+            <button className="btn btn-secondary btn-sm" onClick={() => onReschedule(patient)}>🗓 Перенести на новий слот</button>
+          )}
+        </div>
+      )}
+
+      {/* примітки радіолога */}
       <div className="pd-notes">
-        <span className="pd-field-lab">Примітки радіолога <span className="pd-autosave">· автозбереження</span></span>
-        <textarea className="pd-textarea" rows={3} placeholder="Внутрішня нотатка (видно команді)…" value={notes} onChange={(e) => saveNote(e.target.value)}></textarea>
+        <span className="pd-field-lab">Примітки радіолога {!readOnly && <span className="pd-autosave">· автозбереження</span>}</span>
+        <textarea className="pd-textarea" rows={3} placeholder={readOnly ? "—" : "Внутрішня нотатка (видно команді)…"} value={notes} disabled={readOnly} onChange={(e) => saveNote(e.target.value)}></textarea>
       </div>
     </div>
   );
 }
 
-function Info({ label, value, wide, indication }) {
+function Info({ label, value, wide }) {
   return (
-    <div className={"pd-info" + (wide ? " wide" : "") + (indication ? " indication" : "")}>
+    <div className={"pd-info" + (wide ? " wide" : "")}>
       <span className="pd-info-lab">{label}</span>
       <span className="pd-info-val">{value}</span>
     </div>
   );
 }
 
-/* ---------- App ---------- */
+/* Лічильники для StatsBar/QueueControls — та сама структура, що в admin computeCounts() */
+function radComputeCounts(list) {
+  const c = { total: list.length, queued: 0, waiting: 0, cabinet: 0, done: 0, noshow: 0 };
+  list.forEach((p) => { c[p.status]++; });
+  return c;
+}
+
+/* ---------- Сторінка ---------- */
 function RadApp() {
-  const authorized = window.RAD_PROFILE.cabinets;
-  const [patients, setPatients] = useState(() => window.getQueuePatients().filter((p) => authorized.includes(p.room)));
+  /* === КОНТРОЛЬ ДОСТУПУ: лише кабінети, видані Адміністратором === */
+  const authorized = window.getAuthorizedCabinets();      // напр. ["r1","r2","r3","r4"]
+  const singleCabinet = authorized.length === 1;
+
+  /* дані: спільна черга, СУВОРО відфільтрована за авторизованим обладнанням
+     (getRadiologistQueue гарантує, що чужі кабінети взагалі не завантажуються) */
+  const [patients, setPatients] = useState(() => window.getRadiologistQueue());
   const [store, setStore] = useState(window.getStudyStore());
-  const [filter, setFilter] = useState("all");
-  const [roomFilter, setRoomFilter] = useState("all");
-  const [selectedId, setSelectedId] = useState(null);
+
+  /* один кабінет → обраний за замовчуванням; кілька → «усі авторизовані» */
+  const [roomFilter, setRoomFilter] = useState(singleCabinet ? authorized[0] : "all");
+  const [filter, setFilter] = useState("all");   // статус-фільтр (як у адміністратора)
+  const [query, setQuery] = useState("");          // пошук (як у адміністратора)
+  const [expandedRow, setExpandedRow] = useState(null);
   const [toasts, push] = useToasts();
 
-  // лише пацієнти обраного кабінету (або всі авторизовані)
-  const visible = useMemo(() => roomFilter === "all" ? patients : patients.filter((p) => p.room === roomFilter), [patients, roomFilter]);
+  /* === Реальний календар (як у адміністратора) === */
+  const [selectedDate, setSelectedDate] = useState(() => window.rfToday());
+  const [simOn, setSimOn] = useState(() => (window.RFSim ? window.RFSim.isOn() : true));
+  const today = window.rfToday();
+  const isToday = window.rfSameDay(selectedDate, today);
+  const isPast = selectedDate < today && !isToday;
+  const dateLabel = window.rfFmtFull(selectedDate);
+  const selKey = selectedDate.getTime();
+  const readOnly = !isToday; // інші дні — лише перегляд
 
-  // radiologist queue = studies, sorted: cabinet → priority → time
-  const queue = useMemo(() => {
-    return visible.slice().sort((a, b) => {
-      const ac = a.status === "cabinet" ? 0 : 1, bc = b.status === "cabinet" ? 0 : 1;
-      if (ac !== bc) return ac - bc;
-      const ap = PRIORITY_ORDER[(window.RAD_CLINICAL[a.id] || {}).priority] ?? 2;
-      const bp = PRIORITY_ORDER[(window.RAD_CLINICAL[b.id] || {}).priority] ?? 2;
-      if (ap !== bp) return ap - bp;
-      return a.time.localeCompare(b.time);
-    });
-  }, [visible]);
+  function toggleRow(id) { setExpandedRow((cur) => (cur === id ? null : id)); }
 
-  const counts = useMemo(() => {
-    const c = { total: visible.length, waiting: 0, cabinet: 0, done: 0, noshow: 0 };
-    visible.forEach((p) => c[p.status]++);
-    return c;
-  }, [visible]);
+  /* Real-time синхронізація:
+       • статуси дослідження (rf_study_store_v1)
+       • статуси дзвінка з колл-листа (rf_calllist_status_v1) — лише для перегляду
+     застосовуються миттєво: між вкладками (storage) і в межах вкладки (rf-call-sync). */
+  const [, setCallVer] = useState(0);
+  function refreshStudy() {
+    setPatients(window.getRadiologistQueue());
+    setStore(window.getStudyStore());
+  }
+  useEffect(() => {
+    function onStorage(e) {
+      if (!e.key || e.key === window.RAD_STORE_KEY) refreshStudy();
+      if (!e.key || e.key === window.CL_STORAGE_KEY) setCallVer((v) => v + 1); // перемалювати статус дзвінка
+      if (!e.key || e.key === window.RF_BOOKINGS_KEY || e.key === window.RF_CANCELLED_KEY) refreshStudy(); // нові/скасовані записи
+    }
+    function onStudySync() { refreshStudy(); }     // симуляція/адмін у цій же вкладці
+    function onCallSync() { setCallVer((v) => v + 1); }
+    function onBookingSync() { refreshStudy(); }   // нові/скасовані/перенесені записи
+    function onSimTog(e) { setSimOn(e && e.detail ? e.detail.on : (window.RFSim && window.RFSim.isOn())); }
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("rf-study-sync", onStudySync);
+    window.addEventListener("rf-call-sync", onCallSync);
+    window.addEventListener("rf-booking-sync", onBookingSync);
+    window.addEventListener("rf-sim-toggle", onSimTog);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("rf-study-sync", onStudySync);
+      window.removeEventListener("rf-call-sync", onCallSync);
+      window.removeEventListener("rf-booking-sync", onBookingSync);
+      window.removeEventListener("rf-sim-toggle", onSimTog);
+    };
+  }, []);
 
-  const filtered = queue.filter((p) => {
-    if (filter === "all") return true;
-    if (filter === "active") return p.status === "cabinet" || p.status === "waiting";
-    return p.status === filter;
-  });
+  /* колапс розгорнутого рядка при кліку поза будь-яким рядком + Esc (як у адміністратора) */
+  useEffect(() => {
+    if (expandedRow == null) return;
+    function onDocClick(e) { if (!e.target.closest(".qrow-item")) setExpandedRow(null); }
+    function onKey(e) { if (e.key === "Escape") setExpandedRow(null); }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDocClick); document.removeEventListener("keydown", onKey); };
+  }, [expandedRow]);
 
-  const selected = patients.find((p) => p.id === selectedId) || null;
+  /* пацієнти обраного дня:
+       • сьогодні — жива черга (getRadiologistQueue + симуляція);
+       • інші дні — детерміноване моделювання (schedule.js), СУВОРО в межах
+         авторизованих кабінетів (контроль доступу зберігається). */
+  const dayPatients = useMemo(() => {
+    if (isToday) return patients;
+    const allowed = window.getAuthorizedCabinets();
+    const all = window.getDayPatients ? window.getDayPatients(selectedDate) : [];
+    return all.filter((p) => allowed.includes(p.room));
+  }, [patients, selKey, isToday]);
 
+  /* вибірка за обраним кабінетом — ЗАВЖДИ в межах авторизованих */
+  const scoped = useMemo(() => roomFilter === "all" ? dayPatients : dayPatients.filter((p) => p.room === roomFilter), [dayPatients, roomFilter]);
+
+  /* лічильники для StatsBar та QueueControls */
+  const counts = useMemo(() => radComputeCounts(scoped), [scoped]);
+
+  /* зміни сьогодні (маркер у календарі) */
+  const hasChanges = patients.some((p) => p.status === "noshow");
+
+  /* статус-фільтр + пошук — ІДЕНТИЧНА логіка адмін-черги */
+  const filtered = window.rfSortFlow(scoped.filter((p) => {
+    if (filter !== "all" && p.status !== filter) return false;
+    if (query.trim()) {
+      const q = query.trim().toLowerCase();
+      if (!(p.name.toLowerCase().includes(q) || p.proc.toLowerCase().includes(q) || p.phone.includes(q))) return false;
+    }
+    return true;
+  }));
+
+  /* дія радіолога: зміна статусу дослідження (синхронізується з адмін-дошкою через спільне сховище) */
   function setStatus(id, status) {
+    const cur = patients.find((x) => x.id === id);
+    if (status === "done" && cur && cur.status !== "cabinet") {
+      push("«Виконано» можна позначити лише для пацієнта в кабінеті", "warning");
+      return;
+    }
     const phase = status === "noshow" ? "waiting" : status; // тримаємо канбан-фазу узгодженою
     window.saveStudy(id, { status, phase });
     setPatients((ps) => ps.map((p) => p.id === id ? { ...p, status } : p));
     setStore(window.getStudyStore());
-    const labels = { cabinet: "В кабінеті", waiting: "Очікує", noshow: "Не відбулось", done: "Виконано" };
+    const labels = { queued: "В черзі", cabinet: "В кабінеті", waiting: "Очікує", noshow: "Не відбулось", done: "Виконано" };
     const p = patients.find((x) => x.id === id);
     push(`${p ? p.name.split(" ").slice(0, 2).join(" ") : ""} → ${labels[status] || "оновлено"} · синхронізовано`, status === "noshow" ? "warning" : status === "done" ? "success" : "info");
   }
 
+  /* дія радіолога: збереження приміток */
   function saveNotes(id, notes) {
     window.saveStudy(id, { notes });
     setStore(window.getStudyStore());
   }
 
-  const pills = [
-    { key: "all", label: "Усі", ct: counts.total },
-    { key: "cabinet", label: "В кабінеті", ct: counts.cabinet },
-    { key: "waiting", label: "Очікують", ct: counts.waiting },
-    { key: "done", label: "Виконано", ct: counts.done },
-  ];
+  /* Перенесення на новий слот недоступне радіологу (лише перегляд + статуси).
+     Керує переносом адміністратор / лікар-направник. */
 
-  const cito = window.getCitoPatients ? window.getCitoPatients(visible) : [];
-
-  const activeRoom = roomFilter !== "all" && window.RF_ROOMS[roomFilter] ? window.RF_ROOMS[roomFilter] : null;
+  /* CITO — лише серед авторизованих/видимих досліджень */
+  const cito = window.getCitoPatients ? window.getCitoPatients(scoped) : [];
 
   return (
     <div className="app">
-      <RadSidebar counts={counts} roomFilter={roomFilter} setRoomFilter={setRoomFilter} />
+      <RadSidebar counts={counts} roomFilter={roomFilter} setRoomFilter={setRoomFilter} authorized={authorized} singleCabinet={singleCabinet} />
       <div className="main">
+        {/* Шапка: ПІБ + роль + поточна дата/час */}
         <PageTopBar
-          icon="🩺" title="Кабінет радіолога" subtitle={window.RF_TODAY + " · " + window.RAD_PROFILE.name}
+          icon="🩺" title="Кабінет радіолога"
+          subtitle={window.RAD_PROFILE.name + " · " + window.RAD_PROFILE.role}
           actions={<>
+            <span className="rad-date">{dateLabel}</span>
+            <LiveClock />
             <span className="rt-pill"><span className="pulse-dot g"></span>Real-time</span>
             <span className="rad-counter">Опрацьовано: <b>{counts.done}</b> / {counts.total}</span>
           </>}
         />
+        <div className="content-wrap">
         <div className="rad-list-wrap">
-          {cito.length > 0 && <CitoBanner patients={cito} onOpen={(id) => setSelectedId(id)} />}
-          <div className="rad-queue rad-queue-single">
-            <div className="rad-queue-head">
-              <span className="rqh-title">{activeRoom ? activeRoom.name : "Моя черга"}</span>
-              <span className="rqh-count">{filtered.length}</span>
-              <div className="rad-pills">
-                {pills.map((p) => (
-                  <button key={p.key} className={"pill pill-sm" + (filter === p.key ? " active" : "")} onClick={() => setFilter(p.key)}>
-                    {p.label}<span className="ct">{p.ct}</span>
-                  </button>
+          {/* банер обраного дня (минуле/майбутнє) — лише перегляд */}
+          {!isToday && (
+            <div className="day-banner" style={{ marginBottom: 14 }}>
+              <span className="db-ic">{isPast ? "🗂" : "📅"}</span>
+              <div className="db-meta">
+                <div className="db-title">{dateLabel}</div>
+                <div className="db-sub">{counts.total === 0 ? "Вихідний — клініка не працює" : (isPast ? "Архів — день завершено" : "Заплановані дослідження") + " · " + counts.total + " записів · лише перегляд"}</div>
+              </div>
+              <button className="btn btn-secondary btn-sm" onClick={() => setSelectedDate(window.rfToday())}>← Сьогодні</button>
+            </div>
+          )}
+
+          {/* Швидка статистика — клікабельні фільтри (ПЕРЕВИКОРИСТАНИЙ StatsBar) */}
+          <StatsBar counts={counts} filter={filter} setFilter={setFilter} />
+
+          {cito.length > 0 && <CitoBanner patients={cito} onOpen={(id) => setExpandedRow(id)} />}
+
+          {/* Фільтри + пошук — ПЕРЕВИКОРИСТАНИЙ admin-компонент QueueControls */}
+          <QueueControls filter={filter} setFilter={setFilter} counts={counts} query={query} setQuery={setQuery} />
+
+          {/* Черга пацієнтів — той самий розкладний механізм, що й у адміністратора */}
+          {filtered.length === 0 ? (
+            <div className="empty">
+              <div className="ei">⌕</div>
+              <div className="et">Нічого не знайдено</div>
+              <div className="es">Спробуйте змінити фільтр, кабінет або пошуковий запит</div>
+            </div>
+          ) : (
+            <>
+              <div className="qhead">
+                <div>Час</div><div>Пацієнт</div><div>Дослідження</div><div>Кабінет</div><div>Статус</div><div></div>
+              </div>
+              <div className="qrows">
+                {filtered.map((p) => (
+                  <RadQueueRow
+                    key={p.id} p={p} date={selectedDate}
+                    expanded={expandedRow === p.id} onToggle={toggleRow}
+                    store={store} onStatus={setStatus} onSaveNotes={saveNotes}
+                    readOnly={readOnly}
+                  />
                 ))}
               </div>
-            </div>
-            <div className="rad-queue-list">
-              {filtered.length === 0 ? (
-                <div className="empty"><div className="et">Немає досліджень</div></div>
-              ) : filtered.map((p) => (
-                <RadQueueItem key={p.id} p={p} active={p.id === selectedId} onSelect={setSelectedId} />
-              ))}
-            </div>
-          </div>
+            </>
+          )}
+        </div>
+
+        {/* Права панель: реальний календар (як у адміністратора) */}
+        <aside className="rpanel">
+          <MiniCalendar
+            selectedDate={selectedDate} onSelectDate={setSelectedDate} today={today}
+            hasChanges={hasChanges} counts={counts} simOn={simOn}
+          />
+        </aside>
         </div>
       </div>
-      {selected && (
-        <div className="overlay" onMouseDown={(e) => e.target.classList.contains("overlay") && setSelectedId(null)}>
-          <div className="dialog rad-dialog fade-in">
-            <div className="dlg-head">
-              <div className="dlg-title"><span className="tic">🩻</span>Дослідження пацієнта</div>
-              <button className="icon-btn" onClick={() => setSelectedId(null)}>✕</button>
-            </div>
-            <div className="rad-dialog-body">
-              <PatientDetail patient={selected} store={store} onStatus={setStatus} onSaveNotes={saveNotes} toast={push} />
-            </div>
-          </div>
-        </div>
-      )}
       <Toasts toasts={toasts} />
     </div>
   );

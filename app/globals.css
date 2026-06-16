@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --rf-bg: #0f1115;
+  --rf-fg: #e7e9ee;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+}
