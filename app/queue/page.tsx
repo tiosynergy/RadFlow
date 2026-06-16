@@ -25,4 +25,22 @@ export default async function QueuePage() {
   if (clinic && !clinic.configured_at) redirect("/setup");
 
   const ROLE_LABELS: Record<string, string> = {
-    admin: "Адміністратор", radiologist: 
+    admin: "Адміністратор", radiologist: "Радіолог", registrar: "Реєстратор", referrer: "Лікар-направник", ceo: "Керівник",
+  };
+
+  const { data: rooms } = await supabase
+    .from("rooms")
+    .select("id, name, modality, apparatus_model")
+    .eq("clinic_id", profile.clinic_id)
+    .order("name");
+
+  return (
+    <QueueBoard
+      clinicId={profile.clinic_id as string}
+      rooms={rooms ?? []}
+      clinicName={clinic?.name ?? ""}
+      adminName={(profile.full_name as string) ?? (user.email ?? "")}
+      adminRole={profile.role ? ROLE_LABELS[profile.role as string] ?? (profile.role as string) : "Адміністратор"}
+    />
+  );
+}

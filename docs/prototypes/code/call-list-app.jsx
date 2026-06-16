@@ -336,4 +336,9 @@ function App() {
       </div>
       <Toasts toasts={toasts} />
       {resched && <RescheduleModal patient={resched.patient} onClose={() => setResched(null)} onConfirm={doReschedule} />}
-      {editStudies && <StudyEditModal patient={editStudies} date={window.rfAddDays(window.rfToday(), 1)} onClo
+      {editStudies && <StudyEditModal patient={editStudies} date={window.rfAddDays(window.rfToday(), 1)} onClose={() => setEditStudies(null)} onConfirm={() => { setList(window.getCallList()); push("Дослідження оновлено · синхронізовано", "success"); }} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);

@@ -79,4 +79,11 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  if (user && matches(pa
+  if (user && matches(path, AUTH_PAGES)) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/queue";
+    return NextResponse.redirect(url);
+  }
+
+  return response;
+}

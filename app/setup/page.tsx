@@ -61,4 +61,8 @@ export default async function SetupPage() {
     adminName: profile.full_name ?? "",
     adminEmail: user.email ?? "",
     adminPhone: profile.phone ?? "",
-    equip: equip.length ? equ
+    equip: equip.length ? equip : undefined,
+  };
+
+  return <SetupWizard clinicId={profile.clinic_id as string} userId={user.id} initial={initial} />;
+}

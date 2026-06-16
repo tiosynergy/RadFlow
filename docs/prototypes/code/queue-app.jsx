@@ -1836,4 +1836,12 @@ function BreakdownDoneModal({ incident, onClose }) {
           </div>
         </div>
         <div className="dlg-foot" style={{ justifyContent: "center" }}>
-          <button className="btn btn-green" style={{ minWidth: 220, justifyCon
+          <button className="btn btn-green" style={{ minWidth: 220, justifyContent: "center" }} onClick={onClose}>Перейти до обдзвону →</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { App });
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);

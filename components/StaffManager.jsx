@@ -161,4 +161,56 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
               <button className="btn btn-primary" disabled={busy} onClick={createAccount}>{busy ? "Створюємо…" : "Створити акаунт"}</button>
-       
+            </div>
+            <div className="hint-blue">Пароль не задається тут: передайте радіологу його <b>логін</b>, він встановить пароль на <b>/set-password</b>. Забув пароль — ви скинете кнопкою нижче.</div>
+          </div>
+
+          {/* Радіологи */}
+          <div style={card}>
+            <div className="bk-section-label" style={{ marginTop: 0 }}>Радіологи клініки ({radiologists.length})</div>
+            {loading ? (
+              <div style={{ color: "var(--text-muted)", padding: 8 }}>Завантаження…</div>
+            ) : radiologists.length === 0 ? (
+              <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає радіологів. Додайте їх вище.</div>
+            ) : radiologists.map((r) => (
+              <div key={r.id} style={{ padding: "14px 0", borderTop: "1px solid var(--border)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 180 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{r.full_name || r.login || r.email}</div>
+                    <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
+                      {r.login ? "@" + r.login + " · " : ""}{r.email}{r.phone ? " · " + r.phone : ""}
+                    </div>
+                    {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
+                  </div>
+                  <span className={"badge " + (r.password_set ? "green" : "yellow")}>{r.password_set ? "🔒 Пароль встановлено" : "Пароль не задано"}</span>
+                  <button className="btn btn-secondary btn-sm" title="Користувач задасть пароль наново" onClick={() => resetPassword(r.id, r.full_name || r.login)}>Скинути пароль</button>
+                  <button className="btn btn-secondary btn-sm" title="Задати пароль вручну" onClick={() => setPassword(r.id)}>Задати пароль</button>
+                  <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити акаунт назавжди" onClick={() => deleteRadiologist(r.id, r.full_name || r.login)}>🗑</button>
+                </div>
+                <div style={{ marginTop: 10 }}>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Доступ до кабінетів:</span>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6 }}>
+                    {(rooms || []).map((rm) => {
+                      const on = hasRoom(r.id, rm.id);
+                      return (
+                        <button key={rm.id} type="button" onClick={() => toggleRoom(r.id, rm.id)}
+                          className={"btn btn-sm " + (on ? "btn-primary" : "btn-secondary")}>
+                          {on ? "✓ " : ""}{rm.name} · {modalityLabel(rm.modality)}
+                        </button>
+                      );
+                    })}
+                    {(rooms || []).length === 0 && <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>Немає кабінетів.</span>}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {toast && (
+        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5, maxWidth: 440 }}>{toast.msg}</div>
+      )}
+    </div>
+  );
+}

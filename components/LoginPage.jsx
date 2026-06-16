@@ -164,4 +164,22 @@ export default function LoginPage() {
           </button>
 
           <p className="alt">
-            Перший вхід? <a href="/se
+            Перший вхід? <a href="/set-password">Встановіть пароль</a>
+          </p>
+          <p className="alt">
+            Нова клініка? <a href="/register">Зареєструвати адміністратора</a>
+          </p>
+        </form>
+      </div>
+
+      <div
+        className={"toast" + (toast.show ? " show" : "")}
+        role="alert"
+        style={{ borderLeftColor: "var(--red)" }}
+      >
+        <div className="tt">{toast.title}</div>
+        <div className="td">{toast.msg}</div>
+      </div>
+    </div>
+  );
+}

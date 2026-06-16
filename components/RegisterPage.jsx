@@ -218,4 +218,29 @@ export default function RegisterPage() {
 
               <div className="check">
                 <input id="terms" type="checkbox" checked={values.terms}
-                  onChange={(e) => { setField("terms", e.target.checked); setTouched((p) => ({ ...p, terms: true })); setErrors((p) => ({ ...p, terms: validateField("terms", { ...values, te
+                  onChange={(e) => { setField("terms", e.target.checked); setTouched((p) => ({ ...p, terms: true })); setErrors((p) => ({ ...p, terms: validateField("terms", { ...values, terms: e.target.checked }) })); }} />
+                <label htmlFor="terms">
+                  Я погоджуюсь з <a href="#">умовами користування</a> та <a href="#">політикою конфіденційності</a>
+                  {touched.terms && errors.terms && <div className="err" role="alert">{errors.terms}</div>}
+                </label>
+              </div>
+
+              <button className="btn" type="submit" disabled={submitting} aria-busy={submitting}>
+                {submitting ? <><span className="spinner" />Реєструємо…</> : "Зареєструватися"}
+              </button>
+              <p className="alt">Вже маєте акаунт? <a href="/login">Увійти</a></p>
+            </form>
+          </>
+        )}
+      </div>
+
+      <p className="fineprint">Реєстрація безкоштовна. Картка не потрібна для 14-денного пробного періоду.</p>
+
+      <div className={"toast" + (toast.show ? " show" : "")} role="alert"
+        style={{ borderLeftColor: toast.type === "info" ? "var(--blue)" : "var(--red)" }}>
+        <div className="tt">{toast.title}</div>
+        <div className="td">{toast.msg}</div>
+      </div>
+    </div>
+  );
+}

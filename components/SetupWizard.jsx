@@ -396,4 +396,16 @@ export default function SetupWizard({ clinicId, userId, initial }) {
               <button className="btn btn-ghost" disabled>← Назад</button>
               <div className="wiz-bar-right">
                 <span className="wiz-cta-wrap" title={valid[1] ? undefined : "Заповніть назву клініки, місто, ПІБ і телефон адміністратора та хоча б один апарат"}>
-                  <button className="btn btn-green btn-launch" onClick={la
+                  <button className="btn btn-green btn-launch" onClick={launch} disabled={!valid[1] || saving}>
+                    {saving ? "Зберігаємо…" : "🚀 Запустити кабінет"}
+                  </button>
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+      <Toasts toasts={toasts} />
+    </div>
+  );
+}

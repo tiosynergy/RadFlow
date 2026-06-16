@@ -545,4 +545,57 @@ export default function BookingModal({ rooms, clinicId, onClose, onSave }) {
                 {slots.map((s) => {
                   const st = slotState(s);
                   const title = st === "busy" ? "Зайнято"
-                    : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець дня (" + fmtMin(BK_E
+                    : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець дня (" + fmtMin(BK_END) + ")"}`
+                    : st === "past" ? "Час минув"
+                    : `Вільно · ${s}–${fmtMin(toMin(s) + slotDur)}`;
+                  return (
+                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + (st === "busy" ? " busy" : "")}
+                      disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
+                  );
+                })}
+              </div>
+              {busyList.length > 0 && (
+                <div className="bk-busy-list">
+                  <span className="bk-busy-lab">Зайнятий час:</span>
+                  {busyList.map((b, i) => <span className="bk-busy-chip" key={i}>{fmtMin(b.s)}–{fmtMin(b.e)}</span>)}
+                </div>
+              )}
+              <div className="bk-slot-legend">
+                <span><span className="lg-dot free" />вільно</span>
+                <span><span className="lg-dot tight" />не вміщується</span>
+                <span><span className="lg-dot busy" />зайнято</span>
+              </div>
+              {time && (() => {
+                const s = toMin(time), e = s + slotDur;
+                const conflict = roomBusy.find((b) => s < b.e && b.s < e);
+                return (
+                  <div className={"bk-slot-confirm " + (conflict ? "bad" : "ok")}>
+                    {conflict ? <>⚠ Перетин із записом {fmtMin(conflict.s)}–{fmtMin(conflict.e)} — оберіть інший слот</>
+                      : <>✓ Слот вільний. Запис: <b>{time}–{fmtMin(e)}</b> ({slotDur} хв).</>}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+
+        <div className="dlg-foot">
+          {valid
+            ? <span className="bk-summary">{name.split(" ").slice(0, 2).join(" ")} · {allStudies.length > 1 ? allStudies.length + " досл." : primaryKind} · {room ? room.name : ""} · {fmtShort(bookDate)} {time}–{fmtMin(toMin(time) + slotDur)}</span>
+            : <span className="bk-missing">{missingList.map((m, i) => <span className="bk-miss-chip" key={i}>{m}</span>)}</span>}
+          <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
+          <button className="btn btn-primary" disabled={!valid} onClick={handleSave}>Зберегти запис</button>
+        </div>
+      </div>
+    </div>
+    {addDoc && (
+      <AddDoctorModal existing={docs} onClose={() => setAddDoc(false)} onSave={async (d) => {
+        const supabase = createClient();
+        const { data, error } = await supabase.from("doctors").insert({ clinic_id: clinicId, name: d.name, spec: d.spec || null, clinic_name: d.clinic || null, phone: d.phone || null }).select("id, name, spec, clinic_name, phone").single();
+        if (!error && data) { setDocs((arr) => [...arr, data]); setDoctorId(String(data.id)); }
+        setAddDoc(false);
+      }} />
+    )}
+    </>
+  );
+}

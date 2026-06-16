@@ -37,4 +37,13 @@ export async function POST(req: Request) {
   if (!room || room.clinic_id !== me.clinic_id) return NextResponse.json({ error: "Кабінет не знайдено" }, { status: 404 });
 
   if (action === "remove") {
-    const { error } = await ad
+    const { error } = await admin.from("radiologist_rooms").delete().eq("profile_id", profileId).eq("room_id", roomId);
+    if (error) return NextResponse.json({ error: "Помилка зняття доступу: " + error.message }, { status: 400 });
+  } else {
+    const { error } = await admin.from("radiologist_rooms")
+      .upsert({ clinic_id: me.clinic_id, profile_id: profileId, room_id: roomId }, { onConflict: "profile_id,room_id", ignoreDuplicates: true });
+    if (error) return NextResponse.json({ error: "Помилка призначення доступу: " + error.message }, { status: 400 });
+  }
+
+  return NextResponse.json({ ok: true });
+}

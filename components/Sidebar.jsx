@@ -92,4 +92,8 @@ export default function Sidebar({ clinicName, adminName, adminRole, rooms, activ
           <div className="nm">{adminName || "Користувач"}</div>
           <div className="rl">{adminRole || "Адміністратор"}</div>
         </div>
-        <button className="icon-btn" title="Вийти" onClick={signOut
+        <button className="icon-btn" title="Вийти" onClick={signOut}>⏻</button>
+      </div>
+    </aside>
+  );
+}
