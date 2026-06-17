@@ -68,6 +68,7 @@ export default async function RadiologistPage() {
       clinicId={profile.clinic_id as string}
       rooms={rooms}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
+      isAdmin={profile.role === "admin"}
     />
   );
 }
