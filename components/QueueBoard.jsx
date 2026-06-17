@@ -17,6 +17,7 @@ import StudyEditModal from "@/components/StudyEditModal";
 import BreakdownModal from "@/components/BreakdownModal";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import { roomScheduleFor, dayStatus } from "@/lib/schedule";
+import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -287,8 +288,9 @@ const CALL_SEG = [
   { key: "not_called", label: "Не дзвонили", cls: "gray" },
 ];
 
-function QueueRow({ p, roomName, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies }) {
-  const meta = ST[p.status] || ST.scheduled;
+function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies }) {
+  const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
+  const meta = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const proc = procLabel(p);
   const act = (fn) => (e) => { e.stopPropagation(); fn(p); };
   return (
@@ -948,7 +950,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
               {filtered.map((p) => {
                 const room = roomsById[p.room_id] || {};
                 return (
-                  <QueueRow key={p.id} p={p}
+                  <QueueRow key={p.id} p={p} dayDate={selectedDate}
                     roomName={room.name || "—"} roomKind={modalityLabel(room.modality)}
                     expanded={expandedRow === p.id} onToggle={toggleRow}
                     readOnly={isPast}

@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radiologist.css";
@@ -169,7 +170,7 @@ function PatientDetail({ p, roomName, roomModel, date, readOnly, onStatus, onSav
 }
 
 function RadQueueRow({ p, roomName, roomModel, roomKind, date, expanded, onToggle, readOnly, onStatus, onSaveNote }) {
-  const meta = ST[p.status] || ST.scheduled;
+  const meta = needsClarification(p.status, date, p.scheduled_time) ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   return (
     <div className={"qrow-item " + p.status + (expanded ? " open" : "")} data-qrow={p.id}>
       <div className="qrow" role="button" tabIndex={0} onClick={() => onToggle(p.id)}
