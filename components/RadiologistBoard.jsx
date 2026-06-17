@@ -186,7 +186,7 @@ function RadQueueRow({ p, roomName, roomModel, roomKind, date, expanded, onToggl
         </div>
         <div className="q-room"><b>{roomName}</b>{roomModel}</div>
         <div className="rqrow-status">
-          <span className={"badge " + meta.cls}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
+          <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
         </div>
         <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
       </div>

@@ -308,7 +308,7 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
         </div>
         <div className="q-room"><b>{roomName}</b></div>
         <div className="q-status-cell">
-          <span className={"badge " + meta.cls}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
+          <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
           {rescheduling && <span className="badge red" title="Апарат заблоковано — потрібен перенос на інший слот">🔧 Перезапис</span>}
         </div>
         <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
@@ -430,7 +430,7 @@ function CallListPanel({ entries, onSetCall }) {
                 <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>{e.scheduled_time}</span>
               </div>
               <div style={{ fontSize: 11.5, color: "var(--text-muted)", margin: "2px 0 4px" }}>{procLabel(e)}</div>
-              {e.patient_phone && <a className="qd-call-tel" href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, marginBottom: 6 }}>☎ {e.patient_phone}</a>}
+              {e.patient_phone && <a className="qd-call-tel" href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, marginBottom: 6, whiteSpace: "nowrap" }}>☎ {e.patient_phone}</a>}
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                 <span className={"qd-call " + cm.cls} style={{ fontSize: 11 }}>{cm.icon} {cm.label}</span>
                 <button className="btn btn-green btn-xs" onClick={() => onSetCall(e, "confirmed")} title="Підтверджено">✓</button>
@@ -462,7 +462,7 @@ function AffectedPanel({ affected, roomsById, onReschedule }) {
               <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>{e.scheduled_time}</span>
             </div>
             <div style={{ fontSize: 11.5, color: "var(--text-muted)", margin: "2px 0 4px" }}>{procLabel(e)} · {(roomsById[e.room_id] || {}).name}</div>
-            {e.patient_phone && <a className="qd-call-tel" href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, marginBottom: 6 }}>☎ {e.patient_phone}</a>}
+            {e.patient_phone && <a className="qd-call-tel" href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, marginBottom: 6, whiteSpace: "nowrap" }}>☎ {e.patient_phone}</a>}
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <button className="btn btn-primary btn-xs" onClick={() => onReschedule(e)}>🗓 Перенести</button>
             </div>
