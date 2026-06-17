@@ -78,7 +78,6 @@ export default function Sidebar({ clinicName, adminName, adminRole, rooms, activ
 
       <div className="sb-settings">
         <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span></a>
-        <a href="/radiologist" className={"sb-item" + (activeNav === "rad" ? " active" : "")}><span className="ic">🩺</span><span className="sb-item-lab">Кабінет радіолога</span></a>
         <a href="/ceo" className={"sb-item" + (activeNav === "ceo" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Дашборд CEO</span></a>
         <a href="/staff" className={"sb-item" + (activeNav === "staff" ? " active" : "")}><span className="ic">👥</span><span className="sb-item-lab">Радіологи та доступи</span></a>
         <a href="/referrers" className={"sb-item" + (activeNav === "referrers" ? " active" : "")}><span className="ic">🩺</span><span className="sb-item-lab">Лікарі-направники</span></a>
