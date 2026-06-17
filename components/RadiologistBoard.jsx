@@ -288,7 +288,7 @@ function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }) {
   );
 }
 
-export default function RadiologistBoard({ clinicId, rooms, adminName, isAdmin }) {
+export default function RadiologistBoard({ clinicId, rooms, adminName }) {
   const single = (rooms || []).length === 1;
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -391,15 +391,6 @@ export default function RadiologistBoard({ clinicId, rooms, adminName, isAdmin }
         </header>
         <div className="content-wrap">
           <div className="content">
-            {isAdmin && (
-              <div className="day-banner" style={{ marginBottom: 14, borderColor: "var(--blue)" }}>
-                <span className="db-ic">👁</span>
-                <div className="db-meta">
-                  <div className="db-title">Перегляд адміністратора — усі кабінети клініки</div>
-                  <div className="db-sub">Доступ конкретного радіолога налаштовується на «Радіологи та доступи» і діє, коли радіолог входить у власний акаунт. Тут адміністратору показано всі кабінети.</div>
-                </div>
-              </div>
-            )}
             {!isToday && (
               <div className="day-banner" style={{ marginBottom: 14 }}>
                 <span className="db-ic">{isPast ? "🗂" : "📅"}</span>
