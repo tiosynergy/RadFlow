@@ -6,23 +6,10 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { regionsFor } from "@/lib/studies";
 
-const MRT_REGIONS = [
-  { label: "Головний мозок", dur: 60 }, { label: "Хребет — шийний відділ", dur: 40 },
-  { label: "Хребет — грудний відділ", dur: 40 }, { label: "Хребет — поперековий відділ", dur: 45 },
-  { label: "Колінний суглоб", dur: 30 }, { label: "Плечовий суглоб", dur: 30 },
-  { label: "Кульшовий суглоб", dur: 35 }, { label: "Черевна порожнина", dur: 50 },
-  { label: "Малий таз", dur: 45 }, { label: "Серце та судини", dur: 60 }, { label: "Молочні залози", dur: 50 },
-];
-const CT_REGIONS = [
-  { label: "Голова / мозок", dur: 15 }, { label: "Органи грудної клітки", dur: 20 },
-  { label: "Органи черевної порожнини", dur: 25 }, { label: "Малий таз", dur: 20 },
-  { label: "Хребет", dur: 20 }, { label: "Кінцівки", dur: 15 },
-  { label: "КТ-ангіографія", dur: 30 }, { label: "Мультизональне дослідження", dur: 40 },
-];
 const MIN_STUDY = 15, DAY_END = 18 * 60;
 function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
-function regionsFor(t) { return t === "КТ" ? CT_REGIONS : MRT_REGIONS; }
 function pad(n) { return String(n).padStart(2, "0"); }
 function toMin(t) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }

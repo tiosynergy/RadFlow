@@ -757,6 +757,17 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const { data: { user } } = await supabase.auth.getUser();
     const [hh, mm] = b.time.split(":").map(Number);
     const at = new Date(b.date.getFullYear(), b.date.getMonth(), b.date.getDate(), hh, mm).toISOString();
+    // повторна перевірка слота безпосередньо перед вставкою (його могли зайняти, поки відкрита модалка)
+    const startMin = hh * 60 + mm, endMin = startMin + (b.dur || 30);
+    const { data: clash } = await supabase
+      .from("queue_entries").select("scheduled_time, duration_min")
+      .eq("room_id", b.roomId).eq("scheduled_date", dateKey(b.date))
+      .neq("status", "cancelled").neq("status", "no_show");
+    if ((clash || []).some((q) => {
+      const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
+      const qs = (qh || 0) * 60 + (qm || 0);
+      return qs < endMin && startMin < qs + (q.duration_min || 30);
+    })) { notify("Слот щойно зайняли — оновіть сторінку й оберіть інший час", "error"); return; }
     const { error } = await supabase.from("queue_entries").insert({
       clinic_id: clinicId, room_id: b.roomId, created_by: user?.id ?? null,
       patient_name: b.name, patient_phone: b.phone || null, patient_email: b.email,
@@ -766,7 +777,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       scheduled_date: dateKey(b.date), scheduled_time: b.time, scheduled_at: at,
       status: "scheduled", call_status: "not_called",
     });
-    if (error) { notify("Помилка збереження: " + error.message, "error"); return; }
+    if (error) { notify(/overlap|exclusion/i.test(error.message) ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час" : "Помилка збереження: " + error.message, "error"); return; }
     setModalOpen(false);
     notify("Новий запис: " + b.name + " · " + b.time, "success");
     if (sameDay(b.date, selectedDate)) reload();

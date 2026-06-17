@@ -28,10 +28,21 @@ const PRICE = {
   "Кінцівки": 1200, "КТ-ангіографія": 2400, "Мультизональне дослідження": 2800,
 };
 const CONTRAST_SURCHARGE = 900;
+// Виручка запису: пріоритет — збережена ціна (нові записи зберігають studies[].price),
+// інакше оцінка за довідником цін (старі записи без ціни).
 function entryRevenue(e) {
   const s = Array.isArray(e.studies) ? e.studies : [];
   if (!s.length) return 0;
-  return s.reduce((sum, x) => sum + (PRICE[x.region] || 1500) + (x.contrast ? CONTRAST_SURCHARGE : 0), 0);
+  return s.reduce((sum, x) => {
+    const stored = (typeof x.price === "number") ? x.price : null;
+    const est = (PRICE[x.region] || 1500) + (x.contrast ? CONTRAST_SURCHARGE : 0);
+    return sum + (stored != null ? stored : est);
+  }, 0);
+}
+// Чи всі дослідження запису мають збережену ціну (тоді виручка точна, не оцінка).
+function entryFullyPriced(e) {
+  const s = Array.isArray(e.studies) ? e.studies : [];
+  return s.length > 0 && s.every((x) => typeof x.price === "number");
 }
 function procName(e) {
   const s = Array.isArray(e.studies) ? e.studies : [];
@@ -125,6 +136,7 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
   const utilColor = util > 70 ? "var(--green)" : util >= 50 ? "var(--orange)" : "var(--red)";
 
   const revenue = entries.filter((e) => e.status === "done").reduce((s, e) => s + entryRevenue(e), 0);
+  const revenueExact = entries.filter((e) => e.status === "done").every(entryFullyPriced);
 
   /* тижневий графік: total + no_show по днях (Пн–Нд) */
   const wk = today0(); const mon = addDays(wk, -((wk.getDay() + 6) % 7));
@@ -204,7 +216,7 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
                 </div>
 
                 <div style={card}>
-                  <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>Дохід (оцінка) · виконані</div>
+                  <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>{revenueExact ? "Дохід · виконані" : "Дохід (частково оцінка) · виконані"}</div>
                   <div style={{ fontSize: 34, fontWeight: 700, color: "var(--green)" }} className="tabular">{fmtUah(revenue)}</div>
                   <div style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 12 }}>За цінами довідника досліджень · {done} виконаних</div>
                 </div>

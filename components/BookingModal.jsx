@@ -9,35 +9,9 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import { roomScheduleFor } from "@/lib/schedule";
+import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
 
-/* ── Довідник областей дослідження ── */
-const MRT_REGIONS = [
-  { label: "Головний мозок", dur: 60, price: 2400, contrast: true },
-  { label: "Хребет — шийний відділ", dur: 40, price: 2100, contrast: true },
-  { label: "Хребет — грудний відділ", dur: 40, price: 2100, contrast: true },
-  { label: "Хребет — поперековий відділ", dur: 45, price: 2100, contrast: true },
-  { label: "Колінний суглоб", dur: 30, price: 1800, contrast: false },
-  { label: "Плечовий суглоб", dur: 30, price: 1800, contrast: false },
-  { label: "Кульшовий суглоб", dur: 35, price: 1900, contrast: false },
-  { label: "Черевна порожнина", dur: 50, price: 2600, contrast: true },
-  { label: "Малий таз", dur: 45, price: 2600, contrast: true },
-  { label: "Серце та судини", dur: 60, price: 3200, contrast: true },
-  { label: "Молочні залози", dur: 50, price: 2700, contrast: true },
-];
-const CT_REGIONS = [
-  { label: "Голова / мозок", dur: 15, price: 1200, contrast: true },
-  { label: "Органи грудної клітки", dur: 20, price: 1500, contrast: true },
-  { label: "Органи черевної порожнини", dur: 25, price: 1700, contrast: true },
-  { label: "Малий таз", dur: 20, price: 1500, contrast: true },
-  { label: "Хребет", dur: 20, price: 1400, contrast: false },
-  { label: "Кінцівки", dur: 15, price: 1200, contrast: false },
-  { label: "КТ-ангіографія", dur: 30, price: 2400, contrast: true },
-  { label: "Мультизональне дослідження", dur: 40, price: 2800, contrast: true },
-];
-const CONTRAST_SURCHARGE = 900;
-const CONTRAST_DUR = 15;
-function regionsFor(type) { return type === "КТ" ? CT_REGIONS : MRT_REGIONS; }
-function studyLabel(s) { return (s.type || "МРТ") + " · " + (s.region || "") + (s.contrast ? " з контрастом" : ""); }
+/* Довідник областей дослідження — у @/lib/studies (єдине джерело). */
 
 /* ── Дати ── */
 const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
@@ -53,7 +27,12 @@ function dateKey(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).pa
 const BK_START = 8 * 60, BK_END = 18 * 60, BK_STEP = 30;
 function toMin(t) { const [h, m] = t.split(":").map(Number); return h * 60 + m; }
 function fmtMin(min) { return String(Math.floor(min / 60)).padStart(2, "0") + ":" + String(min % 60).padStart(2, "0"); }
-function slotsList() { const out = []; for (let m = BK_START; m < BK_END; m += BK_STEP) out.push(fmtMin(m)); return out; }
+function slotsList(startMin = BK_START, endMin = BK_END) {
+  const out = [];
+  const s0 = Math.ceil(startMin / BK_STEP) * BK_STEP;
+  for (let m = s0; m < endMin; m += BK_STEP) out.push(fmtMin(m));
+  return out;
+}
 
 /* ── Дата народження ── */
 function dobFmt(s) { if (!s) return ""; const p = String(s).split("-"); return p.length === 3 ? p[2] + "." + p[1] + "." + p[0] : s; }
@@ -276,8 +255,8 @@ export default function BookingModal({ rooms, clinicId, onClose, onSave }) {
   const exRemove = (i) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
 
-  const primaryStudy = region ? { type: primaryKind, region, contrast: contrast === true, dur } : null;
-  const allStudies = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: parseInt(s.dur, 10) || 0 })));
+  const primaryStudy = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast) } : null;
+  const allStudies = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: parseInt(s.dur, 10) || 0, price: studyPrice(s.type, s.region, false) })));
   const combinedLabel = allStudies.length ? allStudies.map(studyLabel).join(" + ") : procLabel;
   const slotDur = dur + validExtra.reduce((s, x) => s + (parseInt(x.dur, 10) || 0), 0);
 
@@ -327,7 +306,7 @@ export default function BookingModal({ rooms, clinicId, onClose, onSave }) {
     const after = roomBusy.filter((b) => b.s >= s).sort((a, b) => a.s - b.s)[0];
     return after ? fmtMin(after.s) : null;
   }
-  const slots = slotsList();
+  const slots = slotsList(schedStartMin, schedEndMin);
   const freeCount = slots.filter((s) => slotState(s) === "free").length;
   const busyList = roomBusy.slice().sort((a, b) => a.s - b.s);
 
@@ -545,7 +524,7 @@ export default function BookingModal({ rooms, clinicId, onClose, onSave }) {
                 {slots.map((s) => {
                   const st = slotState(s);
                   const title = st === "busy" ? "Зайнято"
-                    : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець дня (" + fmtMin(BK_END) + ")"}`
+                    : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець графіка (" + fmtMin(schedEndMin) + ")"}`
                     : st === "past" ? "Час минув"
                     : `Вільно · ${s}–${fmtMin(toMin(s) + slotDur)}`;
                   return (

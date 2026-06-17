@@ -10,22 +10,10 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import RescheduleModal from "@/components/RescheduleModal";
 import { roomScheduleFor } from "@/lib/schedule";
+import { regionsFor, studyPrice } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
 
-const MRT_REGIONS = [
-  { label: "Головний мозок", dur: 60 }, { label: "Хребет — шийний відділ", dur: 40 },
-  { label: "Хребет — грудний відділ", dur: 40 }, { label: "Хребет — поперековий відділ", dur: 45 },
-  { label: "Колінний суглоб", dur: 30 }, { label: "Плечовий суглоб", dur: 30 },
-  { label: "Кульшовий суглоб", dur: 35 }, { label: "Черевна порожнина", dur: 50 },
-  { label: "Малий таз", dur: 45 }, { label: "Серце та судини", dur: 60 }, { label: "Молочні залози", dur: 50 },
-];
-const CT_REGIONS = [
-  { label: "Голова / мозок", dur: 15 }, { label: "Органи грудної клітки", dur: 20 },
-  { label: "Органи черевної порожнини", dur: 25 }, { label: "Малий таз", dur: 20 },
-  { label: "Хребет", dur: 20 }, { label: "Кінцівки", dur: 15 },
-  { label: "КТ-ангіографія", dur: 30 }, { label: "Мультизональне дослідження", dur: 40 },
-];
-function regionsFor(t) { return t === "КТ" ? CT_REGIONS : MRT_REGIONS; }
+/* Довідник областей дослідження — у @/lib/studies (єдине джерело). */
 function pad(n) { return String(n).padStart(2, "0"); }
 function toMin(t) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
@@ -113,15 +101,26 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
     const supabase = createClient();
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), hh, mm).toISOString();
+    // повторна перевірка слота перед вставкою (його могли зайняти, поки відкрита форма)
+    const startMin2 = hh * 60 + mm, endMin2 = startMin2 + (dur || 30);
+    const { data: clash } = await supabase
+      .from("queue_entries").select("scheduled_time, duration_min")
+      .eq("room_id", roomId).eq("scheduled_date", date)
+      .neq("status", "cancelled").neq("status", "no_show");
+    if ((clash || []).some((q) => {
+      const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
+      const qs = (qh || 0) * 60 + (qm || 0);
+      return qs < endMin2 && startMin2 < qs + (q.duration_min || 30);
+    })) { setBusy(false); onCreated(null, "Слот щойно зайняли — оновіть сторінку й оберіть інший час"); return; }
     const { error } = await supabase.from("queue_entries").insert({
       clinic_id: clinicId, room_id: roomId, patient_name: name.trim(), patient_phone: phone.trim(),
       patient_dob: dob, patient_age: calcAge(dob),
-      studies: [{ type: studyType, region, contrast: false, dur }], duration_min: dur,
+      studies: [{ type: studyType, region, contrast: false, dur, price: studyPrice(studyType, region, false) }], duration_min: dur,
       scheduled_date: date, scheduled_time: time, scheduled_at: at,
       status: "scheduled", call_status: "not_called", doctor: doctorName, created_by: doctorId, indication: comment.trim() || null,
     });
     setBusy(false);
-    if (error) { onCreated(null, error.message); return; }
+    if (error) { onCreated(null, /overlap|exclusion/i.test(error.message) ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час" : error.message); return; }
     setName(""); setDob(""); setPhone(""); setRegion(""); setComment(""); setTime("");
     onCreated(name.trim());
   }
