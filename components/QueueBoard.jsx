@@ -429,10 +429,10 @@ function CallListPanel({ entries, onSetCall }) {
                 <span style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.patient_name}</span>
                 <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>{e.scheduled_time}</span>
               </div>
-              <div style={{ fontSize: 11.5, color: "var(--text-muted)", margin: "2px 0 6px" }}>{procLabel(e)}</div>
+              <div style={{ fontSize: 11.5, color: "var(--text-muted)", margin: "2px 0 4px" }}>{procLabel(e)}</div>
+              {e.patient_phone && <a className="qd-call-tel" href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, marginBottom: 6 }}>☎ {e.patient_phone}</a>}
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                 <span className={"qd-call " + cm.cls} style={{ fontSize: 11 }}>{cm.icon} {cm.label}</span>
-                {e.patient_phone && <a className="qd-call-tel" href={"tel:" + e.patient_phone.replace(/\s/g, "")} title={e.patient_phone}>☎</a>}
                 <button className="btn btn-green btn-xs" onClick={() => onSetCall(e, "confirmed")} title="Підтверджено">✓</button>
                 <button className="btn btn-secondary btn-xs" onClick={() => onSetCall(e, "to_recall")} title="Передзвонити">↻</button>
                 <button className="btn btn-secondary btn-xs" onClick={() => onSetCall(e, "no_answer")} title="Не відповідає">…</button>
@@ -461,9 +461,9 @@ function AffectedPanel({ affected, roomsById, onReschedule }) {
               <span style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.patient_name}</span>
               <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>{e.scheduled_time}</span>
             </div>
-            <div style={{ fontSize: 11.5, color: "var(--text-muted)", margin: "2px 0 6px" }}>{procLabel(e)} · {(roomsById[e.room_id] || {}).name}</div>
+            <div style={{ fontSize: 11.5, color: "var(--text-muted)", margin: "2px 0 4px" }}>{procLabel(e)} · {(roomsById[e.room_id] || {}).name}</div>
+            {e.patient_phone && <a className="qd-call-tel" href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, marginBottom: 6 }}>☎ {e.patient_phone}</a>}
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              {e.patient_phone && <a className="qd-call-tel" href={"tel:" + e.patient_phone.replace(/\s/g, "")} title={e.patient_phone}>☎</a>}
               <button className="btn btn-primary btn-xs" onClick={() => onReschedule(e)}>🗓 Перенести</button>
             </div>
           </div>
