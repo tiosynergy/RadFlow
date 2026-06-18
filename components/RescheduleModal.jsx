@@ -61,7 +61,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, blockedRoomI
   const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
   const roomSched = roomScheduleFor(dateObj, roomId, override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
-  const slots = []; for (let m = 8 * 60; m < 18 * 60; m += 30) slots.push(fmt(m));
+  const slots = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
   function slotState(s) {
     const a = toMin(s), b = a + dur;
     if (roomSched.closed) return "closed";

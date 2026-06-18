@@ -83,7 +83,7 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
   const roomSched = roomScheduleFor(dateObj, roomId, override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
   const busySlots = dayEntries.filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) }));
-  const slots = []; for (let m = 8 * 60; m < 18 * 60; m += 30) slots.push(fmt(m));
+  const slots = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
   function slotState(slot) {
     const a = toMin(slot), b = a + dur;
     if (roomSched.closed) return "closed";
