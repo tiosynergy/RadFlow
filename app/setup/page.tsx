@@ -34,7 +34,7 @@ export default async function SetupPage() {
 
   const { data: rooms } = await supabase
     .from("rooms")
-    .select("name, modality, apparatus_model, schedule")
+    .select("id, name, modality, apparatus_model, schedule")
     .eq("clinic_id", profile.clinic_id);
 
   const equip = (rooms ?? []).map((r: Record<string, unknown>, i: number) => {
@@ -45,6 +45,7 @@ export default async function SetupPage() {
     const modality = r.modality as string;
     return {
       id: i + 1,
+      roomId: r.id as string,   // DB-id кабінету — щоб оновлювати, а не пересоздавати
       type: modality === "MRI" ? "МРТ" : modality === "CT" ? "КТ" : "Інше",
       desc: (r.apparatus_model as string) ?? "",
       room: (r.name as string) ?? "",

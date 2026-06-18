@@ -321,8 +321,10 @@ export default function SetupWizard({ clinicId, userId, initial }) {
         .eq("id", userId);
       if (pe) throw pe;
 
-      await supabase.from("rooms").delete().eq("clinic_id", clinicId);
-      const rows = d.equip.map((e) => ({
+      // Кабінети: оновлюємо наявні за id, додаємо нові, видаляємо лише прибрані.
+      // НЕ робимо delete-all+insert — інакше осиротіли б записи (queue_entries.room_id)
+      // та доступи радіологів (radiologist_rooms каскадно).
+      const roomFields = (e) => ({
         clinic_id: clinicId,
         name: (e.room || e.type).trim(),
         modality: e.type === "МРТ" ? "MRI" : e.type === "КТ" ? "CT" : "OTHER",
@@ -332,10 +334,25 @@ export default function SetupWizard({ clinicId, userId, initial }) {
           lunch: e.lunch, lunchS: e.lunchS, lunchE: e.lunchE,
           perDay: e.perDay, dayHours: e.dayHours,
         },
-      }));
-      if (rows.length) {
-        const { error: re } = await supabase.from("rooms").insert(rows);
-        if (re) throw re;
+      });
+      const keepIds = [];
+      for (const e of d.equip) {
+        if (e.roomId) {
+          const { error: ue } = await supabase.from("rooms").update(roomFields(e)).eq("id", e.roomId);
+          if (ue) throw ue;
+          keepIds.push(e.roomId);
+        } else {
+          const { data: ins, error: ie } = await supabase.from("rooms").insert(roomFields(e)).select("id").single();
+          if (ie) throw ie;
+          if (ins) keepIds.push(ins.id);
+        }
+      }
+      // Прибрані в майстрі кабінети — видаляємо точково за id.
+      const { data: existingRooms } = await supabase.from("rooms").select("id").eq("clinic_id", clinicId);
+      const removed = (existingRooms || []).map((r) => r.id).filter((id) => !keepIds.includes(id));
+      for (const id of removed) {
+        const { error: de } = await supabase.from("rooms").delete().eq("id", id);
+        if (de) throw de;
       }
 
       setLaunched(true);

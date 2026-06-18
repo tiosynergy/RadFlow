@@ -432,12 +432,12 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
 }
 
 /* ── Колл-лист (підтвердження) ── */
-function CallListPanel({ entries, onSetCall }) {
+function CallListPanel({ entries, onSetCall, dateLabel }) {
   const list = entries.filter((e) => ["not_called", "to_recall", "no_answer"].includes(e.call_status || "not_called") && (e.status === "scheduled" || e.status === "waiting"));
   return (
     <div className="rcard">
       <div className="rcard-toggle open" style={{ cursor: "default" }}>
-        <span className="rct-title">Обдзвін — підтвердження</span>
+        <span className="rct-title">Обдзвін — підтвердження{dateLabel ? " · " + dateLabel : ""}</span>
         <span className="rct-sum">{list.length}</span>
       </div>
       <div className="load-body">
@@ -730,9 +730,12 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   async function setCall(p, call_status) {
     const supabase = createClient();
-    const { error } = await supabase.from("queue_entries").update({ call_status }).eq("id", p.id);
+    // Відмова пацієнта на обдзвоні → запис скасовується.
+    const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
+    const { error } = await supabase.from("queue_entries").update(patch).eq("id", p.id);
     if (error) { notify("Помилка: " + error.message, "error"); return; }
-    setEntries((es) => es.map((e) => (e.id === p.id ? { ...e, call_status } : e)));
+    setEntries((es) => es.map((e) => (e.id === p.id ? { ...e, ...patch } : e)));
+    if (call_status === "declined") notify("Пацієнт відмовився — запис скасовано", "info");
     reload();
   }
 
@@ -743,12 +746,24 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const supabase = createClient();
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
+    // повторна перевірка зайнятості кабінету на цільову дату (без самого пацієнта)
+    const startMin = hh * 60 + mm, endMin = startMin + (dur || 30);
+    const { data: clash } = await supabase
+      .from("queue_entries").select("id, scheduled_time, duration_min")
+      .eq("room_id", roomId).eq("scheduled_date", dateKey(date))
+      .neq("status", "cancelled").neq("status", "no_show");
+    if ((clash || []).some((q) => {
+      if (q.id === p.id) return false;
+      const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
+      const qs = (qh || 0) * 60 + (qm || 0);
+      return qs < endMin && startMin < qs + (q.duration_min || 30);
+    })) { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
     const { error } = await supabase.from("queue_entries").update({
       room_id: roomId, scheduled_date: dateKey(date), scheduled_time: time, scheduled_at: at,
       duration_min: dur, status: "scheduled", call_status: "not_called",
     }).eq("id", p.id);
     setReschedFor(null);
-    if (error) { notify("Помилка переносу: " + error.message, "error"); return; }
+    if (error) { notify(/overlap|exclusion/i.test(error.message) ? "Слот зайнятий — оберіть інший" : "Помилка переносу: " + error.message, "error"); return; }
     notify("Перенесено на " + fmtShort(date) + " " + time, "success");
     reload();
   }
@@ -991,7 +1006,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
             <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} onEditSchedule={() => setSchedEditOpen(true)} />
             {isToday && (rooms || []).length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}
-            {!isPast && <CallListPanel entries={entries} onSetCall={setCall} />}
+            {!isPast && <CallListPanel entries={entries} onSetCall={setCall} dateLabel={fmtShort(selectedDate)} />}
           </aside>
         </div>
       </div>
