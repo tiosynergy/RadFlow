@@ -7,25 +7,31 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { regionsFor } from "@/lib/studies";
+import { roomScheduleFor } from "@/lib/schedule";
 
-const MIN_STUDY = 15, DAY_END = 18 * 60;
+const MIN_STUDY = 15;
 function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function pad(n) { return String(n).padStart(2, "0"); }
 function toMin(t) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 
-export default function StudyEditModal({ patient, scheduledDate, rooms, onClose, onConfirm }) {
+export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, onClose, onConfirm }) {
   const room = (rooms || []).find((r) => r.id === patient.room_id);
   const roomKind = room ? modalityLabel(room.modality) : "МРТ"; // "МРТ" | "КТ"
   const lockType = roomKind === "МРТ" || roomKind === "КТ";
   const defaultType = lockType ? roomKind : "МРТ";
 
   const [nextStart, setNextStart] = useState(null);
+  const [override, setOverride] = useState(null);
   useEffect(() => {
     let cancel = false;
     (async () => {
       if (!patient.room_id || !scheduledDate) return;
       const supabase = createClient();
+      if (clinicId) {
+        const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
+        if (!cancel) setOverride(ov.data || null);
+      }
       const { data } = await supabase
         .from("queue_entries")
         .select("id, scheduled_time, status")
@@ -37,10 +43,16 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, onClose,
       setNextStart(ns != null ? ns : null);
     })();
     return () => { cancel = true; };
-  }, [patient.id, patient.room_id, patient.scheduled_time, scheduledDate]);
+  }, [patient.id, patient.room_id, patient.scheduled_time, scheduledDate, clinicId]);
 
   const startMin = toMin(patient.scheduled_time);
-  const windowEnd = nextStart != null ? nextStart : DAY_END;
+  // Кінець вікна — за графіком кабінету (з урахуванням особливого графіка),
+  // але не далі наступного запису у цьому кабінеті.
+  const dateObj = scheduledDate ? new Date(scheduledDate + "T00:00:00") : new Date();
+  const roomSched = roomScheduleFor(dateObj, patient.room_id, override);
+  const schedEnd = toMin(roomSched.end);
+  const windowEnd = nextStart != null ? Math.min(nextStart, schedEnd) : schedEnd;
+  const windowLabel = (nextStart != null && nextStart <= schedEnd) ? ("до наступного запису о " + fmt(nextStart)) : ("до кінця графіка (" + fmt(schedEnd) + ")");
   const availableDur = Math.max(0, windowEnd - startMin);
 
   function recalc(type, region, prevDur) {
@@ -89,8 +101,8 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, onClose,
           <div className="ctx-hint blue" style={{ fontSize: 13 }}>Пацієнт: <b>{patient.patient_name}</b> · слот о <b>{patient.scheduled_time}</b>{room ? <> · {room.name}{lockType ? <> · <b>{roomKind}</b></> : null}</> : null}. {lockType ? <>Усі дослідження слота — лише <b>{roomKind}</b>.</> : null}</div>
           <div className={"ctx-hint " + (overflow ? "red" : "blue")} style={{ fontSize: 12.5 }}>
             {overflow
-              ? <>⚠ Не вміщується: разом <b>{totalDur} хв</b>, доступно <b>{availableDur} хв</b> ({nextStart != null ? <>до наступного запису о {fmt(nextStart)}</> : <>до кінця дня</>}). Скоротіть на {totalDur - availableDur} хв.</>
-              : <>Доступно у слоті: <b>{availableDur} хв</b> ({nextStart != null ? <>до наступного запису о {fmt(nextStart)}</> : <>до кінця дня</>}). Вільно ще <b>{remaining} хв</b>.</>}
+              ? <>⚠ Не вміщується: разом <b>{totalDur} хв</b>, доступно <b>{availableDur} хв</b> ({windowLabel}). Скоротіть на {totalDur - availableDur} хв.</>
+              : <>Доступно у слоті: <b>{availableDur} хв</b> ({windowLabel}). Вільно ще <b>{remaining} хв</b>.</>}
           </div>
           <div className="st-rows">
             {rows.map((r, i) => {
