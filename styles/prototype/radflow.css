@@ -302,7 +302,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 
 /* ===== Queue table ===== */
 .qhead {
-  display: grid; grid-template-columns: 54px minmax(180px,2fr) minmax(150px,1.7fr) minmax(116px,1fr) 104px 26px;
+  display: grid; grid-template-columns: 54px minmax(230px,2.6fr) minmax(140px,1.4fr) minmax(110px,1fr) 104px 26px;
   gap: 12px; padding: 6px 16px; font-size: 11px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint);
 }
@@ -320,7 +320,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .qrow-item.open { border-color: var(--border-strong); box-shadow: 0 6px 22px rgba(0,0,0,0.32); }
 .qrow-item.flash { animation: rowFlash 1.2s ease-out; }
 .qrow {
-  display: grid; grid-template-columns: 54px minmax(180px,2fr) minmax(150px,1.7fr) minmax(116px,1fr) 104px 26px;
+  display: grid; grid-template-columns: 54px minmax(230px,2.6fr) minmax(140px,1.4fr) minmax(110px,1fr) 104px 26px;
   gap: 12px; align-items: center; padding: 12px 16px; cursor: pointer;
   transition: background .12s; -webkit-tap-highlight-color: transparent;
 }

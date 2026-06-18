@@ -312,11 +312,11 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
           <div className="nm">{p.cito && (p.status === "scheduled" || p.status === "waiting" || p.status === "in_progress") && <span className="cito-tag">CITO</span>}{p.patient_name}</div>
-          <div className="det">{[
-            [p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ") || null,
-            p.patient_phone || null,
-            p.doctor ? "напр.: " + p.doctor : null,
-          ].filter(Boolean).join(" · ")}</div>
+          <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
+            {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
+            {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
+            {p.doctor && <span>Напр.: {p.doctor}</span>}
+          </div>
         </div>
         <div className="q-proc">
           <div className="pp">{proc}</div>
