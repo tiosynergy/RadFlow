@@ -566,6 +566,11 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
 
+  // Лёгкий тикер: перерендер раз на 20 с, щоб статус «⚠ Уточнити» зʼявлявся
+  // автоматично одразу після настання часу запису (без ручного оновлення).
+  const [, setNowTick] = useState(0);
+  useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
+
   const today = today0();
   const isToday = sameDay(selectedDate, today);
   const isPast = selectedDate < today;
