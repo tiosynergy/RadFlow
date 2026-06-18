@@ -36,7 +36,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
         .from("queue_entries")
         .select("id, scheduled_time, status")
         .eq("room_id", patient.room_id).eq("scheduled_date", scheduledDate)
-        .neq("status", "cancelled").neq("status", "no_show");
+        .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
       if (cancel) return;
       const startMin = toMin(patient.scheduled_time);
       const ns = (data || []).filter((p) => p.id !== patient.id).map((p) => toMin(p.scheduled_time)).filter((m) => m > startMin).sort((a, b) => a - b)[0];

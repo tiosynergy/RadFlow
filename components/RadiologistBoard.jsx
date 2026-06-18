@@ -49,7 +49,9 @@ const ST = {
   waiting: { label: "Очікує", cls: "yellow" },
   in_progress: { label: "В кабінеті", cls: "blue", dot: true },
   done: { label: "Виконано", cls: "green" },
-  no_show: { label: "Не відбулось", cls: "red" },
+  no_show: { label: "Неявка", cls: "red" },
+  not_held: { label: "Не відбулося", cls: "orange" },
+  cancelled: { label: "Скасовано", cls: "gray" },
 };
 const RAD_STATUSES = [
   { key: "scheduled", label: "В черзі", cls: "gray" },

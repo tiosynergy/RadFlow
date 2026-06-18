@@ -318,7 +318,14 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .qrow-item.done.open, .qrow-item.done:hover { opacity: 1; }
 .qrow-item.noshow { opacity: 0.55; border-left-color: var(--red); }
 .qrow-item.noshow.open, .qrow-item.noshow:hover { opacity: 1; }
-.qrow-item.open { border-color: var(--border-strong); box-shadow: 0 6px 22px rgba(0,0,0,0.32); }
+/* Лівий акцент = колір статусу запису */
+.qrow-item.scheduled { border-left-color: var(--text-faint); }
+.qrow-item.waiting { border-left-color: var(--yellow); }
+.qrow-item.in_progress { border-left-color: var(--blue); background: rgba(10,132,255,0.07); }
+.qrow-item.done { border-left-color: var(--green); }
+.qrow-item.no_show { border-left-color: var(--red); opacity: 0.6; }
+.qrow-item.no_show.open, .qrow-item.no_show:hover { opacity: 1; }
+.qrow-item.open { border-top-color: var(--border-strong); border-right-color: var(--border-strong); border-bottom-color: var(--border-strong); box-shadow: 0 6px 22px rgba(0,0,0,0.32); }
 .qrow-item.flash { animation: rowFlash 1.2s ease-out; }
 .qrow {
   display: grid; grid-template-columns: 54px minmax(200px,2fr) minmax(220px,3fr) minmax(92px,0.8fr) 110px 26px;

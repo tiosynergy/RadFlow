@@ -73,7 +73,7 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
         if (!cancel) setOverride(ov.data || null);
       }
       if (!roomId) { setDayEntries([]); return; }
-      const { data } = await supabase.from("queue_entries").select("scheduled_time, duration_min, status").eq("room_id", roomId).eq("scheduled_date", date).neq("status", "cancelled").neq("status", "no_show");
+      const { data } = await supabase.from("queue_entries").select("scheduled_time, duration_min, status").eq("room_id", roomId).eq("scheduled_date", date).neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
       if (!cancel) setDayEntries(data || []);
     })();
     return () => { cancel = true; };
@@ -106,7 +106,7 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
     const { data: clash } = await supabase
       .from("queue_entries").select("scheduled_time, duration_min")
       .eq("room_id", roomId).eq("scheduled_date", date)
-      .neq("status", "cancelled").neq("status", "no_show");
+      .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
     if ((clash || []).some((q) => {
       const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
       const qs = (qh || 0) * 60 + (qm || 0);

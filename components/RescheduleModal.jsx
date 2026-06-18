@@ -48,7 +48,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, blockedRoomI
         .from("queue_entries")
         .select("id, scheduled_time, duration_min, status")
         .eq("room_id", roomId).eq("scheduled_date", dateStr)
-        .neq("status", "cancelled").neq("status", "no_show");
+        .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
       if (!cancel) setDayEntries((data || []).filter((e) => e.id !== patient.id));
     })();
     return () => { cancel = true; };

@@ -40,16 +40,18 @@ const ST = {
   waiting:     { label: "Очікує",       cls: "yellow" },
   in_progress: { label: "В кабінеті",   cls: "blue", dot: true },
   done:        { label: "Виконано",     cls: "green" },
-  no_show:     { label: "Не відбулось", cls: "red" },
+  no_show:     { label: "Неявка",       cls: "red" },
+  not_held:    { label: "Не відбулося", cls: "orange" },
+  cancelled:   { label: "Скасовано",    cls: "gray" },
 };
-const FLOW = { in_progress: 0, waiting: 1, scheduled: 2, done: 3, no_show: 4 };
+const FLOW = { in_progress: 0, waiting: 1, scheduled: 2, done: 3, not_held: 4, no_show: 5 };
 const STAT_ITEMS = [
   { key: "all", lab: "Всього сьогодні", sub: "записів", cls: "white" },
   { key: "scheduled", lab: "В черзі", sub: "записані", cls: "gray" },
   { key: "waiting", lab: "Очікують", sub: "прийшли", cls: "yellow" },
   { key: "in_progress", lab: "В кабінеті", sub: "зараз", cls: "blue" },
   { key: "done", lab: "Виконано", sub: "процедур", cls: "green" },
-  { key: "no_show", lab: "Не відбулось", sub: "неявка", cls: "red" },
+  { key: "not_held", lab: "Не відбулося", sub: "не відбулось", cls: "orange" },
 ];
 
 function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
@@ -249,7 +251,7 @@ function CurrentCard({ patient, roomName, roomModel, enteredAt, nextWaiting, onC
 function computeRoomLoad(rooms, entries) {
   const cap = 480; // 8 робочих годин у хвилинах
   return (rooms || []).map((r) => {
-    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show").reduce((s, e) => s + (e.duration_min || 0), 0);
+    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "cancelled" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0), 0);
     const pct = Math.min(100, Math.round((mins / cap) * 100));
     return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)" };
   });
@@ -316,7 +318,7 @@ const CALL_SEG_STYLE = {
   declined:   { color: "var(--red)",       bg: "var(--red-bg)" },
 };
 
-function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies }) {
+function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies }) {
   const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
   const meta = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
@@ -385,7 +387,7 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
               const pb = STEP_PRIMARY[p.status] || STEP_PRIMARY.done;
               const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
               const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall) || !isTodayRow;
-              const terminal = p.status === "done" || p.status === "no_show";
+              const terminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
               return (
                 <div className="qd-step">
                   {/* Прогрес-крок: пройдені ✓, поточний підсвічено, клік по кроку = виправлення статусу */}
@@ -414,9 +416,9 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
 
                   {/* Основна дія — рух на наступний крок */}
                   <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
-                    {p.status === "no_show" ? (
+                    {(p.status === "no_show" || p.status === "not_held") ? (
                       <>
-                        <span className="q-noshow-lab" style={{ flex: 1 }}>✕ Не відбулось</span>
+                        <span className="q-noshow-lab" style={{ flex: 1 }}>✕ {p.status === "not_held" ? "Не відбулося" : "Неявка"}</span>
                         <button className="btn btn-secondary btn-sm" onClick={act(onUndo)}>↩ Повернути в чергу</button>
                       </>
                     ) : (
@@ -434,9 +436,10 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
                     )}
                   </div>
 
-                  {moreOpen && p.status !== "no_show" && (
+                  {moreOpen && !terminal && (
                     <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }}>
-                      {p.status !== "done" && <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNoShow)}>✕ Неявка</button>}
+                      <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNoShow)}>✕ Неявка</button>
+                      <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNotHeld)}>✕ Не відбулося</button>
                       <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onCancel)}>✕ Скасувати запис</button>
                     </div>
                   )}
@@ -587,6 +590,41 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, onEditSched
 }
 
 /* ── Головний компонент ── */
+/* ── Скасовані + Неявка (нижня панель, згортувана) ── */
+function CancelledPanel({ entries, onUndo, onReschedule }) {
+  const [open, setOpen] = useState(false);
+  if (!entries.length) return null;
+  return (
+    <div className="rcard">
+      <button className={"rcard-toggle" + (open ? " open" : "")} onClick={() => setOpen((o) => !o)} style={{ cursor: "pointer" }}>
+        <span className="rct-title">Скасовані + Неявка</span>
+        <span className="rct-sum">{entries.length}</span>
+        <span className="rct-chev">⌄</span>
+      </button>
+      {open && (
+        <div className="load-body">
+          {entries.map((e) => {
+            const isCancelled = e.status === "cancelled";
+            return (
+              <div key={e.id} style={{ padding: "8px 0", borderTop: "1px solid var(--border)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.patient_name}</span>
+                  <span className={"badge " + (isCancelled ? "gray" : "red")} style={{ fontSize: 10.5, flexShrink: 0 }}>{isCancelled ? "Скасовано" : "Неявка"}</span>
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--text-muted)", margin: "2px 0 6px" }}>{e.scheduled_time} · {procLabel(e)}</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <button className="btn btn-secondary btn-xs" onClick={() => onUndo(e)}>↩ В чергу</button>
+                  <button className="btn btn-secondary btn-xs" onClick={() => onReschedule(e)}>🗓 Перезаписати</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adminRole }) {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -636,7 +674,6 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, status, call_status, note, studies, contraindications, cito, doctor, room_id, updated_at")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
-      .neq("status", "cancelled")
       .order("scheduled_time", { ascending: true });
     if (!error) setEntries(data || []);
     setLoading(false);
@@ -750,6 +787,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
   const arrive = (p) => setStatus(p.id, "waiting");
   const noShow = (p) => setStatus(p.id, "no_show");
+  const notHeld = (p) => setStatus(p.id, "not_held");
   const undo = (p) => setStatus(p.id, "scheduled");
   const openComplete = (p) => setCompleteFor(p);
 
@@ -761,7 +799,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const { error } = await supabase.from("queue_entries").update({ status, note }).eq("id", p.id);
     setCompleteFor(null);
     if (error) { notify("Помилка: " + error.message, "error"); return; }
-    notify(status === "done" ? "Процедуру завершено" : "Позначено: не відбулось", "success");
+    notify(status === "done" ? "Процедуру завершено" : "Позначено: не відбулося", "success");
     reload();
   }
 
@@ -796,7 +834,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const { data: clash } = await supabase
       .from("queue_entries").select("id, scheduled_time, duration_min")
       .eq("room_id", roomId).eq("scheduled_date", dateKey(date))
-      .neq("status", "cancelled").neq("status", "no_show");
+      .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
     if ((clash || []).some((q) => {
       if (q.id === p.id) return false;
       const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
@@ -846,7 +884,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const { data: clash } = await supabase
       .from("queue_entries").select("scheduled_time, duration_min")
       .eq("room_id", b.roomId).eq("scheduled_date", dateKey(b.date))
-      .neq("status", "cancelled").neq("status", "no_show");
+      .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
     if ((clash || []).some((q) => {
       const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
       const qs = (qh || 0) * 60 + (qm || 0);
@@ -869,9 +907,12 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   /* агрегати (scoped — звужено до обраного кабінету в сайдбарі) */
   const scoped = roomView === "all" ? entries : entries.filter((e) => e.room_id === roomView);
+  // Основний список: активні + завершені + «не відбулося». Скасовані та неявки — в окремій панелі.
+  const boardScoped = scoped.filter((e) => e.status !== "cancelled" && e.status !== "no_show");
+  const panelEntries = scoped.filter((e) => e.status === "cancelled" || e.status === "no_show");
   const counts = useMemo(() => {
-    const c = { total: scoped.length, scheduled: 0, waiting: 0, in_progress: 0, done: 0, no_show: 0 };
-    scoped.forEach((e) => { if (c[e.status] != null) c[e.status]++; });
+    const c = { total: 0, scheduled: 0, waiting: 0, in_progress: 0, done: 0, no_show: 0, not_held: 0, cancelled: 0 };
+    scoped.forEach((e) => { if (c[e.status] != null) c[e.status]++; if (e.status !== "cancelled") c.total++; });
     return c;
   }, [scoped]);
 
@@ -886,7 +927,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   const roomLoad = computeRoomLoad(rooms, entries);
 
-  const sorted = scoped.slice().sort((a, b) => {
+  const sorted = boardScoped.slice().sort((a, b) => {
     const d = (FLOW[a.status] ?? 9) - (FLOW[b.status] ?? 9);
     if (d !== 0) return d;
     return (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
@@ -1039,7 +1080,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                     readOnly={isPast}
                     canCall={!currentByRoom[p.room_id]} rescheduling={affectedIds.has(p.id)}
                     onArrive={arrive} onCall={callPatient} onComplete={openComplete}
-                    onNoShow={noShow} onUndo={undo} onCancel={cancelBooking} onSetStatus={(pt, st) => setStatus(pt.id, st)} onSetCall={setCall}
+                    onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onCancel={cancelBooking} onSetStatus={(pt, st) => setStatus(pt.id, st)} onSetCall={setCall}
                     onReschedule={openReschedule} onEditStudies={openEditStudies} />
                 );
               })}
@@ -1053,6 +1094,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
             {isToday && (rooms || []).length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}
             {!isPast && <CallListPanel entries={entries} onSetCall={setCall} dateLabel={fmtShort(selectedDate)} />}
+            <CancelledPanel entries={panelEntries} onUndo={undo} onReschedule={openReschedule} />
           </aside>
         </div>
       </div>
@@ -1067,7 +1109,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
           enteredAt={completeFor.updated_at}
           onClose={() => setCompleteFor(null)}
           onSuccess={(notes) => finishComplete("done", notes)}
-          onFail={(reason, notes) => finishComplete("no_show", [reason, notes].filter(Boolean).join(" — "))}
+          onFail={(reason, notes) => finishComplete("not_held", [reason, notes].filter(Boolean).join(" — "))}
         />
       )}
 

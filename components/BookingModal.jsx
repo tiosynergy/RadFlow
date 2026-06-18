@@ -276,7 +276,8 @@ export default function BookingModal({ rooms, clinicId, onClose, onSave }) {
         .eq("room_id", roomId)
         .eq("scheduled_date", dateKey(bookDate))
         .neq("status", "cancelled")
-        .neq("status", "no_show");
+        .neq("status", "no_show")
+        .neq("status", "not_held");
       if (!cancel) setDayEntries(data || []);
     }
     load();

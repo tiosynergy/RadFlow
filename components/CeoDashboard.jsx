@@ -127,11 +127,12 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
   const total = entries.length;
   const done = entries.filter((e) => e.status === "done").length;
   const noShow = entries.filter((e) => e.status === "no_show").length;
+  const notHeld = entries.filter((e) => e.status === "not_held").length;
   const active = entries.filter((e) => ["scheduled", "waiting", "in_progress"].includes(e.status)).length;
 
   const workdays = Math.max(1, workdaysBetween(from, to));
   const capacityMin = (rooms || []).length * 480 * workdays;
-  const bookedMin = entries.filter((e) => e.status !== "no_show").reduce((s, e) => s + (e.duration_min || 0), 0);
+  const bookedMin = entries.filter((e) => e.status !== "no_show" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0), 0);
   const util = capacityMin ? Math.min(100, Math.round((bookedMin / capacityMin) * 100)) : 0;
   const utilColor = util > 70 ? "var(--green)" : util >= 50 ? "var(--orange)" : "var(--red)";
 
@@ -144,7 +145,7 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
   const weekData = weekDays.map((d) => {
     const k = dateKey(d);
     const dayEntries = weekEntries.filter((e) => e.scheduled_date === k);
-    return { d, total: dayEntries.length, noShow: dayEntries.filter((e) => e.status === "no_show").length };
+    return { d, total: dayEntries.length, noShow: dayEntries.filter((e) => e.status === "no_show" || e.status === "not_held").length };
   });
   const maxBar = Math.max(1, ...weekData.map((x) => x.total));
 
@@ -201,7 +202,8 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
                   <div style={{ fontSize: 40, fontWeight: 700 }} className="tabular">{total}</div>
                   <div style={{ display: "flex", gap: 16, marginTop: 14, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 13 }}><b style={{ color: "var(--green)" }} className="tabular">{done}</b> <span style={{ color: "var(--text-muted)" }}>виконано</span></span>
-                    <span style={{ fontSize: 13 }}><b style={{ color: "var(--red)" }} className="tabular">{noShow}</b> <span style={{ color: "var(--text-muted)" }}>не відбулось</span></span>
+                    <span style={{ fontSize: 13 }}><b style={{ color: "var(--red)" }} className="tabular">{noShow}</b> <span style={{ color: "var(--text-muted)" }}>неявка</span></span>
+                    <span style={{ fontSize: 13 }}><b style={{ color: "var(--orange)" }} className="tabular">{notHeld}</b> <span style={{ color: "var(--text-muted)" }}>не відбулося</span></span>
                     <span style={{ fontSize: 13 }}><b style={{ color: "var(--blue)" }} className="tabular">{active}</b> <span style={{ color: "var(--text-muted)" }}>в процесі</span></span>
                   </div>
                 </div>
@@ -226,7 +228,7 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
               <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, marginTop: 16 }}>
                 <div style={card}>
                   <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Дослідження за тиждень</div>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16 }}>Стовпці — всього, червоні позначки — «Не відбулось»</div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16 }}>Стовпці — всього, червоні позначки — зрив (неявка + не відбулося)</div>
                   <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 180, paddingTop: 10 }}>
                     {weekData.map((x, i) => (
                       <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
