@@ -4,25 +4,43 @@
    Портовано з queue-app.jsx (BreakdownModal), спрощено: фіксує простій і блокує
    кабінет. Автоматичний колл-лист постраждалих пацієнтів — наступний під-етап. */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { createClient } from "@/lib/supabase/client";
+import { roomScheduleFor } from "@/lib/schedule";
 
 function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function pad(n) { return String(n).padStart(2, "0"); }
 function nowHHMM() { const d = new Date(); return pad(d.getHours()) + ":" + pad(d.getMinutes()); }
 function dateInputVal(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
 function hhmmToday(hhmm) { const [h, m] = String(hhmm).split(":").map(Number); const d = new Date(); d.setHours(h || 0, m || 0, 0, 0); return d; }
+function hhmmFromISO(iso) { try { const d = new Date(iso); return pad(d.getHours()) + ":" + pad(d.getMinutes()); } catch { return nowHHMM(); } }
 
 const DURATIONS = [
   { k: "1h", label: "1 година" }, { k: "2h", label: "2 години" }, { k: "4h", label: "4 години" },
   { k: "eod", label: "До кінця дня" }, { k: "restore", label: "До відновлення" },
 ];
 
-export default function BreakdownModal({ rooms, onClose, onConfirm }) {
-  const [roomId, setRoomId] = useState((rooms || [])[0]?.id || "");
-  const [reason, setReason] = useState("breakdown");
-  const [startTime, setStartTime] = useState(nowHHMM());
+export default function BreakdownModal({ rooms, clinicId, incident, onClose, onConfirm }) {
+  const editing = !!incident;
+  const [roomId, setRoomId] = useState(incident?.room_id || (rooms || [])[0]?.id || "");
+  const [reason, setReason] = useState(incident?.reason || "breakdown");
+  const [startTime, setStartTime] = useState(incident ? hhmmFromISO(incident.started_at) : nowHHMM());
   const [durKey, setDurKey] = useState("");
   const [restoreDate, setRestoreDate] = useState(() => { const d = new Date(); d.setDate(d.getDate() + 1); return dateInputVal(d); });
+
+  // Графік кабінету на сьогодні (для «до кінця дня» — з урахуванням особливого графіка).
+  const [override, setOverride] = useState(null);
+  useEffect(() => {
+    if (!clinicId) return;
+    let cancel = false;
+    (async () => {
+      const supabase = createClient();
+      const { data } = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateInputVal(new Date())).maybeSingle();
+      if (!cancel) setOverride(data || null);
+    })();
+    return () => { cancel = true; };
+  }, [clinicId]);
+  const schedEndStr = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return roomScheduleFor(d, roomId, override).end; })();
 
   const reasonLabel = reason === "maintenance" ? "Планове ТО" : "Поломка обладнання";
   const minRestore = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return dateInputVal(d); })();
@@ -35,7 +53,7 @@ export default function BreakdownModal({ rooms, onClose, onConfirm }) {
     if (durKey === "1h") { blockedUntil = new Date(startedAt.getTime() + 3600e3); durationLabel = "1 година"; }
     else if (durKey === "2h") { blockedUntil = new Date(startedAt.getTime() + 2 * 3600e3); durationLabel = "2 години"; }
     else if (durKey === "4h") { blockedUntil = new Date(startedAt.getTime() + 4 * 3600e3); durationLabel = "4 години"; }
-    else if (durKey === "eod") { const d = new Date(); d.setHours(18, 0, 0, 0); blockedUntil = d; durationLabel = "до кінця дня"; }
+    else if (durKey === "eod") { const [eh, em] = String(schedEndStr).split(":").map(Number); const d = new Date(); d.setHours(eh || 18, em || 0, 0, 0); blockedUntil = d; durationLabel = "до кінця дня (" + schedEndStr + ")"; }
     else if (durKey === "restore") { const d = new Date(restoreDate + "T18:00:00"); blockedUntil = d; durationLabel = "до відновлення (" + restoreDate + ")"; }
     return { startedAt, blockedUntil, durationLabel };
   }
@@ -55,7 +73,7 @@ export default function BreakdownModal({ rooms, onClose, onConfirm }) {
     <div className="overlay">
       <div className="dialog fade-in" style={{ maxWidth: 600 }}>
         <div className="dlg-head">
-          <div className="dlg-title"><span className="tic" style={{ background: "var(--red-bg)", color: "var(--red)" }}>🔧</span>Поломка / Технічне обслуговування</div>
+          <div className="dlg-title"><span className="tic" style={{ background: "var(--red-bg)", color: "var(--red)" }}>🔧</span>{editing ? "Редагувати простій" : "Поломка / Технічне обслуговування"}</div>
           <button className="icon-btn" onClick={onClose}>✕</button>
         </div>
         <div className="dlg-body">
@@ -118,7 +136,7 @@ export default function BreakdownModal({ rooms, onClose, onConfirm }) {
             ? <span className="bk-summary">{room ? room.name : ""} · {reason === "maintenance" ? "ТО" : "Поломка"} · {compute().durationLabel}</span>
             : <span style={{ fontSize: 12, color: "var(--text-faint)", marginRight: "auto", alignSelf: "center" }}>* Оберіть апарат, причину та тривалість</span>}
           <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
-          <button className="btn btn-danger" disabled={!valid} onClick={confirm}>🔒 Заблокувати апарат</button>
+          <button className="btn btn-danger" disabled={!valid} onClick={confirm}>{editing ? "💾 Зберегти зміни" : "🔒 Заблокувати апарат"}</button>
         </div>
       </div>
     </div>

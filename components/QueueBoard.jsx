@@ -64,6 +64,24 @@ function fmtTimer(sec) {
   return m + ":" + String(s).padStart(2, "0");
 }
 function toMinHHMM(t) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
+// Чи запис (день + час) потрапляє в період блокування інциденту (працює і для багатоденних простоїв).
+function entryInIncidentWindow(scheduledTime, dayDate, inc) {
+  if (!inc || !scheduledTime || !dayDate) return false;
+  const [h, m] = String(scheduledTime).split(":").map(Number);
+  const dt = new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0).getTime();
+  const start = new Date(inc.started_at).getTime();
+  const end = inc.blocked_until ? new Date(inc.blocked_until).getTime() : Infinity;
+  return dt >= start && dt < end;
+}
+// Чи день потрапляє в період блокування (для банера на потрібні дні).
+function incidentCoversDay(inc, dayDate) {
+  if (!inc || !dayDate) return false;
+  const dayStart = new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate()).getTime();
+  const dayEnd = dayStart + 24 * 3600e3;
+  const start = new Date(inc.started_at).getTime();
+  const end = inc.blocked_until ? new Date(inc.blocked_until).getTime() : Infinity;
+  return start < dayEnd && dayStart < end;
+}
 function incWindow(inc) {
   const s = new Date(inc.started_at);
   const startMin = s.getHours() * 60 + s.getMinutes();
@@ -302,6 +320,7 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
   const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
   const meta = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
+  const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true; // прогрес статусу — лише в день запису
   const [moreOpen, setMoreOpen] = useState(false);
   const proc = procLabel(p);
   const act = (fn) => (e) => { e.stopPropagation(); fn(p); };
@@ -322,7 +341,15 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
           <div className="pp">{proc}</div>
           <div className="du">{roomKind}</div>
         </div>
-        <div className="q-room"><b>{roomName}</b></div>
+        <div className="q-room" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3 }}>
+          {(() => {
+            const km = (Array.isArray(p.studies) && p.studies[0] && p.studies[0].type) || ((roomKind === "МРТ" || roomKind === "КТ") ? roomKind : "");
+            if (!km) return null;
+            const isCt = km === "КТ";
+            return <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "#4da3ff" }}>{km}</span>;
+          })()}
+          <b>{roomName}</b>
+        </div>
         <div className="q-status-cell">
           <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
           {rescheduling && <span className="badge red" title="Апарат заблоковано — потрібен перенос на інший слот">🔧 Перезапис</span>}
@@ -333,6 +360,19 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
       <div className="qrow-detail-wrap">
         <div className="qrow-detail-inner">
           <div className="qrow-detail">
+            {Array.isArray(p.studies) && p.studies.length > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{p.studies.length > 1 ? "Дослідження (" + p.studies.length + ")" : "Дослідження"}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
+                  {p.studies.map((s, i) => (
+                    <div key={i} style={{ color: "var(--text-secondary)" }}>
+                      {p.studies.length > 1 && <b style={{ color: "var(--text-muted)" }}>{i + 1}. </b>}
+                      {(s.type || "") + (s.region ? " · " + s.region : "") + (s.contrast ? " · з контрастом" : "")}{s.dur ? " · " + s.dur + " хв" : ""}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {(p.contraindications || p.note) && (
               <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
                 {p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}>⚠ Протипоказання</span>}
@@ -344,7 +384,7 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
               const stepIdx = STEP_ORDER.indexOf(p.status);
               const pb = STEP_PRIMARY[p.status] || STEP_PRIMARY.done;
               const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
-              const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall);
+              const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall) || !isTodayRow;
               const terminal = p.status === "done" || p.status === "no_show";
               return (
                 <div className="qd-step">
@@ -358,8 +398,8 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
                         const m = STEP_META[key];
                         return (
                           <div key={key} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 72 }}>
-                            <button onClick={act(() => onSetStatus(p, key))} title={"Встановити статус: " + m.label}
-                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: "pointer",
+                            <button onClick={isTodayRow ? act(() => onSetStatus(p, key)) : undefined} disabled={!isTodayRow} title={isTodayRow ? "Встановити статус: " + m.label : "Зміна статусу доступна в день запису"}
+                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: isTodayRow ? "pointer" : "default",
                                 background: isDone ? "var(--green)" : (isCur ? m.color : "transparent"),
                                 border: "1.5px solid " + ((isDone || isCur) ? "transparent" : "var(--border-strong)"),
                                 color: isDone ? "#04210d" : (isCur ? "#1c1c1e" : "var(--text-faint)") }}>
@@ -382,14 +422,14 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
                     ) : (
                       <>
                         <button onClick={advanceDisabled ? undefined : act(advanceFn)} disabled={advanceDisabled}
-                          title={p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""}
-                          style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "11px 16px", borderRadius: 10, fontSize: 14.5, fontWeight: 600, border: "none",
+                          title={!isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "")}
+                          style={{ flex: 8, minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
                           {pb.icon} {pb.label}
                         </button>
-                        {!terminal && onEditStudies && <button className="btn btn-secondary btn-sm" onClick={act(onEditStudies)} title="Редагувати дослідження">🩻</button>}
-                        {!terminal && <button className="btn btn-secondary btn-sm" onClick={act(onReschedule)} title="Перенести на слот">🗓 Перенести</button>}
-                        <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); setMoreOpen((o) => !o); }} title="Більше дій">⋯</button>
+                        {!terminal && onEditStudies && <button className="btn btn-secondary btn-sm" style={{ flex: 4, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} onClick={act(onEditStudies)}>🩻 Редагувати дослідження</button>}
+                        {!terminal && <button className="btn btn-secondary btn-sm" style={{ flex: 2, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} onClick={act(onReschedule)} title="Перенести на слот">🗓 Перенести</button>}
+                        <button className="btn btn-secondary btn-sm" style={{ flex: 1, minWidth: 0 }} onClick={(e) => { e.stopPropagation(); setMoreOpen((o) => !o); }} title="Більше дій">⋯</button>
                       </>
                     )}
                   </div>
@@ -556,6 +596,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const [editStudiesFor, setEditStudiesFor] = useState(null);
   const [incidents, setIncidents] = useState([]);
   const [breakdownOpen, setBreakdownOpen] = useState(false);
+  const [editIncident, setEditIncident] = useState(null);
   const [overrides, setOverrides] = useState({});
   const [schedEditOpen, setSchedEditOpen] = useState(false);
   const [filter, setFilter] = useState("all");
@@ -670,10 +711,8 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   if (!isPast) {
     entries.forEach((e) => {
       if (e.status !== "scheduled" && e.status !== "waiting") return;
-      if (isToday) {
-        const inc = incidentByRoom[e.room_id];
-        if (inc) { const [s, en] = incWindow(inc); const m = toMinHHMM(e.scheduled_time); if (m >= s && m < en) { affectedIds.add(e.id); return; } }
-      }
+      const inc = incidentByRoom[e.room_id];
+      if (inc && entryInIncidentWindow(e.scheduled_time, selectedDate, inc)) { affectedIds.add(e.id); return; }
       if (roomSchedClosed(e.room_id)) affectedIds.add(e.id);
     });
   }
@@ -683,13 +722,14 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   async function registerBreakdown(data) {
     const supabase = createClient();
-    const { error } = await supabase.from("incidents").insert({
-      clinic_id: clinicId, room_id: data.roomId, reason: data.reason, reason_label: data.reasonLabel,
-      note: data.note, started_at: data.startedAt, blocked_until: data.blockedUntil, status: "active",
-    });
-    setBreakdownOpen(false);
+    const fields = { room_id: data.roomId, reason: data.reason, reason_label: data.reasonLabel, note: data.note, started_at: data.startedAt, blocked_until: data.blockedUntil };
+    const { error } = editIncident
+      ? await supabase.from("incidents").update(fields).eq("id", editIncident.id)
+      : await supabase.from("incidents").insert({ clinic_id: clinicId, status: "active", ...fields });
+    const wasEdit = !!editIncident;
+    setBreakdownOpen(false); setEditIncident(null);
     if (error) { notify("Помилка: " + error.message, "error"); return; }
-    notify("Апарат заблоковано", "success");
+    notify(wasEdit ? "Простій оновлено" : "Апарат заблоковано", "success");
     loadIncidents();
   }
 
@@ -894,7 +934,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                 <button className="btn btn-secondary btn-sm" onClick={() => setFilter("all")}>Показати чергу</button>
               </div>
             )}
-            {isToday && incidents.map((inc) => {
+            {!isPast && incidents.filter((inc) => incidentCoversDay(inc, selectedDate)).map((inc) => {
               const r = roomsById[inc.room_id] || {};
               return (
                 <div className="inc-banner fade-in" key={inc.id}>
@@ -905,6 +945,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                     </div>
                     <div className="inc-banner-sub">{(() => { const n = affected.filter((a) => a.room_id === inc.room_id).length; return n > 0 ? n + (n === 1 ? " пацієнт у вікні простою потребує переносу →" : " пацієнтів у вікні простою потребують переносу →") : "Нові виклики на цей апарат призупинено"; })()}</div>
                   </div>
+                  <button className="btn btn-secondary btn-sm" onClick={() => { setEditIncident(inc); setBreakdownOpen(true); }}>✎ Редагувати</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => resolveIncident(inc)}>🔓 Розблокувати</button>
                 </div>
               );
@@ -1039,7 +1080,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       )}
 
       {breakdownOpen && (
-        <BreakdownModal rooms={rooms} onClose={() => setBreakdownOpen(false)} onConfirm={registerBreakdown} />
+        <BreakdownModal rooms={rooms} clinicId={clinicId} incident={editIncident} onClose={() => { setBreakdownOpen(false); setEditIncident(null); }} onConfirm={registerBreakdown} />
       )}
 
       {schedEditOpen && (

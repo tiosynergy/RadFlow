@@ -202,13 +202,18 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const { data: ents } = await supabase
       .from("queue_entries")
       .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, status, call_status, studies, room_id, scheduled_date")
-      .eq("clinic_id", clinicId).eq("scheduled_date", todayKey)
+      .eq("clinic_id", clinicId).gte("scheduled_date", todayKey)
       .in("room_id", incs.map((i) => i.room_id)).in("status", ["scheduled", "waiting"]);
     const byRoom = {}; incs.forEach((i) => { byRoom[i.room_id] = i; });
+    // Пострадавшие — за весь період блокування (вкл. майбутні дні), за повним datetime.
     const aff = (ents || []).filter((e) => {
-      const inc = byRoom[e.room_id]; if (!inc) return false;
-      const [s, en] = incWindow(inc); const m = toMinHHMM(e.scheduled_time);
-      return m >= s && m < en;
+      const inc = byRoom[e.room_id]; if (!inc || !e.scheduled_date || !e.scheduled_time) return false;
+      const [h, m] = String(e.scheduled_time).split(":").map(Number);
+      const [Y, Mo, D] = String(e.scheduled_date).split("-").map(Number);
+      const dt = new Date(Y, (Mo || 1) - 1, D || 1, h || 0, m || 0).getTime();
+      const start = new Date(inc.started_at).getTime();
+      const end = inc.blocked_until ? new Date(inc.blocked_until).getTime() : Infinity;
+      return dt >= start && dt < end;
     });
     setAffectedToday(aff);
   }, [clinicId]);
