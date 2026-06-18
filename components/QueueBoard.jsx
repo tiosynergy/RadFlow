@@ -266,13 +266,6 @@ function RoomLoad({ rooms, onSelectRoom }) {
 }
 
 /* ── Рядок черги ── */
-const STATUS_SEG = [
-  { key: "scheduled", label: "В черзі", cls: "gray" },
-  { key: "waiting", label: "Очікує", cls: "yellow" },
-  { key: "in_progress", label: "В кабінеті", cls: "blue" },
-  { key: "done", label: "Виконано", cls: "green" },
-  { key: "no_show", label: "Не відбулось", cls: "red" },
-];
 const CALL_META = {
   confirmed:  { label: "Підтверджено", cls: "green", icon: "✓" },
   to_recall:  { label: "Передзвонити", cls: "blue", icon: "↻" },
@@ -280,27 +273,50 @@ const CALL_META = {
   declined:   { label: "Відмова", cls: "red", icon: "✕" },
   not_called: { label: "Не дзвонили", cls: "gray", icon: "○" },
 };
-const CALL_SEG = [
-  { key: "confirmed", label: "Підтверджено", cls: "green" },
-  { key: "to_recall", label: "Передзвонити", cls: "blue" },
-  { key: "no_answer", label: "Не відповідає", cls: "orange" },
-  { key: "declined", label: "Відмова", cls: "red" },
-  { key: "not_called", label: "Не дзвонили", cls: "gray" },
-];
+
+/* Прогрес-крок статусу: happy-path 4 кроки (scheduled→waiting→in_progress→done).
+   Пройдені — з ✓, поточний підсвічено; клік по кроку = виправлення статусу. */
+const STEP_ORDER = ["scheduled", "waiting", "in_progress", "done"];
+const STEP_META = {
+  scheduled:   { label: "В черзі",    color: "#aeaeb2" },
+  waiting:     { label: "Очікує",     color: "#ffd60a" },
+  in_progress: { label: "В кабінеті", color: "#4da3ff" },
+  done:        { label: "Виконано",   color: "#30d158" },
+};
+const STEP_PRIMARY = {
+  scheduled:   { icon: "✓", label: "Пацієнт прийшов",      bg: "var(--blue)",  color: "#fff" },
+  waiting:     { icon: "▶", label: "Викликати в кабінет",  bg: "var(--blue)",  color: "#fff" },
+  in_progress: { icon: "✓", label: "Завершити процедуру",  bg: "var(--green)", color: "#04210d" },
+  done:        { icon: "✓", label: "Дослідження виконано", bg: "var(--card)",  color: "var(--text-faint)" },
+};
+const CALL_SEG_ORDER = ["not_called", "confirmed", "to_recall", "no_answer", "declined"];
+const CALL_SEG_STYLE = {
+  not_called: { color: "var(--text-secondary)", bg: "var(--gray-badge-bg)" },
+  confirmed:  { color: "var(--green)",     bg: "var(--green-bg)" },
+  to_recall:  { color: "var(--blue-text)", bg: "var(--blue-bg)" },
+  no_answer:  { color: "var(--orange)",    bg: "var(--orange-bg)" },
+  declined:   { color: "var(--red)",       bg: "var(--red-bg)" },
+};
 
 function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies }) {
   const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
   const meta = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
+  const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
+  const [moreOpen, setMoreOpen] = useState(false);
   const proc = procLabel(p);
   const act = (fn) => (e) => { e.stopPropagation(); fn(p); };
   return (
     <div className={"qrow-item " + p.status + (expanded ? " open" : "")} data-qrow={p.id}>
       <div className="qrow" role="button" tabIndex={0} onClick={() => onToggle(p.id)}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
-        <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div></div>
+        <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
           <div className="nm">{p.cito && (p.status === "scheduled" || p.status === "waiting" || p.status === "in_progress") && <span className="cito-tag">CITO</span>}{p.patient_name}</div>
-          <div className="det">{p.patient_age ? p.patient_age + " р. · " : ""}{p.patient_phone || ""}{p.doctor ? " · напр.: " + p.doctor : ""}</div>
+          <div className="det">{[
+            [p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ") || null,
+            p.patient_phone || null,
+            p.doctor ? "напр.: " + p.doctor : null,
+          ].filter(Boolean).join(" · ")}</div>
         </div>
         <div className="q-proc">
           <div className="pp">{proc}</div>
@@ -317,91 +333,97 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
       <div className="qrow-detail-wrap">
         <div className="qrow-detail-inner">
           <div className="qrow-detail">
-            <div className="qd-info">
-              <span className="qd-row"><span className="qd-k">Процедура</span><span className="qd-v">{proc}</span></span>
-              <span className="qd-row"><span className="qd-k">Кабінет</span><span className="qd-v">{roomName}</span></span>
-              <span className="qd-row"><span className="qd-k">Час · Тривалість</span><span className="qd-v">{p.scheduled_time} · {p.duration_min} хв</span></span>
-              {p.patient_phone && <span className="qd-row"><span className="qd-k">Телефон</span><a className="qd-v qd-phone" href={"tel:" + p.patient_phone.replace(/\s/g, "")} onClick={(e) => e.stopPropagation()}>{p.patient_phone}</a></span>}
-              {p.patient_age != null && <span className="qd-row"><span className="qd-k">Вік</span><span className="qd-v">{p.patient_age} р.</span></span>}
-              {p.patient_weight != null && <span className="qd-row"><span className="qd-k">Вага</span><span className="qd-v">{p.patient_weight} кг</span></span>}
-              {p.contraindications && <span className="qd-row"><span className="qd-k">Протипоказання</span><span className="qd-v"><span className="badge red">є</span></span></span>}
-              {p.note && <span className="qd-row"><span className="qd-k">Примітки</span><span className="qd-v">{p.note}</span></span>}
-              <span className="qd-row"><span className="qd-k">Дзвінок-підтвердження</span><span className="qd-v qd-v-call">
-                {(() => { const cm = CALL_META[p.call_status || "not_called"]; return <span className={"qd-call " + cm.cls}>{cm.icon} {cm.label}</span>; })()}
-                {onSetCall && p.status !== "done" && p.status !== "no_show" && (p.call_status || "not_called") !== "confirmed" && (
-                  <span className="qd-call-quick">
-                    {p.patient_phone && <a className="qd-call-tel" href={"tel:" + p.patient_phone.replace(/\s/g, "")} onClick={(e) => e.stopPropagation()} title={"Подзвонити: " + p.patient_phone}>☎</a>}
-                    <button className="btn btn-green btn-xs" onClick={(e) => { e.stopPropagation(); onSetCall(p, "confirmed"); }} title="Позначити дзвінок як підтверджений">✓ Підтвердити</button>
-                  </span>
-                )}
-              </span></span>
-            </div>
-
-            {!readOnly && (
-              <div className="qd-actions">
-                {onEditStudies && p.status !== "done" && p.status !== "no_show" && (
-                  <button className="btn btn-secondary btn-sm" onClick={act(onEditStudies)}>🩻 Дослідження</button>
-                )}
-                {p.status === "scheduled" && (
-                  <>
-                    <button className="btn btn-primary btn-sm" onClick={act(onArrive)}>✓ Пацієнт прийшов</button>
-                    <button className="btn btn-secondary btn-sm" onClick={act(onReschedule)}>🗓 Перенести на слот</button>
-                    <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onCancel)}>✕ Скасувати запис</button>
-                    <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNoShow)}>✕ Неявка</button>
-                  </>
-                )}
-                {p.status === "waiting" && (
-                  <>
-                    <button className="btn btn-primary btn-sm" disabled={!canCall} onClick={act(onCall)} title={canCall ? "" : "Кабінет зайнятий"}>▶ Викликати в кабінет</button>
-                    <button className="btn btn-secondary btn-sm" onClick={act(onReschedule)}>🗓 Перенести на слот</button>
-                    <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onCancel)}>✕ Скасувати запис</button>
-                    <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNoShow)}>✕ Неявка</button>
-                  </>
-                )}
-                {p.status === "in_progress" && (
-                  <button className="btn btn-green btn-sm" onClick={act(onComplete)}>✓ Завершити процедуру</button>
-                )}
-                {p.status === "done" && <span className="q-done-lab">✓ Дослідження виконано</span>}
-                {p.status === "no_show" && (
-                  <>
-                    <span className="q-noshow-lab">✕ Не відбулось</span>
-                    <button className="btn btn-secondary btn-sm" onClick={act(onUndo)}>↩ Повернути в чергу</button>
-                  </>
-                )}
+            {(p.contraindications || p.note) && (
+              <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
+                {p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}>⚠ Протипоказання</span>}
+                {p.note && <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>}
               </div>
             )}
 
-            {!readOnly && (
-              <div className="qd-statusfix">
-                <span className="qd-sf-lab">Змінити статус <span className="qd-sf-hint">(у разі помилкового натискання)</span></span>
-                <div className="qd-seg">
-                  {STATUS_SEG.map((s) => {
-                    const lockDone = s.key === "in_progress" && false;
-                    return (
-                      <button key={s.key}
-                        className={"qd-seg-btn " + s.cls + (p.status === s.key ? " active" : "")}
-                        onClick={(e) => { e.stopPropagation(); onSetStatus(p, s.key); }}>
-                        <span className={"qd-seg-dot " + s.cls} />{s.label}
-                      </button>
-                    );
-                  })}
+            {!readOnly && (() => {
+              const stepIdx = STEP_ORDER.indexOf(p.status);
+              const pb = STEP_PRIMARY[p.status] || STEP_PRIMARY.done;
+              const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
+              const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall);
+              const terminal = p.status === "done" || p.status === "no_show";
+              return (
+                <div className="qd-step">
+                  {/* Прогрес-крок: пройдені ✓, поточний підсвічено, клік по кроку = виправлення статусу */}
+                  <div style={{ position: "relative", padding: "14px 32px 4px" }}>
+                    <div style={{ position: "absolute", top: 29, left: 56, right: 56, height: 2, background: "var(--border)" }} />
+                    <div style={{ position: "relative", display: "flex", justifyContent: "space-between" }}>
+                      {STEP_ORDER.map((key, i) => {
+                        const isDone = stepIdx >= 0 && i < stepIdx;
+                        const isCur = i === stepIdx;
+                        const m = STEP_META[key];
+                        return (
+                          <div key={key} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 72 }}>
+                            <button onClick={act(() => onSetStatus(p, key))} title={"Встановити статус: " + m.label}
+                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: "pointer",
+                                background: isDone ? "var(--green)" : (isCur ? m.color : "transparent"),
+                                border: "1.5px solid " + ((isDone || isCur) ? "transparent" : "var(--border-strong)"),
+                                color: isDone ? "#04210d" : (isCur ? "#1c1c1e" : "var(--text-faint)") }}>
+                              {isDone ? "✓" : i + 1}
+                            </button>
+                            <span style={{ marginTop: 8, fontSize: 12, textAlign: "center", color: isCur ? "var(--text)" : (isDone ? "var(--text-secondary)" : "var(--text-faint)"), fontWeight: isCur ? 700 : 400 }}>{m.label}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Основна дія — рух на наступний крок */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
+                    {p.status === "no_show" ? (
+                      <>
+                        <span className="q-noshow-lab" style={{ flex: 1 }}>✕ Не відбулось</span>
+                        <button className="btn btn-secondary btn-sm" onClick={act(onUndo)}>↩ Повернути в чергу</button>
+                      </>
+                    ) : (
+                      <>
+                        <button onClick={advanceDisabled ? undefined : act(advanceFn)} disabled={advanceDisabled}
+                          title={p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""}
+                          style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 7, padding: "11px 16px", borderRadius: 10, fontSize: 14.5, fontWeight: 600, border: "none",
+                            cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
+                          {pb.icon} {pb.label}
+                        </button>
+                        {!terminal && onEditStudies && <button className="btn btn-secondary btn-sm" onClick={act(onEditStudies)} title="Редагувати дослідження">🩻</button>}
+                        {!terminal && <button className="btn btn-secondary btn-sm" onClick={act(onReschedule)} title="Перенести на слот">🗓 Перенести</button>}
+                        <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); setMoreOpen((o) => !o); }} title="Більше дій">⋯</button>
+                      </>
+                    )}
+                  </div>
+
+                  {moreOpen && p.status !== "no_show" && (
+                    <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }}>
+                      {p.status !== "done" && <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNoShow)}>✕ Неявка</button>}
+                      <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onCancel)}>✕ Скасувати запис</button>
+                    </div>
+                  )}
+
+                  {/* Дзвінок-підтвердження — один сегментований перемикач, завжди видно поточне значення */}
+                  {onSetCall && !terminal && (
+                    <div style={{ marginTop: 6 }}>
+                      <div className="qd-sf-lab" style={{ marginBottom: 8 }}>Дзвінок-підтвердження</div>
+                      <div style={{ display: "flex", background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 10, padding: 3, gap: 2 }}>
+                        {CALL_SEG_ORDER.map((key) => {
+                          const cm = CALL_META[key]; const cs = CALL_SEG_STYLE[key];
+                          const active = (p.call_status || "not_called") === key;
+                          return (
+                            <button key={key} onClick={act(() => onSetCall(p, key))}
+                              style={{ flex: 1, textAlign: "center", padding: "8px 4px", borderRadius: 8, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", border: "none",
+                                background: active ? cs.bg : "transparent", color: active ? cs.color : "var(--text-muted)", fontWeight: active ? 600 : 400 }}>
+                              {cm.icon} {cm.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
-            {!readOnly && onSetCall && p.status !== "done" && p.status !== "no_show" && (
-              <div className="qd-statusfix">
-                <span className="qd-sf-lab">Дзвінок-підтвердження <span className="qd-sf-hint">(обдзвін напередодні)</span></span>
-                <div className="qd-seg">
-                  {CALL_SEG.map((s) => (
-                    <button key={s.key} className={"qd-seg-btn " + s.cls + ((p.call_status || "not_called") === s.key ? " active" : "")}
-                      onClick={(e) => { e.stopPropagation(); onSetCall(p, s.key); }}>
-                      <span className={"qd-seg-dot " + s.cls} />{s.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>
