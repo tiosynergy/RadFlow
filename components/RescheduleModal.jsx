@@ -19,17 +19,15 @@ function procLabel(e) {
   return e.note || "—";
 }
 
-export default function RescheduleModal({ patient, rooms, clinicId, blockedRoomIds = [], onClose, onConfirm }) {
+export default function RescheduleModal({ patient, rooms, clinicId, incidents = [], onClose, onConfirm }) {
   const curRoom = (rooms || []).find((r) => r.id === patient.room_id);
   const modality = curRoom ? curRoom.modality : "MRI";
   const kind = modalityLabel(modality);
   const dur = patient.duration_min || 30;
-  const options = (rooms || []).filter((r) => r.modality === modality && !blockedRoomIds.includes(r.id));
+  // Кабінети тієї ж модальності, зокрема заблоковані — щоб можна було перенести на дату ПІСЛЯ відновлення.
+  const options = (rooms || []).filter((r) => r.modality === modality);
 
-  const [roomId, setRoomId] = useState(() => {
-    if (patient.room_id && !blockedRoomIds.includes(patient.room_id)) return patient.room_id;
-    return (options[0] || {}).id || "";
-  });
+  const [roomId, setRoomId] = useState(() => patient.room_id || (options[0] || {}).id || "");
   const [dateStr, setDateStr] = useState(() => { const d = new Date(); d.setDate(d.getDate() + 1); return dateVal(d); });
   const [time, setTime] = useState("");
   const [dayEntries, setDayEntries] = useState([]);
@@ -61,10 +59,20 @@ export default function RescheduleModal({ patient, rooms, clinicId, blockedRoomI
   const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
   const roomSched = roomScheduleFor(dateObj, roomId, override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
+  // Активний простій обраного кабінету: слоти в його вікні — недоступні (на дату після відновлення кабінет вільний).
+  const roomIncident = (incidents || []).find((i) => i.room_id === roomId);
+  function slotBlockedByIncident(slotMin) {
+    if (!roomIncident) return false;
+    const dt = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(slotMin / 60), slotMin % 60).getTime();
+    const start = new Date(roomIncident.started_at).getTime();
+    const end = roomIncident.blocked_until ? new Date(roomIncident.blocked_until).getTime() : Infinity;
+    return dt >= start && dt < end;
+  }
   const slots = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
   function slotState(s) {
     const a = toMin(s), b = a + dur;
     if (roomSched.closed) return "closed";
+    if (slotBlockedByIncident(a)) return "blocked";
     if (a < schedStart || a >= schedEnd) return "offhours";
     if (b > schedEnd) return "tight";
     if (isToday && a < nowMin) return "past";
@@ -108,12 +116,13 @@ export default function RescheduleModal({ patient, rooms, clinicId, blockedRoomI
           <div className="fld">
             {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {dateStr}{override && override.label ? " · " + override.label : ""}. Оберіть інший день.</div>}
             {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік: {roomSched.start}–{roomSched.end}.</div>}
+            {roomIncident && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncident.blocked_until ? " до " + new Date(roomIncident.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}. Оберіть слот після відновлення або інший день.</div>}
             <div className="bk-slot-grid">
               {slots.map((s) => {
                 const st = slotState(s);
-                const title = st === "busy" ? "Зайнято" : st === "tight" ? ("Не вміщується: блок " + dur + " хв перетне " + (nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець дня")) : st === "past" ? "Час минув" : ("Вільно · " + s + "–" + fmt(toMin(s) + dur));
+                const title = st === "busy" ? "Зайнято" : st === "blocked" ? "Кабінет на ремонті/ТО" : st === "tight" ? ("Не вміщується: блок " + dur + " хв перетне " + (nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець дня")) : st === "past" ? "Час минув" : ("Вільно · " + s + "–" + fmt(toMin(s) + dur));
                 return (
-                  <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + (st === "busy" ? " busy" : "")} disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
+                  <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked") ? " busy" : "")} disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
                 );
               })}
             </div>

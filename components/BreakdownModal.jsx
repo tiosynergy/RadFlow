@@ -20,9 +20,10 @@ const DURATIONS = [
   { k: "eod", label: "До кінця дня" }, { k: "restore", label: "До відновлення" },
 ];
 
-export default function BreakdownModal({ rooms, clinicId, incident, onClose, onConfirm }) {
+export default function BreakdownModal({ rooms, clinicId, incident, blockedRoomIds = [], onClose, onConfirm }) {
   const editing = !!incident;
-  const [roomId, setRoomId] = useState(incident?.room_id || (rooms || [])[0]?.id || "");
+  const isLocked = (id) => blockedRoomIds.includes(id) && (!incident || incident.room_id !== id);
+  const [roomId, setRoomId] = useState(incident?.room_id || ((rooms || []).find((r) => !isLocked(r.id)) || (rooms || [])[0] || {}).id || "");
   const [reason, setReason] = useState(incident?.reason || "breakdown");
   const [startTime, setStartTime] = useState(incident ? hhmmFromISO(incident.started_at) : nowHHMM());
   const [durKey, setDurKey] = useState("");
@@ -82,12 +83,15 @@ export default function BreakdownModal({ rooms, clinicId, incident, onClose, onC
           <div className="fld">
             <span className="fld-lab">Який апарат? *</span>
             <div className="bd-rooms">
-              {(rooms || []).map((r) => (
-                <button key={r.id} className={"bd-room" + (roomId === r.id ? " active" : "")} onClick={() => setRoomId(r.id)} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
-                  <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
-                  <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
-                </button>
-              ))}
+              {(rooms || []).map((r) => {
+                const locked = isLocked(r.id);
+                return (
+                  <button key={r.id} disabled={locked} className={"bd-room" + (roomId === r.id ? " active" : "")} onClick={() => !locked && setRoomId(r.id)} title={locked ? "Кабінет уже заблоковано" : r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")} style={locked ? { opacity: 0.45, cursor: "not-allowed" } : undefined}>
+                    <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+                    <span className="bd-room-meta"><span className="bd-room-name">{r.name}{locked ? " 🔒" : ""}</span><span className="bd-room-model">{locked ? "вже заблоковано" : (r.apparatus_model || "")}</span></span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 

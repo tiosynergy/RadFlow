@@ -759,15 +759,26 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   async function registerBreakdown(data) {
     const supabase = createClient();
+    const wasEdit = !!editIncident;
+    // Заборона дублювання активного простою одного кабінету.
+    if (!wasEdit && incidents.some((i) => i.room_id === data.roomId)) {
+      setBreakdownOpen(false); setEditIncident(null);
+      notify("Кабінет уже заблоковано — редагуйте наявний простій", "error");
+      return;
+    }
     const fields = { room_id: data.roomId, reason: data.reason, reason_label: data.reasonLabel, note: data.note, started_at: data.startedAt, blocked_until: data.blockedUntil };
-    const { error } = editIncident
+    const { error } = wasEdit
       ? await supabase.from("incidents").update(fields).eq("id", editIncident.id)
       : await supabase.from("incidents").insert({ clinic_id: clinicId, status: "active", ...fields });
-    const wasEdit = !!editIncident;
     setBreakdownOpen(false); setEditIncident(null);
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
+    if (error) { notify(/duplicate|unique|23505/i.test(error.message) ? "Кабінет уже заблоковано" : "Помилка: " + error.message, "error"); return; }
+    // Поломка під час дослідження: пацієнт «у кабінеті» → «Не відбулося».
+    if (!wasEdit) {
+      await supabase.from("queue_entries").update({ status: "not_held" }).eq("clinic_id", clinicId).eq("room_id", data.roomId).eq("status", "in_progress");
+    }
     notify(wasEdit ? "Простій оновлено" : "Апарат заблоковано", "success");
     loadIncidents();
+    reload();
   }
 
   async function resolveIncident(incident) {
@@ -1114,7 +1125,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       )}
 
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} blockedRoomIds={blockedRoomIds} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} incidents={incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
 
       {editStudiesFor && (
@@ -1122,7 +1133,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       )}
 
       {breakdownOpen && (
-        <BreakdownModal rooms={rooms} clinicId={clinicId} incident={editIncident} onClose={() => { setBreakdownOpen(false); setEditIncident(null); }} onConfirm={registerBreakdown} />
+        <BreakdownModal rooms={rooms} clinicId={clinicId} incident={editIncident} blockedRoomIds={incidents.map((i) => i.room_id)} onClose={() => { setBreakdownOpen(false); setEditIncident(null); }} onConfirm={registerBreakdown} />
       )}
 
       {schedEditOpen && (

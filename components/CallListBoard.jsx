@@ -406,7 +406,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
       </div>
 
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} blockedRoomIds={incidents.map((i) => i.room_id)} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} incidents={incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
       {editStudiesFor && (
         <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
