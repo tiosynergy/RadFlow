@@ -740,8 +740,10 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
   function roomSchedClosed(roomId) { return roomScheduleFor(selectedDate, roomId, selectedOverride).closed; }
 
-  const incidentByRoom = {};
-  incidents.forEach((i) => { incidentByRoom[i.room_id] = i; });
+  // Кабінет може мати кілька одночасних простоїв (напр. поломка + планове ТО) —
+  // тримаємо масив на кабінет, щоб не загубити жодне вікно простою.
+  const incidentsByRoom = {};
+  incidents.forEach((i) => { (incidentsByRoom[i.room_id] = incidentsByRoom[i.room_id] || []).push(i); });
   // Блокування діє ЗАРАЗ лише якщо поточний час у вікні простою — запланований майбутній ТО не блокує кабінет наперед.
   const blockingByRoom = {};
   incidents.forEach((i) => {
@@ -755,13 +757,13 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   if (!isPast) {
     entries.forEach((e) => {
       if (e.status !== "scheduled" && e.status !== "waiting") return;
-      const inc = incidentByRoom[e.room_id];
-      if (inc && entryInIncidentWindow(e.scheduled_time, selectedDate, inc)) { affectedIds.add(e.id); return; }
+      const incs = incidentsByRoom[e.room_id];
+      if (incs && incs.some((inc) => entryInIncidentWindow(e.scheduled_time, selectedDate, inc))) { affectedIds.add(e.id); return; }
       if (roomSchedClosed(e.room_id)) affectedIds.add(e.id);
     });
   }
   const affected = entries.filter((e) => affectedIds.has(e.id));
-  const blockedRoomIds = Object.keys(incidentByRoom);
+  const blockedRoomIds = Object.keys(incidentsByRoom);
   const citoList = entries.filter((e) => e.cito && (e.status === "scheduled" || e.status === "waiting" || e.status === "in_progress"));
 
   async function submitIncident(payload) {
@@ -954,15 +956,23 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   entries.forEach((e) => {
     if (e.status === "in_progress") currentByRoom[e.room_id] = e;
   });
+  // Наступний на виклик: CITO (терміновий) має пріоритет, інакше найраніший за часом
+  // (entries вже впорядковані за scheduled_time за зростанням).
   entries.forEach((e) => {
-    if (e.status === "waiting" && !nextWaitingByRoom[e.room_id]) nextWaitingByRoom[e.room_id] = e;
+    if (e.status !== "waiting") return;
+    const cur = nextWaitingByRoom[e.room_id];
+    if (!cur || (e.cito && !cur.cito)) nextWaitingByRoom[e.room_id] = e;
   });
 
   const roomLoad = computeRoomLoad(rooms, entries);
 
+  // CITO підіймається вгору в межах свого статусу (для активних записів).
+  const citoRank = (x) => (x.cito && (x.status === "scheduled" || x.status === "waiting" || x.status === "in_progress")) ? 0 : 1;
   const sorted = boardScoped.slice().sort((a, b) => {
     const d = (FLOW[a.status] ?? 9) - (FLOW[b.status] ?? 9);
     if (d !== 0) return d;
+    const c = citoRank(a) - citoRank(b);
+    if (c !== 0) return c;
     return (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
   });
   const filtered = sorted.filter((e) => {
