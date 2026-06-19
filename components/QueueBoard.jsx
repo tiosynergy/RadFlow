@@ -797,7 +797,13 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   async function setStatus(id, status) {
     const supabase = createClient();
     const { error } = await supabase.from("queue_entries").update({ status }).eq("id", id);
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
+    if (error) {
+      // Порушення інваріанта «один in_progress на кабінет» (індекс queue_one_in_progress_per_room).
+      const msg = (status === "in_progress" && /in_progress|duplicate|23505/i.test(error.message))
+        ? "У кабінеті вже є пацієнт — спершу завершіть поточного"
+        : "Помилка: " + error.message;
+      notify(msg, "error"); return;
+    }
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, status, updated_at: new Date().toISOString() } : e)));
     reload();
   }
@@ -882,12 +888,23 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     reload();
   }
 
+  // Причина, чому пацієнта НЕ можна зараз завести в кабінет (null = можна).
+  function inProgressBlockReason(p) {
+    if (blockingByRoom[p.room_id]) return "Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат";
+    if (roomSchedClosed(p.room_id)) return "Кабінет зачинено за графіком на цей день";
+    if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    return null;
+  }
   function callPatient(p) {
-    if (blockingByRoom[p.room_id]) { notify("Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат", "error"); return; }
-    if (roomSchedClosed(p.room_id)) { notify("Кабінет зачинено за графіком на цей день", "error"); return; }
-    const busy = entries.some((e) => e.room_id === p.room_id && e.status === "in_progress");
-    if (busy) { notify("Кабінет зайнятий — спершу завершіть поточного пацієнта", "error"); return; }
+    const reason = inProgressBlockReason(p);
+    if (reason) { notify(reason, "error"); return; }
     setStatus(p.id, "in_progress");
+  }
+  // Єдина точка зміни статусу зі сходинок прогрес-кроку: перехід у in_progress
+  // завжди проходить ті самі перевірки, що й кнопка «Викликати в кабінет».
+  function setStatusGuarded(p, status) {
+    if (status === "in_progress") { callPatient(p); return; }
+    setStatus(p.id, status);
   }
 
   async function saveBooking(b) {
@@ -1102,7 +1119,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                     readOnly={isPast}
                     canCall={!currentByRoom[p.room_id]} rescheduling={affectedIds.has(p.id)}
                     onArrive={arrive} onCall={callPatient} onComplete={openComplete}
-                    onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onCancel={cancelBooking} onSetStatus={(pt, st) => setStatus(pt.id, st)} onSetCall={setCall}
+                    onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onCancel={cancelBooking} onSetStatus={setStatusGuarded} onSetCall={setCall}
                     onReschedule={openReschedule} onEditStudies={openEditStudies} />
                 );
               })}
