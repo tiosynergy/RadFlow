@@ -634,7 +634,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const [editStudiesFor, setEditStudiesFor] = useState(null);
   const [incidents, setIncidents] = useState([]);
   const [breakdownOpen, setBreakdownOpen] = useState(false);
-  const [editIncident, setEditIncident] = useState(null);
+  const [breakdownRoomId, setBreakdownRoomId] = useState(null);
   const [overrides, setOverrides] = useState({});
   const [schedEditOpen, setSchedEditOpen] = useState(false);
   const [filter, setFilter] = useState("all");
@@ -764,44 +764,34 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const blockedRoomIds = Object.keys(incidentByRoom);
   const citoList = entries.filter((e) => e.cito && (e.status === "scheduled" || e.status === "waiting" || e.status === "in_progress"));
 
-  async function registerBreakdown(data) {
+  async function submitIncident(payload) {
     const supabase = createClient();
-    const wasEdit = !!editIncident;
-    const startMs = new Date(data.startedAt).getTime();
-    const endMs = data.blockedUntil ? new Date(data.blockedUntil).getTime() : Infinity;
-    // Заборона перетину періодів простою одного кабінету (активний + майбутній ТО допускаються, якщо не перетинаються).
-    if (!wasEdit) {
-      const conflict = incidents.some((i) => {
-        if (i.room_id !== data.roomId) return false;
-        const s = new Date(i.started_at).getTime();
-        const e = i.blocked_until ? new Date(i.blocked_until).getTime() : Infinity;
-        return s < endMs && startMs < e;
-      });
-      if (conflict) { setBreakdownOpen(false); setEditIncident(null); notify("На цей період кабінет уже має простій — оберіть інший час", "error"); return; }
-    }
+    const startMs = new Date(payload.startedAt).getTime();
     // Майбутній старт → «заплановано» (не блокує наперед); поточний/минулий → активний зараз.
     const status = startMs > Date.now() ? "planned" : "active";
-    const fields = { room_id: data.roomId, reason: data.reason, reason_label: data.reasonLabel, note: data.note, started_at: data.startedAt, blocked_until: data.blockedUntil, status };
-    const { error } = wasEdit
-      ? await supabase.from("incidents").update(fields).eq("id", editIncident.id)
+    const fields = { room_id: payload.roomId, reason: payload.reason, reason_label: payload.reasonLabel, note: payload.note, started_at: payload.startedAt, blocked_until: payload.blockedUntil, status };
+    const { error } = payload.id
+      ? await supabase.from("incidents").update(fields).eq("id", payload.id)
       : await supabase.from("incidents").insert({ clinic_id: clinicId, ...fields });
-    setBreakdownOpen(false); setEditIncident(null);
     if (error) { notify(/duplicate|unique|23505/i.test(error.message) ? "Кабінет уже має активний простій" : "Помилка: " + error.message, "error"); return; }
     // Поломка ЗАРАЗ під час дослідження → пацієнт «у кабінеті» → «Не відбулося».
-    if (!wasEdit && status === "active") {
-      await supabase.from("queue_entries").update({ status: "not_held" }).eq("clinic_id", clinicId).eq("room_id", data.roomId).eq("status", "in_progress");
+    if (!payload.id && status === "active") {
+      await supabase.from("queue_entries").update({ status: "not_held" }).eq("clinic_id", clinicId).eq("room_id", payload.roomId).eq("status", "in_progress");
     }
-    notify(wasEdit ? "Простій оновлено" : (status === "planned" ? "Заплановано простій" : "Апарат заблоковано"), "success");
+    notify(payload.id ? "Збережено" : (status === "planned" ? "Заплановано простій" : "Апарат заблоковано"), "success");
     loadIncidents();
     reload();
   }
 
-  async function resolveIncident(incident) {
+  async function resolveIncident(idOrInc) {
+    const id = typeof idOrInc === "string" ? idOrInc : idOrInc?.id;
+    if (!id) return;
     const supabase = createClient();
-    const { error } = await supabase.from("incidents").update({ status: "resolved", resolved_at: new Date().toISOString() }).eq("id", incident.id);
+    const { error } = await supabase.from("incidents").update({ status: "resolved", resolved_at: new Date().toISOString() }).eq("id", id);
     if (error) { notify("Помилка: " + error.message, "error"); return; }
-    notify("Апарат розблоковано", "success");
+    notify("Знято", "success");
     loadIncidents();
+    reload();
   }
 
   async function setStatus(id, status) {
@@ -971,7 +961,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       <Sidebar
         clinicName={clinicName} adminName={adminName} adminRole={adminRole}
         rooms={rooms} activeRoom={roomView} onSelectRoom={setRoomView} onNew={() => setModalOpen(true)}
-        incidentCount={incidents.length} onBreakdown={() => setBreakdownOpen(true)}
+        incidentCount={incidents.length} onBreakdown={() => { setBreakdownRoomId(null); setBreakdownOpen(true); }}
       />
       <div className="main">
         <header className="topbar">
@@ -1018,7 +1008,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                       return n > 0 ? n + (n === 1 ? " пацієнт у вікні простою потребує переносу →" : " пацієнтів у вікні простою потребують переносу →") : "Нові виклики на цей апарат призупинено";
                     })()}</div>
                   </div>
-                  <button className="btn btn-secondary btn-sm" onClick={() => { setEditIncident(inc); setBreakdownOpen(true); }}>✎ Редагувати</button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => { setBreakdownRoomId(inc.room_id); setBreakdownOpen(true); }}>✎ Редагувати</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => resolveIncident(inc)}>{nowBlocking ? "🔓 Розблокувати" : "✕ Скасувати"}</button>
                 </div>
               );
@@ -1154,7 +1144,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       )}
 
       {breakdownOpen && (
-        <BreakdownModal rooms={rooms} clinicId={clinicId} incident={editIncident} blockedRoomIds={Object.keys(blockingByRoom)} onClose={() => { setBreakdownOpen(false); setEditIncident(null); }} onConfirm={registerBreakdown} />
+        <BreakdownModal rooms={rooms} incidents={incidents} initialRoomId={breakdownRoomId} onClose={() => { setBreakdownOpen(false); setBreakdownRoomId(null); }} onSubmit={submitIncident} onResolve={resolveIncident} />
       )}
 
       {schedEditOpen && (
