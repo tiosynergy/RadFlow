@@ -92,6 +92,9 @@ function incWindow(inc) {
   return [startMin, endMin];
 }
 
+/* Момент входу в кабінет: окрема мітка in_progress_at; для старих рядків — updated_at. */
+function enteredAtOf(e) { return e ? (e.in_progress_at || e.updated_at) : null; }
+
 /* ── Живий таймер ── */
 function LiveTimer({ enteredAt, children }) {
   const [now, setNow] = useState(() => Date.now());
@@ -248,12 +251,28 @@ function CurrentCard({ patient, roomName, roomModel, enteredAt, nextWaiting, onC
 }
 
 /* ── Завантаженість кабінетів (права панель) ── */
-function computeRoomLoad(rooms, entries) {
-  const cap = 480; // 8 робочих годин у хвилинах
+// Перетин вікна простою з робочим вікном дня (у хвилинах від початку дня), або 0.
+function incidentWorkMinutes(inc, date, startMin, endMin) {
+  const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const s = new Date(inc.started_at).getTime();
+  const e = inc.blocked_until ? new Date(inc.blocked_until).getTime() : dayStart + 24 * 3600e3;
+  const sMin = Math.max(startMin, Math.round((s - dayStart) / 60000));
+  const eMin = Math.min(endMin, Math.round((e - dayStart) / 60000));
+  return Math.max(0, eMin - sMin);
+}
+// Ємність дня = робоче вікно графіка кабінету мінус простої; закритий день → 0.
+function computeRoomLoad(rooms, entries, date, override, incidents) {
   return (rooms || []).map((r) => {
+    const sched = roomScheduleFor(date, r.id, override);
+    const startMin = toMinHHMM(sched.start), endMin = toMinHHMM(sched.end);
+    let cap = sched.closed ? 0 : Math.max(0, endMin - startMin);
+    if (cap > 0) {
+      (incidents || []).filter((i) => i.room_id === r.id).forEach((i) => { cap -= incidentWorkMinutes(i, date, startMin, endMin); });
+      cap = Math.max(0, cap);
+    }
     const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "cancelled" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0), 0);
-    const pct = Math.min(100, Math.round((mins / cap) * 100));
-    return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)" };
+    const pct = cap > 0 ? Math.min(100, Math.round((mins / cap) * 100)) : 0;
+    return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)" };
   });
 }
 function RoomLoad({ rooms, onSelectRoom }) {
@@ -671,7 +690,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const supabase = createClient();
     const { data, error } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, status, call_status, note, studies, contraindications, cito, doctor, room_id, updated_at")
+      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, status, call_status, note, studies, contraindications, cito, doctor, room_id, updated_at, in_progress_at")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .order("scheduled_time", { ascending: true });
@@ -798,7 +817,10 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   async function setStatus(id, status) {
     const supabase = createClient();
-    const { error } = await supabase.from("queue_entries").update({ status }).eq("id", id);
+    const nowIso = new Date().toISOString();
+    // Момент входу в кабінет фіксуємо окремо (для коректного таймера, незалежного від updated_at).
+    const patch = status === "in_progress" ? { status, in_progress_at: nowIso } : { status };
+    const { error } = await supabase.from("queue_entries").update(patch).eq("id", id);
     if (error) {
       // Порушення інваріанта «один in_progress на кабінет» (індекс queue_one_in_progress_per_room).
       const msg = (status === "in_progress" && /in_progress|duplicate|23505/i.test(error.message))
@@ -806,7 +828,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
         : "Помилка: " + error.message;
       notify(msg, "error"); return;
     }
-    setEntries((es) => es.map((e) => (e.id === id ? { ...e, status, updated_at: new Date().toISOString() } : e)));
+    setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
     reload();
   }
   const arrive = (p) => setStatus(p.id, "waiting");
@@ -964,7 +986,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     if (!cur || (e.cito && !cur.cito)) nextWaitingByRoom[e.room_id] = e;
   });
 
-  const roomLoad = computeRoomLoad(rooms, entries);
+  const roomLoad = computeRoomLoad(rooms, entries, selectedDate, selectedOverride, incidents);
 
   // CITO підіймається вгору в межах свого статусу (для активних записів).
   const citoRank = (x) => (x.cito && (x.status === "scheduled" || x.status === "waiting" || x.status === "in_progress")) ? 0 : 1;
@@ -1067,7 +1089,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
               <div className="room-cards">
                 {(rooms || []).map((r) => (
                   <RoomStatusCard key={r.id} room={r}
-                    patient={currentByRoom[r.id]} enteredAt={currentByRoom[r.id] && currentByRoom[r.id].updated_at}
+                    patient={currentByRoom[r.id]} enteredAt={enteredAtOf(currentByRoom[r.id])}
                     nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
                     schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? selDayStatus.label : null}
                     onComplete={openComplete} onCall={callPatient} onUnblock={resolveIncident} />
@@ -1089,7 +1111,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                   patient={currentByRoom[roomView]}
                   roomName={(roomsById[roomView] || {}).name || "—"}
                   roomModel={(roomsById[roomView] || {}).apparatus_model}
-                  enteredAt={currentByRoom[roomView] && currentByRoom[roomView].updated_at}
+                  enteredAt={enteredAtOf(currentByRoom[roomView])}
                   nextWaiting={nextWaitingByRoom[roomView]}
                   onCall={callPatient} onComplete={openComplete} onReschedule={openReschedule}
                 />
@@ -1155,7 +1177,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
           patient={completeFor}
           proc={procLabel(completeFor)}
           roomName={(roomsById[completeFor.room_id] || {}).name || "—"}
-          enteredAt={completeFor.updated_at}
+          enteredAt={enteredAtOf(completeFor)}
           onClose={() => setCompleteFor(null)}
           onSuccess={(notes) => finishComplete("done", notes)}
           onFail={(reason, notes) => finishComplete("not_held", [reason, notes].filter(Boolean).join(" — "))}
