@@ -59,14 +59,17 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
   const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
   const roomSched = roomScheduleFor(dateObj, roomId, override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
-  // Активний простій обраного кабінету: слоти в його вікні — недоступні (на дату після відновлення кабінет вільний).
-  const roomIncident = (incidents || []).find((i) => i.room_id === roomId);
+  // Простій обраного кабінету (поломка + ТО): слоти у будь-якому вікні — недоступні (на дату після відновлення кабінет вільний).
+  const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
+  const roomIncident = roomIncidents[0];
   function slotBlockedByIncident(slotMin) {
-    if (!roomIncident) return false;
+    if (!roomIncidents.length) return false;
     const dt = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(slotMin / 60), slotMin % 60).getTime();
-    const start = new Date(roomIncident.started_at).getTime();
-    const end = roomIncident.blocked_until ? new Date(roomIncident.blocked_until).getTime() : Infinity;
-    return dt >= start && dt < end;
+    return roomIncidents.some((inc) => {
+      const start = new Date(inc.started_at).getTime();
+      const end = inc.blocked_until ? new Date(inc.blocked_until).getTime() : Infinity;
+      return dt >= start && dt < end;
+    });
   }
   const slots = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
   function slotState(s) {

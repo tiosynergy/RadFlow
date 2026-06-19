@@ -1121,7 +1121,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
         </div>
       </div>
 
-      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} onClose={() => setModalOpen(false)} onSave={saveBooking} />}
+      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} incidents={incidents} onClose={() => setModalOpen(false)} onSave={saveBooking} />}
 
       {completeFor && (
         <CompletionModal

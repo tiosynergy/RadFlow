@@ -181,7 +181,7 @@ function BookingCalendar({ value, onPick }) {
   );
 }
 
-export default function BookingModal({ rooms, clinicId, onClose, onSave }) {
+export default function BookingModal({ rooms, clinicId, incidents = [], onClose, onSave }) {
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
   const [gender, setGender] = useState("");
@@ -292,9 +292,22 @@ export default function BookingModal({ rooms, clinicId, onClose, onSave }) {
   const roomSched = roomScheduleFor(bookDate, roomId, override);
   const schedStartMin = toMin(roomSched.start), schedEndMin = toMin(roomSched.end);
 
+  // Простій (поломка/ТО) обраного кабінету: слоти у вікні інциденту — недоступні.
+  const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
+  function slotBlockedByIncident(slotMin) {
+    if (!roomIncidents.length) return false;
+    const base = new Date(bookDate.getFullYear(), bookDate.getMonth(), bookDate.getDate(), Math.floor(slotMin / 60), slotMin % 60).getTime();
+    return roomIncidents.some((inc) => {
+      const start = new Date(inc.started_at).getTime();
+      const end = inc.blocked_until ? new Date(inc.blocked_until).getTime() : Infinity;
+      return base >= start && base < end;
+    });
+  }
+
   function slotState(slot) {
     const s = toMin(slot), e = s + slotDur;
     if (roomSched.closed) return "closed";
+    if (slotBlockedByIncident(s)) return "blocked";
     if (s < schedStartMin || s >= schedEndMin) return "offhours";
     if (e > schedEndMin) return "tight";
     if (isBookToday && s < nowMin) return "past";
@@ -521,15 +534,17 @@ export default function BookingModal({ rooms, clinicId, onClose, onSave }) {
               </div>
               {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
               {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
+              {!roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncidents[0]?.blocked_until ? " до " + new Date(Math.max(...roomIncidents.map((i) => i.blocked_until ? new Date(i.blocked_until).getTime() : 0))).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}. Оберіть слот після відновлення або інший день/кабінет.</div>}
               <div className={"bk-slot-grid" + (miss.time ? " bk-miss-slots" : "")}>
                 {slots.map((s) => {
                   const st = slotState(s);
                   const title = st === "busy" ? "Зайнято"
+                    : st === "blocked" ? "Кабінет на ремонті/ТО"
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець графіка (" + fmtMin(schedEndMin) + ")"}`
                     : st === "past" ? "Час минув"
                     : `Вільно · ${s}–${fmtMin(toMin(s) + slotDur)}`;
                   return (
-                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + (st === "busy" ? " busy" : "")}
+                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked") ? " busy" : "")}
                       disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
                   );
                 })}
@@ -547,10 +562,12 @@ export default function BookingModal({ rooms, clinicId, onClose, onSave }) {
               </div>
               {time && (() => {
                 const s = toMin(time), e = s + slotDur;
+                const blocked = slotBlockedByIncident(s);
                 const conflict = roomBusy.find((b) => s < b.e && b.s < e);
                 return (
-                  <div className={"bk-slot-confirm " + (conflict ? "bad" : "ok")}>
-                    {conflict ? <>⚠ Перетин із записом {fmtMin(conflict.s)}–{fmtMin(conflict.e)} — оберіть інший слот</>
+                  <div className={"bk-slot-confirm " + (blocked || conflict ? "bad" : "ok")}>
+                    {blocked ? <>⚠ Кабінет на ремонті/ТО у цей час — оберіть інший слот або день</>
+                      : conflict ? <>⚠ Перетин із записом {fmtMin(conflict.s)}–{fmtMin(conflict.e)} — оберіть інший слот</>
                       : <>✓ Слот вільний. Запис: <b>{time}–{fmtMin(e)}</b> ({slotDur} хв).</>}
                   </div>
                 );
