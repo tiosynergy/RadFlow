@@ -822,10 +822,12 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const patch = status === "in_progress" ? { status, in_progress_at: nowIso } : { status };
     const { error } = await supabase.from("queue_entries").update(patch).eq("id", id);
     if (error) {
+      let msg;
       // Порушення інваріанта «один in_progress на кабінет» (індекс queue_one_in_progress_per_room).
-      const msg = (status === "in_progress" && /in_progress|duplicate|23505/i.test(error.message))
-        ? "У кабінеті вже є пацієнт — спершу завершіть поточного"
-        : "Помилка: " + error.message;
+      if (status === "in_progress" && /in_progress|duplicate|23505/i.test(error.message)) msg = "У кабінеті вже є пацієнт — спершу завершіть поточного";
+      // Слот зайнятий іншим записом або потрапляє у вікно простою (поломка/ТО) — типово при поверненні в чергу.
+      else if (/overlap|exclusion|incident/i.test(error.message)) msg = "Слот недоступний (зайнятий або простій) — перенесіть пацієнта на інший час";
+      else msg = "Помилка: " + error.message;
       notify(msg, "error"); return;
     }
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
@@ -892,7 +894,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       duration_min: dur, status: "scheduled", call_status: "not_called",
     }).eq("id", p.id);
     setReschedFor(null);
-    if (error) { notify(/overlap|exclusion/i.test(error.message) ? "Слот зайнятий — оберіть інший" : "Помилка переносу: " + error.message, "error"); return; }
+    if (error) { notify(/incident/i.test(error.message) ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день" : /overlap|exclusion/i.test(error.message) ? "Слот зайнятий — оберіть інший" : "Помилка переносу: " + error.message, "error"); return; }
     notify("Перенесено на " + fmtShort(date) + " " + time, "success");
     reload();
   }
@@ -956,7 +958,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       scheduled_date: dateKey(b.date), scheduled_time: b.time, scheduled_at: at,
       status: "scheduled", call_status: "not_called",
     });
-    if (error) { notify(/overlap|exclusion/i.test(error.message) ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час" : "Помилка збереження: " + error.message, "error"); return; }
+    if (error) { notify(/incident/i.test(error.message) ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день" : /overlap|exclusion/i.test(error.message) ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час" : "Помилка збереження: " + error.message, "error"); return; }
     setModalOpen(false);
     notify("Новий запис: " + b.name + " · " + b.time, "success");
     if (sameDay(b.date, selectedDate)) reload();

@@ -267,10 +267,10 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm).toISOString();
     const { error } = await supabase.from("queue_entries").update({
-      room_id: roomId, scheduled_date: dateKey(d), scheduled_time: time, scheduled_at: at, duration_min: dur, call_status: "confirmed",
+      room_id: roomId, scheduled_date: dateKey(d), scheduled_time: time, scheduled_at: at, duration_min: dur, status: "scheduled", call_status: "confirmed",
     }).eq("id", p.id);
     setReschedFor(null);
-    if (error) { notify("Помилка переносу: " + error.message, "error"); return; }
+    if (error) { notify(/incident/i.test(error.message) ? "Кабінет у простої — оберіть інший слот" : /overlap|exclusion/i.test(error.message) ? "Слот зайнятий — оберіть інший" : "Помилка переносу: " + error.message, "error"); return; }
     notify("Перенесено · підтверджено", "success");
     reload();
   }

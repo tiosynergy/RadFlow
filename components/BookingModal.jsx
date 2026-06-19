@@ -23,7 +23,12 @@ function dowMon(d) { return (d.getDay() + 6) % 7; }
 function fmtShort(d) { return d.getDate() + " " + MONTHS_GEN[d.getMonth()]; }
 function dateKey(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 
-/* ── Слоти часу ── */
+/* ── Слоти часу ──
+   ОБМЕЖЕННЯ (за дизайном): сітка фіксована з кроком BK_STEP від початку графіка,
+   тож слоти НЕ вирівнюються по фактичному завершенню попередньої процедури
+   нечітної тривалості (напр. після 08:00–08:45 наступний слот — 09:00, а 08:45–09:00
+   лишається невикористаним). Прийнятно для МVP; за потреби — режим «впритул»
+   (генерувати слоти від кінця попереднього запису). */
 const BK_START = 8 * 60, BK_END = 18 * 60, BK_STEP = 30;
 function toMin(t) { const [h, m] = t.split(":").map(Number); return h * 60 + m; }
 function fmtMin(min) { return String(Math.floor(min / 60)).padStart(2, "0") + ":" + String(min % 60).padStart(2, "0"); }
