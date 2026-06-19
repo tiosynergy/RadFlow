@@ -726,20 +726,38 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   useEffect(() => {
     setLoading(true);
-    reload();
-    loadIncidents();
-    loadOverrides();
     const supabase = createClient();
-    const channel = supabase
-      .channel("queue-" + clinicId)
-      .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "clinic_id=eq." + clinicId }, () => reload())
-      .on("postgres_changes", { event: "*", schema: "public", table: "incidents", filter: "clinic_id=eq." + clinicId }, () => loadIncidents())
-      .on("postgres_changes", { event: "*", schema: "public", table: "schedule_overrides", filter: "clinic_id=eq." + clinicId }, () => loadOverrides())
-      .subscribe();
-    // Періодичний перерахунок простоїв: щойно настане час завершення — авто-розблокування
-    // спрацює навіть без подій realtime (напр. сторінка просто відкрита).
-    const incTimer = setInterval(() => loadIncidents(), 30000);
-    return () => { clearInterval(incTimer); supabase.removeChannel(channel); };
+    const refetchAll = () => { reload(); loadIncidents(); loadOverrides(); };
+    let channel;
+    let cancelled = false;
+    (async () => {
+      // Realtime з RLS не доставляє postgres_changes, якщо сокет не авторизований —
+      // тому СПЕРШУ ставимо токен сесії на realtime, і лише потім підписуємось.
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) supabase.realtime.setAuth(session.access_token);
+      } catch (e) { /* ignore */ }
+      if (cancelled) return;
+      refetchAll();
+      channel = supabase
+        .channel("queue-" + clinicId)
+        .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "clinic_id=eq." + clinicId }, () => reload())
+        .on("postgres_changes", { event: "*", schema: "public", table: "incidents", filter: "clinic_id=eq." + clinicId }, () => loadIncidents())
+        .on("postgres_changes", { event: "*", schema: "public", table: "schedule_overrides", filter: "clinic_id=eq." + clinicId }, () => loadOverrides())
+        .subscribe();
+    })();
+    // Підстраховка, якщо подію realtime втрачено: оновлення при поверненні на вкладку + легкий поллінг.
+    const onVis = () => { if (document.visibilityState === "visible") refetchAll(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onVis);
+    const pollTimer = setInterval(refetchAll, 10000);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onVis);
+      clearInterval(pollTimer);
+      if (channel) supabase.removeChannel(channel);
+    };
   }, [clinicId, reload, loadIncidents, loadOverrides]);
 
   const selectedOverride = overrides[dayKey] || null;
