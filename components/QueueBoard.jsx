@@ -18,7 +18,7 @@ import BreakdownModal from "@/components/BreakdownModal";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import { roomScheduleFor, dayStatus } from "@/lib/schedule";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
-import { incidentEffectiveEnd, incidentExpired } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock } from "@/lib/incidents";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -1057,22 +1057,26 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
             {!isPast && liveIncidents.filter((inc) => incidentCoversDay(inc, selectedDate)).map((inc) => {
               const r = roomsById[inc.room_id] || {};
               const nowBlocking = !!blockingByRoom[inc.room_id] && blockingByRoom[inc.room_id].id === inc.id;
+              // Ручний режим і вікно вже завершилося: кабінет вже вільний, але запис чекає на підтвердження зняття.
+              const awaitingManual = !nowBlocking && incidentAwaitingManualUnblock(inc);
               const startStr = new Date(inc.started_at).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+              const borderColor = nowBlocking ? undefined : awaitingManual ? { borderColor: "var(--green)" } : { borderColor: "var(--orange)" };
               return (
-                <div className="inc-banner fade-in" key={inc.id} style={nowBlocking ? undefined : { borderColor: "var(--orange)" }}>
-                  <span className="inc-banner-ic">{nowBlocking ? "🔧" : "🗓"}</span>
+                <div className="inc-banner fade-in" key={inc.id} style={borderColor}>
+                  <span className="inc-banner-ic">{nowBlocking ? "🔧" : awaitingManual ? "🔓" : "🗓"}</span>
                   <div className="inc-banner-txt">
-                    <div className="inc-banner-title">{r.name || "Апарат"} {nowBlocking ? "заблоковано" : "— заплановано простій"} · {inc.reason_label || "Поломка"}
+                    <div className="inc-banner-title">{r.name || "Апарат"} {nowBlocking ? "заблоковано" : awaitingManual ? "— простій завершився" : "— заплановано простій"} · {inc.reason_label || "Поломка"}
                       {inc.note ? <span className="inc-banner-window">{inc.note}</span> : null}
                     </div>
                     <div className="inc-banner-sub">{(() => {
                       const n = affected.filter((a) => a.room_id === inc.room_id).length;
+                      if (awaitingManual) return "Час завершення минув · кабінет вільний · підтвердьте зняття вручну →";
                       if (!nowBlocking) return "Заплановано з " + startStr + " · виклики поки працюють" + (n > 0 ? " · пацієнтів у вікні: " + n + " →" : "");
                       return n > 0 ? n + (n === 1 ? " пацієнт у вікні простою потребує переносу →" : " пацієнтів у вікні простою потребують переносу →") : "Нові виклики на цей апарат призупинено";
                     })()}</div>
                   </div>
                   <button className="btn btn-secondary btn-sm" onClick={() => { setBreakdownRoomId(inc.room_id); setBreakdownOpen(true); }}>✎ Редагувати</button>
-                  <button className="btn btn-secondary btn-sm" onClick={() => resolveIncident(inc)}>{nowBlocking ? "🔓 Розблокувати" : "✕ Скасувати"}</button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => resolveIncident(inc)}>{nowBlocking || awaitingManual ? "🔓 Розблокувати" : "✕ Скасувати"}</button>
                 </div>
               );
             })}

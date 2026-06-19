@@ -89,7 +89,7 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve })
           )}
           <label className={"rf-check" + (autoUnblock ? " on" : "")} style={{ marginTop: 4 }}>
             <input type="checkbox" checked={autoUnblock} onChange={(e) => setAutoUnblock(e.target.checked)} />
-            <span className="rf-box" /><span>Автоматично розблокувати у вказаний час {autoUnblock ? "" : "— зараз лише вручну"}</span>
+            <span className="rf-box" /><span>Автоматично зняти блокування у вказаний час {autoUnblock ? "" : "— інакше підтвердьте зняття вручну"}</span>
           </label>
           {err && <div className="ctx-hint red" style={{ fontSize: 12.5 }}>⚠ {err}</div>}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
@@ -149,7 +149,7 @@ function MaintenanceSection({ roomId, existing, others, onSave, onResolve }) {
           </div>
           <label className={"rf-check" + (autoUnblock ? " on" : "")} style={{ marginTop: 4 }}>
             <input type="checkbox" checked={autoUnblock} onChange={(e) => setAutoUnblock(e.target.checked)} />
-            <span className="rf-box" /><span>Автоматично розблокувати наприкінці ТО {autoUnblock ? "" : "— зараз лише вручну"}</span>
+            <span className="rf-box" /><span>Автоматично зняти ТО наприкінці {autoUnblock ? "" : "— інакше підтвердьте зняття вручну"}</span>
           </label>
           {err && <div className="ctx-hint red" style={{ fontSize: 12.5 }}>⚠ {err}</div>}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
