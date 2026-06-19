@@ -7,6 +7,7 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFor } from "@/lib/schedule";
+import { incidentEffectiveEnd } from "@/lib/incidents";
 
 function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function pad(n) { return String(n).padStart(2, "0"); }
@@ -67,8 +68,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
     const dt = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(slotMin / 60), slotMin % 60).getTime();
     return roomIncidents.some((inc) => {
       const start = new Date(inc.started_at).getTime();
-      const end = inc.blocked_until ? new Date(inc.blocked_until).getTime() : Infinity;
-      return dt >= start && dt < end;
+      return dt >= start && dt < incidentEffectiveEnd(inc);
     });
   }
   const slots = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }

@@ -9,6 +9,7 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import { roomScheduleFor } from "@/lib/schedule";
+import { incidentEffectiveEnd } from "@/lib/incidents";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
 
 /* Довідник областей дослідження — у @/lib/studies (єдине джерело). */
@@ -304,8 +305,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
     const base = new Date(bookDate.getFullYear(), bookDate.getMonth(), bookDate.getDate(), Math.floor(slotMin / 60), slotMin % 60).getTime();
     return roomIncidents.some((inc) => {
       const start = new Date(inc.started_at).getTime();
-      const end = inc.blocked_until ? new Date(inc.blocked_until).getTime() : Infinity;
-      return base >= start && base < end;
+      return base >= start && base < incidentEffectiveEnd(inc);
     });
   }
 

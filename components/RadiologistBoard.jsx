@@ -155,7 +155,7 @@ function PatientDetail({ p, roomName, roomModel, date, readOnly, onStatus, onSav
 
       {!readOnly && p.status === "in_progress" && (
         <div className="pd-timer-card">
-          <LiveTimer enteredAt={p.updated_at}>{(sec) => {
+          <LiveTimer enteredAt={p.in_progress_at || p.updated_at}>{(sec) => {
             const over = sec > (p.duration_min || 30) * 60;
             return <span className={"pd-timer tabular" + (over ? " over" : "")}>◷ {fmtTimer(sec)} <span className="pd-timer-lab">{over ? "перевищено час" : "у кабінеті"}</span></span>;
           }}</LiveTimer>
@@ -321,7 +321,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
     const supabase = createClient();
     let q = supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, status, call_status, studies, has_contrast, contraindications, cito, doctor, note, radiologist_note, indication, room_id, updated_at")
+      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, status, call_status, studies, has_contrast, contraindications, cito, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .neq("status", "cancelled");
@@ -346,9 +346,19 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
     const cur = entries.find((e) => e.id === id);
     if (status === "done" && cur && cur.status !== "in_progress") { notify("«Виконано» можна лише для пацієнта в кабінеті", "error"); return; }
     const supabase = createClient();
-    const { error } = await supabase.from("queue_entries").update({ status }).eq("id", id);
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
-    setEntries((es) => es.map((e) => (e.id === id ? { ...e, status, updated_at: new Date().toISOString() } : e)));
+    const nowIso = new Date().toISOString();
+    // Момент входу в кабінет фіксуємо окремо (синхронно з дошкою — для коректного таймера).
+    const patch = status === "in_progress" ? { status, in_progress_at: nowIso } : { status };
+    const { error } = await supabase.from("queue_entries").update(patch).eq("id", id);
+    if (error) {
+      let msg;
+      if (status === "in_progress" && /in_progress|duplicate|23505/i.test(error.message)) msg = "У кабінеті вже є пацієнт — спершу завершіть поточного";
+      else if (/incident/i.test(error.message)) msg = "Кабінет у простої (поломка/ТО) — дію заблоковано";
+      else if (/overlap|exclusion/i.test(error.message)) msg = "Слот недоступний — перенесіть пацієнта";
+      else msg = "Помилка: " + error.message;
+      notify(msg, "error"); return;
+    }
+    setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
     reload();
   }
   async function saveNote(id, radiologist_note) {

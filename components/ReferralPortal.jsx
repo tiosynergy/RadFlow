@@ -10,6 +10,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import RescheduleModal from "@/components/RescheduleModal";
 import { roomScheduleFor } from "@/lib/schedule";
+import { slotBlockedByIncidents } from "@/lib/incidents";
 import { regionsFor, studyPrice } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
 
@@ -54,6 +55,7 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
   const [time, setTime] = useState("");
   const [dayEntries, setDayEntries] = useState([]);
   const [override, setOverride] = useState(null);
+  const [incidents, setIncidents] = useState([]);
   const [busy, setBusy] = useState(false);
 
   const modality = studyType === "КТ" ? "CT" : "MRI";
@@ -72,6 +74,10 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
         const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", date).maybeSingle();
         if (!cancel) setOverride(ov.data || null);
       }
+      if (clinicId) {
+        const inc = await supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", clinicId).in("status", ["active", "planned"]);
+        if (!cancel) setIncidents(inc.data || []);
+      }
       if (!roomId) { setDayEntries([]); return; }
       const { data } = await supabase.from("queue_entries").select("scheduled_time, duration_min, status").eq("room_id", roomId).eq("scheduled_date", date).neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
       if (!cancel) setDayEntries(data || []);
@@ -87,6 +93,8 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
   function slotState(slot) {
     const a = toMin(slot), b = a + dur;
     if (roomSched.closed) return "closed";
+    const slotMs = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60).getTime();
+    if (slotBlockedByIncidents(incidents, roomId, slotMs)) return "blocked";
     if (a < schedStart || a >= schedEnd) return "offhours";
     if (b > schedEnd) return "tight";
     if (busySlots.some((x) => a >= x.s && a < x.e)) return "busy";
@@ -120,7 +128,7 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
       status: "scheduled", call_status: "not_called", doctor: doctorName, created_by: doctorId, indication: comment.trim() || null,
     });
     setBusy(false);
-    if (error) { onCreated(null, /overlap|exclusion/i.test(error.message) ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час" : error.message); return; }
+    if (error) { onCreated(null, /incident/i.test(error.message) ? "Кабінет у простої (ремонт/ТО) у цей час — оберіть інший слот або день" : /overlap|exclusion/i.test(error.message) ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час" : error.message); return; }
     setName(""); setDob(""); setPhone(""); setRegion(""); setComment(""); setTime("");
     onCreated(name.trim());
   }
@@ -164,12 +172,13 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
               <div className="fld"><span className="fld-lab">Кабінет</span><div className="inp" style={{ display: "flex", alignItems: "center" }}>{room.name} · {modalityLabel(room.modality)}</div></div>
             </div>
             {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room.name} не працює {date}{override && override.label ? " · " + override.label : ""}.</div>}
+            {!roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room.name} на ремонті/ТО у частині дня. Оберіть вільний слот або інший день.</div>}
             <div className="fld">
               <span className="fld-lab">Вільні слоти · блок {dur} хв</span>
               <div className="bk-slot-grid">
                 {slots.map((s) => {
                   const stt = slotState(s);
-                  return <button key={s} className={"slot" + (time === s ? " sel" : "") + (stt !== "free" ? " taken" : "") + (stt === "busy" ? " busy" : "") + (stt === "tight" ? " tight" : "")} disabled={stt !== "free"} onClick={() => setTime(s)} title={stt === "free" ? "Вільно" : "Недоступно"}>{s}</button>;
+                  return <button key={s} className={"slot" + (time === s ? " sel" : "") + (stt !== "free" ? " taken" : "") + ((stt === "busy" || stt === "blocked") ? " busy" : "") + (stt === "tight" ? " tight" : "")} disabled={stt !== "free"} onClick={() => setTime(s)} title={stt === "free" ? "Вільно" : stt === "blocked" ? "Кабінет на ремонті/ТО" : "Недоступно"}>{s}</button>;
                 })}
               </div>
               <div className="bk-slot-legend"><span><span className="lg-dot free" />вільно</span><span><span className="lg-dot busy" />зайнято</span></div>

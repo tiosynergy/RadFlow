@@ -33,6 +33,7 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve })
   const [durKey, setDurKey] = useState(existing ? "restore" : "");
   const [restoreDate, setRestoreDate] = useState(existing?.blocked_until ? dateVal(new Date(existing.blocked_until)) : dateVal(nextWorkday((() => { const d = new Date(); d.setDate(d.getDate() + 1); return d; })())));
   const [restoreTime, setRestoreTime] = useState(existing?.blocked_until ? hhmmFromISO(existing.blocked_until) : "08:00");
+  const [autoUnblock, setAutoUnblock] = useState(existing ? existing.auto_unblock !== false : true);
   const [err, setErr] = useState("");
 
   const schedEnd = (() => { const d = dtFrom(startDate, "00:00"); return roomScheduleFor(d, roomId, null).end; })();
@@ -54,7 +55,7 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve })
       setErr("Період перетинається з ТО цього кабінету"); return;
     }
     const durLabel = durKey === "restore" ? "до " + restoreDate + " " + restoreTime : DURATIONS.find((d) => d.k === durKey)?.label;
-    onSave({ id: existing?.id, roomId, reason: "breakdown", reasonLabel: "Поломка обладнання", startedAt: s.toISOString(), blockedUntil: e ? e.toISOString() : null, note: "Поломка " + startDate + " " + startTime + " · " + durLabel });
+    onSave({ id: existing?.id, roomId, reason: "breakdown", reasonLabel: "Поломка обладнання", startedAt: s.toISOString(), blockedUntil: e ? e.toISOString() : null, autoUnblock, note: "Поломка " + startDate + " " + startTime + " · " + durLabel });
     setOpen(false);
   }
 
@@ -86,6 +87,10 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve })
               <label className="fld" style={{ maxWidth: 110 }}><span className="fld-lab">Час *</span><input className="inp tabular" type="time" value={restoreTime} onChange={(e) => setRestoreTime(e.target.value)} /></label>
             </div>
           )}
+          <label className={"rf-check" + (autoUnblock ? " on" : "")} style={{ marginTop: 4 }}>
+            <input type="checkbox" checked={autoUnblock} onChange={(e) => setAutoUnblock(e.target.checked)} />
+            <span className="rf-box" /><span>Автоматично розблокувати у вказаний час {autoUnblock ? "" : "— зараз лише вручну"}</span>
+          </label>
           {err && <div className="ctx-hint red" style={{ fontSize: 12.5 }}>⚠ {err}</div>}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
             {existing && <button className="btn btn-ghost btn-sm" onClick={() => setOpen(false)}>Скасувати</button>}
@@ -105,6 +110,7 @@ function MaintenanceSection({ roomId, existing, others, onSave, onResolve }) {
   const [startTime, setStartTime] = useState(existing ? hhmmFromISO(existing.started_at) : "08:00");
   const [endDate, setEndDate] = useState(existing?.blocked_until ? dateVal(new Date(existing.blocked_until)) : tmrw);
   const [endTime, setEndTime] = useState(existing?.blocked_until ? hhmmFromISO(existing.blocked_until) : "12:00");
+  const [autoUnblock, setAutoUnblock] = useState(existing ? existing.auto_unblock !== false : true);
   const [err, setErr] = useState("");
 
   function save() {
@@ -114,7 +120,7 @@ function MaintenanceSection({ roomId, existing, others, onSave, onResolve }) {
     if ((others || []).some((o) => overlaps(s.getTime(), e.getTime(), new Date(o.started_at).getTime(), o.blocked_until ? new Date(o.blocked_until).getTime() : Infinity))) {
       setErr("Період перетинається з поломкою цього кабінету"); return;
     }
-    onSave({ id: existing?.id, roomId, reason: "maintenance", reasonLabel: "Планове ТО", startedAt: s.toISOString(), blockedUntil: e.toISOString(), note: "Планове ТО " + startDate + " " + startTime + "–" + endDate + " " + endTime });
+    onSave({ id: existing?.id, roomId, reason: "maintenance", reasonLabel: "Планове ТО", startedAt: s.toISOString(), blockedUntil: e.toISOString(), autoUnblock, note: "Планове ТО " + startDate + " " + startTime + "–" + endDate + " " + endTime });
     setOpen(false);
   }
 
@@ -141,6 +147,10 @@ function MaintenanceSection({ roomId, existing, others, onSave, onResolve }) {
             <label className="fld" style={{ maxWidth: 160 }}><span className="fld-lab">Кінець — дата *</span><input className="inp tabular" type="date" min={startDate} value={endDate} onChange={(e) => setEndDate(e.target.value)} /></label>
             <label className="fld" style={{ maxWidth: 110 }}><span className="fld-lab">Час *</span><input className="inp tabular" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} /></label>
           </div>
+          <label className={"rf-check" + (autoUnblock ? " on" : "")} style={{ marginTop: 4 }}>
+            <input type="checkbox" checked={autoUnblock} onChange={(e) => setAutoUnblock(e.target.checked)} />
+            <span className="rf-box" /><span>Автоматично розблокувати наприкінці ТО {autoUnblock ? "" : "— зараз лише вручну"}</span>
+          </label>
           {err && <div className="ctx-hint red" style={{ fontSize: 12.5 }}>⚠ {err}</div>}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
             {existing && <button className="btn btn-ghost btn-sm" onClick={() => setOpen(false)}>Скасувати</button>}

@@ -18,6 +18,7 @@ import BreakdownModal from "@/components/BreakdownModal";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import { roomScheduleFor, dayStatus } from "@/lib/schedule";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
+import { incidentEffectiveEnd, incidentExpired } from "@/lib/incidents";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -72,8 +73,7 @@ function entryInIncidentWindow(scheduledTime, dayDate, inc) {
   const [h, m] = String(scheduledTime).split(":").map(Number);
   const dt = new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0).getTime();
   const start = new Date(inc.started_at).getTime();
-  const end = inc.blocked_until ? new Date(inc.blocked_until).getTime() : Infinity;
-  return dt >= start && dt < end;
+  return dt >= start && dt < incidentEffectiveEnd(inc);
 }
 // Чи день потрапляє в період блокування (для банера на потрібні дні).
 function incidentCoversDay(inc, dayDate) {
@@ -81,8 +81,7 @@ function incidentCoversDay(inc, dayDate) {
   const dayStart = new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate()).getTime();
   const dayEnd = dayStart + 24 * 3600e3;
   const start = new Date(inc.started_at).getTime();
-  const end = inc.blocked_until ? new Date(inc.blocked_until).getTime() : Infinity;
-  return start < dayEnd && dayStart < end;
+  return start < dayEnd && dayStart < incidentEffectiveEnd(inc);
 }
 function incWindow(inc) {
   const s = new Date(inc.started_at);
@@ -702,9 +701,16 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const supabase = createClient();
     const { data } = await supabase
       .from("incidents")
-      .select("id, room_id, reason, reason_label, note, started_at, blocked_until, status")
+      .select("id, room_id, reason, reason_label, note, started_at, blocked_until, status, auto_unblock")
       .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
-    setIncidents(data || []);
+    const list = data || [];
+    // Авто-розблокування: інциденти з галочкою auto_unblock, у яких настав час завершення,
+    // знімаємо автоматично — кабінет і черга відновлюються самі (синхронно для всіх ролей через realtime).
+    const expired = list.filter((i) => incidentExpired(i));
+    if (expired.length) {
+      await supabase.from("incidents").update({ status: "resolved", resolved_at: new Date().toISOString() }).in("id", expired.map((i) => i.id));
+    }
+    setIncidents(list);
   }, [clinicId]);
 
   const loadOverrides = useCallback(async () => {
@@ -730,7 +736,10 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       .on("postgres_changes", { event: "*", schema: "public", table: "incidents", filter: "clinic_id=eq." + clinicId }, () => loadIncidents())
       .on("postgres_changes", { event: "*", schema: "public", table: "schedule_overrides", filter: "clinic_id=eq." + clinicId }, () => loadOverrides())
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    // Періодичний перерахунок простоїв: щойно настане час завершення — авто-розблокування
+    // спрацює навіть без подій realtime (напр. сторінка просто відкрита).
+    const incTimer = setInterval(() => loadIncidents(), 30000);
+    return () => { clearInterval(incTimer); supabase.removeChannel(channel); };
   }, [clinicId, reload, loadIncidents, loadOverrides]);
 
   const selectedOverride = overrides[dayKey] || null;
@@ -759,16 +768,19 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
   function roomSchedClosed(roomId) { return roomScheduleFor(selectedDate, roomId, selectedOverride).closed; }
 
+  // Інциденти, що ВЖЕ діють: відкидаємо ті, у яких авто-розблокування і час завершення минув
+  // (банер/блокування зникають одразу при настанні blocked_until, ще до фонового зняття в БД).
+  const liveIncidents = incidents.filter((i) => !incidentExpired(i));
   // Кабінет може мати кілька одночасних простоїв (напр. поломка + планове ТО) —
   // тримаємо масив на кабінет, щоб не загубити жодне вікно простою.
   const incidentsByRoom = {};
-  incidents.forEach((i) => { (incidentsByRoom[i.room_id] = incidentsByRoom[i.room_id] || []).push(i); });
-  // Блокування діє ЗАРАЗ лише якщо поточний час у вікні простою — запланований майбутній ТО не блокує кабінет наперед.
+  liveIncidents.forEach((i) => { (incidentsByRoom[i.room_id] = incidentsByRoom[i.room_id] || []).push(i); });
+  // Блокування діє ЗАРАЗ лише якщо поточний час у вікні простою; кінець залежить від
+  // auto_unblock (Infinity при ручному знятті). Запланований майбутній ТО не блокує наперед.
   const blockingByRoom = {};
-  incidents.forEach((i) => {
+  liveIncidents.forEach((i) => {
     const s = new Date(i.started_at).getTime();
-    const e = i.blocked_until ? new Date(i.blocked_until).getTime() : Infinity;
-    if (Date.now() >= s && Date.now() < e) blockingByRoom[i.room_id] = i;
+    if (Date.now() >= s && Date.now() < incidentEffectiveEnd(i)) blockingByRoom[i.room_id] = i;
   });
 
   // Пацієнти, чиї записи потрапили у вікно простою заблокованого апарата → на перенос.
@@ -790,7 +802,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const startMs = new Date(payload.startedAt).getTime();
     // Майбутній старт → «заплановано» (не блокує наперед); поточний/минулий → активний зараз.
     const status = startMs > Date.now() ? "planned" : "active";
-    const fields = { room_id: payload.roomId, reason: payload.reason, reason_label: payload.reasonLabel, note: payload.note, started_at: payload.startedAt, blocked_until: payload.blockedUntil, status };
+    const fields = { room_id: payload.roomId, reason: payload.reason, reason_label: payload.reasonLabel, note: payload.note, started_at: payload.startedAt, blocked_until: payload.blockedUntil, auto_unblock: payload.autoUnblock !== false, status };
     const { error } = payload.id
       ? await supabase.from("incidents").update(fields).eq("id", payload.id)
       : await supabase.from("incidents").insert({ clinic_id: clinicId, ...fields });
@@ -1012,7 +1024,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       <Sidebar
         clinicName={clinicName} adminName={adminName} adminRole={adminRole}
         rooms={rooms} activeRoom={roomView} onSelectRoom={setRoomView} onNew={() => setModalOpen(true)}
-        incidentCount={incidents.length} onBreakdown={() => { setBreakdownRoomId(null); setBreakdownOpen(true); }}
+        incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(null); setBreakdownOpen(true); }}
       />
       <div className="main">
         <header className="topbar">
@@ -1042,7 +1054,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                 <button className="btn btn-secondary btn-sm" onClick={() => setFilter("all")}>Показати чергу</button>
               </div>
             )}
-            {!isPast && incidents.filter((inc) => incidentCoversDay(inc, selectedDate)).map((inc) => {
+            {!isPast && liveIncidents.filter((inc) => incidentCoversDay(inc, selectedDate)).map((inc) => {
               const r = roomsById[inc.room_id] || {};
               const nowBlocking = !!blockingByRoom[inc.room_id] && blockingByRoom[inc.room_id].id === inc.id;
               const startStr = new Date(inc.started_at).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
@@ -1172,7 +1184,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
         </div>
       </div>
 
-      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} incidents={incidents} onClose={() => setModalOpen(false)} onSave={saveBooking} />}
+      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} incidents={liveIncidents} onClose={() => setModalOpen(false)} onSave={saveBooking} />}
 
       {completeFor && (
         <CompletionModal
@@ -1187,7 +1199,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       )}
 
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} incidents={incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} incidents={liveIncidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
 
       {editStudiesFor && (
@@ -1195,7 +1207,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       )}
 
       {breakdownOpen && (
-        <BreakdownModal rooms={rooms} incidents={incidents} initialRoomId={breakdownRoomId} onClose={() => { setBreakdownOpen(false); setBreakdownRoomId(null); }} onSubmit={submitIncident} onResolve={resolveIncident} />
+        <BreakdownModal rooms={rooms} incidents={liveIncidents} initialRoomId={breakdownRoomId} onClose={() => { setBreakdownOpen(false); setBreakdownRoomId(null); }} onSubmit={submitIncident} onResolve={resolveIncident} />
       )}
 
       {schedEditOpen && (
