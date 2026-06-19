@@ -14,6 +14,8 @@ function nowHHMM() { const d = new Date(); return pad(d.getHours()) + ":" + pad(
 function dateInputVal(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
 function hhmmToday(hhmm) { const [h, m] = String(hhmm).split(":").map(Number); const d = new Date(); d.setHours(h || 0, m || 0, 0, 0); return d; }
 function hhmmFromISO(iso) { try { const d = new Date(iso); return pad(d.getHours()) + ":" + pad(d.getMinutes()); } catch { return nowHHMM(); } }
+function dtFrom(dateStr, hhmm) { const [h, m] = String(hhmm).split(":").map(Number); const d = new Date(dateStr + "T00:00:00"); d.setHours(h || 0, m || 0, 0, 0); return d; }
+function nextWorkday(d) { const x = new Date(d); while (x.getDay() === 0) x.setDate(x.getDate() + 1); return x; } // неділя — вихідний
 
 const DURATIONS = [
   { k: "1h", label: "1 година" }, { k: "2h", label: "2 години" }, { k: "4h", label: "4 години" },
@@ -25,9 +27,11 @@ export default function BreakdownModal({ rooms, clinicId, incident, blockedRoomI
   const isLocked = (id) => blockedRoomIds.includes(id) && (!incident || incident.room_id !== id);
   const [roomId, setRoomId] = useState(incident?.room_id || ((rooms || []).find((r) => !isLocked(r.id)) || (rooms || [])[0] || {}).id || "");
   const [reason, setReason] = useState(incident?.reason || "breakdown");
+  const [startDate, setStartDate] = useState(incident ? dateInputVal(new Date(incident.started_at)) : dateInputVal(new Date()));
   const [startTime, setStartTime] = useState(incident ? hhmmFromISO(incident.started_at) : nowHHMM());
   const [durKey, setDurKey] = useState("");
-  const [restoreDate, setRestoreDate] = useState(() => { const d = new Date(); d.setDate(d.getDate() + 1); return dateInputVal(d); });
+  const [restoreDate, setRestoreDate] = useState(incident?.blocked_until ? dateInputVal(new Date(incident.blocked_until)) : dateInputVal(nextWorkday((() => { const d = new Date(); d.setDate(d.getDate() + 1); return d; })())));
+  const [restoreTime, setRestoreTime] = useState(incident?.blocked_until ? hhmmFromISO(incident.blocked_until) : "08:00");
 
   // Графік кабінету на сьогодні (для «до кінця дня» — з урахуванням особливого графіка).
   const [override, setOverride] = useState(null);
@@ -44,18 +48,18 @@ export default function BreakdownModal({ rooms, clinicId, incident, blockedRoomI
   const schedEndStr = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return roomScheduleFor(d, roomId, override).end; })();
 
   const reasonLabel = reason === "maintenance" ? "Планове ТО" : "Поломка обладнання";
-  const minRestore = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return dateInputVal(d); })();
+  const minRestore = startDate;
   const room = (rooms || []).find((r) => r.id === roomId);
-  const valid = roomId && reason && durKey && (durKey !== "restore" || restoreDate);
+  const valid = roomId && reason && durKey && (durKey !== "restore" || (restoreDate && restoreTime));
 
   function compute() {
-    const startedAt = hhmmToday(startTime);
+    const startedAt = dtFrom(startDate, startTime);
     let blockedUntil = null, durationLabel = "";
     if (durKey === "1h") { blockedUntil = new Date(startedAt.getTime() + 3600e3); durationLabel = "1 година"; }
     else if (durKey === "2h") { blockedUntil = new Date(startedAt.getTime() + 2 * 3600e3); durationLabel = "2 години"; }
     else if (durKey === "4h") { blockedUntil = new Date(startedAt.getTime() + 4 * 3600e3); durationLabel = "4 години"; }
-    else if (durKey === "eod") { const [eh, em] = String(schedEndStr).split(":").map(Number); const d = new Date(); d.setHours(eh || 18, em || 0, 0, 0); blockedUntil = d; durationLabel = "до кінця дня (" + schedEndStr + ")"; }
-    else if (durKey === "restore") { const d = new Date(restoreDate + "T18:00:00"); blockedUntil = d; durationLabel = "до відновлення (" + restoreDate + ")"; }
+    else if (durKey === "eod") { const [eh, em] = String(schedEndStr).split(":").map(Number); const d = dtFrom(startDate, "00:00"); d.setHours(eh || 18, em || 0, 0, 0); blockedUntil = d; durationLabel = "до кінця дня (" + schedEndStr + ")"; }
+    else if (durKey === "restore") { blockedUntil = dtFrom(restoreDate, restoreTime); durationLabel = "до відновлення (" + restoreDate + " " + restoreTime + ")"; }
     return { startedAt, blockedUntil, durationLabel };
   }
 
@@ -66,7 +70,7 @@ export default function BreakdownModal({ rooms, clinicId, incident, blockedRoomI
       startedAt: c.startedAt.toISOString(),
       blockedUntil: c.blockedUntil ? c.blockedUntil.toISOString() : null,
       durationLabel: c.durationLabel,
-      note: "Простій " + pad(hhmmToday(startTime).getHours()) + ":" + pad(hhmmToday(startTime).getMinutes()) + " · " + c.durationLabel,
+      note: "Простій " + startDate + " " + startTime + " · " + c.durationLabel,
     });
   }
 
@@ -112,25 +116,35 @@ export default function BreakdownModal({ rooms, clinicId, incident, blockedRoomI
           </div>
 
           <div className="fld-row">
-            <label className="fld" style={{ maxWidth: 160 }}>
-              <span className="fld-lab">Початок простою</span>
+            <label className="fld" style={{ maxWidth: 170 }}>
+              <span className="fld-lab">Дата початку *</span>
+              <input className="inp tabular" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            </label>
+            <label className="fld" style={{ maxWidth: 120 }}>
+              <span className="fld-lab">Час початку *</span>
               <input className="inp tabular" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
             </label>
-            <div className="fld">
-              <span className="fld-lab">Тривалість простою *</span>
-              <div className="bd-durs">
-                {DURATIONS.map((d) => (
-                  <button key={d.k} className={"bd-chip" + (durKey === d.k ? " active" : "")} onClick={() => setDurKey(d.k)}>{d.label}</button>
-                ))}
-              </div>
+          </div>
+          <div className="fld">
+            <span className="fld-lab">Тривалість простою *</span>
+            <div className="bd-durs">
+              {DURATIONS.map((d) => (
+                <button key={d.k} className={"bd-chip" + (durKey === d.k ? " active" : "")} onClick={() => setDurKey(d.k)}>{d.label}</button>
+              ))}
             </div>
           </div>
 
           {durKey === "restore" && (
-            <label className="fld">
-              <span className="fld-lab">Очікувана дата відновлення *</span>
-              <input className="inp tabular" type="date" min={minRestore} value={restoreDate} onChange={(e) => setRestoreDate(e.target.value)} style={{ maxWidth: 200 }} />
-            </label>
+            <div className="fld-row">
+              <label className="fld" style={{ maxWidth: 200 }}>
+                <span className="fld-lab">Очікувана дата відновлення *</span>
+                <input className="inp tabular" type="date" min={minRestore} value={restoreDate} onChange={(e) => setRestoreDate(e.target.value)} />
+              </label>
+              <label className="fld" style={{ maxWidth: 120 }}>
+                <span className="fld-lab">Час відновлення *</span>
+                <input className="inp tabular" type="time" value={restoreTime} onChange={(e) => setRestoreTime(e.target.value)} />
+              </label>
+            </div>
           )}
 
           <div className="hint-blue">⚡ <b>Realtime:</b> блокування апарата миттєво зʼявиться у всіх ролей.</div>

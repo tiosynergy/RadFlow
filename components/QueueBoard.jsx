@@ -684,7 +684,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const { data } = await supabase
       .from("incidents")
       .select("id, room_id, reason, reason_label, note, started_at, blocked_until, status")
-      .eq("clinic_id", clinicId).eq("status", "active");
+      .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
     setIncidents(data || []);
   }, [clinicId]);
 
@@ -742,6 +742,13 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   const incidentByRoom = {};
   incidents.forEach((i) => { incidentByRoom[i.room_id] = i; });
+  // Блокування діє ЗАРАЗ лише якщо поточний час у вікні простою — запланований майбутній ТО не блокує кабінет наперед.
+  const blockingByRoom = {};
+  incidents.forEach((i) => {
+    const s = new Date(i.started_at).getTime();
+    const e = i.blocked_until ? new Date(i.blocked_until).getTime() : Infinity;
+    if (Date.now() >= s && Date.now() < e) blockingByRoom[i.room_id] = i;
+  });
 
   // Пацієнти, чиї записи потрапили у вікно простою заблокованого апарата → на перенос.
   const affectedIds = new Set();
@@ -760,23 +767,31 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   async function registerBreakdown(data) {
     const supabase = createClient();
     const wasEdit = !!editIncident;
-    // Заборона дублювання активного простою одного кабінету.
-    if (!wasEdit && incidents.some((i) => i.room_id === data.roomId)) {
-      setBreakdownOpen(false); setEditIncident(null);
-      notify("Кабінет уже заблоковано — редагуйте наявний простій", "error");
-      return;
+    const startMs = new Date(data.startedAt).getTime();
+    const endMs = data.blockedUntil ? new Date(data.blockedUntil).getTime() : Infinity;
+    // Заборона перетину періодів простою одного кабінету (активний + майбутній ТО допускаються, якщо не перетинаються).
+    if (!wasEdit) {
+      const conflict = incidents.some((i) => {
+        if (i.room_id !== data.roomId) return false;
+        const s = new Date(i.started_at).getTime();
+        const e = i.blocked_until ? new Date(i.blocked_until).getTime() : Infinity;
+        return s < endMs && startMs < e;
+      });
+      if (conflict) { setBreakdownOpen(false); setEditIncident(null); notify("На цей період кабінет уже має простій — оберіть інший час", "error"); return; }
     }
-    const fields = { room_id: data.roomId, reason: data.reason, reason_label: data.reasonLabel, note: data.note, started_at: data.startedAt, blocked_until: data.blockedUntil };
+    // Майбутній старт → «заплановано» (не блокує наперед); поточний/минулий → активний зараз.
+    const status = startMs > Date.now() ? "planned" : "active";
+    const fields = { room_id: data.roomId, reason: data.reason, reason_label: data.reasonLabel, note: data.note, started_at: data.startedAt, blocked_until: data.blockedUntil, status };
     const { error } = wasEdit
       ? await supabase.from("incidents").update(fields).eq("id", editIncident.id)
-      : await supabase.from("incidents").insert({ clinic_id: clinicId, status: "active", ...fields });
+      : await supabase.from("incidents").insert({ clinic_id: clinicId, ...fields });
     setBreakdownOpen(false); setEditIncident(null);
-    if (error) { notify(/duplicate|unique|23505/i.test(error.message) ? "Кабінет уже заблоковано" : "Помилка: " + error.message, "error"); return; }
-    // Поломка під час дослідження: пацієнт «у кабінеті» → «Не відбулося».
-    if (!wasEdit) {
+    if (error) { notify(/duplicate|unique|23505/i.test(error.message) ? "Кабінет уже має активний простій" : "Помилка: " + error.message, "error"); return; }
+    // Поломка ЗАРАЗ під час дослідження → пацієнт «у кабінеті» → «Не відбулося».
+    if (!wasEdit && status === "active") {
       await supabase.from("queue_entries").update({ status: "not_held" }).eq("clinic_id", clinicId).eq("room_id", data.roomId).eq("status", "in_progress");
     }
-    notify(wasEdit ? "Простій оновлено" : "Апарат заблоковано", "success");
+    notify(wasEdit ? "Простій оновлено" : (status === "planned" ? "Заплановано простій" : "Апарат заблоковано"), "success");
     loadIncidents();
     reload();
   }
@@ -878,7 +893,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
 
   function callPatient(p) {
-    if (incidentByRoom[p.room_id]) { notify("Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат", "error"); return; }
+    if (blockingByRoom[p.room_id]) { notify("Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат", "error"); return; }
     if (roomSchedClosed(p.room_id)) { notify("Кабінет зачинено за графіком на цей день", "error"); return; }
     const busy = entries.some((e) => e.room_id === p.room_id && e.status === "in_progress");
     if (busy) { notify("Кабінет зайнятий — спершу завершіть поточного пацієнта", "error"); return; }
@@ -988,17 +1003,23 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
             )}
             {!isPast && incidents.filter((inc) => incidentCoversDay(inc, selectedDate)).map((inc) => {
               const r = roomsById[inc.room_id] || {};
+              const nowBlocking = !!blockingByRoom[inc.room_id] && blockingByRoom[inc.room_id].id === inc.id;
+              const startStr = new Date(inc.started_at).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
               return (
-                <div className="inc-banner fade-in" key={inc.id}>
-                  <span className="inc-banner-ic">🔧</span>
+                <div className="inc-banner fade-in" key={inc.id} style={nowBlocking ? undefined : { borderColor: "var(--orange)" }}>
+                  <span className="inc-banner-ic">{nowBlocking ? "🔧" : "🗓"}</span>
                   <div className="inc-banner-txt">
-                    <div className="inc-banner-title">{r.name || "Апарат"} заблоковано · {inc.reason_label || "Поломка"}
+                    <div className="inc-banner-title">{r.name || "Апарат"} {nowBlocking ? "заблоковано" : "— заплановано простій"} · {inc.reason_label || "Поломка"}
                       {inc.note ? <span className="inc-banner-window">{inc.note}</span> : null}
                     </div>
-                    <div className="inc-banner-sub">{(() => { const n = affected.filter((a) => a.room_id === inc.room_id).length; return n > 0 ? n + (n === 1 ? " пацієнт у вікні простою потребує переносу →" : " пацієнтів у вікні простою потребують переносу →") : "Нові виклики на цей апарат призупинено"; })()}</div>
+                    <div className="inc-banner-sub">{(() => {
+                      const n = affected.filter((a) => a.room_id === inc.room_id).length;
+                      if (!nowBlocking) return "Заплановано з " + startStr + " · виклики поки працюють" + (n > 0 ? " · пацієнтів у вікні: " + n + " →" : "");
+                      return n > 0 ? n + (n === 1 ? " пацієнт у вікні простою потребує переносу →" : " пацієнтів у вікні простою потребують переносу →") : "Нові виклики на цей апарат призупинено";
+                    })()}</div>
                   </div>
                   <button className="btn btn-secondary btn-sm" onClick={() => { setEditIncident(inc); setBreakdownOpen(true); }}>✎ Редагувати</button>
-                  <button className="btn btn-secondary btn-sm" onClick={() => resolveIncident(inc)}>🔓 Розблокувати</button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => resolveIncident(inc)}>{nowBlocking ? "🔓 Розблокувати" : "✕ Скасувати"}</button>
                 </div>
               );
             })}
@@ -1030,8 +1051,8 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                 {(rooms || []).map((r) => (
                   <RoomStatusCard key={r.id} room={r}
                     patient={currentByRoom[r.id]} enteredAt={currentByRoom[r.id] && currentByRoom[r.id].updated_at}
-                    nextWaiting={nextWaitingByRoom[r.id]} blocked={incidentByRoom[r.id]}
-                    schedClosed={!incidentByRoom[r.id] && roomSchedClosed(r.id) ? selDayStatus.label : null}
+                    nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
+                    schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? selDayStatus.label : null}
                     onComplete={openComplete} onCall={callPatient} onUnblock={resolveIncident} />
                 ))}
                 {(rooms || []).length === 0 && (
@@ -1133,7 +1154,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       )}
 
       {breakdownOpen && (
-        <BreakdownModal rooms={rooms} clinicId={clinicId} incident={editIncident} blockedRoomIds={incidents.map((i) => i.room_id)} onClose={() => { setBreakdownOpen(false); setEditIncident(null); }} onConfirm={registerBreakdown} />
+        <BreakdownModal rooms={rooms} clinicId={clinicId} incident={editIncident} blockedRoomIds={Object.keys(blockingByRoom)} onClose={() => { setBreakdownOpen(false); setEditIncident(null); }} onConfirm={registerBreakdown} />
       )}
 
       {schedEditOpen && (

@@ -195,7 +195,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const { data: incs } = await supabase
       .from("incidents")
       .select("id, room_id, reason_label, note, started_at, blocked_until, status")
-      .eq("clinic_id", clinicId).eq("status", "active");
+      .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
     setIncidents(incs || []);
     if (!incs || !incs.length) { setAffectedToday([]); return; }
     const todayKey = dateKey(new Date());
