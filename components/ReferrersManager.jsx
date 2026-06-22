@@ -63,7 +63,26 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     setLoading(false);
   }, [clinicId]);
 
-  useEffect(() => { reload(); }, [reload]);
+  // Realtime: оновлюємо список, коли направник приймає/відхиляє запрошення
+  // або змінюється грант. Один канал на referral_access свого центру.
+  useEffect(() => {
+    const supabase = createClient();
+    let channel; let cancelled = false;
+    (async () => {
+      // Без авторизованого сокета RLS не пропустить postgres_changes.
+      try { const { data: { session } } = await supabase.auth.getSession(); if (session?.access_token) supabase.realtime.setAuth(session.access_token); } catch { /* ignore */ }
+      if (cancelled) return;
+      reload();
+      channel = supabase.channel("ref-access-" + clinicId)
+        .on("postgres_changes", { event: "*", schema: "public", table: "referral_access", filter: "clinic_id=eq." + clinicId }, () => reload())
+        .subscribe();
+    })();
+    // Підстраховка, якщо подію realtime втрачено: оновлення при поверненні на вкладку + легкий поллінг.
+    const onVis = () => { if (document.visibilityState === "visible") reload(); };
+    document.addEventListener("visibilitychange", onVis); window.addEventListener("focus", onVis);
+    const t = setInterval(reload, 15000);
+    return () => { cancelled = true; document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); clearInterval(t); if (channel) supabase.removeChannel(channel); };
+  }, [clinicId, reload]);
 
   async function invite() {
     if (!form.email.trim()) { notify("Вкажіть email лікаря", "error"); return; }
