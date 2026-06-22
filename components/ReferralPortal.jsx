@@ -515,13 +515,15 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
       reload();
       channel = supabase.channel("ref-" + doctorId)
         .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "created_by=eq." + doctorId }, () => reload())
+        // Зміни доступу до центрів (центр підтвердив/відхилив/відкликав) → перезавантажуємо серверні пропси.
+        .on("postgres_changes", { event: "*", schema: "public", table: "referral_access", filter: "referrer_id=eq." + doctorId }, () => router.refresh())
         .subscribe();
     })();
-    const onVis = () => { if (document.visibilityState === "visible") reload(); };
+    const onVis = () => { if (document.visibilityState === "visible") { reload(); router.refresh(); } };
     document.addEventListener("visibilitychange", onVis); window.addEventListener("focus", onVis);
     const t = setInterval(reload, 12000);
     return () => { cancelled = true; document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); clearInterval(t); if (channel) supabase.removeChannel(channel); };
-  }, [doctorId, reload]);
+  }, [doctorId, reload, router]);
 
   async function doReschedule({ roomId, date, time, dur }) {
     const p = reschedFor; if (!p) return;
