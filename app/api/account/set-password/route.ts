@@ -10,19 +10,27 @@ export async function POST(req: Request) {
   }
 
   const body = await req.json().catch(() => ({}));
-  const login = String(body.login || "").trim();
+  const ident = String(body.login || "").trim(); // логін АБО email
   const password = String(body.password || "");
-  if (!login) return NextResponse.json({ error: "Вкажіть логін" }, { status: 400 });
+  if (!ident) return NextResponse.json({ error: "Вкажіть логін або email" }, { status: 400 });
   if (password.length < 8) return NextResponse.json({ error: "Пароль мінімум 8 символів" }, { status: 400 });
 
   const admin = createAdminClient();
-  const { data: profile } = await admin
+  // Спершу за логіном; якщо введено email (напр. направник без логіну) — за email.
+  let { data: profile } = await admin
     .from("profiles")
     .select("id, password_set")
-    .ilike("login", login)
+    .ilike("login", ident)
     .maybeSingle();
+  if (!profile && ident.includes("@")) {
+    ({ data: profile } = await admin
+      .from("profiles")
+      .select("id, password_set")
+      .eq("email", ident.toLowerCase())
+      .maybeSingle());
+  }
 
-  if (!profile) return NextResponse.json({ error: "Логін не знайдено" }, { status: 404 });
+  if (!profile) return NextResponse.json({ error: "Логін або email не знайдено" }, { status: 404 });
   if (profile.password_set) {
     return NextResponse.json({ error: "Пароль уже встановлено. Зверніться до адміністратора, щоб його скинути." }, { status: 409 });
   }

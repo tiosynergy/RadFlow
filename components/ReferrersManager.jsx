@@ -165,7 +165,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
               <button className="btn btn-primary" disabled={busy} onClick={invite}>{busy ? "Надсилаємо…" : "Запросити"}</button>
             </div>
-            <div className="hint-blue">Якщо акаунта ще немає — створимо глобальний акаунт направника й надішлемо запрошення. Пароль лікар задасть на <b>/set-password</b> за логіном.</div>
+            <div className="hint-blue">Якщо акаунта ще немає — створимо глобальний акаунт направника. Передайте лікарю його <b>логін або email</b>: пароль він задасть на <b>/set-password</b>, далі прийме запрошення у «Мої центри». Логін необовʼязковий — можна входити за email.</div>
           </div>
 
           {/* Запити на доступ */}

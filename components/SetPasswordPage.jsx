@@ -100,8 +100,8 @@ export default function SetPasswordPage() {
 
             <form onSubmit={onSubmit} noValidate>
               <div className="field">
-                <label htmlFor="login">Логін</label>
-                <input {...inputProps("login", "text")} placeholder="Ваш логін" autoComplete="username" />
+                <label htmlFor="login">Логін або email</label>
+                <input {...inputProps("login", "text")} placeholder="Ваш логін або email" autoComplete="username" />
                 {touched.login && errors.login && <div className="err" role="alert">{errors.login}</div>}
               </div>
               <div className="field">
