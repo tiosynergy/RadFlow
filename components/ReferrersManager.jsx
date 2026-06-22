@@ -61,7 +61,11 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
 
   function roomsLabel(room_ids) {
     if (!room_ids || room_ids.length === 0) return "усі кабінети";
-    return room_ids.map((id) => (roomById[id] ? roomById[id].name : "?")).join(", ");
+    return room_ids.map((id) => {
+      const rm = roomById[id];
+      if (!rm) return "?";
+      return rm.name + (rm.apparatus_model ? " (" + rm.apparatus_model + ")" : "");
+    }).join(", ");
   }
 
   const reload = useCallback(async () => {

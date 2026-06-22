@@ -58,7 +58,8 @@ export async function POST(req: Request) {
     if (!isClinicAdmin) return NextResponse.json({ error: "Лише адміністратор центру" }, { status: 403 });
     const patch: Record<string, unknown> = {};
     if (policy) patch.policy = policy;
-    if (roomIds !== null) patch.room_ids = roomIds.length ? roomIds : null; // [] → усі кабінети
+    // room_ids присутній у запиті завжди (null = усі кабінети, масив = підмножина).
+    if ("room_ids" in body) patch.room_ids = roomIds && roomIds.length ? roomIds : null;
     if (typeof body.note === "string") patch.note = body.note.trim() || null;
     if (Object.keys(patch).length === 0) return NextResponse.json({ error: "Немає змін" }, { status: 400 });
     const { error } = await admin.from("referral_access").update(patch).eq("id", row.id);
