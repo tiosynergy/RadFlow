@@ -42,9 +42,17 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const [busy, setBusy] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const [toast, setToast] = useState(null);
+  const [origin, setOrigin] = useState("");
   const toastTimer = useRef(null);
 
+  useEffect(() => { setOrigin(window.location.origin); }, []);
+
   function notify(msg, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 4500); }
+  async function copyLink(login) {
+    const link = (origin || window.location.origin) + "/set-password?login=" + encodeURIComponent(login);
+    try { await navigator.clipboard.writeText(link); notify("Посилання для входу скопійовано", "success"); }
+    catch { notify(link, "info"); }
+  }
   function setF(k, v) { setForm((f) => ({ ...f, [k]: v })); }
   function toggleRoom(id) { setForm((f) => ({ ...f, room_ids: f.room_ids.includes(id) ? f.room_ids.filter((x) => x !== id) : [...f.room_ids, id] })); }
 
@@ -64,7 +72,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     const ids = Array.from(new Set(list.map((a) => a.referrer_id)));
     const profById = {};
     if (ids.length) {
-      const { data: profs } = await supabase.from("profiles").select("id, login, full_name, email, phone").in("id", ids);
+      const { data: profs } = await supabase.from("profiles").select("id, login, full_name, email, phone, password_set").in("id", ids);
       (profs || []).forEach((p) => { profById[p.id] = p; });
     }
     setRows(list.map((a) => ({ access_id: a.id, referrer_id: a.referrer_id, status: a.status, policy: a.policy, room_ids: a.room_ids, note: a.note, referrer: profById[a.referrer_id] || {} })));
@@ -101,7 +109,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     if (data.status === "active") {
       notify("Доступ активовано (лікар уже надсилав запит)", "success");
     } else if (data.created_account) {
-      notify("Акаунт створено. Передайте лікарю логін «" + (data.login || "—") + "» — пароль він задасть на /set-password, далі прийме запрошення у «Мої центри».", "info");
+      notify("Акаунт створено. Скопіюйте посилання для входу в картці направника нижче і передайте лікарю.", "info");
     } else {
       notify("Запрошення надіслано. Лікар прийме його у вкладці «Мої центри».", "success");
     }
@@ -135,6 +143,13 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{r.referrer.login ? "@" + r.referrer.login : ""}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
           {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
           {r.status === "active" && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Кабінети: {roomsLabel(r.room_ids)}</div>}
+          {!r.referrer.password_set && r.referrer.login && (
+            <div style={{ fontSize: 12, marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для входу:</span>
+              <code style={{ fontSize: 11.5, color: "var(--text-secondary)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?login={r.referrer.login}</code>
+              <button className="btn btn-secondary btn-sm" onClick={() => copyLink(r.referrer.login)}>Скопіювати</button>
+            </div>
+          )}
         </div>
         <span className={"badge " + m.cls}>{m.label}</span>
         {children}
@@ -158,11 +173,11 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           <div style={card}>
             <div className="bk-section-label" style={{ marginTop: 0 }}>Запросити лікаря-направника</div>
             <div className="fld-row">
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Логін{req}</span><input className="inp" placeholder="логін для входу" value={form.login} onChange={(e) => setF("login", e.target.value)} /></label>
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">ПІБ{req}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setF("full_name", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Логін{req}</span><input className="inp" placeholder="логін для входу" value={form.login} onChange={(e) => setF("login", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>ПІБ{req}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setF("full_name", e.target.value)} /></label>
             </div>
             <div className="fld-row">
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон{req}</span><input className="inp" type="tel" placeholder="+380 XX XXX XX XX" value={form.phone} onChange={(e) => setF("phone", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Телефон{req}</span><input className="inp" type="tel" placeholder="+380 XX XXX XX XX" value={form.phone} onChange={(e) => setF("phone", e.target.value)} /></label>
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email</span><input className="inp" type="email" placeholder="необовʼязково" value={form.email} onChange={(e) => setF("email", e.target.value)} /></label>
             </div>
             <div className="fld-row">
@@ -195,7 +210,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
               <button className="btn btn-primary" disabled={busy} onClick={invite}>{busy ? "Надсилаємо…" : "Запросити"}</button>
             </div>
-            <div className="hint-blue">Якщо акаунта ще немає — створимо глобальний акаунт направника. Передайте лікарю його <b>логін</b>: пароль він задасть на <b>/set-password</b>, далі прийме запрошення у «Мої центри». <b>Email необовʼязковий</b> — входити можна за логіном.</div>
+            <div className="hint-blue">Якщо акаунта ще немає — створимо глобальний акаунт направника. Пароль лікар задасть <b>самостійно за посиланням</b> (зʼявиться у картці направника нижче — скопіюйте кнопкою й передайте йому). <b>Email необовʼязковий</b> — входити можна за логіном.</div>
           </div>
 
           {/* Запити на доступ */}

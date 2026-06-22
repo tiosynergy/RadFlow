@@ -4,7 +4,7 @@
    Користувача створив адміністратор; тут він задає собі пароль за логіном.
    Працює лише поки пароль не встановлено (далі — скидання адміністратором). */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import "./register.css";
 
 const REQUIRED = "Це поле обов'язкове";
@@ -16,6 +16,14 @@ export default function SetPasswordPage() {
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [toast, setToast] = useState({ show: false, title: "", msg: "" });
+
+  // Підставляємо логін із посилання ?login=... (адмін надсилає його лікарю).
+  useEffect(() => {
+    try {
+      const p = new URLSearchParams(window.location.search).get("login");
+      if (p) setValues((v) => ({ ...v, login: p }));
+    } catch { /* ignore */ }
+  }, []);
 
   function validate(name, vals) {
     const v = vals[name] || "";
