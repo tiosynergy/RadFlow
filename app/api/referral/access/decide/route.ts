@@ -8,7 +8,8 @@ import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 //   • status='pending_clinic'   → вирішує АДМІН цього центру (approve/decline)
 //   • status='pending_referrer' → вирішує сам НАПРАВНИК (approve/decline)
 //   • revoke (active→revoked)   → може будь-яка сторона зв'язку
-// body: { access_id, decision: 'approve' | 'decline' | 'revoke', policy? }
+//   • update (налаштування active) → лише АДМІН центру (policy/room_ids/note)
+// body: { access_id, decision: 'approve'|'decline'|'revoke'|'update', policy?, room_ids?, note? }
 export async function POST(req: Request) {
   if (!isAdminConfigured()) {
     return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY не налаштовано на сервері (.env.local)" }, { status: 500 });
@@ -27,7 +28,7 @@ export async function POST(req: Request) {
   const policy = body.policy === "confirm" ? "confirm" : body.policy === "direct" ? "direct" : null;
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const roomIds = Array.isArray(body.room_ids) ? body.room_ids.filter((x: unknown) => UUID_RE.test(String(x))) : null;
-  if (!accessId || !["approve", "decline", "revoke"].includes(decision)) {
+  if (!accessId || !["approve", "decline", "revoke", "update"].includes(decision)) {
     return NextResponse.json({ error: "Некоректні параметри" }, { status: 400 });
   }
 
@@ -49,6 +50,20 @@ export async function POST(req: Request) {
     const { error } = await admin.from("referral_access").update({ status: "revoked", decided_at: new Date().toISOString() }).eq("id", row.id);
     if (error) return NextResponse.json({ error: "Помилка: " + error.message }, { status: 400 });
     return NextResponse.json({ ok: true, status: "revoked" });
+  }
+
+  // --- Редагування налаштувань активного доступу (лише адмін центру) ---
+  if (decision === "update") {
+    if (row.status !== "active") return NextResponse.json({ error: "Редагувати можна лише активний доступ" }, { status: 409 });
+    if (!isClinicAdmin) return NextResponse.json({ error: "Лише адміністратор центру" }, { status: 403 });
+    const patch: Record<string, unknown> = {};
+    if (policy) patch.policy = policy;
+    if (roomIds !== null) patch.room_ids = roomIds.length ? roomIds : null; // [] → усі кабінети
+    if (typeof body.note === "string") patch.note = body.note.trim() || null;
+    if (Object.keys(patch).length === 0) return NextResponse.json({ error: "Немає змін" }, { status: 400 });
+    const { error } = await admin.from("referral_access").update(patch).eq("id", row.id);
+    if (error) return NextResponse.json({ error: "Помилка: " + error.message }, { status: 400 });
+    return NextResponse.json({ ok: true, status: "active" });
   }
 
   // --- approve / decline: залежить від того, чия зараз черга вирішувати ---

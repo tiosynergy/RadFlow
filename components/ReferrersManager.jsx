@@ -43,6 +43,9 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const [busyId, setBusyId] = useState(null);
   const [toast, setToast] = useState(null);
   const [origin, setOrigin] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ policy: "direct", room_ids: [], note: "" });
+  const [savingEdit, setSavingEdit] = useState(false);
   const toastTimer = useRef(null);
 
   useEffect(() => { setOrigin(window.location.origin); }, []);
@@ -125,6 +128,22 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     reload();
   }
 
+  function startEdit(r) {
+    setEditingId(r.access_id);
+    setEditForm({ policy: r.policy || "direct", room_ids: (r.room_ids && r.room_ids.length ? r.room_ids : allRoomIds), note: r.note || "" });
+  }
+  function toggleEditRoom(id) { setEditForm((f) => ({ ...f, room_ids: f.room_ids.includes(id) ? f.room_ids.filter((x) => x !== id) : [...f.room_ids, id] })); }
+  async function saveEdit() {
+    setSavingEdit(true);
+    const room_ids = (editForm.room_ids.length === 0 || editForm.room_ids.length === allRoomIds.length) ? null : editForm.room_ids;
+    const { ok, data } = await postJSON("/api/referral/access/decide", { access_id: editingId, decision: "update", policy: editForm.policy, room_ids, note: editForm.note });
+    setSavingEdit(false);
+    if (!ok) { notify(data.error || "Помилка", "error"); return; }
+    notify("Налаштування збережено", "success");
+    setEditingId(null);
+    reload();
+  }
+
   const requests = rows.filter((r) => r.status === "pending_clinic");
   const active = rows.filter((r) => r.status === "active");
   const invited = rows.filter((r) => r.status === "pending_referrer");
@@ -133,11 +152,11 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20, marginBottom: 16 };
   const req = <span style={{ color: "var(--red)" }}> *</span>;
 
-  function Row({ r, children }) {
+  function Row({ r, children, onClick }) {
     const m = ACCESS_ST[r.status] || ACCESS_ST.active;
     const name = r.referrer.full_name || r.referrer.login || "Лікар";
     return (
-      <div style={{ padding: "14px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      <div onClick={onClick} style={{ padding: "14px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
         <div style={{ flex: 1, minWidth: 180 }}>
           <div style={{ fontWeight: 600, fontSize: 14 }}>{name}</div>
           <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{r.referrer.login ? "@" + r.referrer.login : ""}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
@@ -147,7 +166,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
             <div style={{ fontSize: 12, marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для входу:</span>
               <code style={{ fontSize: 11.5, color: "var(--text-secondary)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?login={r.referrer.login}</code>
-              <button className="btn btn-secondary btn-sm" onClick={() => copyLink(r.referrer.login)}>Скопіювати</button>
+              <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); copyLink(r.referrer.login); }}>Скопіювати</button>
             </div>
           )}
         </div>
@@ -232,9 +251,45 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
             {loading ? <div style={{ color: "var(--text-muted)", padding: 8 }}>Завантаження…</div>
               : active.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає активних направників. Запросіть лікаря вище.</div>
               : active.map((r) => (
-                <Row key={r.access_id} r={r}>
-                  <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === r.access_id} onClick={() => { if (window.confirm("Відкликати доступ для «" + (r.referrer.full_name || r.referrer.login) + "»?\n\nСтворені ним направлення лишаться. Нові він створювати не зможе.")) decide(r.access_id, "revoke"); }}>Відкликати доступ</button>
-                </Row>
+                <div key={r.access_id}>
+                  <Row r={r} onClick={() => (editingId === r.access_id ? setEditingId(null) : startEdit(r))}>
+                    <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); (editingId === r.access_id ? setEditingId(null) : startEdit(r)); }}>{editingId === r.access_id ? "Згорнути" : "Змінити"}</button>
+                    <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відкликати доступ для «" + (r.referrer.full_name || r.referrer.login) + "»?\n\nСтворені ним направлення лишаться. Нові він створювати не зможе.")) decide(r.access_id, "revoke"); }}>Відкликати доступ</button>
+                  </Row>
+                  {editingId === r.access_id && (
+                    <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: 16, margin: "4px 0 8px" }}>
+                      <div className="fld-row">
+                        <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Режим бронювання</span>
+                          <select className="inp" value={editForm.policy} onChange={(e) => setEditForm((f) => ({ ...f, policy: e.target.value }))}>
+                            <option value="direct">Пряма черга (одразу в чергу)</option>
+                            <option value="confirm">З підтвердженням оператора</option>
+                          </select>
+                        </label>
+                        <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Примітка</span><input className="inp" value={editForm.note} onChange={(e) => setEditForm((f) => ({ ...f, note: e.target.value }))} /></label>
+                      </div>
+                      <div className="fld">
+                        <span className="fld-lab">Доступні кабінети</span>
+                        {(rooms || []).length === 0 ? <div className="ctx-hint" style={{ fontSize: 12.5 }}>У центрі немає кабінетів.</div> : (
+                          <div className="bd-rooms">
+                            {(rooms || []).map((rm) => {
+                              const on = editForm.room_ids.includes(rm.id);
+                              return (
+                                <button type="button" key={rm.id} className={"bd-room" + (on ? " active" : "")} onClick={() => toggleEditRoom(rm.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}>
+                                  <span className={"bd-room-kind " + (rm.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(rm.modality)}</span>
+                                  <span className="bd-room-meta"><span className="bd-room-name">{rm.name}</span><span className="bd-room-model">{rm.apparatus_model || ""}</span></span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+                        <button className="btn btn-ghost btn-sm" onClick={() => setEditingId(null)}>Скасувати</button>
+                        <button className="btn btn-primary btn-sm" disabled={savingEdit} onClick={saveEdit}>{savingEdit ? "Зберігаємо…" : "Зберегти"}</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               ))}
           </div>
 
