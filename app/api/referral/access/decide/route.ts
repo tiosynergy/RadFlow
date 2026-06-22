@@ -25,8 +25,8 @@ export async function POST(req: Request) {
   const accessId = String(body.access_id || "").trim();
   const decision = String(body.decision || "").trim(); // approve | decline | revoke
   const policy = body.policy === "confirm" ? "confirm" : body.policy === "direct" ? "direct" : null;
-  const ALLOWED_MODALITIES = ["MRI", "CT", "OTHER"];
-  const mods = Array.isArray(body.modalities) ? body.modalities.filter((m: unknown) => ALLOWED_MODALITIES.includes(String(m))) : null;
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const roomIds = Array.isArray(body.room_ids) ? body.room_ids.filter((x: unknown) => UUID_RE.test(String(x))) : null;
   if (!accessId || !["approve", "decline", "revoke"].includes(decision)) {
     return NextResponse.json({ error: "Некоректні параметри" }, { status: 400 });
   }
@@ -65,7 +65,7 @@ export async function POST(req: Request) {
   // Центр при підтвердженні може одразу задати policy (direct/confirm) і дозволені модальності.
   if (nextStatus === "active" && isClinicAdmin) {
     if (policy) patch.policy = policy;
-    if (mods !== null) patch.modalities = mods.length ? mods : null; // [] → усі
+    if (roomIds !== null) patch.room_ids = roomIds.length ? roomIds : null; // [] → усі кабінети
   }
 
   const { error } = await admin.from("referral_access").update(patch).eq("id", row.id);

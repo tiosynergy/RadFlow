@@ -81,9 +81,12 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
 
   const modality = studyType === "КТ" ? "CT" : "MRI";
   const selCenter = activeCenters.find((c) => c.clinicId === centerId) || null;
-  const allowedMods = selCenter && Array.isArray(selCenter.modalities) && selCenter.modalities.length ? selCenter.modalities : null; // null = усі
-  const modAllowed = (code) => !allowedMods || allowedMods.includes(code);
-  const rooms = roomsByClinic[centerId] || [];
+  const allRooms = roomsByClinic[centerId] || [];
+  const allowedRoomIds = selCenter && Array.isArray(selCenter.room_ids) && selCenter.room_ids.length ? selCenter.room_ids : null; // null = усі
+  const rooms = allowedRoomIds ? allRooms.filter((r) => allowedRoomIds.includes(r.id)) : allRooms;
+  const hasMRI = rooms.some((r) => r.modality === "MRI");
+  const hasCT = rooms.some((r) => r.modality === "CT");
+  const modAllowed = (code) => (code === "MRI" ? hasMRI : code === "CT" ? hasCT : false);
   const roomsOfType = rooms.filter((r) => r.modality === modality);
   const room = roomsOfType.find((r) => r.id === roomId) || null;
   const regions = regionsFor(studyType);

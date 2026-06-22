@@ -2,10 +2,10 @@
 
 /* ===== RadFlow — Лікарі-направники (адмін, крос-клінічна модель) =====
    Доступ направника до центру = referral_access. Адмін центру:
-   • запрошує направника за email (глобальний акаунт) → /api/referrers/invite;
-   • підтверджує/відхиляє запити направників (status='pending_clinic');
-   • відкликає активний доступ.
-   Пароль направник задає сам на /set-password. */
+   • запрошує направника (логін/ПІБ/телефон обовʼязкові, email — ні);
+   • обирає, до яких КАБІНЕТІВ центру направник має доступ;
+   • підтверджує/відхиляє запити направників; відкликає доступ.
+   Пароль направник задає сам на /set-password (за логіном). */
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -13,9 +13,7 @@ import Sidebar from "@/components/Sidebar";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
-const EMPTY = { email: "", full_name: "", login: "", phone: "", note: "", policy: "direct", modalities: ["MRI", "CT"] };
-const MOD_LABEL = { MRI: "МРТ", CT: "КТ", OTHER: "Інше" };
-function modsLabel(mods) { return !mods || mods.length === 0 ? "усі" : mods.map((m) => MOD_LABEL[m] || m).join(", "); }
+function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 
 const ACCESS_ST = {
   active: { label: "Активний", cls: "green" },
@@ -34,42 +32,50 @@ async function postJSON(url, body) {
 }
 
 export default function ReferrersManager({ clinicId, rooms, clinicName, adminName }) {
-  const [rows, setRows] = useState([]);   // { access_id, status, policy, note, referrer:{full_name,email,phone} }
+  const allRoomIds = (rooms || []).map((r) => r.id);
+  const roomById = {}; (rooms || []).forEach((r) => { roomById[r.id] = r; });
+  const emptyForm = () => ({ login: "", full_name: "", email: "", phone: "", note: "", policy: "direct", room_ids: allRoomIds });
+
+  const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState(EMPTY);
+  const [form, setForm] = useState(emptyForm);
   const [busy, setBusy] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
 
-  function notify(msg, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 4000); }
+  function notify(msg, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 4500); }
   function setF(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  function toggleRoom(id) { setForm((f) => ({ ...f, room_ids: f.room_ids.includes(id) ? f.room_ids.filter((x) => x !== id) : [...f.room_ids, id] })); }
+
+  function roomsLabel(room_ids) {
+    if (!room_ids || room_ids.length === 0) return "усі кабінети";
+    return room_ids.map((id) => (roomById[id] ? roomById[id].name : "?")).join(", ");
+  }
 
   const reload = useCallback(async () => {
     const supabase = createClient();
     const { data: access } = await supabase
       .from("referral_access")
-      .select("id, referrer_id, status, policy, modalities, note, created_at")
+      .select("id, referrer_id, status, policy, room_ids, note, created_at")
       .eq("clinic_id", clinicId)
       .order("created_at", { ascending: false });
     const list = access || [];
     const ids = Array.from(new Set(list.map((a) => a.referrer_id)));
     const profById = {};
     if (ids.length) {
-      const { data: profs } = await supabase.from("profiles").select("id, full_name, email, phone, password_set").in("id", ids);
+      const { data: profs } = await supabase.from("profiles").select("id, login, full_name, email, phone").in("id", ids);
       (profs || []).forEach((p) => { profById[p.id] = p; });
     }
-    setRows(list.map((a) => ({ access_id: a.id, referrer_id: a.referrer_id, status: a.status, policy: a.policy, modalities: a.modalities, note: a.note, referrer: profById[a.referrer_id] || {} })));
+    setRows(list.map((a) => ({ access_id: a.id, referrer_id: a.referrer_id, status: a.status, policy: a.policy, room_ids: a.room_ids, note: a.note, referrer: profById[a.referrer_id] || {} })));
     setLoading(false);
   }, [clinicId]);
 
-  // Realtime: оновлюємо список, коли направник приймає/відхиляє запрошення
-  // або змінюється грант. Один канал на referral_access свого центру.
+  // Realtime: статус доступу оновлюється без перезавантаження.
   useEffect(() => {
     const supabase = createClient();
     let channel; let cancelled = false;
     (async () => {
-      // Без авторизованого сокета RLS не пропустить postgres_changes.
       try { const { data: { session } } = await supabase.auth.getSession(); if (session?.access_token) supabase.realtime.setAuth(session.access_token); } catch { /* ignore */ }
       if (cancelled) return;
       reload();
@@ -77,7 +83,6 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
         .on("postgres_changes", { event: "*", schema: "public", table: "referral_access", filter: "clinic_id=eq." + clinicId }, () => reload())
         .subscribe();
     })();
-    // Підстраховка, якщо подію realtime втрачено: оновлення при поверненні на вкладку + легкий поллінг.
     const onVis = () => { if (document.visibilityState === "visible") reload(); };
     document.addEventListener("visibilitychange", onVis); window.addEventListener("focus", onVis);
     const t = setInterval(reload, 15000);
@@ -85,14 +90,14 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   }, [clinicId, reload]);
 
   async function invite() {
-    if (!form.email.trim()) { notify("Вкажіть email лікаря", "error"); return; }
+    if (!form.login.trim() || !form.full_name.trim() || !form.phone.trim()) { notify("Заповніть логін, ПІБ і телефон", "error"); return; }
     setBusy(true);
-    // Рівно одна обрана модальність → обмеження; обидві/жодної → усі (null).
-    const modalities = form.modalities.length === 1 ? form.modalities : null;
-    const { ok, data } = await postJSON("/api/referrers/invite", { ...form, modalities });
+    // Усі або жоден обраний кабінет → усі (null); інакше — обраний перелік.
+    const room_ids = (form.room_ids.length === 0 || form.room_ids.length === allRoomIds.length) ? null : form.room_ids;
+    const { ok, data } = await postJSON("/api/referrers/invite", { ...form, room_ids });
     setBusy(false);
     if (!ok) { notify(data.error || "Помилка", "error"); return; }
-    setForm(EMPTY);
+    setForm(emptyForm());
     if (data.status === "active") {
       notify("Доступ активовано (лікар уже надсилав запит)", "success");
     } else if (data.created_account) {
@@ -118,17 +123,18 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const history = rows.filter((r) => r.status === "revoked" || r.status === "declined");
 
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20, marginBottom: 16 };
+  const req = <span style={{ color: "var(--red)" }}> *</span>;
 
   function Row({ r, children }) {
     const m = ACCESS_ST[r.status] || ACCESS_ST.active;
-    const name = r.referrer.full_name || r.referrer.email || "Лікар";
+    const name = r.referrer.full_name || r.referrer.login || "Лікар";
     return (
       <div style={{ padding: "14px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 180 }}>
           <div style={{ fontWeight: 600, fontSize: 14 }}>{name}</div>
-          <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{r.referrer.email || "—"}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
+          <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{r.referrer.login ? "@" + r.referrer.login : ""}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
           {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
-          {r.status === "active" && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Модальності: {modsLabel(r.modalities)}</div>}
+          {r.status === "active" && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Кабінети: {roomsLabel(r.room_ids)}</div>}
         </div>
         <span className={"badge " + m.cls}>{m.label}</span>
         {children}
@@ -152,12 +158,12 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           <div style={card}>
             <div className="bk-section-label" style={{ marginTop: 0 }}>Запросити лікаря-направника</div>
             <div className="fld-row">
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email *</span><input className="inp" type="email" placeholder="doctor@clinic.ua" value={form.email} onChange={(e) => setF("email", e.target.value)} /></label>
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">ПІБ</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setF("full_name", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Логін{req}</span><input className="inp" placeholder="логін для входу" value={form.login} onChange={(e) => setF("login", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">ПІБ{req}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setF("full_name", e.target.value)} /></label>
             </div>
             <div className="fld-row">
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Логін</span><input className="inp" placeholder="логін для входу (якщо новий акаунт)" value={form.login} onChange={(e) => setF("login", e.target.value)} /></label>
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон</span><input className="inp" type="tel" placeholder="+380 XX XXX XX XX" value={form.phone} onChange={(e) => setF("phone", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон{req}</span><input className="inp" type="tel" placeholder="+380 XX XXX XX XX" value={form.phone} onChange={(e) => setF("phone", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email</span><input className="inp" type="email" placeholder="необовʼязково" value={form.email} onChange={(e) => setF("email", e.target.value)} /></label>
             </div>
             <div className="fld-row">
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Режим бронювання</span>
@@ -169,22 +175,27 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Примітка</span><input className="inp" placeholder="напр. спеціалізація" value={form.note} onChange={(e) => setF("note", e.target.value)} /></label>
             </div>
             <div className="fld">
-              <span className="fld-lab">Доступні модальності</span>
-              <div style={{ display: "flex", gap: 18, alignItems: "center", paddingTop: 4 }}>
-                {[["MRI", "МРТ"], ["CT", "КТ"]].map(([code, label]) => (
-                  <label key={code} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13, cursor: "pointer" }}>
-                    <input type="checkbox" checked={form.modalities.includes(code)}
-                      onChange={(e) => setF("modalities", e.target.checked ? Array.from(new Set([...form.modalities, code])) : form.modalities.filter((m) => m !== code))} />
-                    {label}
-                  </label>
-                ))}
-                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>обидві = усі</span>
-              </div>
+              <span className="fld-lab">Доступні кабінети</span>
+              {(rooms || []).length === 0 ? (
+                <div className="ctx-hint" style={{ fontSize: 12.5 }}>У центрі ще немає кабінетів — додайте їх у Майстрі налаштування.</div>
+              ) : (
+                <div className="bd-rooms">
+                  {(rooms || []).map((r) => {
+                    const on = form.room_ids.includes(r.id);
+                    return (
+                      <button type="button" key={r.id} className={"bd-room" + (on ? " active" : "")} onClick={() => toggleRoom(r.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}>
+                        <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+                        <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
               <button className="btn btn-primary" disabled={busy} onClick={invite}>{busy ? "Надсилаємо…" : "Запросити"}</button>
             </div>
-            <div className="hint-blue">Якщо акаунта ще немає — створимо глобальний акаунт направника. Передайте лікарю його <b>логін або email</b>: пароль він задасть на <b>/set-password</b>, далі прийме запрошення у «Мої центри». Логін необовʼязковий — можна входити за email.</div>
+            <div className="hint-blue">Якщо акаунта ще немає — створимо глобальний акаунт направника. Передайте лікарю його <b>логін</b>: пароль він задасть на <b>/set-password</b>, далі прийме запрошення у «Мої центри». <b>Email необовʼязковий</b> — входити можна за логіном.</div>
           </div>
 
           {/* Запити на доступ */}
@@ -207,7 +218,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
               : active.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає активних направників. Запросіть лікаря вище.</div>
               : active.map((r) => (
                 <Row key={r.access_id} r={r}>
-                  <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === r.access_id} onClick={() => { if (window.confirm("Відкликати доступ для «" + (r.referrer.full_name || r.referrer.email) + "»?\n\nСтворені ним направлення лишаться. Нові він створювати не зможе.")) decide(r.access_id, "revoke"); }}>Відкликати доступ</button>
+                  <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === r.access_id} onClick={() => { if (window.confirm("Відкликати доступ для «" + (r.referrer.full_name || r.referrer.login) + "»?\n\nСтворені ним направлення лишаться. Нові він створювати не зможе.")) decide(r.access_id, "revoke"); }}>Відкликати доступ</button>
                 </Row>
               ))}
           </div>
@@ -231,7 +242,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
       </div>
 
       {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5, maxWidth: 440 }}>{toast.msg}</div>
+        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5, maxWidth: 460 }}>{toast.msg}</div>
       )}
     </div>
   );
