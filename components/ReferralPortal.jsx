@@ -1,9 +1,12 @@
 "use client";
 
-/* ===== RadFlow — Referral Portal (портал лікарів-направників) =====
-   Зовнішній портал: «Нове направлення» (форма + вибір слота) і «Мої направлення»
-   (список своїх направлень + деталі + перезапис). Направлення = queue_entries з
-   doctor = ПІБ лікаря. На реальних даних Supabase, schedule-aware. */
+/* ===== RadFlow — Referral Portal 2.0 (крос-клінічний портал направників) =====
+   Глобальний направник працює з кількома центрами через referral_access.
+   Вкладки: «Нове направлення» (вибір центру → кабінет → слот), «Мої направлення»
+   (крос-клінічний список + перезапис + скасування), «Мої центри» (керування
+   доступом: запит/прийняття/відхилення/відкликання).
+   Зайнятість слотів — через знеособлений RPC room_busy_slots (без PII).
+   Realtime — один канал за created_by на всі центри. */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
@@ -14,7 +17,6 @@ import { slotBlockedByIncidents } from "@/lib/incidents";
 import { regionsFor, studyPrice } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
 
-/* Довідник областей дослідження — у @/lib/studies (єдине джерело). */
 function pad(n) { return String(n).padStart(2, "0"); }
 function toMin(t) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
@@ -26,6 +28,7 @@ function procLabel(e) {
   if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "")).join(" + ");
   return e.note || "—";
 }
+function centerLabel(c) { return c ? c.name + (c.city ? " · " + c.city : "") : "—"; }
 
 const ST = {
   scheduled: { label: "Очікує", cls: "gray" },
@@ -33,6 +36,7 @@ const ST = {
   in_progress: { label: "В роботі", cls: "blue" },
   done: { label: "Виконано", cls: "green" },
   no_show: { label: "Не відбулося", cls: "red" },
+  not_held: { label: "Не відбулося", cls: "gray" },
   cancelled: { label: "Скасовано", cls: "gray" },
 };
 const FILTERS = [
@@ -42,9 +46,25 @@ const FILTERS = [
   { key: "done", label: "Виконано" },
   { key: "no_show", label: "Не відбулося" },
 ];
+const ACCESS_ST = {
+  active: { label: "Активний", cls: "green" },
+  pending_clinic: { label: "Очікує підтвердження центру", cls: "yellow" },
+  pending_referrer: { label: "Запрошення центру", cls: "blue" },
+  revoked: { label: "Відкликано", cls: "gray" },
+  declined: { label: "Відхилено", cls: "gray" },
+};
+
+async function postJSON(url, body) {
+  try {
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, data };
+  } catch { return { ok: false, data: { error: "Помилка зʼєднання із сервером" } }; }
+}
 
 /* ---------- Вкладка «Нове направлення» ---------- */
-function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
+function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCreated }) {
+  const [centerId, setCenterId] = useState(() => (activeCenters[0] ? activeCenters[0].clinicId : ""));
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
   const [phone, setPhone] = useState("");
@@ -52,6 +72,7 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
   const [region, setRegion] = useState("");
   const [comment, setComment] = useState("");
   const [date, setDate] = useState(() => { const d = new Date(); d.setDate(d.getDate() + 1); return dateVal(d); });
+  const [roomId, setRoomId] = useState(null);
   const [time, setTime] = useState("");
   const [dayEntries, setDayEntries] = useState([]);
   const [override, setOverride] = useState(null);
@@ -59,36 +80,46 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
   const [busy, setBusy] = useState(false);
 
   const modality = studyType === "КТ" ? "CT" : "MRI";
-  const roomsOfType = (rooms || []).filter((r) => r.modality === modality);
-  const room = roomsOfType[0] || null;
-  const roomId = room ? room.id : null;
+  const rooms = roomsByClinic[centerId] || [];
+  const roomsOfType = rooms.filter((r) => r.modality === modality);
+  const room = roomsOfType.find((r) => r.id === roomId) || null;
   const regions = regionsFor(studyType);
   const regionObj = regions.find((r) => r.label === region);
   const dur = regionObj ? regionObj.dur : (studyType === "КТ" ? 20 : 45);
 
+  // Дефолтний кабінет при зміні центру/модальності.
   useEffect(() => {
-    let cancel = false;
-    (async () => {
-      const supabase = createClient();
-      if (clinicId) {
-        const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", date).maybeSingle();
-        if (!cancel) setOverride(ov.data || null);
-      }
-      if (clinicId) {
-        const inc = await supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", clinicId).in("status", ["active", "planned"]);
-        if (!cancel) setIncidents(inc.data || []);
-      }
-      if (!roomId) { setDayEntries([]); return; }
-      const { data } = await supabase.from("queue_entries").select("scheduled_time, duration_min, status").eq("room_id", roomId).eq("scheduled_date", date).neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
-      if (!cancel) setDayEntries(data || []);
-    })();
-    return () => { cancel = true; };
-  }, [roomId, date, clinicId]);
+    setRoomId((prev) => (roomsOfType.some((r) => r.id === prev) ? prev : (roomsOfType[0] ? roomsOfType[0].id : null)));
+    setTime("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [centerId, studyType]);
+
+  const loadDay = useCallback(async () => {
+    const supabase = createClient();
+    if (centerId) {
+      const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", centerId).eq("override_date", date).maybeSingle();
+      setOverride(ov.data || null);
+      const inc = await supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", centerId).in("status", ["active", "planned"]);
+      setIncidents(inc.data || []);
+    }
+    if (!roomId) { setDayEntries([]); return; }
+    // Знеособлена зайнятість через RPC (без ПІБ/телефонів інших пацієнтів).
+    const { data } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
+    setDayEntries(data || []);
+  }, [centerId, roomId, date]);
+
+  useEffect(() => { let live = true; (async () => { await loadDay(); })(); return () => { live = false; }; }, [loadDay]);
+  // Підстраховка: оновити зайнятість при поверненні на вкладку.
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "visible") loadDay(); };
+    document.addEventListener("visibilitychange", onVis); window.addEventListener("focus", onVis);
+    return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); };
+  }, [loadDay]);
 
   const dateObj = new Date(date + "T00:00:00");
   const roomSched = roomScheduleFor(dateObj, roomId, override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
-  const busySlots = dayEntries.filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) }));
+  const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) }));
   const slots = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
   function slotState(slot) {
     const a = toMin(slot), b = a + dur;
@@ -101,7 +132,7 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
     if (busySlots.some((x) => a < x.e && x.s < b)) return "tight";
     return "free";
   }
-  const valid = name.trim() && dob && phone.trim() && region && time && roomId && !roomSched.closed && slotState(time) === "free";
+  const valid = centerId && name.trim() && dob && phone.trim() && region && time && roomId && !roomSched.closed && slotState(time) === "free";
 
   async function submit() {
     if (!valid || busy) return;
@@ -109,19 +140,15 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
     const supabase = createClient();
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), hh, mm).toISOString();
-    // повторна перевірка слота перед вставкою (його могли зайняти, поки відкрита форма)
+    // Повторна перевірка зайнятості через RPC (слот могли зайняти, поки відкрита форма).
     const startMin2 = hh * 60 + mm, endMin2 = startMin2 + (dur || 30);
-    const { data: clash } = await supabase
-      .from("queue_entries").select("scheduled_time, duration_min")
-      .eq("room_id", roomId).eq("scheduled_date", date)
-      .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
+    const { data: clash } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
     if ((clash || []).some((q) => {
-      const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
-      const qs = (qh || 0) * 60 + (qm || 0);
+      const qs = toMin(q.scheduled_time);
       return qs < endMin2 && startMin2 < qs + (q.duration_min || 30);
     })) { setBusy(false); onCreated(null, "Слот щойно зайняли — оновіть сторінку й оберіть інший час"); return; }
     const { error } = await supabase.from("queue_entries").insert({
-      clinic_id: clinicId, room_id: roomId, patient_name: name.trim(), patient_phone: phone.trim(),
+      clinic_id: centerId, room_id: roomId, patient_name: name.trim(), patient_phone: phone.trim(),
       patient_dob: dob, patient_age: calcAge(dob),
       studies: [{ type: studyType, region, contrast: false, dur, price: studyPrice(studyType, region, false) }], duration_min: dur,
       scheduled_date: date, scheduled_time: time, scheduled_at: at,
@@ -133,9 +160,25 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
     onCreated(name.trim());
   }
 
+  if (activeCenters.length === 0) {
+    return (
+      <div style={{ maxWidth: 560, margin: "0 auto" }}>
+        <div className="empty"><div className="ei">🏥</div><div className="et">Немає авторизованих центрів</div><div className="es">Додайте центр у вкладці «Мої центри» — після підтвердження зможете створювати направлення.</div></div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ maxWidth: 720, margin: "0 auto" }}>
       <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 24 }}>
+        <div className="bk-section-label" style={{ marginTop: 0 }}>Центр</div>
+        <label className="fld">
+          <span className="fld-lab">Куди направляємо *</span>
+          <select className="inp" value={centerId} onChange={(e) => { setCenterId(e.target.value); setTime(""); }}>
+            {activeCenters.map((c) => <option key={c.clinicId} value={c.clinicId}>{centerLabel(c)}</option>)}
+          </select>
+        </label>
+
         <div className="bk-section-label">Пацієнт</div>
         <label className="fld"><span className="fld-lab">ПІБ *</span><input className="inp" placeholder="Прізвище Ім'я По батькові" value={name} onChange={(e) => setName(e.target.value)} /></label>
         <div className="fld-row">
@@ -162,17 +205,27 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
         </div>
         <label className="fld"><span className="fld-lab">Клінічне питання / коментар</span><textarea className="inp" rows={2} placeholder="Показання, що шукаємо, особливості…" value={comment} onChange={(e) => setComment(e.target.value)} /></label>
 
-        <div className="bk-section-label" style={{ marginTop: 8 }}>Запис у клініку</div>
-        {!room ? (
-          <div className="ctx-hint red">У клініці немає кабінету типу {studyType}.</div>
+        <div className="bk-section-label" style={{ marginTop: 8 }}>Запис у кабінет</div>
+        {roomsOfType.length === 0 ? (
+          <div className="ctx-hint red">У цьому центрі немає кабінету типу {studyType}.</div>
         ) : (
           <>
+            {roomsOfType.length > 1 && (
+              <div className="bd-rooms" style={{ marginBottom: 10 }}>
+                {roomsOfType.map((r) => (
+                  <button key={r.id} className={"bd-room" + (roomId === r.id ? " active" : "")} onClick={() => { setRoomId(r.id); setTime(""); }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
+                    <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+                    <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="fld-row">
               <label className="fld" style={{ maxWidth: 180 }}><span className="fld-lab">Дата</span><input className="inp tabular" type="date" min={dateVal(new Date())} value={date} onChange={(e) => { setDate(e.target.value); setTime(""); }} /></label>
-              <div className="fld"><span className="fld-lab">Кабінет</span><div className="inp" style={{ display: "flex", alignItems: "center" }}>{room.name} · {modalityLabel(room.modality)}</div></div>
+              <div className="fld"><span className="fld-lab">Кабінет</span><div className="inp" style={{ display: "flex", alignItems: "center" }}>{room ? room.name + " · " + modalityLabel(room.modality) : "—"}</div></div>
             </div>
-            {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room.name} не працює {date}{override && override.label ? " · " + override.label : ""}.</div>}
-            {!roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room.name} на ремонті/ТО у частині дня. Оберіть вільний слот або інший день.</div>}
+            {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {date}{override && override.label ? " · " + override.label : ""}.</div>}
+            {!roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО у частині дня. Оберіть вільний слот або інший день.</div>}
             <div className="fld">
               <span className="fld-lab">Вільні слоти · блок {dur} хв</span>
               <div className="bk-slot-grid">
@@ -195,25 +248,40 @@ function NewReferral({ clinicId, rooms, doctorName, doctorId, onCreated }) {
 }
 
 /* ---------- Вкладка «Мої направлення» ---------- */
-function MyReferrals({ referrals, onReschedule }) {
+function MyReferrals({ referrals, centersById, onReschedule, onCancel }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [centerFilter, setCenterFilter] = useState("all");
   const [selected, setSelected] = useState(null);
+
+  const centerOptions = useMemo(() => {
+    const ids = Array.from(new Set(referrals.map((r) => r.clinic_id)));
+    return ids.map((id) => ({ id, label: centerLabel(centersById[id]) }));
+  }, [referrals, centersById]);
 
   const filtered = referrals.filter((r) => {
     if (filter === "active") { if (!["waiting", "in_progress"].includes(r.status)) return false; }
     else if (filter !== "all" && r.status !== filter) return false;
+    if (centerFilter !== "all" && r.clinic_id !== centerFilter) return false;
     if (query.trim()) { const q = query.trim().toLowerCase(); if (!((r.patient_name || "").toLowerCase().includes(q) || procLabel(r).toLowerCase().includes(q))) return false; }
     return true;
   });
 
+  const canCancel = (r) => ["scheduled", "waiting"].includes(r.status);
+
   return (
-    <div style={{ maxWidth: 980, margin: "0 auto", display: "flex", gap: 16 }}>
+    <div style={{ maxWidth: 1000, margin: "0 auto", display: "flex", gap: 16 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="qctrl" style={{ marginBottom: 12 }}>
+        <div className="qctrl" style={{ marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
           <div className="pills">
             {FILTERS.map((f) => <button key={f.key} className={"pill" + (filter === f.key ? " active" : "")} onClick={() => setFilter(f.key)}>{f.label}</button>)}
           </div>
+          {centerOptions.length > 1 && (
+            <select className="inp" style={{ maxWidth: 220, height: 32, padding: "2px 8px" }} value={centerFilter} onChange={(e) => setCenterFilter(e.target.value)}>
+              <option value="all">Усі центри</option>
+              {centerOptions.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          )}
           <div className="spacer" />
           <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
         </div>
@@ -227,7 +295,7 @@ function MyReferrals({ referrals, onReschedule }) {
                 <div key={r.id} onClick={() => setSelected(r)} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", background: "var(--card)", border: "1px solid " + (selected && selected.id === r.id ? "var(--blue)" : "var(--border)"), borderRadius: "var(--r-md)", cursor: "pointer" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 14 }}>{r.patient_name}</div>
-                    <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{procLabel(r)}</div>
+                    <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{procLabel(r)} · <span style={{ color: "var(--text-secondary)" }}>🏥 {centerLabel(centersById[r.clinic_id])}</span></div>
                   </div>
                   <div style={{ fontSize: 12.5, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{r.scheduled_date} · {r.scheduled_time}</div>
                   <span className={"badge " + m.cls}>{m.label}</span>
@@ -250,14 +318,23 @@ function MyReferrals({ referrals, onReschedule }) {
             <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", rowGap: 10, columnGap: 10, fontSize: 13 }}>
               <span style={{ color: "var(--text-muted)" }}>Пацієнт</span><span>{selected.patient_name}</span>
               <span style={{ color: "var(--text-muted)" }}>Телефон</span><span>{selected.patient_phone || "—"}</span>
+              <span style={{ color: "var(--text-muted)" }}>Центр</span><span>{centerLabel(centersById[selected.clinic_id])}</span>
               <span style={{ color: "var(--text-muted)" }}>Дослідження</span><span>{procLabel(selected)}</span>
               <span style={{ color: "var(--text-muted)" }}>Дата · час</span><span>{selected.scheduled_date} · {selected.scheduled_time}</span>
               <span style={{ color: "var(--text-muted)" }}>Статус</span><span><span className={"badge " + m.cls}>{m.label}</span></span>
               {selected.indication && <><span style={{ color: "var(--text-muted)" }}>Питання</span><span>{selected.indication}</span></>}
               {selected.status === "no_show" && selected.note && <><span style={{ color: "var(--red)" }}>Причина</span><span>{selected.note}</span></>}
             </div>
-            {selected.status !== "done" && selected.status !== "cancelled" && (
-              <button className="btn btn-primary btn-sm" style={{ width: "100%", justifyContent: "center", marginTop: 16 }} onClick={() => onReschedule(selected)}>🗓 Перезаписати</button>
+            {selected.status !== "done" && selected.status !== "cancelled" && selected.status !== "no_show" && (
+              <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                <button className="btn btn-primary btn-sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => onReschedule(selected)}>🗓 Перезаписати</button>
+                {canCancel(selected) && (
+                  <button className="btn btn-secondary btn-sm qd-act-red" style={{ justifyContent: "center" }} onClick={() => { onCancel(selected); setSelected(null); }}>Скасувати</button>
+                )}
+              </div>
+            )}
+            {!canCancel(selected) && selected.status === "in_progress" && (
+              <div className="ctx-hint blue" style={{ marginTop: 10, fontSize: 12 }}>Дослідження вже почалося — скасування лише через центр.</div>
             )}
           </aside>
         );
@@ -266,15 +343,140 @@ function MyReferrals({ referrals, onReschedule }) {
   );
 }
 
-export default function ReferralPortal({ clinicId, rooms, clinicName, doctorName, doctorId }) {
+/* ---------- Вкладка «Мої центри» ---------- */
+function MyCenters({ centers, canManage, onChanged, notify }) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [busyId, setBusyId] = useState(null);
+
+  const knownIds = useMemo(() => new Set(centers.map((c) => c.clinicId)), [centers]);
+  const invites = centers.filter((c) => c.status === "pending_referrer");
+  const active = centers.filter((c) => c.status === "active");
+  const awaiting = centers.filter((c) => c.status === "pending_clinic");
+  const history = centers.filter((c) => c.status === "revoked" || c.status === "declined");
+
+  async function search() {
+    setSearching(true);
+    const supabase = createClient();
+    const { data } = await supabase.rpc("search_clinics", { q: q.trim() });
+    setResults((data || []).filter((c) => !knownIds.has(c.id)));
+    setSearching(false);
+  }
+
+  async function sendRequest(clinicId) {
+    setBusyId(clinicId);
+    const { ok, data } = await postJSON("/api/referral/access/request", { clinic_id: clinicId });
+    setBusyId(null);
+    if (!ok) { notify(data.error || "Помилка", "error"); return; }
+    notify("Запит надіслано — очікуйте підтвердження центру", "success");
+    setResults((rs) => rs.filter((r) => r.id !== clinicId));
+    onChanged();
+  }
+
+  async function decide(accessId, decision) {
+    setBusyId(accessId);
+    const { ok, data } = await postJSON("/api/referral/access/decide", { access_id: accessId, decision });
+    setBusyId(null);
+    if (!ok) { notify(data.error || "Помилка", "error"); return; }
+    notify(decision === "approve" ? "Запрошення прийнято" : decision === "revoke" ? "Доступ відкликано" : "Відхилено", "success");
+    onChanged();
+  }
+
+  const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 18, marginBottom: 14 };
+  function Row({ c, children }) {
+    const m = ACCESS_ST[c.status] || ACCESS_ST.active;
+    return (
+      <div style={{ padding: "12px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{c.name}</div>
+          <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{c.city || "—"}{c.status === "active" ? " · режим: " + (c.policy === "confirm" ? "з підтвердженням" : "пряма черга") : ""}</div>
+        </div>
+        <span className={"badge " + m.cls}>{m.label}</span>
+        {children}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 820, margin: "0 auto" }}>
+      {canManage && (
+        <div style={card}>
+          <div className="bk-section-label" style={{ marginTop: 0 }}>Додати центр</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input className="inp" placeholder="Назва або місто центру…" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
+            <button className="btn btn-secondary" onClick={search} disabled={searching}>{searching ? "Пошук…" : "Знайти"}</button>
+          </div>
+          {results.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              {results.map((r) => (
+                <div key={r.id} style={{ padding: "10px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.name}</div>
+                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{r.city || "—"}{Array.isArray(r.modalities) && r.modalities.length ? " · " + r.modalities.map(modalityLabel).join(", ") : ""}</div>
+                  </div>
+                  <button className="btn btn-primary btn-sm" disabled={busyId === r.id} onClick={() => sendRequest(r.id)}>{busyId === r.id ? "…" : "Надіслати запит"}</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {invites.length > 0 && (
+        <div style={card}>
+          <div className="bk-section-label" style={{ marginTop: 0 }}>Запрошення центрів ({invites.length})</div>
+          {invites.map((c) => (
+            <Row key={c.accessId} c={c}>
+              <button className="btn btn-primary btn-sm" disabled={busyId === c.accessId} onClick={() => decide(c.accessId, "approve")}>Прийняти</button>
+              <button className="btn btn-secondary btn-sm" disabled={busyId === c.accessId} onClick={() => decide(c.accessId, "decline")}>Відхилити</button>
+            </Row>
+          ))}
+        </div>
+      )}
+
+      <div style={card}>
+        <div className="bk-section-label" style={{ marginTop: 0 }}>Активні центри ({active.length})</div>
+        {active.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає активних центрів.</div>
+          : active.map((c) => (
+            <Row key={c.accessId || c.clinicId} c={c}>
+              {canManage && c.accessId && <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === c.accessId} onClick={() => { if (window.confirm("Відкликати доступ до «" + c.name + "»? Створені направлення лишаться у центрі, нові ви створювати не зможете.")) decide(c.accessId, "revoke"); }}>Відкликати</button>}
+            </Row>
+          ))}
+      </div>
+
+      {awaiting.length > 0 && (
+        <div style={card}>
+          <div className="bk-section-label" style={{ marginTop: 0 }}>Очікують підтвердження ({awaiting.length})</div>
+          {awaiting.map((c) => <Row key={c.accessId} c={c} />)}
+        </div>
+      )}
+
+      {history.length > 0 && (
+        <div style={card}>
+          <div className="bk-section-label" style={{ marginTop: 0 }}>Історія</div>
+          {history.map((c) => <Row key={c.accessId} c={c} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function ReferralPortal({ role, centers, roomsByClinic, doctorName, doctorId }) {
   const router = useRouter();
+  const canManage = role === "referrer";
   async function signOut() {
     const supabase = createClient();
     await supabase.auth.signOut();
     router.push("/login");
     router.refresh();
   }
-  const [tab, setTab] = useState("new");
+
+  const activeCenters = useMemo(() => centers.filter((c) => c.status === "active"), [centers]);
+  const centersById = useMemo(() => { const m = {}; centers.forEach((c) => { m[c.clinicId] = c; }); return m; }, [centers]);
+  const pendingInvites = centers.filter((c) => c.status === "pending_referrer").length;
+
+  const [tab, setTab] = useState(() => (activeCenters.length === 0 ? "centers" : "new"));
   const [referrals, setReferrals] = useState([]);
   const [reschedFor, setReschedFor] = useState(null);
   const [toast, setToast] = useState(null);
@@ -286,18 +488,28 @@ export default function ReferralPortal({ clinicId, rooms, clinicName, doctorName
     const supabase = createClient();
     const { data } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, status, studies, doctor, note, indication, room_id")
-      .eq("clinic_id", clinicId).eq("created_by", doctorId)
+      .select("id, clinic_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, status, studies, doctor, note, indication, room_id")
+      .eq("created_by", doctorId)
       .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
     setReferrals(data || []);
-  }, [clinicId, doctorId]);
+  }, [doctorId]);
 
   useEffect(() => {
-    reload();
     const supabase = createClient();
-    const channel = supabase.channel("ref-" + clinicId).on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "clinic_id=eq." + clinicId }, () => reload()).subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [clinicId, reload]);
+    let channel; let cancelled = false;
+    (async () => {
+      try { const { data: { session } } = await supabase.auth.getSession(); if (session?.access_token) supabase.realtime.setAuth(session.access_token); } catch { /* ignore */ }
+      if (cancelled) return;
+      reload();
+      channel = supabase.channel("ref-" + doctorId)
+        .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "created_by=eq." + doctorId }, () => reload())
+        .subscribe();
+    })();
+    const onVis = () => { if (document.visibilityState === "visible") reload(); };
+    document.addEventListener("visibilitychange", onVis); window.addEventListener("focus", onVis);
+    const t = setInterval(reload, 12000);
+    return () => { cancelled = true; document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); clearInterval(t); if (channel) supabase.removeChannel(channel); };
+  }, [doctorId, reload]);
 
   async function doReschedule({ roomId, date, time, dur }) {
     const p = reschedFor; if (!p) return;
@@ -310,7 +522,17 @@ export default function ReferralPortal({ clinicId, rooms, clinicName, doctorName
     notify("Перенесено", "success"); reload();
   }
 
-  const recent = referrals.slice(0, 5);
+  async function doCancel(entry) {
+    if (!entry) return;
+    const supabase = createClient();
+    const { error } = await supabase.from("queue_entries").update({ status: "cancelled" }).eq("id", entry.id);
+    if (error) { notify("Помилка скасування: " + error.message, "error"); return; }
+    notify("Направлення скасовано", "success"); reload();
+  }
+
+  function onCentersChanged() { router.refresh(); }
+
+  const reschedRooms = reschedFor ? (roomsByClinic[reschedFor.clinic_id] || []) : [];
 
   return (
     <div style={{ minHeight: "100vh", background: "var(--bg)", color: "var(--text)", fontFamily: "var(--font)" }}>
@@ -318,7 +540,7 @@ export default function ReferralPortal({ clinicId, rooms, clinicName, doctorName
         <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 19, fontWeight: 700, color: "var(--blue)" }}>
           <span style={{ width: 9, height: 9, borderRadius: "50%", background: "var(--blue)", boxShadow: "0 0 10px var(--blue)" }} />
           Referral RadFlow
-          <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>· {clinicName}</span>
+          <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>· {activeCenters.length} {activeCenters.length === 1 ? "центр" : "центрів"}</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>🩺 {doctorName}</span>
@@ -329,35 +551,24 @@ export default function ReferralPortal({ clinicId, rooms, clinicName, doctorName
       <div style={{ display: "flex", gap: 4, padding: "16px 28px 0", maxWidth: 1040, margin: "0 auto" }}>
         <button className={"pill" + (tab === "new" ? " active" : "")} onClick={() => setTab("new")}>Нове направлення</button>
         <button className={"pill" + (tab === "mine" ? " active" : "")} onClick={() => setTab("mine")}>Мої направлення <span className="ct">({referrals.length})</span></button>
+        <button className={"pill" + (tab === "centers" ? " active" : "")} onClick={() => setTab("centers")}>Мої центри{pendingInvites > 0 ? <span className="ct" style={{ background: "var(--blue)", color: "#fff" }}>{pendingInvites}</span> : null}</button>
       </div>
 
       <div style={{ padding: "20px 28px 50px" }}>
-        {tab === "new" ? (
-          <>
-            <NewReferral clinicId={clinicId} rooms={rooms} doctorName={doctorName} doctorId={doctorId} onCreated={(nm, err) => { if (err) notify("Помилка: " + err, "error"); else { notify("Направлення відправлено: " + nm, "success"); reload(); setTab("mine"); } }} />
-            {recent.length > 0 && (
-              <div style={{ maxWidth: 720, margin: "20px auto 0" }}>
-                <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8 }}>Останні направлення</div>
-                {recent.map((r) => {
-                  const m = ST[r.status] || ST.scheduled;
-                  return (
-                    <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 12px", background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", marginBottom: 6, fontSize: 13 }}>
-                      <span style={{ flex: 1 }}>{r.patient_name} · <span style={{ color: "var(--text-muted)" }}>{procLabel(r)}</span></span>
-                      <span style={{ color: "var(--text-muted)" }}>{r.scheduled_date} {r.scheduled_time}</span>
-                      <span className={"badge " + m.cls}>{m.label}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </>
-        ) : (
-          <MyReferrals referrals={referrals} onReschedule={(r) => setReschedFor(r)} />
+        {tab === "new" && (
+          <NewReferral activeCenters={activeCenters} roomsByClinic={roomsByClinic} doctorName={doctorName} doctorId={doctorId}
+            onCreated={(nm, err) => { if (err) notify("Помилка: " + err, "error"); else { notify("Направлення відправлено: " + nm, "success"); reload(); setTab("mine"); } }} />
+        )}
+        {tab === "mine" && (
+          <MyReferrals referrals={referrals} centersById={centersById} onReschedule={(r) => setReschedFor(r)} onCancel={doCancel} />
+        )}
+        {tab === "centers" && (
+          <MyCenters centers={centers} canManage={canManage} onChanged={onCentersChanged} notify={notify} />
         )}
       </div>
 
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+        <RescheduleModal patient={reschedFor} rooms={reschedRooms} clinicId={reschedFor.clinic_id} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
       {toast && (
         <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>{toast.msg}</div>

@@ -59,6 +59,22 @@ drop policy if exists sched_referrer_read on public.schedule_overrides;
 create policy sched_referrer_read on public.schedule_overrides for select
   using (clinic_id in (select public.auth_referrer_clinics()));
 
+-- ---------- profiles: адмін центру читає профілі направників, повʼязаних із його центром ----------
+--  Глобальний направник має clinic_id IS NULL, тож наявна profiles_select
+--  (clinic_id = auth_clinic_id()) його НЕ показує адміну. Потрібно для екрана
+--  «Лікарі-направники» (показати ПІБ/email за грантами свого центру).
+--  Підзапит виконується в контексті адміна → ra_clinic_select (auth_is_admin) пропускає.
+drop policy if exists profiles_referrer_linked_read on public.profiles;
+create policy profiles_referrer_linked_read on public.profiles for select
+  using (
+    role = 'referrer'
+    and exists (
+      select 1 from public.referral_access ra
+       where ra.referrer_id = public.profiles.id
+         and ra.clinic_id = public.auth_clinic_id()
+    )
+  );
+
 -- ---------- clinics: направник бачить картки центрів, де має ЗВ'ЯЗОК (active або pending) ----------
 --  (Пошук НОВИХ центрів — через search_clinics RPC у 0025, не через цю політику.)
 drop policy if exists clinics_referrer_read on public.clinics;

@@ -1,9 +1,11 @@
 "use client";
 
-/* ===== RadFlow — Лікарі-направники (адмін) =====
-   Адміністратор створює акаунт лікаря-направника вручну (логін, ПІБ, телефон,
-   email, примітка, місце роботи). Пароль лікар задає сам на /set-password;
-   адміністратор може скинути або задати пароль. Кабінети не призначаються. */
+/* ===== RadFlow — Лікарі-направники (адмін, крос-клінічна модель) =====
+   Доступ направника до центру = referral_access. Адмін центру:
+   • запрошує направника за email (глобальний акаунт) → /api/referrers/invite;
+   • підтверджує/відхиляє запити направників (status='pending_clinic');
+   • відкликає активний доступ.
+   Пароль направник задає сам на /set-password. */
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -11,13 +13,30 @@ import Sidebar from "@/components/Sidebar";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
-const EMPTY = { login: "", full_name: "", email: "", phone: "", note: "", workplace: "" };
+const EMPTY = { email: "", full_name: "", login: "", phone: "", note: "", policy: "direct" };
+
+const ACCESS_ST = {
+  active: { label: "Активний", cls: "green" },
+  pending_clinic: { label: "Запит на доступ", cls: "yellow" },
+  pending_referrer: { label: "Запрошено — очікує лікаря", cls: "blue" },
+  revoked: { label: "Відкликано", cls: "gray" },
+  declined: { label: "Відхилено", cls: "gray" },
+};
+
+async function postJSON(url, body) {
+  try {
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, data };
+  } catch { return { ok: false, data: { error: "Помилка зʼєднання із сервером" } }; }
+}
 
 export default function ReferrersManager({ clinicId, rooms, clinicName, adminName }) {
-  const [referrers, setReferrers] = useState([]);
+  const [rows, setRows] = useState([]);   // { access_id, status, policy, note, referrer:{full_name,email,phone} }
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState(EMPTY);
   const [busy, setBusy] = useState(false);
+  const [busyId, setBusyId] = useState(null);
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
 
@@ -26,58 +45,67 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
 
   const reload = useCallback(async () => {
     const supabase = createClient();
-    const { data: profs } = await supabase.from("profiles").select("id, login, full_name, email, phone, note, workplace, password_set").eq("clinic_id", clinicId).eq("role", "referrer").order("full_name");
-    setReferrers(profs || []);
+    const { data: access } = await supabase
+      .from("referral_access")
+      .select("id, referrer_id, status, policy, note, created_at")
+      .eq("clinic_id", clinicId)
+      .order("created_at", { ascending: false });
+    const list = access || [];
+    const ids = Array.from(new Set(list.map((a) => a.referrer_id)));
+    const profById = {};
+    if (ids.length) {
+      const { data: profs } = await supabase.from("profiles").select("id, full_name, email, phone, password_set").in("id", ids);
+      (profs || []).forEach((p) => { profById[p.id] = p; });
+    }
+    setRows(list.map((a) => ({ access_id: a.id, referrer_id: a.referrer_id, status: a.status, policy: a.policy, note: a.note, referrer: profById[a.referrer_id] || {} })));
     setLoading(false);
   }, [clinicId]);
 
   useEffect(() => { reload(); }, [reload]);
 
-  async function createAccount() {
-    if (!form.login.trim() || !form.full_name.trim() || !form.email.trim()) { notify("Заповніть логін, ПІБ та email", "error"); return; }
+  async function invite() {
+    if (!form.email.trim()) { notify("Вкажіть email лікаря", "error"); return; }
     setBusy(true);
-    try {
-      const res = await fetch("/api/staff", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: "referrer", ...form }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) { notify(data.error || "Помилка створення", "error"); setBusy(false); return; }
-      setForm(EMPTY);
-      notify("Лікаря створено. Передайте йому логін — пароль він задасть на /set-password.", "success");
-      reload();
-    } catch { notify("Помилка зʼєднання із сервером", "error"); }
+    const { ok, data } = await postJSON("/api/referrers/invite", form);
     setBusy(false);
+    if (!ok) { notify(data.error || "Помилка", "error"); return; }
+    setForm(EMPTY);
+    notify(data.status === "active" ? "Доступ активовано (лікар уже надсилав запит)" : data.created_account ? "Акаунт створено й запрошено. Лікар задасть пароль на /set-password." : "Запрошення надіслано лікарю.", "success");
+    reload();
   }
 
-  async function resetPassword(profileId, label) {
-    if (!window.confirm(`Скинути пароль для «${label}»?\n\nПоточний пароль перестане діяти. Користувач задасть новий на /set-password за своїм логіном.`)) return;
-    const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: profileId, action: "reset" }) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { notify(data.error || "Помилка", "error"); return; }
-    setReferrers((rs) => rs.map((r) => (r.id === profileId ? { ...r, password_set: false } : r)));
-    notify("Пароль скинуто — користувач задасть новий на /set-password", "info");
+  async function decide(accessId, decision) {
+    setBusyId(accessId);
+    const { ok, data } = await postJSON("/api/referral/access/decide", { access_id: accessId, decision });
+    setBusyId(null);
+    if (!ok) { notify(data.error || "Помилка", "error"); return; }
+    notify(decision === "approve" ? "Доступ підтверджено" : decision === "revoke" ? "Доступ відкликано" : "Запит відхилено", "success");
+    reload();
   }
-  async function setPassword(profileId) {
-    const pw = window.prompt("Новий пароль (мінімум 8 символів):");
-    if (pw == null) return;
-    if (pw.length < 8) { notify("Пароль мінімум 8 символів", "error"); return; }
-    const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: profileId, action: "set", password: pw }) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { notify(data.error || "Помилка", "error"); return; }
-    setReferrers((rs) => rs.map((r) => (r.id === profileId ? { ...r, password_set: true } : r)));
-    notify("Пароль встановлено", "success");
-  }
-  async function deleteReferrer(profileId, label) {
-    if (!window.confirm(`Видалити акаунт лікаря-направника «${label}» назавжди?\n\nБудуть видалені: обліковий запис і профіль. Створені ним направлення (записи пацієнтів) залишаться. Дію не можна скасувати.`)) return;
-    const supabase = createClient();
-    const { error } = await supabase.rpc("delete_clinic_member", { target: profileId });
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
-    setReferrers((rs) => rs.filter((r) => r.id !== profileId));
-    notify("Акаунт лікаря видалено", "info");
-  }
+
+  const requests = rows.filter((r) => r.status === "pending_clinic");
+  const active = rows.filter((r) => r.status === "active");
+  const invited = rows.filter((r) => r.status === "pending_referrer");
+  const history = rows.filter((r) => r.status === "revoked" || r.status === "declined");
 
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20, marginBottom: 16 };
+
+  function Row({ r, children }) {
+    const m = ACCESS_ST[r.status] || ACCESS_ST.active;
+    const name = r.referrer.full_name || r.referrer.email || "Лікар";
+    return (
+      <div style={{ padding: "14px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 180 }}>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{name}</div>
+          <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{r.referrer.email || "—"}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
+          {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
+          {r.status === "active" && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"}</div>}
+        </div>
+        <span className={"badge " + m.cls}>{m.label}</span>
+        {children}
+      </div>
+    );
+  }
 
   return (
     <div className="app">
@@ -91,50 +119,72 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
         </header>
 
         <div className="content" style={{ overflowY: "auto", padding: "22px", maxWidth: 900 }}>
-          {/* Додати лікаря */}
+          {/* Запросити лікаря */}
           <div style={card}>
-            <div className="bk-section-label" style={{ marginTop: 0 }}>Додати лікаря-направника</div>
-            <div className="fld-row">
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Логін *</span><input className="inp" placeholder="логін для входу" value={form.login} onChange={(e) => setF("login", e.target.value)} /></label>
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">ПІБ *</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setF("full_name", e.target.value)} /></label>
-            </div>
+            <div className="bk-section-label" style={{ marginTop: 0 }}>Запросити лікаря-направника</div>
             <div className="fld-row">
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email *</span><input className="inp" type="email" placeholder="doctor@clinic.ua" value={form.email} onChange={(e) => setF("email", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">ПІБ</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setF("full_name", e.target.value)} /></label>
+            </div>
+            <div className="fld-row">
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Логін</span><input className="inp" placeholder="логін для входу (якщо новий акаунт)" value={form.login} onChange={(e) => setF("login", e.target.value)} /></label>
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон</span><input className="inp" type="tel" placeholder="+380 XX XXX XX XX" value={form.phone} onChange={(e) => setF("phone", e.target.value)} /></label>
             </div>
-            <label className="fld"><span className="fld-lab">Місце роботи</span><input className="inp" placeholder="Клініка / лікарня направника" value={form.workplace} onChange={(e) => setF("workplace", e.target.value)} /></label>
-            <label className="fld"><span className="fld-lab">Пароль</span><input className="inp" placeholder="Порожній — користувач задасть сам на /set-password" disabled /></label>
-            <label className="fld"><span className="fld-lab">Примітка</span><input className="inp" placeholder="Коротка примітка (необовʼязково)" value={form.note} onChange={(e) => setF("note", e.target.value)} /></label>
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
-              <button className="btn btn-primary" disabled={busy} onClick={createAccount}>{busy ? "Створюємо…" : "Створити акаунт"}</button>
+            <div className="fld-row">
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Режим бронювання</span>
+                <select className="inp" value={form.policy} onChange={(e) => setF("policy", e.target.value)}>
+                  <option value="direct">Пряма черга (одразу в чергу)</option>
+                  <option value="confirm">З підтвердженням оператора</option>
+                </select>
+              </label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Примітка</span><input className="inp" placeholder="напр. спеціалізація" value={form.note} onChange={(e) => setF("note", e.target.value)} /></label>
             </div>
-            <div className="hint-blue">Пароль не задається тут: передайте лікарю його <b>логін</b>, він встановить пароль на <b>/set-password</b>. Забув пароль — ви скинете кнопкою нижче.</div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
+              <button className="btn btn-primary" disabled={busy} onClick={invite}>{busy ? "Надсилаємо…" : "Запросити"}</button>
+            </div>
+            <div className="hint-blue">Якщо акаунта ще немає — створимо глобальний акаунт направника й надішлемо запрошення. Пароль лікар задасть на <b>/set-password</b> за логіном.</div>
           </div>
 
-          {/* Лікарі */}
+          {/* Запити на доступ */}
+          {requests.length > 0 && (
+            <div style={card}>
+              <div className="bk-section-label" style={{ marginTop: 0 }}>Запити на доступ ({requests.length})</div>
+              {requests.map((r) => (
+                <Row key={r.access_id} r={r}>
+                  <button className="btn btn-primary btn-sm" disabled={busyId === r.access_id} onClick={() => decide(r.access_id, "approve")}>Підтвердити</button>
+                  <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={() => decide(r.access_id, "decline")}>Відхилити</button>
+                </Row>
+              ))}
+            </div>
+          )}
+
+          {/* Активні */}
           <div style={card}>
-            <div className="bk-section-label" style={{ marginTop: 0 }}>Лікарі-направники клініки ({referrers.length})</div>
-            {loading ? (
-              <div style={{ color: "var(--text-muted)", padding: 8 }}>Завантаження…</div>
-            ) : referrers.length === 0 ? (
-              <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає лікарів-направників. Додайте їх вище.</div>
-            ) : referrers.map((r) => (
-              <div key={r.id} style={{ padding: "14px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                <div style={{ flex: 1, minWidth: 180 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14 }}>{r.full_name || r.login || r.email}</div>
-                  <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
-                    {r.login ? "@" + r.login + " · " : ""}{r.email}{r.phone ? " · " + r.phone : ""}
-                  </div>
-                  {r.workplace && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>🏥 {r.workplace}</div>}
-                  {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
-                </div>
-                <span className={"badge " + (r.password_set ? "green" : "yellow")}>{r.password_set ? "🔒 Пароль встановлено" : "Пароль не задано"}</span>
-                <button className="btn btn-secondary btn-sm" title="Користувач задасть пароль наново" onClick={() => resetPassword(r.id, r.full_name || r.login)}>Скинути пароль</button>
-                <button className="btn btn-secondary btn-sm" title="Задати пароль вручну" onClick={() => setPassword(r.id)}>Задати пароль</button>
-                <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити акаунт назавжди" onClick={() => deleteReferrer(r.id, r.full_name || r.login)}>🗑</button>
-              </div>
-            ))}
+            <div className="bk-section-label" style={{ marginTop: 0 }}>Активні направники ({active.length})</div>
+            {loading ? <div style={{ color: "var(--text-muted)", padding: 8 }}>Завантаження…</div>
+              : active.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає активних направників. Запросіть лікаря вище.</div>
+              : active.map((r) => (
+                <Row key={r.access_id} r={r}>
+                  <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === r.access_id} onClick={() => { if (window.confirm("Відкликати доступ для «" + (r.referrer.full_name || r.referrer.email) + "»?\n\nСтворені ним направлення лишаться. Нові він створювати не зможе.")) decide(r.access_id, "revoke"); }}>Відкликати доступ</button>
+                </Row>
+              ))}
           </div>
+
+          {/* Запрошені (очікують лікаря) */}
+          {invited.length > 0 && (
+            <div style={card}>
+              <div className="bk-section-label" style={{ marginTop: 0 }}>Запрошені — очікують прийняття ({invited.length})</div>
+              {invited.map((r) => <Row key={r.access_id} r={r} />)}
+            </div>
+          )}
+
+          {/* Історія */}
+          {history.length > 0 && (
+            <div style={card}>
+              <div className="bk-section-label" style={{ marginTop: 0 }}>Історія</div>
+              {history.map((r) => <Row key={r.access_id} r={r} />)}
+            </div>
+          )}
         </div>
       </div>
 
