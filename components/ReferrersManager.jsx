@@ -221,8 +221,9 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                   {(rooms || []).map((r) => {
                     const on = form.room_ids.includes(r.id);
                     return (
-                      <button type="button" key={r.id} className={"bd-room" + (on ? " active" : "")} onClick={() => toggleRoom(r.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}>
-                        <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+                      <button type="button" key={r.id} className="bd-room" onClick={() => toggleRoom(r.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}
+                        style={{ padding: "5px 9px", gap: 8, borderColor: on ? "var(--green)" : undefined, background: on ? "var(--green-bg)" : undefined }}>
+                        <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")} style={{ width: 26, height: 26, fontSize: 10 }}>{modalityLabel(r.modality)}</span>
                         <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
                       </button>
                     );
@@ -278,8 +279,9 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                             {(rooms || []).map((rm) => {
                               const on = editForm.room_ids.includes(rm.id);
                               return (
-                                <button type="button" key={rm.id} className={"bd-room" + (on ? " active" : "")} onClick={() => toggleEditRoom(rm.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}>
-                                  <span className={"bd-room-kind " + (rm.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(rm.modality)}</span>
+                                <button type="button" key={rm.id} className="bd-room" onClick={() => toggleEditRoom(rm.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}
+                                  style={{ padding: "5px 9px", gap: 8, borderColor: on ? "var(--green)" : undefined, background: on ? "var(--green-bg)" : undefined }}>
+                                  <span className={"bd-room-kind " + (rm.modality === "MRI" ? "mrt" : "ct")} style={{ width: 26, height: 26, fontSize: 10 }}>{modalityLabel(rm.modality)}</span>
                                   <span className="bd-room-meta"><span className="bd-room-name">{rm.name}</span><span className="bd-room-model">{rm.apparatus_model || ""}</span></span>
                                 </button>
                               );
