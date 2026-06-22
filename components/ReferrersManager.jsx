@@ -13,7 +13,9 @@ import Sidebar from "@/components/Sidebar";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
-const EMPTY = { email: "", full_name: "", login: "", phone: "", note: "", policy: "direct" };
+const EMPTY = { email: "", full_name: "", login: "", phone: "", note: "", policy: "direct", modalities: ["MRI", "CT"] };
+const MOD_LABEL = { MRI: "МРТ", CT: "КТ", OTHER: "Інше" };
+function modsLabel(mods) { return !mods || mods.length === 0 ? "усі" : mods.map((m) => MOD_LABEL[m] || m).join(", "); }
 
 const ACCESS_ST = {
   active: { label: "Активний", cls: "green" },
@@ -47,7 +49,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     const supabase = createClient();
     const { data: access } = await supabase
       .from("referral_access")
-      .select("id, referrer_id, status, policy, note, created_at")
+      .select("id, referrer_id, status, policy, modalities, note, created_at")
       .eq("clinic_id", clinicId)
       .order("created_at", { ascending: false });
     const list = access || [];
@@ -57,7 +59,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
       const { data: profs } = await supabase.from("profiles").select("id, full_name, email, phone, password_set").in("id", ids);
       (profs || []).forEach((p) => { profById[p.id] = p; });
     }
-    setRows(list.map((a) => ({ access_id: a.id, referrer_id: a.referrer_id, status: a.status, policy: a.policy, note: a.note, referrer: profById[a.referrer_id] || {} })));
+    setRows(list.map((a) => ({ access_id: a.id, referrer_id: a.referrer_id, status: a.status, policy: a.policy, modalities: a.modalities, note: a.note, referrer: profById[a.referrer_id] || {} })));
     setLoading(false);
   }, [clinicId]);
 
@@ -66,11 +68,19 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   async function invite() {
     if (!form.email.trim()) { notify("Вкажіть email лікаря", "error"); return; }
     setBusy(true);
-    const { ok, data } = await postJSON("/api/referrers/invite", form);
+    // Рівно одна обрана модальність → обмеження; обидві/жодної → усі (null).
+    const modalities = form.modalities.length === 1 ? form.modalities : null;
+    const { ok, data } = await postJSON("/api/referrers/invite", { ...form, modalities });
     setBusy(false);
     if (!ok) { notify(data.error || "Помилка", "error"); return; }
     setForm(EMPTY);
-    notify(data.status === "active" ? "Доступ активовано (лікар уже надсилав запит)" : data.created_account ? "Акаунт створено й запрошено. Лікар задасть пароль на /set-password." : "Запрошення надіслано лікарю.", "success");
+    if (data.status === "active") {
+      notify("Доступ активовано (лікар уже надсилав запит)", "success");
+    } else if (data.created_account) {
+      notify("Акаунт створено. Передайте лікарю логін «" + (data.login || "—") + "» — пароль він задасть на /set-password, далі прийме запрошення у «Мої центри».", "info");
+    } else {
+      notify("Запрошення надіслано. Лікар прийме його у вкладці «Мої центри».", "success");
+    }
     reload();
   }
 
@@ -99,7 +109,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           <div style={{ fontWeight: 600, fontSize: 14 }}>{name}</div>
           <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{r.referrer.email || "—"}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
           {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
-          {r.status === "active" && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"}</div>}
+          {r.status === "active" && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Модальності: {modsLabel(r.modalities)}</div>}
         </div>
         <span className={"badge " + m.cls}>{m.label}</span>
         {children}
@@ -138,6 +148,19 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                 </select>
               </label>
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Примітка</span><input className="inp" placeholder="напр. спеціалізація" value={form.note} onChange={(e) => setF("note", e.target.value)} /></label>
+            </div>
+            <div className="fld">
+              <span className="fld-lab">Доступні модальності</span>
+              <div style={{ display: "flex", gap: 18, alignItems: "center", paddingTop: 4 }}>
+                {[["MRI", "МРТ"], ["CT", "КТ"]].map(([code, label]) => (
+                  <label key={code} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13, cursor: "pointer" }}>
+                    <input type="checkbox" checked={form.modalities.includes(code)}
+                      onChange={(e) => setF("modalities", e.target.checked ? Array.from(new Set([...form.modalities, code])) : form.modalities.filter((m) => m !== code))} />
+                    {label}
+                  </label>
+                ))}
+                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>обидві = усі</span>
+              </div>
             </div>
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
               <button className="btn btn-primary" disabled={busy} onClick={invite}>{busy ? "Надсилаємо…" : "Запросити"}</button>

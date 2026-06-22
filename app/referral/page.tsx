@@ -21,6 +21,7 @@ type Center = {
   clinicId: string;
   status: string;
   policy: string;
+  modalities: string[] | null;
   name: string;
   city: string | null;
 };
@@ -53,7 +54,7 @@ export default async function ReferralPage() {
     // Глобальний направник: членство — лише через referral_access.
     const { data: access } = await supabase
       .from("referral_access")
-      .select("id, clinic_id, status, policy")
+      .select("id, clinic_id, status, policy, modalities")
       .eq("referrer_id", user.id);
     const list = access ?? [];
     const clinicIds = Array.from(new Set(list.map((a) => a.clinic_id as string)));
@@ -70,6 +71,7 @@ export default async function ReferralPage() {
         clinicId: a.clinic_id as string,
         status: a.status as string,
         policy: (a.policy as string) ?? "direct",
+        modalities: (a.modalities as string[] | null) ?? null,
         name: clinicsById[a.clinic_id as string]?.name ?? "Центр",
         city: clinicsById[a.clinic_id as string]?.city ?? null,
       });
@@ -96,7 +98,7 @@ export default async function ReferralPage() {
       .single();
     if (clinic && !clinic.configured_at) redirect("/setup");
     if (clinic) {
-      centers.push({ accessId: null, clinicId: clinic.id as string, status: "active", policy: "direct", name: (clinic.name as string) ?? "", city: (clinic.city as string) ?? null });
+      centers.push({ accessId: null, clinicId: clinic.id as string, status: "active", policy: "direct", modalities: null, name: (clinic.name as string) ?? "", city: (clinic.city as string) ?? null });
       const { data: rooms } = await supabase
         .from("rooms")
         .select("id, name, modality, apparatus_model, clinic_id")

@@ -25,6 +25,8 @@ export async function POST(req: Request) {
   const accessId = String(body.access_id || "").trim();
   const decision = String(body.decision || "").trim(); // approve | decline | revoke
   const policy = body.policy === "confirm" ? "confirm" : body.policy === "direct" ? "direct" : null;
+  const ALLOWED_MODALITIES = ["MRI", "CT", "OTHER"];
+  const mods = Array.isArray(body.modalities) ? body.modalities.filter((m: unknown) => ALLOWED_MODALITIES.includes(String(m))) : null;
   if (!accessId || !["approve", "decline", "revoke"].includes(decision)) {
     return NextResponse.json({ error: "Некоректні параметри" }, { status: 400 });
   }
@@ -60,8 +62,11 @@ export async function POST(req: Request) {
 
   const nextStatus = decision === "approve" ? "active" : "declined";
   const patch: Record<string, unknown> = { status: nextStatus, decided_at: new Date().toISOString() };
-  // Центр при підтвердженні може одразу задати policy (direct/confirm); дефолт лишається 'direct'.
-  if (nextStatus === "active" && isClinicAdmin && policy) patch.policy = policy;
+  // Центр при підтвердженні може одразу задати policy (direct/confirm) і дозволені модальності.
+  if (nextStatus === "active" && isClinicAdmin) {
+    if (policy) patch.policy = policy;
+    if (mods !== null) patch.modalities = mods.length ? mods : null; // [] → усі
+  }
 
   const { error } = await admin.from("referral_access").update(patch).eq("id", row.id);
   if (error) return NextResponse.json({ error: "Помилка: " + error.message }, { status: 400 });

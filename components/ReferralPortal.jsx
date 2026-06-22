@@ -80,12 +80,24 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const [busy, setBusy] = useState(false);
 
   const modality = studyType === "КТ" ? "CT" : "MRI";
+  const selCenter = activeCenters.find((c) => c.clinicId === centerId) || null;
+  const allowedMods = selCenter && Array.isArray(selCenter.modalities) && selCenter.modalities.length ? selCenter.modalities : null; // null = усі
+  const modAllowed = (code) => !allowedMods || allowedMods.includes(code);
   const rooms = roomsByClinic[centerId] || [];
   const roomsOfType = rooms.filter((r) => r.modality === modality);
   const room = roomsOfType.find((r) => r.id === roomId) || null;
   const regions = regionsFor(studyType);
   const regionObj = regions.find((r) => r.label === region);
   const dur = regionObj ? regionObj.dur : (studyType === "КТ" ? 20 : 45);
+
+  // Якщо центр обмежує модальності — переключаємо тип на дозволений.
+  useEffect(() => {
+    if (!modAllowed(studyType === "КТ" ? "CT" : "MRI")) {
+      if (modAllowed("MRI")) setStudyType("МРТ"); else if (modAllowed("CT")) setStudyType("КТ");
+      setRegion(""); setTime("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [centerId]);
 
   // Дефолтний кабінет при зміні центру/модальності.
   useEffect(() => {
@@ -191,8 +203,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
           <div className="fld" style={{ flex: "0 0 130px" }}>
             <span className="fld-lab">Тип *</span>
             <div className="bk-seg">
-              <button className={"bk-seg-btn" + (studyType === "МРТ" ? " active mrt" : "")} onClick={() => { setStudyType("МРТ"); setRegion(""); setTime(""); }}>МРТ</button>
-              <button className={"bk-seg-btn" + (studyType === "КТ" ? " active ct" : "")} onClick={() => { setStudyType("КТ"); setRegion(""); setTime(""); }}>КТ</button>
+              {modAllowed("MRI") && <button className={"bk-seg-btn" + (studyType === "МРТ" ? " active mrt" : "")} onClick={() => { setStudyType("МРТ"); setRegion(""); setTime(""); }}>МРТ</button>}
+              {modAllowed("CT") && <button className={"bk-seg-btn" + (studyType === "КТ" ? " active ct" : "")} onClick={() => { setStudyType("КТ"); setRegion(""); setTime(""); }}>КТ</button>}
             </div>
           </div>
           <label className="fld" style={{ flex: 1 }}>

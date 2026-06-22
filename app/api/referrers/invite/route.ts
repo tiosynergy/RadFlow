@@ -9,7 +9,10 @@ import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 //                                       (clinic_id = NULL) + pending_referrer
 // На відміну від /api/staff (садить у клініку), тут акаунт глобальний:
 // членство визначається лише через referral_access.
-// body: { email, full_name?, login?, phone?, note?, policy? }
+// body: { email, full_name?, login?, phone?, note?, policy?, modalities? }
+//   modalities: масив ['MRI','CT','OTHER'] або порожній/відсутній → усі.
+const ALLOWED_MODALITIES = ["MRI", "CT", "OTHER"];
+
 export async function POST(req: Request) {
   if (!isAdminConfigured()) {
     return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY не налаштовано на сервері (.env.local)" }, { status: 500 });
@@ -31,6 +34,8 @@ export async function POST(req: Request) {
   const phone = String(body.phone || "").trim() || null;
   const note = String(body.note || "").trim() || null;
   const policy = body.policy === "confirm" ? "confirm" : "direct";
+  const mods = Array.isArray(body.modalities) ? body.modalities.filter((m: unknown) => ALLOWED_MODALITIES.includes(String(m))) : [];
+  const modalities = mods.length ? mods : null; // null = усі
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return NextResponse.json({ error: "Вкажіть коректний email" }, { status: 400 });
   }
@@ -40,11 +45,12 @@ export async function POST(req: Request) {
   // Чи вже є направник із таким email?
   const { data: existingProf } = await admin
     .from("profiles")
-    .select("id, role")
+    .select("id, role, login")
     .ilike("email", email)
     .maybeSingle();
 
   let referrerId: string;
+  let referrerLogin: string | null = login;
   let createdAccount = false;
 
   if (existingProf) {
@@ -52,6 +58,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Цей email належить персоналу, а не лікарю-направнику" }, { status: 409 });
     }
     referrerId = existingProf.id;
+    referrerLogin = (existingProf.login as string) || login;
   } else {
     // Створюємо глобальний referrer-акаунт (clinic_id = NULL).
     const tempPass = "Rf!" + crypto.randomUUID().replace(/-/g, "");
@@ -92,25 +99,29 @@ export async function POST(req: Request) {
     .eq("clinic_id", me.clinic_id)
     .maybeSingle();
 
+  let resultStatus = "pending_referrer";
+
   if (existing) {
     if (existing.status === "active") return NextResponse.json({ error: "Доступ уже активний" }, { status: 409 });
-    if (existing.status === "pending_referrer") return NextResponse.json({ ok: true, id: existing.id, status: "pending_referrer", created_account: createdAccount });
-    if (existing.status === "pending_clinic") {
+    if (existing.status === "pending_referrer") {
+      await admin.from("referral_access").update({ policy, modalities, note }).eq("id", existing.id);
+      resultStatus = "pending_referrer";
+    } else if (existing.status === "pending_clinic") {
       // Направник уже сам надіслав запит — підтверджуємо одразу (обидві сторони згодні).
-      await admin.from("referral_access").update({ status: "active", policy, decided_at: new Date().toISOString() }).eq("id", existing.id);
-      return NextResponse.json({ ok: true, id: existing.id, status: "active", created_account: createdAccount });
+      await admin.from("referral_access").update({ status: "active", policy, modalities, decided_at: new Date().toISOString() }).eq("id", existing.id);
+      resultStatus = "active";
+    } else {
+      // revoked / declined → перевідкриваємо запрошенням.
+      await admin.from("referral_access").update({ status: "pending_referrer", policy, modalities, initiated_by: user.id, note, decided_at: null }).eq("id", existing.id);
+      resultStatus = "pending_referrer";
     }
-    // revoked / declined → перевідкриваємо запрошенням.
-    await admin.from("referral_access").update({ status: "pending_referrer", policy, initiated_by: user.id, note, decided_at: null }).eq("id", existing.id);
-    return NextResponse.json({ ok: true, id: existing.id, status: "pending_referrer", created_account: createdAccount });
+  } else {
+    const { error: iErr } = await admin
+      .from("referral_access")
+      .insert({ referrer_id: referrerId, clinic_id: me.clinic_id, status: "pending_referrer", policy, modalities, initiated_by: user.id, note });
+    if (iErr) return NextResponse.json({ error: "Помилка створення запрошення: " + iErr.message }, { status: 400 });
+    resultStatus = "pending_referrer";
   }
 
-  const { data: ra, error: iErr } = await admin
-    .from("referral_access")
-    .insert({ referrer_id: referrerId, clinic_id: me.clinic_id, status: "pending_referrer", policy, initiated_by: user.id, note })
-    .select("id")
-    .single();
-  if (iErr) return NextResponse.json({ error: "Помилка створення запрошення: " + iErr.message }, { status: 400 });
-
-  return NextResponse.json({ ok: true, id: ra.id, status: "pending_referrer", created_account: createdAccount });
+  return NextResponse.json({ ok: true, status: resultStatus, created_account: createdAccount, login: referrerLogin });
 }
