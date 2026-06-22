@@ -156,11 +156,12 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20, marginBottom: 16 };
   const req = <span style={{ color: "var(--red)" }}> *</span>;
 
-  function Row({ r, children, onClick }) {
+  function Row({ r, children, onClick, expandable, expanded }) {
     const m = ACCESS_ST[r.status] || ACCESS_ST.active;
     const name = r.referrer.full_name || r.referrer.login || "Лікар";
     return (
-      <div onClick={onClick} style={{ padding: "14px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
+      <div onClick={onClick} title={expandable ? (expanded ? "Згорнути налаштування" : "Натисніть, щоб змінити налаштування") : undefined} style={{ padding: "14px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
+        {expandable && <span style={{ color: "var(--text-muted)", fontSize: 13, width: 12, flexShrink: 0, display: "inline-block", transition: "transform .15s", transform: expanded ? "rotate(90deg)" : "none" }}>▸</span>}
         <div style={{ flex: 1, minWidth: 180 }}>
           <div style={{ fontWeight: 600, fontSize: 14 }}>{name}</div>
           <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{r.referrer.login ? "@" + r.referrer.login : ""}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
@@ -257,8 +258,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
               : active.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає активних направників. Запросіть лікаря вище.</div>
               : active.map((r) => (
                 <div key={r.access_id}>
-                  <Row r={r} onClick={() => (editingId === r.access_id ? setEditingId(null) : startEdit(r))}>
-                    <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); (editingId === r.access_id ? setEditingId(null) : startEdit(r)); }}>{editingId === r.access_id ? "Згорнути" : "Змінити"}</button>
+                  <Row r={r} expandable expanded={editingId === r.access_id} onClick={() => (editingId === r.access_id ? setEditingId(null) : startEdit(r))}>
                     <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відкликати доступ для «" + (r.referrer.full_name || r.referrer.login) + "»?\n\nСтворені ним направлення лишаться. Нові він створювати не зможе.")) decide(r.access_id, "revoke"); }}>Відкликати доступ</button>
                   </Row>
                   {editingId === r.access_id && (
