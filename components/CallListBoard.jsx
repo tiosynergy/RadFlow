@@ -241,9 +241,12 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
 
   async function setCall(id, call_status) {
     const supabase = createClient();
-    const { error } = await supabase.from("queue_entries").update({ call_status }).eq("id", id);
+    // Відмова = скасування запису (як на дошці черги), інакше дані розходяться між екранами.
+    const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
+    const { error } = await supabase.from("queue_entries").update(patch).eq("id", id);
     if (error) { notify("Помилка: " + error.message, "error"); return; }
-    setEntries((es) => es.map((e) => (e.id === id ? { ...e, call_status } : e)));
+    setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch } : e)));
+    if (call_status === "declined") notify("Пацієнт відмовився — запис скасовано", "info");
     reload();
   }
   async function setNote(id, call_note) {

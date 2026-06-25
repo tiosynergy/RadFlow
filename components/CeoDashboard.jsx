@@ -114,13 +114,35 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
 
   useEffect(() => {
     setLoading(true);
-    reload();
     const supabase = createClient();
-    const channel = supabase
-      .channel("ceo-" + clinicId)
-      .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "clinic_id=eq." + clinicId }, () => reload())
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    let channel;
+    let cancelled = false;
+    (async () => {
+      // Realtime з RLS не доставляє postgres_changes без авторизованого сокета —
+      // ставимо токен сесії перед підпискою (інакше оновлення лише після перезавантаження).
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) supabase.realtime.setAuth(session.access_token);
+      } catch (e) { /* ignore */ }
+      if (cancelled) return;
+      reload();
+      channel = supabase
+        .channel("ceo-" + clinicId)
+        .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "clinic_id=eq." + clinicId }, () => reload())
+        .subscribe();
+    })();
+    // Підстраховка на випадок втрати події realtime: оновлення при поверненні на вкладку + легкий поллінг.
+    const onVis = () => { if (document.visibilityState === "visible") reload(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onVis);
+    const pollTimer = setInterval(reload, 15000);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onVis);
+      clearInterval(pollTimer);
+      if (channel) supabase.removeChannel(channel);
+    };
   }, [clinicId, reload]);
 
   /* KPI */
@@ -136,8 +158,9 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
   const util = capacityMin ? Math.min(100, Math.round((bookedMin / capacityMin) * 100)) : 0;
   const utilColor = util > 70 ? "var(--green)" : util >= 50 ? "var(--orange)" : "var(--red)";
 
-  const revenue = entries.filter((e) => e.status === "done").reduce((s, e) => s + entryRevenue(e), 0);
-  const revenueExact = entries.filter((e) => e.status === "done").every(entryFullyPriced);
+  const doneEntries = entries.filter((e) => e.status === "done");
+  const revenue = doneEntries.reduce((s, e) => s + entryRevenue(e), 0);
+  const revenueExact = doneEntries.length > 0 && doneEntries.every(entryFullyPriced);
 
   /* тижневий графік: total + no_show по днях (Пн–Нд) */
   const wk = today0(); const mon = addDays(wk, -((wk.getDay() + 6) % 7));
@@ -156,7 +179,7 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
 
   /* завантаженість по апаратах */
   const roomUtil = (rooms || []).map((r) => {
-    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show").reduce((s, e) => s + (e.duration_min || 0), 0);
+    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0), 0);
     const cap = 480 * workdays;
     return { name: r.name, kind: modalityLabel(r.modality), pct: cap ? Math.min(100, Math.round((mins / cap) * 100)) : 0, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)" };
   });
@@ -164,7 +187,9 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
   function exportCsv() {
     const head = ["Дата", "Пацієнт", "Процедура", "Кабінет", "Статус", "Дохід"];
     const rows = entries.map((e) => [e.scheduled_date, e.patient_name, procName(e), (roomsById[e.room_id] || {}).name || "", e.status, entryRevenue(e)]);
-    const csv = [head, ...rows].map((r) => r.map((c) => '"' + String(c).replace(/"/g, '""') + '"').join(";")).join("\n");
+    // Захист від CSV-інʼєкції: значення, що починаються з = + - @, екрануємо апострофом.
+    const safe = (c) => { let v = String(c == null ? "" : c); if (/^[=+\-@]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; };
+    const csv = [head, ...rows].map((r) => r.map(safe).join(";")).join("\n");
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "ceo-" + period + ".csv"; a.click(); URL.revokeObjectURL(url);
     notify("Експортовано у CSV");
@@ -234,8 +259,10 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
                       <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
                         <div style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 600 }} className="tabular">{x.total}</div>
                         <div style={{ width: "100%", display: "flex", alignItems: "flex-end", justifyContent: "center", height: 130, position: "relative" }}>
-                          <div style={{ width: 26, height: Math.round((x.total / maxBar) * 130) + "px", background: "var(--blue)", borderRadius: "6px 6px 0 0", minHeight: x.total ? 4 : 0 }} />
-                          {x.noShow > 0 && <div title={x.noShow + " не відбулось"} style={{ position: "absolute", bottom: Math.round((x.total / maxBar) * 130) + 2, width: 10, height: 10, borderRadius: "50%", background: "var(--red)" }} />}
+                          {(() => { const barH = x.total ? Math.max(4, Math.round((x.total / maxBar) * 130)) : 0; return (<>
+                          <div style={{ width: 26, height: barH + "px", background: "var(--blue)", borderRadius: "6px 6px 0 0" }} />
+                          {x.noShow > 0 && <div title={x.noShow + " не відбулось"} style={{ position: "absolute", bottom: barH + 2, width: 10, height: 10, borderRadius: "50%", background: "var(--red)" }} />}
+                        </>); })()}
                         </div>
                         <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{WK_SHORT[i]}</div>
                       </div>

@@ -13,7 +13,9 @@ const REQUIRED = "Це поле обов'язкове";
 export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const redirectTo = searchParams.get("redirect") || "/queue";
+  const rawRedirect = searchParams.get("redirect") || "/queue";
+  // Лише внутрішні шляхи (захист від open-redirect): один "/", без "//" чи "/\".
+  const redirectTo = /^\/(?![/\\])/.test(rawRedirect) ? rawRedirect : "/queue";
 
   const [values, setValues] = useState({ email: "", password: "" });
   const [errors, setErrors] = useState({});

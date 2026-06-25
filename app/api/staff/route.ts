@@ -18,13 +18,16 @@ export async function POST(req: Request) {
   if (!me || me.role !== "admin") return NextResponse.json({ error: "Лише адміністратор" }, { status: 403 });
 
   const body = await req.json().catch(() => ({}));
-  const role = body.role === "referrer" ? "referrer" : "radiologist";
+  // Цей роут створює ЛИШЕ акаунти радіологів. Лікарі-направники мають глобальний
+  // акаунт (clinic_id = NULL) і створюються через /api/referrers/invite — інакше
+  // ламається tenant-модель направника (членство через referral_access).
+  const role = "radiologist";
   const email = String(body.email || "").trim().toLowerCase();
   const login = String(body.login || "").trim();
   const fullName = String(body.full_name || "").trim();
   const phone = String(body.phone || "").trim() || null;
   const note = String(body.note || "").trim() || null;
-  const workplace = role === "referrer" ? (String(body.workplace || "").trim() || null) : null;
+  const workplace: string | null = null; // лише радіологи; поле workplace — для направників
   const roomIds: string[] = Array.isArray(body.room_ids) ? body.room_ids : [];
 
   if (!email || !login || !fullName) {

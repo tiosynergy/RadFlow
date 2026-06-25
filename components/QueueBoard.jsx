@@ -192,7 +192,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
           <div className="rc-free-row"><span className="rc-free-dot" /><span className="rc-free">Кабінет вільний</span></div>
           {nextWaiting && (
             <button className="btn btn-primary btn-sm" onClick={() => onCall(nextWaiting)}>
-              Викликати: {nextWaiting.patient_name.split(" ").slice(0, 2).join(" ")} · {nextWaiting.scheduled_time}
+              Викликати: {(nextWaiting.patient_name || "").split(" ").slice(0, 2).join(" ")} · {nextWaiting.scheduled_time}
             </button>
           )}
         </div>
@@ -1073,7 +1073,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                 <span className="inc-banner-ic">🔴</span>
                 <div className="inc-banner-txt">
                   <div className="inc-banner-title">Термінові пацієнти (CITO): {citoList.length}</div>
-                  <div className="inc-banner-sub">{citoList.slice(0, 3).map((e) => e.patient_name.split(" ").slice(0, 2).join(" ")).join(" · ")}{citoList.length > 3 ? " …" : ""}</div>
+                  <div className="inc-banner-sub">{citoList.slice(0, 3).map((e) => (e.patient_name || "").split(" ").slice(0, 2).join(" ")).join(" · ")}{citoList.length > 3 ? " …" : ""}</div>
                 </div>
                 <button className="btn btn-secondary btn-sm" onClick={() => setFilter("all")}>Показати чергу</button>
               </div>

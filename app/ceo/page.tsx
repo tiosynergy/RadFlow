@@ -17,6 +17,8 @@ export default async function CeoPage() {
   if (!profile) redirect("/login");
   if (profile.role === "radiologist") redirect("/radiologist");
   if (profile.role === "referrer") redirect("/referral");
+  // Дашборд керівника з фінансовими метриками — лише для admin/ceo.
+  if (profile.role !== "admin" && profile.role !== "ceo") redirect("/queue");
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
     | { name?: string; configured_at: string | null }
