@@ -88,6 +88,12 @@ function LiveTimer({ enteredAt, children }) {
   const sec = enteredAt ? Math.max(0, Math.floor((now - new Date(enteredAt).getTime()) / 1000)) : 0;
   return children(sec);
 }
+/* Поточний час (годинник у шапці) — як на дошці радіолога. */
+function LiveClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
+  return <span className="tabular" style={{ fontVariantNumeric: "tabular-nums" }}>🕐 {now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>;
+}
 
 /* ── StatsBar ── */
 function StatsBar({ counts, filter, setFilter }) {
@@ -1042,7 +1048,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
             <span className="tic">▦</span>
             <div>
               <h1>Дошка черги</h1>
-              <div className="date">{fmtFull(selectedDate)}</div>
+              <div className="date">{fmtFull(selectedDate)} · <LiveClock /></div>
             </div>
           </div>
           <div className="tb-right">
