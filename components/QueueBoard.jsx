@@ -18,6 +18,7 @@ import BreakdownModal from "@/components/BreakdownModal";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import { roomScheduleFor, dayStatus } from "@/lib/schedule";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
+import { diffStudies, studyText } from "@/lib/studies";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock } from "@/lib/incidents";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -382,19 +383,22 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
       <div className="qrow-detail-wrap">
         <div className="qrow-detail-inner">
           <div className="qrow-detail">
-            {Array.isArray(p.studies) && p.studies.length > 0 && (
-              <div style={{ marginBottom: 8 }}>
-                <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{p.studies.length > 1 ? "Дослідження (" + p.studies.length + ")" : "Дослідження"}</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
-                  {p.studies.map((s, i) => (
-                    <div key={i} style={{ color: "var(--text-secondary)" }}>
-                      {p.studies.length > 1 && <b style={{ color: "var(--text-muted)" }}>{i + 1}. </b>}
-                      {(s.type || "") + (s.region ? " · " + s.region : "") + (s.contrast ? " · з контрастом" : "")}{s.dur ? " · " + s.dur + " хв" : ""}
-                    </div>
-                  ))}
+            {Array.isArray(p.studies) && p.studies.length > 0 && (() => {
+              const sdiff = diffStudies(p.studies_original, p.studies);
+              const changed = sdiff.some((d) => d.state !== "kept");
+              return (
+                <div style={{ marginBottom: 8 }}>
+                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{p.studies.length > 1 ? "Дослідження (" + p.studies.length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено</span>}</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
+                    {sdiff.map((d, i) => (
+                      <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
+                        {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
             {(p.contraindications || p.note) && (
               <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
                 {p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}>⚠ Протипоказання</span>}
@@ -691,7 +695,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const supabase = createClient();
     const { data, error } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, status, call_status, note, studies, contraindications, cito, doctor, room_id, updated_at, in_progress_at")
+      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, status, call_status, note, studies, studies_original, contraindications, cito, doctor, room_id, updated_at, in_progress_at")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .order("scheduled_time", { ascending: true });
@@ -986,7 +990,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       patient_name: b.name, patient_phone: b.phone || null, patient_email: b.email,
       patient_dob: b.dob || null, patient_sex: b.gender || null, patient_age: b.age || null, patient_weight: b.weight,
       contraindications: !!b.hasContra, cito: !!b.cito, has_contrast: (b.studies || []).some((s) => s.contrast),
-      studies: b.studies || [], doctor: b.doctor, note: b.notes, duration_min: b.dur,
+      studies: b.studies || [], studies_original: b.studies || [], doctor: b.doctor, note: b.notes, duration_min: b.dur,
       scheduled_date: dateKey(b.date), scheduled_time: b.time, scheduled_at: at,
       status: "scheduled", call_status: "not_called",
     });

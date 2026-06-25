@@ -14,7 +14,7 @@ import { createClient } from "@/lib/supabase/client";
 import RescheduleModal from "@/components/RescheduleModal";
 import { roomScheduleFor } from "@/lib/schedule";
 import { slotBlockedByIncidents } from "@/lib/incidents";
-import { regionsFor, studyPrice } from "@/lib/studies";
+import { regionsFor, studyPrice, diffStudies, studiesChanged, studyText } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
 
 function pad(n) { return String(n).padStart(2, "0"); }
@@ -162,10 +162,11 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
       const qs = toMin(q.scheduled_time);
       return qs < endMin2 && startMin2 < qs + (q.duration_min || 30);
     })) { setBusy(false); onCreated(null, "Слот щойно зайняли — оновіть сторінку й оберіть інший час"); return; }
+    const studiesArr = [{ type: studyType, region, contrast: false, dur, price: studyPrice(studyType, region, false) }];
     const { error } = await supabase.from("queue_entries").insert({
       clinic_id: centerId, room_id: roomId, patient_name: name.trim(), patient_phone: phone.trim(),
       patient_dob: dob, patient_age: calcAge(dob),
-      studies: [{ type: studyType, region, contrast: false, dur, price: studyPrice(studyType, region, false) }], duration_min: dur,
+      studies: studiesArr, studies_original: studiesArr, duration_min: dur,
       scheduled_date: date, scheduled_time: time, scheduled_at: at,
       status: "scheduled", call_status: "not_called", doctor: doctorName, created_by: doctorId, indication: comment.trim() || null,
     });
@@ -310,7 +311,7 @@ function MyReferrals({ referrals, centersById, onReschedule, onCancel }) {
                 <div key={r.id} onClick={() => setSelected(r)} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", background: "var(--card)", border: "1px solid " + (selected && selected.id === r.id ? "var(--blue)" : "var(--border)"), borderRadius: "var(--r-md)", cursor: "pointer" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 14 }}>{r.patient_name}</div>
-                    <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{procLabel(r)} · <span style={{ color: "var(--text-secondary)" }}>🏥 {centerLabel(centersById[r.clinic_id])}</span></div>
+                    <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{procLabel(r)} · <span style={{ color: "var(--text-secondary)" }}>🏥 {centerLabel(centersById[r.clinic_id])}</span>{studiesChanged(r.studies_original, r.studies) && <span style={{ color: "var(--orange)", marginLeft: 6 }}>✎ змінено клінікою</span>}</div>
                   </div>
                   <div style={{ fontSize: 12.5, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{r.scheduled_date} · {r.scheduled_time}</div>
                   <span className={"badge " + m.cls}>{m.label}</span>
@@ -323,7 +324,10 @@ function MyReferrals({ referrals, centersById, onReschedule, onCancel }) {
       </div>
 
       {selected && (() => {
-        const m = ST[selected.status] || ST.scheduled;
+        const sel = referrals.find((x) => x.id === selected.id) || selected; // живі дані (realtime/полінг)
+        const m = ST[sel.status] || ST.scheduled;
+        const sdiff = diffStudies(sel.studies_original, sel.studies);
+        const changed = studiesChanged(sel.studies_original, sel.studies);
         return (
           <aside style={{ width: 320, flexShrink: 0, background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 18, alignSelf: "flex-start" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -331,24 +335,32 @@ function MyReferrals({ referrals, centersById, onReschedule, onCancel }) {
               <button className="icon-btn" onClick={() => setSelected(null)}>✕</button>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", rowGap: 10, columnGap: 10, fontSize: 13 }}>
-              <span style={{ color: "var(--text-muted)" }}>Пацієнт</span><span>{selected.patient_name}</span>
-              <span style={{ color: "var(--text-muted)" }}>Телефон</span><span>{selected.patient_phone || "—"}</span>
-              <span style={{ color: "var(--text-muted)" }}>Центр</span><span>{centerLabel(centersById[selected.clinic_id])}</span>
-              <span style={{ color: "var(--text-muted)" }}>Дослідження</span><span>{procLabel(selected)}</span>
-              <span style={{ color: "var(--text-muted)" }}>Дата · час</span><span>{selected.scheduled_date} · {selected.scheduled_time}</span>
+              <span style={{ color: "var(--text-muted)" }}>Пацієнт</span><span>{sel.patient_name}</span>
+              <span style={{ color: "var(--text-muted)" }}>Телефон</span><span>{sel.patient_phone || "—"}</span>
+              <span style={{ color: "var(--text-muted)" }}>Центр</span><span>{centerLabel(centersById[sel.clinic_id])}</span>
+              <span style={{ color: "var(--text-muted)" }}>Дослідження{changed && <span style={{ color: "var(--orange)" }}> · змінено</span>}</span>
+              <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {sdiff.map((d, i) => (
+                  <span key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
+                    {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
+                  </span>
+                ))}
+              </span>
+              <span style={{ color: "var(--text-muted)" }}>Дата · час</span><span>{sel.scheduled_date} · {sel.scheduled_time}{sel.duration_min ? " · " + sel.duration_min + " хв" : ""}</span>
               <span style={{ color: "var(--text-muted)" }}>Статус</span><span><span className={"badge " + m.cls}>{m.label}</span></span>
-              {selected.indication && <><span style={{ color: "var(--text-muted)" }}>Питання</span><span>{selected.indication}</span></>}
-              {selected.status === "no_show" && selected.note && <><span style={{ color: "var(--red)" }}>Причина</span><span>{selected.note}</span></>}
+              {sel.indication && <><span style={{ color: "var(--text-muted)" }}>Питання</span><span>{sel.indication}</span></>}
+              {sel.status === "no_show" && sel.note && <><span style={{ color: "var(--red)" }}>Причина</span><span>{sel.note}</span></>}
             </div>
-            {selected.status !== "done" && selected.status !== "cancelled" && selected.status !== "no_show" && (
+            {changed && <div className="ctx-hint" style={{ marginTop: 10, fontSize: 12 }}>Центр скоригував перелік досліджень. <span style={{ color: "var(--green)" }}>Зелені</span> — додані, <span style={{ color: "var(--red)", textDecoration: "line-through" }}>закреслені</span> — прибрані.</div>}
+            {sel.status !== "done" && sel.status !== "cancelled" && sel.status !== "no_show" && (
               <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-                <button className="btn btn-primary btn-sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => onReschedule(selected)}>🗓 Перезаписати</button>
-                {canCancel(selected) && (
-                  <button className="btn btn-secondary btn-sm qd-act-red" style={{ justifyContent: "center" }} onClick={() => { onCancel(selected); setSelected(null); }}>Скасувати</button>
+                <button className="btn btn-primary btn-sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => onReschedule(sel)}>🗓 Перезаписати</button>
+                {canCancel(sel) && (
+                  <button className="btn btn-secondary btn-sm qd-act-red" style={{ justifyContent: "center" }} onClick={() => { onCancel(sel); setSelected(null); }}>Скасувати</button>
                 )}
               </div>
             )}
-            {!canCancel(selected) && selected.status === "in_progress" && (
+            {!canCancel(sel) && sel.status === "in_progress" && (
               <div className="ctx-hint blue" style={{ marginTop: 10, fontSize: 12 }}>Дослідження вже почалося — скасування лише через центр.</div>
             )}
           </aside>
@@ -503,7 +515,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     const supabase = createClient();
     const { data } = await supabase
       .from("queue_entries")
-      .select("id, clinic_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, status, studies, doctor, note, indication, room_id")
+      .select("id, clinic_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, status, studies, studies_original, doctor, note, indication, room_id")
       .eq("created_by", doctorId)
       .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
     setReferrals(data || []);
