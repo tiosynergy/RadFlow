@@ -4,9 +4,12 @@
    Відкривається кліком по імені пацієнта в черзі (адміністратор) або у
    «Моїх направленнях» (лікар-направник). Зміни пишуться в queue_entries і
    миттєво розходяться по ролях через Realtime/полінг.
-   «Лікар-направник» випадає зі списку АКТИВНИХ направників ЦЕНТРУ запису
-   (referral_access → profiles) + довідник doctors центру. У кожного центру
-   власний перелік; направники працюють з багатьма центрами (M2M referral_access). */
+
+   Логіка поля «Лікар-направник»:
+   • якщо запис створив САМ направник (created_by — акаунт направника центру),
+     поле ЗАБЛОКОВАНО — адмін не змінює направника вручну;
+   • якщо запис створив адмін/реєстратор — направника можна обрати зі списку
+     активних направників центру (referral_access → profiles) + довідник doctors. */
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -26,7 +29,8 @@ function calcAge(dob) {
 
 export default function PatientEditModal({ entryId, onClose, onSaved }) {
   const [form, setForm] = useState(null);
-  const [docs, setDocs] = useState([]); // [{key, name, sub}]
+  const [docs, setDocs] = useState([]);       // [{key, name, sub}] — активні направники + довідник
+  const [lockDoctor, setLockDoctor] = useState(false); // запис внесено направником → не редагувати
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -36,22 +40,26 @@ export default function PatientEditModal({ entryId, onClose, onSaved }) {
       const supabase = createClient();
       const { data } = await supabase
         .from("queue_entries")
-        .select("id, clinic_id, patient_name, patient_phone, patient_dob, patient_age, patient_sex, patient_weight, contraindications, doctor, note")
+        .select("id, clinic_id, created_by, patient_name, patient_phone, patient_dob, patient_age, patient_sex, patient_weight, contraindications, doctor, note")
         .eq("id", entryId)
         .maybeSingle();
       if (!live) return;
       setForm(data || {});
       if (data?.clinic_id) {
         const cid = data.clinic_id;
-        // Активні направники центру (акаунти) + довідник лікарів центру.
         const [accRes, docRes] = await Promise.all([
-          supabase.from("referral_access").select("referrer_id").eq("clinic_id", cid).eq("status", "active"),
+          supabase.from("referral_access").select("referrer_id, status").eq("clinic_id", cid),
           supabase.from("doctors").select("id, name, spec").eq("clinic_id", cid).order("name"),
         ]);
-        const refIds = Array.from(new Set((accRes.data || []).map((a) => a.referrer_id)));
+        const access = accRes.data || [];
+        // Чи запис створив направник центру (будь-який статус доступу) → блокуємо зміну.
+        const allRefIds = new Set(access.map((a) => a.referrer_id));
+        if (data.created_by && allRefIds.has(data.created_by)) { if (live) setLockDoctor(true); }
+        // Список для вибору — лише АКТИВНІ направники + довідник.
+        const activeRefIds = Array.from(new Set(access.filter((a) => a.status === "active").map((a) => a.referrer_id)));
         let refProfiles = [];
-        if (refIds.length) {
-          const { data: profs } = await supabase.from("profiles").select("id, full_name").in("id", refIds);
+        if (activeRefIds.length) {
+          const { data: profs } = await supabase.from("profiles").select("id, full_name").in("id", activeRefIds);
           refProfiles = profs || [];
         }
         const seen = new Set();
@@ -81,9 +89,14 @@ export default function PatientEditModal({ entryId, onClose, onSaved }) {
       patient_sex: form.patient_sex || null,
       patient_weight: (w === "" || w == null) ? null : Number(w),
       contraindications: !!form.contraindications,
-      doctor: (form.doctor || "").trim() || null,
       note: (form.note || "").trim() || null,
     };
+    // Направника змінюємо ЛИШЕ якщо запис не внесений самим направником.
+    if (!lockDoctor) {
+      patch.doctor = (form.doctor || "").trim() || null;
+      const selOpt = docs.find((d) => d.name === form.doctor);
+      patch.referrer_id = selOpt && selOpt.key.startsWith("r-") ? selOpt.key.slice(2) : null;
+    }
     const { error } = await supabase.from("queue_entries").update(patch).eq("id", entryId);
     setBusy(false);
     if (error) { setErr("Помилка збереження: " + error.message); return; }
@@ -130,11 +143,18 @@ export default function PatientEditModal({ entryId, onClose, onSaved }) {
                 </label>
               </div>
               <label className="fld"><span className="fld-lab">Лікар-направник</span>
-                <select className="inp" value={curDoctor} onChange={(e) => setF("doctor", e.target.value)}>
-                  <option value="">— не вказано —</option>
-                  {curDoctor && !knownDoctor && <option value={curDoctor}>{curDoctor}</option>}
-                  {docs.map((d) => <option key={d.key} value={d.name}>{d.name}{d.sub ? " · " + d.sub : ""}</option>)}
-                </select>
+                {lockDoctor ? (
+                  <>
+                    <input className="inp" value={curDoctor || "— не вказано —"} disabled readOnly title="Запис внесено лікарем-направником" />
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>🔒 Запис внесено лікарем-направником — зміна недоступна.</span>
+                  </>
+                ) : (
+                  <select className="inp" value={curDoctor} onChange={(e) => setF("doctor", e.target.value)}>
+                    <option value="">— не вказано —</option>
+                    {curDoctor && !knownDoctor && <option value={curDoctor}>{curDoctor}</option>}
+                    {docs.map((d) => <option key={d.key} value={d.name}>{d.name}{d.sub ? " · " + d.sub : ""}</option>)}
+                  </select>
+                )}
               </label>
               <label className={"rf-check" + (form.contraindications ? " on" : "")} style={{ marginBottom: 10 }}>
                 <input type="checkbox" checked={!!form.contraindications} onChange={(e) => setF("contraindications", e.target.checked)} />

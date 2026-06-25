@@ -170,7 +170,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
       patient_dob: dob, patient_age: calcAge(dob),
       studies: studiesArr, studies_original: studiesArr, duration_min: dur,
       scheduled_date: date, scheduled_time: time, scheduled_at: at,
-      status: "scheduled", call_status: "not_called", doctor: doctorName, created_by: doctorId, indication: comment.trim() || null,
+      status: "scheduled", call_status: "not_called", doctor: doctorName, created_by: doctorId, referrer_id: doctorId, indication: comment.trim() || null,
     });
     setBusy(false);
     if (error) { onCreated(null, /incident/i.test(error.message) ? "Кабінет у простої (ремонт/ТО) у цей час — оберіть інший слот або день" : /overlap|exclusion/i.test(error.message) ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час" : error.message); return; }
@@ -519,7 +519,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     const { data } = await supabase
       .from("queue_entries")
       .select("id, clinic_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, status, studies, studies_original, doctor, note, indication, room_id")
-      .eq("created_by", doctorId)
+      .eq("referrer_id", doctorId)
       .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
     setReferrals(data || []);
   }, [doctorId]);
@@ -532,7 +532,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
       if (cancelled) return;
       reload();
       channel = supabase.channel("ref-" + doctorId)
-        .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "created_by=eq." + doctorId }, () => reload())
+        .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "referrer_id=eq." + doctorId }, () => reload())
         // Зміни доступу до центрів (центр підтвердив/відхилив/відкликав) → перезавантажуємо серверні пропси.
         .on("postgres_changes", { event: "*", schema: "public", table: "referral_access", filter: "referrer_id=eq." + doctorId }, () => router.refresh())
         .subscribe();

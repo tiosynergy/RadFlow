@@ -357,6 +357,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
       proc: combinedLabel, dur: slotDur, studies: allStudies,
       roomId, date: bookDate, time, notes: notes.trim() || null,
       hasContra, cito, doctor: (docs.find((d) => String(d.id) === String(doctorId)) || {}).name || null,
+      referrerId: (() => { const sel = docs.find((d) => String(d.id) === String(doctorId)); return sel && String(sel.id).startsWith("ref:") ? String(sel.id).slice(4) : null; })(),
     });
   }
 

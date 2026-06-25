@@ -979,7 +979,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       return qs < endMin && startMin < qs + (q.duration_min || 30);
     })) { notify("Слот щойно зайняли — оновіть сторінку й оберіть інший час", "error"); return; }
     const { error } = await supabase.from("queue_entries").insert({
-      clinic_id: clinicId, room_id: b.roomId, created_by: user?.id ?? null,
+      clinic_id: clinicId, room_id: b.roomId, created_by: user?.id ?? null, referrer_id: b.referrerId ?? null,
       patient_name: b.name, patient_phone: b.phone || null, patient_email: b.email,
       patient_dob: b.dob || null, patient_sex: b.gender || null, patient_age: b.age || null, patient_weight: b.weight,
       contraindications: !!b.hasContra, cito: !!b.cito, has_contrast: (b.studies || []).some((s) => s.contrast),
