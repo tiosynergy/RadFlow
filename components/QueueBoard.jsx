@@ -340,7 +340,9 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
   const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
   const meta = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
-  const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true; // прогрес статусу — лише в день запису
+  const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
+  const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
+  const canSetStatus = !isFutureRow; // статус/дзвінок можна уточнювати в день запису і для минулих (архівних) днів; для майбутніх — ні
   const [moreOpen, setMoreOpen] = useState(false);
   const proc = procLabel(p);
   const act = (fn) => (e) => { e.stopPropagation(); fn(p); };
@@ -418,8 +420,8 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
                         const m = STEP_META[key];
                         return (
                           <div key={key} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 72 }}>
-                            <button onClick={isTodayRow ? act(() => onSetStatus(p, key)) : undefined} disabled={!isTodayRow} title={isTodayRow ? "Встановити статус: " + m.label : "Зміна статусу доступна в день запису"}
-                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: isTodayRow ? "pointer" : "default",
+                            <button onClick={canSetStatus ? act(() => onSetStatus(p, key)) : undefined} disabled={!canSetStatus} title={canSetStatus ? "Встановити статус: " + m.label : "Майбутній запис — статус зміните в день запису"}
+                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: canSetStatus ? "pointer" : "default",
                                 background: isDone ? "var(--green)" : (isCur ? m.color : "transparent"),
                                 border: "1.5px solid " + ((isDone || isCur) ? "transparent" : "var(--border-strong)"),
                                 color: isDone ? "#04210d" : (isCur ? "#1c1c1e" : "var(--text-faint)") }}>
@@ -1184,7 +1186,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                   <QueueRow key={p.id} p={p} dayDate={selectedDate}
                     roomName={room.name || "—"} roomKind={modalityLabel(room.modality)}
                     expanded={expandedRow === p.id} onToggle={toggleRow}
-                    readOnly={isPast}
+                    readOnly={false}
                     canCall={!currentByRoom[p.room_id]} rescheduling={affectedIds.has(p.id)}
                     onArrive={arrive} onCall={callPatient} onComplete={openComplete}
                     onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onCancel={cancelBooking} onSetStatus={setStatusGuarded} onSetCall={setCall}

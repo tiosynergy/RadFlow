@@ -190,6 +190,8 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
   const meta = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
+  const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
+  const canSetStatus = !isFutureRow; // статус можна уточнювати в день запису і для минулих (архівних) днів; для майбутніх — ні
   const [moreOpen, setMoreOpen] = useState(false);
   const [note, setNote] = useState(noteValue || "");
   useEffect(() => { setNote(noteValue || ""); }, [p.id, noteValue]);
@@ -268,8 +270,8 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                         const m = STEP_META[key];
                         return (
                           <div key={key} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 72 }}>
-                            <button onClick={isTodayRow ? act(() => onSetStatus(p, key)) : undefined} disabled={!isTodayRow} title={isTodayRow ? "Встановити статус: " + m.label : "Зміна статусу доступна в день запису"}
-                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: isTodayRow ? "pointer" : "default",
+                            <button onClick={canSetStatus ? act(() => onSetStatus(p, key)) : undefined} disabled={!canSetStatus} title={canSetStatus ? "Встановити статус: " + m.label : "Майбутній запис — статус зміните в день запису"}
+                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: canSetStatus ? "pointer" : "default",
                                 background: isDone ? "var(--green)" : (isCur ? m.color : "transparent"),
                                 border: "1.5px solid " + ((isDone || isCur) ? "transparent" : "var(--border-strong)"),
                                 color: isDone ? "#04210d" : (isCur ? "#1c1c1e" : "var(--text-faint)") }}>
@@ -439,7 +441,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
   const today = today0();
   const isToday = sameDay(selectedDate, today);
   const isPast = selectedDate < today;
-  const readOnly = isPast;
+  const readOnly = false; // архівні дні теж редаговані — статус/нотатки можна уточнювати постфактум
   const dayKey = dateKey(selectedDate);
   const roomsById = useMemo(() => { const m = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
   const roomIds = useMemo(() => (rooms || []).map((r) => r.id), [rooms]);
