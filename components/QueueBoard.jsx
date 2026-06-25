@@ -12,6 +12,7 @@ import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import BookingModal from "@/components/BookingModal";
+import PatientEditModal from "@/components/PatientEditModal";
 import CompletionModal from "@/components/CompletionModal";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
@@ -324,7 +325,7 @@ const CALL_SEG_STYLE = {
   declined:   { color: "var(--red)",       bg: "var(--red-bg)" },
 };
 
-function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies }) {
+function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient }) {
   const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
   const meta = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
@@ -340,7 +341,7 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
-          <div className="nm">{p.cito && (p.status === "scheduled" || p.status === "waiting" || p.status === "in_progress") && <span className="cito-tag">CITO</span>}{p.patient_name}</div>
+          <div className="nm">{p.cito && (p.status === "scheduled" || p.status === "waiting" || p.status === "in_progress") && <span className="cito-tag">CITO</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient && onEditPatient(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span></div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
             {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
@@ -359,10 +360,12 @@ function QueueRow({ p, dayDate, roomName, roomKind, expanded, onToggle, readOnly
             return <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "#4da3ff" }}>{km}</span>;
           })()}
           <b>{roomName}</b>
+          {roomModel ? <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{roomModel}</span> : null}
         </div>
         <div className="q-status-cell">
           <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
           {rescheduling && <span className="badge red" title="Апарат заблоковано — потрібен перенос на інший слот">🔧 Перезапис</span>}
+          {(p.status === "scheduled" || p.status === "waiting") ? (() => { const cm = CALL_META[p.call_status || "not_called"]; return <span className={"badge " + cm.cls} title={"Дзвінок: " + cm.label} style={{ fontSize: 10.5 }}>{cm.icon} {cm.label}</span>; })() : null}
         </div>
         <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
       </div>
@@ -643,6 +646,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const [completeFor, setCompleteFor] = useState(null);
   const [reschedFor, setReschedFor] = useState(null);
   const [editStudiesFor, setEditStudiesFor] = useState(null);
+  const [editPatientFor, setEditPatientFor] = useState(null);
   const [incidents, setIncidents] = useState([]);
   const [breakdownOpen, setBreakdownOpen] = useState(false);
   const [breakdownRoomId, setBreakdownRoomId] = useState(null);
@@ -1175,13 +1179,13 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                 const room = roomsById[p.room_id] || {};
                 return (
                   <QueueRow key={p.id} p={p} dayDate={selectedDate}
-                    roomName={room.name || "—"} roomKind={modalityLabel(room.modality)}
+                    roomName={room.name || "—"} roomModel={room.apparatus_model || ""} roomKind={modalityLabel(room.modality)}
                     expanded={expandedRow === p.id} onToggle={toggleRow}
                     readOnly={false}
                     canCall={!currentByRoom[p.room_id]} rescheduling={affectedIds.has(p.id)}
                     onArrive={arrive} onCall={callPatient} onComplete={openComplete}
                     onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onCancel={cancelBooking} onSetStatus={setStatusGuarded} onSetCall={setCall}
-                    onReschedule={openReschedule} onEditStudies={openEditStudies} />
+                    onReschedule={openReschedule} onEditStudies={openEditStudies} onEditPatient={(pt) => setEditPatientFor(pt)} />
                 );
               })}
             </div>
@@ -1219,6 +1223,9 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
       {editStudiesFor && (
         <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+      )}
+      {editPatientFor && (
+        <PatientEditModal entryId={editPatientFor.id} onClose={() => setEditPatientFor(null)} onSaved={reload} />
       )}
 
       {breakdownOpen && (

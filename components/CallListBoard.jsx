@@ -46,7 +46,7 @@ function StatusBadge({ status }) {
   return <span className={"badge " + m.cls}>{m.icon} {m.label}</span>;
 }
 
-function CallRow({ p, roomName, dateShort, expanded, onToggle, onSet, onNote, onReschedule, onEditStudies }) {
+function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet, onNote, onReschedule, onEditStudies }) {
   const type = studyKind(p);
   return (
     <div className={"clrow-wrap" + (expanded ? " open" : "")}>
@@ -58,7 +58,7 @@ function CallRow({ p, roomName, dateShort, expanded, onToggle, onSet, onNote, on
         <button className="cl-name cl-name-btn" onClick={() => onToggle(p.id)}>{p.patient_name}</button>
         <div><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>☎ {p.patient_phone}</a></div>
         <div className="cl-proc">{procLabel(p)}</div>
-        <div className="cl-room">{roomName}</div>
+        <div className="cl-room">{roomName}{roomModel ? <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{roomModel}</div> : null}</div>
         <div><StatusBadge status={p.call_status} /></div>
         <div>
           <input key={p.id + ":" + (p.call_note || "")} className="note-input" placeholder="Нотатка…" defaultValue={p.call_note || ""} onBlur={(e) => onNote(p.id, e.target.value)} />
@@ -390,7 +390,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
             ) : (
               <div className="clrows">
                 {filtered.map((p) => (
-                  <CallRow key={p.id} p={p} roomName={(roomsById[p.room_id] || {}).name || "—"} dateShort={shortDate(date)}
+                  <CallRow key={p.id} p={p} roomName={(roomsById[p.room_id] || {}).name || "—"} roomModel={(roomsById[p.room_id] || {}).apparatus_model || ""} dateShort={shortDate(date)}
                     expanded={expandedId === p.id} onToggle={(id) => setExpandedId((x) => (x === id ? null : id))}
                     onSet={setCall} onNote={setNote} onReschedule={(pt) => setReschedFor(pt)} onEditStudies={(pt) => setEditStudiesFor(pt)} />
                 ))}

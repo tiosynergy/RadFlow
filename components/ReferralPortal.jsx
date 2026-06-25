@@ -12,6 +12,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import LiveClock from "@/components/LiveClock";
+import PatientEditModal from "@/components/PatientEditModal";
 import RescheduleModal from "@/components/RescheduleModal";
 import { roomScheduleFor } from "@/lib/schedule";
 import { slotBlockedByIncidents } from "@/lib/incidents";
@@ -265,7 +266,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
 }
 
 /* ---------- Вкладка «Мої направлення» ---------- */
-function MyReferrals({ referrals, centersById, onReschedule, onCancel }) {
+function MyReferrals({ referrals, centersById, onReschedule, onCancel, onEditPatient }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [centerFilter, setCenterFilter] = useState("all");
@@ -311,7 +312,7 @@ function MyReferrals({ referrals, centersById, onReschedule, onCancel }) {
               return (
                 <div key={r.id} onClick={() => setSelected(r)} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", background: "var(--card)", border: "1px solid " + (selected && selected.id === r.id ? "var(--blue)" : "var(--border)"), borderRadius: "var(--r-md)", cursor: "pointer" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{r.patient_name}</div>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{canCancel(r) ? <span onClick={(e) => { e.stopPropagation(); onEditPatient && onEditPatient(r); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{r.patient_name}</span> : r.patient_name}</div>
                     <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{procLabel(r)} · <span style={{ color: "var(--text-secondary)" }}>🏥 {centerLabel(centersById[r.clinic_id])}</span>{studiesChanged(r.studies_original, r.studies) && <span style={{ color: "var(--orange)", marginLeft: 6 }}>✎ змінено клінікою</span>}</div>
                   </div>
                   <div style={{ fontSize: 12.5, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{r.scheduled_date} · {r.scheduled_time}</div>
@@ -505,6 +506,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
   const pendingInvites = centers.filter((c) => c.status === "pending_referrer").length;
 
   const [tab, setTab] = useState(() => (activeCenters.length === 0 ? "centers" : "new"));
+  const [editPatientFor, setEditPatientFor] = useState(null);
   const [referrals, setReferrals] = useState([]);
   const [reschedFor, setReschedFor] = useState(null);
   const [toast, setToast] = useState(null);
@@ -591,7 +593,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
             onCreated={(nm, err) => { if (err) notify("Помилка: " + err, "error"); else { notify("Направлення відправлено: " + nm, "success"); reload(); setTab("mine"); } }} />
         )}
         {tab === "mine" && (
-          <MyReferrals referrals={referrals} centersById={centersById} onReschedule={(r) => setReschedFor(r)} onCancel={doCancel} />
+          <MyReferrals referrals={referrals} centersById={centersById} onReschedule={(r) => setReschedFor(r)} onCancel={doCancel} onEditPatient={(r) => setEditPatientFor(r)} />
         )}
         {tab === "centers" && (
           <MyCenters centers={centers} canManage={canManage} onChanged={onCentersChanged} notify={notify} />
@@ -600,6 +602,9 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
 
       {reschedFor && (
         <RescheduleModal patient={reschedFor} rooms={reschedRooms} clinicId={reschedFor.clinic_id} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+      )}
+      {editPatientFor && (
+        <PatientEditModal entryId={editPatientFor.id} onClose={() => setEditPatientFor(null)} onSaved={reload} />
       )}
       {toast && (
         <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>{toast.msg}</div>
