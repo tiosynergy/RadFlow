@@ -1235,7 +1235,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       )}
 
       {breakdownOpen && (
-        <BreakdownModal rooms={rooms} incidents={liveIncidents} initialRoomId={breakdownRoomId} onClose={() => { setBreakdownOpen(false); setBreakdownRoomId(null); }} onSubmit={submitIncident} onResolve={resolveIncident} />
+        <BreakdownModal rooms={rooms} incidents={liveIncidents} overrides={overrides} initialRoomId={breakdownRoomId} onClose={() => { setBreakdownOpen(false); setBreakdownRoomId(null); }} onSubmit={submitIncident} onResolve={resolveIncident} />
       )}
 
       {schedEditOpen && (

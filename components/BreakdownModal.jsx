@@ -26,7 +26,7 @@ const DURATIONS = [
 ];
 
 /* ── 🔧 Поломка обладнання ── */
-function BreakdownSection({ roomId, room, existing, others, onSave, onResolve }) {
+function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, overrides = {} }) {
   const [open, setOpen] = useState(!existing); // немає події → одразу форма; є → спершу зведення
   const [startDate, setStartDate] = useState(existing ? dateVal(new Date(existing.started_at)) : dateVal(new Date()));
   const [startTime, setStartTime] = useState(existing ? hhmmFromISO(existing.started_at) : nowHHMM());
@@ -36,7 +36,8 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve })
   const [autoUnblock, setAutoUnblock] = useState(existing ? existing.auto_unblock !== false : true);
   const [err, setErr] = useState("");
 
-  const schedEnd = (() => { const d = dtFrom(startDate, "00:00"); return roomScheduleFor(d, roomId, null).end; })();
+  // Кінець дня — за ефективним графіком кабінету на дату початку (з урахуванням особливого графіка/overrides).
+  const schedEnd = (() => { const d = dtFrom(startDate, "00:00"); return roomScheduleFor(d, roomId, overrides[startDate] || null).end; })();
   function blockedUntil(startedAt) {
     if (durKey === "1h") return new Date(startedAt.getTime() + 3600e3);
     if (durKey === "2h") return new Date(startedAt.getTime() + 2 * 3600e3);
@@ -162,7 +163,7 @@ function MaintenanceSection({ roomId, existing, others, onSave, onResolve }) {
   );
 }
 
-export default function BreakdownModal({ rooms, incidents = [], initialRoomId, onClose, onSubmit, onResolve }) {
+export default function BreakdownModal({ rooms, incidents = [], overrides = {}, initialRoomId, onClose, onSubmit, onResolve }) {
   const [roomId, setRoomId] = useState(initialRoomId || (rooms || [])[0]?.id || "");
   const room = (rooms || []).find((r) => r.id === roomId);
   const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
@@ -189,7 +190,7 @@ export default function BreakdownModal({ rooms, incidents = [], initialRoomId, o
             </div>
           </div>
 
-          <BreakdownSection key={"b-" + roomId + "-" + (breakdownInc?.id || "new")} roomId={roomId} room={room} existing={breakdownInc} others={maintenanceInc ? [maintenanceInc] : []} onSave={onSubmit} onResolve={onResolve} />
+          <BreakdownSection key={"b-" + roomId + "-" + (breakdownInc?.id || "new")} roomId={roomId} room={room} existing={breakdownInc} others={maintenanceInc ? [maintenanceInc] : []} onSave={onSubmit} onResolve={onResolve} overrides={overrides} />
           <MaintenanceSection key={"m-" + roomId + "-" + (maintenanceInc?.id || "new")} roomId={roomId} existing={maintenanceInc} others={breakdownInc ? [breakdownInc] : []} onSave={onSubmit} onResolve={onResolve} />
 
           <div className="hint-blue" style={{ marginBottom: 0 }}>⚡ <b>Realtime:</b> зміни миттєво зʼявляться у всіх ролей. Поломка блокує апарат відразу; планове ТО — у вказаний час.</div>
