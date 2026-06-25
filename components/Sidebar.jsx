@@ -5,7 +5,7 @@
    Деякі операції (Колл-лист, Інцидент, Кабінет радіолога) — окремі етапи (disabled). */
 
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
+import { signOutAndRedirect } from "@/lib/auth";
 
 function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function initials(name) {
@@ -14,15 +14,12 @@ function initials(name) {
   return (parts[0][0] + (parts[1] ? parts[1][0] : "")).toUpperCase();
 }
 
-export default function Sidebar({ clinicName, adminName, adminRole, rooms, activeRoom = "all", activeNav, onSelectRoom, onNew, incidentCount = 0, onBreakdown }) {
+export default function Sidebar({ clinicName, adminName, adminRole, roleKey = "admin", rooms, activeRoom = "all", activeNav, onSelectRoom, onNew, incidentCount = 0, onBreakdown }) {
   const router = useRouter();
+  const isAdmin = roleKey === "admin";
+  const isAdminOrCeo = roleKey === "admin" || roleKey === "ceo";
 
-  async function signOut() {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.push("/login");
-    router.refresh();
-  }
+  async function signOut() { await signOutAndRedirect(router); }
 
   const soon = (label) => (
     <span key={label} className="sb-item" title="Незабаром" style={{ opacity: 0.45, cursor: "not-allowed" }}>
@@ -72,17 +69,17 @@ export default function Sidebar({ clinicName, adminName, adminRole, rooms, activ
             {incidentCount ? <span className="sb-badge sb-badge-red">{incidentCount}</span> : null}
           </button>
           {soon("Лікар-направляч")}
-          <a href="/setup" className="sb-item"><span className="ic">₴</span><span className="sb-item-lab">Прайс-лист / Налаштування</span></a>
+          {isAdmin && <a href="/setup" className="sb-item"><span className="ic">₴</span><span className="sb-item-lab">Прайс-лист / Налаштування</span></a>}
         </div>
       </nav>
 
       <div className="sb-settings">
         <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span></a>
-        <a href="/ceo" className={"sb-item" + (activeNav === "ceo" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Дашборд CEO</span></a>
-        <a href="/staff" className={"sb-item" + (activeNav === "staff" ? " active" : "")}><span className="ic">👥</span><span className="sb-item-lab">Радіологи та доступи</span></a>
-        <a href="/referrers" className={"sb-item" + (activeNav === "referrers" ? " active" : "")}><span className="ic">🩺</span><span className="sb-item-lab">Лікарі-направники</span></a>
-        <a href="/referral" className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span></a>
-        <a href="/setup" className="sb-item"><span className="ic">⚙</span><span className="sb-item-lab">Майстер налаштування</span></a>
+        {isAdminOrCeo && <a href="/ceo" className={"sb-item" + (activeNav === "ceo" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Дашборд CEO</span></a>}
+        {isAdmin && <a href="/staff" className={"sb-item" + (activeNav === "staff" ? " active" : "")}><span className="ic">👥</span><span className="sb-item-lab">Радіологи та доступи</span></a>}
+        {isAdmin && <a href="/referrers" className={"sb-item" + (activeNav === "referrers" ? " active" : "")}><span className="ic">🩺</span><span className="sb-item-lab">Лікарі-направники</span></a>}
+        {isAdmin && <a href="/referral" className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span></a>}
+        {isAdmin && <a href="/setup" className="sb-item"><span className="ic">⚙</span><span className="sb-item-lab">Майстер налаштування</span></a>}
       </div>
 
       <div className="sb-user">

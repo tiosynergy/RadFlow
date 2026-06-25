@@ -79,7 +79,7 @@ function ProgressCircle({ pct, color }) {
 
 const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20 };
 
-export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, adminRole }) {
+export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }) {
   const [period, setPeriod] = useState("today");
   const [entries, setEntries] = useState([]);
   const [weekEntries, setWeekEntries] = useState([]);
@@ -202,7 +202,7 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
 
   return (
     <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} rooms={rooms} activeNav="ceo" />
+      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={rooms} activeNav="ceo" />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">

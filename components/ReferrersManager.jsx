@@ -183,7 +183,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
 
   return (
     <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" rooms={rooms} activeNav="referrers" />
+      <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={rooms} activeNav="referrers" />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">

@@ -23,6 +23,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [origin, setOrigin] = useState("");
+  const [pwModal, setPwModal] = useState(null); // { id, val, busy } | null
   const toastTimer = useRef(null);
   const roomsById = useMemo(() => { const m = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
 
@@ -88,15 +89,16 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
     setRadiologists((rs) => rs.map((r) => (r.id === profileId ? { ...r, password_set: false } : r)));
     notify("Пароль скинуто — користувач задасть новий на /set-password", "info");
   }
-  async function setPassword(profileId) {
-    const pw = window.prompt("Новий пароль (мінімум 8 символів):");
-    if (pw == null) return;
-    if (pw.length < 8) { notify("Пароль мінімум 8 символів", "error"); return; }
-    const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: profileId, action: "set", password: pw }) });
+  function setPassword(profileId) { setPwModal({ id: profileId, val: "", busy: false }); }
+  async function submitPassword() {
+    if (!pwModal || pwModal.val.length < 8) { notify("Пароль мінімум 8 символів", "error"); return; }
+    setPwModal((m) => m && { ...m, busy: true });
+    const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: pwModal.id, action: "set", password: pwModal.val }) });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) { notify(data.error || "Помилка", "error"); return; }
-    setRadiologists((rs) => rs.map((r) => (r.id === profileId ? { ...r, password_set: true } : r)));
+    if (!res.ok) { notify(data.error || "Помилка", "error"); setPwModal((m) => m && { ...m, busy: false }); return; }
+    setRadiologists((rs) => rs.map((r) => (r.id === pwModal.id ? { ...r, password_set: true } : r)));
     notify("Пароль встановлено", "success");
+    setPwModal(null);
   }
   async function deleteRadiologist(profileId, label) {
     if (!window.confirm(`Видалити акаунт радіолога «${label}» назавжди?\n\nБудуть видалені: обліковий запис, профіль і доступи до кабінетів. Записи пацієнтів залишаться. Дію не можна скасувати.`)) return;
@@ -129,7 +131,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
 
   return (
     <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" rooms={rooms} activeNav="staff" />
+      <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={rooms} activeNav="staff" />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">
@@ -223,6 +225,24 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
         </div>
       </div>
 
+      {pwModal && (
+        <div className="overlay" onClick={() => !pwModal.busy && setPwModal(null)}>
+          <div className="dialog fade-in" style={{ maxWidth: 380 }} onClick={(e) => e.stopPropagation()}>
+            <div className="dlg-head"><div className="dlg-title">Задати пароль</div><button className="icon-btn" onClick={() => setPwModal(null)}>✕</button></div>
+            <div className="dlg-body">
+              <label className="fld" style={{ marginBottom: 0 }}><span className="fld-lab">Новий пароль (мінімум 8 символів)</span>
+                <input className="inp" type="password" autoFocus value={pwModal.val}
+                  onChange={(e) => setPwModal((m) => m && { ...m, val: e.target.value })}
+                  onKeyDown={(e) => { if (e.key === "Enter") submitPassword(); }} placeholder="Пароль" />
+              </label>
+            </div>
+            <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button className="btn btn-ghost" onClick={() => setPwModal(null)}>Скасувати</button>
+              <button className="btn btn-primary" disabled={pwModal.busy || pwModal.val.length < 8} onClick={submitPassword}>{pwModal.busy ? "Зберігаємо…" : "Встановити"}</button>
+            </div>
+          </div>
+        </div>
+      )}
       {toast && (
         <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5, maxWidth: 440 }}>{toast.msg}</div>
       )}

@@ -153,7 +153,7 @@ function IncidentCallSection({ incident, roomName, affected, onReschedule, onRec
   );
 }
 
-export default function CallListBoard({ clinicId, rooms, clinicName, adminName, adminRole }) {
+export default function CallListBoard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }) {
   const tomorrow = useMemo(() => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(0, 0, 0, 0); return d; }, []);
   const [date, setDate] = useState(tomorrow);
   const [entries, setEntries] = useState([]);
@@ -332,7 +332,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
 
   return (
     <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} rooms={rooms} activeNav="calls" />
+      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={rooms} activeNav="calls" />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">

@@ -649,7 +649,7 @@ function CancelledPanel({ entries, onUndo, onReschedule }) {
   );
 }
 
-export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adminRole }) {
+export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }) {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1046,7 +1046,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   return (
     <div className="app">
       <Sidebar
-        clinicName={clinicName} adminName={adminName} adminRole={adminRole}
+        clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey}
         rooms={rooms} activeRoom={roomView} onSelectRoom={setRoomView} onNew={() => setModalOpen(true)}
         incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(null); setBreakdownOpen(true); }}
       />

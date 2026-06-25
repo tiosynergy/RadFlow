@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
 import { roomScheduleFor, dayStatus } from "@/lib/schedule";
 import { diffStudies, studyText } from "@/lib/studies";
@@ -261,7 +262,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
               const stepIdx = STEP_ORDER.indexOf(p.status);
               const pb = STEP_PRIMARY[p.status] || STEP_PRIMARY.done;
               const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
-              const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall) || !isTodayRow;
+              const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall) || isFutureRow;
               const terminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
               return (
                 <div className="qd-step">
@@ -297,7 +298,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                     ) : (
                       <>
                         <button onClick={advanceDisabled ? undefined : act(advanceFn)} disabled={advanceDisabled}
-                          title={!isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "")}
+                          title={isFutureRow ? "Майбутній запис — дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "")}
                           style={{ flex: 8, minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
                           {pb.icon} {pb.label}
@@ -378,12 +379,7 @@ function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }) {
   const router = useRouter();
   const single = (rooms || []).length === 1;
   const initials = (() => { const p = String(adminName || "").trim().split(/\s+/); return ((p[0] || "Р")[0] + (p[1] ? p[1][0] : "")).toUpperCase(); })();
-  async function signOut() {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.push("/login");
-    router.refresh();
-  }
+  async function signOut() { await signOutAndRedirect(router); }
   return (
     <aside className="sidebar">
       <div className="sb-head">
