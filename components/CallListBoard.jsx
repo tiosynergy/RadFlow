@@ -66,7 +66,7 @@ function CallRow({ p, roomName, dateShort, expanded, onToggle, onSet, onNote, on
         <div className="cl-room">{roomName}</div>
         <div><StatusBadge status={p.call_status} /></div>
         <div>
-          <input className="note-input" placeholder="Нотатка…" defaultValue={p.call_note || ""} onBlur={(e) => onNote(p.id, e.target.value)} />
+          <input key={p.id + ":" + (p.call_note || "")} className="note-input" placeholder="Нотатка…" defaultValue={p.call_note || ""} onBlur={(e) => onNote(p.id, e.target.value)} />
         </div>
         <div className="cl-actions">
           {p.call_status === "confirmed" ? (

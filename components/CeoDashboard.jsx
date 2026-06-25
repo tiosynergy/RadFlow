@@ -152,7 +152,9 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
   const notHeld = entries.filter((e) => e.status === "not_held").length;
   const active = entries.filter((e) => ["scheduled", "waiting", "in_progress"].includes(e.status)).length;
 
-  const workdays = Math.max(1, workdaysBetween(from, to));
+  // Рахуємо лише робочі дні, що вже настали (включно з сьогодні), інакше util
+  // занижується на початку тижня/місяця (знаменник містить майбутні дні).
+  const workdays = Math.max(1, workdaysBetween(from, to < today0() ? to : today0()));
   const capacityMin = (rooms || []).length * 480 * workdays;
   const bookedMin = entries.filter((e) => e.status !== "no_show" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0), 0);
   const util = capacityMin ? Math.min(100, Math.round((bookedMin / capacityMin) * 100)) : 0;

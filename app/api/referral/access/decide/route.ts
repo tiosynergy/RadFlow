@@ -27,9 +27,15 @@ export async function POST(req: Request) {
   const decision = String(body.decision || "").trim(); // approve | decline | revoke
   const policy = body.policy === "confirm" ? "confirm" : body.policy === "direct" ? "direct" : null;
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  const roomIds = Array.isArray(body.room_ids) ? body.room_ids.filter((x: unknown) => UUID_RE.test(String(x))) : null;
+  const rawRoomIds = Array.isArray(body.room_ids) ? body.room_ids.map((x: unknown) => String(x)) : null;
+  const roomIds = rawRoomIds ? rawRoomIds.filter((x: string) => UUID_RE.test(x)) : null;
   if (!accessId || !["approve", "decline", "revoke", "update"].includes(decision)) {
     return NextResponse.json({ error: "Некоректні параметри" }, { status: 400 });
+  }
+  // Якщо передані room_ids, але якісь не пройшли валідацію UUID — це помилка,
+  // а не «усі кабінети» (інакше адмін випадково відкриє доступ до всіх кабінетів).
+  if (rawRoomIds && roomIds && roomIds.length !== rawRoomIds.length) {
+    return NextResponse.json({ error: "Некоректні ідентифікатори кабінетів" }, { status: 400 });
   }
 
   const admin = createAdminClient();

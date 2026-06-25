@@ -26,6 +26,7 @@ export default async function SetupPage() {
   if (!profile) redirect("/login");
   if (profile.role === "radiologist") redirect("/radiologist");
   if (profile.role === "referrer") redirect("/referral");
+  if (profile.role !== "admin") redirect("/queue"); // майстер налаштувань — лише адмін
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
     | { name?: string; city?: string; address?: string; phones?: string[]; emails?: string[] }

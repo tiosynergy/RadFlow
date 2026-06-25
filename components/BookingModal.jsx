@@ -237,7 +237,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
     setContrast(v);
     if (v && region && !allRegions.some((r) => r.label === region && r.contrast)) { setRegion(""); setTime(""); }
   }
-  function calcAge(d) { if (!d) return 0; return Math.floor((Date.now() - new Date(d).getTime()) / (365.25 * 24 * 3600 * 1000)); }
+  function calcAge(d) { if (!d) return 0; const b = new Date(d); if (isNaN(b.getTime())) return 0; const n = new Date(); let a = n.getFullYear() - b.getFullYear(); const m = n.getMonth() - b.getMonth(); if (m < 0 || (m === 0 && n.getDate() < b.getDate())) a--; return a < 0 ? 0 : a; }
 
   const contrastSuffix = contrast ? " з контрастом" : "";
   const procLabel = region ? `${primaryKind} · ${region}${contrastSuffix}` : primaryKind;
