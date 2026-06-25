@@ -41,9 +41,10 @@ const CL_META = {
 };
 const CALL_ORDER = { not_called: 0, to_recall: 1, no_answer: 2, confirmed: 3, declined: 4 };
 
+const CALL_COLOR = { confirmed: "var(--green)", to_recall: "#4da3ff", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
 function StatusBadge({ status }) {
   const m = CL_META[status || "not_called"];
-  return <span className={"badge " + m.cls}>{m.icon} {m.label}</span>;
+  return <span title={m.label} style={{ fontSize: 17, lineHeight: 1, color: CALL_COLOR[status || "not_called"] }}>☎</span>;
 }
 
 function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet, onNote, onReschedule, onEditStudies }) {

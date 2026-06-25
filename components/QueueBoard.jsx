@@ -300,6 +300,8 @@ const CALL_META = {
   declined:   { label: "Відмова", cls: "red", icon: "✕" },
   not_called: { label: "Не дзвонили", cls: "gray", icon: "○" },
 };
+// Колір телефонної піктограми за статусом обдзвону (замість текстових бейджів).
+const CALL_COLOR = { confirmed: "var(--green)", to_recall: "#4da3ff", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
 
 /* Прогрес-крок статусу: happy-path 4 кроки (scheduled→waiting→in_progress→done).
    Пройдені — з ✓, поточний підсвічено; клік по кроку = виправлення статусу. */
@@ -365,7 +367,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         <div className="q-status-cell">
           <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
           {rescheduling && <span className="badge red" title="Апарат заблоковано — потрібен перенос на інший слот">🔧 Перезапис</span>}
-          {(p.status === "scheduled" || p.status === "waiting") ? (() => { const cm = CALL_META[p.call_status || "not_called"]; return <span className={"badge " + cm.cls} title={"Дзвінок: " + cm.label} style={{ fontSize: 10.5 }}>{cm.icon} {cm.label}</span>; })() : null}
+          {(p.status === "scheduled" || p.status === "waiting") ? (() => { const cm = CALL_META[p.call_status || "not_called"]; return <span title={"Дзвінок: " + cm.label} style={{ fontSize: 16, lineHeight: 1, color: CALL_COLOR[p.call_status || "not_called"] }}>☎</span>; })() : null}
         </div>
         <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
       </div>

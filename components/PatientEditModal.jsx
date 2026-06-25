@@ -3,7 +3,9 @@
 /* ===== RadFlow — Редагування даних пацієнта =====
    Відкривається кліком по імені пацієнта в черзі (адміністратор) або у
    «Моїх направленнях» (лікар-направник). Зміни пишуться в queue_entries і
-   миттєво розходяться по ролях через Realtime/полінг. */
+   миттєво розходяться по ролях через Realtime/полінг.
+   «Лікар-направник» — випадає зі списку лікарів ЦЕНТРУ запису (таблиця doctors,
+   у кожного центру свій перелік; RLS обмежує перелік клінікою). */
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -23,6 +25,7 @@ function calcAge(dob) {
 
 export default function PatientEditModal({ entryId, onClose, onSaved }) {
   const [form, setForm] = useState(null);
+  const [doctors, setDoctors] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -32,10 +35,20 @@ export default function PatientEditModal({ entryId, onClose, onSaved }) {
       const supabase = createClient();
       const { data } = await supabase
         .from("queue_entries")
-        .select("id, patient_name, patient_phone, patient_dob, patient_age, patient_sex, patient_weight, contraindications, doctor, note")
+        .select("id, clinic_id, patient_name, patient_phone, patient_dob, patient_age, patient_sex, patient_weight, contraindications, doctor, note")
         .eq("id", entryId)
         .maybeSingle();
-      if (live) setForm(data || {});
+      if (!live) return;
+      setForm(data || {});
+      // Перелік лікарів-направників ЦЕНТРУ запису (у кожного центру власний).
+      if (data?.clinic_id) {
+        const { data: docs } = await supabase
+          .from("doctors")
+          .select("id, name, spec")
+          .eq("clinic_id", data.clinic_id)
+          .order("name");
+        if (live) setDoctors(docs || []);
+      }
     })();
     return () => { live = false; };
   }, [entryId]);
@@ -65,6 +78,9 @@ export default function PatientEditModal({ entryId, onClose, onSaved }) {
     if (onSaved) onSaved();
     if (onClose) onClose();
   }
+
+  const curDoctor = form?.doctor || "";
+  const knownDoctor = doctors.some((d) => d.name === curDoctor);
 
   return (
     <div className="overlay" onClick={() => { if (!busy) onClose(); }}>
@@ -102,7 +118,11 @@ export default function PatientEditModal({ entryId, onClose, onSaved }) {
                 </label>
               </div>
               <label className="fld"><span className="fld-lab">Лікар-направник</span>
-                <input className="inp" value={form.doctor || ""} onChange={(e) => setF("doctor", e.target.value)} />
+                <select className="inp" value={curDoctor} onChange={(e) => setF("doctor", e.target.value)}>
+                  <option value="">— не вказано —</option>
+                  {curDoctor && !knownDoctor && <option value={curDoctor}>{curDoctor}</option>}
+                  {doctors.map((d) => <option key={d.id} value={d.name}>{d.name}{d.spec ? " · " + d.spec : ""}</option>)}
+                </select>
               </label>
               <label className={"rf-check" + (form.contraindications ? " on" : "")} style={{ marginBottom: 10 }}>
                 <input type="checkbox" checked={!!form.contraindications} onChange={(e) => setF("contraindications", e.target.checked)} />
