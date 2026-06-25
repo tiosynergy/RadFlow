@@ -11,6 +11,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import LiveClock from "@/components/LiveClock";
 import RescheduleModal from "@/components/RescheduleModal";
 import { roomScheduleFor } from "@/lib/schedule";
 import { slotBlockedByIncidents } from "@/lib/incidents";
@@ -572,6 +573,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
           <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>· {activeCenters.length} {activeCenters.length === 1 ? "центр" : "центрів"}</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 13, color: "var(--text-secondary)" }}><LiveClock /></span>
           <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>🩺 {doctorName}</span>
           <button className="btn btn-secondary btn-sm" onClick={signOut} title="Вийти з акаунта">Вийти</button>
         </div>

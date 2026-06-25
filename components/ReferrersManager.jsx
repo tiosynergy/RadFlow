@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
+import LiveClock from "@/components/LiveClock";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -188,7 +189,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
         <header className="topbar">
           <div className="tb-title">
             <span className="tic">🩺</span>
-            <div><h1>Лікарі-направники</h1><div className="date">{clinicName}</div></div>
+            <div><h1>Лікарі-направники</h1><div className="date">{clinicName} · <LiveClock /></div></div>
           </div>
         </header>
 

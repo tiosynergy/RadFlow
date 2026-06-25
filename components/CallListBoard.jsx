@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
+import LiveClock from "@/components/LiveClock";
 import { entryInIncidentWindow, incidentExpired } from "@/lib/incidents";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
@@ -330,7 +331,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
             <span className="tic">☎</span>
             <div>
               <h1>Колл-лист</h1>
-              <div className="date">Записи на {fmtFull(date)}</div>
+              <div className="date">Записи на {fmtFull(date)} · <LiveClock /></div>
             </div>
           </div>
           <div className="tb-right">

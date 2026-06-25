@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
+import LiveClock from "@/components/LiveClock";
 import BookingModal from "@/components/BookingModal";
 import CompletionModal from "@/components/CompletionModal";
 import RescheduleModal from "@/components/RescheduleModal";
@@ -87,12 +88,6 @@ function LiveTimer({ enteredAt, children }) {
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   const sec = enteredAt ? Math.max(0, Math.floor((now - new Date(enteredAt).getTime()) / 1000)) : 0;
   return children(sec);
-}
-/* Поточний час (годинник у шапці) — як на дошці радіолога. */
-function LiveClock() {
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
-  return <span className="tabular" style={{ fontVariantNumeric: "tabular-nums" }}>🕐 {now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>;
 }
 
 /* ── StatsBar ── */

@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
+import LiveClock from "@/components/LiveClock";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -136,7 +137,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
         <header className="topbar">
           <div className="tb-title">
             <span className="tic">👥</span>
-            <div><h1>Радіологи та доступи</h1><div className="date">{clinicName}</div></div>
+            <div><h1>Радіологи та доступи</h1><div className="date">{clinicName} · <LiveClock /></div></div>
           </div>
         </header>
 

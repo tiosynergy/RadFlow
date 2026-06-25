@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
+import LiveClock from "@/components/LiveClock";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -207,7 +208,7 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
         <header className="topbar">
           <div className="tb-title">
             <span className="tic">📊</span>
-            <div><h1>Дашборд — Загальний огляд</h1><div className="date">{clinicName} · {periodLabel}</div></div>
+            <div><h1>Дашборд — Загальний огляд</h1><div className="date">{clinicName} · {periodLabel} · <LiveClock /></div></div>
           </div>
           <div className="tb-right">
             <div className="bk-seg">
