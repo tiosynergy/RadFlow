@@ -210,8 +210,21 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
     (async () => {
       if (!clinicId) return;
       const supabase = createClient();
-      const { data } = await supabase.from("doctors").select("id, name, spec, clinic_name, phone").eq("clinic_id", clinicId).order("name");
-      if (!cancel) setDocs(data || []);
+      // Джерело лікарів-направників = довідник doctors + АКТИВНІ направники центру
+      // (referral_access → profiles). Єдиний перелік для всього центру.
+      const [docRes, accRes] = await Promise.all([
+        supabase.from("doctors").select("id, name, spec, clinic_name, phone").eq("clinic_id", clinicId).order("name"),
+        supabase.from("referral_access").select("referrer_id").eq("clinic_id", clinicId).eq("status", "active"),
+      ]);
+      const list = docRes.data || [];
+      const seen = new Set(list.map((d) => (d.name || "").trim()));
+      const refIds = Array.from(new Set((accRes.data || []).map((a) => a.referrer_id)));
+      if (refIds.length) {
+        const { data: profs } = await supabase.from("profiles").select("id, full_name").in("id", refIds);
+        (profs || []).forEach((pr) => { const n = (pr.full_name || "").trim(); if (n && !seen.has(n)) { seen.add(n); list.push({ id: "ref:" + pr.id, name: n, spec: "направник" }); } });
+      }
+      list.sort((a, b) => (a.name || "").localeCompare(b.name || "", "uk"));
+      if (!cancel) setDocs(list);
     })();
     return () => { cancel = true; };
   }, [clinicId]);

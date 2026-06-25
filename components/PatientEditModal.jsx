@@ -4,8 +4,9 @@
    Відкривається кліком по імені пацієнта в черзі (адміністратор) або у
    «Моїх направленнях» (лікар-направник). Зміни пишуться в queue_entries і
    миттєво розходяться по ролях через Realtime/полінг.
-   «Лікар-направник» — випадає зі списку лікарів ЦЕНТРУ запису (таблиця doctors,
-   у кожного центру свій перелік; RLS обмежує перелік клінікою). */
+   «Лікар-направник» випадає зі списку АКТИВНИХ направників ЦЕНТРУ запису
+   (referral_access → profiles) + довідник doctors центру. У кожного центру
+   власний перелік; направники працюють з багатьма центрами (M2M referral_access). */
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -25,7 +26,7 @@ function calcAge(dob) {
 
 export default function PatientEditModal({ entryId, onClose, onSaved }) {
   const [form, setForm] = useState(null);
-  const [doctors, setDoctors] = useState([]);
+  const [docs, setDocs] = useState([]); // [{key, name, sub}]
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -40,14 +41,25 @@ export default function PatientEditModal({ entryId, onClose, onSaved }) {
         .maybeSingle();
       if (!live) return;
       setForm(data || {});
-      // Перелік лікарів-направників ЦЕНТРУ запису (у кожного центру власний).
       if (data?.clinic_id) {
-        const { data: docs } = await supabase
-          .from("doctors")
-          .select("id, name, spec")
-          .eq("clinic_id", data.clinic_id)
-          .order("name");
-        if (live) setDoctors(docs || []);
+        const cid = data.clinic_id;
+        // Активні направники центру (акаунти) + довідник лікарів центру.
+        const [accRes, docRes] = await Promise.all([
+          supabase.from("referral_access").select("referrer_id").eq("clinic_id", cid).eq("status", "active"),
+          supabase.from("doctors").select("id, name, spec").eq("clinic_id", cid).order("name"),
+        ]);
+        const refIds = Array.from(new Set((accRes.data || []).map((a) => a.referrer_id)));
+        let refProfiles = [];
+        if (refIds.length) {
+          const { data: profs } = await supabase.from("profiles").select("id, full_name").in("id", refIds);
+          refProfiles = profs || [];
+        }
+        const seen = new Set();
+        const opts = [];
+        refProfiles.forEach((p) => { const n = (p.full_name || "").trim(); if (n && !seen.has(n)) { seen.add(n); opts.push({ key: "r-" + p.id, name: n, sub: "направник" }); } });
+        (docRes.data || []).forEach((d) => { const n = (d.name || "").trim(); if (n && !seen.has(n)) { seen.add(n); opts.push({ key: "d-" + d.id, name: n, sub: d.spec || "" }); } });
+        opts.sort((a, b) => a.name.localeCompare(b.name, "uk"));
+        if (live) setDocs(opts);
       }
     })();
     return () => { live = false; };
@@ -80,7 +92,7 @@ export default function PatientEditModal({ entryId, onClose, onSaved }) {
   }
 
   const curDoctor = form?.doctor || "";
-  const knownDoctor = doctors.some((d) => d.name === curDoctor);
+  const knownDoctor = docs.some((d) => d.name === curDoctor);
 
   return (
     <div className="overlay" onClick={() => { if (!busy) onClose(); }}>
@@ -121,7 +133,7 @@ export default function PatientEditModal({ entryId, onClose, onSaved }) {
                 <select className="inp" value={curDoctor} onChange={(e) => setF("doctor", e.target.value)}>
                   <option value="">— не вказано —</option>
                   {curDoctor && !knownDoctor && <option value={curDoctor}>{curDoctor}</option>}
-                  {doctors.map((d) => <option key={d.id} value={d.name}>{d.name}{d.spec ? " · " + d.spec : ""}</option>)}
+                  {docs.map((d) => <option key={d.key} value={d.name}>{d.name}{d.sub ? " · " + d.sub : ""}</option>)}
                 </select>
               </label>
               <label className={"rf-check" + (form.contraindications ? " on" : "")} style={{ marginBottom: 10 }}>
