@@ -65,7 +65,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
   const roomIncident = roomIncidents[0];
   function slotBlockedByIncident(slotMin) {
     if (!roomIncidents.length) return false;
-    const dt = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(slotMin / 60), slotMin % 60).getTime();
+    const dt = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(slotMin / 60), slotMin % 60);
     return roomIncidents.some((inc) => {
       const start = new Date(inc.started_at).getTime();
       return dt >= start && dt < incidentEffectiveEnd(inc);
@@ -119,7 +119,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
           <div className="fld">
             {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {dateStr}{override && override.label ? " · " + override.label : ""}. Оберіть інший день.</div>}
             {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік: {roomSched.start}–{roomSched.end}.</div>}
-            {roomIncident && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncident.blocked_until ? " до " + new Date(roomIncident.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}. Оберіть слот після відновлення або інший день.</div>}
+            {roomIncident && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncident.blocked_until ? " до " + new Date(roomIncident.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : ""}. Оберіть слот після відновлення або інший день.</div>}
             <div className="bk-slot-grid">
               {slots.map((s) => {
                 const st = slotState(s);

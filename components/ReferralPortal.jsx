@@ -139,7 +139,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   function slotState(slot) {
     const a = toMin(slot), b = a + dur;
     if (roomSched.closed) return "closed";
-    const slotMs = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60).getTime();
+    const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60);
     if (slotBlockedByIncidents(incidents, roomId, slotMs)) return "blocked";
     if (a < schedStart || a >= schedEnd) return "offhours";
     if (b > schedEnd) return "tight";

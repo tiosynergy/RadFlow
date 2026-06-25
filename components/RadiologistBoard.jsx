@@ -14,7 +14,7 @@ import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
 import { roomScheduleFor, dayStatus } from "@/lib/schedule";
 import { diffStudies, studyText } from "@/lib/studies";
-import { incidentEffectiveEnd, incidentExpired } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentExpired, wallNow } from "@/lib/incidents";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radiologist.css";
@@ -528,7 +528,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
   const blockingByRoom = {};
   liveIncidents.forEach((i) => {
     const s = new Date(i.started_at).getTime();
-    if (Date.now() >= s && Date.now() < incidentEffectiveEnd(i)) blockingByRoom[i.room_id] = i;
+    if (wallNow() >= s && wallNow() < incidentEffectiveEnd(i)) blockingByRoom[i.room_id] = i;
   });
 
   async function setStatus(id, status) {
@@ -638,7 +638,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
             {!isPast && liveIncidents.filter((inc) => roomIds.includes(inc.room_id)).map((inc) => {
               const r = roomsById[inc.room_id] || {};
               const nowBlocking = !!blockingByRoom[inc.room_id] && blockingByRoom[inc.room_id].id === inc.id;
-              const startStr = new Date(inc.started_at).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+              const startStr = new Date(inc.started_at).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
               return (
                 <div className="inc-banner fade-in" key={inc.id} style={nowBlocking ? undefined : { borderColor: "var(--orange)" }}>
                   <span className="inc-banner-ic">{nowBlocking ? "🔧" : "🗓"}</span>

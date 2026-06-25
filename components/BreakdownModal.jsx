@@ -14,10 +14,11 @@ function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" 
 function pad(n) { return String(n).padStart(2, "0"); }
 function nowHHMM() { const d = new Date(); return pad(d.getHours()) + ":" + pad(d.getMinutes()); }
 function dateVal(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
-function hhmmFromISO(iso) { try { const d = new Date(iso); return pad(d.getHours()) + ":" + pad(d.getMinutes()); } catch { return nowHHMM(); } }
-function dtFrom(dateStr, hhmm) { const [h, m] = String(hhmm).split(":").map(Number); const d = new Date(dateStr + "T00:00:00"); d.setHours(h || 0, m || 0, 0, 0); return d; }
+function hhmmFromISO(iso) { return String(iso || "").slice(11, 16) || nowHHMM(); }
+function dtFrom(dateStr, hhmm) { const [h, m] = String(hhmm).split(":").map(Number); const [Y, Mo, D] = String(dateStr).split("-").map(Number); return new Date(Date.UTC(Y, (Mo || 1) - 1, D || 1, h || 0, m || 0, 0, 0)); }
+function isoDate(iso) { return String(iso || "").slice(0, 10); }
 function nextWorkday(d) { const x = new Date(d); while (x.getDay() === 0) x.setDate(x.getDate() + 1); return x; }
-function fmtDT(iso) { try { return new Date(iso).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }); } catch { return ""; } }
+function fmtDT(iso) { try { return new Date(iso).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }); } catch { return ""; } }
 function overlaps(aS, aE, bS, bE) { return aS < bE && bS < aE; }
 
 const DURATIONS = [
@@ -28,10 +29,10 @@ const DURATIONS = [
 /* ── 🔧 Поломка обладнання ── */
 function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, overrides = {} }) {
   const [open, setOpen] = useState(!existing); // немає події → одразу форма; є → спершу зведення
-  const [startDate, setStartDate] = useState(existing ? dateVal(new Date(existing.started_at)) : dateVal(new Date()));
+  const [startDate, setStartDate] = useState(existing ? isoDate(existing.started_at) : dateVal(new Date()));
   const [startTime, setStartTime] = useState(existing ? hhmmFromISO(existing.started_at) : nowHHMM());
   const [durKey, setDurKey] = useState(existing ? "restore" : "");
-  const [restoreDate, setRestoreDate] = useState(existing?.blocked_until ? dateVal(new Date(existing.blocked_until)) : dateVal(nextWorkday((() => { const d = new Date(); d.setDate(d.getDate() + 1); return d; })())));
+  const [restoreDate, setRestoreDate] = useState(existing?.blocked_until ? isoDate(existing.blocked_until) : dateVal(nextWorkday((() => { const d = new Date(); d.setDate(d.getDate() + 1); return d; })())));
   const [restoreTime, setRestoreTime] = useState(existing?.blocked_until ? hhmmFromISO(existing.blocked_until) : "08:00");
   const [autoUnblock, setAutoUnblock] = useState(existing ? existing.auto_unblock !== false : true);
   const [err, setErr] = useState("");
@@ -42,7 +43,7 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
     if (durKey === "1h") return new Date(startedAt.getTime() + 3600e3);
     if (durKey === "2h") return new Date(startedAt.getTime() + 2 * 3600e3);
     if (durKey === "4h") return new Date(startedAt.getTime() + 4 * 3600e3);
-    if (durKey === "eod") { const [eh, em] = schedEnd.split(":").map(Number); const d = dtFrom(startDate, "00:00"); d.setHours(eh || 18, em || 0, 0, 0); return d; }
+    if (durKey === "eod") { return dtFrom(startDate, schedEnd); }
     if (durKey === "restore") return dtFrom(restoreDate, restoreTime);
     return null;
   }
@@ -107,9 +108,9 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
 function MaintenanceSection({ roomId, existing, others, onSave, onResolve }) {
   const tmrw = dateVal(nextWorkday((() => { const d = new Date(); d.setDate(d.getDate() + 1); return d; })()));
   const [open, setOpen] = useState(!existing);
-  const [startDate, setStartDate] = useState(existing ? dateVal(new Date(existing.started_at)) : tmrw);
+  const [startDate, setStartDate] = useState(existing ? isoDate(existing.started_at) : tmrw);
   const [startTime, setStartTime] = useState(existing ? hhmmFromISO(existing.started_at) : "08:00");
-  const [endDate, setEndDate] = useState(existing?.blocked_until ? dateVal(new Date(existing.blocked_until)) : tmrw);
+  const [endDate, setEndDate] = useState(existing?.blocked_until ? isoDate(existing.blocked_until) : tmrw);
   const [endTime, setEndTime] = useState(existing?.blocked_until ? hhmmFromISO(existing.blocked_until) : "12:00");
   const [autoUnblock, setAutoUnblock] = useState(existing ? existing.auto_unblock !== false : true);
   const [err, setErr] = useState("");

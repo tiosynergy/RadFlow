@@ -19,7 +19,7 @@ import ScheduleEditModal from "@/components/ScheduleEditModal";
 import { roomScheduleFor, dayStatus } from "@/lib/schedule";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
 import { diffStudies, studyText } from "@/lib/studies";
-import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow } from "@/lib/incidents";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -72,7 +72,7 @@ function toMinHHMM(t) { const p = String(t || "").split(":"); return (parseInt(p
 // Чи день потрапляє в період блокування (для банера на потрібні дні).
 function incidentCoversDay(inc, dayDate) {
   if (!inc || !dayDate) return false;
-  const dayStart = new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate()).getTime();
+  const dayStart = Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate());
   const dayEnd = dayStart + 24 * 3600e3;
   const start = new Date(inc.started_at).getTime();
   return start < dayEnd && dayStart < incidentEffectiveEnd(inc);
@@ -239,7 +239,7 @@ function CurrentCard({ patient, roomName, roomModel, enteredAt, nextWaiting, onC
 /* ── Завантаженість кабінетів (права панель) ── */
 // Перетин вікна простою з робочим вікном дня (у хвилинах від початку дня), або 0.
 function incidentWorkMinutes(inc, date, startMin, endMin) {
-  const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const dayStart = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
   const s = new Date(inc.started_at).getTime();
   const e = inc.blocked_until ? new Date(inc.blocked_until).getTime() : dayStart + 24 * 3600e3;
   const sMin = Math.max(startMin, Math.round((s - dayStart) / 60000));
@@ -790,7 +790,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const blockingByRoom = {};
   liveIncidents.forEach((i) => {
     const s = new Date(i.started_at).getTime();
-    if (Date.now() >= s && Date.now() < incidentEffectiveEnd(i)) blockingByRoom[i.room_id] = i;
+    if (wallNow() >= s && wallNow() < incidentEffectiveEnd(i)) blockingByRoom[i.room_id] = i;
   });
 
   // Пацієнти, чиї записи потрапили у вікно простою заблокованого апарата → на перенос.
@@ -1069,7 +1069,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
               const nowBlocking = !!blockingByRoom[inc.room_id] && blockingByRoom[inc.room_id].id === inc.id;
               // Ручний режим і вікно вже завершилося: кабінет вже вільний, але запис чекає на підтвердження зняття.
               const awaitingManual = !nowBlocking && incidentAwaitingManualUnblock(inc);
-              const startStr = new Date(inc.started_at).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+              const startStr = new Date(inc.started_at).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
               const borderColor = nowBlocking ? undefined : awaitingManual ? { borderColor: "var(--green)" } : { borderColor: "var(--orange)" };
               return (
                 <div className="inc-banner fade-in" key={inc.id} style={borderColor}>
