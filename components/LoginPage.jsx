@@ -5,7 +5,7 @@
 
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { isSupabaseConfigured } from "@/lib/supabase/client";
 import "./register.css";
 
 const REQUIRED = "Це поле обов'язкове";
@@ -61,29 +61,15 @@ export default function LoginPage() {
 
     setSubmitting(true);
     try {
-      const supabase = createClient();
-      // Вхід за логіном або email: якщо введено логін — резолвимо email.
-      let email = values.email.trim();
-      if (!email.includes("@")) {
-        const { data: resolved } = await supabase.rpc("email_for_login", { p_login: email });
-        if (!resolved) {
-          setSubmitting(false);
-          showToast("Невірний логін або пароль.");
-          return;
-        }
-        email = resolved;
-      }
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password: values.password,
+      // Вхід за логіном або email — резолв і signIn на сервері (email не розкривається).
+      const res = await fetch("/api/auth/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier: values.email.trim(), password: values.password }),
       });
-      if (error) {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
         setSubmitting(false);
-        if (/email not confirmed/i.test(error.message)) {
-          showToast("Спочатку підтвердьте email — перевірте пошту.");
-        } else {
-          showToast("Невірний логін/email або пароль.");
-        }
+        showToast(data.error || "Невірний логін/email або пароль.");
         return;
       }
       router.push(redirectTo);

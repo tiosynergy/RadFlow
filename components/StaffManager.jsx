@@ -22,16 +22,24 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
   const [formRooms, setFormRooms] = useState([]);    // cabinet ids for new account
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
+  const [origin, setOrigin] = useState("");
   const toastTimer = useRef(null);
   const roomsById = useMemo(() => { const m = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
 
+  useEffect(() => { setOrigin(window.location.origin); }, []);
+
   function notify(msg, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 4000); }
   function setF(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  async function copyLink(tok) {
+    const link = (origin || window.location.origin) + "/set-password?token=" + encodeURIComponent(tok);
+    try { await navigator.clipboard.writeText(link); notify("Посилання для входу скопійовано", "success"); }
+    catch { notify(link, "info"); }
+  }
 
   const reload = useCallback(async () => {
     const supabase = createClient();
     const [{ data: profs }, { data: rr }] = await Promise.all([
-      supabase.from("profiles").select("id, login, full_name, email, phone, note, password_set").eq("clinic_id", clinicId).eq("role", "radiologist").order("full_name"),
+      supabase.from("profiles").select("id, login, full_name, email, phone, note, password_set, invite_token").eq("clinic_id", clinicId).eq("role", "radiologist").order("full_name"),
       supabase.from("radiologist_rooms").select("profile_id, room_id").eq("clinic_id", clinicId),
     ]);
     setRadiologists(profs || []);
@@ -66,7 +74,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { notify(data.error || "Помилка створення", "error"); setBusy(false); return; }
       setForm(EMPTY); setFormRooms([]);
-      notify("Радіолога створено. Передайте йому логін — пароль він задасть на /set-password.", "success");
+      notify("Радіолога створено. Скопіюйте посилання для встановлення пароля в його картці нижче і передайте йому.", "success");
       reload();
     } catch { notify("Помилка зʼєднання із сервером", "error"); }
     setBusy(false);
@@ -162,7 +170,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
               <button className="btn btn-primary" disabled={busy} onClick={createAccount}>{busy ? "Створюємо…" : "Створити акаунт"}</button>
             </div>
-            <div className="hint-blue">Пароль не задається тут: передайте радіологу його <b>логін</b>, він встановить пароль на <b>/set-password</b>. Забув пароль — ви скинете кнопкою нижче.</div>
+            <div className="hint-blue">Пароль не задається тут: після створення скопіюйте в картці радіолога <b>персональне посилання</b> й передайте йому — він встановить пароль сам. Забув пароль — натисніть «Скинути», зʼявиться нове посилання.</div>
           </div>
 
           {/* Радіологи */}
@@ -187,6 +195,13 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
                   <button className="btn btn-secondary btn-sm" title="Задати пароль вручну" onClick={() => setPassword(r.id)}>Задати пароль</button>
                   <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити акаунт назавжди" onClick={() => deleteRadiologist(r.id, r.full_name || r.login)}>🗑</button>
                 </div>
+                {!r.password_set && r.invite_token && (
+                  <div style={{ fontSize: 12, marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для встановлення пароля:</span>
+                    <code style={{ fontSize: 11.5, color: "var(--text-secondary)", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
+                    <button className="btn btn-secondary btn-sm" onClick={() => copyLink(r.invite_token)}>Скопіювати</button>
+                  </div>
+                )}
                 <div style={{ marginTop: 10 }}>
                   <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Доступ до кабінетів:</span>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6 }}>

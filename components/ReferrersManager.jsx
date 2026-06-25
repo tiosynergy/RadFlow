@@ -51,8 +51,8 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   useEffect(() => { setOrigin(window.location.origin); }, []);
 
   function notify(msg, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 4500); }
-  async function copyLink(login) {
-    const link = (origin || window.location.origin) + "/set-password?login=" + encodeURIComponent(login);
+  async function copyLink(tok) {
+    const link = (origin || window.location.origin) + "/set-password?token=" + encodeURIComponent(tok);
     try { await navigator.clipboard.writeText(link); notify("Посилання для входу скопійовано", "success"); }
     catch { notify(link, "info"); }
   }
@@ -79,7 +79,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     const ids = Array.from(new Set(list.map((a) => a.referrer_id)));
     const profById = {};
     if (ids.length) {
-      const { data: profs } = await supabase.from("profiles").select("id, login, full_name, email, phone, password_set").in("id", ids);
+      const { data: profs } = await supabase.from("profiles").select("id, login, full_name, email, phone, password_set, invite_token").in("id", ids);
       (profs || []).forEach((p) => { profById[p.id] = p; });
     }
     setRows(list.map((a) => ({ access_id: a.id, referrer_id: a.referrer_id, status: a.status, policy: a.policy, room_ids: a.room_ids, note: a.note, referrer: profById[a.referrer_id] || {} })));
@@ -167,11 +167,11 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{r.referrer.login ? "@" + r.referrer.login : ""}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
           {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
           {r.status === "active" && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Кабінети: {roomsLabel(r.room_ids)}</div>}
-          {!r.referrer.password_set && r.referrer.login && (
+          {!r.referrer.password_set && r.referrer.invite_token && (
             <div style={{ fontSize: 12, marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для входу:</span>
-              <code style={{ fontSize: 11.5, color: "var(--text-secondary)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?login={r.referrer.login}</code>
-              <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); copyLink(r.referrer.login); }}>Скопіювати</button>
+              <code style={{ fontSize: 11.5, color: "var(--text-secondary)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
+              <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); copyLink(r.referrer.invite_token); }}>Скопіювати</button>
             </div>
           )}
         </div>

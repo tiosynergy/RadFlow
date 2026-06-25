@@ -39,6 +39,8 @@ export async function POST(req: Request) {
 
   const admin = createAdminClient();
   const tempPass = "Rf!" + crypto.randomUUID().replace(/-/g, "");
+  // Одноразовий токен для безпечного встановлення пароля (/set-password?token=…).
+  const inviteToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
 
   const { data: created, error: cErr } = await admin.auth.admin.createUser({
     email,
@@ -57,7 +59,7 @@ export async function POST(req: Request) {
   const uid = created.user.id;
   const { error: pErr } = await admin.from("profiles").insert({
     id: uid, clinic_id: me.clinic_id, role, login, full_name: fullName,
-    email, phone, note, workplace, approved: true, password_set: false,
+    email, phone, note, workplace, approved: true, password_set: false, invite_token: inviteToken,
   });
   if (pErr) {
     await admin.auth.admin.deleteUser(uid); // відкат, щоб не лишати «сирітський» auth-акаунт
@@ -73,5 +75,5 @@ export async function POST(req: Request) {
     );
   }
 
-  return NextResponse.json({ ok: true, id: uid });
+  return NextResponse.json({ ok: true, id: uid, invite_token: inviteToken });
 }

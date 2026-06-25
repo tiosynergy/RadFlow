@@ -33,18 +33,21 @@ export async function POST(req: Request) {
 
   let newPass: string;
   let passwordSet: boolean;
+  let inviteToken: string | null = null;
   if (action === "set") {
     newPass = String(body.password || "");
     if (newPass.length < 8) return NextResponse.json({ error: "Пароль мінімум 8 символів" }, { status: 400 });
-    passwordSet = true;
+    passwordSet = true; // пароль задано вручну — токен більше не потрібен
   } else {
     newPass = "Rf!" + crypto.randomUUID().replace(/-/g, "");
     passwordSet = false;
+    // Скидання: генеруємо новий одноразовий токен для /set-password?token=…
+    inviteToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
   }
 
   const { error: uErr } = await admin.auth.admin.updateUserById(targetId, { password: newPass });
   if (uErr) return NextResponse.json({ error: "Помилка зміни пароля: " + uErr.message }, { status: 400 });
-  await admin.from("profiles").update({ password_set: passwordSet }).eq("id", targetId);
+  await admin.from("profiles").update({ password_set: passwordSet, invite_token: inviteToken }).eq("id", targetId);
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, invite_token: inviteToken });
 }

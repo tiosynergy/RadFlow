@@ -10,24 +10,24 @@ import "./register.css";
 const REQUIRED = "Це поле обов'язкове";
 
 export default function SetPasswordPage() {
-  const [values, setValues] = useState({ login: "", password: "", password2: "" });
+  const [values, setValues] = useState({ password: "", password2: "" });
+  const [token, setToken] = useState(null); // одноразовий токен із ?token=
   const [errors, setErrors] = useState({});
   const [touched, setTouched] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [toast, setToast] = useState({ show: false, title: "", msg: "" });
 
-  // Підставляємо логін із посилання ?login=... (адмін надсилає його лікарю).
+  // Беремо одноразовий токен із посилання ?token=… (адмін передає його особисто).
   useEffect(() => {
     try {
-      const p = new URLSearchParams(window.location.search).get("login");
-      if (p) setValues((v) => ({ ...v, login: p }));
+      const p = new URLSearchParams(window.location.search).get("token");
+      if (p) setToken(p.trim());
     } catch { /* ignore */ }
   }, []);
 
   function validate(name, vals) {
     const v = vals[name] || "";
-    if (name === "login") return !v.trim() ? REQUIRED : "";
     if (name === "password") return !v ? REQUIRED : (v.length < 8 || !/[A-ZА-ЯЇІЄ]/.test(v) || !/\d/.test(v)) ? "Мінімум 8 символів, одна велика буква, одна цифра" : "";
     if (name === "password2") return !v ? REQUIRED : v !== vals.password ? "Паролі не співпадають" : "";
     return "";
@@ -56,17 +56,18 @@ export default function SetPasswordPage() {
 
   async function onSubmit(e) {
     e.preventDefault();
-    const names = ["login", "password", "password2"];
+    const names = ["password", "password2"];
     const ne = {}; const nt = {};
     names.forEach((n) => { nt[n] = true; ne[n] = validate(n, values); });
     setTouched(nt); setErrors(ne);
     if (names.some((n) => ne[n])) return;
+    if (!token) { showToast("Посилання недійсне. Попросіть адміністратора надіслати нове."); return; }
 
     setSubmitting(true);
     try {
       const res = await fetch("/api/account/set-password", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ login: values.login.trim(), password: values.password }),
+        body: JSON.stringify({ token, password: values.password }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setSubmitting(false); showToast(data.error || "Не вдалося встановити пароль."); return; }
@@ -106,12 +107,13 @@ export default function SetPasswordPage() {
               <p>Ваш акаунт створив адміністратор. Задайте свій пароль для першого входу.</p>
             </div>
 
-            <form onSubmit={onSubmit} noValidate>
-              <div className="field">
-                <label htmlFor="login">Логін або email</label>
-                <input {...inputProps("login", "text")} placeholder="Ваш логін або email" autoComplete="username" />
-                {touched.login && errors.login && <div className="err" role="alert">{errors.login}</div>}
+            {!token && (
+              <div className="err" role="alert" style={{ marginBottom: 12 }}>
+                Посилання недійсне або неповне. Відкрийте сторінку за посиланням від адміністратора або попросіть надіслати нове.
               </div>
+            )}
+
+            <form onSubmit={onSubmit} noValidate>
               <div className="field">
                 <label htmlFor="password">Новий пароль</label>
                 <input {...inputProps("password", "password")} placeholder="Пароль" autoComplete="new-password" />

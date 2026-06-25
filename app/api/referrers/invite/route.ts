@@ -56,6 +56,7 @@ export async function POST(req: Request) {
 
   let referrerId: string;
   let createdAccount = false;
+  let inviteToken: string | null = null;
 
   if (existingProf) {
     if (existingProf.role !== "referrer") {
@@ -64,6 +65,8 @@ export async function POST(req: Request) {
     referrerId = existingProf.id;
   } else {
     const tempPass = "Rf!" + crypto.randomUUID().replace(/-/g, "");
+    // Одноразовий токен для безпечного встановлення пароля (/set-password?token=…).
+    inviteToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
     const { data: created, error: cErr } = await admin.auth.admin.createUser({
       email: effectiveEmail,
       email_confirm: true,
@@ -82,7 +85,7 @@ export async function POST(req: Request) {
 
     const { error: pErr } = await admin.from("profiles").insert({
       id: referrerId, clinic_id: null, role: "referrer", login, full_name: fullName,
-      email: effectiveEmail, phone, note, approved: true, password_set: false,
+      email: effectiveEmail, phone, note, approved: true, password_set: false, invite_token: inviteToken,
     });
     if (pErr) {
       await admin.auth.admin.deleteUser(referrerId); // відкат
@@ -120,5 +123,5 @@ export async function POST(req: Request) {
     if (iErr) return NextResponse.json({ error: "Помилка створення запрошення: " + iErr.message }, { status: 400 });
   }
 
-  return NextResponse.json({ ok: true, status: resultStatus, created_account: createdAccount, login });
+  return NextResponse.json({ ok: true, status: resultStatus, created_account: createdAccount, login, invite_token: inviteToken });
 }
