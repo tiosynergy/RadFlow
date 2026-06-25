@@ -19,7 +19,7 @@ import ScheduleEditModal from "@/components/ScheduleEditModal";
 import { roomScheduleFor, dayStatus } from "@/lib/schedule";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
 import { diffStudies, studyText } from "@/lib/studies";
-import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow } from "@/lib/incidents";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -69,13 +69,6 @@ function fmtTimer(sec) {
 }
 function toMinHHMM(t) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 // Чи запис (день + час) потрапляє в період блокування інциденту (працює і для багатоденних простоїв).
-function entryInIncidentWindow(scheduledTime, dayDate, inc) {
-  if (!inc || !scheduledTime || !dayDate) return false;
-  const [h, m] = String(scheduledTime).split(":").map(Number);
-  const dt = new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0).getTime();
-  const start = new Date(inc.started_at).getTime();
-  return dt >= start && dt < incidentEffectiveEnd(inc);
-}
 // Чи день потрапляє в період блокування (для банера на потрібні дні).
 function incidentCoversDay(inc, dayDate) {
   if (!inc || !dayDate) return false;
@@ -83,13 +76,6 @@ function incidentCoversDay(inc, dayDate) {
   const dayEnd = dayStart + 24 * 3600e3;
   const start = new Date(inc.started_at).getTime();
   return start < dayEnd && dayStart < incidentEffectiveEnd(inc);
-}
-function incWindow(inc) {
-  const s = new Date(inc.started_at);
-  const startMin = s.getHours() * 60 + s.getMinutes();
-  let endMin = 24 * 60;
-  if (inc.blocked_until) { const e = new Date(inc.blocked_until); endMin = e.getHours() * 60 + e.getMinutes(); if (endMin <= startMin) endMin = 24 * 60; }
-  return [startMin, endMin];
 }
 
 /* Момент входу в кабінет: окрема мітка in_progress_at; для старих рядків — updated_at. */
@@ -813,7 +799,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     entries.forEach((e) => {
       if (e.status !== "scheduled" && e.status !== "waiting") return;
       const incs = incidentsByRoom[e.room_id];
-      if (incs && incs.some((inc) => entryInIncidentWindow(e.scheduled_time, selectedDate, inc))) { affectedIds.add(e.id); return; }
+      if (incs && incs.some((inc) => entryInIncidentWindow(dayKey, e.scheduled_time, inc))) { affectedIds.add(e.id); return; }
       if (roomSchedClosed(e.room_id)) affectedIds.add(e.id);
     });
   }

@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
+import { entryInIncidentWindow, incidentExpired } from "@/lib/incidents";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import "@/styles/prototype/radflow.css";
@@ -20,13 +21,6 @@ function pad(n) { return String(n).padStart(2, "0"); }
 function shortDate(d) { return pad(d.getDate()) + "." + pad(d.getMonth() + 1); }
 function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function toMinHHMM(t) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
-function incWindow(inc) {
-  const s = new Date(inc.started_at);
-  const startMin = s.getHours() * 60 + s.getMinutes();
-  let endMin = 24 * 60;
-  if (inc.blocked_until) { const e = new Date(inc.blocked_until); endMin = e.getHours() * 60 + e.getMinutes(); if (endMin <= startMin) endMin = 24 * 60; }
-  return [startMin, endMin];
-}
 function studyKind(e) {
   const s = Array.isArray(e.studies) && e.studies[0] ? e.studies[0].type : null;
   return s || "МРТ";
@@ -205,15 +199,12 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
       .eq("clinic_id", clinicId).gte("scheduled_date", todayKey)
       .in("room_id", incs.map((i) => i.room_id)).in("status", ["scheduled", "waiting"]);
     const byRoom = {}; incs.forEach((i) => { byRoom[i.room_id] = i; });
-    // Пострадавшие — за весь період блокування (вкл. майбутні дні), за повним datetime.
+    // Постраждалі — єдиний предикат із lib/incidents (той самий, що на дошці);
+    // істекші авто-інциденти не враховуємо.
     const aff = (ents || []).filter((e) => {
-      const inc = byRoom[e.room_id]; if (!inc || !e.scheduled_date || !e.scheduled_time) return false;
-      const [h, m] = String(e.scheduled_time).split(":").map(Number);
-      const [Y, Mo, D] = String(e.scheduled_date).split("-").map(Number);
-      const dt = new Date(Y, (Mo || 1) - 1, D || 1, h || 0, m || 0).getTime();
-      const start = new Date(inc.started_at).getTime();
-      const end = inc.blocked_until ? new Date(inc.blocked_until).getTime() : Infinity;
-      return dt >= start && dt < end;
+      const inc = byRoom[e.room_id];
+      if (!inc || incidentExpired(inc)) return false;
+      return entryInIncidentWindow(e.scheduled_date, e.scheduled_time, inc);
     });
     setAffectedToday(aff);
   }, [clinicId]);
