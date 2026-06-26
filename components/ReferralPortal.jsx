@@ -372,12 +372,84 @@ function MyReferrals({ referrals, centersById, onReschedule, onCancel, onEditPat
   );
 }
 
+/* ---------- Розгорнута картка центру (деталі + контакти адміна + обладнання) ---------- */
+function CenterDetails({ data, loading }) {
+  const panel = { background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: 16, margin: "4px 0 8px" };
+  if (loading) return <div style={panel}><div style={{ color: "var(--text-muted)", fontSize: 13 }}>Завантаження…</div></div>;
+  if (!data) return <div style={panel}><div style={{ color: "var(--text-muted)", fontSize: 13 }}>Не вдалося завантажити деталі центру.</div></div>;
+  const admins = Array.isArray(data.admins) ? data.admins : [];
+  const rooms = Array.isArray(data.rooms) ? data.rooms : [];
+  const realEmail = (e) => e && !/@referrer\.radflow\.local$/i.test(e);
+  const lbl = { color: "var(--text-muted)", fontSize: 11.5, textTransform: "uppercase", letterSpacing: ".04em", margin: "0 0 8px" };
+  return (
+    <div style={panel}>
+      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", rowGap: 8, columnGap: 10, fontSize: 13, marginBottom: 16 }}>
+        <span style={{ color: "var(--text-muted)" }}>Центр</span><span style={{ fontWeight: 600 }}>{data.name}</span>
+        <span style={{ color: "var(--text-muted)" }}>Місто</span><span>{data.city || "—"}</span>
+        <span style={{ color: "var(--text-muted)" }}>Режим бронювання</span><span>{data.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга (одразу в чергу)"}</span>
+        {data.note ? <><span style={{ color: "var(--text-muted)" }}>Примітка</span><span>{data.note}</span></> : null}
+      </div>
+
+      <div style={lbl}>Адміністратор центру</div>
+      {admins.length === 0 ? (
+        <div style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 16 }}>Контакти не вказані.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+          {admins.map((a, i) => {
+            const phone = a.phone || "";
+            const email = realEmail(a.email) ? a.email : "";
+            return (
+              <div key={i} style={{ fontSize: 13 }}>
+                <div style={{ fontWeight: 600 }}>{a.full_name || "Адміністратор"}</div>
+                <div style={{ color: "var(--text-secondary)", display: "flex", gap: 16, flexWrap: "wrap", marginTop: 3 }}>
+                  {phone ? <a href={"tel:" + phone} style={{ color: "var(--blue)", textDecoration: "none" }}>📞 {phone}</a> : null}
+                  {email ? <a href={"mailto:" + email} style={{ color: "var(--blue)", textDecoration: "none" }}>✉ {email}</a> : null}
+                  {!phone && !email ? <span style={{ color: "var(--text-muted)" }}>контакти не вказані</span> : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={lbl}>Доступне обладнання для вас</div>
+      {rooms.length === 0 ? (
+        <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Кабінети не вказані.</div>
+      ) : (
+        <div className="bd-rooms">
+          {rooms.map((r) => (
+            <div key={r.id} className="bd-room" style={{ cursor: "default" }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
+              <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+              <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Вкладка «Мої центри» ---------- */
 function MyCenters({ centers, canManage, onChanged, notify }) {
   const [q, setQ] = useState("");
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [busyId, setBusyId] = useState(null);
+  const [expandedId, setExpandedId] = useState(null);   // accessId розгорнутої картки
+  const [details, setDetails] = useState({});           // кеш деталей за accessId
+  const [loadingId, setLoadingId] = useState(null);
+
+  async function toggleExpand(c) {
+    if (!c.accessId) return;
+    if (expandedId === c.accessId) { setExpandedId(null); return; }
+    setExpandedId(c.accessId);
+    if (details[c.accessId]) return; // уже завантажено
+    setLoadingId(c.accessId);
+    const supabase = createClient();
+    const { data, error } = await supabase.rpc("referral_center_card", { p_access_id: c.accessId });
+    setLoadingId(null);
+    if (!error && data) setDetails((d) => ({ ...d, [c.accessId]: data }));
+  }
 
   const knownIds = useMemo(() => new Set(centers.map((c) => c.clinicId)), [centers]);
   const invites = centers.filter((c) => c.status === "pending_referrer");
@@ -413,10 +485,11 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
   }
 
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 18, marginBottom: 14 };
-  function Row({ c, children }) {
+  function Row({ c, children, onClick, expandable, expanded }) {
     const m = ACCESS_ST[c.status] || ACCESS_ST.active;
     return (
-      <div style={{ padding: "12px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      <div onClick={onClick} title={expandable ? (expanded ? "Згорнути" : "Натисніть, щоб переглянути деталі центру") : undefined} style={{ padding: "12px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
+        {expandable && <span style={{ color: "var(--text-muted)", fontSize: 13, width: 12, flexShrink: 0, display: "inline-block", transition: "transform .15s", transform: expanded ? "rotate(90deg)" : "none" }}>▸</span>}
         <div style={{ flex: 1, minWidth: 180 }}>
           <div style={{ fontWeight: 600, fontSize: 14 }}>{c.name}</div>
           <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{c.city || "—"}{c.status === "active" ? " · режим: " + (c.policy === "confirm" ? "з підтвердженням" : "пряма черга") : ""}</div>
@@ -456,10 +529,13 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
         <div style={card}>
           <div className="bk-section-label" style={{ marginTop: 0 }}>Запрошення центрів ({invites.length})</div>
           {invites.map((c) => (
-            <Row key={c.accessId} c={c}>
-              <button className="btn btn-primary btn-sm" disabled={busyId === c.accessId} onClick={() => decide(c.accessId, "approve")}>Прийняти</button>
-              <button className="btn btn-secondary btn-sm" disabled={busyId === c.accessId} onClick={() => decide(c.accessId, "decline")}>Відхилити</button>
-            </Row>
+            <div key={c.accessId}>
+              <Row c={c} expandable expanded={expandedId === c.accessId} onClick={() => toggleExpand(c)}>
+                <button className="btn btn-primary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); decide(c.accessId, "approve"); }}>Прийняти</button>
+                <button className="btn btn-secondary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відхилити запрошення центру «" + c.name + "»?\n\nВи зможете надіслати запит на доступ пізніше вручну.")) decide(c.accessId, "decline"); }}>Відхилити</button>
+              </Row>
+              {expandedId === c.accessId && <CenterDetails data={details[c.accessId]} loading={loadingId === c.accessId} />}
+            </div>
           ))}
         </div>
       )}
@@ -468,9 +544,12 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
         <div className="bk-section-label" style={{ marginTop: 0 }}>Активні центри ({active.length})</div>
         {active.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає активних центрів.</div>
           : active.map((c) => (
-            <Row key={c.accessId || c.clinicId} c={c}>
-              {canManage && c.accessId && <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === c.accessId} onClick={() => { if (window.confirm("Відкликати доступ до «" + c.name + "»? Створені направлення лишаться у центрі, нові ви створювати не зможете.")) decide(c.accessId, "revoke"); }}>Відкликати</button>}
-            </Row>
+            <div key={c.accessId || c.clinicId}>
+              <Row c={c} expandable={!!c.accessId} expanded={expandedId === c.accessId} onClick={c.accessId ? () => toggleExpand(c) : undefined}>
+                {canManage && c.accessId && <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відкликати доступ до «" + c.name + "»? Створені направлення лишаться у центрі, нові ви створювати не зможете.")) decide(c.accessId, "revoke"); }}>Відкликати</button>}
+              </Row>
+              {c.accessId && expandedId === c.accessId && <CenterDetails data={details[c.accessId]} loading={loadingId === c.accessId} />}
+            </div>
           ))}
       </div>
 
