@@ -439,17 +439,32 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
   const [details, setDetails] = useState({});           // кеш деталей за accessId
   const [loadingId, setLoadingId] = useState(null);
 
-  async function toggleExpand(c) {
+  function toggleExpand(c) {
     if (!c.accessId) return;
-    if (expandedId === c.accessId) { setExpandedId(null); return; }
-    setExpandedId(c.accessId);
-    if (details[c.accessId]) return; // уже завантажено
-    setLoadingId(c.accessId);
-    const supabase = createClient();
-    const { data, error } = await supabase.rpc("referral_center_card", { p_access_id: c.accessId });
-    setLoadingId(null);
-    if (!error && data) setDetails((d) => ({ ...d, [c.accessId]: data }));
+    setExpandedId((id) => (id === c.accessId ? null : c.accessId));
   }
+
+  // Деталі розгорнутої картки тягнемо реактивно: при відкритті І при будь-якій
+  // зміні гранту (room_ids/policy/status) — щоб «Доступне обладнання для вас»
+  // оновлювалося миттєво без перезавантаження сторінки. Звʼязок direct→props:
+  // realtime на referral_access у батьку викликає router.refresh() → оновлює
+  // centers → змінюється підпис нижче → ефект перезапитує RPC.
+  const expandedCenter = centers.find((c) => c.accessId === expandedId) || null;
+  const expandedSig = expandedCenter ? JSON.stringify([expandedCenter.status, expandedCenter.policy, expandedCenter.room_ids]) : "";
+  useEffect(() => {
+    if (!expandedId) return;
+    let cancelled = false;
+    (async () => {
+      setLoadingId(expandedId);
+      const supabase = createClient();
+      const { data, error } = await supabase.rpc("referral_center_card", { p_access_id: expandedId });
+      if (cancelled) return;
+      setLoadingId((id) => (id === expandedId ? null : id));
+      if (!error && data) setDetails((d) => ({ ...d, [expandedId]: data }));
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedId, expandedSig]);
 
   const knownIds = useMemo(() => new Set(centers.map((c) => c.clinicId)), [centers]);
   const invites = centers.filter((c) => c.status === "pending_referrer");
@@ -534,7 +549,7 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
                 <button className="btn btn-primary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); decide(c.accessId, "approve"); }}>Прийняти</button>
                 <button className="btn btn-secondary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відхилити запрошення центру «" + c.name + "»?\n\nВи зможете надіслати запит на доступ пізніше вручну.")) decide(c.accessId, "decline"); }}>Відхилити</button>
               </Row>
-              {expandedId === c.accessId && <CenterDetails data={details[c.accessId]} loading={loadingId === c.accessId} />}
+              {expandedId === c.accessId && <CenterDetails data={details[c.accessId]} loading={loadingId === c.accessId && !details[c.accessId]} />}
             </div>
           ))}
         </div>
@@ -548,7 +563,7 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
               <Row c={c} expandable={!!c.accessId} expanded={expandedId === c.accessId} onClick={c.accessId ? () => toggleExpand(c) : undefined}>
                 {canManage && c.accessId && <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відкликати доступ до «" + c.name + "»? Створені направлення лишаться у центрі, нові ви створювати не зможете.")) decide(c.accessId, "revoke"); }}>Відкликати</button>}
               </Row>
-              {c.accessId && expandedId === c.accessId && <CenterDetails data={details[c.accessId]} loading={loadingId === c.accessId} />}
+              {c.accessId && expandedId === c.accessId && <CenterDetails data={details[c.accessId]} loading={loadingId === c.accessId && !details[c.accessId]} />}
             </div>
           ))}
       </div>
