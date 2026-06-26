@@ -416,11 +416,11 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                     {roomsOfType.map((r) => (
                       <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + (r.modality === "MRI" ? " mrt" : " ct")}
                         onClick={() => { setRoomId(r.id); setTime(""); }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
-                        {r.name}
+                        <span className="bk-room-chip-name">{r.name}</span>
+                        {r.apparatus_model && <span className="bk-room-chip-model">{r.apparatus_model}</span>}
                       </button>
                     ))}
                   </div>
-                  {room && room.apparatus_model && <span className="bk-room-model-line">{room.apparatus_model}</span>}
                 </>
               )}
             </div>

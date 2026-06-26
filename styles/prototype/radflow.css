@@ -998,10 +998,13 @@ select.inp { cursor: pointer; }
 .bk-room-chips { display: flex; gap: 5px; flex-wrap: wrap; }
 .bk-room-chip {
   flex: 1; min-width: 46px; padding: 7px 10px; text-align: center; line-height: 1.25;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
   font-size: 12.5px; font-weight: 700; border-radius: 7px;
   border: 1.5px solid var(--border-strong); background: var(--card);
   color: var(--text-secondary); transition: all .14s; border-bottom-width: 3px;
 }
+.bk-room-chip-name { font-size: 12.5px; font-weight: 700; }
+.bk-room-chip-model { font-size: 12px; font-weight: 500; opacity: .8; }
 .bk-room-chip:hover:not(.active) { background: var(--card-hover); color: var(--text); }
 .bk-room-chip.mrt { border-bottom-color: rgba(10,132,255,0.4); }
 .bk-room-chip.ct  { border-bottom-color: rgba(255,159,10,0.4); }
