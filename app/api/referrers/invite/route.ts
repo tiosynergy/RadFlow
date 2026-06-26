@@ -50,7 +50,7 @@ export async function POST(req: Request) {
   // Чи вже є направник із таким логіном? (логін унікальний)
   const { data: existingProf } = await admin
     .from("profiles")
-    .select("id, role, login")
+    .select("id, role, login, password_set, invite_token")
     .ilike("login", login)
     .maybeSingle();
 
@@ -63,6 +63,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Цей логін належить персоналу, а не лікарю-направнику" }, { status: 409 });
     }
     referrerId = existingProf.id;
+    // Лікар ще не задав пароль → гарантуємо актуальне посилання для входу,
+    // щоб у картці направника завжди була кнопка «Скопіювати». Якщо токен уже
+    // є — повертаємо його; якщо немає — генеруємо свіжий і зберігаємо.
+    if (!existingProf.password_set) {
+      inviteToken = existingProf.invite_token || (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
+      if (!existingProf.invite_token) {
+        await admin.from("profiles").update({ invite_token: inviteToken }).eq("id", referrerId);
+      }
+    }
   } else {
     const tempPass = "Rf!" + crypto.randomUUID().replace(/-/g, "");
     // Одноразовий токен для безпечного встановлення пароля (/set-password?token=…).
