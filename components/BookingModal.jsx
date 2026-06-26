@@ -18,10 +18,10 @@ import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, regionsFor, 
 const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MONTHS_NOM = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 const MONTHS_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
-function today0() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
-function sameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
+export function today0() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
+export function sameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 function dowMon(d) { return (d.getDay() + 6) % 7; }
-function fmtShort(d) { return d.getDate() + " " + MONTHS_GEN[d.getMonth()]; }
+export function fmtShort(d) { return d.getDate() + " " + MONTHS_GEN[d.getMonth()]; }
 function dateKey(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 
 /* ── Слоти часу ──
@@ -63,7 +63,7 @@ function parseDob(text) {
   return { ok: true, iso: yyyy + "-" + m[2] + "-" + m[1] };
 }
 
-function DobField({ value, onChange, invalid }) {
+export function DobField({ value, onChange, invalid }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState(() => dobFmt(value));
   const [err, setErr] = useState("");
@@ -144,7 +144,7 @@ function DobField({ value, onChange, invalid }) {
   );
 }
 
-function BookingCalendar({ value, onPick }) {
+export function BookingCalendar({ value, onPick }) {
   const t = today0();
   const [viewMonth, setViewMonth] = useState(() => new Date(value.getFullYear(), value.getMonth(), 1));
   const shift = (n) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));

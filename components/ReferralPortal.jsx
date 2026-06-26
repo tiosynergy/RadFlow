@@ -16,7 +16,8 @@ import PatientEditModal from "@/components/PatientEditModal";
 import RescheduleModal from "@/components/RescheduleModal";
 import { roomScheduleFor } from "@/lib/schedule";
 import { slotBlockedByIncidents } from "@/lib/incidents";
-import { regionsFor, studyPrice, diffStudies, studiesChanged, studyText } from "@/lib/studies";
+import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE } from "@/lib/studies";
+import { DobField, BookingCalendar, fmtShort, today0, sameDay } from "@/components/BookingModal";
 import "@/styles/prototype/radflow.css";
 
 function pad(n) { return String(n).padStart(2, "0"); }
@@ -64,16 +65,27 @@ async function postJSON(url, body) {
   } catch { return { ok: false, data: { error: "Помилка зʼєднання із сервером" } }; }
 }
 
-/* ---------- Вкладка «Нове направлення» ---------- */
+/* ---------- Вкладка «Нове направлення» ----------
+   UI повністю дзеркалить адмінську модалку запису (BookingModal): ті самі секції,
+   поля, чекбокси, календар і блок «Вільні слоти». Єдина відмінність — немає поля
+   «Лікар-направник» (направник = поточний користувач) і додано вибір центру.
+   Зайнятість слотів тягнемо знеособленим RPC room_busy_slots (без PII). */
 function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCreated }) {
   const [centerId, setCenterId] = useState(() => (activeCenters[0] ? activeCenters[0].clinicId : ""));
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
+  const [gender, setGender] = useState("");
+  const [weight, setWeight] = useState("");
   const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
   const [studyType, setStudyType] = useState("МРТ");
   const [region, setRegion] = useState("");
+  const [contrast, setContrast] = useState(false);
+  const [hasContra, setHasContra] = useState(false);
+  const [cito, setCito] = useState(false);
   const [comment, setComment] = useState("");
-  const [date, setDate] = useState(() => { const d = new Date(); d.setDate(d.getDate() + 1); return dateVal(d); });
+  const [extraStudies, setExtraStudies] = useState([]);
+  const [bookDate, setBookDate] = useState(() => { const d = today0(); d.setDate(d.getDate() + 1); return d; });
   const [roomId, setRoomId] = useState(null);
   const [time, setTime] = useState("");
   const [dayEntries, setDayEntries] = useState([]);
@@ -81,7 +93,9 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const [incidents, setIncidents] = useState([]);
   const [busy, setBusy] = useState(false);
 
+  const date = dateVal(bookDate);
   const modality = studyType === "КТ" ? "CT" : "MRI";
+  const primaryKind = studyType;
   const selCenter = activeCenters.find((c) => c.clinicId === centerId) || null;
   const allRooms = roomsByClinic[centerId] || [];
   const allowedRoomIds = selCenter && Array.isArray(selCenter.room_ids) && selCenter.room_ids.length ? selCenter.room_ids : null; // null = усі
@@ -91,15 +105,52 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const modAllowed = (code) => (code === "MRI" ? hasMRI : code === "CT" ? hasCT : false);
   const roomsOfType = rooms.filter((r) => r.modality === modality);
   const room = roomsOfType.find((r) => r.id === roomId) || null;
-  const regions = regionsFor(studyType);
+
+  const allRegions = regionsFor(studyType);
+  const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const regionObj = regions.find((r) => r.label === region);
-  const dur = regionObj ? regionObj.dur : (studyType === "КТ" ? 20 : 45);
+  const contrastSuffix = contrast ? " з контрастом" : "";
+  const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (studyType === "КТ" ? 20 : 45);
+  const price = regionObj ? regionObj.price + (contrast ? CONTRAST_SURCHARGE : 0) : null;
+  const fmtPrice = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
+
+  const [durEdit, setDurEdit] = useState("");
+  useEffect(() => { if (region) setDurEdit(String(computedDur)); }, [region, contrast, studyType]); // eslint-disable-line
+  const dur = Math.max(5, parseInt(durEdit, 10) || computedDur);
+  const durCustom = region && parseInt(durEdit, 10) && parseInt(durEdit, 10) !== computedDur;
+
+  function changeType(t) {
+    setStudyType(t); setRegion(""); setContrast(false); setTime("");
+    setExtraStudies((a) => a.map((s) => (s.type === t ? s : { ...s, type: t, region: "", dur: exDur(t, "") })));
+  }
+  function toggleContrast(v) {
+    setContrast(v);
+    if (v && region && !allRegions.some((r) => r.label === region && r.contrast)) { setRegion(""); setTime(""); }
+  }
+
+  /* Додаткові дослідження (як в адмінці) */
+  const exRegions = (t) => regionsFor(t);
+  const exDur = (t, reg) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : (t === "КТ" ? 20 : 45); };
+  const exPatch = (i, p) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
+  const exSetRegion = (i, reg) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
+  const exSetDur = (i, v) => exPatch(i, { dur: Math.max(5, parseInt(v, 10) || 0) });
+  const exAdd = () => setExtraStudies((a) => [...a, { type: primaryKind, region: "", dur: exDur(primaryKind, "") }]);
+  const exRemove = (i) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
+  const validExtra = extraStudies.filter((s) => s.region);
+
+  const primaryStudy = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast) } : null;
+  const allStudies = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: parseInt(s.dur, 10) || 0, price: studyPrice(s.type, s.region, false) })));
+  const procLabelTxt = region ? `${primaryKind} · ${region}${contrastSuffix}` : primaryKind;
+  const combinedLabel = allStudies.length ? allStudies.map(studyLabel).join(" + ") : procLabelTxt;
+  const slotDur = dur + validExtra.reduce((s, x) => s + (parseInt(x.dur, 10) || 0), 0);
+
+  function calcAgeLocal(d) { const a = calcAge(d); return a == null || a < 0 ? 0 : a; }
 
   // Якщо центр обмежує модальності — переключаємо тип на дозволений.
   useEffect(() => {
     if (!modAllowed(studyType === "КТ" ? "CT" : "MRI")) {
       if (modAllowed("MRI")) setStudyType("МРТ"); else if (modAllowed("CT")) setStudyType("КТ");
-      setRegion(""); setTime("");
+      setRegion(""); setContrast(false); setTime("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [centerId]);
@@ -137,19 +188,34 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const roomSched = roomScheduleFor(dateObj, roomId, override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
   const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) }));
+  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+  const isBookToday = sameDay(bookDate, today0());
   const slots = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
   function slotState(slot) {
-    const a = toMin(slot), b = a + dur;
+    const a = toMin(slot), b = a + slotDur;
     if (roomSched.closed) return "closed";
     const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60);
     if (slotBlockedByIncidents(incidents, roomId, slotMs)) return "blocked";
     if (a < schedStart || a >= schedEnd) return "offhours";
     if (b > schedEnd) return "tight";
+    if (isBookToday && a < nowMin) return "past";
     if (busySlots.some((x) => a >= x.s && a < x.e)) return "busy";
     if (busySlots.some((x) => a < x.e && x.s < b)) return "tight";
     return "free";
   }
-  const valid = centerId && name.trim() && dob && phone.trim() && region && time && roomId && !roomSched.closed && slotState(time) === "free";
+  function nextApptAfter(slot) {
+    const s = toMin(slot);
+    const after = busySlots.filter((x) => x.s >= s).sort((a, b) => a.s - b.s)[0];
+    return after ? fmt(after.s) : null;
+  }
+  const freeCount = slots.filter((s) => slotState(s) === "free").length;
+  const busyList = busySlots.slice().sort((a, b) => a.s - b.s);
+
+  const miss = { name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), region: !region, time: !time };
+  const MISS_LABELS = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", region: "Область дослідження", time: "Слот часу" };
+  const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
+  const timeBad = time ? slotState(time) !== "free" : false;
+  const valid = centerId && missingList.length === 0 && roomId && !timeBad && !roomSched.closed;
 
   async function submit() {
     if (!valid || busy) return;
@@ -158,23 +224,25 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), hh, mm).toISOString();
     // Повторна перевірка зайнятості через RPC (слот могли зайняти, поки відкрита форма).
-    const startMin2 = hh * 60 + mm, endMin2 = startMin2 + (dur || 30);
+    const startMin2 = hh * 60 + mm, endMin2 = startMin2 + (slotDur || 30);
     const { data: clash } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
     if ((clash || []).some((q) => {
       const qs = toMin(q.scheduled_time);
       return qs < endMin2 && startMin2 < qs + (q.duration_min || 30);
     })) { setBusy(false); onCreated(null, "Слот щойно зайняли — оновіть сторінку й оберіть інший час"); return; }
-    const studiesArr = [{ type: studyType, region, contrast: false, dur, price: studyPrice(studyType, region, false) }];
+    const note = comment.trim() || null;
     const { error } = await supabase.from("queue_entries").insert({
-      clinic_id: centerId, room_id: roomId, patient_name: name.trim(), patient_phone: phone.trim(),
-      patient_dob: dob, patient_age: calcAge(dob),
-      studies: studiesArr, studies_original: studiesArr, duration_min: dur,
+      clinic_id: centerId, room_id: roomId, created_by: doctorId, referrer_id: doctorId,
+      patient_name: name.trim(), patient_phone: phone.trim() || null, patient_email: email.trim() || null,
+      patient_dob: dob || null, patient_sex: gender || null, patient_age: calcAgeLocal(dob), patient_weight: weight ? +weight : null,
+      contraindications: !!hasContra, cito: !!cito, has_contrast: allStudies.some((s) => s.contrast),
+      studies: allStudies, studies_original: allStudies, duration_min: slotDur,
       scheduled_date: date, scheduled_time: time, scheduled_at: at,
-      status: "scheduled", call_status: "not_called", doctor: doctorName, created_by: doctorId, referrer_id: doctorId, indication: comment.trim() || null,
+      status: "scheduled", call_status: "not_called", doctor: doctorName, note, indication: note,
     });
     setBusy(false);
     if (error) { onCreated(null, /incident/i.test(error.message) ? "Кабінет у простої (ремонт/ТО) у цей час — оберіть інший слот або день" : /overlap|exclusion/i.test(error.message) ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час" : error.message); return; }
-    setName(""); setDob(""); setPhone(""); setRegion(""); setComment(""); setTime("");
+    setName(""); setDob(""); setGender(""); setWeight(""); setPhone(""); setEmail(""); setRegion(""); setContrast(false); setHasContra(false); setCito(false); setComment(""); setExtraStudies([]); setTime("");
     onCreated(name.trim());
   }
 
@@ -187,79 +255,237 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   }
 
   return (
-    <div style={{ maxWidth: 720, margin: "0 auto" }}>
-      <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 24 }}>
-        <div className="bk-section-label" style={{ marginTop: 0 }}>Центр</div>
-        <label className="fld">
-          <span className="fld-lab">Куди направляємо *</span>
-          <select className="inp" value={centerId} onChange={(e) => { setCenterId(e.target.value); setTime(""); }}>
-            {activeCenters.map((c) => <option key={c.clinicId} value={c.clinicId}>{centerLabel(c)}</option>)}
-          </select>
-        </label>
+    <div style={{ maxWidth: 880, margin: "0 auto" }}>
+      <div className="dialog bk-dialog" style={{ margin: 0, maxHeight: "none", overflow: "visible" }}>
+        <div className="bk-grid">
+          {/* ЛІВА КОЛОНКА */}
+          <div className="bk-col bk-col-left">
+            <div className="bk-section-label" style={{ marginTop: 0 }}>Центр</div>
+            <label className="fld">
+              <span className="fld-lab">Куди направляємо *</span>
+              <select className="inp" value={centerId} onChange={(e) => { setCenterId(e.target.value); setTime(""); }}>
+                {activeCenters.map((c) => <option key={c.clinicId} value={c.clinicId}>{centerLabel(c)}</option>)}
+              </select>
+            </label>
 
-        <div className="bk-section-label">Пацієнт</div>
-        <label className="fld"><span className="fld-lab">ПІБ *</span><input className="inp" placeholder="Прізвище Ім'я По батькові" value={name} onChange={(e) => setName(e.target.value)} /></label>
-        <div className="fld-row">
-          <label className="fld"><span className="fld-lab">Дата народження *</span><input className="inp tabular" type="date" max={dateVal(new Date())} value={dob} onChange={(e) => setDob(e.target.value)} /></label>
-          <label className="fld"><span className="fld-lab">Телефон *</span><input className="inp" type="tel" placeholder="+38 0__ ___ __ __" value={phone} onChange={(e) => setPhone(e.target.value)} /></label>
-        </div>
+            <div className="bk-section-label">Пацієнт</div>
 
-        <div className="bk-section-label" style={{ marginTop: 8 }}>Дослідження</div>
-        <div className="fld-row" style={{ alignItems: "flex-end" }}>
-          <div className="fld" style={{ flex: "0 0 130px" }}>
-            <span className="fld-lab">Тип *</span>
-            <div className="bk-seg">
-              {modAllowed("MRI") && <button className={"bk-seg-btn" + (studyType === "МРТ" ? " active mrt" : "")} onClick={() => { setStudyType("МРТ"); setRegion(""); setTime(""); }}>МРТ</button>}
-              {modAllowed("CT") && <button className={"bk-seg-btn" + (studyType === "КТ" ? " active ct" : "")} onClick={() => { setStudyType("КТ"); setRegion(""); setTime(""); }}>КТ</button>}
-            </div>
-          </div>
-          <label className="fld" style={{ flex: 1 }}>
-            <span className="fld-lab">Область дослідження *</span>
-            <select className="inp" value={region} onChange={(e) => { setRegion(e.target.value); setTime(""); }}>
-              <option value="">— Оберіть область —</option>
-              {regions.map((r) => <option key={r.label} value={r.label}>{r.label} · {r.dur} хв</option>)}
-            </select>
-          </label>
-        </div>
-        <label className="fld"><span className="fld-lab">Клінічне питання / коментар</span><textarea className="inp" rows={2} placeholder="Показання, що шукаємо, особливості…" value={comment} onChange={(e) => setComment(e.target.value)} /></label>
+            <label className="fld">
+              <span className={"fld-lab" + (miss.name ? " bk-miss-lab" : "")}>ПІБ *</span>
+              <input className="inp" placeholder="Прізвище Ім'я По батькові" value={name} onChange={(e) => setName(e.target.value)} />
+            </label>
 
-        <div className="bk-section-label" style={{ marginTop: 8 }}>Запис у кабінет</div>
-        {roomsOfType.length === 0 ? (
-          <div className="ctx-hint red">У цьому центрі немає кабінету типу {studyType}.</div>
-        ) : (
-          <>
-            {roomsOfType.length > 1 && (
-              <div className="bd-rooms" style={{ marginBottom: 10 }}>
-                {roomsOfType.map((r) => (
-                  <button key={r.id} className={"bd-room" + (roomId === r.id ? " active" : "")} onClick={() => { setRoomId(r.id); setTime(""); }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
-                    <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
-                    <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
-                  </button>
-                ))}
-              </div>
-            )}
             <div className="fld-row">
-              <label className="fld" style={{ maxWidth: 180 }}><span className="fld-lab">Дата</span><input className="inp tabular" type="date" min={dateVal(new Date())} value={date} onChange={(e) => { setDate(e.target.value); setTime(""); }} /></label>
-              <div className="fld"><span className="fld-lab">Кабінет</span><div className="inp" style={{ display: "flex", alignItems: "center" }}>{room ? room.name + " · " + modalityLabel(room.modality) : "—"}</div></div>
+              <div className="fld" style={{ flex: "0 0 150px" }}>
+                <span className={"fld-lab" + (miss.dob ? " bk-miss-lab" : "")}>Дата народження *</span>
+                <DobField value={dob} onChange={setDob} invalid={miss.dob} />
+              </div>
+              <div className="fld" style={{ flex: "0 0 auto" }}>
+                <span className={"fld-lab" + (miss.gender ? " bk-miss-lab" : "")}>Стать *</span>
+                <div className="bk-gender-row">
+                  <button className={"bk-gender-btn" + (gender === "М" ? " active" : "")} onClick={() => setGender("М")} title="Чоловіча">♂</button>
+                  <button className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} onClick={() => setGender("Ж")} title="Жіноча">♀</button>
+                </div>
+              </div>
+              <div className="fld" style={{ flex: "0 0 52px" }}>
+                <span className="fld-lab">Вік</span>
+                <div className="inp bk-age" title="Розраховано з дати народження">{dob ? calcAgeLocal(dob) : "—"}</div>
+              </div>
+              <label className="fld" style={{ flex: "0 0 60px" }}>
+                <span className="fld-lab">Вага</span>
+                <input className="inp" placeholder="кг" value={weight} onChange={(e) => setWeight(e.target.value.replace(/\D/g, ""))} />
+              </label>
             </div>
-            {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {date}{override && override.label ? " · " + override.label : ""}.</div>}
-            {!roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО у частині дня. Оберіть вільний слот або інший день.</div>}
+
+            <div className="fld-row">
+              <label className="fld">
+                <span className={"fld-lab" + (miss.phone ? " bk-miss-lab" : "")}>Телефон *</span>
+                <input className="inp" type="tel" placeholder="+38 0__ ___ __ __" value={phone} onChange={(e) => setPhone(e.target.value)} />
+              </label>
+              <label className="fld">
+                <span className="fld-lab">Email</span>
+                <input className="inp" type="email" placeholder="patient@email.com" value={email} onChange={(e) => setEmail(e.target.value)} />
+              </label>
+            </div>
+
+            <div className="bk-section-label">Дослідження</div>
+
+            <div className="fld-row" style={{ alignItems: "flex-end" }}>
+              <div className="fld" style={{ flex: "0 0 130px" }}>
+                <span className="fld-lab">Тип *</span>
+                <div className="bk-seg">
+                  {modAllowed("MRI") && <button className={"bk-seg-btn" + (studyType === "МРТ" ? " active mrt" : "")} onClick={() => changeType("МРТ")}>МРТ</button>}
+                  {modAllowed("CT") && <button className={"bk-seg-btn" + (studyType === "КТ" ? " active ct" : "")} onClick={() => changeType("КТ")}>КТ</button>}
+                </div>
+              </div>
+              <div className="fld">
+                <span className="fld-lab">Параметри</span>
+                <div className="bk-check-row">
+                  <label className={"rf-check" + (contrast ? " on" : "")}>
+                    <input type="checkbox" checked={contrast} onChange={(e) => toggleContrast(e.target.checked)} />
+                    <span className="rf-box" /><span>Контраст</span>
+                  </label>
+                  <label className={"rf-check" + (hasContra ? " warn" : "")}>
+                    <input type="checkbox" checked={hasContra} onChange={(e) => setHasContra(e.target.checked)} />
+                    <span className="rf-box" /><span>Протипоказання</span>
+                  </label>
+                  <label className={"rf-check" + (cito ? " warn" : "")}>
+                    <input type="checkbox" checked={cito} onChange={(e) => setCito(e.target.checked)} />
+                    <span className="rf-box" /><span>CITO (терміново)</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div className="fld-row" style={{ alignItems: "flex-start" }}>
+              <label className="fld" style={{ flex: "1 1 auto" }}>
+                <span className={"fld-lab" + (miss.region ? " bk-miss-lab" : "")}>Область дослідження *</span>
+                <select className="inp" value={region} onChange={(e) => { setRegion(e.target.value); setTime(""); }}>
+                  <option value="">— Оберіть область —</option>
+                  {regions.map((r) => (
+                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur + (contrast ? CONTRAST_DUR : 0)} хв</option>
+                  ))}
+                </select>
+              </label>
+              <label className="fld" style={{ flex: "0 0 108px" }}>
+                <span className="fld-lab">Тривалість *</span>
+                <div className="bk-dur-row">
+                  <input className="inp bk-dur-input" type="number" min="5" step="5" placeholder="—"
+                    value={durEdit} onChange={(e) => setDurEdit(e.target.value.replace(/\D/g, ""))} disabled={!region} />
+                  <span className="bk-dur-unit">хв</span>
+                </div>
+                <span className={"bk-time-state " + (durCustom ? "busy" : "none")}>
+                  {!region ? "оберіть область" : durCustom ? `↺ за замовч. ${computedDur} хв` : "за тривалістю області"}
+                </span>
+              </label>
+            </div>
+
+            {price != null && (
+              <div className="ctx-hint blue" style={{ marginBottom: 6 }}>Орієнтовна вартість: {fmtPrice(price)}</div>
+            )}
+
+            {/* Додаткові дослідження */}
             <div className="fld">
-              <span className="fld-lab">Вільні слоти · блок {dur} хв</span>
-              <div className="bk-slot-grid">
+              {extraStudies.length > 0 && (
+                <div className="bk-study-table">
+                  <div className="bk-study-head"><span>Тип</span><span>Область дослідження</span><span>Трив.</span><span /></div>
+                  {extraStudies.map((r, i) => {
+                    const regs = exRegions(r.type);
+                    return (
+                      <div className="bk-study-row" key={i}>
+                        <div className="bk-seg bk-seg-sm st-seg-locked" title="Тип = тип основного дослідження">
+                          <button className={"bk-seg-btn active " + (primaryKind === "МРТ" ? "mrt" : "ct")} disabled>{primaryKind}</button>
+                        </div>
+                        <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
+                          <option value="">— Оберіть область —</option>
+                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur} хв</option>)}
+                        </select>
+                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.dur} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                        <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: extraStudies.length > 0 ? 8 : 0 }} onClick={exAdd}>＋ Додати дослідження</button>
+            </div>
+
+            <label className="fld" style={{ flex: 1 }}>
+              <span className="fld-lab">Примітки</span>
+              <textarea className="inp bk-notes" placeholder="Клінічне питання, показання, що шукаємо, особливі вимоги…" value={comment} onChange={(e) => setComment(e.target.value)} />
+            </label>
+          </div>
+
+          {/* ПРАВА КОЛОНКА — Scheduler */}
+          <div className="bk-col bk-col-right">
+            <div className="bk-sched-head">
+              <span className="bk-sched-spark">✦</span>
+              <span className="bk-sched-title">Розклад</span>
+              <span className="bk-sched-sync"><span className="pulse-dot" style={{ background: "var(--green)", width: 6, height: 6 }} /> синхр. з чергою</span>
+            </div>
+
+            <div className="fld">
+              <span className="fld-lab">Кабінет ({studyType === "МРТ" ? "МРТ" : "КТ"})</span>
+              {roomsOfType.length === 0 ? (
+                <div className="ctx-hint red">У цьому центрі немає кабінету типу {studyType}.</div>
+              ) : (
+                <>
+                  <div className="bk-room-chips">
+                    {roomsOfType.map((r) => {
+                      const num = (String(r.name).match(/№?\s*(\d+)/) || [])[1] || r.name;
+                      return (
+                        <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + (r.modality === "MRI" ? " mrt" : " ct")}
+                          onClick={() => { setRoomId(r.id); setTime(""); }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
+                          №{num}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {room && room.apparatus_model && <span className="bk-room-model-line">{room.apparatus_model}</span>}
+                </>
+              )}
+            </div>
+
+            <BookingCalendar value={bookDate} onPick={(d) => { setBookDate(d); setTime(""); }} />
+
+            <div className="fld">
+              <div className="bk-slots-head">
+                <span className={"fld-lab" + (miss.time ? " bk-miss-lab" : "")} style={{ margin: 0 }}>Вільні слоти · {fmtShort(bookDate)} {miss.time ? "— оберіть час *" : ""}</span>
+                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} · {freeCount} вільних</span>
+              </div>
+              {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
+              {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
+              {!roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО у частині дня. Оберіть вільний слот або інший день.</div>}
+              <div className={"bk-slot-grid" + (miss.time ? " bk-miss-slots" : "")}>
                 {slots.map((s) => {
-                  const stt = slotState(s);
-                  return <button key={s} className={"slot" + (time === s ? " sel" : "") + (stt !== "free" ? " taken" : "") + ((stt === "busy" || stt === "blocked") ? " busy" : "") + (stt === "tight" ? " tight" : "")} disabled={stt !== "free"} onClick={() => setTime(s)} title={stt === "free" ? "Вільно" : stt === "blocked" ? "Кабінет на ремонті/ТО" : "Недоступно"}>{s}</button>;
+                  const st = slotState(s);
+                  const title = st === "busy" ? "Зайнято"
+                    : st === "blocked" ? "Кабінет на ремонті/ТО"
+                    : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець графіка (" + fmt(schedEnd) + ")"}`
+                    : st === "past" ? "Час минув"
+                    : `Вільно · ${s}–${fmt(toMin(s) + slotDur)}`;
+                  return (
+                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked") ? " busy" : "")}
+                      disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
+                  );
                 })}
               </div>
-              <div className="bk-slot-legend"><span><span className="lg-dot free" />вільно</span><span><span className="lg-dot busy" />зайнято</span></div>
+              {busyList.length > 0 && (
+                <div className="bk-busy-list">
+                  <span className="bk-busy-lab">Зайнятий час:</span>
+                  {busyList.map((b, i) => <span className="bk-busy-chip" key={i}>{fmt(b.s)}–{fmt(b.e)}</span>)}
+                </div>
+              )}
+              <div className="bk-slot-legend">
+                <span><span className="lg-dot free" />вільно</span>
+                <span><span className="lg-dot tight" />не вміщується</span>
+                <span><span className="lg-dot busy" />зайнято</span>
+              </div>
+              {time && (() => {
+                const s = toMin(time), e = s + slotDur;
+                const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(s / 60), s % 60);
+                const blocked = slotBlockedByIncidents(incidents, roomId, slotMs);
+                const conflict = busySlots.find((b) => s < b.e && b.s < e);
+                return (
+                  <div className={"bk-slot-confirm " + (blocked || conflict ? "bad" : "ok")}>
+                    {blocked ? <>⚠ Кабінет на ремонті/ТО у цей час — оберіть інший слот або день</>
+                      : conflict ? <>⚠ Перетин із записом {fmt(conflict.s)}–{fmt(conflict.e)} — оберіть інший слот</>
+                      : <>✓ Слот вільний. Запис: <b>{time}–{fmt(e)}</b> ({slotDur} хв).</>}
+                  </div>
+                );
+              })()}
             </div>
-          </>
-        )}
+          </div>
+        </div>
 
-        <button className="btn btn-primary btn-lg" style={{ width: "100%", justifyContent: "center", marginTop: 8 }} disabled={!valid || busy} onClick={submit}>
-          {busy ? "Відправляємо…" : "Відправити направлення"}
-        </button>
+        <div className="dlg-foot">
+          {valid
+            ? <span className="bk-summary">{name.split(" ").slice(0, 2).join(" ")} · {allStudies.length > 1 ? allStudies.length + " досл." : primaryKind} · {room ? room.name : ""} · {fmtShort(bookDate)} {time}–{fmt(toMin(time) + slotDur)}</span>
+            : <span className="bk-missing">{missingList.map((m, i) => <span className="bk-miss-chip" key={i}>{m}</span>)}</span>}
+          <button className="btn btn-primary" disabled={!valid || busy} onClick={submit}>
+            {busy ? "Відправляємо…" : "Відправити направлення"}
+          </button>
+        </div>
       </div>
     </div>
   );
