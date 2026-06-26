@@ -133,6 +133,26 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     reload();
   }
 
+  // Повторне запрошення відкликаного/відхиленого направника. Бекенд (invite)
+  // переводить зв'язок revoked/declined → pending_referrer (потрібне нове
+  // підтвердження лікаря). Реюзаємо збережені дані профілю й гранту.
+  async function reinvite(r) {
+    setBusyId(r.access_id);
+    const { ok, data } = await postJSON("/api/referrers/invite", {
+      login: r.referrer.login || "",
+      full_name: r.referrer.full_name || "",
+      phone: r.referrer.phone || "",
+      email: "",
+      note: r.note || "",
+      policy: r.policy || "direct",
+      room_ids: r.room_ids || null,
+    });
+    setBusyId(null);
+    if (!ok) { notify(data.error || "Помилка", "error"); return; }
+    notify("Запрошення надіслано повторно — очікує підтвердження лікаря", "success");
+    reload();
+  }
+
   function startEdit(r) {
     setEditingId(r.access_id);
     setEditForm({ policy: r.policy || "direct", room_ids: (r.room_ids && r.room_ids.length ? r.room_ids : allRoomIds), note: r.note || "" });
@@ -312,7 +332,11 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           {history.length > 0 && (
             <div style={card}>
               <div className="bk-section-label" style={{ marginTop: 0 }}>Історія</div>
-              {history.map((r) => <Row key={r.access_id} r={r} />)}
+              {history.map((r) => (
+                <Row key={r.access_id} r={r}>
+                  <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={() => reinvite(r)}>{busyId === r.access_id ? "…" : "Запросити знову"}</button>
+                </Row>
+              ))}
             </div>
           )}
         </div>

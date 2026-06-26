@@ -578,7 +578,11 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
       {history.length > 0 && (
         <div style={card}>
           <div className="bk-section-label" style={{ marginTop: 0 }}>Історія</div>
-          {history.map((c) => <Row key={c.accessId} c={c} />)}
+          {history.map((c) => (
+            <Row key={c.accessId} c={c}>
+              {canManage && <button className="btn btn-secondary btn-sm" disabled={busyId === c.clinicId} onClick={() => sendRequest(c.clinicId)}>{busyId === c.clinicId ? "…" : "Надіслати запит знову"}</button>}
+            </Row>
+          ))}
         </div>
       )}
     </div>
