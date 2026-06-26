@@ -51,7 +51,7 @@ npm run dev      # http://localhost:3000
 
 ## База данных
 
-Схема и политики управляются миграциями в `supabase/migrations/` (на текущий момент `0001`–`0031`).
+Схема и политики управляются миграциями в `supabase/migrations/` (на текущий момент `0001`–`0037`).
 Применять по порядку в Supabase → SQL Editor. Подробно о схеме, ограничениях и RLS — в
 [`docs/PRODUCT_OVERVIEW.md`](docs/PRODUCT_OVERVIEW.md) (раздел «Модель данных»).
 
