@@ -155,9 +155,10 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [centerId]);
 
-  // Дефолтний кабінет при зміні центру/модальності.
+  // Кабінет при зміні центру/модальності: зберігаємо валідний вибір; авто-вибір
+  // лише коли кабінет один, інакше — користувач обирає вручну (поле обовʼязкове).
   useEffect(() => {
-    setRoomId((prev) => (roomsOfType.some((r) => r.id === prev) ? prev : (roomsOfType[0] ? roomsOfType[0].id : null)));
+    setRoomId((prev) => (roomsOfType.some((r) => r.id === prev) ? prev : (roomsOfType.length === 1 ? roomsOfType[0].id : null)));
     setTime("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [centerId, studyType]);

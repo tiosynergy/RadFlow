@@ -230,7 +230,8 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
   }, [clinicId]);
 
   const roomsOfType = (t) => (rooms || []).filter((r) => r.modality === (t === "MRT" ? "MRI" : "CT"));
-  const [roomId, setRoomId] = useState(() => (roomsOfType("MRT")[0] || (rooms || [])[0] || {}).id || "");
+  // Авто-вибір лише коли кабінет один; якщо їх кілька — користувач обирає вручну.
+  const [roomId, setRoomId] = useState(() => { const l = roomsOfType("MRT"); return l.length === 1 ? l[0].id : ""; });
   const [bookDate, setBookDate] = useState(() => today0());
   const [time, setTime] = useState("");
   const [dayEntries, setDayEntries] = useState([]);
@@ -242,7 +243,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
   function changeType(t) {
     setStudyType(t); setRegion(""); setContrast(false); setTime("");
     const list = roomsOfType(t);
-    setRoomId((list[0] || {}).id || "");
+    setRoomId(list.length === 1 ? list[0].id : "");
     const k = t === "MRT" ? "МРТ" : "КТ";
     setExtraStudies((a) => a.map((s) => (s.type === k ? s : { ...s, type: k, region: "", dur: exDur(k, "") })));
   }
