@@ -211,8 +211,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const freeCount = slots.filter((s) => slotState(s) === "free").length;
   const busyList = busySlots.slice().sort((a, b) => a.s - b.s);
 
-  const miss = { name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), region: !region, time: !time };
-  const MISS_LABELS = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", region: "Область дослідження", time: "Слот часу" };
+  const miss = { name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), region: !region, room: !roomId, time: !time };
+  const MISS_LABELS = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   const timeBad = time ? slotState(time) !== "free" : false;
   const valid = centerId && missingList.length === 0 && roomId && !timeBad && !roomSched.closed;
@@ -401,25 +401,23 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
             <div className="bk-sched-head">
               <span className="bk-sched-spark">✦</span>
               <span className="bk-sched-title">Розклад</span>
+              <span className={"bk-sched-mod " + (modality === "MRI" ? "mrt" : "ct")}>{studyType}</span>
               <span className="bk-sched-sync"><span className="pulse-dot" style={{ background: "var(--green)", width: 6, height: 6 }} /> синхр. з чергою</span>
             </div>
 
             <div className="fld">
-              <span className="fld-lab">Кабінет ({studyType === "МРТ" ? "МРТ" : "КТ"})</span>
+              <span className={"fld-lab" + (miss.room ? " bk-miss-lab" : "")}>Кабінет *</span>
               {roomsOfType.length === 0 ? (
                 <div className="ctx-hint red">У цьому центрі немає кабінету типу {studyType}.</div>
               ) : (
                 <>
                   <div className="bk-room-chips">
-                    {roomsOfType.map((r) => {
-                      const num = (String(r.name).match(/№?\s*(\d+)/) || [])[1] || r.name;
-                      return (
-                        <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + (r.modality === "MRI" ? " mrt" : " ct")}
-                          onClick={() => { setRoomId(r.id); setTime(""); }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
-                          №{num}
-                        </button>
-                      );
-                    })}
+                    {roomsOfType.map((r) => (
+                      <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + (r.modality === "MRI" ? " mrt" : " ct")}
+                        onClick={() => { setRoomId(r.id); setTime(""); }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
+                        {r.name}
+                      </button>
+                    ))}
                   </div>
                   {room && room.apparatus_model && <span className="bk-room-model-line">{room.apparatus_model}</span>}
                 </>
