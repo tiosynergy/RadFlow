@@ -47,9 +47,34 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ policy: "direct", room_ids: [], note: "" });
   const [savingEdit, setSavingEdit] = useState(false);
+  const [loginSug, setLoginSug] = useState([]);      // підказки існуючих логінів
+  const [sugOpen, setSugOpen] = useState(false);
+  const [existingPicked, setExistingPicked] = useState(false); // обрано наявного направника
   const toastTimer = useRef(null);
 
   useEffect(() => { setOrigin(window.location.origin); }, []);
+
+  // Автодоповнення логіну: шукаємо вже існуючих у RadFlow направників (RPC,
+  // лише адмінам). Якщо лікар уже є — додаємо за логіном без ПІБ/телефону й без
+  // пароля (лікар підтвердить запрошення у себе).
+  useEffect(() => {
+    const q = form.login.trim();
+    if (existingPicked || q.length < 2) { setLoginSug([]); return; }
+    let active = true;
+    const t = setTimeout(async () => {
+      const supabase = createClient();
+      const { data } = await supabase.rpc("search_referrers", { q });
+      if (active) setLoginSug(data || []);
+    }, 250);
+    return () => { active = false; clearTimeout(t); };
+  }, [form.login, existingPicked]);
+
+  function pickReferrer(s) {
+    setForm((f) => ({ ...f, login: s.login, full_name: s.full_name || "" }));
+    setExistingPicked(true);
+    setSugOpen(false);
+    setLoginSug([]);
+  }
 
   function notify(msg, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 4500); }
   async function copyLink(tok) {
@@ -106,7 +131,8 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   }, [clinicId, reload]);
 
   async function invite() {
-    if (!form.login.trim() || !form.full_name.trim() || !form.phone.trim()) { notify("Заповніть логін, ПІБ і телефон", "error"); return; }
+    if (!form.login.trim()) { notify("Вкажіть логін направника", "error"); return; }
+    if (!existingPicked && (!form.full_name.trim() || !form.phone.trim())) { notify("Для нового направника вкажіть ПІБ і телефон", "error"); return; }
     setBusy(true);
     // Усі або жоден обраний кабінет → усі (null); інакше — обраний перелік.
     const room_ids = (form.room_ids.length === 0 || form.room_ids.length === allRoomIds.length) ? null : form.room_ids;
@@ -114,6 +140,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     setBusy(false);
     if (!ok) { notify(data.error || "Помилка", "error"); return; }
     setForm(emptyForm());
+    setExistingPicked(false);
     if (data.status === "active") {
       notify("Доступ активовано (лікар уже надсилав запит)", "success");
     } else if (data.created_account) {
@@ -218,13 +245,35 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           <div style={card}>
             <div className="bk-section-label" style={{ marginTop: 0 }}>Запросити лікаря-направника</div>
             <div className="fld-row">
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Логін{req}</span><input className="inp" placeholder="логін для входу" value={form.login} onChange={(e) => setF("login", e.target.value)} /></label>
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>ПІБ{req}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setF("full_name", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1, position: "relative" }}>
+                <span className="fld-lab" style={{ color: "var(--red)" }}>Логін{req}</span>
+                <input className="inp" placeholder="логін направника" value={form.login} autoComplete="off"
+                  onChange={(e) => { setF("login", e.target.value); setExistingPicked(false); setSugOpen(true); }}
+                  onFocus={() => setSugOpen(true)}
+                  onBlur={() => setTimeout(() => setSugOpen(false), 150)} />
+                {sugOpen && !existingPicked && loginSug.length > 0 && (
+                  <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30, background: "var(--card)", border: "1px solid var(--border-strong)", borderRadius: "var(--r-md)", marginTop: 4, boxShadow: "var(--shadow-pop)", overflow: "hidden" }}>
+                    {loginSug.map((s) => (
+                      <button type="button" key={s.id} onMouseDown={(e) => { e.preventDefault(); pickReferrer(s); }}
+                        style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", borderTop: "1px solid var(--border)", cursor: "pointer", color: "var(--text)" }}>
+                        <span style={{ fontWeight: 600, fontSize: 13 }}>@{s.login}</span>
+                        {s.full_name ? <span style={{ color: "var(--text-muted)", fontSize: 12.5 }}> · {s.full_name}</span> : null}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: existingPicked ? "var(--text-muted)" : "var(--red)" }}>ПІБ{existingPicked ? "" : req}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} readOnly={existingPicked} style={existingPicked ? { opacity: 0.6 } : undefined} onChange={(e) => setF("full_name", e.target.value)} /></label>
             </div>
-            <div className="fld-row">
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Телефон{req}</span><input className="inp" type="tel" placeholder="+380 XX XXX XX XX" value={form.phone} onChange={(e) => setF("phone", e.target.value)} /></label>
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email</span><input className="inp" type="email" placeholder="необовʼязково" value={form.email} onChange={(e) => setF("email", e.target.value)} /></label>
-            </div>
+            {existingPicked && (
+              <div className="hint-blue" style={{ marginTop: 0 }}>Лікар <b>@{form.login}</b> уже зареєстрований у RadFlow. ПІБ, телефон і пароль уже є — повторно вводити не треба. Він підтвердить запрошення у вкладці «Мої центри». <span style={{ color: "var(--blue)", cursor: "pointer" }} onClick={() => { setExistingPicked(false); setForm((f) => ({ ...f, login: "", full_name: "" })); }}>Скинути</span></div>
+            )}
+            {!existingPicked && (
+              <div className="fld-row">
+                <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Телефон{req}</span><input className="inp" type="tel" placeholder="+380 XX XXX XX XX" value={form.phone} onChange={(e) => setF("phone", e.target.value)} /></label>
+                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email</span><input className="inp" type="email" placeholder="необовʼязково" value={form.email} onChange={(e) => setF("email", e.target.value)} /></label>
+              </div>
+            )}
             <div className="fld-row">
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Режим бронювання</span>
                 <select className="inp" value={form.policy} onChange={(e) => setF("policy", e.target.value)}>

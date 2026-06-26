@@ -480,6 +480,23 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
     setSearching(false);
   }
 
+  // Живий пошук центрів «по мірі вводу» (debounce). Кнопка «Знайти» необовʼязкова —
+  // підказки зʼявляються самі. Уже відомі центри (active/pending/історія) ховаємо.
+  useEffect(() => {
+    const query = q.trim();
+    if (query.length < 2) { setResults([]); setSearching(false); return; }
+    let active = true;
+    setSearching(true);
+    const t = setTimeout(async () => {
+      const supabase = createClient();
+      const { data } = await supabase.rpc("search_clinics", { q: query });
+      if (!active) return;
+      setResults((data || []).filter((c) => !knownIds.has(c.id)));
+      setSearching(false);
+    }, 250);
+    return () => { active = false; clearTimeout(t); };
+  }, [q, knownIds]);
+
   async function sendRequest(clinicId) {
     setBusyId(clinicId);
     const { ok, data } = await postJSON("/api/referral/access/request", { clinic_id: clinicId });
@@ -521,12 +538,14 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
         <div style={card}>
           <div className="bk-section-label" style={{ marginTop: 0 }}>Додати центр</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <input className="inp" placeholder="Назва або місто центру…" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
-            <button className="btn btn-secondary" onClick={search} disabled={searching}>{searching ? "Пошук…" : "Знайти"}</button>
+            <input className="inp" placeholder="Почніть вводити назву або місто центру…" value={q} autoComplete="off" onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
+            <button className="btn btn-secondary" onClick={search} disabled={searching || q.trim().length < 2}>{searching ? "Пошук…" : "Знайти"}</button>
           </div>
-          {results.length > 0 && (
+          {q.trim().length >= 2 && (
             <div style={{ marginTop: 10 }}>
-              {results.map((r) => (
+              {results.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: "var(--text-muted)", padding: "8px 0" }}>{searching ? "Шукаємо…" : "Нічого не знайдено. Уточніть назву або місто."}</div>
+              ) : results.map((r) => (
                 <div key={r.id} style={{ padding: "10px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12 }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.name}</div>

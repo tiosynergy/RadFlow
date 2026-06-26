@@ -34,9 +34,11 @@ export async function POST(req: Request) {
   const roomIdsRaw = Array.isArray(body.room_ids) ? body.room_ids.filter((x: unknown) => UUID_RE.test(String(x))) : [];
   const room_ids = roomIdsRaw.length ? roomIdsRaw : null; // null = усі кабінети
 
-  // Обовʼязкові поля: логін, ПІБ, телефон.
-  if (!login || !fullName || !phone) {
-    return NextResponse.json({ error: "Заповніть логін, ПІБ і телефон" }, { status: 400 });
+  // Логін обовʼязковий завжди. ПІБ і телефон обовʼязкові ЛИШЕ для нового акаунта
+  // (перевірка нижче, у гілці створення) — якщо направник уже є в RadFlow, його
+  // дані вже збережені, і повторно вводити їх не треба (додавання за логіном).
+  if (!login) {
+    return NextResponse.json({ error: "Вкажіть логін направника" }, { status: 400 });
   }
   if (emailRaw && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw)) {
     return NextResponse.json({ error: "Некоректний email" }, { status: 400 });
@@ -73,6 +75,10 @@ export async function POST(req: Request) {
       }
     }
   } else {
+    // Новий акаунт направника — ПІБ і телефон обовʼязкові.
+    if (!fullName || !phone) {
+      return NextResponse.json({ error: "Лікаря з таким логіном не знайдено. Для нового направника вкажіть ПІБ і телефон" }, { status: 400 });
+    }
     const tempPass = "Rf!" + crypto.randomUUID().replace(/-/g, "");
     // Одноразовий токен для безпечного встановлення пароля (/set-password?token=…).
     inviteToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
