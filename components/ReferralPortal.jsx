@@ -71,7 +71,8 @@ async function postJSON(url, body) {
    «Лікар-направник» (направник = поточний користувач) і додано вибір центру.
    Зайнятість слотів тягнемо знеособленим RPC room_busy_slots (без PII). */
 function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCreated }) {
-  const [centerId, setCenterId] = useState(() => (activeCenters[0] ? activeCenters[0].clinicId : ""));
+  // Авто-вибір центру лише коли він один; якщо центрів кілька — обовʼязковий ручний вибір.
+  const [centerId, setCenterId] = useState(() => (activeCenters.length === 1 ? activeCenters[0].clinicId : ""));
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
   const [gender, setGender] = useState("");
@@ -265,6 +266,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
             <label className="fld">
               <span className={"fld-lab" + (miss.center ? " bk-miss-lab" : "")}>Куди направляємо *</span>
               <select className="inp" value={centerId} onChange={(e) => { setCenterId(e.target.value); setTime(""); }}>
+                <option value="">— Оберіть центр —</option>
                 {activeCenters.map((c) => <option key={c.clinicId} value={c.clinicId}>{centerLabel(c)}</option>)}
               </select>
             </label>
