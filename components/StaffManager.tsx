@@ -12,27 +12,44 @@ import LiveClock from "@/components/LiveClock";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
-function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
-const EMPTY = { login: "", full_name: "", email: "", phone: "", note: "" };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type StaffForm = { login: string; full_name: string; email: string; phone: string; note: string };
+type Radiologist = {
+  id: string; login: string | null; full_name: string | null; email: string | null;
+  phone: string | null; note: string | null; password_set: boolean; invite_token: string | null;
+};
+type RadRoom = { profile_id: string; room_id: string };
+type PwModal = { id: string; val: string; busy: boolean };
 
-export default function StaffManager({ clinicId, rooms, clinicName, adminName }) {
-  const [radiologists, setRadiologists] = useState([]);
-  const [radRooms, setRadRooms] = useState([]);     // [{profile_id, room_id}]
+function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+const EMPTY: StaffForm = { login: "", full_name: "", email: "", phone: "", note: "" };
+
+interface StaffManagerProps {
+  clinicId: string;
+  rooms?: RoomOpt[];
+  clinicName?: string;
+  adminName?: string;
+}
+
+export default function StaffManager({ clinicId, rooms, clinicName, adminName }: StaffManagerProps) {
+  const [radiologists, setRadiologists] = useState<Radiologist[]>([]);
+  const [radRooms, setRadRooms] = useState<RadRoom[]>([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState(EMPTY);
-  const [formRooms, setFormRooms] = useState([]);    // cabinet ids for new account
+  const [form, setForm] = useState<StaffForm>(EMPTY);
+  const [formRooms, setFormRooms] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState(null);
+  const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const [origin, setOrigin] = useState("");
-  const [pwModal, setPwModal] = useState(null); // { id, val, busy } | null
-  const toastTimer = useRef(null);
-  const roomsById = useMemo(() => { const m = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
+  const [pwModal, setPwModal] = useState<PwModal | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
+  void roomsById;
 
   useEffect(() => { setOrigin(window.location.origin); }, []);
 
-  function notify(msg, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 4000); }
-  function setF(k, v) { setForm((f) => ({ ...f, [k]: v })); }
-  async function copyLink(tok) {
+  function notify(msg: string, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 4000); }
+  function setF(k: keyof StaffForm, v: string) { setForm((f) => ({ ...f, [k]: v })); }
+  async function copyLink(tok: string) {
     const link = (origin || window.location.origin) + "/set-password?token=" + encodeURIComponent(tok);
     try { await navigator.clipboard.writeText(link); notify("Посилання для входу скопійовано", "success"); }
     catch { notify(link, "info"); }
@@ -51,8 +68,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
 
   useEffect(() => { reload(); }, [reload]);
 
-  // Оновлюємо список при поверненні на вкладку — щоб бейдж пароля / доступи
-  // не «застигали» після дій в інших вкладках (напр. /set-password).
+  // Оновлюємо список при поверненні на вкладку.
   useEffect(() => {
     const onFocus = () => reload();
     window.addEventListener("focus", onFocus);
@@ -63,7 +79,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
     };
   }, [reload]);
 
-  const hasRoom = (profileId, roomId) => radRooms.some((x) => x.profile_id === profileId && x.room_id === roomId);
+  const hasRoom = (profileId: string, roomId: string) => radRooms.some((x) => x.profile_id === profileId && x.room_id === roomId);
 
   async function createAccount() {
     if (!form.login.trim() || !form.full_name.trim() || !form.email.trim()) { notify("Заповніть логін, ПІБ та email", "error"); return; }
@@ -82,7 +98,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
     setBusy(false);
   }
 
-  async function resetPassword(profileId, label) {
+  async function resetPassword(profileId: string, label: string | null) {
     if (!window.confirm(`Скинути пароль для «${label}»?\n\nПоточний пароль перестане діяти. Користувач задасть новий на /set-password за своїм логіном.`)) return;
     const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: profileId, action: "reset" }) });
     const data = await res.json().catch(() => ({}));
@@ -90,18 +106,18 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
     setRadiologists((rs) => rs.map((r) => (r.id === profileId ? { ...r, password_set: false } : r)));
     notify("Пароль скинуто — користувач задасть новий на /set-password", "info");
   }
-  function setPassword(profileId) { setPwModal({ id: profileId, val: "", busy: false }); }
+  function setPassword(profileId: string) { setPwModal({ id: profileId, val: "", busy: false }); }
   async function submitPassword() {
     if (!pwModal || pwModal.val.length < 8) { notify("Пароль мінімум 8 символів", "error"); return; }
-    setPwModal((m) => m && { ...m, busy: true });
+    setPwModal((m) => (m ? { ...m, busy: true } : m));
     const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: pwModal.id, action: "set", password: pwModal.val }) });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) { notify(data.error || "Помилка", "error"); setPwModal((m) => m && { ...m, busy: false }); return; }
+    if (!res.ok) { notify(data.error || "Помилка", "error"); setPwModal((m) => (m ? { ...m, busy: false } : m)); return; }
     setRadiologists((rs) => rs.map((r) => (r.id === pwModal.id ? { ...r, password_set: true } : r)));
     notify("Пароль встановлено", "success");
     setPwModal(null);
   }
-  async function deleteRadiologist(profileId, label) {
+  async function deleteRadiologist(profileId: string, label: string | null) {
     if (!window.confirm(`Видалити акаунт радіолога «${label}» назавжди?\n\nБудуть видалені: обліковий запис, профіль і доступи до кабінетів. Записи пацієнтів залишаться. Дію не можна скасувати.`)) return;
     const supabase = createClient();
     const { error } = await supabase.rpc("delete_clinic_member", { target: profileId });
@@ -110,10 +126,8 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
     setRadRooms((rr) => rr.filter((x) => x.profile_id !== profileId));
     notify("Акаунт радіолога видалено", "info");
   }
-  async function toggleRoom(profileId, roomId) {
+  async function toggleRoom(profileId: string, roomId: string) {
     const adding = !hasRoom(profileId, roomId);
-    // Призначення кабінетів — через серверний роут (service-role + перевірка адміна
-    // на сервері). Так запис не залежить від активної сесії в браузері.
     try {
       const res = await fetch("/api/staff/rooms", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -202,7 +216,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
                   <div style={{ fontSize: 12, marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для встановлення пароля:</span>
                     <code style={{ fontSize: 11.5, color: "var(--text-secondary)", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
-                    <button className="btn btn-secondary btn-sm" onClick={() => copyLink(r.invite_token)}>Скопіювати</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => copyLink(r.invite_token as string)}>Скопіювати</button>
                   </div>
                 )}
                 <div style={{ marginTop: 10 }}>
@@ -233,7 +247,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName })
             <div className="dlg-body">
               <label className="fld" style={{ marginBottom: 0 }}><span className="fld-lab">Новий пароль (мінімум 8 символів)</span>
                 <input className="inp" type="password" autoFocus value={pwModal.val}
-                  onChange={(e) => setPwModal((m) => m && { ...m, val: e.target.value })}
+                  onChange={(e) => setPwModal((m) => (m ? { ...m, val: e.target.value } : m))}
                   onKeyDown={(e) => { if (e.key === "Enter") submitPassword(); }} placeholder="Пароль" />
               </label>
             </div>

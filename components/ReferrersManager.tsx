@@ -4,10 +4,9 @@
    Доступ направника до центру = referral_access. Адмін центру:
    • запрошує направника (логін/ПІБ/телефон обовʼязкові, email — ні);
    • обирає, до яких КАБІНЕТІВ центру направник має доступ;
-   • підтверджує/відхиляє запити направників; відкликає доступ.
-   Пароль направник задає сам на /set-password (за логіном). */
+   • підтверджує/відхиляє запити направників; відкликає доступ. */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
@@ -15,9 +14,18 @@ import LiveClock from "@/components/LiveClock";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
-function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type ReferrerProfile = { id?: string; login?: string | null; full_name?: string | null; email?: string | null; phone?: string | null; password_set?: boolean; invite_token?: string | null };
+type AccessRow = { access_id: string; referrer_id: string; status: string; policy: string | null; room_ids: string[] | null; note: string | null; referrer: ReferrerProfile };
+type InviteForm = { login: string; full_name: string; email: string; phone: string; note: string; policy: string; room_ids: string[] };
+type EditForm = { policy: string; room_ids: string[]; note: string };
+type LoginSug = { id: string; login: string | null; full_name: string | null };
+type StrKey = "login" | "full_name" | "email" | "phone" | "note" | "policy";
+type ApiResult = { ok: boolean; data: any }; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-const ACCESS_ST = {
+function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+
+const ACCESS_ST: Record<string, { label: string; cls: string }> = {
   active: { label: "Активний", cls: "green" },
   pending_clinic: { label: "Запит на доступ", cls: "yellow" },
   pending_referrer: { label: "Запрошено — очікує лікаря", cls: "blue" },
@@ -25,7 +33,7 @@ const ACCESS_ST = {
   declined: { label: "Відхилено", cls: "gray" },
 };
 
-async function postJSON(url, body) {
+async function postJSON(url: string, body: unknown): Promise<ApiResult> {
   try {
     const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
@@ -33,31 +41,36 @@ async function postJSON(url, body) {
   } catch { return { ok: false, data: { error: "Помилка зʼєднання із сервером" } }; }
 }
 
-export default function ReferrersManager({ clinicId, rooms, clinicName, adminName }) {
-  const allRoomIds = (rooms || []).map((r) => r.id);
-  const roomById = {}; (rooms || []).forEach((r) => { roomById[r.id] = r; });
-  const emptyForm = () => ({ login: "", full_name: "", email: "", phone: "", note: "", policy: "direct", room_ids: allRoomIds });
+interface ReferrersManagerProps {
+  clinicId: string;
+  rooms?: RoomOpt[];
+  clinicName?: string;
+  adminName?: string;
+}
 
-  const [rows, setRows] = useState([]);
+export default function ReferrersManager({ clinicId, rooms, clinicName, adminName }: ReferrersManagerProps) {
+  const allRoomIds = (rooms || []).map((r) => r.id);
+  const roomById: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { roomById[r.id] = r; });
+  const emptyForm = (): InviteForm => ({ login: "", full_name: "", email: "", phone: "", note: "", policy: "direct", room_ids: allRoomIds });
+
+  const [rows, setRows] = useState<AccessRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState<InviteForm>(emptyForm);
   const [busy, setBusy] = useState(false);
-  const [busyId, setBusyId] = useState(null);
-  const [toast, setToast] = useState(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const [origin, setOrigin] = useState("");
-  const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({ policy: "direct", room_ids: [], note: "" });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<EditForm>({ policy: "direct", room_ids: [], note: "" });
   const [savingEdit, setSavingEdit] = useState(false);
-  const [loginSug, setLoginSug] = useState([]);      // підказки існуючих логінів
+  const [loginSug, setLoginSug] = useState<LoginSug[]>([]);
   const [sugOpen, setSugOpen] = useState(false);
-  const [existingPicked, setExistingPicked] = useState(false); // обрано наявного направника
-  const toastTimer = useRef(null);
+  const [existingPicked, setExistingPicked] = useState(false);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { setOrigin(window.location.origin); }, []);
 
-  // Автодоповнення логіну: шукаємо вже існуючих у RadFlow направників (RPC,
-  // лише адмінам). Якщо лікар уже є — додаємо за логіном без ПІБ/телефону й без
-  // пароля (лікар підтвердить запрошення у себе).
+  // Автодоповнення логіну: шукаємо вже існуючих у RadFlow направників (RPC).
   useEffect(() => {
     const q = form.login.trim();
     if (existingPicked || q.length < 2) { setLoginSug([]); return; }
@@ -70,23 +83,23 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     return () => { active = false; clearTimeout(t); };
   }, [form.login, existingPicked]);
 
-  function pickReferrer(s) {
-    setForm((f) => ({ ...f, login: s.login, full_name: s.full_name || "" }));
+  function pickReferrer(s: LoginSug) {
+    setForm((f) => ({ ...f, login: s.login || "", full_name: s.full_name || "" }));
     setExistingPicked(true);
     setSugOpen(false);
     setLoginSug([]);
   }
 
-  function notify(msg, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 4500); }
-  async function copyLink(tok) {
+  function notify(msg: string, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 4500); }
+  async function copyLink(tok: string) {
     const link = (origin || window.location.origin) + "/set-password?token=" + encodeURIComponent(tok);
     try { await navigator.clipboard.writeText(link); notify("Посилання для входу скопійовано", "success"); }
     catch { notify(link, "info"); }
   }
-  function setF(k, v) { setForm((f) => ({ ...f, [k]: v })); }
-  function toggleRoom(id) { setForm((f) => ({ ...f, room_ids: f.room_ids.includes(id) ? f.room_ids.filter((x) => x !== id) : [...f.room_ids, id] })); }
+  function setF(k: StrKey, v: string) { setForm((f) => ({ ...f, [k]: v })); }
+  function toggleRoom(id: string) { setForm((f) => ({ ...f, room_ids: f.room_ids.includes(id) ? f.room_ids.filter((x) => x !== id) : [...f.room_ids, id] })); }
 
-  function roomsLabel(room_ids) {
+  function roomsLabel(room_ids: string[] | null) {
     if (!room_ids || room_ids.length === 0) return "усі кабінети";
     return room_ids.map((id) => {
       const rm = roomById[id];
@@ -104,7 +117,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
       .order("created_at", { ascending: false });
     const list = access || [];
     const ids = Array.from(new Set(list.map((a) => a.referrer_id)));
-    const profById = {};
+    const profById: Record<string, ReferrerProfile> = {};
     if (ids.length) {
       const { data: profs } = await supabase.from("profiles").select("id, login, full_name, email, phone, password_set, invite_token").in("id", ids);
       (profs || []).forEach((p) => { profById[p.id] = p; });
@@ -113,8 +126,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     setLoading(false);
   }, [clinicId]);
 
-  // Realtime: статус доступу оновлюється без перезавантаження (TD-3 — единый хук:
-  // дебаунс + поллинг только при разрыве сокета вместо безусловного 15с).
+  // Realtime (TD-3 — единый хук).
   useRealtimeRefetch({
     channelName: clinicId ? "ref-access-" + clinicId : null,
     subscriptions: [
@@ -126,7 +138,6 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     if (!form.login.trim()) { notify("Вкажіть логін направника", "error"); return; }
     if (!existingPicked && (!form.full_name.trim() || !form.phone.trim())) { notify("Для нового направника вкажіть ПІБ і телефон", "error"); return; }
     setBusy(true);
-    // Усі або жоден обраний кабінет → усі (null); інакше — обраний перелік.
     const room_ids = (form.room_ids.length === 0 || form.room_ids.length === allRoomIds.length) ? null : form.room_ids;
     const { ok, data } = await postJSON("/api/referrers/invite", { ...form, room_ids });
     setBusy(false);
@@ -143,7 +154,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     reload();
   }
 
-  async function decide(accessId, decision) {
+  async function decide(accessId: string, decision: string) {
     setBusyId(accessId);
     const { ok, data } = await postJSON("/api/referral/access/decide", { access_id: accessId, decision });
     setBusyId(null);
@@ -152,10 +163,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     reload();
   }
 
-  // Повторне запрошення відкликаного/відхиленого направника. Бекенд (invite)
-  // переводить зв'язок revoked/declined → pending_referrer (потрібне нове
-  // підтвердження лікаря). Реюзаємо збережені дані профілю й гранту.
-  async function reinvite(r) {
+  async function reinvite(r: AccessRow) {
     setBusyId(r.access_id);
     const { ok, data } = await postJSON("/api/referrers/invite", {
       login: r.referrer.login || "",
@@ -172,11 +180,11 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     reload();
   }
 
-  function startEdit(r) {
+  function startEdit(r: AccessRow) {
     setEditingId(r.access_id);
     setEditForm({ policy: r.policy || "direct", room_ids: (r.room_ids && r.room_ids.length ? r.room_ids : allRoomIds), note: r.note || "" });
   }
-  function toggleEditRoom(id) { setEditForm((f) => ({ ...f, room_ids: f.room_ids.includes(id) ? f.room_ids.filter((x) => x !== id) : [...f.room_ids, id] })); }
+  function toggleEditRoom(id: string) { setEditForm((f) => ({ ...f, room_ids: f.room_ids.includes(id) ? f.room_ids.filter((x) => x !== id) : [...f.room_ids, id] })); }
   async function saveEdit() {
     setSavingEdit(true);
     const room_ids = (editForm.room_ids.length === 0 || editForm.room_ids.length === allRoomIds.length) ? null : editForm.room_ids;
@@ -196,7 +204,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20, marginBottom: 16 };
   const req = <span style={{ color: "var(--red)" }}> *</span>;
 
-  function Row({ r, children, onClick, expandable, expanded }) {
+  function Row({ r, children, onClick, expandable, expanded }: { r: AccessRow; children?: ReactNode; onClick?: () => void; expandable?: boolean; expanded?: boolean }) {
     const m = ACCESS_ST[r.status] || ACCESS_ST.active;
     const name = r.referrer.full_name || r.referrer.login || "Лікар";
     return (
@@ -211,7 +219,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
             <div style={{ fontSize: 12, marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для входу:</span>
               <code style={{ fontSize: 11.5, color: "var(--text-secondary)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
-              <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); copyLink(r.referrer.invite_token); }}>Скопіювати</button>
+              <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); copyLink(r.referrer.invite_token as string); }}>Скопіювати</button>
             </div>
           )}
         </div>
