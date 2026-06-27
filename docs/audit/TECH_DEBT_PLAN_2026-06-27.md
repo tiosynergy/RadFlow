@@ -23,6 +23,30 @@
 
 ---
 
+## ✅ Статус выполнения (2026-06-27) — план закрыт полностью
+
+| ID | Статус | Что сделано |
+|----|--------|-------------|
+| TD-1 | ✅ Done | `supabase/types.ts` (реконструкция из миграций 0001–0039), `<Database>` во всех клиентах. `tsc` зелёный. |
+| TD-2 | ✅ Done | `lib/{studies,incidents,queueStatus,schedule}.js` → `.ts` с типами и интерфейсами. |
+| TD-3 | ✅ Done | Единый хук `lib/useRealtimeRefetch.ts`: `setAuth` → подписка → потабличный дебаунс → поллинг с backoff только при разрыве сокета. Подключён в 6 досок. Попутно: отсутствовавший `setAuth` в CallList; фикс перезапроса при смене дня/периода. |
+| TD-4 | ✅ Done | `app/queue/actions.ts` — все мутации очереди на Server Actions; проверено вживую (Chrome). |
+| TD-5 | ✅ Done | Все 22 компонента `components/*.jsx` → `.tsx`; `tsc --noEmit` = 0 ошибок. |
+
+**Пост-TD доработки:**
+
+- **`@supabase/ssr` 0.5.2 → 0.12.0** — новая сигнатура корректно тредит дженерики, временные касты `as unknown as SupabaseClient<Database>` в `lib/supabase/{server,client}.ts` убраны.
+- **Мутации всех досок → Server Actions** — RadiologistBoard, CallListBoard, ReferralPortal, PatientEditModal больше не пишут в БД напрямую. Добавлены: `setRadiologistNote`, `setCallNote`, `confirmAllCalls`, `updatePatientDetails`, `createReferralBooking` (серверная проверка активного `referral_access` + допустимого кабинета); `rescheduleQueueEntry` получил опц. `callStatus`. Проверено вживую под аккаунтом направника.
+- **Поймано типами и исправлено:** `completeQueueEntry` принимал только `done|no_show`, а доска шлёт `not_held` при «Не відбулось» — расширено до `done|no_show|not_held`.
+
+**Что осталось прямой мутацией намеренно:** read-side авто-снятие просроченных инцидентов в `loadIncidents` (не пользовательское действие).
+
+**Возможные следующие шаги (не в этом плане):** инкрементальный realtime-merge по `payload.new/old` (убрать сам refetch); React `cache()`/`revalidateTag` для server-страниц; миграция оставшихся `app/api/*` логик при желании.
+
+---
+
+---
+
 ## 2. Фактическая картина (на 2026-06-27)
 
 - **Компоненты:** 23 продакшен-файла в `components/` — **все `.jsx`**, `.tsx`-компонентов нет. 13 страниц `app/**/page.tsx` — тонкие, делегируют в `.jsx`. Ещё 8 `.jsx` в `docs/prototypes/code/` — мёртвый код прототипа в дереве.
