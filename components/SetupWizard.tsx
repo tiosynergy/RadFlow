@@ -4,16 +4,36 @@
    Портовано з прототипу wizard-app.jsx + wizard-steps.jsx.
    Дані префілляться з Supabase і зберігаються при «Запустити кабінет». */
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import type { Json, TablesInsert } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radflow-wizard.css";
 
+type Toast = { id: number; msg: string; type: string; out?: boolean };
+type DayHours = { start: string; end: string; lunch: boolean; lunchS: string; lunchE: string };
+type EquipItem = {
+  id: number | string;
+  type: string; desc: string; room: string;
+  days: number[];
+  start: string; end: string; lunch: boolean; lunchS: string; lunchE: string;
+  perDay: boolean; dayHours: DayHours[];
+  roomId?: string;
+};
+type WizardData = {
+  clinic: string; city: string; address: string; phones: string[]; emails: string[];
+  adminName: string; adminEmail: string; aPhones: string[]; aEmails: string[]; equip: EquipItem[];
+};
+type WizardInitial = Partial<{
+  clinic: string; city: string; address: string; phones: string[]; emails: string[];
+  adminName: string; adminEmail: string; adminPhone: string; equip: EquipItem[];
+}>;
+
 /* ---------- Toasts ---------- */
-function Toasts({ toasts }) {
-  const icons = { success: "✓", error: "✕", info: "ℹ", warning: "⚠" };
+function Toasts({ toasts }: { toasts: Toast[] }) {
+  const icons: Record<string, string> = { success: "✓", error: "✕", info: "ℹ", warning: "⚠" };
   return (
     <div className="toast-wrap">
       {toasts.map((t) => (
@@ -25,10 +45,10 @@ function Toasts({ toasts }) {
     </div>
   );
 }
-function useToasts() {
-  const [toasts, setToasts] = useState([]);
+function useToasts(): [Toast[], (msg: string, type?: string) => void] {
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const seq = useRef(0);
-  function push(msg, type = "success") {
+  function push(msg: string, type = "success") {
     const id = ++seq.current;
     setToasts((ts) => [...ts, { id, msg, type }]);
     setTimeout(() => setToasts((ts) => ts.map((t) => (t.id === id ? { ...t, out: true } : t))), 3400);
@@ -40,11 +60,18 @@ function useToasts() {
 const Req = () => <span className="req" title="Обов'язкове поле">*</span>;
 
 /* Список телефонів / email-ів */
-function ContactList({ label, items, setItems, type, ph, required }) {
+function ContactList({ label, items, setItems, type, ph, required }: {
+  label: string;
+  items: string[];
+  setItems: Dispatch<SetStateAction<string[]>>;
+  type?: string;
+  ph?: string;
+  required?: boolean;
+}) {
   const noun = type === "email" ? "email" : "телефон";
-  const upd = (i, v) => setItems((a) => a.map((x, j) => (j === i ? v : x)));
+  const upd = (i: number, v: string) => setItems((a) => a.map((x, j) => (j === i ? v : x)));
   const add = () => setItems((a) => [...a, ""]);
-  const del = (i) => setItems((a) => (a.length > 1 ? a.filter((_, j) => j !== i) : [""]));
+  const del = (i: number) => setItems((a) => (a.length > 1 ? a.filter((_, j) => j !== i) : [""]));
   const empty = required && items.every((x) => x.trim() === "");
   return (
     <div className="fld">
@@ -61,25 +88,25 @@ function ContactList({ label, items, setItems, type, ph, required }) {
 }
 
 const EQ_DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
-const DEF_DAY = { start: "08:00", end: "18:00", lunch: false, lunchS: "13:00", lunchE: "14:00" };
-function mkSched() {
+const DEF_DAY: DayHours = { start: "08:00", end: "18:00", lunch: false, lunchS: "13:00", lunchE: "14:00" };
+function mkSched(): Omit<EquipItem, "id" | "type" | "desc" | "room" | "roomId"> {
   return { days: [1, 1, 1, 1, 1, 0, 0], ...DEF_DAY, perDay: false, dayHours: Array.from({ length: 7 }, () => ({ ...DEF_DAY })) };
 }
 
 /* ---------- Крок 1: Профіль клініки ---------- */
-function StepRegister({ report, onData, initial }) {
+function StepRegister({ report, onData, initial }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial }) {
   const [clinic, setClinic] = useState(initial.clinic || "");
   const [city, setCity] = useState(initial.city || "");
   const [address, setAddress] = useState(initial.address || "");
-  const [phones, setPhones] = useState(initial.phones && initial.phones.length ? initial.phones : [""]);
-  const [emails, setEmails] = useState(initial.emails && initial.emails.length ? initial.emails : [""]);
+  const [phones, setPhones] = useState<string[]>(initial.phones && initial.phones.length ? initial.phones : [""]);
+  const [emails, setEmails] = useState<string[]>(initial.emails && initial.emails.length ? initial.emails : [""]);
 
   const [adminName, setAdminName] = useState(initial.adminName || "");
   const [adminEmail, setAdminEmail] = useState(initial.adminEmail || "");
-  const [aPhones, setAPhones] = useState([initial.adminPhone || ""]);
-  const [aEmails, setAEmails] = useState([""]);
+  const [aPhones, setAPhones] = useState<string[]>([initial.adminPhone || ""]);
+  const [aEmails, setAEmails] = useState<string[]>([""]);
 
-  const [equip, setEquip] = useState(
+  const [equip, setEquip] = useState<EquipItem[]>(
     initial.equip && initial.equip.length
       ? initial.equip
       : [{ id: 1, type: "МРТ", desc: "", room: "Кабінет №1", ...mkSched() }]
@@ -93,12 +120,12 @@ function StepRegister({ report, onData, initial }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clinic, city, address, phones, emails, adminName, adminEmail, aPhones, aEmails, equip]);
 
-  function setEq(i, k, v) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, [k]: v } : x))); }
-  function toggleEqDay(i, d) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, days: x.days.map((v, k) => (k === d ? (v ? 0 : 1) : v)) } : x))); }
-  function setEqDay(i, di, k, v) {
+  function setEq(i: number, k: string, v: string | boolean) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, [k]: v } : x))); }
+  function toggleEqDay(i: number, d: number) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, days: x.days.map((v, k) => (k === d ? (v ? 0 : 1) : v)) } : x))); }
+  function setEqDay(i: number, di: number, k: string, v: string | boolean) {
     setEquip((a) => a.map((x, j) => (j === i ? { ...x, dayHours: x.dayHours.map((dh, k2) => (k2 === di ? { ...dh, [k]: v } : dh)) } : x)));
   }
-  function toggleEqPerDay(i, on) {
+  function toggleEqPerDay(i: number, on: boolean) {
     setEquip((a) => a.map((x, j) => {
       if (j !== i) return x;
       if (!on) return { ...x, perDay: false };
@@ -107,7 +134,7 @@ function StepRegister({ report, onData, initial }) {
     }));
   }
   function addEq() { setEquip((a) => [...a, { id: Date.now(), type: "МРТ", desc: "", room: "", ...mkSched() }]); }
-  function delEq(i) { setEquip((a) => a.filter((_, j) => j !== i)); }
+  function delEq(i: number) { setEquip((a) => a.filter((_, j) => j !== i)); }
 
   return (
     <div className="fade-in">
@@ -278,16 +305,16 @@ function Confetti() {
 }
 
 /* ---------- Майстер (контейнер) ---------- */
-export default function SetupWizard({ clinicId, userId, initial }) {
+export default function SetupWizard({ clinicId, userId, initial }: { clinicId: string; userId: string; initial: WizardInitial }) {
   const router = useRouter();
   const [launched, setLaunched] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [valid, setValid] = useState({});
+  const [valid, setValid] = useState<Record<number, boolean>>({});
   const [toasts, push] = useToasts();
-  const dataRef = useRef(null);
+  const dataRef = useRef<WizardData | null>(null);
 
-  function report(k, ok) { setValid((v) => (v[k] === ok ? v : { ...v, [k]: ok })); }
-  function onData(d) { dataRef.current = d; }
+  function report(k: number, ok: boolean) { setValid((v) => (v[k] === ok ? v : { ...v, [k]: ok })); }
+  function onData(d: WizardData) { dataRef.current = d; }
 
   const STEP = { key: 1, title: "Профіль клініки", desc: "Дані, акаунт, обладнання" };
 
@@ -295,7 +322,7 @@ export default function SetupWizard({ clinicId, userId, initial }) {
     const d = dataRef.current;
     if (!d || saving) return;
     setSaving(true);
-    const clean = (a) => a.map((x) => x.trim()).filter(Boolean);
+    const clean = (a: string[]) => a.map((x) => x.trim()).filter(Boolean);
     try {
       const supabase = createClient();
 
@@ -322,9 +349,7 @@ export default function SetupWizard({ clinicId, userId, initial }) {
       if (pe) throw pe;
 
       // Кабінети: оновлюємо наявні за id, додаємо нові, видаляємо лише прибрані.
-      // НЕ робимо delete-all+insert — інакше осиротіли б записи (queue_entries.room_id)
-      // та доступи радіологів (radiologist_rooms каскадно).
-      const roomFields = (e) => ({
+      const roomFields = (e: EquipItem): TablesInsert<"rooms"> => ({
         clinic_id: clinicId,
         name: (e.room || e.type).trim(),
         modality: e.type === "МРТ" ? "MRI" : e.type === "КТ" ? "CT" : "OTHER",
@@ -333,9 +358,9 @@ export default function SetupWizard({ clinicId, userId, initial }) {
           days: e.days, start: e.start, end: e.end,
           lunch: e.lunch, lunchS: e.lunchS, lunchE: e.lunchE,
           perDay: e.perDay, dayHours: e.dayHours,
-        },
+        } as Json,
       });
-      const keepIds = [];
+      const keepIds: string[] = [];
       for (const e of d.equip) {
         if (e.roomId) {
           const { error: ue } = await supabase.from("rooms").update(roomFields(e)).eq("id", e.roomId);
@@ -358,7 +383,7 @@ export default function SetupWizard({ clinicId, userId, initial }) {
       setLaunched(true);
       push("🎉 Кабінет активовано!", "success");
     } catch (e) {
-      push("Помилка збереження: " + (e?.message || String(e)), "error");
+      push("Помилка збереження: " + ((e as { message?: string })?.message || String(e)), "error");
       setSaving(false);
     }
   }

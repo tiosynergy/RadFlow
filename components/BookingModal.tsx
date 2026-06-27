@@ -2,54 +2,59 @@
 
 /* ===== RadFlow — Новий запис (повна модалка) =====
    Портовано з queue-app.jsx (NewBookingModal + BookingCalendar + DobField).
-   Кабінети беруться з БД (rooms), зайняті слоти — з Supabase (queue_entries).
-   Графік: фіксовані робочі години 08:00–18:00 (override-логіка прототипу поки опущена). */
+   Кабінети беруться з БД (rooms), зайняті слоти — з Supabase (queue_entries). */
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
-import { roomScheduleFor } from "@/lib/schedule";
-import { incidentEffectiveEnd } from "@/lib/incidents";
+import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { incidentEffectiveEnd, type IncidentLike } from "@/lib/incidents";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
 
-/* Довідник областей дослідження — у @/lib/studies (єдине джерело). */
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type DocOpt = { id: string; name: string; spec?: string | null; clinic_name?: string | null; phone?: string | null };
+type ExtraStudy = { type: string; region: string; dur: number };
+type DayEntryRow = { scheduled_time: string | null; duration_min: number | null; patient_name: string | null; status: string };
+type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
+export type BookingPayload = {
+  name: string; phone: string; email: string | null; age: number; dob: string;
+  weight: number | null; gender: string; proc: string; dur: number; studies: StudyOut[];
+  roomId: string; date: Date; time: string; notes: string | null;
+  hasContra: boolean; cito: boolean; doctor: string | null; referrerId: string | null;
+};
+type ParsedDob = { ok: false; partial?: boolean; err?: string } | { ok: true; iso: string };
 
 /* ── Дати ── */
 const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MONTHS_NOM = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 const MONTHS_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
 export function today0() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
-export function sameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
-function dowMon(d) { return (d.getDay() + 6) % 7; }
-export function fmtShort(d) { return d.getDate() + " " + MONTHS_GEN[d.getMonth()]; }
-function dateKey(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+export function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
+function dowMon(d: Date) { return (d.getDay() + 6) % 7; }
+export function fmtShort(d: Date) { return d.getDate() + " " + MONTHS_GEN[d.getMonth()]; }
+function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 
-/* ── Слоти часу ──
-   ОБМЕЖЕННЯ (за дизайном): сітка фіксована з кроком BK_STEP від початку графіка,
-   тож слоти НЕ вирівнюються по фактичному завершенню попередньої процедури
-   нечітної тривалості (напр. після 08:00–08:45 наступний слот — 09:00, а 08:45–09:00
-   лишається невикористаним). Прийнятно для МVP; за потреби — режим «впритул»
-   (генерувати слоти від кінця попереднього запису). */
+/* ── Слоти часу ── */
 const BK_START = 8 * 60, BK_END = 18 * 60, BK_STEP = 30;
-function toMin(t) { const [h, m] = t.split(":").map(Number); return h * 60 + m; }
-function fmtMin(min) { return String(Math.floor(min / 60)).padStart(2, "0") + ":" + String(min % 60).padStart(2, "0"); }
+function toMin(t: string) { const [h, m] = t.split(":").map(Number); return h * 60 + m; }
+function fmtMin(min: number) { return String(Math.floor(min / 60)).padStart(2, "0") + ":" + String(min % 60).padStart(2, "0"); }
 function slotsList(startMin = BK_START, endMin = BK_END) {
-  const out = [];
+  const out: string[] = [];
   const s0 = Math.ceil(startMin / BK_STEP) * BK_STEP;
   for (let m = s0; m < endMin; m += BK_STEP) out.push(fmtMin(m));
   return out;
 }
 
 /* ── Дата народження ── */
-function dobFmt(s) { if (!s) return ""; const p = String(s).split("-"); return p.length === 3 ? p[2] + "." + p[1] + "." + p[0] : s; }
-function dobMask(raw) {
+function dobFmt(s: string | null | undefined) { if (!s) return ""; const p = String(s).split("-"); return p.length === 3 ? p[2] + "." + p[1] + "." + p[0] : s; }
+function dobMask(raw: string) {
   const d = String(raw).replace(/\D/g, "").slice(0, 8);
   let out = d.slice(0, 2);
   if (d.length >= 3) out += "." + d.slice(2, 4);
   if (d.length >= 5) out += "." + d.slice(4, 8);
   return out;
 }
-function parseDob(text) {
+function parseDob(text: string): ParsedDob {
   const m = String(text).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
   if (!m) return { ok: false, partial: true };
   const dd = +m[1], mm = +m[2], yyyy = +m[3];
@@ -63,17 +68,17 @@ function parseDob(text) {
   return { ok: true, iso: yyyy + "-" + m[2] + "-" + m[1] };
 }
 
-export function DobField({ value, onChange, invalid }) {
+export function DobField({ value, onChange, invalid }: { value: string; onChange: (v: string) => void; invalid?: boolean }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState(() => dobFmt(value));
   const [err, setErr] = useState("");
   const t = today0();
   const base = value ? new Date(value + "T00:00:00") : new Date(t.getFullYear() - 30, t.getMonth(), 1);
   const [viewMonth, setViewMonth] = useState(() => new Date(base.getFullYear(), base.getMonth(), 1));
-  const shift = (n) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
-  const shiftYear = (n) => setViewMonth((m) => new Date(m.getFullYear() + n, m.getMonth(), 1));
+  const shift = (n: number) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
+  const shiftYear = (n: number) => setViewMonth((m) => new Date(m.getFullYear() + n, m.getMonth(), 1));
 
-  function onType(raw) {
+  function onType(raw: string) {
     const masked = dobMask(raw);
     setText(masked);
     if (masked.length < 10) { setErr(""); onChange(""); return; }
@@ -91,10 +96,10 @@ export function DobField({ value, onChange, invalid }) {
   const startIdx = dowMon(first);
   const label = MONTHS_NOM[mo] + " " + y;
   const sel = value ? new Date(value + "T00:00:00") : null;
-  const cells = [];
+  const cells: (number | null)[] = [];
   for (let i = 0; i < startIdx; i++) cells.push(null);
   for (let d = 1; d <= days; d++) cells.push(d);
-  function pick(d) {
+  function pick(d: number) {
     const cd = new Date(y, mo, d);
     const iso = cd.getFullYear() + "-" + String(cd.getMonth() + 1).padStart(2, "0") + "-" + String(cd.getDate()).padStart(2, "0");
     onChange(iso); setText(dobFmt(iso)); setErr(""); setOpen(false);
@@ -144,16 +149,16 @@ export function DobField({ value, onChange, invalid }) {
   );
 }
 
-export function BookingCalendar({ value, onPick }) {
+export function BookingCalendar({ value, onPick }: { value: Date; onPick: (d: Date) => void }) {
   const t = today0();
   const [viewMonth, setViewMonth] = useState(() => new Date(value.getFullYear(), value.getMonth(), 1));
-  const shift = (n) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
+  const shift = (n: number) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
   const y = viewMonth.getFullYear(), mo = viewMonth.getMonth();
   const first = new Date(y, mo, 1);
   const days = new Date(y, mo + 1, 0).getDate();
   const startIdx = dowMon(first);
   const label = MONTHS_NOM[mo] + " " + y;
-  const cells = [];
+  const cells: (number | null)[] = [];
   for (let i = 0; i < startIdx; i++) cells.push(null);
   for (let d = 1; d <= days; d++) cells.push(d);
   return (
@@ -187,7 +192,15 @@ export function BookingCalendar({ value, onPick }) {
   );
 }
 
-export default function BookingModal({ rooms, clinicId, incidents = [], onClose, onSave }) {
+interface BookingModalProps {
+  rooms?: RoomOpt[];
+  clinicId?: string | null;
+  incidents?: IncidentLike[];
+  onClose: () => void;
+  onSave: (b: BookingPayload) => void;
+}
+
+export default function BookingModal({ rooms, clinicId, incidents = [], onClose, onSave }: BookingModalProps) {
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
   const [gender, setGender] = useState("");
@@ -200,23 +213,21 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
   const [hasContra, setHasContra] = useState(false);
   const [cito, setCito] = useState(false);
   const [notes, setNotes] = useState("");
-  const [docs, setDocs] = useState([]);
+  const [docs, setDocs] = useState<DocOpt[]>([]);
   const [doctorId, setDoctorId] = useState("");
   const [addDoc, setAddDoc] = useState(false);
-  const [override, setOverride] = useState(null);
+  const [override, setOverride] = useState<DayOverride | null>(null);
 
   useEffect(() => {
     let cancel = false;
     (async () => {
       if (!clinicId) return;
       const supabase = createClient();
-      // Джерело лікарів-направників = довідник doctors + АКТИВНІ направники центру
-      // (referral_access → profiles). Єдиний перелік для всього центру.
       const [docRes, accRes] = await Promise.all([
         supabase.from("doctors").select("id, name, spec, clinic_name, phone").eq("clinic_id", clinicId).order("name"),
         supabase.from("referral_access").select("referrer_id").eq("clinic_id", clinicId).eq("status", "active"),
       ]);
-      const list = docRes.data || [];
+      const list: DocOpt[] = docRes.data || [];
       const seen = new Set(list.map((d) => (d.name || "").trim()));
       const refIds = Array.from(new Set((accRes.data || []).map((a) => a.referrer_id)));
       if (refIds.length) {
@@ -229,56 +240,56 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
     return () => { cancel = true; };
   }, [clinicId]);
 
-  const roomsOfType = (t) => (rooms || []).filter((r) => r.modality === (t === "MRT" ? "MRI" : "CT"));
+  const roomsOfType = (t: string) => (rooms || []).filter((r) => r.modality === (t === "MRT" ? "MRI" : "CT"));
   // Авто-вибір лише коли кабінет один; якщо їх кілька — користувач обирає вручну.
   const [roomId, setRoomId] = useState(() => { const l = roomsOfType("MRT"); return l.length === 1 ? l[0].id : ""; });
   const [bookDate, setBookDate] = useState(() => today0());
   const [time, setTime] = useState("");
-  const [dayEntries, setDayEntries] = useState([]);
+  const [dayEntries, setDayEntries] = useState<DayEntryRow[]>([]);
 
   const allRegions = studyType === "MRT" ? MRT_REGIONS : CT_REGIONS;
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const primaryKind = studyType === "MRT" ? "МРТ" : "КТ";
 
-  function changeType(t) {
+  function changeType(t: string) {
     setStudyType(t); setRegion(""); setContrast(false); setTime("");
     const list = roomsOfType(t);
     setRoomId(list.length === 1 ? list[0].id : "");
     const k = t === "MRT" ? "МРТ" : "КТ";
     setExtraStudies((a) => a.map((s) => (s.type === k ? s : { ...s, type: k, region: "", dur: exDur(k, "") })));
   }
-  function toggleContrast(v) {
+  function toggleContrast(v: boolean) {
     setContrast(v);
     if (v && region && !allRegions.some((r) => r.label === region && r.contrast)) { setRegion(""); setTime(""); }
   }
-  function calcAge(d) { if (!d) return 0; const b = new Date(d); if (isNaN(b.getTime())) return 0; const n = new Date(); let a = n.getFullYear() - b.getFullYear(); const m = n.getMonth() - b.getMonth(); if (m < 0 || (m === 0 && n.getDate() < b.getDate())) a--; return a < 0 ? 0 : a; }
+  function calcAge(d: string) { if (!d) return 0; const b = new Date(d); if (isNaN(b.getTime())) return 0; const n = new Date(); let a = n.getFullYear() - b.getFullYear(); const m = n.getMonth() - b.getMonth(); if (m < 0 || (m === 0 && n.getDate() < b.getDate())) a--; return a < 0 ? 0 : a; }
 
   const contrastSuffix = contrast ? " з контрастом" : "";
   const procLabel = region ? `${primaryKind} · ${region}${contrastSuffix}` : primaryKind;
   const regionObj = regions.find((r) => r.label === region);
   const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (studyType === "MRT" ? 45 : 20);
   const price = regionObj ? regionObj.price + (contrast ? CONTRAST_SURCHARGE : 0) : null;
-  const fmtPrice = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
+  const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   const [durEdit, setDurEdit] = useState("");
   useEffect(() => { if (region) setDurEdit(String(computedDur)); }, [region, contrast, studyType]); // eslint-disable-line
   const dur = Math.max(5, parseInt(durEdit, 10) || computedDur);
   const durCustom = region && parseInt(durEdit, 10) && parseInt(durEdit, 10) !== computedDur;
 
-  const [extraStudies, setExtraStudies] = useState([]);
-  const exRegions = (t) => regionsFor(t);
-  const exDur = (t, reg) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : (t === "КТ" ? 20 : 45); };
-  const exPatch = (i, p) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
-  const exSetRegion = (i, reg) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
-  const exSetDur = (i, v) => exPatch(i, { dur: Math.max(5, parseInt(v, 10) || 0) });
+  const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>([]);
+  const exRegions = (t: string) => regionsFor(t);
+  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : (t === "КТ" ? 20 : 45); };
+  const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
+  const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
+  const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(5, parseInt(v, 10) || 0) });
   const exAdd = () => setExtraStudies((a) => [...a, { type: primaryKind, region: "", dur: exDur(primaryKind, "") }]);
-  const exRemove = (i) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
+  const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
 
-  const primaryStudy = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast) } : null;
-  const allStudies = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: parseInt(s.dur, 10) || 0, price: studyPrice(s.type, s.region, false) })));
+  const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast) } : null;
+  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false) })));
   const combinedLabel = allStudies.length ? allStudies.map(studyLabel).join(" + ") : procLabel;
-  const slotDur = dur + validExtra.reduce((s, x) => s + (parseInt(x.dur, 10) || 0), 0);
+  const slotDur = dur + validExtra.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
   /* зайняті слоти обраного кабінету на обрану дату — з Supabase */
   useEffect(() => {
@@ -287,7 +298,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
       const supabase = createClient();
       if (clinicId) {
         const ovRes = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateKey(bookDate)).maybeSingle();
-        if (!cancel) setOverride(ovRes.data || null);
+        if (!cancel) setOverride((ovRes.data as unknown as DayOverride) || null);
       }
       if (!roomId) { setDayEntries([]); return; }
       const { data } = await supabase
@@ -306,7 +317,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
 
   const roomBusy = dayEntries
     .filter((p) => p.scheduled_time)
-    .map((p) => ({ s: toMin(p.scheduled_time), e: toMin(p.scheduled_time) + (p.duration_min || 30), name: p.patient_name }));
+    .map((p) => ({ s: toMin(p.scheduled_time as string), e: toMin(p.scheduled_time as string) + (p.duration_min || 30), name: p.patient_name }));
   const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
   const isBookToday = sameDay(bookDate, today0());
   const roomSched = roomScheduleFor(bookDate, roomId, override);
@@ -314,7 +325,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
 
   // Простій (поломка/ТО) обраного кабінету: слоти у вікні інциденту — недоступні.
   const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
-  function slotBlockedByIncident(slotMin) {
+  function slotBlockedByIncident(slotMin: number) {
     if (!roomIncidents.length) return false;
     const base = Date.UTC(bookDate.getFullYear(), bookDate.getMonth(), bookDate.getDate(), Math.floor(slotMin / 60), slotMin % 60);
     return roomIncidents.some((inc) => {
@@ -323,7 +334,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
     });
   }
 
-  function slotState(slot) {
+  function slotState(slot: string) {
     const s = toMin(slot), e = s + slotDur;
     if (roomSched.closed) return "closed";
     if (slotBlockedByIncident(s)) return "blocked";
@@ -334,7 +345,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
     if (roomBusy.some((b) => s < b.e && b.s < e)) return "tight";
     return "free";
   }
-  function nextApptAfter(slot) {
+  function nextApptAfter(slot: string) {
     const s = toMin(slot);
     const after = roomBusy.filter((b) => b.s >= s).sort((a, b) => a.s - b.s)[0];
     return after ? fmtMin(after.s) : null;
@@ -343,8 +354,8 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
   const freeCount = slots.filter((s) => slotState(s) === "free").length;
   const busyList = roomBusy.slice().sort((a, b) => a.s - b.s);
 
-  const miss = { name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), region: !region, room: !roomId, time: !time };
-  const MISS_LABELS = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
+  const miss: Record<string, boolean> = { name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), region: !region, room: !roomId, time: !time };
+  const MISS_LABELS: Record<string, string> = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   const timeBad = time ? slotState(time) !== "free" : false;
   const room = (rooms || []).find((r) => r.id === roomId) || null;
@@ -352,13 +363,14 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
 
   function handleSave() {
     if (!valid) return;
+    const sel = docs.find((d) => String(d.id) === String(doctorId));
     onSave({
       name: name.trim(), phone, email: email.trim() || null,
       age: calcAge(dob), dob, weight: weight ? +weight : null, gender,
       proc: combinedLabel, dur: slotDur, studies: allStudies,
       roomId, date: bookDate, time, notes: notes.trim() || null,
-      hasContra, cito, doctor: (docs.find((d) => String(d.id) === String(doctorId)) || {}).name || null,
-      referrerId: (() => { const sel = docs.find((d) => String(d.id) === String(doctorId)); return sel && String(sel.id).startsWith("ref:") ? String(sel.id).slice(4) : null; })(),
+      hasContra, cito, doctor: sel?.name || null,
+      referrerId: sel && String(sel.id).startsWith("ref:") ? String(sel.id).slice(4) : null,
     });
   }
 
@@ -606,7 +618,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
     {addDoc && (
       <AddDoctorModal existing={docs} onClose={() => setAddDoc(false)} onSave={async (d) => {
         const supabase = createClient();
-        const { data, error } = await supabase.from("doctors").insert({ clinic_id: clinicId, name: d.name, spec: d.spec || null, clinic_name: d.clinic || null, phone: d.phone || null }).select("id, name, spec, clinic_name, phone").single();
+        const { data, error } = await supabase.from("doctors").insert({ clinic_id: clinicId as string, name: d.name, spec: d.spec || null, clinic_name: d.clinic || null, phone: d.phone || null }).select("id, name, spec, clinic_name, phone").single();
         if (!error && data) { setDocs((arr) => [...arr, data]); setDoctorId(String(data.id)); }
         setAddDoc(false);
       }} />
