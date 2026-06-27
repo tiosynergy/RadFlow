@@ -2,39 +2,55 @@
 
 /* ===== RadFlow — Referral Portal 2.0 (крос-клінічний портал направників) =====
    Глобальний направник працює з кількома центрами через referral_access.
-   Вкладки: «Нове направлення» (вибір центру → кабінет → слот), «Мої направлення»
-   (крос-клінічний список + перезапис + скасування), «Мої центри» (керування
-   доступом: запит/прийняття/відхилення/відкликання).
-   Зайнятість слотів — через знеособлений RPC room_busy_slots (без PII).
-   Realtime — один канал за created_by на всі центри. */
+   Вкладки: «Нове направлення», «Мої направлення», «Мої центри».
+   Зайнятість слотів — через знеособлений RPC room_busy_slots (без PII). */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import LiveClock from "@/components/LiveClock";
 import PatientEditModal from "@/components/PatientEditModal";
 import RescheduleModal from "@/components/RescheduleModal";
-import { roomScheduleFor } from "@/lib/schedule";
-import { slotBlockedByIncidents } from "@/lib/incidents";
+import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { slotBlockedByIncidents, type IncidentLike } from "@/lib/incidents";
 import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE } from "@/lib/studies";
 import { DobField, BookingCalendar, fmtShort, today0, sameDay } from "@/components/BookingModal";
+import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 
-function pad(n) { return String(n).padStart(2, "0"); }
-function toMin(t) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
-function fmt(m) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
-function dateVal(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
-function calcAge(dob) { if (!dob) return null; return Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 3600 * 1000)); }
-function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
-function procLabel(e) {
-  const s = Array.isArray(e.studies) ? e.studies : [];
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null };
+type Referral = {
+  id: string; clinic_id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
+  scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; status: string;
+  studies: Json; studies_original: Json | null; doctor: string | null; note: string | null; indication: string | null; room_id: string | null;
+};
+type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
+type ExtraStudy = { type: string; region: string; dur: number };
+type BusySlot = { scheduled_time: string; duration_min: number };
+type SearchClinic = { id: string; name: string; city: string | null; modalities: string[] };
+type CenterCardData = {
+  name?: string; city?: string | null; policy?: string | null; note?: string | null;
+  admins?: Array<{ full_name?: string | null; phone?: string | null; email?: string | null }>;
+  rooms?: RoomOpt[];
+};
+type ApiResult = { ok: boolean; data: any }; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+function pad(n: number) { return String(n).padStart(2, "0"); }
+function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
+function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
+function dateVal(d: Date) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+function calcAge(dob: string | null | undefined) { if (!dob) return null; return Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 3600 * 1000)); }
+function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+function procLabel(e: { studies?: unknown; note?: string | null }) {
+  const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string }>) : [];
   if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "")).join(" + ");
   return e.note || "—";
 }
-function centerLabel(c) { return c ? c.name + (c.city ? " · " + c.city : "") : "—"; }
+function centerLabel(c?: { name: string; city?: string | null } | null) { return c ? c.name + (c.city ? " · " + c.city : "") : "—"; }
 
-const ST = {
+const ST: Record<string, { label: string; cls: string }> = {
   scheduled: { label: "Очікує", cls: "gray" },
   waiting: { label: "В роботі", cls: "blue" },
   in_progress: { label: "В роботі", cls: "blue" },
@@ -50,7 +66,7 @@ const FILTERS = [
   { key: "done", label: "Виконано" },
   { key: "no_show", label: "Не відбулося" },
 ];
-const ACCESS_ST = {
+const ACCESS_ST: Record<string, { label: string; cls: string }> = {
   active: { label: "Активний", cls: "green" },
   pending_clinic: { label: "Очікує підтвердження центру", cls: "yellow" },
   pending_referrer: { label: "Запрошення центру", cls: "blue" },
@@ -58,7 +74,7 @@ const ACCESS_ST = {
   declined: { label: "Відхилено", cls: "gray" },
 };
 
-async function postJSON(url, body) {
+async function postJSON(url: string, body: unknown): Promise<ApiResult> {
   try {
     const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
@@ -66,13 +82,16 @@ async function postJSON(url, body) {
   } catch { return { ok: false, data: { error: "Помилка зʼєднання із сервером" } }; }
 }
 
-/* ---------- Вкладка «Нове направлення» ----------
-   UI повністю дзеркалить адмінську модалку запису (BookingModal): ті самі секції,
-   поля, чекбокси, календар і блок «Вільні слоти». Єдина відмінність — немає поля
-   «Лікар-направник» (направник = поточний користувач) і додано вибір центру.
-   Зайнятість слотів тягнемо знеособленим RPC room_busy_slots (без PII). */
-function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCreated }) {
-  // Авто-вибір центру лише коли він один; якщо центрів кілька — обовʼязковий ручний вибір.
+/* ---------- Вкладка «Нове направлення» ---------- */
+interface NewReferralProps {
+  activeCenters: Center[];
+  roomsByClinic: Record<string, RoomOpt[]>;
+  doctorName: string;
+  doctorId: string;
+  onCreated: (nm: string | null, err?: string) => void;
+}
+
+function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCreated }: NewReferralProps) {
   const [centerId, setCenterId] = useState(() => (activeCenters.length === 1 ? activeCenters[0].clinicId : ""));
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
@@ -86,13 +105,13 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const [hasContra, setHasContra] = useState(false);
   const [cito, setCito] = useState(false);
   const [comment, setComment] = useState("");
-  const [extraStudies, setExtraStudies] = useState([]);
+  const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>([]);
   const [bookDate, setBookDate] = useState(() => { const d = today0(); d.setDate(d.getDate() + 1); return d; });
-  const [roomId, setRoomId] = useState(null);
+  const [roomId, setRoomId] = useState<string | null>(null);
   const [time, setTime] = useState("");
-  const [dayEntries, setDayEntries] = useState([]);
-  const [override, setOverride] = useState(null);
-  const [incidents, setIncidents] = useState([]);
+  const [dayEntries, setDayEntries] = useState<BusySlot[]>([]);
+  const [override, setOverride] = useState<DayOverride | null>(null);
+  const [incidents, setIncidents] = useState<IncidentLike[]>([]);
   const [busy, setBusy] = useState(false);
 
   const date = dateVal(bookDate);
@@ -100,11 +119,11 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const primaryKind = studyType;
   const selCenter = activeCenters.find((c) => c.clinicId === centerId) || null;
   const allRooms = roomsByClinic[centerId] || [];
-  const allowedRoomIds = selCenter && Array.isArray(selCenter.room_ids) && selCenter.room_ids.length ? selCenter.room_ids : null; // null = усі
+  const allowedRoomIds = selCenter && Array.isArray(selCenter.room_ids) && selCenter.room_ids.length ? selCenter.room_ids : null;
   const rooms = allowedRoomIds ? allRooms.filter((r) => allowedRoomIds.includes(r.id)) : allRooms;
   const hasMRI = rooms.some((r) => r.modality === "MRI");
   const hasCT = rooms.some((r) => r.modality === "CT");
-  const modAllowed = (code) => (code === "MRI" ? hasMRI : code === "CT" ? hasCT : false);
+  const modAllowed = (code: string) => (code === "MRI" ? hasMRI : code === "CT" ? hasCT : false);
   const roomsOfType = rooms.filter((r) => r.modality === modality);
   const room = roomsOfType.find((r) => r.id === roomId) || null;
 
@@ -114,41 +133,39 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const contrastSuffix = contrast ? " з контрастом" : "";
   const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (studyType === "КТ" ? 20 : 45);
   const price = regionObj ? regionObj.price + (contrast ? CONTRAST_SURCHARGE : 0) : null;
-  const fmtPrice = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
+  const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   const [durEdit, setDurEdit] = useState("");
   useEffect(() => { if (region) setDurEdit(String(computedDur)); }, [region, contrast, studyType]); // eslint-disable-line
   const dur = Math.max(5, parseInt(durEdit, 10) || computedDur);
   const durCustom = region && parseInt(durEdit, 10) && parseInt(durEdit, 10) !== computedDur;
 
-  function changeType(t) {
+  const exRegions = (t: string) => regionsFor(t);
+  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : (t === "КТ" ? 20 : 45); };
+  function changeType(t: string) {
     setStudyType(t); setRegion(""); setContrast(false); setTime("");
     setExtraStudies((a) => a.map((s) => (s.type === t ? s : { ...s, type: t, region: "", dur: exDur(t, "") })));
   }
-  function toggleContrast(v) {
+  function toggleContrast(v: boolean) {
     setContrast(v);
     if (v && region && !allRegions.some((r) => r.label === region && r.contrast)) { setRegion(""); setTime(""); }
   }
 
-  /* Додаткові дослідження (як в адмінці) */
-  const exRegions = (t) => regionsFor(t);
-  const exDur = (t, reg) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : (t === "КТ" ? 20 : 45); };
-  const exPatch = (i, p) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
-  const exSetRegion = (i, reg) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
-  const exSetDur = (i, v) => exPatch(i, { dur: Math.max(5, parseInt(v, 10) || 0) });
+  const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
+  const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
+  const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(5, parseInt(v, 10) || 0) });
   const exAdd = () => setExtraStudies((a) => [...a, { type: primaryKind, region: "", dur: exDur(primaryKind, "") }]);
-  const exRemove = (i) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
+  const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
 
-  const primaryStudy = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast) } : null;
-  const allStudies = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: parseInt(s.dur, 10) || 0, price: studyPrice(s.type, s.region, false) })));
+  const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast) } : null;
+  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false) })));
   const procLabelTxt = region ? `${primaryKind} · ${region}${contrastSuffix}` : primaryKind;
   const combinedLabel = allStudies.length ? allStudies.map(studyLabel).join(" + ") : procLabelTxt;
-  const slotDur = dur + validExtra.reduce((s, x) => s + (parseInt(x.dur, 10) || 0), 0);
+  const slotDur = dur + validExtra.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
-  function calcAgeLocal(d) { const a = calcAge(d); return a == null || a < 0 ? 0 : a; }
+  function calcAgeLocal(d: string) { const a = calcAge(d); return a == null || a < 0 ? 0 : a; }
 
-  // Якщо центр обмежує модальності — переключаємо тип на дозволений.
   useEffect(() => {
     if (!modAllowed(studyType === "КТ" ? "CT" : "MRI")) {
       if (modAllowed("MRI")) setStudyType("МРТ"); else if (modAllowed("CT")) setStudyType("КТ");
@@ -157,8 +174,6 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [centerId]);
 
-  // Кабінет при зміні центру/модальності: зберігаємо валідний вибір; авто-вибір
-  // лише коли кабінет один, інакше — користувач обирає вручну (поле обовʼязкове).
   useEffect(() => {
     setRoomId((prev) => (roomsOfType.some((r) => r.id === prev) ? prev : (roomsOfType.length === 1 ? roomsOfType[0].id : null)));
     setTime("");
@@ -169,18 +184,16 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     const supabase = createClient();
     if (centerId) {
       const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", centerId).eq("override_date", date).maybeSingle();
-      setOverride(ov.data || null);
+      setOverride((ov.data as unknown as DayOverride) || null);
       const inc = await supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", centerId).in("status", ["active", "planned"]);
       setIncidents(inc.data || []);
     }
     if (!roomId) { setDayEntries([]); return; }
-    // Знеособлена зайнятість через RPC (без ПІБ/телефонів інших пацієнтів).
     const { data } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
     setDayEntries(data || []);
   }, [centerId, roomId, date]);
 
-  useEffect(() => { let live = true; (async () => { await loadDay(); })(); return () => { live = false; }; }, [loadDay]);
-  // Підстраховка: оновити зайнятість при поверненні на вкладку.
+  useEffect(() => { (async () => { await loadDay(); })(); }, [loadDay]);
   useEffect(() => {
     const onVis = () => { if (document.visibilityState === "visible") loadDay(); };
     document.addEventListener("visibilitychange", onVis); window.addEventListener("focus", onVis);
@@ -188,17 +201,17 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   }, [loadDay]);
 
   const dateObj = new Date(date + "T00:00:00");
-  const roomSched = roomScheduleFor(dateObj, roomId, override);
+  const roomSched = roomScheduleFor(dateObj, roomId || "", override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
   const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) }));
   const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
   const isBookToday = sameDay(bookDate, today0());
-  const slots = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
-  function slotState(slot) {
+  const slots: string[] = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
+  function slotState(slot: string) {
     const a = toMin(slot), b = a + slotDur;
     if (roomSched.closed) return "closed";
     const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60);
-    if (slotBlockedByIncidents(incidents, roomId, slotMs)) return "blocked";
+    if (slotBlockedByIncidents(incidents, roomId || "", slotMs)) return "blocked";
     if (a < schedStart || a >= schedEnd) return "offhours";
     if (b > schedEnd) return "tight";
     if (isBookToday && a < nowMin) return "past";
@@ -206,7 +219,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     if (busySlots.some((x) => a < x.e && x.s < b)) return "tight";
     return "free";
   }
-  function nextApptAfter(slot) {
+  function nextApptAfter(slot: string) {
     const s = toMin(slot);
     const after = busySlots.filter((x) => x.s >= s).sort((a, b) => a.s - b.s)[0];
     return after ? fmt(after.s) : null;
@@ -214,8 +227,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const freeCount = slots.filter((s) => slotState(s) === "free").length;
   const busyList = busySlots.slice().sort((a, b) => a.s - b.s);
 
-  const miss = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), region: !region, room: !roomId, time: !time };
-  const MISS_LABELS = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
+  const miss: Record<string, boolean> = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), region: !region, room: !roomId, time: !time };
+  const MISS_LABELS: Record<string, string> = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   const timeBad = time ? slotState(time) !== "free" : false;
   const valid = centerId && missingList.length === 0 && roomId && !timeBad && !roomSched.closed;
@@ -226,9 +239,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     const supabase = createClient();
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), hh, mm).toISOString();
-    // Повторна перевірка зайнятості через RPC (слот могли зайняти, поки відкрита форма).
     const startMin2 = hh * 60 + mm, endMin2 = startMin2 + (slotDur || 30);
-    const { data: clash } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
+    const { data: clash } = await supabase.rpc("room_busy_slots", { p_room: roomId as string, p_date: date });
     if ((clash || []).some((q) => {
       const qs = toMin(q.scheduled_time);
       return qs < endMin2 && startMin2 < qs + (q.duration_min || 30);
@@ -239,7 +251,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
       patient_name: name.trim(), patient_phone: phone.trim() || null, patient_email: email.trim() || null,
       patient_dob: dob || null, patient_sex: gender || null, patient_age: calcAgeLocal(dob), patient_weight: weight ? +weight : null,
       contraindications: !!hasContra, cito: !!cito, has_contrast: allStudies.some((s) => s.contrast),
-      studies: allStudies, studies_original: allStudies, duration_min: slotDur,
+      studies: allStudies as Json, studies_original: allStudies as Json, duration_min: slotDur,
       scheduled_date: date, scheduled_time: time, scheduled_at: at,
       status: "scheduled", call_status: "not_called", doctor: doctorName, note, indication: note,
     });
@@ -261,7 +273,6 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     <div style={{ maxWidth: 880, margin: "0 auto" }}>
       <div className="dialog bk-dialog" style={{ margin: 0, maxHeight: "none", overflow: "visible" }}>
         <div className="bk-grid">
-          {/* ЛІВА КОЛОНКА */}
           <div className="bk-col bk-col-left">
             <div className="bk-section-label" style={{ marginTop: 0 }}>Центр</div>
             <label className="fld">
@@ -368,7 +379,6 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
               <div className="ctx-hint blue" style={{ marginBottom: 6 }}>Орієнтовна вартість: {fmtPrice(price)}</div>
             )}
 
-            {/* Додаткові дослідження */}
             <div className="fld">
               {extraStudies.length > 0 && (
                 <div className="bk-study-table">
@@ -400,7 +410,6 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
             </label>
           </div>
 
-          {/* ПРАВА КОЛОНКА — Scheduler */}
           <div className="bk-col bk-col-right">
             <div className="bk-sched-head">
               <span className="bk-sched-spark">✦</span>
@@ -466,7 +475,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
               {time && (() => {
                 const s = toMin(time), e = s + slotDur;
                 const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(s / 60), s % 60);
-                const blocked = slotBlockedByIncidents(incidents, roomId, slotMs);
+                const blocked = slotBlockedByIncidents(incidents, roomId || "", slotMs);
                 const conflict = busySlots.find((b) => s < b.e && b.s < e);
                 return (
                   <div className={"bk-slot-confirm " + (blocked || conflict ? "bad" : "ok")}>
@@ -494,11 +503,19 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
 }
 
 /* ---------- Вкладка «Мої направлення» ---------- */
-function MyReferrals({ referrals, centersById, onReschedule, onCancel, onEditPatient }) {
+interface MyReferralsProps {
+  referrals: Referral[];
+  centersById: Record<string, Center>;
+  onReschedule: (r: Referral) => void;
+  onCancel: (r: Referral) => void;
+  onEditPatient: (r: Referral) => void;
+}
+
+function MyReferrals({ referrals, centersById, onReschedule, onCancel, onEditPatient }: MyReferralsProps) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [centerFilter, setCenterFilter] = useState("all");
-  const [selected, setSelected] = useState(null);
+  const [selected, setSelected] = useState<Referral | null>(null);
 
   const centerOptions = useMemo(() => {
     const ids = Array.from(new Set(referrals.map((r) => r.clinic_id)));
@@ -513,7 +530,7 @@ function MyReferrals({ referrals, centersById, onReschedule, onCancel, onEditPat
     return true;
   });
 
-  const canCancel = (r) => ["scheduled", "waiting"].includes(r.status);
+  const canCancel = (r: Referral) => ["scheduled", "waiting"].includes(r.status);
 
   return (
     <div style={{ maxWidth: 1000, margin: "0 auto", display: "flex", gap: 16 }}>
@@ -541,7 +558,7 @@ function MyReferrals({ referrals, centersById, onReschedule, onCancel, onEditPat
                 <div key={r.id} onClick={() => setSelected(r)} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", background: "var(--card)", border: "1px solid " + (selected && selected.id === r.id ? "var(--blue)" : "var(--border)"), borderRadius: "var(--r-md)", cursor: "pointer" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 14 }}>{canCancel(r) ? <span onClick={(e) => { e.stopPropagation(); onEditPatient && onEditPatient(r); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{r.patient_name}</span> : r.patient_name}</div>
-                    <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{procLabel(r)} · <span style={{ color: "var(--text-secondary)" }}>🏥 {centerLabel(centersById[r.clinic_id])}</span>{studiesChanged(r.studies_original, r.studies) && <span style={{ color: "var(--orange)", marginLeft: 6 }}>✎ змінено клінікою</span>}</div>
+                    <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{procLabel(r)} · <span style={{ color: "var(--text-secondary)" }}>🏥 {centerLabel(centersById[r.clinic_id])}</span>{studiesChanged(r.studies_original as Parameters<typeof studiesChanged>[0], r.studies as Parameters<typeof studiesChanged>[1]) && <span style={{ color: "var(--orange)", marginLeft: 6 }}>✎ змінено клінікою</span>}</div>
                   </div>
                   <div style={{ fontSize: 12.5, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{r.scheduled_date} · {r.scheduled_time}</div>
                   <span className={"badge " + m.cls}>{m.label}</span>
@@ -554,10 +571,10 @@ function MyReferrals({ referrals, centersById, onReschedule, onCancel, onEditPat
       </div>
 
       {selected && (() => {
-        const sel = referrals.find((x) => x.id === selected.id) || selected; // живі дані (realtime/полінг)
+        const sel = referrals.find((x) => x.id === selected.id) || selected;
         const m = ST[sel.status] || ST.scheduled;
-        const sdiff = diffStudies(sel.studies_original, sel.studies);
-        const changed = studiesChanged(sel.studies_original, sel.studies);
+        const sdiff = diffStudies(sel.studies_original as Parameters<typeof diffStudies>[0], sel.studies as Parameters<typeof diffStudies>[1]);
+        const changed = studiesChanged(sel.studies_original as Parameters<typeof studiesChanged>[0], sel.studies as Parameters<typeof studiesChanged>[1]);
         return (
           <aside style={{ width: 320, flexShrink: 0, background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 18, alignSelf: "flex-start" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -600,15 +617,15 @@ function MyReferrals({ referrals, centersById, onReschedule, onCancel, onEditPat
   );
 }
 
-/* ---------- Розгорнута картка центру (деталі + контакти адміна + обладнання) ---------- */
-function CenterDetails({ data, loading }) {
+/* ---------- Розгорнута картка центру ---------- */
+function CenterDetails({ data, loading }: { data?: CenterCardData | null; loading: boolean }) {
   const panel = { background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: 16, margin: "4px 0 8px" };
   if (loading) return <div style={panel}><div style={{ color: "var(--text-muted)", fontSize: 13 }}>Завантаження…</div></div>;
   if (!data) return <div style={panel}><div style={{ color: "var(--text-muted)", fontSize: 13 }}>Не вдалося завантажити деталі центру.</div></div>;
   const admins = Array.isArray(data.admins) ? data.admins : [];
   const rooms = Array.isArray(data.rooms) ? data.rooms : [];
-  const realEmail = (e) => e && !/@referrer\.radflow\.local$/i.test(e);
-  const lbl = { color: "var(--text-muted)", fontSize: 11.5, textTransform: "uppercase", letterSpacing: ".04em", margin: "0 0 8px" };
+  const realEmail = (e?: string | null) => e && !/@referrer\.radflow\.local$/i.test(e);
+  const lbl = { color: "var(--text-muted)", fontSize: 11.5, textTransform: "uppercase" as const, letterSpacing: ".04em", margin: "0 0 8px" };
   return (
     <div style={panel}>
       <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", rowGap: 8, columnGap: 10, fontSize: 13, marginBottom: 16 }}>
@@ -658,25 +675,27 @@ function CenterDetails({ data, loading }) {
 }
 
 /* ---------- Вкладка «Мої центри» ---------- */
-function MyCenters({ centers, canManage, onChanged, notify }) {
-  const [q, setQ] = useState("");
-  const [results, setResults] = useState([]);
-  const [searching, setSearching] = useState(false);
-  const [busyId, setBusyId] = useState(null);
-  const [expandedId, setExpandedId] = useState(null);   // accessId розгорнутої картки
-  const [details, setDetails] = useState({});           // кеш деталей за accessId
-  const [loadingId, setLoadingId] = useState(null);
+interface MyCentersProps {
+  centers: Center[];
+  canManage: boolean;
+  onChanged: () => void;
+  notify: (msg: string, type?: string) => void;
+}
 
-  function toggleExpand(c) {
+function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<SearchClinic[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [details, setDetails] = useState<Record<string, CenterCardData>>({});
+  const [loadingId, setLoadingId] = useState<string | null>(null);
+
+  function toggleExpand(c: Center) {
     if (!c.accessId) return;
-    setExpandedId((id) => (id === c.accessId ? null : c.accessId));
+    setExpandedId((id) => (id === c.accessId ? null : c.accessId!));
   }
 
-  // Деталі розгорнутої картки тягнемо реактивно: при відкритті І при будь-якій
-  // зміні гранту (room_ids/policy/status) — щоб «Доступне обладнання для вас»
-  // оновлювалося миттєво без перезавантаження сторінки. Звʼязок direct→props:
-  // realtime на referral_access у батьку викликає router.refresh() → оновлює
-  // centers → змінюється підпис нижче → ефект перезапитує RPC.
   const expandedCenter = centers.find((c) => c.accessId === expandedId) || null;
   const expandedSig = expandedCenter ? JSON.stringify([expandedCenter.status, expandedCenter.policy, expandedCenter.room_ids]) : "";
   useEffect(() => {
@@ -688,7 +707,7 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
       const { data, error } = await supabase.rpc("referral_center_card", { p_access_id: expandedId });
       if (cancelled) return;
       setLoadingId((id) => (id === expandedId ? null : id));
-      if (!error && data) setDetails((d) => ({ ...d, [expandedId]: data }));
+      if (!error && data) setDetails((d) => ({ ...d, [expandedId]: data as unknown as CenterCardData }));
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -708,24 +727,22 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
     setSearching(false);
   }
 
-  // Живий пошук центрів «по мірі вводу» (debounce). Кнопка «Знайти» необовʼязкова —
-  // підказки зʼявляються самі. Уже відомі центри (active/pending/історія) ховаємо.
   useEffect(() => {
     const query = q.trim();
     if (query.length < 2) { setResults([]); setSearching(false); return; }
-    let active = true;
+    let active2 = true;
     setSearching(true);
     const t = setTimeout(async () => {
       const supabase = createClient();
       const { data } = await supabase.rpc("search_clinics", { q: query });
-      if (!active) return;
+      if (!active2) return;
       setResults((data || []).filter((c) => !knownIds.has(c.id)));
       setSearching(false);
     }, 250);
-    return () => { active = false; clearTimeout(t); };
+    return () => { active2 = false; clearTimeout(t); };
   }, [q, knownIds]);
 
-  async function sendRequest(clinicId) {
+  async function sendRequest(clinicId: string) {
     setBusyId(clinicId);
     const { ok, data } = await postJSON("/api/referral/access/request", { clinic_id: clinicId });
     setBusyId(null);
@@ -735,7 +752,7 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
     onChanged();
   }
 
-  async function decide(accessId, decision) {
+  async function decide(accessId: string, decision: string) {
     setBusyId(accessId);
     const { ok, data } = await postJSON("/api/referral/access/decide", { access_id: accessId, decision });
     setBusyId(null);
@@ -745,7 +762,7 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
   }
 
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 18, marginBottom: 14 };
-  function Row({ c, children, onClick, expandable, expanded }) {
+  function Row({ c, children, onClick, expandable, expanded }: { c: Center; children?: ReactNode; onClick?: () => void; expandable?: boolean; expanded?: boolean }) {
     const m = ACCESS_ST[c.status] || ACCESS_ST.active;
     return (
       <div onClick={onClick} title={expandable ? (expanded ? "Згорнути" : "Натисніть, щоб переглянути деталі центру") : undefined} style={{ padding: "12px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
@@ -793,10 +810,10 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
           {invites.map((c) => (
             <div key={c.accessId}>
               <Row c={c} expandable expanded={expandedId === c.accessId} onClick={() => toggleExpand(c)}>
-                <button className="btn btn-primary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); decide(c.accessId, "approve"); }}>Прийняти</button>
-                <button className="btn btn-secondary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відхилити запрошення центру «" + c.name + "»?\n\nВи зможете надіслати запит на доступ пізніше вручну.")) decide(c.accessId, "decline"); }}>Відхилити</button>
+                <button className="btn btn-primary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); decide(c.accessId!, "approve"); }}>Прийняти</button>
+                <button className="btn btn-secondary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відхилити запрошення центру «" + c.name + "»?\n\nВи зможете надіслати запит на доступ пізніше вручну.")) decide(c.accessId!, "decline"); }}>Відхилити</button>
               </Row>
-              {expandedId === c.accessId && <CenterDetails data={details[c.accessId]} loading={loadingId === c.accessId && !details[c.accessId]} />}
+              {expandedId === c.accessId && <CenterDetails data={details[c.accessId!]} loading={loadingId === c.accessId && !details[c.accessId!]} />}
             </div>
           ))}
         </div>
@@ -808,7 +825,7 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
           : active.map((c) => (
             <div key={c.accessId || c.clinicId}>
               <Row c={c} expandable={!!c.accessId} expanded={expandedId === c.accessId} onClick={c.accessId ? () => toggleExpand(c) : undefined}>
-                {canManage && c.accessId && <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відкликати доступ до «" + c.name + "»? Створені направлення лишаться у центрі, нові ви створювати не зможете.")) decide(c.accessId, "revoke"); }}>Відкликати</button>}
+                {canManage && c.accessId && <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відкликати доступ до «" + c.name + "»? Створені направлення лишаться у центрі, нові ви створювати не зможете.")) decide(c.accessId!, "revoke"); }}>Відкликати</button>}
               </Row>
               {c.accessId && expandedId === c.accessId && <CenterDetails data={details[c.accessId]} loading={loadingId === c.accessId && !details[c.accessId]} />}
             </div>
@@ -836,7 +853,15 @@ function MyCenters({ centers, canManage, onChanged, notify }) {
   );
 }
 
-export default function ReferralPortal({ role, centers, roomsByClinic, doctorName, doctorId }) {
+interface ReferralPortalProps {
+  role: string;
+  centers: Center[];
+  roomsByClinic: Record<string, RoomOpt[]>;
+  doctorName: string;
+  doctorId: string;
+}
+
+export default function ReferralPortal({ role, centers, roomsByClinic, doctorName, doctorId }: ReferralPortalProps) {
   const router = useRouter();
   const canManage = role === "referrer";
   async function signOut() {
@@ -847,17 +872,17 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
   }
 
   const activeCenters = useMemo(() => centers.filter((c) => c.status === "active"), [centers]);
-  const centersById = useMemo(() => { const m = {}; centers.forEach((c) => { m[c.clinicId] = c; }); return m; }, [centers]);
+  const centersById = useMemo(() => { const m: Record<string, Center> = {}; centers.forEach((c) => { m[c.clinicId] = c; }); return m; }, [centers]);
   const pendingInvites = centers.filter((c) => c.status === "pending_referrer").length;
 
   const [tab, setTab] = useState(() => (activeCenters.length === 0 ? "centers" : "new"));
-  const [editPatientFor, setEditPatientFor] = useState(null);
-  const [referrals, setReferrals] = useState([]);
-  const [reschedFor, setReschedFor] = useState(null);
-  const [toast, setToast] = useState(null);
-  const toastTimer = useRef(null);
+  const [editPatientFor, setEditPatientFor] = useState<Referral | null>(null);
+  const [referrals, setReferrals] = useState<Referral[]>([]);
+  const [reschedFor, setReschedFor] = useState<Referral | null>(null);
+  const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  function notify(msg, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3200); }
+  function notify(msg: string, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3200); }
 
   const reload = useCallback(async () => {
     const supabase = createClient();
@@ -869,8 +894,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     setReferrals(data || []);
   }, [doctorId]);
 
-  // TD-3: единый realtime-хук (дебаунс + поллинг только при разрыве сокета).
-  // queue_entries → reload(); referral_access → router.refresh() (серверные пропсы).
+  // TD-3: единый realtime-хук.
   useRealtimeRefetch({
     channelName: doctorId ? "ref-" + doctorId : null,
     subscriptions: [
@@ -879,7 +903,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     ],
   });
 
-  async function doReschedule({ roomId, date, time, dur }) {
+  async function doReschedule({ roomId, date, time, dur }: { roomId: string; date: Date; time: string; dur: number }) {
     const p = reschedFor; if (!p) return;
     const supabase = createClient();
     const [hh, mm] = time.split(":").map(Number);
@@ -890,7 +914,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     notify("Перенесено", "success"); reload();
   }
 
-  async function doCancel(entry) {
+  async function doCancel(entry: Referral) {
     if (!entry) return;
     const supabase = createClient();
     const { error } = await supabase.from("queue_entries").update({ status: "cancelled" }).eq("id", entry.id);

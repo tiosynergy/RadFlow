@@ -112,7 +112,7 @@ export default async function ReferralPage() {
     <ReferralPortal
       role={profile.role as string}
       centers={centers}
-      roomsByClinic={roomsByClinic}
+      roomsByClinic={roomsByClinic as Parameters<typeof ReferralPortal>[0]["roomsByClinic"]}
       doctorName={(profile.full_name as string) ?? (user.email ?? "Лікар")}
       doctorId={user.id}
     />
