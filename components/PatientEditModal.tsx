@@ -7,6 +7,7 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { updatePatientDetails } from "@/app/queue/actions";
 import type { TablesUpdate } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -96,7 +97,6 @@ export default function PatientEditModal({ entryId, onClose, onSaved }: PatientE
     if (!form) return;
     if (!String(form.patient_name || "").trim()) { setErr("Вкажіть ПІБ пацієнта"); return; }
     setBusy(true); setErr("");
-    const supabase = createClient();
     const w = form.patient_weight;
     const patch: TablesUpdate<"queue_entries"> = {
       patient_name: (form.patient_name || "").trim(),
@@ -114,9 +114,9 @@ export default function PatientEditModal({ entryId, onClose, onSaved }: PatientE
       const selOpt = docs.find((d) => d.name === form.doctor);
       patch.referrer_id = selOpt && selOpt.key.startsWith("r-") ? selOpt.key.slice(2) : null;
     }
-    const { error } = await supabase.from("queue_entries").update(patch).eq("id", entryId);
+    const res = await updatePatientDetails(entryId, patch);
     setBusy(false);
-    if (error) { setErr("Помилка збереження: " + error.message); return; }
+    if (!res.ok) { setErr("Помилка збереження: " + res.error); return; }
     if (onSaved) onSaved();
     if (onClose) onClose();
   }

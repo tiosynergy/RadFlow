@@ -14,6 +14,7 @@ import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText } from "@/lib/studies";
 import { incidentEffectiveEnd, incidentExpired, wallNow } from "@/lib/incidents";
+import { setQueueEntryStatus, setRadiologistNote } from "@/app/queue/actions";
 import type { QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -560,25 +561,25 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   async function setStatus(id: string, status: string) {
     const cur = entries.find((e) => e.id === id);
     if (status === "done" && cur && cur.status !== "in_progress") { notify("«Виконано» можна лише для пацієнта в кабінеті", "error"); return; }
-    const supabase = createClient();
+    // Server Action (серверная сессия + единая обработка ошибок); оптимистично локально.
     const nowIso = new Date().toISOString();
-    const patch = status === "in_progress" ? { status: status as QueueStatus, in_progress_at: nowIso } : { status: status as QueueStatus };
-    const { error } = await supabase.from("queue_entries").update(patch).eq("id", id);
-    if (error) {
-      let msg;
-      if (status === "in_progress" && /in_progress|duplicate|23505/i.test(error.message)) msg = "У кабінеті вже є пацієнт — спершу завершіть поточного";
-      else if (/incident/i.test(error.message)) msg = "Кабінет у простої (поломка/ТО) — дію заблоковано";
-      else if (/overlap|exclusion/i.test(error.message)) msg = "Слот недоступний — зверніться до адміністратора";
-      else msg = "Помилка: " + error.message;
-      notify(msg, "error"); return;
-    }
+    const patch = status === "in_progress" ? { status, in_progress_at: nowIso } : { status };
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
+    const res = await setQueueEntryStatus(id, status as QueueStatus);
+    if (!res.ok) {
+      const msg = res.code === "room_busy" ? "У кабінеті вже є пацієнт — спершу завершіть поточного"
+        : res.code === "slot_unavailable" ? "Слот недоступний (простій/зайнято) — зверніться до адміністратора"
+        : "Помилка: " + res.error;
+      notify(msg, "error");
+      reload();
+      return;
+    }
     reload();
   }
   async function saveNote(id: string, radiologist_note: string) {
-    const supabase = createClient();
-    await supabase.from("queue_entries").update({ radiologist_note }).eq("id", id);
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, radiologist_note } : e)));
+    const res = await setRadiologistNote(id, radiologist_note);
+    if (!res.ok) notify("Помилка збереження нотатки: " + res.error, "error");
   }
 
   function inProgressBlockReason(p: RadEntry): string | null {

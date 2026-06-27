@@ -14,7 +14,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database, Json, QueueStatus, CallStatus } from "@/supabase/types";
+import type { Database, Json, QueueStatus, CallStatus, TablesUpdate } from "@/supabase/types";
 
 export type QueueActionResult =
   | { ok: true }
@@ -334,6 +334,7 @@ export type RescheduleInput = {
   scheduledTime: string;
   scheduledAt: string;
   durationMin: number;
+  callStatus?: CallStatus; // напр. колл-лист підтверджує слот при переносі
 };
 
 /** Перенос записи на другой кабинет/дату/время (с пред-проверкой пересечения). */
@@ -359,7 +360,7 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
       scheduled_at: input.scheduledAt,
       duration_min: input.durationMin,
       status: "scheduled",
-      call_status: "not_called",
+      call_status: input.callStatus ?? "not_called",
     })
     .eq("id", input.id)
     .select("id");
@@ -455,6 +456,137 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
     studies_original: input.studies,
     doctor: input.doctor ?? null,
     note: input.notes ?? null,
+    duration_min: input.durationMin,
+    scheduled_date: input.scheduledDate,
+    scheduled_time: input.scheduledTime,
+    scheduled_at: input.scheduledAt,
+    status: "scheduled",
+    call_status: "not_called",
+  });
+
+  if (error) return mapBookingError(error.message);
+  return { ok: true };
+}
+
+/** Заметка радіолога (radiologist_note). */
+export async function setRadiologistNote(id: string, note: string): Promise<QueueActionResult> {
+  if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+  const { data, error } = await supabase.from("queue_entries").update({ radiologist_note: note }).eq("id", id).select("id");
+  if (error) return { ok: false, error: error.message, code: "generic" };
+  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  return { ok: true };
+}
+
+/** Заметка обзвона (call_note). */
+export async function setCallNote(id: string, note: string): Promise<QueueActionResult> {
+  if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+  const { data, error } = await supabase.from("queue_entries").update({ call_note: note }).eq("id", id).select("id");
+  if (error) return { ok: false, error: error.message, code: "generic" };
+  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  return { ok: true };
+}
+
+/** Масове підтвердження обзвону (call_status → confirmed) за списком id. RLS обмежує клінікою. */
+export async function confirmAllCalls(ids: string[]): Promise<QueueActionResult> {
+  if (!Array.isArray(ids) || ids.length === 0) return { ok: true };
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+  const { error } = await supabase.from("queue_entries").update({ call_status: "confirmed" }).in("id", ids);
+  if (error) return { ok: false, error: error.message, code: "generic" };
+  return { ok: true };
+}
+
+/** Редагування даних пацієнта (PatientEditModal). patch — підмножина колонок queue_entries. */
+export async function updatePatientDetails(id: string, patch: TablesUpdate<"queue_entries">): Promise<QueueActionResult> {
+  if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+  const { data, error } = await supabase.from("queue_entries").update(patch).eq("id", id).select("id");
+  if (error) return { ok: false, error: error.message, code: "generic" };
+  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  return { ok: true };
+}
+
+export type ReferralBookingInput = {
+  clinicId: string;
+  roomId: string;
+  name: string;
+  phone?: string | null;
+  email?: string | null;
+  dob?: string | null;
+  sex?: string | null;
+  age?: number | null;
+  weight?: number | null;
+  hasContra?: boolean;
+  cito?: boolean;
+  studies: Json;
+  doctorName?: string | null;
+  note?: string | null;
+  durationMin: number;
+  scheduledDate: string;
+  scheduledTime: string;
+  scheduledAt: string;
+};
+
+/** Створення направлення направником у обраний центр. Сервер перевіряє активний
+    referral_access (referrer_id=user, clinic_id, status=active) і дозволений кабінет. */
+export async function createReferralBooking(input: ReferralBookingInput): Promise<QueueActionResult> {
+  if (!input?.clinicId || !input?.roomId || !input?.name) return { ok: false, error: "Не вистачає даних направлення", code: "generic" };
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  // Перевірка доступу направника до центру і кабінету.
+  const { data: access } = await supabase
+    .from("referral_access")
+    .select("status, room_ids")
+    .eq("referrer_id", user.id)
+    .eq("clinic_id", input.clinicId)
+    .eq("status", "active")
+    .maybeSingle();
+  if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
+  const roomAllowed = !access.room_ids || access.room_ids.length === 0 || access.room_ids.includes(input.roomId);
+  if (!roomAllowed) return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
+
+  const [hh, mm] = input.scheduledTime.split(":").map(Number);
+  const startMin = (hh || 0) * 60 + (mm || 0);
+  const endMin = startMin + (input.durationMin || 30);
+  if (await hasSlotClash(supabase, input.roomId, input.scheduledDate, startMin, endMin)) {
+    return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
+  }
+
+  const hasContrast = Array.isArray(input.studies)
+    ? input.studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
+    : false;
+
+  const { error } = await supabase.from("queue_entries").insert({
+    clinic_id: input.clinicId,
+    room_id: input.roomId,
+    created_by: user.id,
+    referrer_id: user.id,
+    patient_name: input.name,
+    patient_phone: input.phone || null,
+    patient_email: input.email ?? null,
+    patient_dob: input.dob || null,
+    patient_sex: input.sex || null,
+    patient_age: input.age ?? null,
+    patient_weight: input.weight ?? null,
+    contraindications: !!input.hasContra,
+    cito: !!input.cito,
+    has_contrast: hasContrast,
+    studies: input.studies,
+    studies_original: input.studies,
+    doctor: input.doctorName ?? null,
+    note: input.note ?? null,
+    indication: input.note ?? null,
     duration_min: input.durationMin,
     scheduled_date: input.scheduledDate,
     scheduled_time: input.scheduledTime,

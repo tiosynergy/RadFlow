@@ -12,6 +12,7 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import LiveClock from "@/components/LiveClock";
 import PatientEditModal from "@/components/PatientEditModal";
 import RescheduleModal from "@/components/RescheduleModal";
+import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry } from "@/app/queue/actions";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { slotBlockedByIncidents, type IncidentLike } from "@/lib/incidents";
 import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE } from "@/lib/studies";
@@ -236,27 +237,25 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   async function submit() {
     if (!valid || busy) return;
     setBusy(true);
-    const supabase = createClient();
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), hh, mm).toISOString();
-    const startMin2 = hh * 60 + mm, endMin2 = startMin2 + (slotDur || 30);
-    const { data: clash } = await supabase.rpc("room_busy_slots", { p_room: roomId as string, p_date: date });
-    if ((clash || []).some((q) => {
-      const qs = toMin(q.scheduled_time);
-      return qs < endMin2 && startMin2 < qs + (q.duration_min || 30);
-    })) { setBusy(false); onCreated(null, "Слот щойно зайняли — оновіть сторінку й оберіть інший час"); return; }
-    const note = comment.trim() || null;
-    const { error } = await supabase.from("queue_entries").insert({
-      clinic_id: centerId, room_id: roomId, created_by: doctorId, referrer_id: doctorId,
-      patient_name: name.trim(), patient_phone: phone.trim() || null, patient_email: email.trim() || null,
-      patient_dob: dob || null, patient_sex: gender || null, patient_age: calcAgeLocal(dob), patient_weight: weight ? +weight : null,
-      contraindications: !!hasContra, cito: !!cito, has_contrast: allStudies.some((s) => s.contrast),
-      studies: allStudies as Json, studies_original: allStudies as Json, duration_min: slotDur,
-      scheduled_date: date, scheduled_time: time, scheduled_at: at,
-      status: "scheduled", call_status: "not_called", doctor: doctorName, note, indication: note,
+    // Server Action: серверна перевірка доступу направника + пред-перевірка слота + insert.
+    const res = await createReferralBooking({
+      clinicId: centerId, roomId: roomId as string,
+      name: name.trim(), phone: phone.trim() || null, email: email.trim() || null,
+      dob: dob || null, sex: gender || null, age: calcAgeLocal(dob), weight: weight ? +weight : null,
+      hasContra: !!hasContra, cito: !!cito, studies: allStudies as Json,
+      doctorName, note: comment.trim() || null, durationMin: slotDur,
+      scheduledDate: date, scheduledTime: time, scheduledAt: at,
     });
     setBusy(false);
-    if (error) { onCreated(null, /incident/i.test(error.message) ? "Кабінет у простої (ремонт/ТО) у цей час — оберіть інший слот або день" : /overlap|exclusion/i.test(error.message) ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час" : error.message); return; }
+    if (!res.ok) {
+      const msg = (res.code === "slot_taken" || res.code === "slot_unavailable") ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час"
+        : res.code === "incident" ? "Кабінет у простої (ремонт/ТО) у цей час — оберіть інший слот або день"
+        : res.code === "forbidden" ? "Немає доступу до цього центру/кабінету" : res.error;
+      onCreated(null, msg);
+      return;
+    }
     setName(""); setDob(""); setGender(""); setWeight(""); setPhone(""); setEmail(""); setRegion(""); setContrast(false); setHasContra(false); setCito(false); setComment(""); setExtraStudies([]); setTime("");
     onCreated(name.trim());
   }
@@ -905,20 +904,23 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
 
   async function doReschedule({ roomId, date, time, dur }: { roomId: string; date: Date; time: string; dur: number }) {
     const p = reschedFor; if (!p) return;
-    const supabase = createClient();
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const { error } = await supabase.from("queue_entries").update({ room_id: roomId, scheduled_date: date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()), scheduled_time: time, scheduled_at: at, duration_min: dur, status: "scheduled", call_status: "not_called" }).eq("id", p.id);
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur });
+    if (!res.ok) {
+      if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
+      setReschedFor(null);
+      notify(res.code === "incident" ? "Кабінет у простої — оберіть інший слот" : res.code === "slot_unavailable" ? "Слот зайнятий — оберіть інший" : "Помилка: " + res.error, "error");
+      return;
+    }
     setReschedFor(null);
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
     notify("Перенесено", "success"); reload();
   }
 
   async function doCancel(entry: Referral) {
     if (!entry) return;
-    const supabase = createClient();
-    const { error } = await supabase.from("queue_entries").update({ status: "cancelled" }).eq("id", entry.id);
-    if (error) { notify("Помилка скасування: " + error.message, "error"); return; }
+    const res = await cancelQueueEntry(entry.id);
+    if (!res.ok) { notify("Помилка скасування: " + res.error, "error"); return; }
     notify("Направлення скасовано", "success"); reload();
   }
 

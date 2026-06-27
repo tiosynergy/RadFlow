@@ -12,7 +12,8 @@ import LiveClock from "@/components/LiveClock";
 import { entryInIncidentWindow, incidentExpired } from "@/lib/incidents";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
-import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
+import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies } from "@/app/queue/actions";
+import type { CallStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -267,33 +268,31 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   });
 
   async function cancelEntry(p: CallEntry) {
-    const supabase = createClient();
-    const { error } = await supabase.from("queue_entries").update({ status: "cancelled" }).eq("id", p.id);
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
+    const res = await cancelQueueEntry(p.id);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Запис скасовано (відмова)", "success");
     reload(); loadIncidents();
   }
 
   async function setCall(id: string, call_status: CallStatus) {
-    const supabase = createClient();
-    // Відмова = скасування запису (як на дошці черги), інакше дані розходяться між екранами.
-    const patch = call_status === "declined" ? { call_status, status: "cancelled" as QueueStatus } : { call_status };
-    const { error } = await supabase.from("queue_entries").update(patch).eq("id", id);
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
+    // Відмова = скасування запису (як на дошці черги); оптимістично локально.
+    const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch } : e)));
+    const res = await setQueueEntryCall(id, call_status);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return; }
     if (call_status === "declined") notify("Пацієнт відмовився — запис скасовано", "info");
     reload();
   }
   async function setNote(id: string, call_note: string) {
-    const supabase = createClient();
-    await supabase.from("queue_entries").update({ call_note }).eq("id", id);
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, call_note } : e)));
+    const res = await setCallNote(id, call_note);
+    if (!res.ok) notify("Помилка збереження нотатки: " + res.error, "error");
   }
   async function confirmAll() {
-    const supabase = createClient();
     const ids = entries.map((e) => e.id);
     if (!ids.length) return;
-    await supabase.from("queue_entries").update({ call_status: "confirmed" }).in("id", ids);
+    const res = await confirmAllCalls(ids);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Усіх пацієнтів підтверджено", "success");
     reload();
   }
@@ -301,24 +300,26 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   async function doReschedule({ roomId, date: d, time, dur }: { roomId: string; date: Date; time: string; dur: number }) {
     const p = reschedFor;
     if (!p) return;
-    const supabase = createClient();
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm).toISOString();
-    const { error } = await supabase.from("queue_entries").update({
-      room_id: roomId, scheduled_date: dateKey(d), scheduled_time: time, scheduled_at: at, duration_min: dur, status: "scheduled", call_status: "confirmed",
-    }).eq("id", p.id);
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, callStatus: "confirmed" });
+    if (!res.ok) {
+      if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
+      setReschedFor(null);
+      const msg = res.code === "incident" ? "Кабінет у простої — оберіть інший слот" : res.code === "slot_unavailable" ? "Слот зайнятий — оберіть інший" : "Помилка переносу: " + res.error;
+      notify(msg, "error");
+      return;
+    }
     setReschedFor(null);
-    if (error) { notify(/incident/i.test(error.message) ? "Кабінет у простої — оберіть інший слот" : /overlap|exclusion/i.test(error.message) ? "Слот зайнятий — оберіть інший" : "Помилка переносу: " + error.message, "error"); return; }
     notify("Перенесено · підтверджено", "success");
     reload();
   }
   async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number }) {
     const p = editStudiesFor;
     if (!p) return;
-    const supabase = createClient();
-    const { error } = await supabase.from("queue_entries").update({ studies: arr as Json, duration_min: (meta && meta.dur) || p.duration_min || 30 }).eq("id", p.id);
+    const res = await editQueueEntryStudies(p.id, arr as Json, (meta && meta.dur) || p.duration_min || 30);
     setEditStudiesFor(null);
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Дослідження оновлено", "success");
     reload();
   }
