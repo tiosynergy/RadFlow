@@ -11,6 +11,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import LiveClock from "@/components/LiveClock";
 import PatientEditModal from "@/components/PatientEditModal";
 import RescheduleModal from "@/components/RescheduleModal";
@@ -868,24 +869,15 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     setReferrals(data || []);
   }, [doctorId]);
 
-  useEffect(() => {
-    const supabase = createClient();
-    let channel; let cancelled = false;
-    (async () => {
-      try { const { data: { session } } = await supabase.auth.getSession(); if (session?.access_token) supabase.realtime.setAuth(session.access_token); } catch { /* ignore */ }
-      if (cancelled) return;
-      reload();
-      channel = supabase.channel("ref-" + doctorId)
-        .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "referrer_id=eq." + doctorId }, () => reload())
-        // Зміни доступу до центрів (центр підтвердив/відхилив/відкликав) → перезавантажуємо серверні пропси.
-        .on("postgres_changes", { event: "*", schema: "public", table: "referral_access", filter: "referrer_id=eq." + doctorId }, () => router.refresh())
-        .subscribe();
-    })();
-    const onVis = () => { if (document.visibilityState === "visible") { reload(); router.refresh(); } };
-    document.addEventListener("visibilitychange", onVis); window.addEventListener("focus", onVis);
-    const t = setInterval(reload, 12000);
-    return () => { cancelled = true; document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); clearInterval(t); if (channel) supabase.removeChannel(channel); };
-  }, [doctorId, reload, router]);
+  // TD-3: единый realtime-хук (дебаунс + поллинг только при разрыве сокета).
+  // queue_entries → reload(); referral_access → router.refresh() (серверные пропсы).
+  useRealtimeRefetch({
+    channelName: doctorId ? "ref-" + doctorId : null,
+    subscriptions: [
+      { table: "queue_entries", filter: "referrer_id=eq." + doctorId, onChange: reload },
+      { table: "referral_access", filter: "referrer_id=eq." + doctorId, onChange: () => router.refresh() },
+    ],
+  });
 
   async function doReschedule({ roomId, date, time, dur }) {
     const p = reschedFor; if (!p) return;

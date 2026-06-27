@@ -9,6 +9,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import "@/styles/prototype/radflow.css";
@@ -112,23 +113,14 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     setLoading(false);
   }, [clinicId]);
 
-  // Realtime: статус доступу оновлюється без перезавантаження.
-  useEffect(() => {
-    const supabase = createClient();
-    let channel; let cancelled = false;
-    (async () => {
-      try { const { data: { session } } = await supabase.auth.getSession(); if (session?.access_token) supabase.realtime.setAuth(session.access_token); } catch { /* ignore */ }
-      if (cancelled) return;
-      reload();
-      channel = supabase.channel("ref-access-" + clinicId)
-        .on("postgres_changes", { event: "*", schema: "public", table: "referral_access", filter: "clinic_id=eq." + clinicId }, () => reload())
-        .subscribe();
-    })();
-    const onVis = () => { if (document.visibilityState === "visible") reload(); };
-    document.addEventListener("visibilitychange", onVis); window.addEventListener("focus", onVis);
-    const t = setInterval(reload, 15000);
-    return () => { cancelled = true; document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); clearInterval(t); if (channel) supabase.removeChannel(channel); };
-  }, [clinicId, reload]);
+  // Realtime: статус доступу оновлюється без перезавантаження (TD-3 — единый хук:
+  // дебаунс + поллинг только при разрыве сокета вместо безусловного 15с).
+  useRealtimeRefetch({
+    channelName: clinicId ? "ref-access-" + clinicId : null,
+    subscriptions: [
+      { table: "referral_access", filter: "clinic_id=eq." + clinicId, onChange: reload },
+    ],
+  });
 
   async function invite() {
     if (!form.login.trim()) { notify("Вкажіть логін направника", "error"); return; }

@@ -6,6 +6,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import "@/styles/prototype/radflow.css";
@@ -113,38 +114,17 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
     setLoading(false);
   }, [clinicId, period]);
 
-  useEffect(() => {
-    setLoading(true);
-    const supabase = createClient();
-    let channel;
-    let cancelled = false;
-    (async () => {
-      // Realtime з RLS не доставляє postgres_changes без авторизованого сокета —
-      // ставимо токен сесії перед підпискою (інакше оновлення лише після перезавантаження).
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.access_token) supabase.realtime.setAuth(session.access_token);
-      } catch (e) { /* ignore */ }
-      if (cancelled) return;
-      reload();
-      channel = supabase
-        .channel("ceo-" + clinicId)
-        .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "clinic_id=eq." + clinicId }, () => reload())
-        .subscribe();
-    })();
-    // Підстраховка на випадок втрати події realtime: оновлення при поверненні на вкладку + легкий поллінг.
-    const onVis = () => { if (document.visibilityState === "visible") reload(); };
-    document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("focus", onVis);
-    const pollTimer = setInterval(reload, 15000);
-    return () => {
-      cancelled = true;
-      document.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("focus", onVis);
-      clearInterval(pollTimer);
-      if (channel) supabase.removeChannel(channel);
-    };
-  }, [clinicId, reload]);
+  // Спинер при первой загрузке/смене клиники/периода; reload снимет его.
+  useEffect(() => { setLoading(true); }, [clinicId]);
+
+  // TD-3: единый realtime-паттерн (дебаунс + поллинг только при разрыве сокета)
+  // вместо безусловного поллинга каждые 15с. setAuth теперь тоже внутри хука.
+  useRealtimeRefetch({
+    channelName: clinicId ? "ceo-" + clinicId : null,
+    subscriptions: [
+      { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: reload },
+    ],
+  });
 
   /* KPI */
   const total = entries.length;

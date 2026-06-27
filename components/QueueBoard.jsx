@@ -9,6 +9,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import BookingModal from "@/components/BookingModal";
@@ -723,41 +724,19 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     setOverrides(m);
   }, [clinicId]);
 
-  useEffect(() => {
-    setLoading(true);
-    const supabase = createClient();
-    const refetchAll = () => { reload(); loadIncidents(); loadOverrides(); };
-    let channel;
-    let cancelled = false;
-    (async () => {
-      // Realtime з RLS не доставляє postgres_changes, якщо сокет не авторизований —
-      // тому СПЕРШУ ставимо токен сесії на realtime, і лише потім підписуємось.
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session?.access_token) supabase.realtime.setAuth(session.access_token);
-      } catch (e) { /* ignore */ }
-      if (cancelled) return;
-      refetchAll();
-      channel = supabase
-        .channel("queue-" + clinicId)
-        .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "clinic_id=eq." + clinicId }, () => reload())
-        .on("postgres_changes", { event: "*", schema: "public", table: "incidents", filter: "clinic_id=eq." + clinicId }, () => loadIncidents())
-        .on("postgres_changes", { event: "*", schema: "public", table: "schedule_overrides", filter: "clinic_id=eq." + clinicId }, () => loadOverrides())
-        .subscribe();
-    })();
-    // Підстраховка, якщо подію realtime втрачено: оновлення при поверненні на вкладку + легкий поллінг.
-    const onVis = () => { if (document.visibilityState === "visible") refetchAll(); };
-    document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("focus", onVis);
-    const pollTimer = setInterval(refetchAll, 10000);
-    return () => {
-      cancelled = true;
-      document.removeEventListener("visibilitychange", onVis);
-      window.removeEventListener("focus", onVis);
-      clearInterval(pollTimer);
-      if (channel) supabase.removeChannel(channel);
-    };
-  }, [clinicId, reload, loadIncidents, loadOverrides]);
+  // Спинер при первой загрузке/смене клиники; лоадеры снимут его по завершении.
+  useEffect(() => { setLoading(true); }, [clinicId]);
+
+  // TD-3: единый realtime-паттерн — потабличный дебаунс + поллинг только при
+  // разрыве сокета (вместо полного refetch на каждое событие и поллинга 10с).
+  useRealtimeRefetch({
+    channelName: clinicId ? "queue-" + clinicId : null,
+    subscriptions: [
+      { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: reload },
+      { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
+      { table: "schedule_overrides", filter: "clinic_id=eq." + clinicId, onChange: loadOverrides },
+    ],
+  });
 
   const selectedOverride = overrides[dayKey] || null;
   const selDayStatus = dayStatus(selectedOverride, selectedDate);

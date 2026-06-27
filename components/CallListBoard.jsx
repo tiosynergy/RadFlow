@@ -6,6 +6,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
+import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import { entryInIncidentWindow, incidentExpired } from "@/lib/incidents";
@@ -211,18 +212,18 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     setAffectedToday(aff);
   }, [clinicId]);
 
-  useEffect(() => {
-    setLoading(true);
-    reload();
-    loadIncidents();
-    const supabase = createClient();
-    const channel = supabase
-      .channel("calllist-" + clinicId)
-      .on("postgres_changes", { event: "*", schema: "public", table: "queue_entries", filter: "clinic_id=eq." + clinicId }, () => { reload(); loadIncidents(); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "incidents", filter: "clinic_id=eq." + clinicId }, () => loadIncidents())
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [clinicId, reload, loadIncidents]);
+  // Спинер при первой загрузке/смене клиники; лоадеры снимут его.
+  useEffect(() => { setLoading(true); }, [clinicId]);
+
+  // TD-3: единый realtime-паттерн. Раньше тут не было ни setAuth (RLS мог не
+  // доставлять события), ни подстраховки поллингом — хук добавляет и то, и другое.
+  useRealtimeRefetch({
+    channelName: clinicId ? "calllist-" + clinicId : null,
+    subscriptions: [
+      { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: () => { reload(); loadIncidents(); } },
+      { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
+    ],
+  });
 
   async function cancelEntry(p) {
     const supabase = createClient();

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
+import type { TablesUpdate } from "@/supabase/types";
 
 // POST /api/referral/access/decide
 // Підтвердження / відхилення / відкликання доступу направник↔центр.
@@ -68,7 +69,7 @@ export async function POST(req: Request) {
     if ("room_ids" in body) patch.room_ids = roomIds && roomIds.length ? roomIds : null;
     if (typeof body.note === "string") patch.note = body.note.trim() || null;
     if (Object.keys(patch).length === 0) return NextResponse.json({ error: "Немає змін" }, { status: 400 });
-    const { error } = await admin.from("referral_access").update(patch).eq("id", row.id);
+    const { error } = await admin.from("referral_access").update(patch as TablesUpdate<"referral_access">).eq("id", row.id);
     if (error) return NextResponse.json({ error: "Помилка: " + error.message }, { status: 400 });
     return NextResponse.json({ ok: true, status: "active" });
   }
@@ -90,7 +91,7 @@ export async function POST(req: Request) {
     if (roomIds !== null) patch.room_ids = roomIds.length ? roomIds : null; // [] → усі кабінети
   }
 
-  const { error } = await admin.from("referral_access").update(patch).eq("id", row.id);
+  const { error } = await admin.from("referral_access").update(patch as TablesUpdate<"referral_access">).eq("id", row.id);
   if (error) return NextResponse.json({ error: "Помилка: " + error.message }, { status: 400 });
 
   return NextResponse.json({ ok: true, status: nextStatus });

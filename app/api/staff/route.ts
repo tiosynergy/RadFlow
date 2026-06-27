@@ -71,7 +71,7 @@ export async function POST(req: Request) {
 
   if (role === "radiologist" && roomIds.length) {
     await admin.from("radiologist_rooms").insert(
-      roomIds.map((rid) => ({ clinic_id: me.clinic_id, profile_id: uid, room_id: rid }))
+      roomIds.map((rid) => ({ clinic_id: me.clinic_id as string, profile_id: uid, room_id: rid }))
     );
   }
 

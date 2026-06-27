@@ -36,7 +36,7 @@ export default async function SetupPage() {
   const { data: rooms } = await supabase
     .from("rooms")
     .select("id, name, modality, apparatus_model, schedule")
-    .eq("clinic_id", profile.clinic_id);
+    .eq("clinic_id", profile.clinic_id as string);
 
   const equip = (rooms ?? []).map((r: Record<string, unknown>, i: number) => {
     const sched =

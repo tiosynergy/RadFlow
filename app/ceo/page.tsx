@@ -33,7 +33,7 @@ export default async function CeoPage() {
   const { data: rooms } = await supabase
     .from("rooms")
     .select("id, name, modality, apparatus_model")
-    .eq("clinic_id", profile.clinic_id)
+    .eq("clinic_id", profile.clinic_id as string)
     .order("name");
 
   return (
