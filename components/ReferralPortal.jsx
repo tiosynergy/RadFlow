@@ -212,8 +212,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const freeCount = slots.filter((s) => slotState(s) === "free").length;
   const busyList = busySlots.slice().sort((a, b) => a.s - b.s);
 
-  const miss = { name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), region: !region, room: !roomId, time: !time };
-  const MISS_LABELS = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
+  const miss = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), region: !region, room: !roomId, time: !time };
+  const MISS_LABELS = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   const timeBad = time ? slotState(time) !== "free" : false;
   const valid = centerId && missingList.length === 0 && roomId && !timeBad && !roomSched.closed;
@@ -263,7 +263,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
           <div className="bk-col bk-col-left">
             <div className="bk-section-label" style={{ marginTop: 0 }}>Центр</div>
             <label className="fld">
-              <span className="fld-lab">Куди направляємо *</span>
+              <span className={"fld-lab" + (miss.center ? " bk-miss-lab" : "")}>Куди направляємо *</span>
               <select className="inp" value={centerId} onChange={(e) => { setCenterId(e.target.value); setTime(""); }}>
                 {activeCenters.map((c) => <option key={c.clinicId} value={c.clinicId}>{centerLabel(c)}</option>)}
               </select>
