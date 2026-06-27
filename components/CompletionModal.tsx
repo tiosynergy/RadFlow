@@ -97,7 +97,7 @@ export default function CompletionModal({ patient, proc, roomName, enteredAt, on
             <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div className="dlg-divider" />
               <label className="fld">
-                <span className="fld-lab">Причина (обов'язково) *</span>
+                <span className="fld-lab">Причина (обов'язково) <span className="req">*</span></span>
                 <select className="inp" value={reason} onChange={(e) => setReason(e.target.value)}>
                   <option value="">— Оберіть причину —</option>
                   {FAIL_REASONS.map((g) => (

@@ -136,7 +136,7 @@ export default function PatientEditModal({ entryId, onClose, onSaved }: PatientE
             <div style={{ color: "var(--text-muted)", padding: 8 }}>Завантаження…</div>
           ) : (
             <>
-              <label className="fld"><span className="fld-lab">ПІБ *</span>
+              <label className="fld"><span className="fld-lab">ПІБ <span className="req">*</span></span>
                 <input className="inp" autoFocus value={form.patient_name || ""} onChange={(e) => setF("patient_name", e.target.value)} placeholder="Прізвище Імʼя По батькові" />
               </label>
               <div className="fld-row">

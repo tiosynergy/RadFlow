@@ -275,7 +275,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
           <div className="bk-col bk-col-left">
             <div className="bk-section-label" style={{ marginTop: 0 }}>Центр</div>
             <label className="fld">
-              <span className={"fld-lab" + (miss.center ? " bk-miss-lab" : "")}>Куди направляємо *</span>
+              <span className={"fld-lab" + (miss.center ? " bk-miss-lab" : "")}>Куди направляємо <span className="req">*</span></span>
               <select className="inp" value={centerId} onChange={(e) => { setCenterId(e.target.value); setTime(""); }}>
                 <option value="">— Оберіть центр —</option>
                 {activeCenters.map((c) => <option key={c.clinicId} value={c.clinicId}>{centerLabel(c)}</option>)}
@@ -285,17 +285,17 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
             <div className="bk-section-label">Пацієнт</div>
 
             <label className="fld">
-              <span className={"fld-lab" + (miss.name ? " bk-miss-lab" : "")}>ПІБ *</span>
+              <span className={"fld-lab" + (miss.name ? " bk-miss-lab" : "")}>ПІБ <span className="req">*</span></span>
               <input className="inp" placeholder="Прізвище Ім'я По батькові" value={name} onChange={(e) => setName(e.target.value)} />
             </label>
 
             <div className="fld-row">
               <div className="fld" style={{ flex: "0 0 150px" }}>
-                <span className={"fld-lab" + (miss.dob ? " bk-miss-lab" : "")}>Дата народження *</span>
+                <span className={"fld-lab" + (miss.dob ? " bk-miss-lab" : "")}>Дата народження <span className="req">*</span></span>
                 <DobField value={dob} onChange={setDob} invalid={miss.dob} />
               </div>
               <div className="fld" style={{ flex: "0 0 auto" }}>
-                <span className={"fld-lab" + (miss.gender ? " bk-miss-lab" : "")}>Стать *</span>
+                <span className={"fld-lab" + (miss.gender ? " bk-miss-lab" : "")}>Стать <span className="req">*</span></span>
                 <div className="bk-gender-row">
                   <button className={"bk-gender-btn" + (gender === "М" ? " active" : "")} onClick={() => setGender("М")} title="Чоловіча">♂</button>
                   <button className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} onClick={() => setGender("Ж")} title="Жіноча">♀</button>
@@ -313,7 +313,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
 
             <div className="fld-row">
               <label className="fld">
-                <span className={"fld-lab" + (miss.phone ? " bk-miss-lab" : "")}>Телефон *</span>
+                <span className={"fld-lab" + (miss.phone ? " bk-miss-lab" : "")}>Телефон <span className="req">*</span></span>
                 <input className="inp" type="tel" placeholder="+38 0__ ___ __ __" value={phone} onChange={(e) => setPhone(e.target.value)} />
               </label>
               <label className="fld">
@@ -326,7 +326,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
 
             <div className="fld-row" style={{ alignItems: "flex-end" }}>
               <div className="fld" style={{ flex: "0 0 130px" }}>
-                <span className="fld-lab">Тип *</span>
+                <span className="fld-lab">Тип <span className="req">*</span></span>
                 <div className="bk-seg">
                   {modAllowed("MRI") && <button className={"bk-seg-btn" + (studyType === "МРТ" ? " active mrt" : "")} onClick={() => changeType("МРТ")}>МРТ</button>}
                   {modAllowed("CT") && <button className={"bk-seg-btn" + (studyType === "КТ" ? " active ct" : "")} onClick={() => changeType("КТ")}>КТ</button>}
@@ -353,7 +353,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
 
             <div className="fld-row" style={{ alignItems: "flex-start" }}>
               <label className="fld" style={{ flex: "1 1 auto" }}>
-                <span className={"fld-lab" + (miss.region ? " bk-miss-lab" : "")}>Область дослідження *</span>
+                <span className={"fld-lab" + (miss.region ? " bk-miss-lab" : "")}>Область дослідження <span className="req">*</span></span>
                 <select className="inp" value={region} onChange={(e) => { setRegion(e.target.value); setTime(""); }}>
                   <option value="">— Оберіть область —</option>
                   {regions.map((r) => (
@@ -362,7 +362,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                 </select>
               </label>
               <label className="fld" style={{ flex: "0 0 108px" }}>
-                <span className="fld-lab">Тривалість *</span>
+                <span className="fld-lab">Тривалість <span className="req">*</span></span>
                 <div className="bk-dur-row">
                   <input className="inp bk-dur-input" type="number" min="5" step="5" placeholder="—"
                     value={durEdit} onChange={(e) => setDurEdit(e.target.value.replace(/\D/g, ""))} disabled={!region} />
@@ -418,7 +418,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
             </div>
 
             <div className="fld">
-              <span className={"fld-lab" + (miss.room ? " bk-miss-lab" : "")}>Кабінет *</span>
+              <span className={"fld-lab" + (miss.room ? " bk-miss-lab" : "")}>Кабінет <span className="req">*</span></span>
               {roomsOfType.length === 0 ? (
                 <div className="ctx-hint red">У цьому центрі немає кабінету типу {studyType}.</div>
               ) : (

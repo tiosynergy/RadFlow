@@ -810,6 +810,9 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .fld-row { display: flex; gap: 12px; }
 .fld-row .fld { flex: 1; }
 .fld-lab { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+/* Назви обов'язкових полів (з зірочкою «*») — червоним текстом */
+.req { color: var(--red); margin-left: 2px; font-weight: 700; }
+.fld-lab:has(.req), .sec-label:has(.req), .bk-section-label:has(.req) { color: var(--red); }
 .inp {
   background: var(--bg-elevated); border: 1px solid var(--border-strong);
   border-radius: 9px; padding: 9px 12px; font-size: 13.5px; outline: none;

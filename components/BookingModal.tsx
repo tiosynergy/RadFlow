@@ -391,17 +391,17 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
             <div className="bk-section-label">Пацієнт</div>
 
             <label className="fld">
-              <span className={"fld-lab" + (miss.name ? " bk-miss-lab" : "")}>ПІБ *</span>
+              <span className={"fld-lab" + (miss.name ? " bk-miss-lab" : "")}>ПІБ <span className="req">*</span></span>
               <input className="inp" placeholder="Прізвище Ім'я По батькові" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
             </label>
 
             <div className="fld-row">
               <div className="fld" style={{ flex: "0 0 150px" }}>
-                <span className={"fld-lab" + (miss.dob ? " bk-miss-lab" : "")}>Дата народження *</span>
+                <span className={"fld-lab" + (miss.dob ? " bk-miss-lab" : "")}>Дата народження <span className="req">*</span></span>
                 <DobField value={dob} onChange={setDob} invalid={miss.dob} />
               </div>
               <div className="fld" style={{ flex: "0 0 auto" }}>
-                <span className={"fld-lab" + (miss.gender ? " bk-miss-lab" : "")}>Стать *</span>
+                <span className={"fld-lab" + (miss.gender ? " bk-miss-lab" : "")}>Стать <span className="req">*</span></span>
                 <div className="bk-gender-row">
                   <button className={"bk-gender-btn" + (gender === "М" ? " active" : "")} onClick={() => setGender("М")} title="Чоловіча">♂</button>
                   <button className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} onClick={() => setGender("Ж")} title="Жіноча">♀</button>
@@ -419,7 +419,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
 
             <div className="fld-row">
               <label className="fld">
-                <span className={"fld-lab" + (miss.phone ? " bk-miss-lab" : "")}>Телефон *</span>
+                <span className={"fld-lab" + (miss.phone ? " bk-miss-lab" : "")}>Телефон <span className="req">*</span></span>
                 <input className="inp" type="tel" placeholder="+38 0__ ___ __ __" value={phone} onChange={(e) => setPhone(e.target.value)} />
               </label>
               <label className="fld">
@@ -432,7 +432,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
 
             <div className="fld-row" style={{ alignItems: "flex-end" }}>
               <div className="fld" style={{ flex: "0 0 130px" }}>
-                <span className="fld-lab">Тип *</span>
+                <span className="fld-lab">Тип <span className="req">*</span></span>
                 <div className="bk-seg">
                   <button className={"bk-seg-btn" + (studyType === "MRT" ? " active mrt" : "")} onClick={() => changeType("MRT")}>МРТ</button>
                   <button className={"bk-seg-btn" + (studyType === "CT" ? " active ct" : "")} onClick={() => changeType("CT")}>КТ</button>
@@ -459,7 +459,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
 
             <div className="fld-row" style={{ alignItems: "flex-start" }}>
               <label className="fld" style={{ flex: "1 1 auto" }}>
-                <span className={"fld-lab" + (miss.region ? " bk-miss-lab" : "")}>Область дослідження *</span>
+                <span className={"fld-lab" + (miss.region ? " bk-miss-lab" : "")}>Область дослідження <span className="req">*</span></span>
                 <select className="inp" value={region} onChange={(e) => setRegion(e.target.value)}>
                   <option value="">— Оберіть область —</option>
                   {regions.map((r) => (
@@ -468,7 +468,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
                 </select>
               </label>
               <label className="fld" style={{ flex: "0 0 108px" }}>
-                <span className="fld-lab">Тривалість *</span>
+                <span className="fld-lab">Тривалість <span className="req">*</span></span>
                 <div className="bk-dur-row">
                   <input className="inp bk-dur-input" type="number" min="5" step="5" placeholder="—"
                     value={durEdit} onChange={(e) => setDurEdit(e.target.value.replace(/\D/g, ""))} disabled={!region} />
@@ -537,7 +537,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
             </div>
 
             <div className="fld">
-              <span className={"fld-lab" + (miss.room ? " bk-miss-lab" : "")}>Кабінет *</span>
+              <span className={"fld-lab" + (miss.room ? " bk-miss-lab" : "")}>Кабінет <span className="req">*</span></span>
               {roomKeys.length === 0 ? (
                 <div className="ctx-hint red">Немає кабінетів типу {studyType === "MRT" ? "МРТ" : "КТ"}. Додайте обладнання в налаштуваннях.</div>
               ) : (

@@ -160,11 +160,11 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName }:
           <div style={card}>
             <div className="bk-section-label" style={{ marginTop: 0 }}>Додати радіолога</div>
             <div className="fld-row">
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Логін *</span><input className="inp" placeholder="логін для входу" value={form.login} onChange={(e) => setF("login", e.target.value)} /></label>
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">ПІБ *</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setF("full_name", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Логін <span className="req">*</span></span><input className="inp" placeholder="логін для входу" value={form.login} onChange={(e) => setF("login", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">ПІБ <span className="req">*</span></span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setF("full_name", e.target.value)} /></label>
             </div>
             <div className="fld-row">
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email *</span><input className="inp" type="email" placeholder="radiologist@clinic.ua" value={form.email} onChange={(e) => setF("email", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email <span className="req">*</span></span><input className="inp" type="email" placeholder="radiologist@clinic.ua" value={form.email} onChange={(e) => setF("email", e.target.value)} /></label>
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон</span><input className="inp" type="tel" placeholder="+380 XX XXX XX XX" value={form.phone} onChange={(e) => setF("phone", e.target.value)} /></label>
             </div>
             <label className="fld"><span className="fld-lab">Пароль</span><input className="inp" placeholder="Порожній — користувач задасть сам на /set-password" disabled /></label>

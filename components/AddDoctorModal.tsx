@@ -34,7 +34,7 @@ export default function AddDoctorModal({ existing = [], onClose, onSave }: AddDo
         <div className="dlg-body">
           <div className="hint-blue">Лікарі-направлячі прив'язуються до записів — це дозволяє формувати звіти за джерелами направлень.</div>
           <label className="fld">
-            <span className="fld-lab">ПІБ лікаря *</span>
+            <span className="fld-lab">ПІБ лікаря <span className="req">*</span></span>
             <input className="inp" placeholder="Прізвище Ім'я По батькові" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
           </label>
           <div className="fld-row">
@@ -46,7 +46,7 @@ export default function AddDoctorModal({ existing = [], onClose, onSave }: AddDo
               </select>
             </label>
             <label className="fld">
-              <span className="fld-lab">Телефон *</span>
+              <span className="fld-lab">Телефон <span className="req">*</span></span>
               <input className="inp" placeholder="+38 0__ ___ __ __" value={phone} onChange={(e) => setPhone(e.target.value)} />
             </label>
           </div>

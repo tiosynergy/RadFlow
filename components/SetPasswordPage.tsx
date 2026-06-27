@@ -12,18 +12,36 @@ const REQUIRED = "Це поле обов'язкове";
 export default function SetPasswordPage() {
   const [values, setValues] = useState<Record<string, string>>({ password: "", password2: "" });
   const [token, setToken] = useState<string | null>(null); // одноразовий токен із ?token=
+  const [identity, setIdentity] = useState<{ login: string | null; full_name: string | null } | null>(null);
+  const [tokenInvalid, setTokenInvalid] = useState(false); // токен є, але недійсний/використаний
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [toast, setToast] = useState<{ show: boolean; title: string; msg: string }>({ show: false, title: "", msg: "" });
 
-  // Беремо одноразовий токен із посилання ?token=… (адмін передає його особисто).
+  // Беремо одноразовий токен із посилання ?token=… (адмін передає його особисто)
+  // і резолвимо його в логін/ПІБ, щоб показати, для якого акаунта задаємо пароль.
   useEffect(() => {
-    try {
-      const p = new URLSearchParams(window.location.search).get("token");
-      if (p) setToken(p.trim());
-    } catch { /* ignore */ }
+    let raw: string | null = null;
+    try { raw = (new URLSearchParams(window.location.search).get("token") || "").trim() || null; } catch { /* ignore */ }
+    if (!raw) return;
+    const tkn: string = raw;
+    setToken(tkn);
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetch(`/api/account/set-password?token=${encodeURIComponent(tkn)}`);
+        if (!active) return;
+        if (res.ok) {
+          const d = await res.json().catch(() => ({}));
+          setIdentity({ login: d.login ?? null, full_name: d.full_name ?? null });
+        } else {
+          setTokenInvalid(true); // токен є, але вже використаний / недійсний
+        }
+      } catch { if (active) setTokenInvalid(true); }
+    })();
+    return () => { active = false; };
   }, []);
 
   function validate(name: string, vals: Record<string, string>): string {
@@ -107,7 +125,14 @@ export default function SetPasswordPage() {
               <p>Ваш акаунт створив адміністратор. Задайте свій пароль для першого входу.</p>
             </div>
 
-            {!token && (
+            {identity && (
+              <div className="hint" role="status" style={{ marginBottom: 12, textAlign: "center" }}>
+                Пароль для акаунта{identity.full_name ? <> <b>{identity.full_name}</b></> : null}
+                {identity.login ? <> · <b>@{identity.login}</b></> : null}
+              </div>
+            )}
+
+            {(!token || tokenInvalid) && (
               <div className="err" role="alert" style={{ marginBottom: 12 }}>
                 Посилання недійсне або неповне. Відкрийте сторінку за посиланням від адміністратора або попросіть надіслати нове.
               </div>
@@ -126,7 +151,7 @@ export default function SetPasswordPage() {
                 {touched.password2 && errors.password2 && <div className="err" role="alert">{errors.password2}</div>}
               </div>
 
-              <button className="btn" type="submit" disabled={submitting} aria-busy={submitting} style={{ marginTop: 6 }}>
+              <button className="btn" type="submit" disabled={submitting || !token || tokenInvalid} aria-busy={submitting} style={{ marginTop: 6 }}>
                 {submitting ? <><span className="spinner" />Зберігаємо…</> : "Встановити пароль"}
               </button>
               <p className="alt">Вже маєте пароль? <a href="/login">Увійти</a></p>

@@ -108,16 +108,16 @@ function BreakdownSection({ roomId, existing, others, onSave, onResolve, overrid
       ) : (
         <>
           <div className="fld-row">
-            <label className="fld" style={{ maxWidth: 160 }}><span className="fld-lab">Дата початку *</span><input className="inp tabular" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></label>
-            <label className="fld" style={{ maxWidth: 110 }}><span className="fld-lab">Час *</span><input className="inp tabular" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></label>
+            <label className="fld" style={{ maxWidth: 160 }}><span className="fld-lab">Дата початку <span className="req">*</span></span><input className="inp tabular" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></label>
+            <label className="fld" style={{ maxWidth: 110 }}><span className="fld-lab">Час <span className="req">*</span></span><input className="inp tabular" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></label>
           </div>
-          <div className="fld"><span className="fld-lab">Тривалість *</span>
+          <div className="fld"><span className="fld-lab">Тривалість <span className="req">*</span></span>
             <div className="bd-durs">{DURATIONS.map((d) => <button key={d.k} className={"bd-chip" + (durKey === d.k ? " active" : "")} onClick={() => setDurKey(d.k)}>{d.label}</button>)}</div>
           </div>
           {durKey === "restore" && (
             <div className="fld-row">
-              <label className="fld" style={{ maxWidth: 160 }}><span className="fld-lab">Дата відновлення *</span><input className="inp tabular" type="date" min={startDate} value={restoreDate} onChange={(e) => setRestoreDate(e.target.value)} /></label>
-              <label className="fld" style={{ maxWidth: 110 }}><span className="fld-lab">Час *</span><input className="inp tabular" type="time" value={restoreTime} onChange={(e) => setRestoreTime(e.target.value)} /></label>
+              <label className="fld" style={{ maxWidth: 160 }}><span className="fld-lab">Дата відновлення <span className="req">*</span></span><input className="inp tabular" type="date" min={startDate} value={restoreDate} onChange={(e) => setRestoreDate(e.target.value)} /></label>
+              <label className="fld" style={{ maxWidth: 110 }}><span className="fld-lab">Час <span className="req">*</span></span><input className="inp tabular" type="time" value={restoreTime} onChange={(e) => setRestoreTime(e.target.value)} /></label>
             </div>
           )}
           <label className={"rf-check" + (autoUnblock ? " on" : "")} style={{ marginTop: 4 }}>
@@ -181,12 +181,12 @@ function MaintenanceSection({ roomId, existing, others, onSave, onResolve }: Mai
       ) : (
         <>
           <div className="fld-row">
-            <label className="fld" style={{ maxWidth: 160 }}><span className="fld-lab">Початок — дата *</span><input className="inp tabular" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></label>
-            <label className="fld" style={{ maxWidth: 110 }}><span className="fld-lab">Час *</span><input className="inp tabular" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></label>
+            <label className="fld" style={{ maxWidth: 160 }}><span className="fld-lab">Початок — дата <span className="req">*</span></span><input className="inp tabular" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></label>
+            <label className="fld" style={{ maxWidth: 110 }}><span className="fld-lab">Час <span className="req">*</span></span><input className="inp tabular" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></label>
           </div>
           <div className="fld-row">
-            <label className="fld" style={{ maxWidth: 160 }}><span className="fld-lab">Кінець — дата *</span><input className="inp tabular" type="date" min={startDate} value={endDate} onChange={(e) => setEndDate(e.target.value)} /></label>
-            <label className="fld" style={{ maxWidth: 110 }}><span className="fld-lab">Час *</span><input className="inp tabular" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} /></label>
+            <label className="fld" style={{ maxWidth: 160 }}><span className="fld-lab">Кінець — дата <span className="req">*</span></span><input className="inp tabular" type="date" min={startDate} value={endDate} onChange={(e) => setEndDate(e.target.value)} /></label>
+            <label className="fld" style={{ maxWidth: 110 }}><span className="fld-lab">Час <span className="req">*</span></span><input className="inp tabular" type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} /></label>
           </div>
           <label className={"rf-check" + (autoUnblock ? " on" : "")} style={{ marginTop: 4 }}>
             <input type="checkbox" checked={autoUnblock} onChange={(e) => setAutoUnblock(e.target.checked)} />
@@ -229,7 +229,7 @@ export default function BreakdownModal({ rooms, incidents = [], overrides = {}, 
         </div>
         <div className="dlg-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <div className="fld" style={{ marginBottom: 0 }}>
-            <span className="fld-lab">Який апарат? *</span>
+            <span className="fld-lab">Який апарат? <span className="req">*</span></span>
             <div className="bd-rooms">
               {(rooms || []).map((r) => (
                 <button key={r.id} className={"bd-room" + (roomId === r.id ? " active" : "")} onClick={() => setRoomId(r.id)} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
