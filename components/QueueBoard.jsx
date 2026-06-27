@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
+import { setQueueEntryStatus, cancelQueueEntry } from "@/app/queue/actions";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import BookingModal from "@/components/BookingModal";
@@ -727,6 +728,11 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его по завершении.
   useEffect(() => { setLoading(true); }, [clinicId]);
 
+  // Перезапрос записей при смене дня: realtime-хук слушает только clinicId и сам
+  // не перезапрашивает при изменении dayKey (иначе показывались бы записи прошлого
+  // дня до ближайшего realtime/focus-события).
+  useEffect(() => { reload(); }, [reload]);
+
   // TD-3: единый realtime-паттерн — потабличный дебаунс + поллинг только при
   // разрыве сокета (вместо полного refetch на каждое событие и поллинга 10с).
   useRealtimeRefetch({
@@ -824,21 +830,23 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
 
   async function setStatus(id, status) {
-    const supabase = createClient();
+    // TD-4: мутация через Server Action (серверная сессия + единая обработка ошибок);
+    // оптимистично обновляем локально, realtime синхронизирует остальных.
     const nowIso = new Date().toISOString();
-    // Момент входу в кабінет фіксуємо окремо (для коректного таймера, незалежного від updated_at).
     const patch = status === "in_progress" ? { status, in_progress_at: nowIso } : { status };
-    const { error } = await supabase.from("queue_entries").update(patch).eq("id", id);
-    if (error) {
+    setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
+    const res = await setQueueEntryStatus(id, status);
+    if (!res.ok) {
       let msg;
       // Порушення інваріанта «один in_progress на кабінет» (індекс queue_one_in_progress_per_room).
-      if (status === "in_progress" && /in_progress|duplicate|23505/i.test(error.message)) msg = "У кабінеті вже є пацієнт — спершу завершіть поточного";
+      if (res.code === "room_busy") msg = "У кабінеті вже є пацієнт — спершу завершіть поточного";
       // Слот зайнятий іншим записом або потрапляє у вікно простою (поломка/ТО) — типово при поверненні в чергу.
-      else if (/overlap|exclusion|incident/i.test(error.message)) msg = "Слот недоступний (зайнятий або простій) — перенесіть пацієнта на інший час";
-      else msg = "Помилка: " + error.message;
-      notify(msg, "error"); return;
+      else if (res.code === "slot_unavailable") msg = "Слот недоступний (зайнятий або простій) — перенесіть пацієнта на інший час";
+      else msg = "Помилка: " + res.error;
+      notify(msg, "error");
+      reload(); // відкат до серверної правди
+      return;
     }
-    setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
     reload();
   }
   const arrive = (p) => setStatus(p.id, "waiting");
@@ -860,9 +868,9 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
 
   async function cancelBooking(p) {
-    const supabase = createClient();
-    const { error } = await supabase.from("queue_entries").update({ status: "cancelled" }).eq("id", p.id);
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
+    // TD-4: мутация через Server Action.
+    const res = await cancelQueueEntry(p.id);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Запис скасовано", "success");
     reload();
   }

@@ -117,6 +117,9 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
   // Спинер при первой загрузке/смене клиники/периода; reload снимет его.
   useEffect(() => { setLoading(true); }, [clinicId]);
 
+  // Перерасчёт при смене периода (сегодня/неделя/месяц): realtime-хук слушает только clinicId.
+  useEffect(() => { reload(); }, [reload]);
+
   // TD-3: единый realtime-паттерн (дебаунс + поллинг только при разрыве сокета)
   // вместо безусловного поллинга каждые 15с. setAuth теперь тоже внутри хука.
   useRealtimeRefetch({

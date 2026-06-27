@@ -215,6 +215,9 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его.
   useEffect(() => { setLoading(true); }, [clinicId]);
 
+  // Перезапрос записей при смене дня: realtime-хук слушает только clinicId.
+  useEffect(() => { reload(); }, [reload]);
+
   // TD-3: единый realtime-паттерн. Раньше тут не было ни setAuth (RLS мог не
   // доставлять события), ни подстраховки поллингом — хук добавляет и то, и другое.
   useRealtimeRefetch({

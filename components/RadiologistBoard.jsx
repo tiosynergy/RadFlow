@@ -488,6 +488,9 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его по завершении.
   useEffect(() => { setLoading(true); }, [clinicId]);
 
+  // Перезапрос записей при смене дня/кабинетов: realtime-хук слушает только clinicId.
+  useEffect(() => { reload(); }, [reload]);
+
   // TD-3: единый realtime-паттерн (потабличный дебаунс + поллинг только при
   // разрыве сокета) вместо полного refetch на каждое событие и поллинга 10с.
   useRealtimeRefetch({
