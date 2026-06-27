@@ -14,11 +14,15 @@
 
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database, QueueStatus, CallStatus } from "@/supabase/types";
+import type { Database, Json, QueueStatus, CallStatus } from "@/supabase/types";
 
 export type QueueActionResult =
   | { ok: true }
-  | { ok: false; error: string; code?: "room_busy" | "slot_unavailable" | "forbidden" | "auth" | "duplicate" | "generic" };
+  | {
+      ok: false;
+      error: string;
+      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "generic";
+    };
 
 // clinic_id текущего пользователя берём с сервера (не доверяем клиенту) — нужно
 // для insert'ов (incidents/booking), где tenant нельзя выводить из обновляемой строки.
@@ -232,4 +236,233 @@ export async function submitIncident(input: IncidentInput): Promise<IncidentActi
       .eq("status", "in_progress");
   }
   return { ok: true, status };
+}
+
+// Мягкая пред-проверка пересечения слота (жёсткую гарантию даёт DB-триггер
+// check_no_overlap). startMin/endMin — минуты от начала суток.
+async function hasSlotClash(
+  supabase: SupabaseClient<Database>,
+  roomId: string,
+  scheduledDate: string,
+  startMin: number,
+  endMin: number,
+  excludeId?: string
+): Promise<boolean> {
+  const { data } = await supabase
+    .from("queue_entries")
+    .select("id, scheduled_time, duration_min")
+    .eq("room_id", roomId)
+    .eq("scheduled_date", scheduledDate)
+    .neq("status", "cancelled")
+    .neq("status", "no_show")
+    .neq("status", "not_held");
+  return (data || []).some((q) => {
+    if (excludeId && q.id === excludeId) return false;
+    const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
+    const qs = (qh || 0) * 60 + (qm || 0);
+    return qs < endMin && startMin < qs + (q.duration_min || 30);
+  });
+}
+
+function mapBookingError(message: string): QueueActionResult {
+  if (/incident/i.test(message)) return { ok: false, error: message, code: "incident" };
+  if (/overlap|exclusion/i.test(message)) return { ok: false, error: message, code: "slot_unavailable" };
+  return { ok: false, error: message, code: "generic" };
+}
+
+export type ScheduleOverrideInput = {
+  overrideDate: string;
+  allClosed: boolean;
+  label?: string | null;
+  rooms?: Record<string, unknown> | null;
+};
+
+/** Сохранить особый график на день (upsert) или удалить, если пусто. */
+export async function saveScheduleOverride(input: ScheduleOverrideInput): Promise<QueueActionResult> {
+  const supabase = await createClient();
+  const clinicId = await callerClinicId(supabase);
+  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+  if (!input?.overrideDate) return { ok: false, error: "Не вказано дату", code: "generic" };
+
+  const rooms = input.rooms || {};
+  const empty = !input.allClosed && Object.keys(rooms).length === 0;
+
+  if (empty) {
+    const { error } = await supabase
+      .from("schedule_overrides")
+      .delete()
+      .eq("clinic_id", clinicId)
+      .eq("override_date", input.overrideDate);
+    if (error) return { ok: false, error: error.message, code: "generic" };
+    return { ok: true };
+  }
+
+  const { error } = await supabase.from("schedule_overrides").upsert(
+    {
+      clinic_id: clinicId,
+      override_date: input.overrideDate,
+      all_closed: !!input.allClosed,
+      label: input.label || null,
+      rooms: rooms as Json,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "clinic_id,override_date" }
+  );
+  if (error) return { ok: false, error: error.message, code: "generic" };
+  return { ok: true };
+}
+
+/** Вернуть типовой график на день (удалить override). */
+export async function resetScheduleOverride(overrideDate: string): Promise<QueueActionResult> {
+  const supabase = await createClient();
+  const clinicId = await callerClinicId(supabase);
+  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const { error } = await supabase
+    .from("schedule_overrides")
+    .delete()
+    .eq("clinic_id", clinicId)
+    .eq("override_date", overrideDate);
+  if (error) return { ok: false, error: error.message, code: "generic" };
+  return { ok: true };
+}
+
+export type RescheduleInput = {
+  id: string;
+  roomId: string;
+  scheduledDate: string;
+  scheduledTime: string;
+  scheduledAt: string;
+  durationMin: number;
+};
+
+/** Перенос записи на другой кабинет/дату/время (с пред-проверкой пересечения). */
+export async function rescheduleQueueEntry(input: RescheduleInput): Promise<QueueActionResult> {
+  if (!input?.id) return { ok: false, error: "Невірний запис", code: "generic" };
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const [hh, mm] = input.scheduledTime.split(":").map(Number);
+  const startMin = (hh || 0) * 60 + (mm || 0);
+  const endMin = startMin + (input.durationMin || 30);
+  if (await hasSlotClash(supabase, input.roomId, input.scheduledDate, startMin, endMin, input.id)) {
+    return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
+  }
+
+  const { data, error } = await supabase
+    .from("queue_entries")
+    .update({
+      room_id: input.roomId,
+      scheduled_date: input.scheduledDate,
+      scheduled_time: input.scheduledTime,
+      scheduled_at: input.scheduledAt,
+      duration_min: input.durationMin,
+      status: "scheduled",
+      call_status: "not_called",
+    })
+    .eq("id", input.id)
+    .select("id");
+
+  if (error) return mapBookingError(error.message);
+  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  return { ok: true };
+}
+
+/** Изменить состав исследований записи (+ длительность и флаг контраста). */
+export async function editQueueEntryStudies(
+  id: string,
+  studies: Json,
+  durationMin: number
+): Promise<QueueActionResult> {
+  if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const hasContrast = Array.isArray(studies)
+    ? studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
+    : false;
+
+  const { data, error } = await supabase
+    .from("queue_entries")
+    .update({ studies, duration_min: durationMin, has_contrast: hasContrast })
+    .eq("id", id)
+    .select("id");
+
+  if (error) return { ok: false, error: error.message, code: "generic" };
+  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  return { ok: true };
+}
+
+export type BookingInput = {
+  roomId: string;
+  referrerId?: string | null;
+  name: string;
+  phone?: string | null;
+  email?: string | null;
+  dob?: string | null;
+  sex?: string | null;
+  age?: number | null;
+  weight?: number | null;
+  hasContra?: boolean;
+  cito?: boolean;
+  studies: Json;
+  doctor?: string | null;
+  notes?: string | null;
+  durationMin: number;
+  scheduledDate: string;
+  scheduledTime: string;
+  scheduledAt: string;
+};
+
+/** Создать новую запись (с пред-проверкой пересечения; clinic_id/created_by — с сервера). */
+export async function createBooking(input: BookingInput): Promise<QueueActionResult> {
+  if (!input?.roomId || !input?.name) return { ok: false, error: "Не вистачає даних запису", code: "generic" };
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+  const clinicId = await callerClinicId(supabase);
+  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const [hh, mm] = input.scheduledTime.split(":").map(Number);
+  const startMin = (hh || 0) * 60 + (mm || 0);
+  const endMin = startMin + (input.durationMin || 30);
+  if (await hasSlotClash(supabase, input.roomId, input.scheduledDate, startMin, endMin)) {
+    return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
+  }
+
+  const hasContrast = Array.isArray(input.studies)
+    ? input.studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
+    : false;
+
+  const { error } = await supabase.from("queue_entries").insert({
+    clinic_id: clinicId,
+    room_id: input.roomId,
+    created_by: user.id,
+    referrer_id: input.referrerId ?? null,
+    patient_name: input.name,
+    patient_phone: input.phone || null,
+    patient_email: input.email ?? null,
+    patient_dob: input.dob || null,
+    patient_sex: input.sex || null,
+    patient_age: input.age ?? null,
+    patient_weight: input.weight ?? null,
+    contraindications: !!input.hasContra,
+    cito: !!input.cito,
+    has_contrast: hasContrast,
+    studies: input.studies,
+    studies_original: input.studies,
+    doctor: input.doctor ?? null,
+    note: input.notes ?? null,
+    duration_min: input.durationMin,
+    scheduled_date: input.scheduledDate,
+    scheduled_time: input.scheduledTime,
+    scheduled_at: input.scheduledAt,
+    status: "scheduled",
+    call_status: "not_called",
+  });
+
+  if (error) return mapBookingError(error.message);
+  return { ok: true };
 }

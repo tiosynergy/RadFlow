@@ -17,6 +17,11 @@ import {
   setQueueEntryCall,
   resolveIncident as resolveIncidentAction,
   submitIncident as submitIncidentAction,
+  saveScheduleOverride,
+  resetScheduleOverride,
+  rescheduleQueueEntry,
+  editQueueEntryStudies,
+  createBooking,
 } from "@/app/queue/actions";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
@@ -755,23 +760,23 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const selDayStatus = dayStatus(selectedOverride, selectedDate);
 
   async function saveOverride(ov) {
-    const supabase = createClient();
-    const empty = !ov.all_closed && (!ov.rooms || Object.keys(ov.rooms).length === 0);
-    if (empty) {
-      await supabase.from("schedule_overrides").delete().eq("clinic_id", clinicId).eq("override_date", dayKey);
-    } else {
-      await supabase.from("schedule_overrides").upsert({
-        clinic_id: clinicId, override_date: dayKey, all_closed: !!ov.all_closed, label: ov.label || null, rooms: ov.rooms || {}, updated_at: new Date().toISOString(),
-      }, { onConflict: "clinic_id,override_date" });
-    }
+    // TD-4: особый график через Server Action (clinic_id выводится на сервере).
+    const res = await saveScheduleOverride({
+      overrideDate: dayKey,
+      allClosed: !!ov.all_closed,
+      label: ov.label || null,
+      rooms: ov.rooms || {},
+    });
     setSchedEditOpen(false);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Графік оновлено", "success");
     loadOverrides();
   }
   async function resetOverride() {
-    const supabase = createClient();
-    await supabase.from("schedule_overrides").delete().eq("clinic_id", clinicId).eq("override_date", dayKey);
+    // TD-4: сброс к типовому графику через Server Action.
+    const res = await resetScheduleOverride(dayKey);
     setSchedEditOpen(false);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Повернуто типовий графік", "success");
     loadOverrides();
   }
@@ -898,27 +903,24 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   async function doReschedule({ roomId, date, time, dur }) {
     const p = reschedFor;
     if (!p) return;
-    const supabase = createClient();
+    // TD-4: перенос через Server Action (пред-проверка пересечения + DB-триггер).
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    // повторна перевірка зайнятості кабінету на цільову дату (без самого пацієнта)
-    const startMin = hh * 60 + mm, endMin = startMin + (dur || 30);
-    const { data: clash } = await supabase
-      .from("queue_entries").select("id, scheduled_time, duration_min")
-      .eq("room_id", roomId).eq("scheduled_date", dateKey(date))
-      .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
-    if ((clash || []).some((q) => {
-      if (q.id === p.id) return false;
-      const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
-      const qs = (qh || 0) * 60 + (qm || 0);
-      return qs < endMin && startMin < qs + (q.duration_min || 30);
-    })) { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
-    const { error } = await supabase.from("queue_entries").update({
-      room_id: roomId, scheduled_date: dateKey(date), scheduled_time: time, scheduled_at: at,
-      duration_min: dur, status: "scheduled", call_status: "not_called",
-    }).eq("id", p.id);
+    const res = await rescheduleQueueEntry({
+      id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur,
+    });
+    if (!res.ok) {
+      // Слот занят — оставляем модалку открытой, чтобы выбрать другой.
+      if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
+      setReschedFor(null);
+      const msg = res.code === "incident"
+        ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день"
+        : res.code === "slot_unavailable" ? "Слот зайнятий — оберіть інший"
+        : "Помилка переносу: " + res.error;
+      notify(msg, "error");
+      return;
+    }
     setReschedFor(null);
-    if (error) { notify(/incident/i.test(error.message) ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день" : /overlap|exclusion/i.test(error.message) ? "Слот зайнятий — оберіть інший" : "Помилка переносу: " + error.message, "error"); return; }
     notify("Перенесено на " + fmtShort(date) + " " + time, "success");
     reload();
   }
@@ -927,13 +929,10 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   async function doEditStudies(arr, meta) {
     const p = editStudiesFor;
     if (!p) return;
-    const supabase = createClient();
-    const { error } = await supabase.from("queue_entries").update({
-      studies: arr, duration_min: (meta && meta.dur) || p.duration_min,
-      has_contrast: (arr || []).some((s) => s.contrast),
-    }).eq("id", p.id);
+    // TD-4: редактирование исследований через Server Action.
+    const res = await editQueueEntryStudies(p.id, arr || [], (meta && meta.dur) || p.duration_min);
     setEditStudiesFor(null);
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Дослідження оновлено", "success");
     reload();
   }
@@ -958,31 +957,26 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
 
   async function saveBooking(b) {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    // TD-4: создание записи через Server Action (clinic_id/created_by — на сервере,
+    // пред-проверка пересечения + DB-триггер check_no_overlap).
     const [hh, mm] = b.time.split(":").map(Number);
     const at = new Date(b.date.getFullYear(), b.date.getMonth(), b.date.getDate(), hh, mm).toISOString();
-    // повторна перевірка слота безпосередньо перед вставкою (його могли зайняти, поки відкрита модалка)
-    const startMin = hh * 60 + mm, endMin = startMin + (b.dur || 30);
-    const { data: clash } = await supabase
-      .from("queue_entries").select("scheduled_time, duration_min")
-      .eq("room_id", b.roomId).eq("scheduled_date", dateKey(b.date))
-      .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
-    if ((clash || []).some((q) => {
-      const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
-      const qs = (qh || 0) * 60 + (qm || 0);
-      return qs < endMin && startMin < qs + (q.duration_min || 30);
-    })) { notify("Слот щойно зайняли — оновіть сторінку й оберіть інший час", "error"); return; }
-    const { error } = await supabase.from("queue_entries").insert({
-      clinic_id: clinicId, room_id: b.roomId, created_by: user?.id ?? null, referrer_id: b.referrerId ?? null,
-      patient_name: b.name, patient_phone: b.phone || null, patient_email: b.email,
-      patient_dob: b.dob || null, patient_sex: b.gender || null, patient_age: b.age || null, patient_weight: b.weight,
-      contraindications: !!b.hasContra, cito: !!b.cito, has_contrast: (b.studies || []).some((s) => s.contrast),
-      studies: b.studies || [], studies_original: b.studies || [], doctor: b.doctor, note: b.notes, duration_min: b.dur,
-      scheduled_date: dateKey(b.date), scheduled_time: b.time, scheduled_at: at,
-      status: "scheduled", call_status: "not_called",
+    const res = await createBooking({
+      roomId: b.roomId, referrerId: b.referrerId ?? null,
+      name: b.name, phone: b.phone || null, email: b.email ?? null,
+      dob: b.dob || null, sex: b.gender || null, age: b.age || null, weight: b.weight ?? null,
+      hasContra: !!b.hasContra, cito: !!b.cito,
+      studies: b.studies || [], doctor: b.doctor ?? null, notes: b.notes ?? null, durationMin: b.dur,
+      scheduledDate: dateKey(b.date), scheduledTime: b.time, scheduledAt: at,
     });
-    if (error) { notify(/incident/i.test(error.message) ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день" : /overlap|exclusion/i.test(error.message) ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час" : "Помилка збереження: " + error.message, "error"); return; }
+    if (!res.ok) {
+      const msg = (res.code === "slot_taken" || res.code === "slot_unavailable")
+        ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час"
+        : res.code === "incident" ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день"
+        : "Помилка збереження: " + res.error;
+      notify(msg, "error");
+      return;
+    }
     setModalOpen(false);
     notify("Новий запис: " + b.name + " · " + b.time, "success");
     if (sameDay(b.date, selectedDate)) reload();
