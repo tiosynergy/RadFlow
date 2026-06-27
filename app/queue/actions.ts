@@ -109,11 +109,11 @@ export async function cancelQueueEntry(id: string): Promise<QueueActionResult> {
 /** Завершить процедуру: статус done/no_show + объединённая заметка. */
 export async function completeQueueEntry(
   id: string,
-  status: "done" | "no_show",
+  status: "done" | "no_show" | "not_held",
   note: string | null
 ): Promise<QueueActionResult> {
   if (!id || typeof id !== "string") return { ok: false, error: "Невірний ідентифікатор запису", code: "generic" };
-  if (status !== "done" && status !== "no_show") return { ok: false, error: "Невідомий статус", code: "generic" };
+  if (status !== "done" && status !== "no_show" && status !== "not_held") return { ok: false, error: "Невідомий статус", code: "generic" };
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();

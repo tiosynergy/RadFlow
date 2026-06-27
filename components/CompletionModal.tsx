@@ -26,7 +26,7 @@ function LiveTimer({ enteredAt, children }: { enteredAt?: string | null; childre
   return children(sec);
 }
 
-type CompletionPatient = Pick<QueueEntry, "patient_name" | "duration_min" | "scheduled_time" | "patient_age">;
+type CompletionPatient = { patient_name: string | null; duration_min: number | null; scheduled_time: string | null; patient_age: number | null };
 
 interface CompletionModalProps {
   patient: CompletionPatient;
