@@ -8,18 +8,39 @@
    Якщо подія вже існує — показується з можливістю редагувати / зняти. */
 
 import { useState } from "react";
-import { roomScheduleFor } from "@/lib/schedule";
+import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 
-function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
-function pad(n) { return String(n).padStart(2, "0"); }
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type IncidentRow = {
+  id: string;
+  room_id: string;
+  reason: string;
+  started_at: string;
+  blocked_until?: string | null;
+  auto_unblock?: boolean | null;
+};
+type IncidentSavePayload = {
+  id?: string;
+  roomId: string;
+  reason: string;
+  reasonLabel: string;
+  startedAt: string;
+  blockedUntil: string | null;
+  autoUnblock: boolean;
+  note: string;
+};
+type Overrides = Record<string, DayOverride | null>;
+
+function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+function pad(n: number) { return String(n).padStart(2, "0"); }
 function nowHHMM() { const d = new Date(); return pad(d.getHours()) + ":" + pad(d.getMinutes()); }
-function dateVal(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
-function hhmmFromISO(iso) { return String(iso || "").slice(11, 16) || nowHHMM(); }
-function dtFrom(dateStr, hhmm) { const [h, m] = String(hhmm).split(":").map(Number); const [Y, Mo, D] = String(dateStr).split("-").map(Number); return new Date(Date.UTC(Y, (Mo || 1) - 1, D || 1, h || 0, m || 0, 0, 0)); }
-function isoDate(iso) { return String(iso || "").slice(0, 10); }
-function nextWorkday(d) { const x = new Date(d); while (x.getDay() === 0) x.setDate(x.getDate() + 1); return x; }
-function fmtDT(iso) { try { return new Date(iso).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }); } catch { return ""; } }
-function overlaps(aS, aE, bS, bE) { return aS < bE && bS < aE; }
+function dateVal(d: Date) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+function hhmmFromISO(iso: string | null | undefined) { return String(iso || "").slice(11, 16) || nowHHMM(); }
+function dtFrom(dateStr: string, hhmm: string) { const [h, m] = String(hhmm).split(":").map(Number); const [Y, Mo, D] = String(dateStr).split("-").map(Number); return new Date(Date.UTC(Y, (Mo || 1) - 1, D || 1, h || 0, m || 0, 0, 0)); }
+function isoDate(iso: string | null | undefined) { return String(iso || "").slice(0, 10); }
+function nextWorkday(d: Date) { const x = new Date(d); while (x.getDay() === 0) x.setDate(x.getDate() + 1); return x; }
+function fmtDT(iso: string | null | undefined) { try { return new Date(iso as string).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }); } catch { return ""; } }
+function overlaps(aS: number, aE: number, bS: number, bE: number) { return aS < bE && bS < aE; }
 
 const DURATIONS = [
   { k: "1h", label: "1 год" }, { k: "2h", label: "2 год" }, { k: "4h", label: "4 год" },
@@ -27,7 +48,17 @@ const DURATIONS = [
 ];
 
 /* ── 🔧 Поломка обладнання ── */
-function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, overrides = {} }) {
+interface BreakdownSectionProps {
+  roomId: string;
+  room?: RoomOpt;
+  existing?: IncidentRow;
+  others?: IncidentRow[];
+  onSave: (p: IncidentSavePayload) => void;
+  onResolve: (id: string) => void;
+  overrides?: Overrides;
+}
+
+function BreakdownSection({ roomId, existing, others, onSave, onResolve, overrides = {} }: BreakdownSectionProps) {
   const [open, setOpen] = useState(!existing); // немає події → одразу форма; є → спершу зведення
   const [startDate, setStartDate] = useState(existing ? isoDate(existing.started_at) : dateVal(new Date()));
   const [startTime, setStartTime] = useState(existing ? hhmmFromISO(existing.started_at) : nowHHMM());
@@ -39,7 +70,7 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
 
   // Кінець дня — за ефективним графіком кабінету на дату початку (з урахуванням особливого графіка/overrides).
   const schedEnd = (() => { const d = dtFrom(startDate, "00:00"); return roomScheduleFor(d, roomId, overrides[startDate] || null).end; })();
-  function blockedUntil(startedAt) {
+  function blockedUntil(startedAt: Date): Date | null {
     if (durKey === "1h") return new Date(startedAt.getTime() + 3600e3);
     if (durKey === "2h") return new Date(startedAt.getTime() + 2 * 3600e3);
     if (durKey === "4h") return new Date(startedAt.getTime() + 4 * 3600e3);
@@ -105,7 +136,15 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
 }
 
 /* ── ⚙️ Планове ТО ── */
-function MaintenanceSection({ roomId, existing, others, onSave, onResolve }) {
+interface MaintenanceSectionProps {
+  roomId: string;
+  existing?: IncidentRow;
+  others?: IncidentRow[];
+  onSave: (p: IncidentSavePayload) => void;
+  onResolve: (id: string) => void;
+}
+
+function MaintenanceSection({ roomId, existing, others, onSave, onResolve }: MaintenanceSectionProps) {
   const tmrw = dateVal(nextWorkday((() => { const d = new Date(); d.setDate(d.getDate() + 1); return d; })()));
   const [open, setOpen] = useState(!existing);
   const [startDate, setStartDate] = useState(existing ? isoDate(existing.started_at) : tmrw);
@@ -164,7 +203,17 @@ function MaintenanceSection({ roomId, existing, others, onSave, onResolve }) {
   );
 }
 
-export default function BreakdownModal({ rooms, incidents = [], overrides = {}, initialRoomId, onClose, onSubmit, onResolve }) {
+interface BreakdownModalProps {
+  rooms?: RoomOpt[];
+  incidents?: IncidentRow[];
+  overrides?: Overrides;
+  initialRoomId?: string;
+  onClose: () => void;
+  onSubmit: (p: IncidentSavePayload) => void;
+  onResolve: (id: string) => void;
+}
+
+export default function BreakdownModal({ rooms, incidents = [], overrides = {}, initialRoomId, onClose, onSubmit, onResolve }: BreakdownModalProps) {
   const [roomId, setRoomId] = useState(initialRoomId || (rooms || [])[0]?.id || "");
   const room = (rooms || []).find((r) => r.id === roomId);
   const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);

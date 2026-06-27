@@ -6,21 +6,34 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { roomScheduleFor } from "@/lib/schedule";
-import { incidentEffectiveEnd } from "@/lib/incidents";
+import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { incidentEffectiveEnd, type IncidentLike } from "@/lib/incidents";
+import type { QueueEntry } from "@/supabase/types";
 
-function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
-function pad(n) { return String(n).padStart(2, "0"); }
-function toMin(t) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
-function fmt(m) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
-function dateVal(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
-function procLabel(e) {
-  const s = Array.isArray(e.studies) ? e.studies : [];
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type DayEntry = { id: string; scheduled_time: string | null; duration_min: number | null; status: string };
+
+interface RescheduleModalProps {
+  patient: QueueEntry;
+  rooms?: RoomOpt[];
+  clinicId?: string | null;
+  incidents?: IncidentLike[];
+  onClose: () => void;
+  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number }) => void;
+}
+
+function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+function pad(n: number) { return String(n).padStart(2, "0"); }
+function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
+function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
+function dateVal(d: Date) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+function procLabel(e: { studies?: unknown; note?: string | null }) {
+  const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string; contrast?: boolean }>) : [];
   if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast ? " з контрастом" : "")).join(" + ");
   return e.note || "—";
 }
 
-export default function RescheduleModal({ patient, rooms, clinicId, incidents = [], onClose, onConfirm }) {
+export default function RescheduleModal({ patient, rooms, clinicId, incidents = [], onClose, onConfirm }: RescheduleModalProps) {
   const curRoom = (rooms || []).find((r) => r.id === patient.room_id);
   const modality = curRoom ? curRoom.modality : "MRI";
   const kind = modalityLabel(modality);
@@ -28,11 +41,11 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
   // Кабінети тієї ж модальності, зокрема заблоковані — щоб можна було перенести на дату ПІСЛЯ відновлення.
   const options = (rooms || []).filter((r) => r.modality === modality);
 
-  const [roomId, setRoomId] = useState(() => patient.room_id || (options[0] || {}).id || "");
-  const [dateStr, setDateStr] = useState(() => { const d = new Date(); d.setDate(d.getDate() + 1); return dateVal(d); });
+  const [roomId, setRoomId] = useState<string>(() => patient.room_id || options[0]?.id || "");
+  const [dateStr, setDateStr] = useState<string>(() => { const d = new Date(); d.setDate(d.getDate() + 1); return dateVal(d); });
   const [time, setTime] = useState("");
-  const [dayEntries, setDayEntries] = useState([]);
-  const [override, setOverride] = useState(null);
+  const [dayEntries, setDayEntries] = useState<DayEntry[]>([]);
+  const [override, setOverride] = useState<DayOverride | null>(null);
 
   useEffect(() => {
     let cancel = false;
@@ -40,7 +53,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
       const supabase = createClient();
       if (clinicId) {
         const ovRes = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateStr).maybeSingle();
-        if (!cancel) setOverride(ovRes.data || null);
+        if (!cancel) setOverride((ovRes.data as unknown as DayOverride) || null);
       }
       if (!roomId) { setDayEntries([]); return; }
       const { data } = await supabase
@@ -48,7 +61,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
         .select("id, scheduled_time, duration_min, status")
         .eq("room_id", roomId).eq("scheduled_date", dateStr)
         .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
-      if (!cancel) setDayEntries((data || []).filter((e) => e.id !== patient.id));
+      if (!cancel) setDayEntries(((data || []) as DayEntry[]).filter((e) => e.id !== patient.id));
     })();
     return () => { cancel = true; };
   }, [roomId, dateStr, patient.id, clinicId]);
@@ -63,7 +76,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
   // Простій обраного кабінету (поломка + ТО): слоти у будь-якому вікні — недоступні (на дату після відновлення кабінет вільний).
   const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
   const roomIncident = roomIncidents[0];
-  function slotBlockedByIncident(slotMin) {
+  function slotBlockedByIncident(slotMin: number) {
     if (!roomIncidents.length) return false;
     const dt = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(slotMin / 60), slotMin % 60);
     return roomIncidents.some((inc) => {
@@ -71,8 +84,8 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
       return dt >= start && dt < incidentEffectiveEnd(inc);
     });
   }
-  const slots = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
-  function slotState(s) {
+  const slots: string[] = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
+  function slotState(s: string) {
     const a = toMin(s), b = a + dur;
     if (roomSched.closed) return "closed";
     if (slotBlockedByIncident(a)) return "blocked";
@@ -83,7 +96,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
     if (busy.some((x) => a < x.e && x.s < b)) return "tight";
     return "free";
   }
-  function nextApptAfter(s) { const a = toMin(s); const f = busy.filter((x) => x.s >= a).sort((x, y) => x.s - y.s)[0]; return f ? fmt(f.s) : null; }
+  function nextApptAfter(s: string) { const a = toMin(s); const f = busy.filter((x) => x.s >= a).sort((x, y) => x.s - y.s)[0]; return f ? fmt(f.s) : null; }
   const freeCount = slots.filter((s) => slotState(s) === "free").length;
   const busyList = busy.slice().sort((a, b) => a.s - b.s);
   const room = (rooms || []).find((r) => r.id === roomId);

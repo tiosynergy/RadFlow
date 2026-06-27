@@ -7,22 +7,37 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { regionsFor } from "@/lib/studies";
-import { roomScheduleFor } from "@/lib/schedule";
+import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import type { QueueEntry } from "@/supabase/types";
 
 const MIN_STUDY = 15;
-function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
-function pad(n) { return String(n).padStart(2, "0"); }
-function toMin(t) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
-function fmt(m) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 
-export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, onClose, onConfirm }) {
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type StudyRow = { type: string; region: string; dur: number };
+type StudyLike = { type?: string; region?: string; dur?: number; contrast?: boolean };
+
+interface StudyEditModalProps {
+  patient: QueueEntry;
+  scheduledDate?: string | null;
+  rooms?: RoomOpt[];
+  clinicId?: string | null;
+  onClose: () => void;
+  onConfirm: (arr: StudyRow[], meta: { dur: number }) => void;
+}
+
+function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+function pad(n: number) { return String(n).padStart(2, "0"); }
+function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
+function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
+
+export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, onClose, onConfirm }: StudyEditModalProps) {
   const room = (rooms || []).find((r) => r.id === patient.room_id);
   const roomKind = room ? modalityLabel(room.modality) : "МРТ"; // "МРТ" | "КТ"
   const lockType = roomKind === "МРТ" || roomKind === "КТ";
   const defaultType = lockType ? roomKind : "МРТ";
 
-  const [nextStart, setNextStart] = useState(null);
-  const [override, setOverride] = useState(null);
+  const [nextStart, setNextStart] = useState<number | null>(null);
+  const [override, setOverride] = useState<DayOverride | null>(null);
   useEffect(() => {
     let cancel = false;
     (async () => {
@@ -30,7 +45,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
       const supabase = createClient();
       if (clinicId) {
         const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
-        if (!cancel) setOverride(ov.data || null);
+        if (!cancel) setOverride((ov.data as unknown as DayOverride) || null);
       }
       const { data } = await supabase
         .from("queue_entries")
@@ -49,19 +64,19 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   // Кінець вікна — за графіком кабінету (з урахуванням особливого графіка),
   // але не далі наступного запису у цьому кабінеті.
   const dateObj = scheduledDate ? new Date(scheduledDate + "T00:00:00") : new Date();
-  const roomSched = roomScheduleFor(dateObj, patient.room_id, override);
+  const roomSched = roomScheduleFor(dateObj, patient.room_id || "", override);
   const schedEnd = toMin(roomSched.end);
   const windowEnd = nextStart != null ? Math.min(nextStart, schedEnd) : schedEnd;
   const windowLabel = (nextStart != null && nextStart <= schedEnd) ? ("до наступного запису о " + fmt(nextStart)) : ("до кінця графіка (" + fmt(schedEnd) + ")");
   const availableDur = Math.max(0, windowEnd - startMin);
 
-  function recalc(type, region, prevDur) {
+  function recalc(type: string, region: string, prevDur?: number): number {
     const ro = regionsFor(type).find((r) => r.label === region);
     return ro ? ro.dur : (prevDur || (type === "КТ" ? 20 : 45));
   }
-  function seed() {
-    const base = Array.isArray(patient.studies) && patient.studies.length
-      ? patient.studies
+  function seed(): StudyRow[] {
+    const base: StudyLike[] = Array.isArray(patient.studies) && patient.studies.length
+      ? (patient.studies as StudyLike[])
       : [{ type: defaultType, region: "", dur: defaultType === "КТ" ? 20 : 45 }];
     return base.map((s) => {
       const t = lockType ? roomKind : (s.type || "МРТ");
@@ -70,23 +85,23 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
       return { type: t, region, dur: region ? (s.dur || 45) : recalc(t, "") };
     });
   }
-  const [rows, setRows] = useState(seed);
+  const [rows, setRows] = useState<StudyRow[]>(seed);
 
-  function patch(i, p) { setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...p } : r))); }
-  function setType(i, type) { if (lockType) return; patch(i, { type, region: "", dur: recalc(type, "") }); }
-  function setRegion(i, region) { const r = rows[i]; patch(i, { region, dur: recalc(r.type, region, r.dur) }); }
-  function setDur(i, v) { patch(i, { dur: Math.max(5, parseInt(v, 10) || 0) }); }
+  function patch(i: number, p: Partial<StudyRow>) { setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...p } : r))); }
+  function setType(i: number, type: string) { if (lockType) return; patch(i, { type, region: "", dur: recalc(type, "") }); }
+  function setRegion(i: number, region: string) { const r = rows[i]; patch(i, { region, dur: recalc(r.type, region, r.dur) }); }
+  function setDur(i: number, v: string) { patch(i, { dur: Math.max(5, parseInt(v, 10) || 0) }); }
   function addRow() { setRows((rs) => [...rs, { type: defaultType, region: "", dur: recalc(defaultType, "") }]); }
-  function removeRow(i) { setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : rs)); }
+  function removeRow(i: number) { setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : rs)); }
 
-  const totalDur = rows.reduce((s, r) => s + (parseInt(r.dur, 10) || 0), 0);
+  const totalDur = rows.reduce((s, r) => s + (Number(r.dur) || 0), 0);
   const overflow = totalDur > availableDur;
   const remaining = availableDur - totalDur;
   const canAdd = remaining >= MIN_STUDY;
   const valid = rows.length > 0 && rows.every((r) => r.region) && !overflow;
 
   function save() {
-    const arr = rows.filter((r) => r.region).map((r) => ({ type: r.type, region: r.region, dur: parseInt(r.dur, 10) || 0 }));
+    const arr = rows.filter((r) => r.region).map((r) => ({ type: r.type, region: r.region, dur: Number(r.dur) || 0 }));
     onConfirm(arr, { dur: totalDur });
   }
 

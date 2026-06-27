@@ -5,40 +5,60 @@
    або змінити графік окремих кабінетів. Зберігається у schedule_overrides. */
 
 import { useState } from "react";
-import { DEF_START, DEF_END, defaultClosed, roomScheduleFor } from "@/lib/schedule";
+import { DEF_START, DEF_END, defaultClosed, roomScheduleFor, type DayOverride } from "@/lib/schedule";
 
 const LABELS = ["Державне свято", "Вихідний день", "Санітарний день", "Технічне обслуговування"];
-function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
-function fmtShort(d) {
+
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomMode = { mode: "open" | "custom" | "closed"; start: string; end: string };
+type OverrideBuild = {
+  all_closed: boolean;
+  label?: string;
+  rooms: Record<string, { closed?: boolean; start?: string; end?: string }>;
+};
+type AffectedEntry = { status: string; room_id: string | null };
+
+interface ScheduleEditModalProps {
+  date: Date;
+  rooms?: RoomOpt[];
+  existing?: DayOverride | null;
+  entries?: AffectedEntry[];
+  onClose: () => void;
+  onSave: (ov: OverrideBuild) => void;
+  onReset: () => void;
+}
+
+function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+function fmtShort(d: Date) {
   const MON = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
   return d.getDate() + " " + MON[d.getMonth()];
 }
 
-export default function ScheduleEditModal({ date, rooms, existing, entries, onClose, onSave, onReset }) {
+export default function ScheduleEditModal({ date, rooms, existing, entries, onClose, onSave, onReset }: ScheduleEditModalProps) {
   const defClosed = defaultClosed(date);
   const [allClosed, setAllClosed] = useState(!!(existing && existing.all_closed));
   const [label, setLabel] = useState((existing && existing.label) || "");
-  const [roomState, setRoomState] = useState(() => {
-    const m = {};
+  const [roomState, setRoomState] = useState<Record<string, RoomMode>>(() => {
+    const m: Record<string, RoomMode> = {};
     (rooms || []).forEach((r) => {
       const eff = roomScheduleFor(date, r.id, existing);
-      const mode = eff.closed ? "closed" : ((eff.start !== DEF_START || eff.end !== DEF_END) ? "custom" : "open");
+      const mode: RoomMode["mode"] = eff.closed ? "closed" : ((eff.start !== DEF_START || eff.end !== DEF_END) ? "custom" : "open");
       m[r.id] = { mode, start: eff.start || DEF_START, end: eff.end || DEF_END };
     });
     return m;
   });
-  function setRoom(k, patch) { setRoomState((s) => ({ ...s, [k]: { ...s[k], ...patch } })); }
+  function setRoom(k: string, patch: Partial<RoomMode>) { setRoomState((s) => ({ ...s, [k]: { ...s[k], ...patch } })); }
 
-  function buildOv() {
+  function buildOv(): OverrideBuild {
     if (allClosed) return { all_closed: true, label: label.trim() || "Неробочий день", rooms: {} };
-    const ro = {};
+    const ro: OverrideBuild["rooms"] = {};
     (rooms || []).forEach((r) => {
       const st = roomState[r.id];
       if (st.mode === "closed") { if (!defClosed) ro[r.id] = { closed: true }; }
       else if (st.mode === "custom") { ro[r.id] = { start: st.start, end: st.end }; }
       else { if (defClosed) ro[r.id] = { start: st.start, end: st.end }; }
     });
-    const o = { all_closed: false, rooms: ro };
+    const o: OverrideBuild = { all_closed: false, rooms: ro };
     if (label.trim()) o.label = label.trim();
     return o;
   }
@@ -48,7 +68,7 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
   const affected = (entries || []).filter((e) => {
     if (e.status !== "scheduled" && e.status !== "waiting") return false;
     if (previewOv.all_closed) return true;
-    const ro = previewOv.rooms ? previewOv.rooms[e.room_id] : null;
+    const ro = e.room_id && previewOv.rooms ? previewOv.rooms[e.room_id] : null;
     if (ro && ro.closed) return true;
     return false;
   });

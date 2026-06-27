@@ -6,7 +6,9 @@ import { signOutAndRedirect } from "@/lib/auth";
 export default function SignOutButton() {
   const router = useRouter();
 
-  async function signOut() { await signOutAndRedirect(router); }
+  async function signOut() {
+    await signOutAndRedirect(router);
+  }
 
   return (
     <button

@@ -4,7 +4,8 @@
    Портовано з queue-app.jsx (CompletionModal). Успіх → done, Не відбулось → no_show
    (причина зберігається у note). Перенос — окремий етап. */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
+import type { QueueEntry } from "@/supabase/types";
 
 const FAIL_REASONS = [
   { group: "Стан пацієнта", items: ["Клаустрофобія", "Несумісний імплант", "Кардіостимулятор", "Не готовий", "Погано почувається", "Відмовився"] },
@@ -12,20 +13,33 @@ const FAIL_REASONS = [
   { group: "Інше", items: ["Інше"] },
 ];
 
-function fmtTimer(sec) {
+function fmtTimer(sec: number): string {
   const m = Math.floor(sec / 60), s = sec % 60, h = Math.floor(m / 60);
   if (h) return h + ":" + String(m % 60).padStart(2, "0") + ":" + String(s).padStart(2, "0");
   return m + ":" + String(s).padStart(2, "0");
 }
-function LiveTimer({ enteredAt, children }) {
+
+function LiveTimer({ enteredAt, children }: { enteredAt?: string | null; children: (sec: number) => ReactNode }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   const sec = enteredAt ? Math.max(0, Math.floor((now - new Date(enteredAt).getTime()) / 1000)) : 0;
   return children(sec);
 }
 
-export default function CompletionModal({ patient, proc, roomName, enteredAt, onClose, onSuccess, onFail }) {
-  const [result, setResult] = useState("success");
+type CompletionPatient = Pick<QueueEntry, "patient_name" | "duration_min" | "scheduled_time" | "patient_age">;
+
+interface CompletionModalProps {
+  patient: CompletionPatient;
+  proc: string;
+  roomName: string;
+  enteredAt?: string | null;
+  onClose: () => void;
+  onSuccess: (notes: string) => void;
+  onFail: (reason: string, notes: string) => void;
+}
+
+export default function CompletionModal({ patient, proc, roomName, enteredAt, onClose, onSuccess, onFail }: CompletionModalProps) {
+  const [result, setResult] = useState<"success" | "failed">("success");
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState("");
   const canConfirm = result === "success" || (result === "failed" && reason);

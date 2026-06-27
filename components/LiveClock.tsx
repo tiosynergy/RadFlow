@@ -6,7 +6,7 @@ import { useState, useEffect } from "react";
 // Час показуємо ЛИШЕ після монтування на клієнті, інакше SSR-рядок не збігається
 // з клієнтським і виникає hydration mismatch.
 export default function LiveClock() {
-  const [now, setNow] = useState(null);
+  const [now, setNow] = useState<Date | null>(null);
   useEffect(() => {
     setNow(new Date());
     const t = setInterval(() => setNow(new Date()), 1000);

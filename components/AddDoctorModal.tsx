@@ -8,7 +8,15 @@ import { useState } from "react";
 
 const SPECS = ["Невролог", "Ортопед-травматолог", "Онколог", "Терапевт", "Кардіолог", "Нейрохірург", "Ревматолог", "Інша спеціальність"];
 
-export default function AddDoctorModal({ existing = [], onClose, onSave }) {
+type ExistingDoctor = { id: string; name: string; spec?: string | null; clinic_name?: string | null };
+
+interface AddDoctorModalProps {
+  existing?: ExistingDoctor[];
+  onClose: () => void;
+  onSave: (data: { name: string; spec: string; clinic: string; phone: string; email: string }) => void;
+}
+
+export default function AddDoctorModal({ existing = [], onClose, onSave }: AddDoctorModalProps) {
   const [name, setName] = useState("");
   const [spec, setSpec] = useState("");
   const [phone, setPhone] = useState("");

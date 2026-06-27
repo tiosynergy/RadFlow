@@ -3,7 +3,7 @@
 /* ===== RadFlow — сторінка входу =====
    Той самий стиль, що й реєстрація (register.css). */
 
-import { useState } from "react";
+import { useState, type ChangeEvent, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { isSupabaseConfigured } from "@/lib/supabase/client";
 import "./register.css";
@@ -17,36 +17,36 @@ export default function LoginPage() {
   // Лише внутрішні шляхи (захист від open-redirect): один "/", без "//" чи "/\".
   const redirectTo = /^\/(?![/\\])/.test(rawRedirect) ? rawRedirect : "/queue";
 
-  const [values, setValues] = useState({ email: "", password: "" });
-  const [errors, setErrors] = useState({});
-  const [touched, setTouched] = useState({});
+  const [values, setValues] = useState<Record<string, string>>({ email: "", password: "" });
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
-  const [toast, setToast] = useState({ show: false, title: "", msg: "" });
+  const [toast, setToast] = useState<{ show: boolean; title: string; msg: string }>({ show: false, title: "", msg: "" });
 
-  function validate(name, v) {
+  function validate(name: string, v: string): string {
     if (name === "email") return !v.trim() ? REQUIRED : "";
     if (name === "password") return !v ? REQUIRED : "";
     return "";
   }
 
-  function setField(name, value) {
+  function setField(name: string, value: string) {
     setValues((p) => ({ ...p, [name]: value }));
     if (touched[name]) setErrors((p) => ({ ...p, [name]: validate(name, value) }));
   }
 
-  function blurField(name) {
+  function blurField(name: string) {
     setTouched((p) => ({ ...p, [name]: true }));
     setErrors((p) => ({ ...p, [name]: validate(name, values[name]) }));
   }
 
-  function showToast(msg, title = "Помилка входу") {
+  function showToast(msg: string, title = "Помилка входу") {
     setToast({ show: true, title, msg });
     setTimeout(() => setToast((t) => ({ ...t, show: false })), 3600);
   }
 
-  async function onSubmit(e) {
+  async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    const newErrors = {
+    const newErrors: Record<string, string> = {
       email: validate("email", values.email),
       password: validate("password", values.password),
     };
@@ -80,14 +80,14 @@ export default function LoginPage() {
     }
   }
 
-  const inputProps = (name, type) => ({
+  const inputProps = (name: string, type: string) => ({
     id: name,
     type,
     value: values[name],
-    onChange: (e) => setField(name, e.target.value),
+    onChange: (e: ChangeEvent<HTMLInputElement>) => setField(name, e.target.value),
     onBlur: () => blurField(name),
     className: touched[name] && errors[name] ? "invalid" : undefined,
-    "aria-invalid": touched[name] && errors[name] ? "true" : "false",
+    "aria-invalid": !!(touched[name] && errors[name]),
   });
 
   return (

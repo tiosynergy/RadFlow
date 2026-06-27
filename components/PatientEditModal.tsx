@@ -3,20 +3,37 @@
 /* ===== RadFlow — Редагування даних пацієнта =====
    Відкривається кліком по імені пацієнта в черзі (адміністратор) або у
    «Моїх направленнях» (лікар-направник). Зміни пишуться в queue_entries і
-   миттєво розходяться по ролях через Realtime/полінг.
-
-   Логіка поля «Лікар-направник»:
-   • якщо запис створив САМ направник (created_by — акаунт направника центру),
-     поле ЗАБЛОКОВАНО — адмін не змінює направника вручну;
-   • якщо запис створив адмін/реєстратор — направника можна обрати зі списку
-     активних направників центру (referral_access → profiles) + довідник doctors. */
+   миттєво розходяться по ролях через Realtime/полінг. */
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
+import type { TablesUpdate } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
-function calcAge(dob) {
+type PatientForm = {
+  id?: string;
+  clinic_id?: string | null;
+  created_by?: string | null;
+  patient_name?: string;
+  patient_phone?: string | null;
+  patient_dob?: string | null;
+  patient_age?: number | null;
+  patient_sex?: string | null;
+  patient_weight?: number | string | null;
+  contraindications?: boolean | null;
+  doctor?: string | null;
+  note?: string | null;
+};
+type DoctorOption = { key: string; name: string; sub: string };
+
+interface PatientEditModalProps {
+  entryId: string;
+  onClose: () => void;
+  onSaved?: () => void;
+}
+
+function calcAge(dob: string | null | undefined): number | null {
   if (!dob) return null;
   const b = new Date(dob);
   if (isNaN(b.getTime())) return null;
@@ -27,9 +44,9 @@ function calcAge(dob) {
   return a < 0 ? null : a;
 }
 
-export default function PatientEditModal({ entryId, onClose, onSaved }) {
-  const [form, setForm] = useState(null);
-  const [docs, setDocs] = useState([]);       // [{key, name, sub}] — активні направники + довідник
+export default function PatientEditModal({ entryId, onClose, onSaved }: PatientEditModalProps) {
+  const [form, setForm] = useState<PatientForm | null>(null);
+  const [docs, setDocs] = useState<DoctorOption[]>([]); // активні направники + довідник
   const [lockDoctor, setLockDoctor] = useState(false); // запис внесено направником → не редагувати
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -57,13 +74,13 @@ export default function PatientEditModal({ entryId, onClose, onSaved }) {
         if (data.created_by && allRefIds.has(data.created_by)) { if (live) setLockDoctor(true); }
         // Список для вибору — лише АКТИВНІ направники + довідник.
         const activeRefIds = Array.from(new Set(access.filter((a) => a.status === "active").map((a) => a.referrer_id)));
-        let refProfiles = [];
+        let refProfiles: { id: string; full_name: string | null }[] = [];
         if (activeRefIds.length) {
           const { data: profs } = await supabase.from("profiles").select("id, full_name").in("id", activeRefIds);
           refProfiles = profs || [];
         }
-        const seen = new Set();
-        const opts = [];
+        const seen = new Set<string>();
+        const opts: DoctorOption[] = [];
         refProfiles.forEach((p) => { const n = (p.full_name || "").trim(); if (n && !seen.has(n)) { seen.add(n); opts.push({ key: "r-" + p.id, name: n, sub: "направник" }); } });
         (docRes.data || []).forEach((d) => { const n = (d.name || "").trim(); if (n && !seen.has(n)) { seen.add(n); opts.push({ key: "d-" + d.id, name: n, sub: d.spec || "" }); } });
         opts.sort((a, b) => a.name.localeCompare(b.name, "uk"));
@@ -73,7 +90,7 @@ export default function PatientEditModal({ entryId, onClose, onSaved }) {
     return () => { live = false; };
   }, [entryId]);
 
-  function setF(k, v) { setForm((f) => ({ ...f, [k]: v })); }
+  function setF<K extends keyof PatientForm>(k: K, v: PatientForm[K]) { setForm((f) => ({ ...(f || {}), [k]: v })); }
 
   async function save() {
     if (!form) return;
@@ -81,8 +98,8 @@ export default function PatientEditModal({ entryId, onClose, onSaved }) {
     setBusy(true); setErr("");
     const supabase = createClient();
     const w = form.patient_weight;
-    const patch = {
-      patient_name: form.patient_name.trim(),
+    const patch: TablesUpdate<"queue_entries"> = {
+      patient_name: (form.patient_name || "").trim(),
       patient_phone: (form.patient_phone || "").trim() || null,
       patient_dob: form.patient_dob || null,
       patient_age: form.patient_dob ? calcAge(form.patient_dob) : (form.patient_age ?? null),

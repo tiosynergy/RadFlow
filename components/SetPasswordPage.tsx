@@ -4,19 +4,19 @@
    Користувача створив адміністратор; тут він задає собі пароль за логіном.
    Працює лише поки пароль не встановлено (далі — скидання адміністратором). */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ChangeEvent, type FormEvent } from "react";
 import "./register.css";
 
 const REQUIRED = "Це поле обов'язкове";
 
 export default function SetPasswordPage() {
-  const [values, setValues] = useState({ password: "", password2: "" });
-  const [token, setToken] = useState(null); // одноразовий токен із ?token=
-  const [errors, setErrors] = useState({});
-  const [touched, setTouched] = useState({});
+  const [values, setValues] = useState<Record<string, string>>({ password: "", password2: "" });
+  const [token, setToken] = useState<string | null>(null); // одноразовий токен із ?token=
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [toast, setToast] = useState({ show: false, title: "", msg: "" });
+  const [toast, setToast] = useState<{ show: boolean; title: string; msg: string }>({ show: false, title: "", msg: "" });
 
   // Беремо одноразовий токен із посилання ?token=… (адмін передає його особисто).
   useEffect(() => {
@@ -26,14 +26,14 @@ export default function SetPasswordPage() {
     } catch { /* ignore */ }
   }, []);
 
-  function validate(name, vals) {
+  function validate(name: string, vals: Record<string, string>): string {
     const v = vals[name] || "";
     if (name === "password") return !v ? REQUIRED : (v.length < 8 || !/[A-ZА-ЯЇІЄ]/.test(v) || !/\d/.test(v)) ? "Мінімум 8 символів, одна велика буква, одна цифра" : "";
     if (name === "password2") return !v ? REQUIRED : v !== vals.password ? "Паролі не співпадають" : "";
     return "";
   }
 
-  function setField(name, value) {
+  function setField(name: string, value: string) {
     setValues((prev) => {
       const next = { ...prev, [name]: value };
       setErrors((e) => {
@@ -45,19 +45,19 @@ export default function SetPasswordPage() {
       return next;
     });
   }
-  function blurField(name) {
+  function blurField(name: string) {
     setTouched((p) => ({ ...p, [name]: true }));
     setErrors((p) => ({ ...p, [name]: validate(name, values) }));
   }
-  function showToast(msg, title = "Помилка") {
+  function showToast(msg: string, title = "Помилка") {
     setToast({ show: true, title, msg });
     setTimeout(() => setToast((t) => ({ ...t, show: false })), 3800);
   }
 
-  async function onSubmit(e) {
+  async function onSubmit(e: FormEvent) {
     e.preventDefault();
     const names = ["password", "password2"];
-    const ne = {}; const nt = {};
+    const ne: Record<string, string> = {}; const nt: Record<string, boolean> = {};
     names.forEach((n) => { nt[n] = true; ne[n] = validate(n, values); });
     setTouched(nt); setErrors(ne);
     if (names.some((n) => ne[n])) return;
@@ -78,12 +78,12 @@ export default function SetPasswordPage() {
     }
   }
 
-  const inputProps = (name, type) => ({
+  const inputProps = (name: string, type: string) => ({
     id: name, type, value: values[name],
-    onChange: (e) => setField(name, e.target.value),
+    onChange: (e: ChangeEvent<HTMLInputElement>) => setField(name, e.target.value),
     onBlur: () => blurField(name),
     className: touched[name] && errors[name] ? "invalid" : undefined,
-    "aria-invalid": touched[name] && errors[name] ? "true" : "false",
+    "aria-invalid": !!(touched[name] && errors[name]),
   });
 
   return (

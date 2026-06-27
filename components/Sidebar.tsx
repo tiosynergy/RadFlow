@@ -7,21 +7,58 @@
 import { useRouter } from "next/navigation";
 import { signOutAndRedirect } from "@/lib/auth";
 
-function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
-function initials(name) {
+type SidebarRoom = {
+  id: string;
+  modality: string;
+  name: string;
+  apparatus_model?: string | null;
+};
+
+interface SidebarProps {
+  clinicName?: string;
+  adminName?: string;
+  adminRole?: string;
+  roleKey?: string;
+  rooms?: SidebarRoom[];
+  activeRoom?: string;
+  activeNav?: string;
+  onSelectRoom?: (id: string) => void;
+  onNew?: () => void;
+  incidentCount?: number;
+  onBreakdown?: () => void;
+}
+
+function modalityLabel(m: string): string {
+  return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше";
+}
+function initials(name?: string | null): string {
   const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "RF";
   return (parts[0][0] + (parts[1] ? parts[1][0] : "")).toUpperCase();
 }
 
-export default function Sidebar({ clinicName, adminName, adminRole, roleKey = "admin", rooms, activeRoom = "all", activeNav, onSelectRoom, onNew, incidentCount = 0, onBreakdown }) {
+export default function Sidebar({
+  clinicName,
+  adminName,
+  adminRole,
+  roleKey = "admin",
+  rooms,
+  activeRoom = "all",
+  activeNav,
+  onSelectRoom,
+  onNew,
+  incidentCount = 0,
+  onBreakdown,
+}: SidebarProps) {
   const router = useRouter();
   const isAdmin = roleKey === "admin";
   const isAdminOrCeo = roleKey === "admin" || roleKey === "ceo";
 
-  async function signOut() { await signOutAndRedirect(router); }
+  async function signOut() {
+    await signOutAndRedirect(router);
+  }
 
-  const soon = (label) => (
+  const soon = (label: string) => (
     <span key={label} className="sb-item" title="Незабаром" style={{ opacity: 0.45, cursor: "not-allowed" }}>
       <span className="ic">·</span>
       <span className="sb-item-lab">{label}</span>
