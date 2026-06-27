@@ -10,7 +10,14 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
-import { setQueueEntryStatus, cancelQueueEntry } from "@/app/queue/actions";
+import {
+  setQueueEntryStatus,
+  cancelQueueEntry,
+  completeQueueEntry,
+  setQueueEntryCall,
+  resolveIncident as resolveIncidentAction,
+  submitIncident as submitIncidentAction,
+} from "@/app/queue/actions";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import BookingModal from "@/components/BookingModal";
@@ -800,20 +807,22 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const citoList = entries.filter((e) => e.cito && (e.status === "scheduled" || e.status === "waiting" || e.status === "in_progress"));
 
   async function submitIncident(payload) {
-    const supabase = createClient();
-    const startMs = new Date(payload.startedAt).getTime();
-    // Майбутній старт → «заплановано» (не блокує наперед); поточний/минулий → активний зараз.
-    const status = startMs > Date.now() ? "planned" : "active";
-    const fields = { room_id: payload.roomId, reason: payload.reason, reason_label: payload.reasonLabel, note: payload.note, started_at: payload.startedAt, blocked_until: payload.blockedUntil, auto_unblock: payload.autoUnblock !== false, status };
-    const { error } = payload.id
-      ? await supabase.from("incidents").update(fields).eq("id", payload.id)
-      : await supabase.from("incidents").insert({ clinic_id: clinicId, ...fields });
-    if (error) { notify(/duplicate|unique|23505/i.test(error.message) ? "Кабінет уже має активний простій" : "Помилка: " + error.message, "error"); return; }
-    // Поломка ЗАРАЗ під час дослідження → пацієнт «у кабінеті» → «Не відбулося».
-    if (!payload.id && status === "active") {
-      await supabase.from("queue_entries").update({ status: "not_held" }).eq("clinic_id", clinicId).eq("room_id", payload.roomId).eq("status", "in_progress");
+    // TD-4: создание/обновление простоя через Server Action (clinic_id выводится на сервере).
+    const res = await submitIncidentAction({
+      id: payload.id,
+      roomId: payload.roomId,
+      reason: payload.reason,
+      reasonLabel: payload.reasonLabel,
+      note: payload.note,
+      startedAt: payload.startedAt,
+      blockedUntil: payload.blockedUntil,
+      autoUnblock: payload.autoUnblock !== false,
+    });
+    if (!res.ok) {
+      notify(res.code === "duplicate" ? "Кабінет уже має активний простій" : "Помилка: " + res.error, "error");
+      return;
     }
-    notify(payload.id ? "Збережено" : (status === "planned" ? "Заплановано простій" : "Апарат заблоковано"), "success");
+    notify(payload.id ? "Збережено" : (res.status === "planned" ? "Заплановано простій" : "Апарат заблоковано"), "success");
     loadIncidents();
     reload();
   }
@@ -821,9 +830,9 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   async function resolveIncident(idOrInc) {
     const id = typeof idOrInc === "string" ? idOrInc : idOrInc?.id;
     if (!id) return;
-    const supabase = createClient();
-    const { error } = await supabase.from("incidents").update({ status: "resolved", resolved_at: new Date().toISOString() }).eq("id", id);
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
+    // TD-4: снятие простоя через Server Action.
+    const res = await resolveIncidentAction(id);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Знято", "success");
     loadIncidents();
     reload();
@@ -858,11 +867,11 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   async function finishComplete(status, extraNote) {
     const p = completeFor;
     if (!p) return;
-    const supabase = createClient();
+    // TD-4: завершение процедуры через Server Action.
     const note = [p.note, extraNote].map((x) => (x || "").trim()).filter(Boolean).join(" · ") || null;
-    const { error } = await supabase.from("queue_entries").update({ status, note }).eq("id", p.id);
+    const res = await completeQueueEntry(p.id, status, note);
     setCompleteFor(null);
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify(status === "done" ? "Процедуру завершено" : "Позначено: не відбулося", "success");
     reload();
   }
@@ -876,12 +885,11 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
 
   async function setCall(p, call_status) {
-    const supabase = createClient();
-    // Відмова пацієнта на обдзвоні → запис скасовується.
+    // TD-4: статус обзвона через Server Action; оптимистично обновляем локально.
     const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
-    const { error } = await supabase.from("queue_entries").update(patch).eq("id", p.id);
-    if (error) { notify("Помилка: " + error.message, "error"); return; }
     setEntries((es) => es.map((e) => (e.id === p.id ? { ...e, ...patch } : e)));
+    const res = await setQueueEntryCall(p.id, call_status);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return; }
     if (call_status === "declined") notify("Пацієнт відмовився — запис скасовано", "info");
     reload();
   }
