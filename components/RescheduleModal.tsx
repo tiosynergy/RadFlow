@@ -8,13 +8,14 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, type IncidentLike } from "@/lib/incidents";
-import type { QueueEntry } from "@/supabase/types";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type DayEntry = { id: string; scheduled_time: string | null; duration_min: number | null; status: string };
+// Минимально необходимый набор полей записи (доски передают разные подмножества).
+type ReschedulePatient = { id: string; room_id: string | null; duration_min: number | null; patient_name: string | null; studies?: unknown; note?: string | null };
 
 interface RescheduleModalProps {
-  patient: QueueEntry;
+  patient: ReschedulePatient;
   rooms?: RoomOpt[];
   clinicId?: string | null;
   incidents?: IncidentLike[];

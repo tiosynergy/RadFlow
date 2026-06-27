@@ -8,16 +8,16 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { regionsFor } from "@/lib/studies";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
-import type { QueueEntry } from "@/supabase/types";
 
 const MIN_STUDY = 15;
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type StudyRow = { type: string; region: string; dur: number };
 type StudyLike = { type?: string; region?: string; dur?: number; contrast?: boolean };
+type StudyPatient = { id: string; room_id: string | null; scheduled_time: string | null; patient_name: string | null; studies?: unknown };
 
 interface StudyEditModalProps {
-  patient: QueueEntry;
+  patient: StudyPatient;
   scheduledDate?: string | null;
   rooms?: RoomOpt[];
   clinicId?: string | null;

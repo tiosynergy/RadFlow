@@ -9,20 +9,27 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
+import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type EntryRow = { id: string; status: string; duration_min: number | null; studies: Json; room_id: string | null; scheduled_date: string | null; patient_name: string | null };
+type WeekRow = { id: string; status: string; scheduled_date: string | null };
+type StudyLike = { price?: number; region?: string; contrast?: boolean; type?: string };
+type RevenueEntry = { studies?: unknown; note?: string | null };
+
 const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
-function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function startOfDay(d: Date) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function today0() { return startOfDay(new Date()); }
-function dateKey(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
-function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-function fmtShort(d) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
-function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
-function fmtUah(n) { return String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴"; }
+function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
+function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+function fmtUah(n: number) { return String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴"; }
 
-const PRICE = {
+const PRICE: Record<string, number> = {
   "Головний мозок": 2400, "Хребет — шийний відділ": 2100, "Хребет — грудний відділ": 2100, "Хребет — поперековий відділ": 2100,
   "Колінний суглоб": 1800, "Плечовий суглоб": 1800, "Кульшовий суглоб": 1900, "Черевна порожнина": 2600, "Малий таз": 2600,
   "Серце та судини": 3200, "Молочні залози": 2700,
@@ -30,29 +37,27 @@ const PRICE = {
   "Кінцівки": 1200, "КТ-ангіографія": 2400, "Мультизональне дослідження": 2800,
 };
 const CONTRAST_SURCHARGE = 900;
-// Виручка запису: пріоритет — збережена ціна (нові записи зберігають studies[].price),
-// інакше оцінка за довідником цін (старі записи без ціни).
-function entryRevenue(e) {
-  const s = Array.isArray(e.studies) ? e.studies : [];
+
+function entryRevenue(e: RevenueEntry): number {
+  const s: StudyLike[] = Array.isArray(e.studies) ? (e.studies as StudyLike[]) : [];
   if (!s.length) return 0;
   return s.reduce((sum, x) => {
     const stored = (typeof x.price === "number") ? x.price : null;
-    const est = (PRICE[x.region] || 1500) + (x.contrast ? CONTRAST_SURCHARGE : 0);
+    const est = (PRICE[x.region || ""] || 1500) + (x.contrast ? CONTRAST_SURCHARGE : 0);
     return sum + (stored != null ? stored : est);
   }, 0);
 }
-// Чи всі дослідження запису мають збережену ціну (тоді виручка точна, не оцінка).
-function entryFullyPriced(e) {
-  const s = Array.isArray(e.studies) ? e.studies : [];
+function entryFullyPriced(e: RevenueEntry): boolean {
+  const s: StudyLike[] = Array.isArray(e.studies) ? (e.studies as StudyLike[]) : [];
   return s.length > 0 && s.every((x) => typeof x.price === "number");
 }
-function procName(e) {
-  const s = Array.isArray(e.studies) ? e.studies : [];
+function procName(e: RevenueEntry): string {
+  const s: StudyLike[] = Array.isArray(e.studies) ? (e.studies as StudyLike[]) : [];
   if (s.length) return (s[0].type || "") + (s[0].region ? " · " + s[0].region : "");
   return e.note || "—";
 }
 
-function periodRange(period) {
+function periodRange(period: string): [Date, Date] {
   const t = today0();
   if (period === "today") return [t, t];
   if (period === "week") { const mon = addDays(t, -((t.getDay() + 6) % 7)); return [mon, addDays(mon, 6)]; }
@@ -60,13 +65,13 @@ function periodRange(period) {
   const last = new Date(t.getFullYear(), t.getMonth() + 1, 0);
   return [first, last];
 }
-function workdaysBetween(a, b) {
+function workdaysBetween(a: Date, b: Date): number {
   let n = 0; let d = new Date(a);
   while (d <= b) { if (d.getDay() !== 0) n++; d = addDays(d, 1); }
   return n;
 }
 
-function ProgressCircle({ pct, color }) {
+function ProgressCircle({ pct, color }: { pct: number; color: string }) {
   const r = 52, c = 2 * Math.PI * r, off = c * (1 - Math.min(100, pct) / 100);
   return (
     <svg width="130" height="130" viewBox="0 0 130 130">
@@ -81,16 +86,25 @@ function ProgressCircle({ pct, color }) {
 
 const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20 };
 
-export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }) {
-  const [period, setPeriod] = useState("today");
-  const [entries, setEntries] = useState([]);
-  const [weekEntries, setWeekEntries] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [toast, setToast] = useState(null);
-  const toastTimer = useRef(null);
-  const roomsById = useMemo(() => { const m = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
+interface CeoDashboardProps {
+  clinicId: string;
+  rooms?: RoomOpt[];
+  clinicName?: string;
+  adminName?: string;
+  adminRole?: string;
+  roleKey?: string;
+}
 
-  function notify(msg) { setToast(msg); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3000); }
+export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: CeoDashboardProps) {
+  const [period, setPeriod] = useState("today");
+  const [entries, setEntries] = useState<EntryRow[]>([]);
+  const [weekEntries, setWeekEntries] = useState<WeekRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
+
+  function notify(msg: string) { setToast(msg); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3000); }
 
   const [from, to] = periodRange(period);
 
@@ -114,14 +128,13 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
     setLoading(false);
   }, [clinicId, period]);
 
-  // Спинер при первой загрузке/смене клиники/периода; reload снимет его.
+  // Спинер при первой загрузке/смене клиники.
   useEffect(() => { setLoading(true); }, [clinicId]);
 
-  // Перерасчёт при смене периода (сегодня/неделя/месяц): realtime-хук слушает только clinicId.
+  // Перерасчёт при смене периода: realtime-хук слушает только clinicId.
   useEffect(() => { reload(); }, [reload]);
 
-  // TD-3: единый realtime-паттерн (дебаунс + поллинг только при разрыве сокета)
-  // вместо безусловного поллинга каждые 15с. setAuth теперь тоже внутри хука.
+  // TD-3: единый realtime-паттерн.
   useRealtimeRefetch({
     channelName: clinicId ? "ceo-" + clinicId : null,
     subscriptions: [
@@ -136,8 +149,6 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
   const notHeld = entries.filter((e) => e.status === "not_held").length;
   const active = entries.filter((e) => ["scheduled", "waiting", "in_progress"].includes(e.status)).length;
 
-  // Рахуємо лише робочі дні, що вже настали (включно з сьогодні), інакше util
-  // занижується на початку тижня/місяця (знаменник містить майбутні дні).
   const workdays = Math.max(1, workdaysBetween(from, to < today0() ? to : today0()));
   const capacityMin = (rooms || []).length * 480 * workdays;
   const bookedMin = entries.filter((e) => e.status !== "no_show" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0), 0);
@@ -159,7 +170,7 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
   const maxBar = Math.max(1, ...weekData.map((x) => x.total));
 
   /* топ-5 процедур */
-  const procMap = {};
+  const procMap: Record<string, number> = {};
   entries.forEach((e) => { const n = procName(e); procMap[n] = (procMap[n] || 0) + 1; });
   const topProcs = Object.entries(procMap).sort((a, b) => b[1] - a[1]).slice(0, 5);
 
@@ -172,9 +183,9 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
 
   function exportCsv() {
     const head = ["Дата", "Пацієнт", "Процедура", "Кабінет", "Статус", "Дохід"];
-    const rows = entries.map((e) => [e.scheduled_date, e.patient_name, procName(e), (roomsById[e.room_id] || {}).name || "", e.status, entryRevenue(e)]);
+    const rows = entries.map((e) => [e.scheduled_date, e.patient_name, procName(e), (e.room_id ? roomsById[e.room_id] : null)?.name || "", e.status, entryRevenue(e)]);
     // Захист від CSV-інʼєкції: значення, що починаються з = + - @, екрануємо апострофом.
-    const safe = (c) => { let v = String(c == null ? "" : c); if (/^[=+\-@]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; };
+    const safe = (c: unknown) => { let v = String(c == null ? "" : c); if (/^[=+\-@]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; };
     const csv = [head, ...rows].map((r) => r.map(safe).join(";")).join("\n");
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "ceo-" + period + ".csv"; a.click(); URL.revokeObjectURL(url);
@@ -209,7 +220,7 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
               {/* KPI row */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
                 <div style={card}>
-                  <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>Записи · {PERIODS.find((p) => p.k === period).l.toLowerCase()}</div>
+                  <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>Записи · {PERIODS.find((p) => p.k === period)?.l.toLowerCase()}</div>
                   <div style={{ fontSize: 40, fontWeight: 700 }} className="tabular">{total}</div>
                   <div style={{ display: "flex", gap: 16, marginTop: 14, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 13 }}><b style={{ color: "var(--green)" }} className="tabular">{done}</b> <span style={{ color: "var(--text-muted)" }}>виконано</span></span>

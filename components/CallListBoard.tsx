@@ -4,7 +4,7 @@
    Записи на завтра (або обраний день) → обдзвін/підтвердження. Статус пишеться у
    queue_entries.call_status (синхронно з дошкою), нотатка — у call_note. Realtime. */
 
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
@@ -12,43 +12,66 @@ import LiveClock from "@/components/LiveClock";
 import { entryInIncidentWindow, incidentExpired } from "@/lib/incidents";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
+import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type CallEntry = {
+  id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
+  scheduled_time: string | null; duration_min: number | null; status: string; call_status: string | null;
+  call_note?: string | null; studies: Json; doctor?: string | null; room_id: string | null; scheduled_date: string | null;
+};
+type IncidentRow = { id: string; room_id: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string };
+
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
-function fmtFull(d) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
-function dateKey(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
-function pad(n) { return String(n).padStart(2, "0"); }
-function shortDate(d) { return pad(d.getDate()) + "." + pad(d.getMonth() + 1); }
-function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
-function toMinHHMM(t) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
-function studyKind(e) {
-  const s = Array.isArray(e.studies) && e.studies[0] ? e.studies[0].type : null;
+function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
+function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+function pad(n: number) { return String(n).padStart(2, "0"); }
+function shortDate(d: Date) { return pad(d.getDate()) + "." + pad(d.getMonth() + 1); }
+function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+function studyKind(e: { studies?: unknown }) {
+  const arr = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string }>) : [];
+  const s = arr[0] ? arr[0].type : null;
   return s || "МРТ";
 }
-function procLabel(e) {
-  const s = Array.isArray(e.studies) ? e.studies : [];
+function procLabel(e: { studies?: unknown; note?: string | null }) {
+  const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string; contrast?: boolean }>) : [];
   if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast ? " з контрастом" : "")).join(" + ");
   return e.note || "—";
 }
 
-const CL_META = {
+const CL_META: Record<string, { label: string; cls: string; icon: string }> = {
   not_called: { label: "Ще не дзвонили", cls: "gray", icon: "○" },
   confirmed: { label: "Підтверджено", cls: "green", icon: "✓" },
   no_answer: { label: "Не відповідає", cls: "orange", icon: "✗" },
   to_recall: { label: "Передзвонити", cls: "blue", icon: "↩" },
   declined: { label: "Відмова", cls: "red", icon: "✕" },
 };
-const CALL_ORDER = { not_called: 0, to_recall: 1, no_answer: 2, confirmed: 3, declined: 4 };
+const CALL_ORDER: Record<string, number> = { not_called: 0, to_recall: 1, no_answer: 2, confirmed: 3, declined: 4 };
+const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "#4da3ff", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
 
-const CALL_COLOR = { confirmed: "var(--green)", to_recall: "#4da3ff", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
-function StatusBadge({ status }) {
-  const m = CL_META[status || "not_called"];
-  return <span title={m.label} style={{ fontSize: 17, lineHeight: 1, color: CALL_COLOR[status || "not_called"] }}>☎</span>;
+function StatusBadge({ status }: { status: string | null | undefined }) {
+  const key = status || "not_called";
+  const m = CL_META[key];
+  return <span title={m.label} style={{ fontSize: 17, lineHeight: 1, color: CALL_COLOR[key] }}>☎</span>;
 }
 
-function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet, onNote, onReschedule, onEditStudies }) {
+interface CallRowProps {
+  p: CallEntry;
+  roomName: string;
+  roomModel?: string;
+  dateShort: string;
+  expanded: boolean;
+  onToggle: (id: string) => void;
+  onSet: (id: string, s: CallStatus) => void;
+  onNote: (id: string, v: string) => void;
+  onReschedule: (p: CallEntry) => void;
+  onEditStudies: (p: CallEntry) => void;
+}
+
+function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet, onNote, onReschedule, onEditStudies }: CallRowProps) {
   const type = studyKind(p);
   return (
     <div className={"clrow-wrap" + (expanded ? " open" : "")}>
@@ -105,8 +128,17 @@ function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet,
   );
 }
 
-function IncidentCallSection({ incident, roomName, affected, onReschedule, onRecall, onRefuse }) {
-  const [openId, setOpenId] = useState(null);
+interface IncidentCallSectionProps {
+  incident: IncidentRow;
+  roomName: string;
+  affected: CallEntry[];
+  onReschedule: (p: CallEntry) => void;
+  onRecall: (p: CallEntry) => void;
+  onRefuse: (p: CallEntry) => void;
+}
+
+function IncidentCallSection({ incident, roomName, affected, onReschedule, onRecall, onRefuse }: IncidentCallSectionProps) {
+  const [openId, setOpenId] = useState<string | null>(null);
   return (
     <div className="info-banner red cl-inc-sec" style={{ flexDirection: "column", alignItems: "stretch", borderColor: "var(--red)", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -150,25 +182,34 @@ function IncidentCallSection({ incident, roomName, affected, onReschedule, onRec
   );
 }
 
-export default function CallListBoard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }) {
+interface CallListBoardProps {
+  clinicId: string;
+  rooms?: RoomOpt[];
+  clinicName?: string;
+  adminName?: string;
+  adminRole?: string;
+  roleKey?: string;
+}
+
+export default function CallListBoard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: CallListBoardProps) {
   const tomorrow = useMemo(() => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(0, 0, 0, 0); return d; }, []);
   const [date, setDate] = useState(tomorrow);
-  const [entries, setEntries] = useState([]);
+  const [entries, setEntries] = useState<CallEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
-  const [expandedId, setExpandedId] = useState(null);
-  const [reschedFor, setReschedFor] = useState(null);
-  const [editStudiesFor, setEditStudiesFor] = useState(null);
-  const [incidents, setIncidents] = useState([]);
-  const [affectedToday, setAffectedToday] = useState([]);
-  const [toast, setToast] = useState(null);
-  const toastTimer = useRef(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [reschedFor, setReschedFor] = useState<CallEntry | null>(null);
+  const [editStudiesFor, setEditStudiesFor] = useState<CallEntry | null>(null);
+  const [incidents, setIncidents] = useState<IncidentRow[]>([]);
+  const [affectedToday, setAffectedToday] = useState<CallEntry[]>([]);
+  const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const dayKey = dateKey(date);
-  const roomsById = useMemo(() => { const m = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
+  const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
 
-  function notify(msg, type = "success") {
+  function notify(msg: string, type = "success") {
     setToast({ msg, type });
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 3000);
@@ -201,11 +242,9 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
       .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, status, call_status, studies, room_id, scheduled_date")
       .eq("clinic_id", clinicId).gte("scheduled_date", todayKey)
       .in("room_id", incs.map((i) => i.room_id)).in("status", ["scheduled", "waiting"]);
-    const byRoom = {}; incs.forEach((i) => { byRoom[i.room_id] = i; });
-    // Постраждалі — єдиний предикат із lib/incidents (той самий, що на дошці);
-    // істекші авто-інциденти не враховуємо.
+    const byRoom: Record<string, IncidentRow> = {}; incs.forEach((i) => { byRoom[i.room_id] = i; });
     const aff = (ents || []).filter((e) => {
-      const inc = byRoom[e.room_id];
+      const inc = e.room_id ? byRoom[e.room_id] : null;
       if (!inc || incidentExpired(inc)) return false;
       return entryInIncidentWindow(e.scheduled_date, e.scheduled_time, inc);
     });
@@ -218,8 +257,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   // Перезапрос записей при смене дня: realtime-хук слушает только clinicId.
   useEffect(() => { reload(); }, [reload]);
 
-  // TD-3: единый realtime-паттерн. Раньше тут не было ни setAuth (RLS мог не
-  // доставлять события), ни подстраховки поллингом — хук добавляет и то, и другое.
+  // TD-3: единый realtime-паттерн.
   useRealtimeRefetch({
     channelName: clinicId ? "calllist-" + clinicId : null,
     subscriptions: [
@@ -228,7 +266,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     ],
   });
 
-  async function cancelEntry(p) {
+  async function cancelEntry(p: CallEntry) {
     const supabase = createClient();
     const { error } = await supabase.from("queue_entries").update({ status: "cancelled" }).eq("id", p.id);
     if (error) { notify("Помилка: " + error.message, "error"); return; }
@@ -236,17 +274,17 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     reload(); loadIncidents();
   }
 
-  async function setCall(id, call_status) {
+  async function setCall(id: string, call_status: CallStatus) {
     const supabase = createClient();
     // Відмова = скасування запису (як на дошці черги), інакше дані розходяться між екранами.
-    const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
+    const patch = call_status === "declined" ? { call_status, status: "cancelled" as QueueStatus } : { call_status };
     const { error } = await supabase.from("queue_entries").update(patch).eq("id", id);
     if (error) { notify("Помилка: " + error.message, "error"); return; }
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch } : e)));
     if (call_status === "declined") notify("Пацієнт відмовився — запис скасовано", "info");
     reload();
   }
-  async function setNote(id, call_note) {
+  async function setNote(id: string, call_note: string) {
     const supabase = createClient();
     await supabase.from("queue_entries").update({ call_note }).eq("id", id);
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, call_note } : e)));
@@ -260,7 +298,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     reload();
   }
 
-  async function doReschedule({ roomId, date: d, time, dur }) {
+  async function doReschedule({ roomId, date: d, time, dur }: { roomId: string; date: Date; time: string; dur: number }) {
     const p = reschedFor;
     if (!p) return;
     const supabase = createClient();
@@ -274,11 +312,11 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     notify("Перенесено · підтверджено", "success");
     reload();
   }
-  async function doEditStudies(arr, meta) {
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number }) {
     const p = editStudiesFor;
     if (!p) return;
     const supabase = createClient();
-    const { error } = await supabase.from("queue_entries").update({ studies: arr, duration_min: (meta && meta.dur) || p.duration_min }).eq("id", p.id);
+    const { error } = await supabase.from("queue_entries").update({ studies: arr as Json, duration_min: (meta && meta.dur) || p.duration_min || 30 }).eq("id", p.id);
     setEditStudiesFor(null);
     if (error) { notify("Помилка: " + error.message, "error"); return; }
     notify("Дослідження оновлено", "success");
@@ -287,8 +325,8 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
 
   function exportCsv() {
     const head = ["Час", "Пацієнт", "Телефон", "Процедура", "Кабінет", "Статус", "Нотатка"];
-    const rows = entries.map((e) => [e.scheduled_time, e.patient_name, e.patient_phone || "", procLabel(e), (roomsById[e.room_id] || {}).name || "", (CL_META[e.call_status || "not_called"]).label, (e.call_note || "").replace(/[\n;]/g, " ")]);
-    const csv = [head, ...rows].map((r) => r.map((c) => '"' + String(c).replace(/"/g, '""') + '"').join(";")).join("\n");
+    const rows = entries.map((e) => [e.scheduled_time, e.patient_name, e.patient_phone || "", procLabel(e), (e.room_id ? roomsById[e.room_id] : undefined)?.name || "", (CL_META[e.call_status || "not_called"]).label, (e.call_note || "").replace(/[\n;]/g, " ")]);
+    const csv = [head, ...rows].map((r) => r.map((c) => '"' + String(c ?? "").replace(/"/g, '""') + '"').join(";")).join("\n");
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "call-list-" + dayKey + ".csv"; a.click();
@@ -296,16 +334,16 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     notify("Колл-лист експортовано у CSV", "info");
   }
 
-  const counts = { total: entries.length, not_called: 0, confirmed: 0, no_answer: 0, to_recall: 0, declined: 0 };
+  const counts: Record<string, number> = { total: entries.length, not_called: 0, confirmed: 0, no_answer: 0, to_recall: 0, declined: 0 };
   entries.forEach((e) => { const s = e.call_status || "not_called"; if (counts[s] != null) counts[s]++; });
-  const pct = (n) => (counts.total ? Math.round((n / counts.total) * 100) : 0);
+  const pct = (n: number) => (counts.total ? Math.round((n / counts.total) * 100) : 0);
   const stats = [
     { lab: "Всього записів", val: counts.total, pct: 100, color: "var(--text-faint)", cls: "" },
     { lab: "Підтверджено", val: counts.confirmed, pct: pct(counts.confirmed), color: "var(--green)", cls: "green" },
     { lab: "Не відповідає", val: counts.no_answer, pct: pct(counts.no_answer), color: "var(--orange)", cls: "orange" },
     { lab: "Передзвонити", val: counts.to_recall, pct: pct(counts.to_recall), color: "#4da3ff", cls: "blue" },
   ];
-  const statColor = { "": "var(--text)", green: "var(--green)", orange: "var(--orange)", blue: "#4da3ff" };
+  const statColor: Record<string, string> = { "": "var(--text)", green: "var(--green)", orange: "var(--orange)", blue: "#4da3ff" };
   const tabs = [
     { key: "all", label: "Всі", ct: counts.total },
     { key: "not_called", label: "Ще не дзвонили", ct: counts.not_called },
@@ -349,7 +387,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
           <div className="page-max">
             {incidents.map((inc) => (
               <IncidentCallSection key={inc.id} incident={inc}
-                roomName={(roomsById[inc.room_id] || {}).name || "Апарат"}
+                roomName={roomsById[inc.room_id]?.name || "Апарат"}
                 affected={affectedToday.filter((a) => a.room_id === inc.room_id)}
                 onReschedule={(p) => setReschedFor(p)}
                 onRecall={(p) => setCall(p.id, "to_recall")}
@@ -395,7 +433,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
             ) : (
               <div className="clrows">
                 {filtered.map((p) => (
-                  <CallRow key={p.id} p={p} roomName={(roomsById[p.room_id] || {}).name || "—"} roomModel={(roomsById[p.room_id] || {}).apparatus_model || ""} dateShort={shortDate(date)}
+                  <CallRow key={p.id} p={p} roomName={(p.room_id ? roomsById[p.room_id] : undefined)?.name || "—"} roomModel={(p.room_id ? roomsById[p.room_id] : undefined)?.apparatus_model || ""} dateShort={shortDate(date)}
                     expanded={expandedId === p.id} onToggle={(id) => setExpandedId((x) => (x === id ? null : id))}
                     onSet={setCall} onNote={setNote} onReschedule={(pt) => setReschedFor(pt)} onEditStudies={(pt) => setEditStudiesFor(pt)} />
                 ))}
