@@ -1,55 +1,63 @@
 "use client";
 
 /* ===== RadFlow — Кабінет радіолога =====
-   Дзеркало дошки адміністратора (той самий стиль, розмітка та кроки-кола),
-   але звужене до авторизованих кабінетів радіолога і з його можливостями:
-   змінювати статус дослідження (кроки + Неявка/Не відбулося/Повернути) та
-   вести власні нотатки. Перенос, редагування досліджень, скасування, обдзвін
-   і фіксація поломок — лише в адміністратора. Повна синхронізація через Realtime. */
+   Дзеркало дошки адміністратора, звужене до авторизованих кабінетів радіолога:
+   статуси досліджень (кроки + Неявка/Не відбулося/Повернути) та власні нотатки.
+   Перенос, редагування досліджень, скасування, обдзвін і поломки — лише в адміна. */
 
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode, type MouseEvent } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
-import { roomScheduleFor, dayStatus } from "@/lib/schedule";
+import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText } from "@/lib/studies";
 import { incidentEffectiveEnd, incidentExpired, wallNow } from "@/lib/incidents";
+import type { QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radiologist.css";
+
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RadEntry = {
+  id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
+  patient_sex: string | null; patient_weight: number | null; scheduled_time: string | null; duration_min: number | null;
+  status: string; call_status: string | null; studies: Json; studies_original: Json | null; has_contrast: boolean;
+  contraindications: boolean; cito: boolean; doctor: string | null; note: string | null; radiologist_note: string | null;
+  indication: string | null; room_id: string | null; updated_at: string; in_progress_at: string | null;
+};
+type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
 
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
 const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
 const MON_NOM = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
-function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function startOfDay(d: Date) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function today0() { return startOfDay(new Date()); }
-function sameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
-function dowMon(d) { return (d.getDay() + 6) % 7; }
-function fmtFull(d) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
-function fmtShort(d) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
-function dateKey(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
-function modalityLabel(m) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
-function procLabel(e) {
-  const s = Array.isArray(e.studies) ? e.studies : [];
+function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
+function dowMon(d: Date) { return (d.getDay() + 6) % 7; }
+function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
+function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
+function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+function procLabel(e: { studies?: unknown; note?: string | null }) {
+  const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string; contrast?: boolean }>) : [];
   if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast ? " з контрастом" : "")).join(" + ");
   return e.note || "—";
 }
-function regionOf(e) {
-  const s = Array.isArray(e.studies) ? e.studies : [];
+function regionOf(e: { studies?: unknown }) {
+  const s = Array.isArray(e.studies) ? (e.studies as Array<{ region?: string }>) : [];
   return s.map((x) => x.region).filter(Boolean).join(", ");
 }
-function fmtTimer(sec) {
+function fmtTimer(sec: number) {
   const m = Math.floor(sec / 60), s = sec % 60, h = Math.floor(m / 60);
   if (h) return h + ":" + String(m % 60).padStart(2, "0") + ":" + String(s).padStart(2, "0");
   return m + ":" + String(s).padStart(2, "0");
 }
-// Момент входу в кабінет: окрема мітка in_progress_at; для старих рядків — updated_at.
-function enteredAtOf(e) { return e ? (e.in_progress_at || e.updated_at) : null; }
+function enteredAtOf(e: RadEntry | null | undefined): string | null { return e ? (e.in_progress_at || e.updated_at) : null; }
 
-const ST = {
+const ST: Record<string, { label: string; cls: string; dot?: boolean }> = {
   scheduled: { label: "В черзі", cls: "gray" },
   waiting: { label: "Очікує", cls: "yellow" },
   in_progress: { label: "В кабінеті", cls: "blue", dot: true },
@@ -58,7 +66,7 @@ const ST = {
   not_held: { label: "Не відбулося", cls: "orange" },
   cancelled: { label: "Скасовано", cls: "gray" },
 };
-const FLOW = { in_progress: 0, waiting: 1, scheduled: 2, done: 3, not_held: 4, no_show: 5 };
+const FLOW: Record<string, number> = { in_progress: 0, waiting: 1, scheduled: 2, done: 3, not_held: 4, no_show: 5 };
 const STAT_ITEMS = [
   { key: "all", lab: "Всього", sub: "досліджень", cls: "white" },
   { key: "scheduled", lab: "В черзі", sub: "записані", cls: "gray" },
@@ -68,15 +76,14 @@ const STAT_ITEMS = [
   { key: "not_held", lab: "Не відбулося", sub: "не відбулось", cls: "orange" },
 ];
 
-/* Прогрес-крок статусу — той самий happy-path, що в адміністратора. */
 const STEP_ORDER = ["scheduled", "waiting", "in_progress", "done"];
-const STEP_META = {
+const STEP_META: Record<string, { label: string; color: string }> = {
   scheduled:   { label: "В черзі",    color: "#aeaeb2" },
   waiting:     { label: "Очікує",     color: "#ffd60a" },
   in_progress: { label: "В кабінеті", color: "#4da3ff" },
   done:        { label: "Виконано",   color: "#30d158" },
 };
-const STEP_PRIMARY = {
+const STEP_PRIMARY: Record<string, { icon: string; label: string; bg: string; color: string }> = {
   scheduled:   { icon: "✓", label: "Пацієнт прийшов",      bg: "var(--blue)",  color: "#fff" },
   waiting:     { icon: "▶", label: "Викликати в кабінет",  bg: "var(--blue)",  color: "#fff" },
   in_progress: { icon: "✓", label: "Завершити дослідження", bg: "var(--green)", color: "#04210d" },
@@ -84,18 +91,18 @@ const STEP_PRIMARY = {
 };
 
 function LiveClock() {
-  const [now, setNow] = useState(null);
+  const [now, setNow] = useState<Date | null>(null);
   useEffect(() => { setNow(new Date()); const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
   return <span className="rad-clock tabular" suppressHydrationWarning>🕐 {now ? now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--:--"}</span>;
 }
-function LiveTimer({ enteredAt, children }) {
+function LiveTimer({ enteredAt, children }: { enteredAt?: string | null; children: (sec: number) => ReactNode }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   const sec = enteredAt ? Math.max(0, Math.floor((now - new Date(enteredAt).getTime()) / 1000)) : 0;
   return children(sec);
 }
 
-function StatsBar({ counts, filter, setFilter }) {
+function StatsBar({ counts, filter, setFilter }: { counts: Record<string, number>; filter: string; setFilter: (f: string) => void }) {
   return (
     <div className="stats">
       {STAT_ITEMS.map((s) => (
@@ -111,8 +118,18 @@ function StatsBar({ counts, filter, setFilter }) {
   );
 }
 
-/* ── Картка кабінету (дзеркало адміністратора; радіолог не знімає поломку) ── */
-function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedClosed, onComplete, onCall }) {
+interface RoomStatusCardProps {
+  room: RoomOpt;
+  patient?: RadEntry | null;
+  enteredAt?: string | null;
+  nextWaiting?: RadEntry | null;
+  blocked?: IncidentRow | null;
+  schedClosed?: string | boolean | null;
+  onComplete: (p: RadEntry) => void;
+  onCall: (p: RadEntry) => void;
+}
+
+function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedClosed, onComplete, onCall }: RoomStatusCardProps) {
   const kind = modalityLabel(room.modality);
   if (!blocked && schedClosed) {
     return (
@@ -187,19 +204,39 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
   );
 }
 
-/* ── Рядок черги зі сходинками-колами (дзеркало адміністратора, можливості радіолога) ── */
-function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onSetStatus, noteValue, onSaveNote }) {
+interface RadQueueRowProps {
+  p: RadEntry;
+  dayDate: Date;
+  roomName: string;
+  roomModel?: string;
+  roomKind: string;
+  expanded: boolean;
+  onToggle: (id: string) => void;
+  readOnly: boolean;
+  canCall: boolean;
+  onArrive: (p: RadEntry) => void;
+  onCall: (p: RadEntry) => void;
+  onComplete: (p: RadEntry) => void;
+  onNoShow: (p: RadEntry) => void;
+  onNotHeld: (p: RadEntry) => void;
+  onUndo: (p: RadEntry) => void;
+  onSetStatus: (p: RadEntry, status: string) => void;
+  noteValue?: string | null;
+  onSaveNote: (id: string, v: string) => void;
+}
+
+function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onSetStatus, noteValue, onSaveNote }: RadQueueRowProps) {
   const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
-  const meta = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
+  const meta: { label: string; cls: string; dot?: boolean; title?: string } = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
   const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
-  const canSetStatus = !isFutureRow; // статус можна уточнювати в день запису і для минулих (архівних) днів; для майбутніх — ні
+  const canSetStatus = !isFutureRow;
   const [moreOpen, setMoreOpen] = useState(false);
   const [note, setNote] = useState(noteValue || "");
   useEffect(() => { setNote(noteValue || ""); }, [p.id, noteValue]);
   const proc = procLabel(p);
-  const act = (fn) => (e) => { e.stopPropagation(); fn(p); };
+  const act = (fn: (p: RadEntry) => void) => (e: MouseEvent) => { e.stopPropagation(); fn(p); };
   return (
     <div className={"qrow-item " + p.status + (expanded ? " open" : "")} data-qrow={p.id}>
       <div className="qrow" role="button" tabIndex={0} onClick={() => onToggle(p.id)}
@@ -219,7 +256,8 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
         </div>
         <div className="q-room" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3 }}>
           {(() => {
-            const km = (Array.isArray(p.studies) && p.studies[0] && p.studies[0].type) || ((roomKind === "МРТ" || roomKind === "КТ") ? roomKind : "");
+            const arr = Array.isArray(p.studies) ? (p.studies as Array<{ type?: string }>) : [];
+            const km = (arr[0] && arr[0].type) || ((roomKind === "МРТ" || roomKind === "КТ") ? roomKind : "");
             if (!km) return null;
             const isCt = km === "КТ";
             return <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "#4da3ff" }}>{km}</span>;
@@ -237,11 +275,11 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
         <div className="qrow-detail-inner">
           <div className="qrow-detail">
             {Array.isArray(p.studies) && p.studies.length > 0 && (() => {
-              const sdiff = diffStudies(p.studies_original, p.studies);
+              const sdiff = diffStudies(p.studies_original as Parameters<typeof diffStudies>[0], p.studies as Parameters<typeof diffStudies>[1]);
               const changed = sdiff.some((d) => d.state !== "kept");
               return (
                 <div style={{ marginBottom: 8 }}>
-                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{p.studies.length > 1 ? "Дослідження (" + p.studies.length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено</span>}</div>
+                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено</span>}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
                     {sdiff.map((d, i) => (
                       <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
@@ -299,7 +337,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                       </>
                     ) : (
                       <>
-                        <button onClick={advanceDisabled ? undefined : act(advanceFn)} disabled={advanceDisabled}
+                        <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn)} disabled={advanceDisabled}
                           title={isFutureRow ? "Майбутній запис — дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "")}
                           style={{ flex: 8, minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
@@ -332,16 +370,16 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
   );
 }
 
-function MiniCalendar({ selectedDate, onSelectDate, overridesByDate }) {
+function MiniCalendar({ selectedDate, onSelectDate, overridesByDate }: { selectedDate: Date; onSelectDate: (d: Date) => void; overridesByDate?: Record<string, DayOverride> }) {
   const today = today0();
   const ovMap = overridesByDate || {};
   const [viewMonth, setViewMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
-  const shift = (n) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
+  const shift = (n: number) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
   const y = viewMonth.getFullYear(), mo = viewMonth.getMonth();
   const first = new Date(y, mo, 1);
   const days = new Date(y, mo + 1, 0).getDate();
   const startIdx = dowMon(first);
-  const cells = [];
+  const cells: (number | null)[] = [];
   for (let i = 0; i < startIdx; i++) cells.push(null);
   for (let d = 1; d <= days; d++) cells.push(d);
   return (
@@ -377,7 +415,7 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate }) {
   );
 }
 
-function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }) {
+function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }: { rooms?: RoomOpt[]; roomFilter: string; setRoomFilter: (s: string) => void; counts: Record<string, number>; adminName?: string }) {
   const router = useRouter();
   const single = (rooms || []).length === 1;
   const initials = (() => { const p = String(adminName || "").trim().split(/\s+/); return ((p[0] || "Р")[0] + (p[1] ? p[1][0] : "")).toUpperCase(); })();
@@ -422,19 +460,25 @@ function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }) {
   );
 }
 
-export default function RadiologistBoard({ clinicId, rooms, adminName }) {
+interface RadiologistBoardProps {
+  clinicId: string;
+  rooms?: RoomOpt[];
+  adminName?: string;
+}
+
+export default function RadiologistBoard({ clinicId, rooms, adminName }: RadiologistBoardProps) {
   const single = (rooms || []).length === 1;
-  const [entries, setEntries] = useState([]);
-  const [incidents, setIncidents] = useState([]);
-  const [overrides, setOverrides] = useState({});
+  const [entries, setEntries] = useState<RadEntry[]>([]);
+  const [incidents, setIncidents] = useState<IncidentRow[]>([]);
+  const [overrides, setOverrides] = useState<Record<string, DayOverride>>({});
   const [loading, setLoading] = useState(true);
-  const [roomFilter, setRoomFilter] = useState(single ? (rooms[0] || {}).id || "all" : "all");
+  const [roomFilter, setRoomFilter] = useState(single ? (rooms?.[0]?.id || "all") : "all");
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
-  const [expandedRow, setExpandedRow] = useState(null);
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState(() => today0());
-  const [toast, setToast] = useState(null);
-  const toastTimer = useRef(null);
+  const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Лёгкий тикер для авто-появи статусу «⚠ Уточнити» та перерахунку простоїв.
   const [, setNowTick] = useState(0);
@@ -443,12 +487,12 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
   const today = today0();
   const isToday = sameDay(selectedDate, today);
   const isPast = selectedDate < today;
-  const readOnly = false; // архівні дні теж редаговані — статус/нотатки можна уточнювати постфактум
+  const readOnly = false;
   const dayKey = dateKey(selectedDate);
-  const roomsById = useMemo(() => { const m = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
+  const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
   const roomIds = useMemo(() => (rooms || []).map((r) => r.id), [rooms]);
 
-  function notify(msg, type = "success") {
+  function notify(msg: string, type = "success") {
     setToast({ msg, type });
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 3000);
@@ -480,8 +524,8 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
   const loadOverrides = useCallback(async () => {
     const supabase = createClient();
     const { data } = await supabase.from("schedule_overrides").select("override_date, all_closed, label, rooms").eq("clinic_id", clinicId);
-    const m = {};
-    (data || []).forEach((o) => { m[o.override_date] = o; });
+    const m: Record<string, DayOverride> = {};
+    (data || []).forEach((o) => { m[o.override_date] = o as unknown as DayOverride; });
     setOverrides(m);
   }, [clinicId]);
 
@@ -491,8 +535,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
   // Перезапрос записей при смене дня/кабинетов: realtime-хук слушает только clinicId.
   useEffect(() => { reload(); }, [reload]);
 
-  // TD-3: единый realtime-паттерн (потабличный дебаунс + поллинг только при
-  // разрыве сокета) вместо полного refetch на каждое событие и поллинга 10с.
+  // TD-3: единый realtime-паттерн.
   useRealtimeRefetch({
     channelName: clinicId ? "rad-" + clinicId : null,
     subscriptions: [
@@ -504,22 +547,22 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
 
   const selectedOverride = overrides[dayKey] || null;
   const selDayStatus = dayStatus(selectedOverride, selectedDate);
-  function roomSchedClosed(roomId) { return roomScheduleFor(selectedDate, roomId, selectedOverride).closed; }
+  function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride).closed; }
 
   // Інциденти, що ВЖЕ діють (без авто-знятих наприкінці вікна).
   const liveIncidents = incidents.filter((i) => !incidentExpired(i));
-  const blockingByRoom = {};
+  const blockingByRoom: Record<string, IncidentRow> = {};
   liveIncidents.forEach((i) => {
     const s = new Date(i.started_at).getTime();
     if (wallNow() >= s && wallNow() < incidentEffectiveEnd(i)) blockingByRoom[i.room_id] = i;
   });
 
-  async function setStatus(id, status) {
+  async function setStatus(id: string, status: string) {
     const cur = entries.find((e) => e.id === id);
     if (status === "done" && cur && cur.status !== "in_progress") { notify("«Виконано» можна лише для пацієнта в кабінеті", "error"); return; }
     const supabase = createClient();
     const nowIso = new Date().toISOString();
-    const patch = status === "in_progress" ? { status, in_progress_at: nowIso } : { status };
+    const patch = status === "in_progress" ? { status: status as QueueStatus, in_progress_at: nowIso } : { status: status as QueueStatus };
     const { error } = await supabase.from("queue_entries").update(patch).eq("id", id);
     if (error) {
       let msg;
@@ -532,46 +575,44 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
     reload();
   }
-  async function saveNote(id, radiologist_note) {
+  async function saveNote(id: string, radiologist_note: string) {
     const supabase = createClient();
     await supabase.from("queue_entries").update({ radiologist_note }).eq("id", id);
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, radiologist_note } : e)));
   }
 
-  // Причина, чому пацієнта НЕ можна завести в кабінет (null = можна) — синхронно з адміністратором.
-  function inProgressBlockReason(p) {
-    if (blockingByRoom[p.room_id]) return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
-    if (roomSchedClosed(p.room_id)) return "Кабінет зачинено за графіком на цей день";
+  function inProgressBlockReason(p: RadEntry): string | null {
+    if (p.room_id && blockingByRoom[p.room_id]) return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
+    if (p.room_id && roomSchedClosed(p.room_id)) return "Кабінет зачинено за графіком на цей день";
     if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
     return null;
   }
-  function callPatient(p) {
+  function callPatient(p: RadEntry) {
     const reason = inProgressBlockReason(p);
     if (reason) { notify(reason, "error"); return; }
     setStatus(p.id, "in_progress");
   }
-  function setStatusGuarded(p, status) {
+  function setStatusGuarded(p: RadEntry, status: string) {
     if (status === "in_progress") { callPatient(p); return; }
     setStatus(p.id, status);
   }
-  const arrive = (p) => setStatus(p.id, "waiting");
-  const completeProc = (p) => setStatus(p.id, "done");
-  const noShow = (p) => setStatus(p.id, "no_show");
-  const notHeld = (p) => setStatus(p.id, "not_held");
-  const undo = (p) => setStatus(p.id, "scheduled");
+  const arrive = (p: RadEntry) => setStatus(p.id, "waiting");
+  const completeProc = (p: RadEntry) => setStatus(p.id, "done");
+  const noShow = (p: RadEntry) => setStatus(p.id, "no_show");
+  const notHeld = (p: RadEntry) => setStatus(p.id, "not_held");
+  const undo = (p: RadEntry) => setStatus(p.id, "scheduled");
 
   const scoped = roomFilter === "all" ? entries : entries.filter((e) => e.room_id === roomFilter);
-  const counts = { total: scoped.length, scheduled: 0, waiting: 0, in_progress: 0, done: 0, no_show: 0, not_held: 0 };
+  const counts: Record<string, number> = { total: scoped.length, scheduled: 0, waiting: 0, in_progress: 0, done: 0, no_show: 0, not_held: 0 };
   scoped.forEach((e) => { if (counts[e.status] != null) counts[e.status]++; });
   const citoList = scoped.filter((e) => e.cito && (e.status === "scheduled" || e.status === "waiting" || e.status === "in_progress"));
 
-  // Картки кабінетів (по всіх авторизованих — не залежать від фільтра статусу).
-  const currentByRoom = {}, nextWaitingByRoom = {};
-  entries.forEach((e) => { if (e.status === "in_progress") currentByRoom[e.room_id] = e; });
+  const currentByRoom: Record<string, RadEntry> = {}, nextWaitingByRoom: Record<string, RadEntry> = {};
+  entries.forEach((e) => { if (e.status === "in_progress" && e.room_id) currentByRoom[e.room_id] = e; });
   entries.forEach((e) => {
-    if (e.status !== "waiting") return;
+    if (e.status !== "waiting" || !e.room_id) return;
     const cur = nextWaitingByRoom[e.room_id];
-    if (!cur || (e.cito && !cur.cito)) nextWaitingByRoom[e.room_id] = e; // CITO — першочергово
+    if (!cur || (e.cito && !cur.cito)) nextWaitingByRoom[e.room_id] = e;
   });
   const cardRooms = roomFilter === "all" ? (rooms || []) : (rooms || []).filter((r) => r.id === roomFilter);
 
@@ -619,14 +660,14 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
               </div>
             )}
             {!isPast && liveIncidents.filter((inc) => roomIds.includes(inc.room_id)).map((inc) => {
-              const r = roomsById[inc.room_id] || {};
+              const r = roomsById[inc.room_id];
               const nowBlocking = !!blockingByRoom[inc.room_id] && blockingByRoom[inc.room_id].id === inc.id;
               const startStr = new Date(inc.started_at).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
               return (
                 <div className="inc-banner fade-in" key={inc.id} style={nowBlocking ? undefined : { borderColor: "var(--orange)" }}>
                   <span className="inc-banner-ic">{nowBlocking ? "🔧" : "🗓"}</span>
                   <div className="inc-banner-txt">
-                    <div className="inc-banner-title">{r.name || "Апарат"} {nowBlocking ? "заблоковано" : "— заплановано простій"} · {inc.reason_label || "Поломка"}
+                    <div className="inc-banner-title">{r?.name || "Апарат"} {nowBlocking ? "заблоковано" : "— заплановано простій"} · {inc.reason_label || "Поломка"}
                       {inc.note ? <span className="inc-banner-window">{inc.note}</span> : null}
                     </div>
                     <div className="inc-banner-sub">{nowBlocking ? "Виклики на цей апарат призупинено · зніме адміністратор" : "Заплановано з " + startStr + " · виклики поки працюють"}</div>
@@ -687,12 +728,12 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }) {
             ) : (
               <div className="qrows">
                 {filtered.map((p) => {
-                  const r = roomsById[p.room_id] || {};
+                  const r = p.room_id ? roomsById[p.room_id] : undefined;
                   return (
                     <RadQueueRow key={p.id} p={p} dayDate={selectedDate}
-                      roomName={r.name || "—"} roomModel={r.apparatus_model || ""} roomKind={modalityLabel(r.modality)}
+                      roomName={r?.name || "—"} roomModel={r?.apparatus_model || ""} roomKind={modalityLabel(r?.modality || "")}
                       expanded={expandedRow === p.id} onToggle={(id) => setExpandedRow((x) => (x === id ? null : id))}
-                      readOnly={readOnly} canCall={!currentByRoom[p.room_id]}
+                      readOnly={readOnly} canCall={!(p.room_id && currentByRoom[p.room_id])}
                       onArrive={arrive} onCall={callPatient} onComplete={completeProc}
                       onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onSetStatus={setStatusGuarded}
                       noteValue={p.radiologist_note} onSaveNote={saveNote} />
