@@ -26,9 +26,24 @@ export async function POST(req: Request) {
   const admin = createAdminClient();
   const { data: target } = await admin.from("profiles").select("clinic_id, role").eq("id", targetId).single();
   if (!target) return NextResponse.json({ error: "Профіль не знайдено" }, { status: 404 });
-  if (target.clinic_id !== me.clinic_id) return NextResponse.json({ error: "Інша клініка" }, { status: 403 });
-  if (target.role !== "radiologist" && target.role !== "referrer") {
-    return NextResponse.json({ error: "Дозволено лише для радіологів і лікарів-направників" }, { status: 403 });
+
+  // Авторизація: радіолог свого центру АБО CEO з активним грантом до центру адміна
+  // (глобальний CEO має clinic_id IS NULL, тож звіряємося через ceo_access).
+  let authorized = false;
+  if (target.role === "radiologist" && target.clinic_id === me.clinic_id) {
+    authorized = true;
+  } else if (target.role === "ceo") {
+    const { data: link } = await admin
+      .from("ceo_access")
+      .select("id")
+      .eq("ceo_id", targetId)
+      .eq("clinic_id", me.clinic_id as string)
+      .eq("status", "active")
+      .maybeSingle();
+    if (link) authorized = true;
+  }
+  if (!authorized) {
+    return NextResponse.json({ error: "Немає прав керувати паролем цього акаунта" }, { status: 403 });
   }
 
   let newPass: string;

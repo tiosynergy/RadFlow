@@ -86,35 +86,50 @@ function ProgressCircle({ pct, color }: { pct: number; color: string }) {
 
 const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20 };
 
+type ClinicOpt = { id: string; name: string };
+
 interface CeoDashboardProps {
-  clinicId: string;
-  rooms?: RoomOpt[];
+  clinics: ClinicOpt[];          // центри, доступні цьому користувачу
   clinicName?: string;
   adminName?: string;
   adminRole?: string;
   roleKey?: string;
 }
 
-export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: CeoDashboardProps) {
+export default function CeoDashboard({ clinics, clinicName, adminName, adminRole, roleKey = "admin" }: CeoDashboardProps) {
   const [period, setPeriod] = useState("today");
+  // scope: "all" — агрегат по всіх доступних центрах, або конкретний clinic_id.
+  const [scope, setScope] = useState<string>(clinics.length === 1 ? clinics[0].id : "all");
+  const [rooms, setRooms] = useState<RoomOpt[]>([]);
   const [entries, setEntries] = useState<EntryRow[]>([]);
   const [weekEntries, setWeekEntries] = useState<WeekRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
+  const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; rooms.forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
+
+  const clinicIds = useMemo(
+    () => (scope === "all" ? clinics.map((c) => c.id) : [scope]),
+    [scope, clinics]
+  );
 
   function notify(msg: string) { setToast(msg); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3000); }
 
   const [from, to] = periodRange(period);
 
   const reload = useCallback(async () => {
+    if (clinicIds.length === 0) { setRooms([]); setEntries([]); setWeekEntries([]); setLoading(false); return; }
     const supabase = createClient();
     const [f, t] = periodRange(period);
+    const { data: rdata } = await supabase
+      .from("rooms")
+      .select("id, name, modality, apparatus_model")
+      .in("clinic_id", clinicIds);
+    setRooms(rdata || []);
     const { data } = await supabase
       .from("queue_entries")
       .select("id, status, duration_min, studies, room_id, scheduled_date, patient_name")
-      .eq("clinic_id", clinicId).neq("status", "cancelled")
+      .in("clinic_id", clinicIds).neq("status", "cancelled")
       .gte("scheduled_date", dateKey(f)).lte("scheduled_date", dateKey(t));
     setEntries(data || []);
     // тиждень для графіка
@@ -122,25 +137,25 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
     const { data: wdata } = await supabase
       .from("queue_entries")
       .select("id, status, scheduled_date")
-      .eq("clinic_id", clinicId).neq("status", "cancelled")
+      .in("clinic_id", clinicIds).neq("status", "cancelled")
       .gte("scheduled_date", dateKey(mon)).lte("scheduled_date", dateKey(addDays(mon, 6)));
     setWeekEntries(wdata || []);
     setLoading(false);
-  }, [clinicId, period]);
+  }, [clinicIds, period]);
 
-  // Спинер при первой загрузке/смене клиники.
-  useEffect(() => { setLoading(true); }, [clinicId]);
+  // Спинер при первой загрузке/смене набора центров.
+  useEffect(() => { setLoading(true); }, [clinicIds]);
 
-  // Перерасчёт при смене периода: realtime-хук слушает только clinicId.
+  // Перерасчёт при смене периода/scope.
   useEffect(() => { reload(); }, [reload]);
 
-  // TD-3: единый realtime-паттерн.
+  // TD-3: единый realtime-паттерн — подписка на каждый доступный центр.
   useRealtimeRefetch({
-    channelName: clinicId ? "ceo-" + clinicId : null,
-    subscriptions: [
-      { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: reload },
-    ],
+    channelName: clinicIds.length ? "ceo-" + scope : null,
+    subscriptions: clinicIds.map((cid) => ({ table: "queue_entries" as const, filter: "clinic_id=eq." + cid, onChange: reload })),
   });
+
+  const scopeName = scope === "all" ? "Всі центри" : (clinics.find((c) => c.id === scope)?.name || clinicName || "");
 
   /* KPI */
   const total = entries.length;
@@ -197,14 +212,20 @@ export default function CeoDashboard({ clinicId, rooms, clinicName, adminName, a
 
   return (
     <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={rooms} activeNav="ceo" />
+      <Sidebar clinicName={scopeName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={rooms} activeNav="ceo" />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">
             <span className="tic">📊</span>
-            <div><h1>Дашборд — Загальний огляд</h1><div className="date">{clinicName} · {periodLabel} · <LiveClock /></div></div>
+            <div><h1>Дашборд — Загальний огляд</h1><div className="date">{scopeName} · {periodLabel} · <LiveClock /></div></div>
           </div>
           <div className="tb-right">
+            {clinics.length > 1 && (
+              <select className="inp" style={{ width: "auto", minWidth: 160 }} value={scope} onChange={(e) => setScope(e.target.value)} title="Оберіть центр">
+                <option value="all">Всі центри ({clinics.length})</option>
+                {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            )}
             <div className="bk-seg">
               {PERIODS.map((p) => <button key={p.k} className={"bk-seg-btn" + (period === p.k ? " active" : "")} onClick={() => setPeriod(p.k)}>{p.l}</button>)}
             </div>

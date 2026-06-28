@@ -10,6 +10,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import LiveClock from "@/components/LiveClock";
+import CeoDashboardLink from "@/components/CeoDashboardLink";
 import PatientEditModal from "@/components/PatientEditModal";
 import RescheduleModal from "@/components/RescheduleModal";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry } from "@/app/queue/actions";
@@ -939,6 +940,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ fontSize: 13, color: "var(--text-secondary)" }}><LiveClock /></span>
           <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>🩺 {doctorName}</span>
+          <CeoDashboardLink />
           <button className="btn btn-secondary btn-sm" onClick={signOut} title="Вийти з акаунта">Вийти</button>
         </div>
       </header>

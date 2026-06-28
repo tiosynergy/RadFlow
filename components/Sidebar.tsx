@@ -4,7 +4,9 @@
    Портовано з rf-shell.jsx. Кабінети — з БД, клініка/адмін — з props.
    Деякі операції (Колл-лист, Інцидент, Кабінет радіолога) — окремі етапи (disabled). */
 
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
 import { signOutAndRedirect } from "@/lib/auth";
 
 type SidebarRoom = {
@@ -53,6 +55,26 @@ export default function Sidebar({
   const router = useRouter();
   const isAdmin = roleKey === "admin";
   const isAdminOrCeo = roleKey === "admin" || roleKey === "ceo";
+
+  // Крос-рольовий CEO (напр. адмін/реєстратор з грантом ceo_access) бачить
+  // посилання на дашборд, навіть якщо його основна роль не admin/ceo.
+  const [hasCeoGrant, setHasCeoGrant] = useState(false);
+  useEffect(() => {
+    if (isAdminOrCeo) return; // у них посилання вже показано
+    let active = true;
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user || !active) return;
+        const { data } = await supabase
+          .from("ceo_access").select("clinic_id").eq("ceo_id", user.id).eq("status", "active").limit(1);
+        if (active && (data?.length ?? 0) > 0) setHasCeoGrant(true);
+      } catch { /* ignore */ }
+    })();
+    return () => { active = false; };
+  }, [isAdminOrCeo]);
+  const showCeoLink = isAdminOrCeo || hasCeoGrant;
 
   async function signOut() {
     await signOutAndRedirect(router);
@@ -112,8 +134,9 @@ export default function Sidebar({
 
       <div className="sb-settings">
         <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span></a>
-        {isAdminOrCeo && <a href="/ceo" className={"sb-item" + (activeNav === "ceo" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Дашборд CEO</span></a>}
+        {showCeoLink && <a href="/ceo" className={"sb-item" + (activeNav === "ceo" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Дашборд CEO</span></a>}
         {isAdmin && <a href="/staff" className={"sb-item" + (activeNav === "staff" ? " active" : "")}><span className="ic">👥</span><span className="sb-item-lab">Радіологи та доступи</span></a>}
+        {isAdmin && <a href="/ceo-admin" className={"sb-item" + (activeNav === "ceo-admin" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Керівники (CEO)</span></a>}
         {isAdmin && <a href="/referrers" className={"sb-item" + (activeNav === "referrers" ? " active" : "")}><span className="ic">🩺</span><span className="sb-item-lab">Лікарі-направники</span></a>}
         {isAdmin && <a href="/referral" className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span></a>}
         {isAdmin && <a href="/setup" className="sb-item"><span className="ic">⚙</span><span className="sb-item-lab">Майстер налаштування</span></a>}

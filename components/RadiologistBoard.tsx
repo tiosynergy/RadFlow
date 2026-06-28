@@ -15,6 +15,7 @@ import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText } from "@/lib/studies";
 import { incidentEffectiveEnd, incidentExpired, wallNow } from "@/lib/incidents";
 import { setQueueEntryStatus, setRadiologistNote } from "@/app/queue/actions";
+import CeoDashboardLink from "@/components/CeoDashboardLink";
 import type { QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -643,6 +644,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
             <div><h1>Кабінет радіолога</h1><div className="date">{adminName} · Радіолог</div></div>
           </div>
           <div className="tb-right">
+            <CeoDashboardLink />
             <span className="rad-date">{fmtFull(selectedDate)}</span>
             <LiveClock />
             <span className="rt-pill"><span className="pulse-dot" style={{ background: "var(--green)", width: 7, height: 7 }} />Real-time</span>

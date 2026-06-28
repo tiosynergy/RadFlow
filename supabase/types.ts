@@ -520,6 +520,52 @@ export type Database = {
           }
         ];
       };
+      ceo_access: {
+        Row: {
+          id: string;
+          ceo_id: string;
+          clinic_id: string;
+          status: Database["public"]["Enums"]["ceo_access_status"];
+          granted_by: string | null;
+          note: string | null;
+          created_at: string;
+          revoked_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          ceo_id: string;
+          clinic_id: string;
+          status?: Database["public"]["Enums"]["ceo_access_status"];
+          granted_by?: string | null;
+          note?: string | null;
+          created_at?: string;
+          revoked_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          ceo_id?: string;
+          clinic_id?: string;
+          status?: Database["public"]["Enums"]["ceo_access_status"];
+          granted_by?: string | null;
+          note?: string | null;
+          created_at?: string;
+          revoked_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "ceo_access_ceo_id_fkey";
+            columns: ["ceo_id"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "ceo_access_clinic_id_fkey";
+            columns: ["clinic_id"];
+            referencedRelation: "clinics";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
       referral_access: {
         Row: {
           id: string;
@@ -614,6 +660,14 @@ export type Database = {
         Args: { c: string };
         Returns: boolean;
       };
+      auth_ceo_clinics: {
+        Args: Record<PropertyKey, never>;
+        Returns: string[];
+      };
+      auth_is_ceo_of: {
+        Args: { c: string };
+        Returns: boolean;
+      };
       auth_referrer_clinics: {
         Args: Record<PropertyKey, never>;
         Returns: string[];
@@ -661,6 +715,7 @@ export type Database = {
     };
     Enums: {
       user_role: "admin" | "radiologist" | "registrar" | "referrer" | "ceo";
+      ceo_access_status: "active" | "revoked";
       modality: "MRI" | "CT" | "OTHER";
       queue_status:
         | "scheduled"
