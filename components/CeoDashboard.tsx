@@ -119,28 +119,35 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
 
   const reload = useCallback(async () => {
     if (clinicIds.length === 0) { setRooms([]); setEntries([]); setWeekEntries([]); setLoading(false); return; }
-    const supabase = createClient();
-    const [f, t] = periodRange(period);
-    const { data: rdata } = await supabase
-      .from("rooms")
-      .select("id, name, modality, apparatus_model")
-      .in("clinic_id", clinicIds);
-    setRooms(rdata || []);
-    const { data } = await supabase
-      .from("queue_entries")
-      .select("id, status, duration_min, studies, room_id, scheduled_date, patient_name")
-      .in("clinic_id", clinicIds).neq("status", "cancelled")
-      .gte("scheduled_date", dateKey(f)).lte("scheduled_date", dateKey(t));
-    setEntries(data || []);
-    // тиждень для графіка
-    const wk = today0(); const mon = addDays(wk, -((wk.getDay() + 6) % 7));
-    const { data: wdata } = await supabase
-      .from("queue_entries")
-      .select("id, status, scheduled_date")
-      .in("clinic_id", clinicIds).neq("status", "cancelled")
-      .gte("scheduled_date", dateKey(mon)).lte("scheduled_date", dateKey(addDays(mon, 6)));
-    setWeekEntries(wdata || []);
-    setLoading(false);
+    // Транзиентний мережевий збій (напр. оновлення токена Supabase) не повинен
+    // валити UI неперехопленим reject — realtime/focus-рефетч підхопить дані пізніше.
+    try {
+      const supabase = createClient();
+      const [f, t] = periodRange(period);
+      const { data: rdata } = await supabase
+        .from("rooms")
+        .select("id, name, modality, apparatus_model")
+        .in("clinic_id", clinicIds);
+      setRooms(rdata || []);
+      const { data } = await supabase
+        .from("queue_entries")
+        .select("id, status, duration_min, studies, room_id, scheduled_date, patient_name")
+        .in("clinic_id", clinicIds).neq("status", "cancelled")
+        .gte("scheduled_date", dateKey(f)).lte("scheduled_date", dateKey(t));
+      setEntries(data || []);
+      // тиждень для графіка
+      const wk = today0(); const mon = addDays(wk, -((wk.getDay() + 6) % 7));
+      const { data: wdata } = await supabase
+        .from("queue_entries")
+        .select("id, status, scheduled_date")
+        .in("clinic_id", clinicIds).neq("status", "cancelled")
+        .gte("scheduled_date", dateKey(mon)).lte("scheduled_date", dateKey(addDays(mon, 6)));
+      setWeekEntries(wdata || []);
+    } catch (e) {
+      console.warn("CEO dashboard reload failed (буде повтор):", e);
+    } finally {
+      setLoading(false);
+    }
   }, [clinicIds, period]);
 
   // Спинер при первой загрузке/смене набора центров.
