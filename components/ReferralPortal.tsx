@@ -854,6 +854,64 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
   );
 }
 
+/* ---------- Вкладка «Мій профіль» (направник редагує власні дані) ---------- */
+function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m: string, t?: string) => void; onSaved: () => void }) {
+  const [form, setForm] = useState({ login: "", full_name: "", phone: "", note: "", email: "" });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const supabase = createClient();
+      const [{ data: p }, { data: priv }] = await Promise.all([
+        supabase.from("profiles").select("login, full_name, phone, note").eq("id", doctorId).maybeSingle(),
+        supabase.from("referrer_private").select("email").eq("referrer_id", doctorId).maybeSingle(),
+      ]);
+      if (!active) return;
+      setForm({ login: p?.login || "", full_name: p?.full_name || "", phone: p?.phone || "", note: p?.note || "", email: priv?.email || "" });
+      setLoading(false);
+    })();
+    return () => { active = false; };
+  }, [doctorId]);
+
+  async function save() {
+    if (!form.login.trim()) { notify("Вкажіть логін", "error"); return; }
+    if (!form.full_name.trim()) { notify("Вкажіть ПІБ", "error"); return; }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/referral/profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { notify(data.error || "Помилка", "error"); setSaving(false); return; }
+      notify("Профіль збережено", "success");
+      onSaved();
+    } catch { notify("Помилка зʼєднання із сервером", "error"); }
+    setSaving(false);
+  }
+
+  const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20, maxWidth: 640, margin: "0 auto" };
+  const reqMark = <span style={{ color: "var(--red)" }}> *</span>;
+  if (loading) return <div className="empty"><div className="et">Завантаження профілю…</div></div>;
+  return (
+    <div style={card}>
+      <div className="bk-section-label" style={{ marginTop: 0 }}>Мій профіль</div>
+      <div className="fld-row">
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Логін{reqMark}</span><input className="inp" value={form.login} onChange={(e) => setForm((f) => ({ ...f, login: e.target.value }))} /></label>
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>ПІБ{reqMark}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))} /></label>
+      </div>
+      <div className="fld-row">
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Телефон{reqMark}</span><PhoneInput required value={form.phone} onChange={(v) => setForm((f) => ({ ...f, phone: v }))} /></label>
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Email (для відновлення доступу){reqMark}</span><input className="inp" type="email" placeholder="name@example.com" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></label>
+      </div>
+      <label className="fld"><span className="fld-lab">Примітки</span><input className="inp" placeholder="напр. спеціалізація (необовʼязково)" value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} /></label>
+      <div className="hint-blue">🔒 <b>Email бачите лише ви</b> — він потрібен для відновлення доступу й не видимий центрам. Логін, ПІБ, телефон і примітки видно центрам, до яких ви підключені.</div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
+        <button className="btn btn-primary" disabled={saving} onClick={save}>{saving ? "Зберігаємо…" : "Зберегти"}</button>
+      </div>
+    </div>
+  );
+}
+
 interface ReferralPortalProps {
   role: string;
   centers: Center[];
@@ -950,6 +1008,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         <button className={"pill" + (tab === "new" ? " active" : "")} onClick={() => setTab("new")}>Нове направлення</button>
         <button className={"pill" + (tab === "mine" ? " active" : "")} onClick={() => setTab("mine")}>Мої направлення <span className="ct">({referrals.length})</span></button>
         <button className={"pill" + (tab === "centers" ? " active" : "")} onClick={() => setTab("centers")}>Мої центри{pendingInvites > 0 ? <span className="ct" style={{ background: "var(--blue)", color: "#fff" }}>{pendingInvites}</span> : null}</button>
+        {canManage && <button className={"pill" + (tab === "profile" ? " active" : "")} onClick={() => setTab("profile")}>Мій профіль</button>}
       </div>
 
       <div style={{ padding: "20px 28px 50px" }}>
@@ -962,6 +1021,9 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         )}
         {tab === "centers" && (
           <MyCenters centers={centers} canManage={canManage} onChanged={onCentersChanged} notify={notify} />
+        )}
+        {tab === "profile" && canManage && (
+          <MyProfile doctorId={doctorId} notify={notify} onSaved={() => router.refresh()} />
         )}
       </div>
 

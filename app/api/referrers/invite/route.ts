@@ -28,8 +28,10 @@ export async function POST(req: Request) {
   const login = String(body.login || "").trim();
   const fullName = String(body.full_name || "").trim();
   const phone = String(body.phone || "").trim();
-  const emailRaw = String(body.email || "").trim().toLowerCase();
-  const note = String(body.note || "").trim() || null;
+  // Реальний email направника тепер ПРИВАТНИЙ і вводиться самим лікарем у профілі
+  // (referrer_private). Адмін його не задає — для Supabase Auth завжди генеруємо
+  // технічний email від логіну (вхід усе одно за логіном).
+  const note = String(body.note || "").trim() || null; // примітка ДО ГРАНТУ (referral_access)
   const policy = body.policy === "confirm" ? "confirm" : "direct";
   const roomIdsRaw = Array.isArray(body.room_ids) ? body.room_ids.filter((x: unknown) => UUID_RE.test(String(x))) : [];
   const room_ids = roomIdsRaw.length ? roomIdsRaw : null; // null = усі кабінети
@@ -40,12 +42,10 @@ export async function POST(req: Request) {
   if (!login) {
     return NextResponse.json({ error: "Вкажіть логін направника" }, { status: 400 });
   }
-  if (emailRaw && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw)) {
-    return NextResponse.json({ error: "Некоректний email" }, { status: 400 });
-  }
-  // Технічний email від логіну, якщо реального немає (вхід усе одно за логіном).
+  // Технічний email від логіну (Supabase Auth потребує email; вхід — за логіном).
+  // Реальний email лікар вкаже сам у профілі (referrer_private).
   const loginSan = login.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "") || "user";
-  const effectiveEmail = emailRaw || (loginSan + "@referrer.radflow.local");
+  const effectiveEmail = loginSan + "@referrer.radflow.local";
 
   const admin = createAdminClient();
 
@@ -98,9 +98,11 @@ export async function POST(req: Request) {
     referrerId = created.user.id;
     createdAccount = true;
 
+    // profiles.note (Примітки) — приватне поле направника, він заповнює його сам.
+    // Тут НЕ ставимо (note йде лише в referral_access як примітка до гранту).
     const { error: pErr } = await admin.from("profiles").insert({
       id: referrerId, clinic_id: null, role: "referrer", login, full_name: fullName,
-      email: effectiveEmail, phone, note, approved: true, password_set: false, invite_token: inviteToken,
+      email: effectiveEmail, phone, approved: true, password_set: false, invite_token: inviteToken,
     });
     if (pErr) {
       await admin.auth.admin.deleteUser(referrerId); // відкат

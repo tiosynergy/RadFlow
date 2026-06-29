@@ -16,10 +16,10 @@ import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
-type ReferrerProfile = { id?: string; login?: string | null; full_name?: string | null; email?: string | null; phone?: string | null; password_set?: boolean; invite_token?: string | null };
+type ReferrerProfile = { id?: string; login?: string | null; full_name?: string | null; phone?: string | null; note?: string | null; password_set?: boolean; invite_token?: string | null };
 type AccessRow = { access_id: string; referrer_id: string; status: string; policy: string | null; room_ids: string[] | null; note: string | null; referrer: ReferrerProfile };
 type InviteForm = { login: string; full_name: string; email: string; phone: string; note: string; policy: string; room_ids: string[] };
-type EditForm = { full_name: string; phone: string; email: string; policy: string; room_ids: string[]; note: string };
+type EditForm = { policy: string; room_ids: string[]; note: string };
 type LoginSug = { id: string; login: string | null; full_name: string | null };
 type StrKey = "login" | "full_name" | "email" | "phone" | "note" | "policy";
 type ApiResult = { ok: boolean; data: any }; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -63,7 +63,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const [origin, setOrigin] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<EditForm>({ full_name: "", phone: "", email: "", policy: "direct", room_ids: [], note: "" });
+  const [editForm, setEditForm] = useState<EditForm>({ policy: "direct", room_ids: [], note: "" });
   const [savingEdit, setSavingEdit] = useState(false);
   const [loginSug, setLoginSug] = useState<LoginSug[]>([]);
   const [sugOpen, setSugOpen] = useState(false);
@@ -121,7 +121,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     const ids = Array.from(new Set(list.map((a) => a.referrer_id)));
     const profById: Record<string, ReferrerProfile> = {};
     if (ids.length) {
-      const { data: profs } = await supabase.from("profiles").select("id, login, full_name, email, phone, password_set, invite_token").in("id", ids);
+      const { data: profs } = await supabase.from("profiles").select("id, login, full_name, phone, note, password_set, invite_token").in("id", ids);
       (profs || []).forEach((p) => { profById[p.id] = p; });
     }
     setRows(list.map((a) => ({ access_id: a.id, referrer_id: a.referrer_id, status: a.status, policy: a.policy, room_ids: a.room_ids, note: a.note, referrer: profById[a.referrer_id] || {} })));
@@ -195,31 +195,16 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
 
   function startEdit(r: AccessRow) {
     setEditingId(r.access_id);
-    setEditForm({
-      full_name: r.referrer.full_name || "",
-      phone: r.referrer.phone || "",
-      email: r.referrer.email || "",
-      policy: r.policy || "direct",
-      room_ids: (r.room_ids && r.room_ids.length ? r.room_ids : allRoomIds),
-      note: r.note || "",
-    });
+    setEditForm({ policy: r.policy || "direct", room_ids: (r.room_ids && r.room_ids.length ? r.room_ids : allRoomIds), note: r.note || "" });
   }
   function toggleEditRoom(id: string) { setEditForm((f) => ({ ...f, room_ids: f.room_ids.includes(id) ? f.room_ids.filter((x) => x !== id) : [...f.room_ids, id] })); }
   async function saveEdit() {
-    if (!editForm.full_name.trim()) { notify("Вкажіть ПІБ направника", "error"); return; }
     setSavingEdit(true);
-    const row = rows.find((x) => x.access_id === editingId);
-    // 1) Дані направника (ПІБ / телефон / email) — глобальний профіль, серверний роут.
-    if (row) {
-      const upd = await postJSON("/api/referrers/update", { referrer_id: row.referrer_id, full_name: editForm.full_name, phone: editForm.phone, email: editForm.email });
-      if (!upd.ok) { setSavingEdit(false); notify(upd.data.error || "Помилка збереження даних направника", "error"); return; }
-    }
-    // 2) Налаштування доступу (режим / кабінети / примітка).
     const room_ids = (editForm.room_ids.length === 0 || editForm.room_ids.length === allRoomIds.length) ? null : editForm.room_ids;
     const { ok, data } = await postJSON("/api/referral/access/decide", { access_id: editingId, decision: "update", policy: editForm.policy, room_ids, note: editForm.note });
     setSavingEdit(false);
     if (!ok) { notify(data.error || "Помилка", "error"); return; }
-    notify("Збережено", "success");
+    notify("Налаштування збережено", "success");
     setEditingId(null);
     reload();
   }
@@ -241,6 +226,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
         <div style={{ flex: 1, minWidth: 180 }}>
           <div style={{ fontWeight: 600, fontSize: 14 }}>{name}</div>
           <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{r.referrer.login ? "@" + r.referrer.login : ""}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
+          {r.referrer.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }} title="Примітка лікаря (редагує сам направник)">📝 {r.referrer.note}</div>}
           {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
           {r.status === "active" && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Кабінети: {roomsLabel(r.room_ids)}</div>}
           {!r.referrer.password_set && r.referrer.invite_token && (
@@ -301,7 +287,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
             {!existingPicked && (
               <div className="fld-row">
                 <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Телефон{req}</span><PhoneInput required value={form.phone} onChange={(v) => setF("phone", v)} /></label>
-                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email</span><input className="inp" type="email" placeholder="необовʼязково" value={form.email} onChange={(e) => setF("email", e.target.value)} /></label>
+                <span className="fld-spacer" style={{ flex: 1 }} />
               </div>
             )}
             <div className="fld-row">
@@ -335,7 +321,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
               <button className="btn btn-primary" disabled={busy} onClick={invite}>{busy ? "Надсилаємо…" : "Запросити"}</button>
             </div>
-            <div className="hint-blue">Якщо акаунта ще немає — створимо глобальний акаунт направника. Пароль лікар задасть <b>самостійно за посиланням</b> (зʼявиться у картці направника нижче — скопіюйте кнопкою й передайте йому). <b>Email необовʼязковий</b> — входити можна за логіном.</div>
+            <div className="hint-blue">Якщо акаунта ще немає — створимо глобальний акаунт направника. Пароль лікар задасть <b>самостійно за посиланням</b> (зʼявиться у картці направника нижче — скопіюйте кнопкою й передайте йому). Вхід — за логіном. <b>Email лікар вкаже сам</b> у своєму профілі (для відновлення доступу) — він не видимий центрам.</div>
           </div>
 
           {/* Запити на доступ */}
@@ -366,16 +352,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                   </Row>
                   {editingId === r.access_id && (
                     <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: 16, margin: "4px 0 8px" }}>
-                      <div className="bk-section-label" style={{ marginTop: 0, marginBottom: 8 }}>Дані направника</div>
-                      <div className="fld-row">
-                        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>ПІБ{req}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={editForm.full_name} onChange={(e) => setEditForm((f) => ({ ...f, full_name: e.target.value }))} /></label>
-                        <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Логін</span><input className="inp" value={r.referrer.login || ""} readOnly style={{ opacity: 0.6 }} title="Логін змінити не можна" /></label>
-                      </div>
-                      <div className="fld-row">
-                        <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон</span><PhoneInput value={editForm.phone} onChange={(v) => setEditForm((f) => ({ ...f, phone: v }))} /></label>
-                        <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email</span><input className="inp" type="email" placeholder="необовʼязково" value={editForm.email} onChange={(e) => setEditForm((f) => ({ ...f, email: e.target.value }))} /></label>
-                      </div>
-                      <div className="bk-section-label" style={{ marginBottom: 8 }}>Доступ до центру</div>
+                      <div className="ctx-hint" style={{ fontSize: 12, marginBottom: 10 }}>Дані направника (ПІБ, телефон, примітки) лікар редагує сам у своєму профілі. Тут — лише налаштування доступу до вашого центру.</div>
                       <div className="fld-row">
                         <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Режим бронювання</span>
                           <select className="inp" value={editForm.policy} onChange={(e) => setEditForm((f) => ({ ...f, policy: e.target.value }))}>

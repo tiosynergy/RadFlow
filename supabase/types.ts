@@ -621,6 +621,31 @@ export type Database = {
           }
         ];
       };
+      referrer_private: {
+        Row: {
+          referrer_id: string;
+          email: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          referrer_id: string;
+          email?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          referrer_id?: string;
+          email?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "referrer_private_referrer_id_fkey";
+            columns: ["referrer_id"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
       rate_limits: {
         Row: {
           key: string;
