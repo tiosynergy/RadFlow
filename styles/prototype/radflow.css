@@ -302,10 +302,11 @@ input, textarea, select { font-family: inherit; color: inherit; }
 
 /* ===== Queue table ===== */
 .qhead {
-  display: grid; grid-template-columns: 54px minmax(180px,2fr) minmax(150px,1.7fr) minmax(116px,1fr) 104px 26px;
+  display: grid; grid-template-columns: 54px minmax(200px,2fr) minmax(220px,3fr) minmax(92px,0.8fr) 110px 26px;
   gap: 12px; padding: 6px 16px; font-size: 11px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint);
 }
+.qhead > div:nth-child(5) { text-align: center; } /* СТАТУС — по центру над бейджами */
 .qrows { display: flex; flex-direction: column; gap: 7px; }
 .qrow-item {
   background: var(--card); border: 1px solid var(--border);
@@ -317,10 +318,17 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .qrow-item.done.open, .qrow-item.done:hover { opacity: 1; }
 .qrow-item.noshow { opacity: 0.55; border-left-color: var(--red); }
 .qrow-item.noshow.open, .qrow-item.noshow:hover { opacity: 1; }
-.qrow-item.open { border-color: var(--border-strong); box-shadow: 0 6px 22px rgba(0,0,0,0.32); }
+/* Лівий акцент = колір статусу запису */
+.qrow-item.scheduled { border-left-color: var(--text-faint); }
+.qrow-item.waiting { border-left-color: var(--yellow); }
+.qrow-item.in_progress { border-left-color: var(--blue); background: rgba(10,132,255,0.07); }
+.qrow-item.done { border-left-color: var(--green); }
+.qrow-item.no_show { border-left-color: var(--red); opacity: 0.6; }
+.qrow-item.no_show.open, .qrow-item.no_show:hover { opacity: 1; }
+.qrow-item.open { border-top-color: var(--border-strong); border-right-color: var(--border-strong); border-bottom-color: var(--border-strong); box-shadow: 0 6px 22px rgba(0,0,0,0.32); }
 .qrow-item.flash { animation: rowFlash 1.2s ease-out; }
 .qrow {
-  display: grid; grid-template-columns: 54px minmax(180px,2fr) minmax(150px,1.7fr) minmax(116px,1fr) 104px 26px;
+  display: grid; grid-template-columns: 54px minmax(200px,2fr) minmax(220px,3fr) minmax(92px,0.8fr) 110px 26px;
   gap: 12px; align-items: center; padding: 12px 16px; cursor: pointer;
   transition: background .12s; -webkit-tap-highlight-color: transparent;
 }
@@ -380,7 +388,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .q-proc .pp { font-size: 13px; color: var(--text-secondary); line-height: 1.3;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .q-proc .du { font-size: 11.5px; color: var(--text-faint); margin-top: 3px; }
-.q-status-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; }
+.q-status-cell { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0; text-align: center; }
 .q-status-cell .badge { max-width: 100%; }
 .badge.q-resched-badge { padding: 2px 7px; font-size: 10px; gap: 4px; }
 .q-room { font-size: 12px; color: var(--text-muted); line-height: 1.3; }
@@ -802,6 +810,9 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .fld-row { display: flex; gap: 12px; }
 .fld-row .fld { flex: 1; }
 .fld-lab { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+/* Назви обов'язкових полів (з зірочкою «*») — червоним текстом */
+.req { color: var(--red); margin-left: 2px; font-weight: 700; }
+.fld-lab:has(.req), .sec-label:has(.req), .bk-section-label:has(.req) { color: var(--red); }
 .inp {
   background: var(--bg-elevated); border: 1px solid var(--border-strong);
   border-radius: 9px; padding: 9px 12px; font-size: 13.5px; outline: none;
@@ -978,6 +989,9 @@ select.inp { cursor: pointer; }
   display: flex; align-items: center; justify-content: center; font-size: 12px;
 }
 .bk-sched-title { font-size: 13.5px; font-weight: 700; color: var(--text); letter-spacing: -.2px; }
+.bk-sched-mod { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 6px; letter-spacing: .02em; }
+.bk-sched-mod.mrt { background: var(--blue-bg); color: #4da3ff; }
+.bk-sched-mod.ct { background: var(--orange-bg); color: var(--orange); }
 .bk-sched-sync {
   margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
   font-size: 10.5px; font-weight: 600; color: var(--green);
@@ -986,11 +1000,14 @@ select.inp { cursor: pointer; }
 /* Cabinet chips (compact horizontal) */
 .bk-room-chips { display: flex; gap: 5px; flex-wrap: wrap; }
 .bk-room-chip {
-  flex: 1; min-width: 46px; padding: 7px 0; text-align: center;
+  flex: 1; min-width: 46px; padding: 7px 10px; text-align: center; line-height: 1.25;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
   font-size: 12.5px; font-weight: 700; border-radius: 7px;
   border: 1.5px solid var(--border-strong); background: var(--card);
   color: var(--text-secondary); transition: all .14s; border-bottom-width: 3px;
 }
+.bk-room-chip-name { font-size: 12.5px; font-weight: 700; }
+.bk-room-chip-model { font-size: 12px; font-weight: 500; opacity: .8; }
 .bk-room-chip:hover:not(.active) { background: var(--card-hover); color: var(--text); }
 .bk-room-chip.mrt { border-bottom-color: rgba(10,132,255,0.4); }
 .bk-room-chip.ct  { border-bottom-color: rgba(255,159,10,0.4); }
@@ -999,7 +1016,7 @@ select.inp { cursor: pointer; }
 .bk-room-chip.closed { position: relative; border-bottom-color: var(--red); color: var(--text-faint); }
 .bk-room-chip.closed.active { border-color: var(--red); background: var(--red-bg); color: var(--red); }
 .bk-room-closed-dot { position: absolute; top: 4px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--red); }
-.bk-room-model-line { font-size: 10.5px; color: var(--text-muted); margin-top: 4px; }
+.bk-room-model-line { font-size: 13px; font-weight: 500; color: var(--text-secondary); margin-top: 5px; }
 
 /* Booking calendar */
 .bk-cal { background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 8px; }

@@ -18,13 +18,16 @@ export async function POST(req: Request) {
   if (!me || me.role !== "admin") return NextResponse.json({ error: "Лише адміністратор" }, { status: 403 });
 
   const body = await req.json().catch(() => ({}));
-  const role = body.role === "referrer" ? "referrer" : "radiologist";
+  // Цей роут створює ЛИШЕ акаунти радіологів. Лікарі-направники мають глобальний
+  // акаунт (clinic_id = NULL) і створюються через /api/referrers/invite — інакше
+  // ламається tenant-модель направника (членство через referral_access).
+  const role = "radiologist";
   const email = String(body.email || "").trim().toLowerCase();
   const login = String(body.login || "").trim();
   const fullName = String(body.full_name || "").trim();
   const phone = String(body.phone || "").trim() || null;
   const note = String(body.note || "").trim() || null;
-  const workplace = role === "referrer" ? (String(body.workplace || "").trim() || null) : null;
+  const workplace: string | null = null; // лише радіологи; поле workplace — для направників
   const roomIds: string[] = Array.isArray(body.room_ids) ? body.room_ids : [];
 
   if (!email || !login || !fullName) {
@@ -36,6 +39,8 @@ export async function POST(req: Request) {
 
   const admin = createAdminClient();
   const tempPass = "Rf!" + crypto.randomUUID().replace(/-/g, "");
+  // Одноразовий токен для безпечного встановлення пароля (/set-password?token=…).
+  const inviteToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
 
   const { data: created, error: cErr } = await admin.auth.admin.createUser({
     email,
@@ -54,7 +59,7 @@ export async function POST(req: Request) {
   const uid = created.user.id;
   const { error: pErr } = await admin.from("profiles").insert({
     id: uid, clinic_id: me.clinic_id, role, login, full_name: fullName,
-    email, phone, note, workplace, approved: true, password_set: false,
+    email, phone, note, workplace, approved: true, password_set: false, invite_token: inviteToken,
   });
   if (pErr) {
     await admin.auth.admin.deleteUser(uid); // відкат, щоб не лишати «сирітський» auth-акаунт
@@ -66,9 +71,9 @@ export async function POST(req: Request) {
 
   if (role === "radiologist" && roomIds.length) {
     await admin.from("radiologist_rooms").insert(
-      roomIds.map((rid) => ({ clinic_id: me.clinic_id, profile_id: uid, room_id: rid }))
+      roomIds.map((rid) => ({ clinic_id: me.clinic_id as string, profile_id: uid, room_id: rid }))
     );
   }
 
-  return NextResponse.json({ ok: true, id: uid });
+  return NextResponse.json({ ok: true, id: uid, invite_token: inviteToken });
 }

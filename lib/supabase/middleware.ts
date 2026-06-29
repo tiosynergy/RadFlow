@@ -10,6 +10,7 @@ const PROTECTED = [
   "/call-list",
   "/incidents",
   "/ceo",
+  "/ceo-admin",
   "/referral",
   "/staff",
   "/referrers",

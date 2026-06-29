@@ -31,7 +31,7 @@ export default async function CallListPage() {
   const { data: rooms } = await supabase
     .from("rooms")
     .select("id, name, modality, apparatus_model")
-    .eq("clinic_id", profile.clinic_id)
+    .eq("clinic_id", profile.clinic_id as string)
     .order("name");
 
   return (
@@ -41,6 +41,7 @@ export default async function CallListPage() {
       clinicName={clinic?.name ?? ""}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
       adminRole={profile.role ? ROLE_LABELS[profile.role as string] ?? (profile.role as string) : "Адміністратор"}
+      roleKey={(profile.role as string) ?? "admin"}
     />
   );
 }

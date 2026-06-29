@@ -9,7 +9,9 @@ import { createClient } from "@/lib/supabase/server";
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
-  const next = searchParams.get("next") ?? "/queue";
+  const rawNext = searchParams.get("next") ?? "/queue";
+  // Лише внутрішні шляхи: один провідний "/", без "//" чи "/\" (захист від open-redirect).
+  const next = /^\/(?![/\\])/.test(rawNext) ? rawNext : "/queue";
 
   if (code) {
     const supabase = await createClient();

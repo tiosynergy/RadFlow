@@ -26,6 +26,7 @@ export default async function SetupPage() {
   if (!profile) redirect("/login");
   if (profile.role === "radiologist") redirect("/radiologist");
   if (profile.role === "referrer") redirect("/referral");
+  if (profile.role !== "admin") redirect("/queue"); // майстер налаштувань — лише адмін
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
     | { name?: string; city?: string; address?: string; phones?: string[]; emails?: string[] }
@@ -34,8 +35,8 @@ export default async function SetupPage() {
 
   const { data: rooms } = await supabase
     .from("rooms")
-    .select("name, modality, apparatus_model, schedule")
-    .eq("clinic_id", profile.clinic_id);
+    .select("id, name, modality, apparatus_model, schedule")
+    .eq("clinic_id", profile.clinic_id as string);
 
   const equip = (rooms ?? []).map((r: Record<string, unknown>, i: number) => {
     const sched =
@@ -45,6 +46,7 @@ export default async function SetupPage() {
     const modality = r.modality as string;
     return {
       id: i + 1,
+      roomId: r.id as string,   // DB-id кабінету — щоб оновлювати, а не пересоздавати
       type: modality === "MRI" ? "МРТ" : modality === "CT" ? "КТ" : "Інше",
       desc: (r.apparatus_model as string) ?? "",
       room: (r.name as string) ?? "",
@@ -64,5 +66,21 @@ export default async function SetupPage() {
     equip: equip.length ? equip : undefined,
   };
 
-  return <SetupWizard clinicId={profile.clinic_id as string} userId={user.id} initial={initial} />;
+  const managerRooms = (rooms ?? []).map((r) => ({
+    id: r.id as string,
+    name: (r.name as string) ?? "",
+    modality: r.modality as string,
+    apparatus_model: (r.apparatus_model as string) ?? null,
+  }));
+
+  return (
+    <SetupWizard
+      clinicId={profile.clinic_id as string}
+      userId={user.id}
+      initial={initial as Parameters<typeof SetupWizard>[0]["initial"]}
+      rooms={managerRooms}
+      clinicName={clinic?.name ?? ""}
+      adminName={profile.full_name ?? (user.email ?? "")}
+    />
+  );
 }
