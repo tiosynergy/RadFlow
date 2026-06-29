@@ -54,13 +54,14 @@ export default function Sidebar({
 }: SidebarProps) {
   const router = useRouter();
   const isAdmin = roleKey === "admin";
-  const isAdminOrCeo = roleKey === "admin" || roleKey === "ceo";
+  const isCeo = roleKey === "ceo";
 
-  // Крос-рольовий CEO (напр. адмін/реєстратор з грантом ceo_access) бачить
-  // посилання на дашборд, навіть якщо його основна роль не admin/ceo.
+  // Крос-рольовий CEO серед НЕ-адмінів (напр. реєстратор з грантом ceo_access)
+  // бачить посилання на дашборд. На сторінці адміна прямого посилання немає —
+  // керування центрами адмін відкриває з Майстра налаштувань.
   const [hasCeoGrant, setHasCeoGrant] = useState(false);
   useEffect(() => {
-    if (isAdminOrCeo) return; // у них посилання вже показано
+    if (isAdmin || isCeo) return; // адмін — не показуємо; ceo й так на /ceo
     let active = true;
     (async () => {
       try {
@@ -73,19 +74,12 @@ export default function Sidebar({
       } catch { /* ignore */ }
     })();
     return () => { active = false; };
-  }, [isAdminOrCeo]);
-  const showCeoLink = isAdminOrCeo || hasCeoGrant;
+  }, [isAdmin, isCeo]);
+  const showCeoLink = isCeo || hasCeoGrant;
 
   async function signOut() {
     await signOutAndRedirect(router);
   }
-
-  const soon = (label: string) => (
-    <span key={label} className="sb-item" title="Незабаром" style={{ opacity: 0.45, cursor: "not-allowed" }}>
-      <span className="ic">·</span>
-      <span className="sb-item-lab">{label}</span>
-    </span>
-  );
 
   return (
     <aside className="sidebar">
@@ -116,29 +110,24 @@ export default function Sidebar({
         </div>
 
         <div className="sb-section">
-          <div className="sb-label">Операції</div>
+          <div className="sb-label">Швидкі дії</div>
+          <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span></a>
           <button type="button" onClick={() => onNew && onNew()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">＋</span>
             <span className="sb-item-lab">Новий запис</span>
           </button>
           <a href="/call-list" className={"sb-item" + (activeNav === "calls" ? " active" : "")}><span className="ic">☎</span><span className="sb-item-lab">Колл-лист</span></a>
+          {isAdmin && <a href="/referral" className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span></a>}
           <button type="button" onClick={() => onBreakdown && onBreakdown()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">⚠</span>
-            <span className="sb-item-lab">Інцидент</span>
+            <span className="sb-item-lab">Інциденти</span>
             {incidentCount ? <span className="sb-badge sb-badge-red">{incidentCount}</span> : null}
           </button>
-          {soon("Лікар-направляч")}
-          {isAdmin && <a href="/setup" className="sb-item"><span className="ic">₴</span><span className="sb-item-lab">Прайс-лист / Налаштування</span></a>}
         </div>
       </nav>
 
       <div className="sb-settings">
-        <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span></a>
         {showCeoLink && <a href="/ceo" className={"sb-item" + (activeNav === "ceo" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Дашборд CEO</span></a>}
-        {isAdmin && <a href="/staff" className={"sb-item" + (activeNav === "staff" ? " active" : "")}><span className="ic">👥</span><span className="sb-item-lab">Радіологи та доступи</span></a>}
-        {isAdmin && <a href="/ceo-admin" className={"sb-item" + (activeNav === "ceo-admin" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Керівники (CEO)</span></a>}
-        {isAdmin && <a href="/referrers" className={"sb-item" + (activeNav === "referrers" ? " active" : "")}><span className="ic">🩺</span><span className="sb-item-lab">Лікарі-направники</span></a>}
-        {isAdmin && <a href="/referral" className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span></a>}
         {isAdmin && <a href="/setup" className="sb-item"><span className="ic">⚙</span><span className="sb-item-lab">Майстер налаштування</span></a>}
       </div>
 

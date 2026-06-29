@@ -17,6 +17,9 @@ export async function POST(req: Request) {
 
   const { data: me } = await supabase.from("profiles").select("clinic_id, role").eq("id", user.id).single();
   if (!me || me.role !== "admin") return NextResponse.json({ error: "Лише адміністратор" }, { status: 403 });
+  // Адмін центру завжди має clinic_id; глобальний акаунт адміном бути не може.
+  // Явний guard робить інваріант захисним (а не побічним наслідком eq-on-null).
+  if (!me.clinic_id) return NextResponse.json({ error: "Адміністратор без центру" }, { status: 403 });
 
   const body = await req.json().catch(() => ({}));
   const targetId = String(body.userId || "");
@@ -27,8 +30,9 @@ export async function POST(req: Request) {
   const { data: target } = await admin.from("profiles").select("clinic_id, role").eq("id", targetId).single();
   if (!target) return NextResponse.json({ error: "Профіль не знайдено" }, { status: 404 });
 
-  // Авторизація: радіолог свого центру АБО CEO з активним грантом до центру адміна
-  // (глобальний CEO має clinic_id IS NULL, тож звіряємося через ceo_access).
+  // Авторизація: радіолог свого центру АБО CEO/направник з активним грантом до
+  // центру адміна. Глобальні акаунти (CEO/referrer) мають clinic_id IS NULL,
+  // тож звіряємося через ceo_access / referral_access.
   let authorized = false;
   if (target.role === "radiologist" && target.clinic_id === me.clinic_id) {
     authorized = true;
@@ -37,6 +41,15 @@ export async function POST(req: Request) {
       .from("ceo_access")
       .select("id")
       .eq("ceo_id", targetId)
+      .eq("clinic_id", me.clinic_id as string)
+      .eq("status", "active")
+      .maybeSingle();
+    if (link) authorized = true;
+  } else if (target.role === "referrer") {
+    const { data: link } = await admin
+      .from("referral_access")
+      .select("id")
+      .eq("referrer_id", targetId)
       .eq("clinic_id", me.clinic_id as string)
       .eq("status", "active")
       .maybeSingle();

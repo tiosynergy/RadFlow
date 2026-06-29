@@ -26,9 +26,10 @@ interface CeoManagerProps {
   clinicId: string;
   clinicName?: string;
   adminName?: string;
+  embedded?: boolean;
 }
 
-export default function CeoManager({ clinicId, clinicName, adminName }: CeoManagerProps) {
+export default function CeoManager({ clinicId, clinicName, adminName, embedded = false }: CeoManagerProps) {
   const [ceos, setCeos] = useState<Ceo[]>([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState<CeoForm>(EMPTY);
@@ -133,17 +134,19 @@ export default function CeoManager({ clinicId, clinicName, adminName }: CeoManag
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20, marginBottom: 16 };
 
   return (
-    <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" activeNav="ceo-admin" />
-      <div className="main">
-        <header className="topbar">
-          <div className="tb-title">
-            <span className="tic">📊</span>
-            <div><h1>Керівники (CEO)</h1><div className="date">{clinicName} · <LiveClock /></div></div>
-          </div>
-        </header>
+    <div className={embedded ? "setup-embed" : "app"}>
+      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" activeNav="ceo-admin" />}
+      <div className={embedded ? "setup-embed-main" : "main"}>
+        {!embedded && (
+          <header className="topbar">
+            <div className="tb-title">
+              <span className="tic">📊</span>
+              <div><h1>Керівники (CEO)</h1><div className="date">{clinicName} · <LiveClock /></div></div>
+            </div>
+          </header>
+        )}
 
-        <div className="content" style={{ overflowY: "auto", padding: "22px", maxWidth: 900 }}>
+        <div className={embedded ? undefined : "content"} style={embedded ? undefined : { overflowY: "auto", padding: "22px", maxWidth: 900 }}>
           {/* Призначити керівника */}
           <div style={card}>
             <div className="bk-section-label" style={{ marginTop: 0 }}>Призначити керівника</div>

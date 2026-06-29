@@ -66,5 +66,21 @@ export default async function SetupPage() {
     equip: equip.length ? equip : undefined,
   };
 
-  return <SetupWizard clinicId={profile.clinic_id as string} userId={user.id} initial={initial as Parameters<typeof SetupWizard>[0]["initial"]} />;
+  const managerRooms = (rooms ?? []).map((r) => ({
+    id: r.id as string,
+    name: (r.name as string) ?? "",
+    modality: r.modality as string,
+    apparatus_model: (r.apparatus_model as string) ?? null,
+  }));
+
+  return (
+    <SetupWizard
+      clinicId={profile.clinic_id as string}
+      userId={user.id}
+      initial={initial as Parameters<typeof SetupWizard>[0]["initial"]}
+      rooms={managerRooms}
+      clinicName={clinic?.name ?? ""}
+      adminName={profile.full_name ?? (user.email ?? "")}
+    />
+  );
 }

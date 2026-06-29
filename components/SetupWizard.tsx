@@ -8,6 +8,9 @@ import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from 
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { Json, TablesInsert } from "@/supabase/types";
+import StaffManager from "@/components/StaffManager";
+import ReferrersManager from "@/components/ReferrersManager";
+import CeoManager from "@/components/CeoManager";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radflow-wizard.css";
@@ -93,8 +96,23 @@ function mkSched(): Omit<EquipItem, "id" | "type" | "desc" | "room" | "roomId"> 
   return { days: [1, 1, 1, 1, 1, 0, 0], ...DEF_DAY, perDay: false, dayHours: Array.from({ length: 7 }, () => ({ ...DEF_DAY })) };
 }
 
+/* Пункти бічної навігації майстра (кружки без нумерації).
+   Профіль / Адміністратор / Обладнання / Прайс — секції цього екрана (anchor);
+   Радіологи / Направники / Керівники — окремі сторінки керування (href). */
+const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string }[] = [
+  { label: "Профіль клініки", desc: "Назва та контакти центру", anchor: "sec-clinic" },
+  { label: "Адміністратор", desc: "Обліковий запис адміна", anchor: "sec-admin" },
+  { label: "Обладнання та кабінети", desc: "Апарати та розклад", anchor: "sec-equip" },
+  { label: "Послуги та прайс", desc: "Незабаром", anchor: "sec-price" },
+  { label: "Радіологи та доступи", desc: "Керування персоналом", anchor: "sec-staff" },
+  { label: "Лікарі-направники", desc: "Направники центру", anchor: "sec-referrers" },
+  { label: "Керівники (CEO)", desc: "Аналітичний доступ", anchor: "sec-ceo" },
+];
+// Секції, що належать майстру первинного налаштування (з кнопкою «Запустити кабінет»).
+const FORM_SECTIONS = ["sec-clinic", "sec-admin", "sec-equip", "sec-price"];
+
 /* ---------- Крок 1: Профіль клініки ---------- */
-function StepRegister({ report, onData, initial }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial }) {
+function StepRegister({ report, onData, initial, active }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial; active: string }) {
   const [clinic, setClinic] = useState(initial.clinic || "");
   const [city, setCity] = useState(initial.city || "");
   const [address, setAddress] = useState(initial.address || "");
@@ -138,15 +156,15 @@ function StepRegister({ report, onData, initial }: { report: (k: number, ok: boo
 
   return (
     <div className="fade-in">
+      {active === "sec-clinic" && (<>
       <h1 className="wiz-h">Профіль клініки</h1>
-      <p className="wiz-hsub">Базові дані центру та обліковий запис адміністратора.</p>
+      <p className="wiz-hsub">Базові дані центру.</p>
 
       <div className="info-banner" style={{ marginTop: 16 }}>
         <span className="ib-ic" style={{ color: "var(--green)" }}>✓</span>
         <span className="ib-txt"><b>Email підтверджено.</b> Обліковий запис активовано.</span>
       </div>
 
-      {/* СЕКЦІЯ 1 — Медичний центр */}
       <div className="sec-label" style={{ marginTop: 16 }}>Медичний центр</div>
       <div className="form-card reg-card">
         <div className="fld-row">
@@ -166,9 +184,12 @@ function StepRegister({ report, onData, initial }: { report: (k: number, ok: boo
         </div>
       </div>
 
-      {/* СЕКЦІЯ 2 — Адміністратор */}
-      <div className="sec-label" style={{ marginTop: 20 }}>Адміністратор</div>
-      <div className="form-card reg-card">
+      </>)}
+
+      {active === "sec-admin" && (<>
+      <h1 className="wiz-h">Адміністратор</h1>
+      <p className="wiz-hsub">Обліковий запис адміністратора центру.</p>
+      <div className="form-card reg-card" style={{ marginTop: 16 }}>
         <div className="fld-row">
           <label className="fld">
             <span className="fld-lab">ПІБ адміністратора <Req /></span>
@@ -186,9 +207,12 @@ function StepRegister({ report, onData, initial }: { report: (k: number, ok: boo
         </div>
       </div>
 
-      {/* Обладнання та кабінети */}
-      <div className="sec-label" style={{ marginTop: 20 }}>Обладнання та кабінети <Req /></div>
-      <div className="form-card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      </>)}
+
+      {active === "sec-equip" && (<>
+      <h1 className="wiz-h">Обладнання та кабінети <Req /></h1>
+      <p className="wiz-hsub">Апарати центру та їхній графік роботи.</p>
+      <div className="form-card" style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 16 }}>
         {equip.map((e, i) => (
           <div key={e.id} className="equip-block">
             <button className="mini-icon equip-block-del" type="button" title="Видалити обладнання" onClick={() => delEq(i)} disabled={equip.length <= 1}>✕</button>
@@ -273,54 +297,47 @@ function StepRegister({ report, onData, initial }: { report: (k: number, ok: boo
         ))}
         <button className="btn btn-secondary btn-sm add-btn" type="button" onClick={addEq}>＋ Додати обладнання</button>
       </div>
-    </div>
-  );
-}
 
-/* ---------- Екран успіху ---------- */
-function LaunchSuccess() {
-  return (
-    <div className="fade-in">
-      <Confetti />
-      <div className="golive">
-        <div className="rocket">🎉</div>
-        <div className="golive-h" style={{ color: "var(--green)" }}>Кабінет активовано!</div>
-        <div className="golive-sub">RadFlow готовий приймати записи. Realtime-синхронізація увімкнена для всіх ролей.</div>
-        <a href="/queue" className="btn btn-green" style={{ marginTop: 22, display: "inline-flex" }}>Перейти до дошки черги →</a>
+      </>)}
+
+      {active === "sec-price" && (<>
+      <h1 className="wiz-h">Послуги та прайс</h1>
+      <div className="form-card" style={{ marginTop: 16 }}>
+        <div className="info-banner">
+          <span className="ib-ic" style={{ color: "var(--blue)" }}>🛠</span>
+          <span className="ib-txt"><b>Незабаром.</b> Тут зʼявиться керування переліком послуг і цінами центру — з привʼязкою до модальності та кабінетів.</span>
+        </div>
       </div>
-    </div>
-  );
-}
-function Confetti() {
-  const colors = ["#0a84ff", "#30d158", "#ff9f0a", "#ff453a", "#7b5cff", "#ffd60a"];
-  const bits = Array.from({ length: 70 }, (_, i) => ({
-    left: Math.random() * 100, color: colors[i % colors.length],
-    delay: Math.random() * 0.6, dur: 1.6 + Math.random() * 1.4,
-  }));
-  return (
-    <div className="confetti">
-      {bits.map((b, i) => <i key={i} style={{ left: b.left + "vw", background: b.color, animationDuration: b.dur + "s", animationDelay: b.delay + "s" }} />)}
+      </>)}
     </div>
   );
 }
 
 /* ---------- Майстер (контейнер) ---------- */
-export default function SetupWizard({ clinicId, userId, initial }: { clinicId: string; userId: string; initial: WizardInitial }) {
+type SetupRoom = { id: string; modality: string; name: string; apparatus_model?: string | null };
+
+export default function SetupWizard({ clinicId, userId, initial, rooms = [], clinicName, adminName }: { clinicId: string; userId: string; initial: WizardInitial; rooms?: SetupRoom[]; clinicName?: string; adminName?: string }) {
   const router = useRouter();
-  const [launched, setLaunched] = useState(false);
+  const [activeSection, setActiveSection] = useState("sec-clinic");
   const [saving, setSaving] = useState(false);
   const [valid, setValid] = useState<Record<number, boolean>>({});
+  const [dirty, setDirty] = useState(false);
+  const [exitAsk, setExitAsk] = useState(false);
   const [toasts, push] = useToasts();
   const dataRef = useRef<WizardData | null>(null);
+  const savedRef = useRef<string | null>(null); // знімок збережених даних форми
 
   function report(k: number, ok: boolean) { setValid((v) => (v[k] === ok ? v : { ...v, [k]: ok })); }
-  function onData(d: WizardData) { dataRef.current = d; }
+  function onData(d: WizardData) {
+    dataRef.current = d;
+    const snap = JSON.stringify(d);
+    if (savedRef.current === null) { savedRef.current = snap; return; } // базовий знімок при першому завантаженні
+    setDirty(snap !== savedRef.current);
+  }
 
-  const STEP = { key: 1, title: "Профіль клініки", desc: "Дані, акаунт, обладнання" };
-
-  async function launch() {
+  async function save(): Promise<boolean> {
     const d = dataRef.current;
-    if (!d || saving) return;
+    if (!d || saving) return false;
     setSaving(true);
     const clean = (a: string[]) => a.map((x) => x.trim()).filter(Boolean);
     try {
@@ -380,17 +397,27 @@ export default function SetupWizard({ clinicId, userId, initial }: { clinicId: s
         if (de) throw de;
       }
 
-      setLaunched(true);
-      push("🎉 Кабінет активовано!", "success");
+      savedRef.current = JSON.stringify(d);
+      setDirty(false);
+      push("Зміни збережено", "success");
+      setSaving(false);
+      return true;
     } catch (e) {
       push("Помилка збереження: " + ((e as { message?: string })?.message || String(e)), "error");
       setSaving(false);
+      return false;
     }
   }
 
-  function saveDraftExit() {
-    push("Чернетку збережено — повернетесь будь-коли", "success");
-    setTimeout(() => router.push("/queue"), 700);
+  function exitSetup() {
+    if (saving) return;
+    if (dirty) { setExitAsk(true); return; }
+    router.push("/queue");
+  }
+  async function saveAndExit() {
+    const ok = await save();
+    setExitAsk(false);
+    if (ok) router.push("/queue");
   }
 
   async function signOut() {
@@ -408,45 +435,86 @@ export default function SetupWizard({ clinicId, userId, initial }: { clinicId: s
           <div className="wiz-sub">Налаштування та профіль кабінету</div>
         </div>
         <div className="wiz-steps">
-          <div className={"wstep " + (launched ? "done" : "active")}>
-            <span className="wstep-num">{launched ? "✓" : STEP.key}</span>
-            <span className="wstep-txt">
-              <span className="wstep-title">{STEP.title}</span>
-              <span className="wstep-desc">{STEP.desc}</span>
-            </span>
-          </div>
+          {WIZ_NAV.map((s) => {
+            const on = activeSection === s.anchor;
+            return (
+              <button key={s.label} type="button" className={"wstep" + (on ? " done" : "")} title={s.desc}
+                aria-current={on ? "true" : undefined} onClick={() => setActiveSection(s.anchor as string)}
+                style={{ width: "100%", textAlign: "left", background: on ? "var(--card-hover)" : "none", border: "none", font: "inherit", cursor: "pointer" }}>
+                <span className="wstep-num" aria-hidden />
+                <span className="wstep-txt">
+                  <span className="wstep-title">{s.label}</span>
+                  <span className="wstep-desc">{s.desc}</span>
+                </span>
+              </button>
+            );
+          })}
         </div>
         <div className="wiz-foot">
-          <div className="wiz-prog-bar"><div className="wiz-prog-fill" style={{ width: (launched ? 100 : 100) + "%" }} /></div>
           <div className="wiz-prog-lab">
-            <span>Крок 1 з 1</span>
+            <span>Майстер налаштувань</span>
             <a href="mailto:support@radflow.ua?subject=Допомога%20з%20налаштуванням" title="Написати в підтримку">Підтримка</a>
           </div>
-          <a className="wiz-exit" onClick={saveDraftExit} style={{ cursor: "pointer" }} title="Прогрес збережеться, можна продовжити пізніше">⤓ Зберегти чернетку й вийти</a>
-          <a className="wiz-exit" onClick={signOut} style={{ cursor: "pointer", marginTop: 6 }} title="Вийти з акаунта">⏻ Вийти з акаунта</a>
+          <a className="wiz-exit" onClick={signOut} style={{ cursor: "pointer" }} title="Вийти з акаунта">⏻ Вийти з акаунта</a>
         </div>
       </aside>
 
       <div className="wiz-main">
         <div className="wiz-main-inner">
-          {launched ? <LaunchSuccess /> : <StepRegister report={report} onData={onData} initial={initial} />}
+          {(
+            <>
+              {/* Кожне вікно налаштувань — окремо; перемикається кружками зліва */}
+              <div style={{ display: FORM_SECTIONS.includes(activeSection) ? "block" : "none" }}>
+                <StepRegister report={report} onData={onData} initial={initial} active={activeSection} />
+              </div>
+
+              <div className="fade-in" style={{ display: activeSection === "sec-staff" ? "block" : "none" }}>
+                <h1 className="wiz-h">Радіологи та доступи</h1>
+                <StaffManager embedded clinicId={clinicId} rooms={rooms} clinicName={clinicName} adminName={adminName} />
+              </div>
+
+              <div className="fade-in" style={{ display: activeSection === "sec-referrers" ? "block" : "none" }}>
+                <h1 className="wiz-h">Лікарі-направники</h1>
+                <ReferrersManager embedded clinicId={clinicId} rooms={rooms} clinicName={clinicName} adminName={adminName} />
+              </div>
+
+              <div className="fade-in" style={{ display: activeSection === "sec-ceo" ? "block" : "none" }}>
+                <h1 className="wiz-h">Керівники (CEO)</h1>
+                <CeoManager embedded clinicId={clinicId} clinicName={clinicName} adminName={adminName} />
+              </div>
+            </>
+          )}
         </div>
 
-        {!launched && (
-          <div className="wiz-bar">
-            <div className="wiz-bar-inner">
-              <button className="btn btn-ghost" disabled>← Назад</button>
-              <div className="wiz-bar-right">
+        <div className="wiz-bar">
+          <div className="wiz-bar-inner">
+            <div className="wiz-bar-right" style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+              {FORM_SECTIONS.includes(activeSection) && (
                 <span className="wiz-cta-wrap" title={valid[1] ? undefined : "Заповніть назву клініки, місто, ПІБ і телефон адміністратора та хоча б один апарат"}>
-                  <button className="btn btn-green btn-launch" onClick={launch} disabled={!valid[1] || saving}>
-                    {saving ? "Зберігаємо…" : "🚀 Запустити кабінет"}
+                  <button className="btn btn-green" onClick={save} disabled={!valid[1] || saving}>
+                    {saving ? "Зберігаємо…" : "Зберегти"}
                   </button>
                 </span>
-              </div>
+              )}
+              <button className="btn btn-secondary" onClick={exitSetup} disabled={saving}>Вийти</button>
             </div>
           </div>
-        )}
+        </div>
       </div>
+
+      {exitAsk && (
+        <div className="overlay" onClick={() => !saving && setExitAsk(false)}>
+          <div className="dialog fade-in" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
+            <div className="dlg-head"><div className="dlg-title">Незбережені зміни</div><button className="icon-btn" onClick={() => setExitAsk(false)} disabled={saving}>✕</button></div>
+            <div className="dlg-body">У налаштуваннях є незбережені зміни. Зберегти їх перед виходом?</div>
+            <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button className="btn btn-ghost" onClick={() => setExitAsk(false)} disabled={saving}>Скасувати</button>
+              <button className="btn btn-secondary" onClick={() => { setExitAsk(false); router.push("/queue"); }} disabled={saving}>Вийти без збереження</button>
+              <button className="btn btn-green" onClick={saveAndExit} disabled={saving}>{saving ? "Зберігаємо…" : "Зберегти й вийти"}</button>
+            </div>
+          </div>
+        </div>
+      )}
       <Toasts toasts={toasts} />
     </div>
   );

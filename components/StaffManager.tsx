@@ -29,9 +29,10 @@ interface StaffManagerProps {
   rooms?: RoomOpt[];
   clinicName?: string;
   adminName?: string;
+  embedded?: boolean;
 }
 
-export default function StaffManager({ clinicId, rooms, clinicName, adminName }: StaffManagerProps) {
+export default function StaffManager({ clinicId, rooms, clinicName, adminName, embedded = false }: StaffManagerProps) {
   const [radiologists, setRadiologists] = useState<Radiologist[]>([]);
   const [radRooms, setRadRooms] = useState<RadRoom[]>([]);
   const [loading, setLoading] = useState(true);
@@ -145,17 +146,19 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName }:
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20, marginBottom: 16 };
 
   return (
-    <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={rooms} activeNav="staff" />
-      <div className="main">
-        <header className="topbar">
-          <div className="tb-title">
-            <span className="tic">👥</span>
-            <div><h1>Радіологи та доступи</h1><div className="date">{clinicName} · <LiveClock /></div></div>
-          </div>
-        </header>
+    <div className={embedded ? "setup-embed" : "app"}>
+      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={rooms} activeNav="staff" />}
+      <div className={embedded ? "setup-embed-main" : "main"}>
+        {!embedded && (
+          <header className="topbar">
+            <div className="tb-title">
+              <span className="tic">👥</span>
+              <div><h1>Радіологи та доступи</h1><div className="date">{clinicName} · <LiveClock /></div></div>
+            </div>
+          </header>
+        )}
 
-        <div className="content" style={{ overflowY: "auto", padding: "22px", maxWidth: 900 }}>
+        <div className={embedded ? undefined : "content"} style={embedded ? undefined : { overflowY: "auto", padding: "22px", maxWidth: 900 }}>
           {/* Додати радіолога */}
           <div style={card}>
             <div className="bk-section-label" style={{ marginTop: 0 }}>Додати радіолога</div>

@@ -46,9 +46,10 @@ interface ReferrersManagerProps {
   rooms?: RoomOpt[];
   clinicName?: string;
   adminName?: string;
+  embedded?: boolean;
 }
 
-export default function ReferrersManager({ clinicId, rooms, clinicName, adminName }: ReferrersManagerProps) {
+export default function ReferrersManager({ clinicId, rooms, clinicName, adminName, embedded = false }: ReferrersManagerProps) {
   const allRoomIds = (rooms || []).map((r) => r.id);
   const roomById: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { roomById[r.id] = r; });
   const emptyForm = (): InviteForm => ({ login: "", full_name: "", email: "", phone: "", note: "", policy: "direct", room_ids: allRoomIds });
@@ -154,6 +155,17 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     reload();
   }
 
+  async function resetPassword(r: AccessRow) {
+    const name = r.referrer.full_name || r.referrer.login || "лікаря";
+    if (!window.confirm(`Скинути пароль для «${name}»?\n\nПоточний пароль перестане діяти. Лікар задасть новий за посиланням (зʼявиться у картці нижче — скопіюйте й передайте йому).`)) return;
+    setBusyId(r.access_id);
+    const { ok, data } = await postJSON("/api/staff/password", { userId: r.referrer_id, action: "reset" });
+    setBusyId(null);
+    if (!ok) { notify(data.error || "Помилка", "error"); return; }
+    setRows((rs) => rs.map((x) => (x.referrer_id === r.referrer_id ? { ...x, referrer: { ...x.referrer, password_set: false, invite_token: data.invite_token } } : x)));
+    notify("Пароль скинуто — скопіюйте нове посилання для входу й передайте лікарю", "success");
+  }
+
   async function decide(accessId: string, decision: string) {
     setBusyId(accessId);
     const { ok, data } = await postJSON("/api/referral/access/decide", { access_id: accessId, decision });
@@ -230,17 +242,19 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   }
 
   return (
-    <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={rooms} activeNav="referrers" />
-      <div className="main">
-        <header className="topbar">
-          <div className="tb-title">
-            <span className="tic">🩺</span>
-            <div><h1>Лікарі-направники</h1><div className="date">{clinicName} · <LiveClock /></div></div>
-          </div>
-        </header>
+    <div className={embedded ? "setup-embed" : "app"}>
+      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={rooms} activeNav="referrers" />}
+      <div className={embedded ? "setup-embed-main" : "main"}>
+        {!embedded && (
+          <header className="topbar">
+            <div className="tb-title">
+              <span className="tic">🩺</span>
+              <div><h1>Лікарі-направники</h1><div className="date">{clinicName} · <LiveClock /></div></div>
+            </div>
+          </header>
+        )}
 
-        <div className="content" style={{ overflowY: "auto", padding: "22px", maxWidth: 900 }}>
+        <div className={embedded ? undefined : "content"} style={embedded ? undefined : { overflowY: "auto", padding: "22px", maxWidth: 900 }}>
           {/* Запросити лікаря */}
           <div style={card}>
             <div className="bk-section-label" style={{ marginTop: 0 }}>Запросити лікаря-направника</div>
@@ -329,6 +343,9 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
               : active.map((r) => (
                 <div key={r.access_id}>
                   <Row r={r} expandable expanded={editingId === r.access_id} onClick={() => (editingId === r.access_id ? setEditingId(null) : startEdit(r))}>
+                    {r.referrer.password_set && r.referrer.id && (
+                      <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); resetPassword(r); }} title="Скинути пароль — лікар задасть новий за посиланням">Скинути пароль</button>
+                    )}
                     <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відкликати доступ для «" + (r.referrer.full_name || r.referrer.login) + "»?\n\nСтворені ним направлення лишаться. Нові він створювати не зможе.")) decide(r.access_id, "revoke"); }}>Відкликати доступ</button>
                   </Row>
                   {editingId === r.access_id && (
