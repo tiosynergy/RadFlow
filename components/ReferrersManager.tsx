@@ -11,6 +11,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
+import PhoneInput from "@/components/PhoneInput";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -284,7 +285,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
             )}
             {!existingPicked && (
               <div className="fld-row">
-                <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Телефон{req}</span><input className="inp" type="tel" placeholder="+380 XX XXX XX XX" value={form.phone} onChange={(e) => setF("phone", e.target.value)} /></label>
+                <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Телефон{req}</span><PhoneInput required value={form.phone} onChange={(v) => setF("phone", v)} /></label>
                 <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email</span><input className="inp" type="email" placeholder="необовʼязково" value={form.email} onChange={(e) => setF("email", e.target.value)} /></label>
               </div>
             )}

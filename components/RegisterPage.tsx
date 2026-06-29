@@ -5,6 +5,7 @@
 
 import { useState, type ChangeEvent, type FormEvent, type InputHTMLAttributes } from "react";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { formatPhoneUA, isValidPhoneUA, normalizePhoneUA } from "@/lib/phone";
 import "./register.css";
 
 const REQUIRED = "Це поле обов'язкове";
@@ -22,7 +23,7 @@ function validateField(name: string, values: Record<string, string | boolean>): 
     case "email":
       return !v.trim() ? REQUIRED : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim()) ? "Введіть коректну електронну адресу" : "";
     case "phone":
-      return !v.trim() ? REQUIRED : !/^\+380\d{9}$/.test(v.replace(/[\s()-]/g, "")) ? "Введіть номер у форматі +380 XX XXX XX XX" : "";
+      return !v.trim() ? REQUIRED : !isValidPhoneUA(v) ? "Введіть номер у форматі +380 XX XXX XX XX" : "";
     case "password":
       return !v ? REQUIRED : (v.length < 8 || !/[A-ZА-ЯЇІЄ]/.test(v) || !/\d/.test(v)) ? "Мінімум 8 символів, одна велика буква, одна цифра" : "";
     case "password2":
@@ -51,7 +52,7 @@ async function registerUser(values: RegValues): Promise<RegisterResult> {
         // Метадані для тригера handle_new_user (створює клініку + профіль).
         data: {
           login: values.login.trim(),
-          phone: values.phone.trim(),
+          phone: normalizePhoneUA(values.phone),
           clinic_name: values.login.trim(),
         },
         emailRedirectTo:
@@ -152,7 +153,7 @@ export default function RegisterPage() {
     id: name,
     type,
     value: values[name as keyof RegValues] as string,
-    onChange: (e: ChangeEvent<HTMLInputElement>) => setField(name, e.target.value),
+    onChange: (e: ChangeEvent<HTMLInputElement>) => setField(name, name === "phone" ? formatPhoneUA(e.target.value) : e.target.value),
     onBlur: () => blurField(name),
     className: touched[name] && errors[name] ? "invalid" : undefined,
     "aria-invalid": !!(touched[name] && errors[name]),

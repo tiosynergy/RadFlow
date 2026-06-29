@@ -7,6 +7,7 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
+import PhoneInput from "@/components/PhoneInput";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, type IncidentLike } from "@/lib/incidents";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
@@ -420,7 +421,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
             <div className="fld-row">
               <label className="fld">
                 <span className={"fld-lab" + (miss.phone ? " bk-miss-lab" : "")}>Телефон <span className="req">*</span></span>
-                <input className="inp" type="tel" placeholder="+38 0__ ___ __ __" value={phone} onChange={(e) => setPhone(e.target.value)} />
+                <PhoneInput value={phone} onChange={setPhone} />
               </label>
               <label className="fld">
                 <span className="fld-lab">Email</span>

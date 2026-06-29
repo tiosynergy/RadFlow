@@ -10,6 +10,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
+import PhoneInput from "@/components/PhoneInput";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -156,7 +157,7 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
             </div>
             <div className="fld-row">
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email</span><input className="inp" type="email" placeholder="ceo@clinic.ua" value={form.email} onChange={(e) => setF("email", e.target.value)} /></label>
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон</span><input className="inp" type="tel" placeholder="+380 XX XXX XX XX" value={form.phone} onChange={(e) => setF("phone", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон</span><PhoneInput value={form.phone} onChange={(v) => setF("phone", v)} /></label>
             </div>
             <label className="fld"><span className="fld-lab">Примітка</span><input className="inp" placeholder="Коротка примітка (необовʼязково)" value={form.note} onChange={(e) => setF("note", e.target.value)} /></label>
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>

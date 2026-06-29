@@ -8,6 +8,7 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { updatePatientDetails } from "@/app/queue/actions";
+import PhoneInput from "@/components/PhoneInput";
 import type { TablesUpdate } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -141,7 +142,7 @@ export default function PatientEditModal({ entryId, onClose, onSaved }: PatientE
               </label>
               <div className="fld-row">
                 <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон</span>
-                  <input className="inp" type="tel" value={form.patient_phone || ""} onChange={(e) => setF("patient_phone", e.target.value)} placeholder="+380 XX XXX XX XX" />
+                  <PhoneInput value={form.patient_phone || ""} onChange={(v) => setF("patient_phone", v)} />
                 </label>
                 <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Дата народження</span>
                   <input className="inp tabular" type="date" value={form.patient_dob || ""} onChange={(e) => setF("patient_dob", e.target.value)} />

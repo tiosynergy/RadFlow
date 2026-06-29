@@ -11,6 +11,7 @@ import type { Json, TablesInsert } from "@/supabase/types";
 import StaffManager from "@/components/StaffManager";
 import ReferrersManager from "@/components/ReferrersManager";
 import CeoManager from "@/components/CeoManager";
+import { formatPhoneUA, isValidPhoneUA } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radflow-wizard.css";
@@ -71,7 +72,8 @@ function ContactList({ label, items, setItems, type, ph, required }: {
   ph?: string;
   required?: boolean;
 }) {
-  const noun = type === "email" ? "email" : "телефон";
+  const isPhone = type !== "email";
+  const noun = isPhone ? "телефон" : "email";
   const upd = (i: number, v: string) => setItems((a) => a.map((x, j) => (j === i ? v : x)));
   const add = () => setItems((a) => [...a, ""]);
   const del = (i: number) => setItems((a) => (a.length > 1 ? a.filter((_, j) => j !== i) : [""]));
@@ -79,12 +81,16 @@ function ContactList({ label, items, setItems, type, ph, required }: {
   return (
     <div className="fld">
       <span className="fld-lab">{label}{required && <Req />}</span>
-      {items.map((v, i) => (
+      {items.map((v, i) => {
+        const badPhone = isPhone && v.trim() !== "" && !isValidPhoneUA(v);
+        return (
         <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-          <input className={"inp" + (empty && i === 0 ? " invalid" : "")} type={type === "email" ? "email" : "text"} placeholder={ph} value={v} onChange={(e) => upd(i, e.target.value)} />
+          <input className={"inp" + ((empty && i === 0) || badPhone ? " invalid" : "")} type={isPhone ? "tel" : "email"} inputMode={isPhone ? "tel" : undefined} placeholder={ph} value={v}
+            onChange={(e) => upd(i, isPhone ? formatPhoneUA(e.target.value) : e.target.value)} />
           <button className="mini-icon" type="button" title={"Видалити " + noun} onClick={() => del(i)}>✕</button>
         </div>
-      ))}
+        );
+      })}
       <button className="btn btn-secondary btn-sm add-btn" type="button" onClick={add}>＋ Додати {noun}</button>
     </div>
   );

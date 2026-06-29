@@ -12,6 +12,7 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import LiveClock from "@/components/LiveClock";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
 import PatientEditModal from "@/components/PatientEditModal";
+import PhoneInput from "@/components/PhoneInput";
 import RescheduleModal from "@/components/RescheduleModal";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry } from "@/app/queue/actions";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
@@ -315,7 +316,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
             <div className="fld-row">
               <label className="fld">
                 <span className={"fld-lab" + (miss.phone ? " bk-miss-lab" : "")}>Телефон <span className="req">*</span></span>
-                <input className="inp" type="tel" placeholder="+38 0__ ___ __ __" value={phone} onChange={(e) => setPhone(e.target.value)} />
+                <PhoneInput value={phone} onChange={setPhone} />
               </label>
               <label className="fld">
                 <span className="fld-lab">Email</span>

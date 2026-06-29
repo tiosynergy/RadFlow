@@ -5,6 +5,7 @@
    робить батьківський компонент через onSave. */
 
 import { useState } from "react";
+import PhoneInput from "@/components/PhoneInput";
 
 const SPECS = ["Невролог", "Ортопед-травматолог", "Онколог", "Терапевт", "Кардіолог", "Нейрохірург", "Ревматолог", "Інша спеціальність"];
 
@@ -47,7 +48,7 @@ export default function AddDoctorModal({ existing = [], onClose, onSave }: AddDo
             </label>
             <label className="fld">
               <span className="fld-lab">Телефон <span className="req">*</span></span>
-              <input className="inp" placeholder="+38 0__ ___ __ __" value={phone} onChange={(e) => setPhone(e.target.value)} />
+              <PhoneInput required value={phone} onChange={setPhone} />
             </label>
           </div>
           <div className="fld-row">
