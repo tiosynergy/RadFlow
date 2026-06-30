@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RadFlow — карта сторінок</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --card2:#1c2230; --border:#2a3340; --border2:#3a4555;
+    --text:#e6edf3; --muted:#8b949e; --faint:#6e7681;
+    --blue:#3b82f6; --green:#22c55e; --violet:#7b5cff; --amber:#f59e0b; --pink:#ec4899;
+    --r:14px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.45}
+  .wrap{max-width:1040px;margin:0 auto;padding:28px 22px 60px}
+  header{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+  .dot{width:11px;height:11px;border-radius:50%;background:var(--blue);box-shadow:0 0 12px var(--blue)}
+  h1{font-size:22px;font-weight:700;margin:0}
+  .sub{color:var(--muted);font-size:13.5px;margin:2px 0 22px}
+  .baserow{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;margin-bottom:22px}
+  .baselab{font-size:13px;color:var(--muted);font-weight:600}
+  input[type=text]{flex:1;min-width:240px;background:var(--card2);border:1px solid var(--border2);border-radius:9px;color:var(--text);padding:9px 12px;font-size:14px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  input[type=text]:focus{outline:none;border-color:var(--blue)}
+  .chips{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{background:var(--card2);border:1px solid var(--border2);border-radius:999px;color:var(--text);padding:6px 12px;font-size:12.5px;cursor:pointer;transition:.12s}
+  .chip:hover{border-color:var(--blue);color:#fff}
+  .group{margin:26px 0 8px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+  .card{display:block;text-decoration:none;color:inherit;background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:15px 16px;transition:.13s;position:relative}
+  .card:hover{border-color:var(--border2);background:var(--card2);transform:translateY(-1px)}
+  .card .top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:5px}
+  .name{font-weight:650;font-size:15px}
+  .path{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--blue)}
+  .desc{font-size:12.5px;color:var(--muted)}
+  .badge{font-size:10.5px;font-weight:700;letter-spacing:.04em;padding:3px 8px;border-radius:999px;white-space:nowrap}
+  .b-pub{background:rgba(139,148,158,.16);color:#c9d1d9}
+  .b-admin{background:rgba(59,130,246,.16);color:#9ec5ff}
+  .b-rad{background:rgba(34,197,94,.16);color:#86efac}
+  .b-reg{background:rgba(245,158,11,.16);color:#fcd9a0}
+  .b-ref{background:rgba(236,72,153,.16);color:#f9a8d4}
+  .b-ceo{background:rgba(123,92,255,.18);color:#c4b5fd}
+  .note{font-size:11.5px;color:var(--amber);margin-top:6px}
+  footer{margin-top:34px;color:var(--faint);font-size:12px;text-align:center}
+  .legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><span class="dot"></span><h1>RadFlow — карта сторінок</h1></header>
+  <div class="sub">Усі робочі сторінки застосунку. Доступ обмежується роллю (middleware) — посилання відкриються лише під відповідним акаунтом.</div>
+
+  <div class="baserow">
+    <span class="baselab">Базовий URL</span>
+    <input id="base" type="text" placeholder="http://localhost:3000">
+    <div class="chips">
+      <span class="chip" data-url="http://localhost:3000">localhost:3000</span>
+      <span class="chip" data-url="" id="prodchip" style="display:none"></span>
+    </div>
+  </div>
+
+  <div class="group">Авторизація та старт</div>
+  <div class="grid" id="g-auth"></div>
+
+  <div class="group">Робота центру (персонал)</div>
+  <div class="grid" id="g-staff"></div>
+
+  <div class="group">Налаштування — вбудовані в «Майстер налаштувань», але роути робочі</div>
+  <div class="grid" id="g-settings"></div>
+
+  <div class="group">Глобальні ролі</div>
+  <div class="grid" id="g-global"></div>
+
+  <footer>Локальний хелпер для навігації/тестування. Ролі: <b>admin</b> · <b>registrar</b> · <b>radiologist</b> · <b>referrer</b> · <b>ceo</b>.</footer>
+</div>
+
+<script>
+  const PAGES = {
+    "g-auth":[
+      {p:"/",            n:"Головна",              d:"Стартова сторінка / реєстрація центру.",        b:"b-pub",  bl:"публічна"},
+      {p:"/login",       n:"Вхід",                 d:"Вхід за логіном або email + пароль.",            b:"b-pub",  bl:"публічна"},
+      {p:"/register",    n:"Реєстрація клініки",   d:"Створення нового центру та акаунта адміна.",     b:"b-pub",  bl:"публічна"},
+      {p:"/set-password",n:"Встановлення пароля",  d:"Користувач задає пароль за одноразовим токеном.",b:"b-pub",  bl:"за токеном", note:"Потрібен параметр ?token=… із посилання-інвайту."},
+    ],
+    "g-staff":[
+      {p:"/queue",      n:"Дошка черги",         d:"Realtime-черга, нові записи, інциденти.",         b:"b-admin",bl:"admin / registrar"},
+      {p:"/call-list",  n:"Колл-лист",           d:"Список пацієнтів для обдзвону/підтвердження.",    b:"b-reg",  bl:"admin / registrar"},
+      {p:"/radiologist",n:"Кабінет радіолога",   d:"Черга кабінету, нотатки, статуси досліджень.",    b:"b-rad",  bl:"radiologist"},
+      {p:"/setup",      n:"Майстер налаштувань", d:"Єдиний хаб налаштувань центру (панелі-кружки).",  b:"b-admin",bl:"admin"},
+    ],
+    "g-settings":[
+      {p:"/staff",     n:"Радіологи та доступи", d:"Створення радіологів, доступ до кабінетів, паролі.", b:"b-admin",bl:"admin"},
+      {p:"/referrers", n:"Лікарі-направники",    d:"Запрошення/керування доступом направників.",          b:"b-admin",bl:"admin"},
+      {p:"/ceo-admin", n:"Керівники (CEO)",      d:"Призначення/відкликання аналітичного доступу CEO.",   b:"b-admin",bl:"admin"},
+    ],
+    "g-global":[
+      {p:"/referral", n:"Портал направника", d:"Нові направлення, мої направлення, центри, профіль.", b:"b-ref",bl:"referrer"},
+      {p:"/ceo",      n:"Дашборд CEO",       d:"Аналітика центрів (перемикач + «Всі центри»).",        b:"b-ceo",bl:"ceo / грант"},
+    ],
+  };
+
+  const KEY="radflow_base_url";
+  const baseInput=document.getElementById("base");
+  baseInput.value=localStorage.getItem(KEY)||"http://localhost:3000";
+
+  function norm(u){ return (u||"").trim().replace(/\/+$/,""); }
+  function render(){
+    const base=norm(baseInput.value)||"http://localhost:3000";
+    for(const [gid,items] of Object.entries(PAGES)){
+      const el=document.getElementById(gid); el.innerHTML="";
+      for(const it of items){
+        const a=document.createElement("a");
+        a.className="card"; a.href=base+it.p; a.target="_blank"; a.rel="noopener";
+        a.innerHTML=
+          '<div class="top"><span class="name">'+it.n+'</span><span class="badge '+it.b+'">'+it.bl+'</span></div>'+
+          '<div class="path">'+it.p+'</div>'+
+          '<div class="desc">'+it.d+'</div>'+
+          (it.note?'<div class="note">⚠ '+it.note+'</div>':'');
+        el.appendChild(a);
+      }
+    }
+  }
+  baseInput.addEventListener("input",()=>{ localStorage.setItem(KEY,norm(baseInput.value)); render(); });
+  document.querySelectorAll(".chip[data-url]").forEach(c=>c.addEventListener("click",()=>{
+    if(!c.dataset.url) return;
+    baseInput.value=c.dataset.url; localStorage.setItem(KEY,norm(c.dataset.url)); render();
+  }));
+  render();
+</script>
+</body>
+</html>

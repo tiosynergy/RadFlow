@@ -8,6 +8,7 @@ import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from 
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import type { Json, TablesInsert } from "@/supabase/types";
+import CitySelect from "@/components/CitySelect";
 import StaffManager from "@/components/StaffManager";
 import ReferrersManager from "@/components/ReferrersManager";
 import CeoManager from "@/components/CeoManager";
@@ -180,7 +181,7 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
         </div>
         <div className="fld-row">
           <label className="fld"><span className="fld-lab">Місто <Req /></span>
-            <input className={"inp" + (city.trim() ? "" : " invalid")} value={city} onChange={(e) => setCity(e.target.value)} /></label>
+            <CitySelect value={city} onChange={setCity} required /></label>
           <label className="fld" style={{ flex: 2 }}><span className="fld-lab">Адреса</span>
             <input className="inp" placeholder="вул., будинок, поверх, індекс" value={address} onChange={(e) => setAddress(e.target.value)} /></label>
         </div>

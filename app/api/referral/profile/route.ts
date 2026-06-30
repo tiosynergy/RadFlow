@@ -5,9 +5,9 @@ import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 // POST /api/referral/profile — лікар-направник редагує ВЛАСНІ дані.
 //   Дозволено ЛИШЕ самому направнику (auth.uid()). Адміністратор дані направника
 //   не змінює (це його особисті дані).
-//   • login / full_name / phone / note → profiles (видимі адміну).
+//   • login / full_name / phone / note / city → profiles (видимі адміну/центрам).
 //   • email → referrer_private (приватний, для відновлення доступу; адмін не бачить).
-// body: { login*, full_name*, phone?, note?, email? }
+// body: { login*, full_name*, phone?, note?, city?, email? }
 export async function POST(req: Request) {
   if (!isAdminConfigured()) {
     return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY не налаштовано на сервері (.env.local)" }, { status: 500 });
@@ -27,6 +27,7 @@ export async function POST(req: Request) {
   const fullName = String(body.full_name || "").trim();
   const phone = String(body.phone || "").trim();
   const note = String(body.note || "").trim();
+  const city = String(body.city || "").trim();
   const email = String(body.email || "").trim().toLowerCase();
   if (!login) return NextResponse.json({ error: "Вкажіть логін" }, { status: 400 });
   if (!fullName) return NextResponse.json({ error: "Вкажіть ПІБ" }, { status: 400 });
@@ -49,7 +50,7 @@ export async function POST(req: Request) {
   // Оновлюємо ЛИШЕ власний рядок (id = auth.uid()) — без mass-assignment.
   const { error: pErr } = await admin
     .from("profiles")
-    .update({ login, full_name: fullName, phone: phone || null, note: note || null })
+    .update({ login, full_name: fullName, phone: phone || null, note: note || null, city: city || null })
     .eq("id", user.id);
   if (pErr) {
     const msg = pErr.message || "";

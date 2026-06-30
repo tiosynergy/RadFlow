@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "sync-board": "node scripts/sync-board.mjs"
+    "sync-board": "node scripts/sync-board.mjs",
+    "seed:cities": "node scripts/seed-cities.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
