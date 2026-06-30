@@ -98,6 +98,7 @@ export type Database = {
           login: string | null;
           note: string | null;
           workplace: string | null;
+          city: string | null;
           password_set: boolean;
           invite_token: string | null;
         };
@@ -113,6 +114,7 @@ export type Database = {
           login?: string | null;
           note?: string | null;
           workplace?: string | null;
+          city?: string | null;
           password_set?: boolean;
           invite_token?: string | null;
         };
@@ -128,6 +130,7 @@ export type Database = {
           login?: string | null;
           note?: string | null;
           workplace?: string | null;
+          city?: string | null;
           password_set?: boolean;
           invite_token?: string | null;
         };

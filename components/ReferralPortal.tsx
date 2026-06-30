@@ -13,6 +13,7 @@ import LiveClock from "@/components/LiveClock";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
 import PatientEditModal from "@/components/PatientEditModal";
 import PhoneInput from "@/components/PhoneInput";
+import CitySelect from "@/components/CitySelect";
 import RescheduleModal from "@/components/RescheduleModal";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry } from "@/app/queue/actions";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
@@ -854,9 +855,43 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
   );
 }
 
+/* Текстове поле, що росте вниз у міру набору (авто-висота),
+   але не більше maxRows видимих рядків — далі зʼявляється прокрутка. */
+function AutoTextarea({ value, onChange, placeholder, className = "inp", maxRows = 5 }: { value: string; onChange: (v: string) => void; placeholder?: string; className?: string; maxRows?: number }) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const cs = getComputedStyle(el);
+    const line = parseFloat(cs.lineHeight) || 20;
+    const padT = parseFloat(cs.paddingTop) || 0;
+    const padB = parseFloat(cs.paddingBottom) || 0;
+    const borderT = parseFloat(cs.borderTopWidth) || 0;
+    const borderB = parseFloat(cs.borderBottomWidth) || 0;
+    // box-sizing: border-box → у height входять padding і border.
+    const extra = padT + padB + borderT + borderB;
+    const max = line * maxRows + extra;
+    const full = el.scrollHeight + borderT + borderB;
+    el.style.height = Math.min(full, max) + "px";
+    el.style.overflowY = full > max ? "auto" : "hidden";
+  }, [value, maxRows]);
+  return (
+    <textarea
+      ref={ref}
+      className={className}
+      placeholder={placeholder}
+      rows={1}
+      style={{ resize: "none", overflow: "hidden" }}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
 /* ---------- Вкладка «Мій профіль» (направник редагує власні дані) ---------- */
 function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m: string, t?: string) => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ login: "", full_name: "", phone: "", note: "", email: "" });
+  const [form, setForm] = useState({ login: "", full_name: "", phone: "", note: "", city: "", email: "" });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -865,11 +900,11 @@ function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m
     (async () => {
       const supabase = createClient();
       const [{ data: p }, { data: priv }] = await Promise.all([
-        supabase.from("profiles").select("login, full_name, phone, note").eq("id", doctorId).maybeSingle(),
+        supabase.from("profiles").select("login, full_name, phone, note, city").eq("id", doctorId).maybeSingle(),
         supabase.from("referrer_private").select("email").eq("referrer_id", doctorId).maybeSingle(),
       ]);
       if (!active) return;
-      setForm({ login: p?.login || "", full_name: p?.full_name || "", phone: p?.phone || "", note: p?.note || "", email: priv?.email || "" });
+      setForm({ login: p?.login || "", full_name: p?.full_name || "", phone: p?.phone || "", note: p?.note || "", city: p?.city || "", email: priv?.email || "" });
       setLoading(false);
     })();
     return () => { active = false; };
@@ -903,8 +938,11 @@ function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m
         <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Телефон{reqMark}</span><PhoneInput required value={form.phone} onChange={(v) => setForm((f) => ({ ...f, phone: v }))} /></label>
         <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Email (для відновлення доступу){reqMark}</span><input className="inp" type="email" placeholder="name@example.com" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></label>
       </div>
-      <label className="fld"><span className="fld-lab">Примітки</span><input className="inp" placeholder="напр. спеціалізація (необовʼязково)" value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} /></label>
-      <div className="hint-blue">🔒 <b>Email бачите лише ви</b> — він потрібен для відновлення доступу й не видимий центрам. Логін, ПІБ, телефон і примітки видно центрам, до яких ви підключені.</div>
+      <div className="fld-row" style={{ alignItems: "flex-start" }}>
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Місто</span><CitySelect value={form.city} onChange={(v) => setForm((f) => ({ ...f, city: v }))} /></label>
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Примітки</span><AutoTextarea placeholder="напр. спеціалізація (необовʼязково)" value={form.note} onChange={(v) => setForm((f) => ({ ...f, note: v }))} /></label>
+      </div>
+      <div className="hint-blue">🔒 <b>Email бачите лише ви</b> — він потрібен для відновлення доступу й не видимий центрам. Логін, ПІБ, телефон, місто і примітки видно центрам, до яких ви підключені.</div>
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
         <button className="btn btn-primary" disabled={saving} onClick={save}>{saving ? "Зберігаємо…" : "Зберегти"}</button>
       </div>
