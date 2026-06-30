@@ -46,13 +46,15 @@ management.
 - User sets their own password at `/set-password?token=…` (one-time `profiles.invite_token`,
   consumed on use). `/set-password` resolves the token via GET and shows the account's login.
 - Admin can reset/set passwords via `/api/staff/password` (authorizes radiologists by `clinic_id`,
-  CEOs via active `ceo_access`). Known bug (open): this route's `clinic_id` check 403s for global
-  REFERRERS — see TODO.
+  CEOs via active `ceo_access`, and REFERRERS via active `referral_access`). The old `clinic_id`
+  403 bug for global referrers is FIXED: the route fetches the target with the service-role client
+  and authorizes by the access grant, not the profile's `clinic_id`.
 
 ## Migrations
 - Applied to prod MANUALLY via the Supabase SQL editor (no automated migration runner).
-- Prod is currently at **0040** (0031–0040 applied). ALWAYS check the highest existing migration
-  number before adding a new one and number it sequentially (a duplicate/lower number is a bug).
+- Prod is currently at **0044** (highest local migration; `0044_ceo_list_rpc.sql` applied
+  2026-06-30). ALWAYS check the highest existing migration number before adding a new one and
+  number it sequentially (a duplicate/lower number is a bug).
 - Keep migrations idempotent (`do $$ … exception when duplicate_object …$$`, `create … if not
   exists`, `drop policy if exists` before `create policy`).
 
@@ -66,15 +68,31 @@ management.
   users (e.g. radiologist with a CEO grant) get a "Дашборд CEO" link via
   `components/CeoDashboardLink.tsx`. Security-reviewed and live-tested in the browser.
 - `CeoDashboard.reload` hardened with `try/catch/finally`.
+- Account security (migration `0032`): one-time `invite_token` for set-password (CRIT-1) and
+  `email_for_login` EXECUTE revoked from anon (CRIT-2). Both old blockers are CLOSED.
+- City directory (migrations `0042`/`0043`): КАТОТТГ picker `components/CitySelect.tsx` + RPC
+  `search_cities`; referrer carries a city.
+- **RPC `ceo_list_for_clinic`** (migration `0044`): security-definer, admin-of-clinic gated;
+  `CeoManager.reload` now calls it. Returns the FULL CEO membership (incl. cross-role / cross-clinic
+  members hidden by `profiles_ceo_linked_read`'s `role='ceo'` guard) WITHOUT exposing `invite_token`
+  of non-`ceo`-role accounts. Type added to `supabase/types.ts`. Security-reviewed (no blockers).
+- **UX-audit P0/P1/P2 implemented** (accessibility, WCAG 2.1 AA target; see `PRODUCT_OVERVIEW.md`
+  §4.11): global `:focus-visible`; removed `zoom` + 11px font floor + AA contrast tokens; density
+  control (Компактно/Звичайно/Просторо — `components/DensityToggle.tsx` export `DensityControl`,
+  `html[data-density]`, `localStorage['rf-density']`, lives in the LEFT sidebar); non-colour status
+  glyphs + calendar shapes (1.4.1); `prefers-reduced-motion`; modal focus-trap/Esc/restore via
+  `lib/useModalA11y.ts` on all 8 modals + stronger `.btn:disabled`; registrar hotkeys
+  (`e.code`: n / `/` / r / 1–9 / `` ` ``); board skeleton; contextual help `components/HelpTip.tsx`;
+  inline block reasons. Live-tested in browser. P1.2 (undo) intentionally skipped.
 
 ## Open work — see `TODO.md` for the live list
 - Commit pending changes; run `npm run typecheck` (== `tsc --noEmit`) and `npm run lint`. Note:
   bare `tsc` is NOT on PATH — use `npx` or the npm script. `next lint` is deprecated and ESLint
   isn't configured yet (separate task).
 - Referrer password recovery via email — deferred until a real domain + SMTP exist.
-- Admin-reset for referrers (fix the `clinic_id` 403 bug; authorize via active `referral_access`).
-- Optional RPC `ceo_list_for_clinic()` so cross-clinic global CEOs of other roles appear in the
-  admin CEO list without exposing `invite_token`.
+- ESLint not configured yet (`next lint` deprecated) — separate task.
+
+  (DONE, do not reopen: admin-reset for referrers — fixed; RPC `ceo_list_for_clinic` — shipped in 0044.)
 
 ## Environment & workflow notes
 - The isolated Linux sandbox/bash may be unavailable (disk space) — prefer file tools.

@@ -1,6 +1,6 @@
 # RadFlow — Обзор продукта (актуальная документация)
 
-**Дата актуализации:** 2026-06-27 · **Источник правды:** код `dev` (`app/`, `components/`, `lib/`, `supabase/migrations/0001–0039`). Весь фронтенд на **TypeScript** (`.tsx`/`.ts`); типы схемы Supabase — в `supabase/types.ts`.
+**Дата актуализации:** 2026-06-30 · **Источник правды:** код `dev` (`app/`, `components/`, `lib/`, `supabase/migrations/0001–0044`). Весь фронтенд на **TypeScript** (`.tsx`/`.ts`); типы схемы Supabase — в `supabase/types.ts`.
 Этот документ описывает RadFlow **как он реализован**. Ранние проектные документы (`docs/plan/`, `docs/architecture/`, `docs/scenarios/`) отражают изначальный замысел и местами расходятся с кодом — см. §9.
 
 ---
@@ -25,7 +25,7 @@ RadFlow — multi-tenant SaaS для **интеллектуального упр
 | Клиенты Supabase | Все типизированы `<Database>` (`@supabase/ssr@0.12`): `client.ts` (браузер, anon), `server.ts` (SSR, anon+cookies), `admin.ts` (service-role), `middleware.ts` (рефреш сессии) |
 | Хостинг | Vercel (авто-деплой из `main`); миграции применяются вручную в Supabase |
 
-**Маршрутизация и защита** (`middleware.ts`): рефреш сессии на каждом запросе; защищённые маршруты (`/queue`, `/radiologist`, `/ceo`, `/call-list`, `/referral`, `/staff`, `/referrers`, `/setup`) требуют входа; залогиненного с `/login`/`/register` ведёт на `/queue`; корень `/` → `/queue` или `/login`. Дальше серверные страницы разводят по роли.
+**Маршрутизация и защита** (`middleware.ts`): рефреш сессии на каждом запросе; защищённые маршруты (`/queue`, `/radiologist`, `/ceo`, `/ceo-admin`, `/call-list`, `/referral`, `/staff`, `/referrers`, `/setup`) требуют входа; залогиненного с `/login`/`/register` ведёт на `/queue`; корень `/` → `/queue` или `/login`. Дальше серверные страницы разводят по роли.
 
 ---
 
@@ -39,7 +39,9 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 | **registrar** | Регистратура: доска очереди и call-list | `/queue` |
 | **radiologist** | Только «Моя черга» по назначенным кабинетам (нужен `approved=true` + ≥1 кабинет) | `/radiologist` |
 | **referrer** | Глобальный аккаунт направляющего врача (`clinic_id = NULL`), доступ к центрам через `referral_access` | `/referral` |
-| **ceo** | CEO-дашборд (после правки — `/ceo` открыт только `admin`/`ceo`) | `/ceo` |
+| **ceo** | CEO-дашборд по аналитике; **глобальный кросс-клиничный аккаунт** — членство в центрах через `ceo_access`, грант выдаётся поверх любой роли (роль не меняется) | `/ceo` |
+
+> **Глобальные аккаунты** (`referrer`, `ceo`) имеют `clinic_id = NULL`; их членство в клиниках хранится в access-таблицах (`referral_access`, `ceo_access`) — строка на пару (пользователь, клиника) со статусом. Один пользователь может держать роль И дополнительный CEO-грант (напр. радиолог, который также CEO) — роль при этом не меняется. Security-definer хелперы изоляции: `auth_referrer_clinics()`, `auth_can_refer()`, `auth_ceo_clinics()`, `auth_is_ceo_of()`.
 
 ---
 
@@ -48,14 +50,14 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 ### 4.1. Регистрация клиники и онбординг
 
 - **`/register`** — администратор регистрирует клинику: `supabase.auth.signUp` с метаданными (login, phone, clinic_name). Триггер `handle_new_user` создаёт клинику и профиль-администратора. Валидация пароля: ≥8 символов, ≥1 заглавная, ≥1 цифра. (Соц-кнопки — демонстрационные заглушки.)
-- **`/setup`** (Setup Wizard, admin) — один шаг «Профиль клиники»: реквизиты центра (название, город, адрес, телефоны, email), данные администратора, и **оборудование/кабинеты** с графиком работы по дням (опционально перерыв, индивидуальные часы). Сохранение: инкрементальный upsert/delete кабинетов **по id** (не delete-all — чтобы не осиротить записи и доступы радиологов). После настройки выставляется `clinics.configured_at`; до этого все рабочие экраны редиректят на `/setup`.
+- **`/setup`** (Setup Wizard, admin) — реквизиты центра (название, **город из справочника КАТОТТГ** — `CitySelect` + RPC `search_cities`, ~29.7 тыс. населённых пунктов; адрес, телефоны, email), данные администратора, и **оборудование/кабинеты** с графиком работы по дням (опционально перерыв, индивидуальные часы). Сохранение: инкрементальный upsert/delete кабинетов **по id** (не delete-all — чтобы не осиротить записи и доступы радиологов). После настройки выставляется `clinics.configured_at`; до этого все рабочие экраны редиректят на `/setup`.
 
 ### 4.2. Аутентификация и приглашения
 
 - **`/login`** — вход по **логину или email** + паролю. Если введён логин (без `@`), email резолвится через RPC `email_for_login`, затем `signInWithPassword`. Параметр `?redirect=` санитизирован (только внутренние пути).
-- **Флоу приглашения сотрудника:** администратор создаёт аккаунт (service-role, временный пароль, `password_set=false`) → передаёт человеку ссылку `/set-password?login=…` → тот задаёт пароль → `password_set=true`.
-- **`/set-password`** + `POST /api/account/set-password` — пользователь сам задаёт пароль, **только если `password_set=false`**.
-  > ⚠️ Безопасность: текущий флоу не подтверждает владение логином (нет одноразового токена). См. аудит CRIT-1 — блокер до продакшена.
+- **Флоу приглашения сотрудника (radiologist/referrer/ceo):** администратор создаёт аккаунт (service-role, без пароля, `password_set=false`, генерируется **одноразовый `invite_token`**) → передаёт человеку персональную ссылку `/set-password?token=…`.
+- **`/set-password`** + `/api/account/set-password`: `GET` резолвит токен в логин/ПИБ (показывает, для какого аккаунта вход), `POST` задаёт пароль — **только при валидном токене и `password_set=false`**; после успеха `password_set=true`, а `invite_token` гасится (миграция 0032, CRIT-1: токен подтверждает владение, переиспользование ссылки исключено).
+- **Сброс пароля админом** (`POST /api/staff/password`): авторизует радиолога по `clinic_id`, CEO — по активному `ceo_access`, направителя — по активному `referral_access`; генерирует новый одноразовый токен для повторной установки.
 
 ### 4.3. Доска очереди (`/queue`, `QueueBoard.tsx`) — admin/registrar
 
@@ -102,6 +104,22 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 
 Периоды: сьогодні / тиждень / місяць. KPI: всего записей, выполнено, неявка, не відбулося, в процессе. **Завантаженість** (`booked / capacity`, capacity = кабинеты × 480 мин × рабочие дни). **Дохід** по выполненным (сохранённая цена или оценка по справочнику + надбавка за контраст). Недельный бар-чарт (всего + отметки срывов), топ-5 процедур, загрузка по аппаратам. Экспорт CSV (с защитой от формульной инъекции). Realtime через `useRealtimeRefetch`.
 
+Для CEO с доступом к нескольким центрам — **переключатель клиник + агрегат «Всі центри»**. Кросс-ролевой пользователь (напр. радиолог с CEO-грантом) получает ссылку на дашборд (`CeoDashboardLink.tsx`), роль при этом не меняется.
+
+### 4.10. Управление руководителями CEO (`/ceo-admin`, `CeoManager.tsx`) — admin
+
+Админ выдаёт/отзывает/удаляет CEO-доступ к своему центру: `POST /api/ceo/{grant,revoke,delete}` (service-role с проверкой прав). Грант можно дать существующему пользователю по логину (роль не меняется, добавляется строка `ceo_access`) или создать CEO-only аккаунт (с одноразовой ссылкой входа). Список руководителей строится через security-definer RPC **`ceo_list_for_clinic`** (миграция 0044): показывает всех членов центра, включая кросс-ролевых и кросс-клиничных, не ослабляя RLS и не раскрывая `invite_token` аккаунтов других ролей.
+
+### 4.11. Доступность и UX (WCAG 2.1 AA)
+
+Слой реализован поверх собственной дизайн-системы (`styles/prototype/*.css`, тёмная тема в духе Apple HIG):
+
+- **Клавиатура:** единый видимый `:focus-visible` для всех интерактивных элементов; в модалках — фокус-ловушка, Esc, возврат фокуса на триггер (хук `lib/useModalA11y.ts`, `role="dialog"`/`aria-modal`). Горячие клавиши регистратуры (через `e.code`, независимо от раскладки): `n` — новый запис, `/` — поиск, `r` — обновить, `1…9` — кабинет, `` ` ``/`0` — все кабинеты (не перехватываются в полях ввода и при открытой модалке).
+- **Читабельность:** убран нестандартный `zoom`; пол кегля 11px; контраст текста доведён до AA (`--text-muted`/`--text-faint`). **Регулятор плотности** (ползунок Компактно/Звичайно/Просторо, `DensityControl` в левом сайдбаре, сохраняется в `localStorage`, применяется через `html[data-density]` без перезагрузки).
+- **Информация не только цветом** (1.4.1): статус звонка различается глифом (✓ ↻ … ✕ ○), метки графика в календаре — формой (круг/квадрат) + `aria-label`.
+- **Движение:** `prefers-reduced-motion` гасит пульсации, тосты, flash, шиммер skeleton.
+- **Обратная связь:** skeleton-каркас при загрузке доски; контекстная справка «?» (`HelpTip` — CITO, авто-розблокування инцидента, политика направителя); инлайн-причина заблокированного действия (не только tooltip).
+
 ---
 
 ## 5. Статусы и справочники
@@ -111,6 +129,7 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 - **`modality`**: `MRI`, `CT`, `OTHER`.
 - **`referral_access_status`**: `pending_clinic`, `pending_referrer`, `active`, `revoked`, `declined`.
 - **`referral_policy`**: `direct` (запись сразу), `confirm` (требует подтверждения).
+- **`ceo_access_status`**: `active`, `revoked`.
 - **`incidents.status`** (text): `active`, `planned`, `resolved`.
 
 ---
@@ -131,17 +150,20 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 | `doctors` | Справочник врачей-направителей (свободный текст, не аккаунты) |
 | `clinic_invites`, `radiologist_rooms` | Приглашения сотрудников и доступ радиолога к кабинетам |
 | `referral_access` | M2M доступ направитель↔центр: `status`, `policy`, `room_ids` (единый источник членства) |
+| `ceo_access` | M2M доступ CEO↔центр: `status` (`active`/`revoked`), `granted_by`, `note`; uniq по (`ceo_id`, `clinic_id`) — единый источник CEO-членства (миграция 0040) |
+| `cities` | Справочник населённых пунктов КАТОТТГ (поиск через `search_cities`); миграции 0042/0043 |
 
 **Ключевые ограничения и логика:**
 
 - `check_no_overlap` (триггер + advisory-lock) — запрет двойной брони по времени; `cancelled/no_show/not_held` освобождают слот.
 - Частичный unique-индекс — один `in_progress` на кабинет; один `active`-инцидент на кабинет.
 - `check_not_during_incident` — запрет записи в окно простоя.
-- `auth_clinic_id()`, `auth_is_admin()`, `auth_is_referrer()` — security-definer хелперы для RLS.
+- `auth_clinic_id()`, `auth_is_admin()`, `auth_is_referrer()`, `auth_referrer_clinics()`, `auth_can_refer()`, `auth_ceo_clinics()`, `auth_is_ceo_of()` — security-definer хелперы для RLS.
+- RLS-чтение профилей для глобальных пользователей — отдельными permissive-политиками (`profiles_referrer_linked_read` / `profiles_ceo_linked_read`), каждая с role-guard (`role='referrer'` / `role='ceo'`) как осознанная граница изоляции (админу нельзя прочитать полный профиль/`invite_token` чужой роли только по факту гранта).
 - `handle_new_user` — создание клиники+админа при регистрации (пропускает `managed`-аккаунты).
 - `touch_updated_at` — `updated_at`; вход в кабинет фиксируется отдельной меткой `in_progress_at`.
 
-**RPC:** `email_for_login`, `auth_referrer_clinics`, `auth_can_refer`, `auth_referrer_can_book_room`, `room_busy_slots` (обезличенная занятость), `search_clinics`, `delete_clinic_member`.
+**RPC:** `email_for_login` (с 0032 — только server-side, EXECUTE отозван у anon), `auth_referrer_can_book_room`, `room_busy_slots` (обезличенная занятость), `search_clinics`, `search_referrers`, `search_cities`, `referral_center_card`, `delete_clinic_member`, **`ceo_list_for_clinic`** (полный список CEO центра без утечки `invite_token`, 0044), `rl_check` (rate-limit, server-only).
 
 **RLS-принцип:** персонал видит/правит данные своей клиники; направитель — только свои записи (`created_by`) и кабинеты центров с активным доступом; запись направителя ограничена `auth_referrer_can_book_room`; `referral_access` пишется только service-role.
 
@@ -151,18 +173,24 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 
 ## 7. Эволюция схемы (миграции)
 
-`0001` фундамент (tenancy, очередь, RLS) · `0002` setup/графики · `0003` поля записи · `0004` инциденты · `0005` overrides · `0006` doctors+CITO · `0007–0008` заметки · `0009` аккаунты радиологов · `0010–0011` удаление · `0012` `created_by`+ролевые политики · `0013` managed-аккаунты, `email_for_login` · `0014/0016` анти-овербукинг, `not_held` · `0015` enum `not_held` · `0017/0018` один active-инцидент / один in_progress · `0019` `in_progress_at` · `0020` запрет записи в простое · `0021` `auto_unblock` · `0022` realtime replica identity · `0023–0029` портал направителей (referral_access, глобальный направитель, RPC, room_ids) · `0030` `studies_original` · **`0031`** realtime для `doctors` + индекс `queue_entries(room_id, scheduled_date)`.
+`0001` фундамент (tenancy, очередь, RLS) · `0002` setup/графики · `0003` поля записи · `0004` инциденты · `0005` overrides · `0006` doctors+CITO · `0007–0008` заметки · `0009` аккаунты радиологов · `0010–0011` удаление · `0012` `created_by`+ролевые политики · `0013` managed-аккаунты, `email_for_login` · `0014/0016` анти-овербукинг, `not_held` · `0015` enum `not_held` · `0017/0018` один active-инцидент / один in_progress · `0019` `in_progress_at` · `0020` запрет записи в простое · `0021` `auto_unblock` · `0022` realtime replica identity · `0023–0029` портал направителей (referral_access, глобальный направитель, RPC, room_ids) · `0030` `studies_original` · `0031` realtime для `doctors` + индекс `queue_entries(room_id, scheduled_date)` · **`0032`** безопасность аккаунтов: одноразовый `invite_token` (CRIT-1) + отзыв `email_for_login` у anon (CRIT-2) · `0033` rate-limits (`rl_check`) · `0034` CHECK статусов + `scheduled_at` · `0035` walltime · `0036` связка/guard направителя · `0037` чистка неиспользуемого · `0038` карточка центра (`referral_center_card`) · `0039` `search_referrers` · **`0040`** глобальный кросс-клиничный CEO (`ceo_access`, `auth_ceo_clinics`/`auth_is_ceo_of`, RLS) · `0041` приватный email направителя · **`0042`/`0043`** справочник городов КАТОТТГ (`cities`, `search_cities`) + город направителя · **`0044`** RPC `ceo_list_for_clinic`.
 
 ---
 
 ## 8. Известные дефекты и ограничения
 
-Полный список — в [`docs/audit/FULL_AUDIT_2026-06-25.md`](audit/FULL_AUDIT_2026-06-25.md). Кратко актуальные блокеры до продакшена:
+Полный исторический список — в [`docs/audit/FULL_AUDIT_2026-06-25.md`](audit/FULL_AUDIT_2026-06-25.md).
 
-- 🔴 **Установка пароля** не подтверждает владение логином (риск захвата аккаунта) — нужны invite-токены.
-- 🔴 **`email_for_login`** доступен анонимно и раскрывает email по логину — энумерация аккаунтов.
+**Прежние блокеры — ЗАКРЫТЫ (миграция 0032):**
 
-Ограничение дизайна: сетка слотов фиксирована шагом 30 мин и не выравнивается по фактическому окончанию процедур нечётной длительности.
+- ✅ **Установка пароля** теперь подтверждает владение через одноразовый `invite_token` (CRIT-1).
+- ✅ **`email_for_login`** больше не доступен анонимно — EXECUTE отозван у anon, резолв логин→email только на сервере (CRIT-2).
+
+**Актуальные ограничения:**
+
+- Сетка слотов фиксирована шагом 30 мин и не выравнивается по фактическому окончанию процедур нечётной длительности.
+- Восстановление пароля направителя по email — отложено до появления реального домена + SMTP.
+- UX-аудит P0/P1/P2 (доступность) внедрён; целевой уровень — WCAG 2.1 AA, см. §4.11.
 
 ---
 
