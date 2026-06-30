@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { signOutAndRedirect } from "@/lib/auth";
+import DensityControl from "@/components/DensityToggle";
 
 type SidebarRoom = {
   id: string;
@@ -129,6 +130,7 @@ export default function Sidebar({
       <div className="sb-settings">
         {showCeoLink && <a href="/ceo" className={"sb-item" + (activeNav === "ceo" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Дашборд CEO</span></a>}
         {isAdmin && <a href="/setup" className="sb-item"><span className="ic">⚙</span><span className="sb-item-lab">Майстер налаштування</span></a>}
+        <div className="sb-density-box"><DensityControl /></div>
       </div>
 
       <div className="sb-user">
