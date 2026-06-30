@@ -491,6 +491,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
   .toast.out { animation: none; }
   .qrow-item.flash, .qrow.flash { animation: none; }
   .load-fill { transition: none; }
+  .sk-line::after { animation: none; }
 }
 
 .q-time { font-size: 15px; font-weight: 700; }
@@ -529,6 +530,35 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .empty .ei { font-size: 40px; color: var(--border-strong); margin-bottom: 14px; }
 .empty .et { font-size: 16px; font-weight: 600; color: var(--text-secondary); }
 .empty .es { font-size: 13px; margin-top: 6px; }
+
+/* P2.3 — Skeleton завантаження дошки (каркас рядків черги) */
+.qrow-item.skel { pointer-events: none; }
+.sk-line { height: 12px; border-radius: 6px; background: var(--card-2); position: relative; overflow: hidden; }
+.sk-line + .sk-line { margin-top: 6px; }
+.sk-time { height: 16px; width: 42px; }
+.sk-badge { width: 84px; height: 20px; border-radius: 12px; justify-self: center; }
+.sk-w40 { width: 40%; } .sk-w50 { width: 50%; } .sk-w60 { width: 60%; } .sk-w70 { width: 70%; } .sk-w90 { width: 90%; }
+.sk-line::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent); animation: skShimmer 1.3s ease-in-out infinite; }
+@keyframes skShimmer { 100% { transform: translateX(100%); } }
+
+/* P2.2 — Контекстна довідка «?» */
+.helptip { position: relative; display: inline-flex; vertical-align: middle; margin-left: 6px; }
+.helptip-btn { width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--card-2);
+  color: var(--text-secondary); font-size: 11px; font-weight: 700; line-height: 1; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: background .12s, color .12s; flex-shrink: 0; }
+.helptip-btn:hover { background: var(--blue-bg); color: #4da3ff; border-color: var(--blue); }
+.helptip-pop { position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%); z-index: 80;
+  width: max-content; max-width: 280px; padding: 9px 12px; border-radius: 9px;
+  background: var(--card); border: 1px solid var(--border-strong); box-shadow: var(--shadow-pop);
+  font-size: 12px; font-weight: 400; line-height: 1.45; color: var(--text-secondary);
+  text-transform: none; letter-spacing: normal; white-space: normal; text-align: left; }
+.helptip-pop b { color: var(--text); font-weight: 600; }
+.helptip-pop::before { content: ""; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+  border: 6px solid transparent; border-bottom-color: var(--border-strong); }
+
+/* P2.4 — Інлайн-причина заблокованої дії (тримається, поки причина актуальна) */
+.qd-inline-err { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--orange);
+  background: var(--orange-bg); border: 1px solid rgba(255,159,10,0.35); border-radius: 8px; padding: 6px 10px; margin: 2px 0 0; }
 
 /* ===== Right panel ===== */
 .rpanel { border-left: 1px solid var(--border); overflow-y: auto; padding: 18px 16px 40px; display: flex; flex-direction: column; gap: 16px; background: var(--bg); }
