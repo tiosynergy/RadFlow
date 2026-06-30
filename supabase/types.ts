@@ -19,6 +19,39 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      cities: {
+        Row: {
+          id: string;
+          katottg: string | null;
+          name: string;
+          category: string;
+          region: string | null;
+          district: string | null;
+          community: string | null;
+          label: string;
+        };
+        Insert: {
+          id?: string;
+          katottg?: string | null;
+          name: string;
+          category: string;
+          region?: string | null;
+          district?: string | null;
+          community?: string | null;
+          label: string;
+        };
+        Update: {
+          id?: string;
+          katottg?: string | null;
+          name?: string;
+          category?: string;
+          region?: string | null;
+          district?: string | null;
+          community?: string | null;
+          label?: string;
+        };
+        Relationships: [];
+      };
       clinics: {
         Row: {
           id: string;
@@ -725,6 +758,17 @@ export type Database = {
       search_referrers: {
         Args: { q: string };
         Returns: { id: string; login: string | null; full_name: string | null }[];
+      };
+      search_cities: {
+        Args: { q: string };
+        Returns: {
+          id: string;
+          name: string;
+          region: string | null;
+          district: string | null;
+          category: string;
+          label: string;
+        }[];
       };
       // EXECUTE revoked from anon/authenticated (0032/0033) - called ONLY by the
       // server admin client (service_role bypasses grants). Still need the types,
