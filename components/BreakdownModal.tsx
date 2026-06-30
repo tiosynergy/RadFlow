@@ -9,6 +9,7 @@
 
 import { useState } from "react";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { useModalA11y } from "@/lib/useModalA11y";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type IncidentRow = {
@@ -214,6 +215,7 @@ interface BreakdownModalProps {
 }
 
 export default function BreakdownModal({ rooms, incidents = [], overrides = {}, initialRoomId, onClose, onSubmit, onResolve }: BreakdownModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [roomId, setRoomId] = useState(initialRoomId || (rooms || [])[0]?.id || "");
   const room = (rooms || []).find((r) => r.id === roomId);
   const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
@@ -222,7 +224,7 @@ export default function BreakdownModal({ rooms, incidents = [], overrides = {}, 
 
   return (
     <div className="overlay">
-      <div className="dialog fade-in" style={{ maxWidth: 600 }}>
+      <div className="dialog fade-in" style={{ maxWidth: 600 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Поломка або технічне обслуговування">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--red-bg)", color: "var(--red)" }}>🔧</span>Поломка / Технічне обслуговування</div>
           <button className="icon-btn" onClick={onClose}>✕</button>

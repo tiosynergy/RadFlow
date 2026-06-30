@@ -313,7 +313,9 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .btn-ghost:hover { background: var(--card-hover); color: var(--text); }
 .btn-sm { padding: 6px 11px; font-size: 12.5px; border-radius: 8px; }
 .btn-lg { padding: 11px 22px; font-size: 14.5px; font-weight: 600; border-radius: 11px; }
-.btn:disabled { opacity: 0.38; cursor: not-allowed; }
+/* Вимкнений стан: не лише прозорість — приглушений фон/текст і grayscale (читабельно, але явно «вимкнено»). */
+.btn:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(0.4); }
+.btn-primary:disabled, .btn-green:disabled, .btn-danger:disabled { background: var(--card-2); color: var(--text-muted); border-color: var(--border); }
 .btn:disabled:active { transform: none; }
 
 /* content + right panel */
@@ -480,7 +482,16 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .qd-call.blue   { background: var(--blue-bg);   color: #4da3ff; }
 .qd-call.red    { background: var(--red-bg);    color: var(--red); }
 .qd-call.gray   { background: var(--gray-badge-bg); color: var(--text-secondary); }
-@media (prefers-reduced-motion: reduce) { .qrow-detail-wrap { transition: none; } .q-chev { transition: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .qrow-detail-wrap { transition: none; }
+  .q-chev { transition: none; }
+  /* Безкінечні / появні анімації — вимкнути (вестибулярна безпека, WCAG 2.3.3) */
+  .pulse-dot::after, .cito-pulse::after { animation: none; opacity: 0; }
+  .toast { animation: none; }
+  .toast.out { animation: none; }
+  .qrow-item.flash, .qrow.flash { animation: none; }
+  .load-fill { transition: none; }
+}
 
 .q-time { font-size: 15px; font-weight: 700; }
 .q-time .td { font-size: 11px; color: var(--text-faint); font-weight: 500; margin-top: 2px; }
@@ -546,8 +557,9 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .cal-day.holiday:not(.today):not(.selected) { color: var(--red); }
 .cal-day.custom:not(.today):not(.selected) { color: var(--orange); }
 .cal-sched { position: absolute; top: 3px; left: 4px; width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 2px var(--card); }
-.cal-sched.closed { background: var(--red); }
-.cal-sched.custom { background: var(--orange); }
+/* Форма теж розрізняє статус (не лише колір, WCAG 1.4.1): закрито — коло, особливий графік — квадрат. */
+.cal-sched.closed { background: var(--red); border-radius: 50%; }
+.cal-sched.custom { background: var(--orange); border-radius: 1px; }
 .cal-day.today .cal-sched { box-shadow: 0 0 0 2px var(--blue); }
 
 .cal-sched-strip { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }

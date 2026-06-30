@@ -6,6 +6,7 @@
 
 import { useState, useEffect, type ReactNode } from "react";
 import type { QueueEntry } from "@/supabase/types";
+import { useModalA11y } from "@/lib/useModalA11y";
 
 const FAIL_REASONS = [
   { group: "Стан пацієнта", items: ["Клаустрофобія", "Несумісний імплант", "Кардіостимулятор", "Не готовий", "Погано почувається", "Відмовився"] },
@@ -39,6 +40,7 @@ interface CompletionModalProps {
 }
 
 export default function CompletionModal({ patient, proc, roomName, enteredAt, onClose, onSuccess, onFail }: CompletionModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [result, setResult] = useState<"success" | "failed">("success");
   const [reason, setReason] = useState("");
   const [notes, setNotes] = useState("");
@@ -53,7 +55,7 @@ export default function CompletionModal({ patient, proc, roomName, enteredAt, on
 
   return (
     <div className="overlay">
-      <div className="dialog fade-in" style={{ maxWidth: 540 }}>
+      <div className="dialog fade-in" style={{ maxWidth: 540 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Підтвердження завершення процедури">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--green-bg)", color: "var(--green)" }}>✓</span>Завершення процедури</div>
           <button className="icon-btn" onClick={onClose}>✕</button>

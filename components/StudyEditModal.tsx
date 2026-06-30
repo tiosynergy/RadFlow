@@ -8,6 +8,7 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { regionsFor } from "@/lib/studies";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { useModalA11y } from "@/lib/useModalA11y";
 
 const MIN_STUDY = 15;
 
@@ -31,6 +32,7 @@ function toMin(t: string | null | undefined) { const p = String(t || "").split("
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 
 export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, onClose, onConfirm }: StudyEditModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const room = (rooms || []).find((r) => r.id === patient.room_id);
   const roomKind = room ? modalityLabel(room.modality) : "МРТ"; // "МРТ" | "КТ"
   const lockType = roomKind === "МРТ" || roomKind === "КТ";
@@ -107,7 +109,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
 
   return (
     <div className="overlay">
-      <div className="dialog fade-in" style={{ maxWidth: 600 }}>
+      <div className="dialog fade-in" style={{ maxWidth: 600 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Редагування дослідження">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue)" }}>🩻</span>Дослідження пацієнта</div>
           <button className="icon-btn" onClick={onClose}>✕</button>

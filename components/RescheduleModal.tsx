@@ -8,6 +8,7 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, type IncidentLike } from "@/lib/incidents";
+import { useModalA11y } from "@/lib/useModalA11y";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type DayEntry = { id: string; scheduled_time: string | null; duration_min: number | null; status: string };
@@ -35,6 +36,7 @@ function procLabel(e: { studies?: unknown; note?: string | null }) {
 }
 
 export default function RescheduleModal({ patient, rooms, clinicId, incidents = [], onClose, onConfirm }: RescheduleModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const curRoom = (rooms || []).find((r) => r.id === patient.room_id);
   const modality = curRoom ? curRoom.modality : "MRI";
   const kind = modalityLabel(modality);
@@ -105,7 +107,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
 
   return (
     <div className="overlay">
-      <div className="dialog fade-in" style={{ maxWidth: 520 }}>
+      <div className="dialog fade-in" style={{ maxWidth: 520 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Перенесення запису">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue)" }}>🗓</span>Перенести на новий слот</div>
           <button className="icon-btn" onClick={onClose}>✕</button>

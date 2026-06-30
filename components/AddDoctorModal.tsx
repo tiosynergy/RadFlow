@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import PhoneInput from "@/components/PhoneInput";
+import { useModalA11y } from "@/lib/useModalA11y";
 
 const SPECS = ["Невролог", "Ортопед-травматолог", "Онколог", "Терапевт", "Кардіолог", "Нейрохірург", "Ревматолог", "Інша спеціальність"];
 
@@ -18,6 +19,7 @@ interface AddDoctorModalProps {
 }
 
 export default function AddDoctorModal({ existing = [], onClose, onSave }: AddDoctorModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [name, setName] = useState("");
   const [spec, setSpec] = useState("");
   const [phone, setPhone] = useState("");
@@ -27,7 +29,7 @@ export default function AddDoctorModal({ existing = [], onClose, onSave }: AddDo
 
   return (
     <div className="overlay">
-      <div className="dialog fade-in" style={{ maxWidth: 540 }}>
+      <div className="dialog fade-in" style={{ maxWidth: 540 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Додавання лікаря-направника">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--green-bg)", color: "var(--green)" }}>🩺</span>Додати лікаря-направляча</div>
           <button className="icon-btn" onClick={onClose}>✕</button>
