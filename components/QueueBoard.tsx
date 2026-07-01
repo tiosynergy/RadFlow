@@ -27,6 +27,7 @@ import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import BreakdownModal from "@/components/BreakdownModal";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
+import HelpTip from "@/components/HelpTip";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
 import { diffStudies, studyText } from "@/lib/studies";
@@ -408,7 +409,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         <div className="q-status-cell">
           <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
           {rescheduling && <span className="badge red" title="Апарат заблоковано — потрібен перенос на інший слот">🔧 Перезапис</span>}
-          {(p.status === "scheduled" || p.status === "waiting") ? (() => { const cm = CALL_META[p.call_status || "not_called"]; return <span title={"Дзвінок: " + cm.label} style={{ fontSize: 16, lineHeight: 1, color: CALL_COLOR[p.call_status || "not_called"] }}>☎</span>; })() : null}
+          {(p.status === "scheduled" || p.status === "waiting") ? (() => { const cm = CALL_META[p.call_status || "not_called"]; return <span title={"Дзвінок: " + cm.label} aria-label={"Дзвінок: " + cm.label} style={{ fontSize: 15, lineHeight: 1, fontWeight: 700, color: CALL_COLOR[p.call_status || "not_called"] }}>{cm.icon}</span>; })() : null}
         </div>
         <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
       </div>
@@ -445,6 +446,8 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
               const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
               const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall) || !isTodayRow;
               const terminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
+              // P2.4 — причина блокування дії показується інлайн (не лише в tooltip), поки актуальна.
+              const blockReason = !advanceFn ? "" : !isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "");
               return (
                 <div className="qd-step">
                   <div style={{ position: "relative", padding: "14px 32px 4px" }}>
@@ -490,6 +493,10 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                       </>
                     )}
                   </div>
+
+                  {advanceDisabled && blockReason && (
+                    <div className="qd-inline-err" role="status">⚠ {blockReason}</div>
+                  )}
 
                   {moreOpen && !terminal && (
                     <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }}>
@@ -627,7 +634,7 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, onEditSched
           const markCustom = st.kind === "custom";
           return (
             <button key={d} className={"cal-day" + (isToday ? " today" : "") + (isSel && !isToday ? " selected" : "") + (markClosed ? " holiday" : "") + (markCustom ? " custom" : "")}
-              title={st.label || undefined} onClick={() => onSelectDate(startOfDay(cd))}>
+              title={st.label || undefined} aria-label={st.label ? `${d} — ${st.label}` : undefined} onClick={() => onSelectDate(startOfDay(cd))}>
               {d}
               {(markClosed || markCustom) && <span className={"cal-sched " + (markClosed ? "closed" : "custom")} />}
             </button>
@@ -703,6 +710,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [roomView, setRoomView] = useState("all");
+  const searchRef = useRef<HTMLInputElement>(null);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState(() => today0());
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
@@ -767,6 +775,26 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   useEffect(() => { setLoading(true); }, [clinicId]);
   useEffect(() => { reload(); }, [reload]);
+
+  // P2.1 — гарячі клавіші реєстратури. Через e.code (незалежно від розкладки UA/RU/EN);
+  // не перехоплюємо у полях вводу та при відкритих модалках.
+  useEffect(() => {
+    const anyModalOpen = modalOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || breakdownOpen || schedEditOpen;
+    function onKey(e: KeyboardEvent) {
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (anyModalOpen) return;
+      const code = e.code;
+      if (code === "KeyN") { e.preventDefault(); setModalOpen(true); }
+      else if (code === "Slash" || e.key === "/") { e.preventDefault(); searchRef.current?.focus(); }
+      else if (code === "KeyR") { e.preventDefault(); reload(); }
+      else if (code === "Backquote" || code === "Digit0") { setRoomView("all"); }
+      else if (/^Digit[1-9]$/.test(code)) { const i = parseInt(code.slice(5), 10) - 1; const rs = rooms || []; if (rs[i]) setRoomView(rs[i].id); }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [modalOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, breakdownOpen, schedEditOpen, reload, rooms]);
 
   useRealtimeRefetch({
     channelName: clinicId ? "queue-" + clinicId : null,
@@ -1028,7 +1056,9 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
               <div className="inc-banner fade-in" style={{ borderColor: "var(--red)" }}>
                 <span className="inc-banner-ic">🔴</span>
                 <div className="inc-banner-txt">
-                  <div className="inc-banner-title">Термінові пацієнти (CITO): {citoList.length}</div>
+                  <div className="inc-banner-title">Термінові пацієнти (CITO): {citoList.length}
+                    <HelpTip label="Що таке CITO" text={<>CITO — терміновий пацієнт поза чергою: дослідження треба виконати якнайшвидше за медичними показаннями. Такі записи підсвічуються й виносяться вгору дошки.</>} />
+                  </div>
                   <div className="inc-banner-sub">{citoList.slice(0, 3).map((e) => (e.patient_name || "").split(" ").slice(0, 2).join(" ")).join(" · ")}{citoList.length > 3 ? " …" : ""}</div>
                 </div>
                 <button className="btn btn-secondary btn-sm" onClick={() => setFilter("all")}>Показати чергу</button>
@@ -1046,6 +1076,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                   <div className="inc-banner-txt">
                     <div className="inc-banner-title">{r?.name || "Апарат"} {nowBlocking ? "заблоковано" : awaitingManual ? "— простій завершився" : "— заплановано простій"} · {inc.reason_label || "Поломка"}
                       {inc.note ? <span className="inc-banner-window">{inc.note}</span> : null}
+                      {(nowBlocking || awaitingManual) && <HelpTip label="Розблокування апарата" text={<>Поки триває простій, апарат заблоковано для записів. Після завершення вікна простою він <b>авто-розблоковується</b>. Якщо вікно минуло, а блок лишився — натисніть «Розблокувати» вручну.</>} />}
                     </div>
                     <div className="inc-banner-sub">{(() => {
                       const n = affected.filter((a) => a.room_id === inc.room_id).length;
@@ -1120,7 +1151,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
             <div className="spacer" />
             <div className="search">
               <span className="si">⌕</span>
-              <input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <input ref={searchRef} placeholder="Пошук пацієнта… ( / )" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
           </div>
 
@@ -1129,7 +1160,20 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
           </div>
 
           {loading ? (
-            <div className="empty"><div className="et">Завантаження…</div></div>
+            <div className="qrows" aria-busy="true" aria-label="Завантаження черги">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div className="qrow-item skel" key={"sk" + i} aria-hidden="true">
+                  <div className="qrow">
+                    <div className="sk-line sk-time" />
+                    <div><div className="sk-line sk-w70" /><div className="sk-line sk-w40" /></div>
+                    <div><div className="sk-line sk-w90" /><div className="sk-line sk-w50" /></div>
+                    <div className="sk-line sk-w60" />
+                    <div className="sk-line sk-badge" />
+                    <div />
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : filtered.length === 0 ? (
             <div className="empty">
               <div className="ei">⌕</div>

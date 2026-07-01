@@ -11,6 +11,7 @@ import PhoneInput from "@/components/PhoneInput";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, type IncidentLike } from "@/lib/incidents";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
+import { useModalA11y } from "@/lib/useModalA11y";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type DocOpt = { id: string; name: string; spec?: string | null; clinic_name?: string | null; phone?: string | null };
@@ -202,6 +203,7 @@ interface BookingModalProps {
 }
 
 export default function BookingModal({ rooms, clinicId, incidents = [], onClose, onSave }: BookingModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
   const [gender, setGender] = useState("");
@@ -380,7 +382,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
   return (
     <>
     <div className="overlay">
-      <div className="dialog fade-in bk-dialog">
+      <div className="dialog fade-in bk-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Новий запис пацієнта">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic">＋</span>Новий запис</div>
           <button className="icon-btn" onClick={onClose}>✕</button>

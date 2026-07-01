@@ -51,22 +51,19 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
   }
 
   const reload = useCallback(async () => {
-    const supabase = createClient();
-    const { data: links } = await supabase
-      .from("ceo_access")
-      .select("ceo_id")
-      .eq("clinic_id", clinicId)
-      .eq("status", "active");
-    const ids = (links || []).map((l) => l.ceo_id as string);
-    if (ids.length === 0) { setCeos([]); setLoading(false); return; }
-    const { data: profs } = await supabase
-      .from("profiles")
-      .select("id, login, full_name, email, phone, note, password_set, invite_token, role")
-      .in("id", ids);
-    const rows = (profs || []).slice()
-      .sort((a, b) => String(a.full_name || a.login || "").localeCompare(String(b.full_name || b.login || "")));
-    setCeos(rows as Ceo[]);
-    setLoading(false);
+    // Повний список членства CEO центру через security-definer RPC (0044):
+    // показує й крос-рольових/крос-клінічних CEO, не послаблюючи RLS і не
+    // розкриваючи invite_token користувачів інших ролей.
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase.rpc("ceo_list_for_clinic", { p_clinic: clinicId });
+      if (error) throw error;
+      setCeos((data || []) as Ceo[]);
+    } catch {
+      // транзієнтний збій (оновлення токена/мережа) — не валимо екран
+    } finally {
+      setLoading(false);
+    }
   }, [clinicId]);
 
   useEffect(() => { reload(); }, [reload]);

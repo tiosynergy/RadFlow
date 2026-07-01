@@ -48,7 +48,7 @@
 .clrow.flash { animation: rowFlash 1.2s ease-out; }
 
 .cl-time { font-size: 15px; font-weight: 700; line-height: 1.1; }
-.cl-date { font-size: 10.5px; font-weight: 500; color: var(--text-faint); margin-top: 1px; font-variant-numeric: tabular-nums; }
+.cl-date { font-size: 11px; font-weight: 500; color: var(--text-faint); margin-top: 1px; font-variant-numeric: tabular-nums; }
 .cl-name { font-size: 13.5px; font-weight: 600; white-space: normal; overflow-wrap: break-word; line-height: 1.2; text-align: left; }
 .cl-name .sub { font-size: 11.5px; color: var(--text-muted); font-weight: 400; margin-top: 2px; }
 .tel { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #4da3ff; text-decoration: none; font-variant-numeric: tabular-nums; white-space: nowrap; }

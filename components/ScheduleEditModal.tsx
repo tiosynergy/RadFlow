@@ -6,6 +6,7 @@
 
 import { useState } from "react";
 import { DEF_START, DEF_END, defaultClosed, roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { useModalA11y } from "@/lib/useModalA11y";
 
 const LABELS = ["Державне свято", "Вихідний день", "Санітарний день", "Технічне обслуговування"];
 
@@ -35,6 +36,7 @@ function fmtShort(d: Date) {
 }
 
 export default function ScheduleEditModal({ date, rooms, existing, entries, onClose, onSave, onReset }: ScheduleEditModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const defClosed = defaultClosed(date);
   const [allClosed, setAllClosed] = useState(!!(existing && existing.all_closed));
   const [label, setLabel] = useState((existing && existing.label) || "");
@@ -75,7 +77,7 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
 
   return (
     <div className="overlay">
-      <div className="dialog fade-in" style={{ maxWidth: 560 }}>
+      <div className="dialog fade-in" style={{ maxWidth: 560 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Графік роботи на день">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic">🗓</span>Режим роботи · {fmtShort(date)}</div>
           <button className="icon-btn" onClick={onClose}>✕</button>

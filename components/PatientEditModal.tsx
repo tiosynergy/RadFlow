@@ -12,6 +12,7 @@ import PhoneInput from "@/components/PhoneInput";
 import type { TablesUpdate } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
+import { useModalA11y } from "@/lib/useModalA11y";
 
 type PatientForm = {
   id?: string;
@@ -47,6 +48,7 @@ function calcAge(dob: string | null | undefined): number | null {
 }
 
 export default function PatientEditModal({ entryId, onClose, onSaved }: PatientEditModalProps) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [form, setForm] = useState<PatientForm | null>(null);
   const [docs, setDocs] = useState<DoctorOption[]>([]); // активні направники + довідник
   const [lockDoctor, setLockDoctor] = useState(false); // запис внесено направником → не редагувати
@@ -127,7 +129,7 @@ export default function PatientEditModal({ entryId, onClose, onSaved }: PatientE
 
   return (
     <div className="overlay" onClick={() => { if (!busy) onClose(); }}>
-      <div className="dialog fade-in" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+      <div className="dialog fade-in" style={{ maxWidth: 460 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Редагування даних пацієнта" onClick={(e) => e.stopPropagation()}>
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue)" }}>👤</span>Дані пацієнта</div>
           <button className="icon-btn" onClick={onClose}>✕</button>

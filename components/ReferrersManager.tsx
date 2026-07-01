@@ -12,6 +12,7 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import PhoneInput from "@/components/PhoneInput";
+import HelpTip from "@/components/HelpTip";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -291,7 +292,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
               </div>
             )}
             <div className="fld-row">
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Режим бронювання</span>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Режим бронювання <HelpTip label="Режим бронювання направника" text={<><b>Пряма черга</b> — направлення направника одразу потрапляє в чергу. <b>З підтвердженням оператора</b> — спершу реєстратор підтверджує запис, і лише тоді він стає в чергу.</>} /></span>
                 <select className="inp" value={form.policy} onChange={(e) => setF("policy", e.target.value)}>
                   <option value="direct">Пряма черга (одразу в чергу)</option>
                   <option value="confirm">З підтвердженням оператора</option>
@@ -354,7 +355,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                     <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: 16, margin: "4px 0 8px" }}>
                       <div className="ctx-hint" style={{ fontSize: 12, marginBottom: 10 }}>Дані направника (ПІБ, телефон, примітки) лікар редагує сам у своєму профілі. Тут — лише налаштування доступу до вашого центру.</div>
                       <div className="fld-row">
-                        <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Режим бронювання</span>
+                        <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Режим бронювання <HelpTip label="Режим бронювання направника" text={<><b>Пряма черга</b> — направлення направника одразу потрапляє в чергу. <b>З підтвердженням оператора</b> — спершу реєстратор підтверджує запис, і лише тоді він стає в чергу.</>} /></span>
                           <select className="inp" value={editForm.policy} onChange={(e) => setEditForm((f) => ({ ...f, policy: e.target.value }))}>
                             <option value="direct">Пряма черга (одразу в чергу)</option>
                             <option value="confirm">З підтвердженням оператора</option>

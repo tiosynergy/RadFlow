@@ -784,6 +784,20 @@ export type Database = {
         Args: { p_login: string };
         Returns: string;
       };
+      ceo_list_for_clinic: {
+        Args: { p_clinic: string };
+        Returns: {
+          id: string;
+          login: string | null;
+          full_name: string | null;
+          email: string | null;
+          phone: string | null;
+          note: string | null;
+          password_set: boolean;
+          invite_token: string | null;
+          role: string;
+        }[];
+      };
     };
     Enums: {
       user_role: "admin" | "radiologist" | "registrar" | "referrer" | "ceo";
