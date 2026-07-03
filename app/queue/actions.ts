@@ -19,7 +19,7 @@ import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 
 export type QueueActionResult =
-  | { ok: true }
+  | { ok: true; id?: string } // id — створений запис (createBooking/createReferralBooking)
   | {
       ok: false;
       error: string;
@@ -450,7 +450,7 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
     ? input.studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
     : false;
 
-  const { error } = await supabase.from("queue_entries").insert({
+  const { data: created, error } = await supabase.from("queue_entries").insert({
     clinic_id: clinicId,
     room_id: input.roomId,
     created_by: user.id,
@@ -476,10 +476,10 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
     scheduled_at: input.scheduledAt,
     status: "scheduled",
     call_status: "not_called",
-  });
+  }).select("id").single();
 
   if (error) return mapBookingError(error.message);
-  return { ok: true };
+  return { ok: true, id: created?.id };
 }
 
 /** Заметка радіолога (radiologist_note). */
@@ -620,7 +620,7 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
     ? input.studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
     : false;
 
-  const { error } = await supabase.from("queue_entries").insert({
+  const { data: created, error } = await supabase.from("queue_entries").insert({
     clinic_id: input.clinicId,
     room_id: input.roomId,
     created_by: user.id,
@@ -647,8 +647,8 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
     scheduled_at: input.scheduledAt,
     status: "scheduled",
     call_status: "not_called",
-  });
+  }).select("id").single();
 
   if (error) return mapBookingError(error.message);
-  return { ok: true };
+  return { ok: true, id: created?.id };
 }

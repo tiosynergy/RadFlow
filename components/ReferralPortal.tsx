@@ -16,6 +16,10 @@ import PhoneInput from "@/components/PhoneInput";
 import CitySelect from "@/components/CitySelect";
 import RescheduleModal from "@/components/RescheduleModal";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry } from "@/app/queue/actions";
+import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal";
+import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority } from "@/app/waitlist/actions";
+import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
+import type { WaitlistEntry } from "@/supabase/types";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { slotBlockedByIncidents, type IncidentLike } from "@/lib/incidents";
 import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
@@ -974,6 +978,71 @@ function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m
   );
 }
 
+/* ── Лист очікування направника: власні пацієнти в усіх авторизованих центрах ── */
+function MyWaitlist({ entries, centersById, onOpenAdd, onCancel, onRestore, onPriority }: {
+  entries: WaitlistEntry[];
+  centersById: Record<string, Center>;
+  onOpenAdd: () => void;
+  onCancel: (e: WaitlistEntry) => void;
+  onRestore: (e: WaitlistEntry) => void;
+  onPriority: (e: WaitlistEntry, v: PatientPriority) => void;
+}) {
+  const waiting = entries.filter((e) => e.status === "waiting").sort(compareWaitlist);
+  const rest = entries.filter((e) => e.status !== "waiting").sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+  const list = [...waiting, ...rest];
+  return (
+    <div style={{ maxWidth: 1040, margin: "0 auto", display: "flex", flexDirection: "column", gap: 10 }}>
+      <div className="info-banner">
+        <span className="ib-ic">⏳</span>
+        <span className="ib-txt"><b>Лист очікування</b> — ваші пацієнти, що чекають на вільне вікно в центрі. Коли слот звільниться, центр запише пацієнта — статус зміниться на «Записано».</span>
+        <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={onOpenAdd}>＋ Додати пацієнта</button>
+      </div>
+      {list.length === 0 ? (
+        <div className="empty"><div className="ei">⏳</div><div className="et">Лист порожній</div><div className="es">Додайте пацієнта, що чекає на вільне вікно</div></div>
+      ) : (
+        list.map((p) => {
+          const m = PRIORITY_META[p.priority_level];
+          const st = WAITLIST_STATUS_META[p.status];
+          const center = centersById[p.clinic_id];
+          return (
+            <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: "10px 14px", opacity: p.status === "waiting" ? 1 : 0.72 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {p.status !== "waiting" && <span className="badge">{st.label}</span>}
+                  {p.priority_level !== "planned" && p.status === "waiting" && <span className={"prio-tag " + m.tone}>{m.short}</span>}
+                  <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.patient_name}</span>
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2 }}>
+                  {centerLabel(center)} · {procLabel(p)} · {desiredWindowText(p)}
+                </div>
+              </div>
+              {p.status === "waiting" && (
+                <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта" style={{ flexShrink: 0 }}>
+                  {PRIORITY_OPTIONS.map((pv) => {
+                    const pm = PRIORITY_META[pv];
+                    return (
+                      <button key={pv} type="button" role="radio" aria-checked={p.priority_level === pv}
+                        className={"prio-seg-btn " + pm.tone + (p.priority_level === pv ? " active" : "")}
+                        title={pm.desc} onClick={() => onPriority(p, pv)}>
+                        {pm.short}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {p.status === "waiting"
+                ? <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)", flexShrink: 0 }} onClick={() => onCancel(p)}>✕ Зняти</button>
+                : (p.status === "cancelled" || p.status === "expired")
+                  ? <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => onRestore(p)}>↩ Повернути</button>
+                  : null}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 interface ReferralPortalProps {
   role: string;
   centers: Center[];
@@ -1000,6 +1069,8 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
   const [editPatientFor, setEditPatientFor] = useState<Referral | null>(null);
   const [referrals, setReferrals] = useState<Referral[]>([]);
   const [reschedFor, setReschedFor] = useState<Referral | null>(null);
+  const [wlEntries, setWlEntries] = useState<WaitlistEntry[]>([]);
+  const [wlAddOpen, setWlAddOpen] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1015,14 +1086,58 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     setReferrals(data || []);
   }, [doctorId]);
 
+  // Лист очікування: RLS показує направнику лише власні рядки (created_by).
+  const reloadWaitlist = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const { data } = await supabase
+        .from("waitlist_entries")
+        .select("*")
+        .eq("created_by", doctorId)
+        .order("created_at", { ascending: true });
+      setWlEntries(data || []);
+    } catch { /* транзієнтний Failed to fetch — ігноруємо */ }
+  }, [doctorId]);
+  useEffect(() => { reloadWaitlist(); }, [reloadWaitlist]);
+
   // TD-3: единый realtime-хук.
   useRealtimeRefetch({
     channelName: doctorId ? "ref-" + doctorId : null,
     subscriptions: [
       { table: "queue_entries", filter: "referrer_id=eq." + doctorId, onChange: reload },
+      { table: "waitlist_entries", filter: "created_by=eq." + doctorId, onChange: reloadWaitlist },
       { table: "referral_access", filter: "referrer_id=eq." + doctorId, onChange: () => router.refresh() },
     ],
   });
+
+  async function wlAdd(w: WaitlistFormOut) {
+    const res = await addWaitlistEntry({
+      clinicId: w.clinicId, name: w.name, phone: w.phone, email: w.email, dob: w.dob, sex: w.sex, age: w.age, weight: w.weight,
+      priorityLevel: w.priorityLevel, studies: w.studies, durationMin: w.durationMin, bufferTimeMin: w.bufferTimeMin,
+      desiredDateFrom: w.desiredDateFrom, desiredDateTo: w.desiredDateTo,
+      desiredTimeFrom: w.desiredTimeFrom, desiredTimeTo: w.desiredTimeTo, note: w.note,
+    });
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    setWlAddOpen(false);
+    notify("Додано до листа очікування: " + w.name, "success");
+    reloadWaitlist();
+  }
+  async function wlCancel(e: WaitlistEntry) {
+    const res = await setWaitlistStatus(e.id, "cancelled");
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    notify("Знято з листа очікування", "info"); reloadWaitlist();
+  }
+  async function wlRestore(e: WaitlistEntry) {
+    const res = await setWaitlistStatus(e.id, "waiting");
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    notify("Повернено в очікування", "success"); reloadWaitlist();
+  }
+  async function wlPrio(e: WaitlistEntry, v: PatientPriority) {
+    if (e.priority_level === v) return;
+    setWlEntries((es) => es.map((x) => (x.id === e.id ? { ...x, priority_level: v } : x)));
+    const res = await setWaitlistPriority(e.id, v);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); reloadWaitlist(); }
+  }
 
   async function doReschedule({ roomId, date, time, dur, buffer }: { roomId: string; date: Date; time: string; dur: number; buffer: number }) {
     const p = reschedFor; if (!p) return;
@@ -1069,6 +1184,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
       <div style={{ display: "flex", gap: 4, padding: "16px 28px 0", maxWidth: 1040, margin: "0 auto" }}>
         <button className={"pill" + (tab === "new" ? " active" : "")} onClick={() => setTab("new")}>Нове направлення</button>
         <button className={"pill" + (tab === "mine" ? " active" : "")} onClick={() => setTab("mine")}>Мої направлення <span className="ct">({referrals.length})</span></button>
+        <button className={"pill" + (tab === "waitlist" ? " active" : "")} onClick={() => setTab("waitlist")}>Лист очікування <span className="ct">({wlEntries.filter((e) => e.status === "waiting").length})</span></button>
         <button className={"pill" + (tab === "centers" ? " active" : "")} onClick={() => setTab("centers")}>Мої центри{pendingInvites > 0 ? <span className="ct" style={{ background: "var(--blue)", color: "#fff" }}>{pendingInvites}</span> : null}</button>
         {canManage && <button className={"pill" + (tab === "profile" ? " active" : "")} onClick={() => setTab("profile")}>Мій профіль</button>}
       </div>
@@ -1081,6 +1197,10 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         {tab === "mine" && (
           <MyReferrals referrals={referrals} centersById={centersById} onReschedule={(r) => setReschedFor(r)} onCancel={doCancel} onEditPatient={(r) => setEditPatientFor(r)} />
         )}
+        {tab === "waitlist" && (
+          <MyWaitlist entries={wlEntries} centersById={centersById} onOpenAdd={() => setWlAddOpen(true)}
+            onCancel={wlCancel} onRestore={wlRestore} onPriority={wlPrio} />
+        )}
         {tab === "centers" && (
           <MyCenters centers={centers} canManage={canManage} onChanged={onCentersChanged} notify={notify} />
         )}
@@ -1091,6 +1211,10 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
 
       {reschedFor && (
         <RescheduleModal patient={reschedFor} rooms={reschedRooms} clinicId={reschedFor.clinic_id} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+      )}
+      {wlAddOpen && (
+        <WaitlistModal centers={activeCenters.map((c) => ({ clinicId: c.clinicId, name: centerLabel(c) }))}
+          onClose={() => setWlAddOpen(false)} onSave={wlAdd} />
       )}
       {editPatientFor && (
         <PatientEditModal entryId={editPatientFor.id} canEditPriority onClose={() => setEditPatientFor(null)} onSaved={reload} />

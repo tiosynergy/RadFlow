@@ -4,7 +4,7 @@
    Портовано з queue-app.jsx (NewBookingModal + BookingCalendar + DobField).
    Кабінети беруться з БД (rooms), зайняті слоти — з Supabase (queue_entries). */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import PhoneInput from "@/components/PhoneInput";
@@ -26,6 +26,25 @@ export type BookingPayload = {
   hasContra: boolean; priority: PatientPriority; doctor: string | null; referrerId: string | null;
 };
 type ParsedDob = { ok: false; partial?: boolean; err?: string } | { ok: true; iso: string };
+
+/** Передзаповнення форми (напр. запис пацієнта з листа очікування). */
+export type BookingPrefill = {
+  name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  dob?: string | null; // YYYY-MM-DD
+  gender?: string | null; // 'М' | 'Ж'
+  weight?: number | null;
+  hasContra?: boolean;
+  priority?: PatientPriority | null;
+  notes?: string | null;
+  buffer?: number | null;
+  studies?: Array<{ type?: string; region?: string; contrast?: boolean; dur?: number }> | null;
+  // Слот, що звільнився (підказка кандидатів): одразу підставляємо кабінет/дату/час.
+  roomId?: string | null;
+  date?: string | null; // YYYY-MM-DD
+  time?: string | null; // HH:MM
+};
 
 /* ── Дати ── */
 const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
@@ -199,25 +218,30 @@ interface BookingModalProps {
   rooms?: RoomOpt[];
   clinicId?: string | null;
   incidents?: IncidentLike[];
+  prefill?: BookingPrefill | null; // напр. запис із листа очікування
   onClose: () => void;
   onSave: (b: BookingPayload) => void;
 }
 
-export default function BookingModal({ rooms, clinicId, incidents = [], onClose, onSave }: BookingModalProps) {
+export default function BookingModal({ rooms, clinicId, incidents = [], prefill, onClose, onSave }: BookingModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
-  const [name, setName] = useState("");
-  const [dob, setDob] = useState("");
-  const [gender, setGender] = useState("");
-  const [weight, setWeight] = useState("");
-  const [phone, setPhone] = useState("");
-  const [email, setEmail] = useState("");
-  const [studyType, setStudyType] = useState("MRT");
-  const [region, setRegion] = useState("");
-  const [contrast, setContrast] = useState(false);
-  const [buffer, setBuffer] = useState<number>(BUFFER_DEFAULT);
-  const [hasContra, setHasContra] = useState(false);
-  const [priority, setPriority] = useState<PatientPriority | "">(""); // обов'язковий вибір при новій записі
-  const [notes, setNotes] = useState("");
+  // Передзаповнення: перше дослідження → основне (тип/область/контраст), решта → додаткові.
+  const pfStudies = Array.isArray(prefill?.studies) ? (prefill!.studies as NonNullable<BookingPrefill["studies"]>) : [];
+  const pfPrimary = pfStudies[0] || null;
+  const pfType = pfPrimary ? (pfPrimary.type === "КТ" || pfPrimary.type === "CT" ? "CT" : "MRT") : "MRT";
+  const [name, setName] = useState(prefill?.name || "");
+  const [dob, setDob] = useState(prefill?.dob || "");
+  const [gender, setGender] = useState(prefill?.gender || "");
+  const [weight, setWeight] = useState(prefill?.weight != null ? String(prefill.weight) : "");
+  const [phone, setPhone] = useState(prefill?.phone || "");
+  const [email, setEmail] = useState(prefill?.email || "");
+  const [studyType, setStudyType] = useState(pfType);
+  const [region, setRegion] = useState(pfPrimary?.region || "");
+  const [contrast, setContrast] = useState(pfPrimary?.contrast === true);
+  const [buffer, setBuffer] = useState<number>(prefill?.buffer ?? BUFFER_DEFAULT);
+  const [hasContra, setHasContra] = useState(prefill?.hasContra === true);
+  const [priority, setPriority] = useState<PatientPriority | "">(prefill?.priority || ""); // обов'язковий вибір при новій записі
+  const [notes, setNotes] = useState(prefill?.notes || "");
   const [docs, setDocs] = useState<DocOpt[]>([]);
   const [doctorId, setDoctorId] = useState("");
   const [addDoc, setAddDoc] = useState(false);
@@ -247,9 +271,18 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
 
   const roomsOfType = (t: string) => (rooms || []).filter((r) => r.modality === (t === "MRT" ? "MRI" : "CT"));
   // Авто-вибір лише коли кабінет один; якщо їх кілька — користувач обирає вручну.
-  const [roomId, setRoomId] = useState(() => { const l = roomsOfType("MRT"); return l.length === 1 ? l[0].id : ""; });
-  const [bookDate, setBookDate] = useState(() => today0());
-  const [time, setTime] = useState("");
+  // Передзаповнений слот (кандидат на вікно, що звільнилося) має пріоритет; кабінет
+  // приймаємо лише якщо він підходить за модальністю дослідження.
+  const [roomId, setRoomId] = useState(() => {
+    const l = roomsOfType(pfType);
+    if (prefill?.roomId && l.some((r) => r.id === prefill.roomId)) return prefill.roomId;
+    return l.length === 1 ? l[0].id : "";
+  });
+  const [bookDate, setBookDate] = useState(() => {
+    if (prefill?.date) { const d = new Date(prefill.date + "T00:00:00"); if (!isNaN(d.getTime()) && d >= today0()) return d; }
+    return today0();
+  });
+  const [time, setTime] = useState(prefill?.date && prefill?.time ? prefill.time : "");
   const [dayEntries, setDayEntries] = useState<DayEntryRow[]>([]);
 
   const allRegions = studyType === "MRT" ? MRT_REGIONS : CT_REGIONS;
@@ -277,11 +310,23 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   const [durEdit, setDurEdit] = useState("");
-  useEffect(() => { if (region) setDurEdit(String(computedDur)); }, [region, contrast, studyType]); // eslint-disable-line
+  // Передзаповнена тривалість (може бути кастомною) — застосовується один раз при відкритті.
+  const pfDurRef = useRef<number | null>(pfPrimary?.dur ?? null);
+  useEffect(() => {
+    if (!region) return;
+    if (pfDurRef.current != null) { setDurEdit(String(pfDurRef.current)); pfDurRef.current = null; return; }
+    setDurEdit(String(computedDur));
+  }, [region, contrast, studyType]); // eslint-disable-line
   const dur = Math.max(5, parseInt(durEdit, 10) || computedDur);
   const durCustom = region && parseInt(durEdit, 10) && parseInt(durEdit, 10) !== computedDur;
 
-  const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>([]);
+  const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>(() =>
+    pfStudies.slice(1).filter((s) => s?.region).map((s) => ({
+      type: s.type === "КТ" || s.type === "CT" ? "КТ" : "МРТ",
+      region: s.region as string,
+      dur: Number(s.dur) || (s.type === "КТ" || s.type === "CT" ? 20 : 45),
+    }))
+  );
   const exRegions = (t: string) => regionsFor(t);
   const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : (t === "КТ" ? 20 : 45); };
   const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));

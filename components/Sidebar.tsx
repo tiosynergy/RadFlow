@@ -61,6 +61,22 @@ export default function Sidebar({
   // бачить посилання на дашборд. На сторінці адміна прямого посилання немає —
   // керування центрами адмін відкриває з Майстра налаштувань.
   const [hasCeoGrant, setHasCeoGrant] = useState(false);
+  // Лічильник листа очікування (RLS сам обмежує видимість клінікою користувача).
+  const [waitCount, setWaitCount] = useState(0);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { count } = await supabase
+          .from("waitlist_entries")
+          .select("id", { count: "exact", head: true })
+          .eq("status", "waiting");
+        if (active) setWaitCount(count ?? 0);
+      } catch { /* ignore */ }
+    })();
+    return () => { active = false; };
+  }, [activeNav]);
   useEffect(() => {
     if (isAdmin || isCeo) return; // адмін — не показуємо; ceo й так на /ceo
     let active = true;
@@ -118,6 +134,11 @@ export default function Sidebar({
             <span className="sb-item-lab">Новий запис</span>
           </button>
           <a href="/call-list" className={"sb-item" + (activeNav === "calls" ? " active" : "")}><span className="ic">☎</span><span className="sb-item-lab">Колл-лист</span></a>
+          <a href="/waitlist" className={"sb-item" + (activeNav === "waitlist" ? " active" : "")}>
+            <span className="ic">⏳</span>
+            <span className="sb-item-lab">Лист очікування</span>
+            {waitCount ? <span className="sb-badge">{waitCount}</span> : null}
+          </a>
           {isAdmin && <a href="/referral" className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span></a>}
           <button type="button" onClick={() => onBreakdown && onBreakdown()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">⚠</span>

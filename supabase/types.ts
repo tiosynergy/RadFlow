@@ -353,6 +353,124 @@ export type Database = {
           }
         ];
       };
+      waitlist_entries: {
+        Row: {
+          id: string;
+          clinic_id: string;
+          source_entry_id: string | null;
+          scheduled_entry_id: string | null;
+          patient_name: string;
+          patient_phone: string | null;
+          patient_dob: string | null;
+          patient_sex: string | null;
+          patient_age: number | null;
+          patient_weight: number | null;
+          patient_email: string | null;
+          studies: Json;
+          duration_min: number;
+          buffer_time_min: number;
+          modality: Database["public"]["Enums"]["modality"] | null;
+          priority_level: Database["public"]["Enums"]["patient_priority"];
+          desired_date_from: string | null;
+          desired_date_to: string | null;
+          desired_time_from: string | null;
+          desired_time_to: string | null;
+          status: Database["public"]["Enums"]["waitlist_status"];
+          note: string | null;
+          referrer_id: string | null;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          clinic_id: string;
+          source_entry_id?: string | null;
+          scheduled_entry_id?: string | null;
+          patient_name: string;
+          patient_phone?: string | null;
+          patient_dob?: string | null;
+          patient_sex?: string | null;
+          patient_age?: number | null;
+          patient_weight?: number | null;
+          patient_email?: string | null;
+          studies?: Json;
+          duration_min?: number;
+          buffer_time_min?: number;
+          modality?: Database["public"]["Enums"]["modality"] | null;
+          priority_level?: Database["public"]["Enums"]["patient_priority"];
+          desired_date_from?: string | null;
+          desired_date_to?: string | null;
+          desired_time_from?: string | null;
+          desired_time_to?: string | null;
+          status?: Database["public"]["Enums"]["waitlist_status"];
+          note?: string | null;
+          referrer_id?: string | null;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          clinic_id?: string;
+          source_entry_id?: string | null;
+          scheduled_entry_id?: string | null;
+          patient_name?: string;
+          patient_phone?: string | null;
+          patient_dob?: string | null;
+          patient_sex?: string | null;
+          patient_age?: number | null;
+          patient_weight?: number | null;
+          patient_email?: string | null;
+          studies?: Json;
+          duration_min?: number;
+          buffer_time_min?: number;
+          modality?: Database["public"]["Enums"]["modality"] | null;
+          priority_level?: Database["public"]["Enums"]["patient_priority"];
+          desired_date_from?: string | null;
+          desired_date_to?: string | null;
+          desired_time_from?: string | null;
+          desired_time_to?: string | null;
+          status?: Database["public"]["Enums"]["waitlist_status"];
+          note?: string | null;
+          referrer_id?: string | null;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "waitlist_entries_clinic_id_fkey";
+            columns: ["clinic_id"];
+            referencedRelation: "clinics";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "waitlist_entries_source_entry_id_fkey";
+            columns: ["source_entry_id"];
+            referencedRelation: "queue_entries";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "waitlist_entries_scheduled_entry_id_fkey";
+            columns: ["scheduled_entry_id"];
+            referencedRelation: "queue_entries";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "waitlist_entries_referrer_id_fkey";
+            columns: ["referrer_id"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "waitlist_entries_created_by_fkey";
+            columns: ["created_by"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
       incidents: {
         Row: {
           id: string;
@@ -831,6 +949,7 @@ export type Database = {
         | "declined";
       referral_policy: "direct" | "confirm";
       patient_priority: "cito" | "urgent" | "planned";
+      waitlist_status: "waiting" | "scheduled" | "cancelled" | "expired";
       // incidents.status is a text column with a CHECK constraint (not a PG enum),
       // but the values are fixed; typed as a union for strictness.
       incident_status: "active" | "planned" | "resolved";
@@ -861,6 +980,8 @@ export type Profile = Tables<"profiles">;
 export type ScheduleOverride = Tables<"schedule_overrides">;
 export type ReferralAccess = Tables<"referral_access">;
 export type QueueStatus = Enums<"queue_status">;
+export type WaitlistEntry = Tables<"waitlist_entries">;
+export type WaitlistStatus = Enums<"waitlist_status">;
 export type CallStatus = Enums<"call_status">;
 export type Modality = Enums<"modality">;
 export type UserRole = Enums<"user_role">;

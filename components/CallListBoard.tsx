@@ -12,6 +12,8 @@ import LiveClock from "@/components/LiveClock";
 import { entryInIncidentWindow, incidentExpired } from "@/lib/incidents";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
+import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
+import type { WaitlistEntry } from "@/supabase/types";
 import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies } from "@/app/queue/actions";
 import type { CallStatus, Json } from "@/supabase/types";
 import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
@@ -207,6 +209,8 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   const [affectedToday, setAffectedToday] = useState<CallEntry[]>([]);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Слот звільнився (відмова) → підходящі кандидати з листа очікування.
+  const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
 
   const dayKey = dateKey(date);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
@@ -268,20 +272,32 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     ],
   });
 
+  // Після звільнення слота — запропонувати кандидатів з листа очікування.
+  async function suggestWaitlistFor(p: CallEntry) {
+    const slot: FreedSlotInfo = { date: p.scheduled_date || dayKey, time: p.scheduled_time, roomId: p.room_id };
+    const candidates = await fetchWaitlistCandidates(clinicId, slot, rooms);
+    if (candidates.length) setWlSuggest({ slot, candidates });
+  }
+
   async function cancelEntry(p: CallEntry) {
     const res = await cancelQueueEntry(p.id);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Запис скасовано (відмова)", "success");
     reload(); loadIncidents();
+    suggestWaitlistFor(p);
   }
 
   async function setCall(id: string, call_status: CallStatus) {
     // Відмова = скасування запису (як на дошці черги); оптимістично локально.
+    const entry = entries.find((e) => e.id === id) || null;
     const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch } : e)));
     const res = await setQueueEntryCall(id, call_status);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return; }
-    if (call_status === "declined") notify("Пацієнт відмовився — запис скасовано", "info");
+    if (call_status === "declined") {
+      notify("Пацієнт відмовився — запис скасовано", "info");
+      if (entry) suggestWaitlistFor(entry);
+    }
     reload();
   }
   async function setNote(id: string, call_note: string) {
@@ -450,6 +466,14 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
       )}
       {editStudiesFor && (
         <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+      )}
+
+      {wlSuggest && (
+        <WaitlistCandidatesModal clinicId={clinicId} rooms={rooms} incidents={incidents}
+          slot={wlSuggest.slot} candidates={wlSuggest.candidates}
+          onClose={() => setWlSuggest(null)}
+          onBooked={(msg) => { notify(msg, "success"); reload(); }}
+          onError={(msg) => notify(msg, "error")} />
       )}
 
       {toast && (

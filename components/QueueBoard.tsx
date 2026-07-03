@@ -22,6 +22,9 @@ import {
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import BookingModal, { type BookingPayload } from "@/components/BookingModal";
+import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
+import { addEntryToWaitlist } from "@/app/waitlist/actions";
+import type { WaitlistEntry } from "@/supabase/types";
 import PatientEditModal from "@/components/PatientEditModal";
 import CompletionModal from "@/components/CompletionModal";
 import RescheduleModal from "@/components/RescheduleModal";
@@ -672,7 +675,7 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, onEditSched
 }
 
 /* ── Скасовані + Неявка ── */
-function CancelledPanel({ entries, onUndo, onReschedule }: { entries: QEntry[]; onUndo: (p: QEntry) => void; onReschedule: (p: QEntry) => void }) {
+function CancelledPanel({ entries, onUndo, onReschedule, onToWaitlist }: { entries: QEntry[]; onUndo: (p: QEntry) => void; onReschedule: (p: QEntry) => void; onToWaitlist: (p: QEntry) => void }) {
   const [open, setOpen] = useState(false);
   if (!entries.length) return null;
   return (
@@ -696,6 +699,7 @@ function CancelledPanel({ entries, onUndo, onReschedule }: { entries: QEntry[]; 
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   <button className="btn btn-secondary btn-xs" onClick={() => onUndo(e)}>↩ В чергу</button>
                   <button className="btn btn-secondary btn-xs" onClick={() => onReschedule(e)}>🗓 Перезаписати</button>
+                  <button className="btn btn-secondary btn-xs" title="Пацієнт чекатиме на вільне вікно" onClick={() => onToWaitlist(e)}>⏳ В лист очікування</button>
                 </div>
               </div>
             );
@@ -736,6 +740,8 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const [selectedDate, setSelectedDate] = useState(() => today0());
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Слот звільнився (скасування/відмова) → підходящі кандидати з листа очікування.
+  const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
 
   const [, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
@@ -923,11 +929,28 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     reload();
   }
 
+  // Після звільнення слота — запропонувати кандидатів з листа очікування.
+  async function suggestWaitlistFor(p: QEntry) {
+    const slot: FreedSlotInfo = { date: dayKey, time: p.scheduled_time, roomId: p.room_id };
+    const candidates = await fetchWaitlistCandidates(clinicId, slot, rooms);
+    if (candidates.length) setWlSuggest({ slot, candidates });
+  }
+
+  async function toWaitlist(p: QEntry) {
+    const res = await addEntryToWaitlist(p.id);
+    if (!res.ok) {
+      notify(res.code === "duplicate" ? "Пацієнт уже в листі очікування" : "Помилка: " + res.error, res.code === "duplicate" ? "info" : "error");
+      return;
+    }
+    notify("Додано до листа очікування: " + (p.patient_name || ""), "success");
+  }
+
   async function cancelBooking(p: QEntry) {
     const res = await cancelQueueEntry(p.id);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Запис скасовано", "success");
     reload();
+    suggestWaitlistFor(p);
   }
 
   async function setCall(p: QEntry, call_status: string) {
@@ -935,7 +958,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     setEntries((es) => es.map((e) => (e.id === p.id ? { ...e, ...patch } : e)));
     const res = await setQueueEntryCall(p.id, call_status as CallStatus);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return; }
-    if (call_status === "declined") notify("Пацієнт відмовився — запис скасовано", "info");
+    if (call_status === "declined") { notify("Пацієнт відмовився — запис скасовано", "info"); suggestWaitlistFor(p); }
     reload();
   }
 
@@ -1235,12 +1258,20 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
             {isToday && (rooms || []).length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}
             {!isPast && <CallListPanel entries={entries} onSetCall={setCall} dateLabel={fmtShort(selectedDate)} />}
-            <CancelledPanel entries={panelEntries} onUndo={undo} onReschedule={openReschedule} />
+            <CancelledPanel entries={panelEntries} onUndo={undo} onReschedule={openReschedule} onToWaitlist={toWaitlist} />
           </aside>
         </div>
       </div>
 
       {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} incidents={liveIncidents} onClose={() => setModalOpen(false)} onSave={saveBooking} />}
+
+      {wlSuggest && (
+        <WaitlistCandidatesModal clinicId={clinicId} rooms={rooms} incidents={liveIncidents}
+          slot={wlSuggest.slot} candidates={wlSuggest.candidates}
+          onClose={() => setWlSuggest(null)}
+          onBooked={(msg) => { notify(msg, "success"); reload(); }}
+          onError={(msg) => notify(msg, "error")} />
+      )}
 
       {completeFor && (
         <CompletionModal
