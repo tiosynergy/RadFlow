@@ -8,12 +8,13 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, type IncidentLike } from "@/lib/incidents";
+import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
-type DayEntry = { id: string; scheduled_time: string | null; duration_min: number | null; status: string };
+type DayEntry = { id: string; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string };
 // Минимально необходимый набор полей записи (доски передают разные подмножества).
-type ReschedulePatient = { id: string; room_id: string | null; duration_min: number | null; patient_name: string | null; studies?: unknown; note?: string | null };
+type ReschedulePatient = { id: string; room_id: string | null; duration_min: number | null; buffer_time_min?: number | null; patient_name: string | null; studies?: unknown; note?: string | null };
 
 interface RescheduleModalProps {
   patient: ReschedulePatient;
@@ -21,7 +22,7 @@ interface RescheduleModalProps {
   clinicId?: string | null;
   incidents?: IncidentLike[];
   onClose: () => void;
-  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number }) => void;
+  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number; buffer: number }) => void;
 }
 
 function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
@@ -41,6 +42,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
   const modality = curRoom ? curRoom.modality : "MRI";
   const kind = modalityLabel(modality);
   const dur = patient.duration_min || 30;
+  const buffer = normBuffer(patient.buffer_time_min ?? BUFFER_DEFAULT); // переноситься разом із записом
   // Кабінети тієї ж модальності, зокрема заблоковані — щоб можна було перенести на дату ПІСЛЯ відновлення.
   const options = (rooms || []).filter((r) => r.modality === modality);
 
@@ -61,7 +63,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
       if (!roomId) { setDayEntries([]); return; }
       const { data } = await supabase
         .from("queue_entries")
-        .select("id, scheduled_time, duration_min, status")
+        .select("id, scheduled_time, duration_min, buffer_time_min, status")
         .eq("room_id", roomId).eq("scheduled_date", dateStr)
         .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
       if (!cancel) setDayEntries(((data || []) as DayEntry[]).filter((e) => e.id !== patient.id));
@@ -69,7 +71,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
     return () => { cancel = true; };
   }, [roomId, dateStr, patient.id, clinicId]);
 
-  const busy = dayEntries.filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) }));
+  const busy = dayEntries.filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) + (e.buffer_time_min ?? BUFFER_DEFAULT) }));
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const dateObj = new Date(dateStr + "T00:00:00");
   const isToday = dateObj.getTime() === today.getTime();
@@ -89,14 +91,15 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
   }
   const slots: string[] = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
   function slotState(s: string) {
-    const a = toMin(s), b = a + dur;
+    // b — кінець дослідження (має вміститись у графік); bBlock — з буфером (перетин з іншими).
+    const a = toMin(s), b = a + dur, bBlock = a + dur + buffer;
     if (roomSched.closed) return "closed";
     if (slotBlockedByIncident(a)) return "blocked";
     if (a < schedStart || a >= schedEnd) return "offhours";
     if (b > schedEnd) return "tight";
     if (isToday && a < nowMin) return "past";
     if (busy.some((x) => a >= x.s && a < x.e)) return "busy";
-    if (busy.some((x) => a < x.e && x.s < b)) return "tight";
+    if (busy.some((x) => a < x.e && x.s < bBlock)) return "tight";
     return "free";
   }
   function nextApptAfter(s: string) { const a = toMin(s); const f = busy.filter((x) => x.s >= a).sort((x, y) => x.s - y.s)[0]; return f ? fmt(f.s) : null; }
@@ -113,7 +116,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
           <button className="icon-btn" onClick={onClose}>✕</button>
         </div>
         <div className="dlg-body">
-          <div className="ctx-hint blue" style={{ fontSize: 13 }}>Пацієнт: <b>{patient.patient_name}</b> · {procLabel(patient)} · {dur} хв</div>
+          <div className="ctx-hint blue" style={{ fontSize: 13 }}>Пацієнт: <b>{patient.patient_name}</b> · {procLabel(patient)} · {dur} хв{buffer > 0 ? ` + ${buffer} буфер` : ""}</div>
           <div className="fld">
             <span className="fld-lab">Кабінет ({kind})</span>
             {options.length === 0
@@ -163,7 +166,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
             ? <span className="bk-summary">{room ? room.name : ""} · {dateStr} {time}–{fmt(toMin(time) + dur)}</span>
             : <span style={{ fontSize: 12, color: "var(--text-faint)", marginRight: "auto", alignSelf: "center" }}>Оберіть кабінет, дату та слот</span>}
           <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
-          <button className="btn btn-primary" disabled={!valid} onClick={() => onConfirm({ roomId, date: dateObj, time, dur })}>✓ Перенести на цей слот</button>
+          <button className="btn btn-primary" disabled={!valid} onClick={() => onConfirm({ roomId, date: dateObj, time, dur, buffer })}>✓ Перенести на цей слот</button>
         </div>
       </div>
     </div>

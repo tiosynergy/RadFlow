@@ -1,6 +1,6 @@
 # RadFlow — Обзор продукта (актуальная документация)
 
-**Дата актуализации:** 2026-06-30 · **Источник правды:** код `dev` (`app/`, `components/`, `lib/`, `supabase/migrations/0001–0044`). Весь фронтенд на **TypeScript** (`.tsx`/`.ts`); типы схемы Supabase — в `supabase/types.ts`.
+**Дата актуализации:** 2026-07-02 · **Источник правды:** код `dev` (`app/`, `components/`, `lib/`, `supabase/migrations/0001–0045`). Весь фронтенд на **TypeScript** (`.tsx`/`.ts`); типы схемы Supabase — в `supabase/types.ts`.
 Этот документ описывает RadFlow **как он реализован**. Ранние проектные документы (`docs/plan/`, `docs/architecture/`, `docs/scenarios/`) отражают изначальный замысел и местами расходятся с кодом — см. §9.
 
 ---
@@ -66,7 +66,7 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 - **Статусы записи** (`queue_status`): `scheduled` (В черзі) → `waiting` (Очікує) → `in_progress` (В кабінеті) → `done` (Виконано); терминальные `no_show` (Неявка), `not_held` (Не відбулося), `cancelled` (Скасовано). Производный визуальный статус «⚠ Уточнити» — когда время прошло, а пациент не продвинут.
 - **Прогресс-степпер** в строке: клик по шагу меняет статус через общий guard `setStatusGuarded` (переход в `in_progress` проходит проверки: кабинет не в простое, не закрыт по графику, не занят другим пациентом).
 - **Слоты по графику кабинета** (`lib/schedule.js`): эффективный график = дефолт (Пн–Сб 08–18) или override (праздники/особые часы/закрытие). Сетка слотов шагом 30 мин; недостаточный до конца графика слот помечается `tight`.
-- **Запись пациента** (`BookingModal`): ПИБ, дата рождения, пол, вес, возраст, телефон, email; тип (МРТ/КТ), контраст, противопоказания, CITO; область исследования из справочника (`lib/studies.js`), длительность и цена; несколько исследований; врач-направитель (+`AddDoctorModal`). Перед вставкой — повторная проверка коллизии слота. Пишет `studies` и `studies_original` (для последующего diff).
+- **Запись пациента** (`BookingModal`): ПИБ, дата рождения, пол, вес, возраст, телефон, email; тип (МРТ/КТ), контраст, противопоказания, CITO; область исследования из справочника (`lib/studies.js`), длительность, **буферное время** (5/10/15 хв, дефолт 5 — занятость кабинета после исследования) и цена; несколько исследований; врач-направитель (+`AddDoctorModal`). Перед вставкой — повторная проверка коллизии слота. Пишет `studies` и `studies_original` (для последующего diff).
 - **Редактирование исследований** (`StudyEditModal`): тип фиксируется кабинетом, суммарная длительность ограничена окном до следующей записи/конца графика.
 - **Перенос** (`RescheduleModal`): кабинеты той же модальности, выбор даты/слота, статус сбрасывается в `scheduled`.
 - **Инциденты** (`BreakdownModal`, `lib/incidents.ts`): две сущности — 🔧 **Поломка** (обычно «сейчас», `active`) и ⚙️ **ТО** (планируется, `planned`). Блокировка до `blocked_until` или «до восстановления». Флаг `auto_unblock` определяет судьбу записей после окна. Просроченные инциденты снимаются. Пострадавшие записи попадают в панель переноса и в call-list.
@@ -144,7 +144,7 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 | `profiles` | Профиль 1:1 с `auth.users`; `role`, `login` (глоб. уникальный), `approved`, `password_set`; `clinic_id NULL` ⇔ глобальный направитель |
 | `rooms` | Кабинеты/аппараты: модальность, `schedule` (jsonb) |
 | `services` | Справочник исследований (модальность, длительность, контраст) |
-| `queue_entries` | Записи очереди + данные пациента + `studies`/`studies_original` (jsonb), `status`, `call_status`, `cito`, `scheduled_at/date/time`, `in_progress_at`, `created_by` |
+| `queue_entries` | Записи очереди + данные пациента + `studies`/`studies_original` (jsonb), `status`, `call_status`, `cito`, `scheduled_at/date/time`, `duration_min`, `buffer_time_min` (буфер после исследования, дефолт 5), `in_progress_at`, `created_by` |
 | `incidents` | Простои (поломка/ТО): `reason`, `started_at`, `blocked_until`, `status`, `auto_unblock` |
 | `schedule_overrides` | Праздники/особые часы (uniq по `clinic_id, override_date`) |
 | `doctors` | Справочник врачей-направителей (свободный текст, не аккаунты) |
@@ -155,7 +155,7 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 
 **Ключевые ограничения и логика:**
 
-- `check_no_overlap` (триггер + advisory-lock) — запрет двойной брони по времени; `cancelled/no_show/not_held` освобождают слот.
+- `check_no_overlap` (триггер + advisory-lock) — запрет двойной брони по времени; занятость слота считается как `duration_min + buffer_time_min` (буфер после исследования); `cancelled/no_show/not_held` освобождают слот. Проверка простоя (`check_not_during_incident`) буфер НЕ учитывает — по чистой длительности.
 - Частичный unique-индекс — один `in_progress` на кабинет; один `active`-инцидент на кабинет.
 - `check_not_during_incident` — запрет записи в окно простоя.
 - `auth_clinic_id()`, `auth_is_admin()`, `auth_is_referrer()`, `auth_referrer_clinics()`, `auth_can_refer()`, `auth_ceo_clinics()`, `auth_is_ceo_of()` — security-definer хелперы для RLS.
@@ -173,7 +173,7 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 
 ## 7. Эволюция схемы (миграции)
 
-`0001` фундамент (tenancy, очередь, RLS) · `0002` setup/графики · `0003` поля записи · `0004` инциденты · `0005` overrides · `0006` doctors+CITO · `0007–0008` заметки · `0009` аккаунты радиологов · `0010–0011` удаление · `0012` `created_by`+ролевые политики · `0013` managed-аккаунты, `email_for_login` · `0014/0016` анти-овербукинг, `not_held` · `0015` enum `not_held` · `0017/0018` один active-инцидент / один in_progress · `0019` `in_progress_at` · `0020` запрет записи в простое · `0021` `auto_unblock` · `0022` realtime replica identity · `0023–0029` портал направителей (referral_access, глобальный направитель, RPC, room_ids) · `0030` `studies_original` · `0031` realtime для `doctors` + индекс `queue_entries(room_id, scheduled_date)` · **`0032`** безопасность аккаунтов: одноразовый `invite_token` (CRIT-1) + отзыв `email_for_login` у anon (CRIT-2) · `0033` rate-limits (`rl_check`) · `0034` CHECK статусов + `scheduled_at` · `0035` walltime · `0036` связка/guard направителя · `0037` чистка неиспользуемого · `0038` карточка центра (`referral_center_card`) · `0039` `search_referrers` · **`0040`** глобальный кросс-клиничный CEO (`ceo_access`, `auth_ceo_clinics`/`auth_is_ceo_of`, RLS) · `0041` приватный email направителя · **`0042`/`0043`** справочник городов КАТОТТГ (`cities`, `search_cities`) + город направителя · **`0044`** RPC `ceo_list_for_clinic`.
+`0001` фундамент (tenancy, очередь, RLS) · `0002` setup/графики · `0003` поля записи · `0004` инциденты · `0005` overrides · `0006` doctors+CITO · `0007–0008` заметки · `0009` аккаунты радиологов · `0010–0011` удаление · `0012` `created_by`+ролевые политики · `0013` managed-аккаунты, `email_for_login` · `0014/0016` анти-овербукинг, `not_held` · `0015` enum `not_held` · `0017/0018` один active-инцидент / один in_progress · `0019` `in_progress_at` · `0020` запрет записи в простое · `0021` `auto_unblock` · `0022` realtime replica identity · `0023–0029` портал направителей (referral_access, глобальный направитель, RPC, room_ids) · `0030` `studies_original` · `0031` realtime для `doctors` + индекс `queue_entries(room_id, scheduled_date)` · **`0032`** безопасность аккаунтов: одноразовый `invite_token` (CRIT-1) + отзыв `email_for_login` у anon (CRIT-2) · `0033` rate-limits (`rl_check`) · `0034` CHECK статусов + `scheduled_at` · `0035` walltime · `0036` связка/guard направителя · `0037` чистка неиспользуемого · `0038` карточка центра (`referral_center_card`) · `0039` `search_referrers` · **`0040`** глобальный кросс-клиничный CEO (`ceo_access`, `auth_ceo_clinics`/`auth_is_ceo_of`, RLS) · `0041` приватный email направителя · **`0042`/`0043`** справочник городов КАТОТТГ (`cities`, `search_cities`) + город направителя · **`0044`** RPC `ceo_list_for_clinic` · **`0045`** буферное время между записями (`queue_entries.buffer_time_min`, дефолт 5, значения 0/5/10/15; `check_no_overlap` считает занятость как `duration_min + buffer_time_min`; `room_busy_slots` возвращает буфер; бекфилл существующих в 5).
 
 ---
 

@@ -10,17 +10,17 @@ import AddDoctorModal from "@/components/AddDoctorModal";
 import PhoneInput from "@/components/PhoneInput";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, type IncidentLike } from "@/lib/incidents";
-import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
+import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type DocOpt = { id: string; name: string; spec?: string | null; clinic_name?: string | null; phone?: string | null };
 type ExtraStudy = { type: string; region: string; dur: number };
-type DayEntryRow = { scheduled_time: string | null; duration_min: number | null; patient_name: string | null; status: string };
+type DayEntryRow = { scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; patient_name: string | null; status: string };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 export type BookingPayload = {
   name: string; phone: string; email: string | null; age: number; dob: string;
-  weight: number | null; gender: string; proc: string; dur: number; studies: StudyOut[];
+  weight: number | null; gender: string; proc: string; dur: number; buffer: number; studies: StudyOut[];
   roomId: string; date: Date; time: string; notes: string | null;
   hasContra: boolean; cito: boolean; doctor: string | null; referrerId: string | null;
 };
@@ -213,6 +213,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
   const [studyType, setStudyType] = useState("MRT");
   const [region, setRegion] = useState("");
   const [contrast, setContrast] = useState(false);
+  const [buffer, setBuffer] = useState<number>(BUFFER_DEFAULT);
   const [hasContra, setHasContra] = useState(false);
   const [cito, setCito] = useState(false);
   const [notes, setNotes] = useState("");
@@ -306,7 +307,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
       if (!roomId) { setDayEntries([]); return; }
       const { data } = await supabase
         .from("queue_entries")
-        .select("scheduled_time, duration_min, patient_name, status")
+        .select("scheduled_time, duration_min, buffer_time_min, patient_name, status")
         .eq("room_id", roomId)
         .eq("scheduled_date", dateKey(bookDate))
         .neq("status", "cancelled")
@@ -318,9 +319,10 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
     return () => { cancel = true; };
   }, [roomId, bookDate, clinicId]);
 
+  // e — ефективний кінець зайнятості: тривалість + буфер наявного запису.
   const roomBusy = dayEntries
     .filter((p) => p.scheduled_time)
-    .map((p) => ({ s: toMin(p.scheduled_time as string), e: toMin(p.scheduled_time as string) + (p.duration_min || 30), name: p.patient_name }));
+    .map((p) => ({ s: toMin(p.scheduled_time as string), e: toMin(p.scheduled_time as string) + (p.duration_min || 30) + (p.buffer_time_min ?? BUFFER_DEFAULT), name: p.patient_name }));
   const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
   const isBookToday = sameDay(bookDate, today0());
   const roomSched = roomScheduleFor(bookDate, roomId, override);
@@ -338,14 +340,15 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
   }
 
   function slotState(slot: string) {
-    const s = toMin(slot), e = s + slotDur;
+    // e — кінець дослідження (має вміститись у графік); eBlock — з буфером (для перетину з іншими записами).
+    const s = toMin(slot), e = s + slotDur, eBlock = s + slotDur + buffer;
     if (roomSched.closed) return "closed";
     if (slotBlockedByIncident(s)) return "blocked";
     if (s < schedStartMin || s >= schedEndMin) return "offhours";
     if (e > schedEndMin) return "tight";
     if (isBookToday && s < nowMin) return "past";
     if (roomBusy.some((b) => s >= b.s && s < b.e)) return "busy";
-    if (roomBusy.some((b) => s < b.e && b.s < e)) return "tight";
+    if (roomBusy.some((b) => s < b.e && b.s < eBlock)) return "tight";
     return "free";
   }
   function nextApptAfter(slot: string) {
@@ -370,7 +373,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
     onSave({
       name: name.trim(), phone, email: email.trim() || null,
       age: calcAge(dob), dob, weight: weight ? +weight : null, gender,
-      proc: combinedLabel, dur: slotDur, studies: allStudies,
+      proc: combinedLabel, dur: slotDur, buffer, studies: allStudies,
       roomId, date: bookDate, time, notes: notes.trim() || null,
       hasContra, cito, doctor: sel?.name || null,
       referrerId: sel && String(sel.id).startsWith("ref:") ? String(sel.id).slice(4) : null,
@@ -481,6 +484,13 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
                   {!region ? "оберіть область" : durCustom ? `↺ за замовч. ${computedDur} хв` : "за тривалістю області"}
                 </span>
               </label>
+              <label className="fld" style={{ flex: "0 0 96px" }}>
+                <span className="fld-lab">Буфер</span>
+                <select className="inp" value={buffer} onChange={(e) => setBuffer(Number(e.target.value))} title="Час на переукладку/дезінфекцію після дослідження">
+                  {BUFFER_OPTIONS.map((b) => <option key={b} value={b}>{b} хв</option>)}
+                </select>
+                <span className="bk-time-state none">після дослідження</span>
+              </label>
             </div>
 
             {price != null && (
@@ -563,7 +573,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
             <div className="fld">
               <div className="bk-slots-head">
                 <span className={"fld-lab" + (miss.time ? " bk-miss-lab" : "")} style={{ margin: 0 }}>Вільні слоти · {fmtShort(bookDate)} {miss.time ? "— оберіть час *" : ""}</span>
-                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} · {freeCount} вільних</span>
+                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {freeCount} вільних</span>
               </div>
               {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
               {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
@@ -594,14 +604,14 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
                 <span><span className="lg-dot busy" />зайнято</span>
               </div>
               {time && (() => {
-                const s = toMin(time), e = s + slotDur;
+                const s = toMin(time), e = s + slotDur, eBlock = s + slotDur + buffer;
                 const blocked = slotBlockedByIncident(s);
-                const conflict = roomBusy.find((b) => s < b.e && b.s < e);
+                const conflict = roomBusy.find((b) => s < b.e && b.s < eBlock);
                 return (
                   <div className={"bk-slot-confirm " + (blocked || conflict ? "bad" : "ok")}>
                     {blocked ? <>⚠ Кабінет на ремонті/ТО у цей час — оберіть інший слот або день</>
                       : conflict ? <>⚠ Перетин із записом {fmtMin(conflict.s)}–{fmtMin(conflict.e)} — оберіть інший слот</>
-                      : <>✓ Слот вільний. Запис: <b>{time}–{fmtMin(e)}</b> ({slotDur} хв).</>}
+                      : <>✓ Слот вільний. Запис: <b>{time}–{fmtMin(e)}</b> ({slotDur} хв){buffer > 0 ? <> + буфер {buffer} хв (до {fmtMin(eBlock)})</> : null}.</>}
                   </div>
                 );
               })()}

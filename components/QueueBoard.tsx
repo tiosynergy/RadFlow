@@ -30,7 +30,7 @@ import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
-import { diffStudies, studyText } from "@/lib/studies";
+import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow } from "@/lib/incidents";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
@@ -39,7 +39,7 @@ import "@/styles/prototype/radflow-screens.css";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type QEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null; patient_weight: number | null;
-  scheduled_time: string | null; duration_min: number | null; status: string; call_status: string | null; note: string | null;
+  scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null; note: string | null;
   studies: Json; studies_original: Json | null; contraindications: boolean; cito: boolean; doctor: string | null;
   room_id: string | null; updated_at: string; in_progress_at: string | null;
 };
@@ -194,7 +194,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
           <div className="rc-brow">
             <span className="rc-pat"><span className="pulse-dot" />{patient.patient_name}</span>
             <LiveTimer enteredAt={enteredAt}>{(sec) => {
-              const over = sec > (patient.duration_min || 30) * 60;
+              const over = sec > ((patient.duration_min || 30) + (patient.buffer_time_min ?? BUFFER_DEFAULT)) * 60;
               return <span className={"rc-timer tabular" + (over ? " over" : "")} title={over ? "Час перевищено" : "Зараз в кабінеті"}>{fmtTimer(sec)}</span>;
             }}</LiveTimer>
           </div>
@@ -260,7 +260,7 @@ function CurrentCard({ patient, roomName, roomModel, enteredAt, nextWaiting, onC
         </div>
         <div className="cur-timer">
           <LiveTimer enteredAt={enteredAt}>{(sec) => {
-            const over = sec > (patient.duration_min || 30) * 60;
+            const over = sec > ((patient.duration_min || 30) + (patient.buffer_time_min ?? BUFFER_DEFAULT)) * 60;
             return (<>
               <div className="t tabular" style={over ? { color: "var(--orange)" } : undefined}>{fmtTimer(sec)}</div>
               <div className="tl">{over ? "перевищено час" : "хв у кабінеті"}</div>
@@ -294,7 +294,7 @@ function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: 
       (incidents || []).filter((i) => i.room_id === r.id).forEach((i) => { cap -= incidentWorkMinutes(i, date, startMin, endMin); });
       cap = Math.max(0, cap);
     }
-    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "cancelled" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0), 0);
+    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "cancelled" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
     const pct = cap > 0 ? Math.min(100, Math.round((mins / cap) * 100)) : 0;
     return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)" };
   });
@@ -740,7 +740,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const supabase = createClient();
     const { data, error } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, status, call_status, note, studies, studies_original, contraindications, cito, doctor, room_id, updated_at, in_progress_at")
+      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, contraindications, cito, doctor, room_id, updated_at, in_progress_at")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .order("scheduled_time", { ascending: true });
@@ -919,12 +919,12 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
 
   const openReschedule = (p: QEntry) => setReschedFor(p);
-  async function doReschedule({ roomId, date, time, dur }: { roomId: string; date: Date; time: string; dur: number }) {
+  async function doReschedule({ roomId, date, time, dur, buffer }: { roomId: string; date: Date; time: string; dur: number; buffer: number }) {
     const p = reschedFor;
     if (!p) return;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer });
     if (!res.ok) {
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
       setReschedFor(null);
@@ -941,10 +941,10 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
 
   const openEditStudies = (p: QEntry) => setEditStudiesFor(p);
-  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number }) {
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number }) {
     const p = editStudiesFor;
     if (!p) return;
-    const res = await editQueueEntryStudies(p.id, (arr || []) as unknown as Json, (meta && meta.dur) || p.duration_min || 30);
+    const res = await editQueueEntryStudies(p.id, (arr || []) as unknown as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer);
     setEditStudiesFor(null);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Дослідження оновлено", "success");
@@ -975,7 +975,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       name: b.name, phone: b.phone || null, email: b.email ?? null,
       dob: b.dob || null, sex: b.gender || null, age: b.age || null, weight: b.weight ?? null,
       hasContra: !!b.hasContra, cito: !!b.cito,
-      studies: b.studies || [], doctor: b.doctor ?? null, notes: b.notes ?? null, durationMin: b.dur,
+      studies: b.studies || [], doctor: b.doctor ?? null, notes: b.notes ?? null, durationMin: b.dur, bufferTimeMin: b.buffer,
       scheduledDate: dateKey(b.date), scheduledTime: b.time, scheduledAt: at,
     });
     if (!res.ok) {

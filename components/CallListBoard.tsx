@@ -20,7 +20,7 @@ import "@/styles/prototype/radflow-screens.css";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type CallEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
-  scheduled_time: string | null; duration_min: number | null; status: string; call_status: string | null;
+  scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
   call_note?: string | null; studies: Json; doctor?: string | null; room_id: string | null; scheduled_date: string | null;
 };
 type IncidentRow = { id: string; room_id: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string };
@@ -220,7 +220,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const supabase = createClient();
     const { data } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, status, call_status, call_note, studies, doctor, room_id, scheduled_date")
+      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, call_note, studies, doctor, room_id, scheduled_date")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .in("status", ["scheduled", "waiting"])
@@ -240,7 +240,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const todayKey = dateKey(new Date());
     const { data: ents } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, status, call_status, studies, room_id, scheduled_date")
+      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, room_id, scheduled_date")
       .eq("clinic_id", clinicId).gte("scheduled_date", todayKey)
       .in("room_id", incs.map((i) => i.room_id)).in("status", ["scheduled", "waiting"]);
     const byRoom: Record<string, IncidentRow> = {}; incs.forEach((i) => { byRoom[i.room_id] = i; });
@@ -297,12 +297,12 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     reload();
   }
 
-  async function doReschedule({ roomId, date: d, time, dur }: { roomId: string; date: Date; time: string; dur: number }) {
+  async function doReschedule({ roomId, date: d, time, dur, buffer }: { roomId: string; date: Date; time: string; dur: number; buffer: number }) {
     const p = reschedFor;
     if (!p) return;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, callStatus: "confirmed" });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed" });
     if (!res.ok) {
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
       setReschedFor(null);
@@ -314,10 +314,10 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     notify("Перенесено · підтверджено", "success");
     reload();
   }
-  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number }) {
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number }) {
     const p = editStudiesFor;
     if (!p) return;
-    const res = await editQueueEntryStudies(p.id, arr as Json, (meta && meta.dur) || p.duration_min || 30);
+    const res = await editQueueEntryStudies(p.id, arr as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer);
     setEditStudiesFor(null);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Дослідження оновлено", "success");

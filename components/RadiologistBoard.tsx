@@ -12,7 +12,7 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
-import { diffStudies, studyText } from "@/lib/studies";
+import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
 import { incidentEffectiveEnd, incidentExpired, wallNow } from "@/lib/incidents";
 import { setQueueEntryStatus, setRadiologistNote } from "@/app/queue/actions";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
@@ -24,7 +24,7 @@ import "@/styles/prototype/radiologist.css";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type RadEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
-  patient_sex: string | null; patient_weight: number | null; scheduled_time: string | null; duration_min: number | null;
+  patient_sex: string | null; patient_weight: number | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null;
   status: string; call_status: string | null; studies: Json; studies_original: Json | null; has_contrast: boolean;
   contraindications: boolean; cito: boolean; doctor: string | null; note: string | null; radiologist_note: string | null;
   indication: string | null; room_id: string | null; updated_at: string; in_progress_at: string | null;
@@ -183,7 +183,8 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
           <div className="rc-brow">
             <span className="rc-pat"><span className="pulse-dot" />{patient.patient_name}</span>
             <LiveTimer enteredAt={enteredAt}>{(sec) => {
-              const over = sec > (patient.duration_min || 30) * 60;
+              // Перевищення рахуємо з урахуванням буфера (дослідження + переукладка/дезінфекція).
+              const over = sec > ((patient.duration_min || 30) + (patient.buffer_time_min ?? BUFFER_DEFAULT)) * 60;
               return <span className={"rc-timer tabular" + (over ? " over" : "")} title={over ? "Час перевищено" : "Зараз в кабінеті"}>{fmtTimer(sec)}</span>;
             }}</LiveTimer>
           </div>
@@ -504,7 +505,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     const supabase = createClient();
     let q = supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, status, call_status, studies, studies_original, has_contrast, contraindications, cito, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at")
+      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, has_contrast, contraindications, cito, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .neq("status", "cancelled");

@@ -15,6 +15,7 @@
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate } from "@/supabase/types";
+import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 
 export type QueueActionResult =
   | { ok: true }
@@ -250,7 +251,7 @@ async function hasSlotClash(
 ): Promise<boolean> {
   const { data } = await supabase
     .from("queue_entries")
-    .select("id, scheduled_time, duration_min")
+    .select("id, scheduled_time, duration_min, buffer_time_min")
     .eq("room_id", roomId)
     .eq("scheduled_date", scheduledDate)
     .neq("status", "cancelled")
@@ -260,7 +261,8 @@ async function hasSlotClash(
     if (excludeId && q.id === excludeId) return false;
     const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
     const qs = (qh || 0) * 60 + (qm || 0);
-    return qs < endMin && startMin < qs + (q.duration_min || 30);
+    // Ефективна зайнятість наявного запису = тривалість + його буфер.
+    return qs < endMin && startMin < qs + (q.duration_min || 30) + (q.buffer_time_min ?? BUFFER_DEFAULT);
   });
 }
 
@@ -334,6 +336,7 @@ export type RescheduleInput = {
   scheduledTime: string;
   scheduledAt: string;
   durationMin: number;
+  bufferTimeMin?: number; // буфер переноситься разом із записом (за замовч. 5)
   callStatus?: CallStatus; // напр. колл-лист підтверджує слот при переносі
 };
 
@@ -344,9 +347,10 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
+  const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);
   const startMin = (hh || 0) * 60 + (mm || 0);
-  const endMin = startMin + (input.durationMin || 30);
+  const endMin = startMin + (input.durationMin || 30) + bufferMin;
   if (await hasSlotClash(supabase, input.roomId, input.scheduledDate, startMin, endMin, input.id)) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
@@ -359,6 +363,7 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
       scheduled_time: input.scheduledTime,
       scheduled_at: input.scheduledAt,
       duration_min: input.durationMin,
+      buffer_time_min: bufferMin,
       status: "scheduled",
       call_status: input.callStatus ?? "not_called",
     })
@@ -374,7 +379,8 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
 export async function editQueueEntryStudies(
   id: string,
   studies: Json,
-  durationMin: number
+  durationMin: number,
+  bufferTimeMin?: number
 ): Promise<QueueActionResult> {
   if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
   const supabase = await createClient();
@@ -385,9 +391,13 @@ export async function editQueueEntryStudies(
     ? studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
     : false;
 
+  // Буфер оновлюємо лише якщо переданий (редактор досліджень може його змінювати).
+  const patch: TablesUpdate<"queue_entries"> = { studies, duration_min: durationMin, has_contrast: hasContrast };
+  if (bufferTimeMin != null) patch.buffer_time_min = normBuffer(bufferTimeMin);
+
   const { data, error } = await supabase
     .from("queue_entries")
-    .update({ studies, duration_min: durationMin, has_contrast: hasContrast })
+    .update(patch)
     .eq("id", id)
     .select("id");
 
@@ -412,6 +422,7 @@ export type BookingInput = {
   doctor?: string | null;
   notes?: string | null;
   durationMin: number;
+  bufferTimeMin?: number;
   scheduledDate: string;
   scheduledTime: string;
   scheduledAt: string;
@@ -426,9 +437,10 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
+  const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);
   const startMin = (hh || 0) * 60 + (mm || 0);
-  const endMin = startMin + (input.durationMin || 30);
+  const endMin = startMin + (input.durationMin || 30) + bufferMin;
   if (await hasSlotClash(supabase, input.roomId, input.scheduledDate, startMin, endMin)) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
@@ -457,6 +469,7 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
     doctor: input.doctor ?? null,
     note: input.notes ?? null,
     duration_min: input.durationMin,
+    buffer_time_min: bufferMin,
     scheduled_date: input.scheduledDate,
     scheduled_time: input.scheduledTime,
     scheduled_at: input.scheduledAt,
@@ -531,6 +544,7 @@ export type ReferralBookingInput = {
   doctorName?: string | null;
   note?: string | null;
   durationMin: number;
+  bufferTimeMin?: number;
   scheduledDate: string;
   scheduledTime: string;
   scheduledAt: string;
@@ -556,9 +570,10 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
   const roomAllowed = !access.room_ids || access.room_ids.length === 0 || access.room_ids.includes(input.roomId);
   if (!roomAllowed) return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
 
+  const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);
   const startMin = (hh || 0) * 60 + (mm || 0);
-  const endMin = startMin + (input.durationMin || 30);
+  const endMin = startMin + (input.durationMin || 30) + bufferMin;
   if (await hasSlotClash(supabase, input.roomId, input.scheduledDate, startMin, endMin)) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
@@ -588,6 +603,7 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
     note: input.note ?? null,
     indication: input.note ?? null,
     duration_min: input.durationMin,
+    buffer_time_min: bufferMin,
     scheduled_date: input.scheduledDate,
     scheduled_time: input.scheduledTime,
     scheduled_at: input.scheduledAt,

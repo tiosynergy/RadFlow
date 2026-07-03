@@ -6,7 +6,7 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { regionsFor } from "@/lib/studies";
+import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { useModalA11y } from "@/lib/useModalA11y";
 
@@ -15,7 +15,7 @@ const MIN_STUDY = 15;
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type StudyRow = { type: string; region: string; dur: number };
 type StudyLike = { type?: string; region?: string; dur?: number; contrast?: boolean };
-type StudyPatient = { id: string; room_id: string | null; scheduled_time: string | null; patient_name: string | null; studies?: unknown };
+type StudyPatient = { id: string; room_id: string | null; scheduled_time: string | null; buffer_time_min?: number | null; patient_name: string | null; studies?: unknown };
 
 interface StudyEditModalProps {
   patient: StudyPatient;
@@ -23,7 +23,7 @@ interface StudyEditModalProps {
   rooms?: RoomOpt[];
   clinicId?: string | null;
   onClose: () => void;
-  onConfirm: (arr: StudyRow[], meta: { dur: number }) => void;
+  onConfirm: (arr: StudyRow[], meta: { dur: number; buffer: number }) => void;
 }
 
 function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
@@ -62,15 +62,22 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
     return () => { cancel = true; };
   }, [patient.id, patient.room_id, patient.scheduled_time, scheduledDate, clinicId]);
 
+  const [buffer, setBuffer] = useState<number>(normBuffer(patient.buffer_time_min ?? BUFFER_DEFAULT));
+
   const startMin = toMin(patient.scheduled_time);
   // Кінець вікна — за графіком кабінету (з урахуванням особливого графіка),
-  // але не далі наступного запису у цьому кабінеті.
+  // але не далі наступного запису. Буфер займає кабінет ПІСЛЯ досліджень, тож
+  // дослідження + буфер не повинні перетнути наступний запис (для графіка —
+  // саме дослідження має вміститись, буфер може вийти за межі закриття).
   const dateObj = scheduledDate ? new Date(scheduledDate + "T00:00:00") : new Date();
   const roomSched = roomScheduleFor(dateObj, patient.room_id || "", override);
   const schedEnd = toMin(roomSched.end);
-  const windowEnd = nextStart != null ? Math.min(nextStart, schedEnd) : schedEnd;
-  const windowLabel = (nextStart != null && nextStart <= schedEnd) ? ("до наступного запису о " + fmt(nextStart)) : ("до кінця графіка (" + fmt(schedEnd) + ")");
-  const availableDur = Math.max(0, windowEnd - startMin);
+  const capByNext = nextStart != null ? nextStart - startMin - buffer : Infinity;
+  const capBySched = schedEnd - startMin;
+  const availableDur = Math.max(0, Math.min(capByNext, capBySched));
+  const windowLabel = (nextStart != null && (nextStart - buffer) <= schedEnd)
+    ? ("до наступного запису о " + fmt(nextStart) + (buffer > 0 ? ` − ${buffer} буфер` : ""))
+    : ("до кінця графіка (" + fmt(schedEnd) + ")");
 
   function recalc(type: string, region: string, prevDur?: number): number {
     const ro = regionsFor(type).find((r) => r.label === region);
@@ -104,7 +111,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
 
   function save() {
     const arr = rows.filter((r) => r.region).map((r) => ({ type: r.type, region: r.region, dur: Number(r.dur) || 0 }));
-    onConfirm(arr, { dur: totalDur });
+    onConfirm(arr, { dur: totalDur, buffer });
   }
 
   return (
@@ -166,7 +173,13 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
             title={canAdd ? "" : "Немає вільного часу у слоті"}>＋ Додати дослідження</button>
         </div>
         <div className="dlg-foot">
-          <span className="st-total">Разом: <b>{totalDur} хв</b> · {rows.length} {rows.length === 1 ? "дослідження" : "досл."}</span>
+          <label className="st-total" style={{ display: "flex", alignItems: "center", gap: 6 }} title="Буфер після дослідження (переукладка/дезінфекція)">
+            Буфер:
+            <select className="inp" style={{ width: 74, padding: "2px 6px" }} value={buffer} onChange={(e) => setBuffer(normBuffer(Number(e.target.value)))}>
+              {BUFFER_OPTIONS.map((b) => <option key={b} value={b}>{b} хв</option>)}
+            </select>
+          </label>
+          <span className="st-total">Разом: <b>{totalDur} хв</b>{buffer > 0 ? <> + {buffer} буфер</> : null} · {rows.length} {rows.length === 1 ? "дослідження" : "досл."}</span>
           <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
           <button className="btn btn-primary" disabled={!valid} onClick={save}>✓ Зберегти дослідження</button>
         </div>

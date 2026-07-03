@@ -18,7 +18,7 @@ import RescheduleModal from "@/components/RescheduleModal";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry } from "@/app/queue/actions";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { slotBlockedByIncidents, type IncidentLike } from "@/lib/incidents";
-import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE } from "@/lib/studies";
+import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
 import { DobField, BookingCalendar, fmtShort, today0, sameDay } from "@/components/BookingModal";
 import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
@@ -27,12 +27,12 @@ type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: s
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null };
 type Referral = {
   id: string; clinic_id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
-  scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; status: string;
+  scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string;
   studies: Json; studies_original: Json | null; doctor: string | null; note: string | null; indication: string | null; room_id: string | null;
 };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 type ExtraStudy = { type: string; region: string; dur: number };
-type BusySlot = { scheduled_time: string; duration_min: number };
+type BusySlot = { scheduled_time: string; duration_min: number; buffer_time_min: number | null };
 type SearchClinic = { id: string; name: string; city: string | null; modalities: string[] };
 type CenterCardData = {
   name?: string; city?: string | null; policy?: string | null; note?: string | null;
@@ -106,6 +106,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const [studyType, setStudyType] = useState("МРТ");
   const [region, setRegion] = useState("");
   const [contrast, setContrast] = useState(false);
+  const [buffer, setBuffer] = useState<number>(BUFFER_DEFAULT);
   const [hasContra, setHasContra] = useState(false);
   const [cito, setCito] = useState(false);
   const [comment, setComment] = useState("");
@@ -207,12 +208,13 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const dateObj = new Date(date + "T00:00:00");
   const roomSched = roomScheduleFor(dateObj, roomId || "", override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
-  const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) }));
+  const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) + (e.buffer_time_min ?? BUFFER_DEFAULT) }));
   const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
   const isBookToday = sameDay(bookDate, today0());
   const slots: string[] = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
   function slotState(slot: string) {
-    const a = toMin(slot), b = a + slotDur;
+    // b — кінець дослідження (має вміститись у графік); bBlock — з буфером (перетин з іншими).
+    const a = toMin(slot), b = a + slotDur, bBlock = a + slotDur + buffer;
     if (roomSched.closed) return "closed";
     const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60);
     if (slotBlockedByIncidents(incidents, roomId || "", slotMs)) return "blocked";
@@ -220,7 +222,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     if (b > schedEnd) return "tight";
     if (isBookToday && a < nowMin) return "past";
     if (busySlots.some((x) => a >= x.s && a < x.e)) return "busy";
-    if (busySlots.some((x) => a < x.e && x.s < b)) return "tight";
+    if (busySlots.some((x) => a < x.e && x.s < bBlock)) return "tight";
     return "free";
   }
   function nextApptAfter(slot: string) {
@@ -248,7 +250,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
       name: name.trim(), phone: phone.trim() || null, email: email.trim() || null,
       dob: dob || null, sex: gender || null, age: calcAgeLocal(dob), weight: weight ? +weight : null,
       hasContra: !!hasContra, cito: !!cito, studies: allStudies as Json,
-      doctorName, note: comment.trim() || null, durationMin: slotDur,
+      doctorName, note: comment.trim() || null, durationMin: slotDur, bufferTimeMin: buffer,
       scheduledDate: date, scheduledTime: time, scheduledAt: at,
     });
     setBusy(false);
@@ -375,6 +377,13 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                   {!region ? "оберіть область" : durCustom ? `↺ за замовч. ${computedDur} хв` : "за тривалістю області"}
                 </span>
               </label>
+              <label className="fld" style={{ flex: "0 0 96px" }}>
+                <span className="fld-lab">Буфер</span>
+                <select className="inp" value={buffer} onChange={(e) => setBuffer(Number(e.target.value))} title="Час на переукладку/дезінфекцію після дослідження">
+                  {BUFFER_OPTIONS.map((b) => <option key={b} value={b}>{b} хв</option>)}
+                </select>
+                <span className="bk-time-state none">після дослідження</span>
+              </label>
             </div>
 
             {price != null && (
@@ -444,7 +453,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
             <div className="fld">
               <div className="bk-slots-head">
                 <span className={"fld-lab" + (miss.time ? " bk-miss-lab" : "")} style={{ margin: 0 }}>Вільні слоти · {fmtShort(bookDate)} {miss.time ? "— оберіть час *" : ""}</span>
-                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} · {freeCount} вільних</span>
+                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {freeCount} вільних</span>
               </div>
               {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
               {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
@@ -475,15 +484,15 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                 <span><span className="lg-dot busy" />зайнято</span>
               </div>
               {time && (() => {
-                const s = toMin(time), e = s + slotDur;
+                const s = toMin(time), e = s + slotDur, eBlock = s + slotDur + buffer;
                 const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(s / 60), s % 60);
                 const blocked = slotBlockedByIncidents(incidents, roomId || "", slotMs);
-                const conflict = busySlots.find((b) => s < b.e && b.s < e);
+                const conflict = busySlots.find((b) => s < b.e && b.s < eBlock);
                 return (
                   <div className={"bk-slot-confirm " + (blocked || conflict ? "bad" : "ok")}>
                     {blocked ? <>⚠ Кабінет на ремонті/ТО у цей час — оберіть інший слот або день</>
                       : conflict ? <>⚠ Перетин із записом {fmt(conflict.s)}–{fmt(conflict.e)} — оберіть інший слот</>
-                      : <>✓ Слот вільний. Запис: <b>{time}–{fmt(e)}</b> ({slotDur} хв).</>}
+                      : <>✓ Слот вільний. Запис: <b>{time}–{fmt(e)}</b> ({slotDur} хв){buffer > 0 ? <> + буфер {buffer} хв (до {fmt(eBlock)})</> : null}.</>}
                   </div>
                 );
               })()}
@@ -985,7 +994,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     const supabase = createClient();
     const { data } = await supabase
       .from("queue_entries")
-      .select("id, clinic_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, status, studies, studies_original, doctor, note, indication, room_id")
+      .select("id, clinic_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, studies, studies_original, doctor, note, indication, room_id")
       .eq("referrer_id", doctorId)
       .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
     setReferrals(data || []);
@@ -1000,11 +1009,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     ],
   });
 
-  async function doReschedule({ roomId, date, time, dur }: { roomId: string; date: Date; time: string; dur: number }) {
+  async function doReschedule({ roomId, date, time, dur, buffer }: { roomId: string; date: Date; time: string; dur: number; buffer: number }) {
     const p = reschedFor; if (!p) return;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer });
     if (!res.ok) {
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
       setReschedFor(null);

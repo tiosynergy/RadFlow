@@ -234,6 +234,7 @@ export type Database = {
           scheduled_date: string | null;
           scheduled_time: string | null;
           duration_min: number;
+          buffer_time_min: number;
           studies: Json;
           patient_dob: string | null;
           patient_sex: string | null;
@@ -268,6 +269,7 @@ export type Database = {
           scheduled_date?: string | null;
           scheduled_time?: string | null;
           duration_min?: number;
+          buffer_time_min?: number;
           studies?: Json;
           patient_dob?: string | null;
           patient_sex?: string | null;
@@ -302,6 +304,7 @@ export type Database = {
           scheduled_date?: string | null;
           scheduled_time?: string | null;
           duration_min?: number;
+          buffer_time_min?: number;
           studies?: Json;
           patient_dob?: string | null;
           patient_sex?: string | null;
@@ -743,7 +746,7 @@ export type Database = {
       };
       room_busy_slots: {
         Args: { p_room: string; p_date: string };
-        Returns: { scheduled_time: string; duration_min: number }[];
+        Returns: { scheduled_time: string; duration_min: number; buffer_time_min: number }[];
       };
       search_clinics: {
         Args: { q: string };

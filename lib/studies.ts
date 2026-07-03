@@ -29,7 +29,20 @@ export interface StudyDiff {
 }
 
 export const CONTRAST_SURCHARGE = 900; // доплата за контраст, грн
-export const CONTRAST_DUR = 15; // +мин за контраст
+export const CONTRAST_DUR = 15; // +мин за контраст (доп. время)
+
+/* ── Буферное время (занятость кабинета ПОСЛЕ исследования: переукладка,
+   дезинфекция, поглощение задержек). Единый источник для всего продукта.
+   Дефолт 5 мин, выбор 5/10/15. Эффективная занятость слота = длительность + буфер.
+   В будущем дефолт будет задаваться в справочнике услуг/прайсе — тогда
+   BUFFER_DEFAULT станет per-service значением. ── */
+export const BUFFER_DEFAULT = 5; // мин, по умолчанию
+export const BUFFER_OPTIONS = [5, 10, 15] as const; // допустимые значения в UI (шаг 5, макс 15)
+/** Нормализовать буфер к допустимому значению (0/5/10/15, максимум 15). */
+export function normBuffer(v: unknown): number {
+  const n = Math.round((Number(v) || 0) / 5) * 5;
+  return Math.max(0, Math.min(15, n));
+}
 
 export const MRT_REGIONS: StudyRegion[] = [
   { label: "Головний мозок", dur: 60, price: 2400, contrast: true },
