@@ -1,6 +1,6 @@
 # RadFlow — Обзор продукта (актуальная документация)
 
-**Дата актуализации:** 2026-07-02 · **Источник правды:** код `dev` (`app/`, `components/`, `lib/`, `supabase/migrations/0001–0045`). Весь фронтенд на **TypeScript** (`.tsx`/`.ts`); типы схемы Supabase — в `supabase/types.ts`.
+**Дата актуализации:** 2026-07-03 · **Источник правды:** код `dev` (`app/`, `components/`, `lib/`, `supabase/migrations/0001–0046`). Весь фронтенд на **TypeScript** (`.tsx`/`.ts`); типы схемы Supabase — в `supabase/types.ts`.
 Этот документ описывает RadFlow **как он реализован**. Ранние проектные документы (`docs/plan/`, `docs/architecture/`, `docs/scenarios/`) отражают изначальный замысел и местами расходятся с кодом — см. §9.
 
 ---
@@ -71,7 +71,7 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 - **Перенос** (`RescheduleModal`): кабинеты той же модальности, выбор даты/слота, статус сбрасывается в `scheduled`.
 - **Инциденты** (`BreakdownModal`, `lib/incidents.ts`): две сущности — 🔧 **Поломка** (обычно «сейчас», `active`) и ⚙️ **ТО** (планируется, `planned`). Блокировка до `blocked_until` или «до восстановления». Флаг `auto_unblock` определяет судьбу записей после окна. Просроченные инциденты снимаются. Пострадавшие записи попадают в панель переноса и в call-list.
 - **Завершение** (`CompletionModal`): «Успішно» → `done` либо «Не відбулось» → `not_held` с обязательной причиной.
-- **CITO**: срочные поднимаются в сортировке и предлагаются к вызову первыми; баннер срочных.
+- **Приоритет пациента** (`priority_level`): обязательный выбор при записи (CITO / Терміново / Планово). Очередь всегда сортируется cito → urgent → planned (внутри статуса), затем по времени; баннер CITO. Менять приоритет существующей записи может админ (инлайн в строке + в модалке пациента) и направитель-владелец (портал); реестратор/радиолог — только просмотр (enforced в `setQueuePriority` + DB-триггер `guard_priority_change`). Бейджи: CITO (красный), Терміново (оранжевый), Планово — без бейджа.
 - **Realtime**: подписка на `queue_entries`, `incidents`, `schedule_overrides` через `useRealtimeRefetch` (поллинг только при разрыве сокета), перезапрос при смене дня; живые таймеры. Все мутации доски — через Server Actions.
 - Фильтры по статусу (карточки StatsBar), поиск, мини-календарь с отметками особого графика.
 
@@ -129,6 +129,7 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 - **`modality`**: `MRI`, `CT`, `OTHER`.
 - **`referral_access_status`**: `pending_clinic`, `pending_referrer`, `active`, `revoked`, `declined`.
 - **`referral_policy`**: `direct` (запись сразу), `confirm` (требует подтверждения).
+- **`patient_priority`** (enum): `cito` (екстрено/CITO), `urgent` (терміново), `planned` (планово). Обязателен при новой записи; порядок очереди: cito → urgent → planned. Машинно-читаемые коды для n8n/AI (`lib/priority.ts`).
 - **`ceo_access_status`**: `active`, `revoked`.
 - **`incidents.status`** (text): `active`, `planned`, `resolved`.
 
@@ -144,7 +145,7 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 | `profiles` | Профиль 1:1 с `auth.users`; `role`, `login` (глоб. уникальный), `approved`, `password_set`; `clinic_id NULL` ⇔ глобальный направитель |
 | `rooms` | Кабинеты/аппараты: модальность, `schedule` (jsonb) |
 | `services` | Справочник исследований (модальность, длительность, контраст) |
-| `queue_entries` | Записи очереди + данные пациента + `studies`/`studies_original` (jsonb), `status`, `call_status`, `cito`, `scheduled_at/date/time`, `duration_min`, `buffer_time_min` (буфер после исследования, дефолт 5), `in_progress_at`, `created_by` |
+| `queue_entries` | Записи очереди + данные пациента + `studies`/`studies_original` (jsonb), `status`, `call_status`, `priority_level` (enum `patient_priority`, обязателен; `cito` boolean — зеркало `priority_level='cito'` через триггер), `scheduled_at/date/time`, `duration_min`, `buffer_time_min` (буфер после исследования, дефолт 5), `in_progress_at`, `created_by` |
 | `incidents` | Простои (поломка/ТО): `reason`, `started_at`, `blocked_until`, `status`, `auto_unblock` |
 | `schedule_overrides` | Праздники/особые часы (uniq по `clinic_id, override_date`) |
 | `doctors` | Справочник врачей-направителей (свободный текст, не аккаунты) |
@@ -173,7 +174,7 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 
 ## 7. Эволюция схемы (миграции)
 
-`0001` фундамент (tenancy, очередь, RLS) · `0002` setup/графики · `0003` поля записи · `0004` инциденты · `0005` overrides · `0006` doctors+CITO · `0007–0008` заметки · `0009` аккаунты радиологов · `0010–0011` удаление · `0012` `created_by`+ролевые политики · `0013` managed-аккаунты, `email_for_login` · `0014/0016` анти-овербукинг, `not_held` · `0015` enum `not_held` · `0017/0018` один active-инцидент / один in_progress · `0019` `in_progress_at` · `0020` запрет записи в простое · `0021` `auto_unblock` · `0022` realtime replica identity · `0023–0029` портал направителей (referral_access, глобальный направитель, RPC, room_ids) · `0030` `studies_original` · `0031` realtime для `doctors` + индекс `queue_entries(room_id, scheduled_date)` · **`0032`** безопасность аккаунтов: одноразовый `invite_token` (CRIT-1) + отзыв `email_for_login` у anon (CRIT-2) · `0033` rate-limits (`rl_check`) · `0034` CHECK статусов + `scheduled_at` · `0035` walltime · `0036` связка/guard направителя · `0037` чистка неиспользуемого · `0038` карточка центра (`referral_center_card`) · `0039` `search_referrers` · **`0040`** глобальный кросс-клиничный CEO (`ceo_access`, `auth_ceo_clinics`/`auth_is_ceo_of`, RLS) · `0041` приватный email направителя · **`0042`/`0043`** справочник городов КАТОТТГ (`cities`, `search_cities`) + город направителя · **`0044`** RPC `ceo_list_for_clinic` · **`0045`** буферное время между записями (`queue_entries.buffer_time_min`, дефолт 5, значения 0/5/10/15; `check_no_overlap` считает занятость как `duration_min + buffer_time_min`; `room_busy_slots` возвращает буфер; бекфилл существующих в 5).
+`0001` фундамент (tenancy, очередь, RLS) · `0002` setup/графики · `0003` поля записи · `0004` инциденты · `0005` overrides · `0006` doctors+CITO · `0007–0008` заметки · `0009` аккаунты радиологов · `0010–0011` удаление · `0012` `created_by`+ролевые политики · `0013` managed-аккаунты, `email_for_login` · `0014/0016` анти-овербукинг, `not_held` · `0015` enum `not_held` · `0017/0018` один active-инцидент / один in_progress · `0019` `in_progress_at` · `0020` запрет записи в простое · `0021` `auto_unblock` · `0022` realtime replica identity · `0023–0029` портал направителей (referral_access, глобальный направитель, RPC, room_ids) · `0030` `studies_original` · `0031` realtime для `doctors` + индекс `queue_entries(room_id, scheduled_date)` · **`0032`** безопасность аккаунтов: одноразовый `invite_token` (CRIT-1) + отзыв `email_for_login` у anon (CRIT-2) · `0033` rate-limits (`rl_check`) · `0034` CHECK статусов + `scheduled_at` · `0035` walltime · `0036` связка/guard направителя · `0037` чистка неиспользуемого · `0038` карточка центра (`referral_center_card`) · `0039` `search_referrers` · **`0040`** глобальный кросс-клиничный CEO (`ceo_access`, `auth_ceo_clinics`/`auth_is_ceo_of`, RLS) · `0041` приватный email направителя · **`0042`/`0043`** справочник городов КАТОТТГ (`cities`, `search_cities`) + город направителя · **`0044`** RPC `ceo_list_for_clinic` · **`0045`** буферное время между записями (`queue_entries.buffer_time_min`, дефолт 5, значения 0/5/10/15; `check_no_overlap` считает занятость как `duration_min + buffer_time_min`; `room_busy_slots` возвращает буфер; бекфилл существующих в 5) · **`0046`** приоритет пациента (enum `patient_priority`, `queue_entries.priority_level`; триггер `sync_cito_from_priority` держит `cito` зеркалом; триггер `guard_priority_change` — менять приоритет существующей записи может только admin или направитель-владелец; бекфилл `cito=true`→`cito`).
 
 ---
 

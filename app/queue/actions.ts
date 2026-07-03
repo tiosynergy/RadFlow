@@ -16,6 +16,7 @@ import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate } from "@/supabase/types";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
+import { normPriority, type PatientPriority } from "@/lib/priority";
 
 export type QueueActionResult =
   | { ok: true }
@@ -417,7 +418,7 @@ export type BookingInput = {
   age?: number | null;
   weight?: number | null;
   hasContra?: boolean;
-  cito?: boolean;
+  priorityLevel?: PatientPriority;
   studies: Json;
   doctor?: string | null;
   notes?: string | null;
@@ -462,7 +463,7 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
     patient_age: input.age ?? null,
     patient_weight: input.weight ?? null,
     contraindications: !!input.hasContra,
-    cito: !!input.cito,
+    priority_level: normPriority(input.priorityLevel),
     has_contrast: hasContrast,
     studies: input.studies,
     studies_original: input.studies,
@@ -522,7 +523,44 @@ export async function updatePatientDetails(id: string, patch: TablesUpdate<"queu
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
-  const { data, error } = await supabase.from("queue_entries").update(patch).eq("id", id).select("id");
+  // Пріоритет змінюється ЛИШЕ через setQueuePriority (з перевіркою ролі) — прибираємо з generic-патча.
+  const { priority_level: _pl, cito: _cito, ...safePatch } = patch;
+  const { data, error } = await supabase.from("queue_entries").update(safePatch).eq("id", id).select("id");
+  if (error) return { ok: false, error: error.message, code: "generic" };
+  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  return { ok: true };
+}
+
+/**
+ * Змінити пріоритет пацієнта у вже створеній записі.
+ * Дозволено ЛИШЕ: адміністратору клініки АБО направнику-власнику запису
+ * (referrer_id = auth.uid()). Реєстратор/радіолог — заборонено (403).
+ * Тригер БД синхронізує булевий cito = (priority_level='cito').
+ */
+export async function setQueuePriority(id: string, priority: PatientPriority): Promise<QueueActionResult> {
+  if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
+  const level = normPriority(priority);
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  // Хто редагує: роль + чи це власна запис направника.
+  const [{ data: profile }, { data: entry }] = await Promise.all([
+    supabase.from("profiles").select("role").eq("id", user.id).maybeSingle(),
+    supabase.from("queue_entries").select("referrer_id").eq("id", id).maybeSingle(),
+  ]);
+  if (!entry) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  const isAdmin = profile?.role === "admin";
+  const isOwnerReferrer = entry.referrer_id != null && entry.referrer_id === user.id;
+  if (!isAdmin && !isOwnerReferrer) {
+    return { ok: false, error: "Змінювати пріоритет може адміністратор або лікар-направник", code: "forbidden" };
+  }
+
+  const { data, error } = await supabase
+    .from("queue_entries")
+    .update({ priority_level: level })
+    .eq("id", id)
+    .select("id");
   if (error) return { ok: false, error: error.message, code: "generic" };
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
   return { ok: true };
@@ -539,7 +577,7 @@ export type ReferralBookingInput = {
   age?: number | null;
   weight?: number | null;
   hasContra?: boolean;
-  cito?: boolean;
+  priorityLevel?: PatientPriority;
   studies: Json;
   doctorName?: string | null;
   note?: string | null;
@@ -595,7 +633,7 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
     patient_age: input.age ?? null,
     patient_weight: input.weight ?? null,
     contraindications: !!input.hasContra,
-    cito: !!input.cito,
+    priority_level: normPriority(input.priorityLevel),
     has_contrast: hasContrast,
     studies: input.studies,
     studies_original: input.studies,

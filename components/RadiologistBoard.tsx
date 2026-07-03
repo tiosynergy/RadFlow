@@ -13,6 +13,7 @@ import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
+import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, wallNow } from "@/lib/incidents";
 import { setQueueEntryStatus, setRadiologistNote } from "@/app/queue/actions";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
@@ -26,7 +27,7 @@ type RadEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   patient_sex: string | null; patient_weight: number | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null;
   status: string; call_status: string | null; studies: Json; studies_original: Json | null; has_contrast: boolean;
-  contraindications: boolean; cito: boolean; doctor: string | null; note: string | null; radiologist_note: string | null;
+  contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null; note: string | null; radiologist_note: string | null;
   indication: string | null; room_id: string | null; updated_at: string; in_progress_at: string | null;
 };
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
@@ -246,7 +247,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
-          <div className="nm">{p.cito && (p.status === "scheduled" || p.status === "waiting" || p.status === "in_progress") && <span className="cito-tag">CITO</span>}{p.patient_name}</div>
+          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}{p.patient_name}</div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
             {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
@@ -505,7 +506,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     const supabase = createClient();
     let q = supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, has_contrast, contraindications, cito, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at")
+      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .neq("status", "cancelled");
@@ -615,7 +616,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   entries.forEach((e) => {
     if (e.status !== "waiting" || !e.room_id) return;
     const cur = nextWaitingByRoom[e.room_id];
-    if (!cur || (e.cito && !cur.cito)) nextWaitingByRoom[e.room_id] = e;
+    if (!cur || priorityRank(e.priority_level) < priorityRank(cur.priority_level)) nextWaitingByRoom[e.room_id] = e;
   });
   const cardRooms = roomFilter === "all" ? (rooms || []) : (rooms || []).filter((r) => r.id === roomFilter);
 
@@ -629,8 +630,8 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   }).sort((a, b) => {
     const d = (FLOW[a.status] ?? 9) - (FLOW[b.status] ?? 9);
     if (d !== 0) return d;
-    const ac = (a.cito && (a.status === "scheduled" || a.status === "waiting" || a.status === "in_progress")) ? 0 : 1;
-    const bc = (b.cito && (b.status === "scheduled" || b.status === "waiting" || b.status === "in_progress")) ? 0 : 1;
+    const ac = isActiveStatus(a.status) ? priorityRank(a.priority_level) : 9;
+    const bc = isActiveStatus(b.status) ? priorityRank(b.priority_level) : 9;
     if (ac !== bc) return ac - bc;
     return (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
   });

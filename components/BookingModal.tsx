@@ -11,6 +11,7 @@ import PhoneInput from "@/components/PhoneInput";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, type IncidentLike } from "@/lib/incidents";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
+import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
@@ -22,7 +23,7 @@ export type BookingPayload = {
   name: string; phone: string; email: string | null; age: number; dob: string;
   weight: number | null; gender: string; proc: string; dur: number; buffer: number; studies: StudyOut[];
   roomId: string; date: Date; time: string; notes: string | null;
-  hasContra: boolean; cito: boolean; doctor: string | null; referrerId: string | null;
+  hasContra: boolean; priority: PatientPriority; doctor: string | null; referrerId: string | null;
 };
 type ParsedDob = { ok: false; partial?: boolean; err?: string } | { ok: true; iso: string };
 
@@ -215,7 +216,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
   const [contrast, setContrast] = useState(false);
   const [buffer, setBuffer] = useState<number>(BUFFER_DEFAULT);
   const [hasContra, setHasContra] = useState(false);
-  const [cito, setCito] = useState(false);
+  const [priority, setPriority] = useState<PatientPriority | "">(""); // обов'язковий вибір при новій записі
   const [notes, setNotes] = useState("");
   const [docs, setDocs] = useState<DocOpt[]>([]);
   const [doctorId, setDoctorId] = useState("");
@@ -360,8 +361,8 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
   const freeCount = slots.filter((s) => slotState(s) === "free").length;
   const busyList = roomBusy.slice().sort((a, b) => a.s - b.s);
 
-  const miss: Record<string, boolean> = { name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), region: !region, room: !roomId, time: !time };
-  const MISS_LABELS: Record<string, string> = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
+  const miss: Record<string, boolean> = { name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time };
+  const MISS_LABELS: Record<string, string> = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   const timeBad = time ? slotState(time) !== "free" : false;
   const room = (rooms || []).find((r) => r.id === roomId) || null;
@@ -375,7 +376,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
       age: calcAge(dob), dob, weight: weight ? +weight : null, gender,
       proc: combinedLabel, dur: slotDur, buffer, studies: allStudies,
       roomId, date: bookDate, time, notes: notes.trim() || null,
-      hasContra, cito, doctor: sel?.name || null,
+      hasContra, priority: priority as PatientPriority, doctor: sel?.name || null,
       referrerId: sel && String(sel.id).startsWith("ref:") ? String(sel.id).slice(4) : null,
     });
   }
@@ -455,12 +456,25 @@ export default function BookingModal({ rooms, clinicId, incidents = [], onClose,
                     <input type="checkbox" checked={hasContra} onChange={(e) => setHasContra(e.target.checked)} />
                     <span className="rf-box" /><span>Протипоказання</span>
                   </label>
-                  <label className={"rf-check" + (cito ? " warn" : "")}>
-                    <input type="checkbox" checked={cito} onChange={(e) => setCito(e.target.checked)} />
-                    <span className="rf-box" /><span>CITO (терміново)</span>
-                  </label>
                 </div>
               </div>
+            </div>
+
+            <div className="fld">
+              <span className={"fld-lab" + (miss.priority ? " bk-miss-lab" : "")}>Пріоритет пацієнта <span className="req">*</span></span>
+              <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
+                {PRIORITY_OPTIONS.map((pv) => {
+                  const m = PRIORITY_META[pv];
+                  return (
+                    <button key={pv} type="button" role="radio" aria-checked={priority === pv}
+                      className={"prio-seg-btn " + m.tone + (priority === pv ? " active" : "")}
+                      onClick={() => setPriority(pv)} title={m.desc}>
+                      {m.short}
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="bk-time-state none">{priority ? PRIORITY_META[priority as PatientPriority].desc : "оберіть пріоритет — впливає на порядок у черзі"}</span>
             </div>
 
             <div className="fld-row" style={{ alignItems: "flex-start" }}>

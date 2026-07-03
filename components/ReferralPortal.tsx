@@ -19,6 +19,7 @@ import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry } from "@
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { slotBlockedByIncidents, type IncidentLike } from "@/lib/incidents";
 import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
+import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { DobField, BookingCalendar, fmtShort, today0, sameDay } from "@/components/BookingModal";
 import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
@@ -28,7 +29,7 @@ type Center = { clinicId: string; name: string; city: string | null; status: str
 type Referral = {
   id: string; clinic_id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string;
-  studies: Json; studies_original: Json | null; doctor: string | null; note: string | null; indication: string | null; room_id: string | null;
+  priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; doctor: string | null; note: string | null; indication: string | null; room_id: string | null;
 };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 type ExtraStudy = { type: string; region: string; dur: number };
@@ -108,7 +109,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const [contrast, setContrast] = useState(false);
   const [buffer, setBuffer] = useState<number>(BUFFER_DEFAULT);
   const [hasContra, setHasContra] = useState(false);
-  const [cito, setCito] = useState(false);
+  const [priority, setPriority] = useState<PatientPriority | "">("");
   const [comment, setComment] = useState("");
   const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>([]);
   const [bookDate, setBookDate] = useState(() => { const d = today0(); d.setDate(d.getDate() + 1); return d; });
@@ -233,8 +234,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const freeCount = slots.filter((s) => slotState(s) === "free").length;
   const busyList = busySlots.slice().sort((a, b) => a.s - b.s);
 
-  const miss: Record<string, boolean> = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), region: !region, room: !roomId, time: !time };
-  const MISS_LABELS: Record<string, string> = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
+  const miss: Record<string, boolean> = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time };
+  const MISS_LABELS: Record<string, string> = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   const timeBad = time ? slotState(time) !== "free" : false;
   const valid = centerId && missingList.length === 0 && roomId && !timeBad && !roomSched.closed;
@@ -249,7 +250,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
       clinicId: centerId, roomId: roomId as string,
       name: name.trim(), phone: phone.trim() || null, email: email.trim() || null,
       dob: dob || null, sex: gender || null, age: calcAgeLocal(dob), weight: weight ? +weight : null,
-      hasContra: !!hasContra, cito: !!cito, studies: allStudies as Json,
+      hasContra: !!hasContra, priorityLevel: priority || undefined, studies: allStudies as Json,
       doctorName, note: comment.trim() || null, durationMin: slotDur, bufferTimeMin: buffer,
       scheduledDate: date, scheduledTime: time, scheduledAt: at,
     });
@@ -261,7 +262,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
       onCreated(null, msg);
       return;
     }
-    setName(""); setDob(""); setGender(""); setWeight(""); setPhone(""); setEmail(""); setRegion(""); setContrast(false); setHasContra(false); setCito(false); setComment(""); setExtraStudies([]); setTime("");
+    setName(""); setDob(""); setGender(""); setWeight(""); setPhone(""); setEmail(""); setRegion(""); setContrast(false); setHasContra(false); setPriority(""); setComment(""); setExtraStudies([]); setTime("");
     onCreated(name.trim());
   }
 
@@ -348,12 +349,25 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                     <input type="checkbox" checked={hasContra} onChange={(e) => setHasContra(e.target.checked)} />
                     <span className="rf-box" /><span>Протипоказання</span>
                   </label>
-                  <label className={"rf-check" + (cito ? " warn" : "")}>
-                    <input type="checkbox" checked={cito} onChange={(e) => setCito(e.target.checked)} />
-                    <span className="rf-box" /><span>CITO (терміново)</span>
-                  </label>
                 </div>
               </div>
+            </div>
+
+            <div className="fld">
+              <span className={"fld-lab" + (miss.priority ? " bk-miss-lab" : "")}>Пріоритет пацієнта <span className="req">*</span></span>
+              <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
+                {PRIORITY_OPTIONS.map((pv) => {
+                  const m = PRIORITY_META[pv];
+                  return (
+                    <button key={pv} type="button" role="radio" aria-checked={priority === pv}
+                      className={"prio-seg-btn " + m.tone + (priority === pv ? " active" : "")}
+                      onClick={() => setPriority(pv)} title={m.desc}>
+                      {m.short}
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="bk-time-state none">{priority ? PRIORITY_META[priority as PatientPriority].desc : "оберіть пріоритет — впливає на порядок у черзі"}</span>
             </div>
 
             <div className="fld-row" style={{ alignItems: "flex-start" }}>
@@ -606,6 +620,7 @@ function MyReferrals({ referrals, centersById, onReschedule, onCancel, onEditPat
               </span>
               <span style={{ color: "var(--text-muted)" }}>Дата · час</span><span>{sel.scheduled_date} · {sel.scheduled_time}{sel.duration_min ? " · " + sel.duration_min + " хв" : ""}</span>
               <span style={{ color: "var(--text-muted)" }}>Статус</span><span><span className={"badge " + m.cls}>{m.label}</span></span>
+              <span style={{ color: "var(--text-muted)" }}>Пріоритет</span><span>{sel.priority_level ? <span className={"prio-tag " + PRIORITY_META[sel.priority_level].tone}>{PRIORITY_META[sel.priority_level].short}</span> : "—"}</span>
               {sel.indication && <><span style={{ color: "var(--text-muted)" }}>Питання</span><span>{sel.indication}</span></>}
               {sel.status === "no_show" && sel.note && <><span style={{ color: "var(--red)" }}>Причина</span><span>{sel.note}</span></>}
             </div>
@@ -994,7 +1009,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     const supabase = createClient();
     const { data } = await supabase
       .from("queue_entries")
-      .select("id, clinic_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, studies, studies_original, doctor, note, indication, room_id")
+      .select("id, clinic_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, priority_level, studies, studies_original, doctor, note, indication, room_id")
       .eq("referrer_id", doctorId)
       .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
     setReferrals(data || []);
@@ -1078,7 +1093,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         <RescheduleModal patient={reschedFor} rooms={reschedRooms} clinicId={reschedFor.clinic_id} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
       {editPatientFor && (
-        <PatientEditModal entryId={editPatientFor.id} onClose={() => setEditPatientFor(null)} onSaved={reload} />
+        <PatientEditModal entryId={editPatientFor.id} canEditPriority onClose={() => setEditPatientFor(null)} onSaved={reload} />
       )}
       {toast && (
         <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>{toast.msg}</div>

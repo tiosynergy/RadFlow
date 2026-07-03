@@ -783,6 +783,22 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .cito-tag { display: inline-block; font-size: 11px; font-weight: 800; letter-spacing: 0.05em; color: #fff; background: var(--red);
   border-radius: 4px; padding: 1px 5px; margin-right: 7px; vertical-align: middle; }
 
+/* ── Пріоритет пацієнта (patient_priority): бейдж + сегментований селектор ── */
+.prio-tag { display: inline-block; font-size: 11px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
+  border-radius: 4px; padding: 1px 6px; margin-right: 7px; vertical-align: middle; }
+.prio-tag.red { color: #fff; background: var(--red); }
+.prio-tag.orange { color: #1c1c1e; background: var(--orange); }
+.prio-tag.muted { color: var(--text-secondary); background: var(--gray-badge-bg); }
+
+.prio-seg { display: inline-flex; gap: 4px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 10px; padding: 3px; }
+.prio-seg-btn { flex: 1; padding: 6px 12px; border-radius: 8px; font-size: 12.5px; font-weight: 700; border: 1.5px solid transparent;
+  background: transparent; color: var(--text-secondary); cursor: pointer; white-space: nowrap; transition: background .12s, color .12s, border-color .12s; }
+.prio-seg-btn:hover { color: var(--text); }
+.prio-seg-btn.red.active { border-color: var(--red); background: var(--red-bg); color: var(--red); }
+.prio-seg-btn.orange.active { border-color: var(--orange); background: var(--orange-bg); color: var(--orange); }
+.prio-seg-btn.muted.active { border-color: var(--border-strong); background: var(--gray-badge-bg); color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .prio-seg-btn { transition: none; } }
+
 .toast-wrap { position: fixed; bottom: 22px; right: 22px; display: flex; flex-direction: column; gap: 10px; z-index: 100; }
 .toast {
   display: flex; align-items: center; gap: 11px; min-width: 290px; max-width: 380px;

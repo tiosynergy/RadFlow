@@ -17,6 +17,7 @@ import {
   rescheduleQueueEntry,
   editQueueEntryStudies,
   createBooking,
+  setQueuePriority,
 } from "@/app/queue/actions";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
@@ -31,6 +32,7 @@ import HelpTip from "@/components/HelpTip";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
 import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
+import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow } from "@/lib/incidents";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
@@ -40,7 +42,7 @@ type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: s
 type QEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null; patient_weight: number | null;
   scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null; note: string | null;
-  studies: Json; studies_original: Json | null; contraindications: boolean; cito: boolean; doctor: string | null;
+  studies: Json; studies_original: Json | null; contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null;
   room_id: string | null; updated_at: string; in_progress_at: string | null;
 };
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
@@ -367,8 +369,9 @@ interface QueueRowProps {
   onNoShow: (p: QEntry) => void; onNotHeld: (p: QEntry) => void; onUndo: (p: QEntry) => void; onCancel: (p: QEntry) => void;
   onSetStatus: (p: QEntry, status: string) => void; onSetCall: (p: QEntry, s: CallStatus) => void;
   onReschedule: (p: QEntry) => void; onEditStudies: (p: QEntry) => void; onEditPatient: (p: QEntry) => void;
+  canSetPriority?: boolean; onSetPriority?: (p: QEntry, priority: PatientPriority) => void;
 }
-function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient }: QueueRowProps) {
+function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, canSetPriority, onSetPriority }: QueueRowProps) {
   const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
   const meta: { label: string; cls: string; dot?: boolean; title?: string } = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
@@ -384,7 +387,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
-          <div className="nm">{p.cito && (p.status === "scheduled" || p.status === "waiting" || p.status === "in_progress") && <span className="cito-tag">CITO</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient && onEditPatient(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span></div>
+          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient && onEditPatient(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span></div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
             {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
@@ -496,6 +499,24 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
 
                   {advanceDisabled && blockReason && (
                     <div className="qd-inline-err" role="status">⚠ {blockReason}</div>
+                  )}
+
+                  {canSetPriority && onSetPriority && (
+                    <div style={{ marginTop: 6 }}>
+                      <div className="qd-sf-lab" style={{ marginBottom: 8 }}>Пріоритет пацієнта</div>
+                      <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
+                        {PRIORITY_OPTIONS.map((pv) => {
+                          const m = PRIORITY_META[pv];
+                          return (
+                            <button key={pv} type="button" role="radio" aria-checked={p.priority_level === pv}
+                              className={"prio-seg-btn " + m.tone + (p.priority_level === pv ? " active" : "")}
+                              onClick={(e) => { e.stopPropagation(); if (p.priority_level !== pv) onSetPriority(p, pv); }} title={m.desc}>
+                              {m.short}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   )}
 
                   {moreOpen && !terminal && (
@@ -740,7 +761,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const supabase = createClient();
     const { data, error } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, contraindications, cito, doctor, room_id, updated_at, in_progress_at")
+      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, contraindications, cito, priority_level, doctor, room_id, updated_at, in_progress_at")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .order("scheduled_time", { ascending: true });
@@ -951,6 +972,14 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     reload();
   }
 
+  const canEditPriority = roleKey === "admin";
+  async function doSetPriority(p: QEntry, priority: PatientPriority) {
+    const res = await setQueuePriority(p.id, priority);
+    if (!res.ok) { notify(res.code === "forbidden" ? "Немає прав змінювати пріоритет" : "Помилка: " + res.error, "error"); return; }
+    notify("Пріоритет оновлено: " + PRIORITY_META[priority].short, "success");
+    reload();
+  }
+
   function inProgressBlockReason(p: QEntry): string | null {
     if (p.room_id && blockingByRoom[p.room_id]) return "Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат";
     if (p.room_id && roomSchedClosed(p.room_id)) return "Кабінет зачинено за графіком на цей день";
@@ -974,7 +1003,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       roomId: b.roomId, referrerId: b.referrerId ?? null,
       name: b.name, phone: b.phone || null, email: b.email ?? null,
       dob: b.dob || null, sex: b.gender || null, age: b.age || null, weight: b.weight ?? null,
-      hasContra: !!b.hasContra, cito: !!b.cito,
+      hasContra: !!b.hasContra, priorityLevel: b.priority,
       studies: b.studies || [], doctor: b.doctor ?? null, notes: b.notes ?? null, durationMin: b.dur, bufferTimeMin: b.buffer,
       scheduledDate: dateKey(b.date), scheduledTime: b.time, scheduledAt: at,
     });
@@ -1005,16 +1034,17 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   entries.forEach((e) => {
     if (e.status !== "waiting" || !e.room_id) return;
     const cur = nextWaitingByRoom[e.room_id];
-    if (!cur || (e.cito && !cur.cito)) nextWaitingByRoom[e.room_id] = e;
+    if (!cur || priorityRank(e.priority_level) < priorityRank(cur.priority_level)) nextWaitingByRoom[e.room_id] = e;
   });
 
   const roomLoad = computeRoomLoad(rooms, entries, selectedDate, selectedOverride, incidents);
 
-  const citoRank = (x: QEntry) => (x.cito && (x.status === "scheduled" || x.status === "waiting" || x.status === "in_progress")) ? 0 : 1;
+  // Порядок черги: у активних статусах — за пріоритетом (cito→urgent→planned), далі за часом.
+  const prioRank = (x: QEntry) => isActiveStatus(x.status) ? priorityRank(x.priority_level) : 9;
   const sorted = boardScoped.slice().sort((a, b) => {
     const d = (FLOW[a.status] ?? 9) - (FLOW[b.status] ?? 9);
     if (d !== 0) return d;
-    const c = citoRank(a) - citoRank(b);
+    const c = prioRank(a) - prioRank(b);
     if (c !== 0) return c;
     return (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
   });
@@ -1192,7 +1222,8 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                     canCall={!(p.room_id && currentByRoom[p.room_id])} rescheduling={affectedIds.has(p.id)}
                     onArrive={arrive} onCall={callPatient} onComplete={openComplete}
                     onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onCancel={cancelBooking} onSetStatus={setStatusGuarded} onSetCall={setCall}
-                    onReschedule={openReschedule} onEditStudies={openEditStudies} onEditPatient={(pt) => setEditPatientFor(pt)} />
+                    onReschedule={openReschedule} onEditStudies={openEditStudies} onEditPatient={(pt) => setEditPatientFor(pt)}
+                    canSetPriority={canEditPriority} onSetPriority={doSetPriority} />
                 );
               })}
             </div>
@@ -1231,7 +1262,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
         <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {editPatientFor && (
-        <PatientEditModal entryId={editPatientFor.id} onClose={() => setEditPatientFor(null)} onSaved={reload} />
+        <PatientEditModal entryId={editPatientFor.id} canEditPriority={canEditPriority} onClose={() => setEditPatientFor(null)} onSaved={reload} />
       )}
 
       {breakdownOpen && (

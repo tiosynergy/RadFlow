@@ -14,6 +14,7 @@ import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies } from "@/app/queue/actions";
 import type { CallStatus, Json } from "@/supabase/types";
+import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -21,7 +22,7 @@ type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: s
 type CallEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
-  call_note?: string | null; studies: Json; doctor?: string | null; room_id: string | null; scheduled_date: string | null;
+  priority_level?: PatientPriority | null; call_note?: string | null; studies: Json; doctor?: string | null; room_id: string | null; scheduled_date: string | null;
 };
 type IncidentRow = { id: string; room_id: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string };
 
@@ -81,7 +82,7 @@ function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet,
           <span className={"cl-chev" + (expanded ? " open" : "")}>›</span>
         </button>
         <div className="cl-time tabular">{p.scheduled_time}<div className="cl-date">{dateShort}</div></div>
-        <button className="cl-name cl-name-btn" onClick={() => onToggle(p.id)}>{p.patient_name}</button>
+        <button className="cl-name cl-name-btn" onClick={() => onToggle(p.id)}>{p.priority_level && p.priority_level !== "planned" && isActiveStatus(p.status) && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone} style={{ marginRight: 6 }}>{PRIORITY_META[p.priority_level].short}</span>}{p.patient_name}</button>
         <div><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>☎ {p.patient_phone}</a></div>
         <div className="cl-proc">{procLabel(p)}</div>
         <div className="cl-room">{roomName}{roomModel ? <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{roomModel}</div> : null}</div>
@@ -220,7 +221,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const supabase = createClient();
     const { data } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, call_note, studies, doctor, room_id, scheduled_date")
+      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, call_note, studies, doctor, room_id, scheduled_date")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .in("status", ["scheduled", "waiting"])
@@ -240,7 +241,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const todayKey = dateKey(new Date());
     const { data: ents } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, room_id, scheduled_date")
+      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, room_id, scheduled_date")
       .eq("clinic_id", clinicId).gte("scheduled_date", todayKey)
       .in("room_id", incs.map((i) => i.room_id)).in("status", ["scheduled", "waiting"]);
     const byRoom: Record<string, IncidentRow> = {}; incs.forEach((i) => { byRoom[i.room_id] = i; });

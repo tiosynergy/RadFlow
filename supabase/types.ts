@@ -245,6 +245,7 @@ export type Database = {
           has_contrast: boolean;
           doctor: string | null;
           cito: boolean;
+          priority_level: Database["public"]["Enums"]["patient_priority"];
           call_note: string | null;
           radiologist_note: string | null;
           indication: string | null;
@@ -280,6 +281,7 @@ export type Database = {
           has_contrast?: boolean;
           doctor?: string | null;
           cito?: boolean;
+          priority_level?: Database["public"]["Enums"]["patient_priority"];
           call_note?: string | null;
           radiologist_note?: string | null;
           indication?: string | null;
@@ -315,6 +317,7 @@ export type Database = {
           has_contrast?: boolean;
           doctor?: string | null;
           cito?: boolean;
+          priority_level?: Database["public"]["Enums"]["patient_priority"];
           call_note?: string | null;
           radiologist_note?: string | null;
           indication?: string | null;
@@ -827,6 +830,7 @@ export type Database = {
         | "revoked"
         | "declined";
       referral_policy: "direct" | "confirm";
+      patient_priority: "cito" | "urgent" | "planned";
       // incidents.status is a text column with a CHECK constraint (not a PG enum),
       // but the values are fixed; typed as a union for strictness.
       incident_status: "active" | "planned" | "resolved";
