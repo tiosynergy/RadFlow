@@ -1,16 +1,20 @@
 "use client";
 
-/* ===== RadFlow — Додати до листа очікування =====
-   Форма без вибору слота: пацієнт + дослідження + пріоритет + бажане вікно
-   (діапазон дат, час доби). Використовується адміном/реєстратором (/waitlist)
-   і направником (портал). Збереження — через Server Action (батько). */
+/* ===== RadFlow — Додати / редагувати запис листа очікування =====
+   Форма без вибору слота: пацієнт + дослідження (основне + додаткові) +
+   пріоритет + бажане вікно (діапазон дат, час доби). Використовується
+   адміном/реєстратором (/waitlist) і направником (портал).
+   Режим редагування: prop `initial` (пріоритет і центр НЕ редагуються тут —
+   пріоритет змінюється в картці з перевіркою прав, центр незмінний).
+   Збереження — через Server Action (батько). */
 
 import { useState } from "react";
 import PhoneInput from "@/components/PhoneInput";
 import { DobField } from "@/components/BookingModal";
-import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyPrice } from "@/lib/studies";
+import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyPrice, normBuffer, type Study } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
-import { TIME_PRESETS } from "@/lib/waitlist";
+import { TIME_PRESETS, timePresetKey } from "@/lib/waitlist";
+import type { WaitlistEntry } from "@/supabase/types";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 type ExtraStudy = { type: string; region: string; dur: number };
@@ -55,29 +59,34 @@ function todayKey(): string {
 interface WaitlistModalProps {
   /** Портал направника: обовʼязковий вибір центру (active referral_access). */
   centers?: { clinicId: string; name: string }[];
+  /** Режим редагування наявного рядка листа. */
+  initial?: WaitlistEntry | null;
   onClose: () => void;
   onSave: (w: WaitlistFormOut) => void | Promise<void>;
 }
 
-export default function WaitlistModal({ centers, onClose, onSave }: WaitlistModalProps) {
+export default function WaitlistModal({ centers, initial, onClose, onSave }: WaitlistModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
-  const needCenter = Array.isArray(centers) && centers.length > 0;
+  const isEdit = !!initial;
+  const initStudies: Study[] = Array.isArray(initial?.studies) ? (initial!.studies as Study[]) : [];
+  const initPrimary = initStudies[0] || null;
+  const needCenter = !isEdit && Array.isArray(centers) && centers.length > 0;
   const [centerId, setCenterId] = useState(() => (needCenter && centers!.length === 1 ? centers![0].clinicId : ""));
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [email, setEmail] = useState("");
-  const [dob, setDob] = useState("");
-  const [gender, setGender] = useState("");
-  const [weight, setWeight] = useState("");
-  const [studyType, setStudyType] = useState("MRT");
-  const [region, setRegion] = useState("");
-  const [contrast, setContrast] = useState(false);
-  const [buffer, setBuffer] = useState<number>(BUFFER_DEFAULT);
-  const [priority, setPriority] = useState<PatientPriority | "">("");
-  const [dateFrom, setDateFrom] = useState(todayKey());
-  const [dateTo, setDateTo] = useState("");
-  const [timeKey, setTimeKey] = useState("any");
-  const [note, setNote] = useState("");
+  const [name, setName] = useState(initial?.patient_name || "");
+  const [phone, setPhone] = useState(initial?.patient_phone || "");
+  const [email, setEmail] = useState(initial?.patient_email || "");
+  const [dob, setDob] = useState(initial?.patient_dob || "");
+  const [gender, setGender] = useState(initial?.patient_sex || "");
+  const [weight, setWeight] = useState(initial?.patient_weight != null ? String(initial.patient_weight) : "");
+  const [studyType, setStudyType] = useState(initPrimary ? (initPrimary.type === "КТ" || initPrimary.type === "CT" ? "CT" : "MRT") : "MRT");
+  const [region, setRegion] = useState(initPrimary?.region || "");
+  const [contrast, setContrast] = useState(initPrimary?.contrast === true);
+  const [buffer, setBuffer] = useState<number>(initial ? normBuffer(initial.buffer_time_min) : BUFFER_DEFAULT);
+  const [priority, setPriority] = useState<PatientPriority | "">(initial?.priority_level || "");
+  const [dateFrom, setDateFrom] = useState(initial ? (initial.desired_date_from || "") : todayKey());
+  const [dateTo, setDateTo] = useState(initial?.desired_date_to || "");
+  const [timeKey, setTimeKey] = useState(() => (initial ? timePresetKey(initial.desired_time_from, initial.desired_time_to) : "any"));
+  const [note, setNote] = useState(initial?.note || "");
   const [saving, setSaving] = useState(false);
 
   const allRegions = studyType === "MRT" ? MRT_REGIONS : CT_REGIONS;
@@ -89,8 +98,19 @@ export default function WaitlistModal({ centers, onClose, onSave }: WaitlistModa
   const price = regionObj ? regionObj.price + (contrast ? CONTRAST_SURCHARGE : 0) : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
-  const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>([]);
   const exDur = (t: string, reg: string) => { const o = regionsFor(t).find((r) => r.label === reg); return o ? o.dur : (t === "КТ" ? 20 : 45); };
+  const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>(() =>
+    initStudies.slice(1).filter((s) => s?.region).map((s) => ({
+      type: s.type === "КТ" || s.type === "CT" ? "КТ" : "МРТ",
+      region: s.region as string,
+      dur: Number(s.dur) || exDur(s.type === "КТ" || s.type === "CT" ? "КТ" : "МРТ", s.region as string),
+    }))
+  );
+  const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
+  const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
+  const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(5, parseInt(v, 10) || 0) });
+  const exAdd = () => setExtraStudies((a) => [...a, { type: primaryKind, region: "", dur: exDur(primaryKind, "") }]);
+  const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
 
   function changeType(t: string) {
@@ -149,7 +169,7 @@ export default function WaitlistModal({ centers, onClose, onSave }: WaitlistModa
     <div className="overlay">
       <div className="dialog fade-in" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Додати до листа очікування" style={{ maxWidth: 560 }}>
         <div className="dlg-head">
-          <div className="dlg-title"><span className="tic">⏳</span>До листа очікування</div>
+          <div className="dlg-title"><span className="tic">{isEdit ? "✎" : "⏳"}</span>{isEdit ? "Редагувати запис листа" : "До листа очікування"}</div>
           <button className="icon-btn" onClick={onClose}>✕</button>
         </div>
 
@@ -228,23 +248,51 @@ export default function WaitlistModal({ centers, onClose, onSave }: WaitlistModa
               ))}
             </select>
           </label>
+          {/* Додаткові дослідження (тип = тип основного, як у формі запису) */}
+          <div className="fld">
+            {extraStudies.length > 0 && (
+              <div className="bk-study-table">
+                <div className="bk-study-head"><span>Тип</span><span>Область дослідження</span><span>Трив.</span><span /></div>
+                {extraStudies.map((r, i) => {
+                  const regs = regionsFor(r.type);
+                  return (
+                    <div className="bk-study-row" key={i}>
+                      <div className="bk-seg bk-seg-sm st-seg-locked" title="Тип = тип основного дослідження">
+                        <button className={"bk-seg-btn active " + (primaryKind === "МРТ" ? "mrt" : "ct")} disabled>{primaryKind}</button>
+                      </div>
+                      <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
+                        <option value="">— Оберіть область —</option>
+                        {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur} хв</option>)}
+                      </select>
+                      <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.dur} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                      <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: extraStudies.length > 0 ? 8 : 0 }} onClick={exAdd}>＋ Додати дослідження</button>
+          </div>
+
           {price != null && <div className="ctx-hint blue">Орієнтовна вартість: {fmtPrice(price)} · блок {totalDur || computedDur} хв</div>}
 
-          <div className="fld">
-            <span className={"fld-lab" + (miss.priority ? " bk-miss-lab" : "")}>Пріоритет пацієнта <span className="req">*</span></span>
-            <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
-              {PRIORITY_OPTIONS.map((pv) => {
-                const m = PRIORITY_META[pv];
-                return (
-                  <button key={pv} type="button" role="radio" aria-checked={priority === pv}
-                    className={"prio-seg-btn " + m.tone + (priority === pv ? " active" : "")}
-                    onClick={() => setPriority(pv)} title={m.desc}>
-                    {m.short}
-                  </button>
-                );
-              })}
+          {!isEdit && (
+            <div className="fld">
+              <span className={"fld-lab" + (miss.priority ? " bk-miss-lab" : "")}>Пріоритет пацієнта <span className="req">*</span></span>
+              <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
+                {PRIORITY_OPTIONS.map((pv) => {
+                  const m = PRIORITY_META[pv];
+                  return (
+                    <button key={pv} type="button" role="radio" aria-checked={priority === pv}
+                      className={"prio-seg-btn " + m.tone + (priority === pv ? " active" : "")}
+                      onClick={() => setPriority(pv)} title={m.desc}>
+                      {m.short}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="bk-section-label">Бажане вікно (для підбору слота)</div>
           <div className="fld-row">
@@ -276,7 +324,7 @@ export default function WaitlistModal({ centers, onClose, onSave }: WaitlistModa
             ? <span className="bk-summary">{name.split(" ").slice(0, 2).join(" ")} · {primaryKind}{region ? " · " + region : ""}</span>
             : <span className="bk-missing">{missingList.map((m, i) => <span className="bk-miss-chip" key={i}>{m}</span>)}</span>}
           <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
-          <button className="btn btn-primary" disabled={!valid || saving} onClick={handleSave}>{saving ? "Збереження…" : "Додати до листа"}</button>
+          <button className="btn btn-primary" disabled={!valid || saving} onClick={handleSave}>{saving ? "Збереження…" : isEdit ? "Зберегти зміни" : "Додати до листа"}</button>
         </div>
       </div>
     </div>

@@ -17,7 +17,7 @@ import CitySelect from "@/components/CitySelect";
 import RescheduleModal from "@/components/RescheduleModal";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry } from "@/app/queue/actions";
 import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal";
-import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority } from "@/app/waitlist/actions";
+import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
 import type { WaitlistEntry } from "@/supabase/types";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
@@ -979,10 +979,11 @@ function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m
 }
 
 /* ── Лист очікування направника: власні пацієнти в усіх авторизованих центрах ── */
-function MyWaitlist({ entries, centersById, onOpenAdd, onCancel, onRestore, onPriority }: {
+function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onRestore, onPriority }: {
   entries: WaitlistEntry[];
   centersById: Record<string, Center>;
   onOpenAdd: () => void;
+  onEdit: (e: WaitlistEntry) => void;
   onCancel: (e: WaitlistEntry) => void;
   onRestore: (e: WaitlistEntry) => void;
   onPriority: (e: WaitlistEntry, v: PatientPriority) => void;
@@ -1030,6 +1031,9 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onCancel, onRestore, onPr
                   })}
                 </div>
               )}
+              {p.status === "waiting" && (
+                <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} title="Редагувати пацієнта/дослідження/вікно" onClick={() => onEdit(p)}>✎ Редагувати</button>
+              )}
               {p.status === "waiting"
                 ? <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)", flexShrink: 0 }} onClick={() => onCancel(p)}>✕ Зняти</button>
                 : (p.status === "cancelled" || p.status === "expired")
@@ -1071,6 +1075,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
   const [reschedFor, setReschedFor] = useState<Referral | null>(null);
   const [wlEntries, setWlEntries] = useState<WaitlistEntry[]>([]);
   const [wlAddOpen, setWlAddOpen] = useState(false);
+  const [wlEditFor, setWlEditFor] = useState<WaitlistEntry | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1122,6 +1127,23 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     notify("Додано до листа очікування: " + w.name, "success");
     reloadWaitlist();
   }
+  async function wlEditSave(w: WaitlistFormOut) {
+    const p = wlEditFor;
+    if (!p) return;
+    const res = await updateWaitlistEntry(p.id, {
+      patient_name: w.name, patient_phone: w.phone, patient_email: w.email,
+      patient_dob: w.dob, patient_sex: w.sex, patient_age: w.age, patient_weight: w.weight,
+      studies: w.studies, duration_min: w.durationMin, buffer_time_min: w.bufferTimeMin,
+      desired_date_from: w.desiredDateFrom, desired_date_to: w.desiredDateTo,
+      desired_time_from: w.desiredTimeFrom, desired_time_to: w.desiredTimeTo,
+      note: w.note,
+    });
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    setWlEditFor(null);
+    notify("Запис листа оновлено", "success");
+    reloadWaitlist();
+  }
+
   async function wlCancel(e: WaitlistEntry) {
     const res = await setWaitlistStatus(e.id, "cancelled");
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
@@ -1199,7 +1221,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         )}
         {tab === "waitlist" && (
           <MyWaitlist entries={wlEntries} centersById={centersById} onOpenAdd={() => setWlAddOpen(true)}
-            onCancel={wlCancel} onRestore={wlRestore} onPriority={wlPrio} />
+            onEdit={(e) => setWlEditFor(e)} onCancel={wlCancel} onRestore={wlRestore} onPriority={wlPrio} />
         )}
         {tab === "centers" && (
           <MyCenters centers={centers} canManage={canManage} onChanged={onCentersChanged} notify={notify} />
@@ -1215,6 +1237,9 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
       {wlAddOpen && (
         <WaitlistModal centers={activeCenters.map((c) => ({ clinicId: c.clinicId, name: centerLabel(c) }))}
           onClose={() => setWlAddOpen(false)} onSave={wlAdd} />
+      )}
+      {wlEditFor && (
+        <WaitlistModal initial={wlEditFor} onClose={() => setWlEditFor(null)} onSave={wlEditSave} />
       )}
       {editPatientFor && (
         <PatientEditModal entryId={editPatientFor.id} canEditPriority onClose={() => setEditPatientFor(null)} onSaved={reload} />

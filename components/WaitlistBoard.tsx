@@ -14,7 +14,7 @@ import LiveClock from "@/components/LiveClock";
 import BookingModal, { type BookingPayload, type BookingPrefill } from "@/components/BookingModal";
 import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal";
 import { createBooking } from "@/app/queue/actions";
-import { addWaitlistEntry, markWaitlistScheduled, setWaitlistPriority, setWaitlistStatus } from "@/app/waitlist/actions";
+import { addWaitlistEntry, markWaitlistScheduled, setWaitlistPriority, setWaitlistStatus, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, compareWaitlist, desiredWindowText } from "@/lib/waitlist";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import type { WaitlistEntry } from "@/supabase/types";
@@ -56,9 +56,11 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"waiting" | "scheduled" | "removed">("waiting");
+  const [roomView, setRoomView] = useState("all"); // фільтр сайдбара: кабінет → модальність
   const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [editFor, setEditFor] = useState<WaitlistEntry | null>(null);
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
@@ -149,6 +151,24 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
     reload();
   }
 
+  // Редагування даних пацієнта/досліджень/вікна в місці ухвалення рішення.
+  async function onEditSave(w: WaitlistFormOut) {
+    const p = editFor;
+    if (!p) return;
+    const res = await updateWaitlistEntry(p.id, {
+      patient_name: w.name, patient_phone: w.phone, patient_email: w.email,
+      patient_dob: w.dob, patient_sex: w.sex, patient_age: w.age, patient_weight: w.weight,
+      studies: w.studies, duration_min: w.durationMin, buffer_time_min: w.bufferTimeMin,
+      desired_date_from: w.desiredDateFrom, desired_date_to: w.desiredDateTo,
+      desired_time_from: w.desiredTimeFrom, desired_time_to: w.desiredTimeTo,
+      note: w.note,
+    });
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    setEditFor(null);
+    notify("Запис листа оновлено", "success");
+    reload();
+  }
+
   async function remove(p: WaitlistEntry) {
     const res = await setWaitlistStatus(p.id, "cancelled");
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
@@ -169,19 +189,27 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
     notify("Пріоритет: " + PRIORITY_META[v].label, "success");
   }
 
-  const waiting = useMemo(() => entries.filter((e) => e.status === "waiting").sort(compareWaitlist), [entries]);
+  // Фільтр за кабінетом із сайдбара: рядок листа не привʼязаний до кабінету,
+  // тому фільтруємо за МОДАЛЬНІСТЮ обраного кабінету (МРТ/КТ).
+  const viewRoom = roomView === "all" ? null : (rooms || []).find((r) => r.id === roomView) || null;
+  const scoped = useMemo(
+    () => (viewRoom ? entries.filter((e) => !e.modality || e.modality === viewRoom.modality) : entries),
+    [entries, viewRoom]
+  );
+
+  const waiting = useMemo(() => scoped.filter((e) => e.status === "waiting").sort(compareWaitlist), [scoped]);
   const counts = useMemo(() => {
     const c = { waiting: waiting.length, cito: 0, urgent: 0, scheduled: 0, removed: 0 };
-    entries.forEach((e) => {
+    scoped.forEach((e) => {
       if (e.status === "waiting") { if (e.priority_level === "cito") c.cito++; if (e.priority_level === "urgent") c.urgent++; }
       if (e.status === "scheduled") c.scheduled++;
       if (e.status === "cancelled" || e.status === "expired") c.removed++;
     });
     return c;
-  }, [entries, waiting]);
+  }, [scoped, waiting]);
 
   const listForTab = filter === "waiting" ? waiting
-    : entries.filter((e) => (filter === "scheduled" ? e.status === "scheduled" : e.status === "cancelled" || e.status === "expired"))
+    : scoped.filter((e) => (filter === "scheduled" ? e.status === "scheduled" : e.status === "cancelled" || e.status === "expired"))
         .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
 
   const filtered = listForTab.filter((p) => {
@@ -214,7 +242,8 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
 
   return (
     <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={rooms} activeNav="waitlist" />
+      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={rooms}
+        activeNav="waitlist" activeRoom={roomView} onSelectRoom={setRoomView} />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">
@@ -244,6 +273,16 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                 </div>
               ))}
             </div>
+
+            {viewRoom && (
+              <div className="info-banner" style={{ padding: "8px 14px" }}>
+                <span className="ib-ic">{viewRoom.modality === "CT" ? "КТ" : "МРТ"}</span>
+                <span className="ib-txt">
+                  Фільтр за кабінетом <b>{viewRoom.name}</b>: показано пацієнтів модальності {viewRoom.modality === "CT" ? "КТ" : "МРТ"} (лист не привʼязаний до конкретного кабінету).
+                </span>
+                <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => setRoomView("all")}>✕ Зняти фільтр</button>
+              </div>
+            )}
 
             <div className="qctrl">
               <div className="pills">
@@ -329,6 +368,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                               </div>
                               <div className="spacer" />
                               <button className="btn btn-green btn-sm" onClick={() => setBookFor(p)}>🗓 Записати у слот</button>
+                              <button className="btn btn-secondary btn-sm" onClick={() => setEditFor(p)}>✎ Редагувати</button>
                               <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => remove(p)}>✕ Зняти з листа</button>
                             </div>
                           )}
@@ -344,6 +384,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
       </div>
 
       {addOpen && <WaitlistModal onClose={() => setAddOpen(false)} onSave={onAdd} />}
+      {editFor && <WaitlistModal initial={editFor} onClose={() => setEditFor(null)} onSave={onEditSave} />}
       {bookFor && (
         <BookingModal rooms={rooms} clinicId={clinicId} incidents={incidents} prefill={bookPrefill}
           onClose={() => setBookFor(null)} onSave={saveBooking} />

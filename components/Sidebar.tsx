@@ -4,9 +4,10 @@
    Портовано з rf-shell.jsx. Кабінети — з БД, клініка/адмін — з props.
    Деякі операції (Колл-лист, Інцидент, Кабінет радіолога) — окремі етапи (disabled). */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
 import DensityControl from "@/components/DensityToggle";
 
@@ -62,21 +63,24 @@ export default function Sidebar({
   // керування центрами адмін відкриває з Майстра налаштувань.
   const [hasCeoGrant, setHasCeoGrant] = useState(false);
   // Лічильник листа очікування (RLS сам обмежує видимість клінікою користувача).
+  // Live: realtime-підписка на waitlist_entries (без фільтра — RLS віддає лише
+  // видимі рядки), щоб бейдж не розходився зі списком після додавання/зняття.
   const [waitCount, setWaitCount] = useState(0);
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const supabase = createClient();
-        const { count } = await supabase
-          .from("waitlist_entries")
-          .select("id", { count: "exact", head: true })
-          .eq("status", "waiting");
-        if (active) setWaitCount(count ?? 0);
-      } catch { /* ignore */ }
-    })();
-    return () => { active = false; };
-  }, [activeNav]);
+  const loadWaitCount = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const { count } = await supabase
+        .from("waitlist_entries")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "waiting");
+      setWaitCount(count ?? 0);
+    } catch { /* транзієнтний збій мережі — лишаємо попереднє значення */ }
+  }, []);
+  useEffect(() => { loadWaitCount(); }, [loadWaitCount]);
+  useRealtimeRefetch({
+    channelName: "sb-waitlist-badge",
+    subscriptions: [{ table: "waitlist_entries", onChange: loadWaitCount }],
+  });
   useEffect(() => {
     if (isAdmin || isCeo) return; // адмін — не показуємо; ceo й так на /ceo
     let active = true;
