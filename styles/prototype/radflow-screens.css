@@ -195,3 +195,5 @@
 .wlrow > * { min-width: 0; }
 .wlrow:hover { background: var(--card-hover); }
 .clrow-wrap.open .wlrow { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom-color: transparent; }
+/* Бейдж пріоритету — окремим рядком, ПІБ пацієнта під ним (як у черзі). */
+.wl-name .prio-tag { display: block; width: fit-content; margin: 0 0 3px; }

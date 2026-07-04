@@ -317,8 +317,8 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                         <button className="cl-exp-btn" onClick={() => setExpandedId((x) => (x === p.id ? null : p.id))} title={expanded ? "Згорнути" : "Розгорнути"}>
                           <span className={"cl-chev" + (expanded ? " open" : "")}>›</span>
                         </button>
-                        <button className="cl-name cl-name-btn" onClick={() => setExpandedId((x) => (x === p.id ? null : p.id))}>
-                          {p.priority_level !== "planned" && p.status === "waiting" && <span className={"prio-tag " + m.tone} style={{ marginRight: 6 }}>{m.short}</span>}
+                        <button className="cl-name cl-name-btn wl-name" onClick={() => setExpandedId((x) => (x === p.id ? null : p.id))}>
+                          {p.priority_level !== "planned" && p.status === "waiting" && <span className={"prio-tag " + m.tone}>{m.short}</span>}
                           {p.status !== "waiting" && <span className="badge" style={{ marginRight: 6 }}>{stMeta.label}</span>}
                           {p.patient_name}
                         </button>
