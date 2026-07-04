@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
-import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
+import { needsClarification, CLARIFY_META, isLate, LATE_META, lateCallClash } from "@/lib/queueStatus";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
@@ -230,8 +230,11 @@ interface RadQueueRowProps {
 }
 
 function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onSetStatus, noteValue, onSaveNote }: RadQueueRowProps) {
+  // «Запізнення» (derived) видно й радіологу; прямий виклик такого пацієнта
+  // блокується (рішення ухвалює реєстратура: повернути/перенести/зняти).
+  const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
   const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
-  const meta: { label: string; cls: string; dot?: boolean; title?: string } = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
+  const meta: { label: string; cls: string; dot?: boolean; title?: string } = late ? LATE_META : overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
   const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
@@ -306,7 +309,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
               const stepIdx = STEP_ORDER.indexOf(p.status);
               const pb = STEP_PRIMARY[p.status] || STEP_PRIMARY.done;
               const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
-              const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall) || isFutureRow;
+              const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall) || isFutureRow || late;
               const terminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
               return (
                 <div className="qd-step">
@@ -342,7 +345,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                     ) : (
                       <>
                         <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn)} disabled={advanceDisabled}
-                          title={isFutureRow ? "Майбутній запис — дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "")}
+                          title={late ? "Запізнення понад буферний час — рішення ухвалює реєстратура (повернути/перенести/зняти)" : isFutureRow ? "Майбутній запис — дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "")}
                           style={{ flex: 8, minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
                           {pb.icon} {pb.label}
@@ -589,6 +592,10 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     if (p.room_id && blockingByRoom[p.room_id]) return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
     if (p.room_id && roomSchedClosed(p.room_id)) return "Кабінет зачинено за графіком на цей день";
     if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    // Пізній виклик: фактичне вікно (зараз + тривалість + буфер) не має
+    // налазити на наступний запис кабінету (напр. після «все ж прийшов»).
+    const clash = lateCallClash(p, entries);
+    if (clash) return `Дослідження ${p.duration_min || 30} хв зараз не вміститься — о ${clash.time} наступний запис. Реєстратура має перенести один із записів`;
     return null;
   }
   function callPatient(p: RadEntry) {
@@ -597,6 +604,11 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     setStatus(p.id, "in_progress");
   }
   function setStatusGuarded(p: RadEntry, status: string) {
+    // Запізнення понад буфер: прямий виклик заблоковано (рішення — за реєстратурою).
+    if (status === "in_progress" && isLate(p.status, selectedDate, p.scheduled_time, p.buffer_time_min)) {
+      notify("Пацієнт запізнився понад буферний час — реєстратура має повернути його в чергу, перенести або зняти запис", "error");
+      return;
+    }
     if (status === "in_progress") { callPatient(p); return; }
     setStatus(p.id, status);
   }

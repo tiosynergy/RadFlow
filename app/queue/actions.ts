@@ -402,7 +402,9 @@ export async function editQueueEntryStudies(
     .eq("id", id)
     .select("id");
 
-  if (error) return { ok: false, error: error.message, code: "generic" };
+  // Збільшення тривалості/буфера може перетнути наступний запис — DB-тригер
+  // check_no_overlap відхилить; класифікуємо, щоб UI показав локалізовану причину.
+  if (error) return mapBookingError(error.message);
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
   return { ok: true };
 }

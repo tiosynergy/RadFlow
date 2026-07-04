@@ -311,7 +311,8 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .btn-danger:hover { background: #ff5e54; }
 .btn-ghost { color: var(--text-secondary); padding: 8px 12px; }
 .btn-ghost:hover { background: var(--card-hover); color: var(--text); }
-.btn-sm { padding: 6px 11px; font-size: 12.5px; border-radius: 8px; }
+/* min-height 36px — сенсорна ціль у щільних рядках (WCAG 2.5.8); щільність тримаємо падінгом */
+.btn-sm { padding: 6px 11px; font-size: 12.5px; border-radius: 8px; min-height: 36px; }
 .btn-lg { padding: 11px 22px; font-size: 14.5px; font-weight: 600; border-radius: 11px; }
 /* Вимкнений стан: не лише прозорість — приглушений фон/текст і grayscale (читабельно, але явно «вимкнено»). */
 .btn:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(0.4); }
@@ -523,8 +524,11 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .q-done-lab { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--green); font-weight: 500; }
 .q-noshow-lab { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--red); font-weight: 500; }
 
-.mini-icon { width: 32px; height: 32px; border-radius: 8px; background: var(--card-2); color: var(--text-secondary); display: flex; align-items: center; justify-content: center; font-size: 13px; transition: background .12s, color .12s; }
+.mini-icon { width: 32px; height: 32px; border-radius: 8px; background: var(--card-2); color: var(--text-secondary); display: flex; align-items: center; justify-content: center; font-size: 13px; transition: background .12s, color .12s; position: relative; }
 .mini-icon:hover { background: var(--border-strong); color: var(--text); }
+/* Сенсорна ціль ≥40px без зміни візуального боксу/сітки (WCAG 2.5.8). */
+.mini-icon::before { content: ""; position: absolute; inset: -4px; }
+.mini-icon:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(0.4); }
 
 .empty { text-align: center; padding: 60px 20px; color: var(--text-muted); }
 .empty .ei { font-size: 40px; color: var(--border-strong); margin-bottom: 14px; }

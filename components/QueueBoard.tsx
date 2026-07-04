@@ -33,7 +33,7 @@ import BreakdownModal from "@/components/BreakdownModal";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
-import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
+import { needsClarification, CLARIFY_META, isLate, LATE_META, lateCallClash } from "@/lib/queueStatus";
 import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow } from "@/lib/incidents";
@@ -81,6 +81,7 @@ const STAT_ITEMS = [
   { key: "waiting", lab: "Очікують", sub: "прийшли", cls: "yellow" },
   { key: "in_progress", lab: "В кабінеті", sub: "зараз", cls: "blue" },
   { key: "done", lab: "Виконано", sub: "процедур", cls: "green" },
+  { key: "late", lab: "Запізнення", sub: "понад буфер", cls: "red" },
   { key: "not_held", lab: "Не відбулося", sub: "не відбулось", cls: "orange" },
 ];
 
@@ -372,11 +373,14 @@ interface QueueRowProps {
   onNoShow: (p: QEntry) => void; onNotHeld: (p: QEntry) => void; onUndo: (p: QEntry) => void; onCancel: (p: QEntry) => void;
   onSetStatus: (p: QEntry, status: string) => void; onSetCall: (p: QEntry, s: CallStatus) => void;
   onReschedule: (p: QEntry) => void; onEditStudies: (p: QEntry) => void; onEditPatient: (p: QEntry) => void;
+  onToWaitlist: (p: QEntry) => void;
   canSetPriority?: boolean; onSetPriority?: (p: QEntry, priority: PatientPriority) => void;
 }
-function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, canSetPriority, onSetPriority }: QueueRowProps) {
+function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority }: QueueRowProps) {
+  // «Запізнення» — derived: пацієнт не прийшов, минуло понад буферний час.
+  const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
   const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
-  const meta: { label: string; cls: string; dot?: boolean; title?: string } = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
+  const meta: { label: string; cls: string; dot?: boolean; title?: string } = late ? LATE_META : overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
   const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
@@ -450,10 +454,10 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
               const stepIdx = STEP_ORDER.indexOf(p.status);
               const pb = STEP_PRIMARY[p.status] || STEP_PRIMARY.done;
               const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
-              const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall) || !isTodayRow;
+              const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall) || !isTodayRow || late;
               const terminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
               // P2.4 — причина блокування дії показується інлайн (не лише в tooltip), поки актуальна.
-              const blockReason = !advanceFn ? "" : !isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "");
+              const blockReason = !advanceFn ? "" : late ? "Запізнення понад буферний час — оберіть дію нижче (повернути, перенести, до листа очікування або зняти)" : !isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "");
               return (
                 <div className="qd-step">
                   <div style={{ position: "relative", padding: "14px 32px 4px" }}>
@@ -502,6 +506,16 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
 
                   {advanceDisabled && blockReason && (
                     <div className="qd-inline-err" role="status">⚠ {blockReason}</div>
+                  )}
+
+                  {/* Панель рішення для запізнення: явні дії замість прямого виклику. */}
+                  {late && !terminal && (
+                    <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }}>
+                      <button className="btn btn-green btn-sm" onClick={act(onArrive)} title="Пацієнт усе ж прийшов — повернути в живу чергу (Очікує)">↩ Все ж прийшов</button>
+                      <button className="btn btn-secondary btn-sm" onClick={act(onReschedule)}>🗓 Перенести</button>
+                      <button className="btn btn-secondary btn-sm" onClick={act(onToWaitlist)} title="Пацієнт чекатиме на вільне вікно">⏳ В лист очікування</button>
+                      <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNotHeld)}>✕ Не відбулося</button>
+                    </div>
                   )}
 
                   {canSetPriority && onSetPriority && (
@@ -743,7 +757,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   // Слот звільнився (скасування/відмова) → підходящі кандидати з листа очікування.
   const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
 
-  const [, setNowTick] = useState(0);
+  const [nowTick, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
 
   const today = today0();
@@ -945,6 +959,17 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     notify("Додано до листа очікування: " + (p.patient_name || ""), "success");
   }
 
+  // Запізнення → лист очікування: слот звільняється (запис стає «Не відбулося»).
+  async function lateToWaitlist(p: QEntry) {
+    const res = await addEntryToWaitlist(p.id);
+    if (!res.ok) {
+      notify(res.code === "duplicate" ? "Пацієнт уже в листі очікування" : "Помилка: " + res.error, res.code === "duplicate" ? "info" : "error");
+      return;
+    }
+    await setStatus(p.id, "not_held");
+    notify("Запізнення: додано до листа очікування, запис — «Не відбулося»", "success");
+  }
+
   async function cancelBooking(p: QEntry) {
     const res = await cancelQueueEntry(p.id);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
@@ -1007,6 +1032,10 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     if (p.room_id && blockingByRoom[p.room_id]) return "Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат";
     if (p.room_id && roomSchedClosed(p.room_id)) return "Кабінет зачинено за графіком на цей день";
     if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    // Пізній виклик: фактичне вікно (зараз + тривалість + буфер) не має
+    // налазити на наступний запис кабінету (напр. після «все ж прийшов»).
+    const clash = lateCallClash(p, entries);
+    if (clash) return `Дослідження ${p.duration_min || 30} хв зараз не вміститься — о ${clash.time} наступний запис${clash.name ? " (" + String(clash.name).split(" ").slice(0, 2).join(" ") + ")" : ""}. Перенесіть один із записів`;
     return null;
   }
   function callPatient(p: QEntry) {
@@ -1015,6 +1044,12 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     setStatus(p.id, "in_progress");
   }
   function setStatusGuarded(p: QEntry, status: string) {
+    // Запізнення понад буфер: прямий виклик у кабінет заблоковано — спершу
+    // явне рішення («все ж прийшов» → Очікує, перенос, лист очікування, зняття).
+    if (status === "in_progress" && isLate(p.status, selectedDate, p.scheduled_time, p.buffer_time_min)) {
+      notify("Пацієнт запізнився понад буферний час — спершу поверніть у чергу, перенесіть або зніміть запис", "error");
+      return;
+    }
     if (status === "in_progress") { callPatient(p); return; }
     setStatus(p.id, status);
   }
@@ -1047,10 +1082,15 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const boardScoped = scoped.filter((e) => e.status !== "cancelled" && e.status !== "no_show");
   const panelEntries = scoped.filter((e) => e.status === "cancelled" || e.status === "no_show");
   const counts = useMemo(() => {
-    const c: Record<string, number> = { total: 0, scheduled: 0, waiting: 0, in_progress: 0, done: 0, no_show: 0, not_held: 0, cancelled: 0 };
-    scoped.forEach((e) => { if (c[e.status] != null) c[e.status]++; if (e.status !== "cancelled") c.total++; });
+    const c: Record<string, number> = { total: 0, scheduled: 0, waiting: 0, in_progress: 0, done: 0, no_show: 0, not_held: 0, cancelled: 0, late: 0 };
+    scoped.forEach((e) => {
+      if (c[e.status] != null) c[e.status]++;
+      if (e.status !== "cancelled") c.total++;
+      if (isLate(e.status, selectedDate, e.scheduled_time, e.buffer_time_min)) c.late++;
+    });
     return c;
-  }, [scoped]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scoped, selectedDate, nowTick]);
 
   const currentByRoom: Record<string, QEntry> = {}, nextWaitingByRoom: Record<string, QEntry> = {};
   entries.forEach((e) => { if (e.status === "in_progress" && e.room_id) currentByRoom[e.room_id] = e; });
@@ -1072,7 +1112,9 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     return (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
   });
   const filtered = sorted.filter((e) => {
-    if (filter !== "all" && e.status !== filter) return false;
+    if (filter === "late") {
+      if (!isLate(e.status, selectedDate, e.scheduled_time, e.buffer_time_min)) return false;
+    } else if (filter !== "all" && e.status !== filter) return false;
     if (query.trim()) return (e.patient_name || "").toLowerCase().includes(query.trim().toLowerCase());
     return true;
   });
@@ -1246,6 +1288,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                     onArrive={arrive} onCall={callPatient} onComplete={openComplete}
                     onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onCancel={cancelBooking} onSetStatus={setStatusGuarded} onSetCall={setCall}
                     onReschedule={openReschedule} onEditStudies={openEditStudies} onEditPatient={(pt) => setEditPatientFor(pt)}
+                    onToWaitlist={lateToWaitlist}
                     canSetPriority={canEditPriority} onSetPriority={doSetPriority} />
                 );
               })}

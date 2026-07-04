@@ -43,6 +43,38 @@ function addedAgo(iso: string): string {
   return days + " дн. тому";
 }
 
+/* ── Меню дій рядка («⋯»): доступний поповер без бібліотек.
+   role=menu/menuitem, закриття по кліку зовні та Escape, фокус — назад на тригер. ── */
+function RowMenu({ disabled, onEdit, onRemove }: { disabled?: boolean; onEdit: () => void; onRemove: () => void }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: Event) => { if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") { setOpen(false); btnRef.current?.focus(); } };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDoc); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  return (
+    <div className="wl-menu-wrap" ref={wrapRef}>
+      <button ref={btnRef} type="button" className="mini-icon" aria-haspopup="menu" aria-expanded={open} aria-label="Ще дії"
+        disabled={disabled} onClick={() => setOpen((o) => !o)}>⋯</button>
+      {open && (
+        <div className="wl-menu" role="menu" aria-label="Дії із записом">
+          <button type="button" role="menuitem" className="wl-menu-item" onClick={() => { setOpen(false); btnRef.current?.focus(); onEdit(); }}>
+            <span aria-hidden="true">✎</span> Редагувати
+          </button>
+          <button type="button" role="menuitem" className="wl-menu-item danger" onClick={() => { setOpen(false); btnRef.current?.focus(); onRemove(); }}>
+            <span aria-hidden="true">✕</span> Зняти з листа
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface WaitlistBoardProps {
   clinicId: string;
   rooms?: RoomOpt[];
@@ -63,15 +95,27 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
   const [editFor, setEditFor] = useState<WaitlistEntry | null>(null);
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
-  const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
+  const [toast, setToast] = useState<{ msg: string; type: string; action?: { label: string; onAction: () => void } } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Рядок із запитом «у польоті»: кнопки цього рядка вимкнені (busy-стан).
+  const [busyId, setBusyId] = useState<string | null>(null);
+  // Вступна підказка ховається назавжди (localStorage), фільтр-банер не чіпаємо.
+  const [hintHidden, setHintHidden] = useState(false);
+  useEffect(() => {
+    try { setHintHidden(localStorage.getItem("rf_waitlist_hint_hidden") === "1"); } catch { /* ignore */ }
+  }, []);
+  function hideHint() {
+    setHintHidden(true);
+    try { localStorage.setItem("rf_waitlist_hint_hidden", "1"); } catch { /* ignore */ }
+  }
 
   const canEditPriority = roleKey === "admin";
 
-  function notify(msg: string, type = "success") {
-    setToast({ msg, type });
+  function notify(msg: string, type = "success", action?: { label: string; onAction: () => void }) {
+    setToast({ msg, type, action });
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 3000);
+    // Тост із дією (Undo) живе довше, щоб встигнути натиснути.
+    toastTimer.current = setTimeout(() => setToast(null), action ? 6000 : 3000);
   }
 
   const reload = useCallback(async () => {
@@ -169,24 +213,34 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
     reload();
   }
 
-  async function remove(p: WaitlistEntry) {
-    const res = await setWaitlistStatus(p.id, "cancelled");
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-    notify("Знято з листа очікування", "info");
-    reload();
-  }
   async function restore(p: WaitlistEntry) {
-    const res = await setWaitlistStatus(p.id, "waiting");
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-    notify("Повернено в очікування", "success");
-    reload();
+    setBusyId(p.id);
+    try {
+      const res = await setWaitlistStatus(p.id, "waiting");
+      if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+      notify("Повернено в очікування", "success");
+      reload();
+    } finally { setBusyId(null); }
+  }
+  // Мʼяке зняття + Undo в тості (замість блокуючого підтвердження).
+  async function remove(p: WaitlistEntry) {
+    setBusyId(p.id);
+    try {
+      const res = await setWaitlistStatus(p.id, "cancelled");
+      if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+      notify("Знято з листа очікування", "info", { label: "Скасувати", onAction: () => restore(p) });
+      reload();
+    } finally { setBusyId(null); }
   }
   async function setPrio(p: WaitlistEntry, v: PatientPriority) {
     if (p.priority_level === v) return;
     setEntries((es) => es.map((e) => (e.id === p.id ? { ...e, priority_level: v } : e))); // оптимістично
-    const res = await setWaitlistPriority(p.id, v);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return; }
-    notify("Пріоритет: " + PRIORITY_META[v].label, "success");
+    setBusyId(p.id);
+    try {
+      const res = await setWaitlistPriority(p.id, v);
+      if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return; }
+      notify("Пріоритет: " + PRIORITY_META[v].label, "success");
+    } finally { setBusyId(null); }
   }
 
   // Фільтр за кабінетом із сайдбара: рядок листа не привʼязаний до кабінету,
@@ -259,18 +313,20 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
         </header>
         <div className="content-full">
           <div className="page-max">
-            <div className="info-banner">
-              <span className="ib-ic">⏳</span>
-              <span className="ib-txt"><b>Лист очікування</b> — пацієнти, що чекають на вільне вікно. Коли слот звільняється (скасування, неявка), запишіть підходящого пацієнта кнопкою «Записати». Порядок: CITO → Терміново → Планово.</span>
-            </div>
+            {!hintHidden && (
+              <div className="info-banner">
+                <span className="ib-ic" aria-hidden="true">⏳</span>
+                <span className="ib-txt"><b>Лист очікування</b> — пацієнти, що чекають на вільне вікно. Коли слот звільняється (скасування, неявка), запишіть підходящого пацієнта кнопкою «Записати». Порядок: CITO → Терміново → Планово.</span>
+                <button type="button" className="mini-icon" style={{ flexShrink: 0 }} aria-label="Сховати підказку" onClick={hideHint}>✕</button>
+              </div>
+            )}
 
-            <div className="cl-stats">
+            <div className="wl-stat-strip" role="status">
               {stats.map((s) => (
-                <div className="cl-stat" key={s.lab}>
-                  <div className="lab">{s.lab}</div>
-                  <div className="val tabular" style={{ color: s.color }}>{s.val}</div>
-                  <div className="mini-bar"><div className="mini-fill" style={{ width: (counts.waiting ? Math.min(100, Math.round((s.val / Math.max(1, counts.waiting)) * 100)) : 0) + "%", background: s.color }} /></div>
-                </div>
+                <span className="item" key={s.lab}>
+                  <span className="wl-dot" style={{ background: s.color }} aria-hidden="true" />
+                  {s.lab} <b>{s.val}</b>
+                </span>
               ))}
             </div>
 
@@ -311,30 +367,32 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                   const expanded = expandedId === p.id;
                   const m = PRIORITY_META[p.priority_level];
                   const stMeta = WAITLIST_STATUS_META[p.status];
+                  const busy = busyId === p.id;
                   return (
                     <div className={"clrow-wrap" + (expanded ? " open" : "")} key={p.id}>
                       <div className="wlrow">
-                        <button className="cl-exp-btn" onClick={() => setExpandedId((x) => (x === p.id ? null : p.id))} title={expanded ? "Згорнути" : "Розгорнути"}>
-                          <span className={"cl-chev" + (expanded ? " open" : "")}>›</span>
+                        <button className="cl-exp-btn" onClick={() => setExpandedId((x) => (x === p.id ? null : p.id))}
+                          title={expanded ? "Згорнути" : "Розгорнути"} aria-label={expanded ? "Згорнути деталі" : "Розгорнути деталі"} aria-expanded={expanded}>
+                          <span className={"cl-chev" + (expanded ? " open" : "")} aria-hidden="true">›</span>
                         </button>
                         <button className="cl-name cl-name-btn wl-name" onClick={() => setExpandedId((x) => (x === p.id ? null : p.id))}>
                           {p.priority_level !== "planned" && p.status === "waiting" && <span className={"prio-tag " + m.tone}>{m.short}</span>}
                           {p.status !== "waiting" && <span className="badge" style={{ marginRight: 6 }}>{stMeta.label}</span>}
                           {p.patient_name}
                         </button>
-                        <div><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>☎ {p.patient_phone}</a></div>
+                        <div><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")} title="Подзвонити пацієнту" aria-label={"Подзвонити пацієнту: " + (p.patient_phone || "")}><span aria-hidden="true">☎</span> {p.patient_phone}</a></div>
                         <div className="cl-proc">{procLabel(p)}</div>
                         <div className="cl-proc" title="Бажане вікно для підбору слота">{desiredWindowText(p)}</div>
                         <div className="cl-room">{addedAgo(p.created_at)}</div>
                         <div className="cl-actions">
                           {p.status === "waiting" && (
                             <>
-                              <button className="btn btn-green btn-sm" title="Записати у вільний слот" onClick={() => setBookFor(p)}>🗓 Записати</button>
-                              <button className="mini-icon" title="Зняти з листа" style={{ color: "var(--red)" }} onClick={() => remove(p)}>✕</button>
+                              <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => setBookFor(p)}>{busy ? "…" : "Записати"}</button>
+                              <RowMenu disabled={busy} onEdit={() => setEditFor(p)} onRemove={() => remove(p)} />
                             </>
                           )}
                           {(p.status === "cancelled" || p.status === "expired") && (
-                            <button className="btn btn-secondary btn-sm" onClick={() => restore(p)}>↩ Повернути</button>
+                            <button className="btn btn-secondary btn-sm" disabled={busy} aria-busy={busy} onClick={() => restore(p)}>{busy ? "…" : "↩ Повернути"}</button>
                           )}
                         </div>
                       </div>
@@ -350,26 +408,28 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                             {p.note && <div className="cld-item cld-item-full"><span className="cld-lab">Нотатка</span><span className="cld-val cld-val-wrap">{p.note}</span></div>}
                           </div>
                           {p.status === "waiting" && (
-                            <div className="cld-actions">
-                              <span className="cld-lab">Пріоритет:</span>
-                              <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
-                                {PRIORITY_OPTIONS.map((pv) => {
-                                  const pm = PRIORITY_META[pv];
-                                  return (
-                                    <button key={pv} type="button" role="radio" aria-checked={p.priority_level === pv}
-                                      className={"prio-seg-btn " + pm.tone + (p.priority_level === pv ? " active" : "")}
-                                      disabled={!canEditPriority}
-                                      title={canEditPriority ? pm.desc : "Змінювати пріоритет може адміністратор або лікар-направник"}
-                                      onClick={() => canEditPriority && setPrio(p, pv)}>
-                                      {pm.short}
-                                    </button>
-                                  );
-                                })}
+                            <div className="cld-actions" style={{ justifyContent: "space-between" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                <span className="cld-lab">Пріоритет:</span>
+                                <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
+                                  {PRIORITY_OPTIONS.map((pv) => {
+                                    const pm = PRIORITY_META[pv];
+                                    return (
+                                      <button key={pv} type="button" role="radio" aria-checked={p.priority_level === pv}
+                                        className={"prio-seg-btn " + pm.tone + (p.priority_level === pv ? " active" : "")}
+                                        disabled={!canEditPriority || busy}
+                                        title={canEditPriority ? pm.desc : "Змінювати пріоритет може адміністратор або лікар-направник"}
+                                        onClick={() => canEditPriority && setPrio(p, pv)}>
+                                        {pm.short}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
                               </div>
-                              <div className="spacer" />
-                              <button className="btn btn-green btn-sm" onClick={() => setBookFor(p)}>🗓 Записати у слот</button>
-                              <button className="btn btn-secondary btn-sm" onClick={() => setEditFor(p)}>✎ Редагувати</button>
-                              <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => remove(p)}>✕ Зняти з листа</button>
+                              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                <span className="cld-lab">Дія:</span>
+                                <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => setBookFor(p)}>{busy ? "…" : "Записати"}</button>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -390,11 +450,19 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
           onClose={() => setBookFor(null)} onSave={saveBooking} />
       )}
 
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>
-          {toast.msg}
-        </div>
-      )}
+      <div role="status" aria-live="polite">
+        {toast && (
+          <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>
+            <span>{toast.msg}</span>
+            {toast.action && (
+              <button type="button" className="wl-toast-action"
+                onClick={() => { const a = toast.action; setToast(null); if (toastTimer.current) clearTimeout(toastTimer.current); a?.onAction(); }}>
+                {toast.action.label}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

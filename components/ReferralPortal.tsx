@@ -19,6 +19,7 @@ import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry } from "@
 import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal";
 import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
+import { isLate, LATE_META } from "@/lib/queueStatus";
 import type { WaitlistEntry } from "@/supabase/types";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { slotBlockedByIncidents, type IncidentLike } from "@/lib/incidents";
@@ -58,6 +59,11 @@ function procLabel(e: { studies?: unknown; note?: string | null }) {
   return e.note || "—";
 }
 function centerLabel(c?: { name: string; city?: string | null } | null) { return c ? c.name + (c.city ? " · " + c.city : "") : "—"; }
+/** Derived «Запізнення» для направлення (та сама формула, що на дошці). */
+function refIsLate(r: { status: string; scheduled_date: string | null; scheduled_time: string | null; buffer_time_min: number | null }): boolean {
+  if (!r.scheduled_date) return false;
+  return isLate(r.status, new Date(r.scheduled_date + "T00:00:00"), r.scheduled_time, r.buffer_time_min);
+}
 
 const ST: Record<string, { label: string; cls: string }> = {
   scheduled: { label: "Очікує", cls: "gray" },
@@ -582,7 +588,7 @@ function MyReferrals({ referrals, centersById, onReschedule, onCancel, onEditPat
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {filtered.map((r) => {
-              const m = ST[r.status] || ST.scheduled;
+              const m = refIsLate(r) ? LATE_META : (ST[r.status] || ST.scheduled);
               return (
                 <div key={r.id} onClick={() => setSelected(r)} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", background: "var(--card)", border: "1px solid " + (selected && selected.id === r.id ? "var(--blue)" : "var(--border)"), borderRadius: "var(--r-md)", cursor: "pointer" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -601,7 +607,7 @@ function MyReferrals({ referrals, centersById, onReschedule, onCancel, onEditPat
 
       {selected && (() => {
         const sel = referrals.find((x) => x.id === selected.id) || selected;
-        const m = ST[sel.status] || ST.scheduled;
+        const m = refIsLate(sel) ? LATE_META : (ST[sel.status] || ST.scheduled);
         const sdiff = diffStudies(sel.studies_original as Parameters<typeof diffStudies>[0], sel.studies as Parameters<typeof diffStudies>[1]);
         const changed = studiesChanged(sel.studies_original as Parameters<typeof studiesChanged>[0], sel.studies as Parameters<typeof studiesChanged>[1]);
         return (

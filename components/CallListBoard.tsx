@@ -14,7 +14,9 @@ import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
 import type { WaitlistEntry } from "@/supabase/types";
-import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies } from "@/app/queue/actions";
+import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies, setQueueEntryStatus } from "@/app/queue/actions";
+import { addEntryToWaitlist } from "@/app/waitlist/actions";
+import { isLate, LATE_META } from "@/lib/queueStatus";
 import type { CallStatus, Json } from "@/supabase/types";
 import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import "@/styles/prototype/radflow.css";
@@ -186,6 +188,55 @@ function IncidentCallSection({ incident, roomName, affected, onReschedule, onRec
   );
 }
 
+/* ── Секція «Запізнення» (сьогодні): обдзвін пацієнтів, що не прийшли понад буфер ── */
+function LateCallSection({ late, roomsById, onReschedule, onRecall, onToWaitlist, onRefuse }: {
+  late: CallEntry[];
+  roomsById: Record<string, RoomOpt>;
+  onReschedule: (p: CallEntry) => void;
+  onRecall: (p: CallEntry) => void;
+  onToWaitlist: (p: CallEntry) => void;
+  onRefuse: (p: CallEntry) => void;
+}) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  if (!late.length) return null;
+  return (
+    <div className="info-banner red cl-inc-sec" style={{ flexDirection: "column", alignItems: "stretch", borderColor: "var(--red)", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="ib-ic">⏰</span>
+        <span className="ib-txt">
+          <b>Запізнення сьогодні</b> — <b>{late.length}</b> {late.length === 1 ? "пацієнт не прийшов" : "пацієнтів не прийшли"} понад буферний час.
+          Зателефонуйте: перенести на слот, до листа очікування або зафіксувати відмову.
+        </span>
+      </div>
+      <div className="cl-inc-list">
+        {late.map((p) => {
+          const isOpen = openId === p.id;
+          return (
+            <div className={"cl-inc-item" + (isOpen ? " open" : "")} key={p.id}>
+              <button className="cl-inc-row" onClick={() => setOpenId((o) => (o === p.id ? null : p.id))}>
+                <span className={"cl-chev" + (isOpen ? " open" : "")}>›</span>
+                <span className="cl-inc-time tabular">{p.scheduled_time}</span>
+                <span className="cl-inc-name">{p.patient_name} · <span style={{ color: "var(--text-muted)" }}>{procLabel(p)}{p.room_id && roomsById[p.room_id] ? " · " + roomsById[p.room_id].name : ""}</span></span>
+              </button>
+              {isOpen && (
+                <div className="cl-inc-detail fade-in">
+                  {p.patient_phone && <a className="btn btn-primary btn-sm" href={"tel:" + p.patient_phone.replace(/\s/g, "")}>☎ Подзвонити {p.patient_phone}</a>}
+                  <div className="cld-actions" style={{ marginTop: 8 }}>
+                    <button className="btn btn-primary btn-sm" onClick={() => onReschedule(p)}>🗓 Перенести на слот</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => onToWaitlist(p)} title="Пацієнт чекатиме на вільне вікно">⏳ В лист очікування</button>
+                    <button className="btn btn-secondary btn-sm" style={{ color: "#4da3ff" }} onClick={() => onRecall(p)}>↩ Передзвонити</button>
+                    <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onRefuse(p)}>✕ Відмова</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 interface CallListBoardProps {
   clinicId: string;
   rooms?: RoomOpt[];
@@ -207,6 +258,9 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   const [editStudiesFor, setEditStudiesFor] = useState<CallEntry | null>(null);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [affectedToday, setAffectedToday] = useState<CallEntry[]>([]);
+  const [todayScheduled, setTodayScheduled] = useState<CallEntry[]>([]); // для секції «Запізнення»
+  const [, setNowTick] = useState(0);
+  useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 30000); return () => clearInterval(t); }, []);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Слот звільнився (відмова) → підходящі кандидати з листа очікування.
@@ -257,6 +311,23 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     setAffectedToday(aff);
   }, [clinicId]);
 
+  // Записи на СЬОГОДНІ зі статусом scheduled — джерело секції «Запізнення»
+  // (обраний день колл-листа за замовчуванням завтра, тому окремий запит).
+  const loadTodayScheduled = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const { data } = await supabase
+        .from("queue_entries")
+        .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, doctor, room_id, scheduled_date")
+        .eq("clinic_id", clinicId)
+        .eq("scheduled_date", dateKey(new Date()))
+        .eq("status", "scheduled")
+        .order("scheduled_time", { ascending: true });
+      setTodayScheduled(data || []);
+    } catch { /* транзієнтний збій — лишаємо попередній список */ }
+  }, [clinicId]);
+  useEffect(() => { loadTodayScheduled(); }, [loadTodayScheduled]);
+
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его.
   useEffect(() => { setLoading(true); }, [clinicId]);
 
@@ -267,7 +338,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   useRealtimeRefetch({
     channelName: clinicId ? "calllist-" + clinicId : null,
     subscriptions: [
-      { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: () => { reload(); loadIncidents(); } },
+      { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: () => { reload(); loadIncidents(); loadTodayScheduled(); } },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
     ],
   });
@@ -403,6 +474,25 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
         </header>
         <div className="content-full">
           <div className="page-max">
+            {(() => {
+              const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+              const lateList = todayScheduled.filter((e) => isLate(e.status, t0, e.scheduled_time, e.buffer_time_min));
+              return (
+                <LateCallSection late={lateList} roomsById={roomsById}
+                  onReschedule={(p) => setReschedFor(p)}
+                  onRecall={(p) => setCall(p.id, "to_recall")}
+                  onToWaitlist={async (p) => {
+                    const res = await addEntryToWaitlist(p.id);
+                    if (!res.ok) { notify(res.code === "duplicate" ? "Пацієнт уже в листі очікування" : "Помилка: " + res.error, res.code === "duplicate" ? "info" : "error"); return; }
+                    // Слот звільняється: запис — «Не відбулося» (термінальний підсумок запізнення).
+                    const upd = await setQueueEntryStatus(p.id, "not_held");
+                    if (!upd.ok) notify("Додано до листа, але статус не оновлено: " + upd.error, "error");
+                    else notify("Запізнення: додано до листа очікування, запис — «Не відбулося»", "success");
+                    reload(); loadTodayScheduled();
+                  }}
+                  onRefuse={(p) => cancelEntry(p)} />
+              );
+            })()}
             {incidents.map((inc) => (
               <IncidentCallSection key={inc.id} incident={inc}
                 roomName={roomsById[inc.room_id]?.name || "Апарат"}
