@@ -17,6 +17,7 @@ import CitySelect from "@/components/CitySelect";
 import RescheduleModal from "@/components/RescheduleModal";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry } from "@/app/queue/actions";
 import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
 import { isLate, LATE_META } from "@/lib/queueStatus";
@@ -1017,7 +1018,12 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
                 <div style={{ fontSize: 13.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   {p.status !== "waiting" && <span className="badge">{st.label}</span>}
                   {p.priority_level !== "planned" && p.status === "waiting" && <span className={"prio-tag " + m.tone}>{m.short}</span>}
-                  <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.patient_name}</span>
+                  {p.status === "waiting" ? (
+                    <span onClick={() => onEdit(p)} title="Редагувати дані пацієнта та дослідження"
+                      style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}>{p.patient_name}</span>
+                  ) : (
+                    <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.patient_name}</span>
+                  )}
                 </div>
                 <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2 }}>
                   {centerLabel(center)} · {procLabel(p)} · {desiredWindowText(p)}
@@ -1150,6 +1156,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     reloadWaitlist();
   }
 
+  const [wlConfirmRemove, setWlConfirmRemove] = useState<WaitlistEntry | null>(null);
   async function wlCancel(e: WaitlistEntry) {
     const res = await setWaitlistStatus(e.id, "cancelled");
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
@@ -1227,7 +1234,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         )}
         {tab === "waitlist" && (
           <MyWaitlist entries={wlEntries} centersById={centersById} onOpenAdd={() => setWlAddOpen(true)}
-            onEdit={(e) => setWlEditFor(e)} onCancel={wlCancel} onRestore={wlRestore} onPriority={wlPrio} />
+            onEdit={(e) => setWlEditFor(e)} onCancel={(e) => setWlConfirmRemove(e)} onRestore={wlRestore} onPriority={wlPrio} />
         )}
         {tab === "centers" && (
           <MyCenters centers={centers} canManage={canManage} onChanged={onCentersChanged} notify={notify} />
@@ -1246,6 +1253,13 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
       )}
       {wlEditFor && (
         <WaitlistModal initial={wlEditFor} onClose={() => setWlEditFor(null)} onSave={wlEditSave} />
+      )}
+      {wlConfirmRemove && (
+        <ConfirmDialog title="Зняти з листа очікування"
+          text={<>Зняти <b style={{ color: "var(--text)" }}>{wlConfirmRemove.patient_name}</b> з листа очікування? Запис можна буде повернути.</>}
+          confirmLabel="Зняти з листа" danger
+          onConfirm={async () => { const p = wlConfirmRemove; setWlConfirmRemove(null); await wlCancel(p); }}
+          onClose={() => setWlConfirmRemove(null)} />
       )}
       {editPatientFor && (
         <PatientEditModal entryId={editPatientFor.id} canEditPriority onClose={() => setEditPatientFor(null)} onSaved={reload} />

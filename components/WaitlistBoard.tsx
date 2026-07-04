@@ -13,6 +13,7 @@ import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import BookingModal, { type BookingPayload, type BookingPrefill } from "@/components/BookingModal";
 import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import { createBooking } from "@/app/queue/actions";
 import { addWaitlistEntry, markWaitlistScheduled, setWaitlistPriority, setWaitlistStatus, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, compareWaitlist, desiredWindowText } from "@/lib/waitlist";
@@ -94,6 +95,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
   const [addOpen, setAddOpen] = useState(false);
   const [editFor, setEditFor] = useState<WaitlistEntry | null>(null);
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<WaitlistEntry | null>(null);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [toast, setToast] = useState<{ msg: string; type: string; action?: { label: string; onAction: () => void } } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -378,17 +380,22 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                         <button className="cl-name cl-name-btn wl-name" onClick={() => setExpandedId((x) => (x === p.id ? null : p.id))}>
                           {p.priority_level !== "planned" && p.status === "waiting" && <span className={"prio-tag " + m.tone}>{m.short}</span>}
                           {p.status !== "waiting" && <span className="badge" style={{ marginRight: 6 }}>{stMeta.label}</span>}
-                          {p.patient_name}
+                          {p.status === "waiting" ? (
+                            <span onClick={(e) => { e.stopPropagation(); setEditFor(p); }}
+                              style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}
+                              title="Редагувати дані пацієнта та дослідження">{p.patient_name}</span>
+                          ) : p.patient_name}
                         </button>
                         <div><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")} title="Подзвонити пацієнту" aria-label={"Подзвонити пацієнту: " + (p.patient_phone || "")}><span aria-hidden="true">☎</span> {p.patient_phone}</a></div>
                         <div className="cl-proc">{procLabel(p)}</div>
                         <div className="cl-proc" title="Бажане вікно для підбору слота">{desiredWindowText(p)}</div>
                         <div className="cl-room">{addedAgo(p.created_at)}</div>
                         <div className="cl-actions">
-                          {p.status === "waiting" && (
+                          {/* Дії згорнутого рядка; у розгорнутому — в картці (без дублю «дії»). */}
+                          {p.status === "waiting" && !expanded && (
                             <>
-                              <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => setBookFor(p)}>{busy ? "…" : "Записати"}</button>
-                              <RowMenu disabled={busy} onEdit={() => setEditFor(p)} onRemove={() => remove(p)} />
+                              <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => setBookFor(p)}>{busy ? "…" : "Додати в чергу"}</button>
+                              <RowMenu disabled={busy} onEdit={() => setEditFor(p)} onRemove={() => setConfirmRemove(p)} />
                             </>
                           )}
                           {(p.status === "cancelled" || p.status === "expired") && (
@@ -399,7 +406,13 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                       {expanded && (
                         <div className="cl-detail fade-in">
                           <div className="cld-grid">
-                            <div className="cld-item cld-item-full"><span className="cld-lab">Пацієнт (ПІБ)</span><span className="cld-val cld-name">{p.patient_name}</span></div>
+                            <div className="cld-item cld-item-full"><span className="cld-lab">Пацієнт (ПІБ)</span><span className="cld-val cld-name">
+                              {p.status === "waiting" ? (
+                                <span onClick={() => setEditFor(p)}
+                                  style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}
+                                  title="Редагувати дані пацієнта та дослідження">{p.patient_name}</span>
+                              ) : p.patient_name}
+                            </span></div>
                             <div className="cld-item"><span className="cld-lab">Вік</span><span className="cld-val">{p.patient_age != null ? p.patient_age + " р." : "—"}</span></div>
                             <div className="cld-item"><span className="cld-lab">Модальність</span><span className="cld-val"><span className={"cld-type " + (p.modality === "CT" ? "ct" : "mrt")}>{p.modality === "CT" ? "КТ" : "МРТ"}</span></span></div>
                             <div className="cld-item cld-item-full"><span className="cld-lab">Дослідження</span><span className="cld-val cld-val-wrap">{procLabel(p)} · {p.duration_min} хв + буфер {p.buffer_time_min} хв</span></div>
@@ -426,9 +439,11 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                                   })}
                                 </div>
                               </div>
-                              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                <span className="cld-lab">Дія:</span>
-                                <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => setBookFor(p)}>{busy ? "…" : "Записати"}</button>
+                              {/* Місце ухвалення рішення: одна група дій (у рядку кнопки сховані, поки картку розгорнуто). */}
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => setBookFor(p)}>{busy ? "…" : "Додати в чергу"}</button>
+                                <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setEditFor(p)}><span aria-hidden="true">✎</span> Редагувати</button>
+                                <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} disabled={busy} onClick={() => setConfirmRemove(p)}><span aria-hidden="true">✕</span> Зняти з листа</button>
                               </div>
                             </div>
                           )}
@@ -445,6 +460,13 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
 
       {addOpen && <WaitlistModal onClose={() => setAddOpen(false)} onSave={onAdd} />}
       {editFor && <WaitlistModal initial={editFor} onClose={() => setEditFor(null)} onSave={onEditSave} />}
+      {confirmRemove && (
+        <ConfirmDialog title="Зняти з листа очікування"
+          text={<>Зняти <b style={{ color: "var(--text)" }}>{confirmRemove.patient_name}</b> з листа очікування? Запис перейде на вкладку «Зняті» — його можна буде повернути.</>}
+          confirmLabel="Зняти з листа" danger busy={busyId === confirmRemove.id}
+          onConfirm={async () => { const p = confirmRemove; setConfirmRemove(null); await remove(p); }}
+          onClose={() => setConfirmRemove(null)} />
+      )}
       {bookFor && (
         <BookingModal rooms={rooms} clinicId={clinicId} incidents={incidents} prefill={bookPrefill}
           onClose={() => setBookFor(null)} onSave={saveBooking} />
