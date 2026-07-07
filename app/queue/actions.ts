@@ -356,18 +356,28 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 
+  const patch: TablesUpdate<"queue_entries"> = {
+    room_id: input.roomId,
+    scheduled_date: input.scheduledDate,
+    scheduled_time: input.scheduledTime,
+    scheduled_at: input.scheduledAt,
+    duration_min: input.durationMin,
+    buffer_time_min: bufferMin,
+    status: "scheduled",
+  };
+  // call_status: направник НЕ має права його чіпати (гард 0048) — для нього
+  // колонку не оновлюємо взагалі. Персонал при перенесенні скидає підтвердження
+  // дзвінка на "not_called" (новий слот → передзвонити), або передає явне значення.
+  if (input.callStatus !== undefined) {
+    patch.call_status = input.callStatus;
+  } else {
+    const { data: prof } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
+    if (prof?.role !== "referrer") patch.call_status = "not_called";
+  }
+
   const { data, error } = await supabase
     .from("queue_entries")
-    .update({
-      room_id: input.roomId,
-      scheduled_date: input.scheduledDate,
-      scheduled_time: input.scheduledTime,
-      scheduled_at: input.scheduledAt,
-      duration_min: input.durationMin,
-      buffer_time_min: bufferMin,
-      status: "scheduled",
-      call_status: input.callStatus ?? "not_called",
-    })
+    .update(patch)
     .eq("id", input.id)
     .select("id");
 
