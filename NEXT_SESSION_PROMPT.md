@@ -1,85 +1,86 @@
-# RadFlow — continue development (paste into a new session)
+# RadFlow — continue development (paste into a new Cowork/Claude Code session)
 
 You are a Senior Full-Stack Engineer continuing work on **RadFlow** — a multi-tenant SaaS for
 radiology (MRI/CT) queue management. Next.js 15 (App Router) + React 19 + Supabase (Postgres + RLS +
 Auth) + TypeScript + Tailwind, deployed on Vercel. Repo: github.com/tiosynergy/RadFlow. Working
 branch `dev`; merging `dev → main` + `git push origin main` triggers Vercel auto-deploy to PROD.
-Communicate with the user (Игорь) in **Russian**.
+Communicate with the user (Игорь) in **Russian** (UI copy is Ukrainian).
 
 ## Before doing anything
-1. Read the auto-memory: `MEMORY.md` and the linked files — especially `radflow-state`,
-   `radflow-open-items`, `radflow-workflow`, `radflow-buffer-time`, `radflow-patient-priority`,
-   `radflow-ux-audit`, `cities-directory`.
-2. Read `docs/PRODUCT_OVERVIEW.md` (source of truth for the product as built) and
-   `docs/audit/FULL_AUDIT_2026-06-25.md`.
-3. Verify current facts against the code + `git status`/`git log` before assuming state — memory
-   reflects what was true when written.
+1. Read the auto-memory: `MEMORY.md` and linked files — especially `radflow-state`,
+   `radflow-waitlist`, `radflow-late-status`, `radflow-workflow`, `radflow-buffer-time`,
+   `radflow-patient-priority`, `radflow-ux-audit`.
+2. Read `docs/PRODUCT_OVERVIEW.md` (updated 2026-07-04 — source of truth, includes waitlist §4.6
+   and derived «Запізнення») and `docs/audit/FULL_AUDIT_2026-06-25.md`.
+3. Verify facts against code + `git status`/`git log` — memory reflects the moment it was written.
 
-## Current state (as of 2026-07-03)
-- Highest migration in **repo**: **0046**. PROD (applied manually via Supabase SQL editor) was last
-  confirmed at **0043**. **PENDING manual apply to PROD, in order: 0044 (ceo_list_rpc), 0045 (buffer
-  time), 0046 (patient priority).** Confirm with Игорь which are already applied.
-- Code for 0045/0046 is on `dev`, **commit + push may still be pending** — check `git status`.
-- `npm run typecheck` (== `tsc --noEmit`) was green locally. `npm run build` is run locally by Игорь
-  (does not complete in the Cowork Linux sandbox — memory limits).
+## Current state (as of end of 2026-07-04 session)
+- **PROD migrations: 0044–0047 APPLIED** (confirmed by Игорь). Highest in repo: **0047**
+  (`waitlist_entries`). No pending migrations.
+- **Large UNCOMMITTED package on `dev`** (built & mostly browser-tested 07-03/07-04):
+  - **Лист очікування** (migration 0047 + `lib/waitlist.ts`, `app/waitlist/*`, `WaitlistBoard/
+    WaitlistModal/WaitlistCandidatesModal`, sidebar live badge, referrer portal tab, candidate
+    suggestions on cancel, «⏳ В лист очікування» from CancelledPanel, slot prefill, cabinet filter
+    via modality, security-review fixes).
+  - **Derived «Запізнення»** (`isLate`/`LATE_META` in `lib/queueStatus.ts`): badge everywhere,
+    blocked direct call + decision panel (все ж прийшов / перенести / в лист / не відбулося),
+    StatsBar counter+filter, call-list section «Запізнення сьогодні», referrer badge.
+  - **`lateCallClash` guard**: calling a patient NOW must fit (now + duration + buffer) before the
+    next active booking of the room — both QueueBoard and RadiologistBoard. Anti-overbooking audit
+    passed; `editQueueEntryStudies` now classifies OVERLAP errors.
+  - **Waitlist UX pass** (heuristic review): one primary action + «⋯» RowMenu, Undo toast
+    (aria-live), per-row busy state, ≥40px touch targets via `::before`, 15px patient name,
+    compact stat strip, dismissible hint (`rf_waitlist_hint_hidden`).
+  - **Decision-point edits** (LAST CHANGES — **NOT yet browser-tested**, dev server died):
+    clickable patient name (dotted underline → full edit modal) in waitlist row/card and referrer
+    portal; card action group «Додати в чергу» + «✎ Редагувати» + «✕ Зняти з листа»; row buttons
+    hidden while card expanded (no «Дія» duplication); new `components/ConfirmDialog.tsx` —
+    confirm modal for «Зняти з листа» (waitlist board + referrer portal).
+  - **`scripts/seed-test-data.mjs`** + npm script `seed:testdata` — wipes queue_entries +
+    waitlist_entries of ONE clinic and seeds today+7 days (10–15 patients/day, no Sundays) + 5
+    waitlist patients. Игорь ran it: multiple clinics in DB → script correctly aborted with the
+    list; needs re-run as `npm run seed:testdata "<назва клініки>"` (his clinic is «Medicom»).
 
-## What was built most recently
-- **Buffer time (migration 0045)**: per-record `queue_entries.buffer_time_min` (default 5, values
-  0/5/10/15). Effective room occupancy = `duration_min + buffer_time_min` everywhere occupancy is
-  computed (overlap trigger `check_no_overlap`, slot grids, `hasSlotClash`, `room_busy_slots` RPC,
-  CEO load, radiologist overtime timer). NOT counted in incident/ТО window checks (decision). Helper:
-  `lib/studies.ts` (`BUFFER_DEFAULT`, `BUFFER_OPTIONS`, `normBuffer`).
-- **Patient priority (migration 0046)**: enum `patient_priority` = `cito` | `urgent` | `planned`
-  (machine-readable codes for future n8n/AI). Column `queue_entries.priority_level` (NOT NULL DEFAULT
-  'planned'). Mandatory on new booking for everyone who books. Legacy `cito` boolean is now a mirror
-  of `priority_level='cito'` via trigger `sync_cito_from_priority`. Queue order everywhere:
-  cito → urgent → planned. Change-after-create allowed only for admin (inline row + PatientEditModal)
-  and owner-referrer (portal), enforced in app action `setQueuePriority` AND DB trigger
-  `guard_priority_change` (service-role/no-JWT allowed for automation). Helper: `lib/priority.ts`.
+## Immediate next steps
+1. Игорь restarts dev server — it was stuck on «missing required error components» (likely stale
+   `.next`; files on disk verified syntactically fine). If a compile error appears in his
+   terminal, fix it first.
+2. Re-seed test data: `npm run seed:testdata "<точна назва>"`.
+3. Browser-test the untested decision-point edits on /waitlist (admin) and referrer portal:
+   name click → edit modal; expanded card shows Пріоритет | Додати в чергу / Редагувати / Зняти;
+   row buttons hidden when expanded; «Зняти з листа» opens ConfirmDialog (also from «⋯» menu),
+   confirm → Undo toast; restore works.
+4. Then: local `npm run typecheck` + `npm run build` (by Игорь), commit the whole package on
+   `dev`, get explicit go-ahead, deploy `dev → main`. Remind him to re-seed or clean test data
+   as appropriate before/after deploy (seed script targets one clinic only).
 
-## Immediate next steps (confirm with Игорь first)
-1. Apply pending migrations to PROD in order (idempotent): 0044 → 0045 → 0046.
-2. Deploy code + migrations **together** (behavior-changing: old prod frontend won't know the new
-   mandatory priority field / buffer semantics). Get explicit go-ahead before `dev → main` push.
-3. After apply: browser-test in the roles that changed (admin/registrar booking with priority +
-   buffer, referrer portal, radiologist board, call-list). Ask Игорь to `npm run dev`
-   (http://localhost:3000 or :3001 — note **http**) and log in per role; inspect via Claude-in-Chrome
-   (he does NOT share passwords).
+## Open backlog
+- n8n + AI-agent automation (Stage 2): smart waitlist rotation, predictive no-show, schedule
+  optimization. `waitlist_status`, `priority_level`, `buffer_time_min`, `desired_*`, `isLate`
+  formula and `waitlistMatchesSlot()` were all designed as its inputs.
+- Optional: hard `room_id` binding for waitlist entries (patient tied to a specific apparatus).
+- Referrer password recovery via email — deferred until real domain + SMTP.
+- Sidebar waitlist badge counts clinic-wide for staff (RLS-scoped), fine; CEO boards don't show
+  waitlist metrics yet (possible future KPI).
 
-## Open backlog / future direction
-- **n8n + AI-agent automation (Stage 2)** is the strategic goal; `priority_level` and
-  `buffer_time_min` were designed as integration-friendly inputs for it (see the Perplexity research:
-  smart waitlist rotation, predictive no-show/cancellation, schedule optimization, KPI dashboard).
-  When starting this, external/direct DB writers must send exact enum literals or route through
-  normalization; legacy flows writing bare `cito` are now no-ops (write `priority_level`).
-- Referrer password recovery via email — DEFERRED until real domain + SMTP.
-- Optional hardening: normalize priority for external writers; revisit whether existing dense
-  back-to-back bookings need re-spacing after the buffer backfill (documented caveat).
+## Conventions / rules (unchanged + new gotchas)
+- Always TypeScript; Server Actions pattern (`app/queue/actions.ts`, `app/waitlist/actions.ts`).
+  Multi-tenant isolation (clinic_id / RLS) is security-critical — use a subagent review for
+  anything touching policies/triggers/RPC. Service-role routes must check caller auth first.
+- Migrations: manual via Supabase SQL editor, sequential numbering (next is 0048), idempotent;
+  update `supabase/types.ts` on schema changes.
+- Realtime via `lib/useRealtimeRefetch.ts`; wrap client reloads in try/catch.
+- UI: Ukrainian copy, dark Apple-HIG tokens, Unicode glyphs (no emoji on dense screens, no icon
+  libs), `.req` red required labels, `useModalA11y` for modals, ≥40px touch targets.
+- **Env gotchas:** Cowork Linux sandbox mount can serve STALE/truncated files — in-sandbox `tsc`
+  is unreliable; file tools (Read/Edit) are ground truth; Игорь's local `npm run typecheck` is
+  authoritative. Grep tool output may mangle text (`//` shown as `\`) — verify with Read before
+  concluding a file is broken. `npm run build` doesn't complete in sandbox. Git and deploys are
+  run locally by Игорь (get explicit go-ahead). Dev server is **http**://localhost:3000 or
+  :3001 — for browser testing ask Игорь to log in per role (he never shares passwords), then
+  inspect via Claude-in-Chrome.
+- Track work with the task list; update MEMORY.md files as facts change; keep
+  `docs/PRODUCT_OVERVIEW.md` in sync when product behavior changes.
 
-## Working conventions / rules
-- Always TypeScript. Prefer Server Components + Server Actions (`app/queue/actions.ts` is the
-  reference pattern). Follow existing patterns in `lib/supabase` and `app/api` before inventing new.
-- Maintain multi-tenant isolation (clinic_id / RLS) — security-critical. Two client types: RLS-bound
-  (`lib/supabase/{client,server}.ts`) vs service-role `admin.ts` (bypasses RLS — every route using it
-  must check caller auth/role first). Use a **subagent for RLS/security review** on anything touching
-  multi-tenant policies, triggers, or RPC grants.
-- Migrations: applied to PROD manually (no runner). Always check the highest existing number and
-  number sequentially. Keep idempotent (`do $$ … exception when duplicate_object …$$`,
-  `create … if not exists`, `drop … if exists` before create). Update `supabase/types.ts` when schema
-  changes.
-- Realtime: shared hook `lib/useRealtimeRefetch.ts`. Wrap client-side reload functions in try/catch
-  for transient "Failed to fetch".
-- Add proper error handling, loading states, optimistic updates. Add red-asterisk required-field
-  labels (`.req` span) for new mandatory inputs.
-- Track work with the task list; keep `MEMORY.md` and the linked memory files updated as facts change.
-
-## Environment gotchas
-- **The Cowork Linux sandbox mount can get out of sync / truncate individual files mid-write** (hit on
-  `lib/studies.ts`), making in-sandbox `tsc` intermittently unreliable. The **file tools (Read/Edit)
-  read the real on-disk file** — trust them as ground truth; treat Игорь's local `npm run typecheck`
-  as authoritative. Prefer file tools over shell for file ops.
-- Git and migrations are run locally by Игорь; get explicit go-ahead before any prod deploy. Stale
-  `.git/index.lock` — have him remove it from PowerShell (sandbox can't).
-
-Start by reading the memory + `docs/PRODUCT_OVERVIEW.md`, run `git status`/`git log` and check which
-migrations are live, then tell Игорь the current open items and what you'd tackle first.
+Start by reading memory + `git status`, ask Игорь whether the dev server is back up and whether
+the seed ran, then finish step 3 (browser-test) before anything new.

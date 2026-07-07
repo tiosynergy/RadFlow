@@ -286,7 +286,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
     { lab: "В очікуванні", val: counts.waiting, color: "var(--green)" },
     { lab: "CITO", val: counts.cito, color: "var(--red)" },
     { lab: "Терміново", val: counts.urgent, color: "var(--orange)" },
-    { lab: "Записано з листа", val: counts.scheduled, color: "#4da3ff" },
+    { lab: "Записано", val: counts.scheduled, color: "#4da3ff" },
   ];
 
   const bookPrefill: BookingPrefill | null = bookFor ? {
@@ -323,12 +323,12 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
               </div>
             )}
 
-            <div className="wl-stat-strip" role="status">
+            <div className="stats" role="status">
               {stats.map((s) => (
-                <span className="item" key={s.lab}>
-                  <span className="wl-dot" style={{ background: s.color }} aria-hidden="true" />
-                  {s.lab} <b>{s.val}</b>
-                </span>
+                <div className="stat" key={s.lab}>
+                  <div className="lab">{s.lab}</div>
+                  <div className="val tabular" style={{ color: s.color }}>{s.val}</div>
+                </div>
               ))}
             </div>
 
@@ -357,7 +357,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
             </div>
 
             <div className="wlhead">
-              <div /><div>Пацієнт</div><div>Телефон</div><div>Дослідження</div><div>Бажане вікно</div><div>Додано</div><div style={{ textAlign: "right" }}>Дії</div>
+              <div /><div>Пацієнт</div><div>Дослідження</div><div>Бажане вікно</div><div style={{ textAlign: "right" }}>Дії</div>
             </div>
             {loading ? (
               <div className="empty"><div className="et">Завантаження…</div></div>
@@ -377,19 +377,29 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                           title={expanded ? "Згорнути" : "Розгорнути"} aria-label={expanded ? "Згорнути деталі" : "Розгорнути деталі"} aria-expanded={expanded}>
                           <span className={"cl-chev" + (expanded ? " open" : "")} aria-hidden="true">›</span>
                         </button>
-                        <button className="cl-name cl-name-btn wl-name" onClick={() => setExpandedId((x) => (x === p.id ? null : p.id))}>
-                          {p.priority_level !== "planned" && p.status === "waiting" && <span className={"prio-tag " + m.tone}>{m.short}</span>}
-                          {p.status !== "waiting" && <span className="badge" style={{ marginRight: 6 }}>{stMeta.label}</span>}
-                          {p.status === "waiting" ? (
-                            <span onClick={(e) => { e.stopPropagation(); setEditFor(p); }}
-                              style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}
-                              title="Редагувати дані пацієнта та дослідження">{p.patient_name}</span>
-                          ) : p.patient_name}
-                        </button>
-                        <div><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")} title="Подзвонити пацієнту" aria-label={"Подзвонити пацієнту: " + (p.patient_phone || "")}><span aria-hidden="true">☎</span> {p.patient_phone}</a></div>
-                        <div className="cl-proc">{procLabel(p)}</div>
-                        <div className="cl-proc" title="Бажане вікно для підбору слота">{desiredWindowText(p)}</div>
-                        <div className="cl-room">{addedAgo(p.created_at)}</div>
+                        <div className="wl-pat">
+                          <button className="cl-name cl-name-btn wl-name" onClick={() => setExpandedId((x) => (x === p.id ? null : p.id))}>
+                            {p.priority_level !== "planned" && p.status === "waiting" && <span className={"prio-tag " + m.tone}>{m.short}</span>}
+                            {p.status !== "waiting" && <span className="badge" style={{ marginRight: 6 }}>{stMeta.label}</span>}
+                            {p.status === "waiting" ? (
+                              <span onClick={(e) => { e.stopPropagation(); setEditFor(p); }}
+                                style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}
+                                title="Редагувати дані пацієнта та дослідження">{p.patient_name}</span>
+                            ) : p.patient_name}
+                          </button>
+                          <div className="wl-meta">
+                            {p.patient_phone && <a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")} title="Подзвонити пацієнту" aria-label={"Подзвонити пацієнту: " + (p.patient_phone || "")}><span aria-hidden="true">☎</span> {p.patient_phone}</a>}
+                            <span>Додано: {addedAgo(p.created_at)}</span>
+                          </div>
+                        </div>
+                        <div className="wl-proc-cell">
+                          <div className="wl-proc-main">
+                            <span className={"wl-mod " + (p.modality === "CT" ? "ct" : "mrt")}>{p.modality === "CT" ? "КТ" : "МРТ"}</span>
+                            <span className="cl-proc">{procLabel(p)}</span>
+                          </div>
+                          <div className="wl-proc-du">{p.duration_min} хв + буфер {p.buffer_time_min} хв</div>
+                        </div>
+                        <div className="wl-win" title="Бажане вікно для підбору слота">{desiredWindowText(p)}</div>
                         <div className="cl-actions">
                           {/* Дії згорнутого рядка; у розгорнутому — в картці (без дублю «дії»). */}
                           {p.status === "waiting" && !expanded && (
