@@ -38,7 +38,7 @@ type Center = { clinicId: string; name: string; city: string | null; status: str
 type Referral = {
   id: string; clinic_id: string; created_by: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
-  priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; doctor: string | null; note: string | null; indication: string | null; room_id: string | null;
+  priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
 };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 type ExtraStudy = { type: string; region: string; dur: number };
@@ -988,7 +988,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     const supabase = createClient();
     const { data } = await supabase
       .from("queue_entries")
-      .select("id, clinic_id, created_by, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, doctor, note, indication, room_id")
+      .select("id, clinic_id, created_by, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, doctor, note, indication, room_id, reschedule_origin")
       .eq("referrer_id", doctorId)
       .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
     setReferrals(data || []);
@@ -1065,11 +1065,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     if (!res.ok) { notify("Помилка: " + res.error, "error"); reloadWaitlist(); }
   }
 
-  async function doReschedule({ roomId, date, time, dur, buffer }: { roomId: string; date: Date; time: string; dur: number; buffer: number }) {
+  async function doReschedule({ roomId, date, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
     const p = reschedFor; if (!p) return;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason });
     if (!res.ok) {
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
       setReschedFor(null);

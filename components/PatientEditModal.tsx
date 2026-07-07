@@ -104,6 +104,9 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
   async function save() {
     if (!form) return;
     if (!String(form.patient_name || "").trim()) { setErr("Вкажіть ПІБ пацієнта"); return; }
+    if (!String(form.patient_phone || "").trim()) { setErr("Вкажіть телефон"); return; }
+    if (!form.patient_dob) { setErr("Вкажіть дату народження"); return; }
+    if (!form.patient_sex) { setErr("Вкажіть стать"); return; }
     setBusy(true); setErr("");
     const w = form.patient_weight;
     const patch: TablesUpdate<"queue_entries"> = {
@@ -153,15 +156,15 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
                 <input className="inp" autoFocus value={form.patient_name || ""} onChange={(e) => setF("patient_name", e.target.value)} placeholder="Прізвище Імʼя По батькові" />
               </label>
               <div className="fld-row">
-                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон</span>
+                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон <span className="req">*</span></span>
                   <PhoneInput value={form.patient_phone || ""} onChange={(v) => setF("patient_phone", v)} />
                 </label>
-                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Дата народження</span>
+                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Дата народження <span className="req">*</span></span>
                   <input className="inp tabular" type="date" value={form.patient_dob || ""} onChange={(e) => setF("patient_dob", e.target.value)} />
                 </label>
               </div>
               <div className="fld-row">
-                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Стать</span>
+                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Стать <span className="req">*</span></span>
                   <select className="inp" value={form.patient_sex || ""} onChange={(e) => setF("patient_sex", e.target.value)}>
                     <option value="">—</option>
                     <option value="М">Чоловік</option>

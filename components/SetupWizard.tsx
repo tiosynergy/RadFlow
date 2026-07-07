@@ -462,7 +462,6 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
             <span>Майстер налаштувань</span>
             <a href="mailto:support@radflow.ua?subject=Допомога%20з%20налаштуванням" title="Написати в підтримку">Підтримка</a>
           </div>
-          <a className="wiz-exit" onClick={signOut} style={{ cursor: "pointer" }} title="Вийти з акаунта">⏻ Вийти з акаунта</a>
         </div>
       </aside>
 
@@ -496,13 +495,11 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
         <div className="wiz-bar">
           <div className="wiz-bar-inner">
             <div className="wiz-bar-right" style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-              {FORM_SECTIONS.includes(activeSection) && (
-                <span className="wiz-cta-wrap" title={valid[1] ? undefined : "Заповніть назву клініки, місто, ПІБ і телефон адміністратора та хоча б один апарат"}>
-                  <button className="btn btn-green" onClick={save} disabled={!valid[1] || saving}>
-                    {saving ? "Зберігаємо…" : "Зберегти"}
-                  </button>
-                </span>
-              )}
+              <span className="wiz-cta-wrap" title={valid[1] ? undefined : "Заповніть назву клініки, місто, ПІБ і телефон адміністратора та хоча б один апарат"}>
+                <button className="btn btn-green" onClick={save} disabled={!valid[1] || saving}>
+                  {saving ? "Зберігаємо…" : "Зберегти"}
+                </button>
+              </span>
               <button className="btn btn-secondary" onClick={exitSetup} disabled={saving}>Вийти</button>
             </div>
           </div>

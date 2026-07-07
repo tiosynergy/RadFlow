@@ -14,7 +14,7 @@ import { useModalA11y } from "@/lib/useModalA11y";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type DayEntry = { id: string; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string };
 // Минимально необходимый набор полей записи (доски передают разные подмножества).
-type ReschedulePatient = { id: string; room_id: string | null; duration_min: number | null; buffer_time_min?: number | null; patient_name: string | null; studies?: unknown; note?: string | null };
+type ReschedulePatient = { id: string; room_id: string | null; duration_min: number | null; buffer_time_min?: number | null; patient_name: string | null; studies?: unknown; note?: string | null; status?: string };
 
 interface RescheduleModalProps {
   patient: ReschedulePatient;
@@ -22,7 +22,7 @@ interface RescheduleModalProps {
   clinicId?: string | null;
   incidents?: IncidentLike[];
   onClose: () => void;
-  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number; buffer: number }) => void;
+  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) => void;
 }
 
 function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
@@ -51,6 +51,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
   const [time, setTime] = useState("");
   const [dayEntries, setDayEntries] = useState<DayEntry[]>([]);
   const [override, setOverride] = useState<DayOverride | null>(null);
+  const [reason, setReason] = useState("");
 
   useEffect(() => {
     let cancel = false;
@@ -117,6 +118,8 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
         </div>
         <div className="dlg-body">
           <div className="ctx-hint blue" style={{ fontSize: 13 }}>Пацієнт: <b>{patient.patient_name}</b> · {procLabel(patient)} · {dur} хв{buffer > 0 ? ` + ${buffer} буфер` : ""}</div>
+          <label className="fld"><span className="fld-lab">Причина переносу (необовʼязково)</span>
+            <input className="inp" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Напр.: пацієнт запізнився / за бажанням пацієнта / апарат зайнятий" /></label>
           <div className="fld">
             <span className="fld-lab">Кабінет ({kind})</span>
             {options.length === 0
@@ -166,7 +169,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
             ? <span className="bk-summary">{room ? room.name : ""} · {dateStr} {time}–{fmt(toMin(time) + dur)}</span>
             : <span style={{ fontSize: 12, color: "var(--text-faint)", marginRight: "auto", alignSelf: "center" }}>Оберіть кабінет, дату та слот</span>}
           <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
-          <button className="btn btn-primary" disabled={!valid} onClick={() => onConfirm({ roomId, date: dateObj, time, dur, buffer })}>✓ Перенести на цей слот</button>
+          <button className="btn btn-primary" disabled={!valid} onClick={() => onConfirm({ roomId, date: dateObj, time, dur, buffer, reason: reason.trim() })}>✓ Перенести на цей слот</button>
         </div>
       </div>
     </div>

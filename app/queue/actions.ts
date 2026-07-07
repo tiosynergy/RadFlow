@@ -339,6 +339,7 @@ export type RescheduleInput = {
   durationMin: number;
   bufferTimeMin?: number; // буфер переноситься разом із записом (за замовч. 5)
   callStatus?: CallStatus; // напр. колл-лист підтверджує слот при переносі
+  reason?: string; // причина переносу (обовʼязкова для «не відбулося»/неявки)
 };
 
 /** Перенос записи на другой кабинет/дату/время (с пред-проверкой пересечения). */
@@ -347,6 +348,17 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  // Не можна переносити дослідження, що ТРИВАЄ (in_progress): спершу його треба
+  // «закрити» — завершити або позначити «не відбулося». Захист на сервері (не лише в UI).
+  // Заразом читаємо стан ДО переносу для довідки reschedule_origin.
+  const { data: cur } = await supabase.from("queue_entries")
+    .select("status, scheduled_date, scheduled_time, room_id, clinic_id")
+    .eq("id", input.id).maybeSingle();
+  if (cur?.status === "in_progress") {
+    return { ok: false, error: "Дослідження триває — спершу завершіть його або позначте «не відбулося», а потім переносьте", code: "forbidden" };
+  }
+  const reason = (input.reason || "").trim();
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);
@@ -373,6 +385,14 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
   } else {
     const { data: prof } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
     if (prof?.role !== "referrer") patch.call_status = "not_called";
+  }
+  // Довідка «звідки перенесено» — знімок стану до переносу + причина.
+  if (cur) {
+    patch.reschedule_origin = {
+      from_date: cur.scheduled_date, from_time: cur.scheduled_time,
+      from_room: cur.room_id, from_clinic: cur.clinic_id, from_status: cur.status,
+      reason: reason || null, at: new Date().toISOString(),
+    } as unknown as Json;
   }
 
   const { data, error } = await supabase

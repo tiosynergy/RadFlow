@@ -385,12 +385,12 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     reload();
   }
 
-  async function doReschedule({ roomId, date: d, time, dur, buffer }: { roomId: string; date: Date; time: string; dur: number; buffer: number }) {
+  async function doReschedule({ roomId, date: d, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
     const p = reschedFor;
     if (!p) return;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed" });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed", reason });
     if (!res.ok) {
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
       setReschedFor(null);

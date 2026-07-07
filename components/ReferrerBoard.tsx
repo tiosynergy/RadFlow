@@ -23,8 +23,17 @@ export type BoardReferral = {
   id: string; clinic_id: string; created_by: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string;
   call_status: string | null; priority_level: PatientPriority | null; studies: Json; studies_original: Json | null;
-  doctor: string | null; note: string | null; indication: string | null; room_id: string | null;
+  doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
 };
+type RescheduleOrigin = { from_date?: string | null; from_time?: string | null; from_room?: string | null; from_status?: string | null; reason?: string | null };
+function fmtOrigin(o: RescheduleOrigin | null, roomById: Record<string, RoomOpt>): string | null {
+  if (!o || (!o.from_date && !o.from_time)) return null;
+  const room = o.from_room ? roomById[o.from_room] : null;
+  const parts = [ [o.from_date, o.from_time].filter(Boolean).join(" "), room?.name ].filter(Boolean);
+  let s = "🔁 Перенесено з " + parts.join(" · ");
+  if (o.reason) s += " · причина: " + o.reason;
+  return s;
+}
 
 /* Статус дослідження — той самий словник, що на дошці адміна (read-only). */
 const STATUS_META: Record<string, { label: string; cls: string }> = {
@@ -234,9 +243,10 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                             </div>
                           );
                         })()}
+                        {(() => { const h = fmtOrigin(r.reschedule_origin as unknown as RescheduleOrigin | null, roomById); return h ? <div className="ctx-hint" style={{ fontSize: 12 }}>{h}</div> : null; })()}
                         {owned && r.status !== "done" && r.status !== "cancelled" && r.status !== "no_show" && r.status !== "not_held" && (
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <button className="btn btn-primary btn-sm" onClick={() => onReschedule(r)}>🗓 Перезаписати</button>
+                            <button className="btn btn-primary btn-sm" disabled={r.status === "in_progress"} title={r.status === "in_progress" ? "Дослідження триває — недоступно" : "Перезаписати"} onClick={() => onReschedule(r)}>🗓 Перезаписати</button>
                             <button className="btn btn-secondary btn-sm" onClick={() => onEditStudies(r)}>🩻 Дослідження</button>
                             <button className="btn btn-secondary btn-sm" onClick={() => onEditPatient(r)}>✎ Дані пацієнта</button>
                             {canCancel(r) && <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onCancel(r)}>✕ Скасувати</button>}

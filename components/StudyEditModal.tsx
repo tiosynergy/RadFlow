@@ -65,6 +65,16 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const [buffer, setBuffer] = useState<number>(normBuffer(patient.buffer_time_min ?? BUFFER_DEFAULT));
 
   const startMin = toMin(patient.scheduled_time);
+  // Реальний старт: якщо запис сьогодні і плановий час уже минув (пацієнт
+  // запізнюється або вже в кабінеті), фактична зайнятість кабінету рахується
+  // від ЗАРАЗ, а не від планового слота. Використовується для м'якого
+  // попередження про наїзд на наступний запис (плановий check_no_overlap
+  // цього не ловить, бо порівнює планові вікна).
+  const _now = new Date();
+  const nowMin = _now.getHours() * 60 + _now.getMinutes();
+  const todayStr = _now.getFullYear() + "-" + pad(_now.getMonth() + 1) + "-" + pad(_now.getDate());
+  const isTodayLate = scheduledDate === todayStr && nowMin > startMin;
+  const refStartMin = isTodayLate ? nowMin : startMin;
   // Кінець вікна — за графіком кабінету (з урахуванням особливого графіка),
   // але не далі наступного запису. Буфер займає кабінет ПІСЛЯ досліджень, тож
   // дослідження + буфер не повинні перетнути наступний запис (для графіка —
@@ -106,6 +116,10 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const totalDur = rows.reduce((s, r) => s + (Number(r.dur) || 0), 0);
   const overflow = totalDur > availableDur;
   const remaining = availableDur - totalDur;
+  // М'яке попередження (НЕ блокує збереження): за фактом старту дослідження+буфер
+  // закінчаться пізніше наступного запису кабінету.
+  const projectedEndMin = refStartMin + totalDur + buffer;
+  const realClash = isTodayLate && nextStart != null && projectedEndMin > nextStart;
   const canAdd = remaining >= MIN_STUDY;
   const valid = rows.length > 0 && rows.every((r) => r.region) && !overflow;
 
@@ -128,6 +142,11 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
               ? <>⚠ Не вміщується: разом <b>{totalDur} хв</b>, доступно <b>{availableDur} хв</b> ({windowLabel}). Скоротіть на {totalDur - availableDur} хв.</>
               : <>Доступно у слоті: <b>{availableDur} хв</b> ({windowLabel}). Вільно ще <b>{remaining} хв</b>.</>}
           </div>
+          {!overflow && realClash && (
+            <div className="ctx-hint red" style={{ fontSize: 12.5 }}>
+              ⚠ Пацієнт запізнюється/у кабінеті: за фактом (з ~<b>{fmt(refStartMin)}</b>) дослідження + буфер закінчаться о ~<b>{fmt(projectedEndMin)}</b> і перекриють наступний запис о <b>{fmt(nextStart ?? 0)}</b>. Зберегти можна, але перенесіть наступний запис.
+            </div>
+          )}
           <div className="st-rows">
             {rows.map((r, i) => {
               const regions = regionsFor(r.type);
