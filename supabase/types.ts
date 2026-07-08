@@ -869,7 +869,7 @@ export type Database = {
         Returns: undefined;
       };
       room_busy_slots: {
-        Args: { p_room: string; p_date: string };
+        Args: { p_room: string; p_date: string; p_exclude?: string };
         Returns: { scheduled_time: string; duration_min: number; buffer_time_min: number }[];
       };
       search_clinics: {

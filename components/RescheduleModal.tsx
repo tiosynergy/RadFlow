@@ -2,7 +2,8 @@
 
 /* ===== RadFlow — Перенести на новий слот =====
    Портовано з rf-shell.jsx (RescheduleModal). Кабінети — з props (та сама модальність),
-   зайняті слоти — з Supabase (queue_entries, окрім самого пацієнта). */
+   зайняті слоти — через знеособлений RPC room_busy_slots (без PII; для направника
+   обходить RLS-сліпоту на чужі записи). p_exclude прибирає сам перенесений запис. */
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -12,7 +13,8 @@ import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
-type DayEntry = { id: string; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string };
+// Знеособлені зайняті слоти з RPC room_busy_slots (без id/статусу/PII).
+type DayEntry = { scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null };
 // Минимально необходимый набор полей записи (доски передают разные подмножества).
 type ReschedulePatient = { id: string; room_id: string | null; duration_min: number | null; buffer_time_min?: number | null; patient_name: string | null; studies?: unknown; note?: string | null; status?: string };
 
@@ -56,18 +58,20 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
   useEffect(() => {
     let cancel = false;
     (async () => {
-      const supabase = createClient();
-      if (clinicId) {
-        const ovRes = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateStr).maybeSingle();
-        if (!cancel) setOverride((ovRes.data as unknown as DayOverride) || null);
+      try {
+        const supabase = createClient();
+        if (clinicId) {
+          const ovRes = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateStr).maybeSingle();
+          if (!cancel) setOverride((ovRes.data as unknown as DayOverride) || null);
+        }
+        if (!roomId) { if (!cancel) setDayEntries([]); return; }
+        // Знеособлена зайнятість кабінету; p_exclude прибирає сам перенесений запис.
+        const { data } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: dateStr, p_exclude: patient.id });
+        if (!cancel) setDayEntries((data || []) as DayEntry[]);
+      } catch {
+        // Транзієнтний збій (оновлення токена / мережа) — не рушимо модаль.
+        if (!cancel) setDayEntries([]);
       }
-      if (!roomId) { setDayEntries([]); return; }
-      const { data } = await supabase
-        .from("queue_entries")
-        .select("id, scheduled_time, duration_min, buffer_time_min, status")
-        .eq("room_id", roomId).eq("scheduled_date", dateStr)
-        .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
-      if (!cancel) setDayEntries(((data || []) as DayEntry[]).filter((e) => e.id !== patient.id));
     })();
     return () => { cancel = true; };
   }, [roomId, dateStr, patient.id, clinicId]);

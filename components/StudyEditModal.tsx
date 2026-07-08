@@ -2,7 +2,9 @@
 
 /* ===== RadFlow — Редактор досліджень =====
    Портовано з rf-shell.jsx (StudyEditModal). Тип фіксується кабінетом (МРТ/КТ).
-   Сумарна тривалість не може перевищити вільний час до наступного запису (з Supabase). */
+   Сумарна тривалість не може перевищити вільний час до наступного запису —
+   зайнятість кабінету беремо через знеособлений RPC room_busy_slots (без PII;
+   для направника обходить RLS-сліпоту), p_exclude прибирає сам редагований запис. */
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -44,20 +46,22 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
     let cancel = false;
     (async () => {
       if (!patient.room_id || !scheduledDate) return;
-      const supabase = createClient();
-      if (clinicId) {
-        const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
-        if (!cancel) setOverride((ov.data as unknown as DayOverride) || null);
+      try {
+        const supabase = createClient();
+        if (clinicId) {
+          const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
+          if (!cancel) setOverride((ov.data as unknown as DayOverride) || null);
+        }
+        // Знеособлена зайнятість кабінету; p_exclude прибирає сам редагований запис.
+        const { data } = await supabase.rpc("room_busy_slots", { p_room: patient.room_id, p_date: scheduledDate, p_exclude: patient.id });
+        if (cancel) return;
+        const startMin = toMin(patient.scheduled_time);
+        const ns = (data || []).map((p) => toMin(p.scheduled_time)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
+        setNextStart(ns != null ? ns : null);
+      } catch {
+        // Транзієнтний збій (оновлення токена / мережа) — не рушимо модаль.
+        if (!cancel) setNextStart(null);
       }
-      const { data } = await supabase
-        .from("queue_entries")
-        .select("id, scheduled_time, status")
-        .eq("room_id", patient.room_id).eq("scheduled_date", scheduledDate)
-        .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
-      if (cancel) return;
-      const startMin = toMin(patient.scheduled_time);
-      const ns = (data || []).filter((p) => p.id !== patient.id).map((p) => toMin(p.scheduled_time)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
-      setNextStart(ns != null ? ns : null);
     })();
     return () => { cancel = true; };
   }, [patient.id, patient.room_id, patient.scheduled_time, scheduledDate, clinicId]);

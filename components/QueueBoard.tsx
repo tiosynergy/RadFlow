@@ -33,7 +33,7 @@ import BreakdownModal from "@/components/BreakdownModal";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
-import { needsClarification, CLARIFY_META, isLate, LATE_META, lateCallClash } from "@/lib/queueStatus";
+import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock } from "@/lib/queueStatus";
 import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow } from "@/lib/incidents";
@@ -1062,25 +1062,18 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
 
   function inProgressBlockReason(p: QEntry): string | null {
-    if (p.room_id && blockingByRoom[p.room_id]) return "Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат";
-    if (p.room_id && roomSchedClosed(p.room_id)) return "Кабінет зачинено за графіком на цей день";
-    if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
-    // Виклик ЗАРАЗ має вміститись до кінця робочого графіка кабінету
-    // (інакше дослідження вийде за межі роботи кабінету).
-    if (p.room_id) {
-      const sched = roomScheduleFor(selectedDate, p.room_id, selectedOverride);
-      if (!sched.closed) {
-        const endMin = toMinHHMM(sched.end);
-        const nowD = new Date();
-        const nowMin = nowD.getHours() * 60 + nowD.getMinutes();
-        // Саме дослідження має вміститись до кінця графіка; буфер (прибирання) може вийти за межі.
-        if (nowMin + (p.duration_min || 30) > endMin) return `Дослідження ${p.duration_min || 30} хв не вміститься до кінця графіка кабінету (${sched.end}) — перенесіть запис`;
-      }
-    }
-    // Пізній виклик: фактичне вікно (зараз + тривалість + буфер) не має
-    // налазити на наступний запис кабінету (напр. після «все ж прийшов»).
-    const clash = lateCallClash(p, entries);
-    if (clash) return `Дослідження ${p.duration_min || 30} хв зараз не вміститься — о ${clash.time} наступний запис${clash.name ? " (" + String(clash.name).split(" ").slice(0, 2).join(" ") + ")" : ""}. Перенесіть один із записів`;
+    const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride) : null;
+    const r = computeCallBlock(p, entries, {
+      roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
+      schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
+      schedEnd: sched && !sched.closed ? sched.end : null,
+    });
+    if (!r) return null;
+    if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат";
+    if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
+    if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    if (r.code === "sched_overrun") return `Дослідження ${r.durationMin} хв не вміститься до кінця графіка кабінету (${r.end}) — перенесіть запис`;
+    if (r.code === "clash") return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис${r.name ? " (" + String(r.name).split(" ").slice(0, 2).join(" ") + ")" : ""}. Перенесіть один із записів`;
     return null;
   }
   function callPatient(p: QEntry) {

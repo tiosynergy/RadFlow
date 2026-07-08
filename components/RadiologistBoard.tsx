@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
-import { needsClarification, CLARIFY_META, isLate, LATE_META, lateCallClash } from "@/lib/queueStatus";
+import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock } from "@/lib/queueStatus";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
@@ -604,25 +604,18 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   }
 
   function inProgressBlockReason(p: RadEntry): string | null {
-    if (p.room_id && blockingByRoom[p.room_id]) return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
-    if (p.room_id && roomSchedClosed(p.room_id)) return "Кабінет зачинено за графіком на цей день";
-    if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
-    // Виклик ЗАРАЗ має вміститись до кінця робочого графіка кабінету
-    // (само дослідження; буфер може вийти за межі — як у редакторі слотів).
-    if (p.room_id) {
-      const sched = roomScheduleFor(selectedDate, p.room_id, selectedOverride);
-      if (!sched.closed) {
-        const [eh, em] = String(sched.end).split(":").map(Number);
-        const endMin = (eh || 0) * 60 + (em || 0);
-        const nowD = new Date();
-        const nowMin = nowD.getHours() * 60 + nowD.getMinutes();
-        if (nowMin + (p.duration_min || 30) > endMin) return `Дослідження ${p.duration_min || 30} хв не вміститься до кінця графіка кабінету (${sched.end}) — реєстратура має перенести запис`;
-      }
-    }
-    // Пізній виклик: фактичне вікно (зараз + тривалість + буфер) не має
-    // налазити на наступний запис кабінету (напр. після «все ж прийшов»).
-    const clash = lateCallClash(p, entries);
-    if (clash) return `Дослідження ${p.duration_min || 30} хв зараз не вміститься — о ${clash.time} наступний запис. Реєстратура має перенести один із записів`;
+    const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride) : null;
+    const r = computeCallBlock(p, entries, {
+      roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
+      schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
+      schedEnd: sched && !sched.closed ? sched.end : null,
+    });
+    if (!r) return null;
+    if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
+    if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
+    if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    if (r.code === "sched_overrun") return `Дослідження ${r.durationMin} хв не вміститься до кінця графіка кабінету (${r.end}) — реєстратура має перенести запис`;
+    if (r.code === "clash") return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис. Реєстратура має перенести один із записів`;
     return null;
   }
   function callPatient(p: RadEntry) {

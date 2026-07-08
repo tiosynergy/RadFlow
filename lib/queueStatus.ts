@@ -69,6 +69,60 @@ export function lateCallClash(
   return next || null;
 }
 
+/* ===== Причина, чому «Викликати в кабінет» ЗАРАЗ неможливо =====
+   Централізована логіка (порядок перевірок + арифметика вікна виклику), спільна
+   для адмінської дошки (QueueBoard) та дошки радіолога (RadiologistBoard). Щоб
+   не тримати два екземпляри, які розповзаються, тут — лише машинний КОД причини
+   + потрібні дані; рольові формулювання повідомлень лишаються в компонентах.
+
+   opts обчислюються в компоненті з наявних хелперів:
+     roomBlocked — кабінет заблоковано (поломка/ТО), напр. blockingByRoom[room_id];
+     schedClosed — кабінет зачинено за графіком на цей день (roomSchedClosed);
+     schedEnd    — "HH:MM" кінець графіка кабінету (null якщо зачинено/невідомо). */
+export type CallBlockInfo = {
+  id: string;
+  room_id: string | null;
+  duration_min: number | null;
+  buffer_time_min: number | null;
+};
+export type CallBlockOpts = {
+  roomBlocked?: boolean;
+  schedClosed?: boolean;
+  schedEnd?: string | null;
+  now?: Date;
+};
+export type CallBlock =
+  | { code: "room_blocked" }
+  | { code: "room_closed" }
+  | { code: "room_busy" }
+  | { code: "sched_overrun"; durationMin: number; end: string }
+  | { code: "clash"; durationMin: number; time: string; name?: string | null };
+
+export function computeCallBlock(
+  p: CallBlockInfo,
+  entries: Array<{ id: string; room_id: string | null; status: string; scheduled_time: string | null; patient_name?: string | null }>,
+  opts: CallBlockOpts = {}
+): CallBlock | null {
+  const now = opts.now ?? new Date();
+  if (opts.roomBlocked) return { code: "room_blocked" };
+  if (opts.schedClosed) return { code: "room_closed" };
+  if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return { code: "room_busy" };
+  const durationMin = p.duration_min || 30;
+  // Виклик ЗАРАЗ має вміститись до кінця робочого графіка кабінету (саме
+  // дослідження; буфер прибирання може вийти за межі — як у редакторі слотів).
+  if (p.room_id && opts.schedEnd) {
+    const [eh, em] = String(opts.schedEnd).split(":").map(Number);
+    const endMin = (eh || 0) * 60 + (em || 0);
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+    if (nowMin + durationMin > endMin) return { code: "sched_overrun", durationMin, end: opts.schedEnd };
+  }
+  // Пізній виклик: фактичне вікно (зараз + тривалість + буфер) не має налазити
+  // на наступний запис кабінету (напр. після «все ж прийшов»).
+  const clash = lateCallClash(p, entries, now);
+  if (clash) return { code: "clash", durationMin, time: clash.time, name: clash.name };
+  return null;
+}
+
 // dayDate — Date дня записи (00:00); scheduledTime — "HH:MM".
 export function needsClarification(
   status: string | null | undefined,
