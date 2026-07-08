@@ -362,6 +362,7 @@ export type Database = {
           clinic_id: string;
           source_entry_id: string | null;
           scheduled_entry_id: string | null;
+          room_id: string | null;
           patient_name: string;
           patient_phone: string | null;
           patient_dob: string | null;
@@ -390,6 +391,7 @@ export type Database = {
           clinic_id: string;
           source_entry_id?: string | null;
           scheduled_entry_id?: string | null;
+          room_id?: string | null;
           patient_name: string;
           patient_phone?: string | null;
           patient_dob?: string | null;
@@ -418,6 +420,7 @@ export type Database = {
           clinic_id?: string;
           source_entry_id?: string | null;
           scheduled_entry_id?: string | null;
+          room_id?: string | null;
           patient_name?: string;
           patient_phone?: string | null;
           patient_dob?: string | null;
@@ -458,6 +461,12 @@ export type Database = {
             foreignKeyName: "waitlist_entries_scheduled_entry_id_fkey";
             columns: ["scheduled_entry_id"];
             referencedRelation: "queue_entries";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "waitlist_entries_room_id_fkey";
+            columns: ["room_id"];
+            referencedRelation: "rooms";
             referencedColumns: ["id"];
           },
           {

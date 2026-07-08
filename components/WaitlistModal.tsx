@@ -19,9 +19,11 @@ import { useModalA11y } from "@/lib/useModalA11y";
 
 type ExtraStudy = { type: string; region: string; dur: number };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 
 export type WaitlistFormOut = {
   clinicId?: string; // при виборі центру (портал направника)
+  roomId: string | null; // опційна жорстка прив'язка до кабінету (null = будь-який)
   name: string;
   phone: string;
   email: string | null;
@@ -59,13 +61,15 @@ function todayKey(): string {
 interface WaitlistModalProps {
   /** Портал направника: обовʼязковий вибір центру (active referral_access). */
   centers?: { clinicId: string; name: string }[];
+  /** Кабінети центру — вмикають опційний селектор жорсткої прив'язки (адмін-флоу). */
+  rooms?: RoomOpt[];
   /** Режим редагування наявного рядка листа. */
   initial?: WaitlistEntry | null;
   onClose: () => void;
   onSave: (w: WaitlistFormOut) => void | Promise<void>;
 }
 
-export default function WaitlistModal({ centers, initial, onClose, onSave }: WaitlistModalProps) {
+export default function WaitlistModal({ centers, rooms, initial, onClose, onSave }: WaitlistModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const isEdit = !!initial;
   const initStudies: Study[] = Array.isArray(initial?.studies) ? (initial!.studies as Study[]) : [];
@@ -83,6 +87,7 @@ export default function WaitlistModal({ centers, initial, onClose, onSave }: Wai
   const [contrast, setContrast] = useState(initPrimary?.contrast === true);
   const [buffer, setBuffer] = useState<number>(initial ? normBuffer(initial.buffer_time_min) : BUFFER_DEFAULT);
   const [priority, setPriority] = useState<PatientPriority | "">(initial?.priority_level || "");
+  const [roomId, setRoomId] = useState<string>(initial?.room_id || "");
   const [dateFrom, setDateFrom] = useState(initial ? (initial.desired_date_from || "") : todayKey());
   const [dateTo, setDateTo] = useState(initial?.desired_date_to || "");
   const [timeKey, setTimeKey] = useState(() => (initial ? timePresetKey(initial.desired_time_from, initial.desired_time_to) : "any"));
@@ -92,6 +97,9 @@ export default function WaitlistModal({ centers, initial, onClose, onSave }: Wai
   const allRegions = studyType === "MRT" ? MRT_REGIONS : CT_REGIONS;
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const primaryKind = studyType === "MRT" ? "МРТ" : "КТ";
+  // Кабінети поточної модальності (МРТ→MRI, КТ→CT) для опційної прив'язки.
+  const roomModality = studyType === "MRT" ? "MRI" : "CT";
+  const roomOptions = (rooms || []).filter((r) => r.modality === roomModality);
   const contrastSuffix = contrast ? " з контрастом" : "";
   const regionObj = regions.find((r) => r.label === region);
   const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (studyType === "MRT" ? 45 : 20);
@@ -114,7 +122,7 @@ export default function WaitlistModal({ centers, initial, onClose, onSave }: Wai
   const validExtra = extraStudies.filter((s) => s.region);
 
   function changeType(t: string) {
-    setStudyType(t); setRegion(""); setContrast(false);
+    setStudyType(t); setRegion(""); setContrast(false); setRoomId(""); // прив'язка до кабінету скидається зі зміною модальності
     const k = t === "MRT" ? "МРТ" : "КТ";
     setExtraStudies((a) => a.map((s) => (s.type === k ? s : { ...s, type: k, region: "", dur: exDur(k, "") })));
   }
@@ -143,6 +151,7 @@ export default function WaitlistModal({ centers, initial, onClose, onSave }: Wai
       const preset = TIME_PRESETS.find((p) => p.key === timeKey) || TIME_PRESETS[0];
       await onSave({
         clinicId: needCenter ? centerId : undefined,
+        roomId: roomId || null,
         name: name.trim(),
         phone,
         email: email.trim() || null,
@@ -312,6 +321,18 @@ export default function WaitlistModal({ centers, initial, onClose, onSave }: Wai
             </label>
           </div>
           {badRange && <div className="ctx-hint red">Дата «по» раніша за дату «з» — виправте діапазон.</div>}
+
+          {roomOptions.length > 0 && (
+            <label className="fld">
+              <span className="fld-lab">Кабінет (необовʼязково)</span>
+              <select className="inp" value={roomId} onChange={(e) => setRoomId(e.target.value)}>
+                <option value="">Будь-який кабінет ({primaryKind})</option>
+                {roomOptions.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}{r.apparatus_model ? " · " + r.apparatus_model : ""}</option>
+                ))}
+              </select>
+            </label>
+          )}
 
           <label className="fld">
             <span className="fld-lab">Нотатка</span>

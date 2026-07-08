@@ -158,6 +158,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
 
   async function onAdd(w: WaitlistFormOut) {
     const res = await addWaitlistEntry({
+      roomId: w.roomId,
       name: w.name, phone: w.phone, email: w.email, dob: w.dob, sex: w.sex, age: w.age, weight: w.weight,
       priorityLevel: w.priorityLevel, studies: w.studies, durationMin: w.durationMin, bufferTimeMin: w.bufferTimeMin,
       desiredDateFrom: w.desiredDateFrom, desiredDateTo: w.desiredDateTo,
@@ -207,7 +208,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
       studies: w.studies, duration_min: w.durationMin, buffer_time_min: w.bufferTimeMin,
       desired_date_from: w.desiredDateFrom, desired_date_to: w.desiredDateTo,
       desired_time_from: w.desiredTimeFrom, desired_time_to: w.desiredTimeTo,
-      note: w.note,
+      note: w.note, room_id: w.roomId,
     });
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     setEditFor(null);
@@ -370,6 +371,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                   const m = PRIORITY_META[p.priority_level];
                   const stMeta = WAITLIST_STATUS_META[p.status];
                   const busy = busyId === p.id;
+                  const boundRoom = p.room_id ? (rooms || []).find((r) => r.id === p.room_id) : null;
                   return (
                     <div className={"clrow-wrap" + (expanded ? " open" : "")} key={p.id}>
                       <div className="wlrow">
@@ -390,6 +392,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                           <div className="wl-meta">
                             {p.patient_phone && <a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")} title="Подзвонити пацієнту" aria-label={"Подзвонити пацієнту: " + (p.patient_phone || "")}><span aria-hidden="true">☎</span> {p.patient_phone}</a>}
                             <span>Додано: {addedAgo(p.created_at)}</span>
+                            {boundRoom && <span title="Жорстка прив'язка до кабінету">Каб.: {boundRoom.name}</span>}
                           </div>
                         </div>
                         <div className="wl-proc-cell">
@@ -428,6 +431,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                             <div className="cld-item cld-item-full"><span className="cld-lab">Дослідження</span><span className="cld-val cld-val-wrap">{procLabel(p)} · {p.duration_min} хв + буфер {p.buffer_time_min} хв</span></div>
                             <div className="cld-item"><span className="cld-lab">Телефон</span><span className="cld-val"><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>{p.patient_phone}</a></span></div>
                             <div className="cld-item"><span className="cld-lab">Бажане вікно</span><span className="cld-val">{desiredWindowText(p)}</span></div>
+                            <div className="cld-item"><span className="cld-lab">Кабінет</span><span className="cld-val">{boundRoom ? boundRoom.name : "Будь-який (за модальністю)"}</span></div>
                             {p.note && <div className="cld-item cld-item-full"><span className="cld-lab">Нотатка</span><span className="cld-val cld-val-wrap">{p.note}</span></div>}
                           </div>
                           {p.status === "waiting" && (
@@ -468,8 +472,8 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
         </div>
       </div>
 
-      {addOpen && <WaitlistModal onClose={() => setAddOpen(false)} onSave={onAdd} />}
-      {editFor && <WaitlistModal initial={editFor} onClose={() => setEditFor(null)} onSave={onEditSave} />}
+      {addOpen && <WaitlistModal rooms={rooms} onClose={() => setAddOpen(false)} onSave={onAdd} />}
+      {editFor && <WaitlistModal rooms={rooms} initial={editFor} onClose={() => setEditFor(null)} onSave={onEditSave} />}
       {confirmRemove && (
         <ConfirmDialog title="Зняти з листа очікування"
           text={<>Зняти <b style={{ color: "var(--text)" }}>{confirmRemove.patient_name}</b> з листа очікування? Запис перейде на вкладку «Зняті» — його можна буде повернути.</>}

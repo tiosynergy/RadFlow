@@ -55,7 +55,7 @@ export async function fetchWaitlistCandidates(
       .eq("clinic_id", clinicId)
       .eq("status", "waiting");
     return (data || [])
-      .filter((e) => waitlistMatchesSlot(e, { date: slot.date, timeMin, modality: modality ?? null }))
+      .filter((e) => waitlistMatchesSlot(e, { date: slot.date, timeMin, modality: modality ?? null, roomId: slot.roomId }))
       .sort(compareWaitlist);
   } catch {
     return []; // транзієнтна помилка мережі — просто не пропонуємо

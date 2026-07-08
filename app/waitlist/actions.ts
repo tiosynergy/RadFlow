@@ -26,6 +26,7 @@ async function callerProfile(supabase: SupabaseClient<Database>) {
 
 export type WaitlistInput = {
   clinicId?: string | null; // направник передає центр; персонал — визначається з сервера
+  roomId?: string | null; // опційна жорстка прив'язка до кабінету (guard 0051: має бути того ж центру)
   name: string;
   phone?: string | null;
   email?: string | null;
@@ -77,6 +78,7 @@ export async function addWaitlistEntry(input: WaitlistInput): Promise<WaitlistAc
     .from("waitlist_entries")
     .insert({
       clinic_id: clinicId,
+      room_id: input.roomId ?? null,
       source_entry_id: input.sourceEntryId ?? null,
       patient_name: input.name.trim(),
       patient_phone: input.phone || null,
@@ -178,6 +180,7 @@ const WAITLIST_PATCH_ALLOWED = [
   "patient_name", "patient_phone", "patient_email", "patient_dob", "patient_sex",
   "patient_age", "patient_weight", "studies", "duration_min", "buffer_time_min",
   "desired_date_from", "desired_date_to", "desired_time_from", "desired_time_to", "note",
+  "room_id",
 ] as const;
 
 /** Редагування рядка листа. Пріоритет і статус — ЛИШЕ через окремі дії

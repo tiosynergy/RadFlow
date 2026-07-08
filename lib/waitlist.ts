@@ -81,6 +81,7 @@ export interface FreedSlot {
   date: string; // YYYY-MM-DD
   timeMin: number; // початок слота, хвилини від 00:00
   modality?: Modality | null; // модальність кабінету
+  roomId?: string | null; // конкретний кабінет слота (для прив'язаних рядків)
 }
 
 /**
@@ -89,7 +90,9 @@ export interface FreedSlot {
  *  • статус waiting;
  *  • дата слота в межах desired_date_from..to (відкриті межі = без обмеження);
  *  • початок слота в межах desired_time_from..to;
- *  • модальність збігається (якщо задана в рядку листа і відома в слота).
+ *  • кабінет збігається, ЯКЩО рядок прив'язаний до конкретного (e.room_id) —
+ *    тоді модальність не перевіряємо окремо (кабінет її вже визначає);
+ *  • інакше — модальність збігається (якщо задана в рядку і відома в слота).
  */
 export function waitlistMatchesSlot(e: WaitlistEntry, slot: FreedSlot): boolean {
   if (e.status !== "waiting") return false;
@@ -99,6 +102,8 @@ export function waitlistMatchesSlot(e: WaitlistEntry, slot: FreedSlot): boolean 
   const to = timeToMin(e.desired_time_to);
   if (from != null && slot.timeMin < from) return false;
   if (to != null && slot.timeMin >= to) return false;
+  // Жорстка прив'язка до кабінету: якщо задана — слот має бути саме цього кабінету.
+  if (e.room_id && slot.roomId && e.room_id !== slot.roomId) return false;
   if (e.modality && slot.modality && e.modality !== slot.modality) return false;
   return true;
 }
