@@ -26,7 +26,7 @@ type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: s
 type RadEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   patient_sex: string | null; patient_weight: number | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null;
-  status: string; call_status: string | null; studies: Json; studies_original: Json | null; has_contrast: boolean;
+  status: string; call_status: string | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; has_contrast: boolean;
   contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null; note: string | null; radiologist_note: string | null;
   indication: string | null; room_id: string | null; updated_at: string; in_progress_at: string | null;
 };
@@ -291,7 +291,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
               const changed = sdiff.some((d) => d.state !== "kept");
               return (
                 <div style={{ marginBottom: 8 }}>
-                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
+                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
                     {sdiff.map((d, i) => (
                       <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
@@ -523,7 +523,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     const supabase = createClient();
     let q = supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at")
+      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .neq("status", "cancelled");

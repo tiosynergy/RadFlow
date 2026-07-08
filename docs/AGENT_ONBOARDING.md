@@ -9,7 +9,8 @@ management.
 
 ## Stack & structure
 - Next.js 15 (App Router) + Supabase (Postgres + RLS + Auth) + TypeScript + Tailwind.
-- Some components are still legacy `.jsx` from an earlier prototype.
+- All components are TypeScript `.tsx` (the earlier prototype `.jsx` were migrated; no `lib/*.js`).
+- ESLint is configured: flat config `eslint.config.mjs` (ESLint 9 / Next 15.5, lenient baseline); `npm run lint` == `eslint .`.
 - `app/` → routes + API route handlers (role-gated; see `middleware.ts` and `lib/supabase/middleware.ts`)
 - `components/` → React components
 - `lib/` → business logic + Supabase clients (`lib/supabase/{client,server,admin}.ts`)
@@ -52,9 +53,9 @@ management.
 
 ## Migrations
 - Applied to prod MANUALLY via the Supabase SQL editor (no automated migration runner).
-- Prod is currently at **0044** (highest local migration; `0044_ceo_list_rpc.sql` applied
-  2026-06-30). ALWAYS check the highest existing migration number before adding a new one and
-  number it sequentially (a duplicate/lower number is a bug).
+- Prod migrations **0001–0052 ALL APPLIED** (highest is `0052_studies_changed_by.sql`). The next
+  new migration is **0053**. ALWAYS check the highest existing migration number before adding a new
+  one and number it sequentially (a duplicate/lower number is a bug).
 - Keep migrations idempotent (`do $$ … exception when duplicate_object …$$`, `create … if not
   exists`, `drop policy if exists` before `create policy`).
 
@@ -84,15 +85,41 @@ management.
   `lib/useModalA11y.ts` on all 8 modals + stronger `.btn:disabled`; registrar hotkeys
   (`e.code`: n / `/` / r / 1–9 / `` ` ``); board skeleton; contextual help `components/HelpTip.tsx`;
   inline block reasons. Live-tested in browser. P1.2 (undo) intentionally skipped.
+- **Since then (through 2026-07-08, prod at 0052):**
+  - `0045` buffer time between bookings; `0046` patient priority (`patient_priority` enum); `0047`
+    waitlist (`waitlist_entries`); `0048` referrer status/call guards; `0049` `reschedule_origin`;
+    `0050` `room_busy_slots` gains optional `p_exclude`; `0051` waitlist optional `room_id` binding
+    (`guard_waitlist_room`); `0052` `queue_entries.studies_changed_by` (edit attribution).
+  - **Room breaks** (no migration — `rooms.schedule` is free JSONB): multiple breaks per room
+    (whole-week + per-day) in the Setup Wizard (`rooms.schedule.breaks[]`); ENFORCED in all slot
+    grids via `lib/schedule.ts` `roomBreaksFor`/`overlapsBreak`. Tech-debt refactor:
+    `inProgressBlockReason` extracted to `lib/queueStatus.ts` → `computeCallBlock()`.
+  - **Emergency stop** (no migration — incident `reason='emergency'`): sidebar toggle on QueueBoard
+    + `EmergencyModal`; marks affected patients `call_status='to_recall'`, fires `N8N_WEBHOOK_URL`
+    (`emergency_stop`); per-room instant toggle w/ confirm; stopped rooms red in the sidebar.
+  - **Referrer portal UI:** shared `components/MiniCalendar.tsx` (used by QueueBoard + ReferrerBoard);
+    ReferrerBoard calendar rail + one-line status filters; sidebar rooms filtered by
+    `referral_access.room_ids` and clickable quick-filters; native date/time pickers dark
+    (`color-scheme: dark`).
+  - **Study-edit attribution (0052):** `editQueueEntryStudies` records the editor's role; boards
+    label "змінено клінікою/направником", synced via realtime. Admin queue shows the referrer
+    (`referrer:referrer_id(full_name)`); "⚠ Протипоказання" shown at the "Дослідження" label level.
+  - Test data seeder `scripts/seed-test-data.mjs` updated (roles, breaks-aware, waitlist per room).
 
 ## Open work — see `TODO.md` for the live list
-- Commit pending changes; run `npm run typecheck` (== `tsc --noEmit`) and `npm run lint`. Note:
-  bare `tsc` is NOT on PATH — use `npx` or the npm script. `next lint` is deprecated and ESLint
-  isn't configured yet (separate task).
+- Run `npm run typecheck` (== `tsc --noEmit`) and `npm run lint` (== `eslint .`). Note: bare `tsc`
+  is NOT on PATH — use `npx` or the npm script.
+- **Stage-2 (n8n + AI):** first live hook is the emergency `emergency_stop` webhook; next up —
+  smart waitlist rotation, predictive no-show, schedule optimization (inputs already modeled:
+  `waitlist_status`, `priority_level`, `buffer_time_min`, `desired_*`, `room_id`, `isLate`,
+  `waitlistMatchesSlot()`, `reschedule_origin`, `studies_changed_by`).
 - Referrer password recovery via email — deferred until a real domain + SMTP exist.
-- ESLint not configured yet (`next lint` deprecated) — separate task.
+- Polish/tech-debt: RadiologistBoard "· змінено" lacks `studies_changed_by` attribution (its select
+  omits the column); ReferrerBoard's in-board room `<select>` still lists ALL clinic rooms (not the
+  referrer's `room_ids`); one stray unused `eslint-disable` in `lib/useRealtimeRefetch.ts`.
 
-  (DONE, do not reopen: admin-reset for referrers — fixed; RPC `ceo_list_for_clinic` — shipped in 0044.)
+  (DONE, do not reopen: ESLint configured; admin-reset for referrers — fixed; RPC `ceo_list_for_clinic`
+  — 0044; `computeCallBlock` extraction; `room_busy_slots` in reschedule/study modals.)
 
 ## Environment & workflow notes
 - The isolated Linux sandbox/bash may be unavailable (disk space) — prefer file tools.

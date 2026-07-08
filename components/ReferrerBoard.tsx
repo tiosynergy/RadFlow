@@ -110,7 +110,14 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
   }, [focus?.nonce]);
 
   const multiCenter = activeCenters.length > 1;
-  const rooms = centerId === "all" ? [] : (roomsByClinic[centerId] || []);
+  // Лише ДОЗВОЛЕНІ кабінети напрямника (referral_access.room_ids). null/порожньо = усі — як у сайдбарі.
+  const rooms = useMemo(() => {
+    if (centerId === "all") return [];
+    const all = roomsByClinic[centerId] || [];
+    const allowed = centersById[centerId]?.room_ids;
+    const list = Array.isArray(allowed) && allowed.length ? allowed : null;
+    return list ? all.filter((r) => list.includes(r.id)) : all;
+  }, [centerId, roomsByClinic, centersById]);
   const roomById = useMemo(() => {
     const m: Record<string, RoomOpt> = {};
     Object.values(roomsByClinic).forEach((arr) => arr.forEach((r) => { m[r.id] = r; }));

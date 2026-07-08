@@ -7,80 +7,81 @@ branch `dev`; merging `dev → main` + `git push origin main` triggers Vercel au
 Communicate with the user (Игорь) in **Russian** (UI copy is Ukrainian).
 
 ## Before doing anything
-1. Read the auto-memory: `MEMORY.md` and linked files — especially `radflow-state`,
-   `radflow-waitlist`, `radflow-late-status`, `radflow-workflow`, `radflow-buffer-time`,
+1. Read auto-memory `MEMORY.md` and the linked files — especially `radflow-state`,
+   `radflow-referrer-board`, `radflow-emergency-stop`, `radflow-room-breaks`,
+   `radflow-queue-lifecycle`, `radflow-waitlist`, `radflow-late-status`, `radflow-workflow`,
    `radflow-patient-priority`, `radflow-ux-audit`.
-2. Read `docs/PRODUCT_OVERVIEW.md` (updated 2026-07-04 — source of truth, includes waitlist §4.6
-   and derived «Запізнення») and `docs/audit/FULL_AUDIT_2026-06-25.md`.
-3. Verify facts against code + `git status`/`git log` — memory reflects the moment it was written.
+2. Read `docs/PRODUCT_OVERVIEW.md` (updated 2026-07-08 — source of truth) and
+   `docs/AGENT_ONBOARDING.md` + `docs/audit/FULL_AUDIT_2026-06-25.md`.
+3. Verify every fact against code + `git status`/`git log` — memory reflects the moment it was written.
 
-## Current state (as of end of 2026-07-04 session)
-- **PROD migrations: 0044–0047 APPLIED** (confirmed by Игорь). Highest in repo: **0047**
-  (`waitlist_entries`). No pending migrations.
-- **Large UNCOMMITTED package on `dev`** (built & mostly browser-tested 07-03/07-04):
-  - **Лист очікування** (migration 0047 + `lib/waitlist.ts`, `app/waitlist/*`, `WaitlistBoard/
-    WaitlistModal/WaitlistCandidatesModal`, sidebar live badge, referrer portal tab, candidate
-    suggestions on cancel, «⏳ В лист очікування» from CancelledPanel, slot prefill, cabinet filter
-    via modality, security-review fixes).
-  - **Derived «Запізнення»** (`isLate`/`LATE_META` in `lib/queueStatus.ts`): badge everywhere,
-    blocked direct call + decision panel (все ж прийшов / перенести / в лист / не відбулося),
-    StatsBar counter+filter, call-list section «Запізнення сьогодні», referrer badge.
-  - **`lateCallClash` guard**: calling a patient NOW must fit (now + duration + buffer) before the
-    next active booking of the room — both QueueBoard and RadiologistBoard. Anti-overbooking audit
-    passed; `editQueueEntryStudies` now classifies OVERLAP errors.
-  - **Waitlist UX pass** (heuristic review): one primary action + «⋯» RowMenu, Undo toast
-    (aria-live), per-row busy state, ≥40px touch targets via `::before`, 15px patient name,
-    compact stat strip, dismissible hint (`rf_waitlist_hint_hidden`).
-  - **Decision-point edits** (LAST CHANGES — **NOT yet browser-tested**, dev server died):
-    clickable patient name (dotted underline → full edit modal) in waitlist row/card and referrer
-    portal; card action group «Додати в чергу» + «✎ Редагувати» + «✕ Зняти з листа»; row buttons
-    hidden while card expanded (no «Дія» duplication); new `components/ConfirmDialog.tsx` —
-    confirm modal for «Зняти з листа» (waitlist board + referrer portal).
-  - **`scripts/seed-test-data.mjs`** + npm script `seed:testdata` — wipes queue_entries +
-    waitlist_entries of ONE clinic and seeds today+7 days (10–15 patients/day, no Sundays) + 5
-    waitlist patients. Игорь ran it: multiple clinics in DB → script correctly aborted with the
-    list; needs re-run as `npm run seed:testdata "<назва клініки>"` (his clinic is «Medicom»).
+## Current state (start of session, ~2026-07-09)
+- **PROD migrations 0001–0052 ALL APPLIED; everything COMMITTED on `dev`.** Highest migration = **0052**
+  (`queue_entries.studies_changed_by`). The next new migration is **0053**. No work in flight.
+- Shipped in the previous session (all live/committed):
+  - **Tech-debt:** `inProgressBlockReason` extracted to `lib/queueStatus.ts` → `computeCallBlock()`
+    (shared by QueueBoard + RadiologistBoard).
+  - **room_busy_slots** RPC now used by RescheduleModal/StudyEditModal (migration 0050 added
+    optional `p_exclude`); removed the RLS-blind direct `queue_entries` reads for referrers.
+  - **Waitlist optional room binding** — migration 0051 (`waitlist_entries.room_id` + guard trigger
+    `guard_waitlist_room`), room-aware candidate matching, `WaitlistModal` room selector.
+  - **ESLint** set up: `eslint.config.mjs` (flat, ESLint 9 / Next 15.5, lenient baseline,
+    `next lint`→`eslint .`, `docs/**` ignored). One stray warning in `lib/useRealtimeRefetch.ts`.
+  - **Room breaks** (no migration — `rooms.schedule` is free JSONB): multiple breaks per room
+    (whole-week + per-day) in the Setup Wizard (`rooms.schedule.breaks[]`, legacy single-lunch
+    auto-migrated by `lib/schedule.normalizeRoomSchedule`); ENFORCED in Booking/Reschedule/Referral
+    slot grids + StudyEdit duration cap (`roomBreaksFor`/`overlapsBreak`); interval validation.
+  - **Emergency stop (Аварійна зупинка)** (no migration — incident `reason='emergency'`): sidebar
+    toggle on QueueBoard + `EmergencyModal`; blocks one/several/all rooms "until clarified", marks
+    today's affected patients `call_status='to_recall'`, fires `N8N_WEBHOOK_URL` (`emergency_stop`
+    event, best-effort). Per-room instant toggle via `ConfirmDialog`, "all" view → multi-select
+    modal (nothing preselected); stopped rooms are red in the sidebar; referrer booking blocked by
+    the existing incident mechanism; `BreakdownModal` shows an "Розблокувати" banner for it.
+  - **Referrer portal UI:** `MiniCalendar` extracted to a shared `components/MiniCalendar.tsx`
+    (used by QueueBoard + ReferrerBoard); ReferrerBoard got a calendar rail + status filters in one
+    line (7 cols); sidebar rooms are filtered by `referral_access.room_ids` and are clickable
+    quick-filters (`focus` prop → board); native date/time pickers dark (`color-scheme: dark` in `:root`).
+  - **studies_changed_by (migration 0052):** `editQueueEntryStudies` records the editor's role;
+    both boards label edits "змінено клінікою/направником", synced via realtime. Admin queue shows
+    the referrer (`referrer:referrer_id(full_name)`, fallback `doctor`); "⚠ Протипоказання" shown at
+    the "Дослідження" label level in all boards.
+  - `scripts/seed-test-data.mjs` updated (roles: 5–7 admin + 3–5 referrer/day; breaks-aware; waitlist
+    3–5 per room). DESTRUCTIVE for one clinic; Игорь runs `node scripts/seed-test-data.mjs "<clinic>"`.
 
-## Immediate next steps
-1. Игорь restarts dev server — it was stuck on «missing required error components» (likely stale
-   `.next`; files on disk verified syntactically fine). If a compile error appears in his
-   terminal, fix it first.
-2. Re-seed test data: `npm run seed:testdata "<точна назва>"`.
-3. Browser-test the untested decision-point edits on /waitlist (admin) and referrer portal:
-   name click → edit modal; expanded card shows Пріоритет | Додати в чергу / Редагувати / Зняти;
-   row buttons hidden when expanded; «Зняти з листа» opens ConfirmDialog (also from «⋯» menu),
-   confirm → Undo toast; restore works.
-4. Then: local `npm run typecheck` + `npm run build` (by Игорь), commit the whole package on
-   `dev`, get explicit go-ahead, deploy `dev → main`. Remind him to re-seed or clean test data
-   as appropriate before/after deploy (seed script targets one clinic only).
+## Suggested next steps / open backlog
+- **Stage-2: n8n + AI-agent automation.** First live hook already ships (emergency `emergency_stop`
+  webhook). Next: smart waitlist rotation, predictive no-show, schedule optimization. Inputs modeled:
+  `waitlist_status`, `priority_level`, `buffer_time_min`, `desired_*`, `room_id`, `isLate`,
+  `waitlistMatchesSlot()`, `reschedule_origin`, `studies_changed_by`, emergency incidents.
+- **Polish / tech-debt:** RadiologistBoard "· змінено" lacks the `studies_changed_by` attribution
+  (its select omits the column); ReferrerBoard's in-board room `<select>` still lists ALL clinic
+  rooms (should filter by the referrer's `room_ids`, like the sidebar now does); stray unused
+  `eslint-disable` in `lib/useRealtimeRefetch.ts`.
+- Referrer password recovery via email — deferred until a real domain + SMTP exist.
 
-## Open backlog
-- n8n + AI-agent automation (Stage 2): smart waitlist rotation, predictive no-show, schedule
-  optimization. `waitlist_status`, `priority_level`, `buffer_time_min`, `desired_*`, `isLate`
-  formula and `waitlistMatchesSlot()` were all designed as its inputs.
-- Optional: hard `room_id` binding for waitlist entries (patient tied to a specific apparatus).
-- Referrer password recovery via email — deferred until real domain + SMTP.
-- Sidebar waitlist badge counts clinic-wide for staff (RLS-scoped), fine; CEO boards don't show
-  waitlist metrics yet (possible future KPI).
-
-## Conventions / rules (unchanged + new gotchas)
+## Conventions / rules
 - Always TypeScript; Server Actions pattern (`app/queue/actions.ts`, `app/waitlist/actions.ts`).
-  Multi-tenant isolation (clinic_id / RLS) is security-critical — use a subagent review for
-  anything touching policies/triggers/RPC. Service-role routes must check caller auth first.
-- Migrations: manual via Supabase SQL editor, sequential numbering (next is 0048), idempotent;
-  update `supabase/types.ts` on schema changes.
-- Realtime via `lib/useRealtimeRefetch.ts`; wrap client reloads in try/catch.
-- UI: Ukrainian copy, dark Apple-HIG tokens, Unicode glyphs (no emoji on dense screens, no icon
-  libs), `.req` red required labels, `useModalA11y` for modals, ≥40px touch targets.
-- **Env gotchas:** Cowork Linux sandbox mount can serve STALE/truncated files — in-sandbox `tsc`
-  is unreliable; file tools (Read/Edit) are ground truth; Игорь's local `npm run typecheck` is
-  authoritative. Grep tool output may mangle text (`//` shown as `\`) — verify with Read before
-  concluding a file is broken. `npm run build` doesn't complete in sandbox. Git and deploys are
-  run locally by Игорь (get explicit go-ahead). Dev server is **http**://localhost:3000 or
-  :3001 — for browser testing ask Игорь to log in per role (he never shares passwords), then
-  inspect via Claude-in-Chrome.
-- Track work with the task list; update MEMORY.md files as facts change; keep
-  `docs/PRODUCT_OVERVIEW.md` in sync when product behavior changes.
+  Multi-tenant isolation (clinic_id / RLS) is security-critical — **use a subagent for security/RLS
+  review** on anything touching policies/triggers/RPC. Service-role routes must check caller auth first.
+- Migrations: manual via Supabase SQL editor, **sequential numbering (next is 0053)**, idempotent
+  (`do $$ … exception when duplicate_object …$$`, `if not exists`, `drop … if exists`); update
+  `supabase/types.ts` on schema changes.
+- Realtime via `lib/useRealtimeRefetch.ts` (TD-3); wrap client reloads in try/catch.
+- UI: Ukrainian copy, dark Apple-HIG tokens, Unicode glyphs (no emoji on dense screens, no icon libs),
+  `.req` red required labels, `useModalA11y` for modals, ≥40px touch targets.
 
-Start by reading memory + `git status`, ask Игорь whether the dev server is back up and whether
-the seed ran, then finish step 3 (browser-test) before anything new.
+## Environment & workflow (important)
+- **Cowork Linux sandbox is unreliable for the toolchain:** in-sandbox `tsc`/`npm run build`/`node`
+  can hit truncated/stale file mounts (false errors); Grep may mangle `//`/`/*` — verify with Read.
+  File tools (Read/Edit/Write) are ground truth. Игорь's local `npm run typecheck` + `npm run build`
+  are authoritative. Git and deploys are run **locally by Игорь** (get explicit go-ahead before a
+  `dev→main` push). `.git/index.lock` can go stale — Игорь removes it from PowerShell.
+- Migrations applied to PROD manually by Игорь via the Supabase SQL editor.
+- Dev server: **http**://localhost:3000. For browser testing use the Claude-in-Chrome connector;
+  Игорь logs in per role (he never shares passwords), then you inspect. One Supabase session per
+  browser profile — use a second browser/incognito to test two roles at once.
+- Track work with the task list; keep the MEMORY.md files, `docs/PRODUCT_OVERVIEW.md` and
+  `docs/AGENT_ONBOARDING.md` in sync when product behavior changes.
+
+Start by reading memory + `git status`, then ask Игорь what to tackle next (Stage-2 automation,
+the tech-debt polish, or a new feature).
