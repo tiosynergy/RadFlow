@@ -17,6 +17,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate } from "@/supabase/types";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
+import { deliverPendingOutbox } from "@/lib/outbox";
 
 export type QueueActionResult =
   | { ok: true; id?: string } // id — створений запис (createBooking/createReferralBooking)
@@ -244,22 +245,9 @@ export async function submitIncident(input: IncidentInput): Promise<IncidentActi
    Блокує один/кілька/усі кабінети до з'ясування обставин: створює інциденти
    reason='emergency' (той самий механізм блокування, що поломка), переводить
    пацієнта «у кабінеті» в not_held, позначає постраждалих ЦЬОГО дня на обдзвон
-   (call_status='to_recall') і надсилає подію в n8n (best-effort). «Відновлення»
-   роботи — resolveEmergency (знімає всі активні аварійні інциденти). */
-
-async function notifyN8nEmergency(payload: Record<string, unknown>): Promise<void> {
-  const hook = process.env.N8N_WEBHOOK_URL;
-  if (!hook) return;
-  try {
-    await fetch(hook, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ event: "emergency_stop", ...payload }),
-    });
-  } catch {
-    // Best-effort: аварійна зупинка важливіша за доставку вебхука.
-  }
-}
+   (call_status='to_recall'). Подія в n8n пишеться в event_outbox ТРАНЗАКЦІЙНО
+   всередині RPC (0055) і доставляється надійно (H-1). «Відновлення» роботи —
+   resolveEmergency (знімає всі активні аварійні інциденти). */
 
 export type EmergencyResult =
   | { ok: true; stopped: number; affected: number }
@@ -275,46 +263,26 @@ export async function emergencyStop(input: { roomIds: string[]; note?: string | 
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  const nowIso = new Date().toISOString();
-
-  // 1) Аварійні інциденти лише для кабінетів БЕЗ активної аварії (ідемпотентно).
-  const { data: existing } = await supabase
-    .from("incidents")
-    .select("room_id")
-    .eq("clinic_id", clinicId).eq("reason", "emergency").eq("status", "active").in("room_id", roomIds);
-  const already = new Set((existing || []).map((r) => r.room_id));
-  const toStop = roomIds.filter((r) => !already.has(r));
-  if (toStop.length) {
-    const rows = toStop.map((room_id) => ({
-      clinic_id: clinicId, room_id, reason: "emergency", reason_label: "Аварійна зупинка",
-      note: input.note ?? null, started_at: nowIso, blocked_until: null, auto_unblock: false, status: "active" as const,
-    }));
-    const { error } = await supabase.from("incidents").insert(rows);
-    if (error) return { ok: false, error: error.message, code: "generic" };
-  }
-
-  // 2) Постраждалі ЦЬОГО дня (активні статуси) в обраних кабінетах — на обдзвон.
-  const { data: affected } = await supabase
-    .from("queue_entries")
-    .select("id, patient_name, patient_phone, room_id, scheduled_time, status")
-    .eq("clinic_id", clinicId).eq("scheduled_date", input.date)
-    .in("room_id", roomIds).in("status", ["scheduled", "waiting", "in_progress"]);
-  const affList = affected || [];
-  if (affList.length) {
-    await supabase.from("queue_entries").update({ call_status: "to_recall" }).in("id", affList.map((a) => a.id));
-  }
-  // 3) Пацієнт «у кабінеті» цих кабінетів → «Не відбулося» (дослідження перервано).
-  await supabase.from("queue_entries").update({ status: "not_held" })
-    .eq("clinic_id", clinicId).in("room_id", roomIds).eq("status", "in_progress");
-
-  // 4) Подія автоматизації (обдзвон) — best-effort.
-  await notifyN8nEmergency({
-    clinicId, at: nowIso, date: input.date, note: input.note ?? null,
-    roomIds: toStop.length ? toStop : roomIds,
-    patients: affList.map((a) => ({ id: a.id, name: a.patient_name, phone: a.patient_phone, roomId: a.room_id, time: a.scheduled_time })),
+  // Кроки 1–4 (інциденти → обдзвон → not_held → подія в event_outbox)
+  // виконуються АТОМАРНО в одній транзакції через RPC emergency_stop_rpc
+  // (0054/0055). Ізоляція по клініці — всередині RPC.
+  const { data, error } = await supabase.rpc("emergency_stop_rpc", {
+    p_room_ids: roomIds,
+    p_date: input.date,
+    p_note: input.note ?? null,
   });
+  if (error) {
+    const code = /28000|не авторизовано/i.test(error.message) ? "auth" : "generic";
+    return { ok: false, error: error.message, code };
+  }
+  const res = Array.isArray(data) ? data[0] : data;
 
-  return { ok: true, stopped: toStop.length, affected: affList.length };
+  // Негайна best-effort доставка події в n8n. Подія вже durable в event_outbox
+  // (записана транзакційно в RPC), тож якщо доставка тут не вдасться —
+  // cron-воркер /api/outbox/deliver добере її з ретраями (H-1).
+  try { await deliverPendingOutbox(20); } catch { /* backstop — cron */ }
+
+  return { ok: true, stopped: res?.stopped ?? 0, affected: res?.affected ?? 0 };
 }
 
 export type ResolveEmergencyResult =

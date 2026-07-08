@@ -839,6 +839,71 @@ export type Database = {
         };
         Relationships: [];
       };
+      audit_log: {
+        Row: {
+          id: number;
+          at: string;
+          actor: string | null;
+          clinic_id: string | null;
+          table_name: string;
+          row_id: string | null;
+          action: string;
+          before: Json | null;
+          after: Json | null;
+        };
+        Insert: {
+          at?: string;
+          actor?: string | null;
+          clinic_id?: string | null;
+          table_name: string;
+          row_id?: string | null;
+          action: string;
+          before?: Json | null;
+          after?: Json | null;
+        };
+        Update: {
+          at?: string;
+          actor?: string | null;
+          clinic_id?: string | null;
+          table_name?: string;
+          row_id?: string | null;
+          action?: string;
+          before?: Json | null;
+          after?: Json | null;
+        };
+        Relationships: [];
+      };
+      event_outbox: {
+        Row: {
+          id: number;
+          created_at: string;
+          event_type: string;
+          idempotency_key: string;
+          payload: Json;
+          delivered_at: string | null;
+          attempts: number;
+          last_error: string | null;
+        };
+        Insert: {
+          created_at?: string;
+          event_type: string;
+          idempotency_key?: string;
+          payload: Json;
+          delivered_at?: string | null;
+          attempts?: number;
+          last_error?: string | null;
+        };
+        Update: {
+          created_at?: string;
+          event_type?: string;
+          idempotency_key?: string;
+          payload?: Json;
+          delivered_at?: string | null;
+          attempts?: number;
+          last_error?: string | null;
+        };
+        Relationships: [];
+      };
     };
     Views: {
       [_ in never]: never;
@@ -936,6 +1001,19 @@ export type Database = {
           invite_token: string | null;
           role: string;
         }[];
+      };
+      emergency_stop_rpc: {
+        Args: { p_room_ids: string[]; p_date: string; p_note?: string | null };
+        Returns: {
+          stopped: number;
+          affected: number;
+          stopped_rooms: string[];
+          patients: Json;
+        }[];
+      };
+      outbox_mark_failed: {
+        Args: { p_id: number; p_error: string };
+        Returns: undefined;
       };
     };
     Enums: {
