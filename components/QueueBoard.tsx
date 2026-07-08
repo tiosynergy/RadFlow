@@ -12,6 +12,8 @@ import {
   setQueueEntryCall,
   resolveIncident as resolveIncidentAction,
   submitIncident as submitIncidentAction,
+  emergencyStop as emergencyStopAction,
+  resolveEmergency as resolveEmergencyAction,
   saveScheduleOverride,
   resetScheduleOverride,
   rescheduleQueueEntry,
@@ -30,6 +32,8 @@ import CompletionModal from "@/components/CompletionModal";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import BreakdownModal from "@/components/BreakdownModal";
+import EmergencyModal from "@/components/EmergencyModal";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
@@ -777,6 +781,9 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [breakdownOpen, setBreakdownOpen] = useState(false);
   const [breakdownRoomId, setBreakdownRoomId] = useState<string | null>(null);
+  const [emergencyOpen, setEmergencyOpen] = useState(false);
+  const [emergencyBusy, setEmergencyBusy] = useState(false);
+  const [emergencyConfirm, setEmergencyConfirm] = useState<{ roomId: string; action: "stop" | "resume" } | null>(null);
   const [overrides, setOverrides] = useState<Record<string, DayOverride>>({});
   const [schedEditOpen, setSchedEditOpen] = useState(false);
   const [filter, setFilter] = useState("all");
@@ -899,6 +906,9 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride).closed; }
 
   const liveIncidents = incidents.filter((i) => !incidentExpired(i));
+  // Аварійна зупинка: активні інциденти reason='emergency' → кабінети зупинено.
+  const emergencyRooms = Array.from(new Set(liveIncidents.filter((i) => i.reason === "emergency").map((i) => i.room_id)));
+  const emergencyActive = emergencyRooms.length > 0;
   const incidentsByRoom: Record<string, IncidentRow[]> = {};
   liveIncidents.forEach((i) => { (incidentsByRoom[i.room_id] = incidentsByRoom[i.room_id] || []).push(i); });
   const blockingByRoom: Record<string, IncidentRow> = {};
@@ -931,6 +941,32 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     notify(payload.id ? "Збережено" : (res.status === "planned" ? "Заплановано простій" : "Апарат заблоковано"), "success");
     loadIncidents();
     reload();
+  }
+
+  async function doEmergencyStop(roomIds: string[], note: string) {
+    setEmergencyBusy(true);
+    const res = await emergencyStopAction({ roomIds, note: note || null, date: dateKey(new Date()) });
+    setEmergencyBusy(false);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    notify(`Аварійна зупинка: кабінетів ${res.stopped}, на обдзвон ${res.affected}`, "error");
+    setEmergencyOpen(false);
+    reload();
+  }
+  async function doEmergencyResume(roomIds?: string[]) {
+    setEmergencyBusy(true);
+    const res = await resolveEmergencyAction(roomIds?.length ? { roomIds } : {});
+    setEmergencyBusy(false);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    notify("Роботу відновлено", "success");
+    setEmergencyOpen(false);
+    reload();
+  }
+  // Кнопка «Аварійна зупинка»: на «Усі кабінети» — модалка вибору; на конкретному
+  // кабінеті — тумблер саме цього кабінету через підтвердження (проти випадкового
+  // натискання; модалка «Усі кабінети» вже сама вимагає свідомого «Зупинити»).
+  function handleEmergencyClick() {
+    if (roomView === "all") { setEmergencyOpen(true); return; }
+    setEmergencyConfirm({ roomId: roomView, action: emergencyRooms.includes(roomView) ? "resume" : "stop" });
   }
 
   async function resolveIncident(idOrInc: string | IncidentRow) {
@@ -1167,6 +1203,9 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
         clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey}
         rooms={rooms} activeRoom={roomView} onSelectRoom={setRoomView} onNew={() => setModalOpen(true)}
         incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }}
+        onEmergency={handleEmergencyClick}
+        emergencyActive={roomView !== "all" ? emergencyRooms.includes(roomView) : emergencyActive}
+        stoppedRoomIds={Object.keys(blockingByRoom)}
       />
       <div className="main">
         <header className="topbar">
@@ -1381,6 +1420,36 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
       {breakdownOpen && (
         <BreakdownModal rooms={rooms} incidents={liveIncidents} overrides={overrides} initialRoomId={breakdownRoomId || undefined} onClose={() => { setBreakdownOpen(false); setBreakdownRoomId(null); }} onSubmit={submitIncident} onResolve={resolveIncident} />
+      )}
+      {emergencyOpen && (
+        <EmergencyModal
+          rooms={rooms}
+          stoppedRoomIds={emergencyRooms}
+          affectedCount={isToday ? entries.filter((e) => emergencyRooms.includes(e.room_id || "") && (e.status === "scheduled" || e.status === "waiting" || e.status === "in_progress")).length : undefined}
+          busy={emergencyBusy}
+          onClose={() => setEmergencyOpen(false)}
+          onStop={doEmergencyStop}
+          onResume={doEmergencyResume}
+        />
+      )}
+      {emergencyConfirm && (
+        <ConfirmDialog
+          title={emergencyConfirm.action === "stop" ? "Аварійно зупинити кабінет?" : "Відновити роботу кабінету?"}
+          text={emergencyConfirm.action === "stop"
+            ? <>Зупинити роботу <b>{roomsById[emergencyConfirm.roomId]?.name || "кабінет"}</b> до зʼясування обставин? Пацієнтів цього дня буде позначено на обдзвон.</>
+            : <>Відновити роботу <b>{roomsById[emergencyConfirm.roomId]?.name || "кабінет"}</b>? Кабінет знову прийматиме записи.</>}
+          confirmLabel={emergencyConfirm.action === "stop" ? "🛑 Зупинити" : "▶ Відновити"}
+          danger={emergencyConfirm.action === "stop"}
+          busy={emergencyBusy}
+          onClose={() => setEmergencyConfirm(null)}
+          onConfirm={async () => {
+            const a = emergencyConfirm;
+            if (!a) return;
+            if (a.action === "stop") await doEmergencyStop([a.roomId], "");
+            else await doEmergencyResume([a.roomId]);
+            setEmergencyConfirm(null);
+          }}
+        />
       )}
 
       {schedEditOpen && (

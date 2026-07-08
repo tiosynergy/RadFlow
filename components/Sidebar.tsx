@@ -30,6 +30,9 @@ interface SidebarProps {
   onNew?: () => void;
   incidentCount?: number;
   onBreakdown?: () => void;
+  onEmergency?: () => void;
+  emergencyActive?: boolean;
+  stoppedRoomIds?: string[]; // кабінети з активним простоєм (аварія/поломка) — підсвічуються червоним
 }
 
 function modalityLabel(m: string): string {
@@ -53,6 +56,9 @@ export default function Sidebar({
   onNew,
   incidentCount = 0,
   onBreakdown,
+  onEmergency,
+  emergencyActive = false,
+  stoppedRoomIds = [],
 }: SidebarProps) {
   const router = useRouter();
   const isAdmin = roleKey === "admin";
@@ -120,10 +126,12 @@ export default function Sidebar({
           </button>
           {(rooms || []).map((r) => (
             <button type="button" key={r.id} onClick={() => onSelectRoom && onSelectRoom(r.id)}
-              className={"sb-cab" + (activeRoom === r.id ? " active" : "")} style={{ width: "100%", textAlign: "left", border: "none", cursor: "pointer" }}>
+              className={"sb-cab" + (activeRoom === r.id ? " active" : "") + (stoppedRoomIds.includes(r.id) ? " stopped" : "")}
+              title={stoppedRoomIds.includes(r.id) ? "Кабінет зупинено (простій)" : undefined}
+              style={{ width: "100%", textAlign: "left", border: "none", cursor: "pointer" }}>
               <span className={"sb-cab-tile " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
               <span className="sb-cab-meta">
-                <span className="sb-cab-name">{r.name}</span>
+                <span className="sb-cab-name">{stoppedRoomIds.includes(r.id) ? "🛑 " : ""}{r.name}</span>
                 <span className="sb-cab-model">{r.apparatus_model || ""}</span>
               </span>
             </button>
@@ -149,6 +157,15 @@ export default function Sidebar({
             <span className="sb-item-lab">Інциденти</span>
             {incidentCount ? <span className="sb-badge sb-badge-red">{incidentCount}</span> : null}
           </button>
+          {onEmergency && (
+            <button type="button" onClick={() => onEmergency()} aria-pressed={emergencyActive}
+              className={"sb-item sb-emergency" + (emergencyActive ? " on" : "")} style={{ width: "100%", textAlign: "left", cursor: "pointer" }}
+              title={emergencyActive ? "Аварія активна — відкрити, щоб відновити роботу" : "Аварійно зупинити роботу кабінетів"}>
+              <span className="ic">🛑</span>
+              <span className="sb-item-lab">Аварійна зупинка</span>
+              {emergencyActive && <span className="sb-badge sb-badge-red">СТОП</span>}
+            </button>
+          )}
         </div>
       </nav>
 

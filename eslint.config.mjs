@@ -22,6 +22,7 @@ const eslintConfig = [
       "scripts/**",
       "styles/**",
       "public/**",
+      "docs/**", // прототипні/довідкові файли — не код застосунку
     ],
   },
   ...compat.extends("next/core-web-vitals", "next/typescript"),

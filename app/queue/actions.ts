@@ -240,6 +240,102 @@ export async function submitIncident(input: IncidentInput): Promise<IncidentActi
   return { ok: true, status };
 }
 
+/* ===== Аварійна зупинка (emergency stop) =====
+   Блокує один/кілька/усі кабінети до з'ясування обставин: створює інциденти
+   reason='emergency' (той самий механізм блокування, що поломка), переводить
+   пацієнта «у кабінеті» в not_held, позначає постраждалих ЦЬОГО дня на обдзвон
+   (call_status='to_recall') і надсилає подію в n8n (best-effort). «Відновлення»
+   роботи — resolveEmergency (знімає всі активні аварійні інциденти). */
+
+async function notifyN8nEmergency(payload: Record<string, unknown>): Promise<void> {
+  const hook = process.env.N8N_WEBHOOK_URL;
+  if (!hook) return;
+  try {
+    await fetch(hook, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ event: "emergency_stop", ...payload }),
+    });
+  } catch {
+    // Best-effort: аварійна зупинка важливіша за доставку вебхука.
+  }
+}
+
+export type EmergencyResult =
+  | { ok: true; stopped: number; affected: number }
+  | { ok: false; error: string; code?: "forbidden" | "auth" | "generic" };
+
+/** Аварійно зупинити роботу обраних кабінетів + обдзвон постраждалих ЦЬОГО дня. */
+export async function emergencyStop(input: { roomIds: string[]; note?: string | null; date: string }): Promise<EmergencyResult> {
+  const roomIds = Array.from(new Set((input?.roomIds || []).filter(Boolean)));
+  if (!roomIds.length) return { ok: false, error: "Не обрано кабінети", code: "generic" };
+  if (!input?.date) return { ok: false, error: "Не вказано дату", code: "generic" };
+
+  const supabase = await createClient();
+  const clinicId = await callerClinicId(supabase);
+  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const nowIso = new Date().toISOString();
+
+  // 1) Аварійні інциденти лише для кабінетів БЕЗ активної аварії (ідемпотентно).
+  const { data: existing } = await supabase
+    .from("incidents")
+    .select("room_id")
+    .eq("clinic_id", clinicId).eq("reason", "emergency").eq("status", "active").in("room_id", roomIds);
+  const already = new Set((existing || []).map((r) => r.room_id));
+  const toStop = roomIds.filter((r) => !already.has(r));
+  if (toStop.length) {
+    const rows = toStop.map((room_id) => ({
+      clinic_id: clinicId, room_id, reason: "emergency", reason_label: "Аварійна зупинка",
+      note: input.note ?? null, started_at: nowIso, blocked_until: null, auto_unblock: false, status: "active" as const,
+    }));
+    const { error } = await supabase.from("incidents").insert(rows);
+    if (error) return { ok: false, error: error.message, code: "generic" };
+  }
+
+  // 2) Постраждалі ЦЬОГО дня (активні статуси) в обраних кабінетах — на обдзвон.
+  const { data: affected } = await supabase
+    .from("queue_entries")
+    .select("id, patient_name, patient_phone, room_id, scheduled_time, status")
+    .eq("clinic_id", clinicId).eq("scheduled_date", input.date)
+    .in("room_id", roomIds).in("status", ["scheduled", "waiting", "in_progress"]);
+  const affList = affected || [];
+  if (affList.length) {
+    await supabase.from("queue_entries").update({ call_status: "to_recall" }).in("id", affList.map((a) => a.id));
+  }
+  // 3) Пацієнт «у кабінеті» цих кабінетів → «Не відбулося» (дослідження перервано).
+  await supabase.from("queue_entries").update({ status: "not_held" })
+    .eq("clinic_id", clinicId).in("room_id", roomIds).eq("status", "in_progress");
+
+  // 4) Подія автоматизації (обдзвон) — best-effort.
+  await notifyN8nEmergency({
+    clinicId, at: nowIso, date: input.date, note: input.note ?? null,
+    roomIds: toStop.length ? toStop : roomIds,
+    patients: affList.map((a) => ({ id: a.id, name: a.patient_name, phone: a.patient_phone, roomId: a.room_id, time: a.scheduled_time })),
+  });
+
+  return { ok: true, stopped: toStop.length, affected: affList.length };
+}
+
+export type ResolveEmergencyResult =
+  | { ok: true; resolved: number }
+  | { ok: false; error: string; code?: "auth" | "generic" };
+
+/** Відновити роботу: зняти активні аварійні інциденти (усі або обрані кабінети). */
+export async function resolveEmergency(input?: { roomIds?: string[] }): Promise<ResolveEmergencyResult> {
+  const supabase = await createClient();
+  const clinicId = await callerClinicId(supabase);
+  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  let q = supabase.from("incidents")
+    .update({ status: "resolved", resolved_at: new Date().toISOString() })
+    .eq("clinic_id", clinicId).eq("reason", "emergency").eq("status", "active");
+  if (input?.roomIds?.length) q = q.in("room_id", input.roomIds);
+  const { data, error } = await q.select("id");
+  if (error) return { ok: false, error: error.message, code: "generic" };
+  return { ok: true, resolved: data?.length ?? 0 };
+}
+
 // Мягкая пред-проверка пересечения слота (жёсткую гарантию даёт DB-триггер
 // check_no_overlap). startMin/endMin — минуты от начала суток.
 async function hasSlotClash(
