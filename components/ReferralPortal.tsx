@@ -25,7 +25,7 @@ import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority, updateWaitlis
 import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
 import { isLate, LATE_META } from "@/lib/queueStatus";
 import type { WaitlistEntry } from "@/supabase/types";
-import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, roomBreaksFor, overlapsBreak, type DayOverride } from "@/lib/schedule";
 import { slotBlockedByIncidents, type IncidentLike } from "@/lib/incidents";
 import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
@@ -131,6 +131,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const [time, setTime] = useState("");
   const [dayEntries, setDayEntries] = useState<BusySlot[]>([]);
   const [override, setOverride] = useState<DayOverride | null>(null);
+  const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule обраного кабінету (для перерв)
   const [incidents, setIncidents] = useState<IncidentLike[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -208,7 +209,9 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
       const inc = await supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", centerId).in("status", ["active", "planned"]);
       setIncidents(inc.data || []);
     }
-    if (!roomId) { setDayEntries([]); return; }
+    if (!roomId) { setDayEntries([]); setRoomSchedule(null); return; }
+    const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+    setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
     const { data } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
     setDayEntries(data || []);
   }, [centerId, roomId, date]);
@@ -224,6 +227,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const roomSched = roomScheduleFor(dateObj, roomId || "", override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
   const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) + (e.buffer_time_min ?? BUFFER_DEFAULT) }));
+  const roomBreaks = roomBreaksFor(dateObj, roomSchedule); // перерви кабінету на цю дату
   const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
   const isBookToday = sameDay(bookDate, today0());
   const slots: string[] = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
@@ -235,6 +239,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     if (slotBlockedByIncidents(incidents, roomId || "", slotMs)) return "blocked";
     if (a < schedStart || a >= schedEnd) return "offhours";
     if (b > schedEnd) return "tight";
+    if (overlapsBreak(a, slotDur, roomBreaks)) return "break"; // блок перетинає перерву
     if (isBookToday && a < nowMin) return "past";
     if (busySlots.some((x) => a >= x.s && a < x.e)) return "busy";
     if (busySlots.some((x) => a < x.e && x.s < bBlock)) return "tight";
@@ -491,11 +496,12 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                   const st = slotState(s);
                   const title = st === "busy" ? "Зайнято"
                     : st === "blocked" ? "Кабінет на ремонті/ТО"
+                    : st === "break" ? "Перерва в роботі кабінету"
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець графіка (" + fmt(schedEnd) + ")"}`
                     : st === "past" ? "Час минув"
                     : `Вільно · ${s}–${fmt(toMin(s) + slotDur)}`;
                   return (
-                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked") ? " busy" : "")}
+                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked" || st === "break") ? " busy" : "")}
                       disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
                   );
                 })}

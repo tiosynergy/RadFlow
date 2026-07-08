@@ -16,14 +16,15 @@ import { formatPhoneUA, isValidPhoneUA } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radflow-wizard.css";
+import type { Break } from "@/lib/schedule";
 
 type Toast = { id: number; msg: string; type: string; out?: boolean };
-type DayHours = { start: string; end: string; lunch: boolean; lunchS: string; lunchE: string };
+type DayHours = { start: string; end: string; breaks: Break[] };
 type EquipItem = {
   id: number | string;
   type: string; desc: string; room: string;
   days: number[];
-  start: string; end: string; lunch: boolean; lunchS: string; lunchE: string;
+  start: string; end: string; breaks: Break[];
   perDay: boolean; dayHours: DayHours[];
   roomId?: string;
 };
@@ -98,9 +99,48 @@ function ContactList({ label, items, setItems, type, ph, required }: {
 }
 
 const EQ_DAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
-const DEF_DAY: DayHours = { start: "08:00", end: "18:00", lunch: false, lunchS: "13:00", lunchE: "14:00" };
+const DEF_START_T = "08:00", DEF_END_T = "18:00";
+const mkDay = (): DayHours => ({ start: DEF_START_T, end: DEF_END_T, breaks: [] });
+const tbMin = (t: string) => { const [h, m] = (t || "").split(":").map(Number); return (h || 0) * 60 + (m || 0); };
+const minToT = (n: number) => String(Math.floor(n / 60)).padStart(2, "0") + ":" + String(n % 60).padStart(2, "0");
+/* Розумний дефолт нової перерви: перша — типовий обід 13:00–14:00 (якщо
+   вписується), наступні — одразу після попередньої, у межах графіка, БЕЗ
+   перетину. Так додавання перерв «просто працює», не впираючись у помилки. */
+function defaultBreak(existing: Break[], dayStart: string, dayEnd: string): Break {
+  const lo = tbMin(dayStart || DEF_START_T), hi = tbMin(dayEnd || DEF_END_T);
+  if (existing.length === 0 && tbMin("13:00") >= lo && tbMin("14:00") <= hi) return { start: "13:00", end: "14:00" };
+  const lastEnd = existing.length ? Math.max(...existing.map((b) => tbMin(b.end) || lo)) : lo;
+  let s = Math.max(lastEnd, lo);
+  let e = Math.min(s + 60, hi);
+  if (e <= s) { s = lo; e = Math.min(lo + 60, hi); } // графік заповнений — валідний інтервал, користувач підправить
+  return { start: minToT(s), end: minToT(e) };
+}
 function mkSched(): Omit<EquipItem, "id" | "type" | "desc" | "room" | "roomId"> {
-  return { days: [1, 1, 1, 1, 1, 0, 0], ...DEF_DAY, perDay: false, dayHours: Array.from({ length: 7 }, () => ({ ...DEF_DAY })) };
+  return { days: [1, 1, 1, 1, 1, 0, 0], start: DEF_START_T, end: DEF_END_T, breaks: [], perDay: false, dayHours: Array.from({ length: 7 }, () => mkDay()) };
+}
+
+/* Валідація однієї перерви в контексті свого списку та годин дня.
+   Час у форматі "HH:MM" коректно порівнюється лексикографічно. */
+function breakRowError(list: Break[], bi: number, dayStart: string, dayEnd: string): string | null {
+  const b = list[bi];
+  if (!b.start || !b.end) return "Вкажіть початок і кінець перерви";
+  if (b.end <= b.start) return "Кінець перерви раніший за початок";
+  if (dayStart && b.start < dayStart) return "Перерва до відкриття кабінету";
+  if (dayEnd && b.end > dayEnd) return "Перерва після закриття кабінету";
+  for (let j = 0; j < list.length; j++) {
+    if (j === bi) continue;
+    const o = list[j];
+    if (o.start && o.end && o.end > o.start && b.start < o.end && o.start < b.end) return "Перетин з іншою перервою";
+  }
+  return null;
+}
+/** Чи всі перерви всіх кабінетів коректні (для гейтингу «Зберегти»). */
+function equipBreaksValid(equip: EquipItem[]): boolean {
+  return equip.every((e) =>
+    e.perDay
+      ? e.dayHours.every((dh, di) => !e.days[di] || dh.breaks.every((_, bi) => breakRowError(dh.breaks, bi, dh.start, dh.end) === null))
+      : e.breaks.every((_, bi) => breakRowError(e.breaks, bi, e.start, e.end) === null)
+  );
 }
 
 /* Пункти бічної навігації майстра (кружки без нумерації).
@@ -139,7 +179,7 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
 
   useEffect(() => {
     const adminPhoneOk = aPhones.some((p) => p.trim() !== "");
-    const ok = clinic.trim() !== "" && city.trim() !== "" && adminName.trim() !== "" && adminPhoneOk && equip.length > 0;
+    const ok = clinic.trim() !== "" && city.trim() !== "" && adminName.trim() !== "" && adminPhoneOk && equip.length > 0 && equipBreaksValid(equip);
     report(1, !!ok);
     onData({ clinic, city, address, phones, emails, adminName, adminEmail, aPhones, aEmails, equip });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -154,10 +194,18 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
     setEquip((a) => a.map((x, j) => {
       if (j !== i) return x;
       if (!on) return { ...x, perDay: false };
-      const seed = { start: x.start, end: x.end, lunch: x.lunch, lunchS: x.lunchS, lunchE: x.lunchE };
-      return { ...x, perDay: true, dayHours: Array.from({ length: 7 }, () => ({ ...seed })) };
+      // Засіваємо кожен день годинами й перервами загального графіка (свіжі копії).
+      return { ...x, perDay: true, dayHours: Array.from({ length: 7 }, () => ({ start: x.start, end: x.end, breaks: x.breaks.map((b) => ({ ...b })) })) };
     }));
   }
+  // Перерви загального графіка (весь тиждень).
+  function addEqBreak(i: number) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, breaks: [...x.breaks, defaultBreak(x.breaks, x.start, x.end)] } : x))); }
+  function setEqBreak(i: number, bi: number, k: "start" | "end", v: string) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, breaks: x.breaks.map((b, k2) => (k2 === bi ? { ...b, [k]: v } : b)) } : x))); }
+  function delEqBreak(i: number, bi: number) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, breaks: x.breaks.filter((_, k2) => k2 !== bi) } : x))); }
+  // Перерви окремого дня (режим «свій час для кожного дня»).
+  function addEqDayBreak(i: number, di: number) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, dayHours: x.dayHours.map((dh, k2) => (k2 === di ? { ...dh, breaks: [...dh.breaks, defaultBreak(dh.breaks, dh.start, dh.end)] } : dh)) } : x))); }
+  function setEqDayBreak(i: number, di: number, bi: number, k: "start" | "end", v: string) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, dayHours: x.dayHours.map((dh, k2) => (k2 === di ? { ...dh, breaks: dh.breaks.map((b, k3) => (k3 === bi ? { ...b, [k]: v } : b)) } : dh)) } : x))); }
+  function delEqDayBreak(i: number, di: number, bi: number) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, dayHours: x.dayHours.map((dh, k2) => (k2 === di ? { ...dh, breaks: dh.breaks.filter((_, k3) => k3 !== bi) } : dh)) } : x))); }
   function addEq() { setEquip((a) => [...a, { id: Date.now(), type: "МРТ", desc: "", room: "", ...mkSched() }]); }
   function delEq(i: number) { setEquip((a) => a.filter((_, j) => j !== i)); }
 
@@ -254,17 +302,24 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
                     <span className="eq-dash">–</span>
                     <input className="inp tabular eq-time" type="time" value={e.end} onChange={(ev) => setEq(i, "end", ev.target.value)} />
                   </div>
-                  <label className="eq-break-lab">
-                    <input type="checkbox" checked={e.lunch} onChange={(ev) => setEq(i, "lunch", ev.target.checked)} />
-                    Перерва
-                  </label>
-                  {e.lunch && (
-                    <div className="eq-hours">
-                      <input className="inp tabular eq-time" type="time" value={e.lunchS} onChange={(ev) => setEq(i, "lunchS", ev.target.value)} />
-                      <span className="eq-dash">–</span>
-                      <input className="inp tabular eq-time" type="time" value={e.lunchE} onChange={(ev) => setEq(i, "lunchE", ev.target.value)} />
-                    </div>
-                  )}
+                  <div className="eq-breaks">
+                    {e.breaks.map((b, bi) => {
+                      const err = breakRowError(e.breaks, bi, e.start, e.end);
+                      return (
+                        <div className={"eq-break-row" + (err ? " has-err" : "")} key={bi}>
+                          <span className="eq-break-tag">Перерва</span>
+                          <div className="eq-hours">
+                            <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.start} onChange={(ev) => setEqBreak(i, bi, "start", ev.target.value)} />
+                            <span className="eq-dash">–</span>
+                            <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.end} onChange={(ev) => setEqBreak(i, bi, "end", ev.target.value)} />
+                          </div>
+                          <button className="mini-icon" type="button" title="Прибрати перерву" onClick={() => delEqBreak(i, bi)}>✕</button>
+                          {err && <span className="eq-break-err">{err}</span>}
+                        </div>
+                      );
+                    })}
+                    <button className="btn btn-ghost btn-sm eq-break-add" type="button" onClick={() => addEqBreak(i)}>＋ Перерва</button>
+                  </div>
                 </>
               )}
 
@@ -280,17 +335,24 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
                             <span className="eq-dash">–</span>
                             <input className="inp tabular eq-time" type="time" value={e.dayHours[di].end} onChange={(ev) => setEqDay(i, di, "end", ev.target.value)} />
                           </div>
-                          <label className="eq-break-lab">
-                            <input type="checkbox" checked={e.dayHours[di].lunch} onChange={(ev) => setEqDay(i, di, "lunch", ev.target.checked)} />
-                            Перерва
-                          </label>
-                          {e.dayHours[di].lunch && (
-                            <div className="eq-hours">
-                              <input className="inp tabular eq-time" type="time" value={e.dayHours[di].lunchS} onChange={(ev) => setEqDay(i, di, "lunchS", ev.target.value)} />
-                              <span className="eq-dash">–</span>
-                              <input className="inp tabular eq-time" type="time" value={e.dayHours[di].lunchE} onChange={(ev) => setEqDay(i, di, "lunchE", ev.target.value)} />
-                            </div>
-                          )}
+                          <div className="eq-breaks">
+                            {e.dayHours[di].breaks.map((b, bi) => {
+                              const err = breakRowError(e.dayHours[di].breaks, bi, e.dayHours[di].start, e.dayHours[di].end);
+                              return (
+                                <div className={"eq-break-row" + (err ? " has-err" : "")} key={bi}>
+                                  <span className="eq-break-tag">Перерва</span>
+                                  <div className="eq-hours">
+                                    <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.start} onChange={(ev) => setEqDayBreak(i, di, bi, "start", ev.target.value)} />
+                                    <span className="eq-dash">–</span>
+                                    <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.end} onChange={(ev) => setEqDayBreak(i, di, bi, "end", ev.target.value)} />
+                                  </div>
+                                  <button className="mini-icon" type="button" title="Прибрати перерву" onClick={() => delEqDayBreak(i, di, bi)}>✕</button>
+                                  {err && <span className="eq-break-err">{err}</span>}
+                                </div>
+                              );
+                            })}
+                            <button className="btn btn-ghost btn-sm eq-break-add" type="button" onClick={() => addEqDayBreak(i, di)}>＋ Перерва</button>
+                          </div>
                         </div>
                       </div>
                     ) : null))
@@ -380,8 +442,10 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
         apparatus_model: e.desc.trim() || null,
         schedule: {
           days: e.days, start: e.start, end: e.end,
-          lunch: e.lunch, lunchS: e.lunchS, lunchE: e.lunchE,
-          perDay: e.perDay, dayHours: e.dayHours,
+          // Не зберігаємо некоректні інтервали (кінець ≤ початку / незаповнені).
+          breaks: e.breaks.filter((b) => b.start && b.end && b.end > b.start),
+          perDay: e.perDay,
+          dayHours: e.dayHours.map((dh) => ({ start: dh.start, end: dh.end, breaks: dh.breaks.filter((b) => b.start && b.end && b.end > b.start) })),
         } as Json,
       });
       const keepIds: string[] = [];

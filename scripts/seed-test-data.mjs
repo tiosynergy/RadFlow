@@ -3,10 +3,15 @@
 //
 //  ЩО РОБИТЬ (для ОДНІЄЇ клініки):
 //   1. ПОВНІСТЮ видаляє waitlist_entries і queue_entries клініки (чистка тестових даних!).
-//   2. Наповнює чергу: сьогодні + 7 днів уперед (без неділь), 10–15 пацієнтів/день,
-//      розкладених по кабінетах БЕЗ перетинів (тригер check_no_overlap все одно пильнує).
-//      Минулі сьогоднішні слоти отримують статус done/no_show для реалізму.
-//   3. Додає 5 пацієнтів у лист очікування (cito/urgent/planned, різні бажані вікна).
+//   2. Наповнює чергу на сьогодні + 7 днів уперед (без неділь):
+//        • від АДМІНІСТРАТОРА (реєстратури) — 5–7 записів/день;
+//        • від НАПРАВНИКІВ — 3–5 записів/день; направник із доступом до кількох
+//          кабінетів розкладає своїх пацієнтів у РІЗНІ кабінети;
+//        • у кожному кабінеті лишаються ВІЛЬНІ слоти (1–3 на день).
+//      Розклад — без перетинів (тригер check_no_overlap) і в обхід ПЕРЕРВ кабінету
+//      (нова фіча: rooms.schedule.breaks). Минулі сьогоднішні слоти → done/no_show.
+//   3. Лист очікування: 3–5 пацієнтів НА КОЖЕН кабінет, прив'язані до нього (room_id),
+//      частина від адміністратора, частина від направників (з доступом до кабінету).
 //
 //  Запуск (env: NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY — або .env.local):
 //      node scripts/seed-test-data.mjs                  # якщо клініка одна
@@ -67,6 +72,7 @@ const rnd = (n) => Math.floor(Math.random() * n);
 const pick = (a) => a[rnd(a.length)];
 const pad = (n) => String(n).padStart(2, "0");
 const chance = (p) => Math.random() < p;
+const toMin = (t) => { const [h, m] = String(t || "").split(":").map(Number); return (h || 0) * 60 + (m || 0); };
 
 function mkPatient() {
   const male = chance(0.45);
@@ -92,30 +98,82 @@ function mkStudy(modality) {
   };
 }
 
-const mkPriority = () => (chance(0.02) ? "cito" : chance(0.1) ? "urgent" : "planned");
+const mkPriority = () => (chance(0.04) ? "cito" : chance(0.14) ? "urgent" : "planned");
 const dateKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const fmtMin = (m) => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+
+/* ── Перерви кабінету (порт lib/schedule.ts: normalizeBreaks + roomBreaksFor) ── */
+function normBreaks(o) {
+  if (!o || typeof o !== "object") return [];
+  const raw = o.breaks;
+  if (Array.isArray(raw)) {
+    return raw.filter((b) => b && b.start && b.end && String(b.start) < String(b.end)).map((b) => ({ s: toMin(b.start), e: toMin(b.end) }));
+  }
+  if (o.lunch === true && o.lunchS && o.lunchE && String(o.lunchS) < String(o.lunchE)) return [{ s: toMin(o.lunchS), e: toMin(o.lunchE) }];
+  return [];
+}
+function roomBreaksMin(schedule, date) {
+  if (!schedule || typeof schedule !== "object") return [];
+  const widx = (date.getDay() + 6) % 7; // Пн..Нд = 0..6
+  if (schedule.perDay && Array.isArray(schedule.dayHours) && schedule.dayHours[widx]) return normBreaks(schedule.dayHours[widx]);
+  return normBreaks(schedule);
+}
+
+const SCHED_START = 8 * 60, SCHED_END = 18 * 60;
+// Не заповнюємо кабінет пізніше цього часу — гарантуємо вільні слоти в кінці дня.
+const FILL_UNTIL = 16 * 60;
+
+/* Наступний вільний старт у кабінеті: без перетину з попередніми (курсор) і
+   в обхід перерв. Повертає хвилини старту або null, якщо кабінет заповнений. */
+function nextSlot(cursor, breaks, durationMin, buffer) {
+  let start = cursor.v;
+  for (let guard = 0; guard < 48; guard++) {
+    if (start + durationMin > FILL_UNTIL) return null;
+    const hit = breaks.find((b) => start < b.e && b.s < start + durationMin);
+    if (hit) { start = Math.ceil(hit.e / 30) * 30; continue; }
+    cursor.v = start + Math.ceil((durationMin + buffer) / 30) * 30;
+    return start;
+  }
+  return null;
+}
 
 async function main() {
   // ── Клініка ──
   const nameArg = process.argv[2];
   const { data: clinics, error: cErr } = await db.from("clinics").select("id, name");
   if (cErr) throw cErr;
-  let clinic = nameArg ? clinics.find((c) => c.name === nameArg) : clinics.length === 1 ? clinics[0] : null;
+  const clinic = nameArg ? clinics.find((c) => c.name === nameArg) : clinics.length === 1 ? clinics[0] : null;
   if (!clinic) {
     console.error(nameArg
       ? `Клініку "${nameArg}" не знайдено. Наявні: ${clinics.map((c) => c.name).join(", ")}`
       : `Клінік декілька — вкажіть назву аргументом. Наявні: ${clinics.map((c) => c.name).join(", ")}`);
-    process.exit(1);
+    process.exitCode = 1; return;
   }
   console.log(`Клініка: ${clinic.name} (${clinic.id})`);
 
-  const { data: rooms } = await db.from("rooms").select("id, name, modality").eq("clinic_id", clinic.id).order("name");
-  if (!rooms?.length) { console.error("У клініки немає кабінетів."); process.exit(1); }
+  const { data: rooms } = await db.from("rooms").select("id, name, modality, schedule").eq("clinic_id", clinic.id).order("name");
+  if (!rooms?.length) { console.error("У клініки немає кабінетів."); process.exitCode = 1; return; }
   console.log(`Кабінети: ${rooms.map((r) => `${r.name} (${r.modality})`).join(", ")}`);
 
   const { data: admin } = await db.from("profiles").select("id").eq("clinic_id", clinic.id).eq("role", "admin").limit(1).maybeSingle();
   const createdBy = admin?.id ?? null;
+
+  // ── Направники з активним доступом + їх доступні кабінети (room_ids/modalities) ──
+  const { data: access } = await db.from("referral_access")
+    .select("referrer_id, room_ids, modalities, status").eq("clinic_id", clinic.id).eq("status", "active");
+  const referrers = (access || []).map((a) => {
+    const roomsFor = rooms.filter((r) =>
+      (!a.room_ids || a.room_ids.length === 0 || a.room_ids.includes(r.id)) &&
+      (!a.modalities || a.modalities.length === 0 || a.modalities.includes(r.modality))
+    );
+    return { id: a.referrer_id, rooms: roomsFor };
+  }).filter((r) => r.id && r.rooms.length > 0);
+  if (referrers.length) {
+    console.log(`Направники: ${referrers.length} (кабінетів у доступі: ${referrers.map((r) => r.rooms.length).join("/")})`);
+  } else {
+    console.log("Направники з доступом не знайдені — записи від направників пропущено.");
+  }
+  const refRoomIdx = Object.fromEntries(referrers.map((r) => [r.id, 0])); // курсор кабінетів для рівномірного розподілу
 
   // ── 1. Чистка ──
   const del1 = await db.from("waitlist_entries").delete().eq("clinic_id", clinic.id).select("id");
@@ -124,92 +182,114 @@ async function main() {
   if (del2.error) throw del2.error;
   console.log(`Видалено: queue_entries=${del2.data?.length ?? 0}, waitlist_entries=${del1.data?.length ?? 0}`);
 
-  // ── 2. Черга: сьогодні + 7 днів (без неділь), 10–15 пацієнтів/день ──
   const now = new Date();
   const nowMin = now.getHours() * 60 + now.getMinutes();
-  let insOk = 0, insFail = 0;
+  let admOk = 0, refOk = 0, insFail = 0;
 
+  // Вставка одного запису черги в конкретний кабінет; повертає true при успіху.
+  async function placeEntry(day, isToday, room, cursor, breaks, creator, referrerId) {
+    const modality = room.modality === "CT" ? "CT" : "MRI";
+    const study = mkStudy(modality);
+    const extra = chance(0.12) ? [mkStudy(modality)] : [];
+    const studies = [study, ...extra];
+    const durationMin = studies.reduce((s, x) => s + x.dur, 0);
+    const buffer = chance(0.15) ? 10 : 5;
+    const start = nextSlot(cursor, breaks, durationMin, buffer);
+    if (start == null) return false;
+
+    const time = fmtMin(start);
+    const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), Math.floor(start / 60), start % 60);
+    const past = isToday && start + durationMin < nowMin;
+    const status = past ? (chance(0.12) ? "no_show" : "done") : "scheduled";
+    const callStatus = status === "scheduled" ? (chance(0.5) ? "confirmed" : "not_called") : "confirmed";
+    const p = mkPatient();
+
+    const { error } = await db.from("queue_entries").insert({
+      clinic_id: clinic.id, room_id: room.id, created_by: creator, referrer_id: referrerId,
+      patient_name: p.name, patient_phone: p.phone, patient_dob: p.dob,
+      patient_sex: p.sex, patient_age: p.age, patient_weight: p.weight,
+      studies, studies_original: studies,
+      has_contrast: studies.some((s) => s.contrast),
+      contraindications: chance(0.05),
+      priority_level: mkPriority(),
+      duration_min: durationMin, buffer_time_min: buffer,
+      scheduled_date: dateKey(day), scheduled_time: time, scheduled_at: at.toISOString(),
+      status, call_status: callStatus,
+      note: chance(0.12) ? "Тестовий запис (сид)" : null,
+    });
+    if (error) { insFail++; console.warn(`  ! ${dateKey(day)} ${time} ${room.name}: ${error.message}`); return false; }
+    return true;
+  }
+
+  // ── 2. Черга: сьогодні + 7 днів (без неділь) ──
   for (let offset = 0; offset <= 7; offset++) {
     const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
     if (day.getDay() === 0) continue; // неділя — кабінети зачинені
     const isToday = offset === 0;
-    const target = 10 + rnd(6); // 10–15
-    const cursors = Object.fromEntries(rooms.map((r) => [r.id, 8 * 60])); // з 08:00
-    let made = 0, guard = 0;
+    const cursors = Object.fromEntries(rooms.map((r) => [r.id, { v: SCHED_START }]));
+    const breaksBy = Object.fromEntries(rooms.map((r) => [r.id, roomBreaksMin(r.schedule, day)]));
+    let dayAdm = 0, dayRef = 0;
 
-    while (made < target && guard++ < 200) {
-      // МРТ трохи частіше за КТ; кабінет має вміщувати дослідження до 18:00.
-      const room = pick(rooms.filter((r) => (chance(0.6) ? r.modality === "MRI" : true))) || pick(rooms);
-      const study = mkStudy(room.modality === "CT" ? "CT" : "MRI");
-      const extra = chance(0.15) ? [mkStudy(room.modality === "CT" ? "CT" : "MRI")] : [];
-      const studies = [study, ...extra];
-      const durationMin = studies.reduce((s, x) => s + x.dur, 0);
-      const buffer = chance(0.15) ? 10 : 5;
-      const start = cursors[room.id];
-      if (start + durationMin > 18 * 60) { // не вміщується — кабінет на сьогодні повний
-        if (rooms.every((r) => cursors[r.id] + 30 > 18 * 60)) break;
-        continue;
+    // Адміністратор/реєстратура — 5–7 записів у будь-які кабінети.
+    const adminTarget = 5 + rnd(3);
+    for (let k = 0, guard = 0; dayAdm < adminTarget && guard < 60; guard++) {
+      // кабінет із найменшим курсором (рівномірне заповнення), МРТ трохи частіше
+      const cand = [...rooms].sort((a, b) => cursors[a.id].v - cursors[b.id].v);
+      const room = (chance(0.6) && cand.find((r) => r.modality === "MRI")) || cand[0];
+      if (await placeEntry(day, isToday, room, cursors[room.id], breaksBy[room.id], createdBy, null)) { dayAdm++; admOk++; }
+      else if (rooms.every((r) => cursors[r.id].v + 30 > FILL_UNTIL)) break; // всі кабінети повні
+      k++;
+    }
+
+    // Направники — 3–5 записів; кожен розкладає у РІЗНІ свої кабінети (round-robin).
+    if (referrers.length) {
+      const refTarget = 3 + rnd(3);
+      for (let k = 0, guard = 0; dayRef < refTarget && guard < 80; guard++, k++) {
+        const ref = referrers[k % referrers.length];
+        // наступний кабінет цього направника (розподіл по різних кабінетах)
+        let placed = false;
+        for (let t = 0; t < ref.rooms.length && !placed; t++) {
+          const room = ref.rooms[(refRoomIdx[ref.id] + t) % ref.rooms.length];
+          placed = await placeEntry(day, isToday, room, cursors[room.id], breaksBy[room.id], ref.id, ref.id);
+        }
+        if (placed) { refRoomIdx[ref.id] = (refRoomIdx[ref.id] + 1) % ref.rooms.length; dayRef++; refOk++; }
+        else if (referrers.every((rf) => rf.rooms.every((r) => cursors[r.id].v + 30 > FILL_UNTIL))) break;
       }
-      // Крок сітки 30 хв: наступний слот після (тривалість + буфер).
-      cursors[room.id] = start + Math.ceil((durationMin + buffer) / 30) * 30;
+    }
+    console.log(`${dateKey(day)}: адмін ${dayAdm}, направники ${dayRef}`);
+  }
 
-      const time = fmtMin(start);
-      const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), Math.floor(start / 60), start % 60);
-      const endMin = start + durationMin;
-      // Минулі сьогоднішні — done (10% no_show); майбутні/інші дні — scheduled.
-      const past = isToday && endMin < nowMin;
-      const status = past ? (chance(0.1) ? "no_show" : "done") : "scheduled";
-      const callStatus = status === "scheduled" ? (offset <= 1 && chance(0.6) ? "confirmed" : "not_called") : "confirmed";
+  // ── 3. Лист очікування: 3–5 пацієнтів НА КОЖЕН кабінет (прив'язані), мікс авторів ──
+  let wlOk = 0, wlFail = 0;
+  const WINDOWS = [[null, null], ["08:00", "12:00"], ["12:00", "16:00"], ["16:00", "20:00"]];
+  for (const room of rooms) {
+    const refsForRoom = referrers.filter((r) => r.rooms.some((x) => x.id === room.id));
+    const n = 3 + rnd(3); // 3..5
+    for (let k = 0; k < n; k++) {
       const p = mkPatient();
-
-      const { error } = await db.from("queue_entries").insert({
-        clinic_id: clinic.id, room_id: room.id, created_by: createdBy,
+      const study = mkStudy(room.modality === "CT" ? "CT" : "MRI");
+      const useRef = refsForRoom.length > 0 && chance(0.45);
+      const ref = useRef ? pick(refsForRoom) : null;
+      const [wf, wt] = pick(WINDOWS);
+      const { error } = await db.from("waitlist_entries").insert({
+        clinic_id: clinic.id, room_id: room.id, // жорстка прив'язка до кабінету
+        created_by: ref ? ref.id : createdBy, referrer_id: ref ? ref.id : null,
         patient_name: p.name, patient_phone: p.phone, patient_dob: p.dob,
         patient_sex: p.sex, patient_age: p.age, patient_weight: p.weight,
-        studies, studies_original: studies,
-        has_contrast: studies.some((s) => s.contrast),
-        contraindications: chance(0.05),
-        priority_level: mkPriority(),
-        duration_min: durationMin, buffer_time_min: buffer,
-        scheduled_date: dateKey(day), scheduled_time: time, scheduled_at: at.toISOString(),
-        status, call_status: callStatus,
-        note: chance(0.15) ? "Тестовий запис (сид)" : null,
+        studies: [study], duration_min: study.dur, buffer_time_min: 5,
+        modality: room.modality === "CT" ? "CT" : "MRI", priority_level: mkPriority(),
+        desired_date_from: dateKey(now),
+        desired_date_to: chance(0.6) ? dateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 14)) : null,
+        desired_time_from: wf, desired_time_to: wt,
+        note: chance(0.4) ? "Тестовий пацієнт листа очікування (сид)" : null,
+        status: "waiting",
       });
-      if (error) { insFail++; console.warn(`  ! ${dateKey(day)} ${time}: ${error.message}`); }
-      else { insOk++; made++; }
+      if (error) { wlFail++; console.warn(`  ! waitlist ${room.name}: ${error.message}`); }
+      else wlOk++;
     }
-    console.log(`${dateKey(day)}: ${made} записів`);
   }
 
-  // ── 3. Лист очікування: 5 пацієнтів ──
-  const WL = [
-    { prio: "cito", mod: "MRI", from: null, to: null },
-    { prio: "urgent", mod: "MRI", from: "08:00", to: "12:00" },
-    { prio: "planned", mod: "MRI", from: "16:00", to: "20:00" },
-    { prio: "planned", mod: "CT", from: null, to: null },
-    { prio: "planned", mod: "CT", from: "12:00", to: "16:00" },
-  ];
-  let wlOk = 0;
-  for (const w of WL) {
-    const p = mkPatient();
-    const study = mkStudy(w.mod);
-    const { error } = await db.from("waitlist_entries").insert({
-      clinic_id: clinic.id, created_by: createdBy,
-      patient_name: p.name, patient_phone: p.phone, patient_dob: p.dob,
-      patient_sex: p.sex, patient_age: p.age, patient_weight: p.weight,
-      studies: [study], duration_min: study.dur, buffer_time_min: 5,
-      modality: w.mod, priority_level: w.prio,
-      desired_date_from: dateKey(now),
-      desired_date_to: chance(0.6) ? dateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 14)) : null,
-      desired_time_from: w.from, desired_time_to: w.to,
-      note: chance(0.4) ? "Тестовий пацієнт листа очікування (сид)" : null,
-      status: "waiting",
-    });
-    if (error) console.warn(`  ! waitlist: ${error.message}`);
-    else wlOk++;
-  }
-
-  console.log(`Готово: черга +${insOk} (відхилено тригерами: ${insFail}), лист очікування +${wlOk}.`);
+  console.log(`\nГотово: черга +${admOk + refOk} (адмін ${admOk}, направники ${refOk}; відхилено тригерами ${insFail}), лист очікування +${wlOk}${wlFail ? ` (помилок ${wlFail})` : ""}.`);
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => { console.error(e); process.exitCode = 1; });

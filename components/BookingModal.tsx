@@ -8,7 +8,7 @@ import { useState, useEffect, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import PhoneInput from "@/components/PhoneInput";
-import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, roomBreaksFor, overlapsBreak, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, type IncidentLike } from "@/lib/incidents";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
@@ -246,6 +246,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
   const [doctorId, setDoctorId] = useState("");
   const [addDoc, setAddDoc] = useState(false);
   const [override, setOverride] = useState<DayOverride | null>(null);
+  const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule обраного кабінету (для перерв)
 
   useEffect(() => {
     let cancel = false;
@@ -350,7 +351,9 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
         const ovRes = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateKey(bookDate)).maybeSingle();
         if (!cancel) setOverride((ovRes.data as unknown as DayOverride) || null);
       }
-      if (!roomId) { setDayEntries([]); return; }
+      if (!roomId) { setDayEntries([]); setRoomSchedule(null); return; }
+      const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+      if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
       const { data } = await supabase
         .from("queue_entries")
         .select("scheduled_time, duration_min, buffer_time_min, patient_name, status")
@@ -373,6 +376,8 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
   const isBookToday = sameDay(bookDate, today0());
   const roomSched = roomScheduleFor(bookDate, roomId, override);
   const schedStartMin = toMin(roomSched.start), schedEndMin = toMin(roomSched.end);
+  // Перерви кабінету на цю дату (обід тощо) — дослідження не може їх перетинати.
+  const roomBreaks = roomBreaksFor(bookDate, roomSchedule);
 
   // Простій (поломка/ТО) обраного кабінету: слоти у вікні інциденту — недоступні.
   const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
@@ -392,6 +397,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
     if (slotBlockedByIncident(s)) return "blocked";
     if (s < schedStartMin || s >= schedEndMin) return "offhours";
     if (e > schedEndMin) return "tight";
+    if (overlapsBreak(s, slotDur, roomBreaks)) return "break"; // блок перетинає перерву
     if (isBookToday && s < nowMin) return "past";
     if (roomBusy.some((b) => s >= b.s && s < b.e)) return "busy";
     if (roomBusy.some((b) => s < b.e && b.s < eBlock)) return "tight";
@@ -642,11 +648,12 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
                   const st = slotState(s);
                   const title = st === "busy" ? "Зайнято"
                     : st === "blocked" ? "Кабінет на ремонті/ТО"
+                    : st === "break" ? "Перерва в роботі кабінету"
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець графіка (" + fmtMin(schedEndMin) + ")"}`
                     : st === "past" ? "Час минув"
                     : `Вільно · ${s}–${fmtMin(toMin(s) + slotDur)}`;
                   return (
-                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked") ? " busy" : "")}
+                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked" || st === "break") ? " busy" : "")}
                       disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
                   );
                 })}

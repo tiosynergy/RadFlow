@@ -1,14 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import SetupWizard from "@/components/SetupWizard";
-
-const DEF_DAY = { start: "08:00", end: "18:00", lunch: false, lunchS: "13:00", lunchE: "14:00" };
-const defSched = () => ({
-  days: [1, 1, 1, 1, 1, 0, 0],
-  ...DEF_DAY,
-  perDay: false,
-  dayHours: Array.from({ length: 7 }, () => ({ ...DEF_DAY })),
-});
+import { normalizeRoomSchedule } from "@/lib/schedule";
 
 export default async function SetupPage() {
   const supabase = await createClient();
@@ -39,10 +32,8 @@ export default async function SetupPage() {
     .eq("clinic_id", profile.clinic_id as string);
 
   const equip = (rooms ?? []).map((r: Record<string, unknown>, i: number) => {
-    const sched =
-      r.schedule && typeof r.schedule === "object" && (r.schedule as Record<string, unknown>).days
-        ? (r.schedule as Record<string, unknown>)
-        : defSched();
+    // Прозора міграція старого формату (одна обідня перерва) → breaks[].
+    const sched = normalizeRoomSchedule(r.schedule as Record<string, unknown> | null);
     const modality = r.modality as string;
     return {
       id: i + 1,

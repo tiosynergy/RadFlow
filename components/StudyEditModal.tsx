@@ -9,7 +9,7 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
-import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, roomBreaksFor, type DayOverride } from "@/lib/schedule";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 const MIN_STUDY = 15;
@@ -42,6 +42,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
 
   const [nextStart, setNextStart] = useState<number | null>(null);
   const [override, setOverride] = useState<DayOverride | null>(null);
+  const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule кабінету (для перерв)
   useEffect(() => {
     let cancel = false;
     (async () => {
@@ -52,6 +53,8 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
           const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
           if (!cancel) setOverride((ov.data as unknown as DayOverride) || null);
         }
+        const roomRes = await supabase.from("rooms").select("schedule").eq("id", patient.room_id).maybeSingle();
+        if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
         // Знеособлена зайнятість кабінету; p_exclude прибирає сам редагований запис.
         const { data } = await supabase.rpc("room_busy_slots", { p_room: patient.room_id, p_date: scheduledDate, p_exclude: patient.id });
         if (cancel) return;
@@ -88,10 +91,15 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const schedEnd = toMin(roomSched.end);
   const capByNext = nextStart != null ? nextStart - startMin - buffer : Infinity;
   const capBySched = schedEnd - startMin;
-  const availableDur = Math.max(0, Math.min(capByNext, capBySched));
-  const windowLabel = (nextStart != null && (nextStart - buffer) <= schedEnd)
-    ? ("до наступного запису о " + fmt(nextStart) + (buffer > 0 ? ` − ${buffer} буфер` : ""))
-    : ("до кінця графіка (" + fmt(schedEnd) + ")");
+  // Перерва кабінету після старту теж обмежує тривалість — дослідження не може її перетнути.
+  const nextBreakStart = roomBreaksFor(dateObj, roomSchedule).map((b) => toMin(b.start)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
+  const capByBreak = nextBreakStart != null ? nextBreakStart - startMin : Infinity;
+  const availableDur = Math.max(0, Math.min(capByNext, capBySched, capByBreak));
+  const windowLabel = (capByBreak <= capByNext && capByBreak <= capBySched && nextBreakStart != null)
+    ? ("до перерви о " + fmt(nextBreakStart))
+    : (nextStart != null && (nextStart - buffer) <= schedEnd)
+      ? ("до наступного запису о " + fmt(nextStart) + (buffer > 0 ? ` − ${buffer} буфер` : ""))
+      : ("до кінця графіка (" + fmt(schedEnd) + ")");
 
   function recalc(type: string, region: string, prevDur?: number): number {
     const ro = regionsFor(type).find((r) => r.label === region);
