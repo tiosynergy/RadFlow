@@ -446,7 +446,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
           breaks: e.breaks.filter((b) => b.start && b.end && b.end > b.start),
           perDay: e.perDay,
           dayHours: e.dayHours.map((dh) => ({ start: dh.start, end: dh.end, breaks: dh.breaks.filter((b) => b.start && b.end && b.end > b.start) })),
-        } as Json,
+        } as unknown as Json,
       });
       const keepIds: string[] = [];
       for (const e of d.equip) {

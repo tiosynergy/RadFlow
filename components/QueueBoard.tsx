@@ -1166,7 +1166,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       <Sidebar
         clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey}
         rooms={rooms} activeRoom={roomView} onSelectRoom={setRoomView} onNew={() => setModalOpen(true)}
-        incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(null); setBreakdownOpen(true); }}
+        incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }}
       />
       <div className="main">
         <header className="topbar">
@@ -1179,7 +1179,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
           </div>
           <div className="tb-right">
             <span className="rt-pill"><span className="pulse-dot" style={{ background: "var(--green)", width: 7, height: 7 }} />Real-time</span>
-            <button className="btn btn-breakdown" onClick={() => setBreakdownOpen(true)} title="Зафіксувати поломку або ТО апарата">🔧 Поломка / ТО</button>
+            <button className="btn btn-breakdown" onClick={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }} title="Зафіксувати поломку або ТО апарата">🔧 Поломка / ТО</button>
             <button className="btn btn-primary btn-lg" onClick={() => setModalOpen(true)}>＋ Новий запис</button>
           </div>
         </header>
