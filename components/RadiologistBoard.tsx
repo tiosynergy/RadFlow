@@ -607,11 +607,13 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   function inProgressBlockReason(p: RadEntry): string | null {
     const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride) : null;
     const r = computeCallBlock(p, entries, {
+      notToday: !sameDay(selectedDate, today0()),
       roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
       schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
       schedEnd: sched && !sched.closed ? sched.end : null,
     });
     if (!r) return null;
+    if (r.code === "wrong_day") return "Запис не на сьогодні — викликати в кабінет можна лише пацієнтів сьогоднішнього дня";
     if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
     if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
     if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";

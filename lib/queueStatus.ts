@@ -89,9 +89,14 @@ export type CallBlockOpts = {
   roomBlocked?: boolean;
   schedClosed?: boolean;
   schedEnd?: string | null;
+  // Дошка відкрита НЕ на сьогодні (обрана дата ≠ сьогодні). Виклик у кабінет
+  // можливий лише для записів сьогоднішнього дня — не можна «завести» пацієнта
+  // з майбутнього/минулого слота у кабінет зараз.
+  notToday?: boolean;
   now?: Date;
 };
 export type CallBlock =
+  | { code: "wrong_day" }
   | { code: "room_blocked" }
   | { code: "room_closed" }
   | { code: "room_busy" }
@@ -104,6 +109,8 @@ export function computeCallBlock(
   opts: CallBlockOpts = {}
 ): CallBlock | null {
   const now = opts.now ?? new Date();
+  // Найперше: запис не на сьогодні — виклик неможливий незалежно від стану кабінету.
+  if (opts.notToday) return { code: "wrong_day" };
   if (opts.roomBlocked) return { code: "room_blocked" };
   if (opts.schedClosed) return { code: "room_closed" };
   if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return { code: "room_busy" };
