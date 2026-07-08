@@ -33,7 +33,7 @@
 
 ### Находки
 
-**[MEDIUM] M-1. `incidents.status` — `text` с `CHECK ... NOT VALID`, никогда не валидированным.**
+**[MEDIUM] M-1. `incidents.status` — `text` с `CHECK ... NOT VALID`, никогда не валидированным.** ✅ *Реализовано — миграция 0056 (VALIDATE status-CHECK + CHECK на `reason`).*
 評 Evidence: `0004_incidents.sql` (`status text not null default 'active'`), `0034_status_check_and_scheduled_at.sql` (`add constraint incidents_status_chk check (...) not valid`).
 Риск: старые строки могли содержать значения вне набора; `NOT VALID` защищает только новые/изменяемые строки. `reason` тоже свободный `text` ('breakdown'|'maintenance'|'emergency') без CHECK.
 Рекомендация: перевести `status`/`reason` в ENUM либо добавить CHECK и выполнить `VALIDATE CONSTRAINT` в отдельном окне; см. §7, пункт M-1.
@@ -78,8 +78,8 @@ Evidence: `queue_entries.room_id … on delete set null` (0001); `waitlist_entri
 Риск: удаление кабинета/профиля молча стирает «в каком кабинете/от кого» у прошлых записей — портит историческую отчётность (загрузка кабинетов, статистика направителей). Не потеря данных пациента, а качество аналитики.
 Рекомендация (по желанию, когда дойдут руки): для сущностей в исторических фактах — `ON DELETE RESTRICT` + soft-delete (`archived_at`). Не срочно.
 
-**[LOW] L-3. `classifyError` разбирает текст ошибки регэкспом** (`actions.ts:50–60`, `/overlap|exclusion|incident/i`, `/23505/`). Хрупко: зависит от текста/локали сообщения PG.
-Рекомендация: использовать `error.code` (SQLSTATE: `23505`, `23P01`, кастомные `errcode`) — Supabase их отдаёт.
+**[LOW] L-3. `classifyError` разбирает текст ошибки регэкспом.** ✅ *Реализовано — `classifyError` теперь код-first (SQLSTATE `23505`/`23P01`) с текстовым fallback.*
+`classifyError` переведён на `error.code` (23505 → room_busy, 23P01 → slot_unavailable), текст оставлен fallback. `mapBookingError` намеренно остался текстовым: incident (0020) и overlap (0014) поднимаются с одним SQLSTATE 23P01, различимы только по сообщению.
 
 ### Проверено и подтверждено как корректное (ложные тревоги сняты)
 - `handle_new_user` (0013) пропускает `managed='true'` → сервис-роут сам вставляет profile; **PK-конфликта и orphan-клиник нет**.

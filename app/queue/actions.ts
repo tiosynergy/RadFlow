@@ -48,13 +48,18 @@ const ALLOWED_STATUSES: readonly QueueStatus[] = [
   "not_held",
 ];
 
-// Распознаём нарушения БД-инвариантов по тексту ошибки и отдаём код клиенту,
-// чтобы он показал локализованное сообщение (укр. строки живут в компоненте).
-function classifyError(message: string, status?: QueueStatus): QueueActionResult {
-  if (status === "in_progress" && /in_progress|duplicate|23505/i.test(message)) {
+// Распознаём нарушения БД-инвариантов и отдаём код клиенту (укр. строки живут
+// в компоненте). L-3: приоритет — по SQLSTATE (error.code), надёжнее текста:
+//   23505 unique_violation → «один in_progress на кабинет» (частичный uniq idx 0018);
+//   23P01 exclusion_violation → перекрытие слота / простой (триггеры 0014/0020).
+// Текстовый разбор оставлен как fallback (на случай иной обёртки ошибки).
+function classifyError(err: { code?: string; message?: string }, status?: QueueStatus): QueueActionResult {
+  const code = err?.code ?? "";
+  const message = err?.message ?? "";
+  if (status === "in_progress" && (code === "23505" || /in_progress|duplicate|23505/i.test(message))) {
     return { ok: false, error: message, code: "room_busy" };
   }
-  if (/overlap|exclusion|incident/i.test(message)) {
+  if (code === "23P01" || /overlap|exclusion|incident/i.test(message)) {
     return { ok: false, error: message, code: "slot_unavailable" };
   }
   return { ok: false, error: message, code: "generic" };
@@ -90,7 +95,7 @@ export async function setQueueEntryStatus(
   if (expectedFrom) q = q.eq("status", expectedFrom); // CAS
   const { data, error } = await q.select("id");
 
-  if (error) return classifyError(error.message, status);
+  if (error) return classifyError(error, status);
   // RLS не отдаёт ошибку, а молча обновляет 0 строк, если нет доступа/записи.
   if (!data || data.length === 0) {
     // С CAS 0 строк может означать «статус уже изменился» — отличаем от forbidden.
@@ -347,6 +352,9 @@ async function hasSlotClash(
   });
 }
 
+// L-3: здесь текст ОСТАВЛЕН намеренно — «простой» (INCIDENT, триггер 0020) и
+// «перекрытие» (OVERLAP, триггер 0014) оба поднимаются с одним SQLSTATE 23P01,
+// поэтому различить incident/slot_unavailable можно только по сообщению.
 function mapBookingError(message: string): QueueActionResult {
   if (/incident/i.test(message)) return { ok: false, error: message, code: "incident" };
   if (/overlap|exclusion/i.test(message)) return { ok: false, error: message, code: "slot_unavailable" };
