@@ -34,6 +34,7 @@ import StudyEditModal from "@/components/StudyEditModal";
 import BreakdownModal from "@/components/BreakdownModal";
 import EmergencyModal from "@/components/EmergencyModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import MiniCalendar from "@/components/MiniCalendar";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
@@ -49,7 +50,7 @@ type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: s
 type QEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null; patient_weight: number | null;
   scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null; note: string | null;
-  studies: Json; studies_original: Json | null; contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null;
+  studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null; referrer: { full_name: string | null } | null;
   room_id: string | null; updated_at: string; in_progress_at: string | null;
   reschedule_origin?: Json | null;
 };
@@ -60,13 +61,10 @@ type RoomLoadItem = { roomKey: string; name: string; kind: string; pct: number; 
 
 /* ── Дати ── */
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
-const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
-const MON_NOM = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 function startOfDay(d: Date) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function today0() { return startOfDay(new Date()); }
 function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
-function dowMon(d: Date) { return (d.getDay() + 6) % 7; }
 function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
@@ -421,7 +419,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
             {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
-            {p.doctor && <span>Напр.: {p.doctor}</span>}
+            {(p.referrer?.full_name || p.doctor) && <span>Напр.: {p.referrer?.full_name || p.doctor}</span>}
           </div>
         </div>
         <div className="q-proc">
@@ -455,7 +453,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
               const changed = sdiff.some((d) => d.state !== "kept");
               return (
                 <div style={{ marginBottom: 8 }}>
-                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено</span>}</div>
+                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
                     {sdiff.map((d, i) => (
                       <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
@@ -469,10 +467,9 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
             {originHint && (
               <div className="ctx-hint" style={{ fontSize: 12, marginBottom: 4 }}>{originHint}</div>
             )}
-            {(p.contraindications || p.note) && (
+            {p.note && (
               <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
-                {p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}>⚠ Протипоказання</span>}
-                {p.note && <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>}
+                <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>
               </div>
             )}
 
@@ -674,56 +671,6 @@ function AffectedPanel({ affected, roomsById, onReschedule }: { affected: QEntry
   );
 }
 
-/* ── Міні-календар ── */
-function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, onEditSchedule }: { selectedDate: Date; onSelectDate: (d: Date) => void; overridesByDate?: Record<string, DayOverride>; onEditSchedule?: () => void }) {
-  const today = today0();
-  const ovMap = overridesByDate || {};
-  const [viewMonth, setViewMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
-  const shift = (n: number) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
-  const y = viewMonth.getFullYear(), mo = viewMonth.getMonth();
-  const first = new Date(y, mo, 1);
-  const days = new Date(y, mo + 1, 0).getDate();
-  const startIdx = dowMon(first);
-  const cells: (number | null)[] = [];
-  for (let i = 0; i < startIdx; i++) cells.push(null);
-  for (let d = 1; d <= days; d++) cells.push(d);
-  return (
-    <div className="bk-cal">
-      <div className="cal-head">
-        <span className="cal-month">{MON_NOM[mo]} {y}</span>
-        <div className="cal-nav">
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць">‹</button>
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць">›</button>
-        </div>
-      </div>
-      <div className="cal-grid">
-        {WK_SHORT.map((d) => <div className="cal-dow" key={d}>{d}</div>)}
-        {cells.map((d, i) => {
-          if (d === null) return <div className="cal-day empty-day" key={"e" + i} />;
-          const cd = new Date(y, mo, d);
-          const isToday = sameDay(cd, today);
-          const isSel = sameDay(cd, selectedDate);
-          const ov = ovMap[dateKey(cd)] || null;
-          const st = dayStatus(ov, cd);
-          const markClosed = st.kind === "closed";
-          const markCustom = st.kind === "custom";
-          return (
-            <button key={d} className={"cal-day" + (isToday ? " today" : "") + (isSel && !isToday ? " selected" : "") + (markClosed ? " holiday" : "") + (markCustom ? " custom" : "")}
-              title={st.label || undefined} aria-label={st.label ? `${d} — ${st.label}` : undefined} onClick={() => onSelectDate(startOfDay(cd))}>
-              {d}
-              {(markClosed || markCustom) && <span className={"cal-sched " + (markClosed ? "closed" : "custom")} />}
-            </button>
-          );
-        })}
-      </div>
-      {onEditSchedule && (
-        <button className="btn btn-secondary btn-sm" style={{ width: "100%", marginTop: 10, justifyContent: "center" }} onClick={() => onEditSchedule()}>
-          ✎ Графік на {selectedDate.getDate()} {MON_NOM[selectedDate.getMonth()].toLowerCase()}
-        </button>
-      )}
-    </div>
-  );
-}
 
 /* ── Скасовані + Неявка ── */
 function CancelledPanel({ entries, onUndo, onReschedule, onToWaitlist }: { entries: QEntry[]; onUndo: (p: QEntry) => void; onReschedule: (p: QEntry) => void; onToWaitlist: (p: QEntry) => void }) {
@@ -821,11 +768,11 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const supabase = createClient();
     const { data, error } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, contraindications, cito, priority_level, doctor, room_id, updated_at, in_progress_at, reschedule_origin")
+      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, studies_changed_by, contraindications, cito, priority_level, doctor, referrer:referrer_id(full_name), room_id, updated_at, in_progress_at, reschedule_origin")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .order("scheduled_time", { ascending: true });
-    if (!error) setEntries(data || []);
+    if (!error) setEntries((data || []) as unknown as QEntry[]);
     setLoading(false);
   }, [clinicId, dayKey]);
 
@@ -1440,6 +1387,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
             : <>Відновити роботу <b>{roomsById[emergencyConfirm.roomId]?.name || "кабінет"}</b>? Кабінет знову прийматиме записи.</>}
           confirmLabel={emergencyConfirm.action === "stop" ? "🛑 Зупинити" : "▶ Відновити"}
           danger={emergencyConfirm.action === "stop"}
+          hideCancel
           busy={emergencyBusy}
           onClose={() => setEmergencyConfirm(null)}
           onConfirm={async () => {

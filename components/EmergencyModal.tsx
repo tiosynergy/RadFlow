@@ -25,7 +25,7 @@ export default function EmergencyModal({ rooms = [], stoppedRoomIds = [], affect
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const stopped = new Set(stoppedRoomIds);
   const free = rooms.filter((r) => !stopped.has(r.id));
-  const [sel, setSel] = useState<Set<string>>(() => new Set(free.map((r) => r.id))); // за замовч. — усі робочі
+  const [sel, setSel] = useState<Set<string>>(() => new Set()); // за замовч. — нічого не обрано (свідомий вибір)
   const [note, setNote] = useState("");
   const toggle = (id: string) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const selList = free.filter((r) => sel.has(r.id)).map((r) => r.id);

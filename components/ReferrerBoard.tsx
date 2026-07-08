@@ -11,7 +11,8 @@
        редагування даних пацієнта (наступні зрізи — дослідження, пріоритет, примітки).
    Захист на рівні БД: міграція 0048 (call_status read-only, status лише scheduled/cancelled). */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import MiniCalendar from "@/components/MiniCalendar";
 import { PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { isLate, LATE_META } from "@/lib/queueStatus";
 import { diffStudies, studyText, studiesChanged } from "@/lib/studies";
@@ -22,7 +23,7 @@ type Center = { clinicId: string; name: string; city: string | null; status: str
 export type BoardReferral = {
   id: string; clinic_id: string; created_by: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string;
-  call_status: string | null; priority_level: PatientPriority | null; studies: Json; studies_original: Json | null;
+  call_status: string | null; priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean;
   doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
 };
 type RescheduleOrigin = { from_date?: string | null; from_time?: string | null; from_room?: string | null; from_status?: string | null; reason?: string | null };
@@ -88,15 +89,25 @@ interface Props {
   onEditStudies: (r: BoardReferral) => void;
   onCancel: (r: BoardReferral) => void;
   onEditPatient: (r: BoardReferral) => void;
+  /** Швидкий фільтр із сайдбару (клік по центру/кабінету). nonce → повторне застосування. */
+  focus?: { clinicId: string; roomId: string; nonce: number } | null;
 }
 
-export default function ReferrerBoard({ referrals, activeCenters, centersById, roomsByClinic, doctorId, onReschedule, onEditStudies, onCancel, onEditPatient }: Props) {
+export default function ReferrerBoard({ referrals, activeCenters, centersById, roomsByClinic, doctorId, onReschedule, onEditStudies, onCancel, onEditPatient, focus }: Props) {
   const [centerId, setCenterId] = useState<string>("all"); // "all" = Всі центри
   const [roomId, setRoomId] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>(""); // "" = всі дати
   const [filter, setFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  // Швидкий фільтр із сайдбару: застосовуємо центр+кабінет (nonce → навіть повторний клік).
+  useEffect(() => {
+    if (!focus) return;
+    setCenterId(focus.clinicId);
+    setRoomId(focus.roomId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.nonce]);
 
   const multiCenter = activeCenters.length > 1;
   const rooms = centerId === "all" ? [] : (roomsByClinic[centerId] || []);
@@ -128,8 +139,13 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
 
   function selectCenter(id: string) { setCenterId(id); setRoomId("all"); }
 
+  // Календар як у адміна: вибір дня = фільтр за датою (порожньо = всі дати).
+  const dk = (d: Date) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  const calDate = dateFilter ? new Date(dateFilter + "T00:00:00") : new Date();
+
   return (
-    <div style={{ maxWidth: 1280, margin: "0 auto" }}>
+    <div style={{ maxWidth: 1280, margin: "0 auto", display: "grid", gridTemplateColumns: "minmax(0,1fr) 300px", gap: 16, alignItems: "start" }}>
+      <div style={{ minWidth: 0 }}>
       {/* Перемикач центрів */}
       {multiCenter && (
         <div className="pills" style={{ marginBottom: 12, flexWrap: "wrap" }}>
@@ -141,7 +157,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
       )}
 
       {/* Stat-картки як фільтри статусу */}
-      <div className="stats" role="tablist" aria-label="Фільтр за статусом">
+      <div className="stats" role="tablist" aria-label="Фільтр за статусом" style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))" }}>
         {STATUS_FILTERS.map((f) => (
           <button key={f.key} role="tab" aria-selected={filter === f.key}
             className={"stat clickable" + (filter === f.key ? " active" : "")} onClick={() => setFilter(f.key)}>
@@ -159,8 +175,6 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
             {rooms.map((r) => <option key={r.id} value={r.id}>{modLabel(r.modality)} · {r.name}</option>)}
           </select>
         )}
-        <input type="date" className="inp" style={{ height: 32, padding: "2px 8px" }} value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} title="Фільтр за датою" />
-        {dateFilter && <button className="btn btn-secondary btn-sm" onClick={() => setDateFilter("")}>✕ Дата</button>}
         <div className="spacer" />
         <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       </div>
@@ -201,7 +215,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                       </div>
                     </div>
                     <div className="q-proc">
-                      <div className="pp">{procLabel(r)}{changed && <span style={{ color: "var(--orange)", marginLeft: 6 }}>✎ змінено клінікою</span>}</div>
+                      <div className="pp">{procLabel(r)}{changed && <span style={{ color: "var(--orange)", marginLeft: 6 }}>✎ змінено {r.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}</div>
                       <div className="du">{km}</div>
                     </div>
                     <div className="q-room" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3 }}>
@@ -229,7 +243,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                               <div className="qd-row"><span className="qd-k">Телефон</span><span className="qd-v">{r.patient_phone || "—"}</span></div>
                               <div className="qd-row"><span className="qd-k">Дзвінок</span><span className="qd-v" style={{ color: CALL_COLOR[r.call_status || "not_called"] }}>{call.label}</span></div>
                               <div className="qd-row" style={{ gridColumn: "1 / -1" }}>
-                                <span className="qd-k">Дослідження{changed && <span style={{ color: "var(--orange)" }}> · змінено клінікою</span>}</span>
+                                <span className="qd-k">Дослідження{changed && <span style={{ color: "var(--orange)" }}> · змінено {r.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{r.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</span>
                                 <span className="qd-v" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                                   {sdiff.map((d, i) => (
                                     <span key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
@@ -267,6 +281,13 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
           </div>
         </>
       )}
+      </div>
+      <aside style={{ position: "sticky", top: 8 }}>
+        <MiniCalendar selectedDate={calDate} onSelectDate={(d) => setDateFilter(dk(d))} highlightSelected={!!dateFilter} />
+        {dateFilter && (
+          <button className="btn btn-secondary btn-sm" style={{ width: "100%", marginTop: 8, justifyContent: "center" }} onClick={() => setDateFilter("")}>Всі дати</button>
+        )}
+      </aside>
     </div>
   );
 }

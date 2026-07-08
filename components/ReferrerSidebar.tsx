@@ -23,12 +23,16 @@ interface Props {
   doctorName: string;
   activeTab: string;
   onNav: (key: string) => void;
+  /** Швидкий фільтр доски «Мої направлення»: клік по центру (roomId="all") або кабінету. */
+  onSelectRoom?: (clinicId: string, roomId: string) => void;
+  activeClinic?: string;
+  activeRoom?: string;
   counts: { mine: number; waitlist: number; pendingInvites: number };
   canManage: boolean;
   onSignOut: () => void;
 }
 
-export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, activeTab, onNav, counts, canManage, onSignOut }: Props) {
+export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, activeTab, onNav, onSelectRoom, activeClinic, activeRoom, counts, canManage, onSignOut }: Props) {
   const nav: Array<{ key: string; label: string; icon: string; badge?: number; badgeBlue?: boolean }> = [
     { key: "new", label: "Нове направлення", icon: "＋" },
     { key: "mine", label: "Мої направлення", icon: "▦", badge: counts.mine },
@@ -50,20 +54,32 @@ export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, ac
           {centers.length === 0 ? (
             <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "4px 10px" }}>Немає активних центрів</div>
           ) : centers.map((c) => {
-            const rooms = roomsByClinic[c.clinicId] || [];
+            const all = roomsByClinic[c.clinicId] || [];
+            // Показуємо лише ДОЗВОЛЕНІ кабінети (room_ids). null/порожньо = усі
+            // кабінети центру — так само, як фільтрує форма запису й БД-гейт
+            // auth_referrer_can_book_room. Раніше показувались усі → рассинхрон.
+            const allowed = Array.isArray(c.room_ids) && c.room_ids.length ? c.room_ids : null;
+            const rooms = allowed ? all.filter((r) => allowed.includes(r.id)) : all;
+            const centerActive = activeClinic === c.clinicId && activeRoom === "all";
             return (
               <div key={c.clinicId} style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", padding: "4px 10px 2px" }} title={c.city ? c.name + " · " + c.city : c.name}>{c.name}</div>
+                <button type="button" onClick={() => onSelectRoom && onSelectRoom(c.clinicId, "all")}
+                  className={"sb-cab-all" + (centerActive ? " active" : "")}
+                  style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: onSelectRoom ? "pointer" : "default", fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", padding: "4px 10px 2px" }}
+                  title={c.city ? c.name + " · " + c.city : c.name}>{c.name}</button>
                 {rooms.length === 0 ? (
                   <div style={{ fontSize: 11.5, color: "var(--text-faint)", padding: "0 10px 2px" }}>обладнання не вказано</div>
                 ) : rooms.map((r) => (
-                  <div key={r.id} className="sb-cab" style={{ cursor: "default" }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
+                  <button type="button" key={r.id} onClick={() => onSelectRoom && onSelectRoom(c.clinicId, r.id)}
+                    className={"sb-cab" + (activeClinic === c.clinicId && activeRoom === r.id ? " active" : "")}
+                    style={{ width: "100%", textAlign: "left", border: "none", cursor: onSelectRoom ? "pointer" : "default" }}
+                    title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
                     <span className={"sb-cab-tile " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
                     <span className="sb-cab-meta">
                       <span className="sb-cab-name">{r.name}</span>
                       <span className="sb-cab-model">{r.apparatus_model || ""}</span>
                     </span>
-                  </div>
+                  </button>
                 ))}
               </div>
             );

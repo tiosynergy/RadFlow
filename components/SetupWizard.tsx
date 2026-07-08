@@ -503,7 +503,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
       <aside className="wiz-side">
         <div className="wiz-head">
           <span className="wiz-logo"><span className="dot" />RadFlow</span>
-          <div className="wiz-sub">Налаштування та профіль кабінету</div>
+          <div className="wiz-sub">{clinicName || "Налаштування та профіль кабінету"}</div>
         </div>
         <div className="wiz-steps">
           {WIZ_NAV.map((s) => {

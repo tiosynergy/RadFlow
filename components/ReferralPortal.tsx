@@ -38,7 +38,7 @@ type Center = { clinicId: string; name: string; city: string | null; status: str
 type Referral = {
   id: string; clinic_id: string; created_by: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
-  priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
+  priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean; doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
 };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 type ExtraStudy = { type: string; region: string; dur: number };
@@ -978,6 +978,8 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
   const pendingInvites = centers.filter((c) => c.status === "pending_referrer").length;
 
   const [tab, setTab] = useState(() => (activeCenters.length === 0 ? "centers" : "new"));
+  // Швидкий фільтр з сайдбару: клік по центру/кабінету → доска «Мої направлення».
+  const [boardFocus, setBoardFocus] = useState<{ clinicId: string; roomId: string; nonce: number } | null>(null);
   const [editPatientFor, setEditPatientFor] = useState<Referral | null>(null);
   const [referrals, setReferrals] = useState<Referral[]>([]);
   const [reschedFor, setReschedFor] = useState<Referral | null>(null);
@@ -994,7 +996,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     const supabase = createClient();
     const { data } = await supabase
       .from("queue_entries")
-      .select("id, clinic_id, created_by, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, doctor, note, indication, room_id, reschedule_origin")
+      .select("id, clinic_id, created_by, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, studies_changed_by, contraindications, doctor, note, indication, room_id, reschedule_origin")
       .eq("referrer_id", doctorId)
       .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
     setReferrals(data || []);
@@ -1114,7 +1116,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
   return (
     <div className="app">
       <ReferrerSidebar centers={activeCenters} roomsByClinic={roomsByClinic} doctorName={doctorName}
-        activeTab={tab} onNav={setTab}
+        activeTab={tab}
+        onNav={(key) => { if (key === "mine") setBoardFocus({ clinicId: "all", roomId: "all", nonce: Date.now() }); setTab(key); }}
+        onSelectRoom={(clinicId, roomId) => { setBoardFocus({ clinicId, roomId, nonce: Date.now() }); setTab("mine"); }}
+        activeClinic={tab === "mine" ? boardFocus?.clinicId : undefined}
+        activeRoom={tab === "mine" ? boardFocus?.roomId : undefined}
         counts={{ mine: referrals.length, waitlist: wlEntries.filter((e) => e.status === "waiting").length, pendingInvites }}
         canManage={canManage} onSignOut={signOut} />
       <div className="main">
@@ -1135,6 +1141,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         )}
         {tab === "mine" && (
           <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} doctorId={doctorId}
+            focus={boardFocus}
             onReschedule={(r) => setReschedFor(r)} onCancel={doCancel} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)} />
         )}
         {tab === "waitlist" && (

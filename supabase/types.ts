@@ -254,6 +254,7 @@ export type Database = {
           studies_original: Json | null;
           referrer_id: string | null;
           reschedule_origin: Json | null;
+          studies_changed_by: string | null;
         };
         Insert: {
           id?: string;
@@ -291,6 +292,7 @@ export type Database = {
           studies_original?: Json | null;
           referrer_id?: string | null;
           reschedule_origin?: Json | null;
+          studies_changed_by?: string | null;
         };
         Update: {
           id?: string;
@@ -328,6 +330,7 @@ export type Database = {
           studies_original?: Json | null;
           referrer_id?: string | null;
           reschedule_origin?: Json | null;
+          studies_changed_by?: string | null;
         };
         Relationships: [
           {

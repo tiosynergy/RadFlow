@@ -518,8 +518,13 @@ export async function editQueueEntryStudies(
     ? studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
     : false;
 
+  // Хто редагує склад досліджень: направник → 'referrer', персонал → 'clinic'.
+  // Дошки підписують зміну відповідно й синхронізуються realtime.
+  const { data: prof } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
+  const changedBy = prof?.role === "referrer" ? "referrer" : "clinic";
+
   // Буфер оновлюємо лише якщо переданий (редактор досліджень може його змінювати).
-  const patch: TablesUpdate<"queue_entries"> = { studies, duration_min: durationMin, has_contrast: hasContrast };
+  const patch: TablesUpdate<"queue_entries"> = { studies, duration_min: durationMin, has_contrast: hasContrast, studies_changed_by: changedBy };
   if (bufferTimeMin != null) patch.buffer_time_min = normBuffer(bufferTimeMin);
 
   const { data, error } = await supabase

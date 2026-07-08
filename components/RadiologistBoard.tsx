@@ -291,7 +291,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
               const changed = sdiff.some((d) => d.state !== "kept");
               return (
                 <div style={{ marginBottom: 8 }}>
-                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено</span>}</div>
+                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
                     {sdiff.map((d, i) => (
                       <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
@@ -302,9 +302,8 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                 </div>
               );
             })()}
-            {(p.contraindications || p.note || p.indication) && (
+            {(p.note || p.indication) && (
               <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
-                {p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}>⚠ Протипоказання</span>}
                 {p.indication && <span style={{ color: "var(--text-muted)" }}>Показання: {p.indication}</span>}
                 {p.note && <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>}
               </div>

@@ -13,11 +13,12 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   danger?: boolean;
   busy?: boolean;
+  hideCancel?: boolean; // прибрати нижню кнопку «Скасувати» (закрити можна ✕ угорі)
   onConfirm: () => void;
   onClose: () => void;
 }
 
-export default function ConfirmDialog({ title, text, confirmLabel = "Підтвердити", danger, busy, onConfirm, onClose }: ConfirmDialogProps) {
+export default function ConfirmDialog({ title, text, confirmLabel = "Підтвердити", danger, busy, hideCancel, onConfirm, onClose }: ConfirmDialogProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   return (
     <div className="overlay">
@@ -27,8 +28,8 @@ export default function ConfirmDialog({ title, text, confirmLabel = "Підтв�
           <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body" style={{ fontSize: 13.5, color: "var(--text-secondary)", lineHeight: 1.5 }}>{text}</div>
-        <div className="dlg-foot">
-          <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
+        <div className="dlg-foot" style={hideCancel ? { justifyContent: "center" } : undefined}>
+          {!hideCancel && <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>}
           <button className={"btn " + (danger ? "btn-danger" : "btn-primary")} disabled={busy} aria-busy={busy} onClick={onConfirm}>
             {busy ? "…" : confirmLabel}
           </button>
