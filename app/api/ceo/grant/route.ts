@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { requireRole } from "@/lib/apiAuth";
 
 // POST /api/ceo/grant
 // Адмін центру призначає роль CEO (керівник з аналітикою) — новому користувачу
@@ -8,18 +8,9 @@ import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 // один CEO може мати багато центрів. Наявному користувачу роль НЕ змінюємо.
 // body: { login*, full_name?, email?, phone?, note? }
 export async function POST(req: Request) {
-  if (!isAdminConfigured()) {
-    return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY не налаштовано на сервері (.env.local)" }, { status: 500 });
-  }
-
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Не авторизовано" }, { status: 401 });
-
-  const { data: me } = await supabase.from("profiles").select("clinic_id, role").eq("id", user.id).single();
-  if (!me || me.role !== "admin" || !me.clinic_id) {
-    return NextResponse.json({ error: "Лише адміністратор центру" }, { status: 403 });
-  }
+  const gate = await requireRole(["admin"], { needClinic: true, forbidden: "Лише адміністратор центру" });
+  if (!gate.ok) return gate.res;
+  const { user, me } = gate;
 
   const body = await req.json().catch(() => ({}));
   const login = String(body.login || "").trim();

@@ -585,10 +585,12 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     const nowIso = new Date().toISOString();
     const patch = status === "in_progress" ? { status, in_progress_at: nowIso } : { status };
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
-    const res = await setQueueEntryStatus(id, status as QueueStatus);
+    // H-2: cur.status — то, что видит рентгенолог; CAS на сервере.
+    const res = await setQueueEntryStatus(id, status as QueueStatus, cur?.status as QueueStatus | undefined);
     if (!res.ok) {
       const msg = res.code === "room_busy" ? "У кабінеті вже є пацієнт — спершу завершіть поточного"
         : res.code === "slot_unavailable" ? "Слот недоступний (простій/зайнято) — зверніться до адміністратора"
+        : res.code === "stale" ? "Статус змінив інший користувач — дошку оновлено"
         : "Помилка: " + res.error;
       notify(msg, "error");
       reload();

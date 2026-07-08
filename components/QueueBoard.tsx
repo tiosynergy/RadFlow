@@ -927,14 +927,18 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
 
   async function setStatus(id: string, status: string) {
+    // H-2: фиксируем статус, который сейчас видит оператор (до оптимистичного
+    // обновления) — как expectedFrom для CAS на сервере.
+    const expectedFrom = entries.find((e) => e.id === id)?.status as QueueStatus | undefined;
     const nowIso = new Date().toISOString();
     const patch = status === "in_progress" ? { status, in_progress_at: nowIso } : { status };
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
-    const res = await setQueueEntryStatus(id, status as QueueStatus);
+    const res = await setQueueEntryStatus(id, status as QueueStatus, expectedFrom);
     if (!res.ok) {
       let msg;
       if (res.code === "room_busy") msg = "У кабінеті вже є пацієнт — спершу завершіть поточного";
       else if (res.code === "slot_unavailable") msg = "Слот недоступний (зайнятий або простій) — перенесіть пацієнта на інший час";
+      else if (res.code === "stale") msg = "Статус змінив інший користувач — дошку оновлено";
       else msg = "Помилка: " + res.error;
       notify(msg, "error");
       reload();

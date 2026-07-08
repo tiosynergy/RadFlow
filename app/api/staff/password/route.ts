@@ -1,25 +1,17 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { requireRole } from "@/lib/apiAuth";
 
 // POST /api/staff/password — адміністратор керує паролем співробітника.
 //  action="set"   — задати конкретний пароль (password у тілі), password_set=true.
 //  action="reset" — обнулити: ставимо випадковий тимчасовий пароль і
 //                   password_set=false, щоб користувач знову задав свій на /set-password.
 export async function POST(req: Request) {
-  if (!isAdminConfigured()) {
-    return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY не налаштовано на сервері (.env.local)" }, { status: 500 });
-  }
-
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Не авторизовано" }, { status: 401 });
-
-  const { data: me } = await supabase.from("profiles").select("clinic_id, role").eq("id", user.id).single();
-  if (!me || me.role !== "admin") return NextResponse.json({ error: "Лише адміністратор" }, { status: 403 });
-  // Адмін центру завжди має clinic_id; глобальний акаунт адміном бути не може.
-  // Явний guard робить інваріант захисним (а не побічним наслідком eq-on-null).
-  if (!me.clinic_id) return NextResponse.json({ error: "Адміністратор без центру" }, { status: 403 });
+  // needClinic:true → «Адміністратор без центру» (інваріант: глобальний акаунт
+  // адміном бути не може) обробляється в requireRole.
+  const gate = await requireRole(["admin"], { needClinic: true, forbidden: "Лише адміністратор" });
+  if (!gate.ok) return gate.res;
+  const { me } = gate;
 
   const body = await req.json().catch(() => ({}));
   const targetId = String(body.userId || "");

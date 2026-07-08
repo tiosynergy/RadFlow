@@ -24,7 +24,9 @@ export type QueueActionResult =
   | {
       ok: false;
       error: string;
-      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "generic";
+      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "stale" | "generic";
+      // Для code='stale' (H-2): реальный статус на сервере, чтобы доска ресинкнулась.
+      currentStatus?: QueueStatus;
     };
 
 // clinic_id текущего пользователя берём с сервера (не доверяем клиенту) — нужно
@@ -64,7 +66,13 @@ function classifyError(message: string, status?: QueueStatus): QueueActionResult
  */
 export async function setQueueEntryStatus(
   id: string,
-  status: QueueStatus
+  status: QueueStatus,
+  // H-2: ожидаемый текущий статус (тот, что видит оператор на доске). Если задан —
+  // делаем CAS через .eq("status", expectedFrom): при устаревшем состоянии
+  // (коллега уже сменил статус) обновятся 0 строк → отдаём code='stale', а не
+  // тихо перетираем чужой переход (last-write-wins). Необязателен → обратная
+  // совместимость: без него поведение прежнее.
+  expectedFrom?: QueueStatus
 ): Promise<QueueActionResult> {
   if (!id || typeof id !== "string") return { ok: false, error: "Невірний ідентифікатор запису", code: "generic" };
   if (!ALLOWED_STATUSES.includes(status)) return { ok: false, error: "Невідомий статус", code: "generic" };
@@ -78,15 +86,23 @@ export async function setQueueEntryStatus(
       ? { status, in_progress_at: new Date().toISOString() }
       : { status };
 
-  const { data, error } = await supabase
-    .from("queue_entries")
-    .update(patch)
-    .eq("id", id)
-    .select("id");
+  let q = supabase.from("queue_entries").update(patch).eq("id", id);
+  if (expectedFrom) q = q.eq("status", expectedFrom); // CAS
+  const { data, error } = await q.select("id");
 
   if (error) return classifyError(error.message, status);
   // RLS не отдаёт ошибку, а молча обновляет 0 строк, если нет доступа/записи.
-  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  if (!data || data.length === 0) {
+    // С CAS 0 строк может означать «статус уже изменился» — отличаем от forbidden.
+    if (expectedFrom) {
+      const { data: cur } = await supabase.from("queue_entries").select("status").eq("id", id).maybeSingle();
+      if (cur) {
+        if (cur.status === status) return { ok: true }; // кто-то уже применил тот же переход — идемпотентно
+        return { ok: false, error: "Стан змінився — оновіть дошку", code: "stale", currentStatus: cur.status as QueueStatus };
+      }
+    }
+    return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  }
   return { ok: true };
 }
 
