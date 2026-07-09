@@ -36,7 +36,7 @@ import "@/styles/prototype/radflow.css";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null };
 type Referral = {
-  id: string; clinic_id: string; created_by: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
+  id: string; clinic_id: string; created_by: string | null; referrer_id: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
   priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean; doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
 };
@@ -996,7 +996,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     const supabase = createClient();
     const { data } = await supabase
       .from("queue_entries")
-      .select("id, clinic_id, created_by, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, studies_changed_by, contraindications, doctor, note, indication, room_id, reschedule_origin")
+      .select("id, clinic_id, created_by, referrer_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, studies_changed_by, contraindications, doctor, note, indication, room_id, reschedule_origin")
       .eq("referrer_id", doctorId)
       .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
     setReferrals(data || []);

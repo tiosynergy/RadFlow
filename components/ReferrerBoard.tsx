@@ -21,7 +21,7 @@ import type { Json } from "@/supabase/types";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null };
 export type BoardReferral = {
-  id: string; clinic_id: string; created_by: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
+  id: string; clinic_id: string; created_by: string | null; referrer_id: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string;
   call_status: string | null; priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean;
   doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
@@ -202,7 +202,9 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
               const km = room ? modLabel(room.modality) : "";
               const changed = studiesChanged(r.studies_original as Parameters<typeof studiesChanged>[0], r.studies as Parameters<typeof studiesChanged>[1]);
               const call = CALL_META[r.call_status || "not_called"];
-              const owned = r.created_by === doctorId;
+              // Направник керує записом у ДВОХ випадках: він автор (created_by)
+              // АБО його призначив центр направником запису (referrer_id).
+              const owned = r.created_by === doctorId || r.referrer_id === doctorId;
               return (
                 <div className={"qrow-item " + r.status + (expanded ? " open" : "")} key={r.id}>
                   <div className="qrow" role="button" tabIndex={0} style={{ gridTemplateColumns: "54px minmax(0,2fr) minmax(0,2.4fr) minmax(120px,1.2fr) 130px 26px" }}
