@@ -285,6 +285,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
   });
   const [time, setTime] = useState(prefill?.date && prefill?.time ? prefill.time : "");
   const [dayEntries, setDayEntries] = useState<DayEntryRow[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(true);
 
   const allRegions = studyType === "MRT" ? MRT_REGIONS : CT_REGIONS;
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
@@ -342,27 +343,33 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
   const combinedLabel = allStudies.length ? allStudies.map(studyLabel).join(" + ") : procLabel;
   const slotDur = dur + validExtra.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
-  /* зайняті слоти обраного кабінету на обрану дату — з Supabase */
+  /* зайняті слоти обраного кабінету на обрану дату — з Supabase.
+     Поки не завантажено — сітку показуємо як «завантаження», а не «усе вільно». */
   useEffect(() => {
     let cancel = false;
+    setSlotsLoading(true);
     async function load() {
-      const supabase = createClient();
-      if (clinicId) {
-        const ovRes = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateKey(bookDate)).maybeSingle();
-        if (!cancel) setOverride((ovRes.data as unknown as DayOverride) || null);
+      try {
+        const supabase = createClient();
+        if (clinicId) {
+          const ovRes = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateKey(bookDate)).maybeSingle();
+          if (!cancel) setOverride((ovRes.data as unknown as DayOverride) || null);
+        }
+        if (!roomId) { if (!cancel) { setDayEntries([]); setRoomSchedule(null); } return; }
+        const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+        if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
+        const { data } = await supabase
+          .from("queue_entries")
+          .select("scheduled_time, duration_min, buffer_time_min, patient_name, status, in_progress_at")
+          .eq("room_id", roomId)
+          .eq("scheduled_date", dateKey(bookDate))
+          .neq("status", "cancelled")
+          .neq("status", "no_show")
+          .neq("status", "not_held");
+        if (!cancel) setDayEntries(data || []);
+      } finally {
+        if (!cancel) setSlotsLoading(false);
       }
-      if (!roomId) { setDayEntries([]); setRoomSchedule(null); return; }
-      const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
-      if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
-      const { data } = await supabase
-        .from("queue_entries")
-        .select("scheduled_time, duration_min, buffer_time_min, patient_name, status, in_progress_at")
-        .eq("room_id", roomId)
-        .eq("scheduled_date", dateKey(bookDate))
-        .neq("status", "cancelled")
-        .neq("status", "no_show")
-        .neq("status", "not_held");
-      if (!cancel) setDayEntries(data || []);
     }
     load();
     return () => { cancel = true; };
@@ -647,12 +654,16 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
             <div className="fld">
               <div className="bk-slots-head">
                 <span className={"fld-lab" + (miss.time ? " bk-miss-lab" : "")} style={{ margin: 0 }}>Вільні слоти · {fmtShort(bookDate)} {miss.time ? "— оберіть час *" : ""}</span>
-                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {freeCount} вільних</span>
+                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {allStudies.length === 0 ? "оберіть область" : slotsLoading ? "завантаження…" : freeCount + " вільних"}</span>
               </div>
               {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
               {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
               {!roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncidents[0]?.blocked_until ? " до " + new Date(Math.max(...roomIncidents.map((i) => i.blocked_until ? new Date(i.blocked_until).getTime() : 0))).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : ""}. Оберіть слот після відновлення або інший день/кабінет.</div>}
-              <div className={"bk-slot-grid" + (miss.time ? " bk-miss-slots" : "")}>
+              {allStudies.length === 0
+                ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
+                : slotsLoading
+                ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
+                : <div className={"bk-slot-grid" + (miss.time ? " bk-miss-slots" : "")}>
                 {slots.map((s) => {
                   const st = slotState(s);
                   const title = st === "busy" ? "Зайнято"
@@ -666,7 +677,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
                       disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
                   );
                 })}
-              </div>
+              </div>}
               {busyList.length > 0 && (
                 <div className="bk-busy-list">
                   <span className="bk-busy-lab">Зайнятий час:</span>

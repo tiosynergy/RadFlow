@@ -516,7 +516,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
               {stats.map((s) => (
                 <div className="cl-stat" key={s.lab}>
                   <div className="lab">{s.lab}</div>
-                  <div className="val tabular" style={{ color: statColor[s.cls] }}>{s.val}</div>
+                  <div className="val tabular" style={{ color: statColor[s.cls] }}>{loading ? "—" : s.val}</div>
                   <div className="mini-bar"><div className="mini-fill" style={{ width: s.pct + "%", background: s.color }} /></div>
                 </div>
               ))}

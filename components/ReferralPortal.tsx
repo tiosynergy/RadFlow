@@ -130,6 +130,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const [roomId, setRoomId] = useState<string | null>(null);
   const [time, setTime] = useState("");
   const [dayEntries, setDayEntries] = useState<BusySlot[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(true);
   const [override, setOverride] = useState<DayOverride | null>(null);
   const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule обраного кабінету (для перерв)
   const [incidents, setIncidents] = useState<IncidentLike[]>([]);
@@ -202,18 +203,23 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   }, [centerId, studyType]);
 
   const loadDay = useCallback(async () => {
-    const supabase = createClient();
-    if (centerId) {
-      const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", centerId).eq("override_date", date).maybeSingle();
-      setOverride((ov.data as unknown as DayOverride) || null);
-      const inc = await supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", centerId).in("status", ["active", "planned"]);
-      setIncidents(inc.data || []);
+    setSlotsLoading(true);
+    try {
+      const supabase = createClient();
+      if (centerId) {
+        const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", centerId).eq("override_date", date).maybeSingle();
+        setOverride((ov.data as unknown as DayOverride) || null);
+        const inc = await supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", centerId).in("status", ["active", "planned"]);
+        setIncidents(inc.data || []);
+      }
+      if (!roomId) { setDayEntries([]); setRoomSchedule(null); return; }
+      const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+      setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
+      const { data } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
+      setDayEntries(data || []);
+    } finally {
+      setSlotsLoading(false);
     }
-    if (!roomId) { setDayEntries([]); setRoomSchedule(null); return; }
-    const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
-    setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
-    const { data } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
-    setDayEntries(data || []);
   }, [centerId, roomId, date]);
 
   useEffect(() => { (async () => { await loadDay(); })(); }, [loadDay]);
@@ -489,12 +495,16 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
             <div className="fld">
               <div className="bk-slots-head">
                 <span className={"fld-lab" + (miss.time ? " bk-miss-lab" : "")} style={{ margin: 0 }}>Вільні слоти · {fmtShort(bookDate)} {miss.time ? "— оберіть час *" : ""}</span>
-                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {freeCount} вільних</span>
+                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {allStudies.length === 0 ? "оберіть область" : slotsLoading ? "завантаження…" : freeCount + " вільних"}</span>
               </div>
               {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
               {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
               {!roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО у частині дня. Оберіть вільний слот або інший день.</div>}
-              <div className={"bk-slot-grid" + (miss.time ? " bk-miss-slots" : "")}>
+              {allStudies.length === 0
+                ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
+                : slotsLoading
+                ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
+                : <div className={"bk-slot-grid" + (miss.time ? " bk-miss-slots" : "")}>
                 {slots.map((s) => {
                   const st = slotState(s);
                   const title = st === "busy" ? "Зайнято"
@@ -508,7 +518,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                       disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
                   );
                 })}
-              </div>
+              </div>}
               {busyList.length > 0 && (
                 <div className="bk-busy-list">
                   <span className="bk-busy-lab">Зайнятий час:</span>

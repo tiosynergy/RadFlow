@@ -775,9 +775,10 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   const reload = useCallback(async () => {
     const supabase = createClient();
-    // Авто-«Уточнити»: помічаємо прострочені scheduled записи клініки (persisted
-    // clarify_at) — щоб вони опустилися в кінець запланованої черги. Ідемпотентно.
-    await supabase.rpc("sink_overdue_scheduled");
+    // Авто-«Уточнити»: помічаємо прострочені scheduled записи (persisted clarify_at).
+    // Fire-and-forget — НЕ блокуємо reload зайвим round-trip'ом (perceived speed);
+    // якщо щось позначиться, зміна прийде наступним realtime-циклом. Ідемпотентно.
+    void supabase.rpc("sink_overdue_scheduled");
     const { data, error } = await supabase
       .from("queue_entries")
       .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, studies_changed_by, contraindications, cito, priority_level, doctor, referrer:referrer_id(full_name), room_id, updated_at, in_progress_at, clarify_at, reschedule_origin")

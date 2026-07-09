@@ -521,8 +521,9 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
 
   const reload = useCallback(async () => {
     const supabase = createClient();
-    // Авто-«Уточнити» для прострочених scheduled записів клініки (persisted clarify_at).
-    await supabase.rpc("sink_overdue_scheduled");
+    // Авто-«Уточнити» для прострочених scheduled (persisted clarify_at). Fire-and-forget —
+    // не блокуємо reload; позначка прийде наступним realtime-циклом.
+    void supabase.rpc("sink_overdue_scheduled");
     let q = supabase
       .from("queue_entries")
       .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at, clarify_at")

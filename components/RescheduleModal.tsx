@@ -56,9 +56,13 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const [override, setOverride] = useState<DayOverride | null>(null);
   const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule обраного кабінету (для перерв)
   const [reason, setReason] = useState("");
+  // Поки зайнятість кабінету не завантажена — НЕ показуємо сітку як «усе вільно»
+  // (інакше можна обрати слот, що насправді зайнятий: race при відкритті/зміні дня).
+  const [slotsLoading, setSlotsLoading] = useState(true);
 
   useEffect(() => {
     let cancel = false;
+    setSlotsLoading(true);
     (async () => {
       try {
         const supabase = createClient();
@@ -75,6 +79,8 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
       } catch {
         // Транзієнтний збій (оновлення токена / мережа) — не рушимо модаль.
         if (!cancel) setDayEntries([]);
+      } finally {
+        if (!cancel) setSlotsLoading(false);
       }
     })();
     return () => { cancel = true; };
@@ -149,13 +155,15 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
           <div className="fld-row">
             <label className="fld" style={{ maxWidth: 180 }}><span className="fld-lab">Дата</span>
               <input className="inp tabular" type="date" min={clinicTodayStr} value={dateStr} onChange={(e) => { setDateStr(e.target.value); setTime(""); }} /></label>
-            <div className="fld"><span className="fld-lab">Вільні слоти · блок {dur} хв · {freeCount} вільних</span></div>
+            <div className="fld"><span className="fld-lab">Вільні слоти · блок {dur} хв · {slotsLoading ? "завантаження…" : freeCount + " вільних"}</span></div>
           </div>
           <div className="fld">
             {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {dateStr}{override && override.label ? " · " + override.label : ""}. Оберіть інший день.</div>}
             {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік: {roomSched.start}–{roomSched.end}.</div>}
             {roomIncident && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncident.blocked_until ? " до " + new Date(roomIncident.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : ""}. Оберіть слот після відновлення або інший день.</div>}
-            <div className="bk-slot-grid">
+            {slotsLoading
+              ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
+              : <div className="bk-slot-grid">
               {slots.map((s) => {
                 const st = slotState(s);
                 const title = st === "busy" ? "Зайнято" : st === "blocked" ? "Кабінет на ремонті/ТО" : st === "break" ? "Перерва в роботі кабінету" : st === "tight" ? ("Не вміщується: блок " + dur + " хв перетне " + (nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець дня")) : st === "past" ? "Час минув" : ("Вільно · " + s + "–" + fmt(toMin(s) + dur));
@@ -163,7 +171,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
                   <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked" || st === "break") ? " busy" : "")} disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
                 );
               })}
-            </div>
+            </div>}
             {busyList.length > 0 && (
               <div className="bk-busy-list">
                 <span className="bk-busy-lab">Зайнятий час{room ? " (" + room.name + ")" : ""}:</span>
