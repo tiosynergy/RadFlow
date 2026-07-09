@@ -24,6 +24,7 @@ type Center = {
   room_ids: string[] | null;
   name: string;
   city: string | null;
+  timezone: string | null;
 };
 
 export default async function ReferralPage() {
@@ -59,10 +60,10 @@ export default async function ReferralPage() {
     const list = access ?? [];
     const clinicIds = Array.from(new Set(list.map((a) => a.clinic_id as string)));
 
-    const clinicsById: Record<string, { name?: string; city?: string | null }> = {};
+    const clinicsById: Record<string, { name?: string; city?: string | null; timezone?: string | null }> = {};
     if (clinicIds.length) {
-      const { data: clinics } = await supabase.from("clinics").select("id, name, city").in("id", clinicIds);
-      (clinics ?? []).forEach((c) => { clinicsById[c.id as string] = { name: c.name as string, city: (c.city as string) ?? null }; });
+      const { data: clinics } = await supabase.from("clinics").select("id, name, city, timezone").in("id", clinicIds);
+      (clinics ?? []).forEach((c) => { clinicsById[c.id as string] = { name: c.name as string, city: (c.city as string) ?? null, timezone: (c.timezone as string) ?? null }; });
     }
 
     list.forEach((a) => {
@@ -74,6 +75,7 @@ export default async function ReferralPage() {
         room_ids: (a.room_ids as string[] | null) ?? null,
         name: clinicsById[a.clinic_id as string]?.name ?? "Центр",
         city: clinicsById[a.clinic_id as string]?.city ?? null,
+        timezone: clinicsById[a.clinic_id as string]?.timezone ?? null,
       });
     });
 
@@ -93,12 +95,12 @@ export default async function ReferralPage() {
     // Адмін: прев'ю порталу для власного центру (один «центр»).
     const { data: clinic } = await supabase
       .from("clinics")
-      .select("id, name, city, configured_at")
+      .select("id, name, city, configured_at, timezone")
       .eq("id", profile.clinic_id as string)
       .single();
     if (clinic && !clinic.configured_at) redirect("/setup");
     if (clinic) {
-      centers.push({ accessId: null, clinicId: clinic.id as string, status: "active", policy: "direct", room_ids: null, name: (clinic.name as string) ?? "", city: (clinic.city as string) ?? null });
+      centers.push({ accessId: null, clinicId: clinic.id as string, status: "active", policy: "direct", room_ids: null, name: (clinic.name as string) ?? "", city: (clinic.city as string) ?? null, timezone: (clinic.timezone as string) ?? null });
       const { data: rooms } = await supabase
         .from("rooms")
         .select("id, name, modality, apparatus_model, clinic_id")

@@ -15,24 +15,34 @@ import PatientEditModal from "@/components/PatientEditModal";
 import PhoneInput from "@/components/PhoneInput";
 import CitySelect from "@/components/CitySelect";
 import RescheduleModal from "@/components/RescheduleModal";
-import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry } from "@/app/queue/actions";
-import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
-import { slotBlockedByIncidents, type IncidentLike } from "@/lib/incidents";
-import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE } from "@/lib/studies";
-import { DobField, BookingCalendar, fmtShort, today0, sameDay } from "@/components/BookingModal";
+import ReferrerBoard from "@/components/ReferrerBoard";
+import ReferrerSidebar from "@/components/ReferrerSidebar";
+import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry, editQueueEntryStudies } from "@/app/queue/actions";
+import StudyEditModal from "@/components/StudyEditModal";
+import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal";
+import ConfirmDialog from "@/components/ConfirmDialog";
+import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority, updateWaitlistEntry } from "@/app/waitlist/actions";
+import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
+import { isLate, LATE_META } from "@/lib/queueStatus";
+import type { WaitlistEntry } from "@/supabase/types";
+import { roomScheduleFor, roomBreaksFor, overlapsBreak, type DayOverride } from "@/lib/schedule";
+import { slotBlockedByIncidents, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
+import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
+import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
+import { DobField, BookingCalendar, fmtShort, today0 } from "@/components/BookingModal";
 import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
-type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null };
+type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null; timezone?: string | null };
 type Referral = {
-  id: string; clinic_id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
-  scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; status: string;
-  studies: Json; studies_original: Json | null; doctor: string | null; note: string | null; indication: string | null; room_id: string | null;
+  id: string; clinic_id: string; created_by: string | null; referrer_id: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
+  scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
+  priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean; doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
 };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 type ExtraStudy = { type: string; region: string; dur: number };
-type BusySlot = { scheduled_time: string; duration_min: number };
+type BusySlot = { scheduled_time: string; duration_min: number; buffer_time_min: number | null };
 type SearchClinic = { id: string; name: string; city: string | null; modalities: string[] };
 type CenterCardData = {
   name?: string; city?: string | null; policy?: string | null; note?: string | null;
@@ -53,6 +63,11 @@ function procLabel(e: { studies?: unknown; note?: string | null }) {
   return e.note || "—";
 }
 function centerLabel(c?: { name: string; city?: string | null } | null) { return c ? c.name + (c.city ? " · " + c.city : "") : "—"; }
+/** Derived «Запізнення» для направлення (та сама формула, що на дошці). */
+function refIsLate(r: { status: string; scheduled_date: string | null; scheduled_time: string | null; buffer_time_min: number | null }): boolean {
+  if (!r.scheduled_date) return false;
+  return isLate(r.status, new Date(r.scheduled_date + "T00:00:00"), r.scheduled_time, r.buffer_time_min);
+}
 
 const ST: Record<string, { label: string; cls: string }> = {
   scheduled: { label: "Очікує", cls: "gray" },
@@ -106,15 +121,18 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const [studyType, setStudyType] = useState("МРТ");
   const [region, setRegion] = useState("");
   const [contrast, setContrast] = useState(false);
+  const [buffer, setBuffer] = useState<number>(BUFFER_DEFAULT);
   const [hasContra, setHasContra] = useState(false);
-  const [cito, setCito] = useState(false);
+  const [priority, setPriority] = useState<PatientPriority | "">("");
   const [comment, setComment] = useState("");
   const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>([]);
   const [bookDate, setBookDate] = useState(() => { const d = today0(); d.setDate(d.getDate() + 1); return d; });
   const [roomId, setRoomId] = useState<string | null>(null);
   const [time, setTime] = useState("");
   const [dayEntries, setDayEntries] = useState<BusySlot[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(true);
   const [override, setOverride] = useState<DayOverride | null>(null);
+  const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule обраного кабінету (для перерв)
   const [incidents, setIncidents] = useState<IncidentLike[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -185,16 +203,23 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   }, [centerId, studyType]);
 
   const loadDay = useCallback(async () => {
-    const supabase = createClient();
-    if (centerId) {
-      const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", centerId).eq("override_date", date).maybeSingle();
-      setOverride((ov.data as unknown as DayOverride) || null);
-      const inc = await supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", centerId).in("status", ["active", "planned"]);
-      setIncidents(inc.data || []);
+    setSlotsLoading(true);
+    try {
+      const supabase = createClient();
+      if (centerId) {
+        const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", centerId).eq("override_date", date).maybeSingle();
+        setOverride((ov.data as unknown as DayOverride) || null);
+        const inc = await supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", centerId).in("status", ["active", "planned"]);
+        setIncidents(inc.data || []);
+      }
+      if (!roomId) { setDayEntries([]); setRoomSchedule(null); return; }
+      const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+      setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
+      const { data } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
+      setDayEntries(data || []);
+    } finally {
+      setSlotsLoading(false);
     }
-    if (!roomId) { setDayEntries([]); return; }
-    const { data } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
-    setDayEntries(data || []);
   }, [centerId, roomId, date]);
 
   useEffect(() => { (async () => { await loadDay(); })(); }, [loadDay]);
@@ -207,20 +232,26 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const dateObj = new Date(date + "T00:00:00");
   const roomSched = roomScheduleFor(dateObj, roomId || "", override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
-  const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) }));
-  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
-  const isBookToday = sameDay(bookDate, today0());
+  const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) + (e.buffer_time_min ?? BUFFER_DEFAULT) }));
+  const roomBreaks = roomBreaksFor(dateObj, roomSchedule); // перерви кабінету на цю дату
+  // «Зараз» у настінному часі центру (wall-as-UTC мс): і хвилини доби, і «сьогодні».
+  const _nowW = wallNow(selCenter?.timezone || undefined);
+  const nowMin = wallMinOfDay(_nowW);
+  const _nowD = new Date(_nowW);
+  const isBookToday = date === (_nowD.getUTCFullYear() + "-" + pad(_nowD.getUTCMonth() + 1) + "-" + pad(_nowD.getUTCDate()));
   const slots: string[] = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
   function slotState(slot: string) {
-    const a = toMin(slot), b = a + slotDur;
+    // b — кінець дослідження (має вміститись у графік); bBlock — з буфером (перетин з іншими).
+    const a = toMin(slot), b = a + slotDur, bBlock = a + slotDur + buffer;
     if (roomSched.closed) return "closed";
     const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60);
     if (slotBlockedByIncidents(incidents, roomId || "", slotMs)) return "blocked";
     if (a < schedStart || a >= schedEnd) return "offhours";
     if (b > schedEnd) return "tight";
+    if (overlapsBreak(a, slotDur, roomBreaks)) return "break"; // блок перетинає перерву
     if (isBookToday && a < nowMin) return "past";
     if (busySlots.some((x) => a >= x.s && a < x.e)) return "busy";
-    if (busySlots.some((x) => a < x.e && x.s < b)) return "tight";
+    if (busySlots.some((x) => a < x.e && x.s < bBlock)) return "tight";
     return "free";
   }
   function nextApptAfter(slot: string) {
@@ -231,8 +262,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const freeCount = slots.filter((s) => slotState(s) === "free").length;
   const busyList = busySlots.slice().sort((a, b) => a.s - b.s);
 
-  const miss: Record<string, boolean> = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), region: !region, room: !roomId, time: !time };
-  const MISS_LABELS: Record<string, string> = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
+  const miss: Record<string, boolean> = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time };
+  const MISS_LABELS: Record<string, string> = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   const timeBad = time ? slotState(time) !== "free" : false;
   const valid = centerId && missingList.length === 0 && roomId && !timeBad && !roomSched.closed;
@@ -247,8 +278,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
       clinicId: centerId, roomId: roomId as string,
       name: name.trim(), phone: phone.trim() || null, email: email.trim() || null,
       dob: dob || null, sex: gender || null, age: calcAgeLocal(dob), weight: weight ? +weight : null,
-      hasContra: !!hasContra, cito: !!cito, studies: allStudies as Json,
-      doctorName, note: comment.trim() || null, durationMin: slotDur,
+      hasContra: !!hasContra, priorityLevel: priority || undefined, studies: allStudies as Json,
+      doctorName, note: comment.trim() || null, durationMin: slotDur, bufferTimeMin: buffer,
       scheduledDate: date, scheduledTime: time, scheduledAt: at,
     });
     setBusy(false);
@@ -259,7 +290,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
       onCreated(null, msg);
       return;
     }
-    setName(""); setDob(""); setGender(""); setWeight(""); setPhone(""); setEmail(""); setRegion(""); setContrast(false); setHasContra(false); setCito(false); setComment(""); setExtraStudies([]); setTime("");
+    setName(""); setDob(""); setGender(""); setWeight(""); setPhone(""); setEmail(""); setRegion(""); setContrast(false); setHasContra(false); setPriority(""); setComment(""); setExtraStudies([]); setTime("");
     onCreated(name.trim());
   }
 
@@ -346,12 +377,25 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                     <input type="checkbox" checked={hasContra} onChange={(e) => setHasContra(e.target.checked)} />
                     <span className="rf-box" /><span>Протипоказання</span>
                   </label>
-                  <label className={"rf-check" + (cito ? " warn" : "")}>
-                    <input type="checkbox" checked={cito} onChange={(e) => setCito(e.target.checked)} />
-                    <span className="rf-box" /><span>CITO (терміново)</span>
-                  </label>
                 </div>
               </div>
+            </div>
+
+            <div className="fld">
+              <span className={"fld-lab" + (miss.priority ? " bk-miss-lab" : "")}>Пріоритет пацієнта <span className="req">*</span></span>
+              <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
+                {PRIORITY_OPTIONS.map((pv) => {
+                  const m = PRIORITY_META[pv];
+                  return (
+                    <button key={pv} type="button" role="radio" aria-checked={priority === pv}
+                      className={"prio-seg-btn " + m.tone + (priority === pv ? " active" : "")}
+                      onClick={() => setPriority(pv)} title={m.desc}>
+                      {m.short}
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="bk-time-state none">{priority ? PRIORITY_META[priority as PatientPriority].desc : "оберіть пріоритет — впливає на порядок у черзі"}</span>
             </div>
 
             <div className="fld-row" style={{ alignItems: "flex-start" }}>
@@ -374,6 +418,13 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                 <span className={"bk-time-state " + (durCustom ? "busy" : "none")}>
                   {!region ? "оберіть область" : durCustom ? `↺ за замовч. ${computedDur} хв` : "за тривалістю області"}
                 </span>
+              </label>
+              <label className="fld" style={{ flex: "0 0 96px" }}>
+                <span className="fld-lab">Буфер</span>
+                <select className="inp" value={buffer} onChange={(e) => setBuffer(Number(e.target.value))} title="Час на переукладку/дезінфекцію після дослідження">
+                  {BUFFER_OPTIONS.map((b) => <option key={b} value={b}>{b} хв</option>)}
+                </select>
+                <span className="bk-time-state none">після дослідження</span>
               </label>
             </div>
 
@@ -444,25 +495,30 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
             <div className="fld">
               <div className="bk-slots-head">
                 <span className={"fld-lab" + (miss.time ? " bk-miss-lab" : "")} style={{ margin: 0 }}>Вільні слоти · {fmtShort(bookDate)} {miss.time ? "— оберіть час *" : ""}</span>
-                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} · {freeCount} вільних</span>
+                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {allStudies.length === 0 ? "оберіть область" : slotsLoading ? "завантаження…" : freeCount + " вільних"}</span>
               </div>
               {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
               {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
               {!roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО у частині дня. Оберіть вільний слот або інший день.</div>}
-              <div className={"bk-slot-grid" + (miss.time ? " bk-miss-slots" : "")}>
+              {allStudies.length === 0
+                ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
+                : slotsLoading
+                ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
+                : <div className={"bk-slot-grid" + (miss.time ? " bk-miss-slots" : "")}>
                 {slots.map((s) => {
                   const st = slotState(s);
                   const title = st === "busy" ? "Зайнято"
                     : st === "blocked" ? "Кабінет на ремонті/ТО"
+                    : st === "break" ? "Перерва в роботі кабінету"
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець графіка (" + fmt(schedEnd) + ")"}`
                     : st === "past" ? "Час минув"
                     : `Вільно · ${s}–${fmt(toMin(s) + slotDur)}`;
                   return (
-                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked") ? " busy" : "")}
+                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked" || st === "break") ? " busy" : "")}
                       disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
                   );
                 })}
-              </div>
+              </div>}
               {busyList.length > 0 && (
                 <div className="bk-busy-list">
                   <span className="bk-busy-lab">Зайнятий час:</span>
@@ -475,15 +531,15 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                 <span><span className="lg-dot busy" />зайнято</span>
               </div>
               {time && (() => {
-                const s = toMin(time), e = s + slotDur;
+                const s = toMin(time), e = s + slotDur, eBlock = s + slotDur + buffer;
                 const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(s / 60), s % 60);
                 const blocked = slotBlockedByIncidents(incidents, roomId || "", slotMs);
-                const conflict = busySlots.find((b) => s < b.e && b.s < e);
+                const conflict = busySlots.find((b) => s < b.e && b.s < eBlock);
                 return (
                   <div className={"bk-slot-confirm " + (blocked || conflict ? "bad" : "ok")}>
                     {blocked ? <>⚠ Кабінет на ремонті/ТО у цей час — оберіть інший слот або день</>
                       : conflict ? <>⚠ Перетин із записом {fmt(conflict.s)}–{fmt(conflict.e)} — оберіть інший слот</>
-                      : <>✓ Слот вільний. Запис: <b>{time}–{fmt(e)}</b> ({slotDur} хв).</>}
+                      : <>✓ Слот вільний. Запис: <b>{time}–{fmt(e)}</b> ({slotDur} хв){buffer > 0 ? <> + буфер {buffer} хв (до {fmt(eBlock)})</> : null}.</>}
                   </div>
                 );
               })()}
@@ -504,120 +560,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   );
 }
 
-/* ---------- Вкладка «Мої направлення» ---------- */
-interface MyReferralsProps {
-  referrals: Referral[];
-  centersById: Record<string, Center>;
-  onReschedule: (r: Referral) => void;
-  onCancel: (r: Referral) => void;
-  onEditPatient: (r: Referral) => void;
-}
-
-function MyReferrals({ referrals, centersById, onReschedule, onCancel, onEditPatient }: MyReferralsProps) {
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("all");
-  const [centerFilter, setCenterFilter] = useState("all");
-  const [selected, setSelected] = useState<Referral | null>(null);
-
-  const centerOptions = useMemo(() => {
-    const ids = Array.from(new Set(referrals.map((r) => r.clinic_id)));
-    return ids.map((id) => ({ id, label: centerLabel(centersById[id]) }));
-  }, [referrals, centersById]);
-
-  const filtered = referrals.filter((r) => {
-    if (filter === "active") { if (!["waiting", "in_progress"].includes(r.status)) return false; }
-    else if (filter !== "all" && r.status !== filter) return false;
-    if (centerFilter !== "all" && r.clinic_id !== centerFilter) return false;
-    if (query.trim()) { const q = query.trim().toLowerCase(); if (!((r.patient_name || "").toLowerCase().includes(q) || procLabel(r).toLowerCase().includes(q))) return false; }
-    return true;
-  });
-
-  const canCancel = (r: Referral) => ["scheduled", "waiting"].includes(r.status);
-
-  return (
-    <div style={{ maxWidth: 1000, margin: "0 auto", display: "flex", gap: 16 }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="qctrl" style={{ marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-          <div className="pills">
-            {FILTERS.map((f) => <button key={f.key} className={"pill" + (filter === f.key ? " active" : "")} onClick={() => setFilter(f.key)}>{f.label}</button>)}
-          </div>
-          {centerOptions.length > 1 && (
-            <select className="inp" style={{ maxWidth: 220, height: 32, padding: "2px 8px" }} value={centerFilter} onChange={(e) => setCenterFilter(e.target.value)}>
-              <option value="all">Усі центри</option>
-              {centerOptions.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
-            </select>
-          )}
-          <div className="spacer" />
-          <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
-        </div>
-        {filtered.length === 0 ? (
-          <div className="empty"><div className="ei">📄</div><div className="et">Направлень немає</div><div className="es">Створіть направлення у вкладці «Нове направлення»</div></div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {filtered.map((r) => {
-              const m = ST[r.status] || ST.scheduled;
-              return (
-                <div key={r.id} onClick={() => setSelected(r)} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", background: "var(--card)", border: "1px solid " + (selected && selected.id === r.id ? "var(--blue)" : "var(--border)"), borderRadius: "var(--r-md)", cursor: "pointer" }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{canCancel(r) ? <span onClick={(e) => { e.stopPropagation(); onEditPatient && onEditPatient(r); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{r.patient_name}</span> : r.patient_name}</div>
-                    <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{procLabel(r)} · <span style={{ color: "var(--text-secondary)" }}>🏥 {centerLabel(centersById[r.clinic_id])}</span>{studiesChanged(r.studies_original as Parameters<typeof studiesChanged>[0], r.studies as Parameters<typeof studiesChanged>[1]) && <span style={{ color: "var(--orange)", marginLeft: 6 }}>✎ змінено клінікою</span>}</div>
-                  </div>
-                  <div style={{ fontSize: 12.5, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{r.scheduled_date} · {r.scheduled_time}</div>
-                  <span className={"badge " + m.cls}>{m.label}</span>
-                  <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); setSelected(r); }}>Деталі</button>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {selected && (() => {
-        const sel = referrals.find((x) => x.id === selected.id) || selected;
-        const m = ST[sel.status] || ST.scheduled;
-        const sdiff = diffStudies(sel.studies_original as Parameters<typeof diffStudies>[0], sel.studies as Parameters<typeof diffStudies>[1]);
-        const changed = studiesChanged(sel.studies_original as Parameters<typeof studiesChanged>[0], sel.studies as Parameters<typeof studiesChanged>[1]);
-        return (
-          <aside style={{ width: 320, flexShrink: 0, background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 18, alignSelf: "flex-start" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <span style={{ fontSize: 15, fontWeight: 700 }}>Деталі направлення</span>
-              <button className="icon-btn" onClick={() => setSelected(null)}>✕</button>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "110px 1fr", rowGap: 10, columnGap: 10, fontSize: 13 }}>
-              <span style={{ color: "var(--text-muted)" }}>Пацієнт</span><span>{sel.patient_name}</span>
-              <span style={{ color: "var(--text-muted)" }}>Телефон</span><span>{sel.patient_phone || "—"}</span>
-              <span style={{ color: "var(--text-muted)" }}>Центр</span><span>{centerLabel(centersById[sel.clinic_id])}</span>
-              <span style={{ color: "var(--text-muted)" }}>Дослідження{changed && <span style={{ color: "var(--orange)" }}> · змінено</span>}</span>
-              <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                {sdiff.map((d, i) => (
-                  <span key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
-                    {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
-                  </span>
-                ))}
-              </span>
-              <span style={{ color: "var(--text-muted)" }}>Дата · час</span><span>{sel.scheduled_date} · {sel.scheduled_time}{sel.duration_min ? " · " + sel.duration_min + " хв" : ""}</span>
-              <span style={{ color: "var(--text-muted)" }}>Статус</span><span><span className={"badge " + m.cls}>{m.label}</span></span>
-              {sel.indication && <><span style={{ color: "var(--text-muted)" }}>Питання</span><span>{sel.indication}</span></>}
-              {sel.status === "no_show" && sel.note && <><span style={{ color: "var(--red)" }}>Причина</span><span>{sel.note}</span></>}
-            </div>
-            {changed && <div className="ctx-hint" style={{ marginTop: 10, fontSize: 12 }}>Центр скоригував перелік досліджень. <span style={{ color: "var(--green)" }}>Зелені</span> — додані, <span style={{ color: "var(--red)", textDecoration: "line-through" }}>закреслені</span> — прибрані.</div>}
-            {sel.status !== "done" && sel.status !== "cancelled" && sel.status !== "no_show" && (
-              <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-                <button className="btn btn-primary btn-sm" style={{ flex: 1, justifyContent: "center" }} onClick={() => onReschedule(sel)}>🗓 Перезаписати</button>
-                {canCancel(sel) && (
-                  <button className="btn btn-secondary btn-sm qd-act-red" style={{ justifyContent: "center" }} onClick={() => { onCancel(sel); setSelected(null); }}>Скасувати</button>
-                )}
-              </div>
-            )}
-            {!canCancel(sel) && sel.status === "in_progress" && (
-              <div className="ctx-hint blue" style={{ marginTop: 10, fontSize: 12 }}>Дослідження вже почалося — скасування лише через центр.</div>
-            )}
-          </aside>
-        );
-      })()}
-    </div>
-  );
-}
+/* «Мої направлення» → тепер компонент ReferrerBoard (доска-черга як у адміна).
+   Стара карткова версія (MyReferrals) видалена. */
 
 /* ---------- Розгорнута картка центру ---------- */
 function CenterDetails({ data, loading }: { data?: CenterCardData | null; loading: boolean }) {
@@ -950,6 +894,80 @@ function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m
   );
 }
 
+/* ── Лист очікування направника: власні пацієнти в усіх авторизованих центрах ── */
+function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onRestore, onPriority }: {
+  entries: WaitlistEntry[];
+  centersById: Record<string, Center>;
+  onOpenAdd: () => void;
+  onEdit: (e: WaitlistEntry) => void;
+  onCancel: (e: WaitlistEntry) => void;
+  onRestore: (e: WaitlistEntry) => void;
+  onPriority: (e: WaitlistEntry, v: PatientPriority) => void;
+}) {
+  const waiting = entries.filter((e) => e.status === "waiting").sort(compareWaitlist);
+  const rest = entries.filter((e) => e.status !== "waiting").sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+  const list = [...waiting, ...rest];
+  return (
+    <div style={{ maxWidth: 1040, margin: "0 auto", display: "flex", flexDirection: "column", gap: 10 }}>
+      <div className="info-banner">
+        <span className="ib-ic">⏳</span>
+        <span className="ib-txt"><b>Лист очікування</b> — ваші пацієнти, що чекають на вільне вікно в центрі. Коли слот звільниться, центр запише пацієнта — статус зміниться на «Записано».</span>
+        <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={onOpenAdd}>＋ Додати пацієнта</button>
+      </div>
+      {list.length === 0 ? (
+        <div className="empty"><div className="ei">⏳</div><div className="et">Лист порожній</div><div className="es">Додайте пацієнта, що чекає на вільне вікно</div></div>
+      ) : (
+        list.map((p) => {
+          const m = PRIORITY_META[p.priority_level];
+          const st = WAITLIST_STATUS_META[p.status];
+          const center = centersById[p.clinic_id];
+          return (
+            <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: "10px 14px", opacity: p.status === "waiting" ? 1 : 0.72 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {p.status !== "waiting" && <span className="badge">{st.label}</span>}
+                  {p.priority_level !== "planned" && p.status === "waiting" && <span className={"prio-tag " + m.tone}>{m.short}</span>}
+                  {p.status === "waiting" ? (
+                    <span onClick={() => onEdit(p)} title="Редагувати дані пацієнта та дослідження"
+                      style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}>{p.patient_name}</span>
+                  ) : (
+                    <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.patient_name}</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2 }}>
+                  {centerLabel(center)} · {procLabel(p)} · {desiredWindowText(p)}
+                </div>
+              </div>
+              {p.status === "waiting" && (
+                <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта" style={{ flexShrink: 0 }}>
+                  {PRIORITY_OPTIONS.map((pv) => {
+                    const pm = PRIORITY_META[pv];
+                    return (
+                      <button key={pv} type="button" role="radio" aria-checked={p.priority_level === pv}
+                        className={"prio-seg-btn " + pm.tone + (p.priority_level === pv ? " active" : "")}
+                        title={pm.desc} onClick={() => onPriority(p, pv)}>
+                        {pm.short}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {p.status === "waiting" && (
+                <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} title="Редагувати пацієнта/дослідження/вікно" onClick={() => onEdit(p)}>✎ Редагувати</button>
+              )}
+              {p.status === "waiting"
+                ? <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)", flexShrink: 0 }} onClick={() => onCancel(p)}>✕ Зняти</button>
+                : (p.status === "cancelled" || p.status === "expired")
+                  ? <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => onRestore(p)}>↩ Повернути</button>
+                  : null}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 interface ReferralPortalProps {
   role: string;
   centers: Center[];
@@ -973,9 +991,15 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
   const pendingInvites = centers.filter((c) => c.status === "pending_referrer").length;
 
   const [tab, setTab] = useState(() => (activeCenters.length === 0 ? "centers" : "new"));
+  // Швидкий фільтр з сайдбару: клік по центру/кабінету → доска «Мої направлення».
+  const [boardFocus, setBoardFocus] = useState<{ clinicId: string; roomId: string; nonce: number } | null>(null);
   const [editPatientFor, setEditPatientFor] = useState<Referral | null>(null);
   const [referrals, setReferrals] = useState<Referral[]>([]);
   const [reschedFor, setReschedFor] = useState<Referral | null>(null);
+  const [editStudiesFor, setEditStudiesFor] = useState<Referral | null>(null);
+  const [wlEntries, setWlEntries] = useState<WaitlistEntry[]>([]);
+  const [wlAddOpen, setWlAddOpen] = useState(false);
+  const [wlEditFor, setWlEditFor] = useState<WaitlistEntry | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -985,26 +1009,88 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     const supabase = createClient();
     const { data } = await supabase
       .from("queue_entries")
-      .select("id, clinic_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, status, studies, studies_original, doctor, note, indication, room_id")
+      .select("id, clinic_id, created_by, referrer_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, studies_changed_by, contraindications, doctor, note, indication, room_id, reschedule_origin")
       .eq("referrer_id", doctorId)
       .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
     setReferrals(data || []);
   }, [doctorId]);
+
+  // Лист очікування: RLS показує направнику лише власні рядки (created_by).
+  const reloadWaitlist = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const { data } = await supabase
+        .from("waitlist_entries")
+        .select("*")
+        .eq("created_by", doctorId)
+        .order("created_at", { ascending: true });
+      setWlEntries(data || []);
+    } catch { /* транзієнтний Failed to fetch — ігноруємо */ }
+  }, [doctorId]);
+  useEffect(() => { reloadWaitlist(); }, [reloadWaitlist]);
 
   // TD-3: единый realtime-хук.
   useRealtimeRefetch({
     channelName: doctorId ? "ref-" + doctorId : null,
     subscriptions: [
       { table: "queue_entries", filter: "referrer_id=eq." + doctorId, onChange: reload },
+      { table: "waitlist_entries", filter: "created_by=eq." + doctorId, onChange: reloadWaitlist },
       { table: "referral_access", filter: "referrer_id=eq." + doctorId, onChange: () => router.refresh() },
     ],
   });
 
-  async function doReschedule({ roomId, date, time, dur }: { roomId: string; date: Date; time: string; dur: number }) {
+  async function wlAdd(w: WaitlistFormOut) {
+    const res = await addWaitlistEntry({
+      clinicId: w.clinicId, name: w.name, phone: w.phone, email: w.email, dob: w.dob, sex: w.sex, age: w.age, weight: w.weight,
+      priorityLevel: w.priorityLevel, studies: w.studies, durationMin: w.durationMin, bufferTimeMin: w.bufferTimeMin,
+      desiredDateFrom: w.desiredDateFrom, desiredDateTo: w.desiredDateTo,
+      desiredTimeFrom: w.desiredTimeFrom, desiredTimeTo: w.desiredTimeTo, note: w.note,
+    });
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    setWlAddOpen(false);
+    notify("Додано до листа очікування: " + w.name, "success");
+    reloadWaitlist();
+  }
+  async function wlEditSave(w: WaitlistFormOut) {
+    const p = wlEditFor;
+    if (!p) return;
+    const res = await updateWaitlistEntry(p.id, {
+      patient_name: w.name, patient_phone: w.phone, patient_email: w.email,
+      patient_dob: w.dob, patient_sex: w.sex, patient_age: w.age, patient_weight: w.weight,
+      studies: w.studies, duration_min: w.durationMin, buffer_time_min: w.bufferTimeMin,
+      desired_date_from: w.desiredDateFrom, desired_date_to: w.desiredDateTo,
+      desired_time_from: w.desiredTimeFrom, desired_time_to: w.desiredTimeTo,
+      note: w.note,
+    });
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    setWlEditFor(null);
+    notify("Запис листа оновлено", "success");
+    reloadWaitlist();
+  }
+
+  const [wlConfirmRemove, setWlConfirmRemove] = useState<WaitlistEntry | null>(null);
+  async function wlCancel(e: WaitlistEntry) {
+    const res = await setWaitlistStatus(e.id, "cancelled");
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    notify("Знято з листа очікування", "info"); reloadWaitlist();
+  }
+  async function wlRestore(e: WaitlistEntry) {
+    const res = await setWaitlistStatus(e.id, "waiting");
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    notify("Повернено в очікування", "success"); reloadWaitlist();
+  }
+  async function wlPrio(e: WaitlistEntry, v: PatientPriority) {
+    if (e.priority_level === v) return;
+    setWlEntries((es) => es.map((x) => (x.id === e.id ? { ...x, priority_level: v } : x)));
+    const res = await setWaitlistPriority(e.id, v);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); reloadWaitlist(); }
+  }
+
+  async function doReschedule({ roomId, date, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
     const p = reschedFor; if (!p) return;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason });
     if (!res.ok) {
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
       setReschedFor(null);
@@ -1022,40 +1108,58 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     notify("Направлення скасовано", "success"); reload();
   }
 
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer: number }) {
+    const p = editStudiesFor;
+    if (!p) return;
+    const res = await editQueueEntryStudies(p.id, arr as unknown as Json, meta.dur || p.duration_min || 30, meta.buffer);
+    setEditStudiesFor(null);
+    if (!res.ok) { notify("Помилка збереження досліджень: " + res.error, "error"); return; }
+    notify("Дослідження оновлено", "success"); reload();
+  }
+
   function onCentersChanged() { router.refresh(); }
 
   const reschedRooms = reschedFor ? (roomsByClinic[reschedFor.clinic_id] || []) : [];
+  const TAB_META: Record<string, { t: string; i: string }> = {
+    new: { t: "Нове направлення", i: "＋" }, mine: { t: "Мої направлення", i: "▦" },
+    waitlist: { t: "Лист очікування", i: "⏳" }, centers: { t: "Мої центри", i: "🏥" }, profile: { t: "Мій профіль", i: "👤" },
+  };
+  const tabMeta = TAB_META[tab] || TAB_META.new;
 
   return (
-    <div style={{ minHeight: "100vh", background: "var(--bg)", color: "var(--text)", fontFamily: "var(--font)" }}>
-      <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 28px", borderBottom: "1px solid var(--border)", background: "var(--bg-elevated)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 19, fontWeight: 700, color: "var(--blue)" }}>
-          <span style={{ width: 9, height: 9, borderRadius: "50%", background: "var(--blue)", boxShadow: "0 0 10px var(--blue)" }} />
-          Referral RadFlow
-          <span style={{ fontSize: 13, fontWeight: 400, color: "var(--text-muted)" }}>· {activeCenters.length} {activeCenters.length === 1 ? "центр" : "центрів"}</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 13, color: "var(--text-secondary)" }}><LiveClock /></span>
-          <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>🩺 {doctorName}</span>
-          <CeoDashboardLink />
-          <button className="btn btn-secondary btn-sm" onClick={signOut} title="Вийти з акаунта">Вийти</button>
-        </div>
-      </header>
-
-      <div style={{ display: "flex", gap: 4, padding: "16px 28px 0", maxWidth: 1040, margin: "0 auto" }}>
-        <button className={"pill" + (tab === "new" ? " active" : "")} onClick={() => setTab("new")}>Нове направлення</button>
-        <button className={"pill" + (tab === "mine" ? " active" : "")} onClick={() => setTab("mine")}>Мої направлення <span className="ct">({referrals.length})</span></button>
-        <button className={"pill" + (tab === "centers" ? " active" : "")} onClick={() => setTab("centers")}>Мої центри{pendingInvites > 0 ? <span className="ct" style={{ background: "var(--blue)", color: "#fff" }}>{pendingInvites}</span> : null}</button>
-        {canManage && <button className={"pill" + (tab === "profile" ? " active" : "")} onClick={() => setTab("profile")}>Мій профіль</button>}
-      </div>
-
-      <div style={{ padding: "20px 28px 50px" }}>
+    <div className="app">
+      <ReferrerSidebar centers={activeCenters} roomsByClinic={roomsByClinic} doctorName={doctorName}
+        activeTab={tab}
+        onNav={(key) => { if (key === "mine") setBoardFocus({ clinicId: "all", roomId: "all", nonce: Date.now() }); setTab(key); }}
+        onSelectRoom={(clinicId, roomId) => { setBoardFocus({ clinicId, roomId, nonce: Date.now() }); setTab("mine"); }}
+        activeClinic={tab === "mine" ? boardFocus?.clinicId : undefined}
+        activeRoom={tab === "mine" ? boardFocus?.roomId : undefined}
+        counts={{ mine: referrals.length, waitlist: wlEntries.filter((e) => e.status === "waiting").length, pendingInvites }}
+        canManage={canManage} onSignOut={signOut} />
+      <div className="main">
+        <header className="topbar">
+          <div className="tb-title">
+            <span className="tic">{tabMeta.i}</span>
+            <div><h1>{tabMeta.t}</h1></div>
+          </div>
+          <div className="tb-right">
+            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}><LiveClock /></span>
+            <CeoDashboardLink />
+          </div>
+        </header>
+        <div className="content" style={{ flex: 1 }}>
         {tab === "new" && (
           <NewReferral activeCenters={activeCenters} roomsByClinic={roomsByClinic} doctorName={doctorName} doctorId={doctorId}
             onCreated={(nm, err) => { if (err) notify("Помилка: " + err, "error"); else { notify("Направлення відправлено: " + nm, "success"); reload(); setTab("mine"); } }} />
         )}
         {tab === "mine" && (
-          <MyReferrals referrals={referrals} centersById={centersById} onReschedule={(r) => setReschedFor(r)} onCancel={doCancel} onEditPatient={(r) => setEditPatientFor(r)} />
+          <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} doctorId={doctorId}
+            focus={boardFocus}
+            onReschedule={(r) => setReschedFor(r)} onCancel={doCancel} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)} />
+        )}
+        {tab === "waitlist" && (
+          <MyWaitlist entries={wlEntries} centersById={centersById} onOpenAdd={() => setWlAddOpen(true)}
+            onEdit={(e) => setWlEditFor(e)} onCancel={(e) => setWlConfirmRemove(e)} onRestore={wlRestore} onPriority={wlPrio} />
         )}
         {tab === "centers" && (
           <MyCenters centers={centers} canManage={canManage} onChanged={onCentersChanged} notify={notify} />
@@ -1063,13 +1167,31 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         {tab === "profile" && canManage && (
           <MyProfile doctorId={doctorId} notify={notify} onSaved={() => router.refresh()} />
         )}
+        </div>
       </div>
 
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={reschedRooms} clinicId={reschedFor.clinic_id} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+        <RescheduleModal patient={reschedFor} rooms={reschedRooms} clinicId={reschedFor.clinic_id} clinicTz={centersById[reschedFor.clinic_id]?.timezone} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+      )}
+      {editStudiesFor && (
+        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+      )}
+      {wlAddOpen && (
+        <WaitlistModal centers={activeCenters.map((c) => ({ clinicId: c.clinicId, name: centerLabel(c) }))}
+          onClose={() => setWlAddOpen(false)} onSave={wlAdd} />
+      )}
+      {wlEditFor && (
+        <WaitlistModal initial={wlEditFor} onClose={() => setWlEditFor(null)} onSave={wlEditSave} />
+      )}
+      {wlConfirmRemove && (
+        <ConfirmDialog title="Зняти з листа очікування"
+          text={<>Зняти <b style={{ color: "var(--text)" }}>{wlConfirmRemove.patient_name}</b> з листа очікування? Запис можна буде повернути.</>}
+          confirmLabel="Зняти з листа" danger
+          onConfirm={async () => { const p = wlConfirmRemove; setWlConfirmRemove(null); await wlCancel(p); }}
+          onClose={() => setWlConfirmRemove(null)} />
       )}
       {editPatientFor && (
-        <PatientEditModal entryId={editPatientFor.id} onClose={() => setEditPatientFor(null)} onSaved={reload} />
+        <PatientEditModal entryId={editPatientFor.id} canEditPriority onClose={() => setEditPatientFor(null)} onSaved={reload} />
       )}
       {toast && (
         <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>{toast.msg}</div>

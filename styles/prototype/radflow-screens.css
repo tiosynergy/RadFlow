@@ -19,7 +19,7 @@
 /* Stats with progress bar */
 .cl-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
 .cl-stat { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 16px; }
-.cl-stat .lab { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); }
+.cl-stat .lab { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); }
 .cl-stat .val { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin: 6px 0 10px; line-height: 1; }
 .cl-stat .mini-bar { height: 5px; border-radius: 3px; background: var(--card-2); overflow: hidden; }
 .cl-stat .mini-fill { height: 100%; border-radius: 3px; transition: width .5s ease; }
@@ -66,8 +66,10 @@
 .cl-actions { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
 
 /* Expand chevron + name button */
-.cl-exp-btn { width: 24px; height: 24px; border-radius: 6px; background: var(--card-2); color: var(--text-muted); display: flex; align-items: center; justify-content: center; }
+.cl-exp-btn { width: 24px; height: 24px; border-radius: 6px; background: var(--card-2); color: var(--text-muted); display: flex; align-items: center; justify-content: center; position: relative; }
 .cl-exp-btn:hover { background: var(--border-strong); color: var(--text); }
+/* Сенсорна ціль ≥40px без зміни сітки (шеврон лишається візуально малим). */
+.cl-exp-btn::before { content: ""; position: absolute; inset: -8px; }
 .cl-chev { font-size: 15px; line-height: 1; transition: transform .18s; }
 .cl-chev.open { transform: rotate(90deg); }
 .cl-name-btn { background: none; border: none; text-align: left; padding: 0; cursor: pointer; }
@@ -82,7 +84,7 @@
 .cld-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px 24px; }
 .cld-item { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .cld-item-full { grid-column: 1 / -1; }
-.cld-lab { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); }
+.cld-lab { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); }
 .cld-val { font-size: 13.5px; color: var(--text); display: flex; align-items: center; gap: 7px; }
 .cld-val-wrap { flex-wrap: wrap; }
 .cld-name { font-size: 15px; font-weight: 700; }
@@ -180,3 +182,68 @@
 .cl-inc-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
 .cl-inc-detail { padding: 0 12px 12px; }
 .cl-inc-detail .cld-actions { margin-top: 8px; padding-top: 0; border-top: none; }
+
+/* ===== Лист очікування (/waitlist) ===== */
+/* Сітка/розміри вирівняно під «Дошку черги» (.qrow): телефон і «додано»
+   переїхали під ПІБ у патієнт-блок; колонки — Пацієнт / Дослідження / Вікно / Дії. */
+.wlhead, .wlrow {
+  display: grid;
+  grid-template-columns: 44px minmax(0,2fr) minmax(0,2.4fr) minmax(0,1.3fr) 176px;
+  gap: 12px; align-items: center;
+}
+.wlhead { padding: 6px 16px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); }
+.wlrow {
+  background: var(--card); border: 1px solid var(--border); border-left: 3px solid transparent;
+  border-radius: var(--r-md); padding: 12px 16px; transition: background .12s, opacity .2s;
+}
+.wlrow > * { min-width: 0; }
+.wlrow:hover { background: var(--card-hover); }
+.clrow-wrap.open .wlrow { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom-color: transparent; }
+/* Бейдж пріоритету — окремим рядком, ПІБ пацієнта під ним (як у черзі). */
+.wl-name .prio-tag { display: block; width: fit-content; margin: 0 0 3px; }
+/* ПІБ — 14px/600, як .q-pat .nm у черзі. */
+.wl-name { font-size: 14px; font-weight: 600; line-height: 1.25; }
+
+/* Патієнт-блок: ПІБ + телефон + «додано» під ним (аналог .q-pat .nm/.det). */
+.wl-pat { display: flex; flex-direction: column; }
+.wl-meta { display: flex; flex-direction: column; gap: 1px; margin-top: 3px; font-size: 11.5px; color: var(--text-muted); }
+.wl-meta .tel { font-size: 11.5px; }
+/* Дослідження: бейдж модальності + назва + тривалість (аналог .q-proc). */
+.wl-proc-cell { display: flex; flex-direction: column; gap: 3px; }
+.wl-proc-main { display: flex; align-items: center; gap: 7px; }
+.wlrow .cl-proc { font-size: 12px; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.35; }
+.wl-proc-du { font-size: 11.5px; color: var(--text-faint); }
+.wl-mod { flex-shrink: 0; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 5px; line-height: 1.4; }
+.wl-mod.mrt { background: var(--blue-bg); color: #4da3ff; }
+.wl-mod.ct { background: var(--orange-bg); color: var(--orange); }
+/* Бажане вікно (аналог .q-room). */
+.wl-win { font-size: 12px; color: var(--text-muted); line-height: 1.3; }
+
+/* Щільність — дзеркалить правила .qrow, щоб лист поводився як черга. */
+html[data-density="compact"] .wlrow,
+html[data-density="compact"] .wlhead { padding-top: 6px; padding-bottom: 6px; }
+html[data-density="compact"] .wlrow,
+html[data-density="compact"] .wlhead { column-gap: 8px; }
+html[data-density="compact"] .wl-name { font-size: 12.5px; }
+html[data-density="compact"] .wl-meta,
+html[data-density="compact"] .wlrow .cl-proc,
+html[data-density="compact"] .wl-proc-du { font-size: 11px; }
+html[data-density="spacious"] .wlrow,
+html[data-density="spacious"] .wlhead { padding-top: 18px; padding-bottom: 18px; }
+
+/* Меню дій рядка листа («⋯»): доступний поповер без бібліотек. */
+.wl-menu-wrap { position: relative; display: inline-flex; }
+.wl-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 190px; background: var(--card); border: 1px solid var(--border-strong); border-radius: var(--r-md); box-shadow: var(--shadow-pop); padding: 4px; display: flex; flex-direction: column; }
+.wl-menu-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: none; color: var(--text); font: inherit; font-size: 13px; padding: 9px 10px; border-radius: 8px; cursor: pointer; min-height: 36px; }
+.wl-menu-item:hover { background: var(--card-hover); }
+.wl-menu-item.danger { color: var(--red); }
+
+/* Компактна стрічка статистики (замість 4 карток) — економія висоти. */
+.wl-stat-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 9px 14px; margin-bottom: 14px; background: var(--card); border: 1px solid var(--border); border-radius: var(--r-md); font-size: 12.5px; color: var(--text-secondary); }
+.wl-stat-strip .item { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.wl-stat-strip b { color: var(--text); font-variant-numeric: tabular-nums; font-size: 13.5px; }
+.wl-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+
+/* Тост із дією (Undo) */
+.wl-toast-action { margin-left: 12px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--card-2); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.wl-toast-action:hover { background: var(--border-strong); }

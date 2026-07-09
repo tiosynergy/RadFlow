@@ -1,21 +1,14 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { requireRole } from "@/lib/apiAuth";
 
 // POST /api/staff — адміністратор створює акаунт радіолога / лікаря-направника.
 // Пароль НЕ задається: користувач встановлює його сам на /set-password
 // (тимчасовий випадковий пароль ставимо лише щоб акаунт був валідним).
 export async function POST(req: Request) {
-  if (!isAdminConfigured()) {
-    return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY не налаштовано на сервері (.env.local)" }, { status: 500 });
-  }
-
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Не авторизовано" }, { status: 401 });
-
-  const { data: me } = await supabase.from("profiles").select("clinic_id, role").eq("id", user.id).single();
-  if (!me || me.role !== "admin") return NextResponse.json({ error: "Лише адміністратор" }, { status: 403 });
+  const gate = await requireRole(["admin"], { needClinic: true, forbidden: "Лише адміністратор" });
+  if (!gate.ok) return gate.res;
+  const { me } = gate;
 
   const body = await req.json().catch(() => ({}));
   // Цей роут створює ЛИШЕ акаунти радіологів. Лікарі-направники мають глобальний

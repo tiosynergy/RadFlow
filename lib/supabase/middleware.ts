@@ -8,6 +8,7 @@ const PROTECTED = [
   "/board-app",
   "/radiologist",
   "/call-list",
+  "/waitlist",
   "/incidents",
   "/ceo",
   "/ceo-admin",

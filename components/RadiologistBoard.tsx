@@ -10,10 +10,11 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
-import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
+import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock } from "@/lib/queueStatus";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
-import { diffStudies, studyText } from "@/lib/studies";
-import { incidentEffectiveEnd, incidentExpired, wallNow } from "@/lib/incidents";
+import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
+import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
+import { incidentEffectiveEnd, incidentExpired, wallNow, setClinicTz } from "@/lib/incidents";
 import { setQueueEntryStatus, setRadiologistNote } from "@/app/queue/actions";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
 import type { QueueStatus, Json } from "@/supabase/types";
@@ -24,10 +25,10 @@ import "@/styles/prototype/radiologist.css";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type RadEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
-  patient_sex: string | null; patient_weight: number | null; scheduled_time: string | null; duration_min: number | null;
-  status: string; call_status: string | null; studies: Json; studies_original: Json | null; has_contrast: boolean;
-  contraindications: boolean; cito: boolean; doctor: string | null; note: string | null; radiologist_note: string | null;
-  indication: string | null; room_id: string | null; updated_at: string; in_progress_at: string | null;
+  patient_sex: string | null; patient_weight: number | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null;
+  status: string; call_status: string | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; has_contrast: boolean;
+  contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null; note: string | null; radiologist_note: string | null;
+  indication: string | null; room_id: string | null; updated_at: string; in_progress_at: string | null; clarify_at?: string | null;
 };
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
 
@@ -127,11 +128,12 @@ interface RoomStatusCardProps {
   nextWaiting?: RadEntry | null;
   blocked?: IncidentRow | null;
   schedClosed?: string | boolean | null;
+  callBlockReason?: string | null;
   onComplete: (p: RadEntry) => void;
   onCall: (p: RadEntry) => void;
 }
 
-function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedClosed, onComplete, onCall }: RoomStatusCardProps) {
+function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedClosed, callBlockReason, onComplete, onCall }: RoomStatusCardProps) {
   const kind = modalityLabel(room.modality);
   if (!blocked && schedClosed) {
     return (
@@ -183,7 +185,8 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
           <div className="rc-brow">
             <span className="rc-pat"><span className="pulse-dot" />{patient.patient_name}</span>
             <LiveTimer enteredAt={enteredAt}>{(sec) => {
-              const over = sec > (patient.duration_min || 30) * 60;
+              // Перевищення рахуємо з урахуванням буфера (дослідження + переукладка/дезінфекція).
+              const over = sec > ((patient.duration_min || 30) + (patient.buffer_time_min ?? BUFFER_DEFAULT)) * 60;
               return <span className={"rc-timer tabular" + (over ? " over" : "")} title={over ? "Час перевищено" : "Зараз в кабінеті"}>{fmtTimer(sec)}</span>;
             }}</LiveTimer>
           </div>
@@ -196,7 +199,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
         <div className="rc-body empty">
           <div className="rc-free-row"><span className="rc-free-dot" /><span className="rc-free">Кабінет вільний</span></div>
           {nextWaiting && (
-            <button className="btn btn-primary btn-sm" onClick={() => onCall(nextWaiting)}>
+            <button className="btn btn-primary btn-sm" disabled={!!callBlockReason} title={callBlockReason || "Викликати наступного"} onClick={() => onCall(nextWaiting)}>
               Викликати: {(nextWaiting.patient_name || "").split(" ").slice(0, 2).join(" ")} · {nextWaiting.scheduled_time}
             </button>
           )}
@@ -216,6 +219,7 @@ interface RadQueueRowProps {
   onToggle: (id: string) => void;
   readOnly: boolean;
   canCall: boolean;
+  startBlockReason?: string | null;
   onArrive: (p: RadEntry) => void;
   onCall: (p: RadEntry) => void;
   onComplete: (p: RadEntry) => void;
@@ -227,9 +231,15 @@ interface RadQueueRowProps {
   onSaveNote: (id: string, v: string) => void;
 }
 
-function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onSetStatus, noteValue, onSaveNote }: RadQueueRowProps) {
-  const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
-  const meta: { label: string; cls: string; dot?: boolean; title?: string } = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
+function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, startBlockReason, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onSetStatus, noteValue, onSaveNote }: RadQueueRowProps) {
+  // «Запізнення» (derived) видно й радіологу; прямий виклик такого пацієнта
+  // блокується (рішення ухвалює реєстратура: повернути/перенести/зняти).
+  const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
+  const overdue = needsClarification(p.status, dayDate, p.scheduled_time) || (p.status === "scheduled" && !!p.clarify_at);
+  // «Неявка»/«Не відбулося» — лише ПІСЛЯ часу початку дослідження (не наперед).
+  const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
+  const beforeStart = _startMs != null && wallNow() < _startMs;
+  const meta: { label: string; cls: string; dot?: boolean; title?: string } = late ? LATE_META : overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
   const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
@@ -245,7 +255,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
-          <div className="nm">{p.cito && (p.status === "scheduled" || p.status === "waiting" || p.status === "in_progress") && <span className="cito-tag">CITO</span>}{p.patient_name}</div>
+          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}{p.patient_name}</div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
             {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
@@ -281,7 +291,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
               const changed = sdiff.some((d) => d.state !== "kept");
               return (
                 <div style={{ marginBottom: 8 }}>
-                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено</span>}</div>
+                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
                     {sdiff.map((d, i) => (
                       <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
@@ -292,9 +302,8 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                 </div>
               );
             })()}
-            {(p.contraindications || p.note || p.indication) && (
+            {(p.note || p.indication) && (
               <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
-                {p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}>⚠ Протипоказання</span>}
                 {p.indication && <span style={{ color: "var(--text-muted)" }}>Показання: {p.indication}</span>}
                 {p.note && <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>}
               </div>
@@ -304,7 +313,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
               const stepIdx = STEP_ORDER.indexOf(p.status);
               const pb = STEP_PRIMARY[p.status] || STEP_PRIMARY.done;
               const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
-              const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall) || isFutureRow;
+              const advanceDisabled = !advanceFn || (p.status === "waiting" && (!canCall || !!startBlockReason)) || isFutureRow || late;
               const terminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
               return (
                 <div className="qd-step">
@@ -332,15 +341,22 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                   </div>
 
                   <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
-                    {(p.status === "no_show" || p.status === "not_held") ? (
-                      <>
-                        <span className="q-noshow-lab" style={{ flex: 1 }}>✕ {p.status === "not_held" ? "Не відбулося" : "Неявка"}</span>
-                        <button className="btn btn-secondary btn-sm" onClick={act(onUndo)}>↩ Повернути в чергу</button>
-                      </>
+                    {terminal ? (
+                      p.status === "done" ? (
+                        <>
+                          <span className="q-noshow-lab" style={{ flex: 1 }}>✓ Виконано</span>
+                          <button className="btn btn-secondary btn-sm" onClick={act(onUndo)} title="Повернути пацієнта в чергу (скасувати завершення, без автозапуску)">↩ В чергу</button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="q-noshow-lab" style={{ flex: 1 }}>✕ {p.status === "not_held" ? "Не відбулося" : "Неявка"}</span>
+                          <button className="btn btn-secondary btn-sm" onClick={act(onUndo)}>↩ Повернути в чергу</button>
+                        </>
+                      )
                     ) : (
                       <>
                         <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn)} disabled={advanceDisabled}
-                          title={isFutureRow ? "Майбутній запис — дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "")}
+                          title={late ? "Запізнення понад буферний час — рішення ухвалює реєстратура (повернути/перенести/зняти)" : isFutureRow ? "Майбутній запис — дія доступна в день запису" : (p.status === "waiting" && startBlockReason ? startBlockReason : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""))}
                           style={{ flex: 8, minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
                           {pb.icon} {pb.label}
@@ -350,10 +366,14 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                     )}
                   </div>
 
+                  {p.status === "waiting" && advanceDisabled && startBlockReason && (
+                    <div style={{ fontSize: 12, color: "var(--red)", padding: "2px 0 6px" }}>⚠ {startBlockReason}</div>
+                  )}
+
                   {moreOpen && !terminal && (
                     <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }}>
-                      <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNoShow)}>✕ Неявка</button>
-                      <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNotHeld)}>✕ Не відбулося</button>
+                      <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNoShow)}>✕ Неявка</button>
+                      <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNotHeld)}>✕ Не відбулося</button>
                     </div>
                   )}
                 </div>
@@ -446,8 +466,7 @@ function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }: { r
         </div>
         <div className="sb-section">
           <div className="sb-label">Перейти</div>
-          <a href="/queue" className="sb-item"><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span></a>
-          <a href="/radiologist" className="sb-item"><span className="ic">⌂</span><span className="sb-item-lab">Моя черга</span></a>
+          <a href="/radiologist" className="sb-item active"><span className="ic">⌂</span><span className="sb-item-lab">Моя черга</span></a>
         </div>
       </nav>
       <div className="sb-user">
@@ -502,9 +521,12 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
 
   const reload = useCallback(async () => {
     const supabase = createClient();
+    // Авто-«Уточнити» для прострочених scheduled (persisted clarify_at). Fire-and-forget —
+    // не блокуємо reload; позначка прийде наступним realtime-циклом.
+    void supabase.rpc("sink_overdue_scheduled");
     let q = supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, status, call_status, studies, studies_original, has_contrast, contraindications, cito, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at")
+      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at, clarify_at")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .neq("status", "cancelled");
@@ -533,6 +555,12 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
 
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его по завершении.
   useEffect(() => { setLoading(true); }, [clinicId]);
+
+  // Таймзона клініки → похідні часу рахуються по ній (не по браузеру).
+  useEffect(() => {
+    createClient().from("clinics").select("timezone").eq("id", clinicId).single()
+      .then(({ data }) => setClinicTz(data?.timezone ?? null));
+  }, [clinicId]);
 
   // Перезапрос записей при смене дня/кабинетов: realtime-хук слушает только clinicId.
   useEffect(() => { reload(); }, [reload]);
@@ -566,10 +594,12 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     const nowIso = new Date().toISOString();
     const patch = status === "in_progress" ? { status, in_progress_at: nowIso } : { status };
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
-    const res = await setQueueEntryStatus(id, status as QueueStatus);
+    // H-2: cur.status — то, что видит рентгенолог; CAS на сервере.
+    const res = await setQueueEntryStatus(id, status as QueueStatus, cur?.status as QueueStatus | undefined);
     if (!res.ok) {
       const msg = res.code === "room_busy" ? "У кабінеті вже є пацієнт — спершу завершіть поточного"
         : res.code === "slot_unavailable" ? "Слот недоступний (простій/зайнято) — зверніться до адміністратора"
+        : res.code === "stale" ? "Статус змінив інший користувач — дошку оновлено"
         : "Помилка: " + res.error;
       notify(msg, "error");
       reload();
@@ -584,9 +614,20 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   }
 
   function inProgressBlockReason(p: RadEntry): string | null {
-    if (p.room_id && blockingByRoom[p.room_id]) return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
-    if (p.room_id && roomSchedClosed(p.room_id)) return "Кабінет зачинено за графіком на цей день";
-    if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride) : null;
+    const r = computeCallBlock(p, entries, {
+      notToday: !sameDay(selectedDate, today0()),
+      roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
+      schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
+      schedEnd: sched && !sched.closed ? sched.end : null,
+    });
+    if (!r) return null;
+    if (r.code === "wrong_day") return "Запис не на сьогодні — викликати в кабінет можна лише пацієнтів сьогоднішнього дня";
+    if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
+    if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
+    if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    if (r.code === "sched_overrun") return `Дослідження ${r.durationMin} хв не вміститься до кінця графіка кабінету (${r.end}) — реєстратура має перенести запис`;
+    if (r.code === "clash") return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис. Реєстратура має перенести один із записів`;
     return null;
   }
   function callPatient(p: RadEntry) {
@@ -595,6 +636,11 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     setStatus(p.id, "in_progress");
   }
   function setStatusGuarded(p: RadEntry, status: string) {
+    // Запізнення понад буфер: прямий виклик заблоковано (рішення — за реєстратурою).
+    if (status === "in_progress" && isLate(p.status, selectedDate, p.scheduled_time, p.buffer_time_min)) {
+      notify("Пацієнт запізнився понад буферний час — реєстратура має повернути його в чергу, перенести або зняти запис", "error");
+      return;
+    }
     if (status === "in_progress") { callPatient(p); return; }
     setStatus(p.id, status);
   }
@@ -614,7 +660,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   entries.forEach((e) => {
     if (e.status !== "waiting" || !e.room_id) return;
     const cur = nextWaitingByRoom[e.room_id];
-    if (!cur || (e.cito && !cur.cito)) nextWaitingByRoom[e.room_id] = e;
+    if (!cur || priorityRank(e.priority_level) < priorityRank(cur.priority_level)) nextWaitingByRoom[e.room_id] = e;
   });
   const cardRooms = roomFilter === "all" ? (rooms || []) : (rooms || []).filter((r) => r.id === roomFilter);
 
@@ -628,8 +674,12 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   }).sort((a, b) => {
     const d = (FLOW[a.status] ?? 9) - (FLOW[b.status] ?? 9);
     if (d !== 0) return d;
-    const ac = (a.cito && (a.status === "scheduled" || a.status === "waiting" || a.status === "in_progress")) ? 0 : 1;
-    const bc = (b.cito && (b.status === "scheduled" || b.status === "waiting" || b.status === "in_progress")) ? 0 : 1;
+    // «Уточнити»: прострочені scheduled опускаються в кінець запланованих.
+    const clA = (a.status === "scheduled" && (!!a.clarify_at || needsClarification(a.status, selectedDate, a.scheduled_time))) ? 1 : 0;
+    const clB = (b.status === "scheduled" && (!!b.clarify_at || needsClarification(b.status, selectedDate, b.scheduled_time))) ? 1 : 0;
+    if (clA !== clB) return clA - clB;
+    const ac = isActiveStatus(a.status) ? priorityRank(a.priority_level) : 9;
+    const bc = isActiveStatus(b.status) ? priorityRank(b.priority_level) : 9;
     if (ac !== bc) return ac - bc;
     return (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
   });
@@ -708,6 +758,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
                     patient={currentByRoom[r.id]} enteredAt={enteredAtOf(currentByRoom[r.id])}
                     nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
                     schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? selDayStatus.label : null}
+                    callBlockReason={nextWaitingByRoom[r.id] ? inProgressBlockReason(nextWaitingByRoom[r.id]) : null}
                     onComplete={completeProc} onCall={callPatient} />
                 ))}
               </div>
@@ -737,6 +788,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
                       roomName={r?.name || "—"} roomModel={r?.apparatus_model || ""} roomKind={modalityLabel(r?.modality || "")}
                       expanded={expandedRow === p.id} onToggle={(id) => setExpandedRow((x) => (x === id ? null : id))}
                       readOnly={readOnly} canCall={!(p.room_id && currentByRoom[p.room_id])}
+                      startBlockReason={p.status === "waiting" ? inProgressBlockReason(p) : null}
                       onArrive={arrive} onCall={callPatient} onComplete={completeProc}
                       onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onSetStatus={setStatusGuarded}
                       noteValue={p.radiologist_note} onSaveNote={saveNote} />

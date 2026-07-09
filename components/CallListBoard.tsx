@@ -9,19 +9,24 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
-import { entryInIncidentWindow, incidentExpired } from "@/lib/incidents";
+import { entryInIncidentWindow, incidentExpired, setClinicTz } from "@/lib/incidents";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
-import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies } from "@/app/queue/actions";
+import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
+import type { WaitlistEntry } from "@/supabase/types";
+import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies, setQueueEntryStatus } from "@/app/queue/actions";
+import { addEntryToWaitlist } from "@/app/waitlist/actions";
+import { isLate, LATE_META } from "@/lib/queueStatus";
 import type { CallStatus, Json } from "@/supabase/types";
+import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type CallEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
-  scheduled_time: string | null; duration_min: number | null; status: string; call_status: string | null;
-  call_note?: string | null; studies: Json; doctor?: string | null; room_id: string | null; scheduled_date: string | null;
+  scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
+  priority_level?: PatientPriority | null; call_note?: string | null; studies: Json; doctor?: string | null; room_id: string | null; scheduled_date: string | null;
 };
 type IncidentRow = { id: string; room_id: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string };
 
@@ -81,7 +86,7 @@ function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet,
           <span className={"cl-chev" + (expanded ? " open" : "")}>›</span>
         </button>
         <div className="cl-time tabular">{p.scheduled_time}<div className="cl-date">{dateShort}</div></div>
-        <button className="cl-name cl-name-btn" onClick={() => onToggle(p.id)}>{p.patient_name}</button>
+        <button className="cl-name cl-name-btn" onClick={() => onToggle(p.id)}>{p.priority_level && p.priority_level !== "planned" && isActiveStatus(p.status) && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone} style={{ marginRight: 6 }}>{PRIORITY_META[p.priority_level].short}</span>}{p.patient_name}</button>
         <div><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>☎ {p.patient_phone}</a></div>
         <div className="cl-proc">{procLabel(p)}</div>
         <div className="cl-room">{roomName}{roomModel ? <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{roomModel}</div> : null}</div>
@@ -183,6 +188,55 @@ function IncidentCallSection({ incident, roomName, affected, onReschedule, onRec
   );
 }
 
+/* ── Секція «Запізнення» (сьогодні): обдзвін пацієнтів, що не прийшли понад буфер ── */
+function LateCallSection({ late, roomsById, onReschedule, onRecall, onToWaitlist, onRefuse }: {
+  late: CallEntry[];
+  roomsById: Record<string, RoomOpt>;
+  onReschedule: (p: CallEntry) => void;
+  onRecall: (p: CallEntry) => void;
+  onToWaitlist: (p: CallEntry) => void;
+  onRefuse: (p: CallEntry) => void;
+}) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  if (!late.length) return null;
+  return (
+    <div className="info-banner red cl-inc-sec" style={{ flexDirection: "column", alignItems: "stretch", borderColor: "var(--red)", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="ib-ic">⏰</span>
+        <span className="ib-txt">
+          <b>Запізнення сьогодні</b> — <b>{late.length}</b> {late.length === 1 ? "пацієнт не прийшов" : "пацієнтів не прийшли"} понад буферний час.
+          Зателефонуйте: перенести на слот, до листа очікування або зафіксувати відмову.
+        </span>
+      </div>
+      <div className="cl-inc-list">
+        {late.map((p) => {
+          const isOpen = openId === p.id;
+          return (
+            <div className={"cl-inc-item" + (isOpen ? " open" : "")} key={p.id}>
+              <button className="cl-inc-row" onClick={() => setOpenId((o) => (o === p.id ? null : p.id))}>
+                <span className={"cl-chev" + (isOpen ? " open" : "")}>›</span>
+                <span className="cl-inc-time tabular">{p.scheduled_time}</span>
+                <span className="cl-inc-name">{p.patient_name} · <span style={{ color: "var(--text-muted)" }}>{procLabel(p)}{p.room_id && roomsById[p.room_id] ? " · " + roomsById[p.room_id].name : ""}</span></span>
+              </button>
+              {isOpen && (
+                <div className="cl-inc-detail fade-in">
+                  {p.patient_phone && <a className="btn btn-primary btn-sm" href={"tel:" + p.patient_phone.replace(/\s/g, "")}>☎ Подзвонити {p.patient_phone}</a>}
+                  <div className="cld-actions" style={{ marginTop: 8 }}>
+                    <button className="btn btn-primary btn-sm" onClick={() => onReschedule(p)}>🗓 Перенести на слот</button>
+                    <button className="btn btn-secondary btn-sm" onClick={() => onToWaitlist(p)} title="Пацієнт чекатиме на вільне вікно">⏳ В лист очікування</button>
+                    <button className="btn btn-secondary btn-sm" style={{ color: "#4da3ff" }} onClick={() => onRecall(p)}>↩ Передзвонити</button>
+                    <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onRefuse(p)}>✕ Відмова</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 interface CallListBoardProps {
   clinicId: string;
   rooms?: RoomOpt[];
@@ -204,8 +258,13 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   const [editStudiesFor, setEditStudiesFor] = useState<CallEntry | null>(null);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [affectedToday, setAffectedToday] = useState<CallEntry[]>([]);
+  const [todayScheduled, setTodayScheduled] = useState<CallEntry[]>([]); // для секції «Запізнення»
+  const [, setNowTick] = useState(0);
+  useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 30000); return () => clearInterval(t); }, []);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Слот звільнився (відмова) → підходящі кандидати з листа очікування.
+  const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
 
   const dayKey = dateKey(date);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
@@ -220,7 +279,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const supabase = createClient();
     const { data } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, status, call_status, call_note, studies, doctor, room_id, scheduled_date")
+      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, call_note, studies, doctor, room_id, scheduled_date")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .in("status", ["scheduled", "waiting"])
@@ -240,7 +299,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const todayKey = dateKey(new Date());
     const { data: ents } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, status, call_status, studies, room_id, scheduled_date")
+      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, room_id, scheduled_date")
       .eq("clinic_id", clinicId).gte("scheduled_date", todayKey)
       .in("room_id", incs.map((i) => i.room_id)).in("status", ["scheduled", "waiting"]);
     const byRoom: Record<string, IncidentRow> = {}; incs.forEach((i) => { byRoom[i.room_id] = i; });
@@ -252,8 +311,31 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     setAffectedToday(aff);
   }, [clinicId]);
 
+  // Записи на СЬОГОДНІ зі статусом scheduled — джерело секції «Запізнення»
+  // (обраний день колл-листа за замовчуванням завтра, тому окремий запит).
+  const loadTodayScheduled = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const { data } = await supabase
+        .from("queue_entries")
+        .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, doctor, room_id, scheduled_date")
+        .eq("clinic_id", clinicId)
+        .eq("scheduled_date", dateKey(new Date()))
+        .eq("status", "scheduled")
+        .order("scheduled_time", { ascending: true });
+      setTodayScheduled(data || []);
+    } catch { /* транзієнтний збій — лишаємо попередній список */ }
+  }, [clinicId]);
+  useEffect(() => { loadTodayScheduled(); }, [loadTodayScheduled]);
+
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его.
   useEffect(() => { setLoading(true); }, [clinicId]);
+
+  // Таймзона клініки → похідні часу рахуються по ній (не по браузеру).
+  useEffect(() => {
+    createClient().from("clinics").select("timezone").eq("id", clinicId).single()
+      .then(({ data }) => setClinicTz(data?.timezone ?? null));
+  }, [clinicId]);
 
   // Перезапрос записей при смене дня: realtime-хук слушает только clinicId.
   useEffect(() => { reload(); }, [reload]);
@@ -262,25 +344,37 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   useRealtimeRefetch({
     channelName: clinicId ? "calllist-" + clinicId : null,
     subscriptions: [
-      { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: () => { reload(); loadIncidents(); } },
+      { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: () => { reload(); loadIncidents(); loadTodayScheduled(); } },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
     ],
   });
+
+  // Після звільнення слота — запропонувати кандидатів з листа очікування.
+  async function suggestWaitlistFor(p: CallEntry) {
+    const slot: FreedSlotInfo = { date: p.scheduled_date || dayKey, time: p.scheduled_time, roomId: p.room_id };
+    const candidates = await fetchWaitlistCandidates(clinicId, slot, rooms);
+    if (candidates.length) setWlSuggest({ slot, candidates });
+  }
 
   async function cancelEntry(p: CallEntry) {
     const res = await cancelQueueEntry(p.id);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Запис скасовано (відмова)", "success");
     reload(); loadIncidents();
+    suggestWaitlistFor(p);
   }
 
   async function setCall(id: string, call_status: CallStatus) {
     // Відмова = скасування запису (як на дошці черги); оптимістично локально.
+    const entry = entries.find((e) => e.id === id) || null;
     const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch } : e)));
     const res = await setQueueEntryCall(id, call_status);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return; }
-    if (call_status === "declined") notify("Пацієнт відмовився — запис скасовано", "info");
+    if (call_status === "declined") {
+      notify("Пацієнт відмовився — запис скасовано", "info");
+      if (entry) suggestWaitlistFor(entry);
+    }
     reload();
   }
   async function setNote(id: string, call_note: string) {
@@ -297,12 +391,12 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     reload();
   }
 
-  async function doReschedule({ roomId, date: d, time, dur }: { roomId: string; date: Date; time: string; dur: number }) {
+  async function doReschedule({ roomId, date: d, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
     const p = reschedFor;
     if (!p) return;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, callStatus: "confirmed" });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed", reason });
     if (!res.ok) {
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
       setReschedFor(null);
@@ -314,10 +408,10 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     notify("Перенесено · підтверджено", "success");
     reload();
   }
-  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number }) {
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number }) {
     const p = editStudiesFor;
     if (!p) return;
-    const res = await editQueueEntryStudies(p.id, arr as Json, (meta && meta.dur) || p.duration_min || 30);
+    const res = await editQueueEntryStudies(p.id, arr as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer);
     setEditStudiesFor(null);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Дослідження оновлено", "success");
@@ -386,6 +480,25 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
         </header>
         <div className="content-full">
           <div className="page-max">
+            {(() => {
+              const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+              const lateList = todayScheduled.filter((e) => isLate(e.status, t0, e.scheduled_time, e.buffer_time_min));
+              return (
+                <LateCallSection late={lateList} roomsById={roomsById}
+                  onReschedule={(p) => setReschedFor(p)}
+                  onRecall={(p) => setCall(p.id, "to_recall")}
+                  onToWaitlist={async (p) => {
+                    const res = await addEntryToWaitlist(p.id);
+                    if (!res.ok) { notify(res.code === "duplicate" ? "Пацієнт уже в листі очікування" : "Помилка: " + res.error, res.code === "duplicate" ? "info" : "error"); return; }
+                    // Слот звільняється: запис — «Не відбулося» (термінальний підсумок запізнення).
+                    const upd = await setQueueEntryStatus(p.id, "not_held");
+                    if (!upd.ok) notify("Додано до листа, але статус не оновлено: " + upd.error, "error");
+                    else notify("Запізнення: додано до листа очікування, запис — «Не відбулося»", "success");
+                    reload(); loadTodayScheduled();
+                  }}
+                  onRefuse={(p) => cancelEntry(p)} />
+              );
+            })()}
             {incidents.map((inc) => (
               <IncidentCallSection key={inc.id} incident={inc}
                 roomName={roomsById[inc.room_id]?.name || "Апарат"}
@@ -403,7 +516,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
               {stats.map((s) => (
                 <div className="cl-stat" key={s.lab}>
                   <div className="lab">{s.lab}</div>
-                  <div className="val tabular" style={{ color: statColor[s.cls] }}>{s.val}</div>
+                  <div className="val tabular" style={{ color: statColor[s.cls] }}>{loading ? "—" : s.val}</div>
                   <div className="mini-bar"><div className="mini-fill" style={{ width: s.pct + "%", background: s.color }} /></div>
                 </div>
               ))}
@@ -449,6 +562,14 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
       )}
       {editStudiesFor && (
         <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+      )}
+
+      {wlSuggest && (
+        <WaitlistCandidatesModal clinicId={clinicId} rooms={rooms} incidents={incidents}
+          slot={wlSuggest.slot} candidates={wlSuggest.candidates}
+          onClose={() => setWlSuggest(null)}
+          onBooked={(msg) => { notify(msg, "success"); reload(); }}
+          onError={(msg) => notify(msg, "error")} />
       )}
 
       {toast && (

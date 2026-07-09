@@ -7,8 +7,9 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { updatePatientDetails } from "@/app/queue/actions";
+import { updatePatientDetails, setQueuePriority } from "@/app/queue/actions";
 import PhoneInput from "@/components/PhoneInput";
+import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import type { TablesUpdate } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -27,11 +28,13 @@ type PatientForm = {
   contraindications?: boolean | null;
   doctor?: string | null;
   note?: string | null;
+  priority_level?: PatientPriority;
 };
 type DoctorOption = { key: string; name: string; sub: string };
 
 interface PatientEditModalProps {
   entryId: string;
+  canEditPriority?: boolean; // адмін або лікар-направник (власник запису)
   onClose: () => void;
   onSaved?: () => void;
 }
@@ -47,9 +50,10 @@ function calcAge(dob: string | null | undefined): number | null {
   return a < 0 ? null : a;
 }
 
-export default function PatientEditModal({ entryId, onClose, onSaved }: PatientEditModalProps) {
+export default function PatientEditModal({ entryId, canEditPriority, onClose, onSaved }: PatientEditModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [form, setForm] = useState<PatientForm | null>(null);
+  const [origPriority, setOrigPriority] = useState<PatientPriority | null>(null);
   const [docs, setDocs] = useState<DoctorOption[]>([]); // активні направники + довідник
   const [lockDoctor, setLockDoctor] = useState(false); // запис внесено направником → не редагувати
   const [busy, setBusy] = useState(false);
@@ -61,11 +65,12 @@ export default function PatientEditModal({ entryId, onClose, onSaved }: PatientE
       const supabase = createClient();
       const { data } = await supabase
         .from("queue_entries")
-        .select("id, clinic_id, created_by, patient_name, patient_phone, patient_dob, patient_age, patient_sex, patient_weight, contraindications, doctor, note")
+        .select("id, clinic_id, created_by, patient_name, patient_phone, patient_dob, patient_age, patient_sex, patient_weight, contraindications, doctor, note, priority_level")
         .eq("id", entryId)
         .maybeSingle();
       if (!live) return;
       setForm(data || {});
+      setOrigPriority(data?.priority_level ?? null);
       if (data?.clinic_id) {
         const cid = data.clinic_id;
         const [accRes, docRes] = await Promise.all([
@@ -99,6 +104,9 @@ export default function PatientEditModal({ entryId, onClose, onSaved }: PatientE
   async function save() {
     if (!form) return;
     if (!String(form.patient_name || "").trim()) { setErr("Вкажіть ПІБ пацієнта"); return; }
+    if (!String(form.patient_phone || "").trim()) { setErr("Вкажіть телефон"); return; }
+    if (!form.patient_dob) { setErr("Вкажіть дату народження"); return; }
+    if (!form.patient_sex) { setErr("Вкажіть стать"); return; }
     setBusy(true); setErr("");
     const w = form.patient_weight;
     const patch: TablesUpdate<"queue_entries"> = {
@@ -118,6 +126,11 @@ export default function PatientEditModal({ entryId, onClose, onSaved }: PatientE
       patch.referrer_id = selOpt && selOpt.key.startsWith("r-") ? selOpt.key.slice(2) : null;
     }
     const res = await updatePatientDetails(entryId, patch);
+    // Пріоритет — окремим викликом з перевіркою ролі (лише admin/направник-власник).
+    if (res.ok && canEditPriority && form.priority_level && form.priority_level !== origPriority) {
+      const pr = await setQueuePriority(entryId, form.priority_level);
+      if (!pr.ok) { setBusy(false); setErr("Дані збережено, але пріоритет: " + pr.error); return; }
+    }
     setBusy(false);
     if (!res.ok) { setErr("Помилка збереження: " + res.error); return; }
     if (onSaved) onSaved();
@@ -143,15 +156,15 @@ export default function PatientEditModal({ entryId, onClose, onSaved }: PatientE
                 <input className="inp" autoFocus value={form.patient_name || ""} onChange={(e) => setF("patient_name", e.target.value)} placeholder="Прізвище Імʼя По батькові" />
               </label>
               <div className="fld-row">
-                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон</span>
+                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон <span className="req">*</span></span>
                   <PhoneInput value={form.patient_phone || ""} onChange={(v) => setF("patient_phone", v)} />
                 </label>
-                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Дата народження</span>
+                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Дата народження <span className="req">*</span></span>
                   <input className="inp tabular" type="date" value={form.patient_dob || ""} onChange={(e) => setF("patient_dob", e.target.value)} />
                 </label>
               </div>
               <div className="fld-row">
-                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Стать</span>
+                <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Стать <span className="req">*</span></span>
                   <select className="inp" value={form.patient_sex || ""} onChange={(e) => setF("patient_sex", e.target.value)}>
                     <option value="">—</option>
                     <option value="М">Чоловік</option>
@@ -180,6 +193,23 @@ export default function PatientEditModal({ entryId, onClose, onSaved }: PatientE
                 <input type="checkbox" checked={!!form.contraindications} onChange={(e) => setF("contraindications", e.target.checked)} />
                 <span className="rf-box" /><span>Є протипоказання (напр. кардіостимулятор, металеві імпланти)</span>
               </label>
+              {canEditPriority && (
+                <div className="fld" style={{ marginBottom: 10 }}>
+                  <span className="fld-lab">Пріоритет пацієнта</span>
+                  <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
+                    {PRIORITY_OPTIONS.map((pv) => {
+                      const m = PRIORITY_META[pv];
+                      return (
+                        <button key={pv} type="button" role="radio" aria-checked={form.priority_level === pv}
+                          className={"prio-seg-btn " + m.tone + (form.priority_level === pv ? " active" : "")}
+                          onClick={() => setF("priority_level", pv)} title={m.desc}>
+                          {m.short}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               <label className="fld" style={{ marginBottom: 0 }}><span className="fld-lab">Примітка</span>
                 <input className="inp" value={form.note || ""} onChange={(e) => setF("note", e.target.value)} />
               </label>

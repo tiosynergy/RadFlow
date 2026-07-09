@@ -12,26 +12,36 @@ import {
   setQueueEntryCall,
   resolveIncident as resolveIncidentAction,
   submitIncident as submitIncidentAction,
+  emergencyStop as emergencyStopAction,
+  resolveEmergency as resolveEmergencyAction,
   saveScheduleOverride,
   resetScheduleOverride,
   rescheduleQueueEntry,
   editQueueEntryStudies,
   createBooking,
+  setQueuePriority,
 } from "@/app/queue/actions";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import BookingModal, { type BookingPayload } from "@/components/BookingModal";
+import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
+import { addEntryToWaitlist } from "@/app/waitlist/actions";
+import type { WaitlistEntry } from "@/supabase/types";
 import PatientEditModal from "@/components/PatientEditModal";
 import CompletionModal from "@/components/CompletionModal";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import BreakdownModal from "@/components/BreakdownModal";
+import EmergencyModal from "@/components/EmergencyModal";
+import ConfirmDialog from "@/components/ConfirmDialog";
+import MiniCalendar from "@/components/MiniCalendar";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
-import { needsClarification, CLARIFY_META } from "@/lib/queueStatus";
-import { diffStudies, studyText } from "@/lib/studies";
-import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow } from "@/lib/incidents";
+import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock } from "@/lib/queueStatus";
+import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
+import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
+import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, setClinicTz } from "@/lib/incidents";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -39,23 +49,22 @@ import "@/styles/prototype/radflow-screens.css";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type QEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null; patient_weight: number | null;
-  scheduled_time: string | null; duration_min: number | null; status: string; call_status: string | null; note: string | null;
-  studies: Json; studies_original: Json | null; contraindications: boolean; cito: boolean; doctor: string | null;
-  room_id: string | null; updated_at: string; in_progress_at: string | null;
+  scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null; note: string | null;
+  studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null; referrer: { full_name: string | null } | null;
+  room_id: string | null; updated_at: string; in_progress_at: string | null; clarify_at?: string | null;
+  reschedule_origin?: Json | null;
 };
+type RescheduleOrigin = { from_date?: string | null; from_time?: string | null; from_room?: string | null; from_status?: string | null; reason?: string | null };
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
 type IncidentPayload = { id?: string; roomId: string; reason: string; reasonLabel: string; note: string; startedAt: string; blockedUntil: string | null; autoUnblock: boolean };
 type RoomLoadItem = { roomKey: string; name: string; kind: string; pct: number; closed: boolean; color: string };
 
 /* ── Дати ── */
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
-const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
-const MON_NOM = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 function startOfDay(d: Date) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function today0() { return startOfDay(new Date()); }
 function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
-function dowMon(d: Date) { return (d.getDay() + 6) % 7; }
 function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
@@ -76,6 +85,7 @@ const STAT_ITEMS = [
   { key: "waiting", lab: "Очікують", sub: "прийшли", cls: "yellow" },
   { key: "in_progress", lab: "В кабінеті", sub: "зараз", cls: "blue" },
   { key: "done", lab: "Виконано", sub: "процедур", cls: "green" },
+  { key: "late", lab: "Запізнення", sub: "понад буфер", cls: "red" },
   { key: "not_held", lab: "Не відбулося", sub: "не відбулось", cls: "orange" },
 ];
 
@@ -194,7 +204,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
           <div className="rc-brow">
             <span className="rc-pat"><span className="pulse-dot" />{patient.patient_name}</span>
             <LiveTimer enteredAt={enteredAt}>{(sec) => {
-              const over = sec > (patient.duration_min || 30) * 60;
+              const over = sec > ((patient.duration_min || 30) + (patient.buffer_time_min ?? BUFFER_DEFAULT)) * 60;
               return <span className={"rc-timer tabular" + (over ? " over" : "")} title={over ? "Час перевищено" : "Зараз в кабінеті"}>{fmtTimer(sec)}</span>;
             }}</LiveTimer>
           </div>
@@ -260,7 +270,7 @@ function CurrentCard({ patient, roomName, roomModel, enteredAt, nextWaiting, onC
         </div>
         <div className="cur-timer">
           <LiveTimer enteredAt={enteredAt}>{(sec) => {
-            const over = sec > (patient.duration_min || 30) * 60;
+            const over = sec > ((patient.duration_min || 30) + (patient.buffer_time_min ?? BUFFER_DEFAULT)) * 60;
             return (<>
               <div className="t tabular" style={over ? { color: "var(--orange)" } : undefined}>{fmtTimer(sec)}</div>
               <div className="tl">{over ? "перевищено час" : "хв у кабінеті"}</div>
@@ -294,7 +304,7 @@ function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: 
       (incidents || []).filter((i) => i.room_id === r.id).forEach((i) => { cap -= incidentWorkMinutes(i, date, startMin, endMin); });
       cap = Math.max(0, cap);
     }
-    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "cancelled" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0), 0);
+    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "cancelled" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
     const pct = cap > 0 ? Math.min(100, Math.round((mins / cap) * 100)) : 0;
     return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)" };
   });
@@ -337,6 +347,16 @@ const CALL_META: Record<string, { label: string; cls: string; icon: string }> = 
   not_called: { label: "Не дзвонили", cls: "gray", icon: "○" },
 };
 const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "#4da3ff", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
+// Довідка «звідки перенесено» → короткий рядок для розгорнутої картки.
+function fmtOrigin(o: RescheduleOrigin | null | undefined, roomsById: Record<string, { name?: string | null }>): string | null {
+  if (!o || (!o.from_date && !o.from_time)) return null;
+  const room = o.from_room ? roomsById[o.from_room] : null;
+  const parts = [ [o.from_date, o.from_time].filter(Boolean).join(" "), room?.name ].filter(Boolean);
+  let s = "🔁 Перенесено з " + parts.join(" · ");
+  if (o.from_status === "in_progress") s += " · перервано дослідження";
+  if (o.reason) s += " · причина: " + o.reason;
+  return s;
+}
 
 const STEP_ORDER = ["scheduled", "waiting", "in_progress", "done"];
 const STEP_META: Record<string, { label: string; color: string }> = {
@@ -367,10 +387,23 @@ interface QueueRowProps {
   onNoShow: (p: QEntry) => void; onNotHeld: (p: QEntry) => void; onUndo: (p: QEntry) => void; onCancel: (p: QEntry) => void;
   onSetStatus: (p: QEntry, status: string) => void; onSetCall: (p: QEntry, s: CallStatus) => void;
   onReschedule: (p: QEntry) => void; onEditStudies: (p: QEntry) => void; onEditPatient: (p: QEntry) => void;
+  onToWaitlist: (p: QEntry) => void;
+  canSetPriority?: boolean; onSetPriority?: (p: QEntry, priority: PatientPriority) => void;
+  originHint?: string | null;
+  startBlockReason?: string | null;
 }
-function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient }: QueueRowProps) {
-  const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
-  const meta: { label: string; cls: string; dot?: boolean; title?: string } = overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
+function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason }: QueueRowProps) {
+  // «Запізнення» — derived: пацієнт не прийшов, минуло понад буферний час.
+  const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
+  // Заплановане в минулому, і час дослідження (старт + тривалість) уже минув →
+  // можна прямо позначити «Виконано» (напр. повернути помилково скасоване завершення).
+  const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
+  const _nowW = wallNow();
+  const pastComplete = _startMs != null && (_startMs + (p.duration_min || 30) * 60000) <= _nowW;
+  // «Неявка»/«Не відбулося» можна ставити лише ПІСЛЯ часу початку дослідження (не наперед).
+  const beforeStart = _startMs != null && _nowW < _startMs;
+  const overdue = needsClarification(p.status, dayDate, p.scheduled_time) || (p.status === "scheduled" && !!p.clarify_at);
+  const meta: { label: string; cls: string; dot?: boolean; title?: string } = late ? LATE_META : overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
   const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
@@ -384,11 +417,11 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
-          <div className="nm">{p.cito && (p.status === "scheduled" || p.status === "waiting" || p.status === "in_progress") && <span className="cito-tag">CITO</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient && onEditPatient(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span></div>
+          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient && onEditPatient(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span></div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
             {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
-            {p.doctor && <span>Напр.: {p.doctor}</span>}
+            {(p.referrer?.full_name || p.doctor) && <span>Напр.: {p.referrer?.full_name || p.doctor}</span>}
           </div>
         </div>
         <div className="q-proc">
@@ -422,7 +455,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
               const changed = sdiff.some((d) => d.state !== "kept");
               return (
                 <div style={{ marginBottom: 8 }}>
-                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено</span>}</div>
+                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
                     {sdiff.map((d, i) => (
                       <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
@@ -433,10 +466,12 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                 </div>
               );
             })()}
-            {(p.contraindications || p.note) && (
+            {originHint && (
+              <div className="ctx-hint" style={{ fontSize: 12, marginBottom: 4 }}>{originHint}</div>
+            )}
+            {p.note && (
               <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
-                {p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}>⚠ Протипоказання</span>}
-                {p.note && <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>}
+                <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>
               </div>
             )}
 
@@ -444,10 +479,12 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
               const stepIdx = STEP_ORDER.indexOf(p.status);
               const pb = STEP_PRIMARY[p.status] || STEP_PRIMARY.done;
               const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
-              const advanceDisabled = !advanceFn || (p.status === "waiting" && !canCall) || !isTodayRow;
+              const advanceDisabled = !advanceFn || (p.status === "waiting" && (!canCall || !!startBlockReason)) || !isTodayRow || late;
               const terminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
               // P2.4 — причина блокування дії показується інлайн (не лише в tooltip), поки актуальна.
-              const blockReason = !advanceFn ? "" : !isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "");
+              // startBlockReason (з батька) — вичерпна причина, чому «Викликати в кабінет» неможливий
+              // (кабінет зайнятий/зачинено/на ремонті, або дослідження не вміститься до закриття/наступного запису).
+              const blockReason = !advanceFn ? "" : late ? "Запізнення понад буферний час — оберіть дію нижче (повернути, перенести, до листа очікування або зняти)" : !isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && startBlockReason ? startBlockReason : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""));
               return (
                 <div className="qd-step">
                   <div style={{ position: "relative", padding: "14px 32px 4px" }}>
@@ -474,11 +511,19 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                   </div>
 
                   <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
-                    {(p.status === "no_show" || p.status === "not_held") ? (
-                      <>
-                        <span className="q-noshow-lab" style={{ flex: 1 }}>✕ {p.status === "not_held" ? "Не відбулося" : "Неявка"}</span>
-                        <button className="btn btn-secondary btn-sm" onClick={act(onUndo)}>↩ Повернути в чергу</button>
-                      </>
+                    {terminal ? (
+                      p.status === "done" ? (
+                        <>
+                          <span className="q-noshow-lab" style={{ flex: 1 }}>✓ Виконано</span>
+                          <button className="btn btn-secondary btn-sm" onClick={act(onUndo)} title="Повернути пацієнта в чергу (скасувати завершення, без автозапуску)">↩ В чергу</button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="q-noshow-lab" style={{ flex: 1 }}>✕ {p.status === "not_held" ? "Не відбулося" : "Неявка"}</span>
+                          <button className="btn btn-secondary btn-sm" onClick={act(onReschedule)} title="Перенести на новий слот">🗓 Перенести</button>
+                          <button className="btn btn-secondary btn-sm" onClick={act(onUndo)}>↩ Повернути в чергу</button>
+                        </>
+                      )
                     ) : (
                       <>
                         <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn)} disabled={advanceDisabled}
@@ -488,7 +533,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                           {pb.icon} {pb.label}
                         </button>
                         {!terminal && onEditStudies && <button className="btn btn-secondary btn-sm" style={{ flex: 4, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} onClick={act(onEditStudies)}>🩻 Редагувати дослідження</button>}
-                        {!terminal && <button className="btn btn-secondary btn-sm" style={{ flex: 2, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} onClick={act(onReschedule)} title="Перенести на слот">🗓 Перенести</button>}
+                        <button className="btn btn-secondary btn-sm" style={{ flex: 2, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} onClick={act(onReschedule)} title={p.status === "in_progress" ? "Зупинити дослідження та перенести на новий слот" : "Перенести на слот"}>🗓 Перенести</button>
                         <button className="btn btn-secondary btn-sm" style={{ flex: 1, minWidth: 0 }} onClick={(e) => { e.stopPropagation(); setMoreOpen((o) => !o); }} title="Більше дій">⋯</button>
                       </>
                     )}
@@ -498,10 +543,39 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                     <div className="qd-inline-err" role="status">⚠ {blockReason}</div>
                   )}
 
+                  {/* Панель рішення для запізнення: явні дії замість прямого виклику. */}
+                  {late && !terminal && (
+                    <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }}>
+                      <button className="btn btn-green btn-sm" onClick={act(onArrive)} title="Пацієнт усе ж прийшов — повернути в живу чергу (Очікує)">↩ Все ж прийшов</button>
+                      {pastComplete && <button className="btn btn-green btn-sm" onClick={(e) => { e.stopPropagation(); onSetStatus(p, "done"); }} title="Позначити виконаним (заплановане в минулому, час дослідження вже минув)">✓ Виконано</button>}
+                      <button className="btn btn-secondary btn-sm" onClick={act(onReschedule)}>🗓 Перенести</button>
+                      <button className="btn btn-secondary btn-sm" onClick={act(onToWaitlist)} title="Пацієнт чекатиме на вільне вікно">⏳ В лист очікування</button>
+                      <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNotHeld)}>✕ Не відбулося</button>
+                    </div>
+                  )}
+
+                  {canSetPriority && onSetPriority && (
+                    <div style={{ marginTop: 6 }}>
+                      <div className="qd-sf-lab" style={{ marginBottom: 8 }}>Пріоритет пацієнта</div>
+                      <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
+                        {PRIORITY_OPTIONS.map((pv) => {
+                          const m = PRIORITY_META[pv];
+                          return (
+                            <button key={pv} type="button" role="radio" aria-checked={p.priority_level === pv}
+                              className={"prio-seg-btn " + m.tone + (p.priority_level === pv ? " active" : "")}
+                              onClick={(e) => { e.stopPropagation(); if (p.priority_level !== pv) onSetPriority(p, pv); }} title={m.desc}>
+                              {m.short}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   {moreOpen && !terminal && (
                     <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }}>
-                      <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNoShow)}>✕ Неявка</button>
-                      <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNotHeld)}>✕ Не відбулося</button>
+                      <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNoShow)}>✕ Неявка</button>
+                      <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNotHeld)}>✕ Не відбулося</button>
                       <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onCancel)}>✕ Скасувати запис</button>
                     </div>
                   )}
@@ -599,59 +673,9 @@ function AffectedPanel({ affected, roomsById, onReschedule }: { affected: QEntry
   );
 }
 
-/* ── Міні-календар ── */
-function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, onEditSchedule }: { selectedDate: Date; onSelectDate: (d: Date) => void; overridesByDate?: Record<string, DayOverride>; onEditSchedule?: () => void }) {
-  const today = today0();
-  const ovMap = overridesByDate || {};
-  const [viewMonth, setViewMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
-  const shift = (n: number) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
-  const y = viewMonth.getFullYear(), mo = viewMonth.getMonth();
-  const first = new Date(y, mo, 1);
-  const days = new Date(y, mo + 1, 0).getDate();
-  const startIdx = dowMon(first);
-  const cells: (number | null)[] = [];
-  for (let i = 0; i < startIdx; i++) cells.push(null);
-  for (let d = 1; d <= days; d++) cells.push(d);
-  return (
-    <div className="bk-cal">
-      <div className="cal-head">
-        <span className="cal-month">{MON_NOM[mo]} {y}</span>
-        <div className="cal-nav">
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць">‹</button>
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць">›</button>
-        </div>
-      </div>
-      <div className="cal-grid">
-        {WK_SHORT.map((d) => <div className="cal-dow" key={d}>{d}</div>)}
-        {cells.map((d, i) => {
-          if (d === null) return <div className="cal-day empty-day" key={"e" + i} />;
-          const cd = new Date(y, mo, d);
-          const isToday = sameDay(cd, today);
-          const isSel = sameDay(cd, selectedDate);
-          const ov = ovMap[dateKey(cd)] || null;
-          const st = dayStatus(ov, cd);
-          const markClosed = st.kind === "closed";
-          const markCustom = st.kind === "custom";
-          return (
-            <button key={d} className={"cal-day" + (isToday ? " today" : "") + (isSel && !isToday ? " selected" : "") + (markClosed ? " holiday" : "") + (markCustom ? " custom" : "")}
-              title={st.label || undefined} aria-label={st.label ? `${d} — ${st.label}` : undefined} onClick={() => onSelectDate(startOfDay(cd))}>
-              {d}
-              {(markClosed || markCustom) && <span className={"cal-sched " + (markClosed ? "closed" : "custom")} />}
-            </button>
-          );
-        })}
-      </div>
-      {onEditSchedule && (
-        <button className="btn btn-secondary btn-sm" style={{ width: "100%", marginTop: 10, justifyContent: "center" }} onClick={() => onEditSchedule()}>
-          ✎ Графік на {selectedDate.getDate()} {MON_NOM[selectedDate.getMonth()].toLowerCase()}
-        </button>
-      )}
-    </div>
-  );
-}
 
 /* ── Скасовані + Неявка ── */
-function CancelledPanel({ entries, onUndo, onReschedule }: { entries: QEntry[]; onUndo: (p: QEntry) => void; onReschedule: (p: QEntry) => void }) {
+function CancelledPanel({ entries, onUndo, onReschedule, onToWaitlist }: { entries: QEntry[]; onUndo: (p: QEntry) => void; onReschedule: (p: QEntry) => void; onToWaitlist: (p: QEntry) => void }) {
   const [open, setOpen] = useState(false);
   if (!entries.length) return null;
   return (
@@ -675,6 +699,7 @@ function CancelledPanel({ entries, onUndo, onReschedule }: { entries: QEntry[]; 
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   <button className="btn btn-secondary btn-xs" onClick={() => onUndo(e)}>↩ В чергу</button>
                   <button className="btn btn-secondary btn-xs" onClick={() => onReschedule(e)}>🗓 Перезаписати</button>
+                  <button className="btn btn-secondary btn-xs" title="Пацієнт чекатиме на вільне вікно" onClick={() => onToWaitlist(e)}>⏳ В лист очікування</button>
                 </div>
               </div>
             );
@@ -705,6 +730,9 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [breakdownOpen, setBreakdownOpen] = useState(false);
   const [breakdownRoomId, setBreakdownRoomId] = useState<string | null>(null);
+  const [emergencyOpen, setEmergencyOpen] = useState(false);
+  const [emergencyBusy, setEmergencyBusy] = useState(false);
+  const [emergencyConfirm, setEmergencyConfirm] = useState<{ roomId: string; action: "stop" | "resume" } | null>(null);
   const [overrides, setOverrides] = useState<Record<string, DayOverride>>({});
   const [schedEditOpen, setSchedEditOpen] = useState(false);
   const [filter, setFilter] = useState("all");
@@ -715,8 +743,10 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const [selectedDate, setSelectedDate] = useState(() => today0());
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Слот звільнився (скасування/відмова) → підходящі кандидати з листа очікування.
+  const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
 
-  const [, setNowTick] = useState(0);
+  const [nowTick, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
 
   const today = today0();
@@ -736,15 +766,26 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }
 
+  // Таймзона клініки → усі похідні часу (isLate/needsClarification/computeCallBlock,
+  // wallNow) рахуються по ній, а не по браузеру (користувачі з усього світу).
+  useEffect(() => {
+    createClient().from("clinics").select("timezone").eq("id", clinicId).single()
+      .then(({ data }) => setClinicTz(data?.timezone ?? null));
+  }, [clinicId]);
+
   const reload = useCallback(async () => {
     const supabase = createClient();
+    // Авто-«Уточнити»: помічаємо прострочені scheduled записи (persisted clarify_at).
+    // Fire-and-forget — НЕ блокуємо reload зайвим round-trip'ом (perceived speed);
+    // якщо щось позначиться, зміна прийде наступним realtime-циклом. Ідемпотентно.
+    void supabase.rpc("sink_overdue_scheduled");
     const { data, error } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, status, call_status, note, studies, studies_original, contraindications, cito, doctor, room_id, updated_at, in_progress_at")
+      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, studies_changed_by, contraindications, cito, priority_level, doctor, referrer:referrer_id(full_name), room_id, updated_at, in_progress_at, clarify_at, reschedule_origin")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .order("scheduled_time", { ascending: true });
-    if (!error) setEntries(data || []);
+    if (!error) setEntries((data || []) as unknown as QEntry[]);
     setLoading(false);
   }, [clinicId, dayKey]);
 
@@ -825,6 +866,9 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride).closed; }
 
   const liveIncidents = incidents.filter((i) => !incidentExpired(i));
+  // Аварійна зупинка: активні інциденти reason='emergency' → кабінети зупинено.
+  const emergencyRooms = Array.from(new Set(liveIncidents.filter((i) => i.reason === "emergency").map((i) => i.room_id)));
+  const emergencyActive = emergencyRooms.length > 0;
   const incidentsByRoom: Record<string, IncidentRow[]> = {};
   liveIncidents.forEach((i) => { (incidentsByRoom[i.room_id] = incidentsByRoom[i.room_id] || []).push(i); });
   const blockingByRoom: Record<string, IncidentRow> = {};
@@ -859,6 +903,32 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     reload();
   }
 
+  async function doEmergencyStop(roomIds: string[], note: string) {
+    setEmergencyBusy(true);
+    const res = await emergencyStopAction({ roomIds, note: note || null, date: dateKey(new Date()) });
+    setEmergencyBusy(false);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    notify(`Аварійна зупинка: кабінетів ${res.stopped}, на обдзвон ${res.affected}`, "error");
+    setEmergencyOpen(false);
+    reload();
+  }
+  async function doEmergencyResume(roomIds?: string[]) {
+    setEmergencyBusy(true);
+    const res = await resolveEmergencyAction(roomIds?.length ? { roomIds } : {});
+    setEmergencyBusy(false);
+    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    notify("Роботу відновлено", "success");
+    setEmergencyOpen(false);
+    reload();
+  }
+  // Кнопка «Аварійна зупинка»: на «Усі кабінети» — модалка вибору; на конкретному
+  // кабінеті — тумблер саме цього кабінету через підтвердження (проти випадкового
+  // натискання; модалка «Усі кабінети» вже сама вимагає свідомого «Зупинити»).
+  function handleEmergencyClick() {
+    if (roomView === "all") { setEmergencyOpen(true); return; }
+    setEmergencyConfirm({ roomId: roomView, action: emergencyRooms.includes(roomView) ? "resume" : "stop" });
+  }
+
   async function resolveIncident(idOrInc: string | IncidentRow) {
     const id = typeof idOrInc === "string" ? idOrInc : idOrInc?.id;
     if (!id) return;
@@ -870,14 +940,18 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
 
   async function setStatus(id: string, status: string) {
+    // H-2: фиксируем статус, который сейчас видит оператор (до оптимистичного
+    // обновления) — как expectedFrom для CAS на сервере.
+    const expectedFrom = entries.find((e) => e.id === id)?.status as QueueStatus | undefined;
     const nowIso = new Date().toISOString();
     const patch = status === "in_progress" ? { status, in_progress_at: nowIso } : { status };
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
-    const res = await setQueueEntryStatus(id, status as QueueStatus);
+    const res = await setQueueEntryStatus(id, status as QueueStatus, expectedFrom);
     if (!res.ok) {
       let msg;
       if (res.code === "room_busy") msg = "У кабінеті вже є пацієнт — спершу завершіть поточного";
       else if (res.code === "slot_unavailable") msg = "Слот недоступний (зайнятий або простій) — перенесіть пацієнта на інший час";
+      else if (res.code === "stale") msg = "Статус змінив інший користувач — дошку оновлено";
       else msg = "Помилка: " + res.error;
       notify(msg, "error");
       reload();
@@ -902,11 +976,39 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     reload();
   }
 
+  // Після звільнення слота — запропонувати кандидатів з листа очікування.
+  async function suggestWaitlistFor(p: QEntry) {
+    const slot: FreedSlotInfo = { date: dayKey, time: p.scheduled_time, roomId: p.room_id };
+    const candidates = await fetchWaitlistCandidates(clinicId, slot, rooms);
+    if (candidates.length) setWlSuggest({ slot, candidates });
+  }
+
+  async function toWaitlist(p: QEntry) {
+    const res = await addEntryToWaitlist(p.id);
+    if (!res.ok) {
+      notify(res.code === "duplicate" ? "Пацієнт уже в листі очікування" : "Помилка: " + res.error, res.code === "duplicate" ? "info" : "error");
+      return;
+    }
+    notify("Додано до листа очікування: " + (p.patient_name || ""), "success");
+  }
+
+  // Запізнення → лист очікування: слот звільняється (запис стає «Не відбулося»).
+  async function lateToWaitlist(p: QEntry) {
+    const res = await addEntryToWaitlist(p.id);
+    if (!res.ok) {
+      notify(res.code === "duplicate" ? "Пацієнт уже в листі очікування" : "Помилка: " + res.error, res.code === "duplicate" ? "info" : "error");
+      return;
+    }
+    await setStatus(p.id, "not_held");
+    notify("Запізнення: додано до листа очікування, запис — «Не відбулося»", "success");
+  }
+
   async function cancelBooking(p: QEntry) {
     const res = await cancelQueueEntry(p.id);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Запис скасовано", "success");
     reload();
+    suggestWaitlistFor(p);
   }
 
   async function setCall(p: QEntry, call_status: string) {
@@ -914,17 +1016,17 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     setEntries((es) => es.map((e) => (e.id === p.id ? { ...e, ...patch } : e)));
     const res = await setQueueEntryCall(p.id, call_status as CallStatus);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return; }
-    if (call_status === "declined") notify("Пацієнт відмовився — запис скасовано", "info");
+    if (call_status === "declined") { notify("Пацієнт відмовився — запис скасовано", "info"); suggestWaitlistFor(p); }
     reload();
   }
 
   const openReschedule = (p: QEntry) => setReschedFor(p);
-  async function doReschedule({ roomId, date, time, dur }: { roomId: string; date: Date; time: string; dur: number }) {
+  async function doReschedule({ roomId, date, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
     const p = reschedFor;
     if (!p) return;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason });
     if (!res.ok) {
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
       setReschedFor(null);
@@ -941,20 +1043,39 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
 
   const openEditStudies = (p: QEntry) => setEditStudiesFor(p);
-  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number }) {
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number }) {
     const p = editStudiesFor;
     if (!p) return;
-    const res = await editQueueEntryStudies(p.id, (arr || []) as unknown as Json, (meta && meta.dur) || p.duration_min || 30);
+    const res = await editQueueEntryStudies(p.id, (arr || []) as unknown as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer);
     setEditStudiesFor(null);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Дослідження оновлено", "success");
     reload();
   }
 
+  const canEditPriority = roleKey === "admin";
+  async function doSetPriority(p: QEntry, priority: PatientPriority) {
+    const res = await setQueuePriority(p.id, priority);
+    if (!res.ok) { notify(res.code === "forbidden" ? "Немає прав змінювати пріоритет" : "Помилка: " + res.error, "error"); return; }
+    notify("Пріоритет оновлено: " + PRIORITY_META[priority].short, "success");
+    reload();
+  }
+
   function inProgressBlockReason(p: QEntry): string | null {
-    if (p.room_id && blockingByRoom[p.room_id]) return "Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат";
-    if (p.room_id && roomSchedClosed(p.room_id)) return "Кабінет зачинено за графіком на цей день";
-    if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride) : null;
+    const r = computeCallBlock(p, entries, {
+      notToday: !isToday,
+      roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
+      schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
+      schedEnd: sched && !sched.closed ? sched.end : null,
+    });
+    if (!r) return null;
+    if (r.code === "wrong_day") return "Запис не на сьогодні — викликати в кабінет можна лише пацієнтів сьогоднішнього дня";
+    if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат";
+    if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
+    if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    if (r.code === "sched_overrun") return `Дослідження ${r.durationMin} хв не вміститься до кінця графіка кабінету (${r.end}) — перенесіть запис`;
+    if (r.code === "clash") return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис${r.name ? " (" + String(r.name).split(" ").slice(0, 2).join(" ") + ")" : ""}. Перенесіть один із записів`;
     return null;
   }
   function callPatient(p: QEntry) {
@@ -963,6 +1084,12 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     setStatus(p.id, "in_progress");
   }
   function setStatusGuarded(p: QEntry, status: string) {
+    // Запізнення понад буфер: прямий виклик у кабінет заблоковано — спершу
+    // явне рішення («все ж прийшов» → Очікує, перенос, лист очікування, зняття).
+    if (status === "in_progress" && isLate(p.status, selectedDate, p.scheduled_time, p.buffer_time_min)) {
+      notify("Пацієнт запізнився понад буферний час — спершу поверніть у чергу, перенесіть або зніміть запис", "error");
+      return;
+    }
     if (status === "in_progress") { callPatient(p); return; }
     setStatus(p.id, status);
   }
@@ -974,8 +1101,8 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       roomId: b.roomId, referrerId: b.referrerId ?? null,
       name: b.name, phone: b.phone || null, email: b.email ?? null,
       dob: b.dob || null, sex: b.gender || null, age: b.age || null, weight: b.weight ?? null,
-      hasContra: !!b.hasContra, cito: !!b.cito,
-      studies: b.studies || [], doctor: b.doctor ?? null, notes: b.notes ?? null, durationMin: b.dur,
+      hasContra: !!b.hasContra, priorityLevel: b.priority,
+      studies: b.studies || [], doctor: b.doctor ?? null, notes: b.notes ?? null, durationMin: b.dur, bufferTimeMin: b.buffer,
       scheduledDate: dateKey(b.date), scheduledTime: b.time, scheduledAt: at,
     });
     if (!res.ok) {
@@ -995,31 +1122,45 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const boardScoped = scoped.filter((e) => e.status !== "cancelled" && e.status !== "no_show");
   const panelEntries = scoped.filter((e) => e.status === "cancelled" || e.status === "no_show");
   const counts = useMemo(() => {
-    const c: Record<string, number> = { total: 0, scheduled: 0, waiting: 0, in_progress: 0, done: 0, no_show: 0, not_held: 0, cancelled: 0 };
-    scoped.forEach((e) => { if (c[e.status] != null) c[e.status]++; if (e.status !== "cancelled") c.total++; });
+    const c: Record<string, number> = { total: 0, scheduled: 0, waiting: 0, in_progress: 0, done: 0, no_show: 0, not_held: 0, cancelled: 0, late: 0 };
+    scoped.forEach((e) => {
+      if (c[e.status] != null) c[e.status]++;
+      if (e.status !== "cancelled") c.total++;
+      if (isLate(e.status, selectedDate, e.scheduled_time, e.buffer_time_min)) c.late++;
+    });
     return c;
-  }, [scoped]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scoped, selectedDate, nowTick]);
 
   const currentByRoom: Record<string, QEntry> = {}, nextWaitingByRoom: Record<string, QEntry> = {};
   entries.forEach((e) => { if (e.status === "in_progress" && e.room_id) currentByRoom[e.room_id] = e; });
   entries.forEach((e) => {
     if (e.status !== "waiting" || !e.room_id) return;
     const cur = nextWaitingByRoom[e.room_id];
-    if (!cur || (e.cito && !cur.cito)) nextWaitingByRoom[e.room_id] = e;
+    if (!cur || priorityRank(e.priority_level) < priorityRank(cur.priority_level)) nextWaitingByRoom[e.room_id] = e;
   });
 
   const roomLoad = computeRoomLoad(rooms, entries, selectedDate, selectedOverride, incidents);
 
-  const citoRank = (x: QEntry) => (x.cito && (x.status === "scheduled" || x.status === "waiting" || x.status === "in_progress")) ? 0 : 1;
+  // Порядок черги: у активних статусах — за пріоритетом (cito→urgent→planned), далі за часом.
+  const prioRank = (x: QEntry) => isActiveStatus(x.status) ? priorityRank(x.priority_level) : 9;
+  // «Уточнити»: прострочені scheduled (persisted clarify_at або похідна) опускаються
+  // в КІНЕЦЬ запланованих (над терміналами), щоб наступний актуальний був першим.
+  const clarifyRank = (x: QEntry) =>
+    (x.status === "scheduled" && (!!x.clarify_at || needsClarification(x.status, selectedDate, x.scheduled_time))) ? 1 : 0;
   const sorted = boardScoped.slice().sort((a, b) => {
     const d = (FLOW[a.status] ?? 9) - (FLOW[b.status] ?? 9);
     if (d !== 0) return d;
-    const c = citoRank(a) - citoRank(b);
+    const cl = clarifyRank(a) - clarifyRank(b);
+    if (cl !== 0) return cl;
+    const c = prioRank(a) - prioRank(b);
     if (c !== 0) return c;
     return (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
   });
   const filtered = sorted.filter((e) => {
-    if (filter !== "all" && e.status !== filter) return false;
+    if (filter === "late") {
+      if (!isLate(e.status, selectedDate, e.scheduled_time, e.buffer_time_min)) return false;
+    } else if (filter !== "all" && e.status !== filter) return false;
     if (query.trim()) return (e.patient_name || "").toLowerCase().includes(query.trim().toLowerCase());
     return true;
   });
@@ -1033,7 +1174,10 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       <Sidebar
         clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey}
         rooms={rooms} activeRoom={roomView} onSelectRoom={setRoomView} onNew={() => setModalOpen(true)}
-        incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(null); setBreakdownOpen(true); }}
+        incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }}
+        onEmergency={handleEmergencyClick}
+        emergencyActive={roomView !== "all" ? emergencyRooms.includes(roomView) : emergencyActive}
+        stoppedRoomIds={Object.keys(blockingByRoom)}
       />
       <div className="main">
         <header className="topbar">
@@ -1046,7 +1190,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
           </div>
           <div className="tb-right">
             <span className="rt-pill"><span className="pulse-dot" style={{ background: "var(--green)", width: 7, height: 7 }} />Real-time</span>
-            <button className="btn btn-breakdown" onClick={() => setBreakdownOpen(true)} title="Зафіксувати поломку або ТО апарата">🔧 Поломка / ТО</button>
+            <button className="btn btn-breakdown" onClick={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }} title="Зафіксувати поломку або ТО апарата">🔧 Поломка / ТО</button>
             <button className="btn btn-primary btn-lg" onClick={() => setModalOpen(true)}>＋ Новий запис</button>
           </div>
         </header>
@@ -1192,7 +1336,11 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                     canCall={!(p.room_id && currentByRoom[p.room_id])} rescheduling={affectedIds.has(p.id)}
                     onArrive={arrive} onCall={callPatient} onComplete={openComplete}
                     onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onCancel={cancelBooking} onSetStatus={setStatusGuarded} onSetCall={setCall}
-                    onReschedule={openReschedule} onEditStudies={openEditStudies} onEditPatient={(pt) => setEditPatientFor(pt)} />
+                    onReschedule={openReschedule} onEditStudies={openEditStudies} onEditPatient={(pt) => setEditPatientFor(pt)}
+                    onToWaitlist={lateToWaitlist}
+                    canSetPriority={canEditPriority} onSetPriority={doSetPriority}
+                    originHint={fmtOrigin(p.reschedule_origin as unknown as RescheduleOrigin | null, roomsById)}
+                    startBlockReason={p.status === "waiting" ? inProgressBlockReason(p) : null} />
                 );
               })}
             </div>
@@ -1204,12 +1352,20 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
             {isToday && (rooms || []).length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}
             {!isPast && <CallListPanel entries={entries} onSetCall={setCall} dateLabel={fmtShort(selectedDate)} />}
-            <CancelledPanel entries={panelEntries} onUndo={undo} onReschedule={openReschedule} />
+            <CancelledPanel entries={panelEntries} onUndo={undo} onReschedule={openReschedule} onToWaitlist={toWaitlist} />
           </aside>
         </div>
       </div>
 
       {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} incidents={liveIncidents} onClose={() => setModalOpen(false)} onSave={saveBooking} />}
+
+      {wlSuggest && (
+        <WaitlistCandidatesModal clinicId={clinicId} rooms={rooms} incidents={liveIncidents}
+          slot={wlSuggest.slot} candidates={wlSuggest.candidates}
+          onClose={() => setWlSuggest(null)}
+          onBooked={(msg) => { notify(msg, "success"); reload(); }}
+          onError={(msg) => notify(msg, "error")} />
+      )}
 
       {completeFor && (
         <CompletionModal
@@ -1231,11 +1387,42 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
         <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {editPatientFor && (
-        <PatientEditModal entryId={editPatientFor.id} onClose={() => setEditPatientFor(null)} onSaved={reload} />
+        <PatientEditModal entryId={editPatientFor.id} canEditPriority={canEditPriority} onClose={() => setEditPatientFor(null)} onSaved={reload} />
       )}
 
       {breakdownOpen && (
         <BreakdownModal rooms={rooms} incidents={liveIncidents} overrides={overrides} initialRoomId={breakdownRoomId || undefined} onClose={() => { setBreakdownOpen(false); setBreakdownRoomId(null); }} onSubmit={submitIncident} onResolve={resolveIncident} />
+      )}
+      {emergencyOpen && (
+        <EmergencyModal
+          rooms={rooms}
+          stoppedRoomIds={emergencyRooms}
+          affectedCount={isToday ? entries.filter((e) => emergencyRooms.includes(e.room_id || "") && (e.status === "scheduled" || e.status === "waiting" || e.status === "in_progress")).length : undefined}
+          busy={emergencyBusy}
+          onClose={() => setEmergencyOpen(false)}
+          onStop={doEmergencyStop}
+          onResume={doEmergencyResume}
+        />
+      )}
+      {emergencyConfirm && (
+        <ConfirmDialog
+          title={emergencyConfirm.action === "stop" ? "Аварійно зупинити кабінет?" : "Відновити роботу кабінету?"}
+          text={emergencyConfirm.action === "stop"
+            ? <>Зупинити роботу <b>{roomsById[emergencyConfirm.roomId]?.name || "кабінет"}</b> до зʼясування обставин? Пацієнтів цього дня буде позначено на обдзвон.</>
+            : <>Відновити роботу <b>{roomsById[emergencyConfirm.roomId]?.name || "кабінет"}</b>? Кабінет знову прийматиме записи.</>}
+          confirmLabel={emergencyConfirm.action === "stop" ? "🛑 Зупинити" : "▶ Відновити"}
+          danger={emergencyConfirm.action === "stop"}
+          hideCancel
+          busy={emergencyBusy}
+          onClose={() => setEmergencyConfirm(null)}
+          onConfirm={async () => {
+            const a = emergencyConfirm;
+            if (!a) return;
+            if (a.action === "stop") await doEmergencyStop([a.roomId], "");
+            else await doEmergencyResume([a.roomId]);
+            setEmergencyConfirm(null);
+          }}
+        />
       )}
 
       {schedEditOpen && (

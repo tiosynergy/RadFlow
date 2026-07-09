@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { requireRole } from "@/lib/apiAuth";
 
 // POST /api/referral/access/request
 // Направник надсилає запит на доступ до центру. Створює referral_access у
@@ -8,18 +8,9 @@ import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 // Запис у referral_access виконується service_role (клієнтських write-політик
 // немає), але дозвіл перевіряємо тут: викликач має бути направником.
 export async function POST(req: Request) {
-  if (!isAdminConfigured()) {
-    return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY не налаштовано на сервері (.env.local)" }, { status: 500 });
-  }
-
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Не авторизовано" }, { status: 401 });
-
-  const { data: me } = await supabase.from("profiles").select("role").eq("id", user.id).single();
-  if (!me || me.role !== "referrer") {
-    return NextResponse.json({ error: "Лише лікар-направник може надсилати запит" }, { status: 403 });
-  }
+  const gate = await requireRole(["referrer"], { forbidden: "Лише лікар-направник може надсилати запит" });
+  if (!gate.ok) return gate.res;
+  const { user } = gate;
 
   const body = await req.json().catch(() => ({}));
   const clinicId = String(body.clinic_id || "").trim();

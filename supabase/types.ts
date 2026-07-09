@@ -62,6 +62,7 @@ export type Database = {
           phones: Json;
           emails: Json;
           configured_at: string | null;
+          timezone: string;
         };
         Insert: {
           id?: string;
@@ -72,6 +73,7 @@ export type Database = {
           phones?: Json;
           emails?: Json;
           configured_at?: string | null;
+          timezone?: string;
         };
         Update: {
           id?: string;
@@ -82,6 +84,7 @@ export type Database = {
           phones?: Json;
           emails?: Json;
           configured_at?: string | null;
+          timezone?: string;
         };
         Relationships: [];
       };
@@ -228,12 +231,14 @@ export type Database = {
           call_status: Database["public"]["Enums"]["call_status"];
           priority: number;
           scheduled_at: string | null;
+          clarify_at: string | null;
           note: string | null;
           created_at: string;
           updated_at: string;
           scheduled_date: string | null;
           scheduled_time: string | null;
           duration_min: number;
+          buffer_time_min: number;
           studies: Json;
           patient_dob: string | null;
           patient_sex: string | null;
@@ -244,6 +249,7 @@ export type Database = {
           has_contrast: boolean;
           doctor: string | null;
           cito: boolean;
+          priority_level: Database["public"]["Enums"]["patient_priority"];
           call_note: string | null;
           radiologist_note: string | null;
           indication: string | null;
@@ -251,6 +257,8 @@ export type Database = {
           in_progress_at: string | null;
           studies_original: Json | null;
           referrer_id: string | null;
+          reschedule_origin: Json | null;
+          studies_changed_by: string | null;
         };
         Insert: {
           id?: string;
@@ -262,12 +270,14 @@ export type Database = {
           call_status?: Database["public"]["Enums"]["call_status"];
           priority?: number;
           scheduled_at?: string | null;
+          clarify_at?: string | null;
           note?: string | null;
           created_at?: string;
           updated_at?: string;
           scheduled_date?: string | null;
           scheduled_time?: string | null;
           duration_min?: number;
+          buffer_time_min?: number;
           studies?: Json;
           patient_dob?: string | null;
           patient_sex?: string | null;
@@ -278,6 +288,7 @@ export type Database = {
           has_contrast?: boolean;
           doctor?: string | null;
           cito?: boolean;
+          priority_level?: Database["public"]["Enums"]["patient_priority"];
           call_note?: string | null;
           radiologist_note?: string | null;
           indication?: string | null;
@@ -285,6 +296,8 @@ export type Database = {
           in_progress_at?: string | null;
           studies_original?: Json | null;
           referrer_id?: string | null;
+          reschedule_origin?: Json | null;
+          studies_changed_by?: string | null;
         };
         Update: {
           id?: string;
@@ -296,12 +309,14 @@ export type Database = {
           call_status?: Database["public"]["Enums"]["call_status"];
           priority?: number;
           scheduled_at?: string | null;
+          clarify_at?: string | null;
           note?: string | null;
           created_at?: string;
           updated_at?: string;
           scheduled_date?: string | null;
           scheduled_time?: string | null;
           duration_min?: number;
+          buffer_time_min?: number;
           studies?: Json;
           patient_dob?: string | null;
           patient_sex?: string | null;
@@ -312,6 +327,7 @@ export type Database = {
           has_contrast?: boolean;
           doctor?: string | null;
           cito?: boolean;
+          priority_level?: Database["public"]["Enums"]["patient_priority"];
           call_note?: string | null;
           radiologist_note?: string | null;
           indication?: string | null;
@@ -319,6 +335,8 @@ export type Database = {
           in_progress_at?: string | null;
           studies_original?: Json | null;
           referrer_id?: string | null;
+          reschedule_origin?: Json | null;
+          studies_changed_by?: string | null;
         };
         Relationships: [
           {
@@ -342,6 +360,133 @@ export type Database = {
           {
             foreignKeyName: "queue_entries_referrer_id_fkey";
             columns: ["referrer_id"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
+      waitlist_entries: {
+        Row: {
+          id: string;
+          clinic_id: string;
+          source_entry_id: string | null;
+          scheduled_entry_id: string | null;
+          room_id: string | null;
+          patient_name: string;
+          patient_phone: string | null;
+          patient_dob: string | null;
+          patient_sex: string | null;
+          patient_age: number | null;
+          patient_weight: number | null;
+          patient_email: string | null;
+          studies: Json;
+          duration_min: number;
+          buffer_time_min: number;
+          modality: Database["public"]["Enums"]["modality"] | null;
+          priority_level: Database["public"]["Enums"]["patient_priority"];
+          desired_date_from: string | null;
+          desired_date_to: string | null;
+          desired_time_from: string | null;
+          desired_time_to: string | null;
+          status: Database["public"]["Enums"]["waitlist_status"];
+          note: string | null;
+          referrer_id: string | null;
+          created_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          clinic_id: string;
+          source_entry_id?: string | null;
+          scheduled_entry_id?: string | null;
+          room_id?: string | null;
+          patient_name: string;
+          patient_phone?: string | null;
+          patient_dob?: string | null;
+          patient_sex?: string | null;
+          patient_age?: number | null;
+          patient_weight?: number | null;
+          patient_email?: string | null;
+          studies?: Json;
+          duration_min?: number;
+          buffer_time_min?: number;
+          modality?: Database["public"]["Enums"]["modality"] | null;
+          priority_level?: Database["public"]["Enums"]["patient_priority"];
+          desired_date_from?: string | null;
+          desired_date_to?: string | null;
+          desired_time_from?: string | null;
+          desired_time_to?: string | null;
+          status?: Database["public"]["Enums"]["waitlist_status"];
+          note?: string | null;
+          referrer_id?: string | null;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          clinic_id?: string;
+          source_entry_id?: string | null;
+          scheduled_entry_id?: string | null;
+          room_id?: string | null;
+          patient_name?: string;
+          patient_phone?: string | null;
+          patient_dob?: string | null;
+          patient_sex?: string | null;
+          patient_age?: number | null;
+          patient_weight?: number | null;
+          patient_email?: string | null;
+          studies?: Json;
+          duration_min?: number;
+          buffer_time_min?: number;
+          modality?: Database["public"]["Enums"]["modality"] | null;
+          priority_level?: Database["public"]["Enums"]["patient_priority"];
+          desired_date_from?: string | null;
+          desired_date_to?: string | null;
+          desired_time_from?: string | null;
+          desired_time_to?: string | null;
+          status?: Database["public"]["Enums"]["waitlist_status"];
+          note?: string | null;
+          referrer_id?: string | null;
+          created_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "waitlist_entries_clinic_id_fkey";
+            columns: ["clinic_id"];
+            referencedRelation: "clinics";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "waitlist_entries_source_entry_id_fkey";
+            columns: ["source_entry_id"];
+            referencedRelation: "queue_entries";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "waitlist_entries_scheduled_entry_id_fkey";
+            columns: ["scheduled_entry_id"];
+            referencedRelation: "queue_entries";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "waitlist_entries_room_id_fkey";
+            columns: ["room_id"];
+            referencedRelation: "rooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "waitlist_entries_referrer_id_fkey";
+            columns: ["referrer_id"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "waitlist_entries_created_by_fkey";
+            columns: ["created_by"];
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           }
@@ -700,6 +845,71 @@ export type Database = {
         };
         Relationships: [];
       };
+      audit_log: {
+        Row: {
+          id: number;
+          at: string;
+          actor: string | null;
+          clinic_id: string | null;
+          table_name: string;
+          row_id: string | null;
+          action: string;
+          before: Json | null;
+          after: Json | null;
+        };
+        Insert: {
+          at?: string;
+          actor?: string | null;
+          clinic_id?: string | null;
+          table_name: string;
+          row_id?: string | null;
+          action: string;
+          before?: Json | null;
+          after?: Json | null;
+        };
+        Update: {
+          at?: string;
+          actor?: string | null;
+          clinic_id?: string | null;
+          table_name?: string;
+          row_id?: string | null;
+          action?: string;
+          before?: Json | null;
+          after?: Json | null;
+        };
+        Relationships: [];
+      };
+      event_outbox: {
+        Row: {
+          id: number;
+          created_at: string;
+          event_type: string;
+          idempotency_key: string;
+          payload: Json;
+          delivered_at: string | null;
+          attempts: number;
+          last_error: string | null;
+        };
+        Insert: {
+          created_at?: string;
+          event_type: string;
+          idempotency_key?: string;
+          payload: Json;
+          delivered_at?: string | null;
+          attempts?: number;
+          last_error?: string | null;
+        };
+        Update: {
+          created_at?: string;
+          event_type?: string;
+          idempotency_key?: string;
+          payload?: Json;
+          delivered_at?: string | null;
+          attempts?: number;
+          last_error?: string | null;
+        };
+        Relationships: [];
+      };
     };
     Views: {
       [_ in never]: never;
@@ -742,8 +952,8 @@ export type Database = {
         Returns: undefined;
       };
       room_busy_slots: {
-        Args: { p_room: string; p_date: string };
-        Returns: { scheduled_time: string; duration_min: number }[];
+        Args: { p_room: string; p_date: string; p_exclude?: string };
+        Returns: { scheduled_time: string; duration_min: number; buffer_time_min: number }[];
       };
       search_clinics: {
         Args: { q: string };
@@ -798,6 +1008,27 @@ export type Database = {
           role: string;
         }[];
       };
+      emergency_stop_rpc: {
+        Args: { p_room_ids: string[]; p_date: string; p_note?: string | null };
+        Returns: {
+          stopped: number;
+          affected: number;
+          stopped_rooms: string[];
+          patients: Json;
+        }[];
+      };
+      outbox_mark_failed: {
+        Args: { p_id: number; p_error: string };
+        Returns: undefined;
+      };
+      sink_overdue_scheduled: {
+        Args: Record<PropertyKey, never>;
+        Returns: number;
+      };
+      sink_overdue_scheduled_all: {
+        Args: Record<PropertyKey, never>;
+        Returns: number;
+      };
     };
     Enums: {
       user_role: "admin" | "radiologist" | "registrar" | "referrer" | "ceo";
@@ -824,6 +1055,8 @@ export type Database = {
         | "revoked"
         | "declined";
       referral_policy: "direct" | "confirm";
+      patient_priority: "cito" | "urgent" | "planned";
+      waitlist_status: "waiting" | "scheduled" | "cancelled" | "expired";
       // incidents.status is a text column with a CHECK constraint (not a PG enum),
       // but the values are fixed; typed as a union for strictness.
       incident_status: "active" | "planned" | "resolved";
@@ -854,6 +1087,8 @@ export type Profile = Tables<"profiles">;
 export type ScheduleOverride = Tables<"schedule_overrides">;
 export type ReferralAccess = Tables<"referral_access">;
 export type QueueStatus = Enums<"queue_status">;
+export type WaitlistEntry = Tables<"waitlist_entries">;
+export type WaitlistStatus = Enums<"waitlist_status">;
 export type CallStatus = Enums<"call_status">;
 export type Modality = Enums<"modality">;
 export type UserRole = Enums<"user_role">;

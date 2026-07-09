@@ -2,12 +2,15 @@
 
 /* ===== RadFlow — Редактор досліджень =====
    Портовано з rf-shell.jsx (StudyEditModal). Тип фіксується кабінетом (МРТ/КТ).
-   Сумарна тривалість не може перевищити вільний час до наступного запису (з Supabase). */
+   Сумарна тривалість не може перевищити вільний час до наступного запису —
+   зайнятість кабінету беремо через знеособлений RPC room_busy_slots (без PII;
+   для направника обходить RLS-сліпоту), p_exclude прибирає сам редагований запис. */
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { regionsFor } from "@/lib/studies";
-import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
+import { roomScheduleFor, roomBreaksFor, type DayOverride } from "@/lib/schedule";
+import { wallNow, wallMinOfDay } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 const MIN_STUDY = 15;
@@ -15,15 +18,16 @@ const MIN_STUDY = 15;
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type StudyRow = { type: string; region: string; dur: number };
 type StudyLike = { type?: string; region?: string; dur?: number; contrast?: boolean };
-type StudyPatient = { id: string; room_id: string | null; scheduled_time: string | null; patient_name: string | null; studies?: unknown };
+type StudyPatient = { id: string; room_id: string | null; scheduled_time: string | null; buffer_time_min?: number | null; patient_name: string | null; studies?: unknown };
 
 interface StudyEditModalProps {
   patient: StudyPatient;
   scheduledDate?: string | null;
   rooms?: RoomOpt[];
   clinicId?: string | null;
+  clinicTz?: string | null; // TZ центру запису (мультиклінічний портал направника)
   onClose: () => void;
-  onConfirm: (arr: StudyRow[], meta: { dur: number }) => void;
+  onConfirm: (arr: StudyRow[], meta: { dur: number; buffer: number }) => void;
 }
 
 function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
@@ -31,7 +35,7 @@ function pad(n: number) { return String(n).padStart(2, "0"); }
 function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 
-export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, onClose, onConfirm }: StudyEditModalProps) {
+export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, onClose, onConfirm }: StudyEditModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const room = (rooms || []).find((r) => r.id === patient.room_id);
   const roomKind = room ? modalityLabel(room.modality) : "МРТ"; // "МРТ" | "КТ"
@@ -40,37 +44,66 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
 
   const [nextStart, setNextStart] = useState<number | null>(null);
   const [override, setOverride] = useState<DayOverride | null>(null);
+  const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule кабінету (для перерв)
   useEffect(() => {
     let cancel = false;
     (async () => {
       if (!patient.room_id || !scheduledDate) return;
-      const supabase = createClient();
-      if (clinicId) {
-        const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
-        if (!cancel) setOverride((ov.data as unknown as DayOverride) || null);
+      try {
+        const supabase = createClient();
+        if (clinicId) {
+          const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
+          if (!cancel) setOverride((ov.data as unknown as DayOverride) || null);
+        }
+        const roomRes = await supabase.from("rooms").select("schedule").eq("id", patient.room_id).maybeSingle();
+        if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
+        // Знеособлена зайнятість кабінету; p_exclude прибирає сам редагований запис.
+        const { data } = await supabase.rpc("room_busy_slots", { p_room: patient.room_id, p_date: scheduledDate, p_exclude: patient.id });
+        if (cancel) return;
+        const startMin = toMin(patient.scheduled_time);
+        const ns = (data || []).map((p) => toMin(p.scheduled_time)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
+        setNextStart(ns != null ? ns : null);
+      } catch {
+        // Транзієнтний збій (оновлення токена / мережа) — не рушимо модаль.
+        if (!cancel) setNextStart(null);
       }
-      const { data } = await supabase
-        .from("queue_entries")
-        .select("id, scheduled_time, status")
-        .eq("room_id", patient.room_id).eq("scheduled_date", scheduledDate)
-        .neq("status", "cancelled").neq("status", "no_show").neq("status", "not_held");
-      if (cancel) return;
-      const startMin = toMin(patient.scheduled_time);
-      const ns = (data || []).filter((p) => p.id !== patient.id).map((p) => toMin(p.scheduled_time)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
-      setNextStart(ns != null ? ns : null);
     })();
     return () => { cancel = true; };
   }, [patient.id, patient.room_id, patient.scheduled_time, scheduledDate, clinicId]);
 
+  const [buffer, setBuffer] = useState<number>(normBuffer(patient.buffer_time_min ?? BUFFER_DEFAULT));
+
   const startMin = toMin(patient.scheduled_time);
+  // Реальний старт: якщо запис сьогодні і плановий час уже минув (пацієнт
+  // запізнюється або вже в кабінеті), фактична зайнятість кабінету рахується
+  // від ЗАРАЗ, а не від планового слота. Використовується для м'якого
+  // попередження про наїзд на наступний запис (плановий check_no_overlap
+  // цього не ловить, бо порівнює планові вікна).
+  // «Зараз» у настінному часі клініки (wall-as-UTC мс): і хвилини доби, і дата.
+  const _nowW = wallNow(clinicTz || undefined);
+  const nowMin = wallMinOfDay(_nowW);
+  const _nowD = new Date(_nowW);
+  const todayStr = _nowD.getUTCFullYear() + "-" + pad(_nowD.getUTCMonth() + 1) + "-" + pad(_nowD.getUTCDate());
+  const isTodayLate = scheduledDate === todayStr && nowMin > startMin;
+  const refStartMin = isTodayLate ? nowMin : startMin;
   // Кінець вікна — за графіком кабінету (з урахуванням особливого графіка),
-  // але не далі наступного запису у цьому кабінеті.
+  // але не далі наступного запису. Буфер займає кабінет ПІСЛЯ досліджень, тож
+  // дослідження + буфер не повинні перетнути наступний запис (для графіка —
+  // саме дослідження має вміститись, буфер може вийти за межі закриття).
   const dateObj = scheduledDate ? new Date(scheduledDate + "T00:00:00") : new Date();
   const roomSched = roomScheduleFor(dateObj, patient.room_id || "", override);
   const schedEnd = toMin(roomSched.end);
-  const windowEnd = nextStart != null ? Math.min(nextStart, schedEnd) : schedEnd;
-  const windowLabel = (nextStart != null && nextStart <= schedEnd) ? ("до наступного запису о " + fmt(nextStart)) : ("до кінця графіка (" + fmt(schedEnd) + ")");
-  const availableDur = Math.max(0, windowEnd - startMin);
+  const capByNext = nextStart != null ? nextStart - startMin - buffer : Infinity;
+  const capBySched = schedEnd - startMin;
+  // Перерва кабінету після старту теж обмежує тривалість — дослідження не може її перетнути.
+  const nextBreakStart = roomBreaksFor(dateObj, roomSchedule).map((b) => toMin(b.start)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
+  const capByBreak = nextBreakStart != null ? nextBreakStart - startMin : Infinity;
+  const availableDur = Math.max(0, Math.min(capByNext, capBySched, capByBreak));
+  const windowLabel = (capByBreak <= capByNext && capByBreak <= capBySched && nextBreakStart != null)
+    ? ("до перерви о " + fmt(nextBreakStart))
+    : (nextStart != null && (nextStart - buffer) <= schedEnd)
+      ? ("до наступного запису о " + fmt(nextStart) + (buffer > 0 ? ` − ${buffer} буфер` : ""))
+      : ("до кінця графіка (" + fmt(schedEnd) + ")");
 
   function recalc(type: string, region: string, prevDur?: number): number {
     const ro = regionsFor(type).find((r) => r.label === region);
@@ -99,12 +132,16 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const totalDur = rows.reduce((s, r) => s + (Number(r.dur) || 0), 0);
   const overflow = totalDur > availableDur;
   const remaining = availableDur - totalDur;
+  // М'яке попередження (НЕ блокує збереження): за фактом старту дослідження+буфер
+  // закінчаться пізніше наступного запису кабінету.
+  const projectedEndMin = refStartMin + totalDur + buffer;
+  const realClash = isTodayLate && nextStart != null && projectedEndMin > nextStart;
   const canAdd = remaining >= MIN_STUDY;
   const valid = rows.length > 0 && rows.every((r) => r.region) && !overflow;
 
   function save() {
     const arr = rows.filter((r) => r.region).map((r) => ({ type: r.type, region: r.region, dur: Number(r.dur) || 0 }));
-    onConfirm(arr, { dur: totalDur });
+    onConfirm(arr, { dur: totalDur, buffer });
   }
 
   return (
@@ -115,12 +152,17 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
           <button className="icon-btn" onClick={onClose}>✕</button>
         </div>
         <div className="dlg-body">
-          <div className="ctx-hint blue" style={{ fontSize: 13 }}>Пацієнт: <b>{patient.patient_name}</b> · слот о <b>{patient.scheduled_time}</b>{room ? <> · {room.name}{lockType ? <> · <b>{roomKind}</b></> : null}</> : null}. {lockType ? <>Усі дослідження слота — лише <b>{roomKind}</b>.</> : null}</div>
+          <div className="ctx-hint blue" style={{ fontSize: 13 }}>Пацієнт: <b>{patient.patient_name}</b> · слот {scheduledDate ? <><b>{scheduledDate.split("-").reverse().join(".")}</b> о </> : "о "}<b>{patient.scheduled_time}</b>{room ? <> · {room.name}{lockType ? <> · <b>{roomKind}</b></> : null}</> : null}. {lockType ? <>Усі дослідження слота — лише <b>{roomKind}</b>.</> : null}</div>
           <div className={"ctx-hint " + (overflow ? "red" : "blue")} style={{ fontSize: 12.5 }}>
             {overflow
               ? <>⚠ Не вміщується: разом <b>{totalDur} хв</b>, доступно <b>{availableDur} хв</b> ({windowLabel}). Скоротіть на {totalDur - availableDur} хв.</>
               : <>Доступно у слоті: <b>{availableDur} хв</b> ({windowLabel}). Вільно ще <b>{remaining} хв</b>.</>}
           </div>
+          {!overflow && realClash && (
+            <div className="ctx-hint red" style={{ fontSize: 12.5 }}>
+              ⚠ Пацієнт запізнюється/у кабінеті: за фактом (з ~<b>{fmt(refStartMin)}</b>) дослідження + буфер закінчаться о ~<b>{fmt(projectedEndMin)}</b> і перекриють наступний запис о <b>{fmt(nextStart ?? 0)}</b>. Зберегти можна, але перенесіть наступний запис.
+            </div>
+          )}
           <div className="st-rows">
             {rows.map((r, i) => {
               const regions = regionsFor(r.type);
@@ -166,7 +208,13 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
             title={canAdd ? "" : "Немає вільного часу у слоті"}>＋ Додати дослідження</button>
         </div>
         <div className="dlg-foot">
-          <span className="st-total">Разом: <b>{totalDur} хв</b> · {rows.length} {rows.length === 1 ? "дослідження" : "досл."}</span>
+          <label className="st-total" style={{ display: "flex", alignItems: "center", gap: 6 }} title="Буфер після дослідження (переукладка/дезінфекція)">
+            Буфер:
+            <select className="inp" style={{ width: 74, padding: "2px 6px" }} value={buffer} onChange={(e) => setBuffer(normBuffer(Number(e.target.value)))}>
+              {BUFFER_OPTIONS.map((b) => <option key={b} value={b}>{b} хв</option>)}
+            </select>
+          </label>
+          <span className="st-total">Разом: <b>{totalDur} хв</b>{buffer > 0 ? <> + {buffer} буфер</> : null} · {rows.length} {rows.length === 1 ? "дослідження" : "досл."}</span>
           <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
           <button className="btn btn-primary" disabled={!valid} onClick={save}>✓ Зберегти дослідження</button>
         </div>

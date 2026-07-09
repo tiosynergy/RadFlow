@@ -4,9 +4,10 @@
    Портовано з rf-shell.jsx. Кабінети — з БД, клініка/адмін — з props.
    Деякі операції (Колл-лист, Інцидент, Кабінет радіолога) — окремі етапи (disabled). */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
 import DensityControl from "@/components/DensityToggle";
 
@@ -29,6 +30,9 @@ interface SidebarProps {
   onNew?: () => void;
   incidentCount?: number;
   onBreakdown?: () => void;
+  onEmergency?: () => void;
+  emergencyActive?: boolean;
+  stoppedRoomIds?: string[]; // кабінети з активним простоєм (аварія/поломка) — підсвічуються червоним
 }
 
 function modalityLabel(m: string): string {
@@ -52,6 +56,9 @@ export default function Sidebar({
   onNew,
   incidentCount = 0,
   onBreakdown,
+  onEmergency,
+  emergencyActive = false,
+  stoppedRoomIds = [],
 }: SidebarProps) {
   const router = useRouter();
   const isAdmin = roleKey === "admin";
@@ -61,6 +68,25 @@ export default function Sidebar({
   // бачить посилання на дашборд. На сторінці адміна прямого посилання немає —
   // керування центрами адмін відкриває з Майстра налаштувань.
   const [hasCeoGrant, setHasCeoGrant] = useState(false);
+  // Лічильник листа очікування (RLS сам обмежує видимість клінікою користувача).
+  // Live: realtime-підписка на waitlist_entries (без фільтра — RLS віддає лише
+  // видимі рядки), щоб бейдж не розходився зі списком після додавання/зняття.
+  const [waitCount, setWaitCount] = useState(0);
+  const loadWaitCount = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const { count } = await supabase
+        .from("waitlist_entries")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "waiting");
+      setWaitCount(count ?? 0);
+    } catch { /* транзієнтний збій мережі — лишаємо попереднє значення */ }
+  }, []);
+  useEffect(() => { loadWaitCount(); }, [loadWaitCount]);
+  useRealtimeRefetch({
+    channelName: "sb-waitlist-badge",
+    subscriptions: [{ table: "waitlist_entries", onChange: loadWaitCount }],
+  });
   useEffect(() => {
     if (isAdmin || isCeo) return; // адмін — не показуємо; ceo й так на /ceo
     let active = true;
@@ -100,10 +126,12 @@ export default function Sidebar({
           </button>
           {(rooms || []).map((r) => (
             <button type="button" key={r.id} onClick={() => onSelectRoom && onSelectRoom(r.id)}
-              className={"sb-cab" + (activeRoom === r.id ? " active" : "")} style={{ width: "100%", textAlign: "left", border: "none", cursor: "pointer" }}>
+              className={"sb-cab" + (activeRoom === r.id ? " active" : "") + (stoppedRoomIds.includes(r.id) ? " stopped" : "")}
+              title={stoppedRoomIds.includes(r.id) ? "Кабінет зупинено (простій)" : undefined}
+              style={{ width: "100%", textAlign: "left", border: "none", cursor: "pointer" }}>
               <span className={"sb-cab-tile " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
               <span className="sb-cab-meta">
-                <span className="sb-cab-name">{r.name}</span>
+                <span className="sb-cab-name">{stoppedRoomIds.includes(r.id) ? "🛑 " : ""}{r.name}</span>
                 <span className="sb-cab-model">{r.apparatus_model || ""}</span>
               </span>
             </button>
@@ -118,12 +146,26 @@ export default function Sidebar({
             <span className="sb-item-lab">Новий запис</span>
           </button>
           <a href="/call-list" className={"sb-item" + (activeNav === "calls" ? " active" : "")}><span className="ic">☎</span><span className="sb-item-lab">Колл-лист</span></a>
+          <a href="/waitlist" className={"sb-item" + (activeNav === "waitlist" ? " active" : "")}>
+            <span className="ic">⏳</span>
+            <span className="sb-item-lab">Лист очікування</span>
+            {waitCount ? <span className="sb-badge">{waitCount}</span> : null}
+          </a>
           {isAdmin && <a href="/referral" className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span></a>}
           <button type="button" onClick={() => onBreakdown && onBreakdown()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">⚠</span>
             <span className="sb-item-lab">Інциденти</span>
             {incidentCount ? <span className="sb-badge sb-badge-red">{incidentCount}</span> : null}
           </button>
+          {onEmergency && (
+            <button type="button" onClick={() => onEmergency()} aria-pressed={emergencyActive}
+              className={"sb-item sb-emergency" + (emergencyActive ? " on" : "")} style={{ width: "100%", textAlign: "left", cursor: "pointer" }}
+              title={emergencyActive ? "Аварія активна — відкрити, щоб відновити роботу" : "Аварійно зупинити роботу кабінетів"}>
+              <span className="ic">🛑</span>
+              <span className="sb-item-lab">Аварійна зупинка</span>
+              {emergencyActive && <span className="sb-badge sb-badge-red">СТОП</span>}
+            </button>
+          )}
         </div>
       </nav>
 

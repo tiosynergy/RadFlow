@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { requireRole } from "@/lib/apiAuth";
 import type { TablesUpdate } from "@/supabase/types";
 
 // POST /api/referral/access/decide
@@ -12,16 +12,11 @@ import type { TablesUpdate } from "@/supabase/types";
 //   • update (налаштування active) → лише АДМІН центру (policy/room_ids/note)
 // body: { access_id, decision: 'approve'|'decline'|'revoke'|'update', policy?, room_ids?, note? }
 export async function POST(req: Request) {
-  if (!isAdminConfigured()) {
-    return NextResponse.json({ error: "SUPABASE_SERVICE_ROLE_KEY не налаштовано на сервері (.env.local)" }, { status: 500 });
-  }
-
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Не авторизовано" }, { status: 401 });
-
-  const { data: me } = await supabase.from("profiles").select("clinic_id, role").eq("id", user.id).single();
-  if (!me) return NextResponse.json({ error: "Профіль не знайдено" }, { status: 403 });
+  // allowed=null: достатньо авторизованого користувача з профілем; конкретне
+  // право (адмін центру / сам направник) перевіряється нижче per-row.
+  const gate = await requireRole(null);
+  if (!gate.ok) return gate.res;
+  const { user, me } = gate;
 
   const body = await req.json().catch(() => ({}));
   const accessId = String(body.access_id || "").trim();

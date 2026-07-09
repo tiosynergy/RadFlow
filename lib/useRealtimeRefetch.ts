@@ -143,7 +143,6 @@ export function useRealtimeRefetch({
       debouncers.forEach((t) => clearTimeout(t));
       if (channel) supabase.removeChannel(channel);
     };
-    // subscriptions намеренно вне зависимостей — через subsRef.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // subscriptions намеренно вне зависимостей — через subsRef (ref стабилен).
   }, [channelName, debounceMs]);
 }

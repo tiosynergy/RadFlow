@@ -10,11 +10,12 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import type { Json } from "@/supabase/types";
+import { BUFFER_DEFAULT } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
-type EntryRow = { id: string; status: string; duration_min: number | null; studies: Json; room_id: string | null; scheduled_date: string | null; patient_name: string | null };
+type EntryRow = { id: string; status: string; duration_min: number | null; buffer_time_min: number | null; studies: Json; room_id: string | null; scheduled_date: string | null; patient_name: string | null };
 type WeekRow = { id: string; status: string; scheduled_date: string | null };
 type StudyLike = { price?: number; region?: string; contrast?: boolean; type?: string };
 type RevenueEntry = { studies?: unknown; note?: string | null };
@@ -131,7 +132,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       setRooms(rdata || []);
       const { data } = await supabase
         .from("queue_entries")
-        .select("id, status, duration_min, studies, room_id, scheduled_date, patient_name")
+        .select("id, status, duration_min, buffer_time_min, studies, room_id, scheduled_date, patient_name")
         .in("clinic_id", clinicIds).neq("status", "cancelled")
         .gte("scheduled_date", dateKey(f)).lte("scheduled_date", dateKey(t));
       setEntries(data || []);
@@ -173,7 +174,8 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
 
   const workdays = Math.max(1, workdaysBetween(from, to < today0() ? to : today0()));
   const capacityMin = (rooms || []).length * 480 * workdays;
-  const bookedMin = entries.filter((e) => e.status !== "no_show" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0), 0);
+  // Ефективна зайнятість = тривалість + буфер (буфер теж споживає ємність кабінету).
+  const bookedMin = entries.filter((e) => e.status !== "no_show" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
   const util = capacityMin ? Math.min(100, Math.round((bookedMin / capacityMin) * 100)) : 0;
   const utilColor = util > 70 ? "var(--green)" : util >= 50 ? "var(--orange)" : "var(--red)";
 
@@ -198,7 +200,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
 
   /* завантаженість по апаратах */
   const roomUtil = (rooms || []).map((r) => {
-    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0), 0);
+    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
     const cap = 480 * workdays;
     return { name: r.name, kind: modalityLabel(r.modality), pct: cap ? Math.min(100, Math.round((mins / cap) * 100)) : 0, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)" };
   });

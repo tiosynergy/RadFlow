@@ -221,6 +221,7 @@ export default function BreakdownModal({ rooms, incidents = [], overrides = {}, 
   const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
   const breakdownInc = roomIncidents.find((i) => i.reason === "breakdown");
   const maintenanceInc = roomIncidents.find((i) => i.reason === "maintenance");
+  const emergencyInc = roomIncidents.find((i) => i.reason === "emergency");
 
   return (
     <div className="overlay">
@@ -241,6 +242,15 @@ export default function BreakdownModal({ rooms, incidents = [], overrides = {}, 
               ))}
             </div>
           </div>
+
+          {emergencyInc && (
+            <div style={{ border: "1px solid var(--red)", borderRadius: 12, padding: 14, background: "var(--red-bg)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 16 }}>🛑</span>
+              <b style={{ color: "var(--red)" }}>Аварійна зупинка</b>
+              <span style={{ flex: 1, fontSize: 13 }}>Активна з <b>{fmtDT(emergencyInc.started_at)}</b> — до зʼясування обставин</span>
+              <button className="btn btn-secondary btn-sm" onClick={() => onResolve(emergencyInc.id)}>🔓 Розблокувати</button>
+            </div>
+          )}
 
           <BreakdownSection key={"b-" + roomId + "-" + (breakdownInc?.id || "new")} roomId={roomId} room={room} existing={breakdownInc} others={maintenanceInc ? [maintenanceInc] : []} onSave={onSubmit} onResolve={onResolve} overrides={overrides} />
           <MaintenanceSection key={"m-" + roomId + "-" + (maintenanceInc?.id || "new")} roomId={roomId} existing={maintenanceInc} others={breakdownInc ? [breakdownInc] : []} onSave={onSubmit} onResolve={onResolve} />

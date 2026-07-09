@@ -15,13 +15,18 @@
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate } from "@/supabase/types";
+import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
+import { normPriority, type PatientPriority } from "@/lib/priority";
+import { deliverPendingOutbox } from "@/lib/outbox";
 
 export type QueueActionResult =
-  | { ok: true }
+  | { ok: true; id?: string } // id — створений запис (createBooking/createReferralBooking)
   | {
       ok: false;
       error: string;
-      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "generic";
+      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "stale" | "generic";
+      // Для code='stale' (H-2): реальный статус на сервере, чтобы доска ресинкнулась.
+      currentStatus?: QueueStatus;
     };
 
 // clinic_id текущего пользователя берём с сервера (не доверяем клиенту) — нужно
@@ -43,13 +48,18 @@ const ALLOWED_STATUSES: readonly QueueStatus[] = [
   "not_held",
 ];
 
-// Распознаём нарушения БД-инвариантов по тексту ошибки и отдаём код клиенту,
-// чтобы он показал локализованное сообщение (укр. строки живут в компоненте).
-function classifyError(message: string, status?: QueueStatus): QueueActionResult {
-  if (status === "in_progress" && /in_progress|duplicate|23505/i.test(message)) {
+// Распознаём нарушения БД-инвариантов и отдаём код клиенту (укр. строки живут
+// в компоненте). L-3: приоритет — по SQLSTATE (error.code), надёжнее текста:
+//   23505 unique_violation → «один in_progress на кабинет» (частичный uniq idx 0018);
+//   23P01 exclusion_violation → перекрытие слота / простой (триггеры 0014/0020).
+// Текстовый разбор оставлен как fallback (на случай иной обёртки ошибки).
+function classifyError(err: { code?: string; message?: string }, status?: QueueStatus): QueueActionResult {
+  const code = err?.code ?? "";
+  const message = err?.message ?? "";
+  if (status === "in_progress" && (code === "23505" || /in_progress|duplicate|23505/i.test(message))) {
     return { ok: false, error: message, code: "room_busy" };
   }
-  if (/overlap|exclusion|incident/i.test(message)) {
+  if (code === "23P01" || /overlap|exclusion|incident/i.test(message)) {
     return { ok: false, error: message, code: "slot_unavailable" };
   }
   return { ok: false, error: message, code: "generic" };
@@ -61,7 +71,13 @@ function classifyError(message: string, status?: QueueStatus): QueueActionResult
  */
 export async function setQueueEntryStatus(
   id: string,
-  status: QueueStatus
+  status: QueueStatus,
+  // H-2: ожидаемый текущий статус (тот, что видит оператор на доске). Если задан —
+  // делаем CAS через .eq("status", expectedFrom): при устаревшем состоянии
+  // (коллега уже сменил статус) обновятся 0 строк → отдаём code='stale', а не
+  // тихо перетираем чужой переход (last-write-wins). Необязателен → обратная
+  // совместимость: без него поведение прежнее.
+  expectedFrom?: QueueStatus
 ): Promise<QueueActionResult> {
   if (!id || typeof id !== "string") return { ok: false, error: "Невірний ідентифікатор запису", code: "generic" };
   if (!ALLOWED_STATUSES.includes(status)) return { ok: false, error: "Невідомий статус", code: "generic" };
@@ -75,15 +91,23 @@ export async function setQueueEntryStatus(
       ? { status, in_progress_at: new Date().toISOString() }
       : { status };
 
-  const { data, error } = await supabase
-    .from("queue_entries")
-    .update(patch)
-    .eq("id", id)
-    .select("id");
+  let q = supabase.from("queue_entries").update(patch).eq("id", id);
+  if (expectedFrom) q = q.eq("status", expectedFrom); // CAS
+  const { data, error } = await q.select("id");
 
-  if (error) return classifyError(error.message, status);
+  if (error) return classifyError(error, status);
   // RLS не отдаёт ошибку, а молча обновляет 0 строк, если нет доступа/записи.
-  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  if (!data || data.length === 0) {
+    // С CAS 0 строк может означать «статус уже изменился» — отличаем от forbidden.
+    if (expectedFrom) {
+      const { data: cur } = await supabase.from("queue_entries").select("status").eq("id", id).maybeSingle();
+      if (cur) {
+        if (cur.status === status) return { ok: true }; // кто-то уже применил тот же переход — идемпотентно
+        return { ok: false, error: "Стан змінився — оновіть дошку", code: "stale", currentStatus: cur.status as QueueStatus };
+      }
+    }
+    return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  }
   return { ok: true };
 }
 
@@ -238,6 +262,69 @@ export async function submitIncident(input: IncidentInput): Promise<IncidentActi
   return { ok: true, status };
 }
 
+/* ===== Аварійна зупинка (emergency stop) =====
+   Блокує один/кілька/усі кабінети до з'ясування обставин: створює інциденти
+   reason='emergency' (той самий механізм блокування, що поломка), переводить
+   пацієнта «у кабінеті» в not_held, позначає постраждалих ЦЬОГО дня на обдзвон
+   (call_status='to_recall'). Подія в n8n пишеться в event_outbox ТРАНЗАКЦІЙНО
+   всередині RPC (0055) і доставляється надійно (H-1). «Відновлення» роботи —
+   resolveEmergency (знімає всі активні аварійні інциденти). */
+
+export type EmergencyResult =
+  | { ok: true; stopped: number; affected: number }
+  | { ok: false; error: string; code?: "forbidden" | "auth" | "generic" };
+
+/** Аварійно зупинити роботу обраних кабінетів + обдзвон постраждалих ЦЬОГО дня. */
+export async function emergencyStop(input: { roomIds: string[]; note?: string | null; date: string }): Promise<EmergencyResult> {
+  const roomIds = Array.from(new Set((input?.roomIds || []).filter(Boolean)));
+  if (!roomIds.length) return { ok: false, error: "Не обрано кабінети", code: "generic" };
+  if (!input?.date) return { ok: false, error: "Не вказано дату", code: "generic" };
+
+  const supabase = await createClient();
+  const clinicId = await callerClinicId(supabase);
+  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  // Кроки 1–4 (інциденти → обдзвон → not_held → подія в event_outbox)
+  // виконуються АТОМАРНО в одній транзакції через RPC emergency_stop_rpc
+  // (0054/0055). Ізоляція по клініці — всередині RPC.
+  const { data, error } = await supabase.rpc("emergency_stop_rpc", {
+    p_room_ids: roomIds,
+    p_date: input.date,
+    p_note: input.note ?? null,
+  });
+  if (error) {
+    const code = /28000|не авторизовано/i.test(error.message) ? "auth" : "generic";
+    return { ok: false, error: error.message, code };
+  }
+  const res = Array.isArray(data) ? data[0] : data;
+
+  // Негайна best-effort доставка події в n8n. Подія вже durable в event_outbox
+  // (записана транзакційно в RPC), тож якщо доставка тут не вдасться —
+  // cron-воркер /api/outbox/deliver добере її з ретраями (H-1).
+  try { await deliverPendingOutbox(20); } catch { /* backstop — cron */ }
+
+  return { ok: true, stopped: res?.stopped ?? 0, affected: res?.affected ?? 0 };
+}
+
+export type ResolveEmergencyResult =
+  | { ok: true; resolved: number }
+  | { ok: false; error: string; code?: "auth" | "generic" };
+
+/** Відновити роботу: зняти активні аварійні інциденти (усі або обрані кабінети). */
+export async function resolveEmergency(input?: { roomIds?: string[] }): Promise<ResolveEmergencyResult> {
+  const supabase = await createClient();
+  const clinicId = await callerClinicId(supabase);
+  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  let q = supabase.from("incidents")
+    .update({ status: "resolved", resolved_at: new Date().toISOString() })
+    .eq("clinic_id", clinicId).eq("reason", "emergency").eq("status", "active");
+  if (input?.roomIds?.length) q = q.in("room_id", input.roomIds);
+  const { data, error } = await q.select("id");
+  if (error) return { ok: false, error: error.message, code: "generic" };
+  return { ok: true, resolved: data?.length ?? 0 };
+}
+
 // Мягкая пред-проверка пересечения слота (жёсткую гарантию даёт DB-триггер
 // check_no_overlap). startMin/endMin — минуты от начала суток.
 async function hasSlotClash(
@@ -250,7 +337,7 @@ async function hasSlotClash(
 ): Promise<boolean> {
   const { data } = await supabase
     .from("queue_entries")
-    .select("id, scheduled_time, duration_min")
+    .select("id, scheduled_time, duration_min, buffer_time_min")
     .eq("room_id", roomId)
     .eq("scheduled_date", scheduledDate)
     .neq("status", "cancelled")
@@ -260,10 +347,14 @@ async function hasSlotClash(
     if (excludeId && q.id === excludeId) return false;
     const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
     const qs = (qh || 0) * 60 + (qm || 0);
-    return qs < endMin && startMin < qs + (q.duration_min || 30);
+    // Ефективна зайнятість наявного запису = тривалість + його буфер.
+    return qs < endMin && startMin < qs + (q.duration_min || 30) + (q.buffer_time_min ?? BUFFER_DEFAULT);
   });
 }
 
+// L-3: здесь текст ОСТАВЛЕН намеренно — «простой» (INCIDENT, триггер 0020) и
+// «перекрытие» (OVERLAP, триггер 0014) оба поднимаются с одним SQLSTATE 23P01,
+// поэтому различить incident/slot_unavailable можно только по сообщению.
 function mapBookingError(message: string): QueueActionResult {
   if (/incident/i.test(message)) return { ok: false, error: message, code: "incident" };
   if (/overlap|exclusion/i.test(message)) return { ok: false, error: message, code: "slot_unavailable" };
@@ -334,7 +425,9 @@ export type RescheduleInput = {
   scheduledTime: string;
   scheduledAt: string;
   durationMin: number;
+  bufferTimeMin?: number; // буфер переноситься разом із записом (за замовч. 5)
   callStatus?: CallStatus; // напр. колл-лист підтверджує слот при переносі
+  reason?: string; // причина переносу (обовʼязкова для «не відбулося»/неявки)
 };
 
 /** Перенос записи на другой кабинет/дату/время (с пред-проверкой пересечения). */
@@ -344,24 +437,56 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
+  // Стан ДО переносу — для довідки reschedule_origin. Перенос дослідження, що
+  // ТРИВАЄ (in_progress), дозволено: воно зупиняється (status → scheduled),
+  // кабінет одразу звільняється, а запис переноситься на новий слот (та сама
+  // запис, не копія) з поміткою про перенос (from_status='in_progress').
+  const { data: cur } = await supabase.from("queue_entries")
+    .select("status, scheduled_date, scheduled_time, room_id, clinic_id")
+    .eq("id", input.id).maybeSingle();
+  const reason = (input.reason || "").trim();
+
+  const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);
   const startMin = (hh || 0) * 60 + (mm || 0);
-  const endMin = startMin + (input.durationMin || 30);
+  const endMin = startMin + (input.durationMin || 30) + bufferMin;
   if (await hasSlotClash(supabase, input.roomId, input.scheduledDate, startMin, endMin, input.id)) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 
+  const patch: TablesUpdate<"queue_entries"> = {
+    room_id: input.roomId,
+    scheduled_date: input.scheduledDate,
+    scheduled_time: input.scheduledTime,
+    scheduled_at: input.scheduledAt,
+    duration_min: input.durationMin,
+    buffer_time_min: bufferMin,
+    status: "scheduled",
+    // Перенос = свіжий слот: скидаємо фактичний старт (важливо, якщо переносимо
+    // in_progress — щоб запис не «займав» кабінет за старим in_progress_at).
+    in_progress_at: null,
+  };
+  // call_status: направник НЕ має права його чіпати (гард 0048) — для нього
+  // колонку не оновлюємо взагалі. Персонал при перенесенні скидає підтвердження
+  // дзвінка на "not_called" (новий слот → передзвонити), або передає явне значення.
+  if (input.callStatus !== undefined) {
+    patch.call_status = input.callStatus;
+  } else {
+    const { data: prof } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
+    if (prof?.role !== "referrer") patch.call_status = "not_called";
+  }
+  // Довідка «звідки перенесено» — знімок стану до переносу + причина.
+  if (cur) {
+    patch.reschedule_origin = {
+      from_date: cur.scheduled_date, from_time: cur.scheduled_time,
+      from_room: cur.room_id, from_clinic: cur.clinic_id, from_status: cur.status,
+      reason: reason || null, at: new Date().toISOString(),
+    } as unknown as Json;
+  }
+
   const { data, error } = await supabase
     .from("queue_entries")
-    .update({
-      room_id: input.roomId,
-      scheduled_date: input.scheduledDate,
-      scheduled_time: input.scheduledTime,
-      scheduled_at: input.scheduledAt,
-      duration_min: input.durationMin,
-      status: "scheduled",
-      call_status: input.callStatus ?? "not_called",
-    })
+    .update(patch)
     .eq("id", input.id)
     .select("id");
 
@@ -374,7 +499,8 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
 export async function editQueueEntryStudies(
   id: string,
   studies: Json,
-  durationMin: number
+  durationMin: number,
+  bufferTimeMin?: number
 ): Promise<QueueActionResult> {
   if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
   const supabase = await createClient();
@@ -385,13 +511,24 @@ export async function editQueueEntryStudies(
     ? studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
     : false;
 
+  // Хто редагує склад досліджень: направник → 'referrer', персонал → 'clinic'.
+  // Дошки підписують зміну відповідно й синхронізуються realtime.
+  const { data: prof } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
+  const changedBy = prof?.role === "referrer" ? "referrer" : "clinic";
+
+  // Буфер оновлюємо лише якщо переданий (редактор досліджень може його змінювати).
+  const patch: TablesUpdate<"queue_entries"> = { studies, duration_min: durationMin, has_contrast: hasContrast, studies_changed_by: changedBy };
+  if (bufferTimeMin != null) patch.buffer_time_min = normBuffer(bufferTimeMin);
+
   const { data, error } = await supabase
     .from("queue_entries")
-    .update({ studies, duration_min: durationMin, has_contrast: hasContrast })
+    .update(patch)
     .eq("id", id)
     .select("id");
 
-  if (error) return { ok: false, error: error.message, code: "generic" };
+  // Збільшення тривалості/буфера може перетнути наступний запис — DB-тригер
+  // check_no_overlap відхилить; класифікуємо, щоб UI показав локалізовану причину.
+  if (error) return mapBookingError(error.message);
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
   return { ok: true };
 }
@@ -407,11 +544,12 @@ export type BookingInput = {
   age?: number | null;
   weight?: number | null;
   hasContra?: boolean;
-  cito?: boolean;
+  priorityLevel?: PatientPriority;
   studies: Json;
   doctor?: string | null;
   notes?: string | null;
   durationMin: number;
+  bufferTimeMin?: number;
   scheduledDate: string;
   scheduledTime: string;
   scheduledAt: string;
@@ -426,9 +564,10 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
+  const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);
   const startMin = (hh || 0) * 60 + (mm || 0);
-  const endMin = startMin + (input.durationMin || 30);
+  const endMin = startMin + (input.durationMin || 30) + bufferMin;
   if (await hasSlotClash(supabase, input.roomId, input.scheduledDate, startMin, endMin)) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
@@ -437,7 +576,7 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
     ? input.studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
     : false;
 
-  const { error } = await supabase.from("queue_entries").insert({
+  const { data: created, error } = await supabase.from("queue_entries").insert({
     clinic_id: clinicId,
     room_id: input.roomId,
     created_by: user.id,
@@ -450,22 +589,23 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
     patient_age: input.age ?? null,
     patient_weight: input.weight ?? null,
     contraindications: !!input.hasContra,
-    cito: !!input.cito,
+    priority_level: normPriority(input.priorityLevel),
     has_contrast: hasContrast,
     studies: input.studies,
     studies_original: input.studies,
     doctor: input.doctor ?? null,
     note: input.notes ?? null,
     duration_min: input.durationMin,
+    buffer_time_min: bufferMin,
     scheduled_date: input.scheduledDate,
     scheduled_time: input.scheduledTime,
     scheduled_at: input.scheduledAt,
     status: "scheduled",
     call_status: "not_called",
-  });
+  }).select("id").single();
 
   if (error) return mapBookingError(error.message);
-  return { ok: true };
+  return { ok: true, id: created?.id };
 }
 
 /** Заметка радіолога (radiologist_note). */
@@ -509,7 +649,44 @@ export async function updatePatientDetails(id: string, patch: TablesUpdate<"queu
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
-  const { data, error } = await supabase.from("queue_entries").update(patch).eq("id", id).select("id");
+  // Пріоритет змінюється ЛИШЕ через setQueuePriority (з перевіркою ролі) — прибираємо з generic-патча.
+  const { priority_level: _pl, cito: _cito, ...safePatch } = patch;
+  const { data, error } = await supabase.from("queue_entries").update(safePatch).eq("id", id).select("id");
+  if (error) return { ok: false, error: error.message, code: "generic" };
+  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  return { ok: true };
+}
+
+/**
+ * Змінити пріоритет пацієнта у вже створеній записі.
+ * Дозволено ЛИШЕ: адміністратору клініки АБО направнику-власнику запису
+ * (referrer_id = auth.uid()). Реєстратор/радіолог — заборонено (403).
+ * Тригер БД синхронізує булевий cito = (priority_level='cito').
+ */
+export async function setQueuePriority(id: string, priority: PatientPriority): Promise<QueueActionResult> {
+  if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
+  const level = normPriority(priority);
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  // Хто редагує: роль + чи це власна запис направника.
+  const [{ data: profile }, { data: entry }] = await Promise.all([
+    supabase.from("profiles").select("role").eq("id", user.id).maybeSingle(),
+    supabase.from("queue_entries").select("referrer_id").eq("id", id).maybeSingle(),
+  ]);
+  if (!entry) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  const isAdmin = profile?.role === "admin";
+  const isOwnerReferrer = entry.referrer_id != null && entry.referrer_id === user.id;
+  if (!isAdmin && !isOwnerReferrer) {
+    return { ok: false, error: "Змінювати пріоритет може адміністратор або лікар-направник", code: "forbidden" };
+  }
+
+  const { data, error } = await supabase
+    .from("queue_entries")
+    .update({ priority_level: level })
+    .eq("id", id)
+    .select("id");
   if (error) return { ok: false, error: error.message, code: "generic" };
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
   return { ok: true };
@@ -526,11 +703,12 @@ export type ReferralBookingInput = {
   age?: number | null;
   weight?: number | null;
   hasContra?: boolean;
-  cito?: boolean;
+  priorityLevel?: PatientPriority;
   studies: Json;
   doctorName?: string | null;
   note?: string | null;
   durationMin: number;
+  bufferTimeMin?: number;
   scheduledDate: string;
   scheduledTime: string;
   scheduledAt: string;
@@ -556,9 +734,10 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
   const roomAllowed = !access.room_ids || access.room_ids.length === 0 || access.room_ids.includes(input.roomId);
   if (!roomAllowed) return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
 
+  const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);
   const startMin = (hh || 0) * 60 + (mm || 0);
-  const endMin = startMin + (input.durationMin || 30);
+  const endMin = startMin + (input.durationMin || 30) + bufferMin;
   if (await hasSlotClash(supabase, input.roomId, input.scheduledDate, startMin, endMin)) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
@@ -567,7 +746,7 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
     ? input.studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
     : false;
 
-  const { error } = await supabase.from("queue_entries").insert({
+  const { data: created, error } = await supabase.from("queue_entries").insert({
     clinic_id: input.clinicId,
     room_id: input.roomId,
     created_by: user.id,
@@ -580,7 +759,7 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
     patient_age: input.age ?? null,
     patient_weight: input.weight ?? null,
     contraindications: !!input.hasContra,
-    cito: !!input.cito,
+    priority_level: normPriority(input.priorityLevel),
     has_contrast: hasContrast,
     studies: input.studies,
     studies_original: input.studies,
@@ -588,13 +767,14 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
     note: input.note ?? null,
     indication: input.note ?? null,
     duration_min: input.durationMin,
+    buffer_time_min: bufferMin,
     scheduled_date: input.scheduledDate,
     scheduled_time: input.scheduledTime,
     scheduled_at: input.scheduledAt,
     status: "scheduled",
     call_status: "not_called",
-  });
+  }).select("id").single();
 
   if (error) return mapBookingError(error.message);
-  return { ok: true };
+  return { ok: true, id: created?.id };
 }
