@@ -2,7 +2,8 @@
 
 Context for an AI agent (Claude Code / Cowork) continuing work on RadFlow. Read this first,
 together with the memory files (`MEMORY.md`, and especially `TODO.md`),
-`docs/PRODUCT_OVERVIEW.md`, and `docs/audit/FULL_AUDIT_2026-06-25.md`.
+`docs/PRODUCT_OVERVIEW.md`, `docs/audit/FULL_AUDIT_2026-06-25.md`, and the latest
+`docs/audit/DATA_ARCHITECTURE_AUDIT_2026-07-08.md` + `docs/audit/BACKLOG_RESIDUAL.md`.
 
 You are a Senior Full-Stack Engineer on RadFlow — a multi-tenant SaaS for radiology queue
 management.
@@ -52,10 +53,12 @@ management.
   and authorizes by the access grant, not the profile's `clinic_id`.
 
 ## Migrations
-- Applied to prod MANUALLY via the Supabase SQL editor (no automated migration runner).
-- Prod migrations **0001–0052 ALL APPLIED** (highest is `0052_studies_changed_by.sql`). The next
-  new migration is **0053**. ALWAYS check the highest existing migration number before adding a new
-  one and number it sequentially (a duplicate/lower number is a bug).
+- Applied to prod MANUALLY via the Supabase SQL editor (no automated migration runner). A Vercel
+  deploy does NOT run them — apply the SQL first, then merge `dev → main`.
+- Prod migrations **0001–0060 ALL APPLIED** (verified 2026-07-09; highest is
+  `0060_in_progress_actual_occupancy.sql`). The next new migration is **0061**. ALWAYS check the
+  highest existing migration number before adding a new one and number it sequentially (a
+  duplicate/lower number is a bug).
 - Keep migrations idempotent (`do $$ … exception when duplicate_object …$$`, `create … if not
   exists`, `drop policy if exists` before `create policy`).
 
@@ -105,21 +108,57 @@ management.
     label "змінено клінікою/направником", synced via realtime. Admin queue shows the referrer
     (`referrer:referrer_id(full_name)`); "⚠ Протипоказання" shown at the "Дослідження" label level.
   - Test data seeder `scripts/seed-test-data.mjs` updated (roles, breaks-aware, waitlist per room).
+- **Release 2026-07-09 (prod at 0060, deployed to `main`):**
+  - Data-architecture audit fixes: `0053` lightweight `audit_log` (queue_entries + incidents);
+    `0054` `emergency_stop_rpc` (transactional emergency stop); `0055` transactional `event_outbox`
+    (payload + HMAC + idempotency-key, for reliable n8n delivery); `0056` incidents integrity
+    (CHECK + VALIDATE); CAS status transitions (`expectedFrom` optimistic concurrency, threaded from
+    boards); `requireRole()` helper unifying service-role route guards; `classifyError` by SQLSTATE.
+  - `0057` **referrer edit rights EXPANDED** — RLS `queue_write_referrer` allows write when
+    `created_by = auth.uid()` OR `referrer_id = auth.uid()` (`FOR ALL`). So a referrer edits both
+    entries they created AND entries where the admin named them as referrer. (This REVERSED an earlier
+    guard idea — do not re-add a block.)
+  - `0058` auto-clarify: `queue_entries.clarify_at` + RPC `sink_overdue_scheduled` / `_all` — overdue
+    `scheduled` entries get flagged and sink down. Boards call `sink_overdue_scheduled` (per-clinic)
+    fire-and-forget on every reload; headless backstop `/api/queue/sink-overdue` (CRON_SECRET).
+  - `0059` **universal timezone**: `clinics.timezone` (IANA). Wall-as-UTC canon (0035) unchanged;
+    TZ only supplies "current wall moment of the clinic zone". Client helpers in `lib/incidents.ts`:
+    `wallNow(tz)`, `wallInstant`, `wallMinOfDay`, `wallMinOfInstant`, `setClinicTz`/`getClinicTz`
+    (module-level default for single-clinic screens; multi-clinic screens pass `nowMs=wallNow(tz)`).
+    `lib/queueStatus.ts` (`isLate`/`needsClarification`/`computeCallBlock`/`lateCallClash`) takes
+    `nowMs`. Do NOT hardcode `Europe/Kiev`.
+  - `0060` in_progress ACTUAL occupancy: `room_busy_slots`/`check_no_overlap` compute an in-progress
+    study's window from `in_progress_at` (real start), not the planned slot; zone validated via
+    `pg_timezone_names`.
+  - Bug fixes: call blocked for entries not on the selected day (`computeCallBlock` `wrong_day`);
+    reschedule of an `in_progress` study is now ALLOWED (study stops → `scheduled`, `in_progress_at`
+    nulled, SAME entry moves, `reschedule_origin.from_status='in_progress'`).
+  - QA polish: custom dark `app/not-found.tsx`; slot-grid loading-gate in all booking/reschedule
+    modals; "оберіть область" placeholder; call-list stat skeleton.
+  - **Deploy note:** Vercel is on the **Hobby plan** (crons daily-only). The every-minute cron was
+    REMOVED from `vercel.json` (it blocked the deploy); `vercel.json` now only carries `$schema`.
+    Re-add a cron only when upgrading to Pro.
 
 ## Open work — see `TODO.md` for the live list
 - Run `npm run typecheck` (== `tsc --noEmit`) and `npm run lint` (== `eslint .`). Note: bare `tsc`
   is NOT on PATH — use `npx` or the npm script.
-- **Stage-2 (n8n + AI):** first live hook is the emergency `emergency_stop` webhook; next up —
-  smart waitlist rotation, predictive no-show, schedule optimization (inputs already modeled:
+- **Stage-2 (n8n + AI):** delivery infra now exists — `emergency_stop` webhook + transactional
+  `event_outbox` (0055, HMAC + idempotency-key) + `audit_log` (0053). Next up — smart waitlist
+  rotation, predictive no-show, schedule optimization, and queue-collision handling when an
+  overrunning `in_progress` study overlaps the next slot (options discussed: cascade-shift the room
+  tail / reschedule to next free slot / move to a parallel room / recall). Inputs already modeled:
   `waitlist_status`, `priority_level`, `buffer_time_min`, `desired_*`, `room_id`, `isLate`,
-  `waitlistMatchesSlot()`, `reschedule_origin`, `studies_changed_by`).
+  `clarify_at`, `waitlistMatchesSlot()`, `reschedule_origin`, `studies_changed_by`, `clinics.timezone`.
 - Referrer password recovery via email — deferred until a real domain + SMTP exist.
-- Polish/tech-debt: RadiologistBoard "· змінено" lacks `studies_changed_by` attribution (its select
-  omits the column); ReferrerBoard's in-board room `<select>` still lists ALL clinic rooms (not the
-  referrer's `room_ids`); one stray unused `eslint-disable` in `lib/useRealtimeRefetch.ts`.
+- **Security:** rotate the `SUPABASE_SERVICE_ROLE_KEY` (was exposed in a screenshot) — reset in
+  Supabase, update the Vercel env var, redeploy.
+- Coverage gaps from the last QA pass: multi-role live testing (Radiologist/CEO/real Referrer logins)
+  and mobile/tablet responsiveness — need test accounts + real-device verification.
 
   (DONE, do not reopen: ESLint configured; admin-reset for referrers — fixed; RPC `ceo_list_for_clinic`
-  — 0044; `computeCallBlock` extraction; `room_busy_slots` in reschedule/study modals.)
+  — 0044; `computeCallBlock` extraction; `room_busy_slots` in reschedule/study modals; RadiologistBoard
+  `studies_changed_by` attribution; ReferrerBoard room filter by `room_ids`; stray `eslint-disable`
+  removed; reschedule-of-in_progress; universal timezone.)
 
 ## Environment & workflow notes
 - The isolated Linux sandbox/bash may be unavailable (disk space) — prefer file tools.
