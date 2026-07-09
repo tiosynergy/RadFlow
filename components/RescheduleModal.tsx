@@ -8,7 +8,7 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFor, roomBreaksFor, overlapsBreak, type DayOverride } from "@/lib/schedule";
-import { incidentEffectiveEnd, type IncidentLike } from "@/lib/incidents";
+import { incidentEffectiveEnd, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
 
@@ -22,6 +22,7 @@ interface RescheduleModalProps {
   patient: ReschedulePatient;
   rooms?: RoomOpt[];
   clinicId?: string | null;
+  clinicTz?: string | null; // TZ центру запису (для «зараз» у мультиклінічному порталі)
   incidents?: IncidentLike[];
   onClose: () => void;
   onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) => void;
@@ -38,7 +39,7 @@ function procLabel(e: { studies?: unknown; note?: string | null }) {
   return e.note || "—";
 }
 
-export default function RescheduleModal({ patient, rooms, clinicId, incidents = [], onClose, onConfirm }: RescheduleModalProps) {
+export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, incidents = [], onClose, onConfirm }: RescheduleModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const curRoom = (rooms || []).find((r) => r.id === patient.room_id);
   const modality = curRoom ? curRoom.modality : "MRI";
@@ -80,10 +81,13 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
   }, [roomId, dateStr, patient.id, clinicId]);
 
   const busy = dayEntries.filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) + (e.buffer_time_min ?? BUFFER_DEFAULT) }));
-  const today = new Date(); today.setHours(0, 0, 0, 0);
   const dateObj = new Date(dateStr + "T00:00:00");
-  const isToday = dateObj.getTime() === today.getTime();
-  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+  // «Зараз» у настінному часі клініки (wall-as-UTC мс): і хвилини доби, і «сьогодні».
+  const _nowW = wallNow(clinicTz || undefined);
+  const nowMin = wallMinOfDay(_nowW);
+  const _nowD = new Date(_nowW);
+  const clinicTodayStr = _nowD.getUTCFullYear() + "-" + String(_nowD.getUTCMonth() + 1).padStart(2, "0") + "-" + String(_nowD.getUTCDate()).padStart(2, "0");
+  const isToday = dateStr === clinicTodayStr;
   const roomSched = roomScheduleFor(dateObj, roomId, override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
   const roomBreaks = roomBreaksFor(dateObj, roomSchedule); // перерви кабінету на цю дату
@@ -144,7 +148,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, incidents = 
           </div>
           <div className="fld-row">
             <label className="fld" style={{ maxWidth: 180 }}><span className="fld-lab">Дата</span>
-              <input className="inp tabular" type="date" min={dateVal(today)} value={dateStr} onChange={(e) => { setDateStr(e.target.value); setTime(""); }} /></label>
+              <input className="inp tabular" type="date" min={clinicTodayStr} value={dateStr} onChange={(e) => { setDateStr(e.target.value); setTime(""); }} /></label>
             <div className="fld"><span className="fld-lab">Вільні слоти · блок {dur} хв · {freeCount} вільних</span></div>
           </div>
           <div className="fld">

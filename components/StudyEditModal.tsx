@@ -10,6 +10,7 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
 import { roomScheduleFor, roomBreaksFor, type DayOverride } from "@/lib/schedule";
+import { wallNow, wallMinOfDay } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 const MIN_STUDY = 15;
@@ -24,6 +25,7 @@ interface StudyEditModalProps {
   scheduledDate?: string | null;
   rooms?: RoomOpt[];
   clinicId?: string | null;
+  clinicTz?: string | null; // TZ центру запису (мультиклінічний портал направника)
   onClose: () => void;
   onConfirm: (arr: StudyRow[], meta: { dur: number; buffer: number }) => void;
 }
@@ -33,7 +35,7 @@ function pad(n: number) { return String(n).padStart(2, "0"); }
 function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 
-export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, onClose, onConfirm }: StudyEditModalProps) {
+export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, onClose, onConfirm }: StudyEditModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const room = (rooms || []).find((r) => r.id === patient.room_id);
   const roomKind = room ? modalityLabel(room.modality) : "МРТ"; // "МРТ" | "КТ"
@@ -77,9 +79,11 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   // від ЗАРАЗ, а не від планового слота. Використовується для м'якого
   // попередження про наїзд на наступний запис (плановий check_no_overlap
   // цього не ловить, бо порівнює планові вікна).
-  const _now = new Date();
-  const nowMin = _now.getHours() * 60 + _now.getMinutes();
-  const todayStr = _now.getFullYear() + "-" + pad(_now.getMonth() + 1) + "-" + pad(_now.getDate());
+  // «Зараз» у настінному часі клініки (wall-as-UTC мс): і хвилини доби, і дата.
+  const _nowW = wallNow(clinicTz || undefined);
+  const nowMin = wallMinOfDay(_nowW);
+  const _nowD = new Date(_nowW);
+  const todayStr = _nowD.getUTCFullYear() + "-" + pad(_nowD.getUTCMonth() + 1) + "-" + pad(_nowD.getUTCDate());
   const isTodayLate = scheduledDate === todayStr && nowMin > startMin;
   const refStartMin = isTodayLate ? nowMin : startMin;
   // Кінець вікна — за графіком кабінету (з урахуванням особливого графіка),

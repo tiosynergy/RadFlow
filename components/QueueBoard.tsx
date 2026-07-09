@@ -353,6 +353,7 @@ function fmtOrigin(o: RescheduleOrigin | null | undefined, roomsById: Record<str
   const room = o.from_room ? roomsById[o.from_room] : null;
   const parts = [ [o.from_date, o.from_time].filter(Boolean).join(" "), room?.name ].filter(Boolean);
   let s = "🔁 Перенесено з " + parts.join(" · ");
+  if (o.from_status === "in_progress") s += " · перервано дослідження";
   if (o.reason) s += " · причина: " + o.reason;
   return s;
 }
@@ -532,7 +533,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                           {pb.icon} {pb.label}
                         </button>
                         {!terminal && onEditStudies && <button className="btn btn-secondary btn-sm" style={{ flex: 4, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} onClick={act(onEditStudies)}>🩻 Редагувати дослідження</button>}
-                        <button className="btn btn-secondary btn-sm" style={{ flex: 2, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} disabled={p.status === "in_progress"} onClick={act(onReschedule)} title={p.status === "in_progress" ? "Спершу завершіть дослідження або позначте «не відбулося», щоб перенести" : "Перенести на слот"}>🗓 Перенести</button>
+                        <button className="btn btn-secondary btn-sm" style={{ flex: 2, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} onClick={act(onReschedule)} title={p.status === "in_progress" ? "Зупинити дослідження та перенести на новий слот" : "Перенести на слот"}>🗓 Перенести</button>
                         <button className="btn btn-secondary btn-sm" style={{ flex: 1, minWidth: 0 }} onClick={(e) => { e.stopPropagation(); setMoreOpen((o) => !o); }} title="Більше дій">⋯</button>
                       </>
                     )}

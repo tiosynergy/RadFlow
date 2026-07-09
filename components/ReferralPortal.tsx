@@ -26,10 +26,10 @@ import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/
 import { isLate, LATE_META } from "@/lib/queueStatus";
 import type { WaitlistEntry } from "@/supabase/types";
 import { roomScheduleFor, roomBreaksFor, overlapsBreak, type DayOverride } from "@/lib/schedule";
-import { slotBlockedByIncidents, type IncidentLike } from "@/lib/incidents";
+import { slotBlockedByIncidents, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
 import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
-import { DobField, BookingCalendar, fmtShort, today0, sameDay } from "@/components/BookingModal";
+import { DobField, BookingCalendar, fmtShort, today0 } from "@/components/BookingModal";
 import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 
@@ -228,8 +228,11 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
   const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) + (e.buffer_time_min ?? BUFFER_DEFAULT) }));
   const roomBreaks = roomBreaksFor(dateObj, roomSchedule); // перерви кабінету на цю дату
-  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
-  const isBookToday = sameDay(bookDate, today0());
+  // «Зараз» у настінному часі центру (wall-as-UTC мс): і хвилини доби, і «сьогодні».
+  const _nowW = wallNow(selCenter?.timezone || undefined);
+  const nowMin = wallMinOfDay(_nowW);
+  const _nowD = new Date(_nowW);
+  const isBookToday = date === (_nowD.getUTCFullYear() + "-" + pad(_nowD.getUTCMonth() + 1) + "-" + pad(_nowD.getUTCDate()));
   const slots: string[] = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
   function slotState(slot: string) {
     // b — кінець дослідження (має вміститись у графік); bBlock — з буфером (перетин з іншими).
@@ -1158,10 +1161,10 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
       </div>
 
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={reschedRooms} clinicId={reschedFor.clinic_id} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+        <RescheduleModal patient={reschedFor} rooms={reschedRooms} clinicId={reschedFor.clinic_id} clinicTz={centersById[reschedFor.clinic_id]?.timezone} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {wlAddOpen && (
         <WaitlistModal centers={activeCenters.map((c) => ({ clinicId: c.clinicId, name: centerLabel(c) }))}

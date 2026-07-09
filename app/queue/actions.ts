@@ -437,15 +437,13 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  // Не можна переносити дослідження, що ТРИВАЄ (in_progress): спершу його треба
-  // «закрити» — завершити або позначити «не відбулося». Захист на сервері (не лише в UI).
-  // Заразом читаємо стан ДО переносу для довідки reschedule_origin.
+  // Стан ДО переносу — для довідки reschedule_origin. Перенос дослідження, що
+  // ТРИВАЄ (in_progress), дозволено: воно зупиняється (status → scheduled),
+  // кабінет одразу звільняється, а запис переноситься на новий слот (та сама
+  // запис, не копія) з поміткою про перенос (from_status='in_progress').
   const { data: cur } = await supabase.from("queue_entries")
     .select("status, scheduled_date, scheduled_time, room_id, clinic_id")
     .eq("id", input.id).maybeSingle();
-  if (cur?.status === "in_progress") {
-    return { ok: false, error: "Дослідження триває — спершу завершіть його або позначте «не відбулося», а потім переносьте", code: "forbidden" };
-  }
   const reason = (input.reason || "").trim();
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
@@ -464,6 +462,9 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
     duration_min: input.durationMin,
     buffer_time_min: bufferMin,
     status: "scheduled",
+    // Перенос = свіжий слот: скидаємо фактичний старт (важливо, якщо переносимо
+    // in_progress — щоб запис не «займав» кабінет за старим in_progress_at).
+    in_progress_at: null,
   };
   // call_status: направник НЕ має права його чіпати (гард 0048) — для нього
   // колонку не оновлюємо взагалі. Персонал при перенесенні скидає підтвердження
