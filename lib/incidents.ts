@@ -71,6 +71,27 @@ export function wallMinOfDay(ms: number): number {
   return d.getUTCHours() * 60 + d.getUTCMinutes();
 }
 
+// Минуты от начала суток настенного времени клиники для РЕАЛЬНОГО момента (ISO
+// instant, напр. in_progress_at = new Date().toISOString()). Нужно, чтобы
+// начатое (возможно с опозданием) in_progress-исследование занимало сетку слотов
+// по фактическому старту, а не по плановому scheduled_time. tz переопределяет клинику.
+export function wallMinOfInstant(iso: string | null | undefined, tz?: string): number | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const zone = tz || _clinicTz;
+  if (!zone) return d.getHours() * 60 + d.getMinutes();
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone, hourCycle: "h23", hour: "2-digit", minute: "2-digit",
+    }).formatToParts(d);
+    const g = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+    return g("hour") * 60 + g("minute");
+  } catch {
+    return d.getHours() * 60 + d.getMinutes();
+  }
+}
+
 // Блокирует ли инцидент кабинет в момент ms (ms — настенный, из wallNow/wallInstant).
 export function incidentActiveAt(inc: IncidentLike | null | undefined, ms: number): boolean {
   if (!inc) return false;

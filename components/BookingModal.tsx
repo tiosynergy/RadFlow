@@ -9,7 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import PhoneInput from "@/components/PhoneInput";
 import { roomScheduleFor, roomBreaksFor, overlapsBreak, type DayOverride } from "@/lib/schedule";
-import { incidentEffectiveEnd, type IncidentLike } from "@/lib/incidents";
+import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallMinOfInstant, type IncidentLike } from "@/lib/incidents";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { useModalA11y } from "@/lib/useModalA11y";
@@ -17,7 +17,7 @@ import { useModalA11y } from "@/lib/useModalA11y";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type DocOpt = { id: string; name: string; spec?: string | null; clinic_name?: string | null; phone?: string | null };
 type ExtraStudy = { type: string; region: string; dur: number };
-type DayEntryRow = { scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; patient_name: string | null; status: string };
+type DayEntryRow = { scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; patient_name: string | null; status: string; in_progress_at: string | null };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 export type BookingPayload = {
   name: string; phone: string; email: string | null; age: number; dob: string;
@@ -356,7 +356,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
       if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
       const { data } = await supabase
         .from("queue_entries")
-        .select("scheduled_time, duration_min, buffer_time_min, patient_name, status")
+        .select("scheduled_time, duration_min, buffer_time_min, patient_name, status, in_progress_at")
         .eq("room_id", roomId)
         .eq("scheduled_date", dateKey(bookDate))
         .neq("status", "cancelled")
@@ -369,10 +369,19 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
   }, [roomId, bookDate, clinicId]);
 
   // e — ефективний кінець зайнятості: тривалість + буфер наявного запису.
+  // ВАЖЛИВО: дослідження «в кабінеті» (in_progress), розпочате за фактом (можливо
+  // із запізненням), займає кабінет від ФАКТИЧНОГО старту (in_progress_at), а не
+  // від планового scheduled_time — інакше пізній старт залишає «дірку» в сітці й
+  // можна записати пацієнта на час, коли кабінет ще зайнятий.
   const roomBusy = dayEntries
-    .filter((p) => p.scheduled_time)
-    .map((p) => ({ s: toMin(p.scheduled_time as string), e: toMin(p.scheduled_time as string) + (p.duration_min || 30) + (p.buffer_time_min ?? BUFFER_DEFAULT), name: p.patient_name }));
-  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+    .filter((p) => p.scheduled_time || (p.status === "in_progress" && p.in_progress_at))
+    .map((p) => {
+      const occ = (p.duration_min || 30) + (p.buffer_time_min ?? BUFFER_DEFAULT);
+      const actual = (p.status === "in_progress" && p.in_progress_at) ? wallMinOfInstant(p.in_progress_at) : null;
+      const s = actual != null ? actual : toMin(p.scheduled_time as string);
+      return { s, e: s + occ, name: p.patient_name };
+    });
+  const nowMin = wallMinOfDay(wallNow());
   const isBookToday = sameDay(bookDate, today0());
   const roomSched = roomScheduleFor(bookDate, roomId, override);
   const schedStartMin = toMin(roomSched.start), schedEndMin = toMin(roomSched.end);
