@@ -26,17 +26,49 @@ export function incidentEffectiveEnd(inc: IncidentLike | null | undefined): numb
 }
 
 // Канон времени: «настенный» момент — дата+время трактуются как UTC (без реальной
-// конвертации TZ). Не зависит от таймзоны браузера, без сдвига даты в полночь и без DST.
+// конвертации TZ). Слот кодируется как UTC-мс независимо от таймзоны просмотра.
 export function wallInstant(dateStr: string | null | undefined, timeStr: string | null | undefined): number {
   if (!dateStr || !timeStr) return NaN;
   const [Y, Mo, D] = String(dateStr).split("-").map(Number);
   const [h, m] = String(timeStr).split(":").map(Number);
   return Date.UTC(Y, (Mo || 1) - 1, D || 1, h || 0, m || 0);
 }
-// Текущий настенный момент (локальные часы центра, закодированные как UTC).
-export function wallNow(): number {
+
+// Таймзона клиники (IANA). Задаётся один раз при загрузке данных клиники
+// (setClinicTz) в одноклиничных экранах (доски персонала). undefined → локальная
+// таймзона браузера (fallback). Для мультиклиничных экранов (портал направителя)
+// таймзона передаётся в wallNow(tz) поэлементно.
+let _clinicTz: string | undefined;
+export function setClinicTz(tz: string | null | undefined): void { _clinicTz = tz || undefined; }
+export function getClinicTz(): string | undefined { return _clinicTz; }
+
+// Текущий «настенный» момент В ТАЙМЗОНЕ КЛИНИКИ, закодированный как UTC-мс —
+// сопоставим с wallInstant(slot). tz переопределяет клинику по умолчанию
+// (нужно для портала направителя, где записи из разных центров).
+export function wallNow(tz?: string): number {
   const d = new Date();
-  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds());
+  const zone = tz || _clinicTz;
+  if (!zone) {
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds());
+  }
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone, hourCycle: "h23",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    }).formatToParts(d);
+    const g = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+    return Date.UTC(g("year"), g("month") - 1, g("day"), g("hour"), g("minute"), g("second"));
+  } catch {
+    // Невалидная IANA-зона → безопасный fallback на локальную.
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds());
+  }
+}
+
+// Минуты от начала суток из настенного UTC-мс (getUTC*, т.к. закодировано как UTC).
+export function wallMinOfDay(ms: number): number {
+  const d = new Date(ms);
+  return d.getUTCHours() * 60 + d.getUTCMinutes();
 }
 
 // Блокирует ли инцидент кабинет в момент ms (ms — настенный, из wallNow/wallInstant).

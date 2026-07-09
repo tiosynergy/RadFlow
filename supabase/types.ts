@@ -62,6 +62,7 @@ export type Database = {
           phones: Json;
           emails: Json;
           configured_at: string | null;
+          timezone: string;
         };
         Insert: {
           id?: string;
@@ -72,6 +73,7 @@ export type Database = {
           phones?: Json;
           emails?: Json;
           configured_at?: string | null;
+          timezone?: string;
         };
         Update: {
           id?: string;
@@ -82,6 +84,7 @@ export type Database = {
           phones?: Json;
           emails?: Json;
           configured_at?: string | null;
+          timezone?: string;
         };
         Relationships: [];
       };
@@ -228,6 +231,7 @@ export type Database = {
           call_status: Database["public"]["Enums"]["call_status"];
           priority: number;
           scheduled_at: string | null;
+          clarify_at: string | null;
           note: string | null;
           created_at: string;
           updated_at: string;
@@ -266,6 +270,7 @@ export type Database = {
           call_status?: Database["public"]["Enums"]["call_status"];
           priority?: number;
           scheduled_at?: string | null;
+          clarify_at?: string | null;
           note?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -304,6 +309,7 @@ export type Database = {
           call_status?: Database["public"]["Enums"]["call_status"];
           priority?: number;
           scheduled_at?: string | null;
+          clarify_at?: string | null;
           note?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -1014,6 +1020,14 @@ export type Database = {
       outbox_mark_failed: {
         Args: { p_id: number; p_error: string };
         Returns: undefined;
+      };
+      sink_overdue_scheduled: {
+        Args: Record<PropertyKey, never>;
+        Returns: number;
+      };
+      sink_overdue_scheduled_all: {
+        Args: Record<PropertyKey, never>;
+        Returns: number;
       };
     };
     Enums: {

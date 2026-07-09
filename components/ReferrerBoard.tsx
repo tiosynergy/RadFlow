@@ -15,11 +15,12 @@ import { useEffect, useMemo, useState } from "react";
 import MiniCalendar from "@/components/MiniCalendar";
 import { PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { isLate, LATE_META } from "@/lib/queueStatus";
+import { wallNow } from "@/lib/incidents";
 import { diffStudies, studyText, studiesChanged } from "@/lib/studies";
 import type { Json } from "@/supabase/types";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
-type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null };
+type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null; timezone?: string | null };
 export type BoardReferral = {
   id: string; clinic_id: string; created_by: string | null; referrer_id: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string;
@@ -73,9 +74,10 @@ function procLabel(e: { studies?: unknown; note?: string | null }) {
   return e.note || "—";
 }
 function centerLabel(c?: Center | null) { return c ? c.name + (c.city ? " · " + c.city : "") : "—"; }
-function refIsLate(r: BoardReferral): boolean {
+// tz — таймзона центру запису (мультиклінічний портал): «зараз» рахуємо по ній.
+function refIsLate(r: BoardReferral, tz?: string | null): boolean {
   if (!r.scheduled_date) return false;
-  return isLate(r.status, new Date(r.scheduled_date + "T00:00:00"), r.scheduled_time, r.buffer_time_min);
+  return isLate(r.status, new Date(r.scheduled_date + "T00:00:00"), r.scheduled_time, r.buffer_time_min, wallNow(tz || undefined));
 }
 function modLabel(m?: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : ""; }
 
@@ -196,7 +198,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
           <div className="qrows">
             {filtered.map((r) => {
               const expanded = expandedId === r.id;
-              const late = refIsLate(r);
+              const late = refIsLate(r, centersById[r.clinic_id]?.timezone);
               const meta = late ? LATE_META : (STATUS_META[r.status] || STATUS_META.scheduled);
               const room = r.room_id ? roomById[r.room_id] : null;
               const km = room ? modLabel(room.modality) : "";

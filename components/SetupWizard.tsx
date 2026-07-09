@@ -420,6 +420,10 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
           address: d.address.trim() || null,
           phones: clean(d.phones),
           emails: clean(d.emails),
+          // Таймзона клініки — авто-детект браузера оператора при налаштуванні
+          // (браузер зазвичай у зоні клініки). Керує порогами «Уточнити»/«Запізнення»
+          // на сервері й клієнті (універсально для користувачів з усього світу).
+          timezone: (typeof Intl !== "undefined" && Intl.DateTimeFormat().resolvedOptions().timeZone) || "UTC",
           configured_at: new Date().toISOString(),
         })
         .eq("id", clinicId);

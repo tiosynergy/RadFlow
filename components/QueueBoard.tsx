@@ -41,7 +41,7 @@ import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock } from "@/lib/queueStatus";
 import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
-import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, setClinicTz } from "@/lib/incidents";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -51,7 +51,7 @@ type QEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null; patient_weight: number | null;
   scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null; note: string | null;
   studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null; referrer: { full_name: string | null } | null;
-  room_id: string | null; updated_at: string; in_progress_at: string | null;
+  room_id: string | null; updated_at: string; in_progress_at: string | null; clarify_at?: string | null;
   reschedule_origin?: Json | null;
 };
 type RescheduleOrigin = { from_date?: string | null; from_time?: string | null; from_room?: string | null; from_status?: string | null; reason?: string | null };
@@ -396,11 +396,12 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
   const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
   // Заплановане в минулому, і час дослідження (старт + тривалість) уже минув →
   // можна прямо позначити «Виконано» (напр. повернути помилково скасоване завершення).
-  const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0).getTime(); })() : null;
-  const pastComplete = _startMs != null && (_startMs + (p.duration_min || 30) * 60000) <= Date.now();
+  const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
+  const _nowW = wallNow();
+  const pastComplete = _startMs != null && (_startMs + (p.duration_min || 30) * 60000) <= _nowW;
   // «Неявка»/«Не відбулося» можна ставити лише ПІСЛЯ часу початку дослідження (не наперед).
-  const beforeStart = _startMs != null && Date.now() < _startMs;
-  const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
+  const beforeStart = _startMs != null && _nowW < _startMs;
+  const overdue = needsClarification(p.status, dayDate, p.scheduled_time) || (p.status === "scheduled" && !!p.clarify_at);
   const meta: { label: string; cls: string; dot?: boolean; title?: string } = late ? LATE_META : overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
@@ -764,11 +765,21 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }
 
+  // Таймзона клініки → усі похідні часу (isLate/needsClarification/computeCallBlock,
+  // wallNow) рахуються по ній, а не по браузеру (користувачі з усього світу).
+  useEffect(() => {
+    createClient().from("clinics").select("timezone").eq("id", clinicId).single()
+      .then(({ data }) => setClinicTz(data?.timezone ?? null));
+  }, [clinicId]);
+
   const reload = useCallback(async () => {
     const supabase = createClient();
+    // Авто-«Уточнити»: помічаємо прострочені scheduled записи клініки (persisted
+    // clarify_at) — щоб вони опустилися в кінець запланованої черги. Ідемпотентно.
+    await supabase.rpc("sink_overdue_scheduled");
     const { data, error } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, studies_changed_by, contraindications, cito, priority_level, doctor, referrer:referrer_id(full_name), room_id, updated_at, in_progress_at, reschedule_origin")
+      .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, studies_changed_by, contraindications, cito, priority_level, doctor, referrer:referrer_id(full_name), room_id, updated_at, in_progress_at, clarify_at, reschedule_origin")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .order("scheduled_time", { ascending: true });
@@ -1131,9 +1142,15 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   // Порядок черги: у активних статусах — за пріоритетом (cito→urgent→planned), далі за часом.
   const prioRank = (x: QEntry) => isActiveStatus(x.status) ? priorityRank(x.priority_level) : 9;
+  // «Уточнити»: прострочені scheduled (persisted clarify_at або похідна) опускаються
+  // в КІНЕЦЬ запланованих (над терміналами), щоб наступний актуальний був першим.
+  const clarifyRank = (x: QEntry) =>
+    (x.status === "scheduled" && (!!x.clarify_at || needsClarification(x.status, selectedDate, x.scheduled_time))) ? 1 : 0;
   const sorted = boardScoped.slice().sort((a, b) => {
     const d = (FLOW[a.status] ?? 9) - (FLOW[b.status] ?? 9);
     if (d !== 0) return d;
+    const cl = clarifyRank(a) - clarifyRank(b);
+    if (cl !== 0) return cl;
     const c = prioRank(a) - prioRank(b);
     if (c !== 0) return c;
     return (a.scheduled_time || "").localeCompare(b.scheduled_time || "");

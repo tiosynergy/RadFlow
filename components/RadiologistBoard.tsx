@@ -14,7 +14,7 @@ import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock }
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
-import { incidentEffectiveEnd, incidentExpired, wallNow } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentExpired, wallNow, setClinicTz } from "@/lib/incidents";
 import { setQueueEntryStatus, setRadiologistNote } from "@/app/queue/actions";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
 import type { QueueStatus, Json } from "@/supabase/types";
@@ -28,7 +28,7 @@ type RadEntry = {
   patient_sex: string | null; patient_weight: number | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null;
   status: string; call_status: string | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; has_contrast: boolean;
   contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null; note: string | null; radiologist_note: string | null;
-  indication: string | null; room_id: string | null; updated_at: string; in_progress_at: string | null;
+  indication: string | null; room_id: string | null; updated_at: string; in_progress_at: string | null; clarify_at?: string | null;
 };
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
 
@@ -235,10 +235,10 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
   // «Запізнення» (derived) видно й радіологу; прямий виклик такого пацієнта
   // блокується (рішення ухвалює реєстратура: повернути/перенести/зняти).
   const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
-  const overdue = needsClarification(p.status, dayDate, p.scheduled_time);
+  const overdue = needsClarification(p.status, dayDate, p.scheduled_time) || (p.status === "scheduled" && !!p.clarify_at);
   // «Неявка»/«Не відбулося» — лише ПІСЛЯ часу початку дослідження (не наперед).
-  const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return new Date(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0).getTime(); })() : null;
-  const beforeStart = _startMs != null && Date.now() < _startMs;
+  const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
+  const beforeStart = _startMs != null && wallNow() < _startMs;
   const meta: { label: string; cls: string; dot?: boolean; title?: string } = late ? LATE_META : overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
@@ -521,9 +521,11 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
 
   const reload = useCallback(async () => {
     const supabase = createClient();
+    // Авто-«Уточнити» для прострочених scheduled записів клініки (persisted clarify_at).
+    await supabase.rpc("sink_overdue_scheduled");
     let q = supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at")
+      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at, clarify_at")
       .eq("clinic_id", clinicId)
       .eq("scheduled_date", dayKey)
       .neq("status", "cancelled");
@@ -552,6 +554,12 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
 
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его по завершении.
   useEffect(() => { setLoading(true); }, [clinicId]);
+
+  // Таймзона клініки → похідні часу рахуються по ній (не по браузеру).
+  useEffect(() => {
+    createClient().from("clinics").select("timezone").eq("id", clinicId).single()
+      .then(({ data }) => setClinicTz(data?.timezone ?? null));
+  }, [clinicId]);
 
   // Перезапрос записей при смене дня/кабинетов: realtime-хук слушает только clinicId.
   useEffect(() => { reload(); }, [reload]);
@@ -665,6 +673,10 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   }).sort((a, b) => {
     const d = (FLOW[a.status] ?? 9) - (FLOW[b.status] ?? 9);
     if (d !== 0) return d;
+    // «Уточнити»: прострочені scheduled опускаються в кінець запланованих.
+    const clA = (a.status === "scheduled" && (!!a.clarify_at || needsClarification(a.status, selectedDate, a.scheduled_time))) ? 1 : 0;
+    const clB = (b.status === "scheduled" && (!!b.clarify_at || needsClarification(b.status, selectedDate, b.scheduled_time))) ? 1 : 0;
+    if (clA !== clB) return clA - clB;
     const ac = isActiveStatus(a.status) ? priorityRank(a.priority_level) : 9;
     const bc = isActiveStatus(b.status) ? priorityRank(b.priority_level) : 9;
     if (ac !== bc) return ac - bc;

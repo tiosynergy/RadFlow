@@ -34,7 +34,7 @@ import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
-type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null };
+type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null; timezone?: string | null };
 type Referral = {
   id: string; clinic_id: string; created_by: string | null; referrer_id: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;

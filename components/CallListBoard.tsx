@@ -9,7 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
-import { entryInIncidentWindow, incidentExpired } from "@/lib/incidents";
+import { entryInIncidentWindow, incidentExpired, setClinicTz } from "@/lib/incidents";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
@@ -330,6 +330,12 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
 
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его.
   useEffect(() => { setLoading(true); }, [clinicId]);
+
+  // Таймзона клініки → похідні часу рахуються по ній (не по браузеру).
+  useEffect(() => {
+    createClient().from("clinics").select("timezone").eq("id", clinicId).single()
+      .then(({ data }) => setClinicTz(data?.timezone ?? null));
+  }, [clinicId]);
 
   // Перезапрос записей при смене дня: realtime-хук слушает только clinicId.
   useEffect(() => { reload(); }, [reload]);
