@@ -8,15 +8,17 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
-import { roomScheduleFor, roomBreaksFor, type DayOverride } from "@/lib/schedule";
+import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, studyDur, studyPrice, CONTRAST_DUR } from "@/lib/studies";
+import { roomScheduleFor, effectiveRoomBreaks, type DayOverride } from "@/lib/schedule";
 import { wallNow, wallMinOfDay } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 const MIN_STUDY = 15;
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
-type StudyRow = { type: string; region: string; dur: number };
+type StudyRow = { type: string; region: string; dur: number; contrast: boolean };
+/** Те, що летить у studies (jsonb) — як у BookingModal: з контрастом і ціною. */
+type StudyOut = { type: string; region: string; contrast: boolean; dur: number; price: number | null };
 type StudyLike = { type?: string; region?: string; dur?: number; contrast?: boolean };
 type StudyPatient = { id: string; room_id: string | null; scheduled_time: string | null; buffer_time_min?: number | null; patient_name: string | null; studies?: unknown };
 
@@ -27,7 +29,7 @@ interface StudyEditModalProps {
   clinicId?: string | null;
   clinicTz?: string | null; // TZ центру запису (мультиклінічний портал направника)
   onClose: () => void;
-  onConfirm: (arr: StudyRow[], meta: { dur: number; buffer: number }) => void;
+  onConfirm: (arr: StudyOut[], meta: { dur: number; buffer: number }) => void;
 }
 
 function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
@@ -96,7 +98,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const capByNext = nextStart != null ? nextStart - startMin - buffer : Infinity;
   const capBySched = schedEnd - startMin;
   // Перерва кабінету після старту теж обмежує тривалість — дослідження не може її перетнути.
-  const nextBreakStart = roomBreaksFor(dateObj, roomSchedule).map((b) => toMin(b.start)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
+  const nextBreakStart = effectiveRoomBreaks(dateObj, patient.room_id || "", roomSchedule, override).map((b) => toMin(b.start)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
   const capByBreak = nextBreakStart != null ? nextBreakStart - startMin : Infinity;
   const availableDur = Math.max(0, Math.min(capByNext, capBySched, capByBreak));
   const windowLabel = (capByBreak <= capByNext && capByBreak <= capBySched && nextBreakStart != null)
@@ -105,9 +107,10 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
       ? ("до наступного запису о " + fmt(nextStart) + (buffer > 0 ? ` − ${buffer} буфер` : ""))
       : ("до кінця графіка (" + fmt(schedEnd) + ")");
 
-  function recalc(type: string, region: string, prevDur?: number): number {
+  // Тривалість за довідником + CONTRAST_DUR, якщо дослідження з контрастом.
+  function recalc(type: string, region: string, contrast: boolean, prevDur?: number): number {
     const ro = regionsFor(type).find((r) => r.label === region);
-    return ro ? ro.dur : (prevDur || (type === "КТ" ? 20 : 45));
+    return ro ? studyDur(type, region, contrast) : (prevDur || (type === "КТ" ? 20 : 45));
   }
   function seed(): StudyRow[] {
     const base: StudyLike[] = Array.isArray(patient.studies) && patient.studies.length
@@ -117,16 +120,24 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
       const t = lockType ? roomKind : (s.type || "МРТ");
       const keepRegion = !lockType || !s.type || s.type === roomKind;
       const region = keepRegion ? (s.region || "") : "";
-      return { type: t, region, dur: region ? (s.dur || 45) : recalc(t, "") };
+      const contrast = keepRegion ? !!s.contrast : false; // ЗБЕРІГАЄМО наявний контраст
+      return { type: t, region, contrast, dur: region ? (s.dur || recalc(t, region, contrast)) : recalc(t, "", contrast) };
     });
   }
   const [rows, setRows] = useState<StudyRow[]>(seed);
 
   function patch(i: number, p: Partial<StudyRow>) { setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...p } : r))); }
-  function setType(i: number, type: string) { if (lockType) return; patch(i, { type, region: "", dur: recalc(type, "") }); }
-  function setRegion(i: number, region: string) { const r = rows[i]; patch(i, { region, dur: recalc(r.type, region, r.dur) }); }
+  function setType(i: number, type: string) { if (lockType) return; patch(i, { type, region: "", contrast: false, dur: recalc(type, "", false) }); }
+  function setRegion(i: number, region: string) { const r = rows[i]; patch(i, { region, dur: recalc(r.type, region, r.contrast, r.dur) }); }
+  // Контраст: ±CONTRAST_DUR до поточної тривалості (зберігає ручні правки тривалості).
+  function setContrast(i: number, contrast: boolean) {
+    const r = rows[i];
+    if (r.contrast === contrast) return;
+    const delta = contrast ? CONTRAST_DUR : -CONTRAST_DUR;
+    patch(i, { contrast, dur: Math.max(5, (Number(r.dur) || 0) + delta) });
+  }
   function setDur(i: number, v: string) { patch(i, { dur: Math.max(5, parseInt(v, 10) || 0) }); }
-  function addRow() { setRows((rs) => [...rs, { type: defaultType, region: "", dur: recalc(defaultType, "") }]); }
+  function addRow() { setRows((rs) => [...rs, { type: defaultType, region: "", contrast: false, dur: recalc(defaultType, "", false) }]); }
   function removeRow(i: number) { setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : rs)); }
 
   const totalDur = rows.reduce((s, r) => s + (Number(r.dur) || 0), 0);
@@ -140,7 +151,15 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const valid = rows.length > 0 && rows.every((r) => r.region) && !overflow;
 
   function save() {
-    const arr = rows.filter((r) => r.region).map((r) => ({ type: r.type, region: r.region, dur: Number(r.dur) || 0 }));
+    // Пишемо повний склад (як BookingModal): контраст + ціна. Раніше вони губилися
+    // при редагуванні — has_contrast на сервері рахується саме зі studies.
+    const arr: StudyOut[] = rows.filter((r) => r.region).map((r) => ({
+      type: r.type,
+      region: r.region,
+      contrast: r.contrast,
+      dur: Number(r.dur) || 0,
+      price: studyPrice(r.type, r.region, r.contrast),
+    }));
     onConfirm(arr, { dur: totalDur, buffer });
   }
 
@@ -195,6 +214,13 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                         {regions.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur} хв</option>)}
                       </select>
                     </label>
+                    <div className="st-field st-field-contrast">
+                      <span className="st-flab">Контраст</span>
+                      <label className={"rf-check" + (r.contrast ? " on" : "")} title={`Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
+                        <input type="checkbox" checked={r.contrast} onChange={(e) => setContrast(i, e.target.checked)} />
+                        <span className="rf-box" /><span>+{CONTRAST_DUR} хв</span>
+                      </label>
+                    </div>
                     <label className="st-field st-field-dur">
                       <span className="st-flab">Тривалість</span>
                       <div className="st-dur"><input className="inp" type="number" min="5" step="5" value={r.dur} onChange={(e) => setDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>

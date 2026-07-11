@@ -754,6 +754,8 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .st-flab { font-size: 11px; font-weight: 500; color: var(--text-muted); }
 .st-field-type { flex: 0 0 auto; }
 .st-field-region { flex: 1 1 220px; min-width: 180px; }
+.st-field-contrast { flex: 0 0 auto; }
+.st-field-contrast .rf-check { height: 34px; }
 .st-field-dur { flex: 0 0 auto; }
 .st-seg { flex: 0 0 auto; }
 /* Зафіксований тип (модальність задана кабінетом) — нередагований бейдж */
