@@ -25,7 +25,9 @@ import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority, updateWaitlis
 import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
 import { isLate, LATE_META } from "@/lib/queueStatus";
 import type { WaitlistEntry } from "@/supabase/types";
-import { roomScheduleFor, roomBreaksFor, overlapsBreak, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, effectiveRoomBreaks, overlapsBreak, type DayOverride } from "@/lib/schedule";
+import { buildSlots } from "@/lib/slots";
+import SlotPicker from "@/components/SlotPicker";
 import { slotBlockedByIncidents, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
 import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
@@ -233,13 +235,13 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const roomSched = roomScheduleFor(dateObj, roomId || "", override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
   const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) + (e.buffer_time_min ?? BUFFER_DEFAULT) }));
-  const roomBreaks = roomBreaksFor(dateObj, roomSchedule); // перерви кабінету на цю дату
+  const roomBreaks = effectiveRoomBreaks(dateObj, roomId || "", roomSchedule, override); // перерви кабінету на цю дату
   // «Зараз» у настінному часі центру (wall-as-UTC мс): і хвилини доби, і «сьогодні».
   const _nowW = wallNow(selCenter?.timezone || undefined);
   const nowMin = wallMinOfDay(_nowW);
   const _nowD = new Date(_nowW);
   const isBookToday = date === (_nowD.getUTCFullYear() + "-" + pad(_nowD.getUTCMonth() + 1) + "-" + pad(_nowD.getUTCDate()));
-  const slots: string[] = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
+  const slots: string[] = buildSlots(schedStart, schedEnd); // крок 5 хв
   function slotState(slot: string) {
     // b — кінець дослідження (має вміститись у графік); bBlock — з буфером (перетин з іншими).
     const a = toMin(slot), b = a + slotDur, bBlock = a + slotDur + buffer;
@@ -504,20 +506,21 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                 ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
                 : slotsLoading
                 ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
-                : <div className={"bk-slot-grid" + (miss.time ? " bk-miss-slots" : "")}>
-                {slots.map((s) => {
-                  const st = slotState(s);
-                  const title = st === "busy" ? "Зайнято"
+                : <div className={miss.time ? "bk-miss-slots" : undefined}>
+                <SlotPicker
+                  slots={slots}
+                  value={time}
+                  onChange={setTime}
+                  spanMin={slotDur}
+                  resetKey={(roomId || "") + "|" + date + "|" + slotDur + "|" + buffer}
+                  stateOf={slotState}
+                  titleOf={(s, st) => st === "busy" ? "Зайнято"
                     : st === "blocked" ? "Кабінет на ремонті/ТО"
                     : st === "break" ? "Перерва в роботі кабінету"
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець графіка (" + fmt(schedEnd) + ")"}`
                     : st === "past" ? "Час минув"
-                    : `Вільно · ${s}–${fmt(toMin(s) + slotDur)}`;
-                  return (
-                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked" || st === "break") ? " busy" : "")}
-                      disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
-                  );
-                })}
+                    : `Вільно · ${s}–${fmt(toMin(s) + slotDur)}`}
+                />
               </div>}
               {busyList.length > 0 && (
                 <div className="bk-busy-list">

@@ -1155,7 +1155,7 @@ select.inp { cursor: pointer; }
 .bk-dialog .dlg-head, .bk-dialog .dlg-foot { flex-shrink: 0; }
 .bk-grid {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  grid-template-columns: 1fr 360px;
   overflow-y: auto;
   min-height: 0;
 }
@@ -1236,6 +1236,25 @@ select.inp { cursor: pointer; }
 .bk-free-count { font-size: 11px; font-weight: 600; color: var(--green); }
 .bk-slot-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
 .bk-slot-grid .slot { padding: 5px 0; font-size: 11px; border-radius: 6px; }
+
+/* Слоти 5 хв: у рядку 4 півгодинні слоти × 6 частин по 5 хв */
+.slot-grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px 7px; max-height: 340px; overflow-y: auto; padding-right: 2px; }
+.slot-blk { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.slot-blk-lab { font-size: 10.5px; font-weight: 700; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.slot-blk-cells { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; }
+.slot-blk-cells .slot { padding: 5px 0; font-size: 9px; border-radius: 4px; min-width: 0; }
+/* Зелені межі планованого дослідження (початок і кінець) */
+.slot.plan { border-color: var(--green) !important; color: #eafff0 !important; background: rgba(48, 209, 88, 0.28) !important; opacity: 1 !important; text-decoration: none !important; }
+@media (max-width: 560px) { .slot-grid4 { grid-template-columns: repeat(2, 1fr); } }
+
+/* Перерви в редакторі графіка на дату (ScheduleEditModal) */
+.sch-breaks { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.sch-breaks-lab { font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.sch-break-row { display: flex; align-items: center; gap: 6px; }
+.sch-break-row .inp { max-width: 96px; }
+.sch-break-del { color: var(--red); width: 26px; height: 26px; }
+.sch-break-add { align-self: flex-start; font-size: 12px; font-weight: 600; color: var(--blue); background: transparent; border: 1px dashed var(--border-strong); border-radius: 7px; padding: 4px 10px; cursor: pointer; }
+.sch-break-add:hover { border-color: var(--blue); }
 
 /* Footer summary */
 .bk-summary {

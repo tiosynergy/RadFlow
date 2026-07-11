@@ -7,10 +7,12 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { roomScheduleFor, roomBreaksFor, overlapsBreak, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, effectiveRoomBreaks, overlapsBreak, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
+import { buildSlots } from "@/lib/slots";
+import SlotPicker from "@/components/SlotPicker";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 // Знеособлені зайняті слоти з RPC room_busy_slots (без id/статусу/PII).
@@ -96,7 +98,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const isToday = dateStr === clinicTodayStr;
   const roomSched = roomScheduleFor(dateObj, roomId, override);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
-  const roomBreaks = roomBreaksFor(dateObj, roomSchedule); // перерви кабінету на цю дату
+  const roomBreaks = effectiveRoomBreaks(dateObj, roomId, roomSchedule, override); // перерви кабінету на цю дату
   // Простій обраного кабінету (поломка + ТО): слоти у будь-якому вікні — недоступні (на дату після відновлення кабінет вільний).
   const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
   const roomIncident = roomIncidents[0];
@@ -108,7 +110,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
       return dt >= start && dt < incidentEffectiveEnd(inc);
     });
   }
-  const slots: string[] = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
+  const slots: string[] = buildSlots(schedStart, schedEnd); // крок 5 хв
   function slotState(s: string) {
     // b — кінець дослідження (має вміститись у графік); bBlock — з буфером (перетин з іншими).
     const a = toMin(s), b = a + dur, bBlock = a + dur + buffer;
@@ -163,15 +165,15 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
             {roomIncident && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncident.blocked_until ? " до " + new Date(roomIncident.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : ""}. Оберіть слот після відновлення або інший день.</div>}
             {slotsLoading
               ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
-              : <div className="bk-slot-grid">
-              {slots.map((s) => {
-                const st = slotState(s);
-                const title = st === "busy" ? "Зайнято" : st === "blocked" ? "Кабінет на ремонті/ТО" : st === "break" ? "Перерва в роботі кабінету" : st === "tight" ? ("Не вміщується: блок " + dur + " хв перетне " + (nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець дня")) : st === "past" ? "Час минув" : ("Вільно · " + s + "–" + fmt(toMin(s) + dur));
-                return (
-                  <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked" || st === "break") ? " busy" : "")} disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
-                );
-              })}
-            </div>}
+              : <SlotPicker
+                  slots={slots}
+                  value={time}
+                  onChange={setTime}
+                  spanMin={dur}
+                  resetKey={roomId + "|" + dateStr + "|" + dur + "|" + buffer}
+                  stateOf={slotState}
+                  titleOf={(s, st) => st === "busy" ? "Зайнято" : st === "blocked" ? "Кабінет на ремонті/ТО" : st === "break" ? "Перерва в роботі кабінету" : st === "tight" ? ("Не вміщується: блок " + dur + " хв перетне " + (nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець дня")) : st === "past" ? "Час минув" : ("Вільно · " + s + "–" + fmt(toMin(s) + dur))}
+                />}
             {busyList.length > 0 && (
               <div className="bk-busy-list">
                 <span className="bk-busy-lab">Зайнятий час{room ? " (" + room.name + ")" : ""}:</span>

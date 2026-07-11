@@ -849,7 +849,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const selectedOverride = overrides[dayKey] || null;
   const selDayStatus = dayStatus(selectedOverride, selectedDate);
 
-  async function saveOverride(ov: { all_closed: boolean; label?: string; rooms: Record<string, { closed?: boolean; start?: string; end?: string }> }) {
+  async function saveOverride(ov: { all_closed: boolean; label?: string; rooms: Record<string, { closed?: boolean; start?: string; end?: string; breaks?: { start: string; end: string }[] }> }) {
     const res = await saveScheduleOverride({ overrideDate: dayKey, allClosed: !!ov.all_closed, label: ov.label || null, rooms: ov.rooms || {} });
     setSchedEditOpen(false);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }

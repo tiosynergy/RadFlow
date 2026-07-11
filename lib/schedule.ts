@@ -10,6 +10,7 @@ export interface RoomOverride {
   closed?: boolean;
   start?: string;
   end?: string;
+  breaks?: Break[]; // перерви саме на цю дату (обід тощо); якщо задані — замінюють базові
 }
 
 /** Переопределение графика на дату (schedule_overrides.Row, rooms — JSONB). */
@@ -105,6 +106,23 @@ export function roomBreaksFor(date: Date, schedule: unknown): Break[] {
     return normalizeBreaks(s.dayHours[widx]);
   }
   return normalizeBreaks(s);
+}
+
+/** Ефективні перерви кабінету на дату: якщо для цієї дати є override кабінету
+    (Інші години / Зачинено), перерви беруться з override (порожньо = без перерв);
+    інакше — базові з rooms.schedule (по дню тижня). */
+export function effectiveRoomBreaks(
+  date: Date,
+  roomId: string,
+  roomSchedule: unknown,
+  override?: DayOverride | null
+): Break[] {
+  const ro = override && override.rooms ? override.rooms[roomId] : null;
+  if (ro) {
+    if (ro.closed) return [];
+    return normalizeBreaks({ breaks: Array.isArray(ro.breaks) ? ro.breaks : [] });
+  }
+  return roomBreaksFor(date, roomSchedule);
 }
 
 /** Чи перетинає блок [aMin, aMin+durMin) хоча б одну перерву (хвилини від 00:00). */

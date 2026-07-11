@@ -5,17 +5,17 @@
    або змінити графік окремих кабінетів. Зберігається у schedule_overrides. */
 
 import { useState } from "react";
-import { DEF_START, DEF_END, defaultClosed, roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { DEF_START, DEF_END, defaultClosed, roomScheduleFor, normalizeBreaks, type DayOverride, type Break } from "@/lib/schedule";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 const LABELS = ["Державне свято", "Вихідний день", "Санітарний день", "Технічне обслуговування"];
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
-type RoomMode = { mode: "open" | "custom" | "closed"; start: string; end: string };
+type RoomMode = { mode: "open" | "custom" | "closed"; start: string; end: string; breaks: Break[] };
 type OverrideBuild = {
   all_closed: boolean;
   label?: string;
-  rooms: Record<string, { closed?: boolean; start?: string; end?: string }>;
+  rooms: Record<string, { closed?: boolean; start?: string; end?: string; breaks?: Break[] }>;
 };
 type AffectedEntry = { status: string; room_id: string | null };
 
@@ -44,20 +44,25 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
     const m: Record<string, RoomMode> = {};
     (rooms || []).forEach((r) => {
       const eff = roomScheduleFor(date, r.id, existing);
-      const mode: RoomMode["mode"] = eff.closed ? "closed" : ((eff.start !== DEF_START || eff.end !== DEF_END) ? "custom" : "open");
-      m[r.id] = { mode, start: eff.start || DEF_START, end: eff.end || DEF_END };
+      const brk = normalizeBreaks(existing && existing.rooms ? existing.rooms[r.id] : null);
+      const mode: RoomMode["mode"] = eff.closed ? "closed" : ((eff.start !== DEF_START || eff.end !== DEF_END || brk.length > 0) ? "custom" : "open");
+      m[r.id] = { mode, start: eff.start || DEF_START, end: eff.end || DEF_END, breaks: brk };
     });
     return m;
   });
   function setRoom(k: string, patch: Partial<RoomMode>) { setRoomState((s) => ({ ...s, [k]: { ...s[k], ...patch } })); }
+  function addBreak(k: string) { setRoomState((s) => ({ ...s, [k]: { ...s[k], breaks: [...s[k].breaks, { start: "13:00", end: "14:00" }] } })); }
+  function setBreak(k: string, i: number, patch: Partial<Break>) { setRoomState((s) => { const bs = s[k].breaks.slice(); bs[i] = { ...bs[i], ...patch }; return { ...s, [k]: { ...s[k], breaks: bs } }; }); }
+  function delBreak(k: string, i: number) { setRoomState((s) => ({ ...s, [k]: { ...s[k], breaks: s[k].breaks.filter((_, j) => j !== i) } })); }
 
   function buildOv(): OverrideBuild {
     if (allClosed) return { all_closed: true, label: label.trim() || "Неробочий день", rooms: {} };
     const ro: OverrideBuild["rooms"] = {};
     (rooms || []).forEach((r) => {
       const st = roomState[r.id];
+      const vb = st.breaks.filter((b) => b.start && b.end && b.start < b.end);
       if (st.mode === "closed") { if (!defClosed) ro[r.id] = { closed: true }; }
-      else if (st.mode === "custom") { ro[r.id] = { start: st.start, end: st.end }; }
+      else if (st.mode === "custom") { ro[r.id] = { start: st.start, end: st.end, ...(vb.length ? { breaks: vb } : {}) }; }
       else { if (defClosed) ro[r.id] = { start: st.start, end: st.end }; }
     });
     const o: OverrideBuild = { all_closed: false, rooms: ro };
@@ -123,6 +128,23 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
                           <input className="inp tabular" type="time" value={st.start} onChange={(e) => setRoom(r.id, { start: e.target.value })} />
                           <span className="sch-dash">–</span>
                           <input className="inp tabular" type="time" value={st.end} onChange={(e) => setRoom(r.id, { end: e.target.value })} />
+                        </div>
+                      )}
+                      {st.mode === "custom" && (
+                        <div className="sch-breaks">
+                          <div className="sch-breaks-lab">Перерви (обід тощо)</div>
+                          {st.breaks.map((b, i) => {
+                            const bad = !(b.start && b.end && b.start < b.end);
+                            return (
+                              <div className="sch-break-row" key={i}>
+                                <input className={"inp tabular" + (bad ? " invalid" : "")} type="time" value={b.start} onChange={(e) => setBreak(r.id, i, { start: e.target.value })} />
+                                <span className="sch-dash">–</span>
+                                <input className={"inp tabular" + (bad ? " invalid" : "")} type="time" value={b.end} onChange={(e) => setBreak(r.id, i, { end: e.target.value })} />
+                                <button type="button" className="icon-btn sch-break-del" onClick={() => delBreak(r.id, i)} title="Прибрати перерву">✕</button>
+                              </div>
+                            );
+                          })}
+                          <button type="button" className="sch-break-add" onClick={() => addBreak(r.id)}>+ Додати перерву</button>
                         </div>
                       )}
                     </div>

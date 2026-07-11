@@ -8,11 +8,12 @@ import { useState, useEffect, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import PhoneInput from "@/components/PhoneInput";
-import { roomScheduleFor, roomBreaksFor, overlapsBreak, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, effectiveRoomBreaks, overlapsBreak, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallMinOfInstant, type IncidentLike } from "@/lib/incidents";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { useModalA11y } from "@/lib/useModalA11y";
+import SlotPicker from "@/components/SlotPicker";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type DocOpt = { id: string; name: string; spec?: string | null; clinic_name?: string | null; phone?: string | null };
@@ -57,7 +58,7 @@ export function fmtShort(d: Date) { return d.getDate() + " " + MONTHS_GEN[d.getM
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 
 /* ── Слоти часу ── */
-const BK_START = 8 * 60, BK_END = 18 * 60, BK_STEP = 30;
+const BK_START = 8 * 60, BK_END = 18 * 60, BK_STEP = 5; // крок вибору слота — 5 хв (сітка групується у 30-хв блоки в SlotPicker)
 function toMin(t: string) { const [h, m] = t.split(":").map(Number); return h * 60 + m; }
 function fmtMin(min: number) { return String(Math.floor(min / 60)).padStart(2, "0") + ":" + String(min % 60).padStart(2, "0"); }
 function slotsList(startMin = BK_START, endMin = BK_END) {
@@ -393,7 +394,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
   const roomSched = roomScheduleFor(bookDate, roomId, override);
   const schedStartMin = toMin(roomSched.start), schedEndMin = toMin(roomSched.end);
   // Перерви кабінету на цю дату (обід тощо) — дослідження не може їх перетинати.
-  const roomBreaks = roomBreaksFor(bookDate, roomSchedule);
+  const roomBreaks = effectiveRoomBreaks(bookDate, roomId, roomSchedule, override);
 
   // Простій (поломка/ТО) обраного кабінету: слоти у вікні інциденту — недоступні.
   const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
@@ -554,7 +555,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
                   ))}
                 </select>
               </label>
-              <label className="fld" style={{ flex: "0 0 108px" }}>
+              <label className="fld" style={{ flex: "0 0 88px" }}>
                 <span className="fld-lab">Тривалість <span className="req">*</span></span>
                 <div className="bk-dur-row">
                   <input className="inp bk-dur-input" type="number" min="5" step="5" placeholder="—"
@@ -565,7 +566,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
                   {!region ? "оберіть область" : durCustom ? `↺ за замовч. ${computedDur} хв` : "за тривалістю області"}
                 </span>
               </label>
-              <label className="fld" style={{ flex: "0 0 96px" }}>
+              <label className="fld" style={{ flex: "0 0 76px" }}>
                 <span className="fld-lab">Буфер</span>
                 <select className="inp" value={buffer} onChange={(e) => setBuffer(Number(e.target.value))} title="Час на переукладку/дезінфекцію після дослідження">
                   {BUFFER_OPTIONS.map((b) => <option key={b} value={b}>{b} хв</option>)}
@@ -663,20 +664,21 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
                 ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
                 : slotsLoading
                 ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
-                : <div className={"bk-slot-grid" + (miss.time ? " bk-miss-slots" : "")}>
-                {slots.map((s) => {
-                  const st = slotState(s);
-                  const title = st === "busy" ? "Зайнято"
+                : <div className={miss.time ? "bk-miss-slots" : undefined}>
+                <SlotPicker
+                  slots={slots}
+                  value={time}
+                  onChange={setTime}
+                  spanMin={slotDur}
+                  resetKey={roomId + "|" + dateKey(bookDate) + "|" + slotDur + "|" + buffer}
+                  stateOf={slotState}
+                  titleOf={(s, st) => st === "busy" ? "Зайнято"
                     : st === "blocked" ? "Кабінет на ремонті/ТО"
                     : st === "break" ? "Перерва в роботі кабінету"
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець графіка (" + fmtMin(schedEndMin) + ")"}`
                     : st === "past" ? "Час минув"
-                    : `Вільно · ${s}–${fmtMin(toMin(s) + slotDur)}`;
-                  return (
-                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked" || st === "break") ? " busy" : "")}
-                      disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
-                  );
-                })}
+                    : `Вільно · ${s}–${fmtMin(toMin(s) + slotDur)}`}
+                />
               </div>}
               {busyList.length > 0 && (
                 <div className="bk-busy-list">
