@@ -520,37 +520,48 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   }
 
   const reload = useCallback(async () => {
-    const supabase = createClient();
-    // Авто-«Уточнити» для прострочених scheduled (persisted clarify_at). Fire-and-forget —
-    // не блокуємо reload; позначка прийде наступним realtime-циклом.
-    void supabase.rpc("sink_overdue_scheduled");
-    let q = supabase
-      .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at, clarify_at")
-      .eq("clinic_id", clinicId)
-      .eq("scheduled_date", dayKey)
-      .neq("status", "cancelled");
-    if (roomIds.length) q = q.in("room_id", roomIds);
-    const { data } = await q.order("scheduled_time", { ascending: true });
-    setEntries(data || []);
-    setLoading(false);
+    // Транзієнтний «Failed to fetch» (рефреш токена / зміна сесії / мережевий збій)
+    // НЕ повинен валитись у Next error overlay — конвенція проєкту.
+    try {
+      const supabase = createClient();
+      // Авто-«Уточнити» для прострочених scheduled (persisted clarify_at). Fire-and-forget —
+      // не блокуємо reload; позначка прийде наступним realtime-циклом.
+      void supabase.rpc("sink_overdue_scheduled");
+      let q = supabase
+        .from("queue_entries")
+        .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at, clarify_at")
+        .eq("clinic_id", clinicId)
+        .eq("scheduled_date", dayKey)
+        .neq("status", "cancelled");
+      if (roomIds.length) q = q.in("room_id", roomIds);
+      const { data } = await q.order("scheduled_time", { ascending: true });
+      setEntries(data || []);
+    } catch {
+      // Мовчки ігноруємо — наступний realtime-цикл/фокус перезавантажить.
+    } finally {
+      setLoading(false);
+    }
   }, [clinicId, dayKey, roomIds]);
 
   const loadIncidents = useCallback(async () => {
-    const supabase = createClient();
-    const { data } = await supabase
-      .from("incidents")
-      .select("id, room_id, reason, reason_label, note, started_at, blocked_until, status, auto_unblock")
-      .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
-    setIncidents(data || []);
+    try {
+      const supabase = createClient();
+      const { data } = await supabase
+        .from("incidents")
+        .select("id, room_id, reason, reason_label, note, started_at, blocked_until, status, auto_unblock")
+        .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
+      setIncidents(data || []);
+    } catch { /* транзієнтний збій мережі/токена — не валимо UI */ }
   }, [clinicId]);
 
   const loadOverrides = useCallback(async () => {
-    const supabase = createClient();
-    const { data } = await supabase.from("schedule_overrides").select("override_date, all_closed, label, rooms").eq("clinic_id", clinicId);
-    const m: Record<string, DayOverride> = {};
-    (data || []).forEach((o) => { m[o.override_date] = o as unknown as DayOverride; });
-    setOverrides(m);
+    try {
+      const supabase = createClient();
+      const { data } = await supabase.from("schedule_overrides").select("override_date, all_closed, label, rooms").eq("clinic_id", clinicId);
+      const m: Record<string, DayOverride> = {};
+      (data || []).forEach((o) => { m[o.override_date] = o as unknown as DayOverride; });
+      setOverrides(m);
+    } catch { /* транзієнтний збій мережі/токена — не валимо UI */ }
   }, [clinicId]);
 
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его по завершении.
