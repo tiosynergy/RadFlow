@@ -8,7 +8,7 @@ import { useState, useEffect, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import PhoneInput from "@/components/PhoneInput";
-import { roomScheduleFor, effectiveRoomBreaks, overlapsBreak, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallMinOfInstant, type IncidentLike } from "@/lib/incidents";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
@@ -415,7 +415,8 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
     if (slotBlockedByIncident(s)) return "blocked";
     if (s < schedStartMin || s >= schedEndMin) return "offhours";
     if (e > schedEndMin) return "tight";
-    if (overlapsBreak(s, slotDur, roomBreaks)) return "break"; // блок перетинає перерву
+    if (inBreak(s, roomBreaks)) return "break";                   // сам слот — перерва кабінету
+    if (breakClash(s, slotDur, roomBreaks)) return "tight";       // слот робочий, але дослідження заїде в перерву
     if (isBookToday && s < nowMin) return "past";
     if (roomBusy.some((b) => s >= b.s && s < b.e)) return "busy";
     if (roomBusy.some((b) => s < b.e && b.s < eBlock)) return "tight";
@@ -425,6 +426,20 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
     const s = toMin(slot);
     const after = roomBusy.filter((b) => b.s >= s).sort((a, b) => a.s - b.s)[0];
     return after ? fmtMin(after.s) : null;
+  }
+  function breakLabel(slot: string) {
+    const br = inBreak(toMin(slot), roomBreaks);
+    return br ? `Перерва в роботі кабінету · ${br.start}–${br.end}` : "Перерва в роботі кабінету";
+  }
+  // Причина «не вміщується» — у тому ж порядку, що й перевірки в slotState.
+  function tightReason(slot: string) {
+    const s = toMin(slot);
+    const endLab = `кінець графіка (${fmtMin(schedEndMin)})`;
+    if (s + slotDur > schedEndMin) return endLab;
+    const br = breakClash(s, slotDur, roomBreaks);
+    if (br) return `перерву ${br.start}–${br.end}`;
+    const appt = nextApptAfter(slot);
+    return appt ? `запис о ${appt}` : endLab;
   }
   const slots = slotsList(schedStartMin, schedEndMin);
   // Скільки ще досліджень цієї тривалості реально вміщується (жадібна укладка),
@@ -677,8 +692,8 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
                   stateOf={slotState}
                   titleOf={(s, st) => st === "busy" ? "Зайнято"
                     : st === "blocked" ? "Кабінет на ремонті/ТО"
-                    : st === "break" ? "Перерва в роботі кабінету"
-                    : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець графіка (" + fmtMin(schedEndMin) + ")"}`
+                    : st === "break" ? breakLabel(s)
+                    : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${tightReason(s)}`
                     : st === "past" ? "Час минув"
                     : `Вільно · ${s}–${fmtMin(toMin(s) + slotDur)}`}
                 />
@@ -693,6 +708,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
                 <span><span className="lg-dot free" />вільно</span>
                 <span><span className="lg-dot tight" />не вміщується</span>
                 <span><span className="lg-dot busy" />зайнято</span>
+                {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
               </div>
               {time && (() => {
                 const s = toMin(time), e = s + slotDur, eBlock = s + slotDur + buffer;

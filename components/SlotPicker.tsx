@@ -3,8 +3,14 @@
 /* ===== RadFlow — вибір слота (крок 5 хв) =====
    Сітка: у рядку 4 півгодинні слоти, кожен поділено на 6 частин по 5 хв
    (4×6 = 24 міні-слоти на рядок = 2 год). Рядків стільки, щоб покрити графік
-   роботи кабінету. Зайняті 5-хв міні-слоти — червоні (стан busy). Дослідження
-   будь-якої тривалості (більше/менше за 30 хв) фарбує свої 5-хв слоти.
+   роботи кабінету. Дослідження будь-якої тривалості (більше/менше за 30 хв)
+   фарбує свої 5-хв слоти.
+
+   Кольори станів (класи в radflow.css):
+     busy / blocked → .busy  (червоний) — зайнято іншим записом / кабінет на ремонті;
+     break          → .brk   (сіра штриховка) — перерва в роботі кабінету;
+     tight          → .tight (помаранчевий) — не вміщується (запис / кінець графіка / перерва);
+     past, offhours, closed → .taken (приглушено).
    Кожна модалка передає власний stateOf() — валідація не змінюється. */
 
 import { groupSlots, slotFmt, slotToMin } from "@/lib/slots";
@@ -47,7 +53,7 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
                 const plan = value && (s === planStart || s === planEnd);
                 return (
                   <button key={s} type="button"
-                    className={"slot" + (value === s ? " sel" : "") + (plan ? " plan" : "") + (!free ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked" || st === "break") ? " busy" : "")}
+                    className={"slot" + (value === s ? " sel" : "") + (plan ? " plan" : "") + (!free ? " taken" : "") + (st === "tight" ? " tight" : "") + (st === "break" ? " brk" : "") + ((st === "busy" || st === "blocked") ? " busy" : "")}
                     disabled={!free} onClick={() => onChange(s)} title={titleOf ? titleOf(s, st) : s} aria-label={s}>
                     {s.slice(3)}
                   </button>

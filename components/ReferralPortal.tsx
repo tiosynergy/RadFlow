@@ -25,7 +25,7 @@ import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority, updateWaitlis
 import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
 import { isLate, LATE_META } from "@/lib/queueStatus";
 import type { WaitlistEntry } from "@/supabase/types";
-import { roomScheduleFor, effectiveRoomBreaks, overlapsBreak, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { slotBlockedByIncidents, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
@@ -250,7 +250,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     if (slotBlockedByIncidents(incidents, roomId || "", slotMs)) return "blocked";
     if (a < schedStart || a >= schedEnd) return "offhours";
     if (b > schedEnd) return "tight";
-    if (overlapsBreak(a, slotDur, roomBreaks)) return "break"; // блок перетинає перерву
+    if (inBreak(a, roomBreaks)) return "break";                 // сам слот — перерва кабінету
+    if (breakClash(a, slotDur, roomBreaks)) return "tight";     // слот робочий, але дослідження заїде в перерву
     if (isBookToday && a < nowMin) return "past";
     if (busySlots.some((x) => a >= x.s && a < x.e)) return "busy";
     if (busySlots.some((x) => a < x.e && x.s < bBlock)) return "tight";
@@ -260,6 +261,20 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     const s = toMin(slot);
     const after = busySlots.filter((x) => x.s >= s).sort((a, b) => a.s - b.s)[0];
     return after ? fmt(after.s) : null;
+  }
+  function breakLabel(slot: string) {
+    const br = inBreak(toMin(slot), roomBreaks);
+    return br ? `Перерва в роботі кабінету · ${br.start}–${br.end}` : "Перерва в роботі кабінету";
+  }
+  // Причина «не вміщується» — у тому ж порядку, що й перевірки в slotState.
+  function tightReason(slot: string) {
+    const a = toMin(slot);
+    const endLab = `кінець графіка (${fmt(schedEnd)})`;
+    if (a + slotDur > schedEnd) return endLab;
+    const br = breakClash(a, slotDur, roomBreaks);
+    if (br) return `перерву ${br.start}–${br.end}`;
+    const appt = nextApptAfter(slot);
+    return appt ? `запис о ${appt}` : endLab;
   }
   // Реальна місткість дня для цієї тривалості (жадібна укладка), а не к-сть 5-хв позицій.
   const fitCount = countFit(slots, (s) => slotState(s) === "free", slotDur + buffer);
@@ -525,8 +540,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                   stateOf={slotState}
                   titleOf={(s, st) => st === "busy" ? "Зайнято"
                     : st === "blocked" ? "Кабінет на ремонті/ТО"
-                    : st === "break" ? "Перерва в роботі кабінету"
-                    : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець графіка (" + fmt(schedEnd) + ")"}`
+                    : st === "break" ? breakLabel(s)
+                    : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${tightReason(s)}`
                     : st === "past" ? "Час минув"
                     : `Вільно · ${s}–${fmt(toMin(s) + slotDur)}`}
                 />
@@ -541,6 +556,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                 <span><span className="lg-dot free" />вільно</span>
                 <span><span className="lg-dot tight" />не вміщується</span>
                 <span><span className="lg-dot busy" />зайнято</span>
+                {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
               </div>
               {time && (() => {
                 const s = toMin(time), e = s + slotDur, eBlock = s + slotDur + buffer;

@@ -1245,8 +1245,10 @@ select.inp { cursor: pointer; }
 .slot-blk-lab { font-size: 10.5px; font-weight: 700; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .slot-blk-cells { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; }
 .slot-blk-cells .slot { padding: 5px 0; font-size: 9px; border-radius: 4px; min-width: 0; }
-/* Зелені межі планованого дослідження (початок і кінець) */
-.slot.plan { border-color: var(--green) !important; color: #eafff0 !important; background: rgba(48, 209, 88, 0.28) !important; opacity: 1 !important; text-decoration: none !important; }
+/* Зелені межі планованого дослідження — правило нижче (після .busy/.tight/.brk),
+   бо слот-кінець сам по собі майже завжди tight (як стартова позиція нове
+   дослідження звідти вже не влазить), а при рівній специфічності з !important
+   виграє останнє правило. */
 @media (max-width: 560px) { .slot-grid4 { grid-template-columns: repeat(2, 1fr); } }
 
 /* Перерви в редакторі графіка на дату (ScheduleEditModal) */
@@ -1398,9 +1400,14 @@ select.inp { cursor: pointer; }
 .bk-missing::before { content: "⚠ Залишилось:"; color: var(--red); font-weight: 700; margin-right: 2px; }
 .bk-miss-chip { background: var(--red-bg); color: var(--red); border: 1px solid var(--red); border-radius: 7px; padding: 1px 8px; font-size: 11.5px; font-weight: 600; }
 
-/* --- Прозорість слотів: зайнято vs не вміщується + список зайнятості --- */
+/* --- Прозорість слотів: зайнято vs перерва vs не вміщується + список зайнятості --- */
 .slot.busy { border-color: var(--red) !important; color: var(--red) !important; background: var(--red-bg) !important; opacity: 0.9; }
 .slot.tight { border-color: var(--orange) !important; color: var(--orange) !important; background: var(--orange-bg) !important; opacity: 0.9; }
+/* Перерва кабінету — НЕ зайнятість: нейтральна сіра штриховка, без червоного алярму. */
+.slot.brk { border-color: var(--border-strong) !important; color: var(--text-faint) !important; opacity: 0.9;
+  background: repeating-linear-gradient(135deg, rgba(142,142,147,0.26) 0 3px, rgba(142,142,147,0.07) 3px 6px) !important; }
+/* Зелені межі планованого дослідження (початок і кінець) — мають перебивати busy/tight/brk. */
+.slot.plan { border-color: var(--green) !important; color: #eafff0 !important; background: rgba(48, 209, 88, 0.28) !important; opacity: 1 !important; text-decoration: none !important; }
 .bk-busy-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
 .bk-busy-lab { font-size: 11.5px; color: var(--text-muted); }
 .bk-busy-chip { font-size: 11px; font-weight: 600; color: var(--red); background: var(--red-bg); border: 1px solid var(--red); border-radius: 6px; padding: 1px 7px; font-variant-numeric: tabular-nums; }
@@ -1410,6 +1417,8 @@ select.inp { cursor: pointer; }
 .lg-dot.free { background: var(--card-2); border: 1px solid var(--text-muted); }
 .lg-dot.tight { background: var(--orange); }
 .lg-dot.busy { background: var(--red); }
+.lg-dot.brk { border: 1px solid var(--border-strong);
+  background: repeating-linear-gradient(135deg, rgba(142,142,147,0.95) 0 2px, rgba(142,142,147,0.3) 2px 4px); }
 .bk-slot-confirm { margin-top: 9px; font-size: 12.5px; border-radius: 8px; padding: 8px 11px; }
 .bk-slot-confirm.ok { color: var(--green); background: var(--green-bg); }
 .bk-slot-confirm.bad { color: var(--red); background: var(--red-bg); }

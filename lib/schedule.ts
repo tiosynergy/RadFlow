@@ -127,9 +127,24 @@ export function effectiveRoomBreaks(
 
 /** Чи перетинає блок [aMin, aMin+durMin) хоча б одну перерву (хвилини від 00:00). */
 export function overlapsBreak(aMin: number, durMin: number, breaks: Break[]): boolean {
-  const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return (h || 0) * 60 + (m || 0); };
   const end = aMin + durMin;
-  return breaks.some((b) => { const bs = toMin(b.start), be = toMin(b.end); return aMin < be && bs < end; });
+  return breaks.some((b) => { const bs = brkMin(b.start), be = brkMin(b.end); return aMin < be && bs < end; });
+}
+
+const brkMin = (t: string) => { const [h, m] = t.split(":").map(Number); return (h || 0) * 60 + (m || 0); };
+
+/** Слот сам стоїть усередині перерви → кабінет у цей час не працює.
+    Відрізняється від breakClash: там слот робочий, але дослідження заїде в перерву. */
+export function inBreak(aMin: number, breaks: Break[]): Break | null {
+  return breaks.find((b) => aMin >= brkMin(b.start) && aMin < brkMin(b.end)) || null;
+}
+
+/** Слот робочий, але блок [aMin, aMin+durMin) наїжджає на перерву → «не вміщується».
+    Повертає перерву, в яку заїде дослідження (для тултипа), інакше null. */
+export function breakClash(aMin: number, durMin: number, breaks: Break[]): Break | null {
+  if (inBreak(aMin, breaks)) return null; // сам слот — перерва, це інший стан
+  const end = aMin + durMin;
+  return breaks.find((b) => aMin < brkMin(b.end) && brkMin(b.start) < end) || null;
 }
 
 /** Канонічна форма графіка кабінету для майстра (breaks[] у новому зразку).
