@@ -30,6 +30,29 @@ export function buildSlots(startMin: number, endMin: number, step: number = SLOT
   return out;
 }
 
+/** Скільки ще досліджень поточної тривалості реально вміщується у день.
+    Жадібна укладка зліва направо: ставимо запис у найраніший вільний слот,
+    далі стрибаємо за його зайнятість (тривалість + буфер). На відміну від
+    «к-сті вільних 5-хв позицій» (вони перетинаються і кратно завищують число),
+    це та цифра, яка потрібна реєстратурі. */
+export function countFit(
+  slots: string[],
+  isFreeSlot: (slot: string) => boolean,
+  occMin: number
+): number {
+  if (!slots.length || occMin <= 0) return 0;
+  let count = 0;
+  let nextFreeMin = -1;
+  for (const s of slots) {
+    const m = slotToMin(s);
+    if (m < nextFreeMin) continue;   // ще всередині щойно «поставленого» запису
+    if (!isFreeSlot(s)) continue;
+    count++;
+    nextFreeMin = m + occMin;        // наступний запис — не раніше кінця цього + буфер
+  }
+  return count;
+}
+
 export interface SlotBlock {
   key: number;       // startMin блоку (для React key/стану)
   startMin: number;  // початок 30-хв блоку

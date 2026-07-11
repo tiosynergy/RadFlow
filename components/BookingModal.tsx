@@ -13,6 +13,7 @@ import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallMinOfInstant, type Inc
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { useModalA11y } from "@/lib/useModalA11y";
+import { countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
@@ -426,7 +427,9 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
     return after ? fmtMin(after.s) : null;
   }
   const slots = slotsList(schedStartMin, schedEndMin);
-  const freeCount = slots.filter((s) => slotState(s) === "free").length;
+  // Скільки ще досліджень цієї тривалості реально вміщується (жадібна укладка),
+  // а не к-сть вільних 5-хв позицій — вони перетинаються і завищують число.
+  const fitCount = countFit(slots, (s) => slotState(s) === "free", slotDur + buffer);
   const busyList = roomBusy.slice().sort((a, b) => a.s - b.s);
 
   const miss: Record<string, boolean> = { name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time };
@@ -655,7 +658,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
             <div className="fld">
               <div className="bk-slots-head">
                 <span className={"fld-lab" + (miss.time ? " bk-miss-lab" : "")} style={{ margin: 0 }}>Вільні слоти · {fmtShort(bookDate)} {miss.time ? "— оберіть час *" : ""}</span>
-                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {allStudies.length === 0 ? "оберіть область" : slotsLoading ? "завантаження…" : freeCount + " вільних"}</span>
+                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {allStudies.length === 0 ? "оберіть область" : slotsLoading ? "завантаження…" : "вміщується ще " + fitCount}</span>
               </div>
               {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
               {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}

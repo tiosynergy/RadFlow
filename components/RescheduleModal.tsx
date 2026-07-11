@@ -11,7 +11,7 @@ import { roomScheduleFor, effectiveRoomBreaks, overlapsBreak, type DayOverride }
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
-import { buildSlots } from "@/lib/slots";
+import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
@@ -125,7 +125,8 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
     return "free";
   }
   function nextApptAfter(s: string) { const a = toMin(s); const f = busy.filter((x) => x.s >= a).sort((x, y) => x.s - y.s)[0]; return f ? fmt(f.s) : null; }
-  const freeCount = slots.filter((s) => slotState(s) === "free").length;
+  // Реальна місткість дня для цієї тривалості (жадібна укладка), а не к-сть 5-хв позицій.
+  const fitCount = countFit(slots, (s) => slotState(s) === "free", dur + buffer);
   const busyList = busy.slice().sort((a, b) => a.s - b.s);
   const room = (rooms || []).find((r) => r.id === roomId);
   const valid = roomId && time && !roomSched.closed && slotState(time) === "free";
@@ -157,7 +158,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
           <div className="fld-row">
             <label className="fld" style={{ maxWidth: 180 }}><span className="fld-lab">Дата</span>
               <input className="inp tabular" type="date" min={clinicTodayStr} value={dateStr} onChange={(e) => { setDateStr(e.target.value); setTime(""); }} /></label>
-            <div className="fld"><span className="fld-lab">Вільні слоти · блок {dur} хв · {slotsLoading ? "завантаження…" : freeCount + " вільних"}</span></div>
+            <div className="fld"><span className="fld-lab">Вільні слоти · блок {dur} хв · {slotsLoading ? "завантаження…" : "вміщується ще " + fitCount}</span></div>
           </div>
           <div className="fld">
             {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {dateStr}{override && override.label ? " · " + override.label : ""}. Оберіть інший день.</div>}
