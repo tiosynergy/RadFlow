@@ -11,7 +11,7 @@ import PhoneInput from "@/components/PhoneInput";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
-import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
+import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice, normDur } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { countFit } from "@/lib/slots";
@@ -335,7 +335,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     if (pfDurRef.current != null) { setDurEdit(String(pfDurRef.current)); pfDurRef.current = null; return; }
     setDurEdit(String(computedDur));
   }, [region, contrast, studyType]); // eslint-disable-line
-  const dur = Math.max(5, parseInt(durEdit, 10) || computedDur);
+  // H-1: кратно 5 і в межах 5..480 — інакше «47» їхало в БД (ламає сітку слотів),
+  // а «0» взагалі обходив анти-овербукінг (порожній tstzrange). CHECK у 0066 — останній рубіж.
+  const dur = normDur(parseInt(durEdit, 10) || computedDur);
   const durCustom = region && parseInt(durEdit, 10) && parseInt(durEdit, 10) !== computedDur;
 
   const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>(() =>

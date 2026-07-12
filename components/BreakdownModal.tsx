@@ -9,6 +9,7 @@
 
 import { useState } from "react";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { wallNow } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown };
@@ -34,7 +35,16 @@ type Overrides = Record<string, DayOverride | null>;
 
 function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function pad(n: number) { return String(n).padStart(2, "0"); }
-function nowHHMM() { const d = new Date(); return pad(d.getHours()) + ":" + pad(d.getMinutes()); }
+
+/* «Зараз» — у НАСТІННОМУ часі КЛІНІКИ, не браузера (аудит 2026-07-12).
+   Час інцидентів кодується як настінний UTC (канон 0035), і БД (0065/0066) рахує
+   planned/active порівнянням із настінним «зараз» клініки. Якщо дефолт форми брати
+   з годинника браузера (getHours()), то в оператора з іншої зони поломка «зараз»
+   лягала б як 'planned' → unique-індекс «один активний інцидент» її не покриває,
+   кабінет не блокується, пацієнт не йде в «Не відбулося». */
+function wallNowDate() { return new Date(wallNow()); }   // wallNow() = мс настінного часу клініки (як UTC)
+function nowHHMM() { const d = wallNowDate(); return pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()); }
+function todayWall() { const d = wallNowDate(); return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); }
 function dateVal(d: Date) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
 function hhmmFromISO(iso: string | null | undefined) { return String(iso || "").slice(11, 16) || nowHHMM(); }
 function dtFrom(dateStr: string, hhmm: string) { const [h, m] = String(hhmm).split(":").map(Number); const [Y, Mo, D] = String(dateStr).split("-").map(Number); return new Date(Date.UTC(Y, (Mo || 1) - 1, D || 1, h || 0, m || 0, 0, 0)); }
@@ -61,10 +71,10 @@ interface BreakdownSectionProps {
 
 function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, overrides = {} }: BreakdownSectionProps) {
   const [open, setOpen] = useState(!existing); // немає події → одразу форма; є → спершу зведення
-  const [startDate, setStartDate] = useState(existing ? isoDate(existing.started_at) : dateVal(new Date()));
+  const [startDate, setStartDate] = useState(existing ? isoDate(existing.started_at) : dateVal(todayWall()));
   const [startTime, setStartTime] = useState(existing ? hhmmFromISO(existing.started_at) : nowHHMM());
   const [durKey, setDurKey] = useState(existing ? "restore" : "");
-  const [restoreDate, setRestoreDate] = useState(existing?.blocked_until ? isoDate(existing.blocked_until) : dateVal(nextWorkday((() => { const d = new Date(); d.setDate(d.getDate() + 1); return d; })())));
+  const [restoreDate, setRestoreDate] = useState(existing?.blocked_until ? isoDate(existing.blocked_until) : dateVal(nextWorkday((() => { const d = todayWall(); d.setDate(d.getDate() + 1); return d; })())));
   const [restoreTime, setRestoreTime] = useState(existing?.blocked_until ? hhmmFromISO(existing.blocked_until) : "08:00");
   const [autoUnblock, setAutoUnblock] = useState(existing ? existing.auto_unblock !== false : true);
   const [err, setErr] = useState("");
@@ -149,7 +159,7 @@ interface MaintenanceSectionProps {
 }
 
 function MaintenanceSection({ roomId, existing, others, onSave, onResolve }: MaintenanceSectionProps) {
-  const tmrw = dateVal(nextWorkday((() => { const d = new Date(); d.setDate(d.getDate() + 1); return d; })()));
+  const tmrw = dateVal(nextWorkday((() => { const d = todayWall(); d.setDate(d.getDate() + 1); return d; })()));
   const [open, setOpen] = useState(!existing);
   const [startDate, setStartDate] = useState(existing ? isoDate(existing.started_at) : tmrw);
   const [startTime, setStartTime] = useState(existing ? hhmmFromISO(existing.started_at) : "08:00");

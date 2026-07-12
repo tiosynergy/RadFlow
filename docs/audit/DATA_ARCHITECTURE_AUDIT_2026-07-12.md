@@ -39,7 +39,9 @@ C-1 — худший класс бага для мультитенантного
 
 ### 1.2. Находки
 
-#### 🟠 H-1. `duration_min` — **ни одного CHECK** во всей схеме
+#### 🟠 H-1. `duration_min` — **ни одного CHECK** во всей схеме *(✅ закрыто миграцией 0066)*
+
+> **Фикс:** CHECK `> 0, ≤ 480, кратно 5` на `queue_entries`/`waitlist_entries`/`services` (+ CHECK `blocked_until > started_at` на `incidents` — тот же класс: «перевёрнутое» окно простоя роняло `tstzrange` с 22000 на **каждой** брони в кабинет). Плюс единый нормализатор `normDur()` (`lib/studies.ts`) в трёх write-путях, где длительность не проверялась вообще (`createBooking`, `createReferralBooking`, `rescheduleQueueEntry`, waitlist), и в клиентских инпутах — там читался голый `parseInt`, так что «47» и «999» доезжали до БД. `DUR_MAX_MIN` приведён с 600 к 480 (иначе 485–600 падали бы сырым 23514).
 
 **Evidence:** `0003_queue.sql:10` — `duration_min int not null default 30`; `0047:54` (waitlist); `0001:67` (services). Grep по всем `add constraint`: есть `queue_entries_buffer_time_min_chk` (0045), `waitlist_*`, `incidents_status_chk`/`incidents_reason_chk` (0056), `audit_log.action` — и **ничего** на `duration_min`.
 
@@ -180,7 +182,9 @@ const status = startMs > Date.now() ? "planned" : "active";   // Date.now() = 16
 2. Пациент уже `in_progress` → оператор колл-листа (у него список ещё `scheduled/waiting`) жмёт «✕ Відмова» → запись `cancelled` **во время исследования**, карточка кабинета пустеет.
 3. Два переноса подряд → `reschedule_origin` второго записывает как «откуда» слот первого — история переноса испорчена.
 
-### 🟠 H-5. `submitIncident` не атомарен (C-2 прошлого аудита закрыт только для аварийной остановки)
+### 🟠 H-5. `submitIncident` не атомарен (C-2 прошлого аудита закрыт только для аварийной остановки) *(✅ закрыто миграцией 0066)*
+
+> **Фикс:** `submit_incident_rpc` — инцидент и перевод пациента `in_progress → not_held` в одной транзакции; статус `planned/active` считает БД в настенном времени клиники (TS сравнивал настенное с `Date.now()`). Ревью поймало ещё три вещи: правка простоя с **истёкшим** окном выбивала бы из кабинета текущего пациента (добавлено условие `blocked_until > now`); дефолты `BreakdownModal` брались из часов **браузера** (теперь `wallNow()` по клинике); `VALIDATE CONSTRAINT` вынесен отдельным шагом — иначе падение на легаси-строке откатило бы всю миграцию **вместе с RPC**, а код уже переведён на него.
 
 **Evidence:** `actions.ts:357-373` — `insert incidents`, затем отдельным запросом `update queue_entries set status='not_held' … where status='in_progress'`. Две транзакции; результат второго запроса **даже не проверяется**.
 

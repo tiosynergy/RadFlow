@@ -44,6 +44,21 @@ export function normBuffer(v: unknown): number {
   return Math.max(0, Math.min(15, n));
 }
 
+/* ── Длительность исследования (аудит 2026-07-12, H-1) ──────────────────────
+   До 0066 у duration_min не было НИ ОДНОГО ограничения: `duration_min = 0` даёт
+   пустой tstzrange → `&&` ложно → двойная бронь проходит мимо check_no_overlap,
+   а некратные 5 значения ломают сетку слотов (SLOT_STEP = 5). При этом инпуты
+   длительности читались как parseInt() — вбить «47» или «999» можно было.
+   Единый нормализатор: кратно 5, в диапазоне [5, 480]. Тот же диапазон — в CHECK. */
+export const DUR_MIN = 5;
+export const DUR_MAX = 480; // 8 годин — стеля, узгоджена з queue_entries_duration_min_chk
+export function normDur(v: unknown, fallback = 30): number {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return normDur(fallback, 30);
+  const r = Math.round(n / 5) * 5;
+  return Math.max(DUR_MIN, Math.min(DUR_MAX, r));
+}
+
 export const MRT_REGIONS: StudyRegion[] = [
   { label: "Головний мозок", dur: 60, price: 2400, contrast: true },
   { label: "Хребет — шийний відділ", dur: 40, price: 2100, contrast: true },

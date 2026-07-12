@@ -15,7 +15,7 @@
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate } from "@/supabase/types";
-import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
+import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
 import { wallNow, wallInstant, wallDayKey } from "@/lib/incidents";
@@ -184,7 +184,9 @@ async function crossesRoomBreak(
    «розтягування» запису на весь день. Раніше editQueueEntryStudies приймав
    БУДЬ-ЯКЕ число: дослідження можна було витягнути за кінець графіка і в перерву
    (ловив лише тригер перетину з іншим записом, та й той рахує без буфера). */
-const DUR_MAX_MIN = 600;
+// Стеля тривалості = стеля CHECK queue_entries_duration_min_chk (0066). Раніше тут
+// було 600, а БД (після 0066) ріже на 480 → значення 485–600 падали б сирою 23514.
+const DUR_MAX_MIN = DUR_MAX;
 
 const ALLOWED_STATUSES: readonly QueueStatus[] = [
   "scheduled",
@@ -420,58 +422,49 @@ export type IncidentActionResult =
   | { ok: true; status: "planned" | "active" }
   | { ok: false; error: string; code?: "duplicate" | "forbidden" | "auth" | "generic" };
 
-/** Создать/обновить простой (поломка/ТО). Будущий старт → planned, текущий → active.
-    При создании активного простоя пациент «у кабінеті» переводится в not_held. */
+/* Створити/оновити простій (поломка / ТО / аварія) — АТОМАРНО, одним RPC (0066).
+   Було: два окремі PostgREST-запити (insert incidents; update in_progress → not_held),
+   тобто дві транзакції, і результат другої навіть не перевірявся. Обрив між ними →
+   кабінет заблоковано, а пацієнт назавжди 'in_progress': унікальний індекс не дасть
+   завести іншого, «Завершити» на заблокованому кабінеті недоступне → КАБІНЕТ МЕРТВИЙ.
+
+   Статус planned/active рахує БД у настінному часі клініки (0065/0066) — TS більше
+   не порівнює настінний startedAt з реальним Date.now(). */
 export async function submitIncident(input: IncidentInput): Promise<IncidentActionResult> {
   if (!input?.roomId) return { ok: false, error: "Не вказано кабінет", code: "generic" };
 
   const supabase = await createClient();
-  const clinicId = await callerClinicId(supabase);
-  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  /* Час інцидентів — «настінний UTC» (той самий канон, що scheduled_at, 0035):
-     BreakdownModal кодує 19:01 як 19:01Z. Порівнювати його з Date.now() (РЕАЛЬНИЙ
-     інстант, 16:01Z для Києва) не можна: поломка, заведена ЗАРАЗ, ставала 'planned'
-     на +offset годин. Наслідки були реальні: unique-індекс «один активний інцидент
-     на кабінет» (0017) її не покривав, а emergency_stop_rpc не бачив і створював
-     ДРУГИЙ інцидент на той самий кабінет. Порівнюємо в одному фреймі. */
-  const startMs = new Date(input.startedAt).getTime();
-  const nowWall = wallNow(await clinicTz(supabase, clinicId));
-  const status: "planned" | "active" = startMs > nowWall ? "planned" : "active";
-  const fields = {
-    room_id: input.roomId,
-    reason: input.reason,
-    reason_label: input.reasonLabel ?? null,
-    note: input.note ?? null,
-    started_at: input.startedAt,
-    blocked_until: input.blockedUntil ?? null,
-    auto_unblock: input.autoUnblock !== false,
-    status,
-  };
+  const { data, error } = await supabase.rpc("submit_incident_rpc", {
+    p_room_id: input.roomId,
+    p_reason: input.reason,
+    p_id: input.id ?? undefined,
+    p_reason_label: input.reasonLabel ?? undefined,
+    p_note: input.note ?? undefined,
+    p_started_at: input.startedAt,
+    p_blocked_until: input.blockedUntil ?? undefined,
+    p_auto_unblock: input.autoUnblock !== false,
+  });
 
-  if (input.id) {
-    const { data, error } = await supabase.from("incidents").update(fields).eq("id", input.id).select("id");
-    if (error) return { ok: false, error: error.message, code: "generic" };
-    if (!data || data.length === 0) return { ok: false, error: "Немає доступу або інцидент не знайдено", code: "forbidden" };
-    return { ok: true, status };
-  }
-
-  const { error } = await supabase.from("incidents").insert({ clinic_id: clinicId, ...fields });
   if (error) {
-    if (/duplicate|unique|23505/i.test(error.message)) {
+    const code = error.code ?? "";
+    // 23505 — унікальний індекс «один активний інцидент на кабінет» (0017).
+    if (code === "23505" || /duplicate|unique|23505/i.test(error.message)) {
       return { ok: false, error: error.message, code: "duplicate" };
+    }
+    if (code === "28000" || /не авторизовано/i.test(error.message)) {
+      return { ok: false, error: "Не авторизовано", code: "auth" };
+    }
+    if (/NOT_FOUND|ROOM_NOT_IN_CLINIC/i.test(error.message)) {
+      return { ok: false, error: "Немає доступу або інцидент не знайдено", code: "forbidden" };
     }
     return { ok: false, error: error.message, code: "generic" };
   }
-  // Поломка ЗАРАЗ під час дослідження → пацієнт «у кабінеті» → «Не відбулося».
-  if (status === "active") {
-    await supabase
-      .from("queue_entries")
-      .update({ status: "not_held" })
-      .eq("clinic_id", clinicId)
-      .eq("room_id", input.roomId)
-      .eq("status", "in_progress");
-  }
+
+  const res = Array.isArray(data) ? data[0] : data;
+  const status = (res?.status === "planned" ? "planned" : "active") as "planned" | "active";
   return { ok: true, status };
 }
 
@@ -585,6 +578,11 @@ async function hasSlotClash(
 function mapBookingError(message: string): QueueActionResult {
   // PAST_SLOT — тригер 0063 (останній рубіж; серверна перевірка стоїть вище).
   if (/PAST_SLOT/i.test(message)) return PAST_ERR;
+  // 0066: CHECK тривалості. Сюди доходити не має (клієнт клампить, сервер нормалізує),
+  // але сирий текст Postgres користувачу показувати не можна.
+  if (/duration_min_chk/i.test(message)) {
+    return { ok: false, error: `Некоректна тривалість дослідження (кратна 5 хв, до ${DUR_MAX / 60} год)`, code: "generic" };
+  }
   if (/incident/i.test(message)) return { ok: false, error: message, code: "incident" };
   if (/overlap|exclusion/i.test(message)) return { ok: false, error: message, code: "slot_unavailable" };
   return { ok: false, error: message, code: "generic" };
@@ -696,7 +694,9 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
     scheduled_date: input.scheduledDate,
     scheduled_time: input.scheduledTime,
     scheduled_at: input.scheduledAt,
-    duration_min: input.durationMin,
+    // H-1: нормалізуємо (кратно 5, 5..480) — клієнтський інпут читався як parseInt(),
+    // тож «47» або «999» доїжджали до БД. duration_min = 0 взагалі обходив анти-овербукінг.
+    duration_min: normDur(input.durationMin),
     buffer_time_min: bufferMin,
     status: "scheduled",
     // Перенос = свіжий слот: скидаємо фактичний старт (важливо, якщо переносимо
@@ -878,7 +878,7 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
     studies_original: input.studies,
     doctor: input.doctor ?? null,
     note: input.notes ?? null,
-    duration_min: input.durationMin,
+    duration_min: normDur(input.durationMin),   // H-1: кратно 5, 5..480 (див. lib/studies.ts)
     buffer_time_min: bufferMin,
     scheduled_date: input.scheduledDate,
     scheduled_time: input.scheduledTime,
@@ -1091,7 +1091,7 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
     doctor: input.doctorName ?? null,
     note: input.note ?? null,
     indication: input.note ?? null,
-    duration_min: input.durationMin,
+    duration_min: normDur(input.durationMin),   // H-1: кратно 5, 5..480 (див. lib/studies.ts)
     buffer_time_min: bufferMin,
     scheduled_date: input.scheduledDate,
     scheduled_time: input.scheduledTime,

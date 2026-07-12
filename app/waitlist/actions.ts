@@ -8,7 +8,7 @@
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, TablesUpdate, WaitlistStatus } from "@/supabase/types";
-import { BUFFER_DEFAULT, normBuffer, type Study } from "@/lib/studies";
+import { BUFFER_DEFAULT, normBuffer, normDur, type Study } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { modalityFromStudies } from "@/lib/waitlist";
 
@@ -90,7 +90,7 @@ export async function addWaitlistEntry(input: WaitlistInput): Promise<WaitlistAc
       patient_age: input.age ?? null,
       patient_weight: input.weight ?? null,
       studies: input.studies,
-      duration_min: input.durationMin || 30,
+      duration_min: normDur(input.durationMin),   // H-1: кратно 5, 5..480 (CHECK 0066)
       buffer_time_min: normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT),
       modality: modalityFromStudies(input.studies as Study[] | null),
       priority_level: normPriority(input.priorityLevel),
@@ -204,6 +204,7 @@ export async function updateWaitlistEntry(
   }
   if (Object.keys(safePatch).length === 0) return { ok: true };
   if (safePatch.buffer_time_min != null) safePatch.buffer_time_min = normBuffer(safePatch.buffer_time_min);
+  if (safePatch.duration_min != null) safePatch.duration_min = normDur(safePatch.duration_min); // H-1 (CHECK 0066)
   if (safePatch.studies !== undefined) {
     // Модальність — похідна від складу досліджень, рахуємо на сервері.
     safePatch.modality = modalityFromStudies(safePatch.studies as Study[] | null);

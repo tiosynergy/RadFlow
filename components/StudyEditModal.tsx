@@ -8,7 +8,7 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, studyDur, studyPrice, CONTRAST_DUR } from "@/lib/studies";
+import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, studyDur, studyPrice, CONTRAST_DUR } from "@/lib/studies";
 import { roomScheduleFor, effectiveRoomBreaks, type DayOverride } from "@/lib/schedule";
 import { wallNow, wallMinOfDay } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
@@ -136,7 +136,8 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
     const delta = contrast ? CONTRAST_DUR : -CONTRAST_DUR;
     patch(i, { contrast, dur: Math.max(5, (Number(r.dur) || 0) + delta) });
   }
-  function setDur(i: number, v: string) { patch(i, { dur: Math.max(5, parseInt(v, 10) || 0) }); }
+  // H-1: кратно 5, 5..480 — те саме обмеження, що CHECK у БД (0066).
+  function setDur(i: number, v: string) { patch(i, { dur: normDur(parseInt(v, 10)) }); }
   function addRow() { setRows((rs) => [...rs, { type: defaultType, region: "", contrast: false, dur: recalc(defaultType, "", false) }]); }
   function removeRow(i: number) { setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : rs)); }
 

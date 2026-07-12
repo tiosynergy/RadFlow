@@ -1033,6 +1033,26 @@ export type Database = {
           patients: Json;
         }[];
       };
+      // 0066: створення/редагування простою однією транзакцією (інцидент +
+      // переведення пацієнта «у кабінеті» в not_held). Статус planned/active
+      // рахує БД у настінному часі клініки.
+      submit_incident_rpc: {
+        Args: {
+          p_room_id: string;
+          p_reason: string;
+          p_id?: string;
+          p_reason_label?: string;
+          p_note?: string;
+          p_started_at?: string;
+          p_blocked_until?: string;
+          p_auto_unblock?: boolean;
+        };
+        Returns: {
+          id: string;
+          status: string;
+          not_held: number;
+        }[];
+      };
       outbox_mark_failed: {
         Args: { p_id: number; p_error: string };
         Returns: undefined;
