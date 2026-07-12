@@ -71,6 +71,18 @@ export function wallMinOfDay(ms: number): number {
   return d.getUTCHours() * 60 + d.getUTCMinutes();
 }
 
+// «Сегодня» (YYYY-MM-DD) в НАСТЕННОМ времени клиники — ключ scheduled_date.
+// Не использовать dateKey(new Date()): он даёт день БРАУЗЕРА (или сервера в
+// Server Action) — в клинике с другой зоной около полуночи это другой день, и
+// «пострадавшие сегодня» считаются не за тот день. getUTC*, т.к. wallNow
+// кодирует настенное время как UTC-мс.
+export function wallDayKey(tz?: string): string {
+  const d = new Date(wallNow(tz));
+  return (
+    d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0")
+  );
+}
+
 // Минуты от начала суток настенного времени клиники для РЕАЛЬНОГО момента (ISO
 // instant, напр. in_progress_at = new Date().toISOString()). Нужно, чтобы
 // начатое (возможно с опозданием) in_progress-исследование занимало сетку слотов

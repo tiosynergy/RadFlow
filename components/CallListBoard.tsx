@@ -9,7 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
-import { entryInIncidentWindow, incidentExpired, setClinicTz } from "@/lib/incidents";
+import { entryInIncidentWindow, incidentExpired, setClinicTz, wallDayKey } from "@/lib/incidents";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
@@ -266,6 +266,12 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   // Слот звільнився (відмова) → підходящі кандидати з листа очікування.
   const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
 
+  // Таймзона клініки (0059). Тримаємо і в стані: від неї залежить, ЯКИЙ день
+  // «сьогодні» для секцій «Запізнення» / «постраждалі» — dateKey(new Date())
+  // давав день БРАУЗЕРА оператора.
+  const [tz, setTz] = useState<string | undefined>(undefined);
+  const todayKey = wallDayKey(tz);
+
   const dayKey = dateKey(date);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
 
@@ -296,7 +302,6 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
       .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
     setIncidents(incs || []);
     if (!incs || !incs.length) { setAffectedToday([]); return; }
-    const todayKey = dateKey(new Date());
     const { data: ents } = await supabase
       .from("queue_entries")
       .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, room_id, scheduled_date")
@@ -309,7 +314,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
       return entryInIncidentWindow(e.scheduled_date, e.scheduled_time, inc);
     });
     setAffectedToday(aff);
-  }, [clinicId]);
+  }, [clinicId, todayKey]);
 
   // Записи на СЬОГОДНІ зі статусом scheduled — джерело секції «Запізнення»
   // (обраний день колл-листа за замовчуванням завтра, тому окремий запит).
@@ -320,21 +325,23 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
         .from("queue_entries")
         .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, doctor, room_id, scheduled_date")
         .eq("clinic_id", clinicId)
-        .eq("scheduled_date", dateKey(new Date()))
+        .eq("scheduled_date", todayKey)
         .eq("status", "scheduled")
         .order("scheduled_time", { ascending: true });
       setTodayScheduled(data || []);
     } catch { /* транзієнтний збій — лишаємо попередній список */ }
-  }, [clinicId]);
+  }, [clinicId, todayKey]);
   useEffect(() => { loadTodayScheduled(); }, [loadTodayScheduled]);
 
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его.
   useEffect(() => { setLoading(true); }, [clinicId]);
 
   // Таймзона клініки → похідні часу рахуються по ній (не по браузеру).
+  // Тримаємо і в модульному синглтоні (wallNow() без аргументу), і в стані:
+  // від tz залежить todayKey → лоадери «сьогодні» перезапустяться, коли зона прийде.
   useEffect(() => {
     createClient().from("clinics").select("timezone").eq("id", clinicId).single()
-      .then(({ data }) => setClinicTz(data?.timezone ?? null));
+      .then(({ data }) => { setClinicTz(data?.timezone ?? null); setTz(data?.timezone ?? undefined); });
   }, [clinicId]);
 
   // Перезапрос записей при смене дня: realtime-хук слушает только clinicId.
@@ -393,12 +400,25 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const res = await setCallNote(id, call_note);
     if (!res.ok) notify("Помилка збереження нотатки: " + res.error, "error");
   }
-  async function confirmAll() {
-    const ids = entries.map((e) => e.id);
+  /* «✓ Всіх підтверджено» — масова НЕОЧЕВИДНА дія. Було три проблеми:
+     1) підтверджувала ВСІХ за день, ігноруючи активний фільтр/пошук (оператор
+        відфільтрував «Не відповідає» — а підтвердились і ті, кому не дзвонили);
+     2) без підтвердження — один клік, скасувати нічим;
+     3) рапортувала успіх навіть коли RLS не оновила жодного рядка.
+     Тепер: діємо рівно на видимий (відфільтрований) список, повз уже
+     підтверджених, через ConfirmDialog, і показуємо реальну кількість. */
+  const [confirmAllAsk, setConfirmAllAsk] = useState(false);
+  const [confirmAllBusy, setConfirmAllBusy] = useState(false);
+
+  async function doConfirmAll(ids: string[]) {
     if (!ids.length) return;
+    setConfirmAllBusy(true);
     const res = await confirmAllCalls(ids);
+    setConfirmAllBusy(false);
+    setConfirmAllAsk(false);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-    notify("Усіх пацієнтів підтверджено", "success");
+    if (res.updated === 0) { notify("Жодного запису не оновлено — перевірте доступ і оновіть сторінку", "error"); reload(); return; }
+    notify(res.updated === 1 ? "Пацієнта підтверджено" : `Підтверджено пацієнтів: ${res.updated}`, "success");
     reload();
   }
 
@@ -472,6 +492,10 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     return String(a.scheduled_time).localeCompare(String(b.scheduled_time));
   });
 
+  // Масове підтвердження діє на ВИДИМИЙ список (фільтр + пошук), повз уже підтверджених.
+  const isNarrowed = filter !== "all" || query.trim().length > 0;
+  const confirmTargets = filtered.filter((p) => (p.call_status || "not_called") !== "confirmed");
+
   return (
     <div className="app">
       <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={rooms} activeNav="calls" />
@@ -487,13 +511,19 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
           <div className="tb-right">
             <input className="inp tabular" type="date" value={dayKey} onChange={(e) => { const [y, m, d] = e.target.value.split("-").map(Number); setDate(new Date(y, m - 1, d)); }} style={{ width: 150 }} />
             <button className="btn btn-secondary" onClick={exportCsv}>↧ Експорт</button>
-            <button className="btn btn-primary" onClick={confirmAll}>✓ Всіх підтверджено</button>
+            <button className="btn btn-primary" disabled={loading || confirmTargets.length === 0} onClick={() => setConfirmAllAsk(true)}
+              title={isNarrowed ? "Підтвердить лише тих, кого видно за поточним фільтром" : "Підтвердить усіх непідтверджених за цей день"}>
+              ✓ Всіх підтверджено{confirmTargets.length ? ` (${confirmTargets.length})` : ""}
+            </button>
           </div>
         </header>
         <div className="content-full">
           <div className="page-max">
             {(() => {
-              const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+              // День «сьогодні» — за настінним часом клініки (той самий, за яким
+              // вибрано todayScheduled), інакше isLate рахував би не той день.
+              const [ty, tm, td] = todayKey.split("-").map(Number);
+              const t0 = new Date(ty, (tm || 1) - 1, td || 1);
               const lateList = todayScheduled.filter((e) => isLate(e.status, t0, e.scheduled_time, e.buffer_time_min));
               return (
                 <LateCallSection late={lateList} roomsById={roomsById}
@@ -594,6 +624,22 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
             setDeclineBusy(false);
             setDeclineAsk(null);
           }}
+        />
+      )}
+
+      {confirmAllAsk && (
+        <ConfirmDialog
+          title="Підтвердити обдзвін масово?"
+          text={<>
+            Статус «Підтверджено» отримають <b>{confirmTargets.length}</b> {confirmTargets.length === 1 ? "пацієнт" : "пацієнтів"} на <b>{fmtFull(date)}</b>
+            {isNarrowed ? <> — <b>лише ті, кого видно за поточним фільтром</b> ({tabs.find((t) => t.key === filter)?.label || "Всі"}{query.trim() ? ` · пошук «${query.trim()}»` : ""}).</> : <> — усі, кому статус ще не проставлено.</>}
+            {" "}Дію не можна скасувати однією кнопкою — статус доведеться міняти вручну.
+          </>}
+          confirmLabel={`✓ Підтвердити (${confirmTargets.length})`}
+          cancelLabel="Скасувати"
+          busy={confirmAllBusy}
+          onClose={() => setConfirmAllAsk(false)}
+          onConfirm={() => doConfirmAll(confirmTargets.map((p) => p.id))}
         />
       )}
 

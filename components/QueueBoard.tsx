@@ -952,19 +952,34 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   async function doEmergencyStop(roomIds: string[], note: string) {
     setEmergencyBusy(true);
-    const res = await emergencyStopAction({ roomIds, note: note || null, date: dateKey(new Date()) });
+    // Дату «цього дня» рахує СЕРВЕР у настінному часі клініки: dateKey(new Date())
+    // дав би день браузера оператора (біля півночі / в іншій зоні — не той день).
+    const res = await emergencyStopAction({ roomIds, note: note || null });
     setEmergencyBusy(false);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-    notify(`Аварійна зупинка: кабінетів ${res.stopped}, на обдзвон ${res.affected}`, "error");
+    // Кабінет, який УЖЕ стоїть на простої (поломка/ТО), другого інциденту не отримує
+    // (unique-індекс «один активний інцидент на кабінет», 0017). Пацієнтів його все
+    // одно позначено на обдзвон, але зняти аварію з нього «Відновити роботу» не зможе —
+    // він знімається як поломка. Мовчки втрачати кабінет в аварії не можна.
+    const skipped = roomIds.length - (res.stopped ?? 0);
+    notify(
+      `Аварійна зупинка: кабінетів ${res.stopped}, на обдзвон ${res.affected}` +
+        (skipped > 0 ? ` · ${skipped} вже були у простої (знімати — як простій)` : ""),
+      "error"
+    );
     setEmergencyOpen(false);
     reload();
   }
-  async function doEmergencyResume(roomIds?: string[]) {
+  // Відновлюємо ЛИШЕ передані кабінети (порожній список сервер відхилить):
+  // раніше виклик без id знімав аварію з усіх кабінетів клініки.
+  async function doEmergencyResume(roomIds: string[]) {
+    if (!roomIds.length) return;
     setEmergencyBusy(true);
-    const res = await resolveEmergencyAction(roomIds?.length ? { roomIds } : {});
+    const res = await resolveEmergencyAction({ roomIds });
     setEmergencyBusy(false);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-    notify("Роботу відновлено", "success");
+    if (res.resolved === 0) { notify("Аварійних зупинок не знято — оновіть сторінку", "error"); loadIncidents(); return; }
+    notify(res.resolved === 1 ? "Роботу кабінету відновлено" : `Відновлено кабінетів: ${res.resolved}`, "success");
     setEmergencyOpen(false);
     reload();
   }

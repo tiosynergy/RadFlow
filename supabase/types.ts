@@ -880,6 +880,7 @@ export type Database = {
         Relationships: [];
       };
       event_outbox: {
+        // next_attempt_at / dead — міграція 0064 (backoff + DLQ).
         Row: {
           id: number;
           created_at: string;
@@ -889,6 +890,8 @@ export type Database = {
           delivered_at: string | null;
           attempts: number;
           last_error: string | null;
+          next_attempt_at: string;
+          dead: boolean;
         };
         Insert: {
           created_at?: string;
@@ -898,6 +901,8 @@ export type Database = {
           delivered_at?: string | null;
           attempts?: number;
           last_error?: string | null;
+          next_attempt_at?: string;
+          dead?: boolean;
         };
         Update: {
           created_at?: string;
@@ -907,6 +912,8 @@ export type Database = {
           delivered_at?: string | null;
           attempts?: number;
           last_error?: string | null;
+          next_attempt_at?: string;
+          dead?: boolean;
         };
         Relationships: [];
       };

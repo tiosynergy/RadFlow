@@ -8,11 +8,19 @@ import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 // додаємо Idempotency-Key (n8n дедуплікує), позначаємо delivered_at при 2xx,
 // інакше attempts++ і last_error (наступна спроба — cron-воркером).
 //
-// Викликається: (1) негайно, best-effort, із Server Action одразу після RPC;
-// (2) періодично cron-роутом /api/outbox/deliver як надійний backstop.
-// Подвійна доставка нешкідлива — n8n дедуплікує за Idempotency-Key.
+// Викликається: (1) негайно, best-effort (НЕ awaited), із Server Action одразу
+// після RPC; (2) періодично cron-воркером (pg_cron → /api/outbox/deliver) як
+// надійний backstop. Подвійна доставка нешкідлива — n8n дедуплікує за Idempotency-Key.
+//
+// Backoff і DLQ (міграція 0064): беремо лише події, ЩО НАСТАЛИ (next_attempt_at <= now)
+// і не «мертві» (dead = false). Раніше вибірка була «усе з attempts < 10» без
+// затримки: кожен виклик миттєво ретраїв усе, а після 10 спроб подія зникала
+// з вибірки назавжди і МОВЧКИ (тепер це явний прапорець dead → моніториться).
 
-const MAX_ATTEMPTS = 10;
+// Таймаут на n8n: Node fetch за замовчуванням БЕЗ таймауту, а доставку викликає
+// аварійна зупинка — найкритичніший за часом сценарій. Повільний n8n не має
+// тримати оператора (подія вже durable в БД).
+const FETCH_TIMEOUT_MS = 3000;
 
 type OutboxRow = {
   id: number;
@@ -35,7 +43,8 @@ export async function deliverPendingOutbox(limit = 20): Promise<DeliverResult> {
     .from("event_outbox")
     .select("id, event_type, idempotency_key, payload, attempts")
     .is("delivered_at", null)
-    .lt("attempts", MAX_ATTEMPTS)
+    .eq("dead", false)                                   // 0064: DLQ — не довбимо безнадійні
+    .lte("next_attempt_at", new Date().toISOString())    // 0064: експоненційний backoff
     .order("created_at", { ascending: true })
     .limit(limit);
   if (error || !rows?.length) return { delivered: 0, failed: 0 };
@@ -59,7 +68,12 @@ export async function deliverPendingOutbox(limit = 20): Promise<DeliverResult> {
     }
 
     try {
-      const resp = await fetch(url, { method: "POST", headers, body });
+      const resp = await fetch(url, {
+        method: "POST",
+        headers,
+        body,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
       if (resp.ok) {
         await admin
           .from("event_outbox")

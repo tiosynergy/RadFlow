@@ -18,7 +18,7 @@ import type { Database, Json, QueueStatus, CallStatus, TablesUpdate } from "@/su
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
-import { wallNow, wallInstant } from "@/lib/incidents";
+import { wallNow, wallInstant, wallDayKey } from "@/lib/incidents";
 import { roomScheduleFor, effectiveRoomBreaks, overlapsBreak, type DayOverride } from "@/lib/schedule";
 
 export type QueueActionResult =
@@ -55,6 +55,11 @@ async function callerClinicId(supabase: SupabaseClient<Database>): Promise<strin
    минулим на секунди. Записів «заднім числом» у продукті немає (постфактум —
    це зміна СТАТУСУ наявного запису), тому в іншому забороняємо жорстко. */
 const PAST_TOLERANCE_MIN = 5;
+
+// Санітизація масових операцій: id мають бути UUID, кількість — обмежена
+// (інакше один виклик Server Action шле в PostgREST десятки тисяч id).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MASS_UPDATE_CAP = 500;
 
 async function clinicTz(supabase: SupabaseClient<Database>, clinicId: string): Promise<string> {
   const { data } = await supabase.from("clinics").select("timezone").eq("id", clinicId).maybeSingle();
@@ -329,8 +334,15 @@ export async function submitIncident(input: IncidentInput): Promise<IncidentActi
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
+  /* Час інцидентів — «настінний UTC» (той самий канон, що scheduled_at, 0035):
+     BreakdownModal кодує 19:01 як 19:01Z. Порівнювати його з Date.now() (РЕАЛЬНИЙ
+     інстант, 16:01Z для Києва) не можна: поломка, заведена ЗАРАЗ, ставала 'planned'
+     на +offset годин. Наслідки були реальні: unique-індекс «один активний інцидент
+     на кабінет» (0017) її не покривав, а emergency_stop_rpc не бачив і створював
+     ДРУГИЙ інцидент на той самий кабінет. Порівнюємо в одному фреймі. */
   const startMs = new Date(input.startedAt).getTime();
-  const status: "planned" | "active" = startMs > Date.now() ? "planned" : "active";
+  const nowWall = wallNow(await clinicTz(supabase, clinicId));
+  const status: "planned" | "active" = startMs > nowWall ? "planned" : "active";
   const fields = {
     room_id: input.roomId,
     reason: input.reason,
@@ -374,28 +386,34 @@ export async function submitIncident(input: IncidentInput): Promise<IncidentActi
    пацієнта «у кабінеті» в not_held, позначає постраждалих ЦЬОГО дня на обдзвон
    (call_status='to_recall'). Подія в n8n пишеться в event_outbox ТРАНЗАКЦІЙНО
    всередині RPC (0055) і доставляється надійно (H-1). «Відновлення» роботи —
-   resolveEmergency (знімає всі активні аварійні інциденти). */
+   resolveEmergency (знімає аварійні інциденти ОБРАНИХ кабінетів).
+
+   «Цей день» рахує СЕРВЕР у настінному часі клініки (wallDayKey(clinics.timezone)).
+   Раніше дату передавав клієнт як dateKey(new Date()) — день БРАУЗЕРА оператора:
+   біля півночі / в іншій зоні на обдзвон потрапляли пацієнти не того дня. */
 
 export type EmergencyResult =
   | { ok: true; stopped: number; affected: number }
   | { ok: false; error: string; code?: "forbidden" | "auth" | "generic" };
 
 /** Аварійно зупинити роботу обраних кабінетів + обдзвон постраждалих ЦЬОГО дня. */
-export async function emergencyStop(input: { roomIds: string[]; note?: string | null; date: string }): Promise<EmergencyResult> {
+export async function emergencyStop(input: { roomIds: string[]; note?: string | null }): Promise<EmergencyResult> {
   const roomIds = Array.from(new Set((input?.roomIds || []).filter(Boolean)));
   if (!roomIds.length) return { ok: false, error: "Не обрано кабінети", code: "generic" };
-  if (!input?.date) return { ok: false, error: "Не вказано дату", code: "generic" };
 
   const supabase = await createClient();
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  // Дата — НЕ з клієнта: настінний «сьогодні» клініки (0059).
+  const date = wallDayKey(await clinicTz(supabase, clinicId));
 
   // Кроки 1–4 (інциденти → обдзвон → not_held → подія в event_outbox)
   // виконуються АТОМАРНО в одній транзакції через RPC emergency_stop_rpc
   // (0054/0055). Ізоляція по клініці — всередині RPC.
   const { data, error } = await supabase.rpc("emergency_stop_rpc", {
     p_room_ids: roomIds,
-    p_date: input.date,
+    p_date: date,
     p_note: input.note ?? null,
   });
   if (error) {
@@ -404,10 +422,12 @@ export async function emergencyStop(input: { roomIds: string[]; note?: string | 
   }
   const res = Array.isArray(data) ? data[0] : data;
 
-  // Негайна best-effort доставка події в n8n. Подія вже durable в event_outbox
-  // (записана транзакційно в RPC), тож якщо доставка тут не вдасться —
-  // cron-воркер /api/outbox/deliver добере її з ретраями (H-1).
-  try { await deliverPendingOutbox(20); } catch { /* backstop — cron */ }
+  // Негайна best-effort доставка події в n8n — НЕ awaited. Подія вже durable в
+  // event_outbox (записана транзакційно в RPC), а оператор в аварії не має чекати
+  // на повільний n8n: раніше `await` на 20 подій без таймауту міг вибити функцію
+  // по maxDuration і показати ПОМИЛКУ на вже закомічену зупинку.
+  // Недоставлене добере cron-воркер /api/outbox/deliver з backoff (0064).
+  void deliverPendingOutbox(3).catch(() => { /* backstop — cron */ });
 
   return { ok: true, stopped: res?.stopped ?? 0, affected: res?.affected ?? 0 };
 }
@@ -416,17 +436,23 @@ export type ResolveEmergencyResult =
   | { ok: true; resolved: number }
   | { ok: false; error: string; code?: "auth" | "generic" };
 
-/** Відновити роботу: зняти активні аварійні інциденти (усі або обрані кабінети). */
-export async function resolveEmergency(input?: { roomIds?: string[] }): Promise<ResolveEmergencyResult> {
+/** Відновити роботу ОБРАНИХ кабінетів: зняти їхні активні аварійні інциденти.
+    roomIds обовʼязковий: раніше порожній виклик знімав аварію з УСІХ кабінетів
+    клініки (кнопка «▶ Відновити роботу» в модалці саме так і викликалась —
+    відновлювала все, хоча в списку були конкретні кабінети). */
+export async function resolveEmergency(input: { roomIds: string[] }): Promise<ResolveEmergencyResult> {
+  const roomIds = Array.from(new Set((input?.roomIds || []).filter(Boolean)));
+  if (!roomIds.length) return { ok: false, error: "Не обрано кабінети", code: "generic" };
+
   const supabase = await createClient();
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  let q = supabase.from("incidents")
+  const { data, error } = await supabase.from("incidents")
     .update({ status: "resolved", resolved_at: new Date().toISOString() })
-    .eq("clinic_id", clinicId).eq("reason", "emergency").eq("status", "active");
-  if (input?.roomIds?.length) q = q.in("room_id", input.roomIds);
-  const { data, error } = await q.select("id");
+    .eq("clinic_id", clinicId).eq("reason", "emergency").eq("status", "active")
+    .in("room_id", roomIds)
+    .select("id");
   if (error) return { ok: false, error: error.message, code: "generic" };
   return { ok: true, resolved: data?.length ?? 0 };
 }
@@ -779,15 +805,28 @@ export async function setCallNote(id: string, note: string): Promise<QueueAction
   return { ok: true };
 }
 
-/** Масове підтвердження обзвону (call_status → confirmed) за списком id. RLS обмежує клінікою. */
-export async function confirmAllCalls(ids: string[]): Promise<QueueActionResult> {
-  if (!Array.isArray(ids) || ids.length === 0) return { ok: true };
+export type ConfirmAllResult =
+  | { ok: true; updated: number }
+  | { ok: false; error: string; code?: "auth" | "generic" };
+
+/** Масове підтвердження обзвону (call_status → confirmed) за списком id. RLS обмежує клінікою.
+    Повертає КІЛЬКІСТЬ реально оновлених рядків: раніше дія рапортувала «усіх
+    підтверджено» навіть коли RLS не оновила жодного рядка. */
+export async function confirmAllCalls(ids: string[]): Promise<ConfirmAllResult> {
+  const list = Array.from(new Set((Array.isArray(ids) ? ids : []).filter((v) => typeof v === "string" && UUID_RE.test(v))));
+  if (!list.length) return { ok: true, updated: 0 };
+  if (list.length > MASS_UPDATE_CAP) return { ok: false, error: "Забагато записів за один раз", code: "generic" };
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
-  const { error } = await supabase.from("queue_entries").update({ call_status: "confirmed" }).in("id", ids);
+  const clinicId = await callerClinicId(supabase);
+  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+  // clinic_id — defense-in-depth поверх RLS (єдиною лінією оборони бути не повинна).
+  const { data, error } = await supabase.from("queue_entries")
+    .update({ call_status: "confirmed" })
+    .eq("clinic_id", clinicId)
+    .in("id", list)
+    .select("id");
   if (error) return { ok: false, error: error.message, code: "generic" };
-  return { ok: true };
+  return { ok: true, updated: data?.length ?? 0 };
 }
 
 /** Редагування даних пацієнта (PatientEditModal). patch — підмножина колонок queue_entries. */

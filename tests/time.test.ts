@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { wallInstant, wallMinOfDay, wallMinOfInstant, wallNow, setClinicTz, incidentEffectiveEnd } from "@/lib/incidents";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { wallInstant, wallMinOfDay, wallMinOfInstant, wallNow, wallDayKey, setClinicTz, incidentEffectiveEnd } from "@/lib/incidents";
 import { priorityRank, normPriority, isActiveStatus } from "@/lib/priority";
 import { normBuffer, BUFFER_DEFAULT, studyDur, CONTRAST_DUR, MRT_REGIONS } from "@/lib/studies";
 
@@ -29,6 +29,31 @@ describe("wall-модель часу", () => {
     const a = wallNow();               // за зоною клініки
     const b = wallNow("UTC");
     expect(Math.abs(a - b)).toBeLessThan(2000);
+  });
+
+  /* Аварійна зупинка позначала на обдзвон постраждалих «сьогодні», де «сьогодні» =
+     день БРАУЗЕРА оператора. Біля півночі (або в оператора з іншої зони) це інший
+     день, ніж у клініки → на обдзвон летіли не ті пацієнти. Тепер день рахує
+     wallDayKey(clinics.timezone) на сервері. */
+  describe("wallDayKey — «сьогодні» за зоною КЛІНІКИ", () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    it("один і той самий інстант дає різні дні в різних зонах", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-13T23:00:00.000Z"));
+      expect(wallDayKey("UTC")).toBe("2026-07-13");
+      expect(wallDayKey("Europe/Kyiv")).toBe("2026-07-14");        // +03 → уже 02:00 наступної доби
+      expect(wallDayKey("America/New_York")).toBe("2026-07-13");   // −04 → ще 19:00
+    });
+
+    it("без аргументу бере зону клініки з setClinicTz", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-13T23:00:00.000Z"));
+      setClinicTz("Europe/Kyiv");
+      expect(wallDayKey()).toBe("2026-07-14");
+      setClinicTz("UTC");
+      expect(wallDayKey()).toBe("2026-07-13");
+    });
   });
 
   it("incidentEffectiveEnd: без blocked_until — «до відновлення»", () => {
