@@ -37,16 +37,34 @@ export function defaultClosed(date: Date): boolean {
   return date.getDay() === 0; // воскресенье
 }
 
+/* Ефективний графік кабінету на дату.
+   Пріоритет: override на дату → БАЗОВИЙ графік кабінету (rooms.schedule) → дефолт.
+
+   roomSchedule ДОДАНО 2026-07-11 (аудит). Раніше функція його не приймала взагалі:
+   майстер налаштувань чесно зберігав days[]/start/end/perDay/dayHours, а сітки
+   слотів усе одно жили за хардкодом «Пн–Сб 08:00–18:00» — тобто пацієнта можна
+   було записати в суботу або о 17:30 у кабінет, який працює Пн–Пт до 15:00.
+
+   roomSchedule = undefined/null → лишається СТАРА поведінка (дефолт + неділя
+   вихідна): екрани, які ще не передають графік, не ламаються. */
 export function roomScheduleFor(
   date: Date,
   roomId: string,
-  override?: DayOverride | null
+  override?: DayOverride | null,
+  roomSchedule?: unknown
 ): EffectiveRoomSchedule {
   if (override && override.all_closed) return { closed: true, start: DEF_START, end: DEF_END, custom: true };
   const ro = override && override.rooms ? override.rooms[roomId] : null;
   if (ro) {
     if (ro.closed) return { closed: true, start: DEF_START, end: DEF_END, custom: true };
     return { closed: false, start: ro.start || DEF_START, end: ro.end || DEF_END, custom: true };
+  }
+  if (roomSchedule != null) {
+    const rs = normalizeRoomSchedule(roomSchedule);
+    const widx = (date.getDay() + 6) % 7; // JS: 0=нд → наш індекс 6; 1=пн → 0
+    if (!rs.days[widx]) return { closed: true, start: rs.start, end: rs.end, custom: false };
+    const dh = rs.perDay ? rs.dayHours[widx] : { start: rs.start, end: rs.end };
+    return { closed: false, start: dh.start || DEF_START, end: dh.end || DEF_END, custom: false };
   }
   if (defaultClosed(date)) return { closed: true, start: DEF_START, end: DEF_END, custom: false };
   return { closed: false, start: DEF_START, end: DEF_END, custom: false };

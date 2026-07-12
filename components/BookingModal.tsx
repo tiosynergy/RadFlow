@@ -4,12 +4,13 @@
    Портовано з queue-app.jsx (NewBookingModal + BookingCalendar + DobField).
    Кабінети беруться з БД (rooms), зайняті слоти — з Supabase (queue_entries). */
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import PhoneInput from "@/components/PhoneInput";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
-import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallMinOfInstant, type IncidentLike } from "@/lib/incidents";
+import { incidentEffectiveEnd, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
+import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { useModalA11y } from "@/lib/useModalA11y";
@@ -19,7 +20,6 @@ import SlotPicker from "@/components/SlotPicker";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type DocOpt = { id: string; name: string; spec?: string | null; clinic_name?: string | null; phone?: string | null };
 type ExtraStudy = { type: string; region: string; dur: number };
-type DayEntryRow = { scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; patient_name: string | null; status: string; in_progress_at: string | null };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 export type BookingPayload = {
   name: string; phone: string; email: string | null; age: number; dob: string;
@@ -173,8 +173,12 @@ export function DobField({ value, onChange, invalid }: { value: string; onChange
   );
 }
 
-export function BookingCalendar({ value, onPick }: { value: Date; onPick: (d: Date) => void }) {
-  const t = today0();
+/* today — «сьогодні» В ТАЙМЗОНІ КЛІНІКИ (не браузера). Якщо не передати, впадемо
+   на дату браузера: у центрі іншої зони це відкривало день, який ТАМ уже минув,
+   і всі його слоти малювались вільними (isBookToday рахувався по браузеру, а
+   nowMin — по клініці: два різні фрейми часу в одній перевірці). */
+export function BookingCalendar({ value, onPick, today }: { value: Date; onPick: (d: Date) => void; today?: Date }) {
+  const t = today || today0();
   const [viewMonth, setViewMonth] = useState(() => new Date(value.getFullYear(), value.getMonth(), 1));
   const shift = (n: number) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
   const y = viewMonth.getFullYear(), mo = viewMonth.getMonth();
@@ -203,7 +207,10 @@ export function BookingCalendar({ value, onPick }: { value: Date; onPick: (d: Da
           const isSel = sameDay(cd, value);
           const isSunday = cd.getDay() === 0;
           const isPast = cd < t;
-          const disabled = isPast || isSunday;
+          /* Неділю більше НЕ блокуємо жорстко: робочі дні кабінету тепер беруться
+             з rooms.schedule (аудит 2026-07-11). Якщо кабінет у цей день не працює,
+             сітка слотів покаже банер «🚫 Кабінет не працює». Блокуємо лише минуле. */
+          const disabled = isPast;
           return (
             <button className={"cal-day" + (isToday ? " today" : "") + (isSel && !isToday ? " selected" : "") + (disabled ? " muted" : "") + (isSunday && !isPast ? " holiday" : "")}
               key={d} disabled={disabled} onClick={() => !disabled && onPick(cd)}>
@@ -219,13 +226,16 @@ export function BookingCalendar({ value, onPick }: { value: Date; onPick: (d: Da
 interface BookingModalProps {
   rooms?: RoomOpt[];
   clinicId?: string | null;
+  /** IANA-зона центру. Передавати ЯВНО: модальний _clinicTz виставляють не всі
+      екрани (напр. /waitlist), і тоді «зараз» рахувалося б по браузеру. */
+  clinicTz?: string | null;
   incidents?: IncidentLike[];
   prefill?: BookingPrefill | null; // напр. запис із листа очікування
   onClose: () => void;
   onSave: (b: BookingPayload) => void;
 }
 
-export default function BookingModal({ rooms, clinicId, incidents = [], prefill, onClose, onSave }: BookingModalProps) {
+export default function BookingModal({ rooms, clinicId, clinicTz, incidents = [], prefill, onClose, onSave }: BookingModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   // Передзаповнення: перше дослідження → основне (тип/область/контраст), решта → додаткові.
   const pfStudies = Array.isArray(prefill?.studies) ? (prefill!.studies as NonNullable<BookingPrefill["studies"]>) : [];
@@ -254,20 +264,24 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
     let cancel = false;
     (async () => {
       if (!clinicId) return;
-      const supabase = createClient();
-      const [docRes, accRes] = await Promise.all([
-        supabase.from("doctors").select("id, name, spec, clinic_name, phone").eq("clinic_id", clinicId).order("name"),
-        supabase.from("referral_access").select("referrer_id").eq("clinic_id", clinicId).eq("status", "active"),
-      ]);
-      const list: DocOpt[] = docRes.data || [];
-      const seen = new Set(list.map((d) => (d.name || "").trim()));
-      const refIds = Array.from(new Set((accRes.data || []).map((a) => a.referrer_id)));
-      if (refIds.length) {
-        const { data: profs } = await supabase.from("profiles").select("id, full_name").in("id", refIds);
-        (profs || []).forEach((pr) => { const n = (pr.full_name || "").trim(); if (n && !seen.has(n)) { seen.add(n); list.push({ id: "ref:" + pr.id, name: n, spec: "направник" }); } });
+      try {
+        const supabase = createClient();
+        const [docRes, accRes] = await Promise.all([
+          supabase.from("doctors").select("id, name, spec, clinic_name, phone").eq("clinic_id", clinicId).order("name"),
+          supabase.from("referral_access").select("referrer_id").eq("clinic_id", clinicId).eq("status", "active"),
+        ]);
+        const list: DocOpt[] = docRes.data || [];
+        const seen = new Set(list.map((d) => (d.name || "").trim()));
+        const refIds = Array.from(new Set((accRes.data || []).map((a) => a.referrer_id)));
+        if (refIds.length) {
+          const { data: profs } = await supabase.from("profiles").select("id, full_name").in("id", refIds);
+          (profs || []).forEach((pr) => { const n = (pr.full_name || "").trim(); if (n && !seen.has(n)) { seen.add(n); list.push({ id: "ref:" + pr.id, name: n, spec: "направник" }); } });
+        }
+        list.sort((a, b) => (a.name || "").localeCompare(b.name || "", "uk"));
+        if (!cancel) setDocs(list);
+      } catch {
+        // Транзієнтний збій мережі — модалка лишається робочою (конвенція проєкту).
       }
-      list.sort((a, b) => (a.name || "").localeCompare(b.name || "", "uk"));
-      if (!cancel) setDocs(list);
     })();
     return () => { cancel = true; };
   }, [clinicId]);
@@ -286,8 +300,8 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
     return today0();
   });
   const [time, setTime] = useState(prefill?.date && prefill?.time ? prefill.time : "");
-  const [dayEntries, setDayEntries] = useState<DayEntryRow[]>([]);
-  const [slotsLoading, setSlotsLoading] = useState(true);
+  const [schedLoading, setSchedLoading] = useState(true); // графік + перерви кабінету (зайнятість — окремий хук)
+  const [schedErr, setSchedErr] = useState(false);
 
   const allRegions = studyType === "MRT" ? MRT_REGIONS : CT_REGIONS;
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
@@ -347,52 +361,54 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
 
   /* зайняті слоти обраного кабінету на обрану дату — з Supabase.
      Поки не завантажено — сітку показуємо як «завантаження», а не «усе вільно». */
-  useEffect(() => {
-    let cancel = false;
-    setSlotsLoading(true);
-    async function load() {
-      try {
-        const supabase = createClient();
-        if (clinicId) {
-          const ovRes = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateKey(bookDate)).maybeSingle();
-          if (!cancel) setOverride((ovRes.data as unknown as DayOverride) || null);
-        }
-        if (!roomId) { if (!cancel) { setDayEntries([]); setRoomSchedule(null); } return; }
-        const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
-        if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
-        const { data } = await supabase
-          .from("queue_entries")
-          .select("scheduled_time, duration_min, buffer_time_min, patient_name, status, in_progress_at")
-          .eq("room_id", roomId)
-          .eq("scheduled_date", dateKey(bookDate))
-          .neq("status", "cancelled")
-          .neq("status", "no_show")
-          .neq("status", "not_held");
-        if (!cancel) setDayEntries(data || []);
-      } finally {
-        if (!cancel) setSlotsLoading(false);
+  const dateKeyStr = dateKey(bookDate);
+  const schedReqRef = useRef(0); // гонка: відповідь по старому кабінету/даті не має перетирати нову
+  const loadSched = useCallback(async () => {
+    const req = ++schedReqRef.current;
+    try {
+      const supabase = createClient();
+      if (clinicId) {
+        const ovRes = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateKeyStr).maybeSingle();
+        if (ovRes.error) throw ovRes.error;
+        if (req !== schedReqRef.current) return;
+        setOverride((ovRes.data as unknown as DayOverride) || null);
       }
+      if (!roomId) { if (req === schedReqRef.current) { setRoomSchedule(null); setSchedErr(false); } return; }
+      const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+      if (roomRes.error) throw roomRes.error; // інакше сітка тихо повернеться до хардкоду «Пн–Сб 08–18»
+      if (req !== schedReqRef.current) return;
+      setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
+      setSchedErr(false);
+    } catch {
+      // Транзієнтний збій — модалку не рушимо, але й сітку не малюємо (конвенція проєкту).
+      if (req === schedReqRef.current) setSchedErr(true);
+    } finally {
+      if (req === schedReqRef.current) setSchedLoading(false);
     }
-    load();
-    return () => { cancel = true; };
-  }, [roomId, bookDate, clinicId]);
+  }, [roomId, dateKeyStr, clinicId]);
 
-  // e — ефективний кінець зайнятості: тривалість + буфер наявного запису.
-  // ВАЖЛИВО: дослідження «в кабінеті» (in_progress), розпочате за фактом (можливо
-  // із запізненням), займає кабінет від ФАКТИЧНОГО старту (in_progress_at), а не
-  // від планового scheduled_time — інакше пізній старт залишає «дірку» в сітці й
-  // можна записати пацієнта на час, коли кабінет ще зайнятий.
-  const roomBusy = dayEntries
-    .filter((p) => p.scheduled_time || (p.status === "in_progress" && p.in_progress_at))
-    .map((p) => {
-      const occ = (p.duration_min || 30) + (p.buffer_time_min ?? BUFFER_DEFAULT);
-      const actual = (p.status === "in_progress" && p.in_progress_at) ? wallMinOfInstant(p.in_progress_at) : null;
-      const s = actual != null ? actual : toMin(p.scheduled_time as string);
-      return { s, e: s + occ, name: p.patient_name };
-    });
-  const nowMin = wallMinOfDay(wallNow());
-  const isBookToday = sameDay(bookDate, today0());
-  const roomSched = roomScheduleFor(bookDate, roomId, override);
+  useEffect(() => { setSchedLoading(true); loadSched(); }, [loadSched]);
+
+  /* Зайнятість — через RPC room_busy_slots (спільний хук + realtime), а НЕ прямим
+     select із queue_entries. Дві причини:
+       • ПІБ/дослідження зайнятих слотів має віддавати сервер лише адміну та
+         радіологу (гейт у 0062) — інакше правило трималося б на UI-прапорці, а
+         дані реєстратора все одно летіли б у браузер;
+       • RPC уже рахує окупацію in_progress від ФАКТИЧНОГО старту (0060) — не
+         треба дублювати цю арифметику на клієнті. */
+  const { spans: roomBusy, loading: busyLoading, error: busyError } = useRoomBusy({ roomId, dateStr: dateKeyStr });
+  const slotsLoading = busyLoading || schedLoading;
+
+  /* Один фрейм часу на всю модалку — НАСТІННИЙ час клініки (clinics.timezone).
+     Було: nowMin по клініці, а «сьогодні» (today0) по браузеру — при розбіжності
+     зон перевірка «past» або вимикалась, або зрізала майбутнє. */
+  const _wNow = wallNow(clinicTz || undefined);
+  const nowMin = wallMinOfDay(_wNow);
+  const _wD = new Date(_wNow);
+  const clinicToday = new Date(_wD.getUTCFullYear(), _wD.getUTCMonth(), _wD.getUTCDate()); // «сьогодні» клініки
+  const isBookToday = sameDay(bookDate, clinicToday);
+  const isPastDay = bookDate < clinicToday;
+  const roomSched = roomScheduleFor(bookDate, roomId, override, roomSchedule); // базовий графік кабінету + override на дату
   const schedStartMin = toMin(roomSched.start), schedEndMin = toMin(roomSched.end);
   // Перерви кабінету на цю дату (обід тощо) — дослідження не може їх перетинати.
   const roomBreaks = effectiveRoomBreaks(bookDate, roomId, roomSchedule, override);
@@ -411,6 +427,7 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
   function slotState(slot: string) {
     // e — кінець дослідження (має вміститись у графік); eBlock — з буфером (для перетину з іншими записами).
     const s = toMin(slot), e = s + slotDur, eBlock = s + slotDur + buffer;
+    if (isPastDay) return "past";  // день у минулому (за часом клініки) — весь закритий
     if (roomSched.closed) return "closed";
     if (slotBlockedByIncident(s)) return "blocked";
     if (s < schedStartMin || s >= schedEndMin) return "offhours";
@@ -430,6 +447,20 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
   function breakLabel(slot: string) {
     const br = inBreak(toMin(slot), roomBreaks);
     return br ? `Перерва в роботі кабінету · ${br.start}–${br.end}` : "Перерва в роботі кабінету";
+  }
+  /* Тултип зайнятої пʼятихвилинки. Деталі (статус/ПІБ/дослідження) з'являються,
+     лише якщо їх віддав сервер — тобто для адміна та радіолога цього центру
+     (гейт у RPC 0062). Реєстратор і направник бачать знеособлене «Зайнято». */
+  function busyLabel(slot: string) {
+    const b = busyAt(roomBusy, toMin(slot));
+    return b ? busyTooltip(b) : "Зайнято";
+  }
+  function blockedLabel(slot: string) {
+    const s = toMin(slot);
+    const base = Date.UTC(bookDate.getFullYear(), bookDate.getMonth(), bookDate.getDate(), Math.floor(s / 60), s % 60);
+    const inc = roomIncidents.find((i) => base >= new Date(i.started_at).getTime() && base < incidentEffectiveEnd(i));
+    const until = inc?.blocked_until ? new Date(inc.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : null;
+    return "Кабінет на ремонті/ТО" + (until ? "\nДо " + until : "\nДо відновлення");
   }
   // Причина «не вміщується» — у тому ж порядку, що й перевірки в slotState.
   function tightReason(slot: string) {
@@ -453,6 +484,15 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
   const timeBad = time ? slotState(time) !== "free" : false;
   const room = (rooms || []).find((r) => r.id === roomId) || null;
   const valid = missingList.length === 0 && roomId && !timeBad && !roomSched.closed;
+
+  /* Realtime: обраний слот зайняли, поки модалка була відкрита — знімаємо вибір
+     і кажемо про це, а не даємо натиснути «Зберегти» й отримати помилку в лоб. */
+  const [taken, setTaken] = useState<string | null>(null);
+  useEffect(() => {
+    if (!time || slotsLoading) return;
+    if (slotState(time) !== "free") { setTaken(time); setTime(""); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomBusy, slotsLoading, timeBad]);
 
   function handleSave() {
     if (!valid) return;
@@ -668,17 +708,24 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
               )}
             </div>
 
-            <BookingCalendar value={bookDate} onPick={(d) => { setBookDate(d); setTime(""); }} />
+            <BookingCalendar value={bookDate} today={clinicToday} onPick={(d) => { setBookDate(d); setTime(""); }} />
 
             <div className="fld">
               <div className="bk-slots-head">
                 <span className={"fld-lab" + (miss.time ? " bk-miss-lab" : "")} style={{ margin: 0 }}>Вільні слоти · {fmtShort(bookDate)} {miss.time ? "— оберіть час *" : ""}</span>
                 <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {allStudies.length === 0 ? "оберіть область" : slotsLoading ? "завантаження…" : "вміщується ще " + fitCount}</span>
               </div>
-              {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
-              {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
-              {!roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncidents[0]?.blocked_until ? " до " + new Date(Math.max(...roomIncidents.map((i) => i.blocked_until ? new Date(i.blocked_until).getTime() : 0))).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : ""}. Оберіть слот після відновлення або інший день/кабінет.</div>}
-              {allStudies.length === 0
+              {/* Банери — лише КОЛИ КАБІНЕТ ОБРАНО: без roomId графік падає на дефолт
+                  (неділя = вихідний) і показував хибне «Кабінет не працює». */}
+              {roomId && roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
+              {roomId && !roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
+              {roomId && !roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncidents[0]?.blocked_until ? " до " + new Date(Math.max(...roomIncidents.map((i) => i.blocked_until ? new Date(i.blocked_until).getTime() : 0))).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : ""}. Оберіть слот після відновлення або інший день/кабінет.</div>}
+              {taken && <div className="ctx-hint red" style={{ marginBottom: 10 }}>⚡ Слот {taken} щойно зайняли — оберіть інший. <button className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={() => setTaken(null)}>Зрозуміло</button></div>}
+              {/* Зайнятість/графік не завантажились — сітку НЕ показуємо: порожній день
+                  виглядав би як «усе вільно», і можна було б записати пацієнта поверх іншого. */}
+              {(busyError || schedErr) && !slotsLoading
+                ? <div className="ctx-hint red" style={{ marginBottom: 10 }}>⚠ Не вдалося завантажити {busyError ? "зайнятість" : "графік"} кабінету — оновіть сторінку. Показувати вільний час не можемо.</div>
+                : allStudies.length === 0
                 ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
                 : slotsLoading
                 ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
@@ -690,8 +737,8 @@ export default function BookingModal({ rooms, clinicId, incidents = [], prefill,
                   spanMin={slotDur}
                   resetKey={roomId + "|" + dateKey(bookDate) + "|" + slotDur + "|" + buffer}
                   stateOf={slotState}
-                  titleOf={(s, st) => st === "busy" ? "Зайнято"
-                    : st === "blocked" ? "Кабінет на ремонті/ТО"
+                  titleOf={(s, st) => st === "busy" ? busyLabel(s)
+                    : st === "blocked" ? blockedLabel(s)
                     : st === "break" ? breakLabel(s)
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${tightReason(s)}`
                     : st === "past" ? "Час минув"

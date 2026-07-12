@@ -24,8 +24,22 @@ export async function POST(req: Request) {
   // технічний email від логіну (вхід усе одно за логіном).
   const note = String(body.note || "").trim() || null; // примітка ДО ГРАНТУ (referral_access)
   const policy = body.policy === "confirm" ? "confirm" : "direct";
-  const roomIdsRaw = Array.isArray(body.room_ids) ? body.room_ids.filter((x: unknown) => UUID_RE.test(String(x))) : [];
-  const room_ids = roomIdsRaw.length ? roomIdsRaw : null; // null = усі кабінети
+  /* room_ids: null/відсутній = УСІ кабінети центру; непорожній масив = підмножина.
+     Усе інше — 400, а НЕ «усі кабінети»: раніше і не-масив, і порожній масив, і
+     масив із невалідними UUID мовчки перетворювались на null — тобто «зняти всі
+     кабінети» відкривало доступ до ВСІХ. */
+  const rawRoomIds: string[] | null = Array.isArray(body.room_ids) ? body.room_ids.map((x: unknown) => String(x)) : null;
+  if ("room_ids" in body && body.room_ids !== null && !Array.isArray(body.room_ids)) {
+    return NextResponse.json({ error: "Некоректні ідентифікатори кабінетів" }, { status: 400 });
+  }
+  if (rawRoomIds && rawRoomIds.length === 0) {
+    return NextResponse.json({ error: "Оберіть хоча б один кабінет (або залиште «усі кабінети»)" }, { status: 400 });
+  }
+  const roomIdsRaw = rawRoomIds ? rawRoomIds.filter((x: string) => UUID_RE.test(x)) : null;
+  if (rawRoomIds && roomIdsRaw && roomIdsRaw.length !== rawRoomIds.length) {
+    return NextResponse.json({ error: "Некоректні ідентифікатори кабінетів" }, { status: 400 });
+  }
+  const room_ids = roomIdsRaw && roomIdsRaw.length ? roomIdsRaw : null; // null = усі кабінети
 
   // Логін обовʼязковий завжди. ПІБ і телефон обовʼязкові ЛИШЕ для нового акаунта
   // (перевірка нижче, у гілці створення) — якщо направник уже є в RadFlow, його
@@ -39,6 +53,17 @@ export async function POST(req: Request) {
   const effectiveEmail = loginSan + "@referrer.radflow.local";
 
   const admin = createAdminClient();
+
+  // Кабінети гранта мають належати центру адміна. Перевірки UUID-формату замало:
+  // інакше в room_ids осідають id видалених/чужих кабінетів (у списку — «?»).
+  if (room_ids) {
+    const { data: okRooms } = await admin
+      .from("rooms").select("id").eq("clinic_id", me.clinic_id).in("id", room_ids);
+    const okSet = new Set((okRooms || []).map((r) => r.id));
+    if (room_ids.some((id: string) => !okSet.has(id))) {
+      return NextResponse.json({ error: "Кабінет не належить вашому центру" }, { status: 400 });
+    }
+  }
 
   // Чи вже є направник із таким логіном? (логін унікальний)
   const { data: existingProf } = await admin

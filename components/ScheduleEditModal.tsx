@@ -5,12 +5,12 @@
    або змінити графік окремих кабінетів. Зберігається у schedule_overrides. */
 
 import { useState } from "react";
-import { DEF_START, DEF_END, defaultClosed, roomScheduleFor, normalizeBreaks, type DayOverride, type Break } from "@/lib/schedule";
+import { DEF_START, DEF_END, roomScheduleFor, normalizeBreaks, type DayOverride, type Break } from "@/lib/schedule";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 const LABELS = ["Державне свято", "Вихідний день", "Санітарний день", "Технічне обслуговування"];
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown };
 type RoomMode = { mode: "open" | "custom" | "closed"; start: string; end: string; breaks: Break[] };
 type OverrideBuild = {
   all_closed: boolean;
@@ -37,15 +37,21 @@ function fmtShort(d: Date) {
 
 export default function ScheduleEditModal({ date, rooms, existing, entries, onClose, onSave, onReset }: ScheduleEditModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
-  const defClosed = defaultClosed(date);
   const [allClosed, setAllClosed] = useState(!!(existing && existing.all_closed));
   const [label, setLabel] = useState((existing && existing.label) || "");
   const [roomState, setRoomState] = useState<Record<string, RoomMode>>(() => {
     const m: Record<string, RoomMode> = {};
     (rooms || []).forEach((r) => {
-      const eff = roomScheduleFor(date, r.id, existing);
-      const brk = normalizeBreaks(existing && existing.rooms ? existing.rooms[r.id] : null);
-      const mode: RoomMode["mode"] = eff.closed ? "closed" : ((eff.start !== DEF_START || eff.end !== DEF_END || brk.length > 0) ? "custom" : "open");
+      const eff = roomScheduleFor(date, r.id, existing, r.schedule); // база кабінету + override на дату
+      const ro = existing && existing.rooms ? existing.rooms[r.id] : null;
+      const brk = normalizeBreaks(ro);
+      /* «Типово» = БАЗОВИЙ графік кабінету (rooms.schedule), а не хардкод 08–18.
+         Режим визначаємо за наявністю override на цю дату, а не за тим, чи
+         збігаються години з дефолтом: інакше кабінет із графіком 09:00–15:00
+         щоразу відкривався б як «Інші години» і зберігав зайвий override. */
+      const mode: RoomMode["mode"] = ro
+        ? (ro.closed ? "closed" : "custom")
+        : (eff.closed ? "closed" : "open"); // база кабінету може закривати цей день
       m[r.id] = { mode, start: eff.start || DEF_START, end: eff.end || DEF_END, breaks: brk };
     });
     return m;
@@ -55,15 +61,23 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
   function setBreak(k: string, i: number, patch: Partial<Break>) { setRoomState((s) => { const bs = s[k].breaks.slice(); bs[i] = { ...bs[i], ...patch }; return { ...s, [k]: { ...s[k], breaks: bs } }; }); }
   function delBreak(k: string, i: number) { setRoomState((s) => ({ ...s, [k]: { ...s[k], breaks: s[k].breaks.filter((_, j) => j !== i) } })); }
 
+  /* «Типово» для кабінету = його БАЗОВИЙ графік (rooms.schedule), а не хардкод
+     «Пн–Сб 08–18». Раніше тут стояв defaultClosed(date) (лише неділя), тому:
+       • кабінет, закритий у суботу власним графіком, показувався як «Працює»;
+       • вибір «Працює» на такий день нічого не писав → кабінет мовчки лишався
+         закритим, а вибір «Працює» на неділю писав зайвий override. */
+  const baseClosedOf = (r: RoomOpt) => roomScheduleFor(date, r.id, null, r.schedule).closed;
+
   function buildOv(): OverrideBuild {
     if (allClosed) return { all_closed: true, label: label.trim() || "Неробочий день", rooms: {} };
     const ro: OverrideBuild["rooms"] = {};
     (rooms || []).forEach((r) => {
       const st = roomState[r.id];
       const vb = st.breaks.filter((b) => b.start && b.end && b.start < b.end);
-      if (st.mode === "closed") { if (!defClosed) ro[r.id] = { closed: true }; }
+      const baseClosed = baseClosedOf(r);
+      if (st.mode === "closed") { if (!baseClosed) ro[r.id] = { closed: true }; }
       else if (st.mode === "custom") { ro[r.id] = { start: st.start, end: st.end, ...(vb.length ? { breaks: vb } : {}) }; }
-      else { if (defClosed) ro[r.id] = { start: st.start, end: st.end }; }
+      else { if (baseClosed) ro[r.id] = { start: st.start, end: st.end }; } // «Працює» всупереч базовому графіку
     });
     const o: OverrideBuild = { all_closed: false, rooms: ro };
     if (label.trim()) o.label = label.trim();

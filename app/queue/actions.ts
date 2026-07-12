@@ -18,13 +18,15 @@ import type { Database, Json, QueueStatus, CallStatus, TablesUpdate } from "@/su
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
+import { wallNow, wallInstant } from "@/lib/incidents";
+import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 
 export type QueueActionResult =
   | { ok: true; id?: string } // id — створений запис (createBooking/createReferralBooking)
   | {
       ok: false;
       error: string;
-      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "stale" | "generic";
+      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "stale" | "past" | "off_schedule" | "generic";
       // Для code='stale' (H-2): реальный статус на сервере, чтобы доска ресинкнулась.
       currentStatus?: QueueStatus;
     };
@@ -37,6 +39,83 @@ async function callerClinicId(supabase: SupabaseClient<Database>): Promise<strin
   const { data } = await supabase.from("profiles").select("clinic_id").eq("id", user.id).single();
   return data?.clinic_id ?? null;
 }
+
+/* ===== Заборона слотів у МИНУЛОМУ =====
+   Досі «минуле» ловила лише клієнтська сітка (стан "past"), а сервер і БД не
+   перевіряли нічого. Дірка: у RescheduleModal дата вводиться звичайним
+   <input type="date"> — атрибут min нічого не блокує, — і при даті ≠ сьогодні
+   перевірка past взагалі не виконувалась. Тобто перенести (у тому числі
+   направником, прямим викликом Server Action) можна було у вчора.
+
+   «Зараз» рахуємо в НАСТІННОМУ часі КЛІНІКИ (clinics.timezone, 0059) — у тому
+   самому каноні, що й scheduled_at (0035). Ніколи не по часу сервера.
+
+   Допуск 5 хв: панель колізій та «пізній виклик» законно ставлять запис на
+   найближчу пʼятихвилинку від «зараз», і поки запит летить, слот встигає стати
+   минулим на секунди. Записів «заднім числом» у продукті немає (постфактум —
+   це зміна СТАТУСУ наявного запису), тому в іншому забороняємо жорстко. */
+const PAST_TOLERANCE_MIN = 5;
+
+async function clinicTz(supabase: SupabaseClient<Database>, clinicId: string): Promise<string> {
+  const { data } = await supabase.from("clinics").select("timezone").eq("id", clinicId).maybeSingle();
+  return data?.timezone || "UTC"; // tz передаємо ЯВНО: на сервері модульний _clinicTz не встановлений
+}
+
+/** Слот (дата+час) уже минув за настінним часом клініки? */
+async function isPastSlot(
+  supabase: SupabaseClient<Database>,
+  clinicId: string,
+  scheduledDate: string,
+  scheduledTime: string
+): Promise<boolean> {
+  const slotMs = wallInstant(scheduledDate, scheduledTime);
+  if (!isFinite(slotMs)) return false; // некоректну дату відсіє БД
+  const tz = await clinicTz(supabase, clinicId);
+  return slotMs < wallNow(tz) - PAST_TOLERANCE_MIN * 60000;
+}
+
+const PAST_ERR = { ok: false as const, error: "Цей час уже минув — оберіть майбутній слот", code: "past" as const };
+
+/* ===== Запис ПОЗА ГРАФІКОМ кабінету =====
+   Аудит 2026-07-11: графік кабінету (rooms.schedule: дні тижня + години) не
+   застосовувався НІДЕ — сітки жили за хардкодом «Пн–Сб 08:00–18:00». Це
+   полагоджено в UI, але сам по собі UI-фікс нічого не гарантує: застаріла
+   вкладка або прямий виклик Server Action усе одно запише пацієнта в суботу
+   або о 17:30 у кабінет, що працює Пн–Пт до 15:00. Тому перевіряємо на сервері.
+
+   Правила ті самі, що в сітці: пріоритет override на дату → базовий графік
+   кабінету; саме ДОСЛІДЖЕННЯ має вміститись до кінця графіка (буфер прибирання
+   може виходити за межі — так само, як у computeCallBlock). Перерви кабінету тут
+   НЕ перевіряємо (їх тримає клієнт + тригери зайнятості) — свідоме спрощення. */
+async function isOutsideRoomSchedule(
+  supabase: SupabaseClient<Database>,
+  roomId: string,
+  clinicId: string,
+  scheduledDate: string,
+  scheduledTime: string,
+  durationMin: number
+): Promise<boolean> {
+  const { data: room } = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+  const { data: ov } = await supabase
+    .from("schedule_overrides").select("all_closed, label, rooms")
+    .eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
+
+  const day = new Date(scheduledDate + "T00:00:00");
+  if (isNaN(day.getTime())) return false;
+  const sched = roomScheduleFor(day, roomId, (ov as unknown as DayOverride) || null, room?.schedule ?? null);
+  if (sched.closed) return true;
+
+  const toMin = (t: string) => { const [h, m] = String(t).split(":").map(Number); return (h || 0) * 60 + (m || 0); };
+  const start = toMin(scheduledTime);
+  const end = start + (durationMin || 30);
+  return start < toMin(sched.start) || end > toMin(sched.end);
+}
+
+const OFF_SCHED_ERR = {
+  ok: false as const,
+  error: "Кабінет не працює в цей час — оберіть слот у межах графіка",
+  code: "off_schedule" as const,
+};
 
 const ALLOWED_STATUSES: readonly QueueStatus[] = [
   "scheduled",
@@ -356,6 +435,8 @@ async function hasSlotClash(
 // «перекрытие» (OVERLAP, триггер 0014) оба поднимаются с одним SQLSTATE 23P01,
 // поэтому различить incident/slot_unavailable можно только по сообщению.
 function mapBookingError(message: string): QueueActionResult {
+  // PAST_SLOT — тригер 0063 (останній рубіж; серверна перевірка стоїть вище).
+  if (/PAST_SLOT/i.test(message)) return PAST_ERR;
   if (/incident/i.test(message)) return { ok: false, error: message, code: "incident" };
   if (/overlap|exclusion/i.test(message)) return { ok: false, error: message, code: "slot_unavailable" };
   return { ok: false, error: message, code: "generic" };
@@ -445,6 +526,11 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
     .select("status, scheduled_date, scheduled_time, room_id, clinic_id")
     .eq("id", input.id).maybeSingle();
   const reason = (input.reason || "").trim();
+
+  /* Перенести в МИНУЛЕ не можна — жодною роллю. Клієнтський гейт тут не працював
+     (isToday=false → перевірка "past" пропускалась), тому це і є основна діра. */
+  if (cur?.clinic_id && await isPastSlot(supabase, cur.clinic_id, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  if (cur?.clinic_id && await isOutsideRoomSchedule(supabase, input.roomId, cur.clinic_id, input.scheduledDate, input.scheduledTime, input.durationMin)) return OFF_SCHED_ERR;
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);
@@ -563,6 +649,9 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  if (await isOutsideRoomSchedule(supabase, input.roomId, clinicId, input.scheduledDate, input.scheduledTime, input.durationMin)) return OFF_SCHED_ERR;
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);
@@ -733,6 +822,9 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
   if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
   const roomAllowed = !access.room_ids || access.room_ids.length === 0 || access.room_ids.includes(input.roomId);
   if (!roomAllowed) return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
+
+  if (await isPastSlot(supabase, input.clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  if (await isOutsideRoomSchedule(supabase, input.roomId, input.clinicId, input.scheduledDate, input.scheduledTime, input.durationMin)) return OFF_SCHED_ERR;
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);

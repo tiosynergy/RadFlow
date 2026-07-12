@@ -7,6 +7,8 @@
    вони поштучні за timestamptz і НЕ залежать від кроку сітки. Тут лише генерація
    кандидатів для UI. */
 
+import { overlapsBreak, type Break } from "./schedule";
+
 export const SLOT_STEP = 5;    // хв — крок вибору слота (раніше 30)
 export const SLOT_BLOCK = 30;  // хв — розмір згорнутого блоку акордеона
 
@@ -51,6 +53,41 @@ export function countFit(
     nextFreeMin = m + occMin;        // наступний запис — не раніше кінця цього + буфер
   }
   return count;
+}
+
+export interface BusySpan { s: number; e: number } // хв доби: зайнятість кабінету (уже з буфером)
+
+/** Найраніша 5-хв позиція ≥ fromMin, куди запис влазить ЦІЛКОМ:
+      • саме дослідження (durMin) до кінця графіка і не в перерву;
+      • дослідження + буфер (occupancy) не перетинає жодну зайнятість кабінету.
+    Використовується панеллю колізій: коли дослідження затягнулося, наступний
+    запис їде не «на дельту», а в перший слот, де він нікого не зачепить — тому
+    каскад не виникає за побудовою. null — до кінця графіка вже не влазить
+    (тоді рішення одне: обзвін). busy має приходити з room_busy_slots (RPC уже
+    рахує окупацію in_progress від фактичного старту — міграція 0060). */
+export function firstFittingSlot(opts: {
+  fromMin: number;
+  durMin: number;
+  bufferMin: number;
+  schedStartMin: number;
+  schedEndMin: number;
+  busy: BusySpan[];
+  breaks?: Break[];
+  step?: number;
+}): string | null {
+  const { fromMin, durMin, schedStartMin, schedEndMin, busy } = opts;
+  const breaks = opts.breaks || [];
+  const step = Math.max(1, opts.step ?? SLOT_STEP);              // 0 → нескінченний цикл
+  const buffer = Math.max(0, Number(opts.bufferMin) || 0);       // NaN мовчки пропустив би зайнятість
+  if (!(durMin > 0) || !(schedEndMin > schedStartMin)) return null;
+  const from = Math.max(fromMin, schedStartMin);
+  for (let s = Math.ceil(from / step) * step; s + durMin <= schedEndMin; s += step) {
+    if (overlapsBreak(s, durMin, breaks)) continue;
+    const occEnd = s + durMin + buffer;
+    if (busy.some((b) => s < b.e && b.s < occEnd)) continue;
+    return slotFmt(s);
+  }
+  return null;
 }
 
 export interface SlotBlock {

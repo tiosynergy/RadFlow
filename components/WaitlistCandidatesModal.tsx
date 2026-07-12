@@ -64,6 +64,7 @@ export async function fetchWaitlistCandidates(
 
 interface WaitlistCandidatesModalProps {
   clinicId: string;
+  clinicTz?: string | null; // явна зона центру для BookingModal («зараз» не по браузеру)
   rooms?: RoomOpt[];
   incidents?: IncidentLite[];
   slot: FreedSlotInfo;
@@ -73,7 +74,7 @@ interface WaitlistCandidatesModalProps {
   onError?: (msg: string) => void;
 }
 
-export default function WaitlistCandidatesModal({ clinicId, rooms, incidents = [], slot, candidates, onClose, onBooked, onError }: WaitlistCandidatesModalProps) {
+export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, incidents = [], slot, candidates, onClose, onBooked, onError }: WaitlistCandidatesModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);
   const roomName = (rooms || []).find((r) => r.id === slot.roomId)?.name || "кабінет";
@@ -117,7 +118,7 @@ export default function WaitlistCandidatesModal({ clinicId, rooms, incidents = [
 
   if (bookFor) {
     return (
-      <BookingModal rooms={rooms} clinicId={clinicId} incidents={incidents} prefill={bookPrefill}
+      <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} prefill={bookPrefill}
         onClose={() => setBookFor(null)} onSave={saveBooking} />
     );
   }

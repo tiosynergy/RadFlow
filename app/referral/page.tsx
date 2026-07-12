@@ -83,7 +83,7 @@ export default async function ReferralPage() {
     if (activeIds.length) {
       const { data: rooms } = await supabase
         .from("rooms")
-        .select("id, name, modality, apparatus_model, clinic_id")
+        .select("id, name, modality, apparatus_model, clinic_id, schedule")
         .in("clinic_id", activeIds)
         .order("name");
       (rooms ?? []).forEach((r) => {
@@ -103,7 +103,7 @@ export default async function ReferralPage() {
       centers.push({ accessId: null, clinicId: clinic.id as string, status: "active", policy: "direct", room_ids: null, name: (clinic.name as string) ?? "", city: (clinic.city as string) ?? null, timezone: (clinic.timezone as string) ?? null });
       const { data: rooms } = await supabase
         .from("rooms")
-        .select("id, name, modality, apparatus_model, clinic_id")
+        .select("id, name, modality, apparatus_model, clinic_id, schedule")
         .eq("clinic_id", profile.clinic_id as string)
         .order("name");
       roomsByClinic[clinic.id as string] = rooms ?? [];

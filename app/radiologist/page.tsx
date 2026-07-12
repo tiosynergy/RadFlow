@@ -38,7 +38,7 @@ export default async function RadiologistPage() {
 
   const { data: allRooms } = await supabase
     .from("rooms")
-    .select("id, name, modality, apparatus_model")
+    .select("id, name, modality, apparatus_model, schedule")
     .eq("clinic_id", profile.clinic_id as string)
     .order("name");
 

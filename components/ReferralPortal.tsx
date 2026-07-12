@@ -133,6 +133,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const [time, setTime] = useState("");
   const [dayEntries, setDayEntries] = useState<BusySlot[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(true);
+  const [slotsErr, setSlotsErr] = useState(false); // зайнятість/простої не завантажились — сітку не показуємо
   const [override, setOverride] = useState<DayOverride | null>(null);
   const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule обраного кабінету (для перерв)
   const [incidents, setIncidents] = useState<IncidentLike[]>([]);
@@ -204,21 +205,34 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [centerId, studyType]);
 
+  /* Помилка завантаження ≠ «вільно» (аудит 2026-07-11). Раніше і зайнятість, і
+     простої бралися як `data || []`: при збої RPC весь день виглядав вільним, а
+     зламаний кабінет — робочим. Тепер піднімаємо slotsErr, сітку не показуємо. */
   const loadDay = useCallback(async () => {
     setSlotsLoading(true);
     try {
       const supabase = createClient();
       if (centerId) {
         const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", centerId).eq("override_date", date).maybeSingle();
+        if (ov.error) throw ov.error;
         setOverride((ov.data as unknown as DayOverride) || null);
         const inc = await supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", centerId).in("status", ["active", "planned"]);
+        if (inc.error) throw inc.error;
         setIncidents(inc.data || []);
       }
-      if (!roomId) { setDayEntries([]); setRoomSchedule(null); return; }
+      if (!roomId) { setDayEntries([]); setRoomSchedule(null); setSlotsErr(false); return; }
       const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
       setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
-      const { data } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
+      // Знеособлена зайнятість: для направника RPC віддає рядки БЕЗ ПІБ/статусу/
+      // досліджень (гейт у 0062) — він бачить лише, що час зайнятий.
+      const { data, error } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
+      if (error) throw error; // PostgREST не кидає сам — інакше «зайнятий день» став би «вільним»
       setDayEntries(data || []);
+      setSlotsErr(false);
+    } catch {
+      // Транзієнтний збій (рефреш токена / мережа) — портал не рушимо, але й
+      // «усе вільно» не малюємо: показуємо помилку й ховаємо сітку.
+      setSlotsErr(true);
     } finally {
       setSlotsLoading(false);
     }
@@ -230,9 +244,19 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     document.addEventListener("visibilitychange", onVis); window.addEventListener("focus", onVis);
     return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); };
   }, [loadDay]);
+  /* Realtime: сітка оновлюється, поки направник заповнює форму. Увага: події
+     ходять під RLS, тож про ЧУЖІ записи направник події не отримає — його рятує
+     refetch по focus/visibility вище + повторна перевірка слота на сервері. */
+  useRealtimeRefetch({
+    channelName: centerId ? "ref-slots-" + centerId + "-" + (roomId || "none") + "-" + date : null,
+    subscriptions: [
+      { table: "queue_entries", onChange: loadDay },
+      { table: "incidents", onChange: loadDay },
+    ],
+  });
 
   const dateObj = new Date(date + "T00:00:00");
-  const roomSched = roomScheduleFor(dateObj, roomId || "", override);
+  const roomSched = roomScheduleFor(dateObj, roomId || "", override, roomSchedule);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
   const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) + (e.buffer_time_min ?? BUFFER_DEFAULT) }));
   const roomBreaks = effectiveRoomBreaks(dateObj, roomId || "", roomSchedule, override); // перерви кабінету на цю дату
@@ -240,11 +264,16 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const _nowW = wallNow(selCenter?.timezone || undefined);
   const nowMin = wallMinOfDay(_nowW);
   const _nowD = new Date(_nowW);
-  const isBookToday = date === (_nowD.getUTCFullYear() + "-" + pad(_nowD.getUTCMonth() + 1) + "-" + pad(_nowD.getUTCDate()));
+  const centerTodayStr = _nowD.getUTCFullYear() + "-" + pad(_nowD.getUTCMonth() + 1) + "-" + pad(_nowD.getUTCDate());
+  const isBookToday = date === centerTodayStr;
+  // «Сьогодні» ЦЕНТРУ (не браузера): направник глобальний, центр може бути в іншій зоні.
+  const centerToday = new Date(_nowD.getUTCFullYear(), _nowD.getUTCMonth(), _nowD.getUTCDate());
+  const isPastDay = date < centerTodayStr;
   const slots: string[] = buildSlots(schedStart, schedEnd); // крок 5 хв
   function slotState(slot: string) {
     // b — кінець дослідження (має вміститись у графік); bBlock — з буфером (перетин з іншими).
     const a = toMin(slot), b = a + slotDur, bBlock = a + slotDur + buffer;
+    if (isPastDay) return "past"; // день у минулому за часом ЦЕНТРУ
     if (roomSched.closed) return "closed";
     const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60);
     if (slotBlockedByIncidents(incidents, roomId || "", slotMs)) return "blocked";
@@ -512,7 +541,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
               )}
             </div>
 
-            <BookingCalendar value={bookDate} onPick={(d) => { setBookDate(d); setTime(""); }} />
+            <BookingCalendar value={bookDate} today={centerToday} onPick={(d) => { setBookDate(d); setTime(""); }} />
 
             <div className="fld">
               <div className="bk-slots-head">
@@ -526,7 +555,14 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
               {roomId && roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
               {roomId && !roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
               {roomId && !roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО у частині дня. Оберіть вільний слот або інший день.</div>}
-              {allStudies.length === 0
+              {/* Зайнятість не завантажилась — сітку НЕ показуємо: порожній день
+                  виглядав би як «усе вільно», і направник записав би пацієнта поверх чужого. */}
+              {slotsErr && !slotsLoading
+                ? <div className="ctx-hint red" style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <span>⚠ Не вдалося завантажити зайнятість кабінету — показати вільний час не можемо.</span>
+                    <button className="btn btn-secondary btn-sm" onClick={() => loadDay()}>↻ Спробувати ще раз</button>
+                  </div>
+                : allStudies.length === 0
                 ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
                 : slotsLoading
                 ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
@@ -1121,6 +1157,8 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason });
     if (!res.ok) {
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
+      // Перенос у минуле / поза графіком кабінету заборонено (сервер + тригер 0063).
+      if (res.code === "past" || res.code === "off_schedule") { notify(res.error, "error"); return; }
       setReschedFor(null);
       notify(res.code === "incident" ? "Кабінет у простої — оберіть інший слот" : res.code === "slot_unavailable" ? "Слот зайнятий — оберіть інший" : "Помилка: " + res.error, "error");
       return;
@@ -1129,6 +1167,10 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     notify("Перенесено", "success"); reload();
   }
 
+  /* Скасування направлення — незворотне (слот звільняється). Раніше йшло в один
+     клік, хоча зняття з листа очікування поруч уже питало підтвердження. */
+  const [cancelAsk, setCancelAsk] = useState<Referral | null>(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
   async function doCancel(entry: Referral) {
     if (!entry) return;
     const res = await cancelQueueEntry(entry.id);
@@ -1183,7 +1225,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         {tab === "mine" && (
           <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} doctorId={doctorId}
             focus={boardFocus}
-            onReschedule={(r) => setReschedFor(r)} onCancel={doCancel} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)} />
+            onReschedule={(r) => setReschedFor(r)} onCancel={(r) => setCancelAsk(r)} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)} />
         )}
         {tab === "waitlist" && (
           <MyWaitlist entries={wlEntries} centersById={centersById} onOpenAdd={() => setWlAddOpen(true)}
@@ -1210,6 +1252,20 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
       )}
       {wlEditFor && (
         <WaitlistModal initial={wlEditFor} onClose={() => setWlEditFor(null)} onSave={wlEditSave} />
+      )}
+      {cancelAsk && (
+        <ConfirmDialog title="Скасувати направлення?"
+          text={<>Запис <b style={{ color: "var(--text)" }}>{cancelAsk.patient_name}</b> о <b style={{ color: "var(--text)" }}>{cancelAsk.scheduled_time}</b> буде скасовано, слот звільниться. Повернути можна лише новим направленням.</>}
+          confirmLabel="✕ Скасувати направлення" cancelLabel="Залишити" danger busy={cancelBusy}
+          onConfirm={async () => {
+            const p = cancelAsk;
+            if (!p) return;
+            setCancelBusy(true);
+            await doCancel(p);
+            setCancelBusy(false);
+            setCancelAsk(null);
+          }}
+          onClose={() => setCancelAsk(null)} />
       )}
       {wlConfirmRemove && (
         <ConfirmDialog title="Зняти з листа очікування"

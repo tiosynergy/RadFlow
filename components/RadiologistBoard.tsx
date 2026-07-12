@@ -22,7 +22,7 @@ import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radiologist.css";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown };
 type RadEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   patient_sex: string | null; patient_weight: number | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null;
@@ -588,7 +588,8 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
 
   const selectedOverride = overrides[dayKey] || null;
   const selDayStatus = dayStatus(selectedOverride, selectedDate);
-  function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride).closed; }
+  const schedOf = (roomId: string) => (rooms || []).find((r) => r.id === roomId)?.schedule;
+  function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride, schedOf(roomId)).closed; }
 
   // Інциденти, що ВЖЕ діють (без авто-знятих наприкінці вікна).
   const liveIncidents = incidents.filter((i) => !incidentExpired(i));
@@ -625,7 +626,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   }
 
   function inProgressBlockReason(p: RadEntry): string | null {
-    const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride) : null;
+    const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)) : null;
     const r = computeCallBlock(p, entries, {
       notToday: !sameDay(selectedDate, today0()),
       roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
@@ -768,7 +769,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
                   <RoomStatusCard key={r.id} room={r}
                     patient={currentByRoom[r.id]} enteredAt={enteredAtOf(currentByRoom[r.id])}
                     nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
-                    schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? selDayStatus.label : null}
+                    schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? (selDayStatus.label || "Не працює за графіком") : null}
                     callBlockReason={nextWaitingByRoom[r.id] ? inProgressBlockReason(nextWaitingByRoom[r.id]) : null}
                     onComplete={completeProc} onCall={callPatient} />
                 ))}

@@ -953,7 +953,16 @@ export type Database = {
       };
       room_busy_slots: {
         Args: { p_room: string; p_date: string; p_exclude?: string };
-        Returns: { scheduled_time: string; duration_min: number; buffer_time_min: number }[];
+        // status/patient_name/studies — лише для admin/radiologist цього центру (0062),
+        // для реєстратора та направника NULL (знеособлена зайнятість).
+        Returns: {
+          scheduled_time: string;
+          duration_min: number;
+          buffer_time_min: number;
+          status: string | null;
+          patient_name: string | null;
+          studies: Json | null;
+        }[];
       };
       search_clinics: {
         Args: { q: string };

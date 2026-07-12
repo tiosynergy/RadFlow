@@ -18,6 +18,7 @@ import { createBooking } from "@/app/queue/actions";
 import { addWaitlistEntry, markWaitlistScheduled, setWaitlistPriority, setWaitlistStatus, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, compareWaitlist, desiredWindowText } from "@/lib/waitlist";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
+import { setClinicTz } from "@/lib/incidents";
 import type { WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
@@ -106,6 +107,25 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
   useEffect(() => {
     try { setHintHidden(localStorage.getItem("rf_waitlist_hint_hidden") === "1"); } catch { /* ignore */ }
   }, []);
+
+  /* Таймзона центру. Без неї wallNow() падав на зону БРАУЗЕРА (setClinicTz цей
+     екран не викликав), і в BookingModal, відкритій із листа очікування, «зараз»
+     рахувалося не за часом клініки — минулі слоти могли стати вибірними. */
+  const [clinicTz, setTz] = useState<string | null>(null);
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data } = await supabase.from("clinics").select("timezone").eq("id", clinicId).maybeSingle();
+        if (cancel) return;
+        const tz = data?.timezone || null;
+        setTz(tz);
+        setClinicTz(tz || undefined);
+      } catch { /* транзієнтний збій — лишаємось на дефолті */ }
+    })();
+    return () => { cancel = true; };
+  }, [clinicId]);
   function hideHint() {
     setHintHidden(true);
     try { localStorage.setItem("rf_waitlist_hint_hidden", "1"); } catch { /* ignore */ }
@@ -482,7 +502,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
           onClose={() => setConfirmRemove(null)} />
       )}
       {bookFor && (
-        <BookingModal rooms={rooms} clinicId={clinicId} incidents={incidents} prefill={bookPrefill}
+        <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} prefill={bookPrefill}
           onClose={() => setBookFor(null)} onSave={saveBooking} />
       )}
 

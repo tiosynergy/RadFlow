@@ -94,7 +94,10 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { notify(data.error || "Помилка створення", "error"); setBusy(false); return; }
       setForm(EMPTY); setFormRooms([]);
-      notify("Радіолога створено. Скопіюйте посилання для встановлення пароля в його картці нижче і передайте йому.", "success");
+      // warning: акаунт створено, але кабінети не призначились — це треба показати,
+      // інакше радіолог мовчки лишиться без жодного кабінету.
+      if (data.warning) notify(String(data.warning), "error");
+      else notify("Радіолога створено. Скопіюйте посилання для встановлення пароля в його картці нижче і передайте йому.", "success");
       reload();
     } catch { notify("Помилка зʼєднання із сервером", "error"); }
     setBusy(false);

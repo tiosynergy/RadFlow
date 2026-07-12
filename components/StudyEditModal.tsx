@@ -93,7 +93,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   // дослідження + буфер не повинні перетнути наступний запис (для графіка —
   // саме дослідження має вміститись, буфер може вийти за межі закриття).
   const dateObj = scheduledDate ? new Date(scheduledDate + "T00:00:00") : new Date();
-  const roomSched = roomScheduleFor(dateObj, patient.room_id || "", override);
+  const roomSched = roomScheduleFor(dateObj, patient.room_id || "", override, roomSchedule);
   const schedEnd = toMin(roomSched.end);
   const capByNext = nextStart != null ? nextStart - startMin - buffer : Infinity;
   const capBySched = schedEnd - startMin;

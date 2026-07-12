@@ -13,6 +13,7 @@ import { entryInIncidentWindow, incidentExpired, setClinicTz } from "@/lib/incid
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import type { WaitlistEntry } from "@/supabase/types";
 import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies, setQueueEntryStatus } from "@/app/queue/actions";
 import { addEntryToWaitlist } from "@/app/waitlist/actions";
@@ -364,6 +365,17 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     suggestWaitlistFor(p);
   }
 
+  /* «✕ Відмова» ставить call_status='declined', а це на сервері СКАСОВУЄ запис
+     (status → cancelled). Кнопка про це не попереджала — користувач дізнавався з
+     тоста постфактум. Тепер деструктивна гілка йде через підтвердження. */
+  const [declineAsk, setDeclineAsk] = useState<{ p: CallEntry; mode: "declined" | "cancel" } | null>(null);
+  const [declineBusy, setDeclineBusy] = useState(false);
+  function setCallGuarded(id: string, call_status: CallStatus) {
+    if (call_status !== "declined") { setCall(id, call_status); return; }
+    const entry = entries.find((e) => e.id === id) || null;
+    if (entry) setDeclineAsk({ p: entry, mode: "declined" });
+  }
+
   async function setCall(id: string, call_status: CallStatus) {
     // Відмова = скасування запису (як на дошці черги); оптимістично локально.
     const entry = entries.find((e) => e.id === id) || null;
@@ -399,6 +411,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed", reason });
     if (!res.ok) {
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
+      if (res.code === "past" || res.code === "off_schedule") { notify(res.error, "error"); return; }
       setReschedFor(null);
       const msg = res.code === "incident" ? "Кабінет у простої — оберіть інший слот" : res.code === "slot_unavailable" ? "Слот зайнятий — оберіть інший" : "Помилка переносу: " + res.error;
       notify(msg, "error");
@@ -496,7 +509,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
                     else notify("Запізнення: додано до листа очікування, запис — «Не відбулося»", "success");
                     reload(); loadTodayScheduled();
                   }}
-                  onRefuse={(p) => cancelEntry(p)} />
+                  onRefuse={(p) => setDeclineAsk({ p, mode: "cancel" })} />
               );
             })()}
             {incidents.map((inc) => (
@@ -505,7 +518,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
                 affected={affectedToday.filter((a) => a.room_id === inc.room_id)}
                 onReschedule={(p) => setReschedFor(p)}
                 onRecall={(p) => setCall(p.id, "to_recall")}
-                onRefuse={(p) => cancelEntry(p)} />
+                onRefuse={(p) => setDeclineAsk({ p, mode: "cancel" })} />
             ))}
             <div className="info-banner">
               <span className="ib-ic">🤖</span>
@@ -549,7 +562,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
                 {filtered.map((p) => (
                   <CallRow key={p.id} p={p} roomName={(p.room_id ? roomsById[p.room_id] : undefined)?.name || "—"} roomModel={(p.room_id ? roomsById[p.room_id] : undefined)?.apparatus_model || ""} dateShort={shortDate(date)}
                     expanded={expandedId === p.id} onToggle={(id) => setExpandedId((x) => (x === id ? null : id))}
-                    onSet={setCall} onNote={setNote} onReschedule={(pt) => setReschedFor(pt)} onEditStudies={(pt) => setEditStudiesFor(pt)} />
+                    onSet={setCallGuarded} onNote={setNote} onReschedule={(pt) => setReschedFor(pt)} onEditStudies={(pt) => setEditStudiesFor(pt)} />
                 ))}
               </div>
             )}
@@ -562,6 +575,27 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
       )}
       {editStudiesFor && (
         <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+      )}
+
+      {declineAsk && (
+        <ConfirmDialog
+          title="Скасувати запис пацієнта?"
+          text={<>«Відмова» скасовує запис <b>{declineAsk.p.patient_name}</b> о <b>{declineAsk.p.scheduled_time}</b>: статус стане «Скасовано», слот звільниться. Якщо пацієнт просто не бере слухавку — оберіть «Не відповідає» або «Передзвонити».</>}
+          confirmLabel="✕ Так, скасувати запис"
+          cancelLabel="Ні, залишити"
+          danger
+          busy={declineBusy}
+          onClose={() => setDeclineAsk(null)}
+          onConfirm={async () => {
+            const a = declineAsk;
+            if (!a) return;
+            setDeclineBusy(true);
+            if (a.mode === "declined") await setCall(a.p.id, "declined");
+            else await cancelEntry(a.p);
+            setDeclineBusy(false);
+            setDeclineAsk(null);
+          }}
+        />
       )}
 
       {wlSuggest && (

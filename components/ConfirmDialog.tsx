@@ -11,14 +11,17 @@ interface ConfirmDialogProps {
   title: string;
   text: ReactNode;
   confirmLabel?: string;
+  /** Напис на кнопці відмови. Для деструктивних дій краще явне «Залишити»/«Ні»,
+      ніж «Скасувати» поруч зі «Скасувати запис» (плутанина: що саме скасовуємо). */
+  cancelLabel?: string;
   danger?: boolean;
   busy?: boolean;
-  hideCancel?: boolean; // прибрати нижню кнопку «Скасувати» (закрити можна ✕ угорі)
+  hideCancel?: boolean; // прибрати нижню кнопку відмови (закрити можна ✕ угорі)
   onConfirm: () => void;
   onClose: () => void;
 }
 
-export default function ConfirmDialog({ title, text, confirmLabel = "Підтвердити", danger, busy, hideCancel, onConfirm, onClose }: ConfirmDialogProps) {
+export default function ConfirmDialog({ title, text, confirmLabel = "Підтвердити", cancelLabel = "Скасувати", danger, busy, hideCancel, onConfirm, onClose }: ConfirmDialogProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   return (
     <div className="overlay">
@@ -29,7 +32,7 @@ export default function ConfirmDialog({ title, text, confirmLabel = "Підтв�
         </div>
         <div className="dlg-body" style={{ fontSize: 13.5, color: "var(--text-secondary)", lineHeight: 1.5 }}>{text}</div>
         <div className="dlg-foot" style={hideCancel ? { justifyContent: "center" } : undefined}>
-          {!hideCancel && <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>}
+          {!hideCancel && <button className="btn btn-ghost" onClick={onClose}>{cancelLabel}</button>}
           <button className={"btn " + (danger ? "btn-danger" : "btn-primary")} disabled={busy} aria-busy={busy} onClick={onConfirm}>
             {busy ? "…" : confirmLabel}
           </button>

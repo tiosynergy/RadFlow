@@ -11,7 +11,7 @@ import { useState } from "react";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { useModalA11y } from "@/lib/useModalA11y";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown };
 type IncidentRow = {
   id: string;
   room_id: string;
@@ -59,7 +59,7 @@ interface BreakdownSectionProps {
   overrides?: Overrides;
 }
 
-function BreakdownSection({ roomId, existing, others, onSave, onResolve, overrides = {} }: BreakdownSectionProps) {
+function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, overrides = {} }: BreakdownSectionProps) {
   const [open, setOpen] = useState(!existing); // немає події → одразу форма; є → спершу зведення
   const [startDate, setStartDate] = useState(existing ? isoDate(existing.started_at) : dateVal(new Date()));
   const [startTime, setStartTime] = useState(existing ? hhmmFromISO(existing.started_at) : nowHHMM());
@@ -70,7 +70,10 @@ function BreakdownSection({ roomId, existing, others, onSave, onResolve, overrid
   const [err, setErr] = useState("");
 
   // Кінець дня — за ефективним графіком кабінету на дату початку (з урахуванням особливого графіка/overrides).
-  const schedEnd = (() => { const d = dtFrom(startDate, "00:00"); return roomScheduleFor(d, roomId, overrides[startDate] || null).end; })();
+  const schedEnd = (() => {
+    const d = dtFrom(startDate, "00:00");
+    return roomScheduleFor(d, roomId, overrides[startDate] || null, room?.schedule).end;
+  })();
   function blockedUntil(startedAt: Date): Date | null {
     if (durKey === "1h") return new Date(startedAt.getTime() + 3600e3);
     if (durKey === "2h") return new Date(startedAt.getTime() + 2 * 3600e3);

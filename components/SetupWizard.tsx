@@ -452,6 +452,35 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
           dayHours: e.dayHours.map((dh) => ({ start: dh.start, end: dh.end, breaks: dh.breaks.filter((b) => b.start && b.end && b.end > b.start) })),
         } as unknown as Json,
       });
+      /* ⚠ Видалення кабінету — НЕ безпечна операція: queue_entries.room_id має
+         ON DELETE SET NULL (0001), тож усі записи пацієнтів (зокрема майбутні)
+         лишилися б у базі з room_id = NULL: зникають із дошки кабінету, їх не
+         можна викликати в кабінет, і ніхто про це не дізнається (раніше тут був
+         просто тост «Зміни збережено»). Тому: перевіряємо ДО будь-яких записів
+         у БД і блокуємо збереження, поки активні записи не перенесуть/скасують. */
+      const { data: existingRooms } = await supabase.from("rooms").select("id, name").eq("clinic_id", clinicId);
+      const keptIds = d.equip.map((e) => e.roomId).filter(Boolean) as string[];
+      const removedRooms = (existingRooms || []).filter((r) => !keptIds.includes(r.id));
+      if (removedRooms.length) {
+        const { data: blockers, error: be } = await supabase
+          .from("queue_entries")
+          .select("room_id")
+          .in("room_id", removedRooms.map((r) => r.id))
+          .in("status", ["scheduled", "waiting", "in_progress"]);
+        if (be) throw be;
+        if (blockers && blockers.length) {
+          const byRoom: Record<string, number> = {};
+          blockers.forEach((b) => { const k = String(b.room_id); byRoom[k] = (byRoom[k] || 0) + 1; });
+          const list = removedRooms
+            .filter((r) => byRoom[r.id])
+            .map((r) => `«${r.name}» — ${byRoom[r.id]} запис(ів)`)
+            .join("; ");
+          push("Не можна видалити кабінет із активними записами: " + list + ". Спершу перенесіть або скасуйте ці записи.", "error");
+          setSaving(false);
+          return false;
+        }
+      }
+
       const keepIds: string[] = [];
       for (const e of d.equip) {
         if (e.roomId) {
@@ -464,11 +493,9 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
           if (ins) keepIds.push(ins.id);
         }
       }
-      // Прибрані в майстрі кабінети — видаляємо точково за id.
-      const { data: existingRooms } = await supabase.from("rooms").select("id").eq("clinic_id", clinicId);
-      const removed = (existingRooms || []).map((r) => r.id).filter((id) => !keepIds.includes(id));
-      for (const id of removed) {
-        const { error: de } = await supabase.from("rooms").delete().eq("id", id);
+      // Прибрані в майстрі кабінети (активних записів у них уже точно немає — перевірили вище).
+      for (const r of removedRooms) {
+        const { error: de } = await supabase.from("rooms").delete().eq("id", r.id);
         if (de) throw de;
       }
 
