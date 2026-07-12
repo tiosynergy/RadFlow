@@ -19,7 +19,7 @@ import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
 import { wallNow, wallInstant } from "@/lib/incidents";
-import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, effectiveRoomBreaks, overlapsBreak, type DayOverride } from "@/lib/schedule";
 
 export type QueueActionResult =
   | { ok: true; id?: string } // id — створений запис (createBooking/createReferralBooking)
@@ -116,6 +116,33 @@ const OFF_SCHED_ERR = {
   error: "Кабінет не працює в цей час — оберіть слот у межах графіка",
   code: "off_schedule" as const,
 };
+
+/** Чи перетинає дослідження [time, +dur) перерву кабінету на цю дату. */
+async function crossesRoomBreak(
+  supabase: SupabaseClient<Database>,
+  roomId: string,
+  clinicId: string,
+  scheduledDate: string,
+  scheduledTime: string,
+  durationMin: number
+): Promise<boolean> {
+  const { data: room } = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+  const { data: ov } = await supabase
+    .from("schedule_overrides").select("all_closed, label, rooms")
+    .eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
+  const day = new Date(scheduledDate + "T00:00:00");
+  if (isNaN(day.getTime())) return false;
+  const breaks = effectiveRoomBreaks(day, roomId, room?.schedule ?? null, (ov as unknown as DayOverride) || null);
+  if (!breaks.length) return false;
+  const [h, m] = String(scheduledTime).split(":").map(Number);
+  return overlapsBreak((h || 0) * 60 + (m || 0), durationMin || 30, breaks);
+}
+
+/* Клінічні тривалості — кратні 5 хв; стеля 600 хв (10 год) відсікає абсурд і
+   «розтягування» запису на весь день. Раніше editQueueEntryStudies приймав
+   БУДЬ-ЯКЕ число: дослідження можна було витягнути за кінець графіка і в перерву
+   (ловив лише тригер перетину з іншим записом, та й той рахує без буфера). */
+const DUR_MAX_MIN = 600;
 
 const ALLOWED_STATUSES: readonly QueueStatus[] = [
   "scheduled",
@@ -599,6 +626,31 @@ export async function editQueueEntryStudies(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
+  /* Валідація тривалості НА СЕРВЕРІ (аудит 2026-07-11). Клієнт обмежує повзунок
+     графіком/перервою/наступним записом, але сам по собі клієнт нічого не гарантує:
+     застаріла вкладка чи прямий виклик Server Action розтягували дослідження за
+     кінець робочого дня або крізь перерву. Перетин з іншим записом ловить тригер
+     check_no_overlap; графік і перерви — ось тут. */
+  const dur = Math.round(Number(durationMin));
+  if (!Number.isFinite(dur) || dur <= 0 || dur > DUR_MAX_MIN || dur % 5 !== 0) {
+    return { ok: false, error: "Некоректна тривалість дослідження", code: "generic" };
+  }
+
+  const { data: cur } = await supabase.from("queue_entries")
+    .select("clinic_id, room_id, scheduled_date, scheduled_time, status")
+    .eq("id", id).maybeSingle();
+  if (!cur) return { ok: false, error: "Запис не знайдено", code: "forbidden" };
+
+  const active = cur.status === "scheduled" || cur.status === "waiting" || cur.status === "in_progress";
+  if (active && cur.room_id && cur.clinic_id && cur.scheduled_date && cur.scheduled_time) {
+    if (await isOutsideRoomSchedule(supabase, cur.room_id, cur.clinic_id, cur.scheduled_date, cur.scheduled_time, dur)) {
+      return { ok: false, error: "Дослідження не вміщується до кінця графіка кабінету", code: "off_schedule" };
+    }
+    if (await crossesRoomBreak(supabase, cur.room_id, cur.clinic_id, cur.scheduled_date, cur.scheduled_time, dur)) {
+      return { ok: false, error: "Дослідження перетинає перерву в роботі кабінету", code: "off_schedule" };
+    }
+  }
+
   const hasContrast = Array.isArray(studies)
     ? studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
     : false;
@@ -609,7 +661,7 @@ export async function editQueueEntryStudies(
   const changedBy = prof?.role === "referrer" ? "referrer" : "clinic";
 
   // Буфер оновлюємо лише якщо переданий (редактор досліджень може його змінювати).
-  const patch: TablesUpdate<"queue_entries"> = { studies, duration_min: durationMin, has_contrast: hasContrast, studies_changed_by: changedBy };
+  const patch: TablesUpdate<"queue_entries"> = { studies, duration_min: dur, has_contrast: hasContrast, studies_changed_by: changedBy };
   if (bufferTimeMin != null) patch.buffer_time_min = normBuffer(bufferTimeMin);
 
   const { data, error } = await supabase

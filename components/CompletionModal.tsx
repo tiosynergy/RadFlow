@@ -5,7 +5,6 @@
    (причина зберігається у note). Перенос — окремий етап. */
 
 import { useState, useEffect, type ReactNode } from "react";
-import type { QueueEntry } from "@/supabase/types";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 const FAIL_REASONS = [

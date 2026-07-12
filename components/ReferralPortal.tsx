@@ -23,13 +23,12 @@ import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal"
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
-import { isLate, LATE_META } from "@/lib/queueStatus";
 import type { WaitlistEntry } from "@/supabase/types";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { slotBlockedByIncidents, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
-import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
+import { regionsFor, studyPrice, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { DobField, BookingCalendar, fmtShort, today0 } from "@/components/BookingModal";
 import type { Json } from "@/supabase/types";
@@ -65,28 +64,8 @@ function procLabel(e: { studies?: unknown; note?: string | null }) {
   return e.note || "—";
 }
 function centerLabel(c?: { name: string; city?: string | null } | null) { return c ? c.name + (c.city ? " · " + c.city : "") : "—"; }
-/** Derived «Запізнення» для направлення (та сама формула, що на дошці). */
-function refIsLate(r: { status: string; scheduled_date: string | null; scheduled_time: string | null; buffer_time_min: number | null }): boolean {
-  if (!r.scheduled_date) return false;
-  return isLate(r.status, new Date(r.scheduled_date + "T00:00:00"), r.scheduled_time, r.buffer_time_min);
-}
-
-const ST: Record<string, { label: string; cls: string }> = {
-  scheduled: { label: "Очікує", cls: "gray" },
-  waiting: { label: "В роботі", cls: "blue" },
-  in_progress: { label: "В роботі", cls: "blue" },
-  done: { label: "Виконано", cls: "green" },
-  no_show: { label: "Не відбулося", cls: "red" },
-  not_held: { label: "Не відбулося", cls: "gray" },
-  cancelled: { label: "Скасовано", cls: "gray" },
-};
-const FILTERS = [
-  { key: "all", label: "Усі" },
-  { key: "scheduled", label: "Очікує" },
-  { key: "active", label: "В роботі" },
-  { key: "done", label: "Виконано" },
-  { key: "no_show", label: "Не відбулося" },
-];
+/* Статуси/фільтри/«Запізнення» списку направлень живуть у ReferrerBoard —
+   тутешні копії лишились від старої версії порталу (мертвий код, ESLint-шум). */
 const ACCESS_ST: Record<string, { label: string; cls: string }> = {
   active: { label: "Активний", cls: "green" },
   pending_clinic: { label: "Очікує підтвердження центру", cls: "yellow" },
@@ -112,7 +91,7 @@ interface NewReferralProps {
   onCreated: (nm: string | null, err?: string) => void;
 }
 
-function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCreated }: NewReferralProps) {
+function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: NewReferralProps) {
   const [centerId, setCenterId] = useState(() => (activeCenters.length === 1 ? activeCenters[0].clinicId : ""));
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
@@ -185,8 +164,6 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
 
   const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast) } : null;
   const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false) })));
-  const procLabelTxt = region ? `${primaryKind} · ${region}${contrastSuffix}` : primaryKind;
-  const combinedLabel = allStudies.length ? allStudies.map(studyLabel).join(" + ") : procLabelTxt;
   const slotDur = dur + validExtra.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
   function calcAgeLocal(d: string) { const a = calcAge(d); return a == null || a < 0 ? 0 : a; }
@@ -735,7 +712,6 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
       if (!error && data) setDetails((d) => ({ ...d, [expandedId]: data as unknown as CenterCardData }));
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expandedId, expandedSig]);
 
   const knownIds = useMemo(() => new Set(centers.map((c) => c.clinicId)), [centers]);

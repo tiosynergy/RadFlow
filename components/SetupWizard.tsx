@@ -18,6 +18,31 @@ import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radflow-wizard.css";
 import type { Break } from "@/lib/schedule";
 
+/* ===== Таймзона центру (IANA) =====
+   Від неї залежать «Запізнення», «Уточнити», гарди виклику в кабінет і заборона
+   запису в минуле (канон wall-as-UTC, міграції 0035/0059). Тому це ЯВНЕ поле, а
+   не мовчазний авто-детект браузера при кожному збереженні. */
+function browserTz(): string {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Kyiv"; }
+  catch { return "Europe/Kyiv"; }
+}
+/** Повний список зон (сучасні рушії) з фолбеком на короткий перелік. */
+function tzList(): string[] {
+  const withValues = Intl as unknown as { supportedValuesOf?: (k: string) => string[] };
+  try {
+    const all = withValues.supportedValuesOf?.("timeZone");
+    if (all && all.length) return all;
+  } catch { /* старий рушій — фолбек нижче */ }
+  return ["Europe/Kyiv", "Europe/Warsaw", "Europe/Berlin", "Europe/Prague", "Europe/Vilnius",
+    "Europe/Riga", "Europe/Bucharest", "Europe/Chisinau", "Europe/London", "Europe/Lisbon",
+    "Europe/Madrid", "Europe/Rome", "Europe/Istanbul", "Asia/Tbilisi", "UTC"];
+}
+/** «Europe/Kyiv · 15:42» — щоб адмін одразу бачив, чи час центру збігається з реальним. */
+function tzNow(tz: string): string {
+  try { return new Intl.DateTimeFormat("uk-UA", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date()); }
+  catch { return "—"; }
+}
+
 type Toast = { id: number; msg: string; type: string; out?: boolean };
 type DayHours = { start: string; end: string; breaks: Break[] };
 type EquipItem = {
@@ -30,10 +55,12 @@ type EquipItem = {
 };
 type WizardData = {
   clinic: string; city: string; address: string; phones: string[]; emails: string[];
+  timezone: string;
   adminName: string; adminEmail: string; aPhones: string[]; aEmails: string[]; equip: EquipItem[];
 };
 type WizardInitial = Partial<{
   clinic: string; city: string; address: string; phones: string[]; emails: string[];
+  timezone: string;
   adminName: string; adminEmail: string; adminPhone: string; equip: EquipItem[];
 }>;
 
@@ -165,6 +192,12 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
   const [address, setAddress] = useState(initial.address || "");
   const [phones, setPhones] = useState<string[]>(initial.phones && initial.phones.length ? initial.phones : [""]);
   const [emails, setEmails] = useState<string[]>(initial.emails && initial.emails.length ? initial.emails : [""]);
+  /* Таймзона ЦЕНТРУ (IANA). Раніше її мовчки перезаписувала зона БРАУЗЕРА при
+     кожному «Зберегти» — адмін з іншої країни (або з увімкненим VPN) ламав час
+     усієї клініки: від нього залежать «Запізнення», «Уточнити», гарди виклику й
+     заборона запису в минуле. Тепер це явне поле; авто-детект — лише як
+     початкове значення для НОВОЇ клініки. */
+  const [timezone, setTimezone] = useState(initial.timezone || browserTz());
 
   const [adminName, setAdminName] = useState(initial.adminName || "");
   const [adminEmail, setAdminEmail] = useState(initial.adminEmail || "");
@@ -181,9 +214,9 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
     const adminPhoneOk = aPhones.some((p) => p.trim() !== "");
     const ok = clinic.trim() !== "" && city.trim() !== "" && adminName.trim() !== "" && adminPhoneOk && equip.length > 0 && equipBreaksValid(equip);
     report(1, !!ok);
-    onData({ clinic, city, address, phones, emails, adminName, adminEmail, aPhones, aEmails, equip });
+    onData({ clinic, city, address, phones, emails, timezone, adminName, adminEmail, aPhones, aEmails, equip });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clinic, city, address, phones, emails, adminName, adminEmail, aPhones, aEmails, equip]);
+  }, [clinic, city, address, phones, emails, timezone, adminName, adminEmail, aPhones, aEmails, equip]);
 
   function setEq(i: number, k: string, v: string | boolean) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, [k]: v } : x))); }
   function toggleEqDay(i: number, d: number) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, days: x.days.map((v, k) => (k === d ? (v ? 0 : 1) : v)) } : x))); }
@@ -232,6 +265,17 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
             <CitySelect value={city} onChange={setCity} required /></label>
           <label className="fld" style={{ flex: 2 }}><span className="fld-lab">Адреса</span>
             <input className="inp" placeholder="вул., будинок, поверх, індекс" value={address} onChange={(e) => setAddress(e.target.value)} /></label>
+        </div>
+        <div className="fld-row">
+          <label className="fld"><span className="fld-lab">Часовий пояс центру <Req /></span>
+            <select className="inp" value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+              {(tzList().includes(timezone) ? tzList() : [timezone, ...tzList()]).map((z) => (
+                <option key={z} value={z}>{z}</option>
+              ))}
+            </select>
+            <span className="fld-hint">Зараз у центрі: {tzNow(timezone)}. За цим часом рахуються «Запізнення», «Уточнити» та заборона запису в минуле — не змінюйте, якщо ви в іншій країні за центр.</span>
+          </label>
+          <span className="fld-spacer" />
         </div>
         <div className="contacts-grid">
           <ContactList label="Телефони" items={phones} setItems={setPhones} ph="+38 0__ ___ __ __" />
@@ -412,6 +456,20 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
     try {
       const supabase = createClient();
 
+      /* Таймзона — ЯВНИЙ вибір адміна (поле в профілі центру). Раніше сюди щоразу
+         писалась зона БРАУЗЕРА оператора: адмін із іншої країни (або з VPN) мовчки
+         ламав час усієї клініки — а від нього залежать «Запізнення», «Уточнити»,
+         гарди виклику й заборона запису в минуле. Порожню/невалідну зону не пишемо. */
+      const tz = (d.timezone || "").trim();
+      const tzValid = !!tz && (() => {
+        try { new Intl.DateTimeFormat("uk-UA", { timeZone: tz }); return true; } catch { return false; }
+      })();
+      if (tz && !tzValid) {
+        push("Некоректний часовий пояс центру", "error");
+        setSaving(false);
+        return false;
+      }
+
       const { error: ce } = await supabase
         .from("clinics")
         .update({
@@ -420,10 +478,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
           address: d.address.trim() || null,
           phones: clean(d.phones),
           emails: clean(d.emails),
-          // Таймзона клініки — авто-детект браузера оператора при налаштуванні
-          // (браузер зазвичай у зоні клініки). Керує порогами «Уточнити»/«Запізнення»
-          // на сервері й клієнті (універсально для користувачів з усього світу).
-          timezone: (typeof Intl !== "undefined" && Intl.DateTimeFormat().resolvedOptions().timeZone) || "UTC",
+          ...(tzValid ? { timezone: tz } : {}),
           configured_at: new Date().toISOString(),
         })
         .eq("id", clinicId);
@@ -520,13 +575,6 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
     const ok = await save();
     setExitAsk(false);
     if (ok) router.push("/queue");
-  }
-
-  async function signOut() {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.push("/login");
-    router.refresh();
   }
 
   return (

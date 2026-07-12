@@ -285,9 +285,13 @@ alter table public.queue_entries enable trigger trg_not_during_incident;
 
 ```bash
 npm run typecheck   # == tsc --noEmit  (bare tsc НЕ в PATH — только npx / npm script)
+npm run lint        # ESLint 9 flat config (eslint.config.mjs); `next lint` deprecated
+npm test            # vitest — чистая логика lib/*
 npm run build
 npm run dev         # http://localhost:3000
 ```
+
+**Тесты** (`tests/`, vitest — добавлены 2026-07-11; первый запуск после `npm i`). Покрывают только **чистую логику** `lib/*`, где живут самые дорогие правила: сетка слотов (`countFit`, `firstFittingSlot`), эффективный график кабинета и перерывы, `isLate`/`needsClarification`/`computeCallBlock`/`collisionFor`, wall-модель времени, приоритеты и буфер. Компоненты и БД не покрыты — для них `typecheck` + прогон на сиде.
 
 ---
 

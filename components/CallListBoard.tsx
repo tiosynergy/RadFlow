@@ -4,7 +4,7 @@
    Записи на завтра (або обраний день) → обдзвін/підтвердження. Статус пишеться у
    queue_entries.call_status (синхронно з дошкою), нотатка — у call_note. Realtime. */
 
-import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
@@ -17,7 +17,7 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import type { WaitlistEntry } from "@/supabase/types";
 import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies, setQueueEntryStatus } from "@/app/queue/actions";
 import { addEntryToWaitlist } from "@/app/waitlist/actions";
-import { isLate, LATE_META } from "@/lib/queueStatus";
+import { isLate } from "@/lib/queueStatus";
 import type { CallStatus, Json } from "@/supabase/types";
 import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import "@/styles/prototype/radflow.css";
@@ -37,7 +37,6 @@ function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + M
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function shortDate(d: Date) { return pad(d.getDate()) + "." + pad(d.getMonth() + 1); }
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function studyKind(e: { studies?: unknown }) {
   const arr = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string }>) : [];
   const s = arr[0] ? arr[0].type : null;

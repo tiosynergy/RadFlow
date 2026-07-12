@@ -12,7 +12,7 @@ export default async function SetupPage() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("clinic_id, full_name, role, phone, clinics(name, city, address, phones, emails)")
+    .select("clinic_id, full_name, role, phone, clinics(name, city, address, phones, emails, timezone)")
     .eq("id", user.id)
     .single();
 
@@ -22,7 +22,7 @@ export default async function SetupPage() {
   if (profile.role !== "admin") redirect("/queue"); // майстер налаштувань — лише адмін
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
-    | { name?: string; city?: string; address?: string; phones?: string[]; emails?: string[] }
+    | { name?: string; city?: string; address?: string; phones?: string[]; emails?: string[]; timezone?: string | null }
     | null
     | undefined;
 
@@ -51,6 +51,8 @@ export default async function SetupPage() {
     address: clinic?.address ?? "",
     phones: clinic?.phones ?? [],
     emails: clinic?.emails ?? [],
+    // Пусто → майстер підставить зону браузера як ПОЧАТКОВЕ значення (нова клініка).
+    timezone: clinic?.timezone ?? "",
     adminName: profile.full_name ?? "",
     adminEmail: user.email ?? "",
     adminPhone: profile.phone ?? "",
