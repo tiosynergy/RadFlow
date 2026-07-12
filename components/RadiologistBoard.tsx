@@ -524,9 +524,9 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     // НЕ повинен валитись у Next error overlay — конвенція проєкту.
     try {
       const supabase = createClient();
-      // Авто-«Уточнити» для прострочених scheduled (persisted clarify_at). Fire-and-forget —
-      // не блокуємо reload; позначка прийде наступним realtime-циклом.
-      void supabase.rpc("sink_overdue_scheduled");
+      // Авто-«Уточнити» (clarify_at) ставить pg_cron (джоб sink-overdue, кожні 5 хв,
+      // supabase/cron_jobs.sql) — не смикаємо RPC з read-лоадера (запис у БД на кожен
+      // рефетч давав WAL + audit_log + realtime-луну на всі дошки).
       let q = supabase
         .from("queue_entries")
         .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at, clarify_at")

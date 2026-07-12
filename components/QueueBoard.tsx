@@ -804,9 +804,11 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const reload = useCallback(async () => {
     try {
       const supabase = createClient();
-      // Авто-«Уточнити»: помічаємо прострочені scheduled записи (persisted clarify_at).
-      // Fire-and-forget — НЕ блокуємо reload зайвим round-trip'ом (perceived speed).
-      void supabase.rpc("sink_overdue_scheduled");
+      /* Авто-«Уточнити» (clarify_at) ставить pg_cron: джоб sink-overdue кожні 5 хв
+         викликає sink_overdue_scheduled_all() (supabase/cron_jobs.sql).
+         Раніше цю RPC смикав КОЖЕН reload дошки: запис у БД із read-лоадера →
+         WAL (replica identity full) + рядок в audit_log + realtime-подія всім
+         іншим дошкам, які на неї ж і перезавантажувались. Не повертати. */
       const { data, error } = await supabase
         .from("queue_entries")
         .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, studies_changed_by, contraindications, cito, priority_level, doctor, referrer:referrer_id(full_name), room_id, updated_at, in_progress_at, clarify_at, reschedule_origin")
@@ -831,11 +833,12 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
         .select("id, room_id, reason, reason_label, note, started_at, blocked_until, status, auto_unblock")
         .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
       if (error) { setIncidentsErr(true); return; } // НЕ чистимо incidents: «немає простоїв» — небезпечна брехня
+      /* Простої з auto_unblock знімає pg_cron (джоб resolve-expired-incidents,
+         supabase/cron_jobs.sql). Раніше це робив клієнт прямо в лоадері — запис у БД
+         на рефетчі + залежність від того, чи в когось відкрита дошка.
+         На відображення це не впливає: incidentExpired() і DB-гард
+         check_not_during_incident рахують ВІКНО [started_at, blocked_until), а не статус. */
       const list = data || [];
-      const expired = list.filter((i) => incidentExpired(i));
-      if (expired.length) {
-        await supabase.from("incidents").update({ status: "resolved", resolved_at: new Date().toISOString() }).in("id", expired.map((i) => i.id));
-      }
       setIncidents(list);
       setIncidentsErr(false);
     } catch {
