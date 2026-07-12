@@ -129,7 +129,10 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
     if (inBreak(a, roomBreaks)) return "break";              // сам слот — перерва кабінету
     if (breakClash(a, dur, roomBreaks)) return "tight";      // слот робочий, але дослідження заїде в перерву
     if (isToday && a < nowMin) return "past";
-    if (busy.some((x) => a >= x.s && a < x.e)) return "busy";
+    // Розділяємо саме дослідження і буфер прибирання після нього: кабінет зайнятий
+    // і там, і там, але видно, коли дослідження реально закінчується.
+    if (busy.some((x) => a >= x.s && a < x.eStudy)) return "busy";
+    if (busy.some((x) => a >= x.eStudy && a < x.e)) return "buffer";
     if (busy.some((x) => a < x.e && x.s < bBlock)) return "tight";
     return "free";
   }
@@ -148,7 +151,9 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   // віддав (admin/radiologist центру, гейт у RPC 0062); інакше просто «Зайнято».
   function busyLabel(s: string) {
     const b = busyAt(busy, toMin(s));
-    return b ? busyTooltip(b) : "Зайнято";
+    if (!b) return "Зайнято";
+    const inBuf = toMin(s) >= b.eStudy;
+    return (inBuf ? "Буфер після дослідження (кабінет ще зайнятий)\n" : "") + busyTooltip(b);
   }
   function blockedLabel(s: string) {
     const a = toMin(s);
@@ -220,27 +225,35 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
                   value={time}
                   onChange={setTime}
                   spanMin={dur}
+                  bufferMin={buffer}
                   resetKey={roomId + "|" + dateStr + "|" + dur + "|" + buffer}
                   stateOf={slotState}
-                  titleOf={(s, st) => st === "busy" ? busyLabel(s) : st === "blocked" ? blockedLabel(s) : st === "break" ? breakLabel(s) : st === "tight" ? ("Не вміщується: блок " + dur + " хв перетне " + tightReason(s)) : st === "past" ? "Час минув" : ("Вільно · " + s + "–" + fmt(toMin(s) + dur))}
+                  titleOf={(s, st) => (st === "busy" || st === "buffer") ? busyLabel(s) : st === "blocked" ? blockedLabel(s) : st === "break" ? breakLabel(s) : st === "tight" ? ("Не вміщується: блок " + dur + " хв перетне " + tightReason(s)) : st === "past" ? "Час минув" : ("Вільно · " + s + "–" + fmt(toMin(s) + dur))}
                 />}
             {busyList.length > 0 && (
               <div className="bk-busy-list">
                 <span className="bk-busy-lab">Зайнятий час{room ? " (" + room.name + ")" : ""}:</span>
-                {busyList.map((b, i) => <span className="bk-busy-chip" key={i}>{fmt(b.s)}–{fmt(b.e)}</span>)}
+                {/* Дослідження і буфер прибирання — окремо: видно, коли кабінет реально звільняється. */}
+                {busyList.map((b, i) => (
+                  <span className="bk-busy-chip" key={i}>
+                    {fmt(b.s)}–{fmt(b.eStudy)}{b.e > b.eStudy ? <span style={{ opacity: 0.7 }}> +{b.e - b.eStudy} хв</span> : null}
+                  </span>
+                ))}
               </div>
             )}
             <div className="bk-slot-legend">
               <span><span className="lg-dot free" />вільно</span>
               <span><span className="lg-dot tight" />не вміщується</span>
               <span><span className="lg-dot busy" />зайнято</span>
+              <span><span className="lg-dot busybuf" />буфер</span>
+              {time && buffer > 0 && <span><span className="lg-dot planbuf" />буфер цього запису</span>}
               {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
             </div>
           </div>
         </div>
         <div className="dlg-foot">
           {valid
-            ? <span className="bk-summary">{room ? room.name : ""} · {dateStr} {time}–{fmt(toMin(time) + dur)}</span>
+            ? <span className="bk-summary">{room ? room.name : ""} · {dateStr} {time}–{fmt(toMin(time) + dur)}{buffer > 0 ? " (+" + buffer + " хв буфер → вільно з " + fmt(toMin(time) + dur + buffer) + ")" : ""}</span>
             : <span style={{ fontSize: 12, color: "var(--text-faint)", marginRight: "auto", alignSelf: "center" }}>Оберіть кабінет, дату та слот</span>}
           <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
           <button className="btn btn-primary" disabled={!valid} onClick={() => onConfirm({ roomId, date: dateObj, time, dur, buffer, reason: reason.trim() })}>✓ Перенести на цей слот</button>

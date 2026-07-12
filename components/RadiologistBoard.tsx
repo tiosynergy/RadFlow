@@ -669,10 +669,13 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
 
   const currentByRoom: Record<string, RadEntry> = {}, nextWaitingByRoom: Record<string, RadEntry> = {};
   entries.forEach((e) => { if (e.status === "in_progress" && e.room_id) currentByRoom[e.room_id] = e; });
+  // «Наступний у черзі» — як і сортування: спершу ЧАС, пріоритет — тай-брейк.
   entries.forEach((e) => {
     if (e.status !== "waiting" || !e.room_id) return;
     const cur = nextWaitingByRoom[e.room_id];
-    if (!cur || priorityRank(e.priority_level) < priorityRank(cur.priority_level)) nextWaitingByRoom[e.room_id] = e;
+    if (!cur) { nextWaitingByRoom[e.room_id] = e; return; }
+    const t = (e.scheduled_time || "").localeCompare(cur.scheduled_time || "");
+    if (t < 0 || (t === 0 && priorityRank(e.priority_level) < priorityRank(cur.priority_level))) nextWaitingByRoom[e.room_id] = e;
   });
   const cardRooms = roomFilter === "all" ? (rooms || []) : (rooms || []).filter((r) => r.id === roomFilter);
 
@@ -690,10 +693,13 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     const clA = (a.status === "scheduled" && (!!a.clarify_at || needsClarification(a.status, selectedDate, a.scheduled_time))) ? 1 : 0;
     const clB = (b.status === "scheduled" && (!!b.clarify_at || needsClarification(b.status, selectedDate, b.scheduled_time))) ? 1 : 0;
     if (clA !== clB) return clA - clB;
+    // У межах статусу — ЗА ЧАСОМ (як на дошці адміна): пріоритет лишається
+    // бейджем, але не виносить запис угору. Тай-брейк на однаковий час — пріоритет.
+    const t = (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
+    if (t !== 0) return t;
     const ac = isActiveStatus(a.status) ? priorityRank(a.priority_level) : 9;
     const bc = isActiveStatus(b.status) ? priorityRank(b.priority_level) : 9;
-    if (ac !== bc) return ac - bc;
-    return (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
+    return ac - bc;
   });
 
   return (

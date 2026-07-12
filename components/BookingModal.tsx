@@ -435,7 +435,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     if (inBreak(s, roomBreaks)) return "break";                   // сам слот — перерва кабінету
     if (breakClash(s, slotDur, roomBreaks)) return "tight";       // слот робочий, але дослідження заїде в перерву
     if (isBookToday && s < nowMin) return "past";
-    if (roomBusy.some((b) => s >= b.s && s < b.e)) return "busy";
+    // Саме дослідження і буфер прибирання після нього — окремі стани: кабінет
+    // зайнятий і там, і там, але видно, коли дослідження реально закінчується.
+    if (roomBusy.some((b) => s >= b.s && s < b.eStudy)) return "busy";
+    if (roomBusy.some((b) => s >= b.eStudy && s < b.e)) return "buffer";
     if (roomBusy.some((b) => s < b.e && b.s < eBlock)) return "tight";
     return "free";
   }
@@ -453,7 +456,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
      (гейт у RPC 0062). Реєстратор і направник бачать знеособлене «Зайнято». */
   function busyLabel(slot: string) {
     const b = busyAt(roomBusy, toMin(slot));
-    return b ? busyTooltip(b) : "Зайнято";
+    if (!b) return "Зайнято";
+    const inBuf = toMin(slot) >= b.eStudy;
+    return (inBuf ? "Буфер після дослідження (кабінет ще зайнятий)\n" : "") + busyTooltip(b);
   }
   function blockedLabel(slot: string) {
     const s = toMin(slot);
@@ -735,9 +740,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                   value={time}
                   onChange={setTime}
                   spanMin={slotDur}
+                  bufferMin={buffer}
                   resetKey={roomId + "|" + dateKey(bookDate) + "|" + slotDur + "|" + buffer}
                   stateOf={slotState}
-                  titleOf={(s, st) => st === "busy" ? busyLabel(s)
+                  titleOf={(s, st) => (st === "busy" || st === "buffer") ? busyLabel(s)
                     : st === "blocked" ? blockedLabel(s)
                     : st === "break" ? breakLabel(s)
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${tightReason(s)}`
@@ -748,13 +754,20 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
               {busyList.length > 0 && (
                 <div className="bk-busy-list">
                   <span className="bk-busy-lab">Зайнятий час:</span>
-                  {busyList.map((b, i) => <span className="bk-busy-chip" key={i}>{fmtMin(b.s)}–{fmtMin(b.e)}</span>)}
+                  {/* Дослідження і буфер — окремо: видно, коли кабінет реально звільняється. */}
+                  {busyList.map((b, i) => (
+                    <span className="bk-busy-chip" key={i}>
+                      {fmtMin(b.s)}–{fmtMin(b.eStudy)}{b.e > b.eStudy ? <span style={{ opacity: 0.7 }}> +{b.e - b.eStudy} хв</span> : null}
+                    </span>
+                  ))}
                 </div>
               )}
               <div className="bk-slot-legend">
                 <span><span className="lg-dot free" />вільно</span>
                 <span><span className="lg-dot tight" />не вміщується</span>
                 <span><span className="lg-dot busy" />зайнято</span>
+                <span><span className="lg-dot busybuf" />буфер</span>
+                {time && buffer > 0 && <span><span className="lg-dot planbuf" />буфер цього запису</span>}
                 {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
               </div>
               {time && (() => {

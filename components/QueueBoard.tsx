@@ -1224,15 +1224,25 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
   const currentByRoom: Record<string, QEntry> = {}, nextWaitingByRoom: Record<string, QEntry> = {};
   entries.forEach((e) => { if (e.status === "in_progress" && e.room_id) currentByRoom[e.room_id] = e; });
+  // «Наступний у черзі» — той самий канон, що й сортування дошки: спершу ЧАС,
+  // пріоритет — тай-брейк на однаковий час.
   entries.forEach((e) => {
     if (e.status !== "waiting" || !e.room_id) return;
     const cur = nextWaitingByRoom[e.room_id];
-    if (!cur || priorityRank(e.priority_level) < priorityRank(cur.priority_level)) nextWaitingByRoom[e.room_id] = e;
+    if (!cur) { nextWaitingByRoom[e.room_id] = e; return; }
+    const t = (e.scheduled_time || "").localeCompare(cur.scheduled_time || "");
+    if (t < 0 || (t === 0 && priorityRank(e.priority_level) < priorityRank(cur.priority_level))) {
+      nextWaitingByRoom[e.room_id] = e;
+    }
   });
 
   const roomLoad = computeRoomLoad(rooms, entries, selectedDate, selectedOverride, incidents);
 
-  // Порядок черги: у активних статусах — за пріоритетом (cito→urgent→planned), далі за часом.
+  /* Порядок черги (рішення Ігоря 2026-07-11): у межах статусу — ЗА ЧАСОМ.
+     Пріоритет (CITO/Терміново) лишається кольоровим бейджем, але НЕ виносить
+     запис угору: інакше дошка не читалась як розклад дня і перенос запису
+     візуально «не переміщував» рядок (найчастіша скарга).
+     Пріоритет тепер — лише тай-брейк для записів на ОДИН і той самий час. */
   const prioRank = (x: QEntry) => isActiveStatus(x.status) ? priorityRank(x.priority_level) : 9;
   // «Уточнити»: прострочені scheduled (persisted clarify_at або похідна) опускаються
   // в КІНЕЦЬ запланованих (над терміналами), щоб наступний актуальний був першим.
@@ -1243,9 +1253,9 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     if (d !== 0) return d;
     const cl = clarifyRank(a) - clarifyRank(b);
     if (cl !== 0) return cl;
-    const c = prioRank(a) - prioRank(b);
-    if (c !== 0) return c;
-    return (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
+    const t = (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
+    if (t !== 0) return t;
+    return prioRank(a) - prioRank(b); // однаковий час → першим терміновіший
   });
   const filtered = sorted.filter((e) => {
     if (filter === "late") {

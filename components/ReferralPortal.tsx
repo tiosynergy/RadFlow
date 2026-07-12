@@ -258,7 +258,12 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const dateObj = new Date(date + "T00:00:00");
   const roomSched = roomScheduleFor(dateObj, roomId || "", override, roomSchedule);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
-  const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) + (e.buffer_time_min ?? BUFFER_DEFAULT) }));
+  // eStudy — кінець САМОГО дослідження; e — кінець зайнятості (з буфером прибирання).
+  const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => {
+    const s = toMin(e.scheduled_time);
+    const eStudy = s + (e.duration_min || 30);
+    return { s, eStudy, e: eStudy + (e.buffer_time_min ?? BUFFER_DEFAULT) };
+  });
   const roomBreaks = effectiveRoomBreaks(dateObj, roomId || "", roomSchedule, override); // перерви кабінету на цю дату
   // «Зараз» у настінному часі центру (wall-as-UTC мс): і хвилини доби, і «сьогодні».
   const _nowW = wallNow(selCenter?.timezone || undefined);
@@ -282,7 +287,9 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     if (inBreak(a, roomBreaks)) return "break";                 // сам слот — перерва кабінету
     if (breakClash(a, slotDur, roomBreaks)) return "tight";     // слот робочий, але дослідження заїде в перерву
     if (isBookToday && a < nowMin) return "past";
-    if (busySlots.some((x) => a >= x.s && a < x.e)) return "busy";
+    // Дослідження і буфер прибирання після нього — окремі стани (кабінет зайнятий і там, і там).
+    if (busySlots.some((x) => a >= x.s && a < x.eStudy)) return "busy";
+    if (busySlots.some((x) => a >= x.eStudy && a < x.e)) return "buffer";
     if (busySlots.some((x) => a < x.e && x.s < bBlock)) return "tight";
     return "free";
   }
@@ -572,9 +579,11 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                   value={time}
                   onChange={setTime}
                   spanMin={slotDur}
+                  bufferMin={buffer}
                   resetKey={(roomId || "") + "|" + date + "|" + slotDur + "|" + buffer}
                   stateOf={slotState}
                   titleOf={(s, st) => st === "busy" ? "Зайнято"
+                    : st === "buffer" ? "Буфер після дослідження — кабінет ще зайнятий"
                     : st === "blocked" ? "Кабінет на ремонті/ТО"
                     : st === "break" ? breakLabel(s)
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${tightReason(s)}`
@@ -585,13 +594,19 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
               {busyList.length > 0 && (
                 <div className="bk-busy-list">
                   <span className="bk-busy-lab">Зайнятий час:</span>
-                  {busyList.map((b, i) => <span className="bk-busy-chip" key={i}>{fmt(b.s)}–{fmt(b.e)}</span>)}
+                  {busyList.map((b, i) => (
+                    <span className="bk-busy-chip" key={i}>
+                      {fmt(b.s)}–{fmt(b.eStudy)}{b.e > b.eStudy ? <span style={{ opacity: 0.7 }}> +{b.e - b.eStudy} хв</span> : null}
+                    </span>
+                  ))}
                 </div>
               )}
               <div className="bk-slot-legend">
                 <span><span className="lg-dot free" />вільно</span>
                 <span><span className="lg-dot tight" />не вміщується</span>
                 <span><span className="lg-dot busy" />зайнято</span>
+                <span><span className="lg-dot busybuf" />буфер</span>
+                {time && buffer > 0 && <span><span className="lg-dot planbuf" />буфер цього запису</span>}
                 {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
               </div>
               {time && (() => {
