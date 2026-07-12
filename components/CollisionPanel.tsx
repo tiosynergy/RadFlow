@@ -78,8 +78,12 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
         const cands = (rooms || []).filter((r) => r.id === entry.room_id || (modality && r.modality === modality));
         if (!cands.length) { if (!cancel) { setHere(null); setAlt(null); setBusyErr(true); } return; } // немає даних про кабінети — не «не влазить»
 
-        // Перерви кабінетів живуть у rooms.schedule (JSONB) — одним запитом.
+        /* Перерви кабінетів живуть у rooms.schedule (JSONB) — одним запитом.
+           H-6: помилку читання НЕ можна ковтати. Порожній schedById → roomScheduleFor
+           відкочується на дефолт «Пн–Сб 08:00–18:00», і панель пропонує слот у час,
+           коли кабінет закритий або на перерві. Краще чесно сказати «не можу порадити». */
         const schedRes = await supabase.from("rooms").select("id, schedule").in("id", cands.map((r) => r.id));
+        if (schedRes.error) throw schedRes.error;
         const schedById: Record<string, unknown> = {};
         ((schedRes.data || []) as Array<{ id: string; schedule?: unknown }>).forEach((r) => { schedById[r.id] = r.schedule ?? null; });
 
@@ -88,7 +92,10 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
           const sched = roomScheduleFor(date, r.id, override, schedById[r.id]);
           if (sched.closed) return null;
           const breaks: Break[] = effectiveRoomBreaks(date, r.id, schedById[r.id], override);
-          const { data } = await supabase.rpc("room_busy_slots", { p_room: r.id, p_date: dateStr, p_exclude: entry.id });
+          // H-6: `data || []` тут означало «кабінет вільний увесь день» → панель
+          // пропонувала слот ПОВЕРХ чужого запису. PostgREST не кидає сам.
+          const { data, error: busyError } = await supabase.rpc("room_busy_slots", { p_room: r.id, p_date: dateStr, p_exclude: entry.id });
+          if (busyError) throw busyError;
           const busy: BusySpan[] = ((data || []) as BusyRow[])
             .filter((b) => b.scheduled_time)
             .map((b) => {

@@ -1050,6 +1050,8 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
   const [boardFocus, setBoardFocus] = useState<{ clinicId: string; roomId: string; nonce: number } | null>(null);
   const [editPatientFor, setEditPatientFor] = useState<Referral | null>(null);
   const [referrals, setReferrals] = useState<Referral[]>([]);
+  // H-6: збій читання списку ≠ «направлень немає» (сітку слотів уже прикриває slotsErr).
+  const [listErr, setListErr] = useState(false);
   const [reschedFor, setReschedFor] = useState<Referral | null>(null);
   const [editStudiesFor, setEditStudiesFor] = useState<Referral | null>(null);
   const [wlEntries, setWlEntries] = useState<WaitlistEntry[]>([]);
@@ -1061,26 +1063,33 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
   function notify(msg: string, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3200); }
 
   const reload = useCallback(async () => {
-    const supabase = createClient();
-    const { data } = await supabase
-      .from("queue_entries")
-      .select("id, clinic_id, created_by, referrer_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, studies_changed_by, contraindications, doctor, note, indication, room_id, reschedule_origin")
-      .eq("referrer_id", doctorId)
-      .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
-    setReferrals(data || []);
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("queue_entries")
+        .select("id, clinic_id, created_by, referrer_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, studies_changed_by, contraindications, doctor, note, indication, room_id, reschedule_origin")
+        .eq("referrer_id", doctorId)
+        .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
+      // H-6: збій читання показувався як «Немає направлень» — лікар вважав, що
+      // його пацієнти не записані, і записував їх удруге.
+      if (error) { setListErr(true); return; }
+      setReferrals(data || []);
+      setListErr(false);
+    } catch { setListErr(true); }
   }, [doctorId]);
 
   // Лист очікування: RLS показує направнику лише власні рядки (created_by).
   const reloadWaitlist = useCallback(async () => {
     try {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("waitlist_entries")
         .select("*")
         .eq("created_by", doctorId)
         .order("created_at", { ascending: true });
+      if (error) { setListErr(true); return; }
       setWlEntries(data || []);
-    } catch { /* транзієнтний Failed to fetch — ігноруємо */ }
+    } catch { setListErr(true); }
   }, [doctorId]);
   useEffect(() => { reloadWaitlist(); }, [reloadWaitlist]);
 
@@ -1233,9 +1242,19 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
             onCreated={(nm, err) => { if (err) notify("Помилка: " + err, "error"); else { notify("Направлення відправлено: " + nm, "success"); reload(); setTab("mine"); } }} />
         )}
         {tab === "mine" && (
-          <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} doctorId={doctorId}
-            focus={boardFocus}
-            onReschedule={(r) => setReschedFor(r)} onCancel={(r) => setCancelAsk(r)} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)} />
+          <>
+            {/* Збій читання ≠ «направлень немає»: інакше лікар вирішить, що пацієнт
+                не записаний, і запише його вдруге. */}
+            {listErr && (
+              <div className="ctx-hint red" style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }} role="alert">
+                <span>⚠ Список направлень не завантажився — показане може бути неповним.</span>
+                <button className="btn btn-secondary btn-sm" onClick={() => { reload(); reloadWaitlist(); }}>↻ Спробувати ще раз</button>
+              </div>
+            )}
+            <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} doctorId={doctorId}
+              focus={boardFocus}
+              onReschedule={(r) => setReschedFor(r)} onCancel={(r) => setCancelAsk(r)} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)} />
+          </>
         )}
         {tab === "waitlist" && (
           <MyWaitlist entries={wlEntries} centersById={centersById} onOpenAdd={() => setWlAddOpen(true)}

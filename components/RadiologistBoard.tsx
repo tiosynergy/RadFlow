@@ -493,6 +493,15 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [overrides, setOverrides] = useState<Record<string, DayOverride>>({});
   const [loading, setLoading] = useState(true);
+  /* Помилка завантаження ≠ «порожньо» (аудит 2026-07-12, H-6). Найнебезпечніше —
+     простої: при збої loadIncidents ставив [] → ЗАБЛОКОВАНИЙ кабінет виглядав
+     вільним, і радіолог кликав пацієнта в апарат на ремонті. Тепер тримаємо
+     прапорці помилок окремо, старі дані НЕ затираємо, а виклик у кабінет
+     блокуємо, поки дані про простої/графік ненадійні. */
+  const [entriesErr, setEntriesErr] = useState(false);
+  const [incidentsErr, setIncidentsErr] = useState(false);
+  const [overridesErr, setOverridesErr] = useState(false);
+  const safetyErr = incidentsErr || overridesErr;
   const [roomFilter, setRoomFilter] = useState(single ? (rooms?.[0]?.id || "all") : "all");
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
@@ -534,10 +543,13 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
         .eq("scheduled_date", dayKey)
         .neq("status", "cancelled");
       if (roomIds.length) q = q.in("room_id", roomIds);
-      const { data } = await q.order("scheduled_time", { ascending: true });
+      const { data, error } = await q.order("scheduled_time", { ascending: true });
+      // PostgREST не кидає — помилку треба читати самому, інакше «збій» = «записів немає».
+      if (error) { setEntriesErr(true); return; }
       setEntries(data || []);
+      setEntriesErr(false);
     } catch {
-      // Мовчки ігноруємо — наступний realtime-цикл/фокус перезавантажить.
+      setEntriesErr(true);   // старі рядки лишаються на екрані + банер «черга не оновилась»
     } finally {
       setLoading(false);
     }
@@ -546,22 +558,27 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   const loadIncidents = useCallback(async () => {
     try {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("incidents")
         .select("id, room_id, reason, reason_label, note, started_at, blocked_until, status, auto_unblock")
         .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
+      // НЕ чистимо incidents: «простоїв немає» — найнебезпечніша брехня на цій дошці.
+      if (error) { setIncidentsErr(true); return; }
       setIncidents(data || []);
-    } catch { /* транзієнтний збій мережі/токена — не валимо UI */ }
+      setIncidentsErr(false);
+    } catch { setIncidentsErr(true); }
   }, [clinicId]);
 
   const loadOverrides = useCallback(async () => {
     try {
       const supabase = createClient();
-      const { data } = await supabase.from("schedule_overrides").select("override_date, all_closed, label, rooms").eq("clinic_id", clinicId);
+      const { data, error } = await supabase.from("schedule_overrides").select("override_date, all_closed, label, rooms").eq("clinic_id", clinicId);
+      if (error) { setOverridesErr(true); return; }   // закритий день не має виглядати робочим
       const m: Record<string, DayOverride> = {};
       (data || []).forEach((o) => { m[o.override_date] = o as unknown as DayOverride; });
       setOverrides(m);
-    } catch { /* транзієнтний збій мережі/токена — не валимо UI */ }
+      setOverridesErr(false);
+    } catch { setOverridesErr(true); }
   }, [clinicId]);
 
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его по завершении.
@@ -626,6 +643,10 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   }
 
   function inProgressBlockReason(p: RadEntry): string | null {
+    /* Дані про простої/графік не завантажились — вважати кабінет вільним НЕ МОЖНА
+       (це виклик пацієнта в апарат, який може бути на ремонті). Гейт до всіх інших
+       перевірок; DB-гард 0020 однаково відхилив би, але оператор має бачити причину. */
+    if (safetyErr) return "Дані про простої/графік не оновились — виклик заблоковано, оновіть сторінку";
     const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)) : null;
     const r = computeCallBlock(p, entries, {
       notToday: !sameDay(selectedDate, today0()),
@@ -753,6 +774,24 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
                   <div className="inc-banner-title">{selDayStatus.kind === "closed" ? "Неробочий день" : "Особливий графік"} · {fmtShort(selectedDate)}</div>
                   <div className="inc-banner-sub">{selDayStatus.label}</div>
                 </div>
+              </div>
+            )}
+
+            {/* Збій завантаження ≠ «все добре»: кажемо прямо, що дані ненадійні. */}
+            {(safetyErr || entriesErr) && (
+              <div className="inc-banner fade-in" style={{ borderColor: "var(--red)" }} role="alert">
+                <span className="inc-banner-ic">⚠</span>
+                <div className="inc-banner-txt">
+                  <div className="inc-banner-title">
+                    {safetyErr ? "Дані про простої / графік не оновились" : "Черга не оновилась"}
+                  </div>
+                  <div className="inc-banner-sub">
+                    {safetyErr
+                      ? "Виклик у кабінет заблоковано — кабінет може бути на ремонті. Оновіть сторінку."
+                      : "На екрані — попередні дані. Оновіть сторінку."}
+                  </div>
+                </div>
+                <button className="btn btn-secondary btn-sm" onClick={() => { reload(); loadIncidents(); loadOverrides(); }}>↻ Оновити</button>
               </div>
             )}
 

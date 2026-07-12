@@ -100,10 +100,17 @@ async function isOutsideRoomSchedule(
   scheduledTime: string,
   durationMin: number
 ): Promise<boolean> {
-  const { data: room } = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
-  const { data: ov } = await supabase
+  /* H-6: помилку читання графіка НЕ ковтаємо. Раніше при збої room/override
+     ставали null, roomScheduleFor відкочувався на дефолт «Пн–Сб 08:00–18:00»,
+     і ГАРД ПРОПУСКАВ запис у кабінет, який насправді зачинений. Кидаємо —
+     виклик у write-екшені впаде в generic-помилку, і запис НЕ створиться
+     (fail-closed: краще «спробуйте ще раз», ніж пацієнт у зачиненому кабінеті). */
+  const { data: room, error: roomErr } = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+  if (roomErr) throw roomErr;
+  const { data: ov, error: ovErr } = await supabase
     .from("schedule_overrides").select("all_closed, label, rooms")
     .eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
+  if (ovErr) throw ovErr;
 
   const day = new Date(scheduledDate + "T00:00:00");
   if (isNaN(day.getTime())) return false;
@@ -122,6 +129,33 @@ const OFF_SCHED_ERR = {
   code: "off_schedule" as const,
 };
 
+// H-6, fail-closed: не змогли прочитати графік → НЕ пускаємо запис (раніше гард
+// мовчки відкочувався на дефолт 08:00–18:00 і пропускав бронь у зачинений кабінет).
+const SCHED_READ_ERR = {
+  ok: false as const,
+  error: "Не вдалося перевірити графік кабінету — спробуйте ще раз",
+  code: "generic" as const,
+};
+
+/** Гард графіка для write-шляхів: null = можна писати, інакше — готова відповідь клієнту. */
+async function scheduleBlock(
+  supabase: SupabaseClient<Database>,
+  roomId: string,
+  clinicId: string,
+  scheduledDate: string,
+  scheduledTime: string,
+  durationMin: number
+): Promise<QueueActionResult | null> {
+  try {
+    if (await isOutsideRoomSchedule(supabase, roomId, clinicId, scheduledDate, scheduledTime, durationMin)) {
+      return OFF_SCHED_ERR;
+    }
+    return null;
+  } catch {
+    return SCHED_READ_ERR;
+  }
+}
+
 /** Чи перетинає дослідження [time, +dur) перерву кабінету на цю дату. */
 async function crossesRoomBreak(
   supabase: SupabaseClient<Database>,
@@ -131,10 +165,13 @@ async function crossesRoomBreak(
   scheduledTime: string,
   durationMin: number
 ): Promise<boolean> {
-  const { data: room } = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
-  const { data: ov } = await supabase
+  // H-6: те саме — збій читання не має виглядати як «перерв немає» (див. isOutsideRoomSchedule).
+  const { data: room, error: roomErr } = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+  if (roomErr) throw roomErr;
+  const { data: ov, error: ovErr } = await supabase
     .from("schedule_overrides").select("all_closed, label, rooms")
     .eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
+  if (ovErr) throw ovErr;
   const day = new Date(scheduledDate + "T00:00:00");
   if (isNaN(day.getTime())) return false;
   const breaks = effectiveRoomBreaks(day, roomId, room?.schedule ?? null, (ov as unknown as DayOverride) || null);
@@ -641,7 +678,10 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
   /* Перенести в МИНУЛЕ не можна — жодною роллю. Клієнтський гейт тут не працював
      (isToday=false → перевірка "past" пропускалась), тому це і є основна діра. */
   if (cur?.clinic_id && await isPastSlot(supabase, cur.clinic_id, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
-  if (cur?.clinic_id && await isOutsideRoomSchedule(supabase, input.roomId, cur.clinic_id, input.scheduledDate, input.scheduledTime, input.durationMin)) return OFF_SCHED_ERR;
+  if (cur?.clinic_id) {
+    const blocked = await scheduleBlock(supabase, input.roomId, cur.clinic_id, input.scheduledDate, input.scheduledTime, input.durationMin);
+    if (blocked) return blocked;
+  }
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);
@@ -729,11 +769,15 @@ export async function editQueueEntryStudies(
 
   const active = cur.status === "scheduled" || cur.status === "waiting" || cur.status === "in_progress";
   if (active && cur.room_id && cur.clinic_id && cur.scheduled_date && cur.scheduled_time) {
-    if (await isOutsideRoomSchedule(supabase, cur.room_id, cur.clinic_id, cur.scheduled_date, cur.scheduled_time, dur)) {
-      return { ok: false, error: "Дослідження не вміщується до кінця графіка кабінету", code: "off_schedule" };
-    }
-    if (await crossesRoomBreak(supabase, cur.room_id, cur.clinic_id, cur.scheduled_date, cur.scheduled_time, dur)) {
-      return { ok: false, error: "Дослідження перетинає перерву в роботі кабінету", code: "off_schedule" };
+    try {
+      if (await isOutsideRoomSchedule(supabase, cur.room_id, cur.clinic_id, cur.scheduled_date, cur.scheduled_time, dur)) {
+        return { ok: false, error: "Дослідження не вміщується до кінця графіка кабінету", code: "off_schedule" };
+      }
+      if (await crossesRoomBreak(supabase, cur.room_id, cur.clinic_id, cur.scheduled_date, cur.scheduled_time, dur)) {
+        return { ok: false, error: "Дослідження перетинає перерву в роботі кабінету", code: "off_schedule" };
+      }
+    } catch {
+      return SCHED_READ_ERR;   // fail-closed: не змогли перевірити графік — не подовжуємо дослідження
     }
   }
 
@@ -798,7 +842,10 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
-  if (await isOutsideRoomSchedule(supabase, input.roomId, clinicId, input.scheduledDate, input.scheduledTime, input.durationMin)) return OFF_SCHED_ERR;
+  {
+    const blocked = await scheduleBlock(supabase, input.roomId, clinicId, input.scheduledDate, input.scheduledTime, input.durationMin);
+    if (blocked) return blocked;
+  }
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);
@@ -1007,7 +1054,10 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
   if (!roomAllowed) return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
 
   if (await isPastSlot(supabase, input.clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
-  if (await isOutsideRoomSchedule(supabase, input.roomId, input.clinicId, input.scheduledDate, input.scheduledTime, input.durationMin)) return OFF_SCHED_ERR;
+  {
+    const blocked = await scheduleBlock(supabase, input.roomId, input.clinicId, input.scheduledDate, input.scheduledTime, input.durationMin);
+    if (blocked) return blocked;
+  }
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const [hh, mm] = input.scheduledTime.split(":").map(Number);

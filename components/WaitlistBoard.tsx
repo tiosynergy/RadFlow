@@ -89,6 +89,9 @@ interface WaitlistBoardProps {
 export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: WaitlistBoardProps) {
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  // H-6: збій завантаження ≠ «лист порожній» / «простоїв немає».
+  const [entriesErr, setEntriesErr] = useState(false);
+  const [incidentsErr, setIncidentsErr] = useState(false);
   const [filter, setFilter] = useState<"waiting" | "scheduled" | "removed">("waiting");
   const [roomView, setRoomView] = useState("all"); // фільтр сайдбара: кабінет → модальність
   const [query, setQuery] = useState("");
@@ -140,28 +143,46 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
     toastTimer.current = setTimeout(() => setToast(null), action ? 6000 : 3000);
   }
 
+  /* Записати кандидата в чергу можна лише коли ДАНІ ПРО ПРОСТОЇ надійні: сітка
+     слотів у BookingModal ховає заблоковані кабінети саме за incidents, і при збої
+     завантаження (порожній масив) кабінет на ремонті виглядав би вільним. */
+  function openBooking(p: WaitlistEntry) {
+    if (incidentsErr) {
+      notify("Дані про простої не оновились — спершу оновіть сторінку, інакше можна записати в заблокований кабінет", "error");
+      loadIncidents();
+      return;
+    }
+    setBookFor(p);
+  }
+
   const reload = useCallback(async () => {
     try {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("waitlist_entries")
         .select("*")
         .eq("clinic_id", clinicId)
         .order("created_at", { ascending: true });
+      // H-6: без перевірки error збій виглядав як «Лист порожній» — і кандидатів,
+      // що чекають слота, ніхто не бачив.
+      if (error) { setEntriesErr(true); return; }
       setEntries(data || []);
-    } catch { /* транзієнтний Failed to fetch (оновлення токена) — не валимо дошку */ }
-    setLoading(false);
+      setEntriesErr(false);
+    } catch { setEntriesErr(true); }
+    finally { setLoading(false); }
   }, [clinicId]);
 
   const loadIncidents = useCallback(async () => {
     try {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("incidents")
         .select("id, room_id, reason_label, note, started_at, blocked_until, status")
         .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
+      if (error) { setIncidentsErr(true); return; }   // «простоїв немає» — небезпечна брехня і тут
       setIncidents(data || []);
-    } catch { /* ignore */ }
+      setIncidentsErr(false);
+    } catch { setIncidentsErr(true); }
   }, [clinicId]);
 
   useEffect(() => { setLoading(true); }, [clinicId]);
@@ -387,6 +408,11 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
             </div>
             {loading ? (
               <div className="empty"><div className="et">Завантаження…</div></div>
+            ) : entriesErr && filtered.length === 0 ? (
+              <div className="empty"><div className="ei">⚠</div><div className="et">Лист не завантажився</div>
+                <div className="es">Це не означає, що він порожній — оновіть сторінку</div>
+                <button className="btn btn-secondary btn-sm" style={{ marginTop: 10 }} onClick={() => { reload(); loadIncidents(); }}>↻ Оновити</button>
+              </div>
             ) : filtered.length === 0 ? (
               <div className="empty"><div className="ei">⏳</div><div className="et">Лист порожній</div><div className="es">{listForTab.length === 0 ? "Додайте пацієнта, що чекає на вільне вікно" : "Змініть фільтр або пошук"}</div></div>
             ) : (
@@ -432,7 +458,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                           {/* Дії згорнутого рядка; у розгорнутому — в картці (без дублю «дії»). */}
                           {p.status === "waiting" && !expanded && (
                             <>
-                              <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => setBookFor(p)}>{busy ? "…" : "Додати в чергу"}</button>
+                              <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => openBooking(p)}>{busy ? "…" : "Додати в чергу"}</button>
                               <RowMenu disabled={busy} onEdit={() => setEditFor(p)} onRemove={() => setConfirmRemove(p)} />
                             </>
                           )}
@@ -480,7 +506,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                               </div>
                               {/* Місце ухвалення рішення: одна група дій (у рядку кнопки сховані, поки картку розгорнуто). */}
                               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => setBookFor(p)}>{busy ? "…" : "Додати в чергу"}</button>
+                                <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => openBooking(p)}>{busy ? "…" : "Додати в чергу"}</button>
                                 <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setEditFor(p)}><span aria-hidden="true">✎</span> Редагувати</button>
                                 <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} disabled={busy} onClick={() => setConfirmRemove(p)}><span aria-hidden="true">✕</span> Зняти з листа</button>
                               </div>

@@ -206,7 +206,9 @@ const status = startMs > Date.now() ? "planned" : "active";   // Date.now() = 16
 
 ### 3.2. Находки
 
-#### 🟠 H-6. `data || []` всё ещё глотает ошибки PostgREST в безопасностно-значимых лоадерах
+#### 🟠 H-6. `data || []` всё ещё глотает ошибки PostgREST в безопасностно-значимых лоадерах *(✅ закрыто 2026-07-12)*
+
+> **Фикс:** флаги ошибок вместо «пусто» в `RadiologistBoard` (при `incidentsErr`/`overridesErr` **вызов в кабинет блокируется** — сломанный аппарат больше не выглядит свободным), `CallListBoard`, `WaitlistBoard` (запись из листа блокируется, пока данные о простоях ненадёжны), `ReferralPortal`; `CollisionPanel` бросает на ошибке `rooms.schedule`/`room_busy_slots` вместо отката на хардкод «Пн–Сб 08:00–18:00»; серверные гарды `isOutsideRoomSchedule`/`crossesRoomBreak` — **fail-closed** (`SCHED_READ_ERR`), раньше при сбое чтения они молча пропускали запись в закрытый кабинет.
 
 QueueBoard это починил (`entriesErr`/`incidentsErr`/`overridesErr`), остальные — нет:
 

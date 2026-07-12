@@ -251,6 +251,9 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   const [date, setDate] = useState(tomorrow);
   const [entries, setEntries] = useState<CallEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  // H-6: збій завантаження ≠ «записів немає» / «простоїв немає».
+  const [entriesErr, setEntriesErr] = useState(false);
+  const [incidentsErr, setIncidentsErr] = useState(false);
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -282,24 +285,36 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   }
 
   const reload = useCallback(async () => {
-    const supabase = createClient();
-    const { data } = await supabase
-      .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, call_note, studies, doctor, room_id, scheduled_date")
-      .eq("clinic_id", clinicId)
-      .eq("scheduled_date", dayKey)
-      .in("status", ["scheduled", "waiting"])
-      .order("scheduled_time", { ascending: true });
-    setEntries(data || []);
-    setLoading(false);
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("queue_entries")
+        .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, call_note, studies, doctor, room_id, scheduled_date")
+        .eq("clinic_id", clinicId)
+        .eq("scheduled_date", dayKey)
+        .in("status", ["scheduled", "waiting"])
+        .order("scheduled_time", { ascending: true });
+      // H-6: PostgREST не кидає сам — без цієї перевірки збій виглядав як «записів немає»,
+      // і оператор просто нікому не дзвонив у цей день.
+      if (error) { setEntriesErr(true); return; }
+      setEntries(data || []);
+      setEntriesErr(false);
+    } catch {
+      setEntriesErr(true);   // старий список лишається на екрані + банер
+    } finally {
+      setLoading(false);
+    }
   }, [clinicId, dayKey]);
 
   const loadIncidents = useCallback(async () => {
+    try {
     const supabase = createClient();
-    const { data: incs } = await supabase
+    const { data: incs, error } = await supabase
       .from("incidents")
       .select("id, room_id, reason_label, note, started_at, blocked_until, status")
       .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
+    if (error) { setIncidentsErr(true); return; }   // «простоїв немає» ≠ «не змогли прочитати»
+    setIncidentsErr(false);
     setIncidents(incs || []);
     if (!incs || !incs.length) { setAffectedToday([]); return; }
     const { data: ents } = await supabase
@@ -314,6 +329,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
       return entryInIncidentWindow(e.scheduled_date, e.scheduled_time, inc);
     });
     setAffectedToday(aff);
+    } catch { setIncidentsErr(true); }
   }, [clinicId, todayKey]);
 
   // Записи на СЬОГОДНІ зі статусом scheduled — джерело секції «Запізнення»
@@ -582,6 +598,21 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
                 onRecall={(p) => setCall(p.id, "to_recall")}
                 onRefuse={(p) => setDeclineAsk({ p, mode: "cancel" })} />
             ))}
+            {(entriesErr || incidentsErr) && (
+              <div className="inc-banner fade-in" style={{ borderColor: "var(--red)" }} role="alert">
+                <span className="inc-banner-ic">⚠</span>
+                <div className="inc-banner-txt">
+                  <div className="inc-banner-title">{entriesErr ? "Список не оновився" : "Дані про простої не оновились"}</div>
+                  <div className="inc-banner-sub">
+                    {entriesErr
+                      ? "На екрані — попередні дані, частина пацієнтів може бути не показана. Оновіть сторінку."
+                      : "Секція «Обдзвін через простій» може бути неповною. Оновіть сторінку."}
+                  </div>
+                </div>
+                <button className="btn btn-secondary btn-sm" onClick={() => { reload(); loadIncidents(); loadTodayScheduled(); }}>↻ Оновити</button>
+              </div>
+            )}
+
             <div className="info-banner">
               <span className="ib-ic">🤖</span>
               <span className="ib-txt"><b>Обдзвін напередодні</b> — зателефонуйте кожному пацієнту, що записаний на цей день, і зафіксуйте статус. Статус миттєво синхронізується з чергою.</span>
@@ -618,7 +649,10 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
             {loading ? (
               <div className="empty"><div className="et">Завантаження…</div></div>
             ) : filtered.length === 0 ? (
-              <div className="empty"><div className="ei">☎</div><div className="et">Немає записів</div><div className="es">{entries.length === 0 ? "На цей день записів немає" : "Змініть фільтр або пошук"}</div></div>
+              <div className="empty"><div className="ei">{entriesErr ? "⚠" : "☎"}</div>
+                <div className="et">{entriesErr ? "Список не завантажився" : "Немає записів"}</div>
+                <div className="es">{entriesErr ? "Це не означає, що записів немає — оновіть сторінку" : entries.length === 0 ? "На цей день записів немає" : "Змініть фільтр або пошук"}</div>
+              </div>
             ) : (
               <div className="clrows">
                 {filtered.map((p) => (
