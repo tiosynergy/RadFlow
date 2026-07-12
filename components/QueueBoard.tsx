@@ -1036,9 +1036,25 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const note = [p.note, extraNote].map((x) => (x || "").trim()).filter(Boolean).join(" · ") || null;
     const res = await completeQueueEntry(p.id, status, note);
     setCompleteFor(null);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    if (!res.ok) {
+      if (handledStale(res)) return;   // запис уже скасовано/завершено іншим оператором
+      notify("Помилка: " + res.error, "error");
+      return;
+    }
     notify(status === "done" ? "Процедуру завершено" : "Позначено: не відбулося", "success");
     reload();
+  }
+
+  /* CAS-промах (аудит H-4): сервер відхилив мутацію, бо запис уже не в тому стані,
+     який бачить оператор (колега завершив/скасував/перезаписав). Показуємо причину
+     і ОДРАЗУ синхронізуємо дошку — інакше оператор дивиться на застарілу картку
+     і б'є в кнопку ще раз. */
+  function handledStale(res: { ok: boolean; code?: string; error?: string }): boolean {
+    if (res.ok || res.code !== "stale") return false;
+    notify(res.error || "Стан змінився — оновіть дошку", "error");
+    reload();
+    loadIncidents();
+    return true;
   }
 
   // Після звільнення слота — запропонувати кандидатів з листа очікування.
@@ -1080,7 +1096,11 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   }
   async function cancelBooking(p: QEntry) {
     const res = await cancelQueueEntry(p.id);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    if (!res.ok) {
+      if (handledStale(res)) return;
+      notify("Помилка: " + res.error, "error");
+      return;
+    }
     notify("Запис скасовано", "success");
     reload();
     suggestWaitlistFor(p);
@@ -1090,7 +1110,13 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
     setEntries((es) => es.map((e) => (e.id === p.id ? { ...e, ...patch } : e)));
     const res = await setQueueEntryCall(p.id, call_status as CallStatus);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return res; }
+    if (!res.ok) {
+      // «Відмова» скасовує запис — сервер відхилить її, якщо пацієнт уже в кабінеті.
+      if (handledStale(res)) return res;
+      notify("Помилка: " + res.error, "error");
+      reload();
+      return res;
+    }
     if (call_status === "declined") { notify("Пацієнт відмовився — запис скасовано", "info"); suggestWaitlistFor(p); }
     reload();
     return res;
@@ -1107,6 +1133,8 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
       // Модалка лишається відкритою — хай оберуть інший час.
       if (res.code === "past" || res.code === "off_schedule") { notify(res.error, "error"); return; }
+      // Запис уже завершено/скасовано — переносити нічого (раніше патч воскрешав його).
+      if (res.code === "stale") { setReschedFor(null); handledStale(res); return; }
       setReschedFor(null);
       const msg = res.code === "incident"
         ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день"
@@ -1156,7 +1184,11 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     if (!p) return;
     const res = await editQueueEntryStudies(p.id, (arr || []) as unknown as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer);
     setEditStudiesFor(null);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    if (!res.ok) {
+      if (handledStale(res)) return;
+      notify("Помилка: " + res.error, "error");
+      return;
+    }
     notify("Дослідження оновлено", "success");
     reload();
   }

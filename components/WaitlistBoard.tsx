@@ -212,7 +212,12 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
       return;
     }
     const mark = await markWaitlistScheduled(wl.id, res.id ?? null);
-    if (!mark.ok) notify("Запис створено, але лист не оновився: " + mark.error, "error");
+    // CAS: кандидата міг узяти інший адміністратор, поки модалка була відкрита.
+    if (!mark.ok) notify(
+      mark.code === "stale"
+        ? "Запис створено, але кандидата вже зняв інший оператор — перевірте лист"
+        : "Запис створено, але лист не оновився: " + mark.error,
+      "error");
     else notify("Записано зі списку очікування: " + b.name + " · " + b.time, "success");
     setBookFor(null);
     reload();

@@ -14,7 +14,9 @@ import { modalityFromStudies } from "@/lib/waitlist";
 
 export type WaitlistActionResult =
   | { ok: true; id?: string }
-  | { ok: false; error: string; code?: "forbidden" | "auth" | "duplicate" | "generic" };
+  // 'stale' — CAS не спрацював: рядок уже змінив стан (напр. кандидата встиг
+  // записати інший адміністратор). UI має оновитись, а не мовчки перетерти.
+  | { ok: false; error: string; code?: "forbidden" | "auth" | "duplicate" | "stale" | "generic" };
 
 async function callerProfile(supabase: SupabaseClient<Database>) {
   const { data: { user } } = await supabase.auth.getUser();
@@ -275,12 +277,33 @@ export async function markWaitlistScheduled(id: string, scheduledEntryId?: strin
     entryRef = qEntry.id;
   }
 
+  /* CAS: позначити «перенесено у слот» можна лише кандидата, який ЩЕ чекає.
+     Раніше два адміністратори могли взяти того самого кандидата на два різні
+     слоти: обидва створювали запис у черзі, обидва писали 'scheduled', і
+     посилання scheduled_entry_id мовчки перетиралось другим — перший слот
+     лишався за пацієнтом, але лист про нього «забував». */
   const { data, error } = await supabase
     .from("waitlist_entries")
     .update({ status: "scheduled", scheduled_entry_id: entryRef })
     .eq("id", id)
+    .eq("status", "waiting")
     .select("id");
   if (error) return { ok: false, error: error.message, code: "generic" };
-  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  if (!data || data.length === 0) {
+    const { data: cur } = await supabase.from("waitlist_entries")
+      .select("status, scheduled_entry_id").eq("id", id).maybeSingle();
+    if (!cur) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+    /* Ідемпотентність перевіряємо по ПОСИЛАННЮ, а не по статусу. Інакше гонка
+       двох адміністраторів (обидва вже створили ЗАПИС у черзі) виглядала б як
+       успіх у другого: лист уже 'scheduled' — «ok» — а пацієнт задвоєний у черзі,
+       і ніхто про це не сказав. Той самий entryRef = ретрай/подвійний клік. */
+    if (cur.status === "scheduled" && (entryRef == null || cur.scheduled_entry_id === entryRef)) {
+      return { ok: true };
+    }
+    if (cur.status === "scheduled") {
+      return { ok: false, error: "Кандидата вже записав інший оператор — перевірте лист", code: "stale" };
+    }
+    return { ok: false, error: "Кандидата вже знято з листа — оновіть сторінку", code: "stale" };
+  }
   return { ok: true };
 }

@@ -1141,6 +1141,16 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     if (!res.ok) { notify("Помилка: " + res.error, "error"); reloadWaitlist(); }
   }
 
+  /* CAS-промах: центр уже провів/скасував пацієнта, поки в направника висіла стара
+     вкладка. Показуємо причину і перечитуємо список — раніше перенос ВОСКРЕШАВ
+     завершений запис (патч містить status:'scheduled'). */
+  function handledStale(res: { ok: boolean; code?: string; error?: string }): boolean {
+    if (res.ok || res.code !== "stale") return false;
+    notify(res.error || "Стан змінився — оновіть сторінку", "error");
+    reload();
+    return true;
+  }
+
   async function doReschedule({ roomId, date, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
     const p = reschedFor; if (!p) return;
     const [hh, mm] = time.split(":").map(Number);
@@ -1150,6 +1160,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
       // Перенос у минуле / поза графіком кабінету заборонено (сервер + тригер 0063).
       if (res.code === "past" || res.code === "off_schedule") { notify(res.error, "error"); return; }
+      if (res.code === "stale") { setReschedFor(null); handledStale(res); return; }
       setReschedFor(null);
       notify(res.code === "incident" ? "Кабінет у простої — оберіть інший слот" : res.code === "slot_unavailable" ? "Слот зайнятий — оберіть інший" : "Помилка: " + res.error, "error");
       return;
@@ -1165,7 +1176,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
   async function doCancel(entry: Referral) {
     if (!entry) return;
     const res = await cancelQueueEntry(entry.id);
-    if (!res.ok) { notify("Помилка скасування: " + res.error, "error"); return; }
+    if (!res.ok) {
+      if (handledStale(res)) return;   // пацієнта вже провели/скасували в центрі
+      notify("Помилка скасування: " + res.error, "error");
+      return;
+    }
     notify("Направлення скасовано", "success"); reload();
   }
 
@@ -1174,7 +1189,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     if (!p) return;
     const res = await editQueueEntryStudies(p.id, arr as unknown as Json, meta.dur || p.duration_min || 30, meta.buffer);
     setEditStudiesFor(null);
-    if (!res.ok) { notify("Помилка збереження досліджень: " + res.error, "error"); return; }
+    if (!res.ok) {
+      if (handledStale(res)) return;
+      notify("Помилка збереження досліджень: " + res.error, "error");
+      return;
+    }
     notify("Дослідження оновлено", "success"); reload();
   }
 

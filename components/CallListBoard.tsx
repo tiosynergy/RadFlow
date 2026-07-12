@@ -363,9 +363,25 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     if (candidates.length) setWlSuggest({ slot, candidates });
   }
 
+  /* CAS-промах (аудит H-4): запис уже не в тому стані, який бачить оператор
+     колл-листа (пацієнт міг прийти і бути в кабінеті, поки список висів). Показуємо
+     причину і перезавантажуємо — мовчки перетирати чужий перехід не можна. */
+  function handledStale(res: { ok: boolean; code?: string; error?: string }): boolean {
+    if (res.ok || res.code !== "stale") return false;
+    notify(res.error || "Стан змінився — оновіть список", "error");
+    reload();
+    loadIncidents();
+    loadTodayScheduled();
+    return true;
+  }
+
   async function cancelEntry(p: CallEntry) {
     const res = await cancelQueueEntry(p.id);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    if (!res.ok) {
+      if (handledStale(res)) return;
+      notify("Помилка: " + res.error, "error");
+      return;
+    }
     notify("Запис скасовано (відмова)", "success");
     reload(); loadIncidents();
     suggestWaitlistFor(p);
@@ -388,7 +404,13 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch } : e)));
     const res = await setQueueEntryCall(id, call_status);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return; }
+    if (!res.ok) {
+      // «Відмова» скасовує запис — сервер відхилить її, якщо пацієнт уже в кабінеті.
+      if (handledStale(res)) return;
+      notify("Помилка: " + res.error, "error");
+      reload();
+      return;
+    }
     if (call_status === "declined") {
       notify("Пацієнт відмовився — запис скасовано", "info");
       if (entry) suggestWaitlistFor(entry);
@@ -431,6 +453,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     if (!res.ok) {
       if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
       if (res.code === "past" || res.code === "off_schedule") { notify(res.error, "error"); return; }
+      if (res.code === "stale") { setReschedFor(null); handledStale(res); return; }
       setReschedFor(null);
       const msg = res.code === "incident" ? "Кабінет у простої — оберіть інший слот" : res.code === "slot_unavailable" ? "Слот зайнятий — оберіть інший" : "Помилка переносу: " + res.error;
       notify(msg, "error");
@@ -445,7 +468,11 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     if (!p) return;
     const res = await editQueueEntryStudies(p.id, arr as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer);
     setEditStudiesFor(null);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    if (!res.ok) {
+      if (handledStale(res)) return;
+      notify("Помилка: " + res.error, "error");
+      return;
+    }
     notify("Дослідження оновлено", "success");
     reload();
   }
@@ -533,8 +560,14 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
                     const res = await addEntryToWaitlist(p.id);
                     if (!res.ok) { notify(res.code === "duplicate" ? "Пацієнт уже в листі очікування" : "Помилка: " + res.error, res.code === "duplicate" ? "info" : "error"); return; }
                     // Слот звільняється: запис — «Не відбулося» (термінальний підсумок запізнення).
-                    const upd = await setQueueEntryStatus(p.id, "not_held");
-                    if (!upd.ok) notify("Додано до листа, але статус не оновлено: " + upd.error, "error");
+                    // expectedFrom='scheduled' (CAS): пацієнт міг прийти, поки список висів
+                    // — тоді статус не перетираємо, а показуємо, що стан змінився.
+                    const upd = await setQueueEntryStatus(p.id, "not_held", "scheduled");
+                    if (!upd.ok) notify(
+                      upd.code === "stale"
+                        ? "Додано до листа, але пацієнт уже не «Заплановано» — перевірте чергу"
+                        : "Додано до листа, але статус не оновлено: " + upd.error,
+                      "error");
                     else notify("Запізнення: додано до листа очікування, запис — «Не відбулося»", "success");
                     reload(); loadTodayScheduled();
                   }}

@@ -169,7 +169,9 @@ const status = startMs > Date.now() ? "planned" : "active";   // Date.now() = 16
 **Фикс:** `submitIncident` считает `planned/active` через `wallNow(clinics.timezone)`; `emergency_stop_rpc` пишет `started_at` в настенном UTC (`0065_incident_wall_time.sql`).
 **Правило (в дополнение к «нет `wallNow()` без tz»):** время инцидентов — тот же настенный канон, что и `scheduled_at`. `now()` в SQL и `Date.now()` в TS с ним **несравнимы**.
 
-### 🟠 H-4. CAS есть только в `setQueueEntryStatus` — остальные мутации перетирают чужие переходы
+### 🟠 H-4. CAS есть только в `setQueueEntryStatus` — остальные мутации перетирают чужие переходы *(✅ закрыто 2026-07-12)*
+
+> **Фикс:** CAS через `.in("status", …)` в `cancelQueueEntry`, `completeQueueEntry`, `setQueueEntryCall` (для `declined` — только `scheduled`/`waiting`), `rescheduleQueueEntry` (запрещён только `done`; «Перезапис» отменённых остаётся), `editQueueEntryStudies`, `confirmAllCalls`; `markWaitlistScheduled` — `.eq("status","waiting")` с идемпотентностью **по `scheduled_entry_id`** (иначе гонка двух админов выглядела бы как успех, а пациент оказывался записан дважды). `updatePatientDetails` получил allowlist колонок — через него с клиента проходил произвольный `TablesUpdate`, включая `status`/`scheduled_at`/`room_id`, в обход всех гардов. Доски (`QueueBoard`, `CallListBoard`, `ReferralPortal`, `WaitlistBoard`) показывают `code:"stale"` и синхронизируются вместо тихой перезаписи.
 
 **Evidence** (`app/queue/actions.ts`): `rescheduleQueueEntry:587-631` (патч содержит `status:"scheduled"`, WHERE — только `id`), `setQueueEntryCall:285-291` (`declined` → `status:"cancelled"`, без гарда), `completeQueueEntry:257`, `cancelQueueEntry:233`, `setQueuePriority:862`, `editQueueEntryStudies:684`, `updatePatientDetails:831`; весь `app/waitlist/actions.ts`.
 

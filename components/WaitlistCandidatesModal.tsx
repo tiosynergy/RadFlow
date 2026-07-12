@@ -101,9 +101,21 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
         : "Помилка запису: " + res.error);
       return;
     }
-    await markWaitlistScheduled(wl.id, res.id ?? null);
+    /* Результат ДРУГОЇ операції не можна ігнорувати: запис у черзі вже створено,
+       і якщо лист не оновився (кандидата встиг узяти інший адміністратор — CAS
+       відхилив, або збій мережі), оператор має це побачити, інакше пацієнт
+       залишиться в «Очікують» і його запишуть удруге. */
+    const mark = await markWaitlistScheduled(wl.id, res.id ?? null);
     setBookFor(null);
-    onBooked?.("Записано з листа очікування: " + b.name + " · " + b.time);
+    if (!mark.ok) {
+      onError?.(
+        mark.code === "stale"
+          ? "Запис створено, але кандидата вже зняв інший оператор — перевірте лист очікування"
+          : "Запис створено, але лист не оновився: " + mark.error
+      );
+    } else {
+      onBooked?.("Записано з листа очікування: " + b.name + " · " + b.time);
+    }
     onClose();
   }
 
