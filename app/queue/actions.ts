@@ -225,6 +225,10 @@ function classifyError(err: { code?: string; message?: string }, status?: QueueS
   if (status === "in_progress" && (code === "23505" || /in_progress|duplicate|23505/i.test(message))) {
     return { ok: false, error: message, code: "room_busy" };
   }
+  // BREAK — тригер 0067 (перерва кабінету). Сюди доходить лише на воскресінні
+  // термінального запису (зміна статусу «живого» рядка гард пропускає), але
+  // сирий текст Postgres користувачу показувати не можна.
+  if (/^BREAK|перетинає перерву/i.test(message)) return BREAK_ERR;
   if (code === "23P01" || /overlap|exclusion|incident/i.test(message)) {
     return { ok: false, error: message, code: "slot_unavailable" };
   }
@@ -599,6 +603,9 @@ function mapBookingError(message: string): QueueActionResult {
   if (/duration_min_chk/i.test(message)) {
     return { ok: false, error: `Некоректна тривалість дослідження (кратна 5 хв, до ${DUR_MAX / 60} год)`, code: "generic" };
   }
+  // BREAK — тригер 0067 (перерва кабінету). Перевіряти треба ДО overlap/exclusion:
+  // виняток піднімається з тим самим SQLSTATE 23P01.
+  if (/^BREAK|перетинає перерву/i.test(message)) return BREAK_ERR;
   if (/incident/i.test(message)) return { ok: false, error: message, code: "incident" };
   if (/overlap|exclusion/i.test(message)) return { ok: false, error: message, code: "slot_unavailable" };
   return { ok: false, error: message, code: "generic" };
