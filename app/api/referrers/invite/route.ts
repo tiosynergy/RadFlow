@@ -11,7 +11,12 @@ import { requireRole } from "@/lib/apiAuth";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function POST(req: Request) {
-  const gate = await requireRole(["admin"], { needClinic: true, forbidden: "Лише адміністратор центру" });
+  // Роут може СТВОРИТИ auth-акаунт направника → ліміт per-admin.
+  const gate = await requireRole(["admin"], {
+    needClinic: true,
+    forbidden: "Лише адміністратор центру",
+    rateLimit: { key: "acct:create", max: 30, windowSeconds: 3600 },
+  });
   if (!gate.ok) return gate.res;
   const { user, me } = gate;
 

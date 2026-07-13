@@ -6,7 +6,13 @@ import { requireRole } from "@/lib/apiAuth";
 // Пароль НЕ задається: користувач встановлює його сам на /set-password
 // (тимчасовий випадковий пароль ставимо лише щоб акаунт був валідним).
 export async function POST(req: Request) {
-  const gate = await requireRole(["admin"], { needClinic: true, forbidden: "Лише адміністратор" });
+  // Роут СТВОРЮЄ auth-акаунт → ліміт per-admin (скомпрометований акаунт інакше
+  // за хвилину наробить тисячі користувачів: квота Supabase, рахунок, сміття).
+  const gate = await requireRole(["admin"], {
+    needClinic: true,
+    forbidden: "Лише адміністратор",
+    rateLimit: { key: "acct:create", max: 30, windowSeconds: 3600 },
+  });
   if (!gate.ok) return gate.res;
   const { me } = gate;
 

@@ -8,7 +8,12 @@ import { requireRole } from "@/lib/apiAuth";
 // один CEO може мати багато центрів. Наявному користувачу роль НЕ змінюємо.
 // body: { login*, full_name?, email?, phone?, note? }
 export async function POST(req: Request) {
-  const gate = await requireRole(["admin"], { needClinic: true, forbidden: "Лише адміністратор центру" });
+  // Роут може СТВОРИТИ auth-акаунт CEO → ліміт per-admin.
+  const gate = await requireRole(["admin"], {
+    needClinic: true,
+    forbidden: "Лише адміністратор центру",
+    rateLimit: { key: "acct:create", max: 30, windowSeconds: 3600 },
+  });
   if (!gate.ok) return gate.res;
   const { user, me } = gate;
 

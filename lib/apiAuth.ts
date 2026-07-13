@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isAdminConfigured } from "@/lib/supabase/admin";
+import { rateLimitOk } from "@/lib/rateLimit";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/supabase/types";
 
@@ -34,17 +35,20 @@ const err = (message: string, status: number): { ok: false; res: NextResponse } 
  *                 При true возвращаемый me.clinic_id сужается до string.
  * @param opts.forbidden   сообщение при неподходящей роли (по умолчанию общее).
  */
+/** Ліміт частоти per-caller (для роутів, що створюють акаунти). */
+type RateLimitOpt = { key: string; max: number; windowSeconds: number };
+
 export function requireRole(
   allowed: Role[] | null,
-  opts: { needClinic: true; forbidden?: string }
+  opts: { needClinic: true; forbidden?: string; rateLimit?: RateLimitOpt }
 ): Promise<Gate<ClinicCaller>>;
 export function requireRole(
   allowed: Role[] | null,
-  opts?: { needClinic?: boolean; forbidden?: string }
+  opts?: { needClinic?: boolean; forbidden?: string; rateLimit?: RateLimitOpt }
 ): Promise<Gate<Caller>>;
 export async function requireRole(
   allowed: Role[] | null,
-  opts?: { needClinic?: boolean; forbidden?: string }
+  opts?: { needClinic?: boolean; forbidden?: string; rateLimit?: RateLimitOpt }
 ): Promise<Gate<Caller>> {
   if (!isAdminConfigured()) {
     return err("SUPABASE_SERVICE_ROLE_KEY не налаштовано на сервері (.env.local)", 500);
@@ -68,6 +72,17 @@ export async function requireRole(
   }
   if (opts?.needClinic && !me.clinic_id) {
     return err("Адміністратор без центру", 403);
+  }
+
+  /* Ліміт на роути, що СТВОРЮЮТЬ auth-акаунти (/api/staff, /api/referrers/invite,
+     /api/ceo/grant). Раніше ліміту не було взагалі: скомпрометований (або просто
+     скриптований) адмін-акаунт за хвилину створював тисячі користувачів — квота
+     Supabase, рахунок і сміття в profiles. Ліміт per-caller, не per-IP: адмін
+     авторизований, і саме його дії треба обмежити. */
+  if (opts?.rateLimit) {
+    const { key, max, windowSeconds } = opts.rateLimit;
+    const ok = await rateLimitOk(`${key}:${user.id}`, max, windowSeconds);
+    if (!ok) return err("Забагато запитів. Спробуйте за кілька хвилин.", 429);
   }
 
   return { ok: true, supabase, user: { id: user.id }, me: me as Caller };

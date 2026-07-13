@@ -1033,6 +1033,35 @@ export type Database = {
           patients: Json;
         }[];
       };
+      /* 0072: резолв логін→email на вході. Лише service_role (для клієнтів це був би
+         інструмент енумерації акаунтів). Бере індекс profiles_login_lower_idx. */
+      resolve_login_email: {
+        Args: { p_login: string };
+        Returns: string | null;
+      };
+      /* 0071: агрегати CEO-дашборда рахує БД (раніше в браузер їхали всі рядки
+         за період по всіх центрах — разом із ПІБ і studies). */
+      ceo_kpi_totals: {
+        Args: { p_from: string; p_to: string; p_clinics?: string[] | null };
+        Returns: { scheduled_date: string; status: string; cnt: number; booked_min: number }[];
+      };
+      ceo_kpi_rooms: {
+        Args: { p_from: string; p_to: string; p_clinics?: string[] | null };
+        Returns: { room_id: string; booked_min: number }[];
+      };
+      ceo_kpi_studies: {
+        Args: { p_from: string; p_to: string; p_clinics?: string[] | null };
+        Returns: {
+          status: string;
+          study_type: string;
+          region: string;
+          contrast: boolean;
+          cnt: number;        // позицій (дохід)
+          first_cnt: number;  // записів, де це дослідження перше (топ-5)
+          priced_sum: number;
+          unpriced: number;
+        }[];
+      };
       /* 0070: колонки станів (status, call_status, in_progress_at, clarify_at,
          reschedule_origin) ВІДКЛИКАНІ в authenticated — писати їх може лише ці RPC
          (SECURITY DEFINER), де живуть авторизація, CAS і правила переходів. */

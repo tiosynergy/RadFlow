@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 
 // Витягуємо IP клієнта із заголовків проксі (Vercel ставить x-forwarded-for).
@@ -5,6 +6,16 @@ export function clientIp(req: Request): string {
   const xff = req.headers.get("x-forwarded-for");
   if (xff) return xff.split(",")[0].trim();
   return req.headers.get("x-real-ip") || "unknown";
+}
+
+/* Ключ лімітера з КОРИСТУВАЦЬКОГО вводу (логін, email) — лише у вигляді хеша.
+   Інакше довжину й вміст ключа задає атакувальник: rate_limits.key — primary key,
+   і мільйон спроб із випадковими логінами = мільйон рядків (плюс роздування PK).
+   А rl_check при деградації fail-open — тобто лімітер вимкнув би сам себе.
+   Фіксовані 32 hex-символи + прибирання за cron (supabase/cron_jobs.sql). */
+export function rlKey(prefix: string, raw: string): string {
+  const h = crypto.createHash("sha256").update(raw.trim().toLowerCase()).digest("hex").slice(0, 32);
+  return `${prefix}:${h}`;
 }
 
 // Перевірка обмеження частоти через БД (fixed-window, функція rl_check).

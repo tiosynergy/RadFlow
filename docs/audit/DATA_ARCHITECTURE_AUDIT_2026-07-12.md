@@ -288,13 +288,19 @@ QueueBoard это починил (`entriesErr`/`incidentsErr`/`overridesErr`), �
 
 ## 4. Масштабируемость
 
-### 🟠 H-7. CEO-дашборд: агрегаты в браузере, месяц × все центры, с ПІБ пациентов
+### 🟠 H-7. CEO-дашборд: агрегаты в браузере, месяц × все центры, с ПІБ пациентов *(✅ закрыто миграцией 0071)*
+
+> **Фикс:** три `SECURITY DEFINER` RPC (`ceo_kpi_totals`, `ceo_kpi_rooms`, `ceo_kpi_studies`) — агрегаты считает Postgres, в браузер едут десятки строк вместо десятков тысяч, **ПІБ в дашборд не грузится вообще** (нужен только для CSV — теперь загружается по клику, с лимитом 5000). Общий `debounceKey` в `useRealtimeRefetch` + дедупликация в `callAll()`: всплеск в 20 центрах давал до 20 полных reload'ов (и столько же — на маунте и на каждом возврате во вкладку).
+> **Ревью поймало два блокера:** `= any(auth_ceo_clinics())` не компилируется (SRF в `WHERE`; нужен `in (select …)`), и — важнее — админ **без** `ceo_access` видел бы нули: RPC обходят RLS, а `/ceo` открыт и админу своего центра. Формулы KPI и «Топ-5» сохранены ровно те же (топ считается по записям, по первому исследованию, и записи без исследований остались отдельным бакетом), чтобы цифры не «поплыли».
 
 **Evidence:** `CeoDashboard.tsx:133-146` — `.select("id, status, duration_min, buffer_time_min, studies, room_id, scheduled_date, patient_name").in("clinic_id", clinicIds)…` **без `.limit()`, без пагинации**; KPI считаются в браузере (`:169-199`). Плюс `:161-164` — подписка **на каждый центр**, у всех один `onChange: reload`, а дебаунсер хука ключуется как `table + ":" + i` (`useRealtimeRefetch.ts:122`) → всплеск в 20 центрах = **до 20 полных reload'ов**, каждый = 3 запроса.
 
 **Риск:** сеть из 20 центров × 200 записей/день × 30 дней = **120k строк с ПІБ** в браузер на каждый reload, с самозаливанием БД при активности.
 
-### 🟠 H-8. `search_referrers` — `ILIKE '%q%'` по `profiles` без trigram-индекса
+### 🟠 H-8. `search_referrers` — `ILIKE '%q%'` по `profiles` без trigram-индекса *(✅ закрыто миграцией 0072)*
+
+> **Фикс:** GIN trigram по `profiles.login where role='referrer'` и по `clinics.name/city`. Вход больше не резолвит логин через `.ilike("login", …)` (этот предикат не sargable — btree по `lower(login)` планировщик применить не мог, значит **seq scan на каждую попытку входа**, включая перебор): теперь `resolve_login_email()` — `SECURITY DEFINER`, `lower(login) = lower($1)`, берёт индекс. Доступ к функции только у `service_role` — клиентам она была бы готовым инструментом энумерации аккаунтов (логин → email).
+> Заодно закрыты **M-10** (ключ `rate_limits` задавал атакующий → `rlKey()` хеширует ввод) и **M-13** (роуты, создающие auth-аккаунты — `/api/staff`, `/api/referrers/invite`, `/api/ceo/grant` — получили per-caller лимит прямо в `requireRole`, чтобы он не забылся в новом роуте).
 
 **Evidence:** `0039_search_referrers.sql:28` — `p.login ilike '%' || btrim(q) || '%'`. Индексы `profiles`: btree по `lower(login)` (0013:19), `profiles_clinic_idx`, `profiles_invite_token_uidx`. **Trigram нет**, хотя `pg_trgm` уже установлен (0042:18) и GIN сделан для `cities`.
 `ReferrersManager.tsx:83` вызывает RPC **по мере ввода** → seq scan всей `profiles` (персонал всех центров + все направители экосистемы) на каждый keystroke.
