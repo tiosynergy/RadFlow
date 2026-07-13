@@ -674,6 +674,11 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
       notify("Пацієнт запізнився понад буферний час — реєстратура має повернути його в чергу, перенести або зняти запис", "error");
       return;
     }
+    // «Виконано» — лише після кабінету (інваріант БД, 0069).
+    if (status === "done" && p.status !== "in_progress" && p.status !== "done") {
+      notify("«Виконано» можна поставити лише пацієнту, який був у кабінеті", "error");
+      return;
+    }
     if (status === "in_progress") { callPatient(p); return; }
     setStatus(p.id, status);
   }

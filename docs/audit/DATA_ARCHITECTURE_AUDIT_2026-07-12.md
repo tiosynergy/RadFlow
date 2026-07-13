@@ -188,6 +188,16 @@ const status = startMs > Date.now() ? "planned" : "active";   // Date.now() = 16
 **Фикс:** `submitIncident` считает `planned/active` через `wallNow(clinics.timezone)`; `emergency_stop_rpc` пишет `started_at` в настенном UTC (`0065_incident_wall_time.sql`).
 **Правило (в дополнение к «нет `wallNow()` без tz»):** время инцидентов — тот же настенный канон, что и `scheduled_at`. `now()` в SQL и `Date.now()` в TS с ним **несравнимы**.
 
+### 🟠 H-12. Машина состояний не была инвариантом БД — прямой `UPDATE` обходил все проверки *(✅ частично закрыто миграцией 0069)*
+
+**Evidence.** `queue_write_staff` (`0024:41-44`) — `for all using (clinic_id = auth_clinic_id() and not auth_is_referrer())`. Любой сотрудник клиники может сделать `PATCH /rest/v1/queue_entries?id=eq.…` с `{"status":"done"}` обычным анон-ключом и своим JWT — мимо Server Actions, CAS, `hasSlotClash`. Server Actions ходят под **тем же** JWT, поэтому БД не отличает легальный путь от прямого запроса.
+
+**Важная граница:** CAS (`expectedFrom`) инвариантом БД быть **не может** — это optimistic concurrency, он выражает «оператор видел статус X», а БД не знает, что видел оператор. В БД можно и нужно вынести другое — **легальность переходов**.
+
+**Фикс (0069):** триггер `guard_status_transition` — в `done` можно попасть **только** из `in_progress`. Это же закрывает п.7 аудита 2026-07-11: степпер позволял кликнуть «Виконано» пациенту, который не приходил, и это росло в «Доході» у CEO. Остальные переходы (возврат в очередь, «Перезапис» отменённого, `in_progress → not_held` аварийкой, «все ж прийшов» из `not_held`) остаются легальными — матрица сознательно минимальна, чтобы не сломать рабочие сценарии. UI на обеих досках блокирует шаг «Виконано» заранее, чтобы пользователь видел подсказку, а не ошибку БД.
+
+**Осталось (отдельным решением):** `REVOKE UPDATE(status, in_progress_at, call_status) FROM authenticated` + перевод статусных мутаций на `SECURITY DEFINER` RPC. Только это сделает прямой PATCH статуса физически невозможным.
+
 ### 🟠 H-4. CAS есть только в `setQueueEntryStatus` — остальные мутации перетирают чужие переходы *(✅ закрыто 2026-07-12)*
 
 > **Фикс:** CAS через `.in("status", …)` в `cancelQueueEntry`, `completeQueueEntry`, `setQueueEntryCall` (для `declined` — только `scheduled`/`waiting`), `rescheduleQueueEntry` (запрещён только `done`; «Перезапис» отменённых остаётся), `editQueueEntryStudies`, `confirmAllCalls`; `markWaitlistScheduled` — `.eq("status","waiting")` с идемпотентностью **по `scheduled_entry_id`** (иначе гонка двух админов выглядела бы как успех, а пациент оказывался записан дважды). `updatePatientDetails` получил allowlist колонок — через него с клиента проходил произвольный `TablesUpdate`, включая `status`/`scheduled_at`/`room_id`, в обход всех гардов. Доски (`QueueBoard`, `CallListBoard`, `ReferralPortal`, `WaitlistBoard`) показывают `code:"stale"` и синхронизируются вместо тихой перезаписи.

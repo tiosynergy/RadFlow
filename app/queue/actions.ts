@@ -231,6 +231,10 @@ function classifyError(err: { code?: string; message?: string }, status?: QueueS
   if (status === "in_progress" && (code === "23505" || /in_progress|duplicate|23505/i.test(message))) {
     return { ok: false, error: message, code: "room_busy" };
   }
+  // STATUS_TRANSITION — тригер 0069: «Виконано» лише з in_progress.
+  if (/STATUS_TRANSITION/i.test(message)) {
+    return { ok: false, error: "«Виконано» можна поставити лише пацієнту, який був у кабінеті", code: "forbidden" };
+  }
   // BREAK — тригер 0067 (перерва кабінету). Сюди доходить лише на воскресінні
   // термінального запису (зміна статусу «живого» рядка гард пропускає), але
   // сирий текст Postgres користувачу показувати не можна.

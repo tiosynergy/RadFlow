@@ -1230,6 +1230,13 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       notify("Пацієнт запізнився понад буферний час — спершу поверніть у чергу, перенесіть або зніміть запис", "error");
       return;
     }
+    /* «Виконано» — лише після кабінету (інваріант БД, 0069). Раніше степпер давав
+       клікнути крок 4 пацієнту, який навіть не приходив: дослідження «виконувалось»
+       нізвідки і росло в «Доході» CEO. */
+    if (status === "done" && p.status !== "in_progress" && p.status !== "done") {
+      notify("«Виконано» можна поставити лише пацієнту, який був у кабінеті — спершу проведіть його через кабінет", "error");
+      return;
+    }
     if (status === "in_progress") { callPatient(p); return; }
     setStatus(p.id, status);
   }
