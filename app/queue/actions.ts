@@ -18,7 +18,7 @@ import type { Database, Json, QueueStatus, CallStatus, TablesUpdate } from "@/su
 import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
-import { wallNow, wallInstant, wallDayKey } from "@/lib/incidents";
+import { wallNow, wallInstant, wallDayKey, wallMinOfInstant } from "@/lib/incidents";
 import { roomScheduleFor, effectiveRoomBreaks, overlapsBreak, type DayOverride } from "@/lib/schedule";
 
 export type QueueActionResult =
@@ -143,6 +143,12 @@ const BREAK_ERR = {
   error: "Дослідження перетинає перерву в роботі кабінету — оберіть інший слот",
   code: "off_schedule" as const,
 };
+
+/** "HH:MM" → хвилини від початку доби. */
+function toMinOfDay(t: string | null | undefined): number {
+  const [h, m] = String(t || "0:0").split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
 
 /* Гард графіка ДЛЯ ВСІХ write-шляхів: null = можна писати, інакше — готова відповідь.
    Перевіряє і межі графіка, і ПЕРЕРВИ кабінету (обід тощо, rooms.schedule.breaks[]).
@@ -786,7 +792,7 @@ export async function editQueueEntryStudies(
   }
 
   const { data: cur } = await supabase.from("queue_entries")
-    .select("clinic_id, room_id, scheduled_date, scheduled_time, status")
+    .select("clinic_id, room_id, scheduled_date, scheduled_time, status, in_progress_at, duration_min, buffer_time_min")
     .eq("id", id).maybeSingle();
   if (!cur) return { ok: false, error: "Запис не знайдено", code: "forbidden" };
 
@@ -801,6 +807,19 @@ export async function editQueueEntryStudies(
       }
     } catch {
       return SCHED_READ_ERR;   // fail-closed: не змогли перевірити графік — не подовжуємо дослідження
+    }
+
+    /* Мʼяка пред-перевірка перетину з НАСТУПНИМ записом (жорстку дає тригер
+       check_no_overlap, 0068). Для пацієнта В КАБІНЕТІ вікно рахується від
+       ФАКТИЧНОГО старту (in_progress_at), а не від планового слота — канон 0060.
+       Клієнтський capByNext не гарантія: у StudyEditModal він Infinity, поки
+       вантажиться зайнятість, а застаріла вкладка не знає про сусіда взагалі. */
+    const newBuf = bufferTimeMin != null ? normBuffer(bufferTimeMin) : normBuffer(cur.buffer_time_min ?? BUFFER_DEFAULT);
+    const startMin = cur.status === "in_progress" && cur.in_progress_at
+      ? wallMinOfInstant(cur.in_progress_at, await clinicTz(supabase, cur.clinic_id)) ?? toMinOfDay(cur.scheduled_time)
+      : toMinOfDay(cur.scheduled_time);
+    if (await hasSlotClash(supabase, cur.room_id, cur.scheduled_date, startMin, startMin + dur + newBuf, id)) {
+      return { ok: false, error: "Дослідження не вміщується — далі стоїть інший запис", code: "slot_unavailable" };
     }
   }
 
