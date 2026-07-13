@@ -402,11 +402,8 @@ interface QueueRowProps {
 function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel }: QueueRowProps) {
   // «Запізнення» — derived: пацієнт не прийшов, минуло понад буферний час.
   const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
-  // Заплановане в минулому, і час дослідження (старт + тривалість) уже минув →
-  // можна прямо позначити «Виконано» (напр. повернути помилково скасоване завершення).
   const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
   const _nowW = wallNow();
-  const pastComplete = _startMs != null && (_startMs + (p.duration_min || 30) * 60000) <= _nowW;
   // «Неявка»/«Не відбулося» можна ставити лише ПІСЛЯ часу початку дослідження (не наперед).
   const beforeStart = _startMs != null && _nowW < _startMs;
   const overdue = needsClarification(p.status, dayDate, p.scheduled_time) || (p.status === "scheduled" && !!p.clarify_at);
@@ -560,8 +557,11 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                   {/* Панель рішення для запізнення: явні дії замість прямого виклику. */}
                   {late && !terminal && (
                     <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }}>
-                      <button className="btn btn-green btn-sm" onClick={act(onArrive)} title="Пацієнт усе ж прийшов — повернути в живу чергу (Очікує)">↩ Все ж прийшов</button>
-                      {pastComplete && <button className="btn btn-green btn-sm" onClick={(e) => { e.stopPropagation(); onSetStatus(p, "done"); }} title="Позначити виконаним (заплановане в минулому, час дослідження вже минув)">✓ Виконано</button>}
+                      {/* Кнопки «✓ Виконано» тут БІЛЬШЕ НЕМАЄ: у 'done' можна потрапити лише
+                          з 'in_progress' (інваріант БД, 0069) — інакше дослідження «виконувалось»
+                          нізвідки і росло в «Доході» CEO. Шлях для пацієнта, який усе ж прийшов:
+                          «↩ Все ж прийшов» → викликати в кабінет → «Виконано». */}
+                      <button className="btn btn-green btn-sm" onClick={act(onArrive)} title="Пацієнт усе ж прийшов — повернути в живу чергу (Очікує), далі виклик у кабінет">↩ Все ж прийшов</button>
                       <button className="btn btn-secondary btn-sm" onClick={act(onReschedule)}>🗓 Перенести</button>
                       <button className="btn btn-secondary btn-sm" onClick={act(onToWaitlist)} title="Пацієнт чекатиме на вільне вікно">⏳ В лист очікування</button>
                       <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onNotHeld)}>✕ Не відбулося</button>

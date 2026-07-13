@@ -188,7 +188,11 @@ const status = startMs > Date.now() ? "planned" : "active";   // Date.now() = 16
 **Фикс:** `submitIncident` считает `planned/active` через `wallNow(clinics.timezone)`; `emergency_stop_rpc` пишет `started_at` в настенном UTC (`0065_incident_wall_time.sql`).
 **Правило (в дополнение к «нет `wallNow()` без tz»):** время инцидентов — тот же настенный канон, что и `scheduled_at`. `now()` в SQL и `Date.now()` в TS с ним **несравнимы**.
 
-### 🟠 H-12. Машина состояний не была инвариантом БД — прямой `UPDATE` обходил все проверки *(✅ частично закрыто миграцией 0069)*
+### 🟠 H-12. Машина состояний не была инвариантом БД — прямой `UPDATE` обходил все проверки *(✅ ЗАКРЫТО ПОЛНОСТЬЮ: 0069 + 0070)*
+
+> **Итог (проверено на проде):** `has_column_privilege('authenticated', 'queue_entries', 'status', 'update') = false` — прямой `PATCH {status:…}` клиентским ключом невозможен. Записывать состояния может только сервер через `queue_set_status_rpc` / `queue_set_call_rpc` / `queue_confirm_calls_rpc` / `queue_reschedule_rpc`, где живут авторизация (клиника/роль/направитель-владелец + его room-ACL), CAS и правила переходов.
+>
+> **Ловушка, которую поймало ревью:** колоночный `REVOKE` при существующем **табличном** `GRANT UPDATE` — **no-op** (Postgres его игнорирует), а Supabase раздаёт именно табличный грант. Пришлось снимать табличный `UPDATE` и выдавать поколоночно. Следствие: каждая новая колонка `queue_entries` требует явного `grant update (col)`.
 
 **Evidence.** `queue_write_staff` (`0024:41-44`) — `for all using (clinic_id = auth_clinic_id() and not auth_is_referrer())`. Любой сотрудник клиники может сделать `PATCH /rest/v1/queue_entries?id=eq.…` с `{"status":"done"}` обычным анон-ключом и своим JWT — мимо Server Actions, CAS, `hasSlotClash`. Server Actions ходят под **тем же** JWT, поэтому БД не отличает легальный путь от прямого запроса.
 

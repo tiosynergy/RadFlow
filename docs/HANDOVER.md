@@ -1,9 +1,14 @@
 # RadFlow — Handover для новой сессии
 
-**Дата:** 2026-07-12 · **Ветка:** `dev` · **PROD:** БД на `0068` (0061–0068 применены владельцем 2026-07-12); код `main` ещё старый — мердж `dev → main` разблокирован.
+**Дата:** 2026-07-13 · **Ветка:** `dev` · **PROD:** БД на `0070` (0061–0070 применены владельцем); код `main` ещё старый — мердж `dev → main` разблокирован.
+
+> **Статусы, обзвон и перенос идут ТОЛЬКО через RPC** (0070): `queue_set_status_rpc`, `queue_set_call_rpc`, `queue_confirm_calls_rpc`, `queue_reschedule_rpc`. Прямой `UPDATE` этих колонок из клиента невозможен (колоночные привилегии). Любая новая мутация статуса — только через эти RPC, не через `.from("queue_entries").update()`.
 ⚠️ Код в `dev` требует БД ≥ 0068 (`event_outbox.next_attempt_at/dead`, RPC `submit_incident_rpc`, триггеры перерывов/overlap). Порядок соблюдён: миграции уже накачены. Плюс в БД живут cron-джобы (`supabase/cron_jobs.sql`): `sink-overdue`, `resolve-expired-incidents`, ретенция `audit_log`/`event_outbox`/`rate_limits`. `outbox-deliver` — закомментирован до появления n8n.
 
-**Инварианты, которые теперь держит БД** (не полагаться на клиент): анти-овербукинг с буфером (`check_no_overlap`, 0064/0068 — включая продление `in_progress`), простои (`check_not_during_incident`), **перерывы кабинета** (`check_not_during_break`, 0067), запрет прошлого (0063), `duration_min` и окно простоя (0066), `room_id ∈ clinic_id` (0064), роль/клиника в `profiles` (0064).
+**Инварианты, которые теперь держит БД** (не полагаться на клиент): анти-овербукинг с буфером (`check_no_overlap`, 0064/0068 — включая продление `in_progress`), простои (`check_not_during_incident`), **перерывы кабинета** (`check_not_during_break`, 0067), запрет прошлого (0063), `duration_min` и окно простоя (0066), `room_id ∈ clinic_id` (0064), роль/клиника в `profiles` (0064), легальность переходов статуса (0069).
+
+> ⚠️ **0070 — колоночные привилегии на `queue_entries`.** Табличный `UPDATE` у `authenticated` **снят**; выдан поколоночно на всё, кроме `status`, `call_status`, `in_progress_at`, `clarify_at`, `reschedule_origin` (их пишут только `queue_set_status_rpc` / `queue_set_call_rpc` / `queue_confirm_calls_rpc` / `queue_reschedule_rpc`) и `clinic_id`/`created_by`/`id`/`created_at`.
+> **Следствие: каждая НОВАЯ колонка `queue_entries` требует явного** `grant update (новая_колонка) on public.queue_entries to authenticated;` — иначе UI молча получит `42501`. Проверять так: `select has_column_privilege('authenticated','public.queue_entries','<col>','update');`
 **Источник правды по продукту:** [`docs/PRODUCT_OVERVIEW.md`](PRODUCT_OVERVIEW.md) — описывает RadFlow *как он реализован*.
 Этот файл — надстройка: что изменилось, где что лежит, чего не делать и с чего начать.
 

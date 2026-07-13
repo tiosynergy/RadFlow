@@ -258,12 +258,9 @@ function classifyError(err: { code?: string; message?: string }, status?: QueueS
 const LIVE_STATUSES: readonly QueueStatus[] = ["scheduled", "waiting", "in_progress"];
 /* Перенести можна і «не відбулося»/«неявку»/«скасовано» — це штатний «Перезапис»
    з панелі скасованих (QueueBoard/CancelledPanel), і навіть in_progress (свідоме
-   рішення: дослідження зупиняється, кабінет звільняється — див. коментар у
-   rescheduleQueueEntry). НЕ можна — тільки ЗАВЕРШЕНИЙ (done): саме там патч
-   status:'scheduled' воскрешав запис і стирав факт виконання (і «Дохід» CEO). */
-const RESCHEDULABLE_STATUSES: readonly QueueStatus[] = [
-  "scheduled", "waiting", "in_progress", "no_show", "not_held", "cancelled",
-];
+   рішення: дослідження зупиняється, кабінет звільняється). НЕ можна — тільки
+   ЗАВЕРШЕНИЙ (done): саме там патч status:'scheduled' воскрешав запис і стирав
+   факт виконання (і «Дохід» CEO). Цей CAS живе тепер у queue_reschedule_rpc (0070). */
 
 const STALE_ERR = "Стан змінився — оновіть дошку";
 
@@ -301,32 +298,55 @@ export async function setQueueEntryStatus(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  const patch =
-    status === "in_progress"
-      ? { status, in_progress_at: new Date().toISOString() }
-      : { status };
-
-  let q = supabase.from("queue_entries").update(patch).eq("id", id);
-  if (expectedFrom) q = q.eq("status", expectedFrom); // CAS
-  const { data, error } = await q.select("id");
-
-  if (error) return classifyError(error, status);
-  // RLS не отдаёт ошибку, а молча обновляет 0 строк, если нет доступа/записи.
-  if (!data || data.length === 0) {
-    // С CAS 0 строк может означать «статус уже изменился» — отличаем от forbidden.
-    if (expectedFrom) {
-      const { data: cur } = await supabase.from("queue_entries").select("status").eq("id", id).maybeSingle();
-      if (cur) {
-        if (cur.status === status) return { ok: true }; // кто-то уже применил тот же переход — идемпотентно
-        return { ok: false, error: "Стан змінився — оновіть дошку", code: "stale", currentStatus: cur.status as QueueStatus };
-      }
-    }
-    return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
-  }
-  return { ok: true };
+  return setStatusViaRpc(supabase, id, status, { expected: expectedFrom });
 }
 
-/** Скасувати запис (status → cancelled). */
+/* ===== Єдина точка входу для зміни статусу (міграція 0070) =====
+   Колонки status / call_status / in_progress_at / clarify_at / reschedule_origin
+   ВІДКЛИКАНІ в authenticated: прямий PATCH з браузера падає 42501. Писати їх може
+   лише SECURITY DEFINER RPC, де живуть авторизація (клініка/роль), CAS і правила.
+   Раніше CAS існував тільки тут, у Server Action, а RLS дозволяла персоналу
+   оновити рядок напряму анон-ключем — тобто вся машина станів обходилась. */
+async function setStatusViaRpc(
+  supabase: SupabaseClient<Database>,
+  id: string,
+  status: QueueStatus,
+  opts: {
+    expected?: QueueStatus;
+    allowed?: readonly QueueStatus[];
+    /** Передати note ЯВНО (у т.ч. null = стерти). Без цього прапорця нотатка не чіпається. */
+    setNote?: boolean;
+    note?: string | null;
+    sameAsOk?: QueueStatus;
+  } = {}
+): Promise<QueueActionResult> {
+  const { data, error } = await supabase.rpc("queue_set_status_rpc", {
+    p_id: id,
+    p_status: status,
+    p_expected: opts.expected ?? undefined,
+    p_allowed: opts.allowed ? (opts.allowed as QueueStatus[]) : undefined,
+    p_note: opts.setNote ? (opts.note ?? null) : undefined,
+    p_set_note: opts.setNote ?? undefined,
+  });
+
+  if (error) {
+    if (error.code === "42501" || /FORBIDDEN/i.test(error.message)) {
+      return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+    }
+    return classifyError(error, status);
+  }
+
+  const res = Array.isArray(data) ? data[0] : data;
+  if (!res) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  if (res.updated) return { ok: true };
+
+  const current = res.current_status as QueueStatus;
+  // Той самий перехід уже застосовано (повторний клік / гонка) — ідемпотентно ok.
+  if (current === status || (opts.sameAsOk && current === opts.sameAsOk)) return { ok: true };
+  return { ok: false, error: STALE_ERR, code: "stale", currentStatus: current };
+}
+
+/** Скасувати запис (status → cancelled). Лише живий запис. */
 export async function cancelQueueEntry(id: string): Promise<QueueActionResult> {
   if (!id || typeof id !== "string") return { ok: false, error: "Невірний ідентифікатор запису", code: "generic" };
 
@@ -334,20 +354,10 @@ export async function cancelQueueEntry(id: string): Promise<QueueActionResult> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  // CAS: скасувати можна лише живий запис (не завершений/не скасований).
-  const { data, error } = await supabase
-    .from("queue_entries")
-    .update({ status: "cancelled" })
-    .eq("id", id)
-    .in("status", LIVE_STATUSES as unknown as QueueStatus[])
-    .select("id");
-
-  if (error) return { ok: false, error: error.message, code: "generic" };
-  if (!data || data.length === 0) return casMiss(supabase, id, "cancelled");
-  return { ok: true };
+  return setStatusViaRpc(supabase, id, "cancelled", { allowed: LIVE_STATUSES, sameAsOk: "cancelled" });
 }
 
-/** Завершить процедуру: статус done/no_show + объединённая заметка. */
+/** Завершити процедуру: статус done/no_show/not_held + нотатка. Лише живий запис. */
 export async function completeQueueEntry(
   id: string,
   status: "done" | "no_show" | "not_held",
@@ -360,17 +370,8 @@ export async function completeQueueEntry(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  // CAS: підсумок ставимо лише живому запису — не «дозавершуємо» скасований.
-  const { data, error } = await supabase
-    .from("queue_entries")
-    .update({ status, note })
-    .eq("id", id)
-    .in("status", LIVE_STATUSES as unknown as QueueStatus[])
-    .select("id");
-
-  if (error) return { ok: false, error: error.message, code: "generic" };
-  if (!data || data.length === 0) return casMiss(supabase, id, status);
-  return { ok: true };
+  // setNote: нотатка завершення пишеться ЗАВЖДИ (у т.ч. порожня — оператор міг її стерти).
+  return setStatusViaRpc(supabase, id, status, { allowed: LIVE_STATUSES, setNote: true, note, sameAsOk: status });
 }
 
 const ALLOWED_CALL_STATUSES: readonly CallStatus[] = [
@@ -390,32 +391,34 @@ export async function setQueueEntryCall(id: string, callStatus: CallStatus): Pro
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  const patch =
-    callStatus === "declined" ? { call_status: callStatus, status: "cancelled" as QueueStatus } : { call_status: callStatus };
-
   /* CAS. «Відмова» СКАСОВУЄ запис, тому дозволена лише до приходу пацієнта:
      оператор колл-листа зі старим списком не має скасувати того, хто вже
-     в кабінеті. Решта статусів обдзвону — на будь-якому живому записі. */
+     в кабінеті. Решта статусів обдзвону — на будь-якому живому записі.
+     Пишемо через RPC (0070): call_status відкликаний у authenticated. */
   const allowedFrom: readonly QueueStatus[] =
     callStatus === "declined" ? (["scheduled", "waiting"] as const) : LIVE_STATUSES;
 
-  const { data, error } = await supabase
-    .from("queue_entries")
-    .update(patch)
-    .eq("id", id)
-    .in("status", allowedFrom as unknown as QueueStatus[])
-    .select("id");
-  if (error) return { ok: false, error: error.message, code: "generic" };
-  if (!data || data.length === 0) {
-    /* Ідемпотентність — по call_status, а не по status: інакше «✕ Відмова» на
-       записі, який щойно скасували ЗВИЧАЙНИМ «Скасувати», повертала б ok, і UI
-       казав би «Пацієнт відмовився» + пропонував кандидатів на вже вільний слот. */
-    const { data: cur } = await supabase.from("queue_entries").select("status, call_status").eq("id", id).maybeSingle();
-    if (!cur) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
-    if (cur.call_status === callStatus) return { ok: true }; // той самий перехід уже застосовано
-    return { ok: false, error: STALE_ERR, code: "stale", currentStatus: cur.status as QueueStatus };
+  const { data, error } = await supabase.rpc("queue_set_call_rpc", {
+    p_id: id,
+    p_call: callStatus,
+    p_allowed: allowedFrom as unknown as QueueStatus[],
+  });
+  if (error) {
+    if (error.code === "42501" || /FORBIDDEN/i.test(error.message)) {
+      return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+    }
+    return { ok: false, error: error.message, code: "generic" };
   }
-  return { ok: true };
+
+  const res = Array.isArray(data) ? data[0] : data;
+  if (!res) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  if (res.updated) return { ok: true };
+
+  /* Ідемпотентність — по call_status, а не по status: інакше «✕ Відмова» на
+     записі, який щойно скасували ЗВИЧАЙНИМ «Скасувати», повертала б ok, і UI
+     казав би «Пацієнт відмовився» + пропонував кандидатів на вже вільний слот. */
+  if (res.current_call === callStatus) return { ok: true };
+  return { ok: false, error: STALE_ERR, code: "stale", currentStatus: res.current_status as QueueStatus };
 }
 
 /** Снять простой кабинета (incident → resolved). */
@@ -722,54 +725,35 @@ export async function rescheduleQueueEntry(input: RescheduleInput): Promise<Queu
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 
-  const patch: TablesUpdate<"queue_entries"> = {
-    room_id: input.roomId,
-    scheduled_date: input.scheduledDate,
-    scheduled_time: input.scheduledTime,
-    scheduled_at: input.scheduledAt,
-    // H-1: нормалізуємо (кратно 5, 5..480) — клієнтський інпут читався як parseInt(),
-    // тож «47» або «999» доїжджали до БД. duration_min = 0 взагалі обходив анти-овербукінг.
-    duration_min: normDur(input.durationMin),
-    buffer_time_min: bufferMin,
-    status: "scheduled",
-    // Перенос = свіжий слот: скидаємо фактичний старт (важливо, якщо переносимо
-    // in_progress — щоб запис не «займав» кабінет за старим in_progress_at).
-    in_progress_at: null,
-    /* …і мітку «⚠ Уточнити» (0058). Її ставить RPC sink_overdue_scheduled
-       прострочениим записам, і саме за нею дошка ОПУСКАЄ запис униз черги
-       (clarifyRank у сортуванні). Без цього скидання перенесений у майбутнє
-       пацієнт лишався з міткою і на старій позиції — «переніс, а він не
-       перемістився». Якщо новий слот теж прострочений, RPC позначить знову. */
-    clarify_at: null,
-  };
-  // call_status: направник НЕ має права його чіпати (гард 0048) — для нього
-  // колонку не оновлюємо взагалі. Персонал при перенесенні скидає підтвердження
-  // дзвінка на "not_called" (новий слот → передзвонити), або передає явне значення.
-  if (input.callStatus !== undefined) {
-    patch.call_status = input.callStatus;
-  } else {
-    const { data: prof } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
-    if (prof?.role !== "referrer") patch.call_status = "not_called";
-  }
-  // Довідка «звідки перенесено» — знімок стану до переносу + причина.
-  if (cur) {
-    patch.reschedule_origin = {
-      from_date: cur.scheduled_date, from_time: cur.scheduled_time,
-      from_room: cur.room_id, from_clinic: cur.clinic_id, from_status: cur.status,
-      reason: reason || null, at: new Date().toISOString(),
-    } as unknown as Json;
-  }
+  /* Перенос — через RPC (0070): status / in_progress_at / clarify_at / call_status /
+     reschedule_origin відкликані в authenticated, тож прямий UPDATE тут уже неможливий.
+     Усередині RPC: авторизація (персонал своєї клініки АБО направник-власник із
+     активним доступом), CAS (завершений запис не воскрешаємо — патч ставить
+     'scheduled'), скидання фактичного старту й мітки «⚠ Уточнити», знімок
+     reschedule_origin. Направнику call_status не чіпаємо (гард 0048).
+     scheduled_at не передаємо: його авторитетно перераховує тригер 0035. */
+  const { data, error } = await supabase.rpc("queue_reschedule_rpc", {
+    p_id: input.id,
+    p_room_id: input.roomId,
+    p_date: input.scheduledDate,
+    p_time: input.scheduledTime,
+    p_duration: normDur(input.durationMin),
+    p_buffer: bufferMin,
+    p_call: input.callStatus ?? undefined,
+    p_reason: reason || undefined,
+  });
 
-  // CAS: не воскрешаємо завершений/скасований запис (патч містить status:'scheduled').
-  const { data, error } = await supabase
-    .from("queue_entries")
-    .update(patch)
-    .eq("id", input.id)
-    .in("status", RESCHEDULABLE_STATUSES as unknown as QueueStatus[])
-    .select("id");
-
-  if (error) return mapBookingError(error.message);
-  if (!data || data.length === 0) return casMiss(supabase, input.id);
+  if (error) {
+    if (error.code === "42501" || /FORBIDDEN/i.test(error.message)) {
+      return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+    }
+    return mapBookingError(error.message);
+  }
+  const res = Array.isArray(data) ? data[0] : data;
+  if (!res) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  if (!res.updated) {
+    return { ok: false, error: STALE_ERR, code: "stale", currentStatus: res.current_status as QueueStatus };
+  }
   return { ok: true };
 }
 
@@ -973,20 +957,21 @@ export async function confirmAllCalls(ids: string[]): Promise<ConfirmAllResult> 
   if (!list.length) return { ok: true, updated: 0 };
   if (list.length > MASS_UPDATE_CAP) return { ok: false, error: "Забагато записів за один раз", code: "generic" };
   const supabase = await createClient();
-  const clinicId = await callerClinicId(supabase);
-  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
-  // clinic_id — defense-in-depth поверх RLS (єдиною лінією оборони бути не повинна).
-  // CAS: підтверджуємо лише живі записи — ids приходять із (можливо застарілого)
-  // відфільтрованого списку, і 'confirmed' не має лягати на щойно скасований запис.
-  // Розбіжність оператор побачить: updated < очікуваного.
-  const { data, error } = await supabase.from("queue_entries")
-    .update({ call_status: "confirmed" })
-    .eq("clinic_id", clinicId)
-    .in("id", list)
-    .in("status", LIVE_STATUSES as unknown as QueueStatus[])
-    .select("id");
-  if (error) return { ok: false, error: error.message, code: "generic" };
-  return { ok: true, updated: data?.length ?? 0 };
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  /* Через RPC (0070): call_status відкликаний у authenticated. Ізоляція по клініці,
+     роль і «лише живі записи» — усередині RPC. Повертає РЕАЛЬНУ кількість оновлених:
+     ids приходять із (можливо застарілого) відфільтрованого списку, і 'confirmed'
+     не має лягати на щойно скасований запис. */
+  const { data, error } = await supabase.rpc("queue_confirm_calls_rpc", { p_ids: list });
+  if (error) {
+    if (error.code === "42501" || /FORBIDDEN/i.test(error.message)) {
+      return { ok: false, error: "Немає прав на обдзвін", code: "generic" };
+    }
+    return { ok: false, error: error.message, code: "generic" };
+  }
+  return { ok: true, updated: typeof data === "number" ? data : 0 };
 }
 
 /* Колонки, які РЕАЛЬНО редагує PatientEditModal. Типи TS не захищають Server Action

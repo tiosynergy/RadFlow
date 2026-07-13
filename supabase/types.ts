@@ -1033,6 +1033,41 @@ export type Database = {
           patients: Json;
         }[];
       };
+      /* 0070: колонки станів (status, call_status, in_progress_at, clarify_at,
+         reschedule_origin) ВІДКЛИКАНІ в authenticated — писати їх може лише ці RPC
+         (SECURITY DEFINER), де живуть авторизація, CAS і правила переходів. */
+      queue_set_status_rpc: {
+        Args: {
+          p_id: string;
+          p_status: QueueStatus;
+          p_expected?: QueueStatus;
+          p_allowed?: QueueStatus[];
+          p_note?: string | null;
+          p_set_note?: boolean;   // true → note перезаписується (у т.ч. null = стерти)
+        };
+        Returns: { updated: boolean; current_status: QueueStatus }[];
+      };
+      queue_set_call_rpc: {
+        Args: { p_id: string; p_call: CallStatus; p_allowed?: QueueStatus[] };
+        Returns: { updated: boolean; current_status: QueueStatus; current_call: CallStatus }[];
+      };
+      queue_confirm_calls_rpc: {
+        Args: { p_ids: string[] };
+        Returns: number;
+      };
+      queue_reschedule_rpc: {
+        Args: {
+          p_id: string;
+          p_room_id: string;
+          p_date: string;
+          p_time: string;
+          p_duration: number;
+          p_buffer: number;
+          p_call?: CallStatus | null;
+          p_reason?: string | null;
+        };
+        Returns: { updated: boolean; current_status: QueueStatus }[];
+      };
       // 0066: створення/редагування простою однією транзакцією (інцидент +
       // переведення пацієнта «у кабінеті» в not_held). Статус planned/active
       // рахує БД у настінному часі клініки.
