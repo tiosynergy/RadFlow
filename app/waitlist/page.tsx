@@ -11,7 +11,7 @@ export default async function WaitlistPage() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("clinic_id, full_name, role, clinics(name, configured_at)")
+    .select("clinic_id, full_name, role, clinics(name, configured_at, timezone)")
     .eq("id", user.id)
     .single();
   if (!profile) redirect("/login");
@@ -20,7 +20,7 @@ export default async function WaitlistPage() {
   if (profile.role === "ceo" || !profile.clinic_id) redirect("/ceo");
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
-    | { name?: string; configured_at: string | null }
+    | { name?: string; configured_at: string | null; timezone?: string | null }
     | null
     | undefined;
   if (clinic && !clinic.configured_at) redirect("/setup");
@@ -38,6 +38,7 @@ export default async function WaitlistPage() {
   return (
     <WaitlistBoard
       clinicId={profile.clinic_id as string}
+      clinicTz={clinic?.timezone || "UTC"}
       rooms={rooms ?? []}
       clinicName={clinic?.name ?? ""}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}

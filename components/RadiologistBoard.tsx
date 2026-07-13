@@ -14,7 +14,7 @@ import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock }
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
-import { incidentEffectiveEnd, incidentExpired, wallNow, setClinicTz } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentExpired, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import { setQueueEntryStatus, setRadiologistNote } from "@/app/queue/actions";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
 import type { QueueStatus, Json } from "@/supabase/types";
@@ -37,7 +37,10 @@ const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
 const MON_NOM = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 function startOfDay(d: Date) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
-function today0() { return startOfDay(new Date()); }
+/* «Сьогодні» — за настінним часом КЛІНІКИ (зона з singleton setClinicTz, який
+   виставляється синхронно з пропа clinicTz). Раніше startOfDay(new Date()) давав
+   день БРАУЗЕРА, тоді як isLate/computeCallBlock рахувалися по клініці (M-4). */
+function today0() { return wallToday0(); }
 function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 function dowMon(d: Date) { return (d.getDay() + 6) % 7; }
 function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
@@ -93,10 +96,17 @@ const STEP_PRIMARY: Record<string, { icon: string; label: string; bg: string; co
   done:        { icon: "✓", label: "Дослідження виконано", bg: "var(--card)",  color: "var(--text-faint)" },
 };
 
-function LiveClock() {
+// Годинник — за часом ЦЕНТРУ (як і решта дошки), а не браузера радіолога.
+function LiveClock({ tz }: { tz?: string }) {
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => { setNow(new Date()); const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
-  return <span className="rad-clock tabular" suppressHydrationWarning>🕐 {now ? now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--:--"}</span>;
+  const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" };
+  const txt = (() => {
+    if (!now) return "--:--:--";
+    try { return now.toLocaleTimeString("uk-UA", tz ? { ...opts, timeZone: tz } : opts); }
+    catch { return now.toLocaleTimeString("uk-UA", opts); }
+  })();
+  return <span className="rad-clock tabular" suppressHydrationWarning>🕐 {txt}</span>;
 }
 function LiveTimer({ enteredAt, children }: { enteredAt?: string | null; children: (sec: number) => ReactNode }) {
   const [now, setNow] = useState(() => Date.now());
@@ -392,8 +402,10 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
   );
 }
 
-function MiniCalendar({ selectedDate, onSelectDate, overridesByDate }: { selectedDate: Date; onSelectDate: (d: Date) => void; overridesByDate?: Record<string, DayOverride> }) {
-  const today = today0();
+function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz }: { selectedDate: Date; onSelectDate: (d: Date) => void; overridesByDate?: Record<string, DayOverride>; tz?: string }) {
+  // tz передаємо явно: під час SSR модульний singleton не виставлений (він лише
+  // клієнтський), і «сьогодні» в сітці розійшлося б із рештою дошки.
+  const today = wallToday0(tz);
   const ovMap = overridesByDate || {};
   const [viewMonth, setViewMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
   const shift = (n: number) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
@@ -483,11 +495,17 @@ function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }: { r
 
 interface RadiologistBoardProps {
   clinicId: string;
+  /** IANA-зона центру (clinics.timezone) — із сервера, а не з браузера. */
+  clinicTz: string;
   rooms?: RoomOpt[];
   adminName?: string;
 }
 
-export default function RadiologistBoard({ clinicId, rooms, adminName }: RadiologistBoardProps) {
+export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName }: RadiologistBoardProps) {
+  // Синхронно, до ініціалізаторів useState (selectedDate) — інакше день дошки
+  // фіксується по браузеру ще до того, як прилетить tz. Тільки на клієнті.
+  if (typeof window !== "undefined") setClinicTz(clinicTz);
+
   const single = (rooms || []).length === 1;
   const [entries, setEntries] = useState<RadEntry[]>([]);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
@@ -506,7 +524,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState(() => today0());
+  const [selectedDate, setSelectedDate] = useState(() => wallToday0(clinicTz));
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -514,7 +532,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   const [, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
 
-  const today = today0();
+  const today = wallToday0(clinicTz);
   const isToday = sameDay(selectedDate, today);
   const isPast = selectedDate < today;
   const readOnly = false;
@@ -583,12 +601,6 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
 
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его по завершении.
   useEffect(() => { setLoading(true); }, [clinicId]);
-
-  // Таймзона клініки → похідні часу рахуються по ній (не по браузеру).
-  useEffect(() => {
-    createClient().from("clinics").select("timezone").eq("id", clinicId).single()
-      .then(({ data }) => setClinicTz(data?.timezone ?? null));
-  }, [clinicId]);
 
   // Перезапрос записей при смене дня/кабинетов: realtime-хук слушает только clinicId.
   useEffect(() => { reload(); }, [reload]);
@@ -740,7 +752,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
           <div className="tb-right">
             <CeoDashboardLink />
             <span className="rad-date">{fmtFull(selectedDate)}</span>
-            <LiveClock />
+            <LiveClock tz={clinicTz} />
             <span className="rt-pill"><span className="pulse-dot" style={{ background: "var(--green)", width: 7, height: 7 }} />Real-time</span>
             <span className="rad-counter">Опрацьовано: <b>{counts.done}</b> / {counts.total}</span>
           </div>
@@ -860,7 +872,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
             )}
           </div>
           <aside className="rpanel">
-            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} />
+            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} tz={clinicTz} />
           </aside>
         </div>
       </div>

@@ -9,7 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
-import { entryInIncidentWindow, incidentExpired, setClinicTz, wallDayKey } from "@/lib/incidents";
+import { entryInIncidentWindow, incidentExpired, setClinicTz, wallDayKey, wallToday0 } from "@/lib/incidents";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
@@ -239,6 +239,8 @@ function LateCallSection({ late, roomsById, onReschedule, onRecall, onToWaitlist
 
 interface CallListBoardProps {
   clinicId: string;
+  /** IANA-зона центру (clinics.timezone) — із сервера, а не з браузера. */
+  clinicTz: string;
   rooms?: RoomOpt[];
   clinicName?: string;
   adminName?: string;
@@ -246,8 +248,14 @@ interface CallListBoardProps {
   roleKey?: string;
 }
 
-export default function CallListBoard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: CallListBoardProps) {
-  const tomorrow = useMemo(() => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(0, 0, 0, 0); return d; }, []);
+export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: CallListBoardProps) {
+  // Синхронно, до ініціалізаторів useState: від зони залежить і «завтра» (день
+  // обдзвону), і todayKey (секції «Запізнення» / «постраждалі»). Тільки на клієнті.
+  if (typeof window !== "undefined") setClinicTz(clinicTz);
+
+  // «Завтра» — доба КЛІНІКИ, а не браузера: біля півночі оператор з іншої зони
+  // відкривав обдзвін не на той день.
+  const tomorrow = useMemo(() => { const d = wallToday0(clinicTz); d.setDate(d.getDate() + 1); return d; }, [clinicTz]);
   const [date, setDate] = useState(tomorrow);
   const [entries, setEntries] = useState<CallEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -269,11 +277,10 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   // Слот звільнився (відмова) → підходящі кандидати з листа очікування.
   const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
 
-  // Таймзона клініки (0059). Тримаємо і в стані: від неї залежить, ЯКИЙ день
-  // «сьогодні» для секцій «Запізнення» / «постраждалі» — dateKey(new Date())
-  // давав день БРАУЗЕРА оператора.
-  const [tz, setTz] = useState<string | undefined>(undefined);
-  const todayKey = wallDayKey(tz);
+  // «Сьогодні» для секцій «Запізнення» / «постраждалі» — доба КЛІНІКИ (0059).
+  // Раніше зона прилітала клієнтським fetch уже після монтування, і перший прохід
+  // лоадерів ішов по дню БРАУЗЕРА.
+  const todayKey = wallDayKey(clinicTz);
 
   const dayKey = dateKey(date);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
@@ -351,14 +358,6 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
 
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его.
   useEffect(() => { setLoading(true); }, [clinicId]);
-
-  // Таймзона клініки → похідні часу рахуються по ній (не по браузеру).
-  // Тримаємо і в модульному синглтоні (wallNow() без аргументу), і в стані:
-  // від tz залежить todayKey → лоадери «сьогодні» перезапустяться, коли зона прийде.
-  useEffect(() => {
-    createClient().from("clinics").select("timezone").eq("id", clinicId).single()
-      .then(({ data }) => { setClinicTz(data?.timezone ?? null); setTz(data?.timezone ?? undefined); });
-  }, [clinicId]);
 
   // Перезапрос записей при смене дня: realtime-хук слушает только clinicId.
   useEffect(() => { reload(); }, [reload]);
@@ -548,7 +547,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
             <span className="tic">☎</span>
             <div>
               <h1>Колл-лист</h1>
-              <div className="date">Записи на {fmtFull(date)} · <LiveClock /></div>
+              <div className="date">Записи на {fmtFull(date)} · <LiveClock tz={clinicTz} /></div>
             </div>
           </div>
           <div className="tb-right">
@@ -666,11 +665,12 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
         </div>
       </div>
 
+      {/* clinicTz — ЯВНО (HANDOVER §6.1): singleton не гарантія. */}
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} incidents={incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
 
       {declineAsk && (
@@ -711,7 +711,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
       )}
 
       {wlSuggest && (
-        <WaitlistCandidatesModal clinicId={clinicId} rooms={rooms} incidents={incidents}
+        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={incidents}
           slot={wlSuggest.slot} candidates={wlSuggest.candidates}
           onClose={() => setWlSuggest(null)}
           onBooked={(msg) => { notify(msg, "success"); reload(); }}

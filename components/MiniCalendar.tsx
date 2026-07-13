@@ -7,11 +7,11 @@
 
 import { useState } from "react";
 import { dayStatus, type DayOverride } from "@/lib/schedule";
+import { wallToday0 } from "@/lib/incidents";
 
 const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MON_NOM = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 function startOfDay(d: Date) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
-function today0() { return startOfDay(new Date()); }
 function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 function dowMon(d: Date) { return (d.getDay() + 6) % 7; }
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
@@ -23,10 +23,14 @@ interface MiniCalendarProps {
   onEditSchedule?: () => void;
   /** false → не підсвічувати «обрану» дату (напр. коли фільтр дати вимкнено). */
   highlightSelected?: boolean;
+  /** IANA-зона центру. Мультицентрові екрани (портал направника) передають зону
+      обраного центру; на дошках персоналу можна не передавати — візьметься
+      singleton setClinicTz(). Без цього «сьогодні» підсвічувалося по браузеру. */
+  tz?: string;
 }
 
-export default function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, onEditSchedule, highlightSelected = true }: MiniCalendarProps) {
-  const today = today0();
+export default function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, onEditSchedule, highlightSelected = true, tz }: MiniCalendarProps) {
+  const today = wallToday0(tz);
   const ovMap = overridesByDate || {};
   const [viewMonth, setViewMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
   const shift = (n: number) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));

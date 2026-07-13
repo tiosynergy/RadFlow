@@ -42,7 +42,7 @@ import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, 
 import CollisionPanel from "@/components/CollisionPanel";
 import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
-import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, setClinicTz } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -65,8 +65,12 @@ type RoomLoadItem = { roomKey: string; name: string; kind: string; pct: number; 
 /* ── Дати ── */
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
-function startOfDay(d: Date) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
-function today0() { return startOfDay(new Date()); }
+/* «Сьогодні» — за настінним часом КЛІНІКИ (wallToday0), а не браузера оператора.
+   Раніше це був startOfDay(new Date()): біля півночі (або в оператора з іншої
+   зони) дошка відкривалася на «вчора клініки», а isLate/computeCallBlock рахувалися
+   вже по клініці — розбіжність фреймів (аудит M-4). Зона береться з singleton
+   setClinicTz(), який виставляється синхронно з пропа clinicTz ДО першого рендера. */
+function today0() { return wallToday0(); }
 function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
@@ -726,6 +730,8 @@ function CancelledPanel({ entries, onUndo, onReschedule, onToWaitlist }: { entri
 
 interface QueueBoardProps {
   clinicId: string;
+  /** IANA-зона центру (clinics.timezone) — приходить із сервера, а не читається з браузера. */
+  clinicTz: string;
   rooms?: RoomOpt[];
   clinicName?: string;
   adminName?: string;
@@ -733,7 +739,13 @@ interface QueueBoardProps {
   roleKey?: string;
 }
 
-export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: QueueBoardProps) {
+export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: QueueBoardProps) {
+  /* Зона центру виставляється СИНХРОННО, до першого рендера й до ініціалізаторів
+     useState — інакше selectedDate = today0() зафіксував би день БРАУЗЕРА назавжди
+     (раніше tz прилітала з клієнтського fetch уже ПІСЛЯ монтування).
+     Лише на клієнті: модульний singleton на сервері шарився б між запитами. */
+  if (typeof window !== "undefined") setClinicTz(clinicTz);
+
   const [entries, setEntries] = useState<QEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -754,7 +766,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const [roomView, setRoomView] = useState("all");
   const searchRef = useRef<HTMLInputElement>(null);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState(() => today0());
+  const [selectedDate, setSelectedDate] = useState(() => wallToday0(clinicTz));
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Слот звільнився (скасування/відмова) → підходящі кандидати з листа очікування.
@@ -763,7 +775,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
   const [nowTick, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
 
-  const today = today0();
+  const today = wallToday0(clinicTz);
   const isToday = sameDay(selectedDate, today);
   const isPast = selectedDate < today;
   const dayKey = dateKey(selectedDate);
@@ -779,13 +791,6 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }
-
-  // Таймзона клініки → усі похідні часу (isLate/needsClarification/computeCallBlock,
-  // wallNow) рахуються по ній, а не по браузеру (користувачі з усього світу).
-  useEffect(() => {
-    createClient().from("clinics").select("timezone").eq("id", clinicId).single()
-      .then(({ data }) => setClinicTz(data?.timezone ?? null));
-  }, [clinicId]);
 
   /* ПОМИЛКА ЗАВАНТАЖЕННЯ ≠ «ПУСТО» (аудит 2026-07-11).
      Раніше всі лоадери робили `data || []`, тож збій мережі виглядав як «даних
@@ -1342,7 +1347,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
             <span className="tic">▦</span>
             <div>
               <h1>Дошка черги</h1>
-              <div className="date">{fmtFull(selectedDate)} · <LiveClock /></div>
+              <div className="date">{fmtFull(selectedDate)} · <LiveClock tz={clinicTz} /></div>
             </div>
           </div>
           <div className="tb-right">
@@ -1539,7 +1544,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
                     collision={collision}
                     collisionPanel={collision?.zone === "clash" && expandedRow === p.id ? (
                       <CollisionPanel
-                        entry={p} info={collision} rooms={rooms} clinicId={clinicId}
+                        entry={p} info={collision} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz}
                         date={selectedDate} override={selectedOverride} incidents={liveIncidents}
                         onMove={(roomId, time) => doCollisionMove(p, roomId, time)}
                         onRecall={() => doCollisionRecall(p)}
@@ -1553,7 +1558,7 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
         </div>
 
           <aside className="rpanel">
-            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} onEditSchedule={() => setSchedEditOpen(true)} />
+            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} onEditSchedule={() => setSchedEditOpen(true)} tz={clinicTz} />
             {isToday && (rooms || []).length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}
             {!isPast && <CallListPanel entries={entries} onSetCall={setCall} dateLabel={fmtShort(selectedDate)} />}
@@ -1564,10 +1569,12 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
 
       {/* Деталі зайнятого слота (ПІБ/статус/дослідження) вирішує СЕРВЕР (RPC 0062):
           admin/radiologist центру — бачать, реєстратор і направник — ні. */}
-      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} incidents={liveIncidents} onClose={() => setModalOpen(false)} onSave={saveBooking} />}
+      {/* clinicTz — ЯВНО в кожну модалку: покладатися на singleton не можна
+          (HANDOVER §6.1), інакше «зараз» тихо з'їде на зону браузера. */}
+      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} onClose={() => setModalOpen(false)} onSave={saveBooking} />}
 
       {wlSuggest && (
-        <WaitlistCandidatesModal clinicId={clinicId} rooms={rooms} incidents={liveIncidents}
+        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={liveIncidents}
           slot={wlSuggest.slot} candidates={wlSuggest.candidates}
           onClose={() => setWlSuggest(null)}
           onBooked={(msg) => { notify(msg, "success"); reload(); }}
@@ -1587,11 +1594,11 @@ export default function QueueBoard({ clinicId, rooms, clinicName, adminName, adm
       )}
 
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} incidents={liveIncidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
 
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {editPatientFor && (
         <PatientEditModal entryId={editPatientFor.id} canEditPriority={canEditPriority} onClose={() => setEditPatientFor(null)} onSaved={reload} />

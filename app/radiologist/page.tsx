@@ -25,13 +25,13 @@ export default async function RadiologistPage() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("clinic_id, full_name, role, approved, clinics(configured_at)")
+    .select("clinic_id, full_name, role, approved, clinics(configured_at, timezone)")
     .eq("id", user.id)
     .single();
   if (!profile) redirect("/login");
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
-    | { configured_at: string | null }
+    | { configured_at: string | null; timezone?: string | null }
     | null
     | undefined;
   if (profile.role === "admin" && clinic && !clinic.configured_at) redirect("/setup");
@@ -66,6 +66,7 @@ export default async function RadiologistPage() {
   return (
     <RadiologistBoard
       clinicId={profile.clinic_id as string}
+      clinicTz={clinic?.timezone || "UTC"}
       rooms={rooms}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
     />

@@ -18,7 +18,7 @@ import { createBooking } from "@/app/queue/actions";
 import { addWaitlistEntry, markWaitlistScheduled, setWaitlistPriority, setWaitlistStatus, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, compareWaitlist, desiredWindowText } from "@/lib/waitlist";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
-import { setClinicTz } from "@/lib/incidents";
+import { setClinicTz, wallToday0 } from "@/lib/incidents";
 import type { WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
@@ -79,6 +79,8 @@ function RowMenu({ disabled, onEdit, onRemove }: { disabled?: boolean; onEdit: (
 
 interface WaitlistBoardProps {
   clinicId: string;
+  /** IANA-зона центру (clinics.timezone) — із сервера, а не з браузера. */
+  clinicTz: string;
   rooms?: RoomOpt[];
   clinicName?: string;
   adminName?: string;
@@ -86,7 +88,12 @@ interface WaitlistBoardProps {
   roleKey?: string;
 }
 
-export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: WaitlistBoardProps) {
+export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: WaitlistBoardProps) {
+  /* Зона центру — синхронно, до першого рендера. Раніше вона прилітала клієнтським
+     fetch уже після монтування, і wallNow() у BookingModal, відкритій із листа
+     очікування, встигав порахувати «зараз» за браузером (минулі слоти — вибірні). */
+  if (typeof window !== "undefined") setClinicTz(clinicTz);
+
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState(true);
   // H-6: збій завантаження ≠ «лист порожній» / «простоїв немає».
@@ -111,24 +118,6 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
     try { setHintHidden(localStorage.getItem("rf_waitlist_hint_hidden") === "1"); } catch { /* ignore */ }
   }, []);
 
-  /* Таймзона центру. Без неї wallNow() падав на зону БРАУЗЕРА (setClinicTz цей
-     екран не викликав), і в BookingModal, відкритій із листа очікування, «зараз»
-     рахувалося не за часом клініки — минулі слоти могли стати вибірними. */
-  const [clinicTz, setTz] = useState<string | null>(null);
-  useEffect(() => {
-    let cancel = false;
-    (async () => {
-      try {
-        const supabase = createClient();
-        const { data } = await supabase.from("clinics").select("timezone").eq("id", clinicId).maybeSingle();
-        if (cancel) return;
-        const tz = data?.timezone || null;
-        setTz(tz);
-        setClinicTz(tz || undefined);
-      } catch { /* транзієнтний збій — лишаємось на дефолті */ }
-    })();
-    return () => { cancel = true; };
-  }, [clinicId]);
   function hideHint() {
     setHintHidden(true);
     try { localStorage.setItem("rf_waitlist_hint_hidden", "1"); } catch { /* ignore */ }
@@ -353,7 +342,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
             <span className="tic">⏳</span>
             <div>
               <h1>Лист очікування</h1>
-              <div className="date">{fmtFull(new Date())} · <LiveClock /></div>
+              <div className="date">{fmtFull(wallToday0(clinicTz))} · <LiveClock tz={clinicTz} /></div>
             </div>
           </div>
           <div className="tb-right">

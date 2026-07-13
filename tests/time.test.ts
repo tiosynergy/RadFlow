@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { wallInstant, wallMinOfDay, wallMinOfInstant, wallNow, wallDayKey, setClinicTz, incidentEffectiveEnd } from "@/lib/incidents";
+import { wallInstant, wallMinOfDay, wallMinOfInstant, wallNow, wallDayKey, wallToday0, setClinicTz, incidentEffectiveEnd } from "@/lib/incidents";
 import { priorityRank, normPriority, isActiveStatus } from "@/lib/priority";
 import { normBuffer, BUFFER_DEFAULT, studyDur, CONTRAST_DUR, MRT_REGIONS } from "@/lib/studies";
 
@@ -53,6 +53,41 @@ describe("wall-модель часу", () => {
       expect(wallDayKey()).toBe("2026-07-14");
       setClinicTz("UTC");
       expect(wallDayKey()).toBe("2026-07-13");
+    });
+  });
+
+  /* today0() у компонентах брав день БРАУЗЕРА, а isLate/computeCallBlock/nowMin —
+     день КЛІНІКИ. Біля півночі дошка відкривалася на «вчора клініки». wallToday0(tz)
+     повертає ЛОКАЛЬНУ північ, але календарний день — клінічний (щоб порівнюватись
+     з new Date("YYYY-MM-DD" + "T00:00:00")). */
+  describe("wallToday0 — «сьогодні» як Date у зоні КЛІНІКИ", () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    it("календарний день збігається з wallDayKey тієї ж зони", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-13T23:00:00.000Z"));
+      const key = (d: Date) =>
+        d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+      expect(key(wallToday0("Europe/Kyiv"))).toBe(wallDayKey("Europe/Kyiv"));   // 2026-07-14
+      expect(key(wallToday0("UTC"))).toBe(wallDayKey("UTC"));                   // 2026-07-13
+      expect(key(wallToday0("Europe/Kyiv"))).not.toBe(key(wallToday0("UTC")));
+    });
+
+    it("це саме північ (порівнянна з new Date(dateStr + \"T00:00:00\"))", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-13T23:00:00.000Z"));
+      const t = wallToday0("Europe/Kyiv");
+      expect([t.getHours(), t.getMinutes(), t.getSeconds(), t.getMilliseconds()]).toEqual([0, 0, 0, 0]);
+      expect(t.getTime()).toBe(new Date("2026-07-14T00:00:00").getTime());
+    });
+
+    it("без аргументу бере зону клініки з setClinicTz", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-13T23:00:00.000Z"));
+      setClinicTz("Europe/Kyiv");
+      expect(wallToday0().getDate()).toBe(14);
+      setClinicTz("UTC");
+      expect(wallToday0().getDate()).toBe(13);
     });
   });
 

@@ -9,7 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import PhoneInput from "@/components/PhoneInput";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
-import { incidentEffectiveEnd, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
+import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallToday0, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice, normDur } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
@@ -52,7 +52,11 @@ export type BookingPrefill = {
 const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MONTHS_NOM = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 const MONTHS_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
-export function today0() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
+/* «Сьогодні» — за настінним часом КЛІНІКИ (singleton setClinicTz виставляють дошки
+   синхронно з пропа clinicTz). Раніше це був день браузера, і в центрі іншої зони
+   календар відкривався на день, який ТАМ уже минув. Де є явна зона (bookDate) —
+   передаємо її аргументом, не покладаючись на singleton. */
+export function today0() { return wallToday0(); }
 export function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 function dowMon(d: Date) { return (d.getDay() + 6) % 7; }
 export function fmtShort(d: Date) { return d.getDate() + " " + MONTHS_GEN[d.getMonth()]; }
@@ -296,8 +300,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     return l.length === 1 ? l[0].id : "";
   });
   const [bookDate, setBookDate] = useState(() => {
-    if (prefill?.date) { const d = new Date(prefill.date + "T00:00:00"); if (!isNaN(d.getTime()) && d >= today0()) return d; }
-    return today0();
+    const t0 = wallToday0(clinicTz || undefined);   // день КЛІНІКИ, не браузера
+    if (prefill?.date) { const d = new Date(prefill.date + "T00:00:00"); if (!isNaN(d.getTime()) && d >= t0) return d; }
+    return t0;
   });
   const [time, setTime] = useState(prefill?.date && prefill?.time ? prefill.time : "");
   const [schedLoading, setSchedLoading] = useState(true); // графік + перерви кабінету (зайнятість — окремий хук)
@@ -406,8 +411,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
      зон перевірка «past» або вимикалась, або зрізала майбутнє. */
   const _wNow = wallNow(clinicTz || undefined);
   const nowMin = wallMinOfDay(_wNow);
-  const _wD = new Date(_wNow);
-  const clinicToday = new Date(_wD.getUTCFullYear(), _wD.getUTCMonth(), _wD.getUTCDate()); // «сьогодні» клініки
+  const clinicToday = wallToday0(clinicTz || undefined); // «сьогодні» клініки (спільний хелпер)
   const isBookToday = sameDay(bookDate, clinicToday);
   const isPastDay = bookDate < clinicToday;
   const roomSched = roomScheduleFor(bookDate, roomId, override, roomSchedule); // базовий графік кабінету + override на дату
@@ -553,7 +557,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
               </div>
               <label className="fld" style={{ flex: "0 0 60px" }}>
                 <span className="fld-lab">Вага</span>
-                <input className="inp" placeholder="кг" value={weight} onChange={(e) => setWeight(e.target.value.replace(/\D/g, ""))} />
+                {/* Клампимо до 400 кг (= PATIENT_WEIGHT_MAX у lib/validation.ts): інакше
+                    «9999» пройшло б інпут і повернулося з сервера загальним 400. */}
+                <input className="inp" placeholder="кг" value={weight}
+                  onChange={(e) => { const w = e.target.value.replace(/\D/g, "").slice(0, 3); setWeight(w && +w > 400 ? "400" : w); }} />
               </label>
             </div>
 

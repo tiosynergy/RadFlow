@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
+import { wallToday0 } from "@/lib/incidents";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import "@/styles/prototype/radflow.css";
@@ -28,8 +29,10 @@ type StudiesRow = { status: string; study_type: string; region: string; contrast
 
 const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
-function startOfDay(d: Date) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
-function today0() { return startOfDay(new Date()); }
+/* «Сьогодні» — за настінним часом ЦЕНТРУ (tz), а не браузера керівника: CEO
+   глобальний і може дивитися центр в іншій зоні, де доба вже інша (аудит M-4).
+   Для агрегату «Всі центри» єдиної зони не існує — там зона браузера (див. scopeTz). */
+function today0(tz?: string) { return wallToday0(tz); }
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
@@ -60,8 +63,8 @@ function procName(e: RevenueEntry): string {
   return e.note || "—";
 }
 
-function periodRange(period: string): [Date, Date] {
-  const t = today0();
+function periodRange(period: string, tz?: string): [Date, Date] {
+  const t = today0(tz);
   if (period === "today") return [t, t];
   if (period === "week") { const mon = addDays(t, -((t.getDay() + 6) % 7)); return [mon, addDays(mon, 6)]; }
   const first = new Date(t.getFullYear(), t.getMonth(), 1);
@@ -89,7 +92,7 @@ function ProgressCircle({ pct, color }: { pct: number; color: string }) {
 
 const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20 };
 
-type ClinicOpt = { id: string; name: string };
+type ClinicOpt = { id: string; name: string; timezone?: string | null };
 
 interface CeoDashboardProps {
   clinics: ClinicOpt[];          // центри, доступні цьому користувачу
@@ -113,6 +116,16 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; rooms.forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
 
+  /* Зона, за якою рахується «сьогодні»/«цей тиждень»: обраного центру, а при
+     «Всі центри» — ПЕРШОГО доступного. Спільної доби в кількох зонах не існує,
+     тож вибір довільний — але він має бути ДЕТЕРМІНОВАНИМ: якщо лишити undefined,
+     wallToday0() впаде на singleton setClinicTz(), а там може лежати зона центру
+     з попереднього екрана (клієнтська навігація /queue → /ceo). */
+  const scopeTz = useMemo(() => {
+    const c = scope !== "all" ? clinics.find((x) => x.id === scope) : clinics[0];
+    return c?.timezone || undefined;
+  }, [scope, clinics]);
+
   const clinicIds = useMemo(
     () => (scope === "all" ? clinics.map((c) => c.id) : [scope]),
     [scope, clinics]
@@ -120,7 +133,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
 
   function notify(msg: string) { setToast(msg); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3000); }
 
-  const [from, to] = periodRange(period);
+  const [from, to] = periodRange(period, scopeTz);
 
   const reload = useCallback(async () => {
     if (clinicIds.length === 0) { setRooms([]); setTotals([]); setWeekTotals([]); setRoomRows([]); setStudyRows([]); setLoading(false); return; }
@@ -128,8 +141,8 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
     // валити UI неперехопленим reject — realtime/focus-рефетч підхопить дані пізніше.
     try {
       const supabase = createClient();
-      const [f, t] = periodRange(period);
-      const wk = today0(); const mon = addDays(wk, -((wk.getDay() + 6) % 7));
+      const [f, t] = periodRange(period, scopeTz);
+      const wk = today0(scopeTz); const mon = addDays(wk, -((wk.getDay() + 6) % 7));
       // scope="all" → усі доступні центри (RPC однаково ріже по auth_ceo_clinics()).
       const p_clinics = scope === "all" ? null : [scope];
 
@@ -166,7 +179,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
     } finally {
       setLoading(false);
     }
-  }, [clinicIds, period, scope]);
+  }, [clinicIds, period, scope, scopeTz]);
 
   // Спинер при первой загрузке/смене набора центров.
   useEffect(() => { setLoading(true); }, [clinicIds]);
@@ -199,7 +212,8 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const notHeld = sumBy(totals, (r) => r.status === "not_held");
   const active = sumBy(totals, (r) => ["scheduled", "waiting", "in_progress"].includes(r.status));
 
-  const workdays = Math.max(1, workdaysBetween(from, to < today0() ? to : today0()));
+  const _t0 = today0(scopeTz);
+  const workdays = Math.max(1, workdaysBetween(from, to < _t0 ? to : _t0));
   const capacityMin = (rooms || []).length * 480 * workdays;
   // Ефективна зайнятість = тривалість + буфер (буфер теж споживає ємність кабінету);
   // неявка / «не відбулося» кабінет не займали.
@@ -223,7 +237,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const revenueExact = doneWithStudies.length > 0 && !doneWithoutStudies && doneWithStudies.every((r) => r.unpriced === 0);
 
   /* тижневий графік: total + неявки по днях (Пн–Нд) */
-  const wk = today0(); const mon = addDays(wk, -((wk.getDay() + 6) % 7));
+  const wk = today0(scopeTz); const mon = addDays(wk, -((wk.getDay() + 6) % 7));
   const weekDays = Array.from({ length: 7 }, (_, i) => addDays(mon, i));
   const weekData = weekDays.map((d) => {
     const k = dateKey(d);
@@ -268,7 +282,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
     setExporting(true);
     try {
       const supabase = createClient();
-      const [f, t] = periodRange(period);
+      const [f, t] = periodRange(period, scopeTz);   // той самий період, що й у KPI
       const { data, error } = await supabase
         .from("queue_entries")
         .select("status, studies, room_id, scheduled_date, patient_name, note")
@@ -310,7 +324,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
         <header className="topbar">
           <div className="tb-title">
             <span className="tic">📊</span>
-            <div><h1>Дашборд — Загальний огляд</h1><div className="date">{scopeName} · {periodLabel} · <LiveClock /></div></div>
+            <div><h1>Дашборд — Загальний огляд</h1><div className="date">{scopeName} · {periodLabel} · <LiveClock tz={scopeTz} /></div></div>
           </div>
           <div className="tb-right">
             {clinics.length > 1 && (

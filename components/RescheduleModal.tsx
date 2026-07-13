@@ -8,7 +8,7 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
-import { incidentEffectiveEnd, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
+import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
@@ -51,7 +51,9 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const options = (rooms || []).filter((r) => r.modality === modality);
 
   const [roomId, setRoomId] = useState<string>(() => patient.room_id || options[0]?.id || "");
-  const [dateStr, setDateStr] = useState<string>(() => { const d = new Date(); d.setDate(d.getDate() + 1); return dateVal(d); });
+  // «Завтра» — від доби КЛІНІКИ, а не браузера: біля півночі в іншій зоні
+  // модалка пропонувала перенести на день, який у центрі вже настав/минув.
+  const [dateStr, setDateStr] = useState<string>(() => { const d = wallToday0(clinicTz || undefined); d.setDate(d.getDate() + 1); return dateVal(d); });
   const [time, setTime] = useState("");
   const [override, setOverride] = useState<DayOverride | null>(null);
   const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule обраного кабінету (для перерв)
@@ -95,8 +97,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   // «Зараз» у настінному часі клініки (wall-as-UTC мс): і хвилини доби, і «сьогодні».
   const _nowW = wallNow(clinicTz || undefined);
   const nowMin = wallMinOfDay(_nowW);
-  const _nowD = new Date(_nowW);
-  const clinicTodayStr = _nowD.getUTCFullYear() + "-" + String(_nowD.getUTCMonth() + 1).padStart(2, "0") + "-" + String(_nowD.getUTCDate()).padStart(2, "0");
+  const clinicTodayStr = wallDayKey(clinicTz || undefined);   // «сьогодні» клініки (спільний хелпер)
   const isToday = dateStr === clinicTodayStr;
   /* Дата в МИНУЛОМУ. Раніше перевірка «past» стояла під `isToday`, тому для
      будь-якої минулої дати вона не виконувалась і весь день малювався вільним

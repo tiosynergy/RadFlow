@@ -15,7 +15,7 @@ import { useEffect, useMemo, useState } from "react";
 import MiniCalendar from "@/components/MiniCalendar";
 import { PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { isLate, LATE_META } from "@/lib/queueStatus";
-import { wallNow } from "@/lib/incidents";
+import { wallNow, wallToday0 } from "@/lib/incidents";
 import { diffStudies, studyText, studiesChanged } from "@/lib/studies";
 import type { Json } from "@/supabase/types";
 
@@ -150,7 +150,12 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
 
   // Календар як у адміна: вибір дня = фільтр за датою (порожньо = всі дати).
   const dk = (d: Date) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-  const calDate = dateFilter ? new Date(dateFilter + "T00:00:00") : new Date();
+  /* «Сьогодні» в календарі — за зоною ОБРАНОГО центру (портал мультиклінічний,
+     singleton setClinicTz тут не виставляється). Для «Всі центри» спільної доби не
+     існує → беремо ПЕРШИЙ центр: вибір довільний, але детермінований (fallback на
+     singleton дав би зону чужого центру з попереднього екрана). */
+  const calTz = (centerId !== "all" ? centersById[centerId]?.timezone : activeCenters[0]?.timezone) || undefined;
+  const calDate = dateFilter ? new Date(dateFilter + "T00:00:00") : wallToday0(calTz);
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto", display: "grid", gridTemplateColumns: "minmax(0,1fr) 300px", gap: 16, alignItems: "start" }}>
@@ -294,7 +299,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
       )}
       </div>
       <aside style={{ position: "sticky", top: 8 }}>
-        <MiniCalendar selectedDate={calDate} onSelectDate={(d) => setDateFilter(dk(d))} highlightSelected={!!dateFilter} />
+        <MiniCalendar selectedDate={calDate} onSelectDate={(d) => setDateFilter(dk(d))} highlightSelected={!!dateFilter} tz={calTz} />
         {dateFilter && (
           <button className="btn btn-secondary btn-sm" style={{ width: "100%", marginTop: 8, justifyContent: "center" }} onClick={() => setDateFilter("")}>Всі дати</button>
         )}

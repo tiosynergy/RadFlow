@@ -27,10 +27,10 @@ import type { WaitlistEntry } from "@/supabase/types";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
-import { slotBlockedByIncidents, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
+import { slotBlockedByIncidents, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
 import { regionsFor, studyPrice, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
-import { DobField, BookingCalendar, fmtShort, today0 } from "@/components/BookingModal";
+import { DobField, BookingCalendar, fmtShort } from "@/components/BookingModal";
 import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 
@@ -107,7 +107,16 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
   const [priority, setPriority] = useState<PatientPriority | "">("");
   const [comment, setComment] = useState("");
   const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>([]);
-  const [bookDate, setBookDate] = useState(() => { const d = today0(); d.setDate(d.getDate() + 1); return d; });
+  /* «Завтра» — від доби ЦЕНТРУ (направник глобальний, центр може бути в іншій зоні).
+     Центр ще не обрано → беремо зону ПЕРШОГО доступного: вибір довільний, але
+     детермінований і однаковий на сервері й на клієнті (undefined впав би на зону
+     процесу при SSR і на зону браузера при гідрації → розбіжність розмітки).
+     Після вибору центру дата підтягнеться ефектом нижче. */
+  const [bookDate, setBookDate] = useState(() => {
+    const d = wallToday0(activeCenters[0]?.timezone || undefined);
+    d.setDate(d.getDate() + 1);
+    return d;
+  });
   const [roomId, setRoomId] = useState<string | null>(null);
   const [time, setTime] = useState("");
   const [dayEntries, setDayEntries] = useState<BusySlot[]>([]);
@@ -130,6 +139,19 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
   const modAllowed = (code: string) => (code === "MRI" ? hasMRI : code === "CT" ? hasCT : false);
   const roomsOfType = rooms.filter((r) => r.modality === modality);
   const room = roomsOfType.find((r) => r.id === roomId) || null;
+
+  /* Центр обрано (або змінено) → підтягуємо дату до доби ЦЕНТРУ, якщо поточний
+     вибір уже минув за його часом. Інакше направник із іншої зони відкривав день,
+     який у центрі позаду, і всі слоти були закриті гардом «минуле» (0063). */
+  const selTz = (selCenter?.timezone || activeCenters[0]?.timezone) || undefined;
+  useEffect(() => {
+    if (!selTz) return;
+    setBookDate((d) => {
+      const t0 = wallToday0(selTz);
+      if (d >= t0) return d;
+      const nx = new Date(t0); nx.setDate(nx.getDate() + 1); return nx;
+    });
+  }, [selTz]);
 
   const allRegions = regionsFor(studyType);
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
@@ -243,13 +265,12 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
   });
   const roomBreaks = effectiveRoomBreaks(dateObj, roomId || "", roomSchedule, override); // перерви кабінету на цю дату
   // «Зараз» у настінному часі центру (wall-as-UTC мс): і хвилини доби, і «сьогодні».
-  const _nowW = wallNow(selCenter?.timezone || undefined);
+  const _nowW = wallNow(selTz);
   const nowMin = wallMinOfDay(_nowW);
-  const _nowD = new Date(_nowW);
-  const centerTodayStr = _nowD.getUTCFullYear() + "-" + pad(_nowD.getUTCMonth() + 1) + "-" + pad(_nowD.getUTCDate());
-  const isBookToday = date === centerTodayStr;
   // «Сьогодні» ЦЕНТРУ (не браузера): направник глобальний, центр може бути в іншій зоні.
-  const centerToday = new Date(_nowD.getUTCFullYear(), _nowD.getUTCMonth(), _nowD.getUTCDate());
+  const centerTodayStr = wallDayKey(selTz);
+  const centerToday = wallToday0(selTz);
+  const isBookToday = date === centerTodayStr;
   const isPastDay = date < centerTodayStr;
   const slots: string[] = buildSlots(schedStart, schedEnd); // крок 5 хв
   function slotState(slot: string) {
@@ -372,7 +393,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
               </div>
               <label className="fld" style={{ flex: "0 0 60px" }}>
                 <span className="fld-lab">Вага</span>
-                <input className="inp" placeholder="кг" value={weight} onChange={(e) => setWeight(e.target.value.replace(/\D/g, ""))} />
+                <input className="inp" placeholder="кг" value={weight}
+                  onChange={(e) => { const w = e.target.value.replace(/\D/g, "").slice(0, 3); setWeight(w && +w > 400 ? "400" : w); }} />
               </label>
             </div>
 
@@ -1232,7 +1254,9 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
             <div><h1>{tabMeta.t}</h1></div>
           </div>
           <div className="tb-right">
-            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}><LiveClock /></span>
+            {/* Годинник — за часом центру (перший доступний): направник глобальний,
+                singleton setClinicTz тут не виставляється. */}
+            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}><LiveClock tz={activeCenters[0]?.timezone || undefined} /></span>
             <CeoDashboardLink />
           </div>
         </header>

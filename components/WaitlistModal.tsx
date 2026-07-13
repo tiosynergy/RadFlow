@@ -14,6 +14,7 @@ import { DobField } from "@/components/BookingModal";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyPrice, normBuffer, type Study } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { TIME_PRESETS, timePresetKey } from "@/lib/waitlist";
+import { wallDayKey } from "@/lib/incidents";
 import type { WaitlistEntry } from "@/supabase/types";
 import { useModalA11y } from "@/lib/useModalA11y";
 
@@ -53,10 +54,10 @@ function calcAge(d: string): number | null {
   return a < 0 ? 0 : a;
 }
 
-function todayKey(): string {
-  const d = new Date();
-  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-}
+/* «Сьогодні» — доба КЛІНІКИ (singleton setClinicTz виставляють дошки персоналу).
+   У порталі направника центр обирається всередині модалки, зона наперед невідома —
+   там лишається браузерна (як і раніше). */
+function todayKey(): string { return wallDayKey(); }
 
 interface WaitlistModalProps {
   /** Портал направника: обовʼязковий вибір центру (active referral_access). */
@@ -221,7 +222,8 @@ export default function WaitlistModal({ centers, rooms, initial, onClose, onSave
             </div>
             <label className="fld" style={{ flex: "0 0 60px" }}>
               <span className="fld-lab">Вага</span>
-              <input className="inp" placeholder="кг" value={weight} onChange={(e) => setWeight(e.target.value.replace(/\D/g, ""))} />
+              <input className="inp" placeholder="кг" value={weight}
+                onChange={(e) => { const w = e.target.value.replace(/\D/g, "").slice(0, 3); setWeight(w && +w > 400 ? "400" : w); }} />
             </label>
           </div>
 

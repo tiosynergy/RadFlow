@@ -12,6 +12,7 @@ import BookingModal, { type BookingPayload, type BookingPrefill } from "@/compon
 import { createBooking } from "@/app/queue/actions";
 import { markWaitlistScheduled } from "@/app/waitlist/actions";
 import { waitlistMatchesSlot, compareWaitlist, desiredWindowText, timeToMin } from "@/lib/waitlist";
+import { wallDayKey, wallMinOfDay, wallNow } from "@/lib/incidents";
 import { PRIORITY_META } from "@/lib/priority";
 import type { Modality, WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
@@ -41,11 +42,14 @@ export async function fetchWaitlistCandidates(
 ): Promise<WaitlistEntry[]> {
   try {
     if (!slot.date || !slot.time) return [];
-    const now = new Date();
-    const todayKey = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
+    /* «Зараз» — настінний час КЛІНІКИ (singleton setClinicTz виставляють дошки, звідки
+       ця функція і викликається). Раніше рахувалося по браузеру: у центрі іншої зони
+       кандидатам пропонувався слот, який ТАМ уже минув, — і запис падав гардом 0063. */
+    const todayKey = wallDayKey();
+    const nowMin = wallMinOfDay(wallNow());
     const timeMin = timeToMin(slot.time) ?? 0;
     if (slot.date < todayKey) return [];
-    if (slot.date === todayKey && timeMin <= now.getHours() * 60 + now.getMinutes()) return [];
+    if (slot.date === todayKey && timeMin <= nowMin) return [];
     const modality = (rooms || []).find((r) => r.id === slot.roomId)?.modality as Modality | undefined;
 
     const supabase = createClient();

@@ -10,7 +10,7 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, studyDur, studyPrice, CONTRAST_DUR } from "@/lib/studies";
 import { roomScheduleFor, effectiveRoomBreaks, type DayOverride } from "@/lib/schedule";
-import { wallNow, wallMinOfDay } from "@/lib/incidents";
+import { wallNow, wallMinOfDay, wallDayKey, wallToday0 } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 const MIN_STUDY = 15;
@@ -84,15 +84,14 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   // «Зараз» у настінному часі клініки (wall-as-UTC мс): і хвилини доби, і дата.
   const _nowW = wallNow(clinicTz || undefined);
   const nowMin = wallMinOfDay(_nowW);
-  const _nowD = new Date(_nowW);
-  const todayStr = _nowD.getUTCFullYear() + "-" + pad(_nowD.getUTCMonth() + 1) + "-" + pad(_nowD.getUTCDate());
+  const todayStr = wallDayKey(clinicTz || undefined);   // «сьогодні» клініки (спільний хелпер)
   const isTodayLate = scheduledDate === todayStr && nowMin > startMin;
   const refStartMin = isTodayLate ? nowMin : startMin;
   // Кінець вікна — за графіком кабінету (з урахуванням особливого графіка),
   // але не далі наступного запису. Буфер займає кабінет ПІСЛЯ досліджень, тож
   // дослідження + буфер не повинні перетнути наступний запис (для графіка —
   // саме дослідження має вміститись, буфер може вийти за межі закриття).
-  const dateObj = scheduledDate ? new Date(scheduledDate + "T00:00:00") : new Date();
+  const dateObj = scheduledDate ? new Date(scheduledDate + "T00:00:00") : wallToday0(clinicTz || undefined);
   const roomSched = roomScheduleFor(dateObj, patient.room_id || "", override, roomSchedule);
   const schedEnd = toMin(roomSched.end);
   const capByNext = nextStart != null ? nextStart - startMin - buffer : Infinity;
