@@ -17,10 +17,18 @@ export async function POST(req: Request) {
   const { me } = gate;
 
   const body = await req.json().catch(() => ({}));
-  // Цей роут створює ЛИШЕ акаунти радіологів. Лікарі-направники мають глобальний
-  // акаунт (clinic_id = NULL) і створюються через /api/referrers/invite — інакше
-  // ламається tenant-модель направника (членство через referral_access).
-  const role = "radiologist";
+  /* Персонал ЦЕНТРУ: радіолог або реєстратор (обидва мають clinic_id).
+     Лікарі-направники мають ГЛОБАЛЬНИЙ акаунт (clinic_id = NULL) і створюються
+     через /api/referrers/invite — інакше ламається tenant-модель направника
+     (членство через referral_access). Адміна створює лише реєстрація центру.
+
+     Реєстратор довго був «мертвою» роллю: enum і маршрути були, RLS (0073) теж,
+     а створити акаунт не було чим — уся реєстратура сиділа під адміном. */
+  const roleRaw = String(body.role || "radiologist");
+  if (roleRaw !== "radiologist" && roleRaw !== "registrar") {
+    return NextResponse.json({ error: "Невідома роль" }, { status: 400 });
+  }
+  const role = roleRaw as "radiologist" | "registrar";
   const email = String(body.email || "").trim().toLowerCase();
   const login = String(body.login || "").trim();
   const fullName = String(body.full_name || "").trim();
@@ -32,8 +40,9 @@ export async function POST(req: Request) {
   if ("room_ids" in body && body.room_ids !== null && !Array.isArray(body.room_ids)) {
     return NextResponse.json({ error: "Некоректні ідентифікатори кабінетів" }, { status: 400 });
   }
-  const roomIds: string[] = rawRoomIds ? Array.from(new Set(rawRoomIds.filter((x) => UUID_RE.test(x)))) : [];
-  if (rawRoomIds && roomIds.length !== new Set(rawRoomIds).size) {
+  const rawRoomIdsForRole = role === "radiologist" ? rawRoomIds : null;   // кабінети — лише радіологам
+  const roomIds: string[] = rawRoomIdsForRole ? Array.from(new Set(rawRoomIdsForRole.filter((x) => UUID_RE.test(x)))) : [];
+  if (rawRoomIdsForRole && roomIds.length !== new Set(rawRoomIdsForRole).size) {
     return NextResponse.json({ error: "Некоректні ідентифікатори кабінетів" }, { status: 400 });
   }
 

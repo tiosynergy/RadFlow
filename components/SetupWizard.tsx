@@ -178,7 +178,7 @@ const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string }[]
   { label: "Адміністратор", desc: "Обліковий запис адміна", anchor: "sec-admin" },
   { label: "Обладнання та кабінети", desc: "Апарати та розклад", anchor: "sec-equip" },
   { label: "Послуги та прайс", desc: "Незабаром", anchor: "sec-price" },
-  { label: "Радіологи та доступи", desc: "Керування персоналом", anchor: "sec-staff" },
+  { label: "Персонал і доступи", desc: "Радіологи та реєстратори", anchor: "sec-staff" },
   { label: "Лікарі-направники", desc: "Направники центру", anchor: "sec-referrers" },
   { label: "Керівники (CEO)", desc: "Аналітичний доступ", anchor: "sec-ceo" },
 ];
@@ -618,7 +618,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
               </div>
 
               <div className="fade-in" style={{ display: activeSection === "sec-staff" ? "block" : "none" }}>
-                <h1 className="wiz-h">Радіологи та доступи</h1>
+                <h1 className="wiz-h">Персонал і доступи</h1>
                 <StaffManager embedded clinicId={clinicId} rooms={rooms} clinicName={clinicName} adminName={adminName} />
               </div>
 

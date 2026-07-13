@@ -19,7 +19,23 @@ export default async function SetupPage() {
   if (!profile) redirect("/login");
   if (profile.role === "radiologist") redirect("/radiologist");
   if (profile.role === "referrer") redirect("/referral");
-  if (profile.role !== "admin") redirect("/queue"); // майстер налаштувань — лише адмін
+
+  /* Майстер налаштувань — лише адмін (з 0073 БД однаково відхилить запис у rooms/clinics
+     не-адміну). Реєстратора НЕ редіректимо на /queue: якщо центр ще не налаштований,
+     /queue сам веде на /setup — виходила петля. Показуємо пояснення. */
+  if (profile.role !== "admin") {
+    return (
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
+        <div style={{ maxWidth: 460, textAlign: "center" }}>
+          <h1 style={{ fontSize: 20, marginBottom: 8 }}>Центр ще не налаштовано</h1>
+          <p style={{ color: "var(--text-muted)", lineHeight: 1.55 }}>
+            Майстер налаштувань доступний лише адміністратору центру. Зверніться до адміністратора —
+            після налаштування кабінетів і графіка черга запрацює.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
     | { name?: string; city?: string; address?: string; phones?: string[]; emails?: string[]; timezone?: string | null }
