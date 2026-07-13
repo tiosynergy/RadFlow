@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { clientIp, rateLimitOk } from "@/lib/rateLimit";
+import { parseBody } from "@/lib/validationHttp";
+import { safeDbError, zPassword } from "@/lib/validation";
 
 const INVALID = "Посилання недійсне або вже використане. Зверніться до адміністратора.";
+
+/* invite_token — hex довжиною 64 (два UUID без дефісів, див. /api/staff). Форма
+   токена перевіряється ДО звернення до БД: сміття не має доїжджати до lookup. */
+const zInviteToken = z.string().trim().regex(/^[0-9a-f]{32,80}$/i, "invalid token");
+const sSetPassword = z.object({ token: zInviteToken, password: zPassword });
 
 // GET /api/account/set-password?token=… — резолвимо ОДНОРАЗОВИЙ токен у логін/ПІБ,
 // щоб користувач бачив, для якого акаунта задає пароль. Без зміни стану.
@@ -11,8 +19,9 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Сервер не налаштовано (SUPABASE_SERVICE_ROLE_KEY)" }, { status: 500 });
   }
 
-  const token = String(new URL(req.url).searchParams.get("token") || "").trim();
-  if (!token) return NextResponse.json({ error: INVALID }, { status: 400 });
+  const tokenRes = zInviteToken.safeParse(new URL(req.url).searchParams.get("token") ?? "");
+  if (!tokenRes.success) return NextResponse.json({ error: INVALID }, { status: 400 });
+  const token = tokenRes.data;
 
   // Rate-limit за IP — захист від перебору токенів через lookup.
   const ip = clientIp(req);
@@ -41,11 +50,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Сервер не налаштовано (SUPABASE_SERVICE_ROLE_KEY)" }, { status: 500 });
   }
 
-  const body = await req.json().catch(() => ({}));
-  const token = String(body.token || "").trim();
-  const password = String(body.password || "");
-  if (!token) return NextResponse.json({ error: INVALID }, { status: 400 });
-  if (password.length < 8) return NextResponse.json({ error: "Пароль мінімум 8 символів" }, { status: 400 });
+  const parsed = await parseBody("api/account/set-password", req, sSetPassword, "Пароль мінімум 8 символів, посилання має бути дійсним");
+  if (!parsed.ok) return parsed.res;
+  const { token, password } = parsed.data;
 
   // Rate-limit за IP — захист від перебору токенів.
   const ip = clientIp(req);
@@ -65,7 +72,7 @@ export async function POST(req: Request) {
   }
 
   const { error: uErr } = await admin.auth.admin.updateUserById(profile.id as string, { password });
-  if (uErr) return NextResponse.json({ error: "Помилка встановлення пароля: " + uErr.message }, { status: 400 });
+  if (uErr) return NextResponse.json({ error: safeDbError("api/account/set-password", uErr) }, { status: 400 });
   await admin.from("profiles").update({ password_set: true, invite_token: null }).eq("id", profile.id);
 
   return NextResponse.json({ ok: true });

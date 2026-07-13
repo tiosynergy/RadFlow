@@ -1,6 +1,18 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
+import { parseBody } from "@/lib/validationHttp";
+import { safeDbError, zLogin, zName, zOptEmail, zOptText } from "@/lib/validation";
+
+const sReferrerProfile = z.object({
+  login: zLogin,
+  full_name: zName,
+  phone: zOptText(32),
+  note: zOptText(2000),
+  city: zOptText(120),
+  email: zOptEmail,   // приватний email направника (referrer_private)
+});
 
 // POST /api/referral/profile — лікар-направник редагує ВЛАСНІ дані.
 //   Дозволено ЛИШЕ самому направнику (auth.uid()). Адміністратор дані направника
@@ -13,18 +25,9 @@ export async function POST(req: Request) {
   if (!gate.ok) return gate.res;
   const { user } = gate;
 
-  const body = await req.json().catch(() => ({}));
-  const login = String(body.login || "").trim();
-  const fullName = String(body.full_name || "").trim();
-  const phone = String(body.phone || "").trim();
-  const note = String(body.note || "").trim();
-  const city = String(body.city || "").trim();
-  const email = String(body.email || "").trim().toLowerCase();
-  if (!login) return NextResponse.json({ error: "Вкажіть логін" }, { status: 400 });
-  if (!fullName) return NextResponse.json({ error: "Вкажіть ПІБ" }, { status: 400 });
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return NextResponse.json({ error: "Некоректний email" }, { status: 400 });
-  }
+  const parsed = await parseBody("api/referral/profile", req, sReferrerProfile, "Вкажіть логін і ПІБ (email — коректний)");
+  if (!parsed.ok) return parsed.res;
+  const { login, full_name: fullName, phone, note, city, email } = parsed.data;
 
   const admin = createAdminClient();
 
@@ -41,20 +44,20 @@ export async function POST(req: Request) {
   // Оновлюємо ЛИШЕ власний рядок (id = auth.uid()) — без mass-assignment.
   const { error: pErr } = await admin
     .from("profiles")
-    .update({ login, full_name: fullName, phone: phone || null, note: note || null, city: city || null })
+    .update({ login, full_name: fullName, phone, note, city })
     .eq("id", user.id);
   if (pErr) {
     const msg = pErr.message || "";
     return NextResponse.json(
-      { error: /login/i.test(msg) && /unique|duplicate/i.test(msg) ? "Логін вже зайнятий" : "Помилка збереження: " + msg },
+      { error: /login/i.test(msg) && /unique|duplicate/i.test(msg) ? "Логін вже зайнятий" : safeDbError("api/referral/profile", pErr) },
       { status: 400 }
     );
   }
 
   const { error: eErr } = await admin
     .from("referrer_private")
-    .upsert({ referrer_id: user.id, email: email || null, updated_at: new Date().toISOString() });
-  if (eErr) return NextResponse.json({ error: "Помилка збереження email: " + eErr.message }, { status: 400 });
+    .upsert({ referrer_id: user.id, email, updated_at: new Date().toISOString() });
+  if (eErr) return NextResponse.json({ error: safeDbError("api/referral/profile.email", eErr) }, { status: 400 });
 
   return NextResponse.json({ ok: true });
 }

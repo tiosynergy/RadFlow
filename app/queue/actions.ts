@@ -12,6 +12,7 @@
 // Это эталон: остальные мутации очереди (incidents, schedule_overrides,
 // бронирование, перенос) переводятся на тот же паттерн пошагово.
 
+import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate } from "@/supabase/types";
@@ -20,6 +21,11 @@ import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
 import { wallNow, wallInstant, wallDayKey, wallMinOfInstant } from "@/lib/incidents";
 import { roomScheduleFor, effectiveRoomBreaks, overlapsBreak, type DayOverride } from "@/lib/schedule";
+import {
+  parseInput, safeDbError, zUuid, zDateKey, zTime, zIsoInstant, zName, zOptText, zOptEmail,
+  zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
+  zDuration, zBuffer, zPriority, zQueueStatus, zCallStatus, zStudies, zIdList,
+} from "@/lib/validation";
 
 export type QueueActionResult =
   | { ok: true; id?: string } // id — створений запис (createBooking/createReferralBooking)
@@ -56,10 +62,99 @@ async function callerClinicId(supabase: SupabaseClient<Database>): Promise<strin
    це зміна СТАТУСУ наявного запису), тому в іншому забороняємо жорстко. */
 const PAST_TOLERANCE_MIN = 5;
 
-// Санітизація масових операцій: id мають бути UUID, кількість — обмежена
-// (інакше один виклик Server Action шле в PostgREST десятки тисяч id).
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MASS_UPDATE_CAP = 500;
+/* ===== Схеми входу (M-12) =====
+   Раніше кожна дія «валідувала» вручну: !id, typeof x === "string", Number(dur).
+   Типи TS на межі Server Action НЕ гарантують нічого — клієнт, протухла вкладка
+   або прямий виклик шлють що завгодно (саме так через updatePatientDetails
+   проходили status / room_id / scheduled_at). Тепер вхід кожної дії має схему;
+   деталі помилки — в лог сервера, користувачу — загальне повідомлення.
+   Примітиви (UUID, "HH:MM", "YYYY-MM-DD", тривалість, буфер) — lib/validation.ts. */
+
+const sStudies = zStudies;
+
+/** Спільні поля пацієнта для бронювання (адмін і направник). */
+const sPatientFields = {
+  name: zName,
+  phone: zOptText(32),
+  email: zOptEmail,
+  dob: zOptDob,        // та сама строгість, що й у патчі: інакше запис зі сміттям у ДР не редагується
+  sex: zOptText(16),
+  age: zOptAge,
+  weight: zOptWeight,
+  hasContra: z.boolean().optional(),
+  priorityLevel: zPriority.optional(),
+  studies: sStudies,
+  durationMin: zDuration,
+  bufferTimeMin: zBuffer.optional(),
+  scheduledDate: zDateKey,
+  scheduledTime: zTime,
+  scheduledAt: zIsoInstant,
+};
+
+const sBooking = z.object({
+  roomId: zUuid,
+  referrerId: zUuid.nullish(),
+  doctor: zOptText(200),
+  notes: zOptText(2000),
+  ...sPatientFields,
+});
+
+const sReferralBooking = z.object({
+  clinicId: zUuid,
+  roomId: zUuid,
+  doctorName: zOptText(200),
+  note: zOptText(2000),
+  ...sPatientFields,
+});
+
+const sReschedule = z.object({
+  id: zUuid,
+  roomId: zUuid,
+  scheduledDate: zDateKey,
+  scheduledTime: zTime,
+  scheduledAt: zIsoInstant,
+  durationMin: zDuration,
+  bufferTimeMin: zBuffer.optional(),
+  callStatus: zCallStatus.optional(),
+  reason: zOptText(500),
+});
+
+const sIncident = z.object({
+  id: zUuid.nullish(),
+  roomId: zUuid,
+  reason: z.enum(["breakdown", "maintenance", "emergency"]),   // = CHECK incidents_reason_chk (0056)
+  reasonLabel: zOptText(200),
+  note: zOptText(2000),
+  startedAt: zIsoInstant,
+  blockedUntil: z.union([zIsoInstant, z.null(), z.undefined()]).transform((v) => v ?? null),
+  autoUnblock: z.boolean().optional(),
+});
+
+const sRoomIdList = z.object({
+  roomIds: z.array(zUuid).min(1, "Не обрано кабінети").max(100).transform((v) => Array.from(new Set(v))),
+  note: zOptText(2000).optional(),
+});
+
+/* Особливий графік дня. Раніше rooms був `Record<string, unknown>` і летів у JSONB
+   як є: невалідні години («18:00–08:00», «25:70») зберігались, а сітка слотів
+   мовчки зникала. Тепер — формат HH:MM і start < end (і для годин, і для перерв). */
+const sHours = z
+  .object({ start: zTime, end: zTime })
+  .refine((v) => v.start < v.end, "Кінець має бути пізніше за початок");
+const sRoomOverride = z
+  .object({
+    closed: z.boolean().optional(),
+    start: zTime.optional(),
+    end: zTime.optional(),
+    breaks: z.array(sHours).max(10).optional(),
+  })
+  .refine((v) => !(v.start && v.end) || v.start < v.end, "Кінець роботи має бути пізніше за початок");
+const sScheduleOverride = z.object({
+  overrideDate: zDateKey,
+  allClosed: z.boolean(),
+  label: zOptText(200),
+  rooms: z.record(zUuid, sRoomOverride).nullish(),
+});
 
 async function clinicTz(supabase: SupabaseClient<Database>, clinicId: string): Promise<string> {
   const { data } = await supabase.from("clinics").select("timezone").eq("id", clinicId).maybeSingle();
@@ -202,23 +297,11 @@ async function crossesRoomBreak(
   return overlapsBreak((h || 0) * 60 + (m || 0), durationMin || 30, breaks);
 }
 
-/* Клінічні тривалості — кратні 5 хв; стеля 600 хв (10 год) відсікає абсурд і
-   «розтягування» запису на весь день. Раніше editQueueEntryStudies приймав
-   БУДЬ-ЯКЕ число: дослідження можна було витягнути за кінець графіка і в перерву
-   (ловив лише тригер перетину з іншим записом, та й той рахує без буфера). */
-// Стеля тривалості = стеля CHECK queue_entries_duration_min_chk (0066). Раніше тут
-// було 600, а БД (після 0066) ріже на 480 → значення 485–600 падали б сирою 23514.
-const DUR_MAX_MIN = DUR_MAX;
-
-const ALLOWED_STATUSES: readonly QueueStatus[] = [
-  "scheduled",
-  "waiting",
-  "in_progress",
-  "done",
-  "no_show",
-  "cancelled",
-  "not_held",
-];
+/* Клінічні тривалості — кратні 5 хв, стеля 480 (= CHECK queue_entries_duration_min_chk,
+   0066). Перевірку робить схема zDuration (lib/validation.ts) на межі КОЖНОЇ дії —
+   раніше вона жила лише в editQueueEntryStudies, а createBooking / createReferralBooking
+   / waitlist покладались на normDur, тобто мовчки клампили сміття.
+   Перелік статусів теж переїхав у схеми (zQueueStatus / zCallStatus). */
 
 // Распознаём нарушения БД-инвариантов и отдаём код клиенту (укр. строки живут
 // в компоненте). L-3: приоритет — по SQLSTATE (error.code), надёжнее текста:
@@ -229,7 +312,7 @@ function classifyError(err: { code?: string; message?: string }, status?: QueueS
   const code = err?.code ?? "";
   const message = err?.message ?? "";
   if (status === "in_progress" && (code === "23505" || /in_progress|duplicate|23505/i.test(message))) {
-    return { ok: false, error: message, code: "room_busy" };
+    return { ok: false, error: "У кабінеті вже є пацієнт", code: "room_busy" };
   }
   // STATUS_TRANSITION — тригер 0069: «Виконано» лише з in_progress.
   if (/STATUS_TRANSITION/i.test(message)) {
@@ -240,9 +323,11 @@ function classifyError(err: { code?: string; message?: string }, status?: QueueS
   // сирий текст Postgres користувачу показувати не можна.
   if (/^BREAK|перетинає перерву/i.test(message)) return BREAK_ERR;
   if (code === "23P01" || /overlap|exclusion|incident/i.test(message)) {
-    return { ok: false, error: message, code: "slot_unavailable" };
+    // M-14: сирий текст Postgres (id кабінету, імена констрейнтів) — у лог, не клієнту.
+    safeDbError("queue.status", err);
+    return { ok: false, error: "Слот недоступний — кабінет зайнятий або в простої", code: "slot_unavailable" };
   }
-  return { ok: false, error: message, code: "generic" };
+  return { ok: false, error: safeDbError("queue.status", err), code: "generic" };
 }
 
 /* ===== CAS для решти мутацій (аудит 2026-07-12, H-4) =====
@@ -291,14 +376,16 @@ export async function setQueueEntryStatus(
   // совместимость: без него поведение прежнее.
   expectedFrom?: QueueStatus
 ): Promise<QueueActionResult> {
-  if (!id || typeof id !== "string") return { ok: false, error: "Невірний ідентифікатор запису", code: "generic" };
-  if (!ALLOWED_STATUSES.includes(status)) return { ok: false, error: "Невідомий статус", code: "generic" };
+  const v = parseInput("setQueueEntryStatus", z.object({
+    id: zUuid, status: zQueueStatus, expectedFrom: zQueueStatus.optional(),
+  }), { id, status, expectedFrom });
+  if (!v.ok) return v;
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  return setStatusViaRpc(supabase, id, status, { expected: expectedFrom });
+  return setStatusViaRpc(supabase, v.data.id, v.data.status, { expected: v.data.expectedFrom });
 }
 
 /* ===== Єдина точка входу для зміни статусу (міграція 0070) =====
@@ -348,13 +435,14 @@ async function setStatusViaRpc(
 
 /** Скасувати запис (status → cancelled). Лише живий запис. */
 export async function cancelQueueEntry(id: string): Promise<QueueActionResult> {
-  if (!id || typeof id !== "string") return { ok: false, error: "Невірний ідентифікатор запису", code: "generic" };
+  const v = parseInput("cancelQueueEntry", zUuid, id);
+  if (!v.ok) return v;
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  return setStatusViaRpc(supabase, id, "cancelled", { allowed: LIVE_STATUSES, sameAsOk: "cancelled" });
+  return setStatusViaRpc(supabase, v.data, "cancelled", { allowed: LIVE_STATUSES, sameAsOk: "cancelled" });
 }
 
 /** Завершити процедуру: статус done/no_show/not_held + нотатка. Лише живий запис. */
@@ -363,29 +451,29 @@ export async function completeQueueEntry(
   status: "done" | "no_show" | "not_held",
   note: string | null
 ): Promise<QueueActionResult> {
-  if (!id || typeof id !== "string") return { ok: false, error: "Невірний ідентифікатор запису", code: "generic" };
-  if (status !== "done" && status !== "no_show" && status !== "not_held") return { ok: false, error: "Невідомий статус", code: "generic" };
+  const v = parseInput("completeQueueEntry", z.object({
+    id: zUuid,
+    status: z.enum(["done", "no_show", "not_held"]),
+    note: zOptText(2000),
+  }), { id, status, note });
+  if (!v.ok) return v;
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
   // setNote: нотатка завершення пишеться ЗАВЖДИ (у т.ч. порожня — оператор міг її стерти).
-  return setStatusViaRpc(supabase, id, status, { allowed: LIVE_STATUSES, setNote: true, note, sameAsOk: status });
+  return setStatusViaRpc(supabase, v.data.id, v.data.status, {
+    allowed: LIVE_STATUSES, setNote: true, note: v.data.note, sameAsOk: v.data.status,
+  });
 }
-
-const ALLOWED_CALL_STATUSES: readonly CallStatus[] = [
-  "not_called",
-  "to_recall",
-  "no_answer",
-  "confirmed",
-  "declined",
-];
 
 /** Статус обзвона. При declined запись отменяется (status → cancelled). */
 export async function setQueueEntryCall(id: string, callStatus: CallStatus): Promise<QueueActionResult> {
-  if (!id || typeof id !== "string") return { ok: false, error: "Невірний ідентифікатор запису", code: "generic" };
-  if (!ALLOWED_CALL_STATUSES.includes(callStatus)) return { ok: false, error: "Невідомий статус обдзвону", code: "generic" };
+  const v = parseInput("setQueueEntryCall", z.object({ id: zUuid, callStatus: zCallStatus }), { id, callStatus });
+  if (!v.ok) return v;
+  id = v.data.id;
+  callStatus = v.data.callStatus;
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -407,7 +495,7 @@ export async function setQueueEntryCall(id: string, callStatus: CallStatus): Pro
     if (error.code === "42501" || /FORBIDDEN/i.test(error.message)) {
       return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
     }
-    return { ok: false, error: error.message, code: "generic" };
+    return { ok: false, error: safeDbError("setQueueEntryCall", error), code: "generic" };
   }
 
   const res = Array.isArray(data) ? data[0] : data;
@@ -423,7 +511,9 @@ export async function setQueueEntryCall(id: string, callStatus: CallStatus): Pro
 
 /** Снять простой кабинета (incident → resolved). */
 export async function resolveIncident(id: string): Promise<QueueActionResult> {
-  if (!id || typeof id !== "string") return { ok: false, error: "Невірний ідентифікатор", code: "generic" };
+  const v = parseInput("resolveIncident", zUuid, id);
+  if (!v.ok) return v;
+  id = v.data;
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -435,7 +525,7 @@ export async function resolveIncident(id: string): Promise<QueueActionResult> {
     .eq("id", id)
     .select("id");
 
-  if (error) return { ok: false, error: error.message, code: "generic" };
+  if (error) return { ok: false, error: safeDbError("resolveIncident", error), code: "generic" };
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або інцидент не знайдено", code: "forbidden" };
   return { ok: true };
 }
@@ -464,28 +554,30 @@ export type IncidentActionResult =
    Статус planned/active рахує БД у настінному часі клініки (0065/0066) — TS більше
    не порівнює настінний startedAt з реальним Date.now(). */
 export async function submitIncident(input: IncidentInput): Promise<IncidentActionResult> {
-  if (!input?.roomId) return { ok: false, error: "Не вказано кабінет", code: "generic" };
+  const v = parseInput("submitIncident", sIncident, input);
+  if (!v.ok) return v;
+  const inc = v.data;
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
   const { data, error } = await supabase.rpc("submit_incident_rpc", {
-    p_room_id: input.roomId,
-    p_reason: input.reason,
-    p_id: input.id ?? undefined,
-    p_reason_label: input.reasonLabel ?? undefined,
-    p_note: input.note ?? undefined,
-    p_started_at: input.startedAt,
-    p_blocked_until: input.blockedUntil ?? undefined,
-    p_auto_unblock: input.autoUnblock !== false,
+    p_room_id: inc.roomId,
+    p_reason: inc.reason,
+    p_id: inc.id ?? undefined,
+    p_reason_label: inc.reasonLabel ?? undefined,
+    p_note: inc.note ?? undefined,
+    p_started_at: inc.startedAt,
+    p_blocked_until: inc.blockedUntil ?? undefined,
+    p_auto_unblock: inc.autoUnblock !== false,
   });
 
   if (error) {
     const code = error.code ?? "";
     // 23505 — унікальний індекс «один активний інцидент на кабінет» (0017).
     if (code === "23505" || /duplicate|unique|23505/i.test(error.message)) {
-      return { ok: false, error: error.message, code: "duplicate" };
+      return { ok: false, error: "Кабінет уже має активний простій", code: "duplicate" };
     }
     if (code === "28000" || /не авторизовано/i.test(error.message)) {
       return { ok: false, error: "Не авторизовано", code: "auth" };
@@ -493,7 +585,7 @@ export async function submitIncident(input: IncidentInput): Promise<IncidentActi
     if (/NOT_FOUND|ROOM_NOT_IN_CLINIC/i.test(error.message)) {
       return { ok: false, error: "Немає доступу або інцидент не знайдено", code: "forbidden" };
     }
-    return { ok: false, error: error.message, code: "generic" };
+    return { ok: false, error: safeDbError("submitIncident", error), code: "generic" };
   }
 
   const res = Array.isArray(data) ? data[0] : data;
@@ -519,8 +611,9 @@ export type EmergencyResult =
 
 /** Аварійно зупинити роботу обраних кабінетів + обдзвон постраждалих ЦЬОГО дня. */
 export async function emergencyStop(input: { roomIds: string[]; note?: string | null }): Promise<EmergencyResult> {
-  const roomIds = Array.from(new Set((input?.roomIds || []).filter(Boolean)));
-  if (!roomIds.length) return { ok: false, error: "Не обрано кабінети", code: "generic" };
+  const v = parseInput("emergencyStop", sRoomIdList, input);
+  if (!v.ok) return v;
+  const { roomIds } = v.data;
 
   const supabase = await createClient();
   const clinicId = await callerClinicId(supabase);
@@ -535,11 +628,11 @@ export async function emergencyStop(input: { roomIds: string[]; note?: string | 
   const { data, error } = await supabase.rpc("emergency_stop_rpc", {
     p_room_ids: roomIds,
     p_date: date,
-    p_note: input.note ?? null,
+    p_note: v.data.note ?? null,
   });
   if (error) {
-    const code = /28000|не авторизовано/i.test(error.message) ? "auth" : "generic";
-    return { ok: false, error: error.message, code };
+    if (/28000|не авторизовано/i.test(error.message)) return { ok: false, error: "Не авторизовано", code: "auth" };
+    return { ok: false, error: safeDbError("emergencyStop", error), code: "generic" };
   }
   const res = Array.isArray(data) ? data[0] : data;
 
@@ -562,8 +655,9 @@ export type ResolveEmergencyResult =
     клініки (кнопка «▶ Відновити роботу» в модалці саме так і викликалась —
     відновлювала все, хоча в списку були конкретні кабінети). */
 export async function resolveEmergency(input: { roomIds: string[] }): Promise<ResolveEmergencyResult> {
-  const roomIds = Array.from(new Set((input?.roomIds || []).filter(Boolean)));
-  if (!roomIds.length) return { ok: false, error: "Не обрано кабінети", code: "generic" };
+  const v = parseInput("resolveEmergency", sRoomIdList, input);
+  if (!v.ok) return v;
+  const { roomIds } = v.data;
 
   const supabase = await createClient();
   const clinicId = await callerClinicId(supabase);
@@ -574,7 +668,7 @@ export async function resolveEmergency(input: { roomIds: string[] }): Promise<Re
     .eq("clinic_id", clinicId).eq("reason", "emergency").eq("status", "active")
     .in("room_id", roomIds)
     .select("id");
-  if (error) return { ok: false, error: error.message, code: "generic" };
+  if (error) return { ok: false, error: safeDbError("resolveEmergency", error), code: "generic" };
   return { ok: true, resolved: data?.length ?? 0 };
 }
 
@@ -619,9 +713,17 @@ function mapBookingError(message: string): QueueActionResult {
   // BREAK — тригер 0067 (перерва кабінету). Перевіряти треба ДО overlap/exclusion:
   // виняток піднімається з тим самим SQLSTATE 23P01.
   if (/^BREAK|перетинає перерву/i.test(message)) return BREAK_ERR;
-  if (/incident/i.test(message)) return { ok: false, error: message, code: "incident" };
-  if (/overlap|exclusion/i.test(message)) return { ok: false, error: message, code: "slot_unavailable" };
-  return { ok: false, error: message, code: "generic" };
+  /* M-14: коди лишаються ті самі (UI на них зав'язаний), але НАЗОВНІ йде наш текст,
+     а сирий Postgres (id кабінету, імена констрейнтів/таблиць) — у лог сервера. */
+  if (/incident/i.test(message)) {
+    safeDbError("booking.incident", { message });
+    return { ok: false, error: "Кабінет у простої — оберіть інший слот або кабінет", code: "incident" };
+  }
+  if (/overlap|exclusion/i.test(message)) {
+    safeDbError("booking.overlap", { message });
+    return { ok: false, error: "Слот зайнятий — оберіть інший час", code: "slot_unavailable" };
+  }
+  return { ok: false, error: safeDbError("booking", { message }), code: "generic" };
 }
 
 export type ScheduleOverrideInput = {
@@ -633,41 +735,46 @@ export type ScheduleOverrideInput = {
 
 /** Сохранить особый график на день (upsert) или удалить, если пусто. */
 export async function saveScheduleOverride(input: ScheduleOverrideInput): Promise<QueueActionResult> {
+  const v = parseInput("saveScheduleOverride", sScheduleOverride, input);
+  if (!v.ok) return v;
+
   const supabase = await createClient();
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
-  if (!input?.overrideDate) return { ok: false, error: "Не вказано дату", code: "generic" };
 
-  const rooms = input.rooms || {};
-  const empty = !input.allClosed && Object.keys(rooms).length === 0;
+  const rooms = v.data.rooms || {};
+  const empty = !v.data.allClosed && Object.keys(rooms).length === 0;
 
   if (empty) {
     const { error } = await supabase
       .from("schedule_overrides")
       .delete()
       .eq("clinic_id", clinicId)
-      .eq("override_date", input.overrideDate);
-    if (error) return { ok: false, error: error.message, code: "generic" };
+      .eq("override_date", v.data.overrideDate);
+    if (error) return { ok: false, error: safeDbError("saveScheduleOverride.delete", error), code: "generic" };
     return { ok: true };
   }
 
   const { error } = await supabase.from("schedule_overrides").upsert(
     {
       clinic_id: clinicId,
-      override_date: input.overrideDate,
-      all_closed: !!input.allClosed,
-      label: input.label || null,
-      rooms: rooms as Json,
+      override_date: v.data.overrideDate,
+      all_closed: v.data.allClosed,
+      label: v.data.label,
+      rooms: rooms as unknown as Json,
       updated_at: new Date().toISOString(),
     },
     { onConflict: "clinic_id,override_date" }
   );
-  if (error) return { ok: false, error: error.message, code: "generic" };
+  if (error) return { ok: false, error: safeDbError("saveScheduleOverride.upsert", error), code: "generic" };
   return { ok: true };
 }
 
 /** Вернуть типовой график на день (удалить override). */
 export async function resetScheduleOverride(overrideDate: string): Promise<QueueActionResult> {
+  const v = parseInput("resetScheduleOverride", zDateKey, overrideDate);
+  if (!v.ok) return v;
+
   const supabase = await createClient();
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
@@ -676,8 +783,8 @@ export async function resetScheduleOverride(overrideDate: string): Promise<Queue
     .from("schedule_overrides")
     .delete()
     .eq("clinic_id", clinicId)
-    .eq("override_date", overrideDate);
-  if (error) return { ok: false, error: error.message, code: "generic" };
+    .eq("override_date", v.data);
+  if (error) return { ok: false, error: safeDbError("resetScheduleOverride", error), code: "generic" };
   return { ok: true };
 }
 
@@ -690,12 +797,15 @@ export type RescheduleInput = {
   durationMin: number;
   bufferTimeMin?: number; // буфер переноситься разом із записом (за замовч. 5)
   callStatus?: CallStatus; // напр. колл-лист підтверджує слот при переносі
-  reason?: string; // причина переносу (обовʼязкова для «не відбулося»/неявки)
+  reason?: string | null; // причина переносу (обовʼязкова для «не відбулося»/неявки)
 };
 
 /** Перенос записи на другой кабинет/дату/время (с пред-проверкой пересечения). */
-export async function rescheduleQueueEntry(input: RescheduleInput): Promise<QueueActionResult> {
-  if (!input?.id) return { ok: false, error: "Невірний запис", code: "generic" };
+export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueActionResult> {
+  const v = parseInput("rescheduleQueueEntry", sReschedule, raw);
+  if (!v.ok) return v;
+  const input = v.data;   // нормалізовані: UUID, "HH:MM", "YYYY-MM-DD", тривалість/буфер
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
@@ -764,20 +874,27 @@ export async function editQueueEntryStudies(
   durationMin: number,
   bufferTimeMin?: number
 ): Promise<QueueActionResult> {
-  if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
-
-  /* Валідація тривалості НА СЕРВЕРІ (аудит 2026-07-11). Клієнт обмежує повзунок
+  /* Валідація НА СЕРВЕРІ (аудит 2026-07-11 + M-12). Клієнт обмежує повзунок
      графіком/перервою/наступним записом, але сам по собі клієнт нічого не гарантує:
      застаріла вкладка чи прямий виклик Server Action розтягували дослідження за
      кінець робочого дня або крізь перерву. Перетин з іншим записом ловить тригер
-     check_no_overlap; графік і перерви — ось тут. */
-  const dur = Math.round(Number(durationMin));
-  if (!Number.isFinite(dur) || dur <= 0 || dur > DUR_MAX_MIN || dur % 5 !== 0) {
-    return { ok: false, error: "Некоректна тривалість дослідження", code: "generic" };
-  }
+     check_no_overlap; графік і перерви — нижче. Тривалість тепер нормалізує схема
+     (кратно 5, [5,480]) — раніше вона перевірялась тут вручну і лише в цій дії. */
+  const v = parseInput("editQueueEntryStudies", z.object({
+    id: zUuid,
+    studies: sStudies,
+    durationMin: zDuration,
+    bufferTimeMin: zBuffer.optional(),
+  }), { id, studies, durationMin, bufferTimeMin });
+  if (!v.ok) return v;
+  id = v.data.id;
+  studies = v.data.studies as unknown as Json;
+  const dur = v.data.durationMin;
+  bufferTimeMin = v.data.bufferTimeMin;
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
   const { data: cur } = await supabase.from("queue_entries")
     .select("clinic_id, room_id, scheduled_date, scheduled_time, status, in_progress_at, duration_min, buffer_time_min")
@@ -863,8 +980,11 @@ export type BookingInput = {
 };
 
 /** Создать новую запись (с пред-проверкой пересечения; clinic_id/created_by — с сервера). */
-export async function createBooking(input: BookingInput): Promise<QueueActionResult> {
-  if (!input?.roomId || !input?.name) return { ok: false, error: "Не вистачає даних запису", code: "generic" };
+export async function createBooking(raw: BookingInput): Promise<QueueActionResult> {
+  const v = parseInput("createBooking", sBooking, raw);
+  if (!v.ok) return v;
+  const input = v.data;
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
@@ -885,9 +1005,8 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 
-  const hasContrast = Array.isArray(input.studies)
-    ? input.studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
-    : false;
+  const studies = input.studies as unknown as Json;
+  const hasContrast = input.studies.some((s) => s.contrast === true);
 
   const { data: created, error } = await supabase.from("queue_entries").insert({
     clinic_id: clinicId,
@@ -895,20 +1014,20 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
     created_by: user.id,
     referrer_id: input.referrerId ?? null,
     patient_name: input.name,
-    patient_phone: input.phone || null,
-    patient_email: input.email ?? null,
-    patient_dob: input.dob || null,
-    patient_sex: input.sex || null,
+    patient_phone: input.phone,
+    patient_email: input.email,
+    patient_dob: input.dob,
+    patient_sex: input.sex,
     patient_age: input.age ?? null,
     patient_weight: input.weight ?? null,
     contraindications: !!input.hasContra,
     priority_level: normPriority(input.priorityLevel),
     has_contrast: hasContrast,
-    studies: input.studies,
-    studies_original: input.studies,
-    doctor: input.doctor ?? null,
-    note: input.notes ?? null,
-    duration_min: normDur(input.durationMin),   // H-1: кратно 5, 5..480 (див. lib/studies.ts)
+    studies,
+    studies_original: studies,
+    doctor: input.doctor,
+    note: input.notes,
+    duration_min: input.durationMin,   // H-1 + M-12: схема вже дала кратне 5 у [5,480]
     buffer_time_min: bufferMin,
     scheduled_date: input.scheduledDate,
     scheduled_time: input.scheduledTime,
@@ -923,24 +1042,26 @@ export async function createBooking(input: BookingInput): Promise<QueueActionRes
 
 /** Заметка радіолога (radiologist_note). */
 export async function setRadiologistNote(id: string, note: string): Promise<QueueActionResult> {
-  if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
+  const v = parseInput("setRadiologistNote", z.object({ id: zUuid, note: zOptText(4000) }), { id, note });
+  if (!v.ok) return v;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
-  const { data, error } = await supabase.from("queue_entries").update({ radiologist_note: note }).eq("id", id).select("id");
-  if (error) return { ok: false, error: error.message, code: "generic" };
+  const { data, error } = await supabase.from("queue_entries").update({ radiologist_note: v.data.note }).eq("id", v.data.id).select("id");
+  if (error) return { ok: false, error: safeDbError("setRadiologistNote", error), code: "generic" };
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
   return { ok: true };
 }
 
 /** Заметка обзвона (call_note). */
 export async function setCallNote(id: string, note: string): Promise<QueueActionResult> {
-  if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
+  const v = parseInput("setCallNote", z.object({ id: zUuid, note: zOptText(4000) }), { id, note });
+  if (!v.ok) return v;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
-  const { data, error } = await supabase.from("queue_entries").update({ call_note: note }).eq("id", id).select("id");
-  if (error) return { ok: false, error: error.message, code: "generic" };
+  const { data, error } = await supabase.from("queue_entries").update({ call_note: v.data.note }).eq("id", v.data.id).select("id");
+  if (error) return { ok: false, error: safeDbError("setCallNote", error), code: "generic" };
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
   return { ok: true };
 }
@@ -953,9 +1074,11 @@ export type ConfirmAllResult =
     Повертає КІЛЬКІСТЬ реально оновлених рядків: раніше дія рапортувала «усіх
     підтверджено» навіть коли RLS не оновила жодного рядка. */
 export async function confirmAllCalls(ids: string[]): Promise<ConfirmAllResult> {
-  const list = Array.from(new Set((Array.isArray(ids) ? ids : []).filter((v) => typeof v === "string" && UUID_RE.test(v))));
+  const v = parseInput("confirmAllCalls", zIdList, ids);
+  if (!v.ok) return v;
+  const list = v.data;
   if (!list.length) return { ok: true, updated: 0 };
-  if (list.length > MASS_UPDATE_CAP) return { ok: false, error: "Забагато записів за один раз", code: "generic" };
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
@@ -969,40 +1092,61 @@ export async function confirmAllCalls(ids: string[]): Promise<ConfirmAllResult> 
     if (error.code === "42501" || /FORBIDDEN/i.test(error.message)) {
       return { ok: false, error: "Немає прав на обдзвін", code: "generic" };
     }
-    return { ok: false, error: error.message, code: "generic" };
+    return { ok: false, error: safeDbError("confirmAllCalls", error), code: "generic" };
   }
   return { ok: true, updated: typeof data === "number" ? data : 0 };
 }
 
-/* Колонки, які РЕАЛЬНО редагує PatientEditModal. Типи TS не захищають Server Action
-   від довільного JSON: раніше сюди приймався весь TablesUpdate<"queue_entries">, і
-   через нього з клієнта (або протухлої вкладки) проходили status, scheduled_date/time,
-   room_id, in_progress_at, call_status — тобто завершений запис можна було воскресити
-   в обхід усіх CAS-гардів. Той самий підхід, що WAITLIST_PATCH_ALLOWED у листі очікування. */
-const PATIENT_PATCH_ALLOWED = [
-  "patient_name", "patient_phone", "patient_email", "patient_dob", "patient_age",
-  "patient_sex", "patient_weight", "contraindications", "note", "doctor", "referrer_id",
-] as const;
+/* Колонки, які РЕАЛЬНО редагує PatientEditModal — тепер СХЕМОЮ, а не масивом імен.
+   Типи TS не захищають Server Action від довільного JSON: раніше сюди приймався
+   весь TablesUpdate<"queue_entries">, і через нього з клієнта (або протухлої
+   вкладки) проходили status, scheduled_date/time, room_id, in_progress_at,
+   call_status — тобто завершений запис можна було воскресити в обхід усіх CAS-гардів.
+   Невідомі ключі zod відкидає; ЗНАЧЕННЯ тепер теж перевіряються (раніше allowlist
+   пропускав будь-яке сміття в дозволеній колонці).
+   ВАЖЛИВО: усі поля .optional() — відсутній ключ має лишитись ВІДСУТНІМ, інакше
+   патч затер би колонку в null. */
+const sPatientPatch = z.object({
+  patient_name: zName.optional(),
+  patient_phone: z.union([z.string().trim().max(32), z.null()]).optional(),
+  patient_email: z.union([z.string().trim().max(254), z.null()]).optional(),
+  patient_dob: z.union([zDateKey, z.literal(""), z.null()]).optional(),
+  patient_age: z.union([z.number().int().min(0).max(PATIENT_AGE_MAX), z.null()]).optional(),
+  patient_sex: z.union([z.string().trim().max(16), z.null()]).optional(),
+  patient_weight: z.union([z.number().finite().min(0).max(PATIENT_WEIGHT_MAX), z.null()]).optional(),
+  contraindications: z.boolean().optional(),
+  note: z.union([z.string().trim().max(2000), z.null()]).optional(),
+  doctor: z.union([z.string().trim().max(200), z.null()]).optional(),
+  referrer_id: z.union([zUuid, z.null()]).optional(),
+});
 
-/** Редагування даних пацієнта (PatientEditModal). patch — тільки allowlist колонок. */
+/** Редагування даних пацієнта (PatientEditModal). patch — тільки колонки зі схеми. */
 export async function updatePatientDetails(id: string, patch: TablesUpdate<"queue_entries">): Promise<QueueActionResult> {
-  if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
+  const v = parseInput("updatePatientDetails", z.object({ id: zUuid, patch: sPatientPatch }), { id, patch });
+  if (!v.ok) return v;
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  // Пріоритет — ЛИШЕ через setQueuePriority (там перевірка ролі); решта — за allowlist.
-  const safePatch: TablesUpdate<"queue_entries"> = {};
-  for (const col of PATIENT_PATCH_ALLOWED) {
-    if (patch[col] !== undefined) (safePatch as Record<string, unknown>)[col] = patch[col];
+  // Пріоритет — ЛИШЕ через setQueuePriority (там перевірка ролі).
+  // Порожні рядки → null (як і раніше: "" не має лягати в дату/телефон).
+  const safePatch: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(v.data.patch)) {
+    if (val === undefined) continue;
+    safePatch[k] = val === "" ? null : val;
   }
   if (Object.keys(safePatch).length === 0) return { ok: true };
 
   /* CAS тут НЕ ставимо свідомо: ПІБ/телефон правлять і в завершеному записі
      (клік по імені відкриває редактор у будь-якому рядку дошки), а статус ці
-     колонки не чіпають — воскресити запис ними неможливо (за це відповідає allowlist). */
-  const { data, error } = await supabase.from("queue_entries").update(safePatch).eq("id", id).select("id");
-  if (error) return { ok: false, error: error.message, code: "generic" };
+     колонки не чіпають — воскресити запис ними неможливо (за це відповідає схема). */
+  const { data, error } = await supabase
+    .from("queue_entries")
+    .update(safePatch as TablesUpdate<"queue_entries">)
+    .eq("id", v.data.id)
+    .select("id");
+  if (error) return { ok: false, error: safeDbError("updatePatientDetails", error), code: "generic" };
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
   return { ok: true };
 }
@@ -1014,8 +1158,11 @@ export async function updatePatientDetails(id: string, patch: TablesUpdate<"queu
  * Тригер БД синхронізує булевий cito = (priority_level='cito').
  */
 export async function setQueuePriority(id: string, priority: PatientPriority): Promise<QueueActionResult> {
-  if (!id) return { ok: false, error: "Невірний запис", code: "generic" };
-  const level = normPriority(priority);
+  const v = parseInput("setQueuePriority", z.object({ id: zUuid, priority: zPriority }), { id, priority });
+  if (!v.ok) return v;
+  id = v.data.id;
+  const level = v.data.priority;
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
@@ -1037,7 +1184,7 @@ export async function setQueuePriority(id: string, priority: PatientPriority): P
     .update({ priority_level: level })
     .eq("id", id)
     .select("id");
-  if (error) return { ok: false, error: error.message, code: "generic" };
+  if (error) return { ok: false, error: safeDbError("setQueuePriority", error), code: "generic" };
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
   return { ok: true };
 }
@@ -1066,8 +1213,11 @@ export type ReferralBookingInput = {
 
 /** Створення направлення направником у обраний центр. Сервер перевіряє активний
     referral_access (referrer_id=user, clinic_id, status=active) і дозволений кабінет. */
-export async function createReferralBooking(input: ReferralBookingInput): Promise<QueueActionResult> {
-  if (!input?.clinicId || !input?.roomId || !input?.name) return { ok: false, error: "Не вистачає даних направлення", code: "generic" };
+export async function createReferralBooking(raw: ReferralBookingInput): Promise<QueueActionResult> {
+  const v = parseInput("createReferralBooking", sReferralBooking, raw);
+  if (!v.ok) return v;
+  const input = v.data;
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
@@ -1098,9 +1248,8 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 
-  const hasContrast = Array.isArray(input.studies)
-    ? input.studies.some((s) => typeof s === "object" && s !== null && (s as { contrast?: boolean }).contrast === true)
-    : false;
+  const studies = input.studies as unknown as Json;
+  const hasContrast = input.studies.some((s) => s.contrast === true);
 
   const { data: created, error } = await supabase.from("queue_entries").insert({
     clinic_id: input.clinicId,
@@ -1108,21 +1257,21 @@ export async function createReferralBooking(input: ReferralBookingInput): Promis
     created_by: user.id,
     referrer_id: user.id,
     patient_name: input.name,
-    patient_phone: input.phone || null,
-    patient_email: input.email ?? null,
-    patient_dob: input.dob || null,
-    patient_sex: input.sex || null,
+    patient_phone: input.phone,
+    patient_email: input.email,
+    patient_dob: input.dob,
+    patient_sex: input.sex,
     patient_age: input.age ?? null,
     patient_weight: input.weight ?? null,
     contraindications: !!input.hasContra,
     priority_level: normPriority(input.priorityLevel),
     has_contrast: hasContrast,
-    studies: input.studies,
-    studies_original: input.studies,
-    doctor: input.doctorName ?? null,
-    note: input.note ?? null,
-    indication: input.note ?? null,
-    duration_min: normDur(input.durationMin),   // H-1: кратно 5, 5..480 (див. lib/studies.ts)
+    studies,
+    studies_original: studies,
+    doctor: input.doctorName,
+    note: input.note,
+    indication: input.note,
+    duration_min: input.durationMin,   // H-1 + M-12: схема дала кратне 5 у [5,480]
     buffer_time_min: bufferMin,
     scheduled_date: input.scheduledDate,
     scheduled_time: input.scheduledTime,

@@ -1,17 +1,27 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { clientIp, rateLimitOk, rlKey } from "@/lib/rateLimit";
+import { parseBody } from "@/lib/validationHttp";
+
+/* Межа довжини — теж захист: identifier іде в ключ rate-limit (хешується) і в
+   резолв логіна, password — у Supabase Auth. Повідомлення про помилку — те саме
+   узагальнене, що й при невірному паролі: воно НЕ має розрізняти «немає такого
+   логіна» і «не той пароль» (енумерація акаунтів). */
+const sLogin = z.object({
+  identifier: z.string().trim().min(1).max(254),
+  password: z.string().min(1).max(200),
+});
 
 // POST /api/auth/login — вхід за логіном АБО email + паролем.
 // Резолв логін→email виконується ЛИШЕ на сервері (service-role); email клієнту
 // не повертається — це закриває енумерацію акаунтів. Сесія — через cookie.
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => ({}));
-  const ident = String(body.identifier || "").trim();
-  const password = String(body.password || "");
   const FAIL = "Невірний логін/email або пароль.";
-  if (!ident || !password) return NextResponse.json({ error: FAIL }, { status: 400 });
+  const parsed = await parseBody("api/auth/login", req, sLogin, FAIL);
+  if (!parsed.ok) return parsed.res;
+  const { identifier: ident, password } = parsed.data;
 
   // Rate-limit: за IP і окремо за ідентифікатором (захист від перебору паролів).
   const ip = clientIp(req);

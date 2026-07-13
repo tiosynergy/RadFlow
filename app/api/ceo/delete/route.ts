@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
+import { parseBody } from "@/lib/validationHttp";
+import { safeDbError, zUuid } from "@/lib/validation";
+
+const sCeoId = z.object({ ceoId: zUuid });
 
 // POST /api/ceo/delete — повне видалення CEO-only акаунта.
 // Дозволено ЛИШЕ якщо: target.role = 'ceo' (CEO-only акаунт) і його єдина
@@ -13,9 +18,9 @@ export async function POST(req: Request) {
   if (!gate.ok) return gate.res;
   const { user, me } = gate;
 
-  const body = await req.json().catch(() => ({}));
-  const ceoId = String(body.ceoId || "");
-  if (!ceoId) return NextResponse.json({ error: "Не вказано керівника" }, { status: 400 });
+  const parsed = await parseBody("api/ceo/delete", req, sCeoId, "Не вказано керівника");
+  if (!parsed.ok) return parsed.res;
+  const { ceoId } = parsed.data;
   if (ceoId === user.id) return NextResponse.json({ error: "Не можна видалити власний акаунт" }, { status: 400 });
 
   const admin = createAdminClient();
@@ -40,7 +45,7 @@ export async function POST(req: Request) {
 
   // Каскадне видалення: auth.users → profiles → ceo_access (on delete cascade).
   const { error: dErr } = await admin.auth.admin.deleteUser(ceoId);
-  if (dErr) return NextResponse.json({ error: "Помилка видалення: " + dErr.message }, { status: 400 });
+  if (dErr) return NextResponse.json({ error: safeDbError("api/ceo/delete", dErr) }, { status: 400 });
 
   return NextResponse.json({ ok: true });
 }

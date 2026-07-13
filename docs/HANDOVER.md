@@ -1,6 +1,9 @@
 # RadFlow — Handover для новой сессии
 
-**Дата:** 2026-07-13 · **Ветка:** `dev` · **PROD:** БД на `0070` (0061–0070 применены владельцем); код `main` ещё старый — мердж `dev → main` разблокирован.
+**Дата:** 2026-07-13 · **Ветка:** `dev` · **PROD:** БД на `0073` (0061–0073 применены владельцем); код `main` ещё старый — мердж `dev → main` разблокирован.
+
+> **0073 — роли в RLS.** Регистратор и радиолог больше не равны админу: `rooms` / `clinics` (в т.ч. `timezone`) / `services` пишет только админ; `incidents` и `schedule_overrides` — админ + регистратор; `doctors` — INSERT админ+регистратор, UPDATE/DELETE админ. Тот же гейт продублирован в `submit_incident_rpc` и `emergency_stop_rpc` (они `SECURITY DEFINER`, RLS не применяют).
+> **Роль регистратора теперь можно создать** — мастер → «Персонал і доступи» (раньше `/api/staff` хардкодил `radiologist`, и вся регистратура работала под админом).
 
 > **Статусы, обзвон и перенос идут ТОЛЬКО через RPC** (0070): `queue_set_status_rpc`, `queue_set_call_rpc`, `queue_confirm_calls_rpc`, `queue_reschedule_rpc`. Прямой `UPDATE` этих колонок из клиента невозможен (колоночные привилегии). Любая новая мутация статуса — только через эти RPC, не через `.from("queue_entries").update()`.
 ⚠️ Код в `dev` требует БД ≥ 0068 (`event_outbox.next_attempt_at/dead`, RPC `submit_incident_rpc`, триггеры перерывов/overlap). Порядок соблюдён: миграции уже накачены. Плюс в БД живут cron-джобы (`supabase/cron_jobs.sql`): `sink-overdue`, `resolve-expired-incidents`, ретенция `audit_log`/`event_outbox`/`rate_limits`. `outbox-deliver` — закомментирован до появления n8n.
@@ -178,7 +181,7 @@ middleware.ts           → рефреш сессии + гейт защищён�
 | **`lib/slotBusy.ts`** | Занятость кабинета: `busySpans()`, `busyTooltip()`, **`useRoomBusy()`** (RPC + realtime + флаг ошибки) |
 | **`lib/schedule.ts`** | Эффективный график (**`roomScheduleFor(date, roomId, override, roomSchedule)`**), перерывы (`effectiveRoomBreaks`, `inBreak`, `breakClash`), `normalizeRoomSchedule` |
 | **`lib/queueStatus.ts`** | `isLate`, `needsClarification`, **`computeCallBlock()`** (единый источник правил вызова), `lateCallClash`, **`collisionFor()`** |
-| **`lib/incidents.ts`** | Простои + **модель времени**: `wallNow(tz)`, `wallInstant`, `wallMinOfDay`, `wallMinOfInstant`, **`wallDayKey(tz)`** («сегодня» по клинике — вместо `dateKey(new Date())`), `setClinicTz` |
+| **`lib/incidents.ts`** | Простои + **модель времени**: `wallNow(tz)`, `wallInstant`, `wallMinOfDay`, `wallMinOfInstant`, **`wallDayKey(tz)`** («сегодня» по клинике — вместо `dateKey(new Date())`), **`wallToday0(tz)`** («сегодня» как `Date` локальной полуночи — вместо `today0()`), `setClinicTz` / `getClinicTz` |
 | `lib/studies.ts` | Справочник МРТ/КТ, `CONTRAST_DUR`, `BUFFER_OPTIONS`, `normBuffer` |
 
 ### Realtime и мутации
@@ -223,7 +226,19 @@ middleware.ts           → рефреш сессии + гейт защищён�
 - **H-5 + H-1 (миграция 0066)** — `submit_incident_rpc` (простой создаётся атомарно), CHECK `duration_min` (>0, ≤480, кратно 5 — `duration_min = 0` обходил анти-овербукинг) и CHECK `incidents.blocked_until > started_at`.
 - **C-3 / M-7 (pg_cron)** — `sink_overdue_scheduled` и авто-снятие простоев ушли из клиентских лоадеров в cron; появилась ретенция. Осталось: включить джоб `outbox-deliver`, когда появится n8n.
 
-Осталось (P1/P2): `ceo_kpi` (дашборд тянет в браузер до 120k строк с ПІБ), trgm-индексы для `search_referrers`/логина (seq scan на каждый keystroke), формат `scheduled_time`, роли в RLS (регистратор == админ на уровне БД), `today0()` → `wallDayKey(tz)` в оставшихся местах, zod на границах, rate-limit на создание аккаунтов — §5 отчёта.
+Осталось (P1/P2): cron доставки outbox (ждёт n8n), L-3 (мёртвая `queue_entries.priority`), CHECK-констрейнт на формат `scheduled_time` в БД (на уровне приложения M-1 уже закрыт схемой `zTime`) — §5 отчёта.
+
+**✅ M-12 (zod на границах) + M-14 (сырые ошибки БД клиенту) закрыты 2026-07-13 — только код.**
+
+- **`lib/validation.ts`** — единственный источник примитивов: `zUuid`, `zDateKey` (реальная дата), **`zTime`** (строго `HH:MM` — это и есть прикладной фикс **M-1**: `"8:5"` больше не доезжает до БД), `zIsoInstant`, `zName`/`zLogin`/`zPassword`/`zEmail`/`zOptEmail`/`zOptText`, `zOptDob`/`zOptAge`/`zOptWeight`, **`zDuration`/`zBuffer`** (форма + границы; клампинг по-прежнему `normDur`/`normBuffer`), `zPriority`/`zQueueStatus`/`zCallStatus`, **`zStudy`/`zStudies`** (неизвестные ключи отбрасываются — частично закрывает **L-2**), **`zRoomIdsGrant`** (канон 0061: `null` = все кабинеты, `[]` = 400), `zIdList`.
+- `parseInput()` — граница Server Actions; **`lib/validationHttp.ts`** → `parseBody()` / `parseJson()` — граница API-роутов (отдельный модуль, чтобы тесты не тянули `next/server`).
+- **Контракт ошибок:** пользователю — общее сообщение, детали (какие поля не прошли) — в лог сервера. `safeDbError()` — сырые ошибки Postgres/Supabase Auth (имена таблиц, колонок, констрейнтов) больше не уезжают клиенту; **коды остались прежними** (`stale`, `slot_taken`, `slot_unavailable`, `incident`, `duplicate`, `forbidden`) — UI на них завязан.
+- Allowlist-массивы (`PATIENT_PATCH_ALLOWED`, `WAITLIST_PATCH_ALLOWED`) заменены схемами. **Ключевой инвариант: все поля патча `.optional()`** — отсутствующий ключ обязан остаться отсутствующим, иначе патч затрёт колонку в `null`. Есть тест.
+- Побочно: `ScheduleEditModal` больше не сохраняет битые часы (`18:00–08:00`, пустое поле) — кнопка «Зберегти» блокируется с подсказкой; часы нормализуются к `HH:MM`.
+- **`npm install` обязателен** — добавлена зависимость `zod ^3.25`.
+
+**✅ M-4 (единая модель времени) закрыт 2026-07-13 — только код, миграций не потребовал.** Добавлен `wallToday0(tz)`; `clinics.timezone` идёт **пропом `clinicTz` с сервера** во все доски (`/queue`, `/radiologist`, `/call-list`, `/waitlist`, `/ceo`), клиентские `fetch` таймзоны удалены; `today0()` / `dateKey(new Date())` / «завтра» по браузеру вычищены из `QueueBoard`, `RadiologistBoard`, `CallListBoard`, `WaitlistBoard`, `CeoDashboard`, `MiniCalendar`, `LiveClock`, `BookingModal`, `RescheduleModal`, `StudyEditModal`, `WaitlistModal`, `WaitlistCandidatesModal`, `ReferralPortal`, `ReferrerBoard`. Правила — §6.1.
+Хардкод `'Europe/Kiev'` в `0058` — **не баг**: обе функции переопределены в 0059 по `clinics.timezone`; в файле 0058 он остался только исторически.
 
 ### 5.1. ✅ Миграции применены (2026-07-12) — мердж разблокирован
 
@@ -269,6 +284,30 @@ middleware.ts           → рефреш сессии + гейт защищён�
 | Время **инцидентов** | «настінний UTC» (клиент сравнивает `started_at` с `Date.UTC(...)`) |
 
 **Ловушка:** `wallNow()` **без аргумента** молча падает на таймзону **браузера**. Любое сравнение «сейчас vs слот» — только `wallNow(clinics.timezone)`; зону передавать **явно** пропом. Именно из-за смешения двух фреймов (`nowMin` по клинике, `today0()` по браузеру) существовала дыра с записью в прошлое.
+
+**Два фрейма — не путать (M-4, закрыт 2026-07-13):**
+
+| Фрейм | Что это | Чем считать |
+|---|---|---|
+| «настінний-час-як-UTC», мс | момент внутри суток (слот, `started_at`, «сейчас») | `wallNow(tz)` / `wallInstant(date,time)`; сравнивать **только** между собой |
+| `Date` **локальной полуночи** | календарная дата (день доски, `new Date("YYYY-MM-DD"+"T00:00:00")`) | **`wallToday0(tz)`** — локальная полночь, но день берётся по клинике |
+
+`wallToday0(tz)` и wall-мс **несравнимы напрямую** — расходятся на величину offset. Календарный ключ дня — `wallDayKey(tz)`.
+
+**Канон таймзоны в компонентах:**
+
+- `clinics.timezone` приходит **пропом `clinicTz` с серверной страницы** (`app/*/page.tsx`), а не клиентским `fetch`. Раньше зона прилетала уже **после** монтирования, и инициализаторы `useState` (например `selectedDate`) навсегда фиксировали день браузера.
+- Доски выставляют singleton **синхронно в теле компонента**, до хуков: `if (typeof window !== "undefined") setClinicTz(clinicTz);`. На сервере — намеренно нет: модульный singleton шарился бы между SSR-запросами разных клиник.
+- Singleton — только страховка для вложенных компонентов. **В модалки и `LiveClock` зону передавать явно** (`clinicTz` / `tz`), иначе на мультиклиничных экранах (портал направителя, CEO) подхватится зона предыдущего экрана.
+- Мультиклиничные экраны, где «общей» даты нет (агрегат «Всі центри»): берём зону **первого** центра — выбор произвольный, но **детерминированный** (иначе SSR и клиент дают разную разметку).
+- `new Date()` остаётся легальным только для **реальных инстантов** (`updated_at`, `in_progress_at`, `delivered_at`) и расчёта возраста по ДР.
+
+### 6.1.1. Валидация на границе (после M-12)
+
+- **Каждый новый Server Action и API-роут начинается со схемы.** Примитивы — только из `lib/validation.ts`, не изобретать свои регулярки.
+- **Патчи (`updatePatientDetails`, `updateWaitlistEntry`) — все поля `.optional()`.** Схема с полем, которое принимает `undefined` и превращает его в `null` (например `zOptText`), в патче **недопустима**: отсутствующий ключ затрёт колонку. `zOptText` — только для INSERT-путей, где «нет значения» ⇒ `null`.
+- **Клиентские инпуты держать в тех же границах, что схема** (вес ≤ 400, вес/возраст — числа, часы — `HH:MM`). Иначе пользователь получает общий 400 вместо подсказки в поле.
+- **Сырые ошибки БД клиенту не отдавать** — `safeDbError()`. Но коды (`stale`, `slot_taken`, …) менять нельзя: на них завязан UI.
 
 ### 6.2. Шаг слота 5 мин
 

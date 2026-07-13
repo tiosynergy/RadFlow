@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
+import { parseBody } from "@/lib/validationHttp";
+import { safeDbError, zUuid, zOptText } from "@/lib/validation";
+
+const sAccessRequest = z.object({ clinic_id: zUuid, note: zOptText(2000) });
 
 // POST /api/referral/access/request
 // Направник надсилає запит на доступ до центру. Створює referral_access у
@@ -12,10 +17,9 @@ export async function POST(req: Request) {
   if (!gate.ok) return gate.res;
   const { user } = gate;
 
-  const body = await req.json().catch(() => ({}));
-  const clinicId = String(body.clinic_id || "").trim();
-  const note = String(body.note || "").trim() || null;
-  if (!clinicId) return NextResponse.json({ error: "Не вказано центр" }, { status: 400 });
+  const parsed = await parseBody("api/referral/access/request", req, sAccessRequest, "Не вказано центр");
+  if (!parsed.ok) return parsed.res;
+  const { clinic_id: clinicId, note } = parsed.data;
 
   const admin = createAdminClient();
 
@@ -48,7 +52,7 @@ export async function POST(req: Request) {
       .from("referral_access")
       .update({ status: "pending_clinic", initiated_by: user.id, note, decided_at: null })
       .eq("id", existing.id);
-    if (uErr) return NextResponse.json({ error: "Помилка оновлення запиту: " + uErr.message }, { status: 400 });
+    if (uErr) return NextResponse.json({ error: safeDbError("api/referral/access/request.update", uErr) }, { status: 400 });
     return NextResponse.json({ ok: true, id: existing.id, status: "pending_clinic" });
   }
 
@@ -57,7 +61,7 @@ export async function POST(req: Request) {
     .insert({ referrer_id: user.id, clinic_id: clinicId, status: "pending_clinic", policy: "direct", initiated_by: user.id, note })
     .select("id")
     .single();
-  if (iErr) return NextResponse.json({ error: "Помилка створення запиту: " + iErr.message }, { status: 400 });
+  if (iErr) return NextResponse.json({ error: safeDbError("api/referral/access/request.insert", iErr) }, { status: 400 });
 
   return NextResponse.json({ ok: true, id: created.id, status: "pending_clinic" });
 }

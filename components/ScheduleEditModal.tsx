@@ -30,6 +30,19 @@ interface ScheduleEditModalProps {
 }
 
 function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+
+/* Нормалізація часу до канону "HH:MM" (сервер тепер вимагає саме його — zTime, M-1).
+   `<input type="time">` у деяких браузерах віддає "9:05" або "", а в rooms.schedule
+   можуть лежати легасі-значення. Раніше таке мовчки їхало в JSONB, і сітка слотів
+   на цю дату просто зникала. Повертає "" для нерозбірного значення. */
+function normHM(v: string | null | undefined): string {
+  const m = String(v ?? "").trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return "";
+  const h = Number(m[1]), mi = Number(m[2]);
+  if (h > 23 || mi > 59) return "";
+  return String(h).padStart(2, "0") + ":" + m[2];
+}
+const hoursOk = (s: string, e: string) => !!s && !!e && s < e;
 function fmtShort(d: Date) {
   const MON = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
   return d.getDate() + " " + MON[d.getMonth()];
@@ -73,16 +86,30 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
     const ro: OverrideBuild["rooms"] = {};
     (rooms || []).forEach((r) => {
       const st = roomState[r.id];
-      const vb = st.breaks.filter((b) => b.start && b.end && b.start < b.end);
+      // Години нормалізуємо до "HH:MM"; невалідні перерви відкидаємо (як і раніше).
+      const start = normHM(st.start), end = normHM(st.end);
+      const vb = st.breaks
+        .map((b) => ({ start: normHM(b.start), end: normHM(b.end) }))
+        .filter((b) => hoursOk(b.start, b.end));
       const baseClosed = baseClosedOf(r);
       if (st.mode === "closed") { if (!baseClosed) ro[r.id] = { closed: true }; }
-      else if (st.mode === "custom") { ro[r.id] = { start: st.start, end: st.end, ...(vb.length ? { breaks: vb } : {}) }; }
-      else { if (baseClosed) ro[r.id] = { start: st.start, end: st.end }; } // «Працює» всупереч базовому графіку
+      else if (st.mode === "custom") { ro[r.id] = { start, end, ...(vb.length ? { breaks: vb } : {}) }; }
+      else { if (baseClosed) ro[r.id] = { start, end }; } // «Працює» всупереч базовому графіку
     });
     const o: OverrideBuild = { all_closed: false, rooms: ro };
     if (label.trim()) o.label = label.trim();
     return o;
   }
+
+  /* Кабінети з битими годинами (порожнє поле, «18:00–08:00»). Раніше такі значення
+     мовчки зберігались, і сітка слотів на цю дату зникала; тепер їх ще й відхилить
+     сервер (zTime + start < end), тож блокуємо «Зберегти» і кажемо, ЩО не так. */
+  const badRooms = allClosed ? [] : (rooms || []).filter((r) => {
+    const st = roomState[r.id];
+    if (!st || st.mode === "closed") return false;
+    if (st.mode === "open" && !baseClosedOf(r)) return false;   // override не пишеться
+    return !hoursOk(normHM(st.start), normHM(st.end));
+  });
 
   // Записи, яких торкнеться закриття/зміна (scheduled/waiting у кабінетах, що закриваються).
   const previewOv = buildOv();
@@ -168,6 +195,13 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
             </div>
           )}
 
+          {badRooms.length > 0 && (
+            <div className="ctx-hint red sch-affected">
+              <div className="sch-aff-head">⚠ Некоректні години: {badRooms.map((r) => r.name).join(", ")}</div>
+              <div className="sch-aff-sub">Вкажіть початок і кінець у форматі ГГ:ХХ, кінець — пізніше за початок.</div>
+            </div>
+          )}
+
           {affected.length > 0 && (
             <div className="ctx-hint red sch-affected">
               <div className="sch-aff-head">⚠ На цю дату вже заплановано {affected.length} {affected.length === 1 ? "запис" : "записів"} у кабінетах, що закриваються.</div>
@@ -181,7 +215,12 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
             : <span className="sch-foot-sp" style={{ marginRight: "auto" }} />}
           <div className="sch-foot-r" style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
             <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
-            <button className="btn btn-primary" onClick={() => onSave(buildOv())}>✓ Зберегти графік</button>
+            <button
+              className="btn btn-primary"
+              disabled={badRooms.length > 0}
+              title={badRooms.length ? "Перевірте години: " + badRooms.map((r) => r.name).join(", ") + " — кінець має бути пізніше за початок" : undefined}
+              onClick={() => onSave(buildOv())}
+            >✓ Зберегти графік</button>
           </div>
         </div>
       </div>

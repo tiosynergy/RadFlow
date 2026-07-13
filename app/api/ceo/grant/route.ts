@@ -1,6 +1,18 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
+import { parseBody } from "@/lib/validationHttp";
+import { safeDbError, zLogin, zOptEmail, zOptText } from "@/lib/validation";
+
+// ПІБ і телефон обовʼязкові лише для НОВОГО CEO-акаунта (перевірка нижче).
+const sGrant = z.object({
+  login: zLogin,
+  full_name: zOptText(200),
+  phone: zOptText(32),
+  email: zOptEmail,
+  note: zOptText(2000),
+});
 
 // POST /api/ceo/grant
 // Адмін центру призначає роль CEO (керівник з аналітикою) — новому користувачу
@@ -17,19 +29,14 @@ export async function POST(req: Request) {
   if (!gate.ok) return gate.res;
   const { user, me } = gate;
 
-  const body = await req.json().catch(() => ({}));
-  const login = String(body.login || "").trim();
-  const fullName = String(body.full_name || "").trim();
-  const phone = String(body.phone || "").trim();
-  const emailRaw = String(body.email || "").trim().toLowerCase();
-  const note = String(body.note || "").trim() || null;
+  const parsed = await parseBody("api/ceo/grant", req, sGrant, "Вкажіть логін керівника (і коректний email)");
+  if (!parsed.ok) return parsed.res;
+  const { login, note } = parsed.data;
+  const fullName = parsed.data.full_name ?? "";
+  const phone = parsed.data.phone ?? "";
 
-  if (!login) return NextResponse.json({ error: "Вкажіть логін керівника" }, { status: 400 });
-  if (emailRaw && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailRaw)) {
-    return NextResponse.json({ error: "Некоректний email" }, { status: 400 });
-  }
   const loginSan = login.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "") || "user";
-  const effectiveEmail = emailRaw || (loginSan + "@ceo.radflow.local");
+  const effectiveEmail = parsed.data.email || (loginSan + "@ceo.radflow.local");
 
   const admin = createAdminClient();
 
@@ -69,7 +76,7 @@ export async function POST(req: Request) {
     if (cErr || !created?.user) {
       const msg = cErr?.message || "";
       return NextResponse.json(
-        { error: /registered|already|exists/i.test(msg) ? "Email вже використовується" : "Помилка створення акаунта: " + msg },
+        { error: /registered|already|exists/i.test(msg) ? "Email вже використовується" : safeDbError("api/ceo/grant.createUser", cErr) },
         { status: 400 }
       );
     }
@@ -82,7 +89,7 @@ export async function POST(req: Request) {
     if (pErr) {
       await admin.auth.admin.deleteUser(ceoId); // відкат
       return NextResponse.json(
-        { error: /login/i.test(pErr.message) && /unique|duplicate/i.test(pErr.message) ? "Логін вже зайнятий" : "Помилка створення профілю: " + pErr.message },
+        { error: /login/i.test(pErr.message) && /unique|duplicate/i.test(pErr.message) ? "Логін вже зайнятий" : safeDbError("api/ceo/grant.profile", pErr) },
         { status: 400 }
       );
     }
@@ -105,7 +112,7 @@ export async function POST(req: Request) {
     const { error: iErr } = await admin
       .from("ceo_access")
       .insert({ ceo_id: ceoId, clinic_id: me.clinic_id, status: "active", granted_by: user.id, note });
-    if (iErr) return NextResponse.json({ error: "Помилка призначення доступу: " + iErr.message }, { status: 400 });
+    if (iErr) return NextResponse.json({ error: safeDbError("api/ceo/grant.access", iErr) }, { status: 400 });
   }
 
   return NextResponse.json({ ok: true, created_account: createdAccount, login, invite_token: inviteToken });

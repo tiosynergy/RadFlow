@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
+import { parseBody } from "@/lib/validationHttp";
+import { safeDbError, zUuid, zPassword } from "@/lib/validation";
+
+/* M-12. action="set" вимагає пароль (мін. 8) — раніше це перевірялось окремим if
+   уже після звернень до БД; тепер контракт «set ⇒ є пароль» тримає схема. */
+const sPassword = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("set"), userId: zUuid, password: zPassword }),
+  z.object({ action: z.literal("reset"), userId: zUuid }),
+]);
 
 // POST /api/staff/password — адміністратор керує паролем співробітника.
 //  action="set"   — задати конкретний пароль (password у тілі), password_set=true.
@@ -13,10 +23,9 @@ export async function POST(req: Request) {
   if (!gate.ok) return gate.res;
   const { me } = gate;
 
-  const body = await req.json().catch(() => ({}));
-  const targetId = String(body.userId || "");
-  const action = body.action === "set" ? "set" : "reset";
-  if (!targetId) return NextResponse.json({ error: "Не вказано користувача" }, { status: 400 });
+  const parsed = await parseBody("api/staff/password", req, sPassword, "Некоректний запит (перевірте пароль: мінімум 8 символів)");
+  if (!parsed.ok) return parsed.res;
+  const targetId = parsed.data.userId;
 
   const admin = createAdminClient();
   const { data: target } = await admin.from("profiles").select("clinic_id, role").eq("id", targetId).single();
@@ -54,9 +63,8 @@ export async function POST(req: Request) {
   let newPass: string;
   let passwordSet: boolean;
   let inviteToken: string | null = null;
-  if (action === "set") {
-    newPass = String(body.password || "");
-    if (newPass.length < 8) return NextResponse.json({ error: "Пароль мінімум 8 символів" }, { status: 400 });
+  if (parsed.data.action === "set") {
+    newPass = parsed.data.password;
     passwordSet = true; // пароль задано вручну — токен більше не потрібен
   } else {
     newPass = "Rf!" + crypto.randomUUID().replace(/-/g, "");
@@ -66,7 +74,7 @@ export async function POST(req: Request) {
   }
 
   const { error: uErr } = await admin.auth.admin.updateUserById(targetId, { password: newPass });
-  if (uErr) return NextResponse.json({ error: "Помилка зміни пароля: " + uErr.message }, { status: 400 });
+  if (uErr) return NextResponse.json({ error: safeDbError("api/staff/password", uErr) }, { status: 400 });
   await admin.from("profiles").update({ password_set: passwordSet, invite_token: inviteToken }).eq("id", targetId);
 
   return NextResponse.json({ ok: true, invite_token: inviteToken });
