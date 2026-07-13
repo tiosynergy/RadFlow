@@ -320,7 +320,9 @@ try { await deliverPendingOutbox(20); } catch { /* backstop — cron */ }
 **Evidence:** `lib/outbox.ts:46-62` — до 20 событий **последовательно**, `fetch(url, {...})` **без `signal`/таймаута** (Node fetch по умолчанию не имеет таймаута); вызывается `await deliverPendingOutbox(20)` прямо в `emergencyStop`.
 **Риск:** самый критичный по времени сценарий (аппарат сломался, пациенты ждут) ждёт медленный n8n; функция Vercel падает по `maxDuration`, оператор видит ошибку — **хотя БД уже закоммитила остановку**. «Успешная операция выглядит как провал» → оператор жмёт ещё раз.
 
-### 🟡 M-11. Middleware без `try/catch` вокруг `getUser()`
+### 🟡 M-11. Middleware без `try/catch` вокруг `getUser()` *(✅ закрыто 2026-07-12 — воспроизвелось вживую)*
+
+> **Наблюдалось в проде-деве:** инцидент на стороне Supabase → `_refreshAccessToken` → `TypeError: fetch failed` в middleware. Теперь `getUser()` обёрнут в `try/catch` с fail-closed деградацией (нет сессии → защищённые страницы редиректят на `/login`, публичные работают). Без этого throw ронял **весь matcher, включая `/login`** — пользователь не мог даже перезайти.
 
 `lib/supabase/middleware.ts:63-65`. Штатно supabase-js возвращает `{data:{user:null}, error}` (fail-closed редирект на `/login` — приемлемо), но при неожиданном throw (DNS-сбой в edge-рантайме) 500 придёт **на весь matcher, включая `/login`** — сайт целиком недоступен.
 

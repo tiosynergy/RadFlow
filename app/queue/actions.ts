@@ -90,8 +90,9 @@ const PAST_ERR = { ok: false as const, error: "Цей час уже минув �
 
    Правила ті самі, що в сітці: пріоритет override на дату → базовий графік
    кабінету; саме ДОСЛІДЖЕННЯ має вміститись до кінця графіка (буфер прибирання
-   може виходити за межі — так само, як у computeCallBlock). Перерви кабінету тут
-   НЕ перевіряємо (їх тримає клієнт + тригери зайнятості) — свідоме спрощення. */
+   може виходити за межі — так само, як у computeCallBlock). Перерви кабінету
+   перевіряє crossesRoomBreak — обидва гарди зібрані в scheduleBlock(), і всі
+   write-шляхи ходять через нього. */
 async function isOutsideRoomSchedule(
   supabase: SupabaseClient<Database>,
   roomId: string,
@@ -137,7 +138,19 @@ const SCHED_READ_ERR = {
   code: "generic" as const,
 };
 
-/** Гард графіка для write-шляхів: null = можна писати, інакше — готова відповідь клієнту. */
+const BREAK_ERR = {
+  ok: false as const,
+  error: "Дослідження перетинає перерву в роботі кабінету — оберіть інший слот",
+  code: "off_schedule" as const,
+};
+
+/* Гард графіка ДЛЯ ВСІХ write-шляхів: null = можна писати, інакше — готова відповідь.
+   Перевіряє і межі графіка, і ПЕРЕРВИ кабінету (обід тощо, rooms.schedule.breaks[]).
+   Раніше перерви перевіряв лише editQueueEntryStudies, а createBooking /
+   createReferralBooking / rescheduleQueueEntry — ні: клієнт малює перерву закритою,
+   але застаріла вкладка, прямий виклик Server Action або направник зі старою сіткою
+   садили пацієнта в обід. У БД цього інваріанта теж немає (breaks живуть у JSONB,
+   тригера на них немає) — тож сервер тут єдиний рубіж. */
 async function scheduleBlock(
   supabase: SupabaseClient<Database>,
   roomId: string,
@@ -149,6 +162,9 @@ async function scheduleBlock(
   try {
     if (await isOutsideRoomSchedule(supabase, roomId, clinicId, scheduledDate, scheduledTime, durationMin)) {
       return OFF_SCHED_ERR;
+    }
+    if (await crossesRoomBreak(supabase, roomId, clinicId, scheduledDate, scheduledTime, durationMin)) {
+      return BREAK_ERR;
     }
     return null;
   } catch {
