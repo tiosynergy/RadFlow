@@ -29,6 +29,12 @@ async function handle(req: Request) {
     return NextResponse.json({ error: "forbidden" }, { status: 401 });
   }
   const res = await deliverPendingOutbox(50);
+  /* Проблема КОНФІГУРАЦІЇ (немає HMAC-секрета / не https) — це не «ok»: payload
+     містить ПІБ і телефони пацієнтів, доставку зупинено, події копляться. Віддаємо
+     5xx, щоб cron/моніторинг це побачив, а не рахував тихий no-op успіхом. */
+  if (res.skipped === "missing_secret" || res.skipped === "insecure_transport" || res.skipped === "invalid_url") {
+    return NextResponse.json({ error: "outbox_config", reason: res.skipped }, { status: 500 });
+  }
   return NextResponse.json({ ok: true, ...res });
 }
 

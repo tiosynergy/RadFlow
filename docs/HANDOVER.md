@@ -1,7 +1,9 @@
 # RadFlow — Handover для новой сессии
 
-**Дата:** 2026-07-12 · **Ветка:** `dev` · **PROD:** БД на `0066` (0061–0066 применены владельцем 2026-07-12); код `main` ещё старый — мердж `dev → main` разблокирован.
-⚠️ Код в `dev` требует БД ≥ 0066 (`event_outbox.next_attempt_at/dead`, RPC `submit_incident_rpc`). Порядок соблюдён: миграции уже накачены. Плюс в БД живут cron-джобы (`supabase/cron_jobs.sql`): `sink-overdue`, `resolve-expired-incidents`, ретенция `audit_log`/`event_outbox`/`rate_limits`. `outbox-deliver` — закомментирован до появления n8n.
+**Дата:** 2026-07-12 · **Ветка:** `dev` · **PROD:** БД на `0068` (0061–0068 применены владельцем 2026-07-12); код `main` ещё старый — мердж `dev → main` разблокирован.
+⚠️ Код в `dev` требует БД ≥ 0068 (`event_outbox.next_attempt_at/dead`, RPC `submit_incident_rpc`, триггеры перерывов/overlap). Порядок соблюдён: миграции уже накачены. Плюс в БД живут cron-джобы (`supabase/cron_jobs.sql`): `sink-overdue`, `resolve-expired-incidents`, ретенция `audit_log`/`event_outbox`/`rate_limits`. `outbox-deliver` — закомментирован до появления n8n.
+
+**Инварианты, которые теперь держит БД** (не полагаться на клиент): анти-овербукинг с буфером (`check_no_overlap`, 0064/0068 — включая продление `in_progress`), простои (`check_not_during_incident`), **перерывы кабинета** (`check_not_during_break`, 0067), запрет прошлого (0063), `duration_min` и окно простоя (0066), `room_id ∈ clinic_id` (0064), роль/клиника в `profiles` (0064).
 **Источник правды по продукту:** [`docs/PRODUCT_OVERVIEW.md`](PRODUCT_OVERVIEW.md) — описывает RadFlow *как он реализован*.
 Этот файл — надстройка: что изменилось, где что лежит, чего не делать и с чего начать.
 
