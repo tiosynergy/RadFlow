@@ -85,9 +85,10 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
 
   function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 
+  // Повертає ТЕКСТ помилки — BookingModal покаже його в собі (тост тонув під оверлеєм).
   async function saveBooking(b: BookingPayload) {
     const wl = bookFor;
-    if (!wl) return;
+    if (!wl) return null;
     const [hh, mm] = b.time.split(":").map(Number);
     const at = new Date(b.date.getFullYear(), b.date.getMonth(), b.date.getDate(), hh, mm).toISOString();
     const res = await createBooking({
@@ -99,11 +100,10 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
       scheduledDate: dateKey(b.date), scheduledTime: b.time, scheduledAt: at,
     });
     if (!res.ok) {
-      onError?.(res.code === "slot_taken" || res.code === "slot_unavailable"
+      return (res.code === "slot_taken" || res.code === "slot_unavailable")
         ? "Слот щойно зайняли — оберіть інший час"
         : res.code === "incident" ? "Кабінет у простої у цей час — оберіть інший слот"
-        : "Помилка запису: " + res.error);
-      return;
+        : res.error;
     }
     /* Результат ДРУГОЇ операції не можна ігнорувати: запис у черзі вже створено,
        і якщо лист не оновився (кандидата встиг узяти інший адміністратор — CAS
@@ -121,6 +121,7 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
       onBooked?.("Записано з листа очікування: " + b.name + " · " + b.time);
     }
     onClose();
+    return null;   // запис створено
   }
 
   const bookPrefill: BookingPrefill | null = bookFor ? {

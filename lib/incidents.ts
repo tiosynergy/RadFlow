@@ -118,6 +118,31 @@ export function wallMinOfInstant(iso: string | null | undefined, tz?: string): n
   }
 }
 
+/* РЕАЛЬНЫЙ инстант (in_progress_at) → «настенные» мс в зоне клиники — тот же фрейм,
+   что wallInstant(date,time). Нужно там, где занятость кабинета сравнивается
+   СКВОЗЬ СУТКИ: wallMinOfInstant даёт только минуты дня и теряет дату, поэтому
+   исследование, начатое в 23:30 и перешедшее полночь, в минутах дня не выражается
+   (вылезает за 1440). Канон совпадает с check_no_overlap (0068), который сравнивает
+   абсолютные tstzrange. */
+export function wallInstantOf(iso: string | null | undefined, tz?: string): number | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const zone = tz || _clinicTz;
+  if (!zone) return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds());
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone, hourCycle: "h23",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    }).formatToParts(d);
+    const g = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+    return Date.UTC(g("year"), g("month") - 1, g("day"), g("hour"), g("minute"), g("second"));
+  } catch {
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds());
+  }
+}
+
 // Блокирует ли инцидент кабинет в момент ms (ms — настенный, из wallNow/wallInstant).
 export function incidentActiveAt(inc: IncidentLike | null | undefined, ms: number): boolean {
   if (!inc) return false;

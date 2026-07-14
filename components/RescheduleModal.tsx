@@ -26,7 +26,12 @@ interface RescheduleModalProps {
   clinicTz?: string | null; // TZ центру запису (для «зараз» у мультиклінічному порталі)
   incidents?: IncidentLike[];
   onClose: () => void;
-  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) => void;
+  /* Повертає ТЕКСТ ПОМИЛКИ (або null, якщо перенесено) — див. коментар у BookingModal:
+     тост із помилкою малювався ПІД оверлеєм, і відмова сервера виглядала як «нічого
+     не сталося». Тут це критичніше: без блокування кнопки подвійний клік проходив
+     ДВІЧІ (M-6), і другий виклик перезаписував reschedule_origin знімком уже нового
+     слота — історія переносу псувалась. */
+  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) => Promise<string | null> | void;
 }
 
 function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
@@ -178,6 +183,24 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, slotsLoading, stillFree]);
 
+  // Запит у польоті + помилка сервера — показуємо в модалці (див. onConfirm).
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+
+  async function handleConfirm() {
+    if (!valid || saving) return;   // M-6: подвійний клік більше не переносить двічі
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      const err = await onConfirm({ roomId, date: dateObj, time, dur, buffer, reason: reason.trim() });
+      if (err) setSaveErr(err);     // успіх → батько закриває модалку
+    } catch {
+      setSaveErr("Не вдалося перенести запис — спробуйте ще раз");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="overlay">
       <div className="dialog fade-in" style={{ maxWidth: 520 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Перенесення запису">
@@ -252,12 +275,16 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
             </div>
           </div>
         </div>
+        {saveErr && <div className="dlg-err" role="alert">⚠ {saveErr}</div>}
+
         <div className="dlg-foot">
           {valid
             ? <span className="bk-summary">{room ? room.name : ""} · {dateStr} {time}–{fmt(toMin(time) + dur)}{buffer > 0 ? " (+" + buffer + " хв буфер → вільно з " + fmt(toMin(time) + dur + buffer) + ")" : ""}</span>
             : <span style={{ fontSize: 12, color: "var(--text-faint)", marginRight: "auto", alignSelf: "center" }}>Оберіть кабінет, дату та слот</span>}
-          <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
-          <button className="btn btn-primary" disabled={!valid} onClick={() => onConfirm({ roomId, date: dateObj, time, dur, buffer, reason: reason.trim() })}>✓ Перенести на цей слот</button>
+          <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Скасувати</button>
+          <button className="btn btn-primary" disabled={!valid || saving} onClick={handleConfirm}>
+            {saving ? "Перенесення…" : "✓ Перенести на цей слот"}
+          </button>
         </div>
       </div>
     </div>

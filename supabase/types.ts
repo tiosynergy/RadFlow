@@ -960,12 +960,20 @@ export type Database = {
       };
       room_busy_slots: {
         Args: { p_room: string; p_date: string; p_exclude?: string };
-        // status/patient_name/studies — лише для admin/radiologist цього центру (0062),
-        // для реєстратора та направника NULL (знеособлена зайнятість).
+        /* status/patient_name/studies — лише для admin/radiologist цього центру (0062),
+           для реєстратора та направника NULL (знеособлена зайнятість).
+           0074: рядки вибираються за ФАКТИЧНИМ вікном зайнятості (in_progress —
+           від in_progress_at), тож сюди потрапляють і «хвости» з попередньої доби.
+           Вікно ОБРІЗАНЕ по запитаній добі: *_min — хвилини від 00:00 (0..1440),
+           а scheduled_time/duration_min/buffer_time_min — те саме вікно у старому
+           вигляді (duration_min може бути 0, якщо в добу зайшов лише буфер). */
         Returns: {
           scheduled_time: string;
           duration_min: number;
           buffer_time_min: number;
+          start_min: number;
+          end_study_min: number;
+          end_min: number;
           status: string | null;
           patient_name: string | null;
           studies: Json | null;

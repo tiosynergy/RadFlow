@@ -1128,29 +1128,27 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
   }
 
   const openReschedule = (p: QEntry) => setReschedFor(p);
+  /* Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
+     Виняток — 'stale': переносити вже нічого (запис завершено/скасовано), модалку
+     закриваємо і синхронізуємо дошку. */
   async function doReschedule({ roomId, date, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
     const p = reschedFor;
-    if (!p) return;
+    if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
     const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason });
     if (!res.ok) {
-      if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
-      // Модалка лишається відкритою — хай оберуть інший час.
-      if (res.code === "past" || res.code === "off_schedule") { notify(res.error, "error"); return; }
-      // Запис уже завершено/скасовано — переносити нічого (раніше патч воскрешав його).
-      if (res.code === "stale") { setReschedFor(null); handledStale(res); return; }
-      setReschedFor(null);
-      const msg = res.code === "incident"
-        ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день"
-        : res.code === "slot_unavailable" ? "Слот зайнятий — оберіть інший"
-        : "Помилка переносу: " + res.error;
-      notify(msg, "error");
-      return;
+      if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
+      reload();   // сітка модалки підтягне свіжу зайнятість
+      return (res.code === "slot_taken" || res.code === "slot_unavailable")
+        ? "Слот щойно зайняли — оберіть інший"
+        : res.code === "incident" ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день"
+        : res.error;
     }
     setReschedFor(null);
     notify("Перенесено на " + fmtShort(date) + " " + time, "success");
     reload();
+    return null;
   }
 
   /* Колізія: перенос Б в один клік на слот, запропонований CollisionPanel.
@@ -1258,16 +1256,18 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
       scheduledDate: dateKey(b.date), scheduledTime: b.time, scheduledAt: at,
     });
     if (!res.ok) {
-      const msg = (res.code === "slot_taken" || res.code === "slot_unavailable")
-        ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час"
+      /* Помилку ПОВЕРТАЄМО модалці — вона покаже її в собі. Раніше тут був notify(),
+         а тост малювався ПІД оверлеєм: користувач тиснув «Зберегти» і не бачив нічого. */
+      reload();   // сітка модалки підтягне свіжу зайнятість (слот міг щойно зайняти колега)
+      return (res.code === "slot_taken" || res.code === "slot_unavailable")
+        ? "Слот щойно зайняли — оберіть інший час"
         : res.code === "incident" ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день"
-        : "Помилка збереження: " + res.error;
-      notify(msg, "error");
-      return;
+        : res.error;
     }
     setModalOpen(false);
     notify("Новий запис: " + b.name + " · " + b.time, "success");
     if (sameDay(b.date, selectedDate)) reload();
+    return null;
   }
 
   const scoped = roomView === "all" ? entries : entries.filter((e) => e.room_id === roomView);

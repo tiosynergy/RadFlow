@@ -21,10 +21,10 @@ import { roomScheduleFor, effectiveRoomBreaks, type DayOverride, type Break } fr
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallInstant, type IncidentLike } from "@/lib/incidents";
 import { firstFittingSlot, slotToMin, type BusySpan } from "@/lib/slots";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
+import type { BusyRow } from "@/lib/slotBusy";   // 0074: рядок room_busy_slots — один тип на всіх
 import type { CollisionInfo } from "@/lib/queueStatus";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
-type BusyRow = { scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null };
 type PanelEntry = {
   id: string;
   room_id: string | null;
@@ -96,12 +96,16 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
           // пропонувала слот ПОВЕРХ чужого запису. PostgREST не кидає сам.
           const { data, error: busyError } = await supabase.rpc("room_busy_slots", { p_room: r.id, p_date: dateStr, p_exclude: entry.id });
           if (busyError) throw busyError;
+          /* 0074: беремо вікно, ОБРІЗАНЕ по добі (start_min/end_min) — інакше
+             «хвіст» дослідження, що почалося вчора й перетнуло опівніч, панель
+             не бачила б і пропонувала слот поверх зайнятого кабінету. */
           const busy: BusySpan[] = ((data || []) as BusyRow[])
-            .filter((b) => b.scheduled_time)
             .map((b) => {
-              const s = slotToMin(String(b.scheduled_time));
-              return { s, e: s + (b.duration_min || 30) + normBuffer(b.buffer_time_min ?? BUFFER_DEFAULT) };
-            });
+              if (b.start_min != null && b.end_min != null) return { s: b.start_min, e: b.end_min };
+              const s = slotToMin(String(b.scheduled_time ?? ""));
+              return { s, e: s + (b.duration_min ?? 30) + normBuffer(b.buffer_time_min ?? BUFFER_DEFAULT) };
+            })
+            .filter((b) => b.e > b.s);
           /* Простої кабінету (поломка/ТО/аварійна зупинка) — теж зайнятість.
              Час інциденту — «настінний UTC» (як і слоти), тому переводимо у хвилини
              доби ЧЕРЕЗ ДАТУ дошки і клампимо до меж дня: у incidents прилітають і

@@ -19,7 +19,7 @@ import type { Database, Json, QueueStatus, CallStatus, TablesUpdate } from "@/su
 import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
-import { wallNow, wallInstant, wallDayKey, wallMinOfInstant } from "@/lib/incidents";
+import { wallNow, wallInstant, wallDayKey, wallInstantOf } from "@/lib/incidents";
 import { roomScheduleFor, effectiveRoomBreaks, overlapsBreak, type DayOverride } from "@/lib/schedule";
 import {
   parseInput, safeDbError, zUuid, zDateKey, zTime, zIsoInstant, zName, zOptText, zOptEmail,
@@ -239,11 +239,6 @@ const BREAK_ERR = {
   code: "off_schedule" as const,
 };
 
-/** "HH:MM" → хвилини від початку доби. */
-function toMinOfDay(t: string | null | undefined): number {
-  const [h, m] = String(t || "0:0").split(":").map(Number);
-  return (h || 0) * 60 + (m || 0);
-}
 
 /* Гард графіка ДЛЯ ВСІХ write-шляхів: null = можна писати, інакше — готова відповідь.
    Перевіряє і межі графіка, і ПЕРЕРВИ кабінету (обід тощо, rooms.schedule.breaks[]).
@@ -672,30 +667,62 @@ export async function resolveEmergency(input: { roomIds: string[] }): Promise<Re
   return { ok: true, resolved: data?.length ?? 0 };
 }
 
-// Мягкая пред-проверка пересечения слота (жёсткую гарантию даёт DB-триггер
-// check_no_overlap). startMin/endMin — минуты от начала суток.
+/** "YYYY-MM-DD" ± n діб (у настінному календарі, без TZ-арифметики). */
+function shiftDayKey(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const t = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  t.setUTCDate(t.getUTCDate() + days);
+  return t.toISOString().slice(0, 10);
+}
+
+/* Мʼяка пред-перевірка перетину слота (жорстку гарантію дає тригер check_no_overlap).
+
+   ЧОМУ АБСОЛЮТНІ МС, А НЕ ХВИЛИНИ ДОБИ (фікс 2026-07-14).
+   Раніше перевірка брала лише записи `scheduled_date = scheduledDate` і рахувала
+   хвилини від початку доби. Але зайнятість кабінету для in_progress рахується від
+   ФАКТИЧНОГО старту (канон 0060), і дослідження, розпочате пізно ввечері, займає
+   кабінет уже в НАСТУПНІЙ добі. Такий «хвіст» ця перевірка не бачила:
+     • сітка малювала слот вільним (та сама діра була в room_busy_slots — 0074);
+     • тригер (порівнює абсолютні tstzrange) бронь відхиляв → «слот зелений, але
+       незаписуваний».
+   Тепер критерій той самий, що в БД: перетин АБСОЛЮТНИХ настінних інтервалів,
+   вибірка — сусідні доби (±1; довший хвіст неможливий: duration_min ≤ 480). */
 async function hasSlotClash(
   supabase: SupabaseClient<Database>,
   roomId: string,
+  clinicId: string,
   scheduledDate: string,
-  startMin: number,
-  endMin: number,
+  startMs: number,   // настінні мс (wallInstant) початку нового вікна
+  endMs: number,     // …і кінця (дослідження + буфер)
   excludeId?: string
 ): Promise<boolean> {
+  const tz = await clinicTz(supabase, clinicId);
+  /* Сусідні доби (±1) — лише для ПЛАНОВИХ рядків: довший хвіст неможливий
+     (duration_min ≤ 480, буфер ≤ 15). in_progress за датою НЕ фільтруємо: його
+     вікно прив'язане до in_progress_at, а не до scheduled_date (прострочений запис
+     можна завести в кабінет через кілька днів). Тригер 0068 теж не фільтрує за
+     датою — розбіжність повернула б «зелений, але незаписуваний слот». */
   const { data } = await supabase
     .from("queue_entries")
-    .select("id, scheduled_time, duration_min, buffer_time_min")
+    .select("id, status, scheduled_date, scheduled_time, duration_min, buffer_time_min, in_progress_at")
     .eq("room_id", roomId)
-    .eq("scheduled_date", scheduledDate)
+    .or(
+      `and(scheduled_date.gte.${shiftDayKey(scheduledDate, -1)},scheduled_date.lte.${shiftDayKey(scheduledDate, 1)}),` +
+      `and(status.eq.in_progress,in_progress_at.not.is.null)`
+    )
     .neq("status", "cancelled")
     .neq("status", "no_show")
     .neq("status", "not_held");
+
   return (data || []).some((q) => {
     if (excludeId && q.id === excludeId) return false;
-    const [qh, qm] = String(q.scheduled_time || "0:0").split(":").map(Number);
-    const qs = (qh || 0) * 60 + (qm || 0);
-    // Ефективна зайнятість наявного запису = тривалість + його буфер.
-    return qs < endMin && startMin < qs + (q.duration_min || 30) + (q.buffer_time_min ?? BUFFER_DEFAULT);
+    if (q.duration_min == null) return false;
+    const qStart = q.status === "in_progress" && q.in_progress_at
+      ? wallInstantOf(q.in_progress_at, tz)                        // фактичний старт
+      : wallInstant(q.scheduled_date ?? "", q.scheduled_time ?? ""); // плановий слот
+    if (qStart == null || !isFinite(qStart)) return false;
+    const qEnd = qStart + (q.duration_min + normBuffer(q.buffer_time_min ?? BUFFER_DEFAULT)) * 60000;
+    return qStart < endMs && startMs < qEnd;
   });
 }
 
@@ -817,21 +844,28 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
   const { data: cur } = await supabase.from("queue_entries")
     .select("status, scheduled_date, scheduled_time, room_id, clinic_id")
     .eq("id", input.id).maybeSingle();
+  /* Рядок не видно під RLS (чужа клініка / не свій запис направника) або він без
+     клініки — далі йти нема сенсу. Раніше при cur=null МОВЧКИ пропускались усі три
+     мʼякі перевірки (минуле / графік / перетин), і користувач отримував не підказку,
+     а мапінг сирої помилки тригера. Дірки в безпеці не було (авторизація — в RPC),
+     але поведінка була неохайною. */
+  if (!cur?.clinic_id) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  const clinicId = cur.clinic_id;
   const reason = (input.reason || "").trim();
 
   /* Перенести в МИНУЛЕ не можна — жодною роллю. Клієнтський гейт тут не працював
      (isToday=false → перевірка "past" пропускалась), тому це і є основна діра. */
-  if (cur?.clinic_id && await isPastSlot(supabase, cur.clinic_id, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
-  if (cur?.clinic_id) {
-    const blocked = await scheduleBlock(supabase, input.roomId, cur.clinic_id, input.scheduledDate, input.scheduledTime, input.durationMin);
+  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  {
+    const blocked = await scheduleBlock(supabase, input.roomId, clinicId, input.scheduledDate, input.scheduledTime, input.durationMin);
     if (blocked) return blocked;
   }
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
-  const [hh, mm] = input.scheduledTime.split(":").map(Number);
-  const startMin = (hh || 0) * 60 + (mm || 0);
-  const endMin = startMin + (input.durationMin || 30) + bufferMin;
-  if (await hasSlotClash(supabase, input.roomId, input.scheduledDate, startMin, endMin, input.id)) {
+  // Абсолютні настінні мс (не хвилини доби): вікно може перетнути опівніч.
+  const startMs = wallInstant(input.scheduledDate, input.scheduledTime);
+  const endMs = startMs + (input.durationMin + bufferMin) * 60000;
+  if (await hasSlotClash(supabase, input.roomId, clinicId, input.scheduledDate, startMs, endMs, input.id)) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 
@@ -920,10 +954,11 @@ export async function editQueueEntryStudies(
        Клієнтський capByNext не гарантія: у StudyEditModal він Infinity, поки
        вантажиться зайнятість, а застаріла вкладка не знає про сусіда взагалі. */
     const newBuf = bufferTimeMin != null ? normBuffer(bufferTimeMin) : normBuffer(cur.buffer_time_min ?? BUFFER_DEFAULT);
-    const startMin = cur.status === "in_progress" && cur.in_progress_at
-      ? wallMinOfInstant(cur.in_progress_at, await clinicTz(supabase, cur.clinic_id)) ?? toMinOfDay(cur.scheduled_time)
-      : toMinOfDay(cur.scheduled_time);
-    if (await hasSlotClash(supabase, cur.room_id, cur.scheduled_date, startMin, startMin + dur + newBuf, id)) {
+    // Вікно — в абсолютних настінних мс: подовжене дослідження може перетнути опівніч.
+    const startMs = cur.status === "in_progress" && cur.in_progress_at
+      ? wallInstantOf(cur.in_progress_at, await clinicTz(supabase, cur.clinic_id)) ?? wallInstant(cur.scheduled_date, cur.scheduled_time)
+      : wallInstant(cur.scheduled_date, cur.scheduled_time);
+    if (await hasSlotClash(supabase, cur.room_id, cur.clinic_id, cur.scheduled_date, startMs, startMs + (dur + newBuf) * 60000, id)) {
       return { ok: false, error: "Дослідження не вміщується — далі стоїть інший запис", code: "slot_unavailable" };
     }
   }
@@ -998,10 +1033,10 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
   }
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
-  const [hh, mm] = input.scheduledTime.split(":").map(Number);
-  const startMin = (hh || 0) * 60 + (mm || 0);
-  const endMin = startMin + (input.durationMin || 30) + bufferMin;
-  if (await hasSlotClash(supabase, input.roomId, input.scheduledDate, startMin, endMin)) {
+  // Абсолютні настінні мс (не хвилини доби): вікно може перетнути опівніч.
+  const startMs = wallInstant(input.scheduledDate, input.scheduledTime);
+  const endMs = startMs + (input.durationMin + bufferMin) * 60000;
+  if (await hasSlotClash(supabase, input.roomId, clinicId, input.scheduledDate, startMs, endMs)) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 
@@ -1241,10 +1276,10 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
   }
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
-  const [hh, mm] = input.scheduledTime.split(":").map(Number);
-  const startMin = (hh || 0) * 60 + (mm || 0);
-  const endMin = startMin + (input.durationMin || 30) + bufferMin;
-  if (await hasSlotClash(supabase, input.roomId, input.scheduledDate, startMin, endMin)) {
+  // Абсолютні настінні мс (не хвилини доби): вікно може перетнути опівніч.
+  const startMs = wallInstant(input.scheduledDate, input.scheduledTime);
+  const endMs = startMs + (input.durationMin + bufferMin) * 60000;
+  if (await hasSlotClash(supabase, input.roomId, input.clinicId, input.scheduledDate, startMs, endMs)) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 

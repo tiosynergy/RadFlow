@@ -459,24 +459,25 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
     reload();
   }
 
+  // Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
   async function doReschedule({ roomId, date: d, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
     const p = reschedFor;
-    if (!p) return;
+    if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm).toISOString();
     const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed", reason });
     if (!res.ok) {
-      if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
-      if (res.code === "past" || res.code === "off_schedule") { notify(res.error, "error"); return; }
-      if (res.code === "stale") { setReschedFor(null); handledStale(res); return; }
-      setReschedFor(null);
-      const msg = res.code === "incident" ? "Кабінет у простої — оберіть інший слот" : res.code === "slot_unavailable" ? "Слот зайнятий — оберіть інший" : "Помилка переносу: " + res.error;
-      notify(msg, "error");
-      return;
+      if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
+      reload();
+      return (res.code === "slot_taken" || res.code === "slot_unavailable")
+        ? "Слот щойно зайняли — оберіть інший"
+        : res.code === "incident" ? "Кабінет у простої — оберіть інший слот"
+        : res.error;
     }
     setReschedFor(null);
     notify("Перенесено · підтверджено", "success");
     reload();
+    return null;
   }
   async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number }) {
     const p = editStudiesFor;

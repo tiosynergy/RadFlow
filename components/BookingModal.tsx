@@ -236,7 +236,13 @@ interface BookingModalProps {
   incidents?: IncidentLike[];
   prefill?: BookingPrefill | null; // напр. запис із листа очікування
   onClose: () => void;
-  onSave: (b: BookingPayload) => void;
+  /* Повертає ТЕКСТ ПОМИЛКИ (або null, якщо збережено). Раніше було `=> void`, і при
+     відмові сервера («слот щойно зайняли», перетин через опівніч тощо) модалка
+     лишалась відкритою, а тост із помилкою малювався на дошці ПІД оверлеєм
+     (z-index 100 проти 200) — користувач тиснув «Зберегти» і не бачив нічого.
+     Тепер помилку показує сама модалка. Заразом це закриває M-6: поки запит
+     у польоті, кнопка заблокована (подвійний клік більше не створює дубль). */
+  onSave: (b: BookingPayload) => Promise<string | null> | void;
 }
 
 export default function BookingModal({ rooms, clinicId, clinicTz, incidents = [], prefill, onClose, onSave }: BookingModalProps) {
@@ -505,17 +511,31 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomBusy, slotsLoading, timeBad]);
 
-  function handleSave() {
-    if (!valid) return;
+  // Запит у польоті + помилка сервера — показуємо тут, у модалці (див. onSave).
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+
+  async function handleSave() {
+    if (!valid || saving) return;   // M-6: подвійний клік не створює другий запис
     const sel = docs.find((d) => String(d.id) === String(doctorId));
-    onSave({
-      name: name.trim(), phone, email: email.trim() || null,
-      age: calcAge(dob), dob, weight: weight ? +weight : null, gender,
-      proc: combinedLabel, dur: slotDur, buffer, studies: allStudies,
-      roomId, date: bookDate, time, notes: notes.trim() || null,
-      hasContra, priority: priority as PatientPriority, doctor: sel?.name || null,
-      referrerId: sel && String(sel.id).startsWith("ref:") ? String(sel.id).slice(4) : null,
-    });
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      const err = await onSave({
+        name: name.trim(), phone, email: email.trim() || null,
+        age: calcAge(dob), dob, weight: weight ? +weight : null, gender,
+        proc: combinedLabel, dur: slotDur, buffer, studies: allStudies,
+        roomId, date: bookDate, time, notes: notes.trim() || null,
+        hasContra, priority: priority as PatientPriority, doctor: sel?.name || null,
+        referrerId: sel && String(sel.id).startsWith("ref:") ? String(sel.id).slice(4) : null,
+      });
+      // Успіх → батько закриває модалку. Помилка → лишаємось відкритими й показуємо її.
+      if (err) setSaveErr(err);
+    } catch {
+      setSaveErr("Не вдалося зберегти запис — спробуйте ще раз");
+    } finally {
+      setSaving(false);
+    }
   }
 
   const roomKeys = roomsOfType(studyType);
@@ -795,12 +815,19 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
           </div>
         </div>
 
+        {/* Помилка сервера — ТУТ, а не тостом під оверлеєм. */}
+        {saveErr && (
+          <div className="dlg-err" role="alert">⚠ {saveErr}</div>
+        )}
+
         <div className="dlg-foot">
           {valid
             ? <span className="bk-summary">{name.split(" ").slice(0, 2).join(" ")} · {allStudies.length > 1 ? allStudies.length + " досл." : primaryKind} · {room ? room.name : ""} · {fmtShort(bookDate)} {time}–{fmtMin(toMin(time) + slotDur)}</span>
             : <span className="bk-missing">{missingList.map((m, i) => <span className="bk-miss-chip" key={i}>{m}</span>)}</span>}
-          <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
-          <button className="btn btn-primary" disabled={!valid} onClick={handleSave}>Зберегти запис</button>
+          <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Скасувати</button>
+          <button className="btn btn-primary" disabled={!valid || saving} onClick={handleSave}>
+            {saving ? "Збереження…" : "Зберегти запис"}
+          </button>
         </div>
       </div>
     </div>

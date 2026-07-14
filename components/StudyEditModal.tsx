@@ -62,8 +62,15 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
         // Знеособлена зайнятість кабінету; p_exclude прибирає сам редагований запис.
         const { data } = await supabase.rpc("room_busy_slots", { p_room: patient.room_id, p_date: scheduledDate, p_exclude: patient.id });
         if (cancel) return;
+        /* Найближчий СЛІДУЮЧИЙ запис у кабінеті — щоб не подовжити дослідження
+           поверх нього. 0074: беремо start_min (обрізаний по добі); «хвости» з
+           попередньої доби мають start_min = 0 і сюди не потраплять (вони раніше
+           за наш старт) — саме те, що треба. */
         const startMin = toMin(patient.scheduled_time);
-        const ns = (data || []).map((p) => toMin(p.scheduled_time)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
+        const ns = (data || [])
+          .map((p) => (p.start_min != null ? p.start_min : toMin(p.scheduled_time)))
+          .filter((m) => m > startMin)
+          .sort((a, b) => a - b)[0];
         setNextStart(ns != null ? ns : null);
       } catch {
         // Транзієнтний збій (оновлення токена / мережа) — не рушимо модаль.

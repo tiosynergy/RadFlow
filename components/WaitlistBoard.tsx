@@ -200,9 +200,10 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
     reload();
   }
 
+  // Повертає ТЕКСТ помилки — BookingModal покаже його в собі (тост тонув під оверлеєм).
   async function saveBooking(b: BookingPayload) {
     const wl = bookFor;
-    if (!wl) return;
+    if (!wl) return null;
     const [hh, mm] = b.time.split(":").map(Number);
     const at = new Date(b.date.getFullYear(), b.date.getMonth(), b.date.getDate(), hh, mm).toISOString();
     const res = await createBooking({
@@ -214,12 +215,10 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
       scheduledDate: dateKey(b.date), scheduledTime: b.time, scheduledAt: at,
     });
     if (!res.ok) {
-      const msg = (res.code === "slot_taken" || res.code === "slot_unavailable")
+      return (res.code === "slot_taken" || res.code === "slot_unavailable")
         ? "Слот щойно зайняли — оберіть інший час"
         : res.code === "incident" ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день"
-        : "Помилка збереження: " + res.error;
-      notify(msg, "error");
-      return;
+        : res.error;
     }
     const mark = await markWaitlistScheduled(wl.id, res.id ?? null);
     // CAS: кандидата міг узяти інший адміністратор, поки модалка була відкрита.
@@ -231,6 +230,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
     else notify("Записано зі списку очікування: " + b.name + " · " + b.time, "success");
     setBookFor(null);
     reload();
+    return null;   // запис створено — модалку закриває батько
   }
 
   // Редагування даних пацієнта/досліджень/вікна в місці ухвалення рішення.

@@ -16,11 +16,17 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 
-/** Рядок RPC room_busy_slots. Три останні поля — NULL, якщо ролі не можна їх бачити. */
+/** Рядок RPC room_busy_slots. Три останні поля — NULL, якщо ролі не можна їх бачити.
+    0074: *_min — вікно зайнятості, ОБРІЗАНЕ по запитаній добі (хвилини від 00:00).
+    Саме вони — джерело правди; scheduled_time/duration_min/buffer_time_min лишені
+    для сумісності й описують те саме вікно. */
 export type BusyRow = {
   scheduled_time: string | null;
   duration_min: number | null;
   buffer_time_min: number | null;
+  start_min?: number | null;
+  end_study_min?: number | null;
+  end_min?: number | null;
   status?: string | null;
   patient_name?: string | null;
   studies?: unknown;
@@ -38,14 +44,23 @@ const toMin = (t: string | null | undefined) => {
 };
 const fmt = (m: number) => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
 
+/* ЖОДНИХ дефолтів «|| 30» і normBuffer() тут (0074). На «хвостовому» рядку
+   (дослідження почалося вчора й перетнуло опівніч) duration_min законно дорівнює
+   0 — у цю добу зайшов лише буфер, — і `duration_min || 30` намалював би пів
+   години зайнятості з повітря. Так само normBuffer() клампить буфер у 0/5/10/15,
+   а обрізаний залишок буфера може бути будь-яким (напр. 3 хв). */
 export function busySpans(rows: BusyRow[] | null | undefined): BusyDetailSpan[] {
   return (rows || [])
-    .filter((r) => r.scheduled_time)
     .map((r) => {
+      if (r.start_min != null && r.end_min != null) {
+        return { s: r.start_min, e: r.end_min, eStudy: r.end_study_min ?? r.end_min, row: r };
+      }
+      // Fallback на старий контракт (якщо 0074 ще не накотили на цю БД).
       const s = toMin(r.scheduled_time);
-      const eStudy = s + (r.duration_min || 30);
+      const eStudy = s + (r.duration_min ?? 30);
       return { s, e: eStudy + normBuffer(r.buffer_time_min ?? BUFFER_DEFAULT), eStudy, row: r };
     })
+    .filter((b) => b.e > b.s)
     .sort((a, b) => a.s - b.s);
 }
 

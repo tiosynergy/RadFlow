@@ -43,7 +43,12 @@ type Referral = {
 };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 type ExtraStudy = { type: string; region: string; dur: number };
-type BusySlot = { scheduled_time: string; duration_min: number; buffer_time_min: number | null };
+/* 0074: RPC віддає вікно, ОБРІЗАНЕ по добі (start_min/end_study_min/end_min) — сюди
+   потрапляють і «хвости» досліджень, що почалися вчора й перетнули опівніч. */
+type BusySlot = {
+  scheduled_time: string; duration_min: number; buffer_time_min: number | null;
+  start_min?: number | null; end_study_min?: number | null; end_min?: number | null;
+};
 type SearchClinic = { id: string; name: string; city: string | null; modalities: string[] };
 type CenterCardData = {
   name?: string; city?: string | null; policy?: string | null; note?: string | null;
@@ -258,9 +263,14 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
   const roomSched = roomScheduleFor(dateObj, roomId || "", override, roomSchedule);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
   // eStudy — кінець САМОГО дослідження; e — кінець зайнятості (з буфером прибирання).
-  const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => {
+  const busySlots = (dayEntries || []).map((e) => {
+    // 0074: пріоритет — обрізані по добі хвилини. Жодних «|| 30»: на хвостовому
+    // рядку duration_min законно 0 (у цю добу зайшов лише буфер).
+    if (e.start_min != null && e.end_min != null) {
+      return { s: e.start_min, eStudy: e.end_study_min ?? e.end_min, e: e.end_min };
+    }
     const s = toMin(e.scheduled_time);
-    const eStudy = s + (e.duration_min || 30);
+    const eStudy = s + (e.duration_min ?? 30);
     return { s, eStudy, e: eStudy + (e.buffer_time_min ?? BUFFER_DEFAULT) };
   });
   const roomBreaks = effectiveRoomBreaks(dateObj, roomId || "", roomSchedule, override); // перерви кабінету на цю дату
@@ -1182,22 +1192,24 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     return true;
   }
 
+  // Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
   async function doReschedule({ roomId, date, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
-    const p = reschedFor; if (!p) return;
+    const p = reschedFor; if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
     const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason });
     if (!res.ok) {
-      if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
+      if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
+      reload();
       // Перенос у минуле / поза графіком кабінету заборонено (сервер + тригер 0063).
-      if (res.code === "past" || res.code === "off_schedule") { notify(res.error, "error"); return; }
-      if (res.code === "stale") { setReschedFor(null); handledStale(res); return; }
-      setReschedFor(null);
-      notify(res.code === "incident" ? "Кабінет у простої — оберіть інший слот" : res.code === "slot_unavailable" ? "Слот зайнятий — оберіть інший" : "Помилка: " + res.error, "error");
-      return;
+      return (res.code === "slot_taken" || res.code === "slot_unavailable")
+        ? "Слот щойно зайняли — оберіть інший"
+        : res.code === "incident" ? "Кабінет у простої — оберіть інший слот"
+        : res.error;
     }
     setReschedFor(null);
     notify("Перенесено", "success"); reload();
+    return null;
   }
 
   /* Скасування направлення — незворотне (слот звільняється). Раніше йшло в один

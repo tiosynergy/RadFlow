@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { wallInstant, wallMinOfDay, wallMinOfInstant, wallNow, wallDayKey, wallToday0, setClinicTz, incidentEffectiveEnd } from "@/lib/incidents";
+import { wallInstant, wallMinOfDay, wallMinOfInstant, wallInstantOf, wallNow, wallDayKey, wallToday0, setClinicTz, incidentEffectiveEnd } from "@/lib/incidents";
+import { busySpans } from "@/lib/slotBusy";
 import { priorityRank, normPriority, isActiveStatus } from "@/lib/priority";
 import { normBuffer, BUFFER_DEFAULT, studyDur, CONTRAST_DUR, MRT_REGIONS } from "@/lib/studies";
 
@@ -91,11 +92,57 @@ describe("wall-модель часу", () => {
     });
   });
 
+  /* Дослідження, розпочате пізно ввечері, займає кабінет уже в НАСТУПНІЙ добі.
+     У хвилинах доби це не виражається (вилазить за 1440), тому і БД (0074), і
+     сервер порівнюють АБСОЛЮТНІ настінні інтервали. */
+  it("wallInstantOf: реальний інстант → настінні мс зони клініки (з датою)", () => {
+    // 21:30 UTC = 00:30 наступної доби в Києві (літо, +03).
+    expect(wallInstantOf("2026-07-13T21:30:00.000Z", "Europe/Kyiv")).toBe(Date.UTC(2026, 6, 14, 0, 30));
+    expect(wallInstantOf("2026-07-13T21:30:00.000Z", "UTC")).toBe(Date.UTC(2026, 6, 13, 21, 30));
+    expect(wallInstantOf(null)).toBeNull();
+  });
+
+  it("wallInstantOf і wallInstant — один фрейм (можна віднімати)", () => {
+    const start = wallInstantOf("2026-07-13T20:30:00.000Z", "Europe/Kyiv")!;  // 23:30 у клініці
+    const midnight = wallInstant("2026-07-14", "00:00");
+    expect((midnight - start) / 60000).toBe(30);   // до опівночі — рівно 30 хв
+  });
+
   it("incidentEffectiveEnd: без blocked_until — «до відновлення»", () => {
     expect(incidentEffectiveEnd({ started_at: "2026-07-13T08:00:00.000Z" })).toBe(Infinity);
     expect(incidentEffectiveEnd({ started_at: "2026-07-13T08:00:00.000Z", blocked_until: "2026-07-13T10:00:00.000Z" }))
       .toBe(new Date("2026-07-13T10:00:00.000Z").getTime());
     expect(incidentEffectiveEnd(null)).toBe(-Infinity);
+  });
+});
+
+/* room_busy_slots (0074) віддає вікно, ОБРІЗАНЕ по запитаній добі. Клієнт мусить
+   малювати саме його: старі дефолти («|| 30», normBuffer) на «хвостовому» рядку
+   брехали — там duration_min законно 0 (у добу зайшов лише буфер). */
+describe("busySpans — вікно, обрізане по добі (перехід через опівніч)", () => {
+  it("бере start_min/end_min, а не хвилини з scheduled_time", () => {
+    const [span] = busySpans([{
+      scheduled_time: "00:00", duration_min: 60, buffer_time_min: 5,
+      start_min: 0, end_study_min: 60, end_min: 65,   // хвіст: почалося вчора о 23:00
+    }]);
+    expect(span).toMatchObject({ s: 0, eStudy: 60, e: 65 });
+  });
+
+  it("у добу зайшов ЛИШЕ буфер: duration_min = 0 і це не 30 хв «з повітря»", () => {
+    const [span] = busySpans([{
+      scheduled_time: "00:00", duration_min: 0, buffer_time_min: 3,
+      start_min: 0, end_study_min: 0, end_min: 3,
+    }]);
+    expect(span).toMatchObject({ s: 0, eStudy: 0, e: 3 });   // раніше було б e = 30 + 5
+  });
+
+  it("порожнє вікно (e <= s) відкидається", () => {
+    expect(busySpans([{ scheduled_time: "10:00", duration_min: 0, buffer_time_min: 0, start_min: 600, end_study_min: 600, end_min: 600 }])).toHaveLength(0);
+  });
+
+  it("fallback на старий контракт, якщо 0074 ще не накотили", () => {
+    const [span] = busySpans([{ scheduled_time: "10:00", duration_min: 30, buffer_time_min: 5 }]);
+    expect(span).toMatchObject({ s: 600, eStudy: 630, e: 635 });
   });
 });
 

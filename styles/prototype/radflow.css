@@ -811,7 +811,11 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .prio-seg-btn.muted.active { border-color: var(--border-strong); background: var(--gray-badge-bg); color: var(--text); }
 @media (prefers-reduced-motion: reduce) { .prio-seg-btn { transition: none; } }
 
-.toast-wrap { position: fixed; bottom: 22px; right: 22px; display: flex; flex-direction: column; gap: 10px; z-index: 100; }
+/* z-index ВИЩЕ оверлея модалки (.overlay = 200). Було 100: тост із помилкою
+   малювався ПІД відкритою модалкою, і відмова сервера («слот щойно зайняли»)
+   виглядала як «кнопка не працює». Самі модалки тепер показують помилку в собі
+   (.dlg-err), але тост має лишатись видимим і поверх них. */
+.toast-wrap { position: fixed; bottom: 22px; right: 22px; display: flex; flex-direction: column; gap: 10px; z-index: 250; }
 .toast {
   display: flex; align-items: center; gap: 11px; min-width: 290px; max-width: 380px;
   background: var(--card); border: 1px solid var(--border-strong); border-radius: var(--r-md);
@@ -973,6 +977,15 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .dlg-title .tic { width: 28px; height: 28px; border-radius: 8px; background: var(--blue-bg); color: #4da3ff; display: flex; align-items: center; justify-content: center; font-size: 14px; }
 .dlg-body { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
 .dlg-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); }
+
+/* Помилка сервера — В САМІЙ модалці (над футером): відмова бронювання/переносу
+   («слот щойно зайняли», перетин, кабінет у простої) має бути видно там, де людина
+   натиснула кнопку, а не тостом у кутку дошки. */
+.dlg-err {
+  margin: 0 18px 12px; padding: 10px 13px;
+  background: var(--red-bg); border: 1px solid rgba(255,69,58,0.35); border-radius: var(--r-md);
+  color: var(--red); font-size: 12.5px; font-weight: 500; line-height: 1.45;
+}
 
 .hint-blue { background: var(--blue-bg-soft); border: 1px solid rgba(10,132,255,0.25); border-radius: var(--r-md); padding: 10px 13px; font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; }
 .hint-blue b { color: #4da3ff; }
