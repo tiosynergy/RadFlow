@@ -303,9 +303,24 @@ async function crossesRoomBreak(
 //   23505 unique_violation → «один in_progress на кабинет» (частичный uniq idx 0018);
 //   23P01 exclusion_violation → перекрытие слота / простой (триггеры 0014/0020).
 // Текстовый разбор оставлен как fallback (на случай иной обёртки ошибки).
+/* Конкурентність (0075): статусні RPC беруть рядок під `for update`, тож очікування
+   блокування стало реальним. Звідси два НОВІ класи помилок, яких раніше не було:
+     40P01 deadlock_detected   — Postgres вибрав нашу транзакцію жертвою;
+     55P03 lock_not_available / 57014 query_canceled — таймаут очікування (Supabase
+           тримає statement_timeout на ролі authenticated).
+   Обидва — ТРАНЗІЄНТНІ: правильна реакція користувача — повторити, а не «щось зламалось». */
+function isRetryableLockError(code: string, message: string): boolean {
+  return code === "40P01" || code === "40001" || code === "55P03" || code === "57014"
+    || /deadlock|canceling statement due to statement timeout|lock timeout/i.test(message);
+}
+
 function classifyError(err: { code?: string; message?: string }, status?: QueueStatus): QueueActionResult {
   const code = err?.code ?? "";
   const message = err?.message ?? "";
+  if (isRetryableLockError(code, message)) {
+    safeDbError("queue.status.lock", err);
+    return { ok: false, error: "Запис саме зараз змінює інший оператор — спробуйте ще раз", code: "stale" };
+  }
   if (status === "in_progress" && (code === "23505" || /in_progress|duplicate|23505/i.test(message))) {
     return { ok: false, error: "У кабінеті вже є пацієнт", code: "room_busy" };
   }
@@ -489,6 +504,10 @@ export async function setQueueEntryCall(id: string, callStatus: CallStatus): Pro
   if (error) {
     if (error.code === "42501" || /FORBIDDEN/i.test(error.message)) {
       return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+    }
+    if (isRetryableLockError(error.code ?? "", error.message)) {
+      safeDbError("setQueueEntryCall.lock", error);
+      return { ok: false, error: "Запис саме зараз змінює інший оператор — спробуйте ще раз", code: "stale" };
     }
     return { ok: false, error: safeDbError("setQueueEntryCall", error), code: "generic" };
   }
@@ -729,7 +748,12 @@ async function hasSlotClash(
 // L-3: здесь текст ОСТАВЛЕН намеренно — «простой» (INCIDENT, триггер 0020) и
 // «перекрытие» (OVERLAP, триггер 0014) оба поднимаются с одним SQLSTATE 23P01,
 // поэтому различить incident/slot_unavailable можно только по сообщению.
-function mapBookingError(message: string): QueueActionResult {
+function mapBookingError(message: string, code = ""): QueueActionResult {
+  // 0075: очікування рядкового блокування → дедлок/таймаут. Транзієнтне, не «помилка даних».
+  if (isRetryableLockError(code, message)) {
+    safeDbError("booking.lock", { code, message });
+    return { ok: false, error: "Запис саме зараз змінює інший оператор — спробуйте ще раз", code: "stale" };
+  }
   // PAST_SLOT — тригер 0063 (останній рубіж; серверна перевірка стоїть вище).
   if (/PAST_SLOT/i.test(message)) return PAST_ERR;
   // 0066: CHECK тривалості. Сюди доходити не має (клієнт клампить, сервер нормалізує),
@@ -891,7 +915,7 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
     if (error.code === "42501" || /FORBIDDEN/i.test(error.message)) {
       return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
     }
-    return mapBookingError(error.message);
+    return mapBookingError(error.message, error.code ?? "");
   }
   const res = Array.isArray(data) ? data[0] : data;
   if (!res) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
@@ -987,7 +1011,7 @@ export async function editQueueEntryStudies(
 
   // Збільшення тривалості/буфера може перетнути наступний запис — DB-тригер
   // check_no_overlap відхилить; класифікуємо, щоб UI показав локалізовану причину.
-  if (error) return mapBookingError(error.message);
+  if (error) return mapBookingError(error.message, error.code ?? "");
   if (!data || data.length === 0) return casMiss(supabase, id);
   return { ok: true };
 }
@@ -1071,7 +1095,7 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
     call_status: "not_called",
   }).select("id").single();
 
-  if (error) return mapBookingError(error.message);
+  if (error) return mapBookingError(error.message, error.code ?? "");
   return { ok: true, id: created?.id };
 }
 
@@ -1315,6 +1339,6 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
     call_status: "not_called",
   }).select("id").single();
 
-  if (error) return mapBookingError(error.message);
+  if (error) return mapBookingError(error.message, error.code ?? "");
   return { ok: true, id: created?.id };
 }
