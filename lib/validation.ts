@@ -112,8 +112,40 @@ export const zDuration = z
 export const zBuffer = z.number().finite().min(0).max(60).transform((v) => normBuffer(v));
 
 export const zPriority = z.enum(["cito", "urgent", "planned"]);
+/* ДВІ РІЗНІ СХЕМИ, і плутати їх не можна (0078).
+
+   zQueueStatus     — що клієнт має право ПОСТАВИТИ. 'needs_reschedule' сюди не
+                      входить: цей статус означає «слот втрачено через операційну
+                      затримку кабінету» і ставиться лише планом затримки (етап 3),
+                      разом із записом у queue_delay_events.
+                      ⚠️ Це НЕ інваріант: queue_set_status_rpc — SECURITY DEFINER,
+                      відкрита для authenticated і приймає будь-яке значення enum.
+                      Справжній гард ставиться в 0079 (raise у самій RPC). zod тут —
+                      лише перший рубіж, не єдиний.
+
+   zQueueStatusAny  — що можна ОЧІКУВАТИ/ПРОЧИТАТИ (expectedFrom, currentStatus).
+                      Тут потрібні ВСІ значення: інакше запис у 'needs_reschedule'
+                      неможливо повернути в чергу — будь-який клік по степперу
+                      надсилає expectedFrom = поточний статус і падав би на
+                      валідації входу («Некоректні дані запиту»). */
 export const zQueueStatus = z.enum(["scheduled", "waiting", "in_progress", "done", "no_show", "cancelled", "not_held"]);
+export const zQueueStatusAny = z.enum([
+  "scheduled", "waiting", "in_progress", "done", "no_show", "cancelled", "not_held", "needs_reschedule",
+]);
 export const zCallStatus = z.enum(["not_called", "to_recall", "no_answer", "confirmed", "declined"]);
+
+/* ===== 0078 — політика черги при затримці дослідження =====
+   Межі ДУБЛЮЮТЬ CHECK у БД (clinics_*_chk). Це не надмірність: zod дає користувачу
+   зрозумілу помилку в полі, CHECK — гарантію на випадок прямого API-виклику. */
+export const zQueueDelayPolicy = z.enum(["manual", "cascade_shift", "reschedule_conflicts"]);
+/** Поріг спрацювання сценарію (хв): кратний кроку сітки, 5..120. */
+export const zOverlapThreshold = z.number().int().min(5).max(120)
+  .refine((v) => v % 5 === 0, { message: "Поріг має бути кратним 5 хв" });
+/** Стеля каскаду: захист від «зсунули 300 записів одним кліком». */
+export const zMaxCascade = z.number().int().min(1).max(100);
+/** Причина винятку графіка (0078): обовʼязкова і НЕ порожня — це аудит рішення людини. */
+export const zExceptionReason = z.string().trim().min(3).max(500);
+export const zExceptionKind = z.enum(["after_hours", "break"]);
 
 /* studies (JSONB). Невідомі ключі zod ВІДКИДАЄ (strip) — у БД їде рівно те, що
    ми знаємо (частково закриває L-2: JSONB без валідації). */

@@ -12,6 +12,7 @@ import CitySelect from "@/components/CitySelect";
 import StaffManager from "@/components/StaffManager";
 import ReferrersManager from "@/components/ReferrersManager";
 import CeoManager from "@/components/CeoManager";
+import QueuePolicySettings, { type QueuePolicyInitial } from "@/components/QueuePolicySettings";
 import { formatPhoneUA, isValidPhoneUA } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -178,6 +179,7 @@ const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string }[]
   { label: "Адміністратор", desc: "Обліковий запис адміна", anchor: "sec-admin" },
   { label: "Обладнання та кабінети", desc: "Апарати та розклад", anchor: "sec-equip" },
   { label: "Послуги та прайс", desc: "Незабаром", anchor: "sec-price" },
+  { label: "Управління чергою", desc: "Політика при затримці", anchor: "sec-queue" },
   { label: "Персонал і доступи", desc: "Радіологи та реєстратори", anchor: "sec-staff" },
   { label: "Лікарі-направники", desc: "Направники центру", anchor: "sec-referrers" },
   { label: "Керівники (CEO)", desc: "Аналітичний доступ", anchor: "sec-ceo" },
@@ -429,7 +431,7 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
 /* ---------- Майстер (контейнер) ---------- */
 type SetupRoom = { id: string; modality: string; name: string; apparatus_model?: string | null };
 
-export default function SetupWizard({ clinicId, userId, initial, rooms = [], clinicName, adminName }: { clinicId: string; userId: string; initial: WizardInitial; rooms?: SetupRoom[]; clinicName?: string; adminName?: string }) {
+export default function SetupWizard({ clinicId, userId, initial, rooms = [], clinicName, adminName, queuePolicy }: { clinicId: string; userId: string; initial: WizardInitial; rooms?: SetupRoom[]; clinicName?: string; adminName?: string; queuePolicy: QueuePolicyInitial }) {
   const router = useRouter();
   const [activeSection, setActiveSection] = useState("sec-clinic");
   const [saving, setSaving] = useState(false);
@@ -521,7 +523,11 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
           .from("queue_entries")
           .select("room_id")
           .in("room_id", removedRooms.map((r) => r.id))
-          .in("status", ["scheduled", "waiting", "in_progress"]);
+          /* 0079: needs_reschedule ОБОВʼЯЗКОВО тут. Запис без слота — це все ще
+             живий пацієнт, який чекає на дзвінок реєстратури. Без нього кабінет
+             видалився б МОВЧКИ, room_id став би NULL (on delete set null) — рівно
+             та втрата записів, від якої цей блокер і ставили (P0 UX-аудиту). */
+          .in("status", ["scheduled", "waiting", "in_progress", "needs_reschedule"]);
         if (be) throw be;
         if (blockers && blockers.length) {
           const byRoom: Record<string, number> = {};
@@ -615,6 +621,13 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
               {/* Кожне вікно налаштувань — окремо; перемикається кружками зліва */}
               <div style={{ display: FORM_SECTIONS.includes(activeSection) ? "block" : "none" }}>
                 <StepRegister report={report} onData={onData} initial={initial} active={activeSection} />
+              </div>
+
+              {/* 0078 — політика черги при затримці дослідження (лише адмін). */}
+              <div className="fade-in" style={{ display: activeSection === "sec-queue" ? "block" : "none" }}>
+                <h1 className="wiz-h">Управління чергою</h1>
+                <p className="wiz-hsub">Що робити, коли дослідження затягнулося і наїжджає на наступні записи.</p>
+                <QueuePolicySettings initial={queuePolicy} />
               </div>
 
               <div className="fade-in" style={{ display: activeSection === "sec-staff" ? "block" : "none" }}>

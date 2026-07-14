@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import SetupWizard from "@/components/SetupWizard";
 import { normalizeRoomSchedule } from "@/lib/schedule";
+import type { QueueDelayPolicy } from "@/supabase/types";
+import type { QueuePolicyInitial } from "@/components/QueuePolicySettings";
 
 export default async function SetupPage() {
   const supabase = await createClient();
@@ -12,7 +14,7 @@ export default async function SetupPage() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("clinic_id, full_name, role, phone, clinics(name, city, address, phones, emails, timezone)")
+    .select("clinic_id, full_name, role, phone, clinics(name, city, address, phones, emails, timezone, queue_delay_policy, overlap_threshold_min, max_cascade_patients, allow_after_hours_shift)")
     .eq("id", user.id)
     .single();
 
@@ -38,9 +40,23 @@ export default async function SetupPage() {
   }
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
-    | { name?: string; city?: string; address?: string; phones?: string[]; emails?: string[]; timezone?: string | null }
+    | {
+        name?: string; city?: string; address?: string; phones?: string[]; emails?: string[]; timezone?: string | null;
+        queue_delay_policy?: QueueDelayPolicy; overlap_threshold_min?: number;
+        max_cascade_patients?: number; allow_after_hours_shift?: boolean;
+      }
     | null
     | undefined;
+
+  /* 0078 — політика черги при затримці. Дефолти дублюють DEFAULT у БД: якщо
+     міграцію ще не накатили (або клініка старша за неї), майстер має відкритись,
+     а не впасти. Значення все одно перевіряє сервер + CHECK. */
+  const queuePolicy: QueuePolicyInitial = {
+    policy: clinic?.queue_delay_policy ?? "manual",
+    overlapThresholdMin: clinic?.overlap_threshold_min ?? 15,
+    maxCascadePatients: clinic?.max_cascade_patients ?? 30,
+    allowAfterHoursShift: clinic?.allow_after_hours_shift ?? false,
+  };
 
   const { data: rooms } = await supabase
     .from("rooms")
@@ -90,6 +106,7 @@ export default async function SetupPage() {
       rooms={managerRooms}
       clinicName={clinic?.name ?? ""}
       adminName={profile.full_name ?? (user.email ?? "")}
+      queuePolicy={queuePolicy}
     />
   );
 }

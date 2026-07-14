@@ -978,6 +978,18 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .dlg-body { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
 .dlg-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); }
 
+/* --- Компактний діалог підтвердження (ConfirmDialog) ---
+   Це коротке «так/ні», а не форма: тісніші відступи, менша ширина, текст одним
+   абзацом. .dlg-text ОБОВʼЯЗКОВИЙ: без нього кожен вузол усередині .dlg-body
+   (flex column + gap) стає окремим рядком і речення розсипається. */
+.dlg-confirm { max-width: 380px; }
+.dlg-confirm .dlg-head { padding: 13px 16px; }
+.dlg-confirm .dlg-title { font-size: 15px; line-height: 1.35; }
+.dlg-confirm .dlg-body { padding: 14px 16px; }
+.dlg-confirm .dlg-foot { padding: 11px 16px; }
+.dlg-text { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--text-secondary); }
+.dlg-text b { color: var(--text); font-weight: 600; }
+
 /* Помилка сервера — В САМІЙ модалці (над футером): відмова бронювання/переносу
    («слот щойно зайняли», перетин, кабінет у простої) має бути видно там, де людина
    натиснула кнопку, а не тостом у кутку дошки. */

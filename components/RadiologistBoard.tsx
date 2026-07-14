@@ -896,10 +896,10 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
       {/* 0077 — виклик у кабінет після кінця робочого дня: свідома дія, не заборона. */}
       {offCallAsk && (
         <ConfirmDialog
-          title="Робочий день кабінету скінчився — викликати?"
-          text={<>Кабінет працює до <b>{offCallAsk.end}</b>, а дослідження триває <b>{offCallAsk.durationMin} хв</b>.
-            Викликати <b>{offCallAsk.p.patient_name}</b> (запис о <b>{offCallAsk.p.scheduled_time}</b>) <b>поза графіком</b>?</>}
-          confirmLabel="⏰ Так, викликати"
+          title="Викликати поза графіком?"
+          text={<><b>{offCallAsk.p.patient_name}</b> · запис о {offCallAsk.p.scheduled_time} · {offCallAsk.durationMin} хв.
+            {" "}Кабінет працює до <b>{offCallAsk.end}</b> — робота триватиме понаднормово.</>}
+          confirmLabel="⏰ Викликати"
           cancelLabel="Ні"
           busy={offCallBusy}
           onClose={() => setOffCallAsk(null)}

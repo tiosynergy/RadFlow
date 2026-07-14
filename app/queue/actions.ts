@@ -15,7 +15,7 @@
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database, Json, QueueStatus, CallStatus, TablesUpdate } from "@/supabase/types";
+import type { Database, Json, QueueStatus, CallStatus, TablesUpdate, QueueDelayPolicy } from "@/supabase/types";
 import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
@@ -28,6 +28,7 @@ import {
   parseInput, safeDbError, zUuid, zDateKey, zTime, zIsoInstant, zName, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
   zDuration, zBuffer, zPriority, zQueueStatus, zCallStatus, zStudies, zIdList,
+  zQueueDelayPolicy, zOverlapThreshold, zMaxCascade, zQueueStatusAny,
 } from "@/lib/validation";
 
 export type QueueActionResult =
@@ -166,6 +167,58 @@ const sScheduleOverride = z.object({
 async function clinicTz(supabase: SupabaseClient<Database>, clinicId: string): Promise<string> {
   const { data } = await supabase.from("clinics").select("timezone").eq("id", clinicId).maybeSingle();
   return data?.timezone || "UTC"; // tz передаємо ЯВНО: на сервері модульний _clinicTz не встановлений
+}
+
+/* ===== 0078 — політика черги при затримці дослідження =====
+   Налаштовує ТІЛЬКИ адмін свого центру. Три рубежі, і жоден не зайвий:
+     1) цей екшен (роль читаємо з profiles на СЕРВЕРІ, не з клієнта);
+     2) RLS clinics_update (0073) — вимагає auth_is_admin();
+     3) CHECK-констрейнти clinics_*_chk — на випадок прямого API-виклику.
+   Схеми zod дають користувачу помилку В ПОЛІ, а не сирий 23514 з БД. */
+const sQueuePolicy = z.object({
+  policy: zQueueDelayPolicy,
+  overlapThresholdMin: zOverlapThreshold,
+  maxCascadePatients: zMaxCascade,
+  allowAfterHoursShift: z.boolean(),
+});
+
+export type QueuePolicyResult =
+  | { ok: true }
+  | { ok: false; error: string; code?: "auth" | "forbidden" | "generic" };
+
+export async function saveQueueDelayPolicy(raw: {
+  policy: QueueDelayPolicy;
+  overlapThresholdMin: number;
+  maxCascadePatients: number;
+  allowAfterHoursShift: boolean;
+}): Promise<QueuePolicyResult> {
+  const v = parseInput("saveQueueDelayPolicy", sQueuePolicy, raw);
+  if (!v.ok) return v;
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  // Роль і клініку беремо з БД, а не з клієнта: інакше «адмін» — це просто поле в запиті.
+  const { data: prof } = await supabase.from("profiles").select("role, clinic_id").eq("id", user.id).maybeSingle();
+  if (!prof?.clinic_id || prof.role !== "admin") {
+    return { ok: false, error: "Політику черги налаштовує лише адміністратор центру", code: "forbidden" };
+  }
+
+  /* .select("id") — НЕ косметика. PostgREST на відхиленому RLS UPDATE повертає
+     error = null і НУЛЬ рядків: без перевірки користувач побачив би «Політику
+     збережено», хоча в БД нічого не змінилось. Це рівно той клас fail-open,
+     який проект уже ловив (H-6, «помилка ≠ пусто»). */
+  const { data: upd, error } = await supabase.from("clinics").update({
+    queue_delay_policy: v.data.policy,
+    overlap_threshold_min: v.data.overlapThresholdMin,
+    max_cascade_patients: v.data.maxCascadePatients,
+    allow_after_hours_shift: v.data.allowAfterHoursShift,
+  }).eq("id", prof.clinic_id).select("id");
+
+  if (error) return { ok: false, error: safeDbError("saveQueueDelayPolicy", error), code: "generic" };
+  if (!upd?.length) return { ok: false, error: "Не вдалося зберегти політику — немає прав", code: "forbidden" };
+  return { ok: true };
 }
 
 /** Слот (дата+час) уже минув за настінним часом клініки? */
@@ -442,8 +495,13 @@ export async function setQueueEntryStatus(
   // совместимость: без него поведение прежнее.
   expectedFrom?: QueueStatus
 ): Promise<QueueActionResult> {
+  /* 0078: ЦІЛЬ і ОЧІКУВАННЯ — різні схеми. status (куди ставимо) не приймає
+     'needs_reschedule' — його ставить лише план затримки. Але expectedFrom (звідки
+     йдемо) мусить приймати ВСІ статуси: інакше запис, який опинився в
+     'needs_reschedule', неможливо повернути в чергу — доска шле поточний статус
+     як expectedFrom, і будь-яка кнопка падала б на валідації входу. */
   const v = parseInput("setQueueEntryStatus", z.object({
-    id: zUuid, status: zQueueStatus, expectedFrom: zQueueStatus.optional(),
+    id: zUuid, status: zQueueStatus, expectedFrom: zQueueStatusAny.optional(),
   }), { id, status, expectedFrom });
   if (!v.ok) return v;
 

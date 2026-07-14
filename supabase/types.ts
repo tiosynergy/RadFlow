@@ -63,6 +63,11 @@ export type Database = {
           emails: Json;
           configured_at: string | null;
           timezone: string;
+          // 0078 — політика черги при затримці дослідження (пише лише адмін).
+          queue_delay_policy: QueueDelayPolicy;
+          overlap_threshold_min: number;
+          max_cascade_patients: number;
+          allow_after_hours_shift: boolean;
         };
         Insert: {
           id?: string;
@@ -74,6 +79,10 @@ export type Database = {
           emails?: Json;
           configured_at?: string | null;
           timezone?: string;
+          queue_delay_policy?: QueueDelayPolicy;
+          overlap_threshold_min?: number;
+          max_cascade_patients?: number;
+          allow_after_hours_shift?: boolean;
         };
         Update: {
           id?: string;
@@ -85,7 +94,55 @@ export type Database = {
           emails?: Json;
           configured_at?: string | null;
           timezone?: string;
+          queue_delay_policy?: QueueDelayPolicy;
+          overlap_threshold_min?: number;
+          max_cascade_patients?: number;
+          allow_after_hours_shift?: boolean;
         };
+        Relationships: [];
+      };
+      /* 0078 — НЕЗМІННИЙ журнал масових рішень при затримці. authenticated має
+         лише SELECT: рядок створює SECURITY DEFINER RPC застосування плану. */
+      queue_delay_events: {
+        Row: {
+          id: string;
+          clinic_id: string;
+          room_id: string;
+          source_entry_id: string;
+          delay_min: number;
+          strategy: "cascade_shift" | "reschedule_conflicts";
+          initiated_by: string;
+          approved_by: string | null;
+          approved_at: string | null;
+          plan: Json;
+          outcome: Json | null;
+          created_at: string;
+        };
+        Insert: never;   // писати може лише RPC / service_role
+        Update: never;   // журнал незмінний
+        Relationships: [];
+      };
+      /* 0078 — журнал ПІДТВЕРДЖЕНИХ винятків графіка (0077): хто, чому, який слот.
+         kind лише after_hours | break — закритий день і час до відкриття лишаються
+         забороненими (рішення власника). Insert можна, update/delete — ні. */
+      schedule_exceptions: {
+        Row: {
+          id: string;
+          clinic_id: string;
+          room_id: string;
+          entry_id: string | null;
+          kind: ScheduleExceptionKind;
+          reason: string;
+          from_slot: Json | null;
+          to_slot: Json;
+          confirmed_by: string;
+          created_at: string;
+        };
+        /* Ззовні — ТІЛЬКИ читання (рішення після ревʼю). Рядок пише тригер на
+           queue_entries у ТІЙ САМІЙ транзакції, що й бронь/перенос (етап 2):
+           інакше бронь і лог — два окремі запити, і журнал може розійтися з фактом. */
+        Insert: never;   // пише лише тригер / service_role
+        Update: never;   // журнал незмінний
         Relationships: [];
       };
       profiles: {
@@ -1155,7 +1212,12 @@ export type Database = {
         | "done"
         | "no_show"
         | "cancelled"
-        | "not_held";
+        | "not_held"
+        /* 0078: слот втрачено через ОПЕРАЦІЙНУ затримку кабінету — потрібен перенос.
+           Це НЕ 'cancelled' (рішення пацієнта/центру зняти запис): пацієнт нікуди
+           не дівся, на нього чекає реєстратура. Змішування зіпсувало б і колл-лист,
+           і KPI. Тригери/переходи/RPC під цей статус — міграція 0079. */
+        | "needs_reschedule";
       call_status:
         | "not_called"
         | "to_recall"
@@ -1201,6 +1263,20 @@ export type Profile = Tables<"profiles">;
 export type ScheduleOverride = Tables<"schedule_overrides">;
 export type ReferralAccess = Tables<"referral_access">;
 export type QueueStatus = Enums<"queue_status">;
+
+/* 0078 — політика центру при затримці дослідження.
+   manual               — показати обидва плани, вирішує адмін (за замовчуванням);
+   cascade_shift        — зсунути наступні записи кабінету (кожен — у ПЕРШИЙ слот,
+                          куди він реально вміщується; не однакова дельта);
+   reschedule_conflicts — не рухати чергу, конфліктних → needs_reschedule.
+   Масове застосування ЗАВЖДИ потребує підтвердження адміна — навіть при авто-політиці. */
+export type QueueDelayPolicy = "manual" | "cascade_shift" | "reschedule_conflicts";
+
+/** Тип підтвердженого винятку графіка (0078). Закритий день і час до відкриття — НЕ виняток. */
+export type ScheduleExceptionKind = "after_hours" | "break";
+
+export type QueueDelayEvent = Tables<"queue_delay_events">;
+export type ScheduleException = Tables<"schedule_exceptions">;
 export type WaitlistEntry = Tables<"waitlist_entries">;
 export type WaitlistStatus = Enums<"waitlist_status">;
 export type CallStatus = Enums<"call_status">;

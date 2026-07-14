@@ -1643,10 +1643,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
           (не галочка, як у модалках): виклик робиться одним кліком просто з дошки. */}
       {offCallAsk && (
         <ConfirmDialog
-          title="Робочий день кабінету скінчився — викликати?"
-          text={<>Кабінет працює до <b>{offCallAsk.end}</b>, а дослідження триває <b>{offCallAsk.durationMin} хв</b>.
-            Викликати <b>{offCallAsk.p.patient_name}</b> (запис о <b>{offCallAsk.p.scheduled_time}</b>) <b>поза графіком</b>?</>}
-          confirmLabel="⏰ Так, викликати"
+          title="Викликати поза графіком?"
+          text={<><b>{offCallAsk.p.patient_name}</b> · запис о {offCallAsk.p.scheduled_time} · {offCallAsk.durationMin} хв.
+            {" "}Кабінет працює до <b>{offCallAsk.end}</b> — робота триватиме понаднормово.</>}
+          confirmLabel="⏰ Викликати"
           cancelLabel="Ні"
           busy={offCallBusy}
           onClose={() => setOffCallAsk(null)}

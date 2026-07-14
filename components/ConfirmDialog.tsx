@@ -25,12 +25,20 @@ export default function ConfirmDialog({ title, text, confirmLabel = "Підтв�
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   return (
     <div className="overlay">
-      <div className="dialog fade-in" ref={dialogRef} role="dialog" aria-modal="true" aria-label={title} style={{ maxWidth: 440 }}>
+      <div className="dialog dlg-confirm fade-in" ref={dialogRef} role="dialog" aria-modal="true" aria-label={title}>
         <div className="dlg-head">
           <div className="dlg-title">{title}</div>
           <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
-        <div className="dlg-body" style={{ fontSize: 13.5, color: "var(--text-secondary)", lineHeight: 1.5 }}>{text}</div>
+        {/* ⚠️ ОБОВʼЯЗКОВА ОБГОРТКА. `.dlg-body` — це flex column з gap: 14px, тобто
+            КОЖЕН вузол усередині (текстовий фрагмент, <b>, <br>) стає окремим
+            flex-елементом і їде на власний рядок з відступом. Речення «Кабінет
+            працює до <b>18:00</b>, а дослідження триває…» розсипалось на сім
+            рядків. Обгортаємо в один блок — усередині нього текст тече нормально.
+            Це стосується ВСІХ діалогів підтвердження, не лише нових. */}
+        <div className="dlg-body">
+          <p className="dlg-text">{text}</p>
+        </div>
         <div className="dlg-foot" style={hideCancel ? { justifyContent: "center" } : undefined}>
           {!hideCancel && <button className="btn btn-ghost" onClick={onClose}>{cancelLabel}</button>}
           <button className={"btn " + (danger ? "btn-danger" : "btn-primary")} disabled={busy} aria-busy={busy} onClick={onConfirm}>
