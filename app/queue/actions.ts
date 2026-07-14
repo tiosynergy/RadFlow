@@ -646,6 +646,14 @@ export async function emergencyStop(input: { roomIds: string[]; note?: string | 
   });
   if (error) {
     if (/28000|не авторизовано/i.test(error.message)) return { ok: false, error: "Не авторизовано", code: "auth" };
+    // 0076 змінила ПРОФІЛЬ помилок: раніше конкурентна аварійка падала миттєво
+    // (23505 на unique-індексі), тепер вона ЧЕКАЄ на спекулятивній вставці.
+    // Отже тут уперше реальні 40P01 / 55P03 / 57014 (statement_timeout ролі
+    // authenticated). Це транзієнт — «спробуйте ще раз», а не «щось зламалось».
+    if (isRetryableLockError(error.code ?? "", error.message)) {
+      safeDbError("emergencyStop.lock", error);
+      return { ok: false, error: "Кабінет саме зараз зупиняє інший оператор — спробуйте ще раз", code: "generic" };
+    }
     return { ok: false, error: safeDbError("emergencyStop", error), code: "generic" };
   }
   const res = Array.isArray(data) ? data[0] : data;
@@ -682,7 +690,15 @@ export async function resolveEmergency(input: { roomIds: string[] }): Promise<Re
     .eq("clinic_id", clinicId).eq("reason", "emergency").eq("status", "active")
     .in("room_id", roomIds)
     .select("id");
-  if (error) return { ok: false, error: safeDbError("resolveEmergency", error), code: "generic" };
+  if (error) {
+    // Симетрично до emergencyStop (0076): зняття аварії тепер може чекати на
+    // паралельній аварійній зупинці того ж кабінету → транзієнтні lock-помилки.
+    if (isRetryableLockError(error.code ?? "", error.message)) {
+      safeDbError("resolveEmergency.lock", error);
+      return { ok: false, error: "Кабінет саме зараз змінює інший оператор — спробуйте ще раз", code: "generic" };
+    }
+    return { ok: false, error: safeDbError("resolveEmergency", error), code: "generic" };
+  }
   return { ok: true, resolved: data?.length ?? 0 };
 }
 
