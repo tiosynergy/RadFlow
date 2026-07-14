@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, overlapsBreak,
   normalizeRoomSchedule, normalizeBreaks, dateKeyOf,
+  offScheduleKind, OFF_SCHED_GRACE_MIN,
+  type EffectiveRoomSchedule, type Break,
 } from "@/lib/schedule";
 
 const ROOM = "room-1";
@@ -85,6 +87,62 @@ describe("перерви кабінету", () => {
   it("normalizeBreaks: легасі lunch → breaks[], сміття відсіюється", () => {
     expect(normalizeBreaks({ lunch: true, lunchS: "13:00", lunchE: "14:00" })).toEqual([{ start: "13:00", end: "14:00" }]);
     expect(normalizeBreaks({ breaks: [{ start: "14:00", end: "13:00" }] })).toEqual([]); // кінець ≤ початку
+  });
+});
+
+/* ===== 0077 — робота ПОЗА ГРАФІКОМ за підтвердженням =====
+   Політика власника: перерва і «хвіст» після закриття — це «зміна ще триває»,
+   тому підтверджувані. Рання година і вихідний — персоналу на місці немає,
+   тому заборонені завжди. Ця функція — ЄДИНЕ джерело правди: нею фарбує слоти
+   сітка і нею ж авторизує сервер (scheduleBlock). Розбіжність = «в UI можна,
+   БД відхиляє», а це вже було в цьому проєкті. */
+describe("offScheduleKind — що можна підтвердити, а що ні (0077)", () => {
+  const OPEN: EffectiveRoomSchedule = { closed: false, start: "09:00", end: "18:00", custom: false };
+  const CLOSED: EffectiveRoomSchedule = { closed: true, start: "09:00", end: "18:00", custom: false };
+  const LUNCH: Break[] = [{ start: "13:00", end: "14:00" }];
+  const at = (h: number, m = 0) => h * 60 + m;
+
+  it("у межах графіка — null (звичайний шлях)", () => {
+    expect(offScheduleKind(at(10), 30, OPEN, LUNCH)).toBeNull();
+    // Впритул до кінця графіка — ще НЕ поза графіком.
+    expect(offScheduleKind(at(17, 30), 30, OPEN, LUNCH)).toBeNull();
+  });
+
+  it("після кінця дня — підтверджуваний after_end", () => {
+    // Дослідження вилазить за 18:00 хвостом.
+    expect(offScheduleKind(at(17, 45), 30, OPEN, [])).toMatchObject({ kind: "after_end", confirmable: true, end: "18:00" });
+    // Слот цілком після закриття.
+    expect(offScheduleKind(at(18, 30), 30, OPEN, [])).toMatchObject({ kind: "after_end", confirmable: true });
+  });
+
+  it("стеля +2 год: рівно на межі — можна, далі — too_late і НЕ підтверджується", () => {
+    const cap = at(18) + OFF_SCHED_GRACE_MIN;            // 20:00
+    expect(offScheduleKind(cap - 30, 30, OPEN, [])).toMatchObject({ kind: "after_end", confirmable: true });
+    expect(offScheduleKind(cap - 30, 35, OPEN, [])).toMatchObject({ kind: "too_late", confirmable: false });
+    expect(offScheduleKind(at(21), 30, OPEN, [])).toMatchObject({ kind: "too_late", confirmable: false });
+  });
+
+  it("до відкриття і вихідний — заборонено ЗАВЖДИ (персоналу на місці немає)", () => {
+    expect(offScheduleKind(at(8), 30, OPEN, [])).toMatchObject({ kind: "before_start", confirmable: false });
+    expect(offScheduleKind(at(10), 30, CLOSED, [])).toMatchObject({ kind: "closed", confirmable: false });
+  });
+
+  it("перерва — підтверджуваний break, і хвостом теж (як overlapsBreak)", () => {
+    expect(offScheduleKind(at(13), 30, OPEN, LUNCH)).toMatchObject({ kind: "break", confirmable: true, brk: LUNCH[0] });
+    // Слот робочий, але дослідження ЗАЇЖДЖАЄ в обід — це та сама зайнятість кабінету.
+    expect(offScheduleKind(at(12, 45), 30, OPEN, LUNCH)).toMatchObject({ kind: "break", confirmable: true });
+    // Впритул перед обідом — чисто.
+    expect(offScheduleKind(at(12, 30), 30, OPEN, LUNCH)).toBeNull();
+  });
+
+  it("закритий кабінет перекриває все інше (порядок перевірок)", () => {
+    expect(offScheduleKind(at(13), 30, CLOSED, LUNCH)).toMatchObject({ kind: "closed", confirmable: false });
+  });
+
+  it("буфер НЕ враховується — за графік законно виходить лише прибирання", () => {
+    // Тривалість 30 хв від 17:30 закінчується рівно о 18:00 → у графіку,
+    // навіть якщо буфер прибирання формально вийде за межі (він тут не бере участі).
+    expect(offScheduleKind(at(17, 30), 30, OPEN, [])).toBeNull();
   });
 });
 

@@ -1419,6 +1419,19 @@ select.inp { cursor: pointer; }
 /* Перерва кабінету — НЕ зайнятість: нейтральна сіра штриховка, без червоного алярму. */
 .slot.brk { border-color: var(--border-strong) !important; color: var(--text-faint) !important; opacity: 0.9;
   background: repeating-linear-gradient(135deg, rgba(142,142,147,0.26) 0 3px, rgba(142,142,147,0.07) 3px 6px) !important; }
+/* 0077 — ПОЗА ГРАФІКОМ (після закриття кабінету або в перерву). Слот доступний,
+   але вибір веде до діалогу підтвердження. Тому й колір окремий: це НЕ «зайнято»
+   (червоний) і НЕ «не вміщується» (помаранчевий), а «можна, але ти береш це на
+   себе» — фіолетовий пунктир. Свій колір тут не прикраса: якби ці слоти виглядали
+   як звичайні вільні, оператор би не помітив, що виводить центр за графік. */
+.slot.offsched { border-style: dashed !important; border-color: #bf5af2 !important; color: #d9a6f5 !important;
+  background: rgba(191, 90, 242, 0.12) !important; }
+.slot.offsched:hover:not(:disabled) { background: rgba(191, 90, 242, 0.24) !important; }
+.lg-dot.offsched { border: 1px dashed #bf5af2; background: rgba(191, 90, 242, 0.35); }
+.badge.offsched { background: rgba(191, 90, 242, 0.15); color: #d9a6f5; }
+/* Банер «ти зараз виходиш за графік» — у модалках і в діалозі підтвердження. */
+.info-banner.offsched { border-color: #bf5af2; background: rgba(191, 90, 242, 0.10); }
+
 /* Буфер ЧУЖОГО запису: кабінет ще зайнятий (прибирання/переукладка), але саме
    дослідження вже скінчилось — червона штриховка замість суцільного червоного. */
 .slot.busybuf { border-color: var(--red) !important; color: #ff8c84 !important; opacity: 0.85;

@@ -28,6 +28,7 @@ type CallEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
   priority_level?: PatientPriority | null; call_note?: string | null; studies: Json; doctor?: string | null; room_id: string | null; scheduled_date: string | null;
+  off_schedule?: boolean | null;   // 0077
 };
 type IncidentRow = { id: string; room_id: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string };
 
@@ -296,7 +297,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
       const supabase = createClient();
       const { data, error } = await supabase
         .from("queue_entries")
-        .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, call_note, studies, doctor, room_id, scheduled_date")
+        .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, call_note, studies, doctor, room_id, scheduled_date, off_schedule")
         .eq("clinic_id", clinicId)
         .eq("scheduled_date", dayKey)
         .in("status", ["scheduled", "waiting"])
@@ -326,7 +327,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
     if (!incs || !incs.length) { setAffectedToday([]); return; }
     const { data: ents } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, room_id, scheduled_date")
+      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, room_id, scheduled_date, off_schedule")
       .eq("clinic_id", clinicId).gte("scheduled_date", todayKey)
       .in("room_id", incs.map((i) => i.room_id)).in("status", ["scheduled", "waiting"]);
     const byRoom: Record<string, IncidentRow> = {}; incs.forEach((i) => { byRoom[i.room_id] = i; });
@@ -346,7 +347,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
       const supabase = createClient();
       const { data } = await supabase
         .from("queue_entries")
-        .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, doctor, room_id, scheduled_date")
+        .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, doctor, room_id, scheduled_date, off_schedule")
         .eq("clinic_id", clinicId)
         .eq("scheduled_date", todayKey)
         .eq("status", "scheduled")
@@ -460,12 +461,12 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
   }
 
   // Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
-  async function doReschedule({ roomId, date: d, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
+  async function doReschedule({ roomId, date: d, time, dur, buffer, reason, offSchedule }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean }) {
     const p = reschedFor;
     if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed", reason });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed", reason, offSchedule });
     if (!res.ok) {
       if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
       reload();
@@ -479,10 +480,11 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
     reload();
     return null;
   }
-  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number }) {
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number; offSchedule?: boolean }) {
     const p = editStudiesFor;
     if (!p) return;
-    const res = await editQueueEntryStudies(p.id, arr as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer);
+    // 0077: згоду віддає модалка (успадкований прапорець або нова галочка) — див. QueueBoard.doEditStudies.
+    const res = await editQueueEntryStudies(p.id, arr as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer, meta?.offSchedule);
     setEditStudiesFor(null);
     if (!res.ok) {
       if (handledStale(res)) return;
@@ -668,10 +670,10 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
 
       {/* clinicTz — ЯВНО (HANDOVER §6.1): singleton не гарантія. */}
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} allowOffSchedule />
       )}
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} offSchedule={!!editStudiesFor.off_schedule} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
 
       {declineAsk && (

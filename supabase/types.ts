@@ -259,6 +259,7 @@ export type Database = {
           referrer_id: string | null;
           reschedule_origin: Json | null;
           studies_changed_by: string | null;
+          off_schedule: boolean;
         };
         Insert: {
           id?: string;
@@ -298,6 +299,7 @@ export type Database = {
           referrer_id?: string | null;
           reschedule_origin?: Json | null;
           studies_changed_by?: string | null;
+          off_schedule?: boolean;
         };
         Update: {
           id?: string;
@@ -337,6 +339,7 @@ export type Database = {
           referrer_id?: string | null;
           reschedule_origin?: Json | null;
           studies_changed_by?: string | null;
+          off_schedule?: boolean;
         };
         Relationships: [
           {
@@ -1102,6 +1105,9 @@ export type Database = {
           p_buffer: number;
           p_call?: CallStatus | null;
           p_reason?: string | null;
+          // 0077: робота поза графіком за підтвердженням. Прапорець ставиться
+          // всередині RPC — окремим UPDATE «після» його б відхилив тригер перерви.
+          p_off_schedule?: boolean;
         };
         Returns: { updated: boolean; current_status: QueueStatus }[];
       };

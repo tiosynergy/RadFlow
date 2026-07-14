@@ -7,7 +7,10 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
+import {
+  roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, offScheduleKind, OFF_SCHED_GRACE_MIN,
+  type DayOverride,
+} from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
@@ -31,7 +34,12 @@ interface RescheduleModalProps {
      не сталося». Тут це критичніше: без блокування кнопки подвійний клік проходив
      ДВІЧІ (M-6), і другий виклик перезаписував reschedule_origin знімком уже нового
      слота — історія переносу псувалась. */
-  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) => Promise<string | null> | void;
+  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean }) => Promise<string | null> | void;
+  /* 0077: чи можна переносити ПОЗА графік (після закриття / у перерву) з підтвердженням.
+     true — лише дошки ПЕРСОНАЛУ (черга, колл-лист). Портал направника НЕ передає цей
+     проп: направник записує пацієнтів ззовні й не знає, чи лишиться зміна. Сервер і
+     тригер БД тримають те саме правило — але сітка не має й пропонувати того, що впаде. */
+  allowOffSchedule?: boolean;
 }
 
 function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
@@ -45,7 +53,7 @@ function procLabel(e: { studies?: unknown; note?: string | null }) {
   return e.note || "—";
 }
 
-export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, incidents = [], onClose, onConfirm }: RescheduleModalProps) {
+export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, incidents = [], onClose, onConfirm, allowOffSchedule = false }: RescheduleModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const curRoom = (rooms || []).find((r) => r.id === patient.room_id);
   const modality = curRoom ? curRoom.modality : "MRI";
@@ -123,24 +131,39 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
       return dt >= start && dt < incidentEffectiveEnd(inc);
     });
   }
-  const slots: string[] = buildSlots(schedStart, schedEnd); // крок 5 хв
+  // 0077: персоналу сітка добудовується на 2 год за кінець графіка (є що клікати);
+  // направнику — рівно як раніше, по графіку.
+  const slots: string[] = buildSlots(schedStart, allowOffSchedule ? schedEnd + OFF_SCHED_GRACE_MIN : schedEnd);
+  /* Порядок перевірок = порядок у BookingModal і на сервері: спершу все, що НЕ
+     лікується підтвердженням (минуле, простій, зайнятість), потім «поза графіком». */
   function slotState(s: string) {
-    // b — кінець дослідження (має вміститись у графік); bBlock — з буфером (перетин з іншими).
-    const a = toMin(s), b = a + dur, bBlock = a + dur + buffer;
+    // bBlock — кінець із буфером (перетин з іншими записами).
+    const a = toMin(s), bBlock = a + dur + buffer;
     if (isPastDay) return "past";                            // весь день у минулому
     if (roomSched.closed) return "closed";
     if (slotBlockedByIncident(a)) return "blocked";
-    if (a < schedStart || a >= schedEnd) return "offhours";
-    if (b > schedEnd) return "tight";
-    if (inBreak(a, roomBreaks)) return "break";              // сам слот — перерва кабінету
-    if (breakClash(a, dur, roomBreaks)) return "tight";      // слот робочий, але дослідження заїде в перерву
     if (isToday && a < nowMin) return "past";
     // Розділяємо саме дослідження і буфер прибирання після нього: кабінет зайнятий
     // і там, і там, але видно, коли дослідження реально закінчується.
     if (busy.some((x) => a >= x.s && a < x.eStudy)) return "busy";
     if (busy.some((x) => a >= x.eStudy && a < x.e)) return "buffer";
     if (busy.some((x) => a < x.e && x.s < bBlock)) return "tight";
+    const off = offScheduleKind(a, dur, roomSched, roomBreaks);
+    if (off) {
+      if (off.confirmable && allowOffSchedule) return "offsched";
+      // Без права на овертайм — стара поведінка: перерва сірим, «не влазить» помаранчевим.
+      return off.kind === "break" ? "break" : off.kind === "after_end" ? "tight" : "offhours";
+    }
     return "free";
+  }
+  const selOff = time ? offScheduleKind(toMin(time), dur, roomSched, roomBreaks) : null;
+  const needsOffConfirm = allowOffSchedule && !!selOff?.confirmable;
+  const SELECTABLE = ["free", "offsched"];
+  function offSchedLabel(s: string) {
+    const off = offScheduleKind(toMin(s), dur, roomSched, roomBreaks);
+    if (!off) return s;
+    if (off.kind === "break" && off.brk) return `Поза графіком · перерва ${off.brk.start}–${off.brk.end}\nПеренести можна, але потрібне підтвердження`;
+    return `Поза графіком · кабінет працює до ${off.end}\nПеренести можна, але потрібне підтвердження`;
   }
   function nextApptAfter(s: string) { const a = toMin(s); const f = busy.filter((x) => x.s >= a).sort((x, y) => x.s - y.s)[0]; return f ? fmt(f.s) : null; }
   function breakLabel(s: string) { const br = inBreak(toMin(s), roomBreaks); return br ? "Перерва в роботі кабінету · " + br.start + "–" + br.end : "Перерва в роботі кабінету"; }
@@ -172,14 +195,17 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const fitCount = countFit(slots, (s) => slotState(s) === "free", dur + buffer);
   const busyList = busy.slice().sort((a, b) => a.s - b.s);
   const room = (rooms || []).find((r) => r.id === roomId);
-  const valid = roomId && time && !roomSched.closed && slotState(time) === "free";
+  const [offOk, setOffOk] = useState(false);
+  useEffect(() => { setOffOk(false); }, [time, roomId, dateStr]);   // згода протухає при зміні слота
+  const valid = roomId && time && !roomSched.closed && SELECTABLE.includes(slotState(time))
+    && (!needsOffConfirm || offOk);
 
   /* Realtime: слот, який ми вже обрали, щойно зайняли (або кабінет закрили) —
      знімаємо вибір і кажемо про це, щоб «Перенести» не впало помилкою в лоб. */
-  const stillFree = !time || slotsLoading || slotState(time) === "free";
+  const stillFree = !time || slotsLoading || SELECTABLE.includes(slotState(time));
   useEffect(() => {
     if (!time || slotsLoading) return;
-    if (slotState(time) !== "free") { setTaken(time); setTime(""); }
+    if (!SELECTABLE.includes(slotState(time))) { setTaken(time); setTime(""); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, slotsLoading, stillFree]);
 
@@ -192,7 +218,10 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
     setSaving(true);
     setSaveErr(null);
     try {
-      const err = await onConfirm({ roomId, date: dateObj, time, dur, buffer, reason: reason.trim() });
+      const err = await onConfirm({
+        roomId, date: dateObj, time, dur, buffer, reason: reason.trim(),
+        offSchedule: needsOffConfirm && offOk,   // 0077 — згода оператора
+      });
       if (err) setSaveErr(err);     // успіх → батько закриває модалку
     } catch {
       setSaveErr("Не вдалося перенести запис — спробуйте ще раз");
@@ -252,7 +281,8 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
                   bufferMin={buffer}
                   resetKey={roomId + "|" + dateStr + "|" + dur + "|" + buffer}
                   stateOf={slotState}
-                  titleOf={(s, st) => (st === "busy" || st === "buffer") ? busyLabel(s) : st === "blocked" ? blockedLabel(s) : st === "break" ? breakLabel(s) : st === "tight" ? ("Не вміщується: блок " + dur + " хв перетне " + tightReason(s)) : st === "past" ? "Час минув" : ("Вільно · " + s + "–" + fmt(toMin(s) + dur))}
+                  freeStates={SELECTABLE}
+                  titleOf={(s, st) => (st === "busy" || st === "buffer") ? busyLabel(s) : st === "blocked" ? blockedLabel(s) : st === "break" ? breakLabel(s) : st === "offsched" ? offSchedLabel(s) : st === "offhours" ? "Кабінет не працює в цей час" : st === "tight" ? ("Не вміщується: блок " + dur + " хв перетне " + tightReason(s)) : st === "past" ? "Час минув" : ("Вільно · " + s + "–" + fmt(toMin(s) + dur))}
                 />}
             {busyList.length > 0 && (
               <div className="bk-busy-list">
@@ -265,6 +295,22 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
                 ))}
               </div>
             )}
+            {/* 0077 — підтвердження переносу поза графік (лише дошки персоналу). */}
+            {needsOffConfirm && (
+              <div className="info-banner offsched" style={{ marginTop: 10, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+                <span className="ib-txt">
+                  <b>⏰ Поза графіком.</b>{" "}
+                  {selOff?.kind === "break" && selOff.brk
+                    ? <>Слот потрапляє в <b>перерву {selOff.brk.start}–{selOff.brk.end}</b>.</>
+                    : <>Кабінет працює до <b>{selOff?.end}</b>, а дослідження закінчиться о <b>{fmt(toMin(time) + dur)}</b>.</>}
+                  {" "}Запис буде позначено як «поза графіком».
+                </span>
+                <label className="fld-lab" style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                  <input type="checkbox" checked={offOk} onChange={(e) => setOffOk(e.target.checked)} />
+                  Підтверджую роботу поза графіком
+                </label>
+              </div>
+            )}
             <div className="bk-slot-legend">
               <span><span className="lg-dot free" />вільно</span>
               <span><span className="lg-dot tight" />не вміщується</span>
@@ -272,6 +318,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
               <span><span className="lg-dot busybuf" />буфер</span>
               {time && buffer > 0 && <span><span className="lg-dot planbuf" />буфер цього запису</span>}
               {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
+              {allowOffSchedule && <span><span className="lg-dot offsched" />поза графіком</span>}
             </div>
           </div>
         </div>

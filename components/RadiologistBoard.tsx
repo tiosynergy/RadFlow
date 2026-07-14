@@ -17,6 +17,7 @@ import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } fro
 import { incidentEffectiveEnd, incidentExpired, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import { setQueueEntryStatus, setRadiologistNote } from "@/app/queue/actions";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import type { QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -29,6 +30,7 @@ type RadEntry = {
   status: string; call_status: string | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; has_contrast: boolean;
   contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null; note: string | null; radiologist_note: string | null;
   indication: string | null; room_id: string | null; updated_at: string; in_progress_at: string | null; clarify_at?: string | null;
+  off_schedule?: boolean | null;   // 0077 — запис поза графіком (за підтвердженням персоналу)
 };
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
 
@@ -289,6 +291,10 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
         </div>
         <div className="q-status-cell">
           <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
+          {/* 0077 — запис зроблено поза графіком кабінету (підтверджено персоналом). */}
+          {p.off_schedule && (
+            <span className="badge offsched" title="Запис поза графіком кабінету (після закриття або в перерву) — підтверджено персоналом">⏰ Поза графіком</span>
+          )}
         </div>
         <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
       </div>
@@ -556,7 +562,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
       // рефетч давав WAL + audit_log + realtime-луну на всі дошки).
       let q = supabase
         .from("queue_entries")
-        .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at, clarify_at")
+        .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at, clarify_at, off_schedule")
         .eq("clinic_id", clinicId)
         .eq("scheduled_date", dayKey)
         .neq("status", "cancelled");
@@ -654,30 +660,40 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
     if (!res.ok) notify("Помилка збереження нотатки: " + res.error, "error");
   }
 
-  function inProgressBlockReason(p: RadEntry): string | null {
-    /* Дані про простої/графік не завантажились — вважати кабінет вільним НЕ МОЖНА
-       (це виклик пацієнта в апарат, який може бути на ремонті). Гейт до всіх інших
-       перевірок; DB-гард 0020 однаково відхилив би, але оператор має бачити причину. */
-    if (safetyErr) return "Дані про простої/графік не оновились — виклик заблоковано, оновіть сторінку";
+  function callBlockOf(p: RadEntry) {
     const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)) : null;
-    const r = computeCallBlock(p, entries, {
+    return computeCallBlock(p, entries, {
       notToday: !sameDay(selectedDate, today0()),
       roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
       schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
       schedEnd: sched && !sched.closed ? sched.end : null,
     });
-    if (!r) return null;
+  }
+  /* 0077: sched_overrun більше НЕ блокує радіолога — рішення власника: центр має
+     добити день, і саме радіолог заводить пацієнта в кабінет. Замість «реєстратура
+     має перенести запис» — діалог підтвердження. Решта причин лишаються жорсткими. */
+  function inProgressBlockReason(p: RadEntry): string | null {
+    /* Дані про простої/графік не завантажились — вважати кабінет вільним НЕ МОЖНА
+       (це виклик пацієнта в апарат, який може бути на ремонті). Гейт до всіх інших
+       перевірок; DB-гард 0020 однаково відхилив би, але оператор має бачити причину. */
+    if (safetyErr) return "Дані про простої/графік не оновились — виклик заблоковано, оновіть сторінку";
+    const r = callBlockOf(p);
+    if (!r || r.confirmable) return null;
     if (r.code === "wrong_day") return "Запис не на сьогодні — викликати в кабінет можна лише пацієнтів сьогоднішнього дня";
     if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
     if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
     if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
-    if (r.code === "sched_overrun") return `Дослідження ${r.durationMin} хв не вміститься до кінця графіка кабінету (${r.end}) — реєстратура має перенести запис`;
     if (r.code === "clash") return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис. Реєстратура має перенести один із записів`;
     return null;
   }
+  const [offCallAsk, setOffCallAsk] = useState<{ p: RadEntry; end: string; durationMin: number } | null>(null);
+  const [offCallBusy, setOffCallBusy] = useState(false);
   function callPatient(p: RadEntry) {
-    const reason = inProgressBlockReason(p);
-    if (reason) { notify(reason, "error"); return; }
+    // safetyErr — жорсткий гейт: підтверджувати виклик на невідомих даних про простої не можна.
+    if (safetyErr) { notify("Дані про простої/графік не оновились — виклик заблоковано, оновіть сторінку", "error"); return; }
+    const r = callBlockOf(p);
+    if (r && !r.confirmable) { notify(inProgressBlockReason(p) || "Викликати зараз неможливо", "error"); return; }
+    if (r && r.code === "sched_overrun") { setOffCallAsk({ p, end: r.end, durationMin: r.durationMin }); return; }
     setStatus(p.id, "in_progress");
   }
   function setStatusGuarded(p: RadEntry, status: string) {
@@ -876,6 +892,27 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
           </aside>
         </div>
       </div>
+
+      {/* 0077 — виклик у кабінет після кінця робочого дня: свідома дія, не заборона. */}
+      {offCallAsk && (
+        <ConfirmDialog
+          title="Робочий день кабінету скінчився — викликати?"
+          text={<>Кабінет працює до <b>{offCallAsk.end}</b>, а дослідження триває <b>{offCallAsk.durationMin} хв</b>.
+            Викликати <b>{offCallAsk.p.patient_name}</b> (запис о <b>{offCallAsk.p.scheduled_time}</b>) <b>поза графіком</b>?</>}
+          confirmLabel="⏰ Так, викликати"
+          cancelLabel="Ні"
+          busy={offCallBusy}
+          onClose={() => setOffCallAsk(null)}
+          onConfirm={async () => {
+            const a = offCallAsk;
+            if (!a) return;
+            setOffCallBusy(true);
+            await setStatus(a.p.id, "in_progress");
+            setOffCallBusy(false);
+            setOffCallAsk(null);
+          }}
+        />
+      )}
 
       {toast && (
         <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>

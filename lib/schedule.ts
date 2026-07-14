@@ -165,6 +165,74 @@ export function breakClash(aMin: number, durMin: number, breaks: Break[]): Break
   return breaks.find((b) => aMin < brkMin(b.end) && brkMin(b.start) < end) || null;
 }
 
+/* ===== Робота ПОЗА ГРАФІКОМ за підтвердженням (0077) =====
+   Рішення власника 2026-07-14: графік — план, а не стіна. Центр має добивати
+   день. Але «поза графіком» — не одне явище, а п'ять, і поводяться вони по-різному.
+
+   ДОЗВОЛЕНО з явним підтвердженням персоналу (confirmable):
+     after_end — «хвіст» після закриття кабінету, у межах OFF_SCHED_GRACE_MIN;
+     break     — перерва кабінету (обід тощо).
+   Спільне в них одне: ЗМІНА ЩЕ ТРИВАЄ, персонал фізично на місці.
+
+   ЗАБОРОНЕНО завжди (confirmable = false):
+     before_start — до відкриття кабінету;
+     closed       — кабінет не працює цього дня (вихідний / override);
+     too_late     — далі, ніж кінець графіка + OFF_SCHED_GRACE_MIN.
+   Тут персоналу на місці НЕМАЄ — підтверджувати нічому.
+
+   Функція чиста (хвилини доби), тож нею користуються ОДНАКОВО сітка слотів,
+   серверний гард scheduleBlock() і тести. Не дублювати цю арифметику в модалках.
+
+   Межа: САМЕ ДОСЛІДЖЕННЯ має вміститись (durMin, БЕЗ буфера) — буфер прибирання
+   законно виходить за межі, як і в computeCallBlock / check_not_during_break. */
+
+/** Наскільки далеко за кінець графіка можна зайти за підтвердженням (хв). */
+export const OFF_SCHED_GRACE_MIN = 120;
+
+export type OffScheduleKind = "closed" | "before_start" | "too_late" | "after_end" | "break";
+
+export interface OffScheduleInfo {
+  kind: OffScheduleKind;
+  /** true → можна записати за явним підтвердженням персоналу; false → заборонено. */
+  confirmable: boolean;
+  /** Кінець графіка кабінету ("HH:MM") — для after_end / too_late. */
+  end?: string;
+  /** Перерва, в яку заїжджає дослідження — для break. */
+  brk?: Break;
+}
+
+/** Чи виходить блок [startMin, startMin+durMin) за графік кабінету — і чи це
+    можна підтвердити. null = запис у межах графіка (звичайний шлях). */
+export function offScheduleKind(
+  startMin: number,
+  durMin: number,
+  sched: EffectiveRoomSchedule,
+  breaks: Break[] = []
+): OffScheduleInfo | null {
+  if (sched.closed) return { kind: "closed", confirmable: false };
+
+  const schedStart = brkMin(sched.start);
+  const schedEnd = brkMin(sched.end);
+  const dur = Math.max(0, durMin);
+  const end = startMin + dur;
+
+  if (startMin < schedStart) return { kind: "before_start", confirmable: false };
+
+  if (end > schedEnd) {
+    if (end > schedEnd + OFF_SCHED_GRACE_MIN) {
+      return { kind: "too_late", confirmable: false, end: sched.end };
+    }
+    return { kind: "after_end", confirmable: true, end: sched.end };
+  }
+
+  /* Перерва. Беремо БУДЬ-ЯКИЙ перетин (overlapsBreak), а не лише «слот усередині
+     перерви»: дослідження, що заїжджає в обід хвостом, займає кабінет так само. */
+  const hit = breaks.find((b) => startMin < brkMin(b.end) && brkMin(b.start) < end);
+  if (hit) return { kind: "break", confirmable: true, brk: hit };
+
+  return null;
+}
+
 /** Канонічна форма графіка кабінету для майстра (breaks[] у новому зразку).
     Прозоро мігрує старий формат (lunch/lunchS/lunchE) і заповнює пропуски. */
 export interface DayScheduleShape { start: string; end: string; breaks: Break[]; }

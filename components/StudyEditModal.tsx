@@ -9,7 +9,7 @@
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, studyDur, studyPrice, CONTRAST_DUR } from "@/lib/studies";
-import { roomScheduleFor, effectiveRoomBreaks, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, effectiveRoomBreaks, OFF_SCHED_GRACE_MIN, type DayOverride } from "@/lib/schedule";
 import { wallNow, wallMinOfDay, wallDayKey, wallToday0 } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
 
@@ -29,7 +29,11 @@ interface StudyEditModalProps {
   clinicId?: string | null;
   clinicTz?: string | null; // TZ центру запису (мультиклінічний портал направника)
   onClose: () => void;
-  onConfirm: (arr: StudyOut[], meta: { dur: number; buffer: number }) => void;
+  onConfirm: (arr: StudyOut[], meta: { dur: number; buffer: number; offSchedule?: boolean }) => void;
+  /* 0077: запис САМ стоїть поза графіком (створений/перенесений за підтвердженням).
+     Тоді кінець графіка і перерва його вже не обмежують — інакше легально створений
+     запис на 17:55 неможливо було б відредагувати взагалі. */
+  offSchedule?: boolean;
 }
 
 function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
@@ -37,7 +41,7 @@ function pad(n: number) { return String(n).padStart(2, "0"); }
 function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 
-export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, onClose, onConfirm }: StudyEditModalProps) {
+export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, onClose, onConfirm, offSchedule = false }: StudyEditModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const room = (rooms || []).find((r) => r.id === patient.room_id);
   const roomKind = room ? modalityLabel(room.modality) : "МРТ"; // "МРТ" | "КТ"
@@ -102,11 +106,21 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const roomSched = roomScheduleFor(dateObj, patient.room_id || "", override, roomSchedule);
   const schedEnd = toMin(roomSched.end);
   const capByNext = nextStart != null ? nextStart - startMin - buffer : Infinity;
-  const capBySched = schedEnd - startMin;
+  /* 0077 — ЗАПИС, ЩО ВЖЕ СТОЇТЬ ПОЗА ГРАФІКОМ, теж треба вміти редагувати.
+     Без цього запис на 17:55 у кабінеті, що закривається о 18:00, давав
+     availableDur = 5 хв → «⚠ Не вміщується» і кнопка «Зберегти» назавжди сіра:
+     легально створений запис ставав невиправним. Стеля та сама, що в сітці
+     (+OFF_SCHED_GRACE_MIN), а перерва позначений запис уже не обмежує — він і так
+     у ній стоїть (тригер 0067 пускає рядки з прапорцем).
+     ⚠️ Це НЕ дозвіл тягнути далі: нове перетинання межі вимагає окремої згоди
+     (offOk нижче), а сервер усе одно перевірить scheduleBlock. */
+  const capBySched = (offSchedule ? schedEnd + OFF_SCHED_GRACE_MIN : schedEnd) - startMin;
   // Перерва кабінету після старту теж обмежує тривалість — дослідження не може її перетнути.
   const nextBreakStart = effectiveRoomBreaks(dateObj, patient.room_id || "", roomSchedule, override).map((b) => toMin(b.start)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
-  const capByBreak = nextBreakStart != null ? nextBreakStart - startMin : Infinity;
+  const capByBreak = offSchedule ? Infinity : (nextBreakStart != null ? nextBreakStart - startMin : Infinity);
   const availableDur = Math.max(0, Math.min(capByNext, capBySched, capByBreak));
+  // Межа, за якою потрібне НОВЕ підтвердження (кінець графіка / початок перерви).
+  const inSchedCap = Math.max(0, Math.min(capByNext, schedEnd - startMin, nextBreakStart != null ? nextBreakStart - startMin : Infinity));
   const windowLabel = (capByBreak <= capByNext && capByBreak <= capBySched && nextBreakStart != null)
     ? ("до перерви о " + fmt(nextBreakStart))
     : (nextStart != null && (nextStart - buffer) <= schedEnd)
@@ -155,7 +169,13 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const projectedEndMin = refStartMin + totalDur + buffer;
   const realClash = isTodayLate && nextStart != null && projectedEndMin > nextStart;
   const canAdd = remaining >= MIN_STUDY;
-  const valid = rows.length > 0 && rows.every((r) => r.region) && !overflow;
+  /* 0077: тривалість перетнула межу графіка/перерви — потрібна ОКРЕМА згода.
+     Без цього збережений колись прапорець працював би як «вічний дозвіл»: запис,
+     підтверджений на 5 хв понаднормово, мовчки розтягнули б ще на дві години. */
+  const [offOk, setOffOk] = useState(false);
+  const crossesNow = totalDur > inSchedCap;
+  const needsOffConfirm = crossesNow && !overflow;
+  const valid = rows.length > 0 && rows.every((r) => r.region) && !overflow && (!needsOffConfirm || offOk);
 
   function save() {
     // Пишемо повний склад (як BookingModal): контраст + ціна. Раніше вони губилися
@@ -167,7 +187,10 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
       dur: Number(r.dur) || 0,
       price: studyPrice(r.type, r.region, r.contrast),
     }));
-    onConfirm(arr, { dur: totalDur, buffer });
+    /* offSchedule: або запис і був поза графіком (успадкований прапорець), або
+       оператор щойно підтвердив нове перетинання межі. Сервер однаково перерахує
+       факт сам (scheduleBlock) — сюди їде саме ЗГОДА, а не «стан слота». */
+    onConfirm(arr, { dur: totalDur, buffer, offSchedule: offSchedule || (needsOffConfirm && offOk) });
   }
 
   return (
@@ -187,6 +210,21 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
           {!overflow && realClash && (
             <div className="ctx-hint red" style={{ fontSize: 12.5 }}>
               ⚠ Пацієнт запізнюється/у кабінеті: за фактом (з ~<b>{fmt(refStartMin)}</b>) дослідження + буфер закінчаться о ~<b>{fmt(projectedEndMin)}</b> і перекриють наступний запис о <b>{fmt(nextStart ?? 0)}</b>. Зберегти можна, але перенесіть наступний запис.
+            </div>
+          )}
+          {/* 0077 — тривалість вивела дослідження за графік / у перерву: окрема згода.
+              Успадкований прапорець запису тут НЕ рахується за підтвердження — інакше
+              одна давня згода дозволяла б тягнути дослідження скільки завгодно. */}
+          {needsOffConfirm && (
+            <div className="info-banner offsched" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+              <span className="ib-txt">
+                <b>⏰ Поза графіком.</b> Разом <b>{totalDur} хв</b> — дослідження вийде за межу
+                (<b>{fmt(startMin + inSchedCap)}</b>: {windowLabel}). Кабінет працюватиме понаднормово.
+              </span>
+              <label className="fld-lab" style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input type="checkbox" checked={offOk} onChange={(e) => setOffOk(e.target.checked)} />
+                Підтверджую роботу поза графіком
+              </label>
             </div>
           )}
           <div className="st-rows">

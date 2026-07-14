@@ -8,7 +8,10 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import PhoneInput from "@/components/PhoneInput";
-import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
+import {
+  roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, offScheduleKind, OFF_SCHED_GRACE_MIN,
+  type DayOverride,
+} from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallToday0, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice, normDur } from "@/lib/studies";
@@ -26,6 +29,9 @@ export type BookingPayload = {
   weight: number | null; gender: string; proc: string; dur: number; buffer: number; studies: StudyOut[];
   roomId: string; date: Date; time: string; notes: string | null;
   hasContra: boolean; priority: PatientPriority; doctor: string | null; referrerId: string | null;
+  // 0077: оператор ПІДТВЕРДИВ роботу поза графіком (після закриття / у перерву).
+  // Це лише «згода», а не «слот поза графіком»: що писати в БД — вирішує сервер.
+  offSchedule?: boolean;
 };
 type ParsedDob = { ok: false; partial?: boolean; err?: string } | { ok: true; iso: string };
 
@@ -436,24 +442,31 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     });
   }
 
+  /* 0077 — ПОРЯДОК ПЕРЕВІРОК ТУТ Є ЧАСТИНОЮ БЕЗПЕКИ.
+     Спершу все, що НЕ лікується підтвердженням (минуле, простій, зайнятість
+     кабінету), і лише потім — «поза графіком». Якби offsched повертався раніше,
+     оператор побачив би фіолетовий «можна з підтвердженням» слот поверх чужого
+     запису, підтвердив би — і отримав відмову тригера. Класифікацію виходу за
+     графік рахує offScheduleKind() — ТА САМА чиста функція, що й на сервері. */
   function slotState(slot: string) {
     // e — кінець дослідження (має вміститись у графік); eBlock — з буфером (для перетину з іншими записами).
-    const s = toMin(slot), e = s + slotDur, eBlock = s + slotDur + buffer;
+    const s = toMin(slot), eBlock = s + slotDur + buffer;
     if (isPastDay) return "past";  // день у минулому (за часом клініки) — весь закритий
     if (roomSched.closed) return "closed";
     if (slotBlockedByIncident(s)) return "blocked";
-    if (s < schedStartMin || s >= schedEndMin) return "offhours";
-    if (e > schedEndMin) return "tight";
-    if (inBreak(s, roomBreaks)) return "break";                   // сам слот — перерва кабінету
-    if (breakClash(s, slotDur, roomBreaks)) return "tight";       // слот робочий, але дослідження заїде в перерву
     if (isBookToday && s < nowMin) return "past";
     // Саме дослідження і буфер прибирання після нього — окремі стани: кабінет
     // зайнятий і там, і там, але видно, коли дослідження реально закінчується.
     if (roomBusy.some((b) => s >= b.s && s < b.eStudy)) return "busy";
     if (roomBusy.some((b) => s >= b.eStudy && s < b.e)) return "buffer";
     if (roomBusy.some((b) => s < b.e && b.s < eBlock)) return "tight";
+    const off = offScheduleKind(s, slotDur, roomSched, roomBreaks);
+    if (off) return off.confirmable ? "offsched" : "offhours";
     return "free";
   }
+  /** Обраний слот поза графіком? (null — у межах графіка) */
+  const selOff = time ? offScheduleKind(toMin(time), slotDur, roomSched, roomBreaks) : null;
+  const needsOffConfirm = !!selOff?.confirmable;
   function nextApptAfter(slot: string) {
     const s = toMin(slot);
     const after = roomBusy.filter((b) => b.s >= s).sort((a, b) => a.s - b.s)[0];
@@ -489,7 +502,19 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     const appt = nextApptAfter(slot);
     return appt ? `запис о ${appt}` : endLab;
   }
-  const slots = slotsList(schedStartMin, schedEndMin);
+  // 0077 — тултип слота поза графіком: одразу пояснюємо, що буде потрібне підтвердження.
+  function offSchedLabel(slot: string) {
+    const off = offScheduleKind(toMin(slot), slotDur, roomSched, roomBreaks);
+    if (!off) return slot;
+    if (off.kind === "break" && off.brk) {
+      return `Поза графіком · перерва ${off.brk.start}–${off.brk.end}\nЗаписати можна, але потрібне підтвердження`;
+    }
+    return `Поза графіком · кабінет працює до ${off.end}\nЗаписати можна, але потрібне підтвердження`;
+  }
+  /* Сітка добудовується на OFF_SCHED_GRACE_MIN за кінець графіка (0077): без цього
+     слотів після закриття у сітці фізично немає — клікати нема по чому. Слоти далі
+     стелі лишаються поза сіткою взагалі (offScheduleKind → too_late, не підтверджуваний). */
+  const slots = slotsList(schedStartMin, schedEndMin + OFF_SCHED_GRACE_MIN);
   // Скільки ще досліджень цієї тривалості реально вміщується (жадібна укладка),
   // а не к-сть вільних 5-хв позицій — вони перетинаються і завищують число.
   const fitCount = countFit(slots, (s) => slotState(s) === "free", slotDur + buffer);
@@ -498,16 +523,23 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const miss: Record<string, boolean> = { name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time };
   const MISS_LABELS: Record<string, string> = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
-  const timeBad = time ? slotState(time) !== "free" : false;
+  // 0077: «поза графіком» — теж легальний вибір, тому НЕ timeBad. Але зберегти
+  // його можна лише з галочкою підтвердження (offOk) — див. valid нижче.
+  const SELECTABLE = ["free", "offsched"];
+  const timeBad = time ? !SELECTABLE.includes(slotState(time)) : false;
   const room = (rooms || []).find((r) => r.id === roomId) || null;
-  const valid = missingList.length === 0 && roomId && !timeBad && !roomSched.closed;
+  const [offOk, setOffOk] = useState(false);
+  // Вибрали інший слот / змінили тривалість → згода протухла, підтверджуємо заново.
+  useEffect(() => { setOffOk(false); }, [time, roomId, slotDur, dateKeyStr]);
+  const valid = missingList.length === 0 && roomId && !timeBad && !roomSched.closed
+    && (!needsOffConfirm || offOk);
 
   /* Realtime: обраний слот зайняли, поки модалка була відкрита — знімаємо вибір
      і кажемо про це, а не даємо натиснути «Зберегти» й отримати помилку в лоб. */
   const [taken, setTaken] = useState<string | null>(null);
   useEffect(() => {
     if (!time || slotsLoading) return;
-    if (slotState(time) !== "free") { setTaken(time); setTime(""); }
+    if (!SELECTABLE.includes(slotState(time))) { setTaken(time); setTime(""); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomBusy, slotsLoading, timeBad]);
 
@@ -528,6 +560,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
         roomId, date: bookDate, time, notes: notes.trim() || null,
         hasContra, priority: priority as PatientPriority, doctor: sel?.name || null,
         referrerId: sel && String(sel.id).startsWith("ref:") ? String(sel.id).slice(4) : null,
+        offSchedule: needsOffConfirm && offOk,   // 0077 — згода оператора; рішення за сервером
       });
       // Успіх → батько закриває модалку. Помилка → лишаємось відкритими й показуємо її.
       if (err) setSaveErr(err);
@@ -772,9 +805,12 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                   bufferMin={buffer}
                   resetKey={roomId + "|" + dateKey(bookDate) + "|" + slotDur + "|" + buffer}
                   stateOf={slotState}
+                  freeStates={SELECTABLE}
                   titleOf={(s, st) => (st === "busy" || st === "buffer") ? busyLabel(s)
                     : st === "blocked" ? blockedLabel(s)
                     : st === "break" ? breakLabel(s)
+                    : st === "offsched" ? offSchedLabel(s)
+                    : st === "offhours" ? "Кабінет не працює в цей час"
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${tightReason(s)}`
                     : st === "past" ? "Час минув"
                     : `Вільно · ${s}–${fmtMin(toMin(s) + slotDur)}`}
@@ -798,7 +834,27 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                 <span><span className="lg-dot busybuf" />буфер</span>
                 {time && buffer > 0 && <span><span className="lg-dot planbuf" />буфер цього запису</span>}
                 {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
+                <span><span className="lg-dot offsched" />поза графіком</span>
               </div>
+              {/* 0077 — підтвердження роботи поза графіком. Це НЕ вкладений діалог:
+                  тост/модалка поверх модалки в цьому проекті вже давали «кнопка не
+                  працює» (помилка малювалась ПІД оверлеєм). Згода живе тут, поруч зі
+                  слотом, і протухає при зміні слота/кабінету/тривалості. */}
+              {needsOffConfirm && (
+                <div className="info-banner offsched" style={{ marginTop: 10, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+                  <span className="ib-txt">
+                    <b>⏰ Поза графіком.</b>{" "}
+                    {selOff?.kind === "break" && selOff.brk
+                      ? <>Слот потрапляє в <b>перерву {selOff.brk.start}–{selOff.brk.end}</b>.</>
+                      : <>Кабінет працює до <b>{selOff?.end}</b>, а дослідження закінчиться о <b>{fmtMin(toMin(time) + slotDur)}</b>.</>}
+                    {" "}Запис буде позначено як «поза графіком».
+                  </span>
+                  <label className="fld-lab" style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                    <input type="checkbox" checked={offOk} onChange={(e) => setOffOk(e.target.checked)} />
+                    Підтверджую роботу поза графіком
+                  </label>
+                </div>
+              )}
               {time && (() => {
                 const s = toMin(time), e = s + slotDur, eBlock = s + slotDur + buffer;
                 const blocked = slotBlockedByIncident(s);

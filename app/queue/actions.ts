@@ -20,7 +20,10 @@ import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
 import { wallNow, wallInstant, wallDayKey, wallInstantOf } from "@/lib/incidents";
-import { roomScheduleFor, effectiveRoomBreaks, overlapsBreak, type DayOverride } from "@/lib/schedule";
+import {
+  roomScheduleFor, effectiveRoomBreaks, offScheduleKind, OFF_SCHED_GRACE_MIN,
+  type DayOverride, type OffScheduleInfo,
+} from "@/lib/schedule";
 import {
   parseInput, safeDbError, zUuid, zDateKey, zTime, zIsoInstant, zName, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
@@ -96,6 +99,9 @@ const sBooking = z.object({
   referrerId: zUuid.nullish(),
   doctor: zOptText(200),
   notes: zOptText(2000),
+  // 0077: оператор підтвердив роботу поза графіком (після закриття / у перерву).
+  // Сам по собі прапорець нічого не відкриває — див. scheduleBlock().
+  offSchedule: z.boolean().optional(),
   ...sPatientFields,
 });
 
@@ -117,6 +123,7 @@ const sReschedule = z.object({
   bufferTimeMin: zBuffer.optional(),
   callStatus: zCallStatus.optional(),
   reason: zOptText(500),
+  offSchedule: z.boolean().optional(),   // 0077 — див. scheduleBlock()
 });
 
 const sIncident = z.object({
@@ -183,23 +190,37 @@ const PAST_ERR = { ok: false as const, error: "Цей час уже минув �
    вкладка або прямий виклик Server Action усе одно запише пацієнта в суботу
    або о 17:30 у кабінет, що працює Пн–Пт до 15:00. Тому перевіряємо на сервері.
 
-   Правила ті самі, що в сітці: пріоритет override на дату → базовий графік
-   кабінету; саме ДОСЛІДЖЕННЯ має вміститись до кінця графіка (буфер прибирання
-   може виходити за межі — так само, як у computeCallBlock). Перерви кабінету
-   перевіряє crossesRoomBreak — обидва гарди зібрані в scheduleBlock(), і всі
-   write-шляхи ходять через нього. */
-async function isOutsideRoomSchedule(
+   0077 — графік став ПЛАНОМ, а не стіною. Класифікацію «наскільки саме поза
+   графіком» тримає ЧИСТА функція offScheduleKind() (lib/schedule.ts) — та сама,
+   якою сітка фарбує слоти. Тут — лише авторизація й політика:
+
+     confirmable = false (closed / before_start / too_late) → відмова ЗАВЖДИ;
+     confirmable = true  (after_end / break) → потрібні ДВІ умови разом:
+        • викликає ПЕРСОНАЛ центру (не направник, не CEO), і
+        • прийшов явний прапорець offSchedule (оператор підтвердив у діалозі).
+
+   Прапорець без персоналу — не працює; персонал без прапорця — не працює.
+   У БД друга лінія: trg_c_guard_off_schedule (0077) не дасть глобальному
+   акаунту поставити off_schedule навіть прямим викликом PostgREST, а
+   check_not_during_break пускає в перерву лише рядки з прапорцем.
+
+   ⚠️ Графік (години/дні) у БД НЕ enforce'иться взагалі — ні до 0077, ні після.
+   Для випадку «після кінця дня» цей серверний гард — ЄДИНИЙ рубіж, а колонка
+   off_schedule там лише мітка (бейдж + audit_log). Для ПЕРЕРВИ рубежів два. */
+
+/** Класифікація слота відносно графіка кабінету. Кидає при збої читання (H-6). */
+async function scheduleGate(
   supabase: SupabaseClient<Database>,
   roomId: string,
   clinicId: string,
   scheduledDate: string,
   scheduledTime: string,
   durationMin: number
-): Promise<boolean> {
+): Promise<OffScheduleInfo | null> {
   /* H-6: помилку читання графіка НЕ ковтаємо. Раніше при збої room/override
      ставали null, roomScheduleFor відкочувався на дефолт «Пн–Сб 08:00–18:00»,
      і ГАРД ПРОПУСКАВ запис у кабінет, який насправді зачинений. Кидаємо —
-     виклик у write-екшені впаде в generic-помилку, і запис НЕ створиться
+     виклик у write-екшені впаде в SCHED_READ_ERR, і запис НЕ створиться
      (fail-closed: краще «спробуйте ще раз», ніж пацієнт у зачиненому кабінеті). */
   const { data: room, error: roomErr } = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
   if (roomErr) throw roomErr;
@@ -209,19 +230,26 @@ async function isOutsideRoomSchedule(
   if (ovErr) throw ovErr;
 
   const day = new Date(scheduledDate + "T00:00:00");
-  if (isNaN(day.getTime())) return false;
-  const sched = roomScheduleFor(day, roomId, (ov as unknown as DayOverride) || null, room?.schedule ?? null);
-  if (sched.closed) return true;
-
-  const toMin = (t: string) => { const [h, m] = String(t).split(":").map(Number); return (h || 0) * 60 + (m || 0); };
-  const start = toMin(scheduledTime);
-  const end = start + (durationMin || 30);
-  return start < toMin(sched.start) || end > toMin(sched.end);
+  if (isNaN(day.getTime())) return null;
+  const override = (ov as unknown as DayOverride) || null;
+  const sched = roomScheduleFor(day, roomId, override, room?.schedule ?? null);
+  const breaks = effectiveRoomBreaks(day, roomId, room?.schedule ?? null, override);
+  const [h, m] = String(scheduledTime).split(":").map(Number);
+  return offScheduleKind((h || 0) * 60 + (m || 0), durationMin || 30, sched, breaks);
 }
 
 const OFF_SCHED_ERR = {
   ok: false as const,
   error: "Кабінет не працює в цей час — оберіть слот у межах графіка",
+  code: "off_schedule" as const,
+};
+
+/* Мапінг сирої помилки тригера check_not_during_break (0067). Лишається і після
+   0077: тригер тепер пускає рядки з off_schedule, але без прапорця (направник,
+   застаріла вкладка, прямий виклик) він так само кидає BREAK. */
+const BREAK_ERR = {
+  ok: false as const,
+  error: "Дослідження перетинає перерву в роботі кабінету — оберіть інший слот",
   code: "off_schedule" as const,
 };
 
@@ -233,63 +261,91 @@ const SCHED_READ_ERR = {
   code: "generic" as const,
 };
 
-const BREAK_ERR = {
-  ok: false as const,
-  error: "Дослідження перетинає перерву в роботі кабінету — оберіть інший слот",
-  code: "off_schedule" as const,
-};
+/* Повідомлення про ЖОРСТКУ відмову. Формулюємо предметно: «оберіть слот у межах
+   графіка» на записі о 22:00 у кабінет, що працює до 18:00, звучить як знущання. */
+function offSchedError(info: OffScheduleInfo): QueueActionResult {
+  if (info.kind === "closed") {
+    return { ok: false, error: "Кабінет не працює цього дня — оберіть іншу дату", code: "off_schedule" };
+  }
+  if (info.kind === "before_start") {
+    return { ok: false, error: "Кабінет ще не відкрито — оберіть слот у межах графіка", code: "off_schedule" };
+  }
+  // too_late
+  const hours = Math.round(OFF_SCHED_GRACE_MIN / 60);
+  return {
+    ok: false,
+    error: `Поза графіком можна працювати не більше ніж ${hours} год після закриття (${info.end}) — оберіть інший слот`,
+    code: "off_schedule",
+  };
+}
 
+/* Підтвердження не прийшло, хоча слот підтверджуваний. Це НЕ помилка користувача,
+   а розсинхрон клієнта (застаріла вкладка / прямий виклик): актуальна сітка сама
+   показала б діалог. Код лишаємо off_schedule — UI на нього вже завʼязаний. */
+function offSchedNeedsConfirm(info: OffScheduleInfo): QueueActionResult {
+  if (info.kind === "break") {
+    const b = info.brk;
+    return {
+      ok: false,
+      error: `Дослідження перетинає перерву${b ? ` ${b.start}–${b.end}` : ""} — потрібне підтвердження роботи поза графіком`,
+      code: "off_schedule",
+    };
+  }
+  return {
+    ok: false,
+    error: `Робочий день кабінету закінчується о ${info.end} — потрібне підтвердження роботи поза графіком`,
+    code: "off_schedule",
+  };
+}
+
+interface ScheduleBlockOpts {
+  /** Оператор явно підтвердив роботу поза графіком. */
+  offSchedule?: boolean;
+  /** Викликає персонал ЦЬОГО центру (у направника/CEO clinic_id = NULL). */
+  isStaff: boolean;
+}
+
+/* Рішення гарда. offSchedule — ЩО ПИСАТИ В КОЛОНКУ, і рахує це СЕРВЕР, а не клієнт:
+   клієнтський прапорець — це лише «оператор підтвердив», а не «слот поза графіком».
+   Якби ми писали в колонку прапорець клієнта, застаріла вкладка (слот уже в межах
+   графіка після правки графіка адміном) поставила б бейдж «поза графіком» на
+   абсолютно нормальний запис. */
+type ScheduleDecision =
+  | { blocked: QueueActionResult; offSchedule?: undefined }
+  | { blocked: null; offSchedule: boolean };
 
 /* Гард графіка ДЛЯ ВСІХ write-шляхів: null = можна писати, інакше — готова відповідь.
    Перевіряє і межі графіка, і ПЕРЕРВИ кабінету (обід тощо, rooms.schedule.breaks[]).
    Раніше перерви перевіряв лише editQueueEntryStudies, а createBooking /
    createReferralBooking / rescheduleQueueEntry — ні: клієнт малює перерву закритою,
    але застаріла вкладка, прямий виклик Server Action або направник зі старою сіткою
-   садили пацієнта в обід. У БД цього інваріанта теж немає (breaks живуть у JSONB,
-   тригера на них немає) — тож сервер тут єдиний рубіж. */
+   садили пацієнта в обід. */
 async function scheduleBlock(
   supabase: SupabaseClient<Database>,
   roomId: string,
   clinicId: string,
   scheduledDate: string,
   scheduledTime: string,
-  durationMin: number
-): Promise<QueueActionResult | null> {
+  durationMin: number,
+  opts: ScheduleBlockOpts
+): Promise<ScheduleDecision> {
+  let info: OffScheduleInfo | null;
   try {
-    if (await isOutsideRoomSchedule(supabase, roomId, clinicId, scheduledDate, scheduledTime, durationMin)) {
-      return OFF_SCHED_ERR;
-    }
-    if (await crossesRoomBreak(supabase, roomId, clinicId, scheduledDate, scheduledTime, durationMin)) {
-      return BREAK_ERR;
-    }
-    return null;
+    info = await scheduleGate(supabase, roomId, clinicId, scheduledDate, scheduledTime, durationMin);
   } catch {
-    return SCHED_READ_ERR;
+    return { blocked: SCHED_READ_ERR };
   }
+  if (!info) return { blocked: null, offSchedule: false };   // у межах графіка
+  if (!info.confirmable) return { blocked: offSchedError(info) };
+  // Підтверджуваний вихід за графік — але лише для персоналу центру.
+  if (!opts.isStaff) return { blocked: OFF_SCHED_ERR };
+  if (!opts.offSchedule) return { blocked: offSchedNeedsConfirm(info) };
+  return { blocked: null, offSchedule: true };
 }
 
-/** Чи перетинає дослідження [time, +dur) перерву кабінету на цю дату. */
-async function crossesRoomBreak(
-  supabase: SupabaseClient<Database>,
-  roomId: string,
-  clinicId: string,
-  scheduledDate: string,
-  scheduledTime: string,
-  durationMin: number
-): Promise<boolean> {
-  // H-6: те саме — збій читання не має виглядати як «перерв немає» (див. isOutsideRoomSchedule).
-  const { data: room, error: roomErr } = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
-  if (roomErr) throw roomErr;
-  const { data: ov, error: ovErr } = await supabase
-    .from("schedule_overrides").select("all_closed, label, rooms")
-    .eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
-  if (ovErr) throw ovErr;
-  const day = new Date(scheduledDate + "T00:00:00");
-  if (isNaN(day.getTime())) return false;
-  const breaks = effectiveRoomBreaks(day, roomId, room?.schedule ?? null, (ov as unknown as DayOverride) || null);
-  if (!breaks.length) return false;
-  const [h, m] = String(scheduledTime).split(":").map(Number);
-  return overlapsBreak((h || 0) * 60 + (m || 0), durationMin || 30, breaks);
+/** Чи належить викликач до ПЕРСОНАЛУ цього центру (направник/CEO — clinic_id NULL). */
+async function callerIsStaffOf(supabase: SupabaseClient<Database>, clinicId: string): Promise<boolean> {
+  return (await callerClinicId(supabase)) === clinicId;
 }
 
 /* Клінічні тривалості — кратні 5 хв, стеля 480 (= CHECK queue_entries_duration_min_chk,
@@ -865,6 +921,7 @@ export type RescheduleInput = {
   bufferTimeMin?: number; // буфер переноситься разом із записом (за замовч. 5)
   callStatus?: CallStatus; // напр. колл-лист підтверджує слот при переносі
   reason?: string | null; // причина переносу (обовʼязкова для «не відбулося»/неявки)
+  offSchedule?: boolean;  // 0077 — оператор підтвердив роботу поза графіком
 };
 
 /** Перенос записи на другой кабинет/дату/время (с пред-проверкой пересечения). */
@@ -896,10 +953,16 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
   /* Перенести в МИНУЛЕ не можна — жодною роллю. Клієнтський гейт тут не працював
      (isToday=false → перевірка "past" пропускалась), тому це і є основна діра. */
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
-  {
-    const blocked = await scheduleBlock(supabase, input.roomId, clinicId, input.scheduledDate, input.scheduledTime, input.durationMin);
-    if (blocked) return blocked;
-  }
+  /* 0077: поза графіком переносить лише персонал ЦЬОГО центру і лише з підтвердженням.
+     isStaff рахуємо від профілю викликача, а не від clinic_id ЗАПИСУ: сюди приходить
+     і направник (переносить своє направлення) — у нього clinic_id = NULL. */
+  const isStaff = await callerIsStaffOf(supabase, clinicId);
+  const gate = await scheduleBlock(
+    supabase, input.roomId, clinicId, input.scheduledDate, input.scheduledTime, input.durationMin,
+    { offSchedule: input.offSchedule, isStaff }
+  );
+  if (gate.blocked) return gate.blocked;
+  const offSchedule = gate.offSchedule;
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   // Абсолютні настінні мс (не хвилини доби): вікно може перетнути опівніч.
@@ -925,6 +988,9 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
     p_buffer: bufferMin,
     p_call: input.callStatus ?? undefined,
     p_reason: reason || undefined,
+    // 0077: прапорець ставиться ВСЕРЕДИНІ RPC — інакше check_not_during_break
+    // відхилив би перенос у перерву ще до того, як мітку встигли б записати.
+    p_off_schedule: offSchedule,
   });
 
   if (error) {
@@ -946,7 +1012,8 @@ export async function editQueueEntryStudies(
   id: string,
   studies: Json,
   durationMin: number,
-  bufferTimeMin?: number
+  bufferTimeMin?: number,
+  offSchedule?: boolean   // 0077: оператор підтвердив, що дослідження вийде за графік
 ): Promise<QueueActionResult> {
   /* Валідація НА СЕРВЕРІ (аудит 2026-07-11 + M-12). Клієнт обмежує повзунок
      графіком/перервою/наступним записом, але сам по собі клієнт нічого не гарантує:
@@ -959,12 +1026,14 @@ export async function editQueueEntryStudies(
     studies: sStudies,
     durationMin: zDuration,
     bufferTimeMin: zBuffer.optional(),
-  }), { id, studies, durationMin, bufferTimeMin });
+    offSchedule: z.boolean().optional(),
+  }), { id, studies, durationMin, bufferTimeMin, offSchedule });
   if (!v.ok) return v;
   id = v.data.id;
   studies = v.data.studies as unknown as Json;
   const dur = v.data.durationMin;
   bufferTimeMin = v.data.bufferTimeMin;
+  offSchedule = v.data.offSchedule;
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -976,17 +1045,16 @@ export async function editQueueEntryStudies(
   if (!cur) return { ok: false, error: "Запис не знайдено", code: "forbidden" };
 
   const active = cur.status === "scheduled" || cur.status === "waiting" || cur.status === "in_progress";
+  // 0077: подовження за графік / у перерву — можливе, але лише персоналу і з підтвердженням.
+  let offSchedFlag = false;
   if (active && cur.room_id && cur.clinic_id && cur.scheduled_date && cur.scheduled_time) {
-    try {
-      if (await isOutsideRoomSchedule(supabase, cur.room_id, cur.clinic_id, cur.scheduled_date, cur.scheduled_time, dur)) {
-        return { ok: false, error: "Дослідження не вміщується до кінця графіка кабінету", code: "off_schedule" };
-      }
-      if (await crossesRoomBreak(supabase, cur.room_id, cur.clinic_id, cur.scheduled_date, cur.scheduled_time, dur)) {
-        return { ok: false, error: "Дослідження перетинає перерву в роботі кабінету", code: "off_schedule" };
-      }
-    } catch {
-      return SCHED_READ_ERR;   // fail-closed: не змогли перевірити графік — не подовжуємо дослідження
-    }
+    const isStaff = await callerIsStaffOf(supabase, cur.clinic_id);
+    const gate = await scheduleBlock(
+      supabase, cur.room_id, cur.clinic_id, cur.scheduled_date, cur.scheduled_time, dur,
+      { offSchedule, isStaff }
+    );
+    if (gate.blocked) return gate.blocked;
+    offSchedFlag = gate.offSchedule;
 
     /* Мʼяка пред-перевірка перетину з НАСТУПНИМ записом (жорстку дає тригер
        check_no_overlap, 0068). Для пацієнта В КАБІНЕТІ вікно рахується від
@@ -1012,9 +1080,16 @@ export async function editQueueEntryStudies(
   const { data: prof } = await supabase.from("profiles").select("role").eq("id", user.id).maybeSingle();
   const changedBy = prof?.role === "referrer" ? "referrer" : "clinic";
 
-  // Буфер оновлюємо лише якщо переданий (редактор досліджень може його змінювати).
+  /* Буфер оновлюємо лише якщо переданий (редактор досліджень може його змінювати).
+     off_schedule — в ТОМУ САМОМУ патчі: тригер check_not_during_break бачить
+     new.duration_min і new.off_schedule разом, тож подовження в перерву проходить
+     рівно тоді, коли мітка вже стоїть. Окремим UPDATE «після» це б не спрацювало. */
   const patch: TablesUpdate<"queue_entries"> = { studies, duration_min: dur, has_contrast: hasContrast, studies_changed_by: changedBy };
   if (bufferTimeMin != null) patch.buffer_time_min = normBuffer(bufferTimeMin);
+  /* Мітку чіпаємо ЛИШЕ для активного запису: у завершеного/скасованого гард графіка
+     не рахувався (active=false), і offSchedFlag там завжди false — записавши його,
+     ми б мовчки зняли бейдж «поза графіком» з історичного запису. */
+  if (active) patch.off_schedule = offSchedFlag;
 
   // CAS: склад досліджень міняємо лише живому запису — не редагуємо завершений
   // (це змінило б «Дохід» CEO) і не воскрешаємо скасований.
@@ -1035,6 +1110,7 @@ export async function editQueueEntryStudies(
 export type BookingInput = {
   roomId: string;
   referrerId?: string | null;
+  offSchedule?: boolean;   // 0077 — оператор підтвердив роботу поза графіком
   name: string;
   phone?: string | null;
   email?: string | null;
@@ -1067,10 +1143,14 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
-  {
-    const blocked = await scheduleBlock(supabase, input.roomId, clinicId, input.scheduledDate, input.scheduledTime, input.durationMin);
-    if (blocked) return blocked;
-  }
+  /* 0077: createBooking доступний лише персоналу (clinic_id викликача = clinicId),
+     тому isStaff тут завжди true — але передаємо явно, щоб гейт лишався одним
+     і тим самим у всіх write-шляхах і не «розповзався». */
+  const gate = await scheduleBlock(
+    supabase, input.roomId, clinicId, input.scheduledDate, input.scheduledTime, input.durationMin,
+    { offSchedule: input.offSchedule, isStaff: true }
+  );
+  if (gate.blocked) return gate.blocked;
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   // Абсолютні настінні мс (не хвилини доби): вікно може перетнути опівніч.
@@ -1085,6 +1165,7 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
 
   const { data: created, error } = await supabase.from("queue_entries").insert({
     clinic_id: clinicId,
+    off_schedule: gate.offSchedule,   // 0077 — рахує сервер, не клієнт
     room_id: input.roomId,
     created_by: user.id,
     referrer_id: input.referrerId ?? null,
@@ -1310,9 +1391,16 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
   if (!roomAllowed) return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
 
   if (await isPastSlot(supabase, input.clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  /* 0077: направнику робота поза графіком НЕ доступна (рішення власника: він
+     записує пацієнтів ззовні й не знає, чи лишиться зміна). isStaff: false —
+     і жодного прапорця в схемі sReferralBooking навіть немає. Другий рубіж —
+     тригер trg_c_guard_off_schedule у БД. */
   {
-    const blocked = await scheduleBlock(supabase, input.roomId, input.clinicId, input.scheduledDate, input.scheduledTime, input.durationMin);
-    if (blocked) return blocked;
+    const gate = await scheduleBlock(
+      supabase, input.roomId, input.clinicId, input.scheduledDate, input.scheduledTime, input.durationMin,
+      { isStaff: false }
+    );
+    if (gate.blocked) return gate.blocked;
   }
 
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);

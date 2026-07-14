@@ -98,6 +98,7 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
       hasContra: !!b.hasContra, priorityLevel: b.priority,
       studies: b.studies || [], doctor: b.doctor ?? null, notes: b.notes ?? null, durationMin: b.dur, bufferTimeMin: b.buffer,
       scheduledDate: dateKey(b.date), scheduledTime: b.time, scheduledAt: at,
+      offSchedule: b.offSchedule,   // 0077
     });
     if (!res.ok) {
       return (res.code === "slot_taken" || res.code === "slot_unavailable")

@@ -15,9 +15,12 @@
      planbuf → зелена штриховка    — буфер планованого дослідження (коли кабінет звільниться).
 
    Решта станів:
-     blocked → .busy  (кабінет на ремонті/ТО);
-     break   → .brk   (сіра штриховка — перерва в роботі кабінету);
-     tight   → .tight (помаранчевий — не вміщується: запис / кінець графіка / перерва);
+     blocked  → .busy  (кабінет на ремонті/ТО);
+     break    → .brk   (сіра штриховка — перерва в роботі кабінету);
+     tight    → .tight (помаранчевий — не вміщується: запис / кінець графіка / перерва);
+     offsched → .offsched (0077 — ПОЗА ГРАФІКОМ: після закриття або в перерву).
+                Слот КЛІКАБЕЛЬНИЙ, але вибір веде до діалогу підтвердження —
+                тому це «вільний» стан (freeStates), а не .taken;
      past, offhours, closed → .taken (приглушено).
    Кожна модалка передає власний stateOf() — валідація не змінюється. */
 
@@ -74,6 +77,7 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
                       + (!plan && planBuf ? " planbuf" : "")
                       + (!free ? " taken" : "")
                       + (st === "tight" ? " tight" : "")
+                      + (st === "offsched" ? " offsched" : "")
                       + (st === "break" ? " brk" : "")
                       + (st === "buffer" ? " busybuf" : "")
                       + ((st === "busy" || st === "blocked") ? " busy" : "")}

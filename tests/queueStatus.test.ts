@@ -49,9 +49,28 @@ describe("computeCallBlock — чому не можна викликати в к
     const entries = [{ id: "a", room_id: "r1", status: "in_progress", scheduled_time: "10:00" }];
     expect(computeCallBlock(P, entries, { nowMs: NOW })).toEqual({ code: "room_busy" });
   });
-  it("дослідження не влізе до кінця графіка", () => {
+  /* 0077: кінець робочого дня більше НЕ блокує виклик — центр має добити день.
+     Це попередження, яке оператор підтверджує (confirmable: true). Дошки саме за
+     цим прапорцем відрізняють «показати діалог» від «заблокувати кнопку». */
+  it("дослідження не влізе до кінця графіка → ПІДТВЕРДЖУВАНЕ, не блок", () => {
     const r = computeCallBlock(P, [], { schedEnd: "10:45", nowMs: NOW });
-    expect(r).toMatchObject({ code: "sched_overrun", durationMin: 30, end: "10:45" });
+    expect(r).toMatchObject({ code: "sched_overrun", durationMin: 30, end: "10:45", confirmable: true });
+  });
+
+  /* Порядок перевірок — частина безпеки. Якщо кінець дня повертався б РАНІШЕ за
+     накладення, оператор підтвердив би «так, поза графіком» і завів пацієнта
+     поверх наступного запису: підтвердження не лікує чужу бронь. */
+  it("накладення ПЕРЕВАЖАЄ кінець дня (жорсткий блок, не підтвердження)", () => {
+    const entries = [{ id: "c", room_id: "r1", status: "scheduled", scheduled_time: "11:00", patient_name: "Іваненко І." }];
+    const r = computeCallBlock(P, entries, { schedEnd: "10:45", nowMs: NOW });
+    expect(r).toMatchObject({ code: "clash", time: "11:00" });
+    expect(r?.confirmable).toBeFalsy();
+  });
+
+  it("простій кабінету підтвердженням не обходиться", () => {
+    const r = computeCallBlock(P, [], { roomBlocked: true, schedEnd: "10:45", nowMs: NOW });
+    expect(r).toMatchObject({ code: "room_blocked" });
+    expect(r?.confirmable).toBeFalsy();
   });
   it("виклик зараз наїде на наступний запис", () => {
     // Зараз 10:30 + 30 хв + 5 буфер = до 11:05 → налазить на 11:00.

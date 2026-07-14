@@ -103,13 +103,20 @@ export type CallBlockOpts = {
   notToday?: boolean;
   nowMs?: number;
 };
+/* 0077: sched_overrun — це вже НЕ блок, а ПОПЕРЕДЖЕННЯ (confirmable: true).
+   Рішення власника: центр має добити день — усіх, кого записано на сьогодні,
+   можна викликати в кабінет і після закриття, але через явне підтвердження.
+   Стелі (+2 год) тут НЕМАЄ свідомо: вона обмежує НОВИЙ запис у сітці, а цей
+   пацієнт уже записаний — відмовити йому о 20:30 «бо пізно» безглуздо.
+   Решта кодів лишаються жорсткими блоками: чужий день, простій, зайнятий
+   кабінет і накладення на наступний запис підтвердженням не лікуються. */
 export type CallBlock =
-  | { code: "wrong_day" }
-  | { code: "room_blocked" }
-  | { code: "room_closed" }
-  | { code: "room_busy" }
-  | { code: "sched_overrun"; durationMin: number; end: string }
-  | { code: "clash"; durationMin: number; time: string; name?: string | null };
+  | { code: "wrong_day"; confirmable?: false }
+  | { code: "room_blocked"; confirmable?: false }
+  | { code: "room_closed"; confirmable?: false }
+  | { code: "room_busy"; confirmable?: false }
+  | { code: "sched_overrun"; durationMin: number; end: string; confirmable: true }
+  | { code: "clash"; durationMin: number; time: string; name?: string | null; confirmable?: false };
 
 export function computeCallBlock(
   p: CallBlockInfo,
@@ -123,18 +130,26 @@ export function computeCallBlock(
   if (opts.schedClosed) return { code: "room_closed" };
   if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return { code: "room_busy" };
   const durationMin = p.duration_min || 30;
+  /* Накладення на НАСТУПНИЙ запис перевіряємо ДО виходу за графік (0077).
+     Порядок важливий: обидва можуть спрацювати одночасно (кінець дня + хтось
+     записаний слідом). clash — жорсткий блок, sched_overrun — підтвердження;
+     якби першим повертався sched_overrun, оператор підтвердив би «так, поза
+     графіком» і завів пацієнта поверх наступного. Спершу — те, що не лікується
+     підтвердженням. */
+  const clash = lateCallClash(p, entries, nowMs);
+  if (clash) return { code: "clash", durationMin, time: clash.time, name: clash.name };
+
   // Виклик ЗАРАЗ має вміститись до кінця робочого графіка кабінету (саме
   // дослідження; буфер прибирання може вийти за межі — як у редакторі слотів).
+  // 0077: не блок, а підтвердження — «робочий день скінчився, все одно викликати?».
   if (p.room_id && opts.schedEnd) {
     const [eh, em] = String(opts.schedEnd).split(":").map(Number);
     const endMin = (eh || 0) * 60 + (em || 0);
     const nowMin = wallMinOfDay(nowMs);
-    if (nowMin + durationMin > endMin) return { code: "sched_overrun", durationMin, end: opts.schedEnd };
+    if (nowMin + durationMin > endMin) {
+      return { code: "sched_overrun", durationMin, end: opts.schedEnd, confirmable: true };
+    }
   }
-  // Пізній виклик: фактичне вікно (зараз + тривалість + буфер) не має налазити
-  // на наступний запис кабінету (напр. після «все ж прийшов»).
-  const clash = lateCallClash(p, entries, nowMs);
-  if (clash) return { code: "clash", durationMin, time: clash.time, name: clash.name };
   return null;
 }
 

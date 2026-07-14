@@ -56,6 +56,7 @@ type QEntry = {
   studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null; referrer: { full_name: string | null } | null;
   room_id: string | null; updated_at: string; in_progress_at: string | null; clarify_at?: string | null;
   reschedule_origin?: Json | null;
+  off_schedule?: boolean | null;   // 0077 — запис зроблено поза графіком (за підтвердженням)
 };
 type RescheduleOrigin = { from_date?: string | null; from_time?: string | null; from_room?: string | null; from_status?: string | null; reason?: string | null };
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
@@ -450,6 +451,11 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         <div className="q-status-cell">
           <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
           {rescheduling && <span className="badge red" title="Апарат заблоковано — потрібен перенос на інший слот">🔧 Перезапис</span>}
+          {/* 0077 — слід рішення: цей запис зробили/перенесли ПОЗА графіком кабінету
+              (після закриття або в перерву) за явним підтвердженням персоналу. */}
+          {p.off_schedule && (
+            <span className="badge offsched" title="Запис поза графіком кабінету (після закриття або в перерву) — підтверджено персоналом">⏰ Поза графіком</span>
+          )}
           {collision?.zone === "clash" && (
             <span className="badge red" title={`Кабінет звільниться о ${collision.freeAt} — дослідження, що триває, наїжджає на цей слот на ${collision.overlapMin} хв. Розгорніть запис, щоб обрати рішення`}>⚠ Накладення</span>
           )}
@@ -816,7 +822,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
          іншим дошкам, які на неї ж і перезавантажувались. Не повертати. */
       const { data, error } = await supabase
         .from("queue_entries")
-        .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, studies_changed_by, contraindications, cito, priority_level, doctor, referrer:referrer_id(full_name), room_id, updated_at, in_progress_at, clarify_at, reschedule_origin")
+        .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, studies_changed_by, contraindications, cito, priority_level, doctor, referrer:referrer_id(full_name), room_id, updated_at, in_progress_at, clarify_at, reschedule_origin, off_schedule")
         .eq("clinic_id", clinicId)
         .eq("scheduled_date", dayKey)
         .order("scheduled_time", { ascending: true });
@@ -1131,12 +1137,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
   /* Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
      Виняток — 'stale': переносити вже нічого (запис завершено/скасовано), модалку
      закриваємо і синхронізуємо дошку. */
-  async function doReschedule({ roomId, date, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
+  async function doReschedule({ roomId, date, time, dur, buffer, reason, offSchedule }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean }) {
     const p = reschedFor;
     if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason, offSchedule });
     if (!res.ok) {
       if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
       reload();   // сітка модалки підтягне свіжу зайнятість
@@ -1182,10 +1188,14 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
   }
 
   const openEditStudies = (p: QEntry) => setEditStudiesFor(p);
-  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number }) {
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number; offSchedule?: boolean }) {
     const p = editStudiesFor;
     if (!p) return;
-    const res = await editQueueEntryStudies(p.id, (arr || []) as unknown as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer);
+    /* 0077: згоду віддає МОДАЛКА (meta.offSchedule) — це або успадкований прапорець
+       запису, що вже стоїть поза графіком, або нова галочка, якщо тривалість щойно
+       перетнула межу. Брати тут просто p.off_schedule не можна: тоді давня згода
+       мовчки дозволяла б розтягувати дослідження далі без нового підтвердження. */
+    const res = await editQueueEntryStudies(p.id, (arr || []) as unknown as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer, meta?.offSchedule);
     setEditStudiesFor(null);
     if (!res.ok) {
       if (handledStale(res)) return;
@@ -1204,26 +1214,35 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
     reload();
   }
 
-  function inProgressBlockReason(p: QEntry): string | null {
+  function callBlockOf(p: QEntry) {
     const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)) : null;
-    const r = computeCallBlock(p, entries, {
+    return computeCallBlock(p, entries, {
       notToday: !isToday,
       roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
       schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
       schedEnd: sched && !sched.closed ? sched.end : null,
     });
-    if (!r) return null;
+  }
+  /* 0077: ЖОРСТКА причина, чому виклик неможливий. sched_overrun сюди більше не
+     потрапляє — робочий день, що скінчився, тепер не блокує виклик, а вимагає
+     підтвердження (центр має добити день). Кнопку через це НЕ вимикаємо. */
+  function inProgressBlockReason(p: QEntry): string | null {
+    const r = callBlockOf(p);
+    if (!r || r.confirmable) return null;
     if (r.code === "wrong_day") return "Запис не на сьогодні — викликати в кабінет можна лише пацієнтів сьогоднішнього дня";
     if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат";
     if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
     if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
-    if (r.code === "sched_overrun") return `Дослідження ${r.durationMin} хв не вміститься до кінця графіка кабінету (${r.end}) — перенесіть запис`;
     if (r.code === "clash") return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис${r.name ? " (" + String(r.name).split(" ").slice(0, 2).join(" ") + ")" : ""}. Перенесіть один із записів`;
     return null;
   }
+  // Виклик поза графіком — через діалог підтвердження (а не тост під оверлеєм).
+  const [offCallAsk, setOffCallAsk] = useState<{ p: QEntry; end: string; durationMin: number } | null>(null);
+  const [offCallBusy, setOffCallBusy] = useState(false);
   function callPatient(p: QEntry) {
-    const reason = inProgressBlockReason(p);
-    if (reason) { notify(reason, "error"); return; }
+    const r = callBlockOf(p);
+    if (r && !r.confirmable) { notify(inProgressBlockReason(p) || "Викликати зараз неможливо", "error"); return; }
+    if (r && r.code === "sched_overrun") { setOffCallAsk({ p, end: r.end, durationMin: r.durationMin }); return; }
     setStatus(p.id, "in_progress");
   }
   function setStatusGuarded(p: QEntry, status: string) {
@@ -1254,6 +1273,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
       hasContra: !!b.hasContra, priorityLevel: b.priority,
       studies: b.studies || [], doctor: b.doctor ?? null, notes: b.notes ?? null, durationMin: b.dur, bufferTimeMin: b.buffer,
       scheduledDate: dateKey(b.date), scheduledTime: b.time, scheduledAt: at,
+      offSchedule: b.offSchedule,   // 0077 — згода оператора на роботу поза графіком
     });
     if (!res.ok) {
       /* Помилку ПОВЕРТАЄМО модалці — вона покаже її в собі. Раніше тут був notify(),
@@ -1594,11 +1614,11 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
       )}
 
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} allowOffSchedule />
       )}
 
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} offSchedule={!!editStudiesFor.off_schedule} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {editPatientFor && (
         <PatientEditModal entryId={editPatientFor.id} canEditPriority={canEditPriority} onClose={() => setEditPatientFor(null)} onSaved={reload} />
@@ -1616,6 +1636,28 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
           onClose={() => setEmergencyOpen(false)}
           onStop={doEmergencyStop}
           onResume={doEmergencyResume}
+        />
+      )}
+      {/* 0077 — виклик у кабінет після кінця робочого дня. Центр має добити день:
+          кнопка не блокується, але дія свідома. Тут доречний саме ConfirmDialog
+          (не галочка, як у модалках): виклик робиться одним кліком просто з дошки. */}
+      {offCallAsk && (
+        <ConfirmDialog
+          title="Робочий день кабінету скінчився — викликати?"
+          text={<>Кабінет працює до <b>{offCallAsk.end}</b>, а дослідження триває <b>{offCallAsk.durationMin} хв</b>.
+            Викликати <b>{offCallAsk.p.patient_name}</b> (запис о <b>{offCallAsk.p.scheduled_time}</b>) <b>поза графіком</b>?</>}
+          confirmLabel="⏰ Так, викликати"
+          cancelLabel="Ні"
+          busy={offCallBusy}
+          onClose={() => setOffCallAsk(null)}
+          onConfirm={async () => {
+            const a = offCallAsk;
+            if (!a) return;
+            setOffCallBusy(true);
+            await setStatus(a.p.id, "in_progress");
+            setOffCallBusy(false);
+            setOffCallAsk(null);
+          }}
         />
       )}
       {cancelAsk && (
