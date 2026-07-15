@@ -1188,6 +1188,41 @@ export type Database = {
           not_held: number;
         }[];
       };
+      /* 0080 + 0081: ЄДИНИЙ шлях, яким у системі зʼявляється статус
+         'needs_reschedule', і єдине місце, де записи кабінету рухаються масово.
+         Застосовує ЛИШЕ адмін свого центру (гейт усередині RPC — вона видана
+         authenticated). Все-або-нічого: пост-умова moved + flagged = розмір плану,
+         інакше raise і відкат.
+
+         p_plan  — [{id, kind: 'shift'|'no_fit'|'conflict', from:"HH:MM",
+                     to:"HH:MM"|null, offSchedule?: boolean,
+                     offScheduleKind?: 'after_hours'|'break',
+                     reason?: 'on_time'|'cascade'|'no_slot_today'|'overlap_with_actual'}]
+                   ⚠️ 'keep' НЕ приймається (0081): застосовувати там нічого, і в
+                   пост-умові він чекав би UPDATE, якого не буде. Фільтрує Server Action.
+         p_expected — знімок [{id, status}], який бачив адмін. ЗОБОВʼЯЗАНИЙ покривати
+                   весь p_plan (у 0080 порожній знімок мовчки вимикав stale-гард).
+
+         Повертає applied=false + stale_ids, якщо стан розійшовся зі знімком або
+         запис уже не в ('scheduled','waiting') — тоді в БД НІЧОГО не змінено. */
+      queue_apply_delay_plan_rpc: {
+        Args: {
+          p_room: string;
+          p_source: string;
+          p_delay_min: number;
+          p_strategy: "cascade_shift" | "reschedule_conflicts";
+          p_plan: Json;
+          p_expected: Json;
+          p_reason?: string | null;
+        };
+        Returns: {
+          applied: boolean;
+          moved: number;
+          flagged: number;
+          stale_ids: string[];
+          event_id: string | null;
+        }[];
+      };
       outbox_mark_failed: {
         Args: { p_id: number; p_error: string };
         Returns: undefined;

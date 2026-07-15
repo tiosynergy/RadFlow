@@ -46,6 +46,10 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   no_show: { label: "Неявка", cls: "red" },
   not_held: { label: "Не відбулося", cls: "gray" },
   cancelled: { label: "Скасовано", cls: "gray" },
+  // 0079/0080 — слот пацієнта втрачено через затримку в кабінеті; новий час підбирає центр.
+  // Направник має це БАЧИТИ (інакше запис виглядав би як звичайне «Очікує»), але не діє:
+  // статусів він не змінює (гард guard_status_change_referrer, 0048).
+  needs_reschedule: { label: "Потребує переносу", cls: "orange" },
 };
 /* Статус обдзвону — read-only бейдж (направник бачить, але не змінює). */
 const CALL_META: Record<string, { label: string; icon: string }> = {

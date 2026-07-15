@@ -27,9 +27,12 @@ interface MiniCalendarProps {
       обраного центру; на дошках персоналу можна не передавати — візьметься
       singleton setClinicTz(). Без цього «сьогодні» підсвічувалося по браузеру. */
   tz?: string;
+  /** Базові графіки кабінетів (rooms.schedule) — щоб позначати «вихідний» за
+      реальним графіком, а не лише за неділею. Не передані → фолбек на неділю. */
+  roomSchedules?: unknown[];
 }
 
-export default function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, onEditSchedule, highlightSelected = true, tz }: MiniCalendarProps) {
+export default function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, onEditSchedule, highlightSelected = true, tz, roomSchedules }: MiniCalendarProps) {
   const today = wallToday0(tz);
   const ovMap = overridesByDate || {};
   const [viewMonth, setViewMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
@@ -58,7 +61,7 @@ export default function MiniCalendar({ selectedDate, onSelectDate, overridesByDa
           const isToday = sameDay(cd, today);
           const isSel = highlightSelected && sameDay(cd, selectedDate);
           const ov = ovMap[dateKey(cd)] || null;
-          const st = dayStatus(ov, cd);
+          const st = dayStatus(ov, cd, roomSchedules);
           const markClosed = st.kind === "closed";
           const markCustom = st.kind === "custom";
           return (

@@ -1275,6 +1275,15 @@ select.inp { cursor: pointer; }
    дослідження звідти вже не влазить), а при рівній специфічності з !important
    виграє останнє правило. */
 @media (max-width: 560px) { .slot-grid4 { grid-template-columns: repeat(2, 1fr); } }
+/* Тач-таргети 5-хв сітки (WCAG 2.5.8, ≥24px). На ДОТИКОВИХ екранах комірки
+   збільшуємо і робимо 2 блоки в рядку (ширші комірки, ~40×30px). На миші —
+   лишається щільна сітка (pointer: fine її не зачіпає). */
+@media (pointer: coarse) {
+  .slot-grid4 { grid-template-columns: repeat(2, 1fr); max-height: 60vh; }
+  .slot-blk-cells { gap: 4px; }
+  .slot-blk-cells .slot { min-height: 32px; padding: 8px 0; font-size: 12px; border-radius: 6px; }
+  .slot-blk-lab { font-size: 12px; }
+}
 
 /* Перерви в редакторі графіка на дату (ScheduleEditModal) */
 .sch-breaks { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }

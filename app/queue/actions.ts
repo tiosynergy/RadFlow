@@ -19,11 +19,16 @@ import type { Database, Json, QueueStatus, CallStatus, TablesUpdate, QueueDelayP
 import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
-import { wallNow, wallInstant, wallDayKey, wallInstantOf } from "@/lib/incidents";
+import { wallNow, wallInstant, wallDayKey, wallInstantOf, wallMinOfDay, wallMinOfInstant } from "@/lib/incidents";
 import {
   roomScheduleFor, effectiveRoomBreaks, offScheduleKind, OFF_SCHED_GRACE_MIN,
-  type DayOverride, type OffScheduleInfo,
+  type DayOverride, type OffScheduleInfo, type Break, type EffectiveRoomSchedule,
 } from "@/lib/schedule";
+import { slotToMin, type BusySpan } from "@/lib/slots";
+import {
+  actualFreeAtMin, delayTriggers, buildCascadePlan, buildConflictPlan,
+  type DelayEntry, type DelayPlan,
+} from "@/lib/delayPlan";
 import {
   parseInput, safeDbError, zUuid, zDateKey, zTime, zIsoInstant, zName, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
@@ -306,6 +311,18 @@ const BREAK_ERR = {
   code: "off_schedule" as const,
 };
 
+/* Мапінг тригера графіка check_room_schedule (0084) — останній рубіж у БД.
+   Нормальний шлях відхиляє scheduleBlock раніше з тим самим кодом; сюди доходить
+   прямий виклик/розсинхрон (напр. графік змінили між preview і apply плану затримки).
+   Коди тригера — префікси повідомлень; сирий текст користувачу не показуємо. */
+function schedTriggerError(message: string): QueueActionResult | null {
+  if (/^ROOM_CLOSED/.test(message)) return { ok: false, error: "Кабінет не працює цього дня — оберіть іншу дату", code: "off_schedule" };
+  if (/^BEFORE_OPEN/.test(message)) return { ok: false, error: "Кабінет ще не відкрито в цей час — оберіть слот у межах графіка", code: "off_schedule" };
+  if (/^TOO_LATE/.test(message))    return { ok: false, error: "Занадто пізно — за межами дозволеного вікна роботи кабінету", code: "off_schedule" };
+  if (/^OFF_SCHEDULE/.test(message)) return { ok: false, error: "Робота після закриття кабінету потребує підтвердження", code: "off_schedule" };
+  return null;
+}
+
 // H-6, fail-closed: не змогли прочитати графік → НЕ пускаємо запис (раніше гард
 // мовчки відкочувався на дефолт 08:00–18:00 і пропускав бронь у зачинений кабінет).
 const SCHED_READ_ERR = {
@@ -441,6 +458,7 @@ function classifyError(err: { code?: string; message?: string }, status?: QueueS
   // термінального запису (зміна статусу «живого» рядка гард пропускає), але
   // сирий текст Postgres користувачу показувати не можна.
   if (/^BREAK|перетинає перерву/i.test(message)) return BREAK_ERR;
+  { const se = schedTriggerError(message); if (se) return se; }   // 0084 — тригер графіка
   if (code === "23P01" || /overlap|exclusion|incident/i.test(message)) {
     // M-14: сирий текст Postgres (id кабінету, імена констрейнтів) — у лог, не клієнту.
     safeDbError("queue.status", err);
@@ -894,6 +912,7 @@ function mapBookingError(message: string, code = ""): QueueActionResult {
   // BREAK — тригер 0067 (перерва кабінету). Перевіряти треба ДО overlap/exclusion:
   // виняток піднімається з тим самим SQLSTATE 23P01.
   if (/^BREAK|перетинає перерву/i.test(message)) return BREAK_ERR;
+  { const se = schedTriggerError(message); if (se) return se; }   // 0084 — тригер графіка
   /* M-14: коди лишаються ті самі (UI на них зав'язаний), але НАЗОВНІ йде наш текст,
      а сирий Postgres (id кабінету, імена констрейнтів/таблиць) — у лог сервера. */
   if (/incident/i.test(message)) {
@@ -1503,4 +1522,360 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
 
   if (error) return mapBookingError(error.message, error.code ?? "");
   return { ok: true, id: created?.id };
+}
+
+/* ============================================================================
+   0078–0081 — ПОЛІТИКА ЧЕРГИ ПРИ ЗАТРИМЦІ (етап 3b)
+
+   Дослідження в кабінеті затягнулося і наїжджає на наступні записи. Сервер рахує
+   ДВА плани (зсунути чергу / перенести конфліктних), адмін дивиться preview і
+   підтверджує один. Застосування — атомарне, через queue_apply_delay_plan_rpc.
+
+   ЧОМУ ПЛАН РАХУЄ СЕРВЕР, А НЕ БРАУЗЕР
+   ------------------------------------
+   `delay_min` і сітка слотів залежать від «зараз» — а «зараз» у цьому продукті
+   існує ЛИШЕ в настінному часі клініки (clinics.timezone). Порахувавши план по
+   годиннику браузера, оператор із іншої зони зсунув би чергу на години. Тому тут
+   жодного `new Date()` для доменного часу: тільки wallNow(tz) / wallMinOfInstant(iso, tz).
+   Ті самі чисті функції (lib/delayPlan.ts) виконує і клієнт — щоб адмін бачив рівно
+   те, що застосується. Дві реалізації розійшлися б; у цьому проєкті так уже було
+   (0074: сітка малювала слот зеленим, а тригер бронь відхиляв).
+   ============================================================================ */
+
+/** Графік кабінету + перерви на дату. Кидає при збої читання (H-6, fail-closed). */
+async function roomDayCtx(
+  supabase: SupabaseClient<Database>,
+  roomId: string,
+  clinicId: string,
+  date: string
+): Promise<{ sched: EffectiveRoomSchedule; breaks: Break[] }> {
+  const { data: room, error: roomErr } = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+  if (roomErr) throw roomErr;
+  const { data: ov, error: ovErr } = await supabase
+    .from("schedule_overrides").select("all_closed, label, rooms")
+    .eq("clinic_id", clinicId).eq("override_date", date).maybeSingle();
+  if (ovErr) throw ovErr;
+
+  const day = new Date(date + "T00:00:00");
+  const override = (ov as unknown as DayOverride) || null;
+  return {
+    sched: roomScheduleFor(day, roomId, override, room?.schedule ?? null),
+    breaks: effectiveRoomBreaks(day, roomId, room?.schedule ?? null, override),
+  };
+}
+
+/* Вікна простоїв кабінету на дату — у хвилинах доби, для планувальника.
+   Час інцидентів зберігається в «настінному UTC» (той самий фрейм, що wallInstant),
+   тому віднімаємо настінну північ доби, а не робимо getHours().
+   Клампінг: початок — floor, кінець — ceil. «Округлення як у школі» повернуло б
+   секунди зайнятого часу в «вільні», і тригер відхилив би бронь саме в них (§6.1.0). */
+async function incidentSpansFor(
+  supabase: SupabaseClient<Database>,
+  roomId: string,
+  date: string
+): Promise<BusySpan[]> {
+  const { data, error } = await supabase
+    .from("incidents")
+    .select("started_at, blocked_until, status")
+    .eq("room_id", roomId)
+    .eq("status", "active");
+  if (error) throw error;   // H-6: збій читання простоїв ≠ «простоїв немає»
+
+  const day0 = wallInstant(date, "00:00");
+  const spans: BusySpan[] = [];
+  for (const i of data || []) {
+    const sMs = new Date(i.started_at).getTime();
+    const eMs = i.blocked_until ? new Date(i.blocked_until).getTime() : day0 + 24 * 3600e3;
+    if (!isFinite(sMs) || !isFinite(eMs)) continue;
+    const s = Math.max(0, Math.floor((sMs - day0) / 60000));
+    const e = Math.min(1440, Math.ceil((eMs - day0) / 60000));
+    if (e > s) spans.push({ s, e });
+  }
+  return spans;
+}
+
+export interface DelayPreview {
+  sourceId: string;
+  roomId: string;
+  date: string;
+  /** Фактичний наїзд на найближчий запис, хв (> порога центру). */
+  delayMin: number;
+  /** Хвилина доби, коли кабінет реально звільниться (з буфером прибирання). */
+  freeAtMin: number;
+  policy: QueueDelayPolicy;
+  thresholdMin: number;
+  cascade: DelayPlan;
+  conflicts: DelayPlan;
+  /** Знімок статусів записів, які план може чіпати. Його ж шлемо в RPC як p_expected. */
+  expected: { id: string; status: QueueStatus }[];
+}
+
+export type DelayPreviewResult =
+  | { ok: true; preview: DelayPreview | null }   // null = затримки немає (або вже не в кабінеті)
+  | { ok: false; error: string; code?: "auth" | "forbidden" | "generic" };
+
+/* Рахує обидва плани. Дивитись може будь-хто з ПЕРСОНАЛУ центру — радіолог теж
+   (рішення власника: він бачить затримку і може ініціювати перерахунок), а от
+   ЗАСТОСОВУЄ лише адмін (гейт в applyDelayPlan і, головне, у самій RPC). */
+export async function previewDelayPlan(sourceEntryId: string): Promise<DelayPreviewResult> {
+  const v = parseInput("previewDelayPlan", zUuid, sourceEntryId);
+  if (!v.ok) return { ok: false, error: v.error, code: "generic" };
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const { data: src, error: srcErr } = await supabase
+    .from("queue_entries")
+    .select("id, clinic_id, room_id, status, scheduled_date, scheduled_time, duration_min, buffer_time_min, in_progress_at")
+    .eq("id", v.data)
+    .maybeSingle();
+  if (srcErr) return { ok: false, error: safeDbError("previewDelayPlan.src", srcErr), code: "generic" };
+  if (!src || !src.room_id || !src.scheduled_date) {
+    return { ok: false, error: "Запис не знайдено", code: "forbidden" };
+  }
+  // Персонал ЦЬОГО центру (у направника/CEO clinic_id = NULL → сюди не пройдуть).
+  if (!(await callerIsStaffOf(supabase, src.clinic_id))) {
+    return { ok: false, error: "Немає доступу", code: "forbidden" };
+  }
+  // План існує рівно доти, доки триває те, що затягнулося.
+  if (src.status !== "in_progress" || !src.in_progress_at) return { ok: true, preview: null };
+
+  const { data: clinic, error: clErr } = await supabase
+    .from("clinics")
+    .select("timezone, queue_delay_policy, overlap_threshold_min, max_cascade_patients, allow_after_hours_shift")
+    .eq("id", src.clinic_id)
+    .maybeSingle();
+  if (clErr) return { ok: false, error: safeDbError("previewDelayPlan.clinic", clErr), code: "generic" };
+  if (!clinic) return { ok: false, error: "Центр не знайдено", code: "forbidden" };
+
+  const tz = clinic.timezone || "UTC";
+  const roomId = src.room_id;
+  const date = src.scheduled_date;
+
+  // Записи кабінету на цей день, які ще чекають (рухати можна тільки їх).
+  const { data: rows, error: rowsErr } = await supabase
+    .from("queue_entries")
+    .select("id, status, scheduled_time, duration_min, buffer_time_min, patient_name")
+    .eq("room_id", roomId)
+    .eq("scheduled_date", date)
+    .in("status", ["scheduled", "waiting"]);
+  if (rowsErr) return { ok: false, error: safeDbError("previewDelayPlan.rows", rowsErr), code: "generic" };
+
+  let sched: EffectiveRoomSchedule, breaks: Break[], incidentSpans: BusySpan[];
+  try {
+    ({ sched, breaks } = await roomDayCtx(supabase, roomId, src.clinic_id, date));
+    incidentSpans = await incidentSpansFor(supabase, roomId, date);
+  } catch (e) {
+    // fail-closed: не змогли прочитати графік/простої → плану НЕ показуємо.
+    // Порада «перенести на 14:00» на застарілих даних гірша за її відсутність.
+    return { ok: false, error: safeDbError("previewDelayPlan.ctx", e as { code?: string; message?: string }), code: "generic" };
+  }
+
+  const entries: DelayEntry[] = (rows || []) as DelayEntry[];
+
+  /* «Зараз» і фактичний старт — у НАСТІННОМУ часі клініки, зона передана ЯВНО.
+     wallNow() без аргументу мовчки взяв би зону сервера Vercel (UTC) — і о 09:00
+     у Києві план вважав би, що зараз 06:00. */
+  const nowMin = wallMinOfDay(wallNow(tz));
+  const runStartMin = wallMinOfInstant(src.in_progress_at, tz);
+  if (runStartMin == null) return { ok: true, preview: null };
+
+  const run: DelayEntry = {
+    id: src.id, status: src.status,
+    scheduled_time: src.scheduled_time,
+    duration_min: src.duration_min,
+    buffer_time_min: src.buffer_time_min,
+  };
+  const freeAtMin = actualFreeAtMin(run, runStartMin, nowMin);
+
+  const thresholdMin = clinic.overlap_threshold_min ?? 15;
+  const delayMin = delayTriggers(freeAtMin, entries, thresholdMin);
+  // Наїзд ≤ порога — це те, що буфер і має поглинати. Сценарій не запускаємо.
+  if (delayMin <= 0) return { ok: true, preview: null };
+
+  const ctx = {
+    freeAtMin,
+    schedStartMin: slotToMin(sched.start),
+    schedEndMin: slotToMin(sched.end),
+    breaks,
+    incidentSpans,
+    allowAfterHours: !!clinic.allow_after_hours_shift,
+    maxItems: clinic.max_cascade_patients ?? 30,
+  };
+
+  return {
+    ok: true,
+    preview: {
+      sourceId: src.id,
+      roomId,
+      date,
+      delayMin,
+      freeAtMin,
+      policy: (clinic.queue_delay_policy ?? "manual") as QueueDelayPolicy,
+      thresholdMin,
+      cascade: buildCascadePlan(entries, ctx),
+      conflicts: buildConflictPlan(entries, ctx),
+      expected: entries.map((e) => ({ id: e.id, status: e.status as QueueStatus })),
+    },
+  };
+}
+
+/* ===== Застосування плану ===== */
+
+const sDelayItem = z.object({
+  id: zUuid,
+  // 'keep' сюди не приходить: застосовувати там нічого, а RPC (0081) його відхиляє.
+  kind: z.enum(["shift", "no_fit", "conflict"]),
+  from: zTime,
+  to: zTime.nullable(),
+});
+
+const sApplyDelayPlan = z.object({
+  sourceId: zUuid,
+  strategy: z.enum(["cascade_shift", "reschedule_conflicts"]),
+  delayMin: z.number().int().positive().max(480),
+  items: z.array(sDelayItem).min(1).max(100),
+  expected: z.array(z.object({ id: zUuid, status: zQueueStatusAny })).max(200),
+  reason: zOptText(500),
+});
+
+/* code — той самий union, що в QueueActionResult (щоб пропускати готові відповіді
+   offSchedError / offSchedNeedsConfirm / SCHED_READ_ERR без звуження типу), плюс
+   staleIds для applied=false. */
+type QueueErrResult = Extract<QueueActionResult, { ok: false }>;
+type QueueErrCode = QueueErrResult["code"];
+export type ApplyDelayResult =
+  | { ok: true; moved: number; flagged: number; eventId: string | null }
+  | { ok: false; error: string; code?: QueueErrCode; staleIds?: string[] };
+
+export async function applyDelayPlan(raw: {
+  sourceId: string;
+  strategy: "cascade_shift" | "reschedule_conflicts";
+  delayMin: number;
+  items: { id: string; kind: "shift" | "no_fit" | "conflict"; from: string; to: string | null }[];
+  expected: { id: string; status: string }[];
+  reason?: string | null;
+}): Promise<ApplyDelayResult> {
+  const v = parseInput("applyDelayPlan", sApplyDelayPlan, raw);
+  if (!v.ok) return { ok: false, error: v.error, code: "generic" };
+  const input = v.data;
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  /* Роль читаємо з БД. Гейт адміна є і всередині RPC (він і є справжнім рубежем —
+     RPC видана authenticated), але падати тут дає ЗРОЗУМІЛУ помилку замість сирого
+     42501, і не марнує роботу на розрахунок графіка. */
+  const { data: prof } = await supabase.from("profiles").select("role, clinic_id").eq("id", user.id).maybeSingle();
+  if (!prof?.clinic_id || prof.role !== "admin") {
+    return { ok: false, error: "Масову зміну черги підтверджує адміністратор центру", code: "forbidden" };
+  }
+
+  const { data: src, error: srcErr } = await supabase
+    .from("queue_entries")
+    .select("id, clinic_id, room_id, status, scheduled_date")
+    .eq("id", input.sourceId)
+    .maybeSingle();
+  if (srcErr) return { ok: false, error: safeDbError("applyDelayPlan.src", srcErr), code: "generic" };
+  if (!src || !src.room_id || !src.scheduled_date || src.clinic_id !== prof.clinic_id) {
+    return { ok: false, error: "Запис не знайдено", code: "forbidden" };
+  }
+  if (src.status !== "in_progress") {
+    // Дослідження встигли завершити, поки адмін дивився preview.
+    return { ok: false, error: "Дослідження вже завершено — затримки більше немає", code: "stale" };
+  }
+
+  const roomId = src.room_id;
+  const date = src.scheduled_date;
+
+  /* Тривалості беремо З БД, а не з клієнта: за ними рахується вихід за графік.
+     Заразом це перевірка, що всі записи плану — цього кабінету і цього дня
+     (те саме перевіряє RPC, але тут ми можемо сказати це людською мовою). */
+  const ids = input.items.map((i) => i.id);
+  const { data: rows, error: rowsErr } = await supabase
+    .from("queue_entries")
+    .select("id, duration_min, status")
+    .in("id", ids)
+    .eq("room_id", roomId)
+    .eq("scheduled_date", date);
+  if (rowsErr) return { ok: false, error: safeDbError("applyDelayPlan.rows", rowsErr), code: "generic" };
+  if ((rows?.length ?? 0) !== ids.length) {
+    return { ok: false, error: "План застарів — перерахуйте", code: "stale" };
+  }
+  const durById = new Map((rows || []).map((r) => [r.id, r.duration_min ?? 30]));
+
+  /* ⚠️ ПРАПОРЕЦЬ off_schedule РАХУЄ СЕРВЕР (канон 0077). Клієнтський прапорець —
+     це лише «оператор погодився», а не «слот поза графіком». Якби ми писали в БД
+     те, що надіслав клієнт, застаріла вкладка позначила б «поза графіком» цілком
+     нормальний слот — або, гірше, НЕ позначила б реальний вихід за графік, і запис
+     сів би за межі робочого дня без причини і без сліду в schedule_exceptions
+     (гард trg_c_guard_off_schedule стріляє лише при off_schedule = true). */
+  const plan: Array<Record<string, unknown>> = [];
+  for (const it of input.items) {
+    if (it.kind !== "shift") {
+      plan.push({ id: it.id, kind: it.kind, from: it.from, to: null, offSchedule: false });
+      continue;
+    }
+    if (!it.to) return { ok: false, error: "План застарів — перерахуйте", code: "stale" };
+
+    let info: OffScheduleInfo | null;
+    try {
+      info = await scheduleGate(supabase, roomId, prof.clinic_id, date, it.to, durById.get(it.id) ?? 30);
+    } catch {
+      return SCHED_READ_ERR;   // fail-closed
+    }
+    // Обидва хелпери завжди повертають ok:false, але їх тип — ширший QueueActionResult
+    // (з ok:true-варіантом бронювання). Звужуємо до false-гілки — вона структурно
+    // збігається з ApplyDelayResult (той самий union кодів).
+    if (info && !info.confirmable) return offSchedError(info) as QueueErrResult;       // закрито / до відкриття / далі +2 год
+    if (info && !input.reason?.trim()) return offSchedNeedsConfirm(info) as QueueErrResult; // причина обовʼязкова (0078)
+
+    plan.push({
+      id: it.id,
+      kind: "shift",
+      from: it.from,
+      to: it.to,
+      offSchedule: !!info,
+      offScheduleKind: info ? (info.kind === "break" ? "break" : "after_hours") : undefined,
+    });
+  }
+
+  const { data, error } = await supabase.rpc("queue_apply_delay_plan_rpc", {
+    p_room: roomId,
+    p_source: input.sourceId,
+    p_delay_min: input.delayMin,
+    p_strategy: input.strategy,
+    p_plan: plan as unknown as Json,
+    p_expected: input.expected as unknown as Json,
+    p_reason: input.reason?.trim() || null,
+  });
+
+  if (error) {
+    // classifyError уже вміє транзиентні блокування (→ stale), OVERLAP/простій
+    // (→ slot_unavailable) і сирі помилки (→ safeDbError). Наш P0001 «застосовано
+    // не повністю» піде в generic — і це правильно: це баг, а не дія користувача.
+    const res = classifyError(error);
+    return res.ok
+      ? { ok: false, error: "Не вдалося застосувати план", code: "generic" }
+      : { ok: false, error: res.error, code: res.code };
+  }
+
+  const r = data?.[0];
+  if (!r) return { ok: false, error: safeDbError("applyDelayPlan.empty", { message: "RPC повернула порожньо" }), code: "generic" };
+
+  /* applied = false — це НЕ помилка, а «стан розійшовся зі знімком»: колега завів
+     пацієнта в кабінет / скасував запис, поки адмін дивився preview. У БД при цьому
+     не змінилось НІЧОГО (0081 тримає все-або-нічого). Доска має перерахувати план. */
+  if (!r.applied) {
+    return {
+      ok: false,
+      error: "Черга змінилася, поки ви дивилися план — перерахуйте",
+      code: "stale",
+      staleIds: r.stale_ids ?? [],
+    };
+  }
+
+  return { ok: true, moved: r.moved, flagged: r.flagged, eventId: r.event_id };
 }

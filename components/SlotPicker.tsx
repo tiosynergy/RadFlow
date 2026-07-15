@@ -81,7 +81,12 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
                       + (st === "break" ? " brk" : "")
                       + (st === "buffer" ? " busybuf" : "")
                       + ((st === "busy" || st === "blocked") ? " busy" : "")}
-                    disabled={!free} onClick={() => onChange(s)} title={titleOf ? titleOf(s, st) : s} aria-label={s}>
+                    disabled={!free} onClick={() => onChange(s)}
+                    title={titleOf ? titleOf(s, st) : s}
+                    /* Стан слота (зайнято/перерва/буфер + інтервал) має бути в
+                       ДОСТУПНОМУ імені, а не лише у title= (на тачі тултипа немає,
+                       і скрінрідер title не завжди озвучує). */
+                    aria-label={titleOf ? titleOf(s, st) : s}>
                     {s.slice(3)}
                   </button>
                 );

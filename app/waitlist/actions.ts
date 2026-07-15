@@ -12,6 +12,7 @@ import type { Database, Json, TablesUpdate, WaitlistStatus } from "@/supabase/ty
 import { BUFFER_DEFAULT, normBuffer, type Study } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { modalityFromStudies } from "@/lib/waitlist";
+import { wallDayKey } from "@/lib/incidents";
 import {
   parseInput, safeDbError, zUuid, zDateKey, zTime, zName, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
@@ -69,6 +70,21 @@ export type WaitlistActionResult =
   // 'stale' — CAS не спрацював: рядок уже змінив стан (напр. кандидата встиг
   // записати інший адміністратор). UI має оновитись, а не мовчки перетерти.
   | { ok: false; error: string; code?: "forbidden" | "auth" | "duplicate" | "stale" | "generic" };
+
+/* Серверний гард «бажане вікно вже минуло» (defense-in-depth до клієнтського в
+   WaitlistModal). Стягуюча умова — на КІНЕЦЬ вікна: якщо desired_date_to цілком у
+   минулому, жоден майбутній слот не потрапить у [from, to] і пацієнт вічно висить
+   у «Очікують». «Сьогодні» — доба КЛІНІКИ (canon: wallDayKey(clinics.timezone),
+   на сервері singleton не виставлений, тож зону передаємо явно). */
+const PAST_WINDOW = {
+  ok: false as const,
+  error: "Кінець бажаного вікна вже минув — оберіть майбутню дату",
+  code: "generic" as const,
+};
+async function clinicTodayKey(supabase: SupabaseClient<Database>, clinicId: string): Promise<string> {
+  const { data } = await supabase.from("clinics").select("timezone").eq("id", clinicId).maybeSingle();
+  return wallDayKey(data?.timezone || "UTC");
+}
 
 async function callerProfile(supabase: SupabaseClient<Database>) {
   const { data: { user } } = await supabase.auth.getUser();
@@ -130,6 +146,9 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
     clinicId = caller.clinicId;
   }
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  // Бажане вікно цілком у минулому → пацієнт не потрапить у підбір (див. PAST_WINDOW).
+  if (input.desiredDateTo && input.desiredDateTo < await clinicTodayKey(supabase, clinicId)) return PAST_WINDOW;
 
   const { data, error } = await supabase
     .from("waitlist_entries")
@@ -202,6 +221,9 @@ export async function addEntryToWaitlist(
     .maybeSingle();
   if (dup) return { ok: false, error: "Пацієнт уже в листі очікування", code: "duplicate" };
 
+  if (opts?.desiredDateTo && entry.clinic_id
+      && opts.desiredDateTo < await clinicTodayKey(supabase, entry.clinic_id)) return PAST_WINDOW;
+
   const { data, error } = await supabase
     .from("waitlist_entries")
     .insert({
@@ -266,6 +288,14 @@ export async function updateWaitlistEntry(
   if (safePatch.studies !== undefined) {
     // Модальність — похідна від складу досліджень, рахуємо на сервері.
     safePatch.modality = modalityFromStudies(safePatch.studies as Study[] | null);
+  }
+
+  // Патч ставить кінець вікна у минуле → той самий гард, що на вставці. Клініку
+  // рядка беремо під RLS (не бачимо — далі UPDATE усе одно віддасть forbidden).
+  const newTo = safePatch.desired_date_to;
+  if (typeof newTo === "string" && newTo) {
+    const { data: row } = await supabase.from("waitlist_entries").select("clinic_id").eq("id", v.data.id).maybeSingle();
+    if (row?.clinic_id && newTo < await clinicTodayKey(supabase, row.clinic_id)) return PAST_WINDOW;
   }
 
   const { data, error } = await supabase

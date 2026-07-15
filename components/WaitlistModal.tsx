@@ -54,10 +54,11 @@ function calcAge(d: string): number | null {
   return a < 0 ? 0 : a;
 }
 
-/* «Сьогодні» — доба КЛІНІКИ (singleton setClinicTz виставляють дошки персоналу).
-   У порталі направника центр обирається всередині модалки, зона наперед невідома —
-   там лишається браузерна (як і раніше). */
-function todayKey(): string { return wallDayKey(); }
+/* «Сьогодні» — доба КЛІНІКИ. Зону передаємо ЯВНО пропом clinicTz (дошки персоналу),
+   бо покладатися на singleton у мультиклінічних екранах не можна (HANDOVER §6.1).
+   Портал направника центр обирає всередині модалки — там clinicTz не передаємо, і
+   лишається фолбек на singleton/браузер (як і було). */
+function todayKey(tz?: string | null): string { return wallDayKey(tz || undefined); }
 
 interface WaitlistModalProps {
   /** Портал направника: обовʼязковий вибір центру (active referral_access). */
@@ -66,13 +67,16 @@ interface WaitlistModalProps {
   rooms?: RoomOpt[];
   /** Режим редагування наявного рядка листа. */
   initial?: WaitlistEntry | null;
+  /** TZ центру (дошки персоналу передають явно; портал направника — ні). */
+  clinicTz?: string | null;
   onClose: () => void;
   onSave: (w: WaitlistFormOut) => void | Promise<void>;
 }
 
-export default function WaitlistModal({ centers, rooms, initial, onClose, onSave }: WaitlistModalProps) {
+export default function WaitlistModal({ centers, rooms, initial, clinicTz, onClose, onSave }: WaitlistModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const isEdit = !!initial;
+  const todayStr = todayKey(clinicTz);   // «сьогодні» клініки — для дефолту й гарду прошлого
   const initStudies: Study[] = Array.isArray(initial?.studies) ? (initial!.studies as Study[]) : [];
   const initPrimary = initStudies[0] || null;
   const needCenter = !isEdit && Array.isArray(centers) && centers.length > 0;
@@ -89,7 +93,7 @@ export default function WaitlistModal({ centers, rooms, initial, onClose, onSave
   const [buffer, setBuffer] = useState<number>(initial ? normBuffer(initial.buffer_time_min) : BUFFER_DEFAULT);
   const [priority, setPriority] = useState<PatientPriority | "">(initial?.priority_level || "");
   const [roomId, setRoomId] = useState<string>(initial?.room_id || "");
-  const [dateFrom, setDateFrom] = useState(initial ? (initial.desired_date_from || "") : todayKey());
+  const [dateFrom, setDateFrom] = useState(initial ? (initial.desired_date_from || "") : todayStr);
   const [dateTo, setDateTo] = useState(initial?.desired_date_to || "");
   const [timeKey, setTimeKey] = useState(() => (initial ? timePresetKey(initial.desired_time_from, initial.desired_time_to) : "any"));
   const [note, setNote] = useState(initial?.note || "");
@@ -143,7 +147,13 @@ export default function WaitlistModal({ centers, rooms, initial, onClose, onSave
   const MISS_LABELS: Record<string, string> = { name: "ПІБ", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", center: "Центр" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   const badRange = !!(dateFrom && dateTo && dateTo < dateFrom);
-  const valid = missingList.length === 0 && !badRange;
+  /* Вікно ЦІЛКОМ у минулому → пацієнт вічно висить у «Очікують»: жоден майбутній
+     слот не потрапить у [from, to]. Стягуюча умова саме на КІНЕЦЬ вікна: відкрите
+     «по» (порожнє) завжди має майбутнє, тож не блокуємо. `min=` на інпутах — лише
+     підказка (атрибут не блокує ручний/клавіатурний ввід — урок past-slot 0063),
+     тому справжній гард тут, у valid. */
+  const pastWindow = !!(dateTo && dateTo < todayStr);
+  const valid = missingList.length === 0 && !badRange && !pastWindow;
 
   async function handleSave() {
     if (!valid || saving) return;
@@ -309,11 +319,11 @@ export default function WaitlistModal({ centers, rooms, initial, onClose, onSave
           <div className="fld-row">
             <label className="fld">
               <span className="fld-lab">Готовий з</span>
-              <input className="inp tabular" type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+              <input className="inp tabular" type="date" min={todayStr} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
             </label>
             <label className="fld">
               <span className="fld-lab">по (включно)</span>
-              <input className="inp tabular" type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+              <input className="inp tabular" type="date" min={todayStr} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
             </label>
             <label className="fld">
               <span className="fld-lab">Час доби</span>
@@ -323,6 +333,7 @@ export default function WaitlistModal({ centers, rooms, initial, onClose, onSave
             </label>
           </div>
           {badRange && <div className="ctx-hint red">Дата «по» раніша за дату «з» — виправте діапазон.</div>}
+          {pastWindow && <div className="ctx-hint red">Кінець бажаного вікна вже минув — оберіть майбутню дату, інакше пацієнт не потрапить у підбір.</div>}
 
           {roomOptions.length > 0 && (
             <label className="fld">

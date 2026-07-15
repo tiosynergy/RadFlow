@@ -192,12 +192,12 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
     channelName: clinicIds.length ? "ceo-" + scope : null,
     // debounceKey СПІЛЬНИЙ: усі підписки ведуть в один reload, і без нього сплеск
     // у 20 центрах давав до 20 повних перезавантажень дашборда підряд.
-    subscriptions: clinicIds.map((cid) => ({
-      table: "queue_entries" as const,
-      filter: "clinic_id=eq." + cid,
-      onChange: reload,
-      debounceKey: "ceo-reload",
-    })),
+    subscriptions: clinicIds.flatMap((cid) => [
+      { table: "queue_entries" as const, filter: "clinic_id=eq." + cid, onChange: reload, debounceKey: "ceo-reload" },
+      // 0086: rooms — reload сам перечитує кабінети (.from("rooms")), тож той самий
+      // reload оновить назви/кількість апаратів; router тут не потрібен.
+      { table: "rooms" as const, filter: "clinic_id=eq." + cid, onChange: reload, debounceKey: "ceo-reload" },
+    ]),
   });
 
   const scopeName = scope === "all" ? "Всі центри" : (clinics.find((c) => c.id === scope)?.name || clinicName || "");

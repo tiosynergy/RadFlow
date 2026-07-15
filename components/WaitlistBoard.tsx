@@ -513,8 +513,8 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
         </div>
       </div>
 
-      {addOpen && <WaitlistModal rooms={rooms} onClose={() => setAddOpen(false)} onSave={onAdd} />}
-      {editFor && <WaitlistModal rooms={rooms} initial={editFor} onClose={() => setEditFor(null)} onSave={onEditSave} />}
+      {addOpen && <WaitlistModal rooms={rooms} clinicTz={clinicTz} onClose={() => setAddOpen(false)} onSave={onAdd} />}
+      {editFor && <WaitlistModal rooms={rooms} clinicTz={clinicTz} initial={editFor} onClose={() => setEditFor(null)} onSave={onEditSave} />}
       {confirmRemove && (
         <ConfirmDialog title="Зняти з листа очікування"
           text={<>Зняти <b style={{ color: "var(--text)" }}>{confirmRemove.patient_name}</b> з листа очікування? Запис перейде на вкладку «Зняті» — його можна буде повернути.</>}

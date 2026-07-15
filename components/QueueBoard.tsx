@@ -3,6 +3,7 @@
 /* ===== RadFlow — Дошка черги (повна) ===== */
 
 import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode, type MouseEvent } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import {
@@ -20,6 +21,9 @@ import {
   editQueueEntryStudies,
   createBooking,
   setQueuePriority,
+  previewDelayPlan,
+  applyDelayPlan,
+  type DelayPreview,
 } from "@/app/queue/actions";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
@@ -34,6 +38,7 @@ import StudyEditModal from "@/components/StudyEditModal";
 import BreakdownModal from "@/components/BreakdownModal";
 import EmergencyModal from "@/components/EmergencyModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import DelayPlanModal, { type DelayApplyPayload } from "@/components/DelayPlanModal";
 import MiniCalendar from "@/components/MiniCalendar";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
@@ -85,8 +90,14 @@ const ST: Record<string, { label: string; cls: string; dot?: boolean }> = {
   no_show:     { label: "Неявка",       cls: "red" },
   not_held:    { label: "Не відбулося", cls: "orange" },
   cancelled:   { label: "Скасовано",    cls: "gray" },
+  // 0079/0080: слот втрачено через затримку, пацієнта треба перенести вручну.
+  // БЕЗ цього рядка запис малювався б як звичайна «В черзі» (ST[status] || ST.scheduled)
+  // — оператор повів би його в кабінет і впіймав сиру помилку тригера переходів.
+  needs_reschedule: { label: "Потребує переносу", cls: "orange" },
 };
-const FLOW: Record<string, number> = { in_progress: 0, waiting: 1, scheduled: 2, done: 3, not_held: 4, no_show: 5 };
+// needs_reschedule стоїть одразу за «В черзі»: слота вже немає, але дія потрібна
+// СЬОГОДНІ — до терміналів (done/not_held/no_show) його опускати не можна.
+const FLOW: Record<string, number> = { in_progress: 0, waiting: 1, scheduled: 2, needs_reschedule: 2.5, done: 3, not_held: 4, no_show: 5 };
 const STAT_ITEMS = [
   { key: "all", lab: "Всього сьогодні", sub: "записів", cls: "white" },
   { key: "scheduled", lab: "В черзі", sub: "записані", cls: "gray" },
@@ -312,7 +323,10 @@ function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: 
       (incidents || []).filter((i) => i.room_id === r.id).forEach((i) => { cap -= incidentWorkMinutes(i, date, startMin, endMin); });
       cap = Math.max(0, cap);
     }
-    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "cancelled" && e.status !== "not_held").reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
+    // needs_reschedule (0079) виключено свідомо: слот ЗВІЛЬНЕНО, кабінет його не займає —
+    // так само, як у skip-листах check_no_overlap / room_busy_slots / ceo_kpi_rooms.
+    // Інакше завантаженість показувала б хвилини, яких у кабінеті вже немає.
+    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "cancelled" && e.status !== "not_held" && e.status !== "needs_reschedule").reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
     const pct = cap > 0 ? Math.min(100, Math.round((mins / cap) * 100)) : 0;
     return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)" };
   });
@@ -403,8 +417,11 @@ interface QueueRowProps {
   // collision — для бейджа у згорнутій строці; collisionPanel — панель рішення в розкритій.
   collision?: CollisionInfo | null;
   collisionPanel?: ReactNode;
+  // 0078–0081 — план при затримці: кнопка на записі, що ЗАРАЗ у кабінеті.
+  onDelayPlan?: (p: QEntry) => void;
+  delayLoading?: boolean;
 }
-function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel }: QueueRowProps) {
+function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel, onDelayPlan, delayLoading }: QueueRowProps) {
   // «Запізнення» — derived: пацієнт не прийшов, минуло понад буферний час.
   const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
   const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
@@ -496,7 +513,26 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
               </div>
             )}
 
-            {!readOnly && (() => {
+            {/* 0079/0080 — «Потребує переносу». Степер тут НЕ показуємо взагалі:
+                матриця переходів у БД дозволяє вийти лише в scheduled / cancelled / no_show,
+                тож кнопки «Пацієнт прийшов» / «Викликати в кабінет» / «Завершити» відхилив би
+                тригер guard_status_transition — оператор упіймав би сиру помилку БД.
+                Слот уже звільнено, тому єдиний легальний шлях назад у чергу — новий слот
+                («Перенести»), а не повернення на старий час. */}
+            {!readOnly && p.status === "needs_reschedule" && (
+              <div className="qd-step">
+                <div className="qd-inline-err" role="status">
+                  ⚠ Слот втрачено через затримку в кабінеті. Оберіть новий час або скасуйте запис.
+                </div>
+                <div style={{ display: "flex", gap: 6, padding: "6px 0", flexWrap: "wrap" }}>
+                  <button className="btn btn-primary btn-sm" onClick={act(onReschedule)} title="Підібрати новий слот">🗓 Перенести</button>
+                  <button className="btn btn-secondary btn-sm" onClick={act(onToWaitlist)} title="Пацієнт чекатиме на вільне вікно">⏳ В лист очікування</button>
+                  <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onCancel)}>✕ Скасувати запис</button>
+                </div>
+              </div>
+            )}
+
+            {!readOnly && p.status !== "needs_reschedule" && (() => {
               const stepIdx = STEP_ORDER.indexOf(p.status);
               const pb = STEP_PRIMARY[p.status] || STEP_PRIMARY.done;
               const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
@@ -559,6 +595,19 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                       </>
                     )}
                   </div>
+
+                  {/* 0078–0081 — план при затримці. Кнопка лише на записі, що ЗАРАЗ у
+                      кабінеті: саме він може затягнутися і наїхати на чергу. Чи є
+                      затримка насправді — вирішує СЕРВЕР (previewDelayPlan); якщо ні,
+                      покаже «черга ще встигає». */}
+                  {p.status === "in_progress" && onDelayPlan && (
+                    <div style={{ padding: "2px 0 6px" }}>
+                      <button className="btn btn-secondary btn-sm" disabled={delayLoading} onClick={act(onDelayPlan)}
+                        title="Порахувати, як затримка впливає на чергу, і за потреби зсунути записи">
+                        {delayLoading ? "⏳ Рахую…" : "📋 План при затримці"}
+                      </button>
+                    </div>
+                  )}
 
                   {advanceDisabled && blockReason && (
                     <div className="qd-inline-err" role="status">⚠ {blockReason}</div>
@@ -698,6 +747,41 @@ function AffectedPanel({ affected, roomsById, onReschedule }: { affected: QEntry
 }
 
 
+/* ── Потребує переносу (0078–0081) ──
+   Записи, чий слот втрачено через затримку в кабінеті (status = needs_reschedule).
+   Це НЕ скасування: пацієнт чекає, реєстратура підбирає новий час. Виносимо в
+   окрему панель, щоб реєстратор одразу бачив, кому дзвонити (call_status уже
+   to_recall — RPC поставила). */
+function NeedsReschedulePanel({ entries, roomsById, onReschedule, onToWaitlist, onCancel }: { entries: QEntry[]; roomsById: Record<string, RoomOpt>; onReschedule: (p: QEntry) => void; onToWaitlist: (p: QEntry) => void; onCancel: (p: QEntry) => void }) {
+  if (!entries.length) return null;
+  return (
+    <div className="rcard">
+      <div className="rcard-toggle open" style={{ cursor: "default" }}>
+        <span className="rct-title">Потребує переносу</span>
+        <span className="rct-sum" style={{ background: "var(--orange)", color: "#04210d", borderRadius: 10, padding: "1px 8px" }}>{entries.length}</span>
+      </div>
+      <div className="load-body">
+        {entries.map((e) => (
+          <div key={e.id} style={{ padding: "8px 0", borderTop: "1px solid var(--border)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.patient_name}</span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)", flexShrink: 0 }}>було {e.scheduled_time}</span>
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--text-muted)", margin: "2px 0 4px" }}>{procLabel(e)} · {(e.room_id ? roomsById[e.room_id] : undefined)?.name}</div>
+            {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, marginBottom: 6, whiteSpace: "nowrap", color: "#4da3ff", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <button className="btn btn-primary btn-xs" onClick={() => onReschedule(e)}>🗓 Перенести</button>
+              <button className="btn btn-secondary btn-xs" title="Пацієнт чекатиме на вільне вікно" onClick={() => onToWaitlist(e)}>⏳ В лист очікування</button>
+              <button className="btn btn-secondary btn-xs" onClick={() => onCancel(e)}>✕ Скасувати</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
 /* ── Скасовані + Неявка ── */
 function CancelledPanel({ entries, onUndo, onReschedule, onToWaitlist }: { entries: QEntry[]; onUndo: (p: QEntry) => void; onReschedule: (p: QEntry) => void; onToWaitlist: (p: QEntry) => void }) {
   const [open, setOpen] = useState(false);
@@ -752,11 +836,16 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
      Лише на клієнті: модульний singleton на сервері шарився б між запитами. */
   if (typeof window !== "undefined") setClinicTz(clinicTz);
 
+  const router = useRouter();   // 0086: зміни кабінетів (rooms — SSR-проп) підхоплюємо через router.refresh
   const [entries, setEntries] = useState<QEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [completeFor, setCompleteFor] = useState<QEntry | null>(null);
   const [reschedFor, setReschedFor] = useState<QEntry | null>(null);
+  // 0078–0081 — план при затримці: preview з сервера + стан застосування.
+  const [delayPreview, setDelayPreview] = useState<DelayPreview | null>(null);
+  const [delayOpening, setDelayOpening] = useState(false);   // йде previewDelayPlan
+  const [delayBusy, setDelayBusy] = useState(false);          // йде applyDelayPlan
   const [editStudiesFor, setEditStudiesFor] = useState<QEntry | null>(null);
   const [editPatientFor, setEditPatientFor] = useState<QEntry | null>(null);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
@@ -903,11 +992,16 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
       { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: reload },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
       { table: "schedule_overrides", filter: "clinic_id=eq." + clinicId, onChange: loadOverrides },
+      // 0086: rooms — SSR-проп; видалення/правка базового графіка кабінету долітає
+      // до всіх ролей через перечитування серверних пропів (router.refresh).
+      { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
     ],
   });
 
   const selectedOverride = overrides[dayKey] || null;
-  const selDayStatus = dayStatus(selectedOverride, selectedDate);
+  // Базові графіки кабінетів → «вихідний» у календарі за реальним графіком, не лише неділею.
+  const roomSchedules = (rooms || []).map((r) => r.schedule);
+  const selDayStatus = dayStatus(selectedOverride, selectedDate, roomSchedules);
 
   async function saveOverride(ov: { all_closed: boolean; label?: string; rooms: Record<string, { closed?: boolean; start?: string; end?: string; breaks?: { start: string; end: string }[] }> }) {
     const res = await saveScheduleOverride({ overrideDate: dayKey, allClosed: !!ov.all_closed, label: ov.label || null, rooms: ov.rooms || {} });
@@ -1187,6 +1281,61 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
     notify("Пацієнта позначено на обзвін — він у колл-листі", "info");
   }
 
+  /* ===== 0078–0081 — план при затримці дослідження =====
+     Джерело плану — запис у кабінеті (in_progress), що затягнувся. Розрахунок
+     робить СЕРВЕР (previewDelayPlan): він читає політику центру, графік, простої і
+     рахує delay_min у настінному часі клініки. Клієнт лише відмальовує результат.
+     Кнопка доступна персоналу центру; ЗАСТОСОВУЄ лише адмін (гейт і в дії, і в RPC). */
+  async function openDelayPlan(p: QEntry) {
+    if (delayOpening) return;
+    setDelayOpening(true);
+    try {
+      const res = await previewDelayPlan(p.id);
+      if (!res.ok) { notify("Не вдалося порахувати план: " + res.error, "error"); return; }
+      if (!res.preview) { notify("Затримки немає — черга ще встигає", "info"); return; }
+      setDelayPreview(res.preview);
+    } catch {
+      // Транзиентний збій (рефреш токена / мережа) — не рушимо дошку.
+      notify("Не вдалося порахувати план — спробуйте ще раз", "error");
+    } finally {
+      setDelayOpening(false);
+    }
+  }
+
+  async function applyDelay(payload: DelayApplyPayload) {
+    const src = delayPreview;
+    if (!src || delayBusy) return;
+    setDelayBusy(true);
+    try {
+      const res = await applyDelayPlan({
+        sourceId: src.sourceId,
+        strategy: payload.strategy,
+        delayMin: src.delayMin,
+        items: payload.items,
+        expected: src.expected,           // знімок, який бачив адмін — для stale-звірки в RPC
+        reason: payload.reason,
+      });
+      if (!res.ok) {
+        // stale — черга змінилась, поки дивилися план: у БД нічого не змінено.
+        notify(res.code === "stale" ? res.error : "Не вдалося застосувати: " + res.error, res.code === "stale" ? "info" : "error");
+        setDelayPreview(null);
+        reload();
+        return;
+      }
+      const parts = [];
+      if (res.moved) parts.push(`зсунуто ${res.moved}`);
+      if (res.flagged) parts.push(`у переносі ${res.flagged}`);
+      notify("План застосовано" + (parts.length ? ": " + parts.join(", ") : ""), "success");
+      setDelayPreview(null);
+      reload();
+    } catch {
+      notify("Не вдалося застосувати план — спробуйте ще раз", "error");
+      reload();
+    } finally {
+      setDelayBusy(false);
+    }
+  }
+
   const openEditStudies = (p: QEntry) => setEditStudiesFor(p);
   async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number; offSchedule?: boolean }) {
     const p = editStudiesFor;
@@ -1293,6 +1442,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
   const scoped = roomView === "all" ? entries : entries.filter((e) => e.room_id === roomView);
   const boardScoped = scoped.filter((e) => e.status !== "cancelled" && e.status !== "no_show");
   const panelEntries = scoped.filter((e) => e.status === "cancelled" || e.status === "no_show");
+  const needsResched = scoped.filter((e) => e.status === "needs_reschedule");
   const counts = useMemo(() => {
     const c: Record<string, number> = { total: 0, scheduled: 0, waiting: 0, in_progress: 0, done: 0, no_show: 0, not_held: 0, cancelled: 0, late: 0 };
     scoped.forEach((e) => {
@@ -1562,6 +1712,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
                     originHint={fmtOrigin(p.reschedule_origin as unknown as RescheduleOrigin | null, roomsById)}
                     startBlockReason={p.status === "waiting" ? inProgressBlockReason(p) : null}
                     collision={collision}
+                    onDelayPlan={isToday && (roleKey === "admin" || roleKey === "registrar") ? openDelayPlan : undefined}
+                    delayLoading={delayOpening}
                     collisionPanel={collision?.zone === "clash" && expandedRow === p.id ? (
                       <CollisionPanel
                         entry={p} info={collision} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz}
@@ -1578,8 +1730,9 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
         </div>
 
           <aside className="rpanel">
-            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} onEditSchedule={() => setSchedEditOpen(true)} tz={clinicTz} />
+            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} onEditSchedule={() => setSchedEditOpen(true)} tz={clinicTz} roomSchedules={roomSchedules} />
             {isToday && (rooms || []).length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} />}
+            {!isPast && <NeedsReschedulePanel entries={needsResched} roomsById={roomsById} onReschedule={openReschedule} onToWaitlist={toWaitlist} onCancel={(pt) => setCancelAsk({ p: pt, mode: "cancel" })} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}
             {!isPast && <CallListPanel entries={entries} onSetCall={setCall} dateLabel={fmtShort(selectedDate)} />}
             <CancelledPanel entries={panelEntries} onUndo={undo} onReschedule={openReschedule} onToWaitlist={toWaitlist} />
@@ -1615,6 +1768,19 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
 
       {reschedFor && (
         <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} allowOffSchedule />
+      )}
+
+      {/* 0078–0081 — план при затримці. Обидва плани прийшли з previewDelayPlan;
+          застосовує лише адмін (canApply), радіолог/реєстратор бачать read-only. */}
+      {delayPreview && (
+        <DelayPlanModal
+          preview={delayPreview}
+          roomName={roomsById[delayPreview.roomId]?.name || "Кабінет"}
+          canApply={roleKey === "admin"}
+          busy={delayBusy}
+          onClose={() => setDelayPreview(null)}
+          onApply={applyDelay}
+        />
       )}
 
       {editStudiesFor && (

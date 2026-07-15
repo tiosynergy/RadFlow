@@ -5,6 +5,7 @@
    queue_entries.call_status (синхронно з дошкою), нотатка — у call_note. Realtime. */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
@@ -254,6 +255,8 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
   // обдзвону), і todayKey (секції «Запізнення» / «постраждалі»). Тільки на клієнті.
   if (typeof window !== "undefined") setClinicTz(clinicTz);
 
+  const router = useRouter();   // 0086: зміни кабінетів (SSR-проп) → router.refresh
+
   // «Завтра» — доба КЛІНІКИ, а не браузера: біля півночі оператор з іншої зони
   // відкривав обдзвін не на той день.
   const tomorrow = useMemo(() => { const d = wallToday0(clinicTz); d.setDate(d.getDate() + 1); return d; }, [clinicTz]);
@@ -369,6 +372,8 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
     subscriptions: [
       { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: () => { reload(); loadIncidents(); loadTodayScheduled(); } },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
+      // 0086: rooms — SSR-проп (назви кабінетів у колл-листі); правку/видалення підхоплюємо через router.refresh.
+      { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
     ],
   });
 

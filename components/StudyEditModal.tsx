@@ -20,7 +20,7 @@ type StudyRow = { type: string; region: string; dur: number; contrast: boolean }
 /** Те, що летить у studies (jsonb) — як у BookingModal: з контрастом і ціною. */
 type StudyOut = { type: string; region: string; contrast: boolean; dur: number; price: number | null };
 type StudyLike = { type?: string; region?: string; dur?: number; contrast?: boolean };
-type StudyPatient = { id: string; room_id: string | null; scheduled_time: string | null; buffer_time_min?: number | null; patient_name: string | null; studies?: unknown };
+type StudyPatient = { id: string; room_id: string | null; scheduled_time: string | null; buffer_time_min?: number | null; duration_min?: number | null; patient_name: string | null; studies?: unknown };
 
 interface StudyEditModalProps {
   patient: StudyPatient;
@@ -51,10 +51,17 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const [nextStart, setNextStart] = useState<number | null>(null);
   const [override, setOverride] = useState<DayOverride | null>(null);
   const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule кабінету (для перерв)
+  // H-6: зайнятість кабінету — це стан «завантажено / помилка», а не просто null.
+  // Поки зайнятість НЕ підтверджена (грузиться або впала), nextStart=null не можна
+  // трактувати як «наступних записів немає» — інакше capByNext=Infinity ЗАВИЩУЄ
+  // доступну тривалість (fail-open) і оператор задасть тривалість, яку відкине сервер.
+  const [busyReady, setBusyReady] = useState(false);   // маємо надійну відповідь про nextStart
+  const [busyErr, setBusyErr] = useState(false);        // читання зайнятості впало
   useEffect(() => {
     let cancel = false;
+    setBusyReady(false); setBusyErr(false);
     (async () => {
-      if (!patient.room_id || !scheduledDate) return;
+      if (!patient.room_id || !scheduledDate) { if (!cancel) setBusyReady(true); return; } // нема що перевіряти
       try {
         const supabase = createClient();
         if (clinicId) {
@@ -64,8 +71,9 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
         const roomRes = await supabase.from("rooms").select("schedule").eq("id", patient.room_id).maybeSingle();
         if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
         // Знеособлена зайнятість кабінету; p_exclude прибирає сам редагований запис.
-        const { data } = await supabase.rpc("room_busy_slots", { p_room: patient.room_id, p_date: scheduledDate, p_exclude: patient.id });
+        const { data, error } = await supabase.rpc("room_busy_slots", { p_room: patient.room_id, p_date: scheduledDate, p_exclude: patient.id });
         if (cancel) return;
+        if (error) throw error;   // не ковтаємо: «пусто» ≠ «помилка» (6.4)
         /* Найближчий СЛІДУЮЧИЙ запис у кабінеті — щоб не подовжити дослідження
            поверх нього. 0074: беремо start_min (обрізаний по добі); «хвости» з
            попередньої доби мають start_min = 0 і сюди не потраплять (вони раніше
@@ -76,9 +84,11 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
           .filter((m) => m > startMin)
           .sort((a, b) => a - b)[0];
         setNextStart(ns != null ? ns : null);
+        setBusyReady(true);
       } catch {
-        // Транзієнтний збій (оновлення токена / мережа) — не рушимо модаль.
-        if (!cancel) setNextStart(null);
+        // Транзієнтний збій (оновлення токена / мережа) — не рушимо модаль, але
+        // ПОЗНАЧАЄМО помилку: capByNext стане консервативним (fail-closed).
+        if (!cancel) { setNextStart(null); setBusyErr(true); }
       }
     })();
     return () => { cancel = true; };
@@ -105,7 +115,14 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const dateObj = scheduledDate ? new Date(scheduledDate + "T00:00:00") : wallToday0(clinicTz || undefined);
   const roomSched = roomScheduleFor(dateObj, patient.room_id || "", override, roomSchedule);
   const schedEnd = toMin(roomSched.end);
-  const capByNext = nextStart != null ? nextStart - startMin - buffer : Infinity;
+  /* Стеля за наступним записом. КЛЮЧОВЕ: поки зайнятість не підтверджена
+     (busyReady=false: грузиться або впала), НЕ ставимо Infinity — це завищувало б
+     доступний час (fail-open). Замість цього консервативна стеля = ПОТОЧНА
+     тривалість запису: редагувати/скоротити можна, ЗБІЛЬШИТИ — ні (overflow), поки
+     не знаємо про наступний запис. Коли завантажилось — стеля стає справжньою. */
+  const capByNext = busyReady
+    ? (nextStart != null ? nextStart - startMin - buffer : Infinity)
+    : (patient.duration_min && patient.duration_min > 0 ? patient.duration_min : Infinity);
   /* 0077 — ЗАПИС, ЩО ВЖЕ СТОЇТЬ ПОЗА ГРАФІКОМ, теж треба вміти редагувати.
      Без цього запис на 17:55 у кабінеті, що закривається о 18:00, давав
      availableDur = 5 хв → «⚠ Не вміщується» і кнопка «Зберегти» назавжди сіра:
@@ -207,6 +224,15 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
               ? <>⚠ Не вміщується: разом <b>{totalDur} хв</b>, доступно <b>{availableDur} хв</b> ({windowLabel}). Скоротіть на {totalDur - availableDur} хв.</>
               : <>Доступно у слоті: <b>{availableDur} хв</b> ({windowLabel}). Вільно ще <b>{remaining} хв</b>.</>}
           </div>
+          {/* Поки зайнятість кабінету не підтверджена — не даємо збільшувати тривалість
+              (fail-closed). При помилці читання це не транзієнт «пусто», а невідомий стан. */}
+          {!busyReady && (
+            <div className={"ctx-hint " + (busyErr ? "orange" : "blue")} style={{ fontSize: 12 }}>
+              {busyErr
+                ? <>⚠ Не вдалося перевірити зайнятість кабінету — збільшувати тривалість поки не можна. Закрийте й відкрийте вікно, щоб спробувати ще раз.</>
+                : <>Перевіряю зайнятість кабінету…</>}
+            </div>
+          )}
           {!overflow && realClash && (
             <div className="ctx-hint red" style={{ fontSize: 12.5 }}>
               ⚠ Пацієнт запізнюється/у кабінеті: за фактом (з ~<b>{fmt(refStartMin)}</b>) дослідження + буфер закінчаться о ~<b>{fmt(projectedEndMin)}</b> і перекриють наступний запис о <b>{fmt(nextStart ?? 0)}</b>. Зберегти можна, але перенесіть наступний запис.

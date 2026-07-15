@@ -13,6 +13,7 @@ import StaffManager from "@/components/StaffManager";
 import ReferrersManager from "@/components/ReferrersManager";
 import CeoManager from "@/components/CeoManager";
 import QueuePolicySettings, { type QueuePolicyInitial } from "@/components/QueuePolicySettings";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import { formatPhoneUA, isValidPhoneUA } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -244,6 +245,31 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
   function addEq() { setEquip((a) => [...a, { id: Date.now(), type: "МРТ", desc: "", room: "", ...mkSched() }]); }
   function delEq(i: number) { setEquip((a) => a.filter((_, j) => j !== i)); }
 
+  /* Видалення кабінету — через ПІДТВЕРДЖЕННЯ (раніше ✕ зносив картку миттєво, без
+     попередження й без шансу відмінити). Для НАЯВНОГО кабінету (є roomId) спершу
+     перевіряємо активні записи в черзі: якщо є — видалення блокуємо (інакше save
+     усе одно відхилить, але вже після втрати картки, і незрозуміло чому). Перевірка
+     best-effort: якщо не вдалось — м'яке підтвердження (save лишається запобіжником). */
+  const [delAsk, setDelAsk] = useState<{ i: number; name: string; count: number | null; checking: boolean } | null>(null);
+  async function askDelEq(i: number) {
+    const e = equip[i];
+    const name = (e.room || e.type || "Кабінет").trim();
+    if (!e.roomId) { setDelAsk({ i, name, count: 0, checking: false }); return; }   // новий кабінет — записів бути не може
+    setDelAsk({ i, name, count: null, checking: true });
+    try {
+      const supabase = createClient();
+      const { count, error } = await supabase
+        .from("queue_entries")
+        .select("id", { count: "exact", head: true })
+        .eq("room_id", e.roomId)
+        .in("status", ["scheduled", "waiting", "in_progress", "needs_reschedule"]);
+      if (error) throw error;
+      setDelAsk((cur) => (cur && cur.i === i ? { ...cur, count: count ?? 0, checking: false } : cur));
+    } catch {
+      setDelAsk((cur) => (cur && cur.i === i ? { ...cur, count: null, checking: false } : cur)); // не змогли перевірити
+    }
+  }
+
   return (
     <div className="fade-in">
       {active === "sec-clinic" && (<>
@@ -316,7 +342,7 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
       <div className="form-card" style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 16 }}>
         {equip.map((e, i) => (
           <div key={e.id} className="equip-block">
-            <button className="mini-icon equip-block-del" type="button" title="Видалити обладнання" onClick={() => delEq(i)} disabled={equip.length <= 1}>✕</button>
+            <button className="mini-icon equip-block-del" type="button" title="Видалити обладнання" onClick={() => askDelEq(i)} disabled={equip.length <= 1}>✕</button>
             <div className="equip-info">
               <div className="equip-info-row">
                 <select className="inp equip-type" value={e.type} onChange={(ev) => setEq(i, "type", ev.target.value)}>
@@ -424,6 +450,35 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
         </div>
       </div>
       </>)}
+
+      {delAsk && (() => {
+        const blocked = (delAsk.count ?? 0) > 0;   // є активні записи → видаляти не можна
+        return (
+          <ConfirmDialog
+            title={blocked ? "Не можна видалити кабінет" : "Видалити кабінет?"}
+            text={
+              delAsk.checking
+                ? <>Перевіряю записи в кабінеті <b>{delAsk.name}</b>…</>
+                : blocked
+                  ? <>У кабінеті <b>{delAsk.name}</b> — <b>{delAsk.count}</b> активних запис(ів) у черзі. Спершу перенесіть або скасуйте їх — інакше пацієнти залишаться без кабінету.</>
+                  : delAsk.count === null
+                    ? <>Не вдалося перевірити записи кабінету <b>{delAsk.name}</b>. Видалити? Якщо в ньому є пацієнти, збереження буде заблоковано.</>
+                    : <>Кабінет <b>{delAsk.name}</b> буде видалено з центру при збереженні. Скасувати дію потім не можна.</>
+            }
+            danger={!blocked}
+            busy={delAsk.checking}
+            hideCancel={blocked}
+            confirmLabel={blocked ? "Зрозуміло" : "Видалити"}
+            cancelLabel="Скасувати"
+            onClose={() => setDelAsk(null)}
+            onConfirm={() => {
+              if (delAsk.checking) return;
+              if (!blocked) delEq(delAsk.i);
+              setDelAsk(null);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

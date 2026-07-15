@@ -70,11 +70,23 @@ export function roomScheduleFor(
   return { closed: false, start: DEF_START, end: DEF_END, custom: false };
 }
 
-export function dayStatus(override: DayOverride | null | undefined, date: Date): DayStatus {
+/* «Закритий» день для ВСІЄЇ клініки за БАЗОВИМИ графіками кабінетів: лише коли
+   КОЖЕН кабінет закритий цього дня тижня (працює хоч один → клініка «відкрита»).
+   roomSchedules не передані → старий фолбек defaultClosed() (лише неділя): екрани,
+   які ще не передають графіки, поведінку не змінюють.
+   Фіксить обидва напрямки: якщо всі кабінети не працюють у суботу — календар це
+   покаже; якщо кабінет працює в неділю — не позначить її вихідною. */
+export function clinicDefaultClosed(date: Date, roomSchedules?: unknown[] | null): boolean {
+  if (!roomSchedules || roomSchedules.length === 0) return defaultClosed(date);
+  return roomSchedules.every((sched) => roomScheduleFor(date, "", undefined, sched).closed);
+}
+
+export function dayStatus(override: DayOverride | null | undefined, date: Date, roomSchedules?: unknown[] | null): DayStatus {
   if (override && override.all_closed) return { kind: "closed", label: override.label || "Неробочий день" };
   if (override && override.rooms && Object.keys(override.rooms).length)
     return { kind: "custom", label: override.label || "Особливий графік" };
-  if (defaultClosed(date)) return { kind: "closed", label: "Вихідний (неділя)" };
+  if (clinicDefaultClosed(date, roomSchedules))
+    return { kind: "closed", label: defaultClosed(date) ? "Вихідний (неділя)" : "Кабінети не працюють" };
   return { kind: "none", label: "" };
 }
 

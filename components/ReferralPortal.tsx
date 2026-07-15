@@ -1132,6 +1132,10 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
       { table: "queue_entries", filter: "referrer_id=eq." + doctorId, onChange: reload },
       { table: "waitlist_entries", filter: "created_by=eq." + doctorId, onChange: reloadWaitlist },
       { table: "referral_access", filter: "referrer_id=eq." + doctorId, onChange: () => router.refresh() },
+      // 0086: зміни кабінетів дозволених центрів (видалення/графік) → оновлюємо
+      // портал. Без filter: RLS доставляє направнику лише кабінети його центрів
+      // (REPLICA IDENTITY FULL з 0086 дає clinic_id і в подіях DELETE).
+      { table: "rooms", onChange: () => router.refresh() },
     ],
   });
 
