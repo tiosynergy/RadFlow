@@ -9,7 +9,7 @@
 
 ## 1. Что такое RadFlow
 
-RadFlow — multi-tenant SaaS для **интеллектуального управления очередью** в центрах лучевой диагностики (МРТ/КТ). Вся очередь, расписание, приоритеты, инциденты и пересчёт живут внутри RadFlow; Excel используется только для разовой загрузки справочников. Система — единственный источник правды по очереди клиники.
+RadFlow — multi-tenant SaaS для **интеллектуального управления очередью** в центрах лучевой и функциональной диагностики (МРТ, КТ, УЗД, Рентген, Мамографія). Вся очередь, расписание, приоритеты, инциденты и пересчёт живут внутри RadFlow; Excel используется только для разовой загрузки справочников. Система — единственный источник правды по очереди клиники.
 
 Каждая клиника (tenant) изолирована на уровне БД (PostgreSQL RLS по `clinic_id`). Несколько ролей работают над одной очередью одновременно, изменения распространяются в реальном времени.
 
@@ -157,7 +157,7 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 
 - **`queue_status`**: `scheduled`, `waiting`, `in_progress`, `done`, `no_show`, `not_held`, `cancelled`.
 - **`call_status`**: `not_called`, `to_recall`, `no_answer`, `confirmed`, `declined`.
-- **`modality`**: `MRI`, `CT`, `OTHER`.
+- **`modality`**: `MRI`, `CT`, `US` (УЗД), `XRAY` (Рентген), `MAMMO` (Мамографія), `OTHER`. Реестр (код↔укр.метка↔цвет↔каталог областей) — `lib/studies.ts` (`MODALITIES`, `BOOKABLE_MODALITIES` = все кроме OTHER). Booking-флоу работает на N модальностей. Инвариант «тип исследования ↔ модальность кабинета» держат триггеры `check_studies_match_room` (queue, 0088) и `check_waitlist_consistency` (лист ожидания, 0090).
 - **`referral_access_status`**: `pending_clinic`, `pending_referrer`, `active`, `revoked`, `declined`.
 - **`referral_policy`**: `direct` (запись сразу), `confirm` (требует подтверждения).
 - **`patient_priority`** (enum): `cito` (екстрено/CITO), `urgent` (терміново), `planned` (планово). Обязателен при новой записи; порядок очереди: cito → urgent → planned. Машинно-читаемые коды для n8n/AI (`lib/priority.ts`).
