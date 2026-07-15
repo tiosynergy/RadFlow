@@ -1076,6 +1076,15 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
 
   const activeCenters = useMemo(() => centers.filter((c) => c.status === "active"), [centers]);
   const centersById = useMemo(() => { const m: Record<string, Center> = {}; centers.forEach((c) => { m[c.clinicId] = c; }); return m; }, [centers]);
+  // Коди модальностей, доступних направнику в центрі за грантом (room_ids; null = усі
+  // кабінети). Передаємо у WaitlistModal, щоб він не пропонував недоступні модальності
+  // (сервер addWaitlistEntry перевіряє те саме).
+  const centerModalities = (c: Center): string[] => {
+    const rs = roomsByClinic[c.clinicId] || [];
+    const ids = Array.isArray(c.room_ids) && c.room_ids.length ? c.room_ids : null;
+    const allowed = ids ? rs.filter((r) => ids.includes(r.id)) : rs;
+    return Array.from(new Set(allowed.map((r) => r.modality)));
+  };
   const pendingInvites = centers.filter((c) => c.status === "pending_referrer").length;
 
   const [tab, setTab] = useState(() => (activeCenters.length === 0 ? "centers" : "new"));
@@ -1317,7 +1326,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {wlAddOpen && (
-        <WaitlistModal centers={activeCenters.map((c) => ({ clinicId: c.clinicId, name: centerLabel(c) }))}
+        <WaitlistModal centers={activeCenters.map((c) => ({ clinicId: c.clinicId, name: centerLabel(c), modalities: centerModalities(c) }))}
           onClose={() => setWlAddOpen(false)} onSave={wlAdd} />
       )}
       {wlEditFor && (

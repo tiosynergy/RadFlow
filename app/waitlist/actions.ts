@@ -116,6 +116,19 @@ export type WaitlistInput = {
   sourceEntryId?: string | null; // якщо доданий з наявного запису черги
 };
 
+/** Чи доступна направнику модальність у центрі за його грантом.
+    roomIds = null → усі кабінети центру; інакше — лише перелічені. Модальність
+    дозволена, якщо серед доступних кабінетів є хоч один цієї модальності.
+    RLS-клієнт: направник бачить кабінети центрів, до яких має referral_access. */
+async function referrerModalityAllowed(
+  supabase: SupabaseClient<Database>, clinicId: string, roomIds: string[] | null, modality: string,
+): Promise<boolean> {
+  let q = supabase.from("rooms").select("modality").eq("clinic_id", clinicId);
+  if (roomIds && roomIds.length) q = q.in("id", roomIds);
+  const { data } = await q;
+  return (data || []).some((r) => r.modality === modality);
+}
+
 /** Додати пацієнта до листа очікування (новий або з наявного запису).
     Персонал — свій центр; направник — авторизований центр (referral_access). */
 export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActionResult> {
@@ -134,12 +147,26 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
     if (!input.clinicId) return { ok: false, error: "Не вказано центр", code: "generic" };
     const { data: access } = await supabase
       .from("referral_access")
-      .select("status")
+      .select("status, room_ids")
       .eq("referrer_id", caller.userId)
       .eq("clinic_id", input.clinicId)
       .eq("status", "active")
       .maybeSingle();
     if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
+    // Бізнес-обмеження гранту: направник може завести в лист лише модальність,
+    // до кабінетів якої має доступ (room_ids; null = усі кабінети центру). Пряма
+    // запис фільтрується по room_ids, лист очікування — раніше НІ (показував усі
+    // 5 модальностей і давав завести напр. мамографію там, де доступ лише МРТ).
+    const grantRooms = access.room_ids as string[] | null;
+    const entryMod = modalityFromStudies(input.studies as Study[] | null);
+    if (!(await referrerModalityAllowed(supabase, input.clinicId, grantRooms, entryMod))) {
+      return { ok: false, error: "Ця модальність недоступна за вашим доступом до центру", code: "forbidden" };
+    }
+    // Якщо направник жорстко привʼязав кабінет — він теж має бути в його гранті
+    // (null/[] = усі). Захист від крафтового запиту повз UI (портал кабінети не показує).
+    if (input.roomId && grantRooms && grantRooms.length > 0 && !grantRooms.includes(input.roomId)) {
+      return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
+    }
     clinicId = input.clinicId;
     referrerId = caller.userId;
   } else {

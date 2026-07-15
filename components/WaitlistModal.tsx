@@ -8,7 +8,7 @@
    пріоритет змінюється в картці з перевіркою прав, центр незмінний).
    Збереження — через Server Action (батько). */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import PhoneInput from "@/components/PhoneInput";
 import { DobField } from "@/components/BookingModal";
 import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyPrice, normBuffer, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, type Study } from "@/lib/studies";
@@ -61,8 +61,10 @@ function calcAge(d: string): number | null {
 function todayKey(tz?: string | null): string { return wallDayKey(tz || undefined); }
 
 interface WaitlistModalProps {
-  /** Портал направника: обовʼязковий вибір центру (active referral_access). */
-  centers?: { clinicId: string; name: string }[];
+  /** Портал направника: обовʼязковий вибір центру (active referral_access).
+      modalities — КОДИ доступних направнику модальностей у центрі (за room_ids-грантом);
+      сегменти типу обмежуємо ними. Сервер (addWaitlistEntry) перевіряє те саме. */
+  centers?: { clinicId: string; name: string; modalities?: string[] }[];
   /** Кабінети центру — вмикають опційний селектор жорсткої прив'язки (адмін-флоу). */
   rooms?: RoomOpt[];
   /** Режим редагування наявного рядка листа. */
@@ -99,14 +101,29 @@ export default function WaitlistModal({ centers, rooms, initial, clinicTz, onClo
   const [note, setNote] = useState(initial?.note || "");
   const [saving, setSaving] = useState(false);
 
-  // Лист очікування не привʼязаний до кабінету, тож пропонуємо всі модальності, на
-  // які можна записати (портал направника кабінетів не передає взагалі).
-  const availableModalities = BOOKABLE_MODALITIES;
+  // Доступні модальності: направнику (needCenter) — лише ті, що дозволяє його грант
+  // на ОБРАНИЙ центр (передаються в centers[].modalities); персоналу — за наявними
+  // кабінетами центру (якщо rooms передані), інакше всі bookable. Лист не привʼязаний
+  // до кабінету, але бізнес-обмеження гранту тут теж діє (дубль перевірки — на сервері).
+  const centerMods = needCenter ? (centers!.find((c) => c.clinicId === centerId)?.modalities ?? null) : null;
+  const availableModalities: string[] = centerMods
+    ? BOOKABLE_MODALITIES.filter((m) => centerMods.includes(m))
+    : (rooms && rooms.length ? BOOKABLE_MODALITIES.filter((m) => rooms.some((r) => r.modality === m)) : BOOKABLE_MODALITIES);
   const allRegions = regionsFor(studyType);
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const primaryKind = modalityLabel(studyType);
   // Кабінети поточної модальності — для опційної жорсткої прив'язки (адмін-флоу).
   const roomOptions = (rooms || []).filter((r) => r.modality === studyType);
+
+  // Направник обрав/змінив центр → якщо поточний тип недоступний за грантом цього
+  // центру, перемикаємо на першу доступну модальність (і скидаємо область/кабінет).
+  useEffect(() => {
+    if (!needCenter) return;
+    if (availableModalities.length && !availableModalities.includes(studyType)) {
+      setStudyType(availableModalities[0]); setRegion(""); setContrast(false); setRoomId("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [centerId]);
   const contrastSuffix = contrast ? " з контрастом" : "";
   const regionObj = regions.find((r) => r.label === region);
   const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (allRegions[0]?.dur ?? 20);
