@@ -303,8 +303,8 @@ export async function updateWaitlistEntry(
   if (!v.ok) return v;
 
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+  const caller = await callerProfile(supabase);
+  if (!caller) return { ok: false, error: "Не авторизовано", code: "auth" };
 
   const safePatch: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(v.data.patch)) {
@@ -314,7 +314,21 @@ export async function updateWaitlistEntry(
   if (Object.keys(safePatch).length === 0) return { ok: true };
   if (safePatch.studies !== undefined) {
     // Модальність — похідна від складу досліджень, рахуємо на сервері.
-    safePatch.modality = modalityFromStudies(safePatch.studies as Study[] | null);
+    const newMod = modalityFromStudies(safePatch.studies as Study[] | null);
+    safePatch.modality = newMod;
+    // Направник не може ЗМІНИТИ тип на модальність поза своїм грантом (як і на
+    // вставці): RLS дозволяє йому правити СВІЙ рядок, але не міняти модальність на
+    // недоступну. Персоналу — свій центр, обмежень тут немає.
+    if (caller.role === "referrer") {
+      const { data: row } = await supabase.from("waitlist_entries").select("clinic_id").eq("id", v.data.id).maybeSingle();
+      if (!row?.clinic_id) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+      const { data: access } = await supabase.from("referral_access")
+        .select("room_ids").eq("referrer_id", caller.userId).eq("clinic_id", row.clinic_id).eq("status", "active").maybeSingle();
+      if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
+      if (!(await referrerModalityAllowed(supabase, row.clinic_id, access.room_ids as string[] | null, newMod))) {
+        return { ok: false, error: "Ця модальність недоступна за вашим доступом до центру", code: "forbidden" };
+      }
+    }
   }
 
   // Патч ставить кінець вікна у минуле → той самий гард, що на вставці. Клініку

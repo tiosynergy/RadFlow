@@ -1330,7 +1330,9 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
           onClose={() => setWlAddOpen(false)} onSave={wlAdd} />
       )}
       {wlEditFor && (
-        <WaitlistModal initial={wlEditFor} onClose={() => setWlEditFor(null)} onSave={wlEditSave} />
+        <WaitlistModal initial={wlEditFor}
+          allowedModalities={centersById[wlEditFor.clinic_id] ? centerModalities(centersById[wlEditFor.clinic_id]) : undefined}
+          onClose={() => setWlEditFor(null)} onSave={wlEditSave} />
       )}
       {cancelAsk && (
         <ConfirmDialog title="Скасувати направлення?"

@@ -69,13 +69,16 @@ interface WaitlistModalProps {
   rooms?: RoomOpt[];
   /** Режим редагування наявного рядка листа. */
   initial?: WaitlistEntry | null;
+  /** Явний перелік КОДІВ дозволених модальностей (edit-режим направника: грант на
+      центр рядка). Має пріоритет над centers/rooms; сервер перевіряє те саме. */
+  allowedModalities?: string[];
   /** TZ центру (дошки персоналу передають явно; портал направника — ні). */
   clinicTz?: string | null;
   onClose: () => void;
   onSave: (w: WaitlistFormOut) => void | Promise<void>;
 }
 
-export default function WaitlistModal({ centers, rooms, initial, clinicTz, onClose, onSave }: WaitlistModalProps) {
+export default function WaitlistModal({ centers, rooms, initial, allowedModalities, clinicTz, onClose, onSave }: WaitlistModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const isEdit = !!initial;
   const todayStr = todayKey(clinicTz);   // «сьогодні» клініки — для дефолту й гарду прошлого
@@ -106,8 +109,9 @@ export default function WaitlistModal({ centers, rooms, initial, clinicTz, onClo
   // кабінетами центру (якщо rooms передані), інакше всі bookable. Лист не привʼязаний
   // до кабінету, але бізнес-обмеження гранту тут теж діє (дубль перевірки — на сервері).
   const centerMods = needCenter ? (centers!.find((c) => c.clinicId === centerId)?.modalities ?? null) : null;
-  const availableModalities: string[] = centerMods
-    ? BOOKABLE_MODALITIES.filter((m) => centerMods.includes(m))
+  const gateMods = allowedModalities ?? centerMods;   // явний перелік (edit направника) або грант центру
+  const availableModalities: string[] = gateMods
+    ? BOOKABLE_MODALITIES.filter((m) => gateMods.includes(m))
     : (rooms && rooms.length ? BOOKABLE_MODALITIES.filter((m) => rooms.some((r) => r.modality === m)) : BOOKABLE_MODALITIES);
   const allRegions = regionsFor(studyType);
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
