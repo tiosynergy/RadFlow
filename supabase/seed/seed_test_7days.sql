@@ -89,6 +89,8 @@ declare
   v_k          int;
   v_j          int;
   v_seq        int := 0;
+  v_ins        int := 0;   -- реально вставлено записів
+  v_skip       int := 0;   -- пропущено (тригер відхилив: графік/перерва/простій/овербукінг)
   v_start      int;
   v_type       text;
   v_region     text;
@@ -161,6 +163,10 @@ begin
       v_room_i := 0;
       for r in select id, modality from public.rooms where clinic_id = c.id order by created_at loop
         v_room_i := v_room_i + 1;
+        -- Сид наповнює лише МРТ/КТ кабінети (каталог областей у сиді — тільки вони).
+        -- Кабінети US/XRAY/MAMMO лишаються без записів: тип «МРТ» у них порушив би
+        -- інваріант 0088 (тригер check_studies_match_room) і сид упав би цілком.
+        continue when r.modality not in ('MRI', 'CT');
         v_cur    := v_open;
         v_k      := 3 + ((v_d + v_room_i) % 3);      -- 3..5 записів на кабінет
         if v_dow = 7 then v_k := 2; end if;
@@ -206,9 +212,13 @@ begin
           v_start := greatest(v_start, v_cur);   -- не наїжджати на попередній запис
           v_start := v_start - (v_start % 5);    -- вирівняти по 5 хв
 
-          -- Перерва 13:00–14:00 на day+3 у першому кабінеті — не перетинати
-          if v_d = 3 and r.id = v_break_room and v_start < 840 and (v_start + v_dur) > 780 then
+          -- Обідня перерва 13:00–14:00: тепер це ДЕФОЛТ майстра в rooms.schedule
+          -- (а не лише override day+3). Тригер check_not_during_break (0067)
+          -- відхиляє будь-яке дослідження, що її перетинає, тож зсуваємо старт за
+          -- 14:00 для ВСІХ кабінетів і днів (інакше сид падає на першому ж обіді).
+          if v_start < 840 and (v_start + v_dur) > 780 then
             v_start := 840;
+            v_start := v_start - (v_start % 5);
           end if;
 
           exit when (v_start + v_dur) > v_close;   -- не влазить у графік дня
@@ -275,7 +285,13 @@ begin
             v_resch := null;
           end if;
 
-          -- ── INSERT (тригери перевірять овербукінг) ──────────────────────
+          -- ── INSERT (тригери перевірять графік/перерву/овербукінг/простій) ──
+          -- Кожну вставку загортаємо в under-block з EXCEPTION: якщо тригер
+          -- відхилив слот (закритий день кабінету, перерва, накладення, простій),
+          -- пропускаємо саме цей запис і продовжуємо. Робить сид стійким до
+          -- будь-якого розкладу кабінетів (Пн–Пт, обід, санітарні дні), а не лише
+          -- до «Пн–Сб 08–18 без перерв», як було зашито раніше.
+          begin
           insert into public.queue_entries (
             clinic_id, room_id, patient_name, patient_phone, patient_email,
             patient_dob, patient_sex, patient_age, patient_weight,
@@ -320,12 +336,19 @@ begin
 
           -- Курсор кабінету: наступний старт після дослідження + буфер + люфт
           v_cur := v_start + v_dur + v_buf + (array[0,5,10,15])[1 + (v_seq % 4)];
+          v_ins := v_ins + 1;
+          exception when others then
+            -- Слот відхилив тригер (перерва/графік/простій/овербукінг цього
+            -- кабінету на цю добу) — пропускаємо запис. v_cur НЕ рухаємо: наступна
+            -- спроба цього ж циклу порахується від того самого курсора.
+            v_skip := v_skip + 1;
+          end;
         end loop;  -- v_j
       end loop;    -- rooms
     end loop;      -- days
   end loop;        -- clinics
 
-  raise notice '✅ Створено % записів черги', v_seq;
+  raise notice '✅ Вставлено % записів черги (пропущено %: не влізли в графік/перерву/простій кабінету)', v_ins, v_skip;
 end $$;
 
 -- ── 4) ЛИСТ ОЧІКУВАННЯ (по 5 на центр) ─────────────────────────────────────
@@ -351,11 +374,12 @@ begin
     v_today := (now() at time zone c.tz)::date;
 
     for i in 1..5 loop
+      -- Лише МРТ/КТ кабінети (склад листа в сиді — теж лише вони).
       select id, modality::text into v_room, v_mod
-        from public.rooms where clinic_id = c.id order by created_at offset ((i-1) % 3) limit 1;
-      if v_room is null then   -- у центрі менше 3 кабінетів
+        from public.rooms where clinic_id = c.id and modality in ('MRI', 'CT') order by created_at offset ((i-1) % 3) limit 1;
+      if v_room is null then   -- у центрі менше 3 МРТ/КТ кабінетів
         select id, modality::text into v_room, v_mod
-          from public.rooms where clinic_id = c.id order by created_at limit 1;
+          from public.rooms where clinic_id = c.id and modality in ('MRI', 'CT') order by created_at limit 1;
       end if;
       continue when v_room is null;
 
@@ -462,9 +486,11 @@ end $$;
 -- ── 6) ІНЦИДЕНТИ (створюємо ПІСЛЯ записів — щоб не блокувати вставку) ───────
 do $$
 declare
-  c       record;
-  v_today date;
-  v_rooms uuid[];
+  c            record;
+  v_today      date;
+  v_rooms      uuid[];
+  v_now_wall   timestamp;   -- «зараз» у настінному часі клініки (naive)
+  v_block_wall timestamp;   -- кінець вікна поломки (настінний)
 begin
   for c in select id, coalesce(timezone,'Europe/Kiev') as tz from public.clinics order by created_at loop
     v_today := (now() at time zone c.tz)::date;
@@ -478,15 +504,20 @@ begin
             ((v_today + 2)::text || 'T15:00:00Z')::timestamptz,
             true, 'Планове ТО (тест)');
 
-    -- (б) Активна поломка СЬОГОДНІ на останньому кабінеті, до кінця дня.
-    --     Час інциденту — теж «настінний UTC» (клієнт порівнює його з Date.UTC слота),
+    -- (б) Активна поломка ВІД «зараз» на останньому кабінеті.
+    --     Час інциденту — «настінний UTC» (клієнт порівнює його з Date.UTC слота),
     --     тому будуємо з настінного часу клініки, а не з now().
-    --     Вікно ОБМЕЖЕНЕ: «до відновлення» (blocked_until = null) заблокувало б кабінет
-    --     на всі 7 днів і зробило б сид непридатним для тестів.
+    --     blocked_until = max(18:00 сьогодні, зараз+2год), рахуємо через TIMESTAMP
+    --     (не time), щоб коректно перейти опівніч. Раніше було хардкод '18:00Z':
+    --     якщо сид запускають УВЕЧЕРІ (настінний час уже > 18:00), started_at
+    --     ставав ПІЗНІШЕ за blocked_until і CHECK incidents_window_chk падав.
+    v_now_wall   := (now() at time zone c.tz);
+    v_block_wall := greatest(date_trunc('day', v_now_wall) + interval '18 hours',
+                             v_now_wall + interval '2 hours');
     insert into public.incidents (clinic_id, room_id, reason, status, started_at, blocked_until, auto_unblock, note)
     values (c.id, v_rooms[array_length(v_rooms,1)], 'breakdown', 'active',
-            (v_today::text || 'T' || to_char((now() at time zone c.tz)::time, 'HH24:MI:SS') || 'Z')::timestamptz,
-            (v_today::text || 'T18:00:00Z')::timestamptz,
+            (to_char(v_now_wall,   'YYYY-MM-DD"T"HH24:MI:SS') || 'Z')::timestamptz,
+            (to_char(v_block_wall, 'YYYY-MM-DD"T"HH24:MI:SS') || 'Z')::timestamptz,
             false, 'Поломка (тест) — постраждалі мають потрапити в обзвон');
   end loop;
 end $$;

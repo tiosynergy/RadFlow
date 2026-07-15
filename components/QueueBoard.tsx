@@ -46,7 +46,7 @@ import RoomDayOverviewModal from "@/components/RoomDayOverviewModal";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, collisionFor, type CollisionInfo } from "@/lib/queueStatus";
 import CollisionPanel from "@/components/CollisionPanel";
-import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
+import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
@@ -109,7 +109,6 @@ const STAT_ITEMS = [
   { key: "not_held", lab: "Не відбулося", sub: "не відбулось", cls: "orange" },
 ];
 
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function procLabel(e: { studies?: unknown; note?: string | null }) {
   const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string; contrast?: boolean }>) : [];
   if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast ? " з контрастом" : "")).join(" + ");
@@ -170,12 +169,12 @@ interface RoomStatusCardProps {
   onUnblock: (inc: IncidentRow) => void;
 }
 function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedClosed, onComplete, onCall, onUnblock }: RoomStatusCardProps) {
-  const kind = modalityLabel(room.modality);
+  const kind = modalityShort(room.modality);
   if (!blocked && schedClosed) {
     return (
       <div className="room-card blocked-card">
         <div className="rc-head">
-          <span className={"equip-tile " + (room.modality === "MRI" ? "mrt" : "ct")}>{kind}</span>
+          <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
           <div className="rc-h-meta">
             <div className="rc-name">{room.name}</div>
             <div className="rc-model">{room.apparatus_model || ""}</div>
@@ -193,7 +192,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
     return (
       <div className="room-card blocked-card">
         <div className="rc-head">
-          <span className={"equip-tile " + (room.modality === "MRI" ? "mrt" : "ct")}>{kind}</span>
+          <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
           <div className="rc-h-meta">
             <div className="rc-name">{room.name}</div>
             <div className="rc-model">{room.apparatus_model || ""}</div>
@@ -213,7 +212,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
   return (
     <div className={"room-card " + (patient ? "busy" : "free")}>
       <div className="rc-head">
-        <span className={"equip-tile " + (room.modality === "MRI" ? "mrt" : "ct")}>{kind}</span>
+        <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
         <div className="rc-h-meta">
           <div className="rc-name">{room.name}</div>
           <div className="rc-model">{room.apparatus_model || ""}</div>
@@ -1636,7 +1635,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
                 <div className="room-view-head">
                   <button className="btn btn-ghost btn-sm" onClick={() => setRoomView("all")}>← Усі кабінети</button>
                   <span className="rvh-title">
-                    <span className={"rvh-tile " + (roomViewRoom?.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(roomViewRoom?.modality || "")}</span>
+                    <span className={"rvh-tile " + modalityKind(roomViewRoom?.modality || "")}>{modalityShort(roomViewRoom?.modality || "")}</span>
                     {roomViewRoom?.name}{roomViewRoom?.apparatus_model ? " · " + roomViewRoom.apparatus_model : ""}
                   </span>
                 </div>

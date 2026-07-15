@@ -13,6 +13,7 @@ import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import PhoneInput from "@/components/PhoneInput";
 import HelpTip from "@/components/HelpTip";
+import { modalityShort, modalityKind } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -24,8 +25,6 @@ type EditForm = { policy: string; room_ids: string[]; note: string };
 type LoginSug = { id: string; login: string | null; full_name: string | null };
 type StrKey = "login" | "full_name" | "email" | "phone" | "note" | "policy";
 type ApiResult = { ok: boolean; data: any }; // eslint-disable-line @typescript-eslint/no-explicit-any
-
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 
 const ACCESS_ST: Record<string, { label: string; cls: string }> = {
   active: { label: "Активний", cls: "green" },
@@ -362,7 +361,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                     return (
                       <button type="button" key={r.id} className="bd-room" onClick={() => toggleRoom(r.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}
                         style={{ padding: "5px 9px", gap: 8, borderColor: on ? "var(--green)" : undefined, background: on ? "var(--green-bg)" : undefined }}>
-                        <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")} style={{ width: 26, height: 26, fontSize: 10 }}>{modalityLabel(r.modality)}</span>
+                        <span className={"bd-room-kind " + modalityKind(r.modality)} style={{ width: 26, height: 26, fontSize: 10 }}>{modalityShort(r.modality)}</span>
                         <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
                       </button>
                     );
@@ -423,7 +422,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                               return (
                                 <button type="button" key={rm.id} className="bd-room" onClick={() => toggleEditRoom(rm.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}
                                   style={{ padding: "5px 9px", gap: 8, borderColor: on ? "var(--green)" : undefined, background: on ? "var(--green-bg)" : undefined }}>
-                                  <span className={"bd-room-kind " + (rm.modality === "MRI" ? "mrt" : "ct")} style={{ width: 26, height: 26, fontSize: 10 }}>{modalityLabel(rm.modality)}</span>
+                                  <span className={"bd-room-kind " + modalityKind(rm.modality)} style={{ width: 26, height: 26, fontSize: 10 }}>{modalityShort(rm.modality)}</span>
                                   <span className="bd-room-meta"><span className="bd-room-name">{rm.name}</span><span className="bd-room-model">{rm.apparatus_model || ""}</span></span>
                                 </button>
                               );

@@ -8,6 +8,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { wallToday0 } from "@/lib/incidents";
+import { modalityLabel } from "@/lib/studies";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import "@/styles/prototype/radflow.css";
@@ -36,7 +37,6 @@ function today0(tz?: string) { return wallToday0(tz); }
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function fmtUah(n: number) { return String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴"; }
 
 const PRICE: Record<string, number> = {

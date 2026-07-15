@@ -10,6 +10,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
 import DensityControl from "@/components/DensityToggle";
+import { modalityShort, modalityKind } from "@/lib/studies";
 
 type SidebarRoom = {
   id: string;
@@ -36,9 +37,6 @@ interface SidebarProps {
   stoppedRoomIds?: string[]; // кабінети з активним простоєм (аварія/поломка) — підсвічуються червоним
 }
 
-function modalityLabel(m: string): string {
-  return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше";
-}
 function initials(name?: string | null): string {
   const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "RF";
@@ -131,7 +129,7 @@ export default function Sidebar({
               className={"sb-cab" + (activeRoom === r.id ? " active" : "") + (stoppedRoomIds.includes(r.id) ? " stopped" : "")}
               title={stoppedRoomIds.includes(r.id) ? "Кабінет зупинено (простій)" : undefined}
               style={{ width: "100%", textAlign: "left", border: "none", cursor: "pointer" }}>
-              <span className={"sb-cab-tile " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+              <span className={"sb-cab-tile " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
               <span className="sb-cab-meta">
                 <span className="sb-cab-name">{stoppedRoomIds.includes(r.id) ? "🛑 " : ""}{r.name}</span>
                 <span className="sb-cab-model">{r.apparatus_model || ""}</span>

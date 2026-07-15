@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import SetupWizard from "@/components/SetupWizard";
 import { normalizeRoomSchedule } from "@/lib/schedule";
+import { modalityLabel } from "@/lib/studies";
 import type { QueueDelayPolicy } from "@/supabase/types";
 import type { QueuePolicyInitial } from "@/components/QueuePolicySettings";
 
@@ -70,7 +71,7 @@ export default async function SetupPage() {
     return {
       id: i + 1,
       roomId: r.id as string,   // DB-id кабінету — щоб оновлювати, а не пересоздавати
-      type: modality === "MRI" ? "МРТ" : modality === "CT" ? "КТ" : "Інше",
+      type: modalityLabel(modality),
       desc: (r.apparatus_model as string) ?? "",
       room: (r.name as string) ?? "",
       ...sched,

@@ -16,7 +16,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate, QueueDelayPolicy } from "@/supabase/types";
-import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX } from "@/lib/studies";
+import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX, studiesMatchModality } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
 import { wallNow, wallInstant, wallDayKey, wallInstantOf, wallMinOfDay, wallMinOfInstant } from "@/lib/incidents";
@@ -41,7 +41,7 @@ export type QueueActionResult =
   | {
       ok: false;
       error: string;
-      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "stale" | "past" | "off_schedule" | "generic";
+      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "stale" | "past" | "off_schedule" | "modality_mismatch" | "generic";
       // Для code='stale' (H-2): реальный статус на сервере, чтобы доска ресинкнулась.
       currentStatus?: QueueStatus;
     };
@@ -418,6 +418,21 @@ async function callerIsStaffOf(supabase: SupabaseClient<Database>, clinicId: str
   return (await callerClinicId(supabase)) === clinicId;
 }
 
+/* ── Інваріант «тип дослідження ↔ модальність кабінету» (0088) ──────────────
+   Джерело правди — rooms.modality; усі дослідження запису мають нормалізуватися
+   в модальність кабінету. UI зазвичай не дасть обрати чужий тип, але Server Action
+   приймає недовірений ввід (застаріла вкладка / інтеграція / прямий виклик), тож
+   перевіряємо і на сервері (friendly-помилка нижче), і в БД (тригер check_studies_
+   match_room — останній рубіж для шляхів повз ці екшени). OTHER/порожній склад —
+   не обмежуємо (див. studiesMatchModality). */
+const MODALITY_MISMATCH_ERR: QueueActionResult = {
+  ok: false, error: "Тип дослідження не відповідає модальності кабінету", code: "modality_mismatch",
+};
+async function studiesRoomMismatch(supabase: SupabaseClient<Database>, roomId: string, studies: unknown): Promise<boolean> {
+  const { data } = await supabase.from("rooms").select("modality").eq("id", roomId).maybeSingle();
+  return !studiesMatchModality(studies as Array<{ type?: string }> | null, data?.modality ?? null);
+}
+
 /* Клінічні тривалості — кратні 5 хв, стеля 480 (= CHECK queue_entries_duration_min_chk,
    0066). Перевірку робить схема zDuration (lib/validation.ts) на межі КОЖНОЇ дії —
    раніше вона жила лише в editQueueEntryStudies, а createBooking / createReferralBooking
@@ -450,6 +465,8 @@ function classifyError(err: { code?: string; message?: string }, status?: QueueS
   if (status === "in_progress" && (code === "23505" || /in_progress|duplicate|23505/i.test(message))) {
     return { ok: false, error: "У кабінеті вже є пацієнт", code: "room_busy" };
   }
+  // MODALITY_MISMATCH — тригер 0088: перенос у кабінет іншої модальності заборонено.
+  if (/MODALITY_MISMATCH/i.test(message)) return MODALITY_MISMATCH_ERR;
   // STATUS_TRANSITION — тригер 0069: «Виконано» лише з in_progress.
   if (/STATUS_TRANSITION/i.test(message)) {
     return { ok: false, error: "«Виконано» можна поставити лише пацієнту, який був у кабінеті", code: "forbidden" };
@@ -902,6 +919,8 @@ function mapBookingError(message: string, code = ""): QueueActionResult {
     safeDbError("booking.lock", { code, message });
     return { ok: false, error: "Запис саме зараз змінює інший оператор — спробуйте ще раз", code: "stale" };
   }
+  // MODALITY_MISMATCH — тригер 0088 (тип дослідження ↔ модальність кабінету).
+  if (/MODALITY_MISMATCH/i.test(message)) return MODALITY_MISMATCH_ERR;
   // PAST_SLOT — тригер 0063 (останній рубіж; серверна перевірка стоїть вище).
   if (/PAST_SLOT/i.test(message)) return PAST_ERR;
   // 0066: CHECK тривалості. Сюди доходити не має (клієнт клампить, сервер нормалізує),
@@ -1120,6 +1139,7 @@ export async function editQueueEntryStudies(
     .select("clinic_id, room_id, scheduled_date, scheduled_time, status, in_progress_at, duration_min, buffer_time_min")
     .eq("id", id).maybeSingle();
   if (!cur) return { ok: false, error: "Запис не знайдено", code: "forbidden" };
+  if (cur.room_id && await studiesRoomMismatch(supabase, cur.room_id, studies)) return MODALITY_MISMATCH_ERR;
 
   const active = cur.status === "scheduled" || cur.status === "waiting" || cur.status === "in_progress";
   // 0077: подовження за графік / у перерву — можливе, але лише персоналу і з підтвердженням.
@@ -1219,6 +1239,7 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
+  if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   /* 0077: createBooking доступний лише персоналу (clinic_id викликача = clinicId),
      тому isStaff тут завжди true — але передаємо явно, щоб гейт лишався одним
@@ -1467,6 +1488,7 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
   const roomAllowed = !access.room_ids || access.room_ids.length === 0 || access.room_ids.includes(input.roomId);
   if (!roomAllowed) return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
 
+  if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
   if (await isPastSlot(supabase, input.clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   /* 0077: направнику робота поза графіком НЕ доступна (рішення власника: він
      записує пацієнтів ззовні й не знає, чи лишиться зміна). isStaff: false —

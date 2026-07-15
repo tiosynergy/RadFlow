@@ -16,7 +16,7 @@ import MiniCalendar from "@/components/MiniCalendar";
 import { PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { isLate, LATE_META } from "@/lib/queueStatus";
 import { wallNow, wallToday0 } from "@/lib/incidents";
-import { diffStudies, studyText, studiesChanged } from "@/lib/studies";
+import { diffStudies, studyText, studiesChanged, modalityLabel } from "@/lib/studies";
 import type { Json } from "@/supabase/types";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
@@ -83,7 +83,6 @@ function refIsLate(r: BoardReferral, tz?: string | null): boolean {
   if (!r.scheduled_date) return false;
   return isLate(r.status, new Date(r.scheduled_date + "T00:00:00"), r.scheduled_time, r.buffer_time_min, wallNow(tz || undefined));
 }
-function modLabel(m?: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : ""; }
 
 interface Props {
   referrals: BoardReferral[];
@@ -190,7 +189,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
         {centerId !== "all" && rooms.length > 0 && (
           <select className="inp" style={{ height: 32, padding: "2px 8px", maxWidth: 240 }} value={roomId} onChange={(e) => setRoomId(e.target.value)}>
             <option value="all">Усі кабінети</option>
-            {rooms.map((r) => <option key={r.id} value={r.id}>{modLabel(r.modality)} · {r.name}</option>)}
+            {rooms.map((r) => <option key={r.id} value={r.id}>{modalityLabel(r.modality)} · {r.name}</option>)}
           </select>
         )}
         <div className="spacer" />
@@ -210,7 +209,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
               const late = refIsLate(r, centersById[r.clinic_id]?.timezone);
               const meta = late ? LATE_META : (STATUS_META[r.status] || STATUS_META.scheduled);
               const room = r.room_id ? roomById[r.room_id] : null;
-              const km = room ? modLabel(room.modality) : "";
+              const km = room ? modalityLabel(room.modality) : "";
               const changed = studiesChanged(r.studies_original as Parameters<typeof studiesChanged>[0], r.studies as Parameters<typeof studiesChanged>[1]);
               const call = CALL_META[r.call_status || "not_called"];
               // Направник керує записом у ДВОХ випадках: він автор (created_by)

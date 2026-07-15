@@ -140,6 +140,11 @@
 .equip-tile { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
 .equip-tile.mrt { background: var(--blue-bg); color: #4da3ff; }
 .equip-tile.ct { background: var(--orange-bg); color: var(--orange); }
+/* Нові модальності (0087) — див. radflow.css */
+.equip-tile.us, .cld-type.us { background: rgba(50,173,230,0.15); color: #5ac8fa; }
+.equip-tile.xray, .cld-type.xray { background: rgba(191,90,242,0.15); color: #d9a6f5; }
+.equip-tile.mammo, .cld-type.mammo { background: rgba(255,55,95,0.15); color: #ff7a92; }
+.equip-tile.other, .cld-type.other { background: rgba(142,142,147,0.15); color: #a3a3a8; }
 .equip-tile.multi { background: var(--card-2); color: var(--text-secondary); }
 .equip-meta { display: flex; flex-direction: column; min-width: 0; }
 .equip-name { font-size: 14px; font-weight: 700; color: var(--text); }

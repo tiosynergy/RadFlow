@@ -7,9 +7,9 @@
 
 import { useState } from "react";
 import { useModalA11y } from "@/lib/useModalA11y";
+import { modalityShort, modalityKind } from "@/lib/studies";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 
 interface EmergencyModalProps {
   rooms?: RoomOpt[];
@@ -62,7 +62,7 @@ export default function EmergencyModal({ rooms = [], stoppedRoomIds = [], affect
                 {stoppedList.map((r) => (
                   <button key={r.id} className={"bd-room" + (isResumeSel(r.id) ? " active" : "")} onClick={() => toggleResume(r.id)}
                     aria-pressed={isResumeSel(r.id)} title={"Відновити " + r.name}>
-                    <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+                    <span className={"bd-room-kind " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
                     <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model" style={{ color: "var(--red)" }}>🛑 зупинено</span></span>
                   </button>
                 ))}
@@ -77,7 +77,7 @@ export default function EmergencyModal({ rooms = [], stoppedRoomIds = [], affect
                 <div className="bd-rooms">
                   {free.map((r) => (
                     <button key={r.id} className={"bd-room" + (sel.has(r.id) ? " active" : "")} onClick={() => toggle(r.id)} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
-                      <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+                      <span className={"bd-room-kind " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
                       <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
                     </button>
                   ))}

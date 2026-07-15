@@ -28,7 +28,7 @@ import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOver
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { slotBlockedByIncidents, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
-import { regionsFor, studyPrice, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS } from "@/lib/studies";
+import { regionsFor, studyPrice, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { DobField, BookingCalendar, fmtShort } from "@/components/BookingModal";
 import type { Json } from "@/supabase/types";
@@ -62,7 +62,6 @@ function toMin(t: string | null | undefined) { const p = String(t || "").split("
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 function dateVal(d: Date) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
 function calcAge(dob: string | null | undefined) { if (!dob) return null; return Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 3600 * 1000)); }
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function procLabel(e: { studies?: unknown; note?: string | null }) {
   const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string }>) : [];
   if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "")).join(" + ");
@@ -133,15 +132,15 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
   const [busy, setBusy] = useState(false);
 
   const date = dateVal(bookDate);
-  const modality = studyType === "КТ" ? "CT" : "MRI";
+  const modality = modalityCode(studyType); // studyType тут — укр. лейбл ("МРТ"/"УЗД"…)
   const primaryKind = studyType;
   const selCenter = activeCenters.find((c) => c.clinicId === centerId) || null;
   const allRooms = roomsByClinic[centerId] || [];
   const allowedRoomIds = selCenter && Array.isArray(selCenter.room_ids) && selCenter.room_ids.length ? selCenter.room_ids : null;
   const rooms = allowedRoomIds ? allRooms.filter((r) => allowedRoomIds.includes(r.id)) : allRooms;
-  const hasMRI = rooms.some((r) => r.modality === "MRI");
-  const hasCT = rooms.some((r) => r.modality === "CT");
-  const modAllowed = (code: string) => (code === "MRI" ? hasMRI : code === "CT" ? hasCT : false);
+  // Модальності, доступні направнику в цьому центрі (є кабінет і можна записати).
+  const availableModalities = BOOKABLE_MODALITIES.filter((code) => rooms.some((r) => r.modality === code));
+  const modAllowed = (code: string) => rooms.some((r) => r.modality === code);
   const roomsOfType = rooms.filter((r) => r.modality === modality);
   const room = roomsOfType.find((r) => r.id === roomId) || null;
 
@@ -162,7 +161,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const regionObj = regions.find((r) => r.label === region);
   const contrastSuffix = contrast ? " з контрастом" : "";
-  const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (studyType === "КТ" ? 20 : 45);
+  const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (allRegions[0]?.dur ?? 20);
   const price = regionObj ? regionObj.price + (contrast ? CONTRAST_SURCHARGE : 0) : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
@@ -172,7 +171,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
   const durCustom = region && parseInt(durEdit, 10) && parseInt(durEdit, 10) !== computedDur;
 
   const exRegions = (t: string) => regionsFor(t);
-  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : (t === "КТ" ? 20 : 45); };
+  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : (regionsFor(t)[0]?.dur ?? 20); };
   function changeType(t: string) {
     setStudyType(t); setRegion(""); setContrast(false); setTime("");
     setExtraStudies((a) => a.map((s) => (s.type === t ? s : { ...s, type: t, region: "", dur: exDur(t, "") })));
@@ -196,8 +195,9 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
   function calcAgeLocal(d: string) { const a = calcAge(d); return a == null || a < 0 ? 0 : a; }
 
   useEffect(() => {
-    if (!modAllowed(studyType === "КТ" ? "CT" : "MRI")) {
-      if (modAllowed("MRI")) setStudyType("МРТ"); else if (modAllowed("CT")) setStudyType("КТ");
+    if (!modAllowed(modalityCode(studyType))) {
+      const first = availableModalities[0];
+      if (first) setStudyType(modalityLabel(first));
       setRegion(""); setContrast(false); setTime("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -425,8 +425,9 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
               <div className="fld" style={{ flex: "0 0 130px" }}>
                 <span className="fld-lab">Тип <span className="req">*</span></span>
                 <div className="bk-seg">
-                  {modAllowed("MRI") && <button className={"bk-seg-btn" + (studyType === "МРТ" ? " active mrt" : "")} onClick={() => changeType("МРТ")}>МРТ</button>}
-                  {modAllowed("CT") && <button className={"bk-seg-btn" + (studyType === "КТ" ? " active ct" : "")} onClick={() => changeType("КТ")}>КТ</button>}
+                  {availableModalities.map((code) => (
+                    <button key={code} className={"bk-seg-btn" + (studyType === modalityLabel(code) ? " active " + modalityKind(code) : "")} onClick={() => changeType(modalityLabel(code))} title={modalityLabel(code)}>{modalityShort(code)}</button>
+                  ))}
                 </div>
               </div>
               <div className="fld">
@@ -504,7 +505,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
                     return (
                       <div className="bk-study-row" key={i}>
                         <div className="bk-seg bk-seg-sm st-seg-locked" title="Тип = тип основного дослідження">
-                          <button className={"bk-seg-btn active " + (primaryKind === "МРТ" ? "mrt" : "ct")} disabled>{primaryKind}</button>
+                          <button className={"bk-seg-btn active " + modalityKind(studyType)} disabled>{modalityShort(studyType)}</button>
                         </div>
                         <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
@@ -530,7 +531,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
             <div className="bk-sched-head">
               <span className="bk-sched-spark">✦</span>
               <span className="bk-sched-title">Розклад</span>
-              <span className={"bk-sched-mod " + (modality === "MRI" ? "mrt" : "ct")}>{studyType}</span>
+              <span className={"bk-sched-mod " + modalityKind(studyType)}>{studyType}</span>
               <span className="bk-sched-sync"><span className="pulse-dot" style={{ background: "var(--green)", width: 6, height: 6 }} /> синхр. з чергою</span>
             </div>
 
@@ -546,7 +547,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
                 <>
                   <div className="bk-room-chips">
                     {roomsOfType.map((r) => (
-                      <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + (r.modality === "MRI" ? " mrt" : " ct")}
+                      <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + " " + modalityKind(r.modality)}
                         onClick={() => { setRoomId(r.id); setTime(""); }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
                         <span className="bk-room-chip-name">{r.name}</span>
                         {r.apparatus_model && <span className="bk-room-chip-model">{r.apparatus_model}</span>}
@@ -698,7 +699,7 @@ function CenterDetails({ data, loading }: { data?: CenterCardData | null; loadin
         <div className="bd-rooms">
           {rooms.map((r) => (
             <div key={r.id} className="bd-room" style={{ cursor: "default" }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
-              <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+              <span className={"bd-room-kind " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
               <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
             </div>
           ))}

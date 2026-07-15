@@ -8,7 +8,7 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, studyDur, studyPrice, CONTRAST_DUR } from "@/lib/studies";
+import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, studyDur, studyPrice, CONTRAST_DUR, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import { roomScheduleFor, effectiveRoomBreaks, OFF_SCHED_GRACE_MIN, type DayOverride } from "@/lib/schedule";
 import { wallNow, wallMinOfDay, wallDayKey, wallToday0 } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
@@ -36,7 +36,6 @@ interface StudyEditModalProps {
   offSchedule?: boolean;
 }
 
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
@@ -44,8 +43,9 @@ function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, onClose, onConfirm, offSchedule = false }: StudyEditModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const room = (rooms || []).find((r) => r.id === patient.room_id);
-  const roomKind = room ? modalityLabel(room.modality) : "МРТ"; // "МРТ" | "КТ"
-  const lockType = roomKind === "МРТ" || roomKind === "КТ";
+  const roomKind = room ? modalityLabel(room.modality) : "МРТ"; // укр. лейбл модальності кабінету
+  // Тип дослідження задає кабінет, якщо його модальність відома (МРТ/КТ/УЗД/Рентген/Мамографія).
+  const lockType = roomKind !== "Інше";
   const defaultType = lockType ? roomKind : "МРТ";
 
   const [nextStart, setNextStart] = useState<number | null>(null);
@@ -147,12 +147,12 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   // Тривалість за довідником + CONTRAST_DUR, якщо дослідження з контрастом.
   function recalc(type: string, region: string, contrast: boolean, prevDur?: number): number {
     const ro = regionsFor(type).find((r) => r.label === region);
-    return ro ? studyDur(type, region, contrast) : (prevDur || (type === "КТ" ? 20 : 45));
+    return ro ? studyDur(type, region, contrast) : (prevDur || (regionsFor(type)[0]?.dur ?? 20));
   }
   function seed(): StudyRow[] {
     const base: StudyLike[] = Array.isArray(patient.studies) && patient.studies.length
       ? (patient.studies as StudyLike[])
-      : [{ type: defaultType, region: "", dur: defaultType === "КТ" ? 20 : 45 }];
+      : [{ type: defaultType, region: "", dur: regionsFor(defaultType)[0]?.dur ?? 20 }];
     return base.map((s) => {
       const t = lockType ? roomKind : (s.type || "МРТ");
       const keepRegion = !lockType || !s.type || s.type === roomKind;
@@ -268,12 +268,13 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                       <span className="st-flab">Тип</span>
                       {lockType ? (
                         <div className="bk-seg st-seg st-seg-locked" title="Тип апарата задає кабінет">
-                          <button className={"bk-seg-btn active " + (roomKind === "МРТ" ? "mrt" : "ct")} disabled>{roomKind} 🔒</button>
+                          <button className={"bk-seg-btn active " + modalityKind(roomKind)} disabled>{modalityShort(roomKind)} 🔒</button>
                         </div>
                       ) : (
-                        <div className="bk-seg st-seg">
-                          <button className={"bk-seg-btn" + (r.type === "МРТ" ? " active mrt" : "")} onClick={() => setType(i, "МРТ")}>МРТ</button>
-                          <button className={"bk-seg-btn" + (r.type === "КТ" ? " active ct" : "")} onClick={() => setType(i, "КТ")}>КТ</button>
+                        <div className="bk-seg st-seg" style={{ flexWrap: "wrap" }}>
+                          {BOOKABLE_MODALITIES.map((code) => (
+                            <button key={code} className={"bk-seg-btn" + (r.type === modalityLabel(code) ? " active " + modalityKind(code) : "")} onClick={() => setType(i, modalityLabel(code))} title={modalityLabel(code)}>{modalityShort(code)}</button>
+                          ))}
                         </div>
                       )}
                     </div>

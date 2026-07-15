@@ -6,11 +6,11 @@
    (перемикає вкладки порталу через onNav). */
 
 import DensityControl from "@/components/DensityToggle";
+import { modalityShort, modalityKind } from "@/lib/studies";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null };
 
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function initials(name?: string | null) {
   const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "РН";
@@ -74,7 +74,7 @@ export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, ac
                     className={"sb-cab" + (activeClinic === c.clinicId && activeRoom === r.id ? " active" : "")}
                     style={{ width: "100%", textAlign: "left", border: "none", cursor: onSelectRoom ? "pointer" : "default" }}
                     title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
-                    <span className={"sb-cab-tile " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+                    <span className={"sb-cab-tile " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
                     <span className="sb-cab-meta">
                       <span className="sb-cab-name">{r.name}</span>
                       <span className="sb-cab-model">{r.apparatus_model || ""}</span>

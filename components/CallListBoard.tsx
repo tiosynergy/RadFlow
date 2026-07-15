@@ -19,6 +19,7 @@ import type { WaitlistEntry } from "@/supabase/types";
 import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies, setQueueEntryStatus } from "@/app/queue/actions";
 import { addEntryToWaitlist } from "@/app/waitlist/actions";
 import { isLate } from "@/lib/queueStatus";
+import { modalityKind } from "@/lib/studies";
 import type { CallStatus, Json } from "@/supabase/types";
 import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import "@/styles/prototype/radflow.css";
@@ -117,7 +118,7 @@ function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet,
             <div className="cld-item cld-item-full"><span className="cld-lab">Пацієнт (ПІБ)</span><span className="cld-val cld-name">{p.patient_name}</span></div>
             <div className="cld-item"><span className="cld-lab">Кабінет</span><span className="cld-val">{roomName}</span></div>
             <div className="cld-item"><span className="cld-lab">Вік</span><span className="cld-val">{p.patient_age != null ? p.patient_age + " р." : "—"}</span></div>
-            <div className="cld-item cld-item-full"><span className="cld-lab">Тип дослідження</span><span className="cld-val cld-val-wrap"><span className={"cld-type " + (type === "МРТ" ? "mrt" : "ct")}>{type}</span> {procLabel(p)}</span></div>
+            <div className="cld-item cld-item-full"><span className="cld-lab">Тип дослідження</span><span className="cld-val cld-val-wrap"><span className={"cld-type " + modalityKind(type)}>{type}</span> {procLabel(p)}</span></div>
             <div className="cld-item"><span className="cld-lab">Телефон</span><span className="cld-val"><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>{p.patient_phone}</a></span></div>
             {p.doctor && <div className="cld-item"><span className="cld-lab">Направник</span><span className="cld-val">{p.doctor}</span></div>}
           </div>

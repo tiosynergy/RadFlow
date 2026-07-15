@@ -1,8 +1,12 @@
-/* ===== RadFlow — единый справочник исследований (МРТ/КТ) =====
+/* ===== RadFlow — единый справочник исследований =====
    Единый источник для BookingModal, StudyEditModal, ReferralPortal и др.
    Каждая запись: { label, dur (мин), price (грн), contrast (доступен ли контраст) }.
    Раньше эти таблицы дублировались в нескольких компонентах и успели разойтись —
-   теперь все импортируют отсюда. */
+   теперь все импортируют отсюда.
+
+   Модальности: МРТ, КТ, УЗД, Рентген, Мамографія, Інше. Каталог областей и
+   вся привязка «код enum ↔ укр. метка ↔ CSS-класс вида» — тоже здесь (реестр
+   MODALITIES), чтобы modalityLabel/kind не дублировались по компонентам. */
 
 /** Запись справочника области исследования. */
 export interface StudyRegion {
@@ -59,6 +63,59 @@ export function normDur(v: unknown, fallback = 30): number {
   return Math.max(DUR_MIN, Math.min(DUR_MAX, r));
 }
 
+/* ── Реестр модальностей — ЕДИНЫЙ источник (код enum ↔ укр. метка ↔ CSS-вид).
+   `code` — значение enum public.modality в БД (rooms.modality, referral_access.modalities).
+   `label` — украинская метка = текст, который кладётся в queue_entries.studies[].type.
+   `kind` — суффикс CSS-класса (.bd-room-kind.<kind>, .equip-tile.<kind>). ── */
+export type ModalityCode = "MRI" | "CT" | "US" | "XRAY" | "MAMMO" | "OTHER";
+export interface ModalityInfo { code: ModalityCode; label: string; short: string; kind: string; icon: string }
+export const MODALITIES: ModalityInfo[] = [
+  { code: "MRI",   label: "МРТ",        short: "МРТ", kind: "mrt",   icon: "🧲" },
+  { code: "CT",    label: "КТ",         short: "КТ",  kind: "ct",    icon: "🩻" },
+  { code: "US",    label: "УЗД",        short: "УЗД", kind: "us",    icon: "🔊" },
+  { code: "XRAY",  label: "Рентген",    short: "РГ",  kind: "xray",  icon: "☢️" },
+  { code: "MAMMO", label: "Мамографія", short: "ММГ", kind: "mammo", icon: "🎗️" },
+  { code: "OTHER", label: "Інше",       short: "Інш", kind: "other", icon: "🔬" },
+];
+const MOD_BY_CODE: Record<string, ModalityInfo> = Object.fromEntries(MODALITIES.map((m) => [m.code, m]));
+const MOD_BY_LABEL: Record<string, ModalityInfo> = Object.fromEntries(MODALITIES.map((m) => [m.label, m]));
+const modInfo = (m?: string | null): ModalityInfo | null => (m ? MOD_BY_CODE[m] || MOD_BY_LABEL[m] || null : null);
+
+/** Метка модальности. Принимает и код enum ("CT"), и укр. текст типа ("КТ"). */
+export function modalityLabel(m?: string | null): string {
+  return modInfo(m)?.label || "Інше";
+}
+/** Короткая метка для квадратных плиток фикс. размера (30–36px): РГ, ММГ, УЗД…
+    Полные «Рентген»/«Мамографія» там обрезаются — в таких местах брать это. */
+export function modalityShort(m?: string | null): string {
+  return modInfo(m)?.short || "Інш";
+}
+/** CSS-суффикс вида кабинета (.bd-room-kind.<kind> / .equip-tile.<kind>). */
+export function modalityKind(m?: string | null): string {
+  return modInfo(m)?.kind || "other";
+}
+/** Декоративная эмодзи-иконка модальности (для списков кабинетов). */
+export function modalityIcon(m?: string | null): string {
+  return modInfo(m)?.icon || "🔬";
+}
+/** Код enum по укр. метке (для сохранения из Мастера); неизвестное → "OTHER". */
+export function modalityCode(m?: string | null): ModalityCode {
+  return (modInfo(m)?.code as ModalityCode) || "OTHER";
+}
+/** Модальности, на которые МОЖНО записать (есть каталог областей). OTHER — нет:
+    у него нет справочника, поэтому в формах записи/листа его не предлагаем. */
+export const BOOKABLE_MODALITIES: ModalityCode[] = MODALITIES.map((m) => m.code).filter((c) => c !== "OTHER");
+
+/** Инвариант «тип исследования ↔ модальность кабинета»: все исследования записи
+    должны нормализоваться в модальность кабинета. Кабинет OTHER (нет каталога) и
+    пустой состав — не ограничиваем. Зеркалит SQL-функцию study_type_modality (0088).
+    Источник правды — rooms.modality; проверяют и сервер (friendly-ошибка), и БД-триггер. */
+export function studiesMatchModality(studies: Array<{ type?: string }> | null | undefined, roomModality?: string | null): boolean {
+  if (!roomModality || roomModality === "OTHER") return true;
+  const arr = Array.isArray(studies) ? studies : [];
+  return arr.every((s) => !s?.type || modalityCode(s.type) === roomModality);
+}
+
 export const MRT_REGIONS: StudyRegion[] = [
   { label: "Головний мозок", dur: 60, price: 2400, contrast: true },
   { label: "Хребет — шийний відділ", dur: 40, price: 2100, contrast: true },
@@ -84,13 +141,62 @@ export const CT_REGIONS: StudyRegion[] = [
   { label: "Мультизональне дослідження", dur: 40, price: 2800, contrast: true },
 ];
 
+/* Длительности — из открытых прайсов украинских центров (лето 2026),
+   округлены к 5 мин; price=0 (цены заполняются владельцем позже, см. TODO).
+   contrast=true только для реально контрастных исследований (барий, CEUS, дуктография). */
+export const US_REGIONS: StudyRegion[] = [
+  { label: "УЗД органів черевної порожнини", dur: 20, price: 0, contrast: false },
+  { label: "УЗД щитоподібної залози", dur: 15, price: 0, contrast: false },
+  { label: "УЗД органів малого таза", dur: 20, price: 0, contrast: false },
+  { label: "УЗД нирок та надниркових залоз", dur: 15, price: 0, contrast: false },
+  { label: "УЗД сечового міхура", dur: 10, price: 0, contrast: false },
+  { label: "УЗД молочних залоз", dur: 20, price: 0, contrast: false },
+  { label: "УЗД передміхурової залози", dur: 15, price: 0, contrast: false },
+  { label: "Ехокардіографія (УЗД серця)", dur: 25, price: 0, contrast: false },
+  { label: "УЗД судин (доплерографія)", dur: 30, price: 0, contrast: false },
+  { label: "УЗД м'яких тканин та суглобів", dur: 15, price: 0, contrast: false },
+  { label: "УЗД з контрастуванням (CEUS)", dur: 30, price: 0, contrast: true },
+];
+
+export const XRAY_REGIONS: StudyRegion[] = [
+  { label: "Рентгенографія органів грудної клітки", dur: 10, price: 0, contrast: false },
+  { label: "Рентгенографія хребта (один відділ)", dur: 15, price: 0, contrast: false },
+  { label: "Рентгенографія суглобів кінцівок", dur: 10, price: 0, contrast: false },
+  { label: "Рентгенографія кісток кінцівок", dur: 10, price: 0, contrast: false },
+  { label: "Рентгенографія придаткових пазух носа", dur: 10, price: 0, contrast: false },
+  { label: "Рентгенографія кісток таза", dur: 10, price: 0, contrast: false },
+  { label: "Рентгенографія черепа", dur: 10, price: 0, contrast: false },
+  { label: "Оглядова рентгенографія черевної порожнини", dur: 10, price: 0, contrast: false },
+  { label: "Рентгеноскопія шлунка з барієм", dur: 30, price: 0, contrast: true },
+  { label: "Іригоскопія (товста кишка з барієм)", dur: 40, price: 0, contrast: true },
+];
+
+export const MAMMO_REGIONS: StudyRegion[] = [
+  { label: "Мамографія обох молочних залоз (2 проекції)", dur: 20, price: 0, contrast: false },
+  { label: "Мамографія однієї молочної залози", dur: 15, price: 0, contrast: false },
+  { label: "Цифрова мамографія з томосинтезом (3D)", dur: 20, price: 0, contrast: false },
+  { label: "Прицільна мамографія", dur: 15, price: 0, contrast: false },
+  { label: "Дуктографія (галактографія)", dur: 30, price: 0, contrast: true },
+];
+
+/* Каталог областей по модальности — ключи и по коду enum, и по укр. метке типа
+   (в queue_entries.studies[].type лежит укр. текст, а rooms.modality — код). */
+const REGIONS_BY_MOD: Record<string, StudyRegion[]> = {
+  MRI: MRT_REGIONS, MRT: MRT_REGIONS, "МРТ": MRT_REGIONS,
+  CT: CT_REGIONS, "КТ": CT_REGIONS,
+  US: US_REGIONS, "УЗД": US_REGIONS,
+  XRAY: XRAY_REGIONS, "Рентген": XRAY_REGIONS,
+  MAMMO: MAMMO_REGIONS, "Мамографія": MAMMO_REGIONS,
+};
+
 /* Тип может приходить как "КТ"/"МРТ" (укр.) или "CT"/"MRI"/"MRT" (код кабинета). */
 export function isCT(type?: string): boolean {
   return type === "КТ" || type === "CT";
 }
 
+/** Области для модальности. Неизвестный тип → МРТ (обратная совместимость). */
 export function regionsFor(type?: string): StudyRegion[] {
-  return isCT(type) ? CT_REGIONS : MRT_REGIONS;
+  return (type ? REGIONS_BY_MOD[type] : null) || (isCT(type) ? CT_REGIONS : MRT_REGIONS);
 }
 
 export function regionInfo(type?: string, region?: string): StudyRegion | null {

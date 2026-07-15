@@ -1239,7 +1239,7 @@ export type Database = {
     Enums: {
       user_role: "admin" | "radiologist" | "registrar" | "referrer" | "ceo";
       ceo_access_status: "active" | "revoked";
-      modality: "MRI" | "CT" | "OTHER";
+      modality: "MRI" | "CT" | "OTHER" | "US" | "XRAY" | "MAMMO";
       queue_status:
         | "scheduled"
         | "waiting"

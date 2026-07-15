@@ -14,6 +14,7 @@ import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import PhoneInput from "@/components/PhoneInput";
+import { modalityLabel } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -32,7 +33,6 @@ type Radiologist = {
 type RadRoom = { profile_id: string; room_id: string };
 type PwModal = { id: string; val: string; busy: boolean };
 
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 const ROLE_LABEL: Record<StaffRole, string> = { radiologist: "Радіолог", registrar: "Реєстратор" };
 const EMPTY: StaffForm = { login: "", full_name: "", email: "", phone: "", note: "" };
 

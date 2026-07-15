@@ -14,7 +14,7 @@ import {
 } from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallToday0, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
-import { MRT_REGIONS, CT_REGIONS, CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice, normDur } from "@/lib/studies";
+import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { countFit } from "@/lib/slots";
@@ -256,7 +256,12 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   // Передзаповнення: перше дослідження → основне (тип/область/контраст), решта → додаткові.
   const pfStudies = Array.isArray(prefill?.studies) ? (prefill!.studies as NonNullable<BookingPrefill["studies"]>) : [];
   const pfPrimary = pfStudies[0] || null;
-  const pfType = pfPrimary ? (pfPrimary.type === "КТ" || pfPrimary.type === "CT" ? "CT" : "MRT") : "MRT";
+  /* Модальності, для яких у центрі Є кабінети (у порядку реєстру). Сегменти типу
+     показуємо лише для них — не пропонуємо записати на модальність без обладнання. */
+  const availableModalities = BOOKABLE_MODALITIES.filter((code) => (rooms || []).some((r) => r.modality === code));
+  const pfCode = pfPrimary ? modalityCode(pfPrimary.type) : "";
+  // studyType тепер тримає КОД модальності (MRI/CT/US/XRAY/MAMMO/OTHER), а не MRT/CT.
+  const pfType: string = (pfCode && availableModalities.includes(pfCode)) ? pfCode : (availableModalities[0] || "MRI");
   const [name, setName] = useState(prefill?.name || "");
   const [dob, setDob] = useState(prefill?.dob || "");
   const [gender, setGender] = useState(prefill?.gender || "");
@@ -302,7 +307,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     return () => { cancel = true; };
   }, [clinicId]);
 
-  const roomsOfType = (t: string) => (rooms || []).filter((r) => r.modality === (t === "MRT" ? "MRI" : "CT"));
+  const roomsOfType = (code: string) => (rooms || []).filter((r) => r.modality === code);
   // Авто-вибір лише коли кабінет один; якщо їх кілька — користувач обирає вручну.
   // Передзаповнений слот (кандидат на вікно, що звільнилося) має пріоритет; кабінет
   // приймаємо лише якщо він підходить за модальністю дослідження.
@@ -320,15 +325,15 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const [schedLoading, setSchedLoading] = useState(true); // графік + перерви кабінету (зайнятість — окремий хук)
   const [schedErr, setSchedErr] = useState(false);
 
-  const allRegions = studyType === "MRT" ? MRT_REGIONS : CT_REGIONS;
+  const allRegions = regionsFor(studyType);
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
-  const primaryKind = studyType === "MRT" ? "МРТ" : "КТ";
+  const primaryKind = modalityLabel(studyType); // укр. текст, який кладеться в studies[].type
 
-  function changeType(t: string) {
-    setStudyType(t); setRegion(""); setContrast(false); setTime("");
-    const list = roomsOfType(t);
+  function changeType(code: string) {
+    setStudyType(code); setRegion(""); setContrast(false); setTime("");
+    const list = roomsOfType(code);
     setRoomId(list.length === 1 ? list[0].id : "");
-    const k = t === "MRT" ? "МРТ" : "КТ";
+    const k = modalityLabel(code);
     setExtraStudies((a) => a.map((s) => (s.type === k ? s : { ...s, type: k, region: "", dur: exDur(k, "") })));
   }
   function toggleContrast(v: boolean) {
@@ -340,7 +345,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const contrastSuffix = contrast ? " з контрастом" : "";
   const procLabel = region ? `${primaryKind} · ${region}${contrastSuffix}` : primaryKind;
   const regionObj = regions.find((r) => r.label === region);
-  const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (studyType === "MRT" ? 45 : 20);
+  const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (allRegions[0]?.dur ?? 20);
   const price = regionObj ? regionObj.price + (contrast ? CONTRAST_SURCHARGE : 0) : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
@@ -359,13 +364,13 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
 
   const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>(() =>
     pfStudies.slice(1).filter((s) => s?.region).map((s) => ({
-      type: s.type === "КТ" || s.type === "CT" ? "КТ" : "МРТ",
+      type: modalityLabel(s.type),
       region: s.region as string,
-      dur: Number(s.dur) || (s.type === "КТ" || s.type === "CT" ? 20 : 45),
+      dur: Number(s.dur) || (regionsFor(s.type)[0]?.dur ?? 20),
     }))
   );
   const exRegions = (t: string) => regionsFor(t);
-  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : (t === "КТ" ? 20 : 45); };
+  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : (regionsFor(t)[0]?.dur ?? 20); };
   const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
   const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
   const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(5, parseInt(v, 10) || 0) });
@@ -631,11 +636,12 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
             <div className="bk-section-label">Дослідження</div>
 
             <div className="fld-row" style={{ alignItems: "flex-end" }}>
-              <div className="fld" style={{ flex: "0 0 130px" }}>
+              <div className="fld" style={{ flex: "0 0 auto" }}>
                 <span className="fld-lab">Тип <span className="req">*</span></span>
-                <div className="bk-seg">
-                  <button className={"bk-seg-btn" + (studyType === "MRT" ? " active mrt" : "")} onClick={() => changeType("MRT")}>МРТ</button>
-                  <button className={"bk-seg-btn" + (studyType === "CT" ? " active ct" : "")} onClick={() => changeType("CT")}>КТ</button>
+                <div className="bk-seg" style={{ flexWrap: "wrap" }}>
+                  {availableModalities.map((code) => (
+                    <button key={code} className={"bk-seg-btn" + (studyType === code ? " active " + modalityKind(code) : "")} onClick={() => changeType(code)} title={modalityLabel(code)}>{modalityShort(code)}</button>
+                  ))}
                 </div>
               </div>
               <div className="fld">
@@ -714,7 +720,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                     return (
                       <div className="bk-study-row" key={i}>
                         <div className="bk-seg bk-seg-sm st-seg-locked" title="Тип = тип основного дослідження">
-                          <button className={"bk-seg-btn active " + (primaryKind === "МРТ" ? "mrt" : "ct")} disabled>{primaryKind}</button>
+                          <button className={"bk-seg-btn active " + modalityKind(studyType)} disabled>{modalityShort(studyType)}</button>
                         </div>
                         <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
@@ -752,19 +758,19 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
             <div className="bk-sched-head">
               <span className="bk-sched-spark">✦</span>
               <span className="bk-sched-title">Розклад</span>
-              <span className={"bk-sched-mod " + (studyType === "MRT" ? "mrt" : "ct")}>{studyType === "MRT" ? "МРТ" : "КТ"}</span>
+              <span className={"bk-sched-mod " + modalityKind(studyType)}>{modalityLabel(studyType)}</span>
               <span className="bk-sched-sync"><span className="pulse-dot" style={{ background: "var(--green)", width: 6, height: 6 }} /> синхр. з чергою</span>
             </div>
 
             <div className="fld">
               <span className={"fld-lab" + (miss.room ? " bk-miss-lab" : "")}>Кабінет <span className="req">*</span></span>
               {roomKeys.length === 0 ? (
-                <div className="ctx-hint red">Немає кабінетів типу {studyType === "MRT" ? "МРТ" : "КТ"}. Додайте обладнання в налаштуваннях.</div>
+                <div className="ctx-hint red">Немає кабінетів типу {modalityLabel(studyType)}. Додайте обладнання в налаштуваннях.</div>
               ) : (
                 <>
                   <div className="bk-room-chips">
                     {roomKeys.map((r) => (
-                      <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + (studyType === "MRT" ? " mrt" : " ct")}
+                      <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + " " + modalityKind(studyType)}
                         onClick={() => { setRoomId(r.id); setTime(""); }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
                         <span className="bk-room-chip-name">{r.name}</span>
                         {r.apparatus_model && <span className="bk-room-chip-model">{r.apparatus_model}</span>}

@@ -19,6 +19,7 @@ import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radflow-wizard.css";
 import type { Break } from "@/lib/schedule";
+import { MODALITIES, modalityCode } from "@/lib/studies";
 
 /* ===== Таймзона центру (IANA) =====
    Від неї залежать «Запізнення», «Уточнити», гарди виклику в кабінет і заборона
@@ -363,9 +364,7 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
             <div className="equip-info">
               <div className="equip-info-row">
                 <select className="inp equip-type" value={e.type} onChange={(ev) => setEq(i, "type", ev.target.value)}>
-                  <option value="МРТ">МРТ</option>
-                  <option value="КТ">КТ</option>
-                  <option value="Інше">Інше</option>
+                  {MODALITIES.map((m) => <option key={m.code} value={m.label}>{m.label}</option>)}
                 </select>
                 <input className="inp equip-room2" placeholder="Кабінет / №" value={e.room} onChange={(ev) => setEq(i, "room", ev.target.value)} />
               </div>
@@ -578,7 +577,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
       const roomFields = (e: EquipItem): TablesInsert<"rooms"> => ({
         clinic_id: clinicId,
         name: (e.room || e.type).trim(),
-        modality: e.type === "МРТ" ? "MRI" : e.type === "КТ" ? "CT" : "OTHER",
+        modality: modalityCode(e.type),
         apparatus_model: e.desc.trim() || null,
         schedule: {
           days: e.days, start: e.start, end: e.end,

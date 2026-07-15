@@ -7,6 +7,7 @@ import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { buildSlots, slotToMin } from "@/lib/slots";
 import { effectiveRoomBreaks, inBreak, roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallToday0, type IncidentLike } from "@/lib/incidents";
+import { modalityShort, modalityKind } from "@/lib/studies";
 
 type Room = {
   id: string;
@@ -31,8 +32,6 @@ const dateFromKey = (v: string) => {
   const [y, m, d] = v.split("-").map(Number);
   return new Date(y || 1970, (m || 1) - 1, d || 1);
 };
-const modalityLabel = (m: string) => m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше";
-
 /**
  * Read-only карта дня для администратора. Она намеренно использует те же
  * room_busy_slots + SlotPicker, что и перенос: визуальный ответ на вопрос
@@ -113,7 +112,7 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
               {rooms.map((r) => (
                 <button key={r.id} type="button" className={"bd-room" + (r.id === roomId ? " active" : "")}
                   onClick={() => { setRoomId(r.id); setSelectedSlot(""); }} title={r.apparatus_model ? `${r.name} · ${r.apparatus_model}` : r.name}>
-                  <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+                  <span className={"bd-room-kind " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
                   <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
                 </button>
               ))}

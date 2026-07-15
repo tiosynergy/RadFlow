@@ -21,6 +21,7 @@ import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/pri
 import { setClinicTz, wallToday0 } from "@/lib/incidents";
 import type { WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
+import { modalityLabel, modalityKind } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -371,9 +372,9 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
 
             {viewRoom && (
               <div className="info-banner" style={{ padding: "8px 14px" }}>
-                <span className="ib-ic">{viewRoom.modality === "CT" ? "КТ" : "МРТ"}</span>
+                <span className="ib-ic">{modalityLabel(viewRoom.modality)}</span>
                 <span className="ib-txt">
-                  Фільтр за кабінетом <b>{viewRoom.name}</b>: показано пацієнтів модальності {viewRoom.modality === "CT" ? "КТ" : "МРТ"} (лист не привʼязаний до конкретного кабінету).
+                  Фільтр за кабінетом <b>{viewRoom.name}</b>: показано пацієнтів модальності {modalityLabel(viewRoom.modality)} (лист не привʼязаний до конкретного кабінету).
                 </span>
                 <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => setRoomView("all")}>✕ Зняти фільтр</button>
               </div>
@@ -438,7 +439,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
                         </div>
                         <div className="wl-proc-cell">
                           <div className="wl-proc-main">
-                            <span className={"wl-mod " + (p.modality === "CT" ? "ct" : "mrt")}>{p.modality === "CT" ? "КТ" : "МРТ"}</span>
+                            <span className={"wl-mod " + modalityKind(p.modality)}>{modalityLabel(p.modality)}</span>
                             <span className="cl-proc">{procLabel(p)}</span>
                           </div>
                           <div className="wl-proc-du">{p.duration_min} хв + буфер {p.buffer_time_min} хв</div>
@@ -468,7 +469,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
                               ) : p.patient_name}
                             </span></div>
                             <div className="cld-item"><span className="cld-lab">Вік</span><span className="cld-val">{p.patient_age != null ? p.patient_age + " р." : "—"}</span></div>
-                            <div className="cld-item"><span className="cld-lab">Модальність</span><span className="cld-val"><span className={"cld-type " + (p.modality === "CT" ? "ct" : "mrt")}>{p.modality === "CT" ? "КТ" : "МРТ"}</span></span></div>
+                            <div className="cld-item"><span className="cld-lab">Модальність</span><span className="cld-val"><span className={"cld-type " + modalityKind(p.modality)}>{modalityLabel(p.modality)}</span></span></div>
                             <div className="cld-item cld-item-full"><span className="cld-lab">Дослідження</span><span className="cld-val cld-val-wrap">{procLabel(p)} · {p.duration_min} хв + буфер {p.buffer_time_min} хв</span></div>
                             <div className="cld-item"><span className="cld-lab">Телефон</span><span className="cld-val"><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>{p.patient_phone}</a></span></div>
                             <div className="cld-item"><span className="cld-lab">Бажане вікно</span><span className="cld-val">{desiredWindowText(p)}</span></div>

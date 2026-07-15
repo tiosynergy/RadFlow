@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { DEF_START, DEF_END, roomScheduleFor, normalizeBreaks, type DayOverride, type Break } from "@/lib/schedule";
 import { useModalA11y } from "@/lib/useModalA11y";
+import { modalityLabel, modalityKind, modalityIcon } from "@/lib/studies";
 
 const LABELS = ["Державне свято", "Вихідний день", "Санітарний день", "Технічне обслуговування"];
 
@@ -28,8 +29,6 @@ interface ScheduleEditModalProps {
   onSave: (ov: OverrideBuild) => void;
   onReset: () => void;
 }
-
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 
 /* Нормалізація часу до канону "HH:MM" (сервер тепер вимагає саме його — zTime, M-1).
    `<input type="time">` у деяких браузерах віддає "9:05" або "", а в rooms.schedule
@@ -152,7 +151,7 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
                 return (
                   <div className="sch-room" key={r.id}>
                     <div className="sch-room-info">
-                      <span className={"sch-room-ic " + (r.modality === "MRI" ? "mrt" : "ct")}>{r.modality === "MRI" ? "🧲" : "🩻"}</span>
+                      <span className={"sch-room-ic " + modalityKind(r.modality)}>{modalityIcon(r.modality)}</span>
                       <div className="sch-room-txt">
                         <span className="sch-room-name">{r.name}</span>
                         <span className="sch-room-model">{modalityLabel(r.modality)}{r.apparatus_model ? " · " + r.apparatus_model : ""}</span>

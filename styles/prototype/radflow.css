@@ -1149,6 +1149,10 @@ select.inp { cursor: pointer; }
 .bk-seg-btn.active { background: var(--card-2); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
 .bk-seg-btn.active.mrt { color: #4da3ff; background: var(--blue-bg); }
 .bk-seg-btn.active.ct  { color: var(--orange); background: var(--orange-bg); }
+.bk-seg-btn.active.us    { color: #5ac8fa; background: rgba(50,173,230,0.15); }
+.bk-seg-btn.active.xray  { color: #d9a6f5; background: rgba(191,90,242,0.15); }
+.bk-seg-btn.active.mammo { color: #ff7a92; background: rgba(255,55,95,0.15); }
+.bk-seg-btn.active.other { color: #a3a3a8; background: rgba(142,142,147,0.15); }
 
 /* Contrast toggle row — compact (no radio) */
 .bk-ct-row { display: flex; gap: 6px; }
@@ -1382,6 +1386,27 @@ select.inp { cursor: pointer; }
 }
 .bd-room-kind.mrt { background: var(--blue); }
 .bd-room-kind.ct { background: var(--orange); }
+
+/* ── Нові модальності (0087): УЗД=бірюза, Рентген=фіолет, Мамографія=рожевий,
+   Інше=сірий. Додано поруч із наявними mrt(синій)/ct(помаранч) для всіх видів
+   тегів кабінету. Дублюється у radiologist.css / radflow-screens.css, бо ті теги
+   визначені й там (сторінки вантажать різні CSS). ── */
+.bd-room-kind.us { background: #32ade6; }
+.bd-room-kind.xray { background: #bf5af2; }
+.bd-room-kind.mammo { background: #ff375f; }
+.bd-room-kind.other { background: #8e8e93; }
+.equip-tile.us, .sb-cab-tile.us, .rvh-tile.us, .cld-type.us, .wl-mod.us, .bk-sched-mod.us { background: rgba(50,173,230,0.15); color: #5ac8fa; }
+.equip-tile.xray, .sb-cab-tile.xray, .rvh-tile.xray, .cld-type.xray, .wl-mod.xray, .bk-sched-mod.xray { background: rgba(191,90,242,0.15); color: #d9a6f5; }
+.equip-tile.mammo, .sb-cab-tile.mammo, .rvh-tile.mammo, .cld-type.mammo, .wl-mod.mammo, .bk-sched-mod.mammo { background: rgba(255,55,95,0.15); color: #ff7a92; }
+.equip-tile.other, .sb-cab-tile.other, .rvh-tile.other, .cld-type.other, .wl-mod.other, .bk-sched-mod.other { background: rgba(142,142,147,0.15); color: #a3a3a8; }
+.sch-room-ic.us { background: rgba(50,173,230,0.15); }
+.sch-room-ic.xray { background: rgba(191,90,242,0.15); }
+.sch-room-ic.mammo { background: rgba(255,55,95,0.15); }
+.sch-room-ic.other { background: rgba(142,142,147,0.15); }
+.bk-room-chip.us { border-bottom-color: rgba(50,173,230,0.4); }
+.bk-room-chip.xray { border-bottom-color: rgba(191,90,242,0.4); }
+.bk-room-chip.mammo { border-bottom-color: rgba(255,55,95,0.4); }
+.bk-room-chip.other { border-bottom-color: rgba(142,142,147,0.4); }
 .bd-room-meta { display: flex; flex-direction: column; min-width: 0; }
 .bd-room-name { font-size: 13px; font-weight: 600; color: var(--text); }
 .bd-room-model { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

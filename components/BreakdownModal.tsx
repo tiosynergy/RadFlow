@@ -11,6 +11,7 @@ import { useState } from "react";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { wallNow } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
+import { modalityShort, modalityKind } from "@/lib/studies";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown };
 type IncidentRow = {
@@ -33,7 +34,6 @@ type IncidentSavePayload = {
 };
 type Overrides = Record<string, DayOverride | null>;
 
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function pad(n: number) { return String(n).padStart(2, "0"); }
 
 /* «Зараз» — у НАСТІННОМУ часі КЛІНІКИ, не браузера (аудит 2026-07-12).
@@ -249,7 +249,7 @@ export default function BreakdownModal({ rooms, incidents = [], overrides = {}, 
             <div className="bd-rooms">
               {(rooms || []).map((r) => (
                 <button key={r.id} className={"bd-room" + (roomId === r.id ? " active" : "")} onClick={() => setRoomId(r.id)} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
-                  <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+                  <span className={"bd-room-kind " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
                   <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
                 </button>
               ))}

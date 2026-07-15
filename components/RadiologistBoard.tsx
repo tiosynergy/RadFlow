@@ -12,7 +12,7 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock } from "@/lib/queueStatus";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
-import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
+import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import { setQueueEntryStatus, setRadiologistNote, previewDelayPlan, type DelayPreview } from "@/app/queue/actions";
@@ -49,7 +49,6 @@ function dowMon(d: Date) { return (d.getDay() + 6) % 7; }
 function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function procLabel(e: { studies?: unknown; note?: string | null }) {
   const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string; contrast?: boolean }>) : [];
   if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast ? " з контрастом" : "")).join(" + ");
@@ -149,12 +148,12 @@ interface RoomStatusCardProps {
 }
 
 function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedClosed, callBlockReason, onComplete, onCall }: RoomStatusCardProps) {
-  const kind = modalityLabel(room.modality);
+  const kind = modalityShort(room.modality);
   if (!blocked && schedClosed) {
     return (
       <div className="room-card blocked-card">
         <div className="rc-head">
-          <span className={"equip-tile " + (room.modality === "MRI" ? "mrt" : "ct")}>{kind}</span>
+          <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
           <div className="rc-h-meta">
             <div className="rc-name">{room.name}</div>
             <div className="rc-model">{room.apparatus_model || ""}</div>
@@ -172,7 +171,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
     return (
       <div className="room-card blocked-card">
         <div className="rc-head">
-          <span className={"equip-tile " + (room.modality === "MRI" ? "mrt" : "ct")}>{kind}</span>
+          <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
           <div className="rc-h-meta">
             <div className="rc-name">{room.name}</div>
             <div className="rc-model">{room.apparatus_model || ""}</div>
@@ -189,7 +188,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
   return (
     <div className={"room-card " + (patient ? "busy" : "free")}>
       <div className="rc-head">
-        <span className={"equip-tile " + (room.modality === "MRI" ? "mrt" : "ct")}>{kind}</span>
+        <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
         <div className="rc-h-meta">
           <div className="rc-name">{room.name}</div>
           <div className="rc-model">{room.apparatus_model || ""}</div>
@@ -506,7 +505,7 @@ function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }: { r
           )}
           {(rooms || []).map((r) => (
             <button key={r.id} className={"sb-cab sb-cab-btn" + (roomFilter === r.id ? " active" : "")} style={{ width: "100%", textAlign: "left", border: "none", cursor: "pointer" }} onClick={() => setRoomFilter(r.id)}>
-              <span className={"sb-cab-tile " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+              <span className={"sb-cab-tile " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
               <span className="sb-cab-meta"><span className="sb-cab-name">{r.name}</span><span className="sb-cab-model">{r.apparatus_model || ""}</span></span>
             </button>
           ))}

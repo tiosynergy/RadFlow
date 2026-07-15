@@ -13,7 +13,7 @@ import {
 } from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
-import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
+import { BUFFER_DEFAULT, normBuffer, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
@@ -42,7 +42,6 @@ interface RescheduleModalProps {
   allowOffSchedule?: boolean;
 }
 
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
@@ -248,7 +247,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
               : <div className="bd-rooms">
                   {options.map((r) => (
                     <button key={r.id} className={"bd-room" + (roomId === r.id ? " active" : "")} onClick={() => { setRoomId(r.id); setTime(""); }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
-                      <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+                      <span className={"bd-room-kind " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
                       <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
                     </button>
                   ))}
