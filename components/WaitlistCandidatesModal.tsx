@@ -9,8 +9,7 @@
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import BookingModal, { type BookingPayload, type BookingPrefill } from "@/components/BookingModal";
-import { createBooking } from "@/app/queue/actions";
-import { markWaitlistScheduled } from "@/app/waitlist/actions";
+import { scheduleFromWaitlist } from "@/app/queue/actions";
 import { waitlistMatchesSlot, compareWaitlist, desiredWindowText, timeToMin } from "@/lib/waitlist";
 import { wallDayKey, wallMinOfDay, wallNow } from "@/lib/incidents";
 import { PRIORITY_META } from "@/lib/priority";
@@ -78,7 +77,7 @@ interface WaitlistCandidatesModalProps {
   onError?: (msg: string) => void;
 }
 
-export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, incidents = [], slot, candidates, onClose, onBooked, onError }: WaitlistCandidatesModalProps) {
+export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, incidents = [], slot, candidates, onClose, onBooked }: WaitlistCandidatesModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);
   const roomName = (rooms || []).find((r) => r.id === slot.roomId)?.name || "кабінет";
@@ -91,7 +90,9 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
     if (!wl) return null;
     const [hh, mm] = b.time.split(":").map(Number);
     const at = new Date(b.date.getFullYear(), b.date.getMonth(), b.date.getDate(), hh, mm).toISOString();
-    const res = await createBooking({
+    // Атомарно: спершу «застовплюємо» кандидата (CAS waiting→scheduled), і лише
+    // переможець створює запис — два адміністратори не задвоять пацієнта.
+    const res = await scheduleFromWaitlist(wl.id, {
       roomId: b.roomId, referrerId: b.referrerId ?? (wl.referrer_id || null),
       name: b.name, phone: b.phone || null, email: b.email ?? null,
       dob: b.dob || null, sex: b.gender || null, age: b.age || null, weight: b.weight ?? null,
@@ -101,26 +102,15 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
       offSchedule: b.offSchedule,   // 0077
     });
     if (!res.ok) {
+      // stale = кандидата саме зараз записує інший оператор → запис НЕ створено.
       return (res.code === "slot_taken" || res.code === "slot_unavailable")
         ? "Слот щойно зайняли — оберіть інший час"
         : res.code === "incident" ? "Кабінет у простої у цей час — оберіть інший слот"
+        : res.code === "stale" ? "Кандидата вже записує інший оператор — оновіть лист очікування"
         : res.error;
     }
-    /* Результат ДРУГОЇ операції не можна ігнорувати: запис у черзі вже створено,
-       і якщо лист не оновився (кандидата встиг узяти інший адміністратор — CAS
-       відхилив, або збій мережі), оператор має це побачити, інакше пацієнт
-       залишиться в «Очікують» і його запишуть удруге. */
-    const mark = await markWaitlistScheduled(wl.id, res.id ?? null);
     setBookFor(null);
-    if (!mark.ok) {
-      onError?.(
-        mark.code === "stale"
-          ? "Запис створено, але кандидата вже зняв інший оператор — перевірте лист очікування"
-          : "Запис створено, але лист не оновився: " + mark.error
-      );
-    } else {
-      onBooked?.("Записано з листа очікування: " + b.name + " · " + b.time);
-    }
+    onBooked?.("Записано з листа очікування: " + b.name + " · " + b.time);
     onClose();
     return null;   // запис створено
   }

@@ -14,8 +14,8 @@ import LiveClock from "@/components/LiveClock";
 import BookingModal, { type BookingPayload, type BookingPrefill } from "@/components/BookingModal";
 import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import { createBooking } from "@/app/queue/actions";
-import { addWaitlistEntry, markWaitlistScheduled, setWaitlistPriority, setWaitlistStatus, updateWaitlistEntry } from "@/app/waitlist/actions";
+import { scheduleFromWaitlist } from "@/app/queue/actions";
+import { addWaitlistEntry, setWaitlistPriority, setWaitlistStatus, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, compareWaitlist, desiredWindowText } from "@/lib/waitlist";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { setClinicTz, wallToday0 } from "@/lib/incidents";
@@ -207,7 +207,9 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
     if (!wl) return null;
     const [hh, mm] = b.time.split(":").map(Number);
     const at = new Date(b.date.getFullYear(), b.date.getMonth(), b.date.getDate(), hh, mm).toISOString();
-    const res = await createBooking({
+    // Атомарно: спершу застовплюємо кандидата (CAS waiting→scheduled), лише
+    // переможець створює запис — два адміністратори не задвоять пацієнта.
+    const res = await scheduleFromWaitlist(wl.id, {
       roomId: b.roomId, referrerId: b.referrerId ?? (wl.referrer_id || null),
       name: b.name, phone: b.phone || null, email: b.email ?? null,
       dob: b.dob || null, sex: b.gender || null, age: b.age || null, weight: b.weight ?? null,
@@ -217,19 +219,14 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
       offSchedule: b.offSchedule,   // 0077
     });
     if (!res.ok) {
+      // stale = кандидата саме зараз записує інший оператор → запис НЕ створено.
       return (res.code === "slot_taken" || res.code === "slot_unavailable")
         ? "Слот щойно зайняли — оберіть інший час"
         : res.code === "incident" ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день"
+        : res.code === "stale" ? "Кандидата вже записує інший оператор — оновіть лист"
         : res.error;
     }
-    const mark = await markWaitlistScheduled(wl.id, res.id ?? null);
-    // CAS: кандидата міг узяти інший адміністратор, поки модалка була відкрита.
-    if (!mark.ok) notify(
-      mark.code === "stale"
-        ? "Запис створено, але кандидата вже зняв інший оператор — перевірте лист"
-        : "Запис створено, але лист не оновився: " + mark.error,
-      "error");
-    else notify("Записано зі списку очікування: " + b.name + " · " + b.time, "success");
+    notify("Записано зі списку очікування: " + b.name + " · " + b.time, "success");
     setBookFor(null);
     reload();
     return null;   // запис створено — модалку закриває батько

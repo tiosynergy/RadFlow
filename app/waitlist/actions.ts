@@ -291,7 +291,7 @@ export async function addEntryToWaitlist(
 }
 
 /** Редагування рядка листа. Пріоритет і статус — ЛИШЕ через окремі дії
-    (setWaitlistPriority / setWaitlistStatus / markWaitlistScheduled).
+    (setWaitlistPriority / setWaitlistStatus; 'scheduled' — через scheduleFromWaitlist).
     Allowlist колонок тепер задає СХЕМА sWaitlistPatch: невідомі ключі відкидаються,
     а значення (дати, "HH:MM", тривалість) нарешті перевіряються — раніше allowlist
     пропускав у дозволену колонку будь-яке сміття. */
@@ -378,7 +378,7 @@ export async function setWaitlistPriority(id: string, priority: PatientPriority)
 export async function setWaitlistStatus(id: string, status: WaitlistStatus): Promise<WaitlistActionResult> {
   const v = parseInput("setWaitlistStatus", z.object({
     id: zUuid,
-    status: z.enum(["waiting", "cancelled"]),   // 'scheduled' — лише через markWaitlistScheduled
+    status: z.enum(["waiting", "cancelled"]),   // 'scheduled' — лише через scheduleFromWaitlist
   }), { id, status });
   if (!v.ok) return v;
   id = v.data.id;
@@ -388,69 +388,18 @@ export async function setWaitlistStatus(id: string, status: WaitlistStatus): Pro
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
+  // «waiting» скидає й claim_token (0089): restore звільняє застовплення, тож
+  // наступний claim починається з чистого токена, а старий rollback уже не збіжиться.
   const patch: TablesUpdate<"waitlist_entries"> =
-    status === "waiting" ? { status, scheduled_entry_id: null } : { status };
+    status === "waiting" ? { status, scheduled_entry_id: null, claim_token: null } : { status };
   const { data, error } = await supabase.from("waitlist_entries").update(patch).eq("id", id).select("id");
   if (error) return { ok: false, error: safeDbError("setWaitlistStatus", error), code: "generic" };
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
   return { ok: true };
 }
 
-/** Позначити «перенесено у слот»: status=scheduled + посилання на створений запис черги. */
-export async function markWaitlistScheduled(id: string, scheduledEntryId?: string | null): Promise<WaitlistActionResult> {
-  const v = parseInput("markWaitlistScheduled", z.object({
-    id: zUuid, scheduledEntryId: zUuid.nullish(),
-  }), { id, scheduledEntryId });
-  if (!v.ok) return v;
-  id = v.data.id;
-  scheduledEntryId = v.data.scheduledEntryId;
-
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
-
-  // Валідація посилання: запис черги має бути видимим викликачу (RLS) і належати
-  // тому ж центру, що й рядок листа (FK перевіряється повз RLS — не покладаємось).
-  let entryRef: string | null = null;
-  if (scheduledEntryId) {
-    const [{ data: wlRow }, { data: qEntry }] = await Promise.all([
-      supabase.from("waitlist_entries").select("clinic_id").eq("id", id).maybeSingle(),
-      supabase.from("queue_entries").select("id, clinic_id").eq("id", scheduledEntryId).maybeSingle(),
-    ]);
-    if (!wlRow) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
-    if (!qEntry || qEntry.clinic_id !== wlRow.clinic_id) {
-      return { ok: false, error: "Невірне посилання на запис черги", code: "forbidden" };
-    }
-    entryRef = qEntry.id;
-  }
-
-  /* CAS: позначити «перенесено у слот» можна лише кандидата, який ЩЕ чекає.
-     Раніше два адміністратори могли взяти того самого кандидата на два різні
-     слоти: обидва створювали запис у черзі, обидва писали 'scheduled', і
-     посилання scheduled_entry_id мовчки перетиралось другим — перший слот
-     лишався за пацієнтом, але лист про нього «забував». */
-  const { data, error } = await supabase
-    .from("waitlist_entries")
-    .update({ status: "scheduled", scheduled_entry_id: entryRef })
-    .eq("id", id)
-    .eq("status", "waiting")
-    .select("id");
-  if (error) return { ok: false, error: safeDbError("markWaitlistScheduled", error), code: "generic" };
-  if (!data || data.length === 0) {
-    const { data: cur } = await supabase.from("waitlist_entries")
-      .select("status, scheduled_entry_id").eq("id", id).maybeSingle();
-    if (!cur) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
-    /* Ідемпотентність перевіряємо по ПОСИЛАННЮ, а не по статусу. Інакше гонка
-       двох адміністраторів (обидва вже створили ЗАПИС у черзі) виглядала б як
-       успіх у другого: лист уже 'scheduled' — «ok» — а пацієнт задвоєний у черзі,
-       і ніхто про це не сказав. Той самий entryRef = ретрай/подвійний клік. */
-    if (cur.status === "scheduled" && (entryRef == null || cur.scheduled_entry_id === entryRef)) {
-      return { ok: true };
-    }
-    if (cur.status === "scheduled") {
-      return { ok: false, error: "Кандидата вже записав інший оператор — перевірте лист", code: "stale" };
-    }
-    return { ok: false, error: "Кандидата вже знято з листа — оновіть сторінку", code: "stale" };
-  }
-  return { ok: true };
-}
+/* markWaitlistScheduled ВИДАЛЕНО (2026-07-15): перенос кандидата у слот тепер
+   атомарний — scheduleFromWaitlist у app/queue/actions.ts застовплює кандидата
+   (CAS waiting→scheduled) ПЕРЕД createBooking, тож два адміністратори не задвоять
+   пацієнта. Стара дія позначала 'scheduled' ПІСЛЯ створення запису, тож переможець
+   CAS уже мав сироту в черзі. Не відроджувати цей двокроковий шлях. */

@@ -431,6 +431,7 @@ export type Database = {
           clinic_id: string;
           source_entry_id: string | null;
           scheduled_entry_id: string | null;
+          claim_token: string | null;
           room_id: string | null;
           patient_name: string;
           patient_phone: string | null;
@@ -460,6 +461,7 @@ export type Database = {
           clinic_id: string;
           source_entry_id?: string | null;
           scheduled_entry_id?: string | null;
+          claim_token?: string | null;
           room_id?: string | null;
           patient_name: string;
           patient_phone?: string | null;
@@ -489,6 +491,7 @@ export type Database = {
           clinic_id?: string;
           source_entry_id?: string | null;
           scheduled_entry_id?: string | null;
+          claim_token?: string | null;
           room_id?: string | null;
           patient_name?: string;
           patient_phone?: string | null;

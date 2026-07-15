@@ -17,6 +17,7 @@ import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate, QueueDelayPolicy } from "@/supabase/types";
 import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX, studiesMatchModality } from "@/lib/studies";
+import { randomUUID } from "node:crypto";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
 import { wallNow, wallInstant, wallDayKey, wallInstantOf, wallMinOfDay, wallMinOfInstant } from "@/lib/incidents";
@@ -1292,6 +1293,69 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
 
   if (error) return mapBookingError(error.message, error.code ?? "");
   return { ok: true, id: created?.id };
+}
+
+/** Атомарний перенос кандидата з листа очікування у слот.
+    ГОНКА, яку це лікує: раніше клієнт робив createBooking, а ПОТІМ окремо
+    markWaitlistScheduled (CAS). Два адміністратори на одного кандидата на різні
+    слоти → ОБИДВА створювали запис у черзі (слоти різні, овербукінгу нема), а CAS
+    відхиляв лише другий markWaitlistScheduled — сирота вже висіла в черзі (пацієнт
+    задвоєний). Тут «застовплюємо» кандидата ПЕРШИМ: CAS waiting→scheduled одним
+    атомарним UPDATE. Тільки переможець (1 рядок) іде бронювати; другий (0 рядків)
+    не створює нічого. Невдале бронювання відкочує застовплення назад у waiting. */
+export async function scheduleFromWaitlist(waitlistId: string, booking: BookingInput): Promise<QueueActionResult> {
+  const v = parseInput("scheduleFromWaitlist", z.object({ waitlistId: zUuid }), { waitlistId });
+  if (!v.ok) return v;
+  const wlId = v.data.waitlistId;
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  // 1) Застовпити кандидата — АТОМАРНИЙ CAS. Тільки той, хто перевів waiting→scheduled,
+  //    піде створювати запис. RLS обмежує оновлення власним центром (крос-тенант — 0 рядків).
+  //    claim_token (0089) — разова мітка ЦЬОГО застовплення: link/rollback чіпають
+  //    лише власний claim, тож повторний claim іншого оператора (restore→re-claim у
+  //    вузькому вікні) не буде затертий чужим відкатом.
+  const claimToken = randomUUID();
+  const { data: claimed, error: claimErr } = await supabase
+    .from("waitlist_entries")
+    .update({ status: "scheduled", claim_token: claimToken })
+    .eq("id", wlId)
+    .eq("status", "waiting")
+    .select("id");
+  if (claimErr) return { ok: false, error: safeDbError("scheduleFromWaitlist.claim", claimErr), code: "generic" };
+  if (!claimed || claimed.length === 0) {
+    const { data: cur } = await supabase.from("waitlist_entries").select("status").eq("id", wlId).maybeSingle();
+    if (!cur) return { ok: false, error: "Немає доступу або кандидата не знайдено", code: "forbidden" };
+    // Уже scheduled (інший оператор) або cancelled — НІЧОГО не створюємо.
+    return { ok: false, error: "Кандидата вже записує інший оператор — оновіть лист", code: "stale" };
+  }
+
+  // Відкат застовплення — ЛИШЕ власного claim (`claim_token = наш`), тож чужий
+  // повторний claim (інший токен) недоторканий. `status='scheduled'` — щоб не
+  // чіпати рядок, який хтось уже перевів деінде.
+  const rollbackClaim = () => supabase.from("waitlist_entries")
+    .update({ status: "waiting", scheduled_entry_id: null, claim_token: null })
+    .eq("id", wlId).eq("status", "scheduled").eq("claim_token", claimToken);
+
+  // 2) Створити запис у черзі (усі перевірки — createBooking + тригери БД).
+  //    try — щоб виняток (мережа/таймаут) між claim і booking не лишив кандидата
+  //    у 'scheduled' без запису: на будь-якому збої відкочуємо застовплення.
+  try {
+    const res = await createBooking(booking);
+    if (!res.ok) { await rollbackClaim(); return res; }
+    // 3) Успіх → прив'язати створений запис (лише поки це наш claim) і зняти токен.
+    //    Якщо лінк не вдався — запис усе одно існує, лист лишається 'scheduled'
+    //    (дубля немає; посилання відновне).
+    await supabase.from("waitlist_entries")
+      .update({ scheduled_entry_id: res.id ?? null, claim_token: null })
+      .eq("id", wlId).eq("status", "scheduled").eq("claim_token", claimToken);
+    return { ok: true, id: res.id };
+  } catch {
+    try { await rollbackClaim(); } catch { /* best-effort: не лишаємо 'scheduled' без запису */ }
+    return { ok: false, error: "Не вдалося записати — спробуйте ще раз", code: "generic" };
+  }
 }
 
 /** Заметка радіолога (radiologist_note). */
