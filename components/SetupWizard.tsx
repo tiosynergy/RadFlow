@@ -163,12 +163,29 @@ function breakRowError(list: Break[], bi: number, dayStart: string, dayEnd: stri
   }
   return null;
 }
+/* Валідація годин самого дня (не перерви). Порожнє поле або кінець ≤ початок
+   раніше зберігались мовчки — і сітка слотів просто зникала (roomScheduleFor
+   не дає жодного слота при start ≥ end). Тепер це помилка, що блокує «Зберегти». */
+function dayHoursError(start: string, end: string): string | null {
+  if (!start || !end) return "Вкажіть години роботи";
+  if (end <= start) return "Кінець раніший за початок";
+  return null;
+}
 /** Чи всі перерви всіх кабінетів коректні (для гейтингу «Зберегти»). */
 function equipBreaksValid(equip: EquipItem[]): boolean {
   return equip.every((e) =>
     e.perDay
       ? e.dayHours.every((dh, di) => !e.days[di] || dh.breaks.every((_, bi) => breakRowError(dh.breaks, bi, dh.start, dh.end) === null))
       : e.breaks.every((_, bi) => breakRowError(e.breaks, bi, e.start, e.end) === null)
+  );
+}
+/** Чи коректні години роботи всіх кабінетів (для гейтингу «Зберегти»).
+    perDay: перевіряємо кожен УВІМКНЕНИЙ день; інакше — єдині години кабінету. */
+function equipHoursValid(equip: EquipItem[]): boolean {
+  return equip.every((e) =>
+    e.perDay
+      ? e.dayHours.every((dh, di) => !e.days[di] || dayHoursError(dh.start, dh.end) === null)
+      : dayHoursError(e.start, e.end) === null
   );
 }
 
@@ -215,7 +232,7 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
 
   useEffect(() => {
     const adminPhoneOk = aPhones.some((p) => p.trim() !== "");
-    const ok = clinic.trim() !== "" && city.trim() !== "" && adminName.trim() !== "" && adminPhoneOk && equip.length > 0 && equipBreaksValid(equip);
+    const ok = clinic.trim() !== "" && city.trim() !== "" && adminName.trim() !== "" && adminPhoneOk && equip.length > 0 && equipHoursValid(equip) && equipBreaksValid(equip);
     report(1, !!ok);
     onData({ clinic, city, address, phones, emails, timezone, adminName, adminEmail, aPhones, aEmails, equip });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -367,13 +384,16 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
                 Свій час для кожного дня
               </label>
 
-              {!e.perDay && (
+              {!e.perDay && (() => {
+                const hErr = dayHoursError(e.start, e.end);
+                return (
                 <>
                   <div className="eq-hours">
-                    <input className="inp tabular eq-time" type="time" value={e.start} onChange={(ev) => setEq(i, "start", ev.target.value)} />
+                    <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" value={e.start} onChange={(ev) => setEq(i, "start", ev.target.value)} />
                     <span className="eq-dash">–</span>
-                    <input className="inp tabular eq-time" type="time" value={e.end} onChange={(ev) => setEq(i, "end", ev.target.value)} />
+                    <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" value={e.end} onChange={(ev) => setEq(i, "end", ev.target.value)} />
                   </div>
+                  {hErr && <span className="eq-break-err">{hErr}</span>}
                   <div className="eq-breaks">
                     {e.breaks.map((b, bi) => {
                       const err = breakRowError(e.breaks, bi, e.start, e.end);
@@ -393,7 +413,8 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
                     <button className="btn btn-ghost btn-sm eq-break-add" type="button" onClick={() => addEqBreak(i)}>＋ Перерва</button>
                   </div>
                 </>
-              )}
+                );
+              })()}
 
               {e.perDay && (
                 <div className="eq-perday-list">
@@ -402,11 +423,14 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
                       <div key={d} className="eq-perday-row">
                         <span className="eq-perday-day">{d}</span>
                         <div className="eq-perday-fields">
+                          {(() => { const dhErr = dayHoursError(e.dayHours[di].start, e.dayHours[di].end); return (<>
                           <div className="eq-hours">
-                            <input className="inp tabular eq-time" type="time" value={e.dayHours[di].start} onChange={(ev) => setEqDay(i, di, "start", ev.target.value)} />
+                            <input className={"inp tabular eq-time" + (dhErr ? " invalid" : "")} type="time" value={e.dayHours[di].start} onChange={(ev) => setEqDay(i, di, "start", ev.target.value)} />
                             <span className="eq-dash">–</span>
-                            <input className="inp tabular eq-time" type="time" value={e.dayHours[di].end} onChange={(ev) => setEqDay(i, di, "end", ev.target.value)} />
+                            <input className={"inp tabular eq-time" + (dhErr ? " invalid" : "")} type="time" value={e.dayHours[di].end} onChange={(ev) => setEqDay(i, di, "end", ev.target.value)} />
                           </div>
+                          {dhErr && <span className="eq-break-err">{dhErr}</span>}
+                          </>); })()}
                           <div className="eq-breaks">
                             {e.dayHours[di].breaks.map((b, bi) => {
                               const err = breakRowError(e.dayHours[di].breaks, bi, e.dayHours[di].start, e.dayHours[di].end);

@@ -28,6 +28,7 @@ interface SidebarProps {
   activeNav?: string;
   onSelectRoom?: (id: string) => void;
   onNew?: () => void;
+  onSlotsOverview?: () => void;
   incidentCount?: number;
   onBreakdown?: () => void;
   onEmergency?: () => void;
@@ -54,6 +55,7 @@ export default function Sidebar({
   activeNav,
   onSelectRoom,
   onNew,
+  onSlotsOverview,
   incidentCount = 0,
   onBreakdown,
   onEmergency,
@@ -141,6 +143,9 @@ export default function Sidebar({
         <div className="sb-section">
           <div className="sb-label">Швидкі дії</div>
           <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span></a>
+          {isAdmin && onSlotsOverview && <button type="button" onClick={onSlotsOverview} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
+            <span className="ic">◫</span><span className="sb-item-lab">Зайнятість кабінету</span>
+          </button>}
           <button type="button" onClick={() => onNew && onNew()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">＋</span>
             <span className="sb-item-lab">Новий запис</span>

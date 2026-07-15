@@ -42,6 +42,7 @@ import DelayPlanModal, { type DelayApplyPayload } from "@/components/DelayPlanMo
 import MiniCalendar from "@/components/MiniCalendar";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
+import RoomDayOverviewModal from "@/components/RoomDayOverviewModal";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, collisionFor, type CollisionInfo } from "@/lib/queueStatus";
 import CollisionPanel from "@/components/CollisionPanel";
@@ -840,6 +841,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
   const [entries, setEntries] = useState<QEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [slotsOverviewOpen, setSlotsOverviewOpen] = useState(false);
   const [completeFor, setCompleteFor] = useState<QEntry | null>(null);
   const [reschedFor, setReschedFor] = useState<QEntry | null>(null);
   // 0078–0081 — план при затримці: preview з сервера + стан застосування.
@@ -969,7 +971,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
   // P2.1 — гарячі клавіші реєстратури. Через e.code (незалежно від розкладки UA/RU/EN);
   // не перехоплюємо у полях вводу та при відкритих модалках.
   useEffect(() => {
-    const anyModalOpen = modalOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || breakdownOpen || schedEditOpen;
+    const anyModalOpen = modalOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || breakdownOpen || schedEditOpen;
     function onKey(e: KeyboardEvent) {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
@@ -984,7 +986,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [modalOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, breakdownOpen, schedEditOpen, reload, rooms]);
+  }, [modalOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, breakdownOpen, schedEditOpen, reload, rooms]);
 
   useRealtimeRefetch({
     channelName: clinicId ? "queue-" + clinicId : null,
@@ -1506,6 +1508,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
       <Sidebar
         clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey}
         rooms={rooms} activeRoom={roomView} onSelectRoom={setRoomView} onNew={() => setModalOpen(true)}
+        onSlotsOverview={roleKey === "admin" ? () => setSlotsOverviewOpen(true) : undefined}
         incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }}
         onEmergency={handleEmergencyClick}
         emergencyActive={roomView !== "all" ? emergencyRooms.includes(roomView) : emergencyActive}
@@ -1745,6 +1748,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
       {/* clinicTz — ЯВНО в кожну модалку: покладатися на singleton не можна
           (HANDOVER §6.1), інакше «зараз» тихо з'їде на зону браузера. */}
       {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} onClose={() => setModalOpen(false)} onSave={saveBooking} />}
+      {slotsOverviewOpen && <RoomDayOverviewModal rooms={rooms || []} clinicTz={clinicTz} incidents={liveIncidents} overrides={overrides} onClose={() => setSlotsOverviewOpen(false)} />}
 
       {wlSuggest && (
         <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={liveIncidents}
