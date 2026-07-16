@@ -7,6 +7,7 @@
    створений запис. Realtime — таблиця waitlist_entries (0047). */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
@@ -94,6 +95,8 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
      fetch уже після монтування, і wallNow() у BookingModal, відкритій із листа
      очікування, встигав порахувати «зараз» за браузером (минулі слоти — вибірні). */
   if (typeof window !== "undefined") setClinicTz(clinicTz);
+
+  const router = useRouter();   // 0086: зміни кабінетів (rooms — SSR-проп) підхоплюємо через router.refresh
 
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -184,6 +187,10 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
     subscriptions: [
       { table: "waitlist_entries", filter: "clinic_id=eq." + clinicId, onChange: reload },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
+      // 0086: rooms — SSR-проп; додавання/зміна модальності/видалення кабінету долітає
+      // до відкритого листа через перечитування серверних пропів (інакше стале-фільтри
+      // кабінетів і allowedModalities у WaitlistModal/BookingModal до ручного refresh).
+      { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
     ],
   });
 
