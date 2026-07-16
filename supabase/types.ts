@@ -1402,4 +1402,6 @@ export type WaitlistEntry = Tables<"waitlist_entries">;
 export type WaitlistStatus = Enums<"waitlist_status">;
 export type CallStatus = Enums<"call_status">;
 export type Modality = Enums<"modality">;
+export type CaseStatus = Enums<"case_status">;
+export type PatientCase = Tables<"patient_cases">;
 export type UserRole = Enums<"user_role">;
