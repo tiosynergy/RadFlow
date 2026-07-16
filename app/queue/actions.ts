@@ -1965,3 +1965,106 @@ export async function applyDelayPlan(raw: {
 
   return { ok: true, moved: r.moved, flagged: r.flagged, eventId: r.event_id };
 }
+
+/* ===== Крос-модальний кейс пацієнта (P1, дизайн: docs/plan/CROSS_MODAL_CASE.md) =====
+   Кейс групує N записів РІЗНИХ модальностей одного пацієнта. Тонкі обгортки над
+   RPC (0092/0093) — уся атомарність/ізоляція/інваріанти живуть у БД. Помилки кроків
+   (0088/overlap/past/break/schedule/incident) маплять тим самим mapBookingError. */
+
+const sCaseStep = z.object({
+  roomId: zUuid,
+  studies: sStudies,
+  durationMin: zDuration,
+  bufferTimeMin: zBuffer.optional(),
+  priorityLevel: zPriority.optional(),
+  scheduledDate: zDateKey,
+  scheduledTime: zTime,
+  contraindications: z.boolean().optional(),
+  doctor: zOptText(200),
+  note: zOptText(2000),
+});
+
+const sCase = z.object({
+  patient: z.object({
+    name: zName,
+    phone: zOptText(32),
+    email: zOptEmail,
+    dob: zOptDob,
+    sex: zOptText(16),
+    age: zOptAge,
+    weight: zOptWeight,
+  }),
+  referrerId: zUuid.nullish(),
+  note: zOptText(2000),
+  steps: z.array(sCaseStep).min(1).max(12),
+});
+
+export type CaseInput = z.infer<typeof sCase>;
+
+/** Помилки RPC кейса: власні raise (FORBIDDEN/AUTH/BAD_INPUT/case_clinic_*) поверх
+    booking-тригерів; решта — той самий маппінг, що й бронювання. */
+function mapCaseError(message: string, code = ""): QueueActionResult {
+  if (/^FORBIDDEN/i.test(message)) return { ok: false, error: "Немає прав керувати кейсом у цьому центрі", code: "forbidden" };
+  if (/^AUTH/i.test(message)) return { ok: false, error: "Не авторизовано", code: "auth" };
+  if (/^BAD_INPUT/i.test(message)) return { ok: false, error: "Некоректний склад кейса", code: "generic" };
+  if (/case_clinic_mismatch|case_not_found/i.test(message)) return { ok: false, error: "Кейс і крок у різних центрах", code: "forbidden" };
+  return mapBookingError(message, code);
+}
+
+/** Створити крос-модальний кейс: пацієнт + N кроків (модальність/кабінет/слот).
+    Атомарно (create_case_rpc, 0093): будь-який крок-порушення → відкат усього. */
+export async function createCase(raw: CaseInput): Promise<QueueActionResult> {
+  const v = parseInput("createCase", sCase, raw);
+  if (!v.ok) return v;
+  const input = v.data;
+
+  const supabase = await createClient();
+  const clinicId = await callerClinicId(supabase);
+  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const p_case = {
+    patient_name: input.patient.name,
+    patient_phone: input.patient.phone ?? null,
+    patient_email: input.patient.email ?? null,
+    patient_dob: input.patient.dob ?? null,
+    patient_sex: input.patient.sex ?? null,
+    patient_age: input.patient.age ?? null,
+    patient_weight: input.patient.weight ?? null,
+    referrer_id: input.referrerId ?? null,
+    note: input.note ?? null,
+  };
+  const p_steps = input.steps.map((s) => ({
+    room_id: s.roomId,
+    studies: s.studies,
+    duration_min: s.durationMin,
+    buffer_time_min: normBuffer(s.bufferTimeMin ?? BUFFER_DEFAULT),
+    priority_level: normPriority(s.priorityLevel),
+    scheduled_date: s.scheduledDate,
+    scheduled_time: s.scheduledTime,
+    contraindications: !!s.contraindications,
+    doctor: s.doctor ?? null,
+    note: s.note ?? null,
+  }));
+
+  const { data, error } = await supabase.rpc("create_case_rpc", {
+    p_case: p_case as unknown as Json,
+    p_steps: p_steps as unknown as Json,
+  });
+  if (error) return mapCaseError(error.message, error.code ?? "");
+  return { ok: true, id: (data as string) ?? undefined };
+}
+
+/** Групове скасування кейса (cancel_case_rpc, 0092): desk, лише активні
+    НЕ-in_progress кроки. Повертає ok; доска/екран кейса ресинкаються realtime. */
+export async function cancelCase(caseId: string): Promise<QueueActionResult> {
+  const v = parseInput("cancelCase", z.object({ caseId: zUuid }), { caseId });
+  if (!v.ok) return v;
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const { error } = await supabase.rpc("cancel_case_rpc", { p_case_id: v.data.caseId });
+  if (error) return mapCaseError(error.message, error.code ?? "");
+  return { ok: true };
+}

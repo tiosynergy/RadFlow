@@ -1067,6 +1067,14 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      cancel_case_rpc: {
+        Args: { p_case_id: string };
+        Returns: number;
+      };
+      create_case_rpc: {
+        Args: { p_case: Json; p_steps: Json };
+        Returns: string;
+      };
       auth_clinic_id: {
         Args: Record<PropertyKey, never>;
         Returns: string;

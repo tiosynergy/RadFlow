@@ -35,6 +35,7 @@ import PatientEditModal from "@/components/PatientEditModal";
 import CompletionModal from "@/components/CompletionModal";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
+import CaseModal from "@/components/CaseModal";
 import BreakdownModal from "@/components/BreakdownModal";
 import EmergencyModal from "@/components/EmergencyModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -63,6 +64,7 @@ type QEntry = {
   room_id: string | null; updated_at: string; in_progress_at: string | null; clarify_at?: string | null;
   reschedule_origin?: Json | null;
   off_schedule?: boolean | null;   // 0077 — запис зроблено поза графіком (за підтвердженням)
+  case_id?: string | null; case_step?: number | null;   // крос-модальний кейс (0091)
 };
 type RescheduleOrigin = { from_date?: string | null; from_time?: string | null; from_room?: string | null; from_status?: string | null; reason?: string | null };
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
@@ -420,8 +422,9 @@ interface QueueRowProps {
   // 0078–0081 — план при затримці: кнопка на записі, що ЗАРАЗ у кабінеті.
   onDelayPlan?: (p: QEntry) => void;
   delayLoading?: boolean;
+  onOpenCase?: (caseId: string) => void;
 }
-function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel, onDelayPlan, delayLoading }: QueueRowProps) {
+function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel, onDelayPlan, delayLoading, onOpenCase }: QueueRowProps) {
   // «Запізнення» — derived: пацієнт не прийшов, минуло понад буферний час.
   const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
   const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
@@ -443,7 +446,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
-          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient?.(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span></div>
+          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient?.(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span>{p.case_id && <span onClick={(e) => { e.stopPropagation(); if (p.case_id) onOpenCase?.(p.case_id); }} style={{ cursor: "pointer", marginLeft: 6, fontSize: 11, fontWeight: 600, color: "var(--accent, #3b82f6)" }} title="Відкрити крос-модальний кейс">🔗 Кейс</span>}</div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
             {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
@@ -840,6 +843,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
   const [entries, setEntries] = useState<QEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [openCaseId, setOpenCaseId] = useState<string | null>(null);
   const [slotsOverviewOpen, setSlotsOverviewOpen] = useState(false);
   const [completeFor, setCompleteFor] = useState<QEntry | null>(null);
   const [reschedFor, setReschedFor] = useState<QEntry | null>(null);
@@ -912,7 +916,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
          іншим дошкам, які на неї ж і перезавантажувались. Не повертати. */
       const { data, error } = await supabase
         .from("queue_entries")
-        .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, studies_changed_by, contraindications, cito, priority_level, doctor, referrer:referrer_id(full_name), room_id, updated_at, in_progress_at, clarify_at, reschedule_origin, off_schedule")
+        .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, studies_changed_by, contraindications, cito, priority_level, doctor, referrer:referrer_id(full_name), room_id, updated_at, in_progress_at, clarify_at, reschedule_origin, off_schedule, case_id, case_step")
         .eq("clinic_id", clinicId)
         .eq("scheduled_date", dayKey)
         .order("scheduled_time", { ascending: true });
@@ -1716,6 +1720,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
                     collision={collision}
                     onDelayPlan={isToday && (roleKey === "admin" || roleKey === "registrar") ? openDelayPlan : undefined}
                     delayLoading={delayOpening}
+                    onOpenCase={setOpenCaseId}
                     collisionPanel={collision?.zone === "clash" && expandedRow === p.id ? (
                       <CollisionPanel
                         entry={p} info={collision} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz}
@@ -1747,6 +1752,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
       {/* clinicTz — ЯВНО в кожну модалку: покладатися на singleton не можна
           (HANDOVER §6.1), інакше «зараз» тихо з'їде на зону браузера. */}
       {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} onClose={() => setModalOpen(false)} onSave={saveBooking} />}
+      {openCaseId && <CaseModal caseId={openCaseId} onClose={() => setOpenCaseId(null)} />}
       {slotsOverviewOpen && <RoomDayOverviewModal rooms={rooms || []} clinicTz={clinicTz} incidents={liveIncidents} overrides={overrides} onClose={() => setSlotsOverviewOpen(false)} />}
 
       {wlSuggest && (
