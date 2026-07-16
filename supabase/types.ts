@@ -317,6 +317,8 @@ export type Database = {
           reschedule_origin: Json | null;
           studies_changed_by: string | null;
           off_schedule: boolean;
+          case_id: string | null;
+          case_step: number | null;
         };
         Insert: {
           id?: string;
@@ -357,6 +359,8 @@ export type Database = {
           reschedule_origin?: Json | null;
           studies_changed_by?: string | null;
           off_schedule?: boolean;
+          case_id?: string | null;
+          case_step?: number | null;
         };
         Update: {
           id?: string;
@@ -397,6 +401,8 @@ export type Database = {
           reschedule_origin?: Json | null;
           studies_changed_by?: string | null;
           off_schedule?: boolean;
+          case_id?: string | null;
+          case_step?: number | null;
         };
         Relationships: [
           {
@@ -420,6 +426,82 @@ export type Database = {
           {
             foreignKeyName: "queue_entries_referrer_id_fkey";
             columns: ["referrer_id"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "queue_entries_case_id_fkey";
+            columns: ["case_id"];
+            referencedRelation: "patient_cases";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
+      patient_cases: {
+        Row: {
+          id: string;
+          clinic_id: string;
+          referrer_id: string | null;
+          created_by: string | null;
+          status: Database["public"]["Enums"]["case_status"];
+          sequential: boolean;
+          note: string | null;
+          patient_name: string;
+          patient_phone: string | null;
+          patient_dob: string | null;
+          patient_sex: string | null;
+          patient_email: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          clinic_id: string;
+          referrer_id?: string | null;
+          created_by?: string | null;
+          status?: Database["public"]["Enums"]["case_status"];
+          sequential?: boolean;
+          note?: string | null;
+          patient_name: string;
+          patient_phone?: string | null;
+          patient_dob?: string | null;
+          patient_sex?: string | null;
+          patient_email?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          clinic_id?: string;
+          referrer_id?: string | null;
+          created_by?: string | null;
+          status?: Database["public"]["Enums"]["case_status"];
+          sequential?: boolean;
+          note?: string | null;
+          patient_name?: string;
+          patient_phone?: string | null;
+          patient_dob?: string | null;
+          patient_sex?: string | null;
+          patient_email?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "patient_cases_clinic_id_fkey";
+            columns: ["clinic_id"];
+            referencedRelation: "clinics";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "patient_cases_referrer_id_fkey";
+            columns: ["referrer_id"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "patient_cases_created_by_fkey";
+            columns: ["created_by"];
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           }
@@ -1242,6 +1324,7 @@ export type Database = {
     Enums: {
       user_role: "admin" | "radiologist" | "registrar" | "referrer" | "ceo";
       ceo_access_status: "active" | "revoked";
+      case_status: "open" | "completed" | "cancelled";
       modality: "MRI" | "CT" | "OTHER" | "US" | "XRAY" | "MAMMO";
       queue_status:
         | "scheduled"
