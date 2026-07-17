@@ -24,7 +24,7 @@
    поведінка для легальних значень не змінилась, а сміття відсікалось. */
 
 import { z } from "zod";
-import { normBuffer, normDur } from "@/lib/studies";
+import { hasBookableStudy, normBuffer, normDur } from "@/lib/studies";
 
 /* ── Примітиви ─────────────────────────────────────────────────────────────── */
 
@@ -157,6 +157,15 @@ export const zStudy = z.object({
   price: z.number().finite().min(0).max(1_000_000).nullable().optional(),
 });
 export const zStudies = z.array(zStudy).max(20, "Забагато досліджень в одному записі");
+
+/** Склад для НОВОЇ записи / зміни складу: ті самі межі, що zStudies, ПЛЮС вимога
+    ≥1 дослідження з каталожною модальністю (не порожній тип, не «Інше»/OTHER).
+    Інакше modalityFromStudies мовчки класифікував би запис як MRI. DB-тригери
+    (0088/0090) навмисно лишаються мʼякими до порожнього складу заради легасі —
+    гард НОВИХ записів живе тут, на межі Server Action (додати параметр не можна). */
+export const zStudiesRequired = zStudies.refine(hasBookableStudy, {
+  message: "Додайте щонайменше одне дослідження з валідним типом",
+});
 
 /* room_ids гранта направника (канон 0061):
      null / відсутній  = УСІ кабінети центру;

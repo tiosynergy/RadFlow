@@ -9,14 +9,14 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, TablesUpdate, WaitlistStatus } from "@/supabase/types";
-import { BUFFER_DEFAULT, normBuffer, type Study } from "@/lib/studies";
+import { BUFFER_DEFAULT, hasBookableStudy, normBuffer, type Study } from "@/lib/studies";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { modalityFromStudies } from "@/lib/waitlist";
 import { wallDayKey } from "@/lib/incidents";
 import {
   parseInput, safeDbError, zUuid, zDateKey, zTime, zName, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
-  zDuration, zBuffer, zPriority, zStudies,
+  zDuration, zBuffer, zPriority, zStudiesRequired,
 } from "@/lib/validation";
 
 /* ===== Схеми входу (M-12) — див. lib/validation.ts =====
@@ -33,7 +33,7 @@ const sWaitlistInput = z.object({
   age: zOptAge,
   weight: zOptWeight,
   priorityLevel: zPriority.optional(),
-  studies: zStudies,
+  studies: zStudiesRequired,
   durationMin: zDuration,
   bufferTimeMin: zBuffer.optional(),
   desiredDateFrom: z.union([zDateKey, z.literal(""), z.null(), z.undefined()]).transform((v) => v || null),
@@ -54,7 +54,7 @@ const sWaitlistPatch = z.object({
   patient_sex: z.union([z.string().trim().max(16), z.null()]).optional(),
   patient_age: z.union([z.number().int().min(0).max(PATIENT_AGE_MAX), z.null()]).optional(),
   patient_weight: z.union([z.number().finite().min(0).max(PATIENT_WEIGHT_MAX), z.null()]).optional(),
-  studies: zStudies.optional(),
+  studies: zStudiesRequired.optional(),
   duration_min: zDuration.optional(),
   buffer_time_min: zBuffer.optional(),
   desired_date_from: z.union([zDateKey, z.literal(""), z.null()]).optional(),
@@ -238,6 +238,13 @@ export async function addEntryToWaitlist(
     .eq("id", entryId)
     .maybeSingle();
   if (!entry) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+
+  // Новий рядок листа — це НОВА запис: склад мусить мати ≥1 дослідження з каталожною
+  // модальністю (не порожній/без типу — інакше modalityFromStudies мовчки дав би MRI).
+  // Легасі-джерело без валідного типу відсікаємо тут, дзеркало zStudiesRequired.
+  if (!hasBookableStudy(entry.studies as Study[] | null)) {
+    return { ok: false, error: "У записі немає дослідження з валідним типом", code: "generic" };
+  }
 
   // Захист від дубля: пацієнт із цього запису вже чекає.
   const { data: dup } = await supabase

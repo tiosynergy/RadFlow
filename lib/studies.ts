@@ -116,6 +116,16 @@ export function studiesMatchModality(studies: Array<{ type?: string }> | null | 
   return arr.every((s) => !s?.type || modalityCode(s.type) === roomModality);
 }
 
+/** Чи є в складі хоча б одне дослідження з КАТАЛОЖНОЮ модальністю (не порожній
+    тип і не «Інше»/OTHER). Порожній / без type склад → false. Використовує
+    валідація НОВИХ записів (zStudiesRequired): без цього склад без типу мовчки
+    класифікувався б у MRI (modalityFromStudies), і crafted/інтеграційний ввід міг
+    створити запис без реального типу. Легасі-читання (modalityFromStudies) не зачіпає. */
+export function hasBookableStudy(studies?: Study[] | null): boolean {
+  const arr = Array.isArray(studies) ? studies : [];
+  return arr.some((s) => !!s?.type && BOOKABLE_MODALITIES.includes(modalityCode(s.type)));
+}
+
 export const MRT_REGIONS: StudyRegion[] = [
   { label: "Головний мозок", dur: 60, price: 2400, contrast: true },
   { label: "Хребет — шийний відділ", dur: 40, price: 2100, contrast: true },

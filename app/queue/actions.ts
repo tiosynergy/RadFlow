@@ -32,7 +32,7 @@ import {
 import {
   parseInput, safeDbError, zUuid, zDateKey, zTime, zIsoInstant, zName, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
-  zDuration, zBuffer, zPriority, zQueueStatus, zCallStatus, zStudies, zIdList,
+  zDuration, zBuffer, zPriority, zQueueStatus, zCallStatus, zStudiesRequired, zIdList,
   zQueueDelayPolicy, zOverlapThreshold, zMaxCascade, zQueueStatusAny,
 } from "@/lib/validation";
 
@@ -79,7 +79,7 @@ const PAST_TOLERANCE_MIN = 5;
    деталі помилки — в лог сервера, користувачу — загальне повідомлення.
    Примітиви (UUID, "HH:MM", "YYYY-MM-DD", тривалість, буфер) — lib/validation.ts. */
 
-const sStudies = zStudies;
+const sStudies = zStudiesRequired;
 
 /** Спільні поля пацієнта для бронювання (адмін і направник). */
 const sPatientFields = {
