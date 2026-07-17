@@ -1,32 +1,74 @@
 "use client";
 
-/* ===== RadFlow — Екран крос-модального кейса (перегляд + групове скасування) =====
-   Кейс (patient_cases, 0091) групує N записів РІЗНИХ модальностей одного пацієнта.
-   Тягне СВОЇ кроки сам (усі дати, не лише день дошки) — RLS віддає лише свій центр.
-   «Скасувати кейс» → cancelCase (0092): знімає активні НЕ-in_progress кроки;
-   виконані та ті, що в кабінеті, лишаються. Статус/прогрес — з lib/case.ts
-   (той самий підрахунок, що й на сервері). */
+/* ===== RadFlow — Екран крос-модального кейса (перегляд + правка + групове скасування) =====
+   Кейс (patient_cases, 0091) групує N записів РІЗНИХ кабінетів/модальностей одного
+   пацієнта. Тягне СВОЇ кроки сам (усі дати, не лише день дошки) — RLS віддає лише
+   свій центр.
 
-import { useEffect, useState } from "react";
+   ПРАВКА КРОКУ (0096): активний крок можна перенести (RescheduleModal →
+   rescheduleQueueEntry) або змінити дослідження (StudyEditModal →
+   editQueueEntryStudies). Обидва шляхи проходять DB-гарди кейса:
+     • різні кабінети (тригер 0095) — крок не можна посунути в кабінет іншого кроку;
+     • не перетинаються за часом (тригер 0096) — крок не можна посунути/розтягнути
+       на час, зайнятий іншим кроком кейса (пацієнт не в двох місцях).
+   Помилки цих гардів мапляться в actions.ts (CASE_SAME_ROOM/CASE_PATIENT_OVERLAP)
+   і показуються в модалці правки — той самий контроль пересічень, що й при створенні.
+
+   СИНХРОНІЗАЦІЯ ДЛЯ ВСІХ РОЛЕЙ: підписка realtime на queue_entries + patient_cases
+   цього кейса (useRealtimeRefetch) — будь-яка зміна (правка/скасування/статус) з
+   іншої вкладки чи іншим оператором одразу оновлює екран.
+
+   «Скасувати кейс» → cancelCase (0092): знімає активні НЕ-in_progress кроки. */
+
+import { useCallback, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { cancelCase } from "@/app/queue/actions";
+import { cancelCase, rescheduleQueueEntry, editQueueEntryStudies, addCaseStep } from "@/app/queue/actions";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import RescheduleModal from "@/components/RescheduleModal";
+import StudyEditModal from "@/components/StudyEditModal";
+import BookingModal, { type BookingPayload } from "@/components/BookingModal";
 import { useModalA11y } from "@/lib/useModalA11y";
+import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { modalityLabel, studyText, type Study } from "@/lib/studies";
 import {
   sortSteps, caseStatusFromSteps, caseProgress, cancellableCount, isActiveStep,
   type CaseStepLite,
 } from "@/lib/case";
-import type { CaseStatus } from "@/supabase/types";
+import type { CaseStatus, Json } from "@/supabase/types";
+import type { IncidentLike } from "@/lib/incidents";
+
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 
 type StepRow = CaseStepLite & {
   id: string;
   patient_name: string | null;
+  patient_phone: string | null;
+  patient_dob: string | null;
+  patient_sex: string | null;
+  patient_email: string | null;
   scheduled_date: string | null;
   scheduled_time: string | null;
+  duration_min: number | null;
+  buffer_time_min: number | null;
+  note: string | null;
+  off_schedule: boolean | null;
+  room_id: string | null;
   studies: unknown;
   room: { name: string | null; modality: string | null } | null;
 };
+
+const STEP_SELECT =
+  "id, patient_name, patient_phone, patient_dob, patient_sex, patient_email, status, case_step, scheduled_date, scheduled_time, duration_min, buffer_time_min, note, off_schedule, room_id, studies, room:room_id(name, modality)";
+
+/* "HH:MM" + N хв → "HH:MM" (щоб показувати кінець слота поряд із початком). */
+function addMinToHHMM(hhmm: string, min: number): string {
+  const [h, m] = hhmm.split(":").map(Number);
+  const t = h * 60 + m + (min || 0);
+  return String(Math.floor((t % 1440) / 60)).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0");
+}
+function dateKey(d: Date) {
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
 
 const STATUS_LABEL: Record<string, string> = {
   scheduled: "Заплановано",
@@ -48,55 +90,122 @@ interface CaseModalProps {
   caseId: string;
   onClose: () => void;
   onCancelled?: () => void;
+  /** Контекст персоналу для правки кроків. Без нього екран — лише перегляд. */
+  rooms?: RoomOpt[];
+  clinicId?: string | null;
+  clinicTz?: string | null;
+  incidents?: IncidentLike[];
 }
 
-export default function CaseModal({ caseId, onClose, onCancelled }: CaseModalProps) {
+export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicId, clinicTz, incidents = [] }: CaseModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [steps, setSteps] = useState<StepRow[] | null>(null);
   const [err, setErr] = useState(false);
   const [busy, setBusy] = useState(false);
   const [askCancel, setAskCancel] = useState(false);
-  const [cancelErr, setCancelErr] = useState<string | null>(null);
+  const [opErr, setOpErr] = useState<string | null>(null);
+  const [reschedStep, setReschedStep] = useState<StepRow | null>(null);
+  const [editStudiesStep, setEditStudiesStep] = useState<StepRow | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const supabase = createClient();
-        const { data, error } = await supabase
-          .from("queue_entries")
-          .select("id, patient_name, status, case_step, scheduled_date, scheduled_time, studies, room:room_id(name, modality)")
-          .eq("case_id", caseId);
-        if (!alive) return;
-        if (error) { setErr(true); return; }
-        setSteps((data || []) as unknown as StepRow[]);
-      } catch {
-        if (alive) setErr(true);
-      }
-    })();
-    return () => { alive = false; };
+  const canEdit = !!clinicId && (rooms?.length ?? 0) > 0;
+
+  const load = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase.from("queue_entries").select(STEP_SELECT).eq("case_id", caseId);
+      if (error) { setErr(true); return; }
+      setErr(false);
+      setSteps((data || []) as unknown as StepRow[]);
+    } catch {
+      setErr(true);
+    }
   }, [caseId]);
 
+  useEffect(() => { load(); }, [load]);
+
+  // Синхронізація для всіх ролей: зміни кроків/кейса з інших вкладок і операторів.
+  useRealtimeRefetch({
+    channelName: caseId ? "case-" + caseId : null,
+    subscriptions: [
+      { table: "queue_entries", filter: "case_id=eq." + caseId, onChange: load },
+      { table: "patient_cases", filter: "id=eq." + caseId, onChange: load },
+    ],
+  });
+
   const ordered = sortSteps(steps || []);
-  const patient = ordered.find((s) => s.patient_name)?.patient_name || "Пацієнт";
+  const pfStep = ordered.find((s) => s.patient_name) || null;
+  const patient = pfStep?.patient_name || "Пацієнт";
   const cStatus = caseStatusFromSteps(steps || []);
   const prog = caseProgress(steps || []);
   const nCancel = cancellableCount(steps || []);
 
+  // Зайнятість наявними активними кроками — для контролю пересічень при додаванні
+  // нового кроку (той самий кабінет заблоковано, зайнятий час — casebusy у сітці).
+  const activeSiblings = (steps || [])
+    .filter((s) => isActiveStep(s.status) && s.room_id && s.scheduled_date && s.scheduled_time && s.duration_min)
+    .map((s) => ({
+      roomId: s.room_id as string,
+      date: new Date((s.scheduled_date as string) + "T00:00:00"),
+      time: String(s.scheduled_time).slice(0, 5),
+      dur: s.duration_min as number,
+    }));
+
   async function doCancel() {
     setBusy(true);
-    setCancelErr(null);
+    setOpErr(null);
     const res = await cancelCase(caseId);
     setBusy(false);
     setAskCancel(false);
-    if (!res.ok) { setCancelErr(res.error); return; }
+    if (!res.ok) { setOpErr(res.error); return; }
     onCancelled?.();
     onClose();
   }
 
+  /* Перенос кроку. Помилки гардів кейса (CASE_SAME_ROOM/CASE_PATIENT_OVERLAP) і
+     звичайні booking-помилки повертаємо в RescheduleModal — вона їх покаже. */
+  async function doReschedule(sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean }): Promise<string | null> {
+    const st = reschedStep;
+    if (!st) return null;
+    const [hh, mm] = sel.time.split(":").map(Number);
+    const at = new Date(sel.date.getFullYear(), sel.date.getMonth(), sel.date.getDate(), hh, mm).toISOString();
+    const res = await rescheduleQueueEntry({
+      id: st.id, roomId: sel.roomId, scheduledDate: dateKey(sel.date), scheduledTime: sel.time,
+      scheduledAt: at, durationMin: sel.dur, bufferTimeMin: sel.buffer, reason: sel.reason, offSchedule: sel.offSchedule,
+    });
+    if (!res.ok) return res.error;   // успіх → закриваємо модалку тут
+    setReschedStep(null);
+    load();
+    return null;
+  }
+
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number; offSchedule?: boolean }) {
+    const st = editStudiesStep;
+    if (!st) return;
+    setEditStudiesStep(null);
+    setOpErr(null);
+    const res = await editQueueEntryStudies(st.id, (arr || []) as unknown as Json, (meta && meta.dur) || st.duration_min || 30, meta?.buffer, meta?.offSchedule);
+    if (!res.ok) { setOpErr(res.error); return; }
+    load();
+  }
+
+  /* Додати новий крок (інша модальність/кабінет) до кейса. Помилки гардів
+     (CASE_SAME_ROOM/CASE_PATIENT_OVERLAP) повертаємо в модалку — вона їх покаже. */
+  async function onAddStep(b: BookingPayload): Promise<string | null> {
+    const res = await addCaseStep(caseId, {
+      roomId: b.roomId, studies: b.studies, durationMin: b.dur, bufferTimeMin: b.buffer,
+      priorityLevel: b.priority, scheduledDate: dateKey(b.date), scheduledTime: b.time,
+      contraindications: !!b.hasContra, doctor: b.doctor ?? null, note: b.notes ?? null,
+    });
+    if (!res.ok) return res.error;
+    setAddOpen(false);
+    load();
+    return null;
+  }
+
   return (
     <div className="overlay">
-      <div className="dialog fade-in" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Кейс пацієнта" style={{ maxWidth: 560 }}>
+      <div className="dialog fade-in" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Кейс пацієнта" style={{ maxWidth: 580 }}>
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic">🔗</span>Кейс · {patient}</div>
           <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
@@ -110,8 +219,8 @@ export default function CaseModal({ caseId, onClose, onCancelled }: CaseModalPro
             </span>
           </div>
 
-          {cancelErr && (
-            <div style={{ fontSize: 12.5, color: "var(--danger, #c0392b)" }}>Не вдалося скасувати: {cancelErr}</div>
+          {opErr && (
+            <div style={{ fontSize: 12.5, color: "var(--danger, #c0392b)" }}>{opErr}</div>
           )}
           {err && (
             <div style={{ fontSize: 12.5, color: "var(--danger, #c0392b)" }}>Не вдалося завантажити кроки кейса — оновіть сторінку.</div>
@@ -128,20 +237,31 @@ export default function CaseModal({ caseId, onClose, onCancelled }: CaseModalPro
                 const active = isActiveStep(s.status);
                 const dateTxt = s.scheduled_date ? s.scheduled_date.split("-").reverse().slice(0, 2).join(".") : "";
                 const timeTxt = s.scheduled_time ? String(s.scheduled_time).slice(0, 5) : "";
+                const endTxt = timeTxt && s.duration_min ? "–" + addMinToHHMM(timeTxt, s.duration_min) : "";
                 return (
-                  <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: "9px 12px", opacity: active ? 1 : 0.55 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", minWidth: 18, textAlign: "center" }}>{s.case_step ?? i + 1}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {modalityLabel(s.room?.modality || "")} · {s.room?.name || "—"}
+                  <div key={s.id} style={{ display: "flex", flexDirection: "column", gap: 8, background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: "9px 12px", opacity: active ? 1 : 0.55 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", minWidth: 18, textAlign: "center" }}>{s.case_step ?? i + 1}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {modalityLabel(s.room?.modality || "")} · {s.room?.name || "—"}
+                        </div>
+                        <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {label}{dateTxt ? " · " + dateTxt : ""}{timeTxt ? " " + timeTxt + endTxt : ""}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {label}{dateTxt ? " · " + dateTxt : ""}{timeTxt ? " " + timeTxt : ""}
-                      </div>
+                      <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 999, border: "1px solid var(--border)", color: "var(--text-muted)" }}>
+                        {STATUS_LABEL[s.status] || s.status}
+                      </span>
                     </div>
-                    <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 999, border: "1px solid var(--border)", color: "var(--text-muted)" }}>
-                      {STATUS_LABEL[s.status] || s.status}
-                    </span>
+                    {/* Правка кроку — лише персоналу центру й лише для активних кроків.
+                        Обидві дії проходять DB-гарди кейса (різні кабінети / без перетину часу). */}
+                    {canEdit && active && (
+                      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                        <button className="btn btn-secondary btn-xs" onClick={() => { setOpErr(null); setEditStudiesStep(s); }} title="Змінити дослідження кроку">🩻 Дослідження</button>
+                        <button className="btn btn-secondary btn-xs" onClick={() => { setOpErr(null); setReschedStep(s); }} title="Перенести крок на інший слот/кабінет">🗓 Перенести</button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -153,6 +273,9 @@ export default function CaseModal({ caseId, onClose, onCancelled }: CaseModalPro
           <span className="bk-summary">
             {nCancel > 0 ? `Скасувати можна ${nCancel} активних кроків` : "Активних кроків для скасування немає"}
           </span>
+          {canEdit && cStatus === "open" && (
+            <button className="btn btn-secondary" onClick={() => { setOpErr(null); setAddOpen(true); }} title="Додати крок іншої модальності/кабінету">＋ Додати крок</button>
+          )}
           <button className="btn btn-ghost" onClick={onClose}>Закрити</button>
           <button className="btn btn-danger" disabled={busy || nCancel === 0} onClick={() => setAskCancel(true)}>
             Скасувати кейс
@@ -170,6 +293,49 @@ export default function CaseModal({ caseId, onClose, onCancelled }: CaseModalPro
           busy={busy}
           onConfirm={doCancel}
           onClose={() => setAskCancel(false)}
+        />
+      )}
+
+      {reschedStep && (
+        <RescheduleModal
+          patient={{
+            id: reschedStep.id, room_id: reschedStep.room_id, duration_min: reschedStep.duration_min,
+            buffer_time_min: reschedStep.buffer_time_min, patient_name: reschedStep.patient_name,
+            studies: reschedStep.studies, note: reschedStep.note, status: reschedStep.status,
+          }}
+          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents}
+          allowOffSchedule
+          onClose={() => setReschedStep(null)}
+          onConfirm={doReschedule}
+        />
+      )}
+
+      {editStudiesStep && (
+        <StudyEditModal
+          patient={{
+            id: editStudiesStep.id, room_id: editStudiesStep.room_id, scheduled_time: editStudiesStep.scheduled_time,
+            buffer_time_min: editStudiesStep.buffer_time_min, duration_min: editStudiesStep.duration_min,
+            patient_name: editStudiesStep.patient_name, studies: editStudiesStep.studies,
+          }}
+          scheduledDate={editStudiesStep.scheduled_date || dateKey(new Date())}
+          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} offSchedule={!!editStudiesStep.off_schedule}
+          onClose={() => setEditStudiesStep(null)}
+          onConfirm={doEditStudies}
+        />
+      )}
+
+      {addOpen && (
+        <BookingModal
+          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents}
+          prefill={{
+            name: pfStep?.patient_name || "", phone: pfStep?.patient_phone || "",
+            dob: pfStep?.patient_dob || "", gender: pfStep?.patient_sex || "",
+            email: pfStep?.patient_email || "", priority: "planned",
+          }}
+          caseSiblings={activeSiblings}
+          onAddCaseStep={onAddStep}
+          onSave={() => {}}
+          onClose={() => setAddOpen(false)}
         />
       )}
     </div>

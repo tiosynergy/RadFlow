@@ -249,9 +249,19 @@ interface BookingModalProps {
      Тепер помилку показує сама модалка. Заразом це закриває M-6: поки запит
      у польоті, кнопка заблокована (подвійний клік більше не створює дубль). */
   onSave: (b: BookingPayload) => Promise<string | null> | void;
+  /** Пакетний режим (кейс): якщо передано, зʼявляється «＋ У кейс» / «Створити кейс».
+      Приймає накопичені кроки різних модальностей → одна атомарна дія createCase. */
+  onCreateCase?: (steps: BookingPayload[]) => Promise<string | null> | void;
+  /** Режим «додати крок до вже створеного кейса»: якщо передано, замість
+      «Зберегти запис» — «Додати крок до кейса» (addCaseStep), а сітка/блок кабінету
+      враховують УЖЕ наявні кроки кейса (caseSiblings). Пакетний бар не показуємо. */
+  onAddCaseStep?: (b: BookingPayload) => Promise<string | null> | void;
+  /** Наявні (активні) кроки кейса — для контролю пересічень у режимі onAddCaseStep:
+      той самий кабінет заблоковано, зайнятий іншим кроком час — casebusy у сітці. */
+  caseSiblings?: { roomId: string; date: Date; time: string; dur: number }[];
 }
 
-export default function BookingModal({ rooms, clinicId, clinicTz, incidents = [], prefill, onClose, onSave }: BookingModalProps) {
+export default function BookingModal({ rooms, clinicId, clinicTz, incidents = [], prefill, onClose, onSave, onCreateCase, onAddCaseStep, caseSiblings }: BookingModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   // Передзаповнення: перше дослідження → основне (тип/область/контраст), решта → додаткові.
   const pfStudies = Array.isArray(prefill?.studies) ? (prefill!.studies as NonNullable<BookingPrefill["studies"]>) : [];
@@ -423,6 +433,21 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const { spans: roomBusy, loading: busyLoading, error: busyError } = useRoomBusy({ roomId, dateStr: dateKeyStr });
   const slotsLoading = busyLoading || schedLoading;
 
+  /* Свіжість зайнятості кабінету. useRoomBusy лишає СТАРІ spans до кінця
+     перезавантаження, а busySpans() щоразу віддає новий масив — тож при зміні
+     кабінету (напр. вхід у правку кроку кейса) є один кадр зі старими spans ще
+     ДО того, як busyLoading встигне стати true. На ньому авто-зняття слота (taken)
+     помилково гасило свій же валідний слот як «щойно зайняли». Фіксуємо ключ
+     кабінету/дати, для якого зайнятість ГАРАНТОВАНО довантажилась (перехід
+     busyLoading true→false), і зіставляємо його перед авто-зняттям. */
+  const roomDateKey = (roomId || "") + "|" + dateKeyStr;
+  const busyFreshRef = useRef<string | null>(null);
+  const prevBusyLoadingRef = useRef(busyLoading);
+  useEffect(() => {
+    if (prevBusyLoadingRef.current && !busyLoading && roomId) busyFreshRef.current = roomDateKey;
+    prevBusyLoadingRef.current = busyLoading;
+  }, [busyLoading, roomDateKey, roomId]);
+
   /* Один фрейм часу на всю модалку — НАСТІННИЙ час клініки (clinics.timezone).
      Було: nowMin по клініці, а «сьогодні» (today0) по браузеру — при розбіжності
      зон перевірка «past» або вимикалась, або зрізала майбутнє. */
@@ -453,6 +478,31 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
      оператор побачив би фіолетовий «можна з підтвердженням» слот поверх чужого
      запису, підтвердив би — і отримав відмову тригера. Класифікацію виходу за
      графік рахує offScheduleKind() — ТА САМА чиста функція, що й на сервері. */
+  const [caseSteps, setCaseSteps] = useState<BookingPayload[]>([]);   // пакетний режим (кейс)
+  // Редагування вже доданого кроку кейса: індекс кроку, форма якого зараз у полях
+  // (null — режим «додати новий»). Оголошено ДО slotState/fitCount, бо сітка тепер
+  // враховує зайнятість пацієнта в інших кроках кейса.
+  const [editIndex, setEditIndex] = useState<number | null>(null);
+  /* Вікна присутності пацієнта в ІНШИХ кроках кейса на цю дату (крок, що
+     редагується, — виключаємо). Слот, що їх перетинає, для кейса не підходить:
+     пацієнт не може бути у двох кабінетах одночасно (RPC 0094 відхилив би). Це
+     лише візуальний гейт у сітці — остаточний рубіж усе одно в БД. */
+  // У режимі «додати крок до кейса» контроль пересічень спирається на вже наявні
+  // кроки кейса (caseSiblings, з БД), а не на пакетні caseSteps (їх тут немає).
+  const siblingSteps = caseSiblings ?? [];
+  const caseBusyWindows = [
+    ...caseSteps.filter((cs, i) => i !== editIndex && sameDay(cs.date, bookDate)),
+    ...siblingSteps.filter((cs) => sameDay(cs.date, bookDate)),
+  ].map((cs) => { const st = toMin(cs.time); return { s: st, e: st + cs.dur }; });
+  /* Кабінети, уже зайняті ІНШИМИ кроками кейса. Кейс — це РІЗНІ кабінети/модальності
+     (0095): два кроки в одному кабінеті заборонені (кілька досліджень одного
+     кабінету — це звичайний запис). Крок, що редагується, — виключаємо. */
+  const caseRoomIds = [
+    ...caseSteps.filter((_, i) => i !== editIndex).map((cs) => cs.roomId),
+    ...siblingSteps.map((cs) => cs.roomId),
+  ];
+  const roomInCase = !!roomId && caseRoomIds.includes(roomId);
+
   function slotState(slot: string) {
     // e — кінець дослідження (має вміститись у графік); eBlock — з буфером (для перетину з іншими записами).
     const s = toMin(slot), eBlock = s + slotDur + buffer;
@@ -465,6 +515,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     if (roomBusy.some((b) => s >= b.s && s < b.eStudy)) return "busy";
     if (roomBusy.some((b) => s >= b.eStudy && s < b.e)) return "buffer";
     if (roomBusy.some((b) => s < b.e && b.s < eBlock)) return "tight";
+    // Крос-модальний кейс: кабінет вільний, але пацієнт у цей час уже зайнятий
+    // іншим кроком кейса (присутність = тривалість дослідження, без буфера).
+    if (caseBusyWindows.some((w) => s < w.e && w.s < s + slotDur)) return "casebusy";
     const off = offScheduleKind(s, slotDur, roomSched, roomBreaks);
     if (off) return off.confirmable ? "offsched" : "offhours";
     return "free";
@@ -525,7 +578,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const fitCount = countFit(slots, (s) => slotState(s) === "free", slotDur + buffer);
   const busyList = roomBusy.slice().sort((a, b) => a.s - b.s);
 
-  const miss: Record<string, boolean> = { name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time };
+  // Режим «додати крок до кейса»: пацієнта бере зі знімка кейса add_case_step_rpc,
+  // тож поля пацієнта у формі — лише передзаповнення, вони НЕ блокують збереження.
+  const addMode = !!onAddCaseStep;
+  const miss: Record<string, boolean> = { name: !addMode && !name.trim(), dob: !addMode && !dob, gender: !addMode && !gender, phone: !addMode && !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time };
   const MISS_LABELS: Record<string, string> = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   // 0077: «поза графіком» — теж легальний вибір, тому НЕ timeBad. Але зберегти
@@ -544,6 +600,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const [taken, setTaken] = useState<string | null>(null);
   useEffect(() => {
     if (!time || slotsLoading) return;
+    // Зайнятість ще не підтверджена свіжою для ПОТОЧНОГО кабінету/дати — на кадрі
+    // зі старими spans (зміна кабінету) свій же слот гасити не можна.
+    if (busyFreshRef.current !== roomDateKey) return;
     if (!SELECTABLE.includes(slotState(time))) { setTaken(time); setTime(""); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomBusy, slotsLoading, timeBad]);
@@ -552,25 +611,125 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
 
+  function buildPayload(): BookingPayload {
+    const sel = docs.find((d) => String(d.id) === String(doctorId));
+    return {
+      name: name.trim(), phone, email: email.trim() || null,
+      age: calcAge(dob), dob, weight: weight ? +weight : null, gender,
+      proc: combinedLabel, dur: slotDur, buffer, studies: allStudies,
+      roomId, date: bookDate, time, notes: notes.trim() || null,
+      hasContra, priority: priority as PatientPriority, doctor: sel?.name || null,
+      referrerId: sel && String(sel.id).startsWith("ref:") ? String(sel.id).slice(4) : null,
+      offSchedule: needsOffConfirm && offOk,   // 0077 — згода оператора; рішення за сервером
+    };
+  }
+
   async function handleSave() {
     if (!valid || saving) return;   // M-6: подвійний клік не створює другий запис
-    const sel = docs.find((d) => String(d.id) === String(doctorId));
     setSaving(true);
     setSaveErr(null);
     try {
-      const err = await onSave({
-        name: name.trim(), phone, email: email.trim() || null,
-        age: calcAge(dob), dob, weight: weight ? +weight : null, gender,
-        proc: combinedLabel, dur: slotDur, buffer, studies: allStudies,
-        roomId, date: bookDate, time, notes: notes.trim() || null,
-        hasContra, priority: priority as PatientPriority, doctor: sel?.name || null,
-        referrerId: sel && String(sel.id).startsWith("ref:") ? String(sel.id).slice(4) : null,
-        offSchedule: needsOffConfirm && offOk,   // 0077 — згода оператора; рішення за сервером
-      });
+      const err = await onSave(buildPayload());
       // Успіх → батько закриває модалку. Помилка → лишаємось відкритими й показуємо її.
       if (err) setSaveErr(err);
     } catch {
       setSaveErr("Не вдалося зберегти запис — спробуйте ще раз");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /* Додати крок до наявного кейса. Кабінет наявного кроку заблоковано (roomInCase),
+     час іншого кроку — casebusy у сітці; остаточний рубіж — тригери 0095/0096. */
+  async function handleAddCaseStep() {
+    if (!onAddCaseStep || !valid || saving || roomInCase) return;
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      const err = await onAddCaseStep(buildPayload());
+      if (err) setSaveErr(err);
+    } catch {
+      setSaveErr("Не вдалося додати крок — спробуйте ще раз");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /* Пакетний режим (кейс): «＋ У кейс» накопичує поточний крок і скидає крок-
+     специфічне (лишаючи пацієнта) — оператор обирає наступну модальність; «Створити
+     кейс» шле всі кроки однією атомарною дією createCase (create_case_rpc, 0093). */
+  /* Скинути крок-специфічні поля (лишаючи пацієнта) — після додавання/оновлення. */
+  function resetStepFields() {
+    setRegion(""); setContrast(false); setExtraStudies([]); setTime(""); setDurEdit("");
+  }
+
+  /* «＋ У кейс» / «Оновити крок»: у режимі редагування ЗАМІНЮЄ крок editIndex,
+     інакше додає новий. Далі — вихід із редагування і скидання полів кроку. */
+  function addStepToCase() {
+    if (!valid) return;
+    // Кейс = різні кабінети: не додаємо крок у кабінет, який уже є в кейсі (0095).
+    if (editIndex === null && roomInCase) return;
+    const p = buildPayload();
+    setCaseSteps((arr) => (editIndex !== null ? arr.map((s, j) => (j === editIndex ? p : s)) : [...arr, p]));
+    setEditIndex(null);
+    resetStepFields();
+  }
+
+  /* Завантажити вже доданий крок назад у форму для редагування (час, дослідження,
+     слот, кабінет, буфер, пріоритет тощо). Зворотне до buildPayload. Пацієнта НЕ
+     чіпаємо — він спільний для кейса. */
+  function loadStepForEdit(i: number) {
+    const s = caseSteps[i];
+    if (!s) return;
+    const studies = Array.isArray(s.studies) ? (s.studies as StudyOut[]) : [];
+    const primary = studies[0];
+    if (primary) {
+      const code = modalityCode(primary.type) || studyType;
+      setStudyType(code);
+      setContrast(primary.contrast === true);
+      pfDurRef.current = Number(primary.dur) || null;   // durEdit-ефект підхопить кастомну тривалість
+      setRegion(primary.region || "");
+    }
+    setExtraStudies(studies.slice(1).map((x) => ({
+      type: x.type, region: x.region || "", dur: Number(x.dur) || (regionsFor(x.type)[0]?.dur ?? 20),
+    })));
+    setRoomId(s.roomId);
+    if (s.date instanceof Date && !isNaN(s.date.getTime())) setBookDate(s.date);
+    setTime(s.time);
+    setBuffer(s.buffer ?? BUFFER_DEFAULT);
+    setPriority(s.priority);
+    setHasContra(s.hasContra === true);
+    setNotes(s.notes || "");
+    // Лікар-направник (best-effort): направник має пріоритет, інакше — за іменем.
+    if (s.referrerId) setDoctorId("ref:" + s.referrerId);
+    else if (s.doctor) { const d = docs.find((x) => (x.name || "").trim() === s.doctor); setDoctorId(d ? String(d.id) : ""); }
+    else setDoctorId("");
+    setEditIndex(i);
+    setSaveErr(null);
+  }
+
+  /* Вийти з режиму редагування без збереження змін до кроку. */
+  function cancelEdit() {
+    setEditIndex(null);
+    resetStepFields();
+  }
+
+  async function createCaseNow() {
+    if (!onCreateCase || saving) return;
+    // У режимі редагування поточна форма — це крок editIndex (не новий): якщо
+    // валідна, вкладаємо зміни в нього; інакше беремо кейс як є.
+    const steps = editIndex !== null
+      ? (valid ? caseSteps.map((s, j) => (j === editIndex ? buildPayload() : s)) : [...caseSteps])
+      // Поточний крок додаємо лише якщо його кабінет ще не в кейсі (різні кабінети).
+      : (valid && !roomInCase ? [...caseSteps, buildPayload()] : [...caseSteps]);
+    if (steps.length < 2) return;   // кейс — щонайменше два кроки різних кабінетів
+    setSaving(true);
+    setSaveErr(null);
+    try {
+      const err = await onCreateCase(steps);
+      if (err) setSaveErr(err);
+    } catch {
+      setSaveErr("Не вдалося створити кейс — спробуйте ще раз");
     } finally {
       setSaving(false);
     }
@@ -583,7 +742,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     <div className="overlay">
       <div className="dialog fade-in bk-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Новий запис пацієнта">
         <div className="dlg-head">
-          <div className="dlg-title"><span className="tic">＋</span>Новий запис</div>
+          <div className="dlg-title"><span className="tic">{addMode ? "🔗" : "＋"}</span>{addMode ? "Додати крок до кейса" : "Новий запис"}</div>
           <button className="icon-btn" onClick={onClose}>✕</button>
         </div>
 
@@ -815,6 +974,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                   titleOf={(s, st) => (st === "busy" || st === "buffer") ? busyLabel(s)
                     : st === "blocked" ? blockedLabel(s)
                     : st === "break" ? breakLabel(s)
+                    : st === "casebusy" ? "Пацієнт зайнятий іншим кроком кейса в цей час — оберіть інший слот"
                     : st === "offsched" ? offSchedLabel(s)
                     : st === "offhours" ? "Кабінет не працює в цей час"
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${tightReason(s)}`
@@ -839,6 +999,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                 <span><span className="lg-dot busy" />зайнято</span>
                 <span><span className="lg-dot busybuf" />буфер</span>
                 {time && buffer > 0 && <span><span className="lg-dot planbuf" />буфер цього запису</span>}
+                {caseBusyWindows.length > 0 && <span><span className="lg-dot casebusy" />інший крок кейса</span>}
                 {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
                 <span><span className="lg-dot offsched" />поза графіком</span>
               </div>
@@ -882,14 +1043,65 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
           <div className="dlg-err" role="alert">⚠ {saveErr}</div>
         )}
 
+        {onCreateCase && (
+          <div className="bk-case-bar" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, padding: "8px 16px", borderTop: "1px solid var(--border)" }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", whiteSpace: "nowrap" }}>🔗 Кейс:</span>
+            {caseSteps.length === 0 && <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>додайте кроки різних модальностей і створіть кейс</span>}
+            {caseSteps.map((s, i) => {
+              const rm = (rooms || []).find((r) => r.id === s.roomId);
+              const editing = editIndex === i;
+              return (
+                <span
+                  key={i}
+                  onClick={() => (editing ? cancelEdit() : loadStepForEdit(i))}
+                  title={editing ? "Редагується — натисніть, щоб вийти" : "Редагувати крок (час, дослідження, слот…)"}
+                  style={{ cursor: "pointer", fontSize: 11.5, padding: "2px 6px 2px 8px", borderRadius: 999,
+                    border: "1px solid " + (editing ? "var(--accent, #3b82f6)" : "var(--border)"),
+                    background: editing ? "color-mix(in srgb, var(--accent, #3b82f6) 14%, transparent)" : "transparent",
+                    display: "inline-flex", alignItems: "center", gap: 6 }}
+                >
+                  <span style={{ fontSize: 10, opacity: 0.7 }}>{i + 1}</span>
+                  {modalityLabel(rm?.modality || "")} · {rm?.name || "—"} · {s.time}–{fmtMin(toMin(s.time) + s.dur)}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setCaseSteps((arr) => arr.filter((_, j) => j !== i)); if (editIndex !== null) cancelEdit(); }}
+                    title="Прибрати крок"
+                    style={{ cursor: "pointer", background: "none", border: "none", color: "var(--text-muted)", padding: 0, lineHeight: 1 }}
+                  >✕</button>
+                </span>
+              );
+            })}
+            {/* Кейс = різні кабінети: підказка, коли поточний кабінет уже у кейсі. */}
+            {editIndex === null && roomInCase && (
+              <span style={{ flexBasis: "100%", fontSize: 11.5, color: "var(--orange, #e08a00)" }}>
+                ⚠ Кабінет «{room?.name}» уже у кейсі. Кейс — це різні кабінети/модальності; кілька досліджень одного кабінету оформіть звичайним записом («＋ Додати дослідження»).
+              </span>
+            )}
+            {editIndex !== null
+              ? (
+                <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
+                  <button className="btn btn-ghost btn-sm" disabled={saving} onClick={cancelEdit} title="Вийти з редагування без змін">Скасувати правку</button>
+                  <button className="btn btn-primary btn-sm" disabled={!valid || saving} onClick={addStepToCase} title="Зберегти зміни в кроці">✓ Оновити крок {editIndex + 1}</button>
+                </span>
+              )
+              : <button className="btn btn-ghost btn-sm" disabled={!valid || saving || roomInCase} onClick={addStepToCase} style={{ marginLeft: "auto" }} title={roomInCase ? "Цей кабінет уже у кейсі — оберіть інший кабінет/модальність" : "Додати поточний крок до кейса"}>＋ У кейс</button>}
+            <button className="btn btn-primary btn-sm" disabled={saving || (caseSteps.length + (editIndex === null && valid && !roomInCase ? 1 : 0)) < 2} onClick={createCaseNow} title="Кейс — щонайменше два кроки в різних кабінетах">
+              Створити кейс ({caseSteps.length + (editIndex === null && valid && !roomInCase ? 1 : 0)})
+            </button>
+          </div>
+        )}
+
         <div className="dlg-foot">
           {valid
             ? <span className="bk-summary">{name.split(" ").slice(0, 2).join(" ")} · {allStudies.length > 1 ? allStudies.length + " досл." : primaryKind} · {room ? room.name : ""} · {fmtShort(bookDate)} {time}–{fmtMin(toMin(time) + slotDur)}</span>
             : <span className="bk-missing">{missingList.map((m, i) => <span className="bk-miss-chip" key={i}>{m}</span>)}</span>}
           <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Скасувати</button>
-          <button className="btn btn-primary" disabled={!valid || saving} onClick={handleSave}>
-            {saving ? "Збереження…" : "Зберегти запис"}
-          </button>
+          {addMode
+            ? <button className="btn btn-primary" disabled={!valid || saving || roomInCase} onClick={handleAddCaseStep} title={roomInCase ? "Цей кабінет уже у кейсі — оберіть іншу модальність/кабінет" : "Додати крок до кейса"}>
+                {saving ? "Додавання…" : "Додати крок до кейса"}
+              </button>
+            : <button className="btn btn-primary" disabled={!valid || saving} onClick={handleSave}>
+                {saving ? "Збереження…" : "Зберегти запис"}
+              </button>}
         </div>
       </div>
     </div>

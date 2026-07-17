@@ -1491,6 +1491,12 @@ select.inp { cursor: pointer; }
    дослідження вже скінчилось — червона штриховка замість суцільного червоного. */
 .slot.busybuf { border-color: var(--red) !important; color: #ff8c84 !important; opacity: 0.85;
   background: repeating-linear-gradient(135deg, rgba(255,69,58,0.22) 0 3px, rgba(255,69,58,0.05) 3px 6px) !important; }
+/* Крос-модальний кейс: слот вільний у кабінеті, але пацієнт у цей час уже зайнятий
+   ІНШИМ кроком кейса (він не може бути у двох кабінетах одночасно). Окремий колір —
+   блакитна штриховка: це НЕ «зайнято кабінетом» (червоний) і НЕ «не вміщується»
+   (помаранчевий), а «пацієнт зайнятий деінде». Слот некликабельний. */
+.slot.casebusy { border-color: #3aa0c9 !important; color: #9bd8ee !important; opacity: 0.9;
+  background: repeating-linear-gradient(135deg, rgba(58,160,201,0.24) 0 3px, rgba(58,160,201,0.06) 3px 6px) !important; }
 /* Зелені межі планованого дослідження (початок і кінець) — мають перебивати busy/tight/brk. */
 .slot.plan { border-color: var(--green) !important; color: #eafff0 !important; background: rgba(48, 209, 88, 0.28) !important; opacity: 1 !important; text-decoration: none !important; }
 /* Буфер ПЛАНОВАНОГО дослідження — видно, коли кабінет реально звільниться. */
@@ -1509,6 +1515,8 @@ select.inp { cursor: pointer; }
   background: repeating-linear-gradient(135deg, rgba(142,142,147,0.95) 0 2px, rgba(142,142,147,0.3) 2px 4px); }
 .lg-dot.busybuf { border: 1px solid var(--red);
   background: repeating-linear-gradient(135deg, rgba(255,69,58,0.95) 0 2px, rgba(255,69,58,0.25) 2px 4px); }
+.lg-dot.casebusy { border: 1px solid #3aa0c9;
+  background: repeating-linear-gradient(135deg, rgba(58,160,201,0.95) 0 2px, rgba(58,160,201,0.3) 2px 4px); }
 .lg-dot.planbuf { border: 1px solid rgba(48,209,88,0.6);
   background: repeating-linear-gradient(135deg, rgba(48,209,88,0.95) 0 2px, rgba(48,209,88,0.25) 2px 4px); }
 .bk-slot-confirm { margin-top: 9px; font-size: 12.5px; border-radius: 8px; padding: 8px 11px; }

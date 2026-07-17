@@ -20,6 +20,8 @@ import {
   rescheduleQueueEntry,
   editQueueEntryStudies,
   createBooking,
+  createCase,
+  caseFromEntry,
   setQueuePriority,
   previewDelayPlan,
   applyDelayPlan,
@@ -423,8 +425,9 @@ interface QueueRowProps {
   onDelayPlan?: (p: QEntry) => void;
   delayLoading?: boolean;
   onOpenCase?: (caseId: string) => void;
+  onOrganizeCase?: (p: QEntry) => void;
 }
-function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel, onDelayPlan, delayLoading, onOpenCase }: QueueRowProps) {
+function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel, onDelayPlan, delayLoading, onOpenCase, onOrganizeCase }: QueueRowProps) {
   // «Запізнення» — derived: пацієнт не прийшов, минуло понад буферний час.
   const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
   const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
@@ -650,6 +653,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
 
                   {moreOpen && !terminal && (
                     <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }}>
+                      {onOrganizeCase && !p.case_id && <button className="btn btn-secondary btn-sm" onClick={act(onOrganizeCase)} title="Додати іншу модальність/кабінет — організувати крос-модальний кейс">🔗 Організувати кейс</button>}
                       <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNoShow)}>✕ Неявка</button>
                       <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNotHeld)}>✕ Не відбулося</button>
                       <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onCancel)}>✕ Скасувати запис</button>
@@ -853,6 +857,9 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
   const [delayBusy, setDelayBusy] = useState(false);          // йде applyDelayPlan
   const [editStudiesFor, setEditStudiesFor] = useState<QEntry | null>(null);
   const [editPatientFor, setEditPatientFor] = useState<QEntry | null>(null);
+  // «Організувати кейс» із наявного запису: відкриваємо вікно запису в режимі
+  // «додати крок» (інша модальність), сиблінг — сам цей запис (0098).
+  const [caseFromEntryFor, setCaseFromEntryFor] = useState<QEntry | null>(null);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [breakdownOpen, setBreakdownOpen] = useState(false);
   const [breakdownRoomId, setBreakdownRoomId] = useState<string | null>(null);
@@ -974,7 +981,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
   // P2.1 — гарячі клавіші реєстратури. Через e.code (незалежно від розкладки UA/RU/EN);
   // не перехоплюємо у полях вводу та при відкритих модалках.
   useEffect(() => {
-    const anyModalOpen = modalOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || breakdownOpen || schedEditOpen;
+    const anyModalOpen = modalOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen;
     function onKey(e: KeyboardEvent) {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
@@ -989,7 +996,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [modalOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, breakdownOpen, schedEditOpen, reload, rooms]);
+  }, [modalOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, reload, rooms]);
 
   useRealtimeRefetch({
     channelName: clinicId ? "queue-" + clinicId : null,
@@ -1360,6 +1367,25 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
     reload();
   }
 
+  const openCaseFromEntry = (p: QEntry) => setCaseFromEntryFor(p);
+  /* Організувати кейс із запису: додаємо крок іншої модальності через
+     case_from_entry_rpc (0098). Успіх → відкриваємо екран кейса. Помилку
+     (той самий кабінет / перетин часу) повертаємо вікну — воно покаже. */
+  async function doCaseFromEntry(b: BookingPayload): Promise<string | null> {
+    const p = caseFromEntryFor;
+    if (!p) return null;
+    const res = await caseFromEntry(p.id, {
+      roomId: b.roomId, studies: b.studies, durationMin: b.dur, bufferTimeMin: b.buffer,
+      priorityLevel: b.priority, scheduledDate: dateKey(b.date), scheduledTime: b.time,
+      contraindications: !!b.hasContra, doctor: b.doctor ?? null, note: b.notes ?? null,
+    });
+    if (!res.ok) return res.error;
+    setCaseFromEntryFor(null);
+    reload();
+    if (res.id) setOpenCaseId(res.id);   // одразу показуємо організований кейс
+    return null;
+  }
+
   const canEditPriority = roleKey === "admin";
   async function doSetPriority(p: QEntry, priority: PatientPriority) {
     const res = await setQueuePriority(p.id, priority);
@@ -1415,6 +1441,30 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
     }
     if (status === "in_progress") { callPatient(p); return; }
     setStatus(p.id, status);
+  }
+
+  /* Пакетне створення кейса з BookingModal: N кроків різних модальностей (спільний
+     пацієнт зі steps[0]) → одна атомарна дія createCase (create_case_rpc, 0093). */
+  async function createCaseFromBooking(steps: BookingPayload[]): Promise<string | null> {
+    if (!steps.length) return "Додайте хоча б один крок";
+    const p0 = steps[0];
+    const res = await createCase({
+      patient: {
+        name: p0.name, phone: p0.phone || null, email: p0.email ?? null,
+        dob: p0.dob || null, sex: p0.gender || null, age: p0.age ?? null, weight: p0.weight ?? null,
+      },
+      referrerId: p0.referrerId,
+      note: null,
+      steps: steps.map((b) => ({
+        roomId: b.roomId, studies: b.studies, durationMin: b.dur, bufferTimeMin: b.buffer,
+        priorityLevel: b.priority, scheduledDate: dateKey(b.date), scheduledTime: b.time,
+        contraindications: b.hasContra, doctor: b.doctor ?? null, note: b.notes ?? null,
+      })),
+    });
+    if (!res.ok) { reload(); return res.error; }
+    setModalOpen(false);
+    reload();
+    return null;
   }
 
   async function saveBooking(b: BookingPayload) {
@@ -1721,6 +1771,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
                     onDelayPlan={isToday && (roleKey === "admin" || roleKey === "registrar") ? openDelayPlan : undefined}
                     delayLoading={delayOpening}
                     onOpenCase={setOpenCaseId}
+                    onOrganizeCase={openCaseFromEntry}
                     collisionPanel={collision?.zone === "clash" && expandedRow === p.id ? (
                       <CollisionPanel
                         entry={p} info={collision} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz}
@@ -1751,8 +1802,22 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
           admin/radiologist центру — бачать, реєстратор і направник — ні. */}
       {/* clinicTz — ЯВНО в кожну модалку: покладатися на singleton не можна
           (HANDOVER §6.1), інакше «зараз» тихо з'їде на зону браузера. */}
-      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} onClose={() => setModalOpen(false)} onSave={saveBooking} />}
-      {openCaseId && <CaseModal caseId={openCaseId} onClose={() => setOpenCaseId(null)} />}
+      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} onClose={() => setModalOpen(false)} onSave={saveBooking} onCreateCase={createCaseFromBooking} />}
+      {openCaseId && <CaseModal caseId={openCaseId} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} onClose={() => setOpenCaseId(null)} onCancelled={reload} />}
+      {caseFromEntryFor && (
+        <BookingModal
+          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents}
+          prefill={{
+            name: caseFromEntryFor.patient_name || "", phone: caseFromEntryFor.patient_phone || "", priority: "planned",
+          }}
+          caseSiblings={caseFromEntryFor.room_id && caseFromEntryFor.scheduled_time && caseFromEntryFor.duration_min
+            ? [{ roomId: caseFromEntryFor.room_id, date: selectedDate, time: String(caseFromEntryFor.scheduled_time).slice(0, 5), dur: caseFromEntryFor.duration_min }]
+            : []}
+          onAddCaseStep={doCaseFromEntry}
+          onSave={() => {}}
+          onClose={() => setCaseFromEntryFor(null)}
+        />
+      )}
       {slotsOverviewOpen && <RoomDayOverviewModal rooms={rooms || []} clinicTz={clinicTz} incidents={liveIncidents} overrides={overrides} onClose={() => setSlotsOverviewOpen(false)} />}
 
       {wlSuggest && (

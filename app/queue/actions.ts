@@ -17,7 +17,6 @@ import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate, QueueDelayPolicy } from "@/supabase/types";
 import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX, studiesMatchModality } from "@/lib/studies";
-import { randomUUID } from "node:crypto";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
 import { wallNow, wallInstant, wallDayKey, wallInstantOf, wallMinOfDay, wallMinOfInstant } from "@/lib/incidents";
@@ -429,6 +428,22 @@ async function callerIsStaffOf(supabase: SupabaseClient<Database>, clinicId: str
 const MODALITY_MISMATCH_ERR: QueueActionResult = {
   ok: false, error: "Тип дослідження не відповідає модальності кабінету", code: "modality_mismatch",
 };
+// 0094/0095 — гарди кейса (тригери + create_case_rpc). Ловляться ЗА ТЕКСТОМ у всіх
+// класифікаторах (mapCaseError/mapBookingError/classifyError) ДО перевірок за SQLSTATE:
+// CASE_SAME_ROOM піднімається з 23505, який інакше сплутали б з «кабінет зайнятий».
+const CASE_SAME_ROOM_ERR: QueueActionResult = {
+  ok: false, error: "Кроки кейса мають бути в різних кабінетах — кілька досліджень одного кабінету оформіть звичайним записом", code: "generic",
+};
+const CASE_OVERLAP_ERR: QueueActionResult = {
+  ok: false, error: "Пацієнт не може бути у двох кабінетах одночасно — змініть час кроку", code: "slot_unavailable",
+};
+/** Гарди кейса (0094/0095) розпізнаємо за префіксом повідомлення — раніше за
+    SQLSTATE, ніж будь-який класифікатор; null, якщо це не помилка кейса. */
+function caseTriggerError(message: string): QueueActionResult | null {
+  if (/CASE_SAME_ROOM/i.test(message)) return CASE_SAME_ROOM_ERR;
+  if (/CASE_PATIENT_OVERLAP/i.test(message)) return CASE_OVERLAP_ERR;
+  return null;
+}
 async function studiesRoomMismatch(supabase: SupabaseClient<Database>, roomId: string, studies: unknown): Promise<boolean> {
   const { data } = await supabase.from("rooms").select("modality").eq("id", roomId).maybeSingle();
   return !studiesMatchModality(studies as Array<{ type?: string }> | null, data?.modality ?? null);
@@ -463,6 +478,9 @@ function classifyError(err: { code?: string; message?: string }, status?: QueueS
     safeDbError("queue.status.lock", err);
     return { ok: false, error: "Запис саме зараз змінює інший оператор — спробуйте ще раз", code: "stale" };
   }
+  // Гарди кейса (0095 CASE_SAME_ROOM піднімається з 23505) — за текстом ДО коду,
+  // інакше перенос/зміна статусу кроку кейса показала б хибне «кабінет зайнятий».
+  { const ce = caseTriggerError(message); if (ce) return ce; }
   if (status === "in_progress" && (code === "23505" || /in_progress|duplicate|23505/i.test(message))) {
     return { ok: false, error: "У кабінеті вже є пацієнт", code: "room_busy" };
   }
@@ -920,6 +938,8 @@ function mapBookingError(message: string, code = ""): QueueActionResult {
     safeDbError("booking.lock", { code, message });
     return { ok: false, error: "Запис саме зараз змінює інший оператор — спробуйте ще раз", code: "stale" };
   }
+  // Гарди кейса (0094/0095) — за текстом ДО перевірок за SQLSTATE (CASE_SAME_ROOM = 23505).
+  { const ce = caseTriggerError(message); if (ce) return ce; }
   // MODALITY_MISMATCH — тригер 0088 (тип дослідження ↔ модальність кабінету).
   if (/MODALITY_MISMATCH/i.test(message)) return MODALITY_MISMATCH_ERR;
   // PAST_SLOT — тригер 0063 (останній рубіж; серверна перевірка стоїть вище).
@@ -1295,67 +1315,82 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
   return { ok: true, id: created?.id };
 }
 
-/** Атомарний перенос кандидата з листа очікування у слот.
-    ГОНКА, яку це лікує: раніше клієнт робив createBooking, а ПОТІМ окремо
-    markWaitlistScheduled (CAS). Два адміністратори на одного кандидата на різні
-    слоти → ОБИДВА створювали запис у черзі (слоти різні, овербукінгу нема), а CAS
-    відхиляв лише другий markWaitlistScheduled — сирота вже висіла в черзі (пацієнт
-    задвоєний). Тут «застовплюємо» кандидата ПЕРШИМ: CAS waiting→scheduled одним
-    атомарним UPDATE. Тільки переможець (1 рядок) іде бронювати; другий (0 рядків)
-    не створює нічого. Невдале бронювання відкочує застовплення назад у waiting. */
+/** Помилки RPC переносу з листа очікування: власні raise (WAITLIST_*) поверх
+    booking-тригерів; решта — той самий маппінг, що й бронювання. */
+function mapWaitlistError(message: string, code = ""): QueueActionResult {
+  if (/^AUTH/i.test(message)) return { ok: false, error: "Не авторизовано", code: "auth" };
+  if (/WAITLIST_NOT_FOUND|^FORBIDDEN/i.test(message)) return { ok: false, error: "Немає доступу або кандидата не знайдено", code: "forbidden" };
+  if (/WAITLIST_STALE/i.test(message)) return { ok: false, error: "Кандидата вже записує інший оператор — оновіть лист", code: "stale" };
+  return mapBookingError(message, code);
+}
+
+/** АТОМАРНИЙ перенос кандидата з листа очікування у слот — ОДНІЄЮ транзакцією БД
+    (schedule_from_waitlist_rpc, 0100): застовплення (CAS waiting→scheduled з
+    рядковим блокуванням) + створення запису черги + запис scheduled_entry_id.
+    Раніше це були ТРИ окремі транзакції: зупинка між створенням запису і звʼязком
+    лишала кандидата 'scheduled' без scheduled_entry_id (зависав), а фінальний UPDATE
+    навіть не перевірявся. Тепер проміжний стан не видно нікому, а будь-який збій
+    відкочує все (кандидат лишається 'waiting', сиріт-записів нема). Пере-перевірки
+    (модальність/минуле/графік/зайнятість) лишаємо на сервері для чистих помилок і
+    щоб порахувати off_schedule (0077); авторитетний рубіж — тригери всередині RPC. */
 export async function scheduleFromWaitlist(waitlistId: string, booking: BookingInput): Promise<QueueActionResult> {
-  const v = parseInput("scheduleFromWaitlist", z.object({ waitlistId: zUuid }), { waitlistId });
-  if (!v.ok) return v;
-  const wlId = v.data.waitlistId;
+  const idv = parseInput("scheduleFromWaitlist.id", zUuid, waitlistId);
+  if (!idv.ok) return idv;
+  const bv = parseInput("scheduleFromWaitlist", sBooking, booking);
+  if (!bv.ok) return bv;
+  const input = bv.data;
 
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+  const clinicId = await callerClinicId(supabase);
+  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  // 1) Застовпити кандидата — АТОМАРНИЙ CAS. Тільки той, хто перевів waiting→scheduled,
-  //    піде створювати запис. RLS обмежує оновлення власним центром (крос-тенант — 0 рядків).
-  //    claim_token (0089) — разова мітка ЦЬОГО застовплення: link/rollback чіпають
-  //    лише власний claim, тож повторний claim іншого оператора (restore→re-claim у
-  //    вузькому вікні) не буде затертий чужим відкатом.
-  const claimToken = randomUUID();
-  const { data: claimed, error: claimErr } = await supabase
-    .from("waitlist_entries")
-    .update({ status: "scheduled", claim_token: claimToken })
-    .eq("id", wlId)
-    .eq("status", "waiting")
-    .select("id");
-  if (claimErr) return { ok: false, error: safeDbError("scheduleFromWaitlist.claim", claimErr), code: "generic" };
-  if (!claimed || claimed.length === 0) {
-    const { data: cur } = await supabase.from("waitlist_entries").select("status").eq("id", wlId).maybeSingle();
-    if (!cur) return { ok: false, error: "Немає доступу або кандидата не знайдено", code: "forbidden" };
-    // Уже scheduled (інший оператор) або cancelled — НІЧОГО не створюємо.
-    return { ok: false, error: "Кандидата вже записує інший оператор — оновіть лист", code: "stale" };
+  // Пере-перевірки (як createBooking): дають чисту помилку ДО застовплення й рахують
+  // off_schedule. Це НЕ мутації — гонку розвʼязує атомарний claim усередині RPC.
+  if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
+  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  const gate = await scheduleBlock(
+    supabase, input.roomId, clinicId, input.scheduledDate, input.scheduledTime, input.durationMin,
+    { offSchedule: input.offSchedule, isStaff: true }
+  );
+  if (gate.blocked) return gate.blocked;
+  const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
+  const startMs = wallInstant(input.scheduledDate, input.scheduledTime);
+  const endMs = startMs + (input.durationMin + bufferMin) * 60000;
+  if (await hasSlotClash(supabase, input.roomId, clinicId, input.scheduledDate, startMs, endMs)) {
+    return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 
-  // Відкат застовплення — ЛИШЕ власного claim (`claim_token = наш`), тож чужий
-  // повторний claim (інший токен) недоторканий. `status='scheduled'` — щоб не
-  // чіпати рядок, який хтось уже перевів деінде.
-  const rollbackClaim = () => supabase.from("waitlist_entries")
-    .update({ status: "waiting", scheduled_entry_id: null, claim_token: null })
-    .eq("id", wlId).eq("status", "scheduled").eq("claim_token", claimToken);
+  const p_booking = {
+    off_schedule: gate.offSchedule,
+    room_id: input.roomId,
+    referrer_id: input.referrerId ?? null,
+    patient_name: input.name,
+    patient_phone: input.phone,
+    patient_email: input.email,
+    patient_dob: input.dob,
+    patient_sex: input.sex,
+    patient_age: input.age ?? null,
+    patient_weight: input.weight ?? null,
+    contraindications: !!input.hasContra,
+    priority_level: normPriority(input.priorityLevel),
+    has_contrast: input.studies.some((s) => s.contrast === true),
+    studies: input.studies,
+    doctor: input.doctor,
+    note: input.notes,
+    duration_min: input.durationMin,
+    buffer_time_min: bufferMin,
+    scheduled_date: input.scheduledDate,
+    scheduled_time: input.scheduledTime,
+  };
 
-  // 2) Створити запис у черзі (усі перевірки — createBooking + тригери БД).
-  //    try — щоб виняток (мережа/таймаут) між claim і booking не лишив кандидата
-  //    у 'scheduled' без запису: на будь-якому збої відкочуємо застовплення.
-  try {
-    const res = await createBooking(booking);
-    if (!res.ok) { await rollbackClaim(); return res; }
-    // 3) Успіх → прив'язати створений запис (лише поки це наш claim) і зняти токен.
-    //    Якщо лінк не вдався — запис усе одно існує, лист лишається 'scheduled'
-    //    (дубля немає; посилання відновне).
-    await supabase.from("waitlist_entries")
-      .update({ scheduled_entry_id: res.id ?? null, claim_token: null })
-      .eq("id", wlId).eq("status", "scheduled").eq("claim_token", claimToken);
-    return { ok: true, id: res.id };
-  } catch {
-    try { await rollbackClaim(); } catch { /* best-effort: не лишаємо 'scheduled' без запису */ }
-    return { ok: false, error: "Не вдалося записати — спробуйте ще раз", code: "generic" };
-  }
+  const { data, error } = await supabase.rpc("schedule_from_waitlist_rpc", {
+    p_waitlist_id: idv.data,
+    p_booking: p_booking as unknown as Json,
+  });
+  if (error) return mapWaitlistError(error.message, error.code ?? "");
+  return { ok: true, id: (data as string) ?? undefined };
 }
 
 /** Заметка радіолога (radiologist_note). */
@@ -2008,6 +2043,8 @@ function mapCaseError(message: string, code = ""): QueueActionResult {
   if (/^AUTH/i.test(message)) return { ok: false, error: "Не авторизовано", code: "auth" };
   if (/^BAD_INPUT/i.test(message)) return { ok: false, error: "Некоректний склад кейса", code: "generic" };
   if (/case_clinic_mismatch|case_not_found/i.test(message)) return { ok: false, error: "Кейс і крок у різних центрах", code: "forbidden" };
+  // 0094/0095 — гарди складу кейса (час пацієнта / різні кабінети).
+  { const ce = caseTriggerError(message); if (ce) return ce; }
   return mapBookingError(message, code);
 }
 
@@ -2049,6 +2086,78 @@ export async function createCase(raw: CaseInput): Promise<QueueActionResult> {
   const { data, error } = await supabase.rpc("create_case_rpc", {
     p_case: p_case as unknown as Json,
     p_steps: p_steps as unknown as Json,
+  });
+  if (error) return mapCaseError(error.message, error.code ?? "");
+  return { ok: true, id: (data as string) ?? undefined };
+}
+
+export type CaseStepInput = z.infer<typeof sCaseStep>;
+
+/** Додати ОДИН крок (інша модальність/кабінет) до вже створеного кейса
+    (add_case_step_rpc, 0097). Пацієнт береться зі знімка кейса; інваріанти кейса
+    (різні кабінети 0095, без перетину часу 0096) тримають тригери — та сама
+    перевірка пересічень, що й при створенні. */
+export async function addCaseStep(caseId: string, raw: CaseStepInput): Promise<QueueActionResult> {
+  const idv = parseInput("addCaseStep.caseId", zUuid, caseId);
+  if (!idv.ok) return idv;
+  const v = parseInput("addCaseStep", sCaseStep, raw);
+  if (!v.ok) return v;
+  const s = v.data;
+
+  const supabase = await createClient();
+  const clinicId = await callerClinicId(supabase);
+  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const p_step = {
+    room_id: s.roomId,
+    studies: s.studies,
+    duration_min: s.durationMin,
+    buffer_time_min: normBuffer(s.bufferTimeMin ?? BUFFER_DEFAULT),
+    priority_level: normPriority(s.priorityLevel),
+    scheduled_date: s.scheduledDate,
+    scheduled_time: s.scheduledTime,
+    contraindications: !!s.contraindications,
+    doctor: s.doctor ?? null,
+    note: s.note ?? null,
+  };
+  const { data, error } = await supabase.rpc("add_case_step_rpc", {
+    p_case_id: idv.data,
+    p_step: p_step as unknown as Json,
+  });
+  if (error) return mapCaseError(error.message, error.code ?? "");
+  return { ok: true, id: (data as string) ?? undefined };
+}
+
+/** Організувати кейс із наявного запису черги: створити кейс (якщо його ще нема)
+    зі знімка пацієнта запису, зробити запис кроком 1 і додати новий крок іншої
+    модальності/кабінету (case_from_entry_rpc, 0098). Повертає id кейса. Ті самі
+    гарди (різні кабінети 0095, без перетину часу 0096) — на тригерах. */
+export async function caseFromEntry(entryId: string, raw: CaseStepInput): Promise<QueueActionResult> {
+  const idv = parseInput("caseFromEntry.entryId", zUuid, entryId);
+  if (!idv.ok) return idv;
+  const v = parseInput("caseFromEntry", sCaseStep, raw);
+  if (!v.ok) return v;
+  const s = v.data;
+
+  const supabase = await createClient();
+  const clinicId = await callerClinicId(supabase);
+  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const p_step = {
+    room_id: s.roomId,
+    studies: s.studies,
+    duration_min: s.durationMin,
+    buffer_time_min: normBuffer(s.bufferTimeMin ?? BUFFER_DEFAULT),
+    priority_level: normPriority(s.priorityLevel),
+    scheduled_date: s.scheduledDate,
+    scheduled_time: s.scheduledTime,
+    contraindications: !!s.contraindications,
+    doctor: s.doctor ?? null,
+    note: s.note ?? null,
+  };
+  const { data, error } = await supabase.rpc("case_from_entry_rpc", {
+    p_entry_id: idv.data,
+    p_step: p_step as unknown as Json,
   });
   if (error) return mapCaseError(error.message, error.code ?? "");
   return { ok: true, id: (data as string) ?? undefined };

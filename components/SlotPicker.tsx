@@ -89,6 +89,7 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
                       + (!free ? " taken" : "")
                       + (hint?.slot === s ? " hinted" : "")
                       + (st === "tight" ? " tight" : "")
+                      + (st === "casebusy" ? " casebusy" : "")
                       + (st === "offsched" ? " offsched" : "")
                       + (st === "break" ? " brk" : "")
                       + (st === "buffer" ? " busybuf" : "")

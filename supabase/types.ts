@@ -1075,6 +1075,22 @@ export type Database = {
         Args: { p_case: Json; p_steps: Json };
         Returns: string;
       };
+      add_case_step_rpc: {
+        Args: { p_case_id: string; p_step: Json };
+        Returns: string;
+      };
+      case_from_entry_rpc: {
+        Args: { p_entry_id: string; p_step: Json };
+        Returns: string;
+      };
+      schedule_from_waitlist_rpc: {
+        Args: { p_waitlist_id: string; p_booking: Json };
+        Returns: string;
+      };
+      set_waitlist_status_rpc: {
+        Args: { p_id: string; p_status: Database["public"]["Enums"]["waitlist_status"] };
+        Returns: string;
+      };
       auth_clinic_id: {
         Args: Record<PropertyKey, never>;
         Returns: string;

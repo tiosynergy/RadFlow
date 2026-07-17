@@ -312,22 +312,28 @@ export async function updateWaitlistEntry(
     safePatch[k] = val === "" ? null : val;   // "" не має лягати в дату/час
   }
   if (Object.keys(safePatch).length === 0) return { ok: true };
-  if (safePatch.studies !== undefined) {
-    // Модальність — похідна від складу досліджень, рахуємо на сервері.
-    const newMod = modalityFromStudies(safePatch.studies as Study[] | null);
-    safePatch.modality = newMod;
-    // Направник не може ЗМІНИТИ тип на модальність поза своїм грантом (як і на
-    // вставці): RLS дозволяє йому правити СВІЙ рядок, але не міняти модальність на
-    // недоступну. Персоналу — свій центр, обмежень тут немає.
-    if (caller.role === "referrer") {
-      const { data: row } = await supabase.from("waitlist_entries").select("clinic_id").eq("id", v.data.id).maybeSingle();
-      if (!row?.clinic_id) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
-      const { data: access } = await supabase.from("referral_access")
-        .select("room_ids").eq("referrer_id", caller.userId).eq("clinic_id", row.clinic_id).eq("status", "active").maybeSingle();
-      if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
-      if (!(await referrerModalityAllowed(supabase, row.clinic_id, access.room_ids as string[] | null, newMod))) {
-        return { ok: false, error: "Ця модальність недоступна за вашим доступом до центру", code: "forbidden" };
-      }
+  // Модальність — похідна від складу досліджень, рахуємо на сервері.
+  const newMod = safePatch.studies !== undefined ? modalityFromStudies(safePatch.studies as Study[] | null) : undefined;
+  if (newMod !== undefined) safePatch.modality = newMod;
+
+  /* Грант направника: перевіряємо і МОДАЛЬНІСТЬ (при зміні складу), і КАБІНЕТ (при
+     зміні room_id) — раніше room_id узагалі не перевірявся, тож крафтовий запит міг
+     проставити кабінет ПОЗА грантом (модальність збігалась → проходило). Дзеркало
+     перевірки на вставці createWaitlistEntry. RLS-політика — останній рубіж (0101).
+     Персоналу — свій центр, обмежень тут немає. */
+  if (caller.role === "referrer" && (newMod !== undefined || safePatch.room_id !== undefined)) {
+    const { data: row } = await supabase.from("waitlist_entries").select("clinic_id").eq("id", v.data.id).maybeSingle();
+    if (!row?.clinic_id) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+    const { data: access } = await supabase.from("referral_access")
+      .select("room_ids").eq("referrer_id", caller.userId).eq("clinic_id", row.clinic_id).eq("status", "active").maybeSingle();
+    if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
+    const grantRooms = access.room_ids as string[] | null;
+    if (newMod !== undefined && !(await referrerModalityAllowed(supabase, row.clinic_id, grantRooms, newMod))) {
+      return { ok: false, error: "Ця модальність недоступна за вашим доступом до центру", code: "forbidden" };
+    }
+    // Кабінет у патчі (не null) має бути в гранті (null/[] = усі кабінети центру).
+    if (safePatch.room_id != null && grantRooms && grantRooms.length > 0 && !grantRooms.includes(safePatch.room_id as string)) {
+      return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
     }
   }
 
@@ -388,13 +394,22 @@ export async function setWaitlistStatus(id: string, status: WaitlistStatus): Pro
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  // «waiting» скидає й claim_token (0089): restore звільняє застовплення, тож
-  // наступний claim починається з чистого токена, а старий rollback уже не збіжиться.
-  const patch: TablesUpdate<"waitlist_entries"> =
-    status === "waiting" ? { status, scheduled_entry_id: null, claim_token: null } : { status };
-  const { data, error } = await supabase.from("waitlist_entries").update(patch).eq("id", id).select("id");
-  if (error) return { ok: false, error: safeDbError("setWaitlistStatus", error), code: "generic" };
-  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  // Перехід статусу — ЛИШЕ через set_waitlist_status_rpc (0102). Службові колонки
+  // status/scheduled_entry_id/claim_token закриті від прямого запису колоночними
+  // грантами; RPC (SECURITY DEFINER) робить явну авторизацію (персонал свого центру
+  // або направник-власник) і на restore→waiting чистить застовплення (0089).
+  const { error } = await supabase.rpc("set_waitlist_status_rpc", {
+    p_id: id,
+    p_status: status,
+  });
+  if (error) {
+    const m = error.message ?? "";
+    if (/^AUTH/i.test(m)) return { ok: false, error: "Не авторизовано", code: "auth" };
+    if (/WAITLIST_NOT_FOUND|^FORBIDDEN/i.test(m)) {
+      return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+    }
+    return { ok: false, error: safeDbError("setWaitlistStatus", error), code: "generic" };
+  }
   return { ok: true };
 }
 
