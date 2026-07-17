@@ -1087,6 +1087,10 @@ export type Database = {
         Args: { p_waitlist_id: string; p_booking: Json };
         Returns: string;
       };
+      waitlist_candidates_for_slot: {
+        Args: { p_room: string | null; p_date: string; p_time_min: number };
+        Returns: Database["public"]["Tables"]["waitlist_entries"]["Row"][];
+      };
       set_waitlist_status_rpc: {
         Args: { p_id: string; p_status: Database["public"]["Enums"]["waitlist_status"] };
         Returns: string;

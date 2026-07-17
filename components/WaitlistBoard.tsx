@@ -29,6 +29,10 @@ import "@/styles/prototype/radflow-screens.css";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type IncidentRow = { id: string; room_id: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string };
 
+// Масштабування доски листа (0104+): пагінація історичних вкладок і стеля waiting.
+const PAGE = 50;         // розмір сторінки історичних вкладок («показати ще»)
+const WAITING_CAP = 300; // waiting вантажимо повністю зі стелею (обмежений за природою)
+
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
 function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
@@ -118,6 +122,18 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
   const [busyId, setBusyId] = useState<string | null>(null);
   // Вступна підказка ховається назавжди (localStorage), фільтр-банер не чіпаємо.
   const [hintHidden, setHintHidden] = useState(false);
+
+  /* Масштабування (0104+): доска більше НЕ тягне select("*") усієї історії центру.
+     Активна вкладка вантажиться серверно (status + модальність + пошук), лічильники —
+     окремими COUNT-запитами, історичні вкладки — сторінками («показати ще»). */
+  const [counts, setCounts] = useState({ waiting: 0, cito: 0, urgent: 0, scheduled: 0, removed: 0 });
+  const [qDebounced, setQDebounced] = useState("");
+  const [limit, setLimit] = useState(PAGE);
+  const [hasMore, setHasMore] = useState(false);
+  // Фільтр за кабінетом із сайдбара: рядок листа не привʼязаний до кабінету, тому
+  // фільтруємо за МОДАЛЬНІСТЮ обраного кабінету (МРТ/КТ/УЗД…). Порожня модальність — теж показуємо.
+  const viewRoom = roomView === "all" ? null : (rooms || []).find((r) => r.id === roomView) || null;
+  const viewMod = viewRoom?.modality ?? null;
   useEffect(() => {
     try { setHintHidden(localStorage.getItem("rf_waitlist_hint_hidden") === "1"); } catch { /* ignore */ }
   }, []);
@@ -148,22 +164,67 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
     setBookFor(p);
   }
 
+  const statusesFor = (f: "waiting" | "scheduled" | "removed"): ("waiting" | "scheduled" | "cancelled" | "expired")[] =>
+    f === "waiting" ? ["waiting"] : f === "scheduled" ? ["scheduled"] : ["cancelled", "expired"];
+
   const reload = useCallback(async () => {
     try {
       const supabase = createClient();
-      const { data, error } = await supabase
+      let q = supabase
         .from("waitlist_entries")
         .select("*")
         .eq("clinic_id", clinicId)
-        .order("created_at", { ascending: true });
+        .in("status", statusesFor(filter));
+      // Модальність (сайдбар) і пошук — СЕРВЕРНО, а не фільтром у браузері.
+      if (viewMod) q = q.or(`modality.is.null,modality.eq.${viewMod}`);
+      const s = qDebounced.trim().replace(/[%,()\\]/g, " ").trim();
+      if (s) q = q.or(`patient_name.ilike.%${s}%,patient_phone.ilike.%${s}%`);
+      // waiting — повністю (зі стелею), клієнт досортує за пріоритетом (enum не дає
+      // cito→urgent→planned серверно); історичні вкладки — сторінками за updated_at.
+      q = filter === "waiting"
+        ? q.order("created_at", { ascending: true }).limit(WAITING_CAP)
+        : q.order("updated_at", { ascending: false }).limit(limit);
+      const { data, error } = await q;
       // H-6: без перевірки error збій виглядав як «Лист порожній» — і кандидатів,
       // що чекають слота, ніхто не бачив.
       if (error) { setEntriesErr(true); return; }
       setEntries(data || []);
+      setHasMore(filter !== "waiting" && (data?.length || 0) >= limit);
       setEntriesErr(false);
     } catch { setEntriesErr(true); }
     finally { setLoading(false); }
-  }, [clinicId]);
+  }, [clinicId, filter, viewMod, qDebounced, limit]);
+
+  // Лічильники StatsBar/вкладок — окремі COUNT (head:true), без вантаження рядків;
+  // рахуються по всіх статусах незалежно від активної вкладки (з модальність-фільтром).
+  const loadCounts = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      const base = () => {
+        let b = supabase.from("waitlist_entries").select("*", { count: "exact", head: true }).eq("clinic_id", clinicId);
+        if (viewMod) b = b.or(`modality.is.null,modality.eq.${viewMod}`);
+        return b;
+      };
+      const [w, ci, u, sc, rm] = await Promise.all([
+        base().eq("status", "waiting"),
+        base().eq("status", "waiting").eq("priority_level", "cito"),
+        base().eq("status", "waiting").eq("priority_level", "urgent"),
+        base().eq("status", "scheduled"),
+        base().in("status", ["cancelled", "expired"]),
+      ]);
+      setCounts({
+        waiting: w.count || 0, cito: ci.count || 0, urgent: u.count || 0,
+        scheduled: sc.count || 0, removed: rm.count || 0,
+      });
+    } catch { /* лічильники некритичні; список і банер помилки покажуть проблему */ }
+  }, [clinicId, viewMod]);
+
+  // Дебаунс пошуку (серверний ilike) + скидання пагінації при зміні фільтра/модальності/пошуку.
+  useEffect(() => { const t = setTimeout(() => setQDebounced(query), 300); return () => clearTimeout(t); }, [query]);
+  useEffect(() => { setLimit(PAGE); }, [filter, viewMod, qDebounced]);
+  useEffect(() => { loadCounts(); }, [loadCounts]);
+  // Мутації оновлюють і рядки активної вкладки, і лічильники (realtime продублює без лагу).
+  const refresh = useCallback(() => { reload(); loadCounts(); }, [reload, loadCounts]);
 
   const loadIncidents = useCallback(async () => {
     try {
@@ -185,7 +246,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
   useRealtimeRefetch({
     channelName: clinicId ? "waitlist-" + clinicId : null,
     subscriptions: [
-      { table: "waitlist_entries", filter: "clinic_id=eq." + clinicId, onChange: reload },
+      { table: "waitlist_entries", filter: "clinic_id=eq." + clinicId, onChange: () => { reload(); loadCounts(); } },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
       // 0086: rooms — SSR-проп; додавання/зміна модальності/видалення кабінету долітає
       // до відкритого листа через перечитування серверних пропів (інакше стале-фільтри
@@ -205,7 +266,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     setAddOpen(false);
     notify("Додано до листа очікування: " + w.name, "success");
-    reload();
+    refresh();
   }
 
   // Повертає ТЕКСТ помилки — BookingModal покаже його в собі (тост тонув під оверлеєм).
@@ -235,7 +296,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
     }
     notify("Записано зі списку очікування: " + b.name + " · " + b.time, "success");
     setBookFor(null);
-    reload();
+    refresh();
     return null;   // запис створено — модалку закриває батько
   }
 
@@ -254,7 +315,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     setEditFor(null);
     notify("Запис листа оновлено", "success");
-    reload();
+    refresh();
   }
 
   async function restore(p: WaitlistEntry) {
@@ -263,7 +324,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
       const res = await setWaitlistStatus(p.id, "waiting");
       if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
       notify("Повернено в очікування", "success");
-      reload();
+      refresh();
     } finally { setBusyId(null); }
   }
   // Мʼяке зняття + Undo в тості (замість блокуючого підтвердження).
@@ -273,7 +334,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
       const res = await setWaitlistStatus(p.id, "cancelled");
       if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
       notify("Знято з листа очікування", "info", { label: "Скасувати", onAction: () => restore(p) });
-      reload();
+      refresh();
     } finally { setBusyId(null); }
   }
   async function setPrio(p: WaitlistEntry, v: PatientPriority) {
@@ -282,41 +343,18 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
     setBusyId(p.id);
     try {
       const res = await setWaitlistPriority(p.id, v);
-      if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return; }
+      if (!res.ok) { notify("Помилка: " + res.error, "error"); refresh(); return; }
       notify("Пріоритет: " + PRIORITY_META[v].label, "success");
     } finally { setBusyId(null); }
   }
 
-  // Фільтр за кабінетом із сайдбара: рядок листа не привʼязаний до кабінету,
-  // тому фільтруємо за МОДАЛЬНІСТЮ обраного кабінету (МРТ/КТ).
-  const viewRoom = roomView === "all" ? null : (rooms || []).find((r) => r.id === roomView) || null;
-  const scoped = useMemo(
-    () => (viewRoom ? entries.filter((e) => !e.modality || e.modality === viewRoom.modality) : entries),
-    [entries, viewRoom]
+  // Активна вкладка вже відфільтрована (status + модальність + пошук) і відсортована
+  // серверно; waiting лише ДОсортуємо за пріоритетом (cito→urgent→planned) на
+  // завантаженій сторінці (enum не дає цього порядку серверно). Пошук — серверний.
+  const filtered = useMemo(
+    () => (filter === "waiting" ? [...entries].sort(compareWaitlist) : entries),
+    [entries, filter]
   );
-
-  const waiting = useMemo(() => scoped.filter((e) => e.status === "waiting").sort(compareWaitlist), [scoped]);
-  const counts = useMemo(() => {
-    const c = { waiting: waiting.length, cito: 0, urgent: 0, scheduled: 0, removed: 0 };
-    scoped.forEach((e) => {
-      if (e.status === "waiting") { if (e.priority_level === "cito") c.cito++; if (e.priority_level === "urgent") c.urgent++; }
-      if (e.status === "scheduled") c.scheduled++;
-      if (e.status === "cancelled" || e.status === "expired") c.removed++;
-    });
-    return c;
-  }, [scoped, waiting]);
-
-  const listForTab = filter === "waiting" ? waiting
-    : scoped.filter((e) => (filter === "scheduled" ? e.status === "scheduled" : e.status === "cancelled" || e.status === "expired"))
-        .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
-
-  const filtered = listForTab.filter((p) => {
-    if (!query.trim()) return true;
-    const q = query.trim().toLowerCase();
-    return (p.patient_name || "").toLowerCase().includes(q)
-      || (p.patient_phone || "").includes(q)
-      || procLabel(p).toLowerCase().includes(q);
-  });
 
   const tabs = [
     { key: "waiting" as const, label: "Очікують", ct: counts.waiting },
@@ -406,10 +444,10 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
             ) : entriesErr && filtered.length === 0 ? (
               <div className="empty"><div className="ei">⚠</div><div className="et">Лист не завантажився</div>
                 <div className="es">Це не означає, що він порожній — оновіть сторінку</div>
-                <button className="btn btn-secondary btn-sm" style={{ marginTop: 10 }} onClick={() => { reload(); loadIncidents(); }}>↻ Оновити</button>
+                <button className="btn btn-secondary btn-sm" style={{ marginTop: 10 }} onClick={() => { refresh(); loadIncidents(); }}>↻ Оновити</button>
               </div>
             ) : filtered.length === 0 ? (
-              <div className="empty"><div className="ei">⏳</div><div className="et">Лист порожній</div><div className="es">{listForTab.length === 0 ? "Додайте пацієнта, що чекає на вільне вікно" : "Змініть фільтр або пошук"}</div></div>
+              <div className="empty"><div className="ei">⏳</div><div className="et">Лист порожній</div><div className="es">{(!qDebounced.trim() && !viewMod) ? "Додайте пацієнта, що чекає на вільне вікно" : "Змініть фільтр або пошук"}</div></div>
             ) : (
               <div className="clrows">
                 {filtered.map((p) => {
@@ -512,6 +550,11 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
                     </div>
                   );
                 })}
+              </div>
+            )}
+            {hasMore && filter !== "waiting" && (
+              <div style={{ textAlign: "center", marginTop: 12 }}>
+                <button className="btn btn-secondary btn-sm" onClick={() => setLimit((l) => l + PAGE)}>Показати ще</button>
               </div>
             )}
           </div>

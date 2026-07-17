@@ -10,10 +10,10 @@ import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import BookingModal, { type BookingPayload, type BookingPrefill } from "@/components/BookingModal";
 import { scheduleFromWaitlist } from "@/app/queue/actions";
-import { waitlistMatchesSlot, compareWaitlist, desiredWindowText, timeToMin } from "@/lib/waitlist";
+import { desiredWindowText, timeToMin } from "@/lib/waitlist";
 import { wallDayKey, wallMinOfDay, wallNow } from "@/lib/incidents";
 import { PRIORITY_META } from "@/lib/priority";
-import type { Modality, WaitlistEntry } from "@/supabase/types";
+import type { WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
 
@@ -34,11 +34,7 @@ function studiesLabel(e: WaitlistEntry): string {
 
 /** Підібрати кандидатів з листа під звільнений слот (для рішення «показувати чи ні»).
     Слоти в минулому не пропонуємо. */
-export async function fetchWaitlistCandidates(
-  clinicId: string,
-  slot: FreedSlotInfo,
-  rooms?: RoomOpt[]
-): Promise<WaitlistEntry[]> {
+export async function fetchWaitlistCandidates(slot: FreedSlotInfo): Promise<WaitlistEntry[]> {
   try {
     if (!slot.date || !slot.time) return [];
     /* «Зараз» — настінний час КЛІНІКИ (singleton setClinicTz виставляють дошки, звідки
@@ -49,17 +45,18 @@ export async function fetchWaitlistCandidates(
     const timeMin = timeToMin(slot.time) ?? 0;
     if (slot.date < todayKey) return [];
     if (slot.date === todayKey && timeMin <= nowMin) return [];
-    const modality = (rooms || []).find((r) => r.id === slot.roomId)?.modality as Modality | undefined;
 
+    /* Матчинг (дата/час/модальність/кабінет) — у SQL (RPC waitlist_candidates_for_slot,
+       0104), а не в браузері: тягнемо лише реальних кандидатів, staff-only, у межах
+       свого центру. Модальність RPC виводить із кабінету слота; сортування —
+       cito→urgent→planned, далі за давністю (дзеркало compareWaitlist). */
     const supabase = createClient();
-    const { data } = await supabase
-      .from("waitlist_entries")
-      .select("*")
-      .eq("clinic_id", clinicId)
-      .eq("status", "waiting");
-    return (data || [])
-      .filter((e) => waitlistMatchesSlot(e, { date: slot.date, timeMin, modality: modality ?? null, roomId: slot.roomId }))
-      .sort(compareWaitlist);
+    const { data } = await supabase.rpc("waitlist_candidates_for_slot", {
+      p_room: slot.roomId,
+      p_date: slot.date,
+      p_time_min: timeMin,
+    });
+    return (data ?? []) as WaitlistEntry[];
   } catch {
     return []; // транзієнтна помилка мережі — просто не пропонуємо
   }

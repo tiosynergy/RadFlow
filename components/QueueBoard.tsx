@@ -1177,7 +1177,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
   // Після звільнення слота — запропонувати кандидатів з листа очікування.
   async function suggestWaitlistFor(p: QEntry) {
     const slot: FreedSlotInfo = { date: dayKey, time: p.scheduled_time, roomId: p.room_id };
-    const candidates = await fetchWaitlistCandidates(clinicId, slot, rooms);
+    const candidates = await fetchWaitlistCandidates(slot);
     if (candidates.length) setWlSuggest({ slot, candidates });
   }
 

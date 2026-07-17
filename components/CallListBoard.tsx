@@ -381,7 +381,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
   // Після звільнення слота — запропонувати кандидатів з листа очікування.
   async function suggestWaitlistFor(p: CallEntry) {
     const slot: FreedSlotInfo = { date: p.scheduled_date || dayKey, time: p.scheduled_time, roomId: p.room_id };
-    const candidates = await fetchWaitlistCandidates(clinicId, slot, rooms);
+    const candidates = await fetchWaitlistCandidates(slot);
     if (candidates.length) setWlSuggest({ slot, candidates });
   }
 
