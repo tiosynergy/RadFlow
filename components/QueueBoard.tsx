@@ -63,6 +63,7 @@ import "@/styles/prototype/radflow-screens.css";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown };
 type QEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null; patient_weight: number | null;
+  patient_dob: string | null; patient_sex: string | null; patient_email: string | null;   // перенос у крок кейса
   scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null; note: string | null;
   studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null; referrer: { full_name: string | null } | null;
   room_id: string | null; updated_at: string; in_progress_at: string | null; clarify_at?: string | null;
@@ -927,7 +928,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, clinic
          іншим дошкам, які на неї ж і перезавантажувались. Не повертати. */
       const { data, error } = await supabase
         .from("queue_entries")
-        .select("id, patient_name, patient_phone, patient_age, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, studies_changed_by, contraindications, cito, priority_level, doctor, referrer:referrer_id(full_name), room_id, updated_at, in_progress_at, clarify_at, reschedule_origin, off_schedule, case_id, case_step")
+        .select("id, patient_name, patient_phone, patient_age, patient_weight, patient_dob, patient_sex, patient_email, scheduled_time, duration_min, buffer_time_min, status, call_status, note, studies, studies_original, studies_changed_by, contraindications, cito, priority_level, doctor, referrer:referrer_id(full_name), room_id, updated_at, in_progress_at, clarify_at, reschedule_origin, off_schedule, case_id, case_step")
         .eq("clinic_id", clinicId)
         .eq("scheduled_date", dayKey)
         .order("scheduled_time", { ascending: true });
@@ -1812,7 +1813,13 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, clinic
         <BookingModal
           rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} services={services}
           prefill={{
-            name: caseFromEntryFor.patient_name || "", phone: caseFromEntryFor.patient_phone || "", priority: "planned",
+            name: caseFromEntryFor.patient_name || "", phone: caseFromEntryFor.patient_phone || "",
+            dob: caseFromEntryFor.patient_dob, gender: caseFromEntryFor.patient_sex,
+            weight: caseFromEntryFor.patient_weight, email: caseFromEntryFor.patient_email,
+            priority: "planned",
+            // Крок кейса — той самий візит: відкриваємо день вихідного запису (dayKey),
+            // кабінет/час НЕ підставляємо (крок — інший кабінет, слот обирає оператор).
+            date: dayKey,
           }}
           caseSiblings={caseFromEntryFor.room_id && caseFromEntryFor.scheduled_time && caseFromEntryFor.duration_min
             ? [{ roomId: caseFromEntryFor.room_id, date: selectedDate, time: String(caseFromEntryFor.scheduled_time).slice(0, 5), dur: caseFromEntryFor.duration_min }]

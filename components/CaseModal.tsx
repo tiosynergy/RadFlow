@@ -47,6 +47,7 @@ type StepRow = CaseStepLite & {
   patient_dob: string | null;
   patient_sex: string | null;
   patient_email: string | null;
+  patient_weight: number | null;
   scheduled_date: string | null;
   scheduled_time: string | null;
   duration_min: number | null;
@@ -59,7 +60,7 @@ type StepRow = CaseStepLite & {
 };
 
 const STEP_SELECT =
-  "id, patient_name, patient_phone, patient_dob, patient_sex, patient_email, status, case_step, scheduled_date, scheduled_time, duration_min, buffer_time_min, note, off_schedule, room_id, studies, room:room_id(name, modality)";
+  "id, patient_name, patient_phone, patient_dob, patient_sex, patient_email, patient_weight, status, case_step, scheduled_date, scheduled_time, duration_min, buffer_time_min, note, off_schedule, room_id, studies, room:room_id(name, modality)";
 
 /* "HH:MM" + N хв → "HH:MM" (щоб показувати кінець слота поряд із початком). */
 function addMinToHHMM(hhmm: string, min: number): string {
@@ -333,7 +334,10 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
           prefill={{
             name: pfStep?.patient_name || "", phone: pfStep?.patient_phone || "",
             dob: pfStep?.patient_dob || "", gender: pfStep?.patient_sex || "",
-            email: pfStep?.patient_email || "", priority: "planned",
+            weight: pfStep?.patient_weight ?? null, email: pfStep?.patient_email || "",
+            priority: "planned",
+            // Крок кейса — той самий візит: відкриваємо день кейса (кабінет/час не підставляємо).
+            date: pfStep?.scheduled_date || undefined,
           }}
           caseSiblings={activeSiblings}
           onAddCaseStep={onAddStep}
