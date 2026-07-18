@@ -220,8 +220,12 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, doctorNam
   /* Помилка завантаження ≠ «вільно» (аудит 2026-07-11). Раніше і зайнятість, і
      простої бралися як `data || []`: при збої RPC весь день виглядав вільним, а
      зламаний кабінет — робочим. Тепер піднімаємо slotsErr, сітку не показуємо. */
-  const loadDay = useCallback(async () => {
-    setSlotsLoading(true);
+  const loadDay = useCallback(async (silent = false) => {
+    // Гейт «Завантаження…» показуємо ЛИШЕ при первинному завантаженні / зміні
+    // кабінету-дати (silent=false). Фонові перезапити (realtime, focus/visibility)
+    // — silent: сітка не мигає в «завантаження» на кожен тик, стара лишається до
+    // приходу нових даних (як у BookingModal). Помилку/дані оновлюємо все одно.
+    if (!silent) setSlotsLoading(true);
     try {
       const supabase = createClient();
       if (centerId) {
@@ -246,13 +250,13 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, doctorNam
       // «усе вільно» не малюємо: показуємо помилку й ховаємо сітку.
       setSlotsErr(true);
     } finally {
-      setSlotsLoading(false);
+      if (!silent) setSlotsLoading(false);
     }
   }, [centerId, roomId, date]);
 
   useEffect(() => { (async () => { await loadDay(); })(); }, [loadDay]);
   useEffect(() => {
-    const onVis = () => { if (document.visibilityState === "visible") loadDay(); };
+    const onVis = () => { if (document.visibilityState === "visible") loadDay(true); };
     document.addEventListener("visibilitychange", onVis); window.addEventListener("focus", onVis);
     return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); };
   }, [loadDay]);
@@ -262,8 +266,8 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, doctorNam
   useRealtimeRefetch({
     channelName: centerId ? "ref-slots-" + centerId + "-" + (roomId || "none") + "-" + date : null,
     subscriptions: [
-      { table: "queue_entries", onChange: loadDay },
-      { table: "incidents", onChange: loadDay },
+      { table: "queue_entries", onChange: () => loadDay(true) },
+      { table: "incidents", onChange: () => loadDay(true) },
     ],
   });
 

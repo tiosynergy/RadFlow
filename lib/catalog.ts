@@ -48,11 +48,20 @@ export interface ServiceLike {
 /** Область каталогу — StudyRegion + per-service доплата за контраст. */
 export interface CatalogRegion extends StudyRegion {
   contrastPrice: number | null; // null = глобальний CONTRAST_SURCHARGE
+  serviceId?: string;           // id базової послуги (для редакторів/діагностики)
 }
 
-/** Override тривалості на конкретному апараті (service_room_durations, 0108/фаза 2b).
-    Мапа service_id → (room_id → duration_min). У фазі 2a — порожня. */
-export type RoomDurations = ReadonlyMap<string, ReadonlyMap<string, number>>;
+/** Переозначення каталогу ПО КАБІНЕТУ (service_room_overrides, 0108).
+    NULL price/duration_min/contrast_price = успадкувати базу; active=false =
+    послуга схована в цьому кабінеті. */
+export interface RoomOverride {
+  price: number | null;
+  duration_min: number | null;
+  contrast_price: number | null;
+  active: boolean;
+}
+/** Мапа room_id → (service_id → override). Немає запису → кабінет успадковує базу. */
+export type RoomOverrides = ReadonlyMap<string, ReadonlyMap<string, RoomOverride>>;
 
 /** Резолвер каталогу зі сталими сигнатурами (drop-in для lib/studies). */
 export interface Catalog {
@@ -69,10 +78,12 @@ export interface Catalog {
 }
 
 /** Побудувати резолвер для КОНКРЕТНОГО центру (services — вже його рядки).
-    roomDurations — override тривалостей per-кабінет (0108, фаза 2b; за замовчуванням порожній). */
+    roomOverrides — переозначення каталогу per-кабінет (0108): якщо для (roomId,
+    serviceId) є override, він перекриває ціну/тривалість/контраст-доплату, а
+    active=false ховає позицію в цьому кабінеті. Немає override → база центру. */
 export function buildCatalog(
   services: ServiceLike[] | null | undefined,
-  roomDurations?: RoomDurations
+  roomOverrides?: RoomOverrides
 ): Catalog {
   const rows = Array.isArray(services) ? services : [];
 
@@ -88,20 +99,17 @@ export function buildCatalog(
     arr.sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name, "uk"));
   }
 
-  const durFor = (s: ServiceLike, roomId?: string): number => {
-    if (roomId) {
-      const perRoom = roomDurations?.get(s.id)?.get(roomId);
-      if (typeof perRoom === "number") return perRoom;
-    }
-    return s.duration_min;
-  };
+  const ovOf = (s: ServiceLike, roomId?: string): RoomOverride | undefined =>
+    roomId ? roomOverrides?.get(roomId)?.get(s.id) : undefined;
 
-  const toRegion = (s: ServiceLike, roomId?: string): CatalogRegion => ({
+  // Ефективна область послуги в контексті кабінету (override ?? база).
+  const toRegion = (s: ServiceLike, ov?: RoomOverride): CatalogRegion => ({
     label: s.name,
-    dur: durFor(s, roomId),
-    price: s.price,
+    dur: ov?.duration_min ?? s.duration_min,
+    price: ov?.price ?? s.price,
     contrast: s.contrast_allowed,
-    contrastPrice: s.contrast_price,
+    contrastPrice: ov?.contrast_price ?? s.contrast_price,
+    serviceId: s.id,
   });
 
   const has: Catalog["has"] = (type) => {
@@ -114,7 +122,13 @@ export function buildCatalog(
     const arr = byMod.get(code);
     // Каталог центру не має цієї модальності → статичний фолбэк (легасі).
     if (!arr || arr.length === 0) return staticRegionsFor(type) as CatalogRegion[];
-    return arr.map((s) => toRegion(s, roomId));
+    const out: CatalogRegion[] = [];
+    for (const s of arr) {
+      const ov = ovOf(s, roomId);
+      if (ov && ov.active === false) continue; // послуга схована в цьому кабінеті
+      out.push(toRegion(s, ov));
+    }
+    return out;
   };
 
   const regionInfo: Catalog["regionInfo"] = (type, region, roomId) => {

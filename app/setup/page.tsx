@@ -99,12 +99,23 @@ export default async function SetupPage() {
     apparatus_model: (r.apparatus_model as string) ?? null,
   }));
 
+  // Каталог послуг (0107) + переозначення по кабінетах (0108) — крок «Послуги та прайс».
+  const { data: services } = await supabase
+    .from("services").select("*")
+    .eq("clinic_id", profile.clinic_id as string)
+    .order("modality").order("active", { ascending: false }).order("sort_order").order("name");
+  const { data: roomOverrides } = await supabase
+    .from("service_room_overrides").select("*")
+    .eq("clinic_id", profile.clinic_id as string);
+
   return (
     <SetupWizard
       clinicId={profile.clinic_id as string}
       userId={user.id}
       initial={initial as Parameters<typeof SetupWizard>[0]["initial"]}
       rooms={managerRooms}
+      services={services ?? []}
+      roomOverrides={roomOverrides ?? []}
       clinicName={clinic?.name ?? ""}
       adminName={profile.full_name ?? (user.email ?? "")}
       queuePolicy={queuePolicy}

@@ -93,14 +93,40 @@ describe("buildCatalog — тривалість і ціна", () => {
   });
 });
 
-describe("buildCatalog — override тривалості per-кабінет (0108/фаза 2b)", () => {
-  it("roomDurations перекриває базову тривалість лише для свого room_id", () => {
-    const s = svc({ name: "Коліно", modality: "MRI", duration_min: 30 });
-    const rd = new Map([[s.id, new Map([["room-fast", 20]])]]);
-    const cat = buildCatalog([s], rd);
-    expect(cat.studyDur("MRI", "Коліно", false, "room-fast")).toBe(20); // override
-    expect(cat.studyDur("MRI", "Коліно", false, "room-slow")).toBe(30); // немає override
-    expect(cat.studyDur("MRI", "Коліно", false)).toBe(30); // без кабінету
+describe("buildCatalog — override каталогу ПО КАБІНЕТУ (0108)", () => {
+  const s = svc({ name: "Коліно", modality: "MRI", duration_min: 30, price: 1800, contrast_allowed: true, contrast_price: null });
+  const ro = (m: Record<string, Record<string, Partial<import("@/lib/catalog").RoomOverride>>>) => {
+    const outer = new Map<string, Map<string, import("@/lib/catalog").RoomOverride>>();
+    for (const [room, byS] of Object.entries(m)) {
+      const inner = new Map<string, import("@/lib/catalog").RoomOverride>();
+      for (const [sid, ov] of Object.entries(byS)) {
+        inner.set(sid, { price: ov.price ?? null, duration_min: ov.duration_min ?? null, contrast_price: ov.contrast_price ?? null, active: ov.active ?? true });
+      }
+      outer.set(room, inner);
+    }
+    return outer;
+  };
+
+  it("тривалість/ціна перекриваються лише для свого room_id", () => {
+    const cat = buildCatalog([s], ro({ "room-fast": { [s.id]: { duration_min: 20, price: 1500 } } }));
+    expect(cat.studyDur("MRI", "Коліно", false, "room-fast")).toBe(20);
+    expect(cat.studyPrice("MRI", "Коліно", false, "room-fast")).toBe(1500);
+    expect(cat.studyDur("MRI", "Коліно", false, "room-slow")).toBe(30);   // немає override → база
+    expect(cat.studyPrice("MRI", "Коліно", false, "room-slow")).toBe(1800);
+    expect(cat.studyDur("MRI", "Коліно", false)).toBe(30);                // без кабінету → база
+  });
+
+  it("active=false ховає позицію ЛИШЕ в цьому кабінеті", () => {
+    const cat = buildCatalog([s], ro({ "room-x": { [s.id]: { active: false } } }));
+    expect(cat.regionsFor("MRI", "room-x").map((r) => r.label)).toEqual([]); // схована тут
+    expect(cat.regionsFor("MRI", "room-y").map((r) => r.label)).toEqual(["Коліно"]); // видима в іншому
+    expect(cat.regionsFor("MRI").map((r) => r.label)).toEqual(["Коліно"]);  // база не зачеплена
+  });
+
+  it("contrast_price override per-кабінет", () => {
+    const cat = buildCatalog([s], ro({ "room-c": { [s.id]: { contrast_price: 300 } } }));
+    expect(cat.studyPrice("MRI", "Коліно", true, "room-c")).toBe(1800 + 300);
+    expect(cat.studyPrice("MRI", "Коліно", true)).toBe(1800 + CONTRAST_SURCHARGE); // база: null → глобальний
   });
 });
 

@@ -7,8 +7,9 @@
 import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import type { Json, TablesInsert } from "@/supabase/types";
+import type { Json, TablesInsert, Tables } from "@/supabase/types";
 import CitySelect from "@/components/CitySelect";
+import ServicesEditor from "@/components/ServicesEditor";
 import StaffManager from "@/components/StaffManager";
 import ReferrersManager from "@/components/ReferrersManager";
 import CeoManager from "@/components/CeoManager";
@@ -207,7 +208,7 @@ const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string }[]
 const FORM_SECTIONS = ["sec-clinic", "sec-admin", "sec-equip", "sec-price"];
 
 /* ---------- Крок 1: Профіль клініки ---------- */
-function StepRegister({ report, onData, initial, active }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial; active: string }) {
+function StepRegister({ report, onData, initial, active, clinicId, services, rooms, roomOverrides }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial; active: string; clinicId: string; services: ServiceRow[]; rooms: SetupRoom[]; roomOverrides: SroRow[] }) {
   const [clinic, setClinic] = useState(initial.clinic || "");
   const [city, setCity] = useState(initial.city || "");
   const [address, setAddress] = useState(initial.address || "");
@@ -466,18 +467,17 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
 
       {active === "sec-price" && (<>
       <h1 className="wiz-h">Послуги та прайс</h1>
-      <div className="form-card" style={{ marginTop: 16 }}>
-        <div className="info-banner">
-          <span className="ib-ic" style={{ color: "var(--blue)" }}>₴</span>
-          <span className="ib-txt">
-            <b>Каталог послуг центру</b> — перелік досліджень, тривалості та ціни для кожної
-            модальності (0107). Разове наповнення з базового довідника, ручне редагування;
-            імпорт прайсів файлом/посиланням (n8n + AI) — наступний етап Stage 2.
-          </span>
-        </div>
-        <div style={{ marginTop: 14 }}>
-          <a className="btn btn-primary" href="/services">₴ Відкрити «Послуги та ціни»</a>
-        </div>
+      <div className="info-banner" style={{ marginTop: 12 }}>
+        <span className="ib-ic" style={{ color: "var(--blue)" }}>₴</span>
+        <span className="ib-txt">
+          <b>Базовий каталог центру</b> — перелік досліджень, тривалості та ціни на модальність.
+          Для <b>кожного кабінета</b> ціну/тривалість/склад можна переозначити окремо — оберіть
+          кабінет у списку «Налаштувати». Порожні поля кабінета успадковують базовий каталог.
+          {rooms.length === 0 && <> <b style={{ color: "var(--orange)" }}>Спершу додайте й збережіть кабінети</b> (крок «Обладнання та кабінети») — тоді зʼявиться налаштування по кабінетах.</>}
+        </span>
+      </div>
+      <div style={{ marginTop: 14 }}>
+        <ServicesEditor clinicId={clinicId} services={services} rooms={rooms} roomOverrides={roomOverrides} embedded />
       </div>
       </>)}
 
@@ -515,8 +515,10 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
 
 /* ---------- Майстер (контейнер) ---------- */
 type SetupRoom = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type ServiceRow = Tables<"services">;
+type SroRow = Tables<"service_room_overrides">;
 
-export default function SetupWizard({ clinicId, userId, initial, rooms = [], clinicName, adminName, queuePolicy }: { clinicId: string; userId: string; initial: WizardInitial; rooms?: SetupRoom[]; clinicName?: string; adminName?: string; queuePolicy: QueuePolicyInitial }) {
+export default function SetupWizard({ clinicId, userId, initial, rooms = [], services = [], roomOverrides = [], clinicName, adminName, queuePolicy }: { clinicId: string; userId: string; initial: WizardInitial; rooms?: SetupRoom[]; services?: ServiceRow[]; roomOverrides?: SroRow[]; clinicName?: string; adminName?: string; queuePolicy: QueuePolicyInitial }) {
   const router = useRouter();
   const [activeSection, setActiveSection] = useState("sec-clinic");
   const [saving, setSaving] = useState(false);
@@ -705,7 +707,8 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
             <>
               {/* Кожне вікно налаштувань — окремо; перемикається кружками зліва */}
               <div style={{ display: FORM_SECTIONS.includes(activeSection) ? "block" : "none" }}>
-                <StepRegister report={report} onData={onData} initial={initial} active={activeSection} />
+                <StepRegister report={report} onData={onData} initial={initial} active={activeSection}
+                  clinicId={clinicId} services={services} rooms={rooms} roomOverrides={roomOverrides} />
               </div>
 
               {/* 0078 — політика черги при затримці дослідження (лише адмін). */}

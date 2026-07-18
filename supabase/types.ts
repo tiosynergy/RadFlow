@@ -295,6 +295,43 @@ export type Database = {
           }
         ];
       };
+      service_room_overrides: {
+        // 0108: переозначення каталогу по кабінету (base services + override).
+        Row: {
+          clinic_id: string;
+          room_id: string;
+          service_id: string;
+          price: number | null;          // null = базова services.price
+          duration_min: number | null;   // null = базова services.duration_min
+          contrast_price: number | null; // null = базова services.contrast_price
+          active: boolean;               // false = послуга схована в цьому кабінеті
+          updated_at: string;
+          created_at: string;
+        };
+        Insert: {
+          clinic_id: string;
+          room_id: string;
+          service_id: string;
+          price?: number | null;
+          duration_min?: number | null;
+          contrast_price?: number | null;
+          active?: boolean;
+          updated_at?: string;
+          created_at?: string;
+        };
+        Update: {
+          clinic_id?: string;
+          room_id?: string;
+          service_id?: string;
+          price?: number | null;
+          duration_min?: number | null;
+          contrast_price?: number | null;
+          active?: boolean;
+          updated_at?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
       queue_entries: {
         Row: {
           id: string;

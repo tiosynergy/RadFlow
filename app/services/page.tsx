@@ -37,10 +37,18 @@ export default async function ServicesPage() {
     .eq("clinic_id", profile.clinic_id as string)
     .order("modality").order("active", { ascending: false }).order("sort_order").order("name");
 
+  // Переозначення каталогу по кабінетах (0108) — для режиму «Кабінет» редактора.
+  const { data: roomOverrides } = await supabase
+    .from("service_room_overrides")
+    .select("*")
+    .eq("clinic_id", profile.clinic_id as string);
+
   return (
     <ServicesManager
+      clinicId={profile.clinic_id as string}
       clinicTz={clinic?.timezone || "UTC"}
       initialServices={services ?? []}
+      roomOverrides={roomOverrides ?? []}
       rooms={rooms ?? []}
       clinicName={clinic?.name ?? ""}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}

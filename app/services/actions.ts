@@ -190,3 +190,68 @@ export async function seedServicesFromCatalog(): Promise<ServiceActionResult> {
   }
   return { ok: true, count: rows.length };
 }
+
+/* ============================================================
+   Переозначення каталогу ПО КАБІНЕТУ (service_room_overrides, 0108).
+   base services (0107) = шаблон центру; тут — цінa/тривалість/контраст/вкл-вимк
+   на пару (room_id, service_id). Немає рядка → кабінет успадковує базу.
+   ============================================================ */
+
+const sRoomOverride = z.object({
+  // NULL = успадкувати базу; число — свій параметр.
+  price: z.union([zPrice, z.null()]).optional().default(null),
+  durationMin: z.union([zDuration, z.null()]).optional().default(null),
+  contrastPrice: z.union([zPrice, z.null()]).optional().default(null),
+  active: z.boolean().optional().default(true),
+});
+export type RoomOverrideInput = z.infer<typeof sRoomOverride>;
+
+function mapSroError(message: string): ServiceActionResult {
+  if (/SRO_MODALITY_MISMATCH/i.test(message)) return { ok: false, error: "Послуга іншої модальності, ніж кабінет", code: "generic" };
+  if (/SRO_CLINIC_MISMATCH|SRO_BAD_REF/i.test(message)) return { ok: false, error: "Кабінет або послуга не з цього центру", code: "forbidden" };
+  if (/sro_duration_chk/i.test(message)) return { ok: false, error: "Тривалість — кратна 5 хв, від 5 до 480", code: "generic" };
+  if (/sro_price_chk|sro_contrast_price_chk/i.test(message)) return { ok: false, error: "Некоректна ціна", code: "generic" };
+  return { ok: false, error: safeDbError("service_room_overrides", { message }), code: "generic" };
+}
+
+/** Задати/оновити переозначення послуги для кабінету (upsert по PK room_id,service_id).
+    NULL price/durationMin/contrastPrice = успадкувати базу; active=false = сховати тут. */
+export async function setRoomServiceOverride(
+  roomId: string, serviceId: string, raw: RoomOverrideInput
+): Promise<ServiceActionResult> {
+  const rv = parseInput("setRoomServiceOverride.room", zUuid, roomId);
+  if (!rv.ok) return rv as ServiceActionResult;
+  const sv = parseInput("setRoomServiceOverride.service", zUuid, serviceId);
+  if (!sv.ok) return sv as ServiceActionResult;
+  const v = parseInput("setRoomServiceOverride", sRoomOverride, raw);
+  if (!v.ok) return v as ServiceActionResult;
+  const supabase = await createClient();
+  const gate = await requireAdmin(supabase);
+  if ("error" in gate) return gate.error;
+
+  // PK (room_id, service_id) — звичайний конфлікт, PostgREST-upsert годиться
+  // (на відміну від services: там expression-індекс lower(name)).
+  // clinic_id ставимо свій; guard-тригер 0108 звірить room+service+модальність.
+  const { error } = await supabase.from("service_room_overrides").upsert({
+    clinic_id: gate.clinicId, room_id: rv.data, service_id: sv.data,
+    price: v.data.price, duration_min: v.data.durationMin,
+    contrast_price: v.data.contrastPrice, active: v.data.active,
+  }, { onConflict: "room_id,service_id" });
+  if (error) return mapSroError(error.message);
+  return { ok: true };
+}
+
+/** Прибрати переозначення — кабінет повертається до базового каталогу центру. */
+export async function clearRoomServiceOverride(roomId: string, serviceId: string): Promise<ServiceActionResult> {
+  const rv = parseInput("clearRoomServiceOverride.room", zUuid, roomId);
+  if (!rv.ok) return rv as ServiceActionResult;
+  const sv = parseInput("clearRoomServiceOverride.service", zUuid, serviceId);
+  if (!sv.ok) return sv as ServiceActionResult;
+  const supabase = await createClient();
+  const gate = await requireAdmin(supabase);
+  if ("error" in gate) return gate.error;
+  const { error } = await supabase.from("service_room_overrides")
+    .delete().eq("room_id", rv.data).eq("service_id", sv.data).eq("clinic_id", gate.clinicId);
+  if (error) return mapSroError(error.message);
+  return { ok: true };
+}
