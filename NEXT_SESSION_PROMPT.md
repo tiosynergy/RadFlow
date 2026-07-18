@@ -17,7 +17,57 @@ TypeScript + Tailwind + zod, Vercel. Репозиторий: `D:\RadFlowDev`, в
 
 ---
 
-## Состояние на конец сессии 2026-07-18 (батч 0103–0105 + масштабирование листа)
+## Состояние на конец сессии 2026-07-18-ВЕЧЕР (0106 — цельность кейсов)
+
+**Прод-БД: 0061–0107 НАКАТАНЫ владельцем (0107 проверена: колонки/индексы/политики/
+триггер на месте, каталог засиден, `/services` работает вживую). Следующая новая =
+0108 (`service_room_durations`, фаза 2b).** Тулчейн: `tsc` чист, `lint` 0,
+`vitest` **180/180**. Оба ревью субагентом: SHIP.
+
+**Начат Stage 2 (автоматизация услуг/цен/времени, решение владельца: per-clinic
+каталог; редактор + сид + импорт файлов/URL через n8n+AI):**
+- Фаза 0: `0107` — services + price/contrast_price/active/sort_order/source/updated_at,
+  CHECK 5..480 кратно 5, уникальность (clinic_id, modality, lower(name)), RLS-чтение
+  направителю/CEO. Верифицирована вживую в откатанной транзакции (7/7 PASS).
+- Фаза 1: экран `/services` (admin): вкладки модальностей, инлайн-правка, вкл/выкл,
+  сид «Заповнити з базового каталогу». Server Actions `app/services/actions.ts`.
+  **Вход — Майстер налаштувань → «Послуги та прайс» → кнопка на `/services`**
+  (решение владельца: НЕ в сайдбаре «Швидкі дії»).
+- Фазы 2–3 (следующие): подключение каталога во ВСЕ формы записи одной сессией
+  (`lib/catalog.ts` + фолбэк `regionsFor`) и импорт прайсов n8n+AI —
+  **план и ловушки: `docs/plan/SERVICES_CATALOG.md`** (обязательно прочитать).
+
+**Проверки 0106 завершены полностью:** SQL-функциональный прогон кейс-флоу 11/11
+PASS (вес, рекомпут, «↩ В чергу», cancel, BAD_INPUT); UI вживую: лист CITO-первый ✅,
+offsched в кейс-режиме задизейблен ✅.
+
+Закрыто в этой сессии (все находки RE_AUDIT_2026-07-18):
+
+1. **High×3 (0106):** сериализация case-RPC (единый порядок локов: `patient_cases`
+   FOR UPDATE → строки `queue_entries` → advisory; `case_from_entry` = peek → лок
+   кейса → лок записи → перечитка, конкурент получает `CASE_STALE` 55000);
+   уникальный индекс `queue_case_step_unique`; revoke UPDATE `case_id`/`case_step`
+   (+ из ревью: гард `CASE_NOT_OPEN` — привязка шага только к открытому кейсу;
+   `revoke update on patient_cases` целиком — `status` пишет только БД).
+2. **Medium (0106):** DB-рекомпут `patient_cases.status` (`case_recompute_status` +
+   AFTER-тригер `trg_z_case_status_recompute` + backfill); `patient_cases.patient_weight`
+   (INTEGER) — поздний шаг больше не теряет вес.
+3. **Попутно:** case-RPC писали `scheduled_time` как `'HH:MM:SS'` (через `::time` в
+   TEXT-колонку) — regex `check_room_schedule` (0084) их МОЛЧА пропускал. Новые
+   вставки → `to_char(...,'HH24:MI')`; в `BookingModal` offsched-слоты для шагов
+   кейса невыбираемы/гарждены (кейс — только в графике, RPC пишут `off_schedule=false`).
+4. **Medium (лист):** `WAITING_CAP=300` удалён — waiting сортируется СЕРВЕРНО
+   `.order("priority_level").order("created_at")` + пагинация 50 («Показати ще»).
+   Порядок enum `patient_priority` = ('cito','urgent','planned') — сверено с БД;
+   паритет-гард `tests/waitlist.test.ts`. **Low:** `countsErr`-индикатор в `loadCounts`.
+5. **Тесты:** smoke `case_integrity_smoke.sql`; методичка двухсессионных гонок —
+   `docs/audit/CASE_CONCURRENCY_TESTS.md` (нужен psql/ветка, не SQL Editor).
+
+**Детали и «почему так» — `docs/HANDOVER.md` (шапка, блок 0106).**
+
+---
+
+### (Историческое) 2026-07-18 (батч 0103–0105 + масштабирование листа)
 
 **Прод-БД: 0061–0105 применены владельцем (ledger `supabase_migrations` пуст — накатка
 ручная через SQL Editor). Следующая новая = 0106.** Репо и прод на `0105`, ветка `dev`,
@@ -145,49 +195,30 @@ TypeScript + Tailwind + zod, Vercel. Репозиторий: `D:\RadFlowDev`, в
 
 ---
 
-## ЧТО ДЕЛАТЬ ДАЛЬШЕ (по приоритету) — из ре-аудита 2026-07-18
+## ЧТО ДЕЛАТЬ ДАЛЬШЕ (по приоритету)
 
-Полный список и доказательства — `docs/audit/RE_AUDIT_2026-07-18.md`. Critical нет; перед
-масштабным использованием кросс-модальных КЕЙСОВ закрыть три High по конкурентности кейса.
-Уже закрыто и НЕ трогать: admin-reset пароля направителю (`/api/staff/password` авторизует
-через `referral_access`), `ceo_list_for_clinic()` (0044) — оба сделаны, сверено по коду.
+**Все находки RE_AUDIT_2026-07-18 (3×High, 3×Medium, 2×Low) закрыты в сессии
+2026-07-18-вечер** — код в `dev`, миграция 0106 готова. Осталось:
 
-**High — сериализовать мутации одного кейса (гонки состава):**
-1. **`FOR UPDATE` в едином порядке** во всех case-RPC: `add_case_step_rpc` (0097) и
-   `cancel_case_rpc` (0092) — блокировать строку `patient_cases` ПЕРЕД чтением/вычислением
-   `case_step`; `case_from_entry_rpc` (0098) — блокировать исходную `queue_entries`
-   (`for update`) и ПОСЛЕ блокировки перечитать `case_id`. Иначе: два шага с одним
-   номером/кабинетом; кейс-сирота; активный шаг в отменённом кейсе.
-2. **Уникальный индекс** `queue_case_step_unique (case_id, case_step) where case_id is not null`
-   (сначала найти/починить исторические дубли).
-3. **Отозвать прямой `UPDATE (case_id, case_step)` у `authenticated`** (0091 его выдал; триггер
-   проверяет лишь клинику). Мутации — только через SECURITY DEFINER RPC:
-   `revoke update (case_id, case_step) on public.queue_entries from authenticated, anon;`
-
-**Medium:**
-4. **DB-пересчёт `patient_cases.status`** при смене `status`/`case_id` шагов (сейчас статус
-   считает только `cancel_case_rpc`; завершение всех шагов через `queue_set_status_rpc`
-   оставляет кейс `open` в БД — UI маскирует через `lib/case.ts`).
-5. **Хранить `patient_weight` в `patient_cases`** и использовать во всех case-RPC (поздний
-   `add_case_step_rpc` сейчас создаёт шаг с `patient_weight = null`).
-6. **`WAITING_CAP=300` → серверная приоритетная выборка** доски листа: сейчас `waiting` грузится
-   300 по `created_at`, затем сортируется по приоритету в браузере → cito за 300-й строкой не
-   будет первым. Нужен `order by case priority_level when 'cito' then 0 when 'urgent' then 1
-   else 2 end, created_at` на сервере + курсорная пагинация (`components/WaitlistBoard.tsx`).
-7. **SQL-интеграционные / двухсессионные тесты конкурентности** (smoke проверяет одиночные
-   вызовы): 2×`add_case_step_rpc`; 2×`case_from_entry_rpc`; `cancel` ↔ add-step; прямой
-   `UPDATE case_id` → 42501; завершение всех шагов → смена статуса кейса; cito после 300-й
-   виден первым. Истинная гонка требует изолированной БД (Supabase-ветка) — одиночный DO-блок
-   её не воспроизводит.
-
-**Low:**
-8. **`countsErr` для листа**: `loadCounts` игнорирует `error` и оставляет старые числа —
-   добавить ненавязчивое «счётчики не обновлені» (`components/WaitlistBoard.tsx`).
+1. ✅ ~~Накатить 0106~~ и ✅ ~~проверки кейс-флоу/листа~~ — **сделано 2026-07-18**.
+2. ✅ ~~Накатить 0107 + сид~~ — **сделано 2026-07-18** (прод = 0107, каталог
+   Medicom засиден 45 позициями, `/services` проверен вживую). Осталось
+   владельцу: проставить реальные цены УЗД/РГ/ММГ (в сиде они 0).
+3. **Stage 2 фаза 2:** подключить каталог во все формы записи ОДНОЙ сессией
+   (`lib/catalog.ts` + фолбэк; точки — `docs/plan/SERVICES_CATALOG.md`), доход CEO
+   по каталогу.
+4. **Stage 2 фаза 3:** импорт прайсов (xlsx детерминированно; pdf/doc/URL — n8n+AI;
+   upsert через SECURITY DEFINER RPC — PostgREST не умеет expression-индекс).
+5. **(Опционально) Двухсессионные тесты гонок** по
+   `docs/audit/CASE_CONCURRENCY_TESTS.md` (psql session-pooler / Supabase-ветка).
 
 **Carryover (владелец / инфра):** Ротация `SUPABASE_SERVICE_ROLE_KEY` (P0). Цены новых
 модальностей (`lib/studies.ts` = 0). `Cron` доставки outbox — ждёт n8n. Апгрейд зависимостей
 (`npm audit fix --force` НЕЛЬЗЯ). Восстановление пароля направителя по email — ждёт домен + SMTP.
 Мердж `dev → main` = автодеплой (проверить `git status`/`origin` перед мерджем).
+Историческая заметка: старые шаги кейсов хранят `scheduled_time` как `'HH:MM:SS'`
+(новые — `'HH:MM'`); читатели толерантны к обоим форматам, но UPDATE слота прошлого
+шага их не нормализует (намеренно — 0063 отверг бы прошлое).
 
 ---
 
@@ -224,8 +255,9 @@ TypeScript + Tailwind + zod, Vercel. Репозиторий: `D:\RadFlowDev`, в
   `@rollup/rollup-linux-x64-gnu` для vitest).
 - **RPC подбора/счётчиков листа (0104/0105):** матчинг кандидатов и лічильники — в SQL
   (`waitlist_candidates_for_slot`, `waitlist_counts`), не в браузере. Любой новый счётчик/подбор —
-  тем же путём. ⚠️ `WAITING_CAP=300` в `WaitlistBoard`: `waiting` сортируется по приоритету на
-  клиенте — cito за 300-й строкой не первый (открытая Medium-находка).
+  тем же путём. `waiting` в `WaitlistBoard` сортируется СЕРВЕРНО
+  `.order("priority_level")` (порядок объявления enum = cito,urgent,planned — сверено
+  с БД) + пагинация; `WAITING_CAP` удалён (закрыто 2026-07-18-вечер).
 - Браузерные проверки — Claude-in-Chrome против `npm run dev`. Пароли вводит владелец.
   Dev и prod смотрят в **один** проект Supabase — убирай за собой.
 - **RLS/гранты/RPC надёжнее всего верифицировать через Supabase MCP** (`execute_sql`)
@@ -238,8 +270,7 @@ TypeScript + Tailwind + zod, Vercel. Репозиторий: `D:\RadFlowDev`, в
 
 ## Первое сообщение
 
-Прочитай `docs/HANDOVER.md` (шапку — блок 0103–0105 — и §6) и `docs/audit/RE_AUDIT_2026-07-18.md`,
-проверь по коду максимальный номер миграции и `git status` (репо и прод на `0105`; следующая
-новая = `0106`), и скажи, с чего предлагаешь начать — приоритет: три High по конкурентности
-кейса (сериализация `add_case_step_rpc`/`cancel_case_rpc`/`case_from_entry_rpc` + уникальный
-индекс `(case_id, case_step)` + revoke прямого UPDATE `case_id/case_step`).
+Прочитай `docs/HANDOVER.md` (шапку — блок 0106 — и §6), проверь по коду максимальный
+номер миграции и `git status` (репо и прод на `0106`; следующая новая = `0107`),
+и предложи план: живая проверка кейс-флоу и листа (Chrome, чек-лист в п.2 выше) →
+двухсессионные тесты гонок (`docs/audit/CASE_CONCURRENCY_TESTS.md`) → carryover-задачи.

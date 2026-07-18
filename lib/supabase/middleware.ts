@@ -15,6 +15,7 @@ const PROTECTED = [
   "/referral",
   "/staff",
   "/referrers",
+  "/services",
 ];
 
 // Auth pages: a logged-in user is redirected to the dashboard.

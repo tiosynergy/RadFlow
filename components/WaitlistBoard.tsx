@@ -30,9 +30,11 @@ import "@/styles/prototype/radflow-screens.css";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type IncidentRow = { id: string; room_id: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string };
 
-// Масштабування доски листа (0104+): пагінація історичних вкладок і стеля waiting.
-const PAGE = 50;         // розмір сторінки історичних вкладок («показати ще»)
-const WAITING_CAP = 300; // waiting вантажимо повністю зі стелею (обмежений за природою)
+// Масштабування доски листа (0104+): усі вкладки — серверні сторінки «показати ще».
+// waiting сортується СЕРВЕРНО за пріоритетом (enum patient_priority оголошений
+// 'cito','urgent','planned' → order by дає саме цей порядок) — cito видно першим
+// навіть якщо він за межами першої сторінки (RE_AUDIT 2026-07-18, Medium).
+const PAGE = 50;         // розмір сторінки («показати ще»)
 
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
@@ -128,6 +130,8 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
      Активна вкладка вантажиться серверно (status + модальність + пошук), лічильники —
      окремими COUNT-запитами, історичні вкладки — сторінками («показати ще»). */
   const [counts, setCounts] = useState({ waiting: 0, cito: 0, urgent: 0, scheduled: 0, removed: 0 });
+  // Лічильники не оновились (RPC-збій) — числа на екрані можуть бути застарілими.
+  const [countsErr, setCountsErr] = useState(false);
   const [qDebounced, setQDebounced] = useState("");
   const [limit, setLimit] = useState(PAGE);
   const [hasMore, setHasMore] = useState(false);
@@ -182,36 +186,42 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
       // ДЛЯ ПОШУКУ (інпут лишається raw — Backspace/редагування ПІБ не ламаються).
       const s = formatPhoneSearch(qDebounced.trim()).replace(/[%,()\\]/g, " ").trim();
       if (s) q = q.or(`patient_name.ilike.%${s}%,patient_phone.ilike.%${s}%`);
-      // waiting — повністю (зі стелею), клієнт досортує за пріоритетом (enum не дає
-      // cito→urgent→planned серверно); історичні вкладки — сторінками за updated_at.
+      // waiting — СЕРВЕРНИЙ порядок cito→urgent→planned (порядок оголошення enum
+      // patient_priority, звірено з БД) → давність; історичні вкладки — за updated_at.
+      // Обидва — сторінками limit («Показати ще»): раніше waiting обрізався стелею
+      // 300 за created_at, і cito за нею взагалі не потрапляв на дошку.
       q = filter === "waiting"
-        ? q.order("created_at", { ascending: true }).limit(WAITING_CAP)
+        ? q.order("priority_level", { ascending: true }).order("created_at", { ascending: true }).limit(limit)
         : q.order("updated_at", { ascending: false }).limit(limit);
       const { data, error } = await q;
       // H-6: без перевірки error збій виглядав як «Лист порожній» — і кандидатів,
       // що чекають слота, ніхто не бачив.
       if (error) { setEntriesErr(true); return; }
       setEntries(data || []);
-      setHasMore(filter !== "waiting" && (data?.length || 0) >= limit);
+      setHasMore((data?.length || 0) >= limit);
       setEntriesErr(false);
     } catch { setEntriesErr(true); }
     finally { setLoading(false); }
   }, [clinicId, filter, viewMod, qDebounced, limit]);
 
-  // Лічильники StatsBar/вкладок — окремі COUNT (head:true), без вантаження рядків;
-  // рахуються по всіх статусах незалежно від активної вкладки (з модальність-фільтром).
+  // Лічильники StatsBar/вкладок — один RPC waitlist_counts (0105) по всіх статусах
+  // незалежно від активної вкладки (з модальність-фільтком).
   const loadCounts = useCallback(async () => {
     try {
       const supabase = createClient();
       // Один RPC (0105) замість п'яти паралельних COUNT: без сплеску запитів/503
       // (StrictMode-дублі в dev їх 503-или) і без тихого застарівання лічильників.
-      const { data } = await supabase.rpc("waitlist_counts", { p_modality: viewMod });
+      const { data, error } = await supabase.rpc("waitlist_counts", { p_modality: viewMod });
+      // RE_AUDIT Low: раніше error ковтався мовчки, і на екрані застигали СТАРІ
+      // числа без жодної ознаки — тепер ненав'язливий індикатор «не оновились».
+      if (error) { setCountsErr(true); return; }
       const c = data?.[0];
       if (c) setCounts({
         waiting: c.waiting || 0, cito: c.cito || 0, urgent: c.urgent || 0,
         scheduled: c.scheduled || 0, removed: c.removed || 0,
       });
-    } catch { /* лічильники некритичні; список і банер помилки покажуть проблему */ }
+      setCountsErr(false);
+    } catch { setCountsErr(true); }
   }, [viewMod]);
 
   // Дебаунс пошуку (серверний ilike) + скидання пагінації при зміні фільтра/модальності/пошуку.
@@ -343,9 +353,10 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
     } finally { setBusyId(null); }
   }
 
-  // Активна вкладка вже відфільтрована (status + модальність + пошук) і відсортована
-  // серверно; waiting лише ДОсортуємо за пріоритетом (cito→urgent→planned) на
-  // завантаженій сторінці (enum не дає цього порядку серверно). Пошук — серверний.
+  // Активна вкладка вже відфільтрована (status + модальність + пошук) І відсортована
+  // серверно (waiting: пріоритет enum → давність). Клієнтський compareWaitlist —
+  // лише стабілізація тієї ж формули на завантаженій сторінці (realtime-патчі
+  // могли б підмішати рядок до наступного reload); порядок ідентичний серверному.
   const filtered = useMemo(
     () => (filter === "waiting" ? [...entries].sort(compareWaitlist) : entries),
     [entries, filter]
@@ -402,10 +413,17 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
               {stats.map((s) => (
                 <div className="stat" key={s.lab}>
                   <div className="lab">{s.lab}</div>
-                  <div className="val tabular" style={{ color: s.color }}>{s.val}</div>
+                  <div className="val tabular" style={{ color: s.color, opacity: countsErr ? 0.55 : 1 }}>{s.val}</div>
                 </div>
               ))}
             </div>
+            {countsErr && (
+              <div role="status" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--text-muted)", margin: "2px 0 6px" }}>
+                <span aria-hidden="true">⚠</span>
+                <span>Лічильники не оновились — цифри можуть бути застарілими.</span>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={loadCounts}>↻ Оновити</button>
+              </div>
+            )}
 
             {viewRoom && (
               <div className="info-banner" style={{ padding: "8px 14px" }}>
@@ -547,7 +565,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
                 })}
               </div>
             )}
-            {hasMore && filter !== "waiting" && (
+            {hasMore && (
               <div style={{ textAlign: "center", marginTop: 12 }}>
                 <button className="btn btn-secondary btn-sm" onClick={() => setLimit((l) => l + PAGE)}>Показати ще</button>
               </div>

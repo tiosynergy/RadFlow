@@ -248,6 +248,12 @@ export type Database = {
           modality: Database["public"]["Enums"]["modality"];
           duration_min: number;
           contrast_allowed: boolean;
+          price: number;                   // 0107: базова ціна, грн
+          contrast_price: number | null;   // 0107: доплата за контраст; null = дефолт CONTRAST_SURCHARGE
+          active: boolean;                 // 0107: м'яке вимкнення позиції
+          sort_order: number;              // 0107
+          source: string;                  // 0107: 'manual' | 'seed' | 'import'
+          updated_at: string;              // 0107
           created_at: string;
         };
         Insert: {
@@ -257,6 +263,12 @@ export type Database = {
           modality: Database["public"]["Enums"]["modality"];
           duration_min?: number;
           contrast_allowed?: boolean;
+          price?: number;
+          contrast_price?: number | null;
+          active?: boolean;
+          sort_order?: number;
+          source?: string;
+          updated_at?: string;
           created_at?: string;
         };
         Update: {
@@ -266,6 +278,12 @@ export type Database = {
           modality?: Database["public"]["Enums"]["modality"];
           duration_min?: number;
           contrast_allowed?: boolean;
+          price?: number;
+          contrast_price?: number | null;
+          active?: boolean;
+          sort_order?: number;
+          source?: string;
+          updated_at?: string;
           created_at?: string;
         };
         Relationships: [
@@ -451,6 +469,7 @@ export type Database = {
           patient_dob: string | null;
           patient_sex: string | null;
           patient_email: string | null;
+          patient_weight: number | null;   // 0106: вага у знімку кейса (M5)
           created_at: string;
           updated_at: string;
         };
@@ -467,6 +486,7 @@ export type Database = {
           patient_dob?: string | null;
           patient_sex?: string | null;
           patient_email?: string | null;
+          patient_weight?: number | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -483,6 +503,7 @@ export type Database = {
           patient_dob?: string | null;
           patient_sex?: string | null;
           patient_email?: string | null;
+          patient_weight?: number | null;
           created_at?: string;
           updated_at?: string;
         };

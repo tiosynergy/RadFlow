@@ -197,7 +197,7 @@ const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string }[]
   { label: "Профіль клініки", desc: "Назва та контакти центру", anchor: "sec-clinic" },
   { label: "Адміністратор", desc: "Обліковий запис адміна", anchor: "sec-admin" },
   { label: "Обладнання та кабінети", desc: "Апарати та розклад", anchor: "sec-equip" },
-  { label: "Послуги та прайс", desc: "Незабаром", anchor: "sec-price" },
+  { label: "Послуги та прайс", desc: "Каталог послуг і цін центру", anchor: "sec-price" },
   { label: "Управління чергою", desc: "Політика при затримці", anchor: "sec-queue" },
   { label: "Персонал і доступи", desc: "Радіологи та реєстратори", anchor: "sec-staff" },
   { label: "Лікарі-направники", desc: "Направники центру", anchor: "sec-referrers" },
@@ -468,8 +468,15 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
       <h1 className="wiz-h">Послуги та прайс</h1>
       <div className="form-card" style={{ marginTop: 16 }}>
         <div className="info-banner">
-          <span className="ib-ic" style={{ color: "var(--blue)" }}>🛠</span>
-          <span className="ib-txt"><b>Незабаром.</b> Тут зʼявиться керування переліком послуг і цінами центру — з привʼязкою до модальності та кабінетів.</span>
+          <span className="ib-ic" style={{ color: "var(--blue)" }}>₴</span>
+          <span className="ib-txt">
+            <b>Каталог послуг центру</b> — перелік досліджень, тривалості та ціни для кожної
+            модальності (0107). Разове наповнення з базового довідника, ручне редагування;
+            імпорт прайсів файлом/посиланням (n8n + AI) — наступний етап Stage 2.
+          </span>
+        </div>
+        <div style={{ marginTop: 14 }}>
+          <a className="btn btn-primary" href="/services">₴ Відкрити «Послуги та ціни»</a>
         </div>
       </div>
       </>)}

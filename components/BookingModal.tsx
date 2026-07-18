@@ -586,7 +586,11 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   // 0077: «поза графіком» — теж легальний вибір, тому НЕ timeBad. Але зберегти
   // його можна лише з галочкою підтвердження (offOk) — див. valid нижче.
-  const SELECTABLE = ["free", "offsched"];
+  // 0106: КРОКИ КЕЙСА — лише в межах графіка (case-RPC пишуть off_schedule=false,
+  // а тригер графіка 0084 тепер бачить канонічний 'HH:MM' і реально їх перевіряє;
+  // раніше 'HH:MM:SS' повз regex — слот «підтверджувався», а сервер усе одно
+  // впав би). У режимі додавання кроку offsched-слот невибірний.
+  const SELECTABLE = onAddCaseStep ? ["free"] : ["free", "offsched"];
   const timeBad = time ? !SELECTABLE.includes(slotState(time)) : false;
   const room = (rooms || []).find((r) => r.id === roomId) || null;
   const [offOk, setOffOk] = useState(false);
@@ -667,6 +671,12 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
      інакше додає новий. Далі — вихід із редагування і скидання полів кроку. */
   function addStepToCase() {
     if (!valid) return;
+    // 0106: кейс — лише в графіку (create_case_rpc/add_case_step_rpc пишуть
+    // off_schedule=false; слот «за графіком» сервер тепер відхиляє завжди).
+    if (needsOffConfirm) {
+      setSaveErr("Кроки кейса — лише в межах графіка кабінету. Оберіть слот у графіку.");
+      return;
+    }
     // Кейс = різні кабінети: не додаємо крок у кабінет, який уже є в кейсі (0095).
     if (editIndex === null && roomInCase) return;
     const p = buildPayload();
@@ -723,6 +733,11 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
       // Поточний крок додаємо лише якщо його кабінет ще не в кейсі (різні кабінети).
       : (valid && !roomInCase ? [...caseSteps, buildPayload()] : [...caseSteps]);
     if (steps.length < 2) return;   // кейс — щонайменше два кроки різних кабінетів
+    // 0106: жоден крок кейса не може бути «поза графіком» (сервер відхилить весь кейс).
+    if (steps.some((s) => s.offSchedule)) {
+      setSaveErr("Кроки кейса — лише в межах графіка кабінету. Приберіть крок «поза графіком».");
+      return;
+    }
     setSaving(true);
     setSaveErr(null);
     try {
@@ -975,7 +990,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                     : st === "blocked" ? blockedLabel(s)
                     : st === "break" ? breakLabel(s)
                     : st === "casebusy" ? "Пацієнт зайнятий іншим кроком кейса в цей час — оберіть інший слот"
-                    : st === "offsched" ? offSchedLabel(s)
+                    : st === "offsched" ? (onAddCaseStep ? "Кроки кейса — лише в межах графіка кабінету" : offSchedLabel(s))
                     : st === "offhours" ? "Кабінет не працює в цей час"
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${tightReason(s)}`
                     : st === "past" ? "Час минув"
@@ -1080,10 +1095,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
               ? (
                 <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
                   <button className="btn btn-ghost btn-sm" disabled={saving} onClick={cancelEdit} title="Вийти з редагування без змін">Скасувати правку</button>
-                  <button className="btn btn-primary btn-sm" disabled={!valid || saving} onClick={addStepToCase} title="Зберегти зміни в кроці">✓ Оновити крок {editIndex + 1}</button>
+                  <button className="btn btn-primary btn-sm" disabled={!valid || saving || needsOffConfirm} onClick={addStepToCase} title={needsOffConfirm ? "Кроки кейса — лише в межах графіка кабінету" : "Зберегти зміни в кроці"}>✓ Оновити крок {editIndex + 1}</button>
                 </span>
               )
-              : <button className="btn btn-ghost btn-sm" disabled={!valid || saving || roomInCase} onClick={addStepToCase} style={{ marginLeft: "auto" }} title={roomInCase ? "Цей кабінет уже у кейсі — оберіть інший кабінет/модальність" : "Додати поточний крок до кейса"}>＋ У кейс</button>}
+              : <button className="btn btn-ghost btn-sm" disabled={!valid || saving || roomInCase || needsOffConfirm} onClick={addStepToCase} style={{ marginLeft: "auto" }} title={roomInCase ? "Цей кабінет уже у кейсі — оберіть інший кабінет/модальність" : needsOffConfirm ? "Кроки кейса — лише в межах графіка кабінету" : "Додати поточний крок до кейса"}>＋ У кейс</button>}
             <button className="btn btn-primary btn-sm" disabled={saving || (caseSteps.length + (editIndex === null && valid && !roomInCase ? 1 : 0)) < 2} onClick={createCaseNow} title="Кейс — щонайменше два кроки в різних кабінетах">
               Створити кейс ({caseSteps.length + (editIndex === null && valid && !roomInCase ? 1 : 0)})
             </button>

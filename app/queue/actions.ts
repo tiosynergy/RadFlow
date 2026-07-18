@@ -437,11 +437,20 @@ const CASE_SAME_ROOM_ERR: QueueActionResult = {
 const CASE_OVERLAP_ERR: QueueActionResult = {
   ok: false, error: "Пацієнт не може бути у двох кабінетах одночасно — змініть час кроку", code: "slot_unavailable",
 };
-/** Гарди кейса (0094/0095) розпізнаємо за префіксом повідомлення — раніше за
+// 0106 — сериалізація case-RPC: CASE_STALE (55000) — конкурент встиг організувати/
+// змінити кейс між читанням і локом; queue_case_step_unique (23505) — DB-запобіжник
+// дубля номера кроку. Обидва транзієнтні: користувач оновлює дошку і повторює.
+const CASE_STALE_ERR: QueueActionResult = {
+  ok: false, error: "Запис щойно змінив інший оператор — оновіть дошку і спробуйте ще раз", code: "stale",
+};
+/** Гарди кейса (0094/0095/0106) розпізнаємо за префіксом повідомлення — раніше за
     SQLSTATE, ніж будь-який класифікатор; null, якщо це не помилка кейса. */
 function caseTriggerError(message: string): QueueActionResult | null {
   if (/CASE_SAME_ROOM/i.test(message)) return CASE_SAME_ROOM_ERR;
   if (/CASE_PATIENT_OVERLAP/i.test(message)) return CASE_OVERLAP_ERR;
+  if (/CASE_STALE|queue_case_step_unique/i.test(message)) return CASE_STALE_ERR;
+  // 0106 — тригер check_case_clinic_match: привʼязка кроку лише до відкритого кейса.
+  if (/CASE_NOT_OPEN/i.test(message)) return { ok: false, error: "Кейс не активний — крок додати не можна", code: "generic" };
   return null;
 }
 async function studiesRoomMismatch(supabase: SupabaseClient<Database>, roomId: string, studies: unknown): Promise<boolean> {
