@@ -28,7 +28,8 @@ import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOver
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { slotBlockedByIncidents, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
-import { regionsFor, studyPrice, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
+import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
+import { buildCatalog, type ServiceLike } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { DobField, BookingCalendar, fmtShort } from "@/components/BookingModal";
 import type { Json } from "@/supabase/types";
@@ -90,12 +91,13 @@ async function postJSON(url: string, body: unknown): Promise<ApiResult> {
 interface NewReferralProps {
   activeCenters: Center[];
   roomsByClinic: Record<string, RoomOpt[]>;
+  servicesByClinic: Record<string, ServiceLike[]>;
   doctorName: string;
   doctorId: string;
   onCreated: (nm: string | null, err?: string) => void;
 }
 
-function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: NewReferralProps) {
+function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, doctorName, onCreated }: NewReferralProps) {
   const [centerId, setCenterId] = useState(() => (activeCenters.length === 1 ? activeCenters[0].clinicId : ""));
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
@@ -157,12 +159,18 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, onCreated }: Ne
     });
   }, [selTz]);
 
+  // Каталог послуг ОБРАНОГО центру (фаза 2a): drop-in шорткати lib/studies.
+  // Порожній (центр не обрано / без сіду) → статичний фолбэк.
+  const catalog = useMemo(() => buildCatalog(servicesByClinic[centerId]), [servicesByClinic, centerId]);
+  const regionsFor = catalog.regionsFor;
+  const studyPrice = catalog.studyPrice;
+
   const allRegions = regionsFor(studyType);
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const regionObj = regions.find((r) => r.label === region);
   const contrastSuffix = contrast ? " з контрастом" : "";
   const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (allRegions[0]?.dur ?? 20);
-  const price = regionObj ? regionObj.price + (contrast ? CONTRAST_SURCHARGE : 0) : null;
+  const price = regionObj ? regionObj.price + (contrast ? (regionObj.contrastPrice ?? CONTRAST_SURCHARGE) : 0) : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   const [durEdit, setDurEdit] = useState("");
@@ -1060,11 +1068,13 @@ interface ReferralPortalProps {
   role: string;
   centers: Center[];
   roomsByClinic: Record<string, RoomOpt[]>;
+  /** Каталоги послуг за центрами (clinic_id → services, 0107). RLS services_referrer_read. */
+  servicesByClinic: Record<string, ServiceLike[]>;
   doctorName: string;
   doctorId: string;
 }
 
-export default function ReferralPortal({ role, centers, roomsByClinic, doctorName, doctorId }: ReferralPortalProps) {
+export default function ReferralPortal({ role, centers, roomsByClinic, servicesByClinic, doctorName, doctorId }: ReferralPortalProps) {
   const router = useRouter();
   const canManage = role === "referrer";
   async function signOut() {
@@ -1288,7 +1298,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         </header>
         <div className="content" style={{ flex: 1 }}>
         {tab === "new" && (
-          <NewReferral activeCenters={activeCenters} roomsByClinic={roomsByClinic} doctorName={doctorName} doctorId={doctorId}
+          <NewReferral activeCenters={activeCenters} roomsByClinic={roomsByClinic} servicesByClinic={servicesByClinic} doctorName={doctorName} doctorId={doctorId}
             onCreated={(nm, err) => { if (err) notify("Помилка: " + err, "error"); else { notify("Направлення відправлено: " + nm, "success"); reload(); setTab("mine"); } }} />
         )}
         {tab === "mine" && (
@@ -1323,15 +1333,17 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         <RescheduleModal patient={reschedFor} rooms={reschedRooms} clinicId={reschedFor.clinic_id} clinicTz={centersById[reschedFor.clinic_id]?.timezone} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} services={servicesByClinic[editStudiesFor.clinic_id]} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {wlAddOpen && (
         <WaitlistModal centers={activeCenters.map((c) => ({ clinicId: c.clinicId, name: centerLabel(c), modalities: centerModalities(c) }))}
+          servicesByCenter={servicesByClinic}
           onClose={() => setWlAddOpen(false)} onSave={wlAdd} />
       )}
       {wlEditFor && (
         <WaitlistModal initial={wlEditFor}
           allowedModalities={centersById[wlEditFor.clinic_id] ? centerModalities(centersById[wlEditFor.clinic_id]) : undefined}
+          servicesByCenter={servicesByClinic}
           onClose={() => setWlEditFor(null)} onSave={wlEditSave} />
       )}
       {cancelAsk && (

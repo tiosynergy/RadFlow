@@ -2,6 +2,10 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import ReferralPortal from "@/components/ReferralPortal";
 import SignOutButton from "@/components/SignOutButton";
+import type { ServiceLike } from "@/lib/catalog";
+
+// Колонки каталогу для форм направника (services, 0107; RLS services_referrer_read).
+const SERVICE_COLS = "id, clinic_id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order";
 
 function Notice({ title, text }: { title: string; text: string }) {
   return (
@@ -50,6 +54,7 @@ export default async function ReferralPage() {
 
   const centers: Center[] = [];
   const roomsByClinic: Record<string, unknown[]> = {};
+  const servicesByClinic: Record<string, ServiceLike[]> = {};
 
   if (profile.role === "referrer") {
     // Глобальний направник: членство — лише через referral_access.
@@ -90,6 +95,11 @@ export default async function ReferralPage() {
         const cid = r.clinic_id as string;
         (roomsByClinic[cid] ||= []).push(r);
       });
+      // Каталоги активних центрів (RLS services_referrer_read — лише центри з грантом).
+      const { data: svc } = await supabase
+        .from("services").select(SERVICE_COLS)
+        .in("clinic_id", activeIds).eq("active", true).order("sort_order");
+      (svc ?? []).forEach((s) => { (servicesByClinic[s.clinic_id as string] ||= []).push(s as ServiceLike); });
     }
   } else {
     // Адмін: прев'ю порталу для власного центру (один «центр»).
@@ -107,6 +117,10 @@ export default async function ReferralPage() {
         .eq("clinic_id", profile.clinic_id as string)
         .order("name");
       roomsByClinic[clinic.id as string] = rooms ?? [];
+      const { data: svc } = await supabase
+        .from("services").select(SERVICE_COLS)
+        .eq("clinic_id", profile.clinic_id as string).eq("active", true).order("sort_order");
+      servicesByClinic[clinic.id as string] = (svc ?? []) as ServiceLike[];
     }
   }
 
@@ -115,6 +129,7 @@ export default async function ReferralPage() {
       role={profile.role as string}
       centers={centers}
       roomsByClinic={roomsByClinic as Parameters<typeof ReferralPortal>[0]["roomsByClinic"]}
+      servicesByClinic={servicesByClinic}
       doctorName={(profile.full_name as string) ?? (user.email ?? "Лікар")}
       doctorId={user.id}
     />

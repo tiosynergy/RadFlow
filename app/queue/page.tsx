@@ -35,6 +35,15 @@ export default async function QueuePage() {
     .eq("clinic_id", profile.clinic_id as string)
     .order("name");
 
+  // Каталог послуг центру (services, 0107) — SSR-проп у форми запису (фаза 2a).
+  // Лише активні: форми пропонують тільки active; порожньо → статичний фолбэк.
+  const { data: services } = await supabase
+    .from("services")
+    .select("id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order")
+    .eq("clinic_id", profile.clinic_id as string)
+    .eq("active", true)
+    .order("sort_order");
+
   return (
     <QueueBoard
       clinicId={profile.clinic_id as string}
@@ -42,6 +51,7 @@ export default async function QueuePage() {
       // початкова дата дошки встигала зафіксуватися по браузеру (M-4).
       clinicTz={clinic?.timezone || "UTC"}
       rooms={rooms ?? []}
+      services={services ?? []}
       clinicName={clinic?.name ?? ""}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
       adminRole={profile.role ? ROLE_LABELS[profile.role as string] ?? (profile.role as string) : "Адміністратор"}

@@ -36,6 +36,7 @@ import {
 } from "@/lib/case";
 import type { CaseStatus, Json } from "@/supabase/types";
 import type { IncidentLike } from "@/lib/incidents";
+import type { ServiceLike } from "@/lib/catalog";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 
@@ -95,9 +96,11 @@ interface CaseModalProps {
   clinicId?: string | null;
   clinicTz?: string | null;
   incidents?: IncidentLike[];
+  /** Каталог послуг центру (services, 0107) — для форм кроків. Порожній → статика. */
+  services?: ServiceLike[];
 }
 
-export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicId, clinicTz, incidents = [] }: CaseModalProps) {
+export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicId, clinicTz, incidents = [], services }: CaseModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [steps, setSteps] = useState<StepRow[] | null>(null);
   const [err, setErr] = useState(false);
@@ -318,7 +321,7 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
             patient_name: editStudiesStep.patient_name, studies: editStudiesStep.studies,
           }}
           scheduledDate={editStudiesStep.scheduled_date || dateKey(new Date())}
-          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} offSchedule={!!editStudiesStep.off_schedule}
+          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} offSchedule={!!editStudiesStep.off_schedule}
           onClose={() => setEditStudiesStep(null)}
           onConfirm={doEditStudies}
         />
@@ -326,7 +329,7 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
 
       {addOpen && (
         <BookingModal
-          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents}
+          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} services={services}
           prefill={{
             name: pfStep?.patient_name || "", phone: pfStep?.patient_phone || "",
             dob: pfStep?.patient_dob || "", gender: pfStep?.patient_sex || "",

@@ -20,6 +20,7 @@ import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, resc
 import { addEntryToWaitlist } from "@/app/waitlist/actions";
 import { isLate } from "@/lib/queueStatus";
 import { modalityKind } from "@/lib/studies";
+import type { ServiceLike } from "@/lib/catalog";
 import type { CallStatus, Json } from "@/supabase/types";
 import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
@@ -246,13 +247,15 @@ interface CallListBoardProps {
   /** IANA-зона центру (clinics.timezone) — із сервера, а не з браузера. */
   clinicTz: string;
   rooms?: RoomOpt[];
+  /** Каталог послуг центру (services, 0107) — SSR-проп, як rooms. Порожній → статика. */
+  services?: ServiceLike[];
   clinicName?: string;
   adminName?: string;
   adminRole?: string;
   roleKey?: string;
 }
 
-export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: CallListBoardProps) {
+export default function CallListBoard({ clinicId, clinicTz, rooms, services, clinicName, adminName, adminRole, roleKey = "admin" }: CallListBoardProps) {
   // Синхронно, до ініціалізаторів useState: від зони залежить і «завтра» (день
   // обдзвону), і todayKey (секції «Запізнення» / «постраждалі»). Тільки на клієнті.
   if (typeof window !== "undefined") setClinicTz(clinicTz);
@@ -680,7 +683,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
         <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} allowOffSchedule />
       )}
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} offSchedule={!!editStudiesFor.off_schedule} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} offSchedule={!!editStudiesFor.off_schedule} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
 
       {declineAsk && (
@@ -721,7 +724,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
       )}
 
       {wlSuggest && (
-        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={incidents}
+        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={incidents} services={services}
           slot={wlSuggest.slot} candidates={wlSuggest.candidates}
           onClose={() => setWlSuggest(null)}
           onBooked={(msg) => { notify(msg, "success"); reload(); }}

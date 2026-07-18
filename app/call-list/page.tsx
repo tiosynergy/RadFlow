@@ -34,11 +34,20 @@ export default async function CallListPage() {
     .eq("clinic_id", profile.clinic_id as string)
     .order("name");
 
+  // Каталог послуг центру (services, 0107) — форми запису з колл-листа (фаза 2a).
+  const { data: services } = await supabase
+    .from("services")
+    .select("id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order")
+    .eq("clinic_id", profile.clinic_id as string)
+    .eq("active", true)
+    .order("sort_order");
+
   return (
     <CallListBoard
       clinicId={profile.clinic_id as string}
       clinicTz={clinic?.timezone || "UTC"}
       rooms={rooms ?? []}
+      services={services ?? []}
       clinicName={clinic?.name ?? ""}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
       adminRole={profile.role ? ROLE_LABELS[profile.role as string] ?? (profile.role as string) : "Адміністратор"}

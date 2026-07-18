@@ -8,10 +8,11 @@
    пріоритет змінюється в картці з перевіркою прав, центр незмінний).
    Збереження — через Server Action (батько). */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import PhoneInput from "@/components/PhoneInput";
 import { DobField } from "@/components/BookingModal";
-import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyPrice, normBuffer, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, type Study } from "@/lib/studies";
+import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, type Study } from "@/lib/studies";
+import { buildCatalog, type ServiceLike } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { TIME_PRESETS, timePresetKey } from "@/lib/waitlist";
 import { wallDayKey } from "@/lib/incidents";
@@ -74,11 +75,15 @@ interface WaitlistModalProps {
   allowedModalities?: string[];
   /** TZ центру (дошки персоналу передають явно; портал направника — ні). */
   clinicTz?: string | null;
+  /** Каталог послуг центру (персонал, один центр). Порожній → статичний фолбэк. */
+  services?: ServiceLike[];
+  /** Каталоги за центрами (направник обирає центр усередині модалки) — clinic_id → services. */
+  servicesByCenter?: Record<string, ServiceLike[]>;
   onClose: () => void;
   onSave: (w: WaitlistFormOut) => void | Promise<void>;
 }
 
-export default function WaitlistModal({ centers, rooms, initial, allowedModalities, clinicTz, onClose, onSave }: WaitlistModalProps) {
+export default function WaitlistModal({ centers, rooms, initial, allowedModalities, clinicTz, services, servicesByCenter, onClose, onSave }: WaitlistModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const isEdit = !!initial;
   const todayStr = todayKey(clinicTz);   // «сьогодні» клініки — для дефолту й гарду прошлого
@@ -113,6 +118,16 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   const availableModalities: string[] = gateMods
     ? BOOKABLE_MODALITIES.filter((m) => gateMods.includes(m))
     : (rooms && rooms.length ? BOOKABLE_MODALITIES.filter((m) => rooms.some((r) => r.modality === m)) : BOOKABLE_MODALITIES);
+  // Каталог послуг (фаза 2a): персонал — свій центр (services); направник —
+  // каталог ОБРАНОГО центру (add) або центру рядка (edit). Порожній → статика.
+  const effClinicId = isEdit ? (initial?.clinic_id ?? null) : (needCenter ? centerId : null);
+  const catalog = useMemo(() => {
+    const eff = (effClinicId && servicesByCenter?.[effClinicId]) ? servicesByCenter[effClinicId] : (services ?? []);
+    return buildCatalog(eff);
+  }, [effClinicId, servicesByCenter, services]);
+  const regionsFor = catalog.regionsFor;
+  const studyPrice = catalog.studyPrice;
+
   const allRegions = regionsFor(studyType);
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const primaryKind = modalityLabel(studyType);
@@ -131,7 +146,7 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   const contrastSuffix = contrast ? " з контрастом" : "";
   const regionObj = regions.find((r) => r.label === region);
   const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (allRegions[0]?.dur ?? 20);
-  const price = regionObj ? regionObj.price + (contrast ? CONTRAST_SURCHARGE : 0) : null;
+  const price = regionObj ? regionObj.price + (contrast ? (regionObj.contrastPrice ?? CONTRAST_SURCHARGE) : 0) : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   const exDur = (t: string, reg: string) => { const o = regionsFor(t).find((r) => r.label === reg); return o ? o.dur : (regionsFor(t)[0]?.dur ?? 20); };

@@ -9,6 +9,7 @@
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import BookingModal, { type BookingPayload, type BookingPrefill } from "@/components/BookingModal";
+import type { ServiceLike } from "@/lib/catalog";
 import { scheduleFromWaitlist } from "@/app/queue/actions";
 import { desiredWindowText, timeToMin } from "@/lib/waitlist";
 import { wallDayKey, wallMinOfDay, wallNow } from "@/lib/incidents";
@@ -67,6 +68,8 @@ interface WaitlistCandidatesModalProps {
   clinicTz?: string | null; // явна зона центру для BookingModal («зараз» не по браузеру)
   rooms?: RoomOpt[];
   incidents?: IncidentLite[];
+  /** Каталог послуг центру (services, 0107) — пробрасываем у BookingModal. */
+  services?: ServiceLike[];
   slot: FreedSlotInfo;
   candidates: WaitlistEntry[];
   onClose: () => void;
@@ -74,7 +77,7 @@ interface WaitlistCandidatesModalProps {
   onError?: (msg: string) => void;
 }
 
-export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, incidents = [], slot, candidates, onClose, onBooked }: WaitlistCandidatesModalProps) {
+export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, incidents = [], services, slot, candidates, onClose, onBooked }: WaitlistCandidatesModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);
   const roomName = (rooms || []).find((r) => r.id === slot.roomId)?.name || "кабінет";
@@ -123,7 +126,7 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
 
   if (bookFor) {
     return (
-      <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} prefill={bookPrefill}
+      <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} services={services} prefill={bookPrefill}
         onClose={() => setBookFor(null)} onSave={saveBooking} />
     );
   }

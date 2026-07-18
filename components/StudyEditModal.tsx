@@ -6,9 +6,10 @@
    зайнятість кабінету беремо через знеособлений RPC room_busy_slots (без PII;
    для направника обходить RLS-сліпоту), p_exclude прибирає сам редагований запис. */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { regionsFor, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, studyDur, studyPrice, CONTRAST_DUR, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
+import { BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, CONTRAST_DUR, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
+import { buildCatalog, type ServiceLike } from "@/lib/catalog";
 import { roomScheduleFor, effectiveRoomBreaks, OFF_SCHED_GRACE_MIN, type DayOverride } from "@/lib/schedule";
 import { wallNow, wallMinOfDay, wallDayKey, wallToday0 } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
@@ -28,6 +29,8 @@ interface StudyEditModalProps {
   rooms?: RoomOpt[];
   clinicId?: string | null;
   clinicTz?: string | null; // TZ центру запису (мультиклінічний портал направника)
+  /** Каталог послуг центру запису (services, 0107). Порожній → статичний фолбэк. */
+  services?: ServiceLike[];
   onClose: () => void;
   onConfirm: (arr: StudyOut[], meta: { dur: number; buffer: number; offSchedule?: boolean }) => void;
   /* 0077: запис САМ стоїть поза графіком (створений/перенесений за підтвердженням).
@@ -40,8 +43,13 @@ function pad(n: number) { return String(n).padStart(2, "0"); }
 function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 
-export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, onClose, onConfirm, offSchedule = false }: StudyEditModalProps) {
+export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, services, onClose, onConfirm, offSchedule = false }: StudyEditModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
+  // Каталог послуг центру (фаза 2a): drop-in шорткати lib/studies. Порожній → статика.
+  const catalog = useMemo(() => buildCatalog(services), [services]);
+  const regionsFor = catalog.regionsFor;
+  const studyDur = catalog.studyDur;
+  const studyPrice = catalog.studyPrice;
   const room = (rooms || []).find((r) => r.id === patient.room_id);
   const roomKind = room ? modalityLabel(room.modality) : "МРТ"; // укр. лейбл модальності кабінету
   // Тип дослідження задає кабінет, якщо його модальність відома (МРТ/КТ/УЗД/Рентген/Мамографія).

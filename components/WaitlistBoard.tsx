@@ -23,6 +23,7 @@ import { setClinicTz, wallToday0 } from "@/lib/incidents";
 import type { WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
 import { modalityLabel, modalityKind } from "@/lib/studies";
+import type { ServiceLike } from "@/lib/catalog";
 import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -91,13 +92,15 @@ interface WaitlistBoardProps {
   /** IANA-зона центру (clinics.timezone) — із сервера, а не з браузера. */
   clinicTz: string;
   rooms?: RoomOpt[];
+  /** Каталог послуг центру (services, 0107) — SSR-проп, як rooms. Порожній → статика. */
+  services?: ServiceLike[];
   clinicName?: string;
   adminName?: string;
   adminRole?: string;
   roleKey?: string;
 }
 
-export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: WaitlistBoardProps) {
+export default function WaitlistBoard({ clinicId, clinicTz, rooms, services, clinicName, adminName, adminRole, roleKey = "admin" }: WaitlistBoardProps) {
   /* Зона центру — синхронно, до першого рендера. Раніше вона прилітала клієнтським
      fetch уже після монтування, і wallNow() у BookingModal, відкритій із листа
      очікування, встигав порахувати «зараз» за браузером (минулі слоти — вибірні). */
@@ -574,8 +577,8 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
         </div>
       </div>
 
-      {addOpen && <WaitlistModal rooms={rooms} clinicTz={clinicTz} onClose={() => setAddOpen(false)} onSave={onAdd} />}
-      {editFor && <WaitlistModal rooms={rooms} clinicTz={clinicTz} initial={editFor} onClose={() => setEditFor(null)} onSave={onEditSave} />}
+      {addOpen && <WaitlistModal rooms={rooms} clinicTz={clinicTz} services={services} onClose={() => setAddOpen(false)} onSave={onAdd} />}
+      {editFor && <WaitlistModal rooms={rooms} clinicTz={clinicTz} services={services} initial={editFor} onClose={() => setEditFor(null)} onSave={onEditSave} />}
       {confirmRemove && (
         <ConfirmDialog title="Зняти з листа очікування"
           text={<>Зняти <b style={{ color: "var(--text)" }}>{confirmRemove.patient_name}</b> з листа очікування? Запис перейде на вкладку «Зняті» — його можна буде повернути.</>}
@@ -584,7 +587,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
           onClose={() => setConfirmRemove(null)} />
       )}
       {bookFor && (
-        <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} prefill={bookPrefill}
+        <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} services={services} prefill={bookPrefill}
           onClose={() => setBookFor(null)} onSave={saveBooking} />
       )}
 

@@ -4,7 +4,7 @@
    Портовано з queue-app.jsx (NewBookingModal + BookingCalendar + DobField).
    Кабінети беруться з БД (rooms), зайняті слоти — з Supabase (queue_entries). */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import PhoneInput from "@/components/PhoneInput";
@@ -14,7 +14,8 @@ import {
 } from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallToday0, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
-import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, regionsFor, studyLabel, studyPrice, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
+import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, studyLabel, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
+import { buildCatalog, type ServiceLike } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { countFit } from "@/lib/slots";
@@ -240,6 +241,9 @@ interface BookingModalProps {
       екрани (напр. /waitlist), і тоді «зараз» рахувалося б по браузеру. */
   clinicTz?: string | null;
   incidents?: IncidentLike[];
+  /** Каталог послуг центру (services, 0107). Порожній/відсутній → статичний
+      lib/studies (фолбэк). Області/тривалості/ціни беруться звідси (фаза 2a). */
+  services?: ServiceLike[];
   prefill?: BookingPrefill | null; // напр. запис із листа очікування
   onClose: () => void;
   /* Повертає ТЕКСТ ПОМИЛКИ (або null, якщо збережено). Раніше було `=> void`, і при
@@ -261,8 +265,14 @@ interface BookingModalProps {
   caseSiblings?: { roomId: string; date: Date; time: string; dur: number }[];
 }
 
-export default function BookingModal({ rooms, clinicId, clinicTz, incidents = [], prefill, onClose, onSave, onCreateCase, onAddCaseStep, caseSiblings }: BookingModalProps) {
+export default function BookingModal({ rooms, clinicId, clinicTz, incidents = [], services, prefill, onClose, onSave, onCreateCase, onAddCaseStep, caseSiblings }: BookingModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
+  // Каталог послуг центру (фаза 2a): drop-in шорткати з тими самими сигнатурами,
+  // що статичні lib/studies — усі виклики нижче не змінюються. Порожній каталог
+  // модальності → делегує статиці (див. lib/catalog.ts).
+  const catalog = useMemo(() => buildCatalog(services), [services]);
+  const regionsFor = catalog.regionsFor;
+  const studyPrice = catalog.studyPrice;
   // Передзаповнення: перше дослідження → основне (тип/область/контраст), решта → додаткові.
   const pfStudies = Array.isArray(prefill?.studies) ? (prefill!.studies as NonNullable<BookingPrefill["studies"]>) : [];
   const pfPrimary = pfStudies[0] || null;
@@ -356,7 +366,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const procLabel = region ? `${primaryKind} · ${region}${contrastSuffix}` : primaryKind;
   const regionObj = regions.find((r) => r.label === region);
   const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (allRegions[0]?.dur ?? 20);
-  const price = regionObj ? regionObj.price + (contrast ? CONTRAST_SURCHARGE : 0) : null;
+  const price = regionObj ? regionObj.price + (contrast ? (regionObj.contrastPrice ?? CONTRAST_SURCHARGE) : 0) : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   const [durEdit, setDurEdit] = useState("");
