@@ -13,7 +13,7 @@
    Мутації — Server Actions (app/services/actions.ts); RLS admin-write як
    defense-in-depth. Після мутації — router.refresh (низькооборотна таблиця). */
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import {
@@ -229,8 +229,20 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
   }
 
   const fmtUah = (n: number) => n.toLocaleString("uk-UA") + " ₴";
-  const GRID_BASE = "minmax(220px,2fr) 110px 110px 140px 90px minmax(180px,1fr)";
-  const GRID_ROOM = "minmax(220px,2fr) 120px 120px 120px minmax(200px,1fr)";
+  // Компактні колонки — щоб таблиця влазила і у вужчу колонку Майстра (~680px),
+  // без горизонтального скролу. Назва — minmax(0,…) (стискається/еліпсис), дії — іконки.
+  const GRID_BASE = "minmax(100px,2.4fr) 66px 78px 80px 68px 112px";
+  const GRID_ROOM = "minmax(120px,2.4fr) 74px 96px 116px 84px";
+
+  // Пілюля стану послуги в кабінеті (замість шумного зеленого «пропонується» на кожному
+  // рядку). Функція-хелпер, НЕ вкладений компонент (правило: вкладений компонент =
+  // ремоунт піддерева щорендер).
+  const statusChip = (hidden: boolean, changed: boolean) => {
+    const base: CSSProperties = { display: "inline-block", fontSize: 12, fontWeight: 600, padding: "2px 9px", borderRadius: 999, border: "1px solid" };
+    if (hidden) return <span style={{ ...base, color: "var(--text-muted)", borderColor: "var(--border-strong)" }}>Прихована</span>;
+    if (changed) return <span style={{ ...base, color: "var(--blue)", borderColor: "var(--blue)", background: "color-mix(in srgb, var(--blue) 12%, transparent)" }}>Змінено</span>;
+    return <span style={{ ...base, color: "var(--text-faint)", borderColor: "var(--border)" }}>Базове</span>;
+  };
 
   return (
     <div>
@@ -298,11 +310,11 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
       {/* Заголовок таблиці */}
       {scope === "base" ? (
         <div className="wlhead" style={{ gridTemplateColumns: GRID_BASE }}>
-          <div>Послуга</div><div>Тривалість</div><div>Ціна</div><div>Контраст</div><div>Стан</div><div style={{ textAlign: "right" }}>Дії</div>
+          <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div style={{ textAlign: "right" }}>Контраст</div><div>Стан</div><div style={{ textAlign: "right" }}>Дії</div>
         </div>
       ) : (
         <div className="wlhead" style={{ gridTemplateColumns: GRID_ROOM }}>
-          <div>Послуга</div><div>Тривалість</div><div>Ціна</div><div>У кабінеті</div><div style={{ textAlign: "right" }}>Дії</div>
+          <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div>У кабінеті</div><div style={{ textAlign: "right" }}>Дії</div>
         </div>
       )}
 
@@ -328,17 +340,17 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
                     </div>
                   ) : (
                     <>
-                      <div style={{ fontWeight: 600 }}>{s.name}
+                      <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.name}>{s.name}
                         {s.source === "import" && <span className="badge" style={{ marginLeft: 8 }} title="Завантажено імпортом">імпорт</span>}</div>
-                      <div className="tabular">{s.duration_min} хв</div>
-                      <div className="tabular">{s.price ? fmtUah(s.price) : <span style={{ color: "var(--orange)" }} title="Ціну ще не задано">0 ₴</span>}</div>
-                      <div>{s.contrast_allowed ? <span title="Доплата за контраст">＋ {fmtUah(s.contrast_price ?? CONTRAST_SURCHARGE)}</span> : <span style={{ color: "var(--text-faint)" }}>—</span>}</div>
+                      <div className="tabular" style={{ textAlign: "right" }}>{s.duration_min} хв</div>
+                      <div className="tabular" style={{ textAlign: "right" }}>{s.price ? fmtUah(s.price) : <span style={{ color: "var(--orange)" }} title="Ціну ще не задано">0 ₴</span>}</div>
+                      <div style={{ textAlign: "right" }}>{s.contrast_allowed ? <span title="Доплата за контраст">＋{fmtUah(s.contrast_price ?? CONTRAST_SURCHARGE)}</span> : <span style={{ color: "var(--text-faint)" }}>—</span>}</div>
                       <div>{s.active ? <span style={{ color: "var(--green)" }}>активна</span> : <span style={{ color: "var(--text-faint)" }}>вимкнена</span>}</div>
-                      <div className="cl-actions">
-                        <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => { setEditId(s.id); setDraft(draftOf(s)); }}>✎</button>
+                      <div className="cl-actions" style={{ justifyContent: "flex-end" }}>
+                        <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => { setEditId(s.id); setDraft(draftOf(s)); }} title="Редагувати" aria-label={"Редагувати " + s.name}>✎</button>
                         <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onToggleActive(s)}
-                          title={s.active ? "Вимкнути" : "Увімкнути"}>{s.active ? "⏻ Вимк." : "⏻ Увімк."}</button>
-                        <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} disabled={busy} onClick={() => setConfirmDel(s)} aria-label={"Видалити " + s.name}>✕</button>
+                          title={s.active ? "Вимкнути (прибрати з форм)" : "Увімкнути"} aria-label={s.active ? "Вимкнути" : "Увімкнути"}>⏻</button>
+                        <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} disabled={busy} onClick={() => setConfirmDel(s)} title="Видалити" aria-label={"Видалити " + s.name}>✕</button>
                       </div>
                     </>
                   )}
@@ -357,56 +369,73 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
             const effPrice = ov?.price ?? s.price;
             const hidden = ov ? !ov.active : false;
             const changed = !!ov;
+            const durChanged = ov?.duration_min != null && ov.duration_min !== s.duration_min;
+            const priceChanged = ov?.price != null && ov.price !== s.price;
+
+            if (editing) {
+              // Форма — окрема картка (не всередині grid-рядка), тому поля не обрізаються.
+              return (
+                <div className="cl-detail" key={s.id} style={{ marginBottom: 8, borderLeft: "3px solid var(--blue)" }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                    <span style={{ fontWeight: 650, fontSize: 14.5 }}>{s.name}</span>
+                    {room && <span className="badge" style={{ color: "var(--text-muted)" }}>кабінет «{room.name}»</span>}
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-end" }}>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                      Тривалість, хв
+                      <input className="inp" type="number" step={5} min={5} max={480} style={{ width: 110 }} placeholder={String(s.duration_min)}
+                        value={ovDraft.durationMin} onChange={(e) => setOvDraft((p) => ({ ...p, durationMin: e.target.value }))} />
+                    </label>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                      Ціна, ₴
+                      <input className="inp" type="number" min={0} step={50} style={{ width: 130 }} placeholder={String(s.price)}
+                        value={ovDraft.price} onChange={(e) => setOvDraft((p) => ({ ...p, price: e.target.value }))} />
+                    </label>
+                    {s.contrast_allowed && (
+                      <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                        Доплата за контраст, ₴
+                        <input className="inp" type="number" min={0} step={50} style={{ width: 150 }} placeholder={String(s.contrast_price ?? CONTRAST_SURCHARGE)}
+                          value={ovDraft.contrastPrice} onChange={(e) => setOvDraft((p) => ({ ...p, contrastPrice: e.target.value }))} />
+                      </label>
+                    )}
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13.5, paddingBottom: 8 }}>
+                      <input type="checkbox" checked={ovDraft.active} onChange={(e) => setOvDraft((p) => ({ ...p, active: e.target.checked }))} />
+                      Пропонується в цьому кабінеті
+                    </label>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 12, color: "var(--text-faint)" }}>Порожнє поле = як у базовому каталозі ({s.duration_min} хв · {fmtUah(s.price)}).</span>
+                    <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
+                      {changed && <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onClearOverride(s)} title="Прибрати переозначення — успадкувати базовий каталог">↺ До базового</button>}
+                      <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setOvEditId(null)}>Скасувати</button>
+                      <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onSaveOverride(s)}>Зберегти</button>
+                    </span>
+                  </div>
+                </div>
+              );
+            }
+
             return (
-              <div className="clrow-wrap" key={s.id}>
-                <div className="wlrow" style={{ gridTemplateColumns: GRID_ROOM, opacity: hidden ? 0.5 : 1 }}>
-                  {editing ? (
-                    <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", padding: "4px 0" }}>
-                      <span style={{ fontWeight: 600, flex: "1 1 200px" }}>{s.name}</span>
-                      <label className="fld-lab" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                        Тривалість
-                        <input className="inp" type="number" step={5} min={5} max={480} style={{ width: 76 }} placeholder={String(s.duration_min)}
-                          value={ovDraft.durationMin} onChange={(e) => setOvDraft((p) => ({ ...p, durationMin: e.target.value }))} /> хв
-                      </label>
-                      <label className="fld-lab" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                        Ціна
-                        <input className="inp" type="number" min={0} step={50} style={{ width: 96 }} placeholder={String(s.price)}
-                          value={ovDraft.price} onChange={(e) => setOvDraft((p) => ({ ...p, price: e.target.value }))} /> ₴
-                      </label>
-                      {s.contrast_allowed && (
-                        <label className="fld-lab" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                          Контраст
-                          <input className="inp" type="number" min={0} step={50} style={{ width: 90 }} placeholder={String(s.contrast_price ?? CONTRAST_SURCHARGE)}
-                            value={ovDraft.contrastPrice} onChange={(e) => setOvDraft((p) => ({ ...p, contrastPrice: e.target.value }))} /> ₴
-                        </label>
-                      )}
-                      <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, cursor: "pointer" }}>
-                        <input type="checkbox" checked={ovDraft.active} onChange={(e) => setOvDraft((p) => ({ ...p, active: e.target.checked }))} />
-                        Пропонується
-                      </label>
-                      <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
-                        {changed && <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onClearOverride(s)} title="Прибрати переозначення — успадкувати базу">↺ До базового</button>}
-                        <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setOvEditId(null)}>Скасувати</button>
-                        <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => onSaveOverride(s)}>Зберегти</button>
-                      </span>
-                      <span style={{ flexBasis: "100%", fontSize: 12, color: "var(--text-faint)" }}>Порожнє поле = як у базовому каталозі ({s.duration_min} хв · {fmtUah(s.price)})</span>
-                    </div>
-                  ) : (
-                    <>
-                      <div style={{ fontWeight: 600 }}>{s.name}
-                        {changed
-                          ? <span className="badge" style={{ marginLeft: 8, color: "var(--blue)" }} title="Переозначено для цього кабінету">змінено</span>
-                          : <span className="badge" style={{ marginLeft: 8, color: "var(--text-faint)" }} title="Успадковано з базового каталогу">базове</span>}
-                      </div>
-                      <div className="tabular">{effDur} хв{ov?.duration_min != null && ov.duration_min !== s.duration_min ? " *" : ""}</div>
-                      <div className="tabular">{effPrice ? fmtUah(effPrice) : <span style={{ color: "var(--orange)" }}>0 ₴</span>}{ov?.price != null && ov.price !== s.price ? " *" : ""}</div>
-                      <div>{hidden ? <span style={{ color: "var(--text-faint)" }}>прихована</span> : <span style={{ color: "var(--green)" }}>пропонується</span>}</div>
-                      <div className="cl-actions">
-                        <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => { setOvEditId(s.id); setOvDraft(ovDraftOf(ov)); }}>✎ Налаштувати</button>
-                        {changed && <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onClearOverride(s)} title="Повернути до базового">↺</button>}
-                      </div>
-                    </>
-                  )}
+              <div className="clrow-wrap" key={s.id}
+                style={{ borderLeft: "3px solid " + (hidden ? "var(--border-strong)" : changed ? "var(--blue)" : "transparent") }}>
+                <div className="wlrow" style={{ gridTemplateColumns: GRID_ROOM, opacity: hidden ? 0.62 : 1 }}>
+                  <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.name}>{s.name}</div>
+                  <div className="tabular" style={{ textAlign: "right" }}>
+                    <span style={durChanged ? { color: "var(--blue)", fontWeight: 600 } : undefined}>{effDur} хв</span>
+                    {durChanged && <div style={{ fontSize: 11, color: "var(--text-faint)" }}>база {s.duration_min}</div>}
+                  </div>
+                  <div className="tabular" style={{ textAlign: "right" }}>
+                    {effPrice
+                      ? <span style={priceChanged ? { color: "var(--blue)", fontWeight: 600 } : undefined}>{fmtUah(effPrice)}</span>
+                      : <span style={{ color: "var(--orange)" }} title="Ціну не задано ні в кабінеті, ні в базі">0 ₴</span>}
+                    {priceChanged && <div style={{ fontSize: 11, color: "var(--text-faint)" }}>база {fmtUah(s.price)}</div>}
+                  </div>
+                  <div>{statusChip(hidden, changed)}</div>
+                  <div className="cl-actions" style={{ justifyContent: "flex-end" }}>
+                    <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => { setOvEditId(s.id); setOvDraft(ovDraftOf(ov)); }}
+                      title={"Налаштувати «" + s.name + "» для цього кабінету"} aria-label={"Налаштувати " + s.name}>✎</button>
+                    {changed && <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onClearOverride(s)} title="Повернути до базового каталогу" aria-label="Повернути до базового">↺</button>}
+                  </div>
                 </div>
               </div>
             );
