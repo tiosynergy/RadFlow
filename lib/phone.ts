@@ -63,3 +63,16 @@ export function formatPhoneSearch(input: string): string {
   const nsn = phoneDigitsUA(v);            // до 9 значущих цифр (без 380/0)
   return "+380" + (nsn ? " " + group(nsn) : " ");
 }
+
+/**
+ * Обробник вводу для полів пошуку «ПІБ АБО телефон» — форматування «as-you-type»,
+ * але ДРУЖНЄ ДО ВИДАЛЕННЯ. Якщо користувач СТИРАЄ (нова довжина менша за попередню)
+ * — НЕ переформатовуємо (інакше Backspace застрягав би на «+380 » і не давав
+ * очистити поле / перейти на пошук за ПІБ). Якщо ДОДАЄ — приводимо телефон до
+ * канонічного «+380 XX XXX XX XX» (formatPhoneSearch); ПІБ лишається як є.
+ * prev — попереднє значення поля (стан пошуку), raw — нове значення з input.
+ */
+export function nextPhoneSearchValue(prev: string, raw: string): string {
+  if (raw.length < (prev ?? "").length) return raw;   // видалення — лишаємо raw
+  return formatPhoneSearch(raw);
+}

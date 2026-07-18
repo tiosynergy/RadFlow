@@ -17,7 +17,7 @@ import { PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { isLate, LATE_META } from "@/lib/queueStatus";
 import { wallNow, wallToday0 } from "@/lib/incidents";
 import { diffStudies, studyText, studiesChanged, modalityLabel } from "@/lib/studies";
-import { formatPhoneSearch } from "@/lib/phone";
+import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import type { Json } from "@/supabase/types";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
@@ -194,7 +194,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
           </select>
         )}
         <div className="spacer" />
-        <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
+        <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} /></div>
       </div>
 
       {filtered.length === 0 ? (

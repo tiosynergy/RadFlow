@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatPhoneSearch, formatPhoneUA } from "@/lib/phone";
+import { formatPhoneSearch, formatPhoneUA, nextPhoneSearchValue } from "@/lib/phone";
 
 /* Пошук у полях «ПІБ АБО телефон»: телефоноподібний ввід приводимо до канонічного
    міжнародного «+380 XX XXX XX XX» (усі номери в БД такі), ПІБ не чіпаємо. */
@@ -38,5 +38,22 @@ describe("formatPhoneUA — базова поведінка (регрес)", () 
   });
   it("міжнародний повний", () => {
     expect(formatPhoneUA("+380501234567")).toBe("+380 50 123 45 67");
+  });
+});
+
+describe("nextPhoneSearchValue — форматуємо при наборі, raw при видаленні", () => {
+  it("ДОДАВАННЯ телефону → форматуємо", () => {
+    expect(nextPhoneSearchValue("+380 5", "+380 50")).toBe("+380 50");
+    expect(nextPhoneSearchValue("", "0")).toBe("+380 ");
+    expect(nextPhoneSearchValue("+380 50", "+380 500")).toBe("+380 50 0");
+  });
+  it("ВИДАЛЕННЯ (коротше) → лишаємо raw (Backspace не застрягає)", () => {
+    expect(nextPhoneSearchValue("+380 50 0", "+380 50 ")).toBe("+380 50 ");
+    expect(nextPhoneSearchValue("+380", "")).toBe("");
+    expect(nextPhoneSearchValue("+380 5", "+380 ")).toBe("+380 ");
+  });
+  it("ПІБ не форматується ні при наборі, ні при видаленні", () => {
+    expect(nextPhoneSearchValue("Макс", "Макси")).toBe("Макси");
+    expect(nextPhoneSearchValue("Макси", "Макс")).toBe("Макс");
   });
 });

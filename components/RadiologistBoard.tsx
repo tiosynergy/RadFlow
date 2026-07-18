@@ -15,7 +15,7 @@ import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
-import { formatPhoneSearch } from "@/lib/phone";
+import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import { setQueueEntryStatus, setRadiologistNote, previewDelayPlan, type DelayPreview } from "@/app/queue/actions";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -912,7 +912,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
             <div className="qctrl">
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
-                <input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} />
+                <input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
               </div>
             </div>
 

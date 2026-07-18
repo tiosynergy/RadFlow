@@ -22,7 +22,7 @@ import { isLate } from "@/lib/queueStatus";
 import { modalityKind } from "@/lib/studies";
 import type { CallStatus, Json } from "@/supabase/types";
 import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
-import { formatPhoneSearch } from "@/lib/phone";
+import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -647,7 +647,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
               </div>
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
-                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(e.target.value)} />
+                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
               </div>
             </div>
 

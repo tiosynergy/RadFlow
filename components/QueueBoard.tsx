@@ -52,7 +52,7 @@ import CollisionPanel from "@/components/CollisionPanel";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
-import { formatPhoneSearch } from "@/lib/phone";
+import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -1710,7 +1710,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
             <div className="spacer" />
             <div className="search">
               <span className="si">⌕</span>
-              <input ref={searchRef} placeholder="Пошук пацієнта… ( / )" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <input ref={searchRef} placeholder="Пошук пацієнта… ( / )" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
             </div>
           </div>
 

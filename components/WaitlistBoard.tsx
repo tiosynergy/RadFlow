@@ -23,7 +23,7 @@ import { setClinicTz, wallToday0 } from "@/lib/incidents";
 import type { WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
 import { modalityLabel, modalityKind } from "@/lib/studies";
-import { formatPhoneSearch } from "@/lib/phone";
+import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -427,7 +427,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
               </div>
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
-                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(e.target.value)} />
+                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
               </div>
             </div>
 
