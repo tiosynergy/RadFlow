@@ -52,6 +52,7 @@ import CollisionPanel from "@/components/CollisionPanel";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
+import { formatPhoneSearch } from "@/lib/phone";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -1548,7 +1549,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, clinicName, admi
     if (filter === "late") {
       if (!isLate(e.status, selectedDate, e.scheduled_time, e.buffer_time_min)) return false;
     } else if (filter !== "all" && e.status !== filter) return false;
-    if (query.trim()) return (e.patient_name || "").toLowerCase().includes(query.trim().toLowerCase());
+    if (query.trim()) { const q = query.trim().toLowerCase(); return (e.patient_name || "").toLowerCase().includes(q) || (e.patient_phone || "").includes(formatPhoneSearch(query.trim())); }
     return true;
   });
 

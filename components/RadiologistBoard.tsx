@@ -15,6 +15,7 @@ import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
+import { formatPhoneSearch } from "@/lib/phone";
 import { setQueueEntryStatus, setRadiologistNote, previewDelayPlan, type DelayPreview } from "@/app/queue/actions";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -791,7 +792,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
     if (filter !== "all" && p.status !== filter) return false;
     if (query.trim()) {
       const q = query.trim().toLowerCase();
-      if (!((p.patient_name || "").toLowerCase().includes(q) || procLabel(p).toLowerCase().includes(q) || (p.patient_phone || "").includes(q))) return false;
+      if (!((p.patient_name || "").toLowerCase().includes(q) || procLabel(p).toLowerCase().includes(q) || (p.patient_phone || "").includes(formatPhoneSearch(query.trim())))) return false;
     }
     return true;
   }).sort((a, b) => {

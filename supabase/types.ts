@@ -1091,6 +1091,10 @@ export type Database = {
         Args: { p_room: string | null; p_date: string; p_time_min: number };
         Returns: Database["public"]["Tables"]["waitlist_entries"]["Row"][];
       };
+      waitlist_counts: {
+        Args: { p_modality?: string | null };
+        Returns: { waiting: number; cito: number; urgent: number; scheduled: number; removed: number }[];
+      };
       set_waitlist_status_rpc: {
         Args: { p_id: string; p_status: Database["public"]["Enums"]["waitlist_status"] };
         Returns: string;

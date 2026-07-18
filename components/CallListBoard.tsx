@@ -22,6 +22,7 @@ import { isLate } from "@/lib/queueStatus";
 import { modalityKind } from "@/lib/studies";
 import type { CallStatus, Json } from "@/supabase/types";
 import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
+import { formatPhoneSearch } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -534,7 +535,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, clinicName, a
     if (filter !== "all" && (p.call_status || "not_called") !== filter) return false;
     if (query.trim()) {
       const q = query.trim().toLowerCase();
-      if (!((p.patient_name || "").toLowerCase().includes(q) || (p.patient_phone || "").includes(q) || procLabel(p).toLowerCase().includes(q))) return false;
+      if (!((p.patient_name || "").toLowerCase().includes(q) || (p.patient_phone || "").includes(formatPhoneSearch(query.trim())) || procLabel(p).toLowerCase().includes(q))) return false;
     }
     return true;
   }).sort((a, b) => {

@@ -23,6 +23,7 @@ import { setClinicTz, wallToday0 } from "@/lib/incidents";
 import type { WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
 import { modalityLabel, modalityKind } from "@/lib/studies";
+import { formatPhoneSearch } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -177,7 +178,9 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
         .in("status", statusesFor(filter));
       // Модальність (сайдбар) і пошук — СЕРВЕРНО, а не фільтром у браузері.
       if (viewMod) q = q.or(`modality.is.null,modality.eq.${viewMod}`);
-      const s = qDebounced.trim().replace(/[%,()\\]/g, " ").trim();
+      // Телефоноподібний запит приводимо до канонічного «+380 XX XXX XX XX» лише
+      // ДЛЯ ПОШУКУ (інпут лишається raw — Backspace/редагування ПІБ не ламаються).
+      const s = formatPhoneSearch(qDebounced.trim()).replace(/[%,()\\]/g, " ").trim();
       if (s) q = q.or(`patient_name.ilike.%${s}%,patient_phone.ilike.%${s}%`);
       // waiting — повністю (зі стелею), клієнт досортує за пріоритетом (enum не дає
       // cito→urgent→planned серверно); історичні вкладки — сторінками за updated_at.
@@ -200,24 +203,16 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, clinicName, a
   const loadCounts = useCallback(async () => {
     try {
       const supabase = createClient();
-      const base = () => {
-        let b = supabase.from("waitlist_entries").select("*", { count: "exact", head: true }).eq("clinic_id", clinicId);
-        if (viewMod) b = b.or(`modality.is.null,modality.eq.${viewMod}`);
-        return b;
-      };
-      const [w, ci, u, sc, rm] = await Promise.all([
-        base().eq("status", "waiting"),
-        base().eq("status", "waiting").eq("priority_level", "cito"),
-        base().eq("status", "waiting").eq("priority_level", "urgent"),
-        base().eq("status", "scheduled"),
-        base().in("status", ["cancelled", "expired"]),
-      ]);
-      setCounts({
-        waiting: w.count || 0, cito: ci.count || 0, urgent: u.count || 0,
-        scheduled: sc.count || 0, removed: rm.count || 0,
+      // Один RPC (0105) замість п'яти паралельних COUNT: без сплеску запитів/503
+      // (StrictMode-дублі в dev їх 503-или) і без тихого застарівання лічильників.
+      const { data } = await supabase.rpc("waitlist_counts", { p_modality: viewMod });
+      const c = data?.[0];
+      if (c) setCounts({
+        waiting: c.waiting || 0, cito: c.cito || 0, urgent: c.urgent || 0,
+        scheduled: c.scheduled || 0, removed: c.removed || 0,
       });
     } catch { /* лічильники некритичні; список і банер помилки покажуть проблему */ }
-  }, [clinicId, viewMod]);
+  }, [viewMod]);
 
   // Дебаунс пошуку (серверний ilike) + скидання пагінації при зміні фільтра/модальності/пошуку.
   useEffect(() => { const t = setTimeout(() => setQDebounced(query), 300); return () => clearTimeout(t); }, [query]);

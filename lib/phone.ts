@@ -43,3 +43,23 @@ export function normalizePhoneUA(input: string): string {
   const d = phoneDigitsUA(input);
   return d.length === 9 ? "+380" + d : (input || "").trim();
 }
+
+/**
+ * Формат для полів ПОШУКУ, де в одному інпуті вводять і ПІБ, і телефон.
+ * Якщо ввід «схожий на телефон» (починається з «+» АБО складається лише з
+ * цифр/пробілів/дужок/дефісів і містить хоч одну цифру) — приводимо до
+ * КАНОНІЧНОГО міжнародного «+380 XX XXX XX XX» (усі номери в БД саме такі, тож
+ * пошук збігається незалежно від того, як оператор набирає: «0501234567»,
+ * «380 50…», «+380500…»). Інакше — лишаємо як є (пошук за ПІБ не чіпаємо;
+ * formatPhoneUA на тексті без цифр обнулив би рядок). Часткові номери формуються
+ * теж (наприклад «+380 50 0» для ilike), тому пошук працює «as-you-type».
+ */
+export function formatPhoneSearch(input: string): string {
+  const v = input ?? "";
+  const t = v.trim();
+  if (!t) return v;
+  const phoneLike = t.startsWith("+") || (/\d/.test(t) && /^[\d\s()+-]+$/.test(t));
+  if (!phoneLike) return v;
+  const nsn = phoneDigitsUA(v);            // до 9 значущих цифр (без 380/0)
+  return "+380" + (nsn ? " " + group(nsn) : " ");
+}

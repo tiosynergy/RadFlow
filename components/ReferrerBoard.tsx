@@ -17,6 +17,7 @@ import { PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { isLate, LATE_META } from "@/lib/queueStatus";
 import { wallNow, wallToday0 } from "@/lib/incidents";
 import { diffStudies, studyText, studiesChanged, modalityLabel } from "@/lib/studies";
+import { formatPhoneSearch } from "@/lib/phone";
 import type { Json } from "@/supabase/types";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
@@ -134,7 +135,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
     if (centerId !== "all" && r.clinic_id !== centerId) return false;
     if (roomId !== "all" && r.room_id !== roomId) return false;
     if (dateFilter && r.scheduled_date !== dateFilter) return false;
-    if (query.trim()) { const q = query.trim().toLowerCase(); if (!((r.patient_name || "").toLowerCase().includes(q) || procLabel(r).toLowerCase().includes(q))) return false; }
+    if (query.trim()) { const q = query.trim().toLowerCase(); if (!((r.patient_name || "").toLowerCase().includes(q) || procLabel(r).toLowerCase().includes(q) || (r.patient_phone || "").includes(formatPhoneSearch(query.trim())))) return false; }
     return true;
   }), [referrals, centerId, roomId, dateFilter, query]);
 
