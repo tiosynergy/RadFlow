@@ -17,6 +17,7 @@ import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate, QueueDelayPolicy } from "@/supabase/types";
 import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX, studiesMatchModality } from "@/lib/studies";
+import { firstClosedService, studiesKeySet } from "@/lib/serviceGate";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
 import { wallNow, wallInstant, wallDayKey, wallInstantOf, wallMinOfDay, wallMinOfInstant } from "@/lib/incidents";
@@ -428,6 +429,12 @@ async function callerIsStaffOf(supabase: SupabaseClient<Database>, clinicId: str
 const MODALITY_MISMATCH_ERR: QueueActionResult = {
   ok: false, error: "Тип дослідження не відповідає модальності кабінету", code: "modality_mismatch",
 };
+/* Defense-in-depth (High): послуга ВИМКНЕНА в каталозі центру або прихована в
+   кабінеті (0107/0108). DB-тригер стереже лише модальність↔кабінет, тож крафтовий/
+   застарілий запит міг записати на закриту послугу. Гейт — firstClosedService. */
+const SERVICE_CLOSED_ERR = (region: string): QueueActionResult => ({
+  ok: false, error: `Послуга «${region}» вимкнена в центрі або кабінеті — оновіть форму`, code: "modality_mismatch",
+});
 // 0094/0095 — гарди кейса (тригери + create_case_rpc). Ловляться ЗА ТЕКСТОМ у всіх
 // класифікаторах (mapCaseError/mapBookingError/classifyError) ДО перевірок за SQLSTATE:
 // CASE_SAME_ROOM піднімається з 23505, який інакше сплутали б з «кабінет зайнятий».
@@ -1173,10 +1180,19 @@ export async function editQueueEntryStudies(
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
   const { data: cur } = await supabase.from("queue_entries")
-    .select("clinic_id, room_id, scheduled_date, scheduled_time, status, in_progress_at, duration_min, buffer_time_min")
+    .select("clinic_id, room_id, scheduled_date, scheduled_time, status, in_progress_at, duration_min, buffer_time_min, studies")
     .eq("id", id).maybeSingle();
   if (!cur) return { ok: false, error: "Запис не знайдено", code: "forbidden" };
   if (cur.room_id && await studiesRoomMismatch(supabase, cur.room_id, studies)) return MODALITY_MISMATCH_ERR;
+  // Гейт закритих послуг з grandfather: області, що вже є в записі (снапшот), не
+  // ріжемо — інакше не відредагувати запис із послугою, вимкненою вже після броні.
+  if (cur.clinic_id && cur.room_id) {
+    const gf = studiesKeySet(cur.studies as unknown as { type?: string | null; region?: string | null }[]);
+    const closed = await firstClosedService(
+      supabase, cur.clinic_id, cur.room_id,
+      studies as unknown as { type?: string | null; region?: string | null }[], gf);
+    if (closed) return SERVICE_CLOSED_ERR(closed);
+  }
 
   const active = cur.status === "scheduled" || cur.status === "waiting" || cur.status === "in_progress";
   // 0077: подовження за графік / у перерву — можливе, але лише персоналу і з підтвердженням.
@@ -1277,6 +1293,7 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
   if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
+  { const closed = await firstClosedService(supabase, clinicId, input.roomId, input.studies); if (closed) return SERVICE_CLOSED_ERR(closed); }
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   /* 0077: createBooking доступний лише персоналу (clinic_id викликача = clinicId),
      тому isStaff тут завжди true — але передаємо явно, щоб гейт лишався одним
@@ -1365,6 +1382,7 @@ export async function scheduleFromWaitlist(waitlistId: string, booking: BookingI
   // Пере-перевірки (як createBooking): дають чисту помилку ДО застовплення й рахують
   // off_schedule. Це НЕ мутації — гонку розвʼязує атомарний claim усередині RPC.
   if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
+  { const closed = await firstClosedService(supabase, clinicId, input.roomId, input.studies); if (closed) return SERVICE_CLOSED_ERR(closed); }
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   const gate = await scheduleBlock(
     supabase, input.roomId, clinicId, input.scheduledDate, input.scheduledTime, input.durationMin,
@@ -1604,6 +1622,7 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
   if (!roomAllowed) return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
 
   if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
+  { const closed = await firstClosedService(supabase, input.clinicId, input.roomId, input.studies); if (closed) return SERVICE_CLOSED_ERR(closed); }
   if (await isPastSlot(supabase, input.clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   /* 0077: направнику робота поза графіком НЕ доступна (рішення власника: він
      записує пацієнтів ззовні й не знає, чи лишиться зміна). isStaff: false —
@@ -2075,6 +2094,12 @@ export async function createCase(raw: CaseInput): Promise<QueueActionResult> {
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
+  // Гейт закритих послуг — кожен крок проти каталогу свого кабінету.
+  for (const st of input.steps) {
+    const c = await firstClosedService(supabase, clinicId, st.roomId, st.studies);
+    if (c) return SERVICE_CLOSED_ERR(c);
+  }
+
   const p_case = {
     patient_name: input.patient.name,
     patient_phone: input.patient.phone ?? null,
@@ -2136,6 +2161,7 @@ export async function addCaseStep(caseId: string, raw: CaseStepInput): Promise<Q
     doctor: s.doctor ?? null,
     note: s.note ?? null,
   };
+  { const c = await firstClosedService(supabase, clinicId, s.roomId, s.studies); if (c) return SERVICE_CLOSED_ERR(c); }
   const { data, error } = await supabase.rpc("add_case_step_rpc", {
     p_case_id: idv.data,
     p_step: p_step as unknown as Json,
@@ -2171,6 +2197,7 @@ export async function caseFromEntry(entryId: string, raw: CaseStepInput): Promis
     doctor: s.doctor ?? null,
     note: s.note ?? null,
   };
+  { const c = await firstClosedService(supabase, clinicId, s.roomId, s.studies); if (c) return SERVICE_CLOSED_ERR(c); }
   const { data, error } = await supabase.rpc("case_from_entry_rpc", {
     p_entry_id: idv.data,
     p_step: p_step as unknown as Json,

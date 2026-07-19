@@ -99,9 +99,11 @@ export default async function ReferralPage() {
         (roomsByClinic[cid] ||= []).push(r);
       });
       // Каталоги активних центрів (RLS services_referrer_read — лише центри з грантом).
+      // ВСІ рядки (у т.ч. active=false): buildCatalog розрізняє «не налаштовували»
+      // (→ статика) від «усі вимкнені» (→ порожньо, напрям закрито). High-2.
       const { data: svc } = await supabase
         .from("services").select(SERVICE_COLS)
-        .in("clinic_id", activeIds).eq("active", true).order("sort_order");
+        .in("clinic_id", activeIds).order("sort_order");
       (svc ?? []).forEach((s) => { (servicesByClinic[s.clinic_id as string] ||= []).push(s as ServiceLike); });
       // Переозначення по кабінетах активних центрів (2b) — ВСІ рядки (active=false ховає позицію).
       const { data: ov } = await supabase
@@ -126,8 +128,8 @@ export default async function ReferralPage() {
         .order("name");
       roomsByClinic[clinic.id as string] = rooms ?? [];
       const { data: svc } = await supabase
-        .from("services").select(SERVICE_COLS)
-        .eq("clinic_id", profile.clinic_id as string).eq("active", true).order("sort_order");
+        .from("services").select(SERVICE_COLS)   // ВСІ рядки (active=false теж) — High-2
+        .eq("clinic_id", profile.clinic_id as string).order("sort_order");
       servicesByClinic[clinic.id as string] = (svc ?? []) as ServiceLike[];
       const { data: ov } = await supabase
         .from("service_room_overrides").select(SRO_COLS)

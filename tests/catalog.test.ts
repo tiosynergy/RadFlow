@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildCatalog, catalogTotalPrice, overridesToMap, type ServiceLike } from "@/lib/catalog";
+import { buildCatalog, catalogTotalPrice, overridesToMap, firstClosedStudy, type ServiceLike } from "@/lib/catalog";
 import { CONTRAST_SURCHARGE, CONTRAST_DUR } from "@/lib/studies";
 
 /* Резолвер каталогу (Stage 2, фаза 2a). Каталог per-clinic (`services`, 0107)
@@ -183,5 +183,47 @@ describe("catalogTotalPrice", () => {
     expect(catalogTotalPrice(cat, [{ type: "MRI", region: "Мозок", price: 1111 }])).toBe(1111); // снімок
     expect(catalogTotalPrice(cat, [{ type: "MRI", region: "Мозок" }])).toBe(2400); // з каталогу
     expect(catalogTotalPrice(cat, null)).toBe(0);
+  });
+});
+
+describe("firstClosedStudy — серверний гейт закритих послуг (defense-in-depth)", () => {
+  const knee = svc({ name: "Коліно", modality: "MRI", active: true });
+  // US налаштована (рядок є), але вимкнена:
+  const usOff = svc({ name: "Плече", modality: "US", active: false });
+
+  it("активна послуга налаштованого центру → не закрита (null)", () => {
+    const cat = buildCatalog([knee]);
+    expect(firstClosedStudy(cat, [{ type: "MRI", region: "Коліно" }])).toBeNull();
+  });
+
+  it("вимкнена модальність (усі позиції off) → закрита, повертає область", () => {
+    const cat = buildCatalog([usOff]);
+    expect(firstClosedStudy(cat, [{ type: "US", region: "Плече" }])).toBe("Плече");
+  });
+
+  it("прихована в кабінеті (override active=false) → закрита ЛИШЕ для цього кабінету", () => {
+    const cat = buildCatalog(
+      [knee],
+      overridesToMap([{ room_id: "r1", service_id: knee.id, price: null, duration_min: null, contrast_price: null, active: false }])
+    );
+    expect(firstClosedStudy(cat, [{ type: "MRI", region: "Коліно" }], "r1")).toBe("Коліно");
+    expect(firstClosedStudy(cat, [{ type: "MRI", region: "Коліно" }], "r2")).toBeNull();
+    expect(firstClosedStudy(cat, [{ type: "MRI", region: "Коліно" }])).toBeNull();
+  });
+
+  it("легасі-модальність (не налаштована) → НЕ закрита (статичний фолбэк)", () => {
+    const cat = buildCatalog([knee]); // MRI налаштована, CT — ні
+    expect(firstClosedStudy(cat, [{ type: "CT", region: "Голова / мозок" }])).toBeNull();
+  });
+
+  it("grandfather пропускає область, що вже є в записі", () => {
+    const cat = buildCatalog([usOff]);
+    expect(firstClosedStudy(cat, [{ type: "US", region: "Плече" }], undefined, new Set(["US|Плече"]))).toBeNull();
+  });
+
+  it("порожні рядки (без type/region) ігноруються", () => {
+    const cat = buildCatalog([usOff]);
+    expect(firstClosedStudy(cat, [{ type: "US", region: "" }, { type: "", region: "X" }])).toBeNull();
+    expect(firstClosedStudy(cat, null)).toBeNull();
   });
 });

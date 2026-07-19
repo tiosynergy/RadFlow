@@ -13,6 +13,7 @@ import { BUFFER_DEFAULT, hasBookableStudy, normBuffer, type Study } from "@/lib/
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { modalityFromStudies } from "@/lib/waitlist";
 import { wallDayKey } from "@/lib/incidents";
+import { firstClosedService, studiesKeySet } from "@/lib/serviceGate";
 import {
   parseInput, safeDbError, zUuid, zDateKey, zTime, zName, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
@@ -70,6 +71,11 @@ export type WaitlistActionResult =
   // 'stale' — CAS не спрацював: рядок уже змінив стан (напр. кандидата встиг
   // записати інший адміністратор). UI має оновитись, а не мовчки перетерти.
   | { ok: false; error: string; code?: "forbidden" | "auth" | "duplicate" | "stale" | "generic" };
+
+/* Defense-in-depth (High): послуга вимкнена в каталозі центру / прихована в кабінеті. */
+const SERVICE_CLOSED_WL = (region: string): WaitlistActionResult => ({
+  ok: false, error: `Послуга «${region}» вимкнена в центрі або кабінеті — оновіть форму`, code: "generic",
+});
 
 /* Серверний гард «бажане вікно вже минуло» (defense-in-depth до клієнтського в
    WaitlistModal). Стягуюча умова — на КІНЕЦЬ вікна: якщо desired_date_to цілком у
@@ -176,6 +182,10 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
 
   // Бажане вікно цілком у минулому → пацієнт не потрапить у підбір (див. PAST_WINDOW).
   if (input.desiredDateTo && input.desiredDateTo < await clinicTodayKey(supabase, clinicId)) return PAST_WINDOW;
+
+  // Гейт закритих послуг: лист не завжди привʼязаний до кабінету (roomId=null →
+  // база центру). Легасі-модальність (без каталогу) не чіпаємо.
+  { const closed = await firstClosedService(supabase, clinicId, input.roomId ?? null, input.studies); if (closed) return SERVICE_CLOSED_WL(closed); }
 
   const { data, error } = await supabase
     .from("waitlist_entries")
@@ -341,6 +351,21 @@ export async function updateWaitlistEntry(
     // Кабінет у патчі (не null) має бути в гранті (null/[] = усі кабінети центру).
     if (safePatch.room_id != null && grantRooms && grantRooms.length > 0 && !grantRooms.includes(safePatch.room_id as string)) {
       return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
+    }
+  }
+
+  // Гейт закритих послуг при зміні складу (grandfather: області, вже наявні в
+  // записі-снапшоті, не ріжемо — тільки нові вимкнені/приховані в кабінеті).
+  if (safePatch.studies !== undefined) {
+    const { data: row } = await supabase.from("waitlist_entries")
+      .select("clinic_id, room_id, studies").eq("id", v.data.id).maybeSingle();
+    if (row?.clinic_id) {
+      const effRoom = (safePatch.room_id !== undefined ? safePatch.room_id : row.room_id) as string | null;
+      const gf = studiesKeySet(row.studies as unknown as { type?: string | null; region?: string | null }[]);
+      const closed = await firstClosedService(
+        supabase, row.clinic_id, effRoom,
+        safePatch.studies as unknown as { type?: string | null; region?: string | null }[], gf);
+      if (closed) return SERVICE_CLOSED_WL(closed);
     }
   }
 

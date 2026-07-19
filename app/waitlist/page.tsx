@@ -36,11 +36,12 @@ export default async function WaitlistPage() {
     .order("name");
 
   // Каталог послуг центру (services, 0107) — форми листа очікування (фаза 2a).
+  // ВСІ рядки (у т.ч. active=false) — buildCatalog розрізняє «не налаштовували»
+  // (→ статика) від «усі вимкнені» (→ порожньо, напрям закрито). High-2.
   const { data: services } = await supabase
     .from("services")
     .select("id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order")
     .eq("clinic_id", profile.clinic_id as string)
-    .eq("active", true)
     .order("sort_order");
 
   // Переозначення каталогу по кабінетах (0108) — форми листа очікування (фаза 2b).

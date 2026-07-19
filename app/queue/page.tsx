@@ -36,12 +36,14 @@ export default async function QueuePage() {
     .order("name");
 
   // Каталог послуг центру (services, 0107) — SSR-проп у форми запису (фаза 2a).
-  // Лише активні: форми пропонують тільки active; порожньо → статичний фолбэк.
+  // ВСІ рядки (у т.ч. active=false): buildCatalog сам відсіює неактивні, але за
+  // наявністю рядка розрізняє «модальність не налаштовували» (→ статика) від «усі
+  // позиції вимкнені» (→ порожньо, напрям закрито). Фільтр active тут знову відкривав
+  // би статику при вимкненні всіх послуг модальності (High-2).
   const { data: services } = await supabase
     .from("services")
     .select("id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order")
     .eq("clinic_id", profile.clinic_id as string)
-    .eq("active", true)
     .order("sort_order");
 
   // Переозначення каталогу по кабінетах (service_room_overrides, 0108) — SSR-проп у

@@ -101,6 +101,9 @@ export function overridesToMap(
 export interface Catalog {
   /** Чи має каталог центру активні позиції цієї модальності (інакше — статика). */
   has(type?: string | null): boolean;
+  /** Чи налаштована модальність у каталозі (є позиція, хай і вимкнена) — true навіть
+      коли всі вимкнені. Саме це (а не has) визначає легасі-фолбэк і серверний гейт. */
+  isConfigured(type?: string | null): boolean;
   /** Області модальності (drop-in для regionsFor). */
   regionsFor(type?: string, roomId?: string): CatalogRegion[];
   /** Область за назвою (drop-in для regionInfo). */
@@ -210,7 +213,30 @@ export function buildCatalog(
     return has(type) ? staticStudyPrice(type, region, contrast) : null;
   };
 
-  return { has, regionsFor, regionInfo, studyDur, studyPrice };
+  return { has, isConfigured, regionsFor, regionInfo, studyDur, studyPrice };
+}
+
+/** Серверний гейт складу дослідження проти каталогу центру (defense-in-depth).
+    Повертає назву ПЕРШОЇ області, ЗАКРИТОЇ каталогом — модальність налаштована,
+    але область неактивна або прихована в кабінеті (regionInfo → null); або null,
+    якщо все дозволено. Легасі-модальність (не налаштована) НЕ чіпається. Порожні
+    рядки (без type/region) ігноруються (їх ловить zStudiesRequired). grandfather —
+    набір "type|region", який уже є в записі (редагування снапшота → пропускаємо). */
+export function firstClosedStudy(
+  cat: Catalog,
+  studies: ReadonlyArray<{ type?: string | null; region?: string | null }> | null | undefined,
+  roomId?: string,
+  grandfather?: ReadonlySet<string>
+): string | null {
+  if (!Array.isArray(studies)) return null;
+  for (const s of studies) {
+    const type = s?.type ?? undefined;
+    const region = s?.region ?? undefined;
+    if (!type || !region) continue;
+    if (grandfather?.has(type + "|" + region)) continue;
+    if (cat.isConfigured(type) && !cat.regionInfo(type, region, roomId)) return region;
+  }
+  return null;
 }
 
 /** Сумарна ціна набору досліджень за каталогом центру: пріоритет — збережена
