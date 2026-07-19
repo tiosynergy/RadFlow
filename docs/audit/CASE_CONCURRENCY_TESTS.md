@@ -94,13 +94,73 @@ rollback;
 (серверный `order by priority_level` — порядок enum). До фикса cito за
 `WAITING_CAP=300` вообще не попадал в выборку.
 
-## Замечание о 40P01
+## 7. Гонка перерасчёта статуса кейса (0109) — статус НЕ застревает в `open`
 
-Порядок локов после 0106: `patient_cases` → строки `queue_entries` → advisory
-кабинета. Триггер пересчёта статуса берёт лок кейса ПОСЛЕ лока записи
-(`queue_set_status_rpc` держит строку) — узкое окно взаимоблокировки с
-`cancel_case_rpc` остаётся и разрешается Postgres'ом как **40P01**; клиент
-классифицирует его как transient (`isRetryableLockError`) и предлагает
-повторить. Это тот же принятый компромисс, что в 0092 для
-`emergency_stop_rpc`/`submit_incident_rpc`. Если в сценарии 3 вместо
-ожидания увидите 40P01 — это штатно: повторите вызов.
+**Это ровно та гонка, которую чинит 0109** (High-1). До 0109
+`case_recompute_status` агрегировал шаги без лока строки `patient_cases`: две
+транзакции, переводящие РАЗНЫЕ шаги одного кейса в неактивное состояние, каждая
+видела чужой шаг ещё активным (READ COMMITTED) → обе оставляли `open`. Теперь
+перерасчёт берёт `for update` на кейс, а все writer-пути лочат кейс первыми
+(порядок `case → queue`), поэтому перерасчёты сериализуются.
+
+Подготовка: открытый кейс `<CASE>` РОВНО с двумя активными шагами
+`<STEP_A>`/`<STEP_B>` (оба `scheduled`, разные кабинеты). До гонки:
+`select status from patient_cases where id='<CASE>';` → `open`. Переходы статусов
+делать по одному (гард 0069: `scheduled → in_progress → done`; `cancelled` — из
+`scheduled`).
+
+### 7a. Два `queue_set_status_rpc` по разным шагам (done ↔ cancelled)
+
+| Шаг | Сессия A | Сессия B |
+|---|---|---|
+| 1 | `begin;` | `begin;` |
+| 2 | `select queue_set_status_rpc('<STEP_A>','in_progress');` затем `select queue_set_status_rpc('<STEP_A>','done');` (лочит строку кейса первой, держит) | — |
+| 3 | — | `select queue_set_status_rpc('<STEP_B>','cancelled');` — **висит** на локе кейса |
+| 4 | `commit;` | B отвисает, перечитывает шаги под локом |
+| 5 | — | `commit;` |
+
+**Ожидание:** `select status from patient_cases where id='<CASE>';` →
+**`completed`** (A `done`, B `cancelled` → активных нет, есть `done`). До 0109 —
+`open` навсегда. Симметрично (B первой) — тот же итог.
+
+### 7b. `queue_set_status_rpc(done)` ↔ `emergency_stop_rpc` (шаг in_progress → not_held)
+
+Шаг B заранее перевести в `in_progress`; кабинет `<ROOM_B>` шага B — в наборе
+аварийной остановки.
+
+| Шаг | Сессия A | Сессия B |
+|---|---|---|
+| 1 | `begin;` | `begin;` |
+| 2 | `select queue_set_status_rpc('<STEP_A>','done');` (лочит кейс первым) | — |
+| 3 | — | `select emergency_stop_rpc(array['<ROOM_B>']::uuid[], '<DATE_B>');` — **висит** на локе кейса шага B |
+| 4 | `commit;` | B отвисает, ставит `not_held` шагу B, перерасчёт под локом |
+| 5 | — | `commit;` |
+
+**Ожидание:** `patient_cases.status` → **`completed`** (A `done`, B `not_held` →
+не активен). Порядок сессий можно поменять — итог тот же (сериализация на строке
+кейса). Аналогично проверяется `submit_incident_rpc` (тот же `not_held`-путь) и
+`queue_apply_delay_plan_rpc` (шаг → `needs_reschedule`: остаётся активным, статус
+кейса `open` — но проверяет, что план не «застревает» и не даёт ложный terminal).
+
+Sequential-инвариант (без гонки) покрыт smoke
+`supabase/smoke/case_status_serialization_smoke.sql` (open/completed/cancelled).
+
+## Замечание о 40P01 (после 0109)
+
+0109 привёл ВСЕ writer-пути, меняющие статус шага кейса, к единому порядку
+`patient_cases` → строки `queue_entries` → advisory кабинета
+(`queue_set_status_rpc`/`queue_reschedule_rpc` — лок кейса первым по peek;
+`emergency_stop_rpc`/`submit_incident_rpc`/`queue_apply_delay_plan_rpc` — лок
+затронутых кейсов первым, `order by pc.id`). Поэтому взаимоблокировка между
+`queue_set_status_rpc` и `cancel_case_rpc`, отмеченная после 0106 (сценарий 3),
+**закрыта**: одинаковый порядок → один ждёт, дедлока нет.
+
+Остаётся УЗКИЙ транзиентный `40P01` только у массовых админ-операций
+(`emergency_stop`/`submit_incident`): если запись стала `in_progress`
+конкурентно — уже ПОСЛЕ снимка залоченных кейсов (0109) и после скана строк
+`for update`, — её `not_held`-перерасчёт возьмёт лок кейса после строки очереди
+(окно `queue → case`). Это неотъемлемое ограничение READ COMMITTED для
+многострочных апдейтов; клиент классифицирует `40P01`/`40001` как transient
+(`isRetryableLockError`) и предлагает повторить. Сценарии 1–3 (case-RPC ↔
+case-RPC) больше 40P01 не дают. Если в 7b вместо ожидания увидите 40P01 — это
+штатно: повторите откатившуюся сессию.

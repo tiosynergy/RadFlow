@@ -766,6 +766,13 @@ export async function submitIncident(input: IncidentInput): Promise<IncidentActi
 
   if (error) {
     const code = error.code ?? "";
+    // 0109: простій переводить in_progress-кроки кейса у not_held → перерахунок
+    // статусу кейса бере лок кейса. У рідкій гонці з case-RPC це дає транзиентний
+    // 40P01 — правильна реакція «повторіть», а не «щось зламалось».
+    if (isRetryableLockError(code, error.message)) {
+      safeDbError("submitIncident.lock", error);
+      return { ok: false, error: "Кабінет саме зараз змінює інший оператор — спробуйте ще раз", code: "generic" };
+    }
     // 23505 — унікальний індекс «один активний інцидент на кабінет» (0017).
     if (code === "23505" || /duplicate|unique|23505/i.test(error.message)) {
       return { ok: false, error: "Кабінет уже має активний простій", code: "duplicate" };

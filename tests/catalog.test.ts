@@ -56,10 +56,15 @@ describe("buildCatalog — пріоритет каталогу центру", ()
     expect(cat.regionsFor("US").map((x) => x.label)).toEqual(["Живий"]);
   });
 
-  it("усі позиції модальності вимкнені → фолбэк на статику (не порожньо)", () => {
+  it("усі позиції модальності ВИМКНЕНІ → ПОРОЖНЬО (напрям закрито), запис заборонено — High-2", () => {
+    // US налаштовано (є рядок), але всі позиції active=false → НЕ статика, а порожньо.
     const cat = buildCatalog([svc({ name: "Вимкнений", modality: "US", active: false })]);
     expect(cat.has("US")).toBe(false);
-    expect(cat.regionsFor("US").length).toBeGreaterThan(0); // статичні US_REGIONS
+    expect(cat.regionsFor("US")).toEqual([]);                 // закрито, не US_REGIONS
+    expect(cat.studyDur("US", "Вимкнений", false)).toBe(0);   // не статична тривалість
+    expect(cat.studyPrice("US", "Вимкнений", false)).toBeNull();
+    // А НЕналаштовану модальність (жодного рядка) той самий каталог делегує статиці.
+    expect(cat.regionsFor("MRI").length).toBeGreaterThan(0);  // MRI не налаштовано → легасі
   });
 });
 

@@ -2,8 +2,9 @@
    ЄДИНА точка читання per-clinic каталогу `services` (0107) у booking-флоу.
    До 2a форми брали області/тривалості/ціни зі статичного lib/studies.ts
    (`regionsFor`/`studyDur`/`studyPrice`). Тепер вони йдуть через buildCatalog():
-   якщо в каталозі центру Є активні позиції модальності — використовуємо їх;
-   якщо НЕМАЄ (легасі-центр без сіду) — прозоро делегуємо статичному каталогу.
+   якщо модальність НАЛАШТОВАНА в каталозі центру — використовуємо його позиції
+   (може бути й порожньо, якщо всі вимкнені → напрям закрито, High-2); якщо
+   модальність НЕ налаштовували (жодного рядка) — прозоро делегуємо статиці.
 
    buildCatalog(services) повертає об'єкт із функціями, чиї СИГНАТУРИ збігаються
    зі статичними (`regionsFor`/`regionInfo`/`studyDur`/`studyPrice`) — заміна у
@@ -120,12 +121,20 @@ export function buildCatalog(
 ): Catalog {
   const rows = Array.isArray(services) ? services : [];
 
+  // High-2: розрізняємо «модальність НЕ налаштовували» (немає жодного рядка →
+  // легасі-фолбэк на lib/studies) від «налаштували, але ВСІ позиції вимкнені»
+  // (→ порожній список, запис заборонено — центр свідомо закрив напрям). Раніше
+  // обидва випадки давали порожній byMod і мовчки поверталися до статики, тож
+  // адмін, вимкнувши всі УЗД, знову бачив стандартний каталог УЗД.
+  const configured = new Set<string>();   // модальності з ≥1 позицією (активна чи ні)
   // Активні позиції, згруповані за кодом модальності, у порядку sort_order → name.
   const byMod = new Map<string, ServiceLike[]>();
   for (const s of rows) {
-    if (!s || s.active === false) continue;
+    if (!s) continue;
     const code = modalityCode(s.modality);
     if (code === "OTHER") continue; // OTHER не має форм запису (сознательно)
+    configured.add(code);
+    if (s.active === false) continue;
     (byMod.get(code) ?? byMod.set(code, []).get(code)!).push(s);
   }
   for (const arr of byMod.values()) {
@@ -145,16 +154,23 @@ export function buildCatalog(
     serviceId: s.id,
   });
 
+  // Чи є активні позиції цієї модальності (публічний has — семантика без змін).
   const has: Catalog["has"] = (type) => {
     const code = modalityCode(type);
     return (byMod.get(code)?.length ?? 0) > 0;
   };
+  // Чи налаштований каталог модальності (є позиції, хай і вимкнені). Саме це, а не
+  // has(), вирішує «легасі-фолбэк на статику (ні) чи каталог центру, можливо
+  // порожній (так)» — інакше вимкнення всіх позицій відкривало б статику (High-2).
+  const isConfigured = (type?: string | null): boolean => configured.has(modalityCode(type));
 
   const regionsFor: Catalog["regionsFor"] = (type, roomId) => {
     const code = modalityCode(type);
-    const arr = byMod.get(code);
-    // Каталог центру не має цієї модальності → статичний фолбэк (легасі).
-    if (!arr || arr.length === 0) return staticRegionsFor(type) as CatalogRegion[];
+    // Модальність НЕ налаштовували → статичний фолбэк (легасі-центр).
+    if (!configured.has(code)) return staticRegionsFor(type) as CatalogRegion[];
+    // Налаштували, але всі позиції вимкнені (byMod порожній) → ПОРОЖНЬО: напрям
+    // закрито, форми не дадуть створити запис (область обов'язкова). High-2.
+    const arr = byMod.get(code) ?? [];
     const out: CatalogRegion[] = [];
     for (const s of arr) {
       const ov = ovOf(s, roomId);
@@ -165,7 +181,7 @@ export function buildCatalog(
   };
 
   const regionInfo: Catalog["regionInfo"] = (type, region, roomId) => {
-    if (!has(type)) {
+    if (!isConfigured(type)) {
       // Делегуємо статиці; contrastPrice=null (глобальна доплата).
       const st = staticRegionInfo(type, region);
       return st ? { ...st, contrastPrice: null } : null;
@@ -174,18 +190,24 @@ export function buildCatalog(
   };
 
   const studyDur: Catalog["studyDur"] = (type, region, contrast, roomId) => {
-    if (!has(type)) return staticStudyDur(type, region, contrast);
+    if (!isConfigured(type)) return staticStudyDur(type, region, contrast);
     const o = regionInfo(type, region, roomId);
-    return o ? o.dur + (contrast ? CONTRAST_DUR : 0) : staticStudyDur(type, region, contrast);
+    if (o) return o.dur + (contrast ? CONTRAST_DUR : 0);
+    // Область відсутня в каталозі: активний каталог → перейменована область (статика);
+    // усі позиції вимкнені → напрям закрито, нічого не пропонуємо (0).
+    return has(type) ? staticStudyDur(type, region, contrast) : 0;
   };
 
   const studyPrice: Catalog["studyPrice"] = (type, region, contrast, roomId) => {
-    if (!has(type)) return staticStudyPrice(type, region, contrast);
+    if (!isConfigured(type)) return staticStudyPrice(type, region, contrast);
     const o = regionInfo(type, region, roomId);
-    if (!o) return staticStudyPrice(type, region, contrast); // область відсутня в каталозі (напр. перейменована)
-    if (o.price == null) return null;
-    const surcharge = contrast ? (o.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
-    return o.price + surcharge;
+    if (o) {
+      if (o.price == null) return null;
+      const surcharge = contrast ? (o.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
+      return o.price + surcharge;
+    }
+    // Область відсутня: активний каталог → статика (перейменована); закрито → null.
+    return has(type) ? staticStudyPrice(type, region, contrast) : null;
   };
 
   return { has, regionsFor, regionInfo, studyDur, studyPrice };
