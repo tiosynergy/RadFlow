@@ -10,8 +10,11 @@ import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, CONTRAST_DUR, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import { buildCatalog, type ServiceLike } from "@/lib/catalog";
-import { roomScheduleFor, effectiveRoomBreaks, OFF_SCHED_GRACE_MIN, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, effectiveRoomBreaks, inBreak, offScheduleKind, OFF_SCHED_GRACE_MIN, type DayOverride } from "@/lib/schedule";
 import { wallNow, wallMinOfDay, wallDayKey, wallToday0 } from "@/lib/incidents";
+import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
+import { buildSlots } from "@/lib/slots";
+import SlotPicker from "@/components/SlotPicker";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 const MIN_STUDY = 15;
@@ -56,51 +59,44 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const lockType = roomKind !== "Інше";
   const defaultType = lockType ? roomKind : "МРТ";
 
-  const [nextStart, setNextStart] = useState<number | null>(null);
   const [override, setOverride] = useState<DayOverride | null>(null);
-  const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule кабінету (для перерв)
-  // H-6: зайнятість кабінету — це стан «завантажено / помилка», а не просто null.
-  // Поки зайнятість НЕ підтверджена (грузиться або впала), nextStart=null не можна
-  // трактувати як «наступних записів немає» — інакше capByNext=Infinity ЗАВИЩУЄ
-  // доступну тривалість (fail-open) і оператор задасть тривалість, яку відкине сервер.
-  const [busyReady, setBusyReady] = useState(false);   // маємо надійну відповідь про nextStart
-  const [busyErr, setBusyErr] = useState(false);        // читання зайнятості впало
+  const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule кабінету (для перерв/сітки)
+  // Графік/оверрайд кабінету на дату (для меж тривалості й сітки слотів). Зайнятість
+  // кабінету — окремо через useRoomBusy (realtime), нижче.
   useEffect(() => {
     let cancel = false;
-    setBusyReady(false); setBusyErr(false);
     (async () => {
-      if (!patient.room_id || !scheduledDate) { if (!cancel) setBusyReady(true); return; } // нема що перевіряти
+      if (!scheduledDate) return;
       try {
         const supabase = createClient();
         if (clinicId) {
           const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
           if (!cancel) setOverride((ov.data as unknown as DayOverride) || null);
         }
-        const roomRes = await supabase.from("rooms").select("schedule").eq("id", patient.room_id).maybeSingle();
-        if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
-        // Знеособлена зайнятість кабінету; p_exclude прибирає сам редагований запис.
-        const { data, error } = await supabase.rpc("room_busy_slots", { p_room: patient.room_id, p_date: scheduledDate, p_exclude: patient.id });
-        if (cancel) return;
-        if (error) throw error;   // не ковтаємо: «пусто» ≠ «помилка» (6.4)
-        /* Найближчий СЛІДУЮЧИЙ запис у кабінеті — щоб не подовжити дослідження
-           поверх нього. 0074: беремо start_min (обрізаний по добі); «хвости» з
-           попередньої доби мають start_min = 0 і сюди не потраплять (вони раніше
-           за наш старт) — саме те, що треба. */
-        const startMin = toMin(patient.scheduled_time);
-        const ns = (data || [])
-          .map((p) => (p.start_min != null ? p.start_min : toMin(p.scheduled_time)))
-          .filter((m) => m > startMin)
-          .sort((a, b) => a - b)[0];
-        setNextStart(ns != null ? ns : null);
-        setBusyReady(true);
-      } catch {
-        // Транзієнтний збій (оновлення токена / мережа) — не рушимо модаль, але
-        // ПОЗНАЧАЄМО помилку: capByNext стане консервативним (fail-closed).
-        if (!cancel) { setNextStart(null); setBusyErr(true); }
-      }
+        if (patient.room_id) {
+          const roomRes = await supabase.from("rooms").select("schedule").eq("id", patient.room_id).maybeSingle();
+          if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
+        }
+      } catch { /* транзієнт — межі лишаться дефолтними; сітку прикриє busyErr */ }
     })();
     return () => { cancel = true; };
-  }, [patient.id, patient.room_id, patient.scheduled_time, scheduledDate, clinicId]);
+  }, [patient.room_id, scheduledDate, clinicId]);
+
+  // Зайнятість кабінету на дату запису (realtime) — сам редагований запис виключаємо
+  // (p_exclude), щоб його власне вікно не рахувалося «наступним записом».
+  const { spans: roomBusy, loading: busyLoading, error: busyErr } = useRoomBusy({
+    roomId: patient.room_id, dateStr: scheduledDate || "", excludeId: patient.id,
+  });
+  // H-6: поки зайнятість НЕ підтверджена (грузиться/впала), nextStart=null не можна
+  // трактувати як «наступних записів немає» (fail-open завищив би доступний час).
+  const busyReady = !busyLoading && !busyErr;
+  // Найближчий СЛІДУЮЧИЙ запис у кабінеті (0074: start_min обрізаний по добі; «хвости»
+  // з попередньої доби мають менший старт і сюди не потраплять) — стеля тривалості.
+  const nextStart = useMemo(() => {
+    const sm = toMin(patient.scheduled_time);
+    const arr = roomBusy.map((b) => b.s).filter((m) => m > sm).sort((a, b) => a - b);
+    return arr.length ? arr[0] : null;
+  }, [roomBusy, patient.scheduled_time]);
 
   const [buffer, setBuffer] = useState<number>(normBuffer(patient.buffer_time_min ?? BUFFER_DEFAULT));
 
@@ -141,7 +137,8 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      (offOk нижче), а сервер усе одно перевірить scheduleBlock. */
   const capBySched = (offSchedule ? schedEnd + OFF_SCHED_GRACE_MIN : schedEnd) - startMin;
   // Перерва кабінету після старту теж обмежує тривалість — дослідження не може її перетнути.
-  const nextBreakStart = effectiveRoomBreaks(dateObj, patient.room_id || "", roomSchedule, override).map((b) => toMin(b.start)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
+  const roomBreaks = effectiveRoomBreaks(dateObj, patient.room_id || "", roomSchedule, override);
+  const nextBreakStart = roomBreaks.map((b) => toMin(b.start)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
   const capByBreak = offSchedule ? Infinity : (nextBreakStart != null ? nextBreakStart - startMin : Infinity);
   const availableDur = Math.max(0, Math.min(capByNext, capBySched, capByBreak));
   // Межа, за якою потрібне НОВЕ підтвердження (кінець графіка / початок перерви).
@@ -154,13 +151,14 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
 
   // Тривалість за довідником + CONTRAST_DUR, якщо дослідження з контрастом.
   function recalc(type: string, region: string, contrast: boolean, prevDur?: number): number {
+    if (!region) return 0; // область не обрана → 0: не додаємо час, поки не вибрано
     const ro = regionsFor(type).find((r) => r.label === region);
-    return ro ? studyDur(type, region, contrast) : (prevDur || (regionsFor(type)[0]?.dur ?? 20));
+    return ro ? studyDur(type, region, contrast) : (prevDur || 0); // легасі-область поза каталогом → зберегти наявну тривалість
   }
   function seed(): StudyRow[] {
     const base: StudyLike[] = Array.isArray(patient.studies) && patient.studies.length
       ? (patient.studies as StudyLike[])
-      : [{ type: defaultType, region: "", dur: regionsFor(defaultType)[0]?.dur ?? 20 }];
+      : [{ type: defaultType, region: "", dur: 0 }]; // порожня стартова строка — 0 хв, поки не обрано область
     return base.map((s) => {
       const t = lockType ? roomKind : (s.type || "МРТ");
       const keepRegion = !lockType || !s.type || s.type === roomKind;
@@ -186,7 +184,9 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   function addRow() { setRows((rs) => [...rs, { type: defaultType, region: "", contrast: false, dur: recalc(defaultType, "", false) }]); }
   function removeRow(i: number) { setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : rs)); }
 
-  const totalDur = rows.reduce((s, r) => s + (Number(r.dur) || 0), 0);
+  // Рахуємо ЛИШЕ дослідження з обраною областю — порожній рядок не додає час
+  // у «Разом» і в блок сітки, поки область не вибрано.
+  const totalDur = rows.reduce((s, r) => s + (r.region ? (Number(r.dur) || 0) : 0), 0);
   const overflow = totalDur > availableDur;
   const remaining = availableDur - totalDur;
   // М'яке попередження (НЕ блокує збереження): за фактом старту дослідження+буфер
@@ -201,6 +201,33 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const crossesNow = totalDur > inSchedCap;
   const needsOffConfirm = crossesNow && !overflow;
   const valid = rows.length > 0 && rows.every((r) => r.region) && !overflow && (!needsOffConfirm || offOk);
+
+  // ── Сітка слотів (read-only візуалізація дня кабінету) ──────────────────────
+  // Показуємо зайнятість кабінету і власне вікно запису (green межі + буфер) —
+  // при додаванні/видаленні досліджень блок росте/меншає в реальному часі, і
+  // видно, чи не наїжджає на сусідні записи. Клік нічого не змінює (freeStates=[])
+  // — перенесення слота робиться окремо («Перенести»).
+  const schedStartMin = toMin(roomSched.start);
+  const isPastDay = !!scheduledDate && !!todayStr && scheduledDate < todayStr;
+  const showGrid = !!patient.room_id && !!scheduledDate;
+  const gridSlots = showGrid && !roomSched.closed ? buildSlots(schedStartMin, schedEnd + OFF_SCHED_GRACE_MIN) : [];
+  function slotState(slot: string): string {
+    const s = toMin(slot), eBlock = s + totalDur + buffer;
+    if (isPastDay) return "past";
+    if (roomSched.closed) return "closed";
+    if (scheduledDate === todayStr && s < nowMin) return "past";
+    if (roomBusy.some((b) => s >= b.s && s < b.eStudy)) return "busy";
+    if (roomBusy.some((b) => s >= b.eStudy && s < b.e)) return "buffer";
+    if (roomBusy.some((b) => s < b.e && b.s < eBlock)) return "tight";
+    const off = offScheduleKind(s, totalDur, roomSched, roomBreaks);
+    if (off) return off.confirmable ? "offsched" : "offhours";
+    return "free";
+  }
+  function slotTitle(slot: string, st: string): string {
+    if (st === "busy" || st === "buffer") { const b = busyAt(roomBusy, toMin(slot)); return b ? (toMin(slot) >= b.eStudy ? "Буфер після дослідження\n" : "") + busyTooltip(b) : "Зайнято"; }
+    if (st === "break") { const br = inBreak(toMin(slot), roomBreaks); return br ? `Перерва · ${br.start}–${br.end}` : "Перерва"; }
+    return "";
+  }
 
   function save() {
     // Пишемо повний склад (як BookingModal): контраст + ціна. Раніше вони губилися
@@ -220,12 +247,13 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
 
   return (
     <div className="overlay">
-      <div className="dialog fade-in" style={{ maxWidth: 600 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Редагування дослідження">
+      <div className="dialog fade-in bk-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Редагування дослідження">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue)" }}>🩻</span>Дослідження пацієнта</div>
           <button className="icon-btn" onClick={onClose}>✕</button>
         </div>
-        <div className="dlg-body">
+        <div className="bk-grid">
+        <div className="bk-col bk-col-left" style={{ gap: 11 }}>
           <div className="ctx-hint blue" style={{ fontSize: 13 }}>Пацієнт: <b>{patient.patient_name}</b> · слот {scheduledDate ? <><b>{scheduledDate.split("-").reverse().join(".")}</b> о </> : "о "}<b>{patient.scheduled_time}</b>{room ? <> · {room.name}{lockType ? <> · <b>{roomKind}</b></> : null}</> : null}. {lockType ? <>Усі дослідження слота — лише <b>{roomKind}</b>.</> : null}</div>
           <div className={"ctx-hint " + (overflow ? "red" : "blue")} style={{ fontSize: 12.5 }}>
             {overflow
@@ -303,7 +331,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                     </div>
                     <label className="st-field st-field-dur">
                       <span className="st-flab">Тривалість</span>
-                      <div className="st-dur"><input className="inp" type="number" min="5" step="5" value={r.dur} onChange={(e) => setDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                      <div className="st-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? r.dur : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => setDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
                     </label>
                   </div>
                 </div>
@@ -313,6 +341,47 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
           <button className="btn btn-secondary btn-sm" style={{ marginTop: 10 }} disabled={!canAdd} onClick={addRow}
             title={canAdd ? "" : "Немає вільного часу у слоті"}>＋ Додати дослідження</button>
         </div>
+        {/* Права колонка — сітка слотів дня кабінету (read-only, realtime). */}
+        <div className="bk-col bk-col-right">
+          <div className="bk-sched-head" style={{ marginBottom: 6 }}>
+            <span style={{ fontWeight: 600, fontSize: 13 }}>Розклад кабінету</span>
+            {room && <span className={"bk-sched-mod " + modalityKind(room.modality)}>{roomKind}</span>}
+            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--green)" }} title="Оновлюється в реальному часі">● наживо</span>
+          </div>
+          {!showGrid
+            ? <div className="ctx-hint" style={{ fontSize: 12.5 }}>Слот запису не визначено — сітку показати нема для чого.</div>
+            : busyErr
+            ? <div className="ctx-hint red" style={{ fontSize: 12.5 }}>⚠ Не вдалося завантажити зайнятість кабінету — оновіть вікно.</div>
+            : busyLoading
+            ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження зайнятості…</div>
+            : roomSched.closed
+            ? <div className="ctx-hint" style={{ fontSize: 12.5 }}>Кабінет у цей день не працює.</div>
+            : (
+              <>
+                <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>
+                  Слот запису — <b style={{ color: "var(--green)" }}>зелена рамка</b>; блок росте/меншає з тривалістю досліджень.
+                </div>
+                <SlotPicker
+                  slots={gridSlots}
+                  value={patient.scheduled_time || ""}
+                  onChange={() => { /* read-only: перенесення слота — окремою дією «Перенести» */ }}
+                  spanMin={totalDur}
+                  bufferMin={buffer}
+                  stateOf={slotState}
+                  freeStates={[]}
+                  titleOf={slotTitle}
+                />
+                <div className="bk-slot-legend">
+                  <span><span className="lg-dot busy" />зайнято</span>
+                  <span><span className="lg-dot busybuf" />буфер</span>
+                  {buffer > 0 && <span><span className="lg-dot planbuf" />буфер цього запису</span>}
+                  {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
+                  {overflow && <span><span className="lg-dot tight" />не вміщується</span>}
+                </div>
+              </>
+            )}
+        </div>
+        </div>{/* /bk-grid */}
         <div className="dlg-foot">
           <label className="st-total" style={{ display: "flex", alignItems: "center", gap: 6 }} title="Буфер після дослідження (переукладка/дезінфекція)">
             Буфер:

@@ -179,7 +179,8 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, doctorNam
   const durCustom = region && parseInt(durEdit, 10) && parseInt(durEdit, 10) !== computedDur;
 
   const exRegions = (t: string) => regionsFor(t);
-  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : (regionsFor(t)[0]?.dur ?? 20); };
+  // Область не обрана → 0 (порожнє дослідження не додає час, поки область не вибрана).
+  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : 0; };
   function changeType(t: string) {
     setStudyType(t); setRegion(""); setContrast(false); setTime("");
     setExtraStudies((a) => a.map((s) => (s.type === t ? s : { ...s, type: t, region: "", dur: exDur(t, "") })));
@@ -523,7 +524,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, doctorNam
                           <option value="">— Оберіть область —</option>
                           {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur} хв</option>)}
                         </select>
-                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.dur} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? r.dur : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
                         <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
                       </div>
                     );

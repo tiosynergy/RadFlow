@@ -149,7 +149,8 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   const price = regionObj ? regionObj.price + (contrast ? (regionObj.contrastPrice ?? CONTRAST_SURCHARGE) : 0) : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
-  const exDur = (t: string, reg: string) => { const o = regionsFor(t).find((r) => r.label === reg); return o ? o.dur : (regionsFor(t)[0]?.dur ?? 20); };
+  // Область не обрана → 0 (порожнє дослідження не додає час, поки область не вибрана).
+  const exDur = (t: string, reg: string) => { const o = regionsFor(t).find((r) => r.label === reg); return o ? o.dur : 0; };
   const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>(() =>
     initStudies.slice(1).filter((s) => s?.region).map((s) => ({
       type: modalityLabel(s.type),
@@ -324,7 +325,7 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
                         <option value="">— Оберіть область —</option>
                         {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur} хв</option>)}
                       </select>
-                      <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.dur} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                      <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? r.dur : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
                       <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
                     </div>
                   );
