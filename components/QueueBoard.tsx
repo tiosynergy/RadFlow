@@ -1014,6 +1014,11 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
       // 0086: rooms — SSR-проп; видалення/правка базового графіка кабінету долітає
       // до всіх ролей через перечитування серверних пропів (router.refresh).
       { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      // Каталог послуг/цін (0107/0108) — SSR-проп у форми запису: зміна адміном
+      // (вимкнення послуги, override кабінету) має оновити відкриту форму, а не
+      // лишати старий каталог. Низькооборотні таблиці → router.refresh (як rooms).
+      { table: "services", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      { table: "service_room_overrides", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
     ],
   });
 

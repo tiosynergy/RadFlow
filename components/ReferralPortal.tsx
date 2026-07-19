@@ -1172,6 +1172,10 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
       // портал. Без filter: RLS доставляє направнику лише кабінети його центрів
       // (REPLICA IDENTITY FULL з 0086 дає clinic_id і в подіях DELETE).
       { table: "rooms", onChange: () => router.refresh() },
+      // Каталог послуг/цін центрів направника (0107/0108) — RLS доставляє лише
+      // доступні центри/кабінети (як rooms); зміна каталогу адміном → оновити портал.
+      { table: "services", onChange: () => router.refresh() },
+      { table: "service_room_overrides", onChange: () => router.refresh() },
     ],
   });
 

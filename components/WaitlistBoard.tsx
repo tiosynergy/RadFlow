@@ -262,6 +262,9 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, services, roo
       // до відкритого листа через перечитування серверних пропів (інакше стале-фільтри
       // кабінетів і allowedModalities у WaitlistModal/BookingModal до ручного refresh).
       { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      // Каталог послуг/цін (0107/0108) — SSR-проп у форми листа; зміна адміном → оновити.
+      { table: "services", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      { table: "service_room_overrides", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
     ],
   });
 

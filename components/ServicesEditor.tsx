@@ -13,7 +13,7 @@
    Мутації — Server Actions (app/services/actions.ts); RLS admin-write як
    defense-in-depth. Після мутації — router.refresh (низькооборотна таблиця). */
 
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import {
@@ -102,6 +102,12 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
 
   const [items, setItems] = useState<ServiceRow[]>(services);
   const [overrides, setOverrides] = useState<SroRow[]>(roomOverrides || []);
+  // SSR-props оновлюються після router.refresh() (сід «Заповнити з базового», додавання
+  // послуги, зміна override). useState бере значення лише на монтуванні, тож без цієї
+  // синхронізації нове не видно до повного F5. Мутації тут оптимістичні + await, тож на
+  // момент зміни props вони вже в БД — перезапис локального стану сервером-істиною безпечний.
+  useEffect(() => { setItems(services); }, [services]);
+  useEffect(() => { setOverrides(roomOverrides || []); }, [roomOverrides]);
   // scope: "base" (каталог центру) або room.id (переозначення кабінету).
   const [scope, setScope] = useState<string>("base");
   const [tab, setTab] = useState<ModalityCode>((BOOKABLE_MODALITIES[0] ?? "MRI") as ModalityCode);
