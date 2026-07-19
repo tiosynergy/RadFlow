@@ -382,6 +382,17 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     if (pfDurRef.current != null) { setDurEdit(String(pfDurRef.current)); pfDurRef.current = null; return; }
     setDurEdit(String(computedDur));
   }, [region, contrast, studyType, roomId]); // eslint-disable-line react-hooks/exhaustive-deps -- зміна кабінету пересчитує дефолтну тривалість (per-room 0108)
+  // Зміна кабінету: якщо обрана область ПРИХОВАНА в новому кабінеті (per-room
+  // active=false, 0108) — знімаємо вибір. Інакше select показував би порожньо, а
+  // форма вважала б область обраною й дозволяла зберегти (політика кабінету;
+  // Nielsen «запобігання помилок»/«видимість стану»). Сервер це теж відхиляє
+  // (firstClosedService), але користувач має бачити зняття одразу.
+  useEffect(() => {
+    const avail = regionsFor(studyType, roomId);
+    if (region && !avail.some((r) => r.label === region)) { setRegion(""); setTime(""); }
+    setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0 } : s)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- лише на зміну кабінету
+  }, [roomId]);
   // H-1: кратно 5 і в межах 5..480 — інакше «47» їхало в БД (ламає сітку слотів),
   // а «0» взагалі обходив анти-овербукінг (порожній tstzrange). CHECK у 0066 — останній рубіж.
   const dur = normDur(parseInt(durEdit, 10) || computedDur);

@@ -183,6 +183,14 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
     setContrast(v);
     if (v && region && !allRegions.some((r) => r.label === region && r.contrast)) setRegion("");
   }
+  // Прив'язка листа до кабінету, де послуга ПРИХОВАНА (per-room active=false, 0108),
+  // не має лишати «фантомно обрану» область (Nielsen; сервер теж ріже firstClosedService).
+  useEffect(() => {
+    const avail = regionsFor(studyType, rid);
+    if (region && !avail.some((r) => r.label === region)) setRegion("");
+    setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0 } : s)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- лише на зміну кабінету
+  }, [roomId]);
 
   const primaryStudy: StudyOut | null = region
     ? { type: primaryKind, region, contrast: contrast === true, dur: computedDur, price: studyPrice(primaryKind, region, contrast, rid) }
