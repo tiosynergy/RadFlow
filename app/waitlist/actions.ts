@@ -13,7 +13,7 @@ import { BUFFER_DEFAULT, hasBookableStudy, normBuffer, type Study } from "@/lib/
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { modalityFromStudies } from "@/lib/waitlist";
 import { wallDayKey } from "@/lib/incidents";
-import { firstClosedService, studiesKeySet } from "@/lib/serviceGate";
+import { firstClosedService, studiesKeySet, CatalogUnavailableError } from "@/lib/serviceGate";
 import {
   parseInput, safeDbError, zUuid, zDateKey, zTime, zName, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
@@ -76,6 +76,26 @@ export type WaitlistActionResult =
 const SERVICE_CLOSED_WL = (region: string): WaitlistActionResult => ({
   ok: false, error: `Послуга «${region}» вимкнена в центрі або кабінеті — оновіть форму`, code: "generic",
 });
+// Fail-CLOSED: збій читання каталогу → відмова у записі (а не легасі-фолбэк).
+const CATALOG_UNAVAILABLE_WL: WaitlistActionResult = {
+  ok: false, error: "Каталог послуг тимчасово недоступний — спробуйте ще раз", code: "generic",
+};
+/** Гейт закритих послуг листа очікування з fail-CLOSED (дзеркало closedRegionGate). */
+async function closedRegionGateWL(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  clinicId: string,
+  roomId: string | null | undefined,
+  studies: { type?: string | null; region?: string | null }[] | null | undefined,
+  grandfather?: ReadonlySet<string>,
+): Promise<WaitlistActionResult | null> {
+  try {
+    const closed = await firstClosedService(supabase, clinicId, roomId, studies, grandfather);
+    return closed ? SERVICE_CLOSED_WL(closed) : null;
+  } catch (e) {
+    if (e instanceof CatalogUnavailableError) return CATALOG_UNAVAILABLE_WL;
+    throw e;
+  }
+}
 
 /* Серверний гард «бажане вікно вже минуло» (defense-in-depth до клієнтського в
    WaitlistModal). Стягуюча умова — на КІНЕЦЬ вікна: якщо desired_date_to цілком у
@@ -185,7 +205,7 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
 
   // Гейт закритих послуг: лист не завжди привʼязаний до кабінету (roomId=null →
   // база центру). Легасі-модальність (без каталогу) не чіпаємо.
-  { const closed = await firstClosedService(supabase, clinicId, input.roomId ?? null, input.studies); if (closed) return SERVICE_CLOSED_WL(closed); }
+  { const g = await closedRegionGateWL(supabase, clinicId, input.roomId ?? null, input.studies); if (g) return g; }
 
   const { data, error } = await supabase
     .from("waitlist_entries")
@@ -362,10 +382,10 @@ export async function updateWaitlistEntry(
     if (row?.clinic_id) {
       const effRoom = (safePatch.room_id !== undefined ? safePatch.room_id : row.room_id) as string | null;
       const gf = studiesKeySet(row.studies as unknown as { type?: string | null; region?: string | null }[]);
-      const closed = await firstClosedService(
+      const g = await closedRegionGateWL(
         supabase, row.clinic_id, effRoom,
         safePatch.studies as unknown as { type?: string | null; region?: string | null }[], gf);
-      if (closed) return SERVICE_CLOSED_WL(closed);
+      if (g) return g;
     }
   }
 

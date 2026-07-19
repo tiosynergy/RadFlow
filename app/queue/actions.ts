@@ -17,7 +17,8 @@ import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate, QueueDelayPolicy } from "@/supabase/types";
 import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX, studiesMatchModality } from "@/lib/studies";
-import { firstClosedService, studiesKeySet } from "@/lib/serviceGate";
+import { firstClosedService, loadClinicCatalog, studiesKeySet, CatalogUnavailableError } from "@/lib/serviceGate";
+import { firstClosedStudy, type Catalog } from "@/lib/catalog";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
 import { wallNow, wallInstant, wallDayKey, wallInstantOf, wallMinOfDay, wallMinOfInstant } from "@/lib/incidents";
@@ -435,6 +436,27 @@ const MODALITY_MISMATCH_ERR: QueueActionResult = {
 const SERVICE_CLOSED_ERR = (region: string): QueueActionResult => ({
   ok: false, error: `Послуга «${region}» вимкнена в центрі або кабінеті — оновіть форму`, code: "modality_mismatch",
 });
+// Fail-CLOSED: збій читання каталогу → відмова у записі (а не мовчазний легасі-фолбэк).
+const CATALOG_UNAVAILABLE_ERR: QueueActionResult = {
+  ok: false, error: "Каталог послуг тимчасово недоступний — спробуйте ще раз", code: "generic",
+};
+/** Гейт закритих послуг із fail-CLOSED: назва закритої області → SERVICE_CLOSED_ERR;
+    недоступний каталог → CATALOG_UNAVAILABLE_ERR; чисто → null. */
+async function closedRegionGate(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  clinicId: string,
+  roomId: string | null | undefined,
+  studies: { type?: string | null; region?: string | null }[] | null | undefined,
+  grandfather?: ReadonlySet<string>,
+): Promise<QueueActionResult | null> {
+  try {
+    const closed = await firstClosedService(supabase, clinicId, roomId, studies, grandfather);
+    return closed ? SERVICE_CLOSED_ERR(closed) : null;
+  } catch (e) {
+    if (e instanceof CatalogUnavailableError) return CATALOG_UNAVAILABLE_ERR;
+    throw e;
+  }
+}
 // 0094/0095 — гарди кейса (тригери + create_case_rpc). Ловляться ЗА ТЕКСТОМ у всіх
 // класифікаторах (mapCaseError/mapBookingError/classifyError) ДО перевірок за SQLSTATE:
 // CASE_SAME_ROOM піднімається з 23505, який інакше сплутали б з «кабінет зайнятий».
@@ -1186,12 +1208,15 @@ export async function editQueueEntryStudies(
   if (cur.room_id && await studiesRoomMismatch(supabase, cur.room_id, studies)) return MODALITY_MISMATCH_ERR;
   // Гейт закритих послуг з grandfather: області, що вже є в записі (снапшот), не
   // ріжемо — інакше не відредагувати запис із послугою, вимкненою вже після броні.
-  if (cur.clinic_id && cur.room_id) {
+  if (cur.clinic_id) {
+    // Узгоджено з БД-тригером 0112 (перевіряє й записи з room_id IS NULL проти
+    // базового каталогу): не гейтимо лише за наявності кабінету, інакше тригер міг
+    // би відхилити запис, який прикладний гейт пропустив.
     const gf = studiesKeySet(cur.studies as unknown as { type?: string | null; region?: string | null }[]);
-    const closed = await firstClosedService(
+    const g = await closedRegionGate(
       supabase, cur.clinic_id, cur.room_id,
       studies as unknown as { type?: string | null; region?: string | null }[], gf);
-    if (closed) return SERVICE_CLOSED_ERR(closed);
+    if (g) return g;
   }
 
   const active = cur.status === "scheduled" || cur.status === "waiting" || cur.status === "in_progress";
@@ -1293,7 +1318,7 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
   if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
-  { const closed = await firstClosedService(supabase, clinicId, input.roomId, input.studies); if (closed) return SERVICE_CLOSED_ERR(closed); }
+  { const g = await closedRegionGate(supabase, clinicId, input.roomId, input.studies); if (g) return g; }
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   /* 0077: createBooking доступний лише персоналу (clinic_id викликача = clinicId),
      тому isStaff тут завжди true — але передаємо явно, щоб гейт лишався одним
@@ -1382,7 +1407,7 @@ export async function scheduleFromWaitlist(waitlistId: string, booking: BookingI
   // Пере-перевірки (як createBooking): дають чисту помилку ДО застовплення й рахують
   // off_schedule. Це НЕ мутації — гонку розвʼязує атомарний claim усередині RPC.
   if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
-  { const closed = await firstClosedService(supabase, clinicId, input.roomId, input.studies); if (closed) return SERVICE_CLOSED_ERR(closed); }
+  { const g = await closedRegionGate(supabase, clinicId, input.roomId, input.studies); if (g) return g; }
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   const gate = await scheduleBlock(
     supabase, input.roomId, clinicId, input.scheduledDate, input.scheduledTime, input.durationMin,
@@ -1622,7 +1647,7 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
   if (!roomAllowed) return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
 
   if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
-  { const closed = await firstClosedService(supabase, input.clinicId, input.roomId, input.studies); if (closed) return SERVICE_CLOSED_ERR(closed); }
+  { const g = await closedRegionGate(supabase, input.clinicId, input.roomId, input.studies); if (g) return g; }
   if (await isPastSlot(supabase, input.clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   /* 0077: направнику робота поза графіком НЕ доступна (рішення власника: він
      записує пацієнтів ззовні й не знає, чи лишиться зміна). isStaff: false —
@@ -2094,9 +2119,20 @@ export async function createCase(raw: CaseInput): Promise<QueueActionResult> {
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  // Гейт закритих послуг — кожен крок проти каталогу свого кабінету.
+  // Гейт закритих послуг — ОДИН load каталогу центру, далі чиста перевірка кожного
+  // кроку проти його кабінету (уникаємо до 24 запитів на кейс). Fail-CLOSED.
+  let caseCat: Catalog;
+  try {
+    caseCat = await loadClinicCatalog(supabase, clinicId);
+  } catch (e) {
+    if (e instanceof CatalogUnavailableError) return CATALOG_UNAVAILABLE_ERR;
+    throw e;
+  }
   for (const st of input.steps) {
-    const c = await firstClosedService(supabase, clinicId, st.roomId, st.studies);
+    const c = firstClosedStudy(
+      caseCat,
+      st.studies as { type?: string | null; region?: string | null }[],
+      st.roomId ?? undefined);
     if (c) return SERVICE_CLOSED_ERR(c);
   }
 
@@ -2161,7 +2197,7 @@ export async function addCaseStep(caseId: string, raw: CaseStepInput): Promise<Q
     doctor: s.doctor ?? null,
     note: s.note ?? null,
   };
-  { const c = await firstClosedService(supabase, clinicId, s.roomId, s.studies); if (c) return SERVICE_CLOSED_ERR(c); }
+  { const g = await closedRegionGate(supabase, clinicId, s.roomId, s.studies); if (g) return g; }
   const { data, error } = await supabase.rpc("add_case_step_rpc", {
     p_case_id: idv.data,
     p_step: p_step as unknown as Json,
@@ -2197,7 +2233,7 @@ export async function caseFromEntry(entryId: string, raw: CaseStepInput): Promis
     doctor: s.doctor ?? null,
     note: s.note ?? null,
   };
-  { const c = await firstClosedService(supabase, clinicId, s.roomId, s.studies); if (c) return SERVICE_CLOSED_ERR(c); }
+  { const g = await closedRegionGate(supabase, clinicId, s.roomId, s.studies); if (g) return g; }
   const { data, error } = await supabase.rpc("case_from_entry_rpc", {
     p_entry_id: idv.data,
     p_step: p_step as unknown as Json,

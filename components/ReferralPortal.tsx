@@ -190,14 +190,16 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
     setContrast(v);
     if (v && region && !allRegions.some((r) => r.label === region && r.contrast)) { setRegion(""); setTime(""); }
   }
-  // Зміна кабінету: прихована в новому кабінеті область (per-room active=false, 0108)
-  // не має лишатися «фантомно обраною» (Nielsen; сервер теж ріже firstClosedService).
+  // Обрана область стала НЕДОСТУПНОЮ (прихована в кабінеті per-room 0108, АБО адмін
+  // вимкнув послугу — realtime-каталог 0111) → знімаємо «фантомний» вибір і час. Ключ —
+  // підпис набору доступних областей, а не лише roomId (Nielsen; сервер теж ріже).
+  const availSig = regionsFor(studyType, roomId || undefined).map((r) => r.label).join("");
   useEffect(() => {
     const avail = regionsFor(studyType, roomId || undefined);
     if (region && !avail.some((r) => r.label === region)) { setRegion(""); setTime(""); }
     setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0 } : s)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- лише на зміну кабінету
-  }, [roomId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей (кабінет АБО realtime-каталог)
+  }, [availSig]);
 
   const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
   const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };

@@ -20,6 +20,15 @@ const SRO_COLS = "room_id, service_id, price, duration_min, contrast_price, acti
 /** Резолвер каталогу центру для серверної валідації — ВСІ послуги (у т.ч.
     active=false, щоб відрізнити «не налаштовували» від «вимкнено») + переозначення
     по кабінетах. Дзеркало SSR-пропів форм (сторінки booking-флоу). */
+/** Сигнал недоступності каталогу: збій читання services/service_room_overrides.
+    Ловиться у write-гейтах для fail-CLOSED (відмова у записі), а не легасі-фолбэку. */
+export class CatalogUnavailableError extends Error {
+  constructor(message = "catalog read failed") {
+    super(message);
+    this.name = "CatalogUnavailableError";
+  }
+}
+
 export async function loadClinicCatalog(
   supabase: SupabaseClient<Database>,
   clinicId: string
@@ -28,6 +37,11 @@ export async function loadClinicCatalog(
     supabase.from("services").select(SERVICE_COLS).eq("clinic_id", clinicId),
     supabase.from("service_room_overrides").select(SRO_COLS).eq("clinic_id", clinicId),
   ]);
+  // Fail-CLOSED: помилку читання НЕ маскуємо порожнім каталогом — інакше центр
+  // помилково вважався б «легасі» і статичний каталог пропускав би вимкнені послуги.
+  if (svc.error || ov.error) {
+    throw new CatalogUnavailableError(svc.error?.message ?? ov.error?.message ?? "catalog read failed");
+  }
   return buildCatalog(
     (svc.data ?? []) as ServiceLike[],
     overridesToMap((ov.data ?? []) as RoomOverrideRow[])
