@@ -42,12 +42,19 @@ export default async function CallListPage() {
     .eq("active", true)
     .order("sort_order");
 
+  // Переозначення каталогу по кабінетах (0108) — форми запису з колл-листа (фаза 2b).
+  const { data: roomOverrides } = await supabase
+    .from("service_room_overrides")
+    .select("room_id, service_id, price, duration_min, contrast_price, active")
+    .eq("clinic_id", profile.clinic_id as string);
+
   return (
     <CallListBoard
       clinicId={profile.clinic_id as string}
       clinicTz={clinic?.timezone || "UTC"}
       rooms={rooms ?? []}
       services={services ?? []}
+      roomOverrides={roomOverrides ?? []}
       clinicName={clinic?.name ?? ""}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
       adminRole={profile.role ? ROLE_LABELS[profile.role as string] ?? (profile.role as string) : "Адміністратор"}

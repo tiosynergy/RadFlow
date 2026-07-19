@@ -12,7 +12,7 @@ import { useState, useEffect, useMemo } from "react";
 import PhoneInput from "@/components/PhoneInput";
 import { DobField } from "@/components/BookingModal";
 import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, type Study } from "@/lib/studies";
-import { buildCatalog, type ServiceLike } from "@/lib/catalog";
+import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { TIME_PRESETS, timePresetKey } from "@/lib/waitlist";
 import { wallDayKey } from "@/lib/incidents";
@@ -79,11 +79,16 @@ interface WaitlistModalProps {
   services?: ServiceLike[];
   /** Каталоги за центрами (направник обирає центр усередині модалки) — clinic_id → services. */
   servicesByCenter?: Record<string, ServiceLike[]>;
+  /** Переозначення каталогу по кабінетах (0108) — персонал (один центр). Застосовуються
+      лише коли лист жорстко привʼязаний до кабінету (roomId); інакше — база центру. */
+  roomOverrides?: RoomOverrideRow[];
+  /** Переозначення за центрами (направник) — clinic_id → service_room_overrides[]. */
+  roomOverridesByCenter?: Record<string, RoomOverrideRow[]>;
   onClose: () => void;
   onSave: (w: WaitlistFormOut) => void | Promise<void>;
 }
 
-export default function WaitlistModal({ centers, rooms, initial, allowedModalities, clinicTz, services, servicesByCenter, onClose, onSave }: WaitlistModalProps) {
+export default function WaitlistModal({ centers, rooms, initial, allowedModalities, clinicTz, services, servicesByCenter, roomOverrides, roomOverridesByCenter, onClose, onSave }: WaitlistModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const isEdit = !!initial;
   const todayStr = todayKey(clinicTz);   // «сьогодні» клініки — для дефолту й гарду прошлого
@@ -123,12 +128,16 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   const effClinicId = isEdit ? (initial?.clinic_id ?? null) : (needCenter ? centerId : null);
   const catalog = useMemo(() => {
     const eff = (effClinicId && servicesByCenter?.[effClinicId]) ? servicesByCenter[effClinicId] : (services ?? []);
-    return buildCatalog(eff);
-  }, [effClinicId, servicesByCenter, services]);
+    const effOv = (effClinicId && roomOverridesByCenter?.[effClinicId]) ? roomOverridesByCenter[effClinicId] : (roomOverrides ?? []);
+    return buildCatalog(eff, overridesToMap(effOv));
+  }, [effClinicId, servicesByCenter, services, roomOverridesByCenter, roomOverrides]);
   const regionsFor = catalog.regionsFor;
   const studyPrice = catalog.studyPrice;
+  // Лист не завжди привʼязаний до кабінету: rid=undefined → база центру; при
+  // жорсткій привʼязці (roomId) застосовується переозначення саме цього кабінету.
+  const rid = roomId || undefined;
 
-  const allRegions = regionsFor(studyType);
+  const allRegions = regionsFor(studyType, rid);
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const primaryKind = modalityLabel(studyType);
   // Кабінети поточної модальності — для опційної жорсткої прив'язки (адмін-флоу).
@@ -150,7 +159,7 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   // Область не обрана → 0 (порожнє дослідження не додає час, поки область не вибрана).
-  const exDur = (t: string, reg: string) => { const o = regionsFor(t).find((r) => r.label === reg); return o ? o.dur : 0; };
+  const exDur = (t: string, reg: string) => { const o = regionsFor(t, rid).find((r) => r.label === reg); return o ? o.dur : 0; };
   const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>(() =>
     initStudies.slice(1).filter((s) => s?.region).map((s) => ({
       type: modalityLabel(s.type),
@@ -176,10 +185,10 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   }
 
   const primaryStudy: StudyOut | null = region
-    ? { type: primaryKind, region, contrast: contrast === true, dur: computedDur, price: studyPrice(primaryKind, region, contrast) }
+    ? { type: primaryKind, region, contrast: contrast === true, dur: computedDur, price: studyPrice(primaryKind, region, contrast, rid) }
     : null;
   const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : [])
-    .concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false) })));
+    .concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, rid) })));
   const totalDur = allStudies.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
   const miss: Record<string, boolean> = { name: !name.trim(), phone: !phone.trim(), priority: !priority, region: !region, center: needCenter && !centerId };
@@ -315,7 +324,7 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
               <div className="bk-study-table">
                 <div className="bk-study-head"><span>Тип</span><span>Область дослідження</span><span>Трив.</span><span /></div>
                 {extraStudies.map((r, i) => {
-                  const regs = regionsFor(r.type);
+                  const regs = regionsFor(r.type, rid);
                   return (
                     <div className="bk-study-row" key={i}>
                       <div className="bk-seg bk-seg-sm st-seg-locked" title="Тип = тип основного дослідження">

@@ -36,7 +36,7 @@ import {
 } from "@/lib/case";
 import type { CaseStatus, Json } from "@/supabase/types";
 import type { IncidentLike } from "@/lib/incidents";
-import type { ServiceLike } from "@/lib/catalog";
+import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 
@@ -99,9 +99,11 @@ interface CaseModalProps {
   incidents?: IncidentLike[];
   /** Каталог послуг центру (services, 0107) — для форм кроків. Порожній → статика. */
   services?: ServiceLike[];
+  /** Переозначення каталогу по кабінетах (service_room_overrides, 0108) — проброс у форми кроків (2b). */
+  roomOverrides?: RoomOverrideRow[];
 }
 
-export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicId, clinicTz, incidents = [], services }: CaseModalProps) {
+export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicId, clinicTz, incidents = [], services, roomOverrides }: CaseModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [steps, setSteps] = useState<StepRow[] | null>(null);
   const [err, setErr] = useState(false);
@@ -322,7 +324,7 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
             patient_name: editStudiesStep.patient_name, studies: editStudiesStep.studies,
           }}
           scheduledDate={editStudiesStep.scheduled_date || dateKey(new Date())}
-          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} offSchedule={!!editStudiesStep.off_schedule}
+          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesStep.off_schedule}
           onClose={() => setEditStudiesStep(null)}
           onConfirm={doEditStudies}
         />
@@ -330,7 +332,7 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
 
       {addOpen && (
         <BookingModal
-          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} services={services}
+          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} services={services} roomOverrides={roomOverrides}
           prefill={{
             name: pfStep?.patient_name || "", phone: pfStep?.patient_phone || "",
             dob: pfStep?.patient_dob || "", gender: pfStep?.patient_sex || "",

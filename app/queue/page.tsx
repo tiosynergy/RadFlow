@@ -44,6 +44,14 @@ export default async function QueuePage() {
     .eq("active", true)
     .order("sort_order");
 
+  // Переозначення каталогу по кабінетах (service_room_overrides, 0108) — SSR-проп у
+  // форми запису (фаза 2b): при обраному кабінеті ціна/тривалість беруться per-room.
+  // Беремо ВСІ рядки центру (у т.ч. active=false — вони ховають позицію в кабінеті).
+  const { data: roomOverrides } = await supabase
+    .from("service_room_overrides")
+    .select("room_id, service_id, price, duration_min, contrast_price, active")
+    .eq("clinic_id", profile.clinic_id as string);
+
   return (
     <QueueBoard
       clinicId={profile.clinic_id as string}
@@ -52,6 +60,7 @@ export default async function QueuePage() {
       clinicTz={clinic?.timezone || "UTC"}
       rooms={rooms ?? []}
       services={services ?? []}
+      roomOverrides={roomOverrides ?? []}
       clinicName={clinic?.name ?? ""}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
       adminRole={profile.role ? ROLE_LABELS[profile.role as string] ?? (profile.role as string) : "Адміністратор"}

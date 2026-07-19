@@ -9,7 +9,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, CONTRAST_DUR, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
-import { buildCatalog, type ServiceLike } from "@/lib/catalog";
+import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, offScheduleKind, OFF_SCHED_GRACE_MIN, type DayOverride } from "@/lib/schedule";
 import { wallNow, wallMinOfDay, wallDayKey, wallToday0 } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
@@ -34,6 +34,9 @@ interface StudyEditModalProps {
   clinicTz?: string | null; // TZ центру запису (мультиклінічний портал направника)
   /** Каталог послуг центру запису (services, 0107). Порожній → статичний фолбэк. */
   services?: ServiceLike[];
+  /** Переозначення каталогу по кабінетах (0108): тривалість/ціна/склад беруться
+      для кабінету цього запису (patient.room_id) поверх бази центру (фаза 2b). */
+  roomOverrides?: RoomOverrideRow[];
   onClose: () => void;
   onConfirm: (arr: StudyOut[], meta: { dur: number; buffer: number; offSchedule?: boolean }) => void;
   /* 0077: запис САМ стоїть поза графіком (створений/перенесений за підтвердженням).
@@ -46,10 +49,12 @@ function pad(n: number) { return String(n).padStart(2, "0"); }
 function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 
-export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, services, onClose, onConfirm, offSchedule = false }: StudyEditModalProps) {
+export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, services, roomOverrides, onClose, onConfirm, offSchedule = false }: StudyEditModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
-  // Каталог послуг центру (фаза 2a): drop-in шорткати lib/studies. Порожній → статика.
-  const catalog = useMemo(() => buildCatalog(services), [services]);
+  // Каталог послуг центру (фаза 2a) + переозначення по кабінетах (фаза 2b): виклики
+  // резолвера передають кабінет цього запису (roomId) → ціна/тривалість per-room (0108).
+  const catalog = useMemo(() => buildCatalog(services, overridesToMap(roomOverrides)), [services, roomOverrides]);
+  const roomId = patient.room_id || undefined; // кабінет запису фіксований (не змінюється у формі)
   const regionsFor = catalog.regionsFor;
   const studyDur = catalog.studyDur;
   const studyPrice = catalog.studyPrice;
@@ -152,8 +157,8 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   // Тривалість за довідником + CONTRAST_DUR, якщо дослідження з контрастом.
   function recalc(type: string, region: string, contrast: boolean, prevDur?: number): number {
     if (!region) return 0; // область не обрана → 0: не додаємо час, поки не вибрано
-    const ro = regionsFor(type).find((r) => r.label === region);
-    return ro ? studyDur(type, region, contrast) : (prevDur || 0); // легасі-область поза каталогом → зберегти наявну тривалість
+    const ro = regionsFor(type, roomId).find((r) => r.label === region);
+    return ro ? studyDur(type, region, contrast, roomId) : (prevDur || 0); // легасі-область поза каталогом → зберегти наявну тривалість
   }
   function seed(): StudyRow[] {
     const base: StudyLike[] = Array.isArray(patient.studies) && patient.studies.length
@@ -237,7 +242,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
       region: r.region,
       contrast: r.contrast,
       dur: Number(r.dur) || 0,
-      price: studyPrice(r.type, r.region, r.contrast),
+      price: studyPrice(r.type, r.region, r.contrast, roomId),
     }));
     /* offSchedule: або запис і був поза графіком (успадкований прапорець), або
        оператор щойно підтвердив нове перетинання межі. Сервер однаково перерахує
@@ -291,7 +296,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
           )}
           <div className="st-rows">
             {rows.map((r, i) => {
-              const regions = regionsFor(r.type);
+              const regions = regionsFor(r.type, roomId);
               const hasRegion = !r.region || regions.some((x) => x.label === r.region);
               return (
                 <div className="st-row" key={i}>

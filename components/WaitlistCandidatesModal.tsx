@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import BookingModal, { type BookingPayload, type BookingPrefill } from "@/components/BookingModal";
-import type { ServiceLike } from "@/lib/catalog";
+import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { scheduleFromWaitlist } from "@/app/queue/actions";
 import { desiredWindowText, timeToMin } from "@/lib/waitlist";
 import { wallDayKey, wallMinOfDay, wallNow } from "@/lib/incidents";
@@ -70,6 +70,8 @@ interface WaitlistCandidatesModalProps {
   incidents?: IncidentLite[];
   /** Каталог послуг центру (services, 0107) — пробрасываем у BookingModal. */
   services?: ServiceLike[];
+  /** Переозначення каталогу по кабінетах (0108) — пробрасываем у BookingModal (2b). */
+  roomOverrides?: RoomOverrideRow[];
   slot: FreedSlotInfo;
   candidates: WaitlistEntry[];
   onClose: () => void;
@@ -77,7 +79,7 @@ interface WaitlistCandidatesModalProps {
   onError?: (msg: string) => void;
 }
 
-export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, incidents = [], services, slot, candidates, onClose, onBooked }: WaitlistCandidatesModalProps) {
+export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, incidents = [], services, roomOverrides, slot, candidates, onClose, onBooked }: WaitlistCandidatesModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);
   const roomName = (rooms || []).find((r) => r.id === slot.roomId)?.name || "кабінет";
@@ -126,7 +128,7 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
 
   if (bookFor) {
     return (
-      <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} services={services} prefill={bookPrefill}
+      <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} services={services} roomOverrides={roomOverrides} prefill={bookPrefill}
         onClose={() => setBookFor(null)} onSave={saveBooking} />
     );
   }

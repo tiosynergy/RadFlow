@@ -63,6 +63,39 @@ export interface RoomOverride {
 /** Мапа room_id → (service_id → override). Немає запису → кабінет успадковує базу. */
 export type RoomOverrides = ReadonlyMap<string, ReadonlyMap<string, RoomOverride>>;
 
+/** Мінімальний контракт рядка service_room_overrides (0108) для overridesToMap —
+    структурна підмножина Tables<"service_room_overrides"> (не тягне generated-типи). */
+export interface RoomOverrideRow {
+  room_id: string;
+  service_id: string;
+  price: number | null;
+  duration_min: number | null;
+  contrast_price: number | null;
+  active: boolean;
+}
+
+/** Згорнути плоский список рядків service_room_overrides (0108, SSR-проп) у
+    RoomOverrides-мапу room_id → (service_id → override) для buildCatalog().
+    Порожній / undefined вхід → порожня мапа (кабінети успадковують базу центру). */
+export function overridesToMap(
+  rows: readonly RoomOverrideRow[] | null | undefined
+): RoomOverrides {
+  const outer = new Map<string, Map<string, RoomOverride>>();
+  if (!Array.isArray(rows)) return outer;
+  for (const r of rows) {
+    if (!r || !r.room_id || !r.service_id) continue;
+    let inner = outer.get(r.room_id);
+    if (!inner) { inner = new Map(); outer.set(r.room_id, inner); }
+    inner.set(r.service_id, {
+      price: r.price ?? null,
+      duration_min: r.duration_min ?? null,
+      contrast_price: r.contrast_price ?? null,
+      active: r.active ?? true,
+    });
+  }
+  return outer;
+}
+
 /** Резолвер каталогу зі сталими сигнатурами (drop-in для lib/studies). */
 export interface Catalog {
   /** Чи має каталог центру активні позиції цієї модальності (інакше — статика). */

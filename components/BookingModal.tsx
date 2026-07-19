@@ -15,7 +15,7 @@ import {
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallToday0, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, studyLabel, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
-import { buildCatalog, type ServiceLike } from "@/lib/catalog";
+import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { countFit } from "@/lib/slots";
@@ -244,6 +244,10 @@ interface BookingModalProps {
   /** Каталог послуг центру (services, 0107). Порожній/відсутній → статичний
       lib/studies (фолбэк). Області/тривалості/ціни беруться звідси (фаза 2a). */
   services?: ServiceLike[];
+  /** Переозначення каталогу по кабінетах (service_room_overrides, 0108). При
+      обраному кабінеті ціна/тривалість/склад беруться per-room поверх бази центру
+      (фаза 2b). Порожній/відсутній → база центру. */
+  roomOverrides?: RoomOverrideRow[];
   prefill?: BookingPrefill | null; // напр. запис із листа очікування
   onClose: () => void;
   /* Повертає ТЕКСТ ПОМИЛКИ (або null, якщо збережено). Раніше було `=> void`, і при
@@ -265,12 +269,13 @@ interface BookingModalProps {
   caseSiblings?: { roomId: string; date: Date; time: string; dur: number }[];
 }
 
-export default function BookingModal({ rooms, clinicId, clinicTz, incidents = [], services, prefill, onClose, onSave, onCreateCase, onAddCaseStep, caseSiblings }: BookingModalProps) {
+export default function BookingModal({ rooms, clinicId, clinicTz, incidents = [], services, roomOverrides, prefill, onClose, onSave, onCreateCase, onAddCaseStep, caseSiblings }: BookingModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
-  // Каталог послуг центру (фаза 2a): drop-in шорткати з тими самими сигнатурами,
-  // що статичні lib/studies — усі виклики нижче не змінюються. Порожній каталог
-  // модальності → делегує статиці (див. lib/catalog.ts).
-  const catalog = useMemo(() => buildCatalog(services), [services]);
+  // Каталог послуг центру (фаза 2a) + переозначення по кабінетах (фаза 2b): drop-in
+  // шорткати з тими самими сигнатурами, що статичні lib/studies. Виклики нижче
+  // передають roomId обраного кабінету → ціна/тривалість/склад per-room (0108).
+  // Порожній каталог модальності → делегує статиці (див. lib/catalog.ts).
+  const catalog = useMemo(() => buildCatalog(services, overridesToMap(roomOverrides)), [services, roomOverrides]);
   const regionsFor = catalog.regionsFor;
   const studyPrice = catalog.studyPrice;
   // Передзаповнення: перше дослідження → основне (тип/область/контраст), решта → додаткові.
@@ -345,7 +350,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const [schedLoading, setSchedLoading] = useState(true); // графік + перерви кабінету (зайнятість — окремий хук)
   const [schedErr, setSchedErr] = useState(false);
 
-  const allRegions = regionsFor(studyType);
+  const allRegions = regionsFor(studyType, roomId);
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const primaryKind = modalityLabel(studyType); // укр. текст, який кладеться в studies[].type
 
@@ -376,7 +381,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     if (!region) return;
     if (pfDurRef.current != null) { setDurEdit(String(pfDurRef.current)); pfDurRef.current = null; return; }
     setDurEdit(String(computedDur));
-  }, [region, contrast, studyType]); // eslint-disable-line
+  }, [region, contrast, studyType, roomId]); // eslint-disable-line react-hooks/exhaustive-deps -- зміна кабінету пересчитує дефолтну тривалість (per-room 0108)
   // H-1: кратно 5 і в межах 5..480 — інакше «47» їхало в БД (ламає сітку слотів),
   // а «0» взагалі обходив анти-овербукінг (порожній tstzrange). CHECK у 0066 — останній рубіж.
   const dur = normDur(parseInt(durEdit, 10) || computedDur);
@@ -386,10 +391,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     pfStudies.slice(1).filter((s) => s?.region).map((s) => ({
       type: modalityLabel(s.type),
       region: s.region as string,
-      dur: Number(s.dur) || (regionsFor(s.type)[0]?.dur ?? 20),
+      dur: Number(s.dur) || (regionsFor(s.type, roomId)[0]?.dur ?? 20),
     }))
   );
-  const exRegions = (t: string) => regionsFor(t);
+  const exRegions = (t: string) => regionsFor(t, roomId);
   // Область не обрана → 0 (не «дефолт першої області»): порожнє дослідження НЕ
   // повинно додавати час у слот/сітку, поки область справді не вибрана.
   const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : 0; };
@@ -400,8 +405,8 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
 
-  const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast) } : null;
-  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false) })));
+  const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast, roomId) } : null;
+  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, roomId) })));
   const combinedLabel = allStudies.length ? allStudies.map(studyLabel).join(" + ") : procLabel;
   const slotDur = dur + validExtra.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
@@ -713,7 +718,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
       setRegion(primary.region || "");
     }
     setExtraStudies(studies.slice(1).map((x) => ({
-      type: x.type, region: x.region || "", dur: Number(x.dur) || (regionsFor(x.type)[0]?.dur ?? 20),
+      type: x.type, region: x.region || "", dur: Number(x.dur) || (regionsFor(x.type, s.roomId)[0]?.dur ?? 20),
     })));
     setRoomId(s.roomId);
     if (s.date instanceof Date && !isNaN(s.date.getTime())) setBookDate(s.date);

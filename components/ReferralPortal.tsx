@@ -29,7 +29,7 @@ import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { slotBlockedByIncidents, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
 import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
-import { buildCatalog, type ServiceLike } from "@/lib/catalog";
+import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { DobField, BookingCalendar, fmtShort } from "@/components/BookingModal";
 import type { Json } from "@/supabase/types";
@@ -92,12 +92,13 @@ interface NewReferralProps {
   activeCenters: Center[];
   roomsByClinic: Record<string, RoomOpt[]>;
   servicesByClinic: Record<string, ServiceLike[]>;
+  roomOverridesByClinic: Record<string, RoomOverrideRow[]>;
   doctorName: string;
   doctorId: string;
   onCreated: (nm: string | null, err?: string) => void;
 }
 
-function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, doctorName, onCreated }: NewReferralProps) {
+function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, onCreated }: NewReferralProps) {
   const [centerId, setCenterId] = useState(() => (activeCenters.length === 1 ? activeCenters[0].clinicId : ""));
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
@@ -161,11 +162,11 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, doctorNam
 
   // Каталог послуг ОБРАНОГО центру (фаза 2a): drop-in шорткати lib/studies.
   // Порожній (центр не обрано / без сіду) → статичний фолбэк.
-  const catalog = useMemo(() => buildCatalog(servicesByClinic[centerId]), [servicesByClinic, centerId]);
+  const catalog = useMemo(() => buildCatalog(servicesByClinic[centerId], overridesToMap(roomOverridesByClinic[centerId])), [servicesByClinic, roomOverridesByClinic, centerId]);
   const regionsFor = catalog.regionsFor;
   const studyPrice = catalog.studyPrice;
 
-  const allRegions = regionsFor(studyType);
+  const allRegions = regionsFor(studyType, roomId || undefined);
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const regionObj = regions.find((r) => r.label === region);
   const contrastSuffix = contrast ? " з контрастом" : "";
@@ -174,11 +175,11 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, doctorNam
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   const [durEdit, setDurEdit] = useState("");
-  useEffect(() => { if (region) setDurEdit(String(computedDur)); }, [region, contrast, studyType]); // eslint-disable-line
+  useEffect(() => { if (region) setDurEdit(String(computedDur)); }, [region, contrast, studyType, roomId]); // eslint-disable-line react-hooks/exhaustive-deps -- зміна кабінету пересчитує дефолтну тривалість (per-room 0108)
   const dur = Math.max(5, parseInt(durEdit, 10) || computedDur);
   const durCustom = region && parseInt(durEdit, 10) && parseInt(durEdit, 10) !== computedDur;
 
-  const exRegions = (t: string) => regionsFor(t);
+  const exRegions = (t: string) => regionsFor(t, roomId || undefined);
   // Область не обрана → 0 (порожнє дослідження не додає час, поки область не вибрана).
   const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : 0; };
   function changeType(t: string) {
@@ -197,8 +198,8 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, doctorNam
   const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
 
-  const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast) } : null;
-  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false) })));
+  const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast, roomId || undefined) } : null;
+  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, roomId || undefined) })));
   const slotDur = dur + validExtra.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
   function calcAgeLocal(d: string) { const a = calcAge(d); return a == null || a < 0 ? 0 : a; }
@@ -1075,11 +1076,13 @@ interface ReferralPortalProps {
   roomsByClinic: Record<string, RoomOpt[]>;
   /** Каталоги послуг за центрами (clinic_id → services, 0107). RLS services_referrer_read. */
   servicesByClinic: Record<string, ServiceLike[]>;
+  /** Переозначення каталогу по кабінетах за центрами (clinic_id → service_room_overrides, 0108). */
+  roomOverridesByClinic: Record<string, RoomOverrideRow[]>;
   doctorName: string;
   doctorId: string;
 }
 
-export default function ReferralPortal({ role, centers, roomsByClinic, servicesByClinic, doctorName, doctorId }: ReferralPortalProps) {
+export default function ReferralPortal({ role, centers, roomsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, doctorId }: ReferralPortalProps) {
   const router = useRouter();
   const canManage = role === "referrer";
   async function signOut() {
@@ -1303,7 +1306,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
         </header>
         <div className="content" style={{ flex: 1 }}>
         {tab === "new" && (
-          <NewReferral activeCenters={activeCenters} roomsByClinic={roomsByClinic} servicesByClinic={servicesByClinic} doctorName={doctorName} doctorId={doctorId}
+          <NewReferral activeCenters={activeCenters} roomsByClinic={roomsByClinic} servicesByClinic={servicesByClinic} roomOverridesByClinic={roomOverridesByClinic} doctorName={doctorName} doctorId={doctorId}
             onCreated={(nm, err) => { if (err) notify("Помилка: " + err, "error"); else { notify("Направлення відправлено: " + nm, "success"); reload(); setTab("mine"); } }} />
         )}
         {tab === "mine" && (
@@ -1338,17 +1341,19 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
         <RescheduleModal patient={reschedFor} rooms={reschedRooms} clinicId={reschedFor.clinic_id} clinicTz={centersById[reschedFor.clinic_id]?.timezone} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} services={servicesByClinic[editStudiesFor.clinic_id]} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} services={servicesByClinic[editStudiesFor.clinic_id]} roomOverrides={roomOverridesByClinic[editStudiesFor.clinic_id]} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {wlAddOpen && (
         <WaitlistModal centers={activeCenters.map((c) => ({ clinicId: c.clinicId, name: centerLabel(c), modalities: centerModalities(c) }))}
           servicesByCenter={servicesByClinic}
+          roomOverridesByCenter={roomOverridesByClinic}
           onClose={() => setWlAddOpen(false)} onSave={wlAdd} />
       )}
       {wlEditFor && (
         <WaitlistModal initial={wlEditFor}
           allowedModalities={centersById[wlEditFor.clinic_id] ? centerModalities(centersById[wlEditFor.clinic_id]) : undefined}
           servicesByCenter={servicesByClinic}
+          roomOverridesByCenter={roomOverridesByClinic}
           onClose={() => setWlEditFor(null)} onSave={wlEditSave} />
       )}
       {cancelAsk && (

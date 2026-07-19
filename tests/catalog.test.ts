@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildCatalog, catalogTotalPrice, type ServiceLike } from "@/lib/catalog";
+import { buildCatalog, catalogTotalPrice, overridesToMap, type ServiceLike } from "@/lib/catalog";
 import { CONTRAST_SURCHARGE, CONTRAST_DUR } from "@/lib/studies";
 
 /* Резолвер каталогу (Stage 2, фаза 2a). Каталог per-clinic (`services`, 0107)
@@ -137,6 +137,38 @@ describe("buildCatalog — фолбэк порожнього каталогу = 
     expect(cat.regionsFor("MRI").length).toBeGreaterThan(0);
     expect(catNull.regionsFor("CT").length).toBeGreaterThan(0);
     expect(cat.has("MRI")).toBe(false);
+  });
+});
+
+describe("overridesToMap — SroRow[] → RoomOverrides (0108, проброс у форми)", () => {
+  const s = svc({ name: "Коліно", modality: "MRI", duration_min: 30, price: 1800, contrast_allowed: true });
+  const row = (o: Partial<import("@/lib/catalog").RoomOverrideRow> & { room_id: string; service_id: string }): import("@/lib/catalog").RoomOverrideRow => ({
+    price: o.price ?? null, duration_min: o.duration_min ?? null, contrast_price: o.contrast_price ?? null,
+    active: o.active ?? true, room_id: o.room_id, service_id: o.service_id,
+  });
+
+  it("плоский список згортається у мапу room→service→override; buildCatalog застосовує", () => {
+    const map = overridesToMap([row({ room_id: "room-fast", service_id: s.id, duration_min: 20, price: 1500 })]);
+    const cat = buildCatalog([s], map);
+    expect(cat.studyDur("MRI", "Коліно", false, "room-fast")).toBe(20);
+    expect(cat.studyPrice("MRI", "Коліно", false, "room-fast")).toBe(1500);
+    expect(cat.studyDur("MRI", "Коліно", false, "room-other")).toBe(30); // немає рядка → база
+  });
+
+  it("active=false рядок ховає позицію в кабінеті; кілька кабінетів у мапі", () => {
+    const map = overridesToMap([
+      row({ room_id: "r1", service_id: s.id, active: false }),
+      row({ room_id: "r2", service_id: s.id, price: 999 }),
+    ]);
+    const cat = buildCatalog([s], map);
+    expect(cat.regionsFor("MRI", "r1").map((r) => r.label)).toEqual([]);
+    expect(cat.studyPrice("MRI", "Коліно", false, "r2")).toBe(999);
+  });
+
+  it("порожній / null вхід → порожня мапа (успадкування бази)", () => {
+    expect(overridesToMap([]).size).toBe(0);
+    expect(overridesToMap(null).size).toBe(0);
+    expect(overridesToMap(undefined).size).toBe(0);
   });
 });
 

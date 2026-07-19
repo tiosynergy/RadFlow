@@ -50,7 +50,7 @@ import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, collisionFor, type CollisionInfo } from "@/lib/queueStatus";
 import CollisionPanel from "@/components/CollisionPanel";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
-import type { ServiceLike } from "@/lib/catalog";
+import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
@@ -835,13 +835,15 @@ interface QueueBoardProps {
   rooms?: RoomOpt[];
   /** Каталог послуг центру (services, 0107) — SSR-проп, як rooms. Порожній → статика. */
   services?: ServiceLike[];
+  /** Переозначення каталогу по кабінетах (service_room_overrides, 0108) — SSR-проп; проброс у форми запису (2b). */
+  roomOverrides?: RoomOverrideRow[];
   clinicName?: string;
   adminName?: string;
   adminRole?: string;
   roleKey?: string;
 }
 
-export default function QueueBoard({ clinicId, clinicTz, rooms, services, clinicName, adminName, adminRole, roleKey = "admin" }: QueueBoardProps) {
+export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: QueueBoardProps) {
   /* Зона центру виставляється СИНХРОННО, до першого рендера й до ініціалізаторів
      useState — інакше selectedDate = today0() зафіксував би день БРАУЗЕРА назавжди
      (раніше tz прилітала з клієнтського fetch уже ПІСЛЯ монтування).
@@ -1807,11 +1809,11 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, clinic
           admin/radiologist центру — бачать, реєстратор і направник — ні. */}
       {/* clinicTz — ЯВНО в кожну модалку: покладатися на singleton не можна
           (HANDOVER §6.1), інакше «зараз» тихо з'їде на зону браузера. */}
-      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} services={services} onClose={() => setModalOpen(false)} onSave={saveBooking} onCreateCase={createCaseFromBooking} />}
-      {openCaseId && <CaseModal caseId={openCaseId} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} services={services} onClose={() => setOpenCaseId(null)} onCancelled={reload} />}
+      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} services={services} roomOverrides={roomOverrides} onClose={() => setModalOpen(false)} onSave={saveBooking} onCreateCase={createCaseFromBooking} />}
+      {openCaseId && <CaseModal caseId={openCaseId} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} services={services} roomOverrides={roomOverrides} onClose={() => setOpenCaseId(null)} onCancelled={reload} />}
       {caseFromEntryFor && (
         <BookingModal
-          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} services={services}
+          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} services={services} roomOverrides={roomOverrides}
           prefill={{
             name: caseFromEntryFor.patient_name || "", phone: caseFromEntryFor.patient_phone || "",
             dob: caseFromEntryFor.patient_dob, gender: caseFromEntryFor.patient_sex,
@@ -1832,7 +1834,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, clinic
       {slotsOverviewOpen && <RoomDayOverviewModal rooms={rooms || []} clinicTz={clinicTz} incidents={liveIncidents} overrides={overrides} onClose={() => setSlotsOverviewOpen(false)} />}
 
       {wlSuggest && (
-        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={liveIncidents} services={services}
+        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={liveIncidents} services={services} roomOverrides={roomOverrides}
           slot={wlSuggest.slot} candidates={wlSuggest.candidates}
           onClose={() => setWlSuggest(null)}
           onBooked={(msg) => { notify(msg, "success"); reload(); }}
@@ -1869,7 +1871,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, clinic
       )}
 
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} offSchedule={!!editStudiesFor.off_schedule} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesFor.off_schedule} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {editPatientFor && (
         <PatientEditModal entryId={editPatientFor.id} canEditPriority={canEditPriority} onClose={() => setEditPatientFor(null)} onSaved={reload} />
