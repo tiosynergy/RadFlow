@@ -370,7 +370,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const contrastSuffix = contrast ? " з контрастом" : "";
   const procLabel = region ? `${primaryKind} · ${region}${contrastSuffix}` : primaryKind;
   const regionObj = regions.find((r) => r.label === region);
-  const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (allRegions[0]?.dur ?? 20);
+  const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + (contrast ? CONTRAST_DUR : 0)) : (allRegions[0]?.dur ?? 20);
   const price = regionObj ? regionObj.price + (contrast ? (regionObj.contrastPrice ?? CONTRAST_SURCHARGE) : 0) : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
@@ -380,7 +380,8 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   useEffect(() => {
     if (!region) return;
     if (pfDurRef.current != null) { setDurEdit(String(pfDurRef.current)); pfDurRef.current = null; return; }
-    setDurEdit(String(computedDur));
+    // 0117: час області «—» → порожнє поле (ручний ввід), НЕ "0".
+    setDurEdit(computedDur > 0 ? String(computedDur) : "");
   }, [region, contrast, studyType, roomId]); // eslint-disable-line react-hooks/exhaustive-deps -- зміна кабінету пересчитує дефолтну тривалість (per-room 0108)
   // Realtime-зміна каталожної тривалості (та сама область/кабінет): підхоплюємо новий
   // default, ЛИШЕ якщо оператор не редагував поле вручну (durEdit === попередній
@@ -389,7 +390,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   useEffect(() => {
     const prev = prevDefDurRef.current;
     prevDefDurRef.current = computedDur;
-    if (region && durEdit === String(prev) && String(prev) !== String(computedDur)) setDurEdit(String(computedDur));
+    if (region && durEdit === String(prev) && String(prev) !== String(computedDur)) setDurEdit(computedDur > 0 ? String(computedDur) : "");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- лише на realtime-зміну каталожного default
   }, [computedDur]);
   // Обрана область стала НЕДОСТУПНОЮ (прихована в кабінеті per-room 0108, АБО
@@ -409,20 +410,23 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   }, [availSig]);
   // H-1: кратно 5 і в межах 5..480 — інакше «47» їхало в БД (ламає сітку слотів),
   // а «0» взагалі обходив анти-овербукінг (порожній tstzrange). CHECK у 0066 — останній рубіж.
-  const dur = normDur(parseInt(durEdit, 10) || computedDur);
+  // 0117: область з часом «—» і порожнє поле → 0 БЕЗ normDur-фолбеку (він давав
+  // фіктивні 30 хв, ревью H1) — збереження блокує miss.dur, доки час не введено.
+  const durRaw = parseInt(durEdit, 10) || computedDur;
+  const dur = durRaw > 0 ? normDur(durRaw) : 0;
   const durCustom = region && parseInt(durEdit, 10) && parseInt(durEdit, 10) !== computedDur;
 
   const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>(() =>
     pfStudies.slice(1).filter((s) => s?.region).map((s) => ({
       type: modalityLabel(s.type),
       region: s.region as string,
-      dur: Number(s.dur) || (regionsFor(s.type, roomId)[0]?.dur ?? 20),
+      dur: Number(s.dur) || (regionsFor(s.type, roomId)[0]?.dur ?? 0),
     }))
   );
   const exRegions = (t: string) => regionsFor(t, roomId);
   // Область не обрана → 0 (не «дефолт першої області»): порожнє дослідження НЕ
   // повинно додавати час у слот/сітку, поки область справді не вибрана.
-  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : 0; };
+  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? (o.dur ?? 0) : 0; };
   const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
   const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
   const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(5, parseInt(v, 10) || 0) });
@@ -623,8 +627,8 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   // Режим «додати крок до кейса»: пацієнта бере зі знімка кейса add_case_step_rpc,
   // тож поля пацієнта у формі — лише передзаповнення, вони НЕ блокують збереження.
   const addMode = !!onAddCaseStep;
-  const miss: Record<string, boolean> = { name: !addMode && !name.trim(), dob: !addMode && !dob, gender: !addMode && !gender, phone: !addMode && !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time };
-  const MISS_LABELS: Record<string, string> = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
+  const miss: Record<string, boolean> = { name: !addMode && !name.trim(), dob: !addMode && !dob, gender: !addMode && !gender, phone: !addMode && !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time, dur: !!region && dur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5) };
+  const MISS_LABELS: Record<string, string> = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу", dur: "Тривалість (хв)", exdur: "Тривалість додаткових досліджень" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   // 0077: «поза графіком» — теж легальний вибір, тому НЕ timeBad. Але зберегти
   // його можна лише з галочкою підтвердження (offOk) — див. valid нижче.
@@ -743,7 +747,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
       setRegion(primary.region || "");
     }
     setExtraStudies(studies.slice(1).map((x) => ({
-      type: x.type, region: x.region || "", dur: Number(x.dur) || (regionsFor(x.type, s.roomId)[0]?.dur ?? 20),
+      type: x.type, region: x.region || "", dur: Number(x.dur) || (regionsFor(x.type, s.roomId)[0]?.dur ?? 0),
     })));
     setRoomId(s.roomId);
     if (s.date instanceof Date && !isNaN(s.date.getTime())) setBookDate(s.date);
@@ -898,7 +902,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                 <select className="inp" value={region} onChange={(e) => setRegion(e.target.value)}>
                   <option value="">— Оберіть область —</option>
                   {regions.map((r) => (
-                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur + (contrast ? CONTRAST_DUR : 0)} хв</option>
+                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + (contrast ? CONTRAST_DUR : 0) + " хв"}</option>
                   ))}
                 </select>
               </label>
@@ -910,7 +914,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                   <span className="bk-dur-unit">хв</span>
                 </div>
                 <span className={"bk-time-state " + (durCustom ? "busy" : "none")}>
-                  {!region ? "оберіть область" : durCustom ? `↺ за замовч. ${computedDur} хв` : "за тривалістю області"}
+                  {!region ? "оберіть область" : durCustom ? `↺ за замовч. ${computedDur} хв` : computedDur > 0 ? "за тривалістю області" : "час не задано — введіть"}
                 </span>
               </label>
               <label className="fld" style={{ flex: "0 0 76px" }}>
@@ -940,9 +944,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                         </div>
                         <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
-                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur} хв</option>)}
+                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}</option>)}
                         </select>
-                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? r.dur : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
                         <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
                       </div>
                     );

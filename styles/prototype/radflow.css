@@ -1234,6 +1234,20 @@ select.inp { cursor: pointer; }
 .bk-room-chip.ct  { border-bottom-color: rgba(255,159,10,0.4); }
 .bk-room-chip.active.mrt { border-color: var(--blue); border-bottom-color: var(--blue); background: var(--blue-bg); color: #4da3ff; }
 .bk-room-chip.active.ct  { border-color: var(--orange); border-bottom-color: var(--orange); background: var(--orange-bg); color: var(--orange); }
+/* Нові модальності: без цих правил АКТИВНИЙ чип УЗД/РГ/ММГ був безстильним —
+   вибраний кабінет не відрізнявся від невибраного (баг-репорт власника 2026-07-20).
+   Палітра = us/xray/mammo з блоку .equip-tile нижче. */
+.bk-room-chip.us    { border-bottom-color: rgba(50,173,230,0.4); }
+.bk-room-chip.xray  { border-bottom-color: rgba(191,90,242,0.4); }
+.bk-room-chip.mammo { border-bottom-color: rgba(255,55,95,0.4); }
+.bk-room-chip.active.us    { border-color: #5ac8fa; border-bottom-color: #5ac8fa; background: rgba(50,173,230,0.15); color: #5ac8fa; }
+.bk-room-chip.active.xray  { border-color: #d9a6f5; border-bottom-color: #d9a6f5; background: rgba(191,90,242,0.15); color: #d9a6f5; }
+.bk-room-chip.active.mammo { border-color: #ff7a92; border-bottom-color: #ff7a92; background: rgba(255,55,95,0.15); color: #ff7a92; }
+.bk-room-chip.active.other { border-color: var(--blue); border-bottom-color: var(--blue); background: var(--blue-bg); color: #4da3ff; }
+/* Явний маркер вибору для БУДЬ-ЯКОЇ модальності: галочка в куті (зліва зверху —
+   правий верхній кут зайнятий крапкою .bk-room-closed-dot). */
+.bk-room-chip { position: relative; }
+.bk-room-chip.active::after { content: "✓"; position: absolute; top: 2px; left: 6px; font-size: 11px; font-weight: 800; opacity: .9; }
 .bk-room-chip.closed { position: relative; border-bottom-color: var(--red); color: var(--text-faint); }
 .bk-room-chip.closed.active { border-color: var(--red); background: var(--red-bg); color: var(--red); }
 .bk-room-closed-dot { position: absolute; top: 4px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--red); }

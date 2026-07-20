@@ -1,6 +1,6 @@
 # RadFlow — Handover для новой сессии
 
-**Дата:** 2026-07-20 · **Ветка:** `dev` (всё закоммичено, дерево чистое) · **PROD:** БД на **`0114`** (0061–0114 применены владельцем; ledger `supabase_migrations` пуст — накатка ручная через SQL Editor). **`0115` (импорт прайсов, фаза 3a) написана и верифицирована в откате — НЕ НАКАТАНА (порядок ввода в строй — блок ниже); после её накатки следующая новая = 0116.** `0114` проверена по прод-БД (`catalog_est_sum` в сигнатуре `ceo_kpi_studies`); `/ceo` не «поплыл». `service_room_overrides` (0108) проверена по прод-БД: таблица/guard-функция/RLS на месте, override-строк 0 (владелец ещё не задавал per-room), базовых услуг 45. ⚠️ Цены УЗД/Рентген/Мамографія в сиде = 0 — проставляет владелец.
+**Дата:** 2026-07-20 · **Ветка:** `dev` (всё закоммичено, дерево чистое) · **PROD:** БД на **`0114`** (0061–0114 применены владельцем; ledger `supabase_migrations` пуст — накатка ручная через SQL Editor). **`0115`+`0116` НАКАТАНЫ владельцем (SMOKE_OK его прогоном). `0117` (services.duration_min NULL-able — «—» вместо фиктивных 20 хв) написана+верифицирована в откате — НАКАТИТЬ; после неё следующая новая = 0118.** `0114` проверена по прод-БД (`catalog_est_sum` в сигнатуре `ceo_kpi_studies`); `/ceo` не «поплыл». `service_room_overrides` (0108) проверена по прод-БД: таблица/guard-функция/RLS на месте, override-строк 0 (владелец ещё не задавал per-room), базовых услуг 45. ⚠️ Цены УЗД/Рентген/Мамографія в сиде = 0 — проставляет владелец.
 
 > **2026-07-20 (сессия 3) — Stage 2 фаза 3a: ИМПОРТ ПРАЙСОВ xlsx/csv — реализована, ЖДЁТ ВВОДА В СТРОЙ.**
 > Тулчейн: `tsc` чист, `lint` 0, `vitest` **223/223** (+20 tests/priceImport.test.ts). Ревью субагентом: SHIP
@@ -31,6 +31,33 @@
 >   закрытие заблокировано во время применения. Server Action `importServices` → RPC. `supabase/types.ts`
 >   +services_import_rpc.
 >
+> **0117 — «не задано» = честное «—» (решение владельца, 2026-07-20/3).** `services.duration_min` DROP NOT NULL
+> + DROP DEFAULT (CHECK 5..480 не тронут — NULL проходит семантикой SQL); импорт без времени пишет NULL
+> (не 20), цена 0 отображается «—» (модель цены не менялась). Резолвер: `CatalogRegion.dur: number|null`,
+> `studyDur` при null → 0 («введите вручную»). **Ревью субагентом: NO-SHIP → SHIP** — клиенты подставляли
+> СВОИ фиктивные значения: BookingModal `normDur`-фолбэк молча бронировал 30 хв при показанном «0» (H1),
+> ReferralPortal — 5-минутный слот (H2, риск наложения), WaitlistModal был тупиком без поля времени (M1),
+> StudyEditModal сохранял dur 0 в снимок (M2). Фиксы: пустое поле + placeholder «—» + блок сохранения
+> `miss.dur`/`miss.exdur`/`valid ≥5` во ВСЕХ формах; в WaitlistModal добавлено поле ручного времени
+> основного исследования; префиллы `?? 20` → `?? 0`. ⚠️ КАНОН: убирая фиктивный дефолт из БД, проверь,
+> что клиентские фолбэки (`normDur(x)`→30, `Math.max(5,…)`) не подставят свой. Тулчейн 231/231; smoke
+> секция (g) ждёт dur IS NULL; 0117 верифицирована в откате на прод-БД (SMOKE_OK).
+>
+> **ДОРАБОТКА ПО ЖИВОМУ ТЕСТУ (2026-07-20, после накатки 0115): `0116_services_import_nullable_price.sql` + код.**
+> Решение владельца: строка прайса БЕЗ цены (и/или времени) всё равно импортируется — новая позиция
+> с ценой 0 («Ціну ще не задано»), у существующей цена НЕ трогается; время при записи и так берётся
+> из каталога с ручным перекрытием в форме (2a). Реализация: RPC 0116 (price nullable: insert →
+> coalesce(price,0), update → coalesce(v_price, s.price); no-op-гард «нечего менять» — не дёргает
+> source/updated_at/realtime; ключ noop в ответе), parseRawRows не отбрасывает строки без цены,
+> isSectionHeader отсеивает заголовки разделов прайса («УЗД», «Рентгенографія:»), группа «Нові без
+> ціни» в превью. Плюс rescue-скан строки заголовков (титул-шапка над таблицей) и includeEmptyCells
+> в Extract-нодах n8n (переопубликован). **Ревью субагентом: NO-SHIP → SHIP.** Blocker B1: z.coerce
+> превращал null→0 (Number(null)===0) — null-ветка union недостижима, импорт затирал бы цены нулём;
+> введён `zPriceNullable` (lib/validation.ts, БЕЗ coerce) — тем же фиксом закрыт живой баг M1 в
+> sRoomOverride (явный null «успадкувати базу» сохранялся как override 0 ₴) и sService.contrastPrice.
+> ⚠️ КАНОН: для nullable-полей НИКОГДА `z.union([z.coerce…, z.null()])` — только схемы без coerce.
+> Тулчейн 231/231; smoke расширен секцией (g), 0116 верифицирована в откате (SMOKE_OK 0116v2).
+>
 > **ПОРЯДОК ВВОДА В СТРОЙ (владелец):**
 > 1. Накатить `0115_services_import_rpc.sql` в SQL Editor → прогнать `services_import_smoke.sql` (подставив
 >    свои UID/clinic_id) → ждать `SMOKE_OK`.
@@ -39,8 +66,10 @@
 > 3. В n8n (workflow radflow-price-import) заменить `REPLACE_ME_IMPORT_SECRET` в нодах «Verify & Decode» И
 >    «Sign Response» на ТОТ ЖЕ секрет → Save → переопубликовать workflow.
 > 4. Живой тест: /services → «⇪ Імпорт прайса» → xlsx с колонками «Назва послуги / Ціна, грн / Тривалість, хв».
->    Это же закрывает пункт «цены УЗД/РГ/ММГ» (49 позиций с ценой 0) — импортом файла с ценами.
-> **После накатки 0115 следующая новая миграция = 0116.**
+>    Это же закрывает пункт «цены УЗД/РГ/ММГ» — импортом файла с ценами.
+> Шаги 1–4 ВЫПОЛНЕНЫ 2026-07-20 (0115+0116 накатаны, секрет в Vercel/.env.local/n8n, цепочка проверена
+> живым тестом). ОСТАЛОСЬ: накатить `0117` (+smoke до SMOKE_OK, секция g ждёт dur IS NULL), закоммитить
+> код на `dev` (npm test = 231/231), смерджить `dev → main`. После 0117 следующая новая миграция = 0118.
 
 > **История миграций 0109–0112 (детали — memory [[radflow-state]] / [[radflow-services-catalog]]):**
 > `0109` write-skew перерасчёта статуса кейса (`for update` на patient_cases; smoke `case_status_serialization_smoke.sql`). `0110` хотфикс `submit_incident_rpc` (`#variable_conflict use_column`). `0111` realtime каталога (services/service_room_overrides в publication + replica identity full) + звужение overrides направителя (`sro_referrer_read` → `auth_referrer_can_book_room`; smoke `services_referrer_scope_smoke.sql`, RLS-имперсонация PASS на прод). `0112` DB-рубеж против записи ЗАКРЫТОЙ услуги (тригер `check_studies_active_catalog` на queue_entries+waitlist_entries — зеркалит резолвер lib/catalog.ts, grandfather на UPDATE; ревью субагентом SHIP; smoke `studies_active_catalog_smoke.sql`). `0113` grandfather только при неизменном кабинете (`new.room_id is not distinct from old.room_id`) — закрывает перенос записи в кабинет со скрытой услугой; `rescheduleQueueEntry` гейтит склад при смене кабинета; `mapBookingError`/waitlist маппят `SERVICE_CLOSED`; realtime-сигнатура модалок учитывает контраст (снимает флаг) + guarded-refresh длительности. Ревью субагентом SHIP; smoke расширен (waitlist + move-to-hidden), PASS в откате. `0114` CEO-доход ПО КАТАЛОГУ: `ceo_kpi_studies` (drop+create) добавляет `catalog_est_sum` — оценка позиций без снимка цены по каталогу центра («чистый каталог»: активная услуга name=region с price>0, +contrast_price/900; иначе 0). Хардкод-справочник `PRICE` в `CeoDashboard` убран (дашборд = priced_sum+catalog_est_sum; CSV мирролит ту же логику через services scoped-центров). Ревью субагентом SHIP; выражение оценки сверено на прод-данных. Прод-импакт сейчас 0 (все done-позиции имеют снимок цены). **0114 накатана+проверена (`/ceo` не «поплыл»).** Тулчейн на HEAD: `tsc`/`lint` 0, `vitest` **203/203**.

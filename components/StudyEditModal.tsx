@@ -185,7 +185,8 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
     patch(i, { contrast, dur: Math.max(5, (Number(r.dur) || 0) + delta) });
   }
   // H-1: кратно 5, 5..480 — те саме обмеження, що CHECK у БД (0066).
-  function setDur(i: number, v: string) { patch(i, { dur: normDur(parseInt(v, 10)) }); }
+  // 0117: порожнє поле → 0 (БЕЗ normDur-фолбеку 30) — збереження блокує valid.
+  function setDur(i: number, v: string) { const n = parseInt(v, 10) || 0; patch(i, { dur: n > 0 ? normDur(n) : 0 }); }
   function addRow() { setRows((rs) => [...rs, { type: defaultType, region: "", contrast: false, dur: recalc(defaultType, "", false) }]); }
   function removeRow(i: number) { setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : rs)); }
 
@@ -205,7 +206,9 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const [offOk, setOffOk] = useState(false);
   const crossesNow = totalDur > inSchedCap;
   const needsOffConfirm = crossesNow && !overflow;
-  const valid = rows.length > 0 && rows.every((r) => r.region) && !overflow && (!needsOffConfirm || offOk);
+  // 0117 (ревью M2): рядок з областю, але без часу (каталожне «—») — не зберігаємо,
+  // інакше в снімок їхав dur 0, а колери мовчки лишали стару тривалість.
+  const valid = rows.length > 0 && rows.every((r) => r.region && (Number(r.dur) || 0) >= 5) && !overflow && (!needsOffConfirm || offOk);
 
   // ── Сітка слотів (read-only візуалізація дня кабінету) ──────────────────────
   // Показуємо зайнятість кабінету і власне вікно запису (green межі + буфер) —
@@ -324,7 +327,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                       <select className="inp" value={hasRegion ? r.region : ""} onChange={(e) => setRegion(i, e.target.value)}>
                         <option value="">— Оберіть область —</option>
                         {!hasRegion && r.region && <option value={r.region}>{r.region} (поточне)</option>}
-                        {regions.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur} хв</option>)}
+                        {regions.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}</option>)}
                       </select>
                     </label>
                     <div className="st-field st-field-contrast">
@@ -336,7 +339,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                     </div>
                     <label className="st-field st-field-dur">
                       <span className="st-flab">Тривалість</span>
-                      <div className="st-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? r.dur : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => setDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                      <div className="st-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => setDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
                     </label>
                   </div>
                 </div>

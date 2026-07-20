@@ -14,7 +14,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/supabase/types";
-import { parseInput, safeDbError, zUuid, zDuration } from "@/lib/validation";
+import { parseInput, safeDbError, zUuid, zDuration, zPriceNullable } from "@/lib/validation";
 import { BOOKABLE_MODALITIES, regionsFor, type ModalityCode } from "@/lib/studies";
 
 export type ServiceActionResult =
@@ -28,14 +28,18 @@ const zModality = z.enum(["MRI", "CT", "US", "XRAY", "MAMMO"]); // = BOOKABLE_MO
 const sService = z.object({
   name: z.string().trim().min(2, "Вкажіть назву послуги").max(120),
   modality: zModality,
-  durationMin: zDuration,                       // кратна 5, 5..480 (= CHECK 0107)
+  // 0117: null = час не задано («—» в каталозі; вводиться вручну при записі).
+  // union безпечний: zDuration БЕЗ coerce (канон zPriceNullable — B1).
+  durationMin: z.union([zDuration, z.null()]),
   price: zPrice,
   contrastAllowed: z.boolean().optional().default(false),
   // null = глобальний дефолт CONTRAST_SURCHARGE (lib/studies.ts).
-  // preprocess: порожній рядок → null (інакше coerce зробив би з "" доплату 0).
+  // preprocess: порожній рядок → null. Далі zPriceNullable БЕЗ coerce: у
+  // z.union([zPrice(coerce), z.null()]) Number(null)===0 робив із null доплату 0
+  // (ревью 0116 B1/M1 — той самий клас бага, що в імпорті).
   contrastPrice: z.preprocess(
     (v) => (v === "" || v === undefined ? null : v),
-    z.union([zPrice, z.null()])
+    zPriceNullable
   ),
   active: z.boolean().optional().default(true),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional().default(0),
@@ -198,10 +202,12 @@ export async function seedServicesFromCatalog(): Promise<ServiceActionResult> {
    ============================================================ */
 
 const sRoomOverride = z.object({
-  // NULL = успадкувати базу; число — свій параметр.
-  price: z.union([zPrice, z.null()]).optional().default(null),
+  // NULL = успадкувати базу; число — свій параметр. zPriceNullable БЕЗ coerce:
+  // інакше явний null ставав ціною 0 — «успадкувати базу» перетворювалось на
+  // override 0 ₴ (ревью 0116 M1). zDuration без coerce — null проходить чесно.
+  price: zPriceNullable.optional().default(null),
   durationMin: z.union([zDuration, z.null()]).optional().default(null),
-  contrastPrice: z.union([zPrice, z.null()]).optional().default(null),
+  contrastPrice: zPriceNullable.optional().default(null),
   active: z.boolean().optional().default(true),
 });
 export type RoomOverrideInput = z.infer<typeof sRoomOverride>;
@@ -267,7 +273,10 @@ export async function clearRoomServiceOverride(roomId: string, serviceId: string
 const sImportRow = z.object({
   name: z.string().trim().min(2).max(120),
   modality: zModality,
-  price: zPrice,
+  // null = у прайсі ціни не було: нова позиція → 0 («заповнити пізніше»),
+  // існуюча → ціна НЕ чіпається (0116). zPriceNullable БЕЗ coerce — інакше
+  // null коерсився в 0 і ЗАТИРАВ реальні ціни (ревью 0116, Blocker B1).
+  price: zPriceNullable.optional().default(null),
   // null = у прайсі часу не було → тривалість існуючої позиції НЕ чіпається.
   durationMin: z.union([zDuration, z.null()]).optional().default(null),
   // true = «оживити» вимкнену позицію (інакше RPC її пропустить).
@@ -277,7 +286,7 @@ const sImportRows = z.array(sImportRow).min(1, "Немає позицій для
 export type ImportServiceRow = z.infer<typeof sImportRow>;
 
 export type ImportServicesResult =
-  | { ok: true; inserted: number; updated: number; skippedInactive: number }
+  | { ok: true; inserted: number; updated: number; skippedInactive: number; noop: number }
   | { ok: false; error: string; code?: "auth" | "forbidden" | "generic" };
 
 /** Застосувати підтверджені позиції імпорту (все-або-нічого). */
@@ -307,11 +316,13 @@ export async function importServices(raw: ImportServiceRow[]): Promise<ImportSer
     }
     return { ok: false, error: safeDbError("services_import", { message: error.message }), code: "generic" };
   }
-  const res = (data ?? {}) as { inserted?: number; updated?: number; skipped_inactive?: number };
+  const res = (data ?? {}) as { inserted?: number; updated?: number; skipped_inactive?: number; noop?: number };
   return {
     ok: true,
     inserted: res.inserted ?? 0,
     updated: res.updated ?? 0,
     skippedInactive: res.skipped_inactive ?? 0,
+    // 0116: рядки без змін (гонка «каталог змінився між передпереглядом і apply»).
+    noop: res.noop ?? 0,
   };
 }

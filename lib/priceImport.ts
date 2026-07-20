@@ -19,7 +19,9 @@ export interface ImportRow {
   name: string;
   /** null = не визначили — адмін обере в передперегляді. */
   modality: ModalityCode | null;
-  price: number;                 // грн, int ≥0
+  /** null = у прайсі ціни немає: нова позиція створюється з ціною 0 («заповнити
+      пізніше»), в існуючої ціна НЕ чіпається (рішення власника 2026-07-20). */
+  price: number | null;
   durationMin: number | null;    // null = у прайсі часу не було (НЕ перезаписуємо)
   confidence: number;            // 0..1 (детермінована гілка: 1 / 0.5)
 }
@@ -78,6 +80,17 @@ const MOD_KEYWORDS: Array<[RegExp, ModalityCode]> = [
   [/рентген|ренген|флюорограф|(^|[^а-яіїєґёa-z])рг([^а-яіїєґёa-z]|$)|x-?ray/, "XRAY"],
   [/мамограф|маммограф|(^|[^а-яіїєґёa-z])ммг([^а-яіїєґёa-z]|$)|mammo/, "MAMMO"],
 ];
+
+/* Назва, що складається ЛИШЕ зі слова-маркера модальності (заголовок розділу
+   прайса: «УЗД», «Рентгенографія:», «МРТ (магнітно-резонансна томографія)»).
+   ⚠️ «Мамографія» у списку НЕМАЄ свідомо: це повна назва реальної послуги
+   (оглядова мамографія), а не лише заголовок розділу (ревью 0116 L2). */
+const SECTION_RE = /^(мрт|магнітно-резонансна томографія|кт|мскт|комп'ютерна томографія|узд|узи|ультразвукова діагностика|ультразвукові дослідження|рентген(ографія|ологія)?|mri|ct|us|x-?ray)([\s:.\-–—]*\([^)]*\))?[\s:.\-–—]*$/i;
+export function isSectionHeader(name: string): boolean {
+  // Типографські апострофи (’ʼ`) → прямий ' — «Комп’ютерна томографія» в
+  // реальних прайсах набрана саме так (ревью 0116 L2).
+  return SECTION_RE.test(name.trim().replace(/[’ʼ`]/g, "'"));
+}
 
 /** Визначити модальність із тексту (значення колонки або назва послуги). */
 export function inferModality(text: unknown): ModalityCode | null {
@@ -147,18 +160,65 @@ export const IMPORT_ROWS_MAX = 500; // стеля позицій за один �
 /** Сирі рядки з n8n (Extract From File): об'єкт «заголовок → значення». */
 export type RawSheetRow = Record<string, unknown>;
 
+/** Рятувальний прохід для файлів із «шапкою» (титул/примітки НАД таблицею):
+    Extract From File бере ПЕРШИЙ рядок аркуша як заголовки, і якщо це титул —
+    справжні заголовки («Назва послуги», «Ціна, грн»…) опиняються ЗНАЧЕННЯМИ
+    одного з перших рядків. Шукаємо такий рядок у перших N і перекейовуємо
+    решту позиційно. Потрібен includeEmptyCells=true на боці n8n (інакше
+    порожні клітинки зсувають позиції). */
+const HEADER_SCAN_ROWS = 10;
+
+function rescueHeaderRow(list: RawSheetRow[]): { list: RawSheetRow[]; cols: DetectedColumns } | null {
+  for (let i = 0; i < Math.min(list.length, HEADER_SCAN_ROWS); i++) {
+    const candidate = list[i];
+    if (!candidate || typeof candidate !== "object") continue;
+    const values = Object.values(candidate).map((v) => String(v ?? "").trim());
+    const cols = detectColumns(values);
+    if (!cols.name || !cols.price) continue;
+    // Знайшли рядок-заголовок: перекейовуємо все ПІСЛЯ нього позиційно.
+    const idx = {
+      name: values.indexOf(cols.name),
+      price: values.indexOf(cols.price),
+      duration: cols.duration ? values.indexOf(cols.duration) : -1,
+      modality: cols.modality ? values.indexOf(cols.modality) : -1,
+    };
+    const rekeyed: RawSheetRow[] = [];
+    for (const r of list.slice(i + 1)) {
+      if (!r || typeof r !== "object") continue;
+      const vals = Object.values(r);
+      // Гард від позиційного зсуву: якщо у рядку менше клітинок, ніж у заголовку
+      // (includeEmptyCells вимкнено на боці n8n), краще пропустити рядок, ніж
+      // прочитати ціну з чужої колонки.
+      if (vals.length !== values.length) { continue; }
+      const row: RawSheetRow = { [cols.name]: vals[idx.name], [cols.price]: vals[idx.price] };
+      if (idx.duration >= 0 && cols.duration) row[cols.duration] = vals[idx.duration];
+      if (idx.modality >= 0 && cols.modality) row[cols.modality] = vals[idx.modality];
+      rekeyed.push(row);
+    }
+    return { list: rekeyed, cols };
+  }
+  return null;
+}
+
 export function parseRawRows(raw: RawSheetRow[] | null | undefined): ParseResult {
   const rows: ImportRow[] = [];
   let skipped = 0;
   let truncated = false;
-  const list = Array.isArray(raw) ? raw : [];
+  let list = Array.isArray(raw) ? raw : [];
   // Заголовки — ОБ'ЄДНАННЯ ключів перших 20 рядків (ревью M3): sparse-парсери
   // опускають порожні клітинки, і колонка, порожня в ПЕРШОМУ рядку, губилась.
   const headerSet = new Set<string>();
   for (const r of list.slice(0, 20)) {
     if (r && typeof r === "object") for (const k of Object.keys(r)) headerSet.add(k);
   }
-  const cols = detectColumns([...headerSet]);
+  let cols = detectColumns([...headerSet]);
+
+  // Ключі не схожі на заголовки (файл із титулом-«шапкою» над таблицею)? —
+  // шукаємо рядок-заголовок серед перших рядків і перекейовуємо (rescue).
+  if (!cols.name || !cols.price) {
+    const rescued = rescueHeaderRow(list);
+    if (rescued) { list = rescued.list; cols = rescued.cols; }
+  }
 
   // Без розпізнаної колонки назви або ціни детермінований розбір неможливий.
   if (!cols.name || !cols.price) return { rows: [], skipped: list.length, columns: cols, truncated };
@@ -169,11 +229,16 @@ export function parseRawRows(raw: RawSheetRow[] | null | undefined): ParseResult
     // slice(0, 512): значення-простиня з зіп-бомби не має коштувати CPU на regex (M2).
     const name = String(r[cols.name] ?? "").slice(0, 512).replace(/\s+/g, " ").trim();
     const price = parsePrice(r[cols.price]);
-    if (name.length < 2 || name.length > IMPORT_NAME_MAX || price == null) { skipped++; continue; }
+    if (name.length < 2 || name.length > IMPORT_NAME_MAX) { skipped++; continue; }
 
     const fromCol = cols.modality ? inferModality(r[cols.modality]) : null;
     const modality = fromCol ?? inferModality(name);
     const durationMin = cols.duration ? parseDuration(r[cols.duration]) : null;
+
+    // Рядок БЕЗ ціни і часу, чия назва — лише слово-маркер модальності
+    // («УЗД», «Рентгенографія», «МРТ:») — це заголовок РОЗДІЛУ прайса,
+    // не послуга. Інакше він імпортувався б порожньою позицією.
+    if (price == null && durationMin == null && isSectionHeader(name)) { skipped++; continue; }
 
     const key = (modality ?? "?") + "|" + name.toLowerCase();
     if (seen.has(key)) { skipped++; continue; } // дубль у файлі — беремо перший
@@ -201,7 +266,7 @@ export interface ExistingService {
   name: string;
   modality: string;
   price: number;
-  duration_min: number;
+  duration_min: number | null; // 0117: null = час не задано
   active: boolean;
 }
 
@@ -224,7 +289,8 @@ export function classifyRows(rows: ImportRow[], existing: ExistingService[]): Cl
     const ex = byKey.get(row.modality + "|" + row.name.toLowerCase());
     if (!ex) return { kind: "new", row };
     if (!ex.active) return { kind: "inactive", row, existing: ex };
-    const priceSame = ex.price === row.price;
+    // null-ціна/null-час у файлі = «не чіпати» → не рахується зміною.
+    const priceSame = row.price == null || ex.price === row.price;
     const durSame = row.durationMin == null || ex.duration_min === row.durationMin;
     return priceSame && durSame
       ? { kind: "unchanged", row, existing: ex }

@@ -170,27 +170,31 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const regionObj = regions.find((r) => r.label === region);
   const contrastSuffix = contrast ? " з контрастом" : "";
-  const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (allRegions[0]?.dur ?? 20);
+  const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + (contrast ? CONTRAST_DUR : 0)) : (allRegions[0]?.dur ?? 20);
   const price = regionObj ? regionObj.price + (contrast ? (regionObj.contrastPrice ?? CONTRAST_SURCHARGE) : 0) : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   const [durEdit, setDurEdit] = useState("");
-  useEffect(() => { if (region) setDurEdit(String(computedDur)); }, [region, contrast, studyType, roomId]); // eslint-disable-line react-hooks/exhaustive-deps -- зміна кабінету пересчитує дефолтну тривалість (per-room 0108)
+  // 0117: каталожне «—» → порожнє поле (ручний ввід).
+  useEffect(() => { if (region) setDurEdit(computedDur > 0 ? String(computedDur) : ""); }, [region, contrast, studyType, roomId]); // eslint-disable-line react-hooks/exhaustive-deps -- зміна кабінету пересчитує дефолтну тривалість (per-room 0108)
   // Realtime-зміна каталожної тривалості (та сама область/кабінет): підхоплюємо новий
   // default, ЛИШЕ якщо оператор не редагував поле вручну. (0111 realtime каталогу.)
   const prevDefDurRef = useRef<number>(computedDur);
   useEffect(() => {
     const prev = prevDefDurRef.current;
     prevDefDurRef.current = computedDur;
-    if (region && durEdit === String(prev) && String(prev) !== String(computedDur)) setDurEdit(String(computedDur));
+    if (region && durEdit === String(prev) && String(prev) !== String(computedDur)) setDurEdit(computedDur > 0 ? String(computedDur) : "");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- лише на realtime-зміну каталожного default
   }, [computedDur]);
-  const dur = Math.max(5, parseInt(durEdit, 10) || computedDur);
+  // 0117: час області «—» і порожнє поле → 0 (без фолбеку в 5 хв — ревью H2:
+  // направник мовчки бронював 5-хвилинний слот) — збереження блокує miss.dur.
+  const durRaw = parseInt(durEdit, 10) || computedDur;
+  const dur = durRaw > 0 ? Math.max(5, durRaw) : 0;
   const durCustom = region && parseInt(durEdit, 10) && parseInt(durEdit, 10) !== computedDur;
 
   const exRegions = (t: string) => regionsFor(t, roomId || undefined);
   // Область не обрана → 0 (порожнє дослідження не додає час, поки область не вибрана).
-  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : 0; };
+  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? (o.dur ?? 0) : 0; };
   function changeType(t: string) {
     setStudyType(t); setRegion(""); setContrast(false); setTime("");
     setExtraStudies((a) => a.map((s) => (s.type === t ? s : { ...s, type: t, region: "", dur: exDur(t, "") })));
@@ -359,8 +363,8 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const fitCount = countFit(slots, (s) => slotState(s) === "free", slotDur + buffer);
   const busyList = busySlots.slice().sort((a, b) => a.s - b.s);
 
-  const miss: Record<string, boolean> = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time };
-  const MISS_LABELS: Record<string, string> = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
+  const miss: Record<string, boolean> = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time, dur: !!region && dur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5) };
+  const MISS_LABELS: Record<string, string> = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу", dur: "Тривалість (хв)", exdur: "Тривалість додаткових досліджень" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   const timeBad = time ? slotState(time) !== "free" : false;
   const valid = centerId && missingList.length === 0 && roomId && !timeBad && !roomSched.closed;
@@ -503,7 +507,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 <select className="inp" value={region} onChange={(e) => { setRegion(e.target.value); setTime(""); }}>
                   <option value="">— Оберіть область —</option>
                   {regions.map((r) => (
-                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur + (contrast ? CONTRAST_DUR : 0)} хв</option>
+                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + (contrast ? CONTRAST_DUR : 0) + " хв"}</option>
                   ))}
                 </select>
               </label>
@@ -515,7 +519,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                   <span className="bk-dur-unit">хв</span>
                 </div>
                 <span className={"bk-time-state " + (durCustom ? "busy" : "none")}>
-                  {!region ? "оберіть область" : durCustom ? `↺ за замовч. ${computedDur} хв` : "за тривалістю області"}
+                  {!region ? "оберіть область" : durCustom ? `↺ за замовч. ${computedDur} хв` : computedDur > 0 ? "за тривалістю області" : "час не задано — введіть"}
                 </span>
               </label>
               <label className="fld" style={{ flex: "0 0 96px" }}>
@@ -544,9 +548,9 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                         </div>
                         <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
-                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur} хв</option>)}
+                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}</option>)}
                         </select>
-                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? r.dur : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
                         <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
                       </div>
                     );

@@ -32,14 +32,15 @@ type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: s
 interface Draft { name: string; durationMin: string; price: string; contrastAllowed: boolean; contrastPrice: string; sortOrder: string }
 const emptyDraft = (): Draft => ({ name: "", durationMin: "20", price: "0", contrastAllowed: false, contrastPrice: "", sortOrder: "0" });
 const draftOf = (s: ServiceRow): Draft => ({
-  name: s.name, durationMin: String(s.duration_min), price: String(s.price),
+  name: s.name, durationMin: s.duration_min != null ? String(s.duration_min) : "", price: String(s.price),
   contrastAllowed: s.contrast_allowed, contrastPrice: s.contrast_price != null ? String(s.contrast_price) : "",
   sortOrder: String(s.sort_order),
 });
 type BookableModality = ServiceInput["modality"];
 function draftToInput(d: Draft, modality: BookableModality, active = true): ServiceInput {
   return {
-    name: d.name.trim(), modality, durationMin: Number(d.durationMin) || 0, price: Number(d.price) || 0,
+    // 0117: порожній час = null («не задано», «—»), НЕ 0 і НЕ фіктивні 20.
+    name: d.name.trim(), modality, durationMin: d.durationMin.trim() === "" ? null : Number(d.durationMin) || 0, price: Number(d.price) || 0,
     contrastAllowed: d.contrastAllowed,
     contrastPrice: d.contrastAllowed && d.contrastPrice.trim() !== "" ? Number(d.contrastPrice) : null,
     active, sortOrder: Number(d.sortOrder) || 0,
@@ -178,7 +179,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
       const res = await updateService(s.id, draftToInput(draft, s.modality as BookableModality, s.active));
       if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
       setItems((arr) => arr.map((x) => (x.id === s.id ? {
-        ...x, name: draft.name.trim(), duration_min: Number(draft.durationMin) || x.duration_min,
+        ...x, name: draft.name.trim(), duration_min: draft.durationMin.trim() === "" ? null : (Number(draft.durationMin) || x.duration_min),
         price: Number(draft.price) || 0, contrast_allowed: draft.contrastAllowed,
         contrast_price: draft.contrastAllowed && draft.contrastPrice.trim() !== "" ? Number(draft.contrastPrice) : null,
         sort_order: Number(draft.sortOrder) || 0,
@@ -352,8 +353,8 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
                     <>
                       <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.name}>{s.name}
                         {s.source === "import" && <span className="badge" style={{ marginLeft: 8 }} title="Завантажено імпортом">імпорт</span>}</div>
-                      <div className="tabular" style={{ textAlign: "right" }}>{s.duration_min} хв</div>
-                      <div className="tabular" style={{ textAlign: "right" }}>{s.price ? fmtUah(s.price) : <span style={{ color: "var(--orange)" }} title="Ціну ще не задано">0 ₴</span>}</div>
+                      <div className="tabular" style={{ textAlign: "right" }}>{s.duration_min != null ? s.duration_min + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано — введіть у редакторі або вручну при записі">—</span>}</div>
+                      <div className="tabular" style={{ textAlign: "right" }}>{s.price ? fmtUah(s.price) : <span style={{ color: "var(--orange)" }} title="Ціну ще не задано">—</span>}</div>
                       <div style={{ textAlign: "right" }}>{s.contrast_allowed ? <span title="Доплата за контраст">＋{fmtUah(s.contrast_price ?? CONTRAST_SURCHARGE)}</span> : <span style={{ color: "var(--text-faint)" }}>—</span>}</div>
                       <div>{s.active ? <span style={{ color: "var(--green)" }}>активна</span> : <span style={{ color: "var(--text-faint)" }}>вимкнена</span>}</div>
                       <div className="cl-actions" style={{ justifyContent: "flex-end" }}>
@@ -393,7 +394,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-end" }}>
                     <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
                       Тривалість, хв
-                      <input className="inp" type="number" step={5} min={5} max={480} style={{ width: 110 }} placeholder={String(s.duration_min)}
+                      <input className="inp" type="number" step={5} min={5} max={480} style={{ width: 110 }} placeholder={s.duration_min != null ? String(s.duration_min) : "—"}
                         value={ovDraft.durationMin} onChange={(e) => setOvDraft((p) => ({ ...p, durationMin: e.target.value }))} />
                     </label>
                     <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
@@ -414,7 +415,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
                     </label>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 12, color: "var(--text-faint)" }}>Порожнє поле = як у базовому каталозі ({s.duration_min} хв · {fmtUah(s.price)}).</span>
+                    <span style={{ fontSize: 12, color: "var(--text-faint)" }}>Порожнє поле = як у базовому каталозі ({s.duration_min != null ? s.duration_min + " хв" : "—"} · {s.price ? fmtUah(s.price) : "—"}).</span>
                     <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
                       {changed && <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onClearOverride(s)} title="Прибрати переозначення — успадкувати базовий каталог">↺ До базового</button>}
                       <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setOvEditId(null)}>Скасувати</button>
@@ -431,13 +432,13 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
                 <div className="wlrow" style={{ gridTemplateColumns: GRID_ROOM, opacity: hidden ? 0.62 : 1 }}>
                   <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.name}>{s.name}</div>
                   <div className="tabular" style={{ textAlign: "right" }}>
-                    <span style={durChanged ? { color: "var(--blue)", fontWeight: 600 } : undefined}>{effDur} хв</span>
-                    {durChanged && <div style={{ fontSize: 11, color: "var(--text-faint)" }}>база {s.duration_min}</div>}
+                    <span style={durChanged ? { color: "var(--blue)", fontWeight: 600 } : undefined}>{effDur != null ? effDur + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано">—</span>}</span>
+                    {durChanged && <div style={{ fontSize: 11, color: "var(--text-faint)" }}>база {s.duration_min ?? "—"}</div>}
                   </div>
                   <div className="tabular" style={{ textAlign: "right" }}>
                     {effPrice
                       ? <span style={priceChanged ? { color: "var(--blue)", fontWeight: 600 } : undefined}>{fmtUah(effPrice)}</span>
-                      : <span style={{ color: "var(--orange)" }} title="Ціну не задано ні в кабінеті, ні в базі">0 ₴</span>}
+                      : <span style={{ color: "var(--orange)" }} title="Ціну не задано ні в кабінеті, ні в базі">—</span>}
                     {priceChanged && <div style={{ fontSize: 11, color: "var(--text-faint)" }}>база {fmtUah(s.price)}</div>}
                   </div>
                   <div>{statusChip(hidden, changed)}</div>

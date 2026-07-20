@@ -12,7 +12,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { importServices, type ImportServiceRow } from "@/app/services/actions";
-import { BOOKABLE_MODALITIES, modalityLabel } from "@/lib/studies";
+import { BOOKABLE_MODALITIES, modalityLabel, normDur } from "@/lib/studies";
 import type { ClassifiedRow, DetectedColumns } from "@/lib/priceImport";
 
 interface Preview {
@@ -51,6 +51,16 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
   // не обрано модальність (modPick).
   const [checked, setChecked] = useState<Record<number, boolean>>({});
   const [modPick, setModPick] = useState<Record<number, BookableMod | "">>({});
+  // Ручна тривалість для нових/нерозпізнаних позицій: у прайсах час зазвичай
+  // НЕ вказано (рішення власника 2026-07-20 — вводиться тут, у передперегляді).
+  // Порожньо → значення з файла; якщо і його немає — час лишиться «—» (NULL, 0117).
+  const [durPick, setDurPick] = useState<Record<number, string>>({});
+  const pickedDur = (i: number, fileDur: number | null): number | null => {
+    const raw = (durPick[i] ?? "").trim();
+    if (raw === "") return fileDur;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? normDur(n) : fileDur;
+  };
 
   async function onUpload(file: File) {
     setErr(null);
@@ -68,6 +78,8 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
       const pv = json.preview as Preview;
       const init: Record<number, boolean> = {};
       pv.rows.forEach((r, i) => {
+        // Нові (в т.ч. без ціни — рішення власника: скелет каталогу теж імпортується)
+        // і зміни — увімкнені одразу; вимкнені/нерозпізнані — свідомий вибір адміна.
         if (r.kind === "new" || r.kind === "changed") init[i] = true;
       });
       setChecked(init);
@@ -82,10 +94,10 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
   }
 
   const groups = useMemo(() => {
-    const g = { changed: [] as number[], news: [] as number[], inactive: [] as number[], unrecognized: [] as number[], unchanged: 0 };
+    const g = { changed: [] as number[], news: [] as number[], newsNoPrice: [] as number[], inactive: [] as number[], unrecognized: [] as number[], unchanged: 0 };
     preview?.rows.forEach((r, i) => {
       if (r.kind === "changed") g.changed.push(i);
-      else if (r.kind === "new") g.news.push(i);
+      else if (r.kind === "new") (r.row.price == null ? g.newsNoPrice : g.news).push(i);
       else if (r.kind === "inactive") g.inactive.push(i);
       else if (r.kind === "unrecognized") g.unrecognized.push(i);
       else g.unchanged++;
@@ -102,7 +114,7 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
       if (r.kind === "unrecognized") {
         const m = modPick[i];
         if (!m) return;
-        out.push({ name: r.row.name, modality: m, price: r.row.price, durationMin: r.row.durationMin, revive: false });
+        out.push({ name: r.row.name, modality: m, price: r.row.price, durationMin: pickedDur(i, r.row.durationMin), revive: false });
         return;
       }
       out.push({
@@ -110,12 +122,13 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
         // ImportRow.modality тут завжди booking-модальність (unrecognized відсіяні вище).
         modality: r.row.modality as BookableMod,
         price: r.row.price,
-        durationMin: r.row.durationMin,
+        // Ручний час із передперегляду (для нових); інакше — з файла.
+        durationMin: pickedDur(i, r.row.durationMin),
         revive: r.kind === "inactive",
       });
     });
     return out;
-  }, [preview, checked, modPick]);
+  }, [preview, checked, modPick, durPick]); // eslint-disable-line react-hooks/exhaustive-deps -- pickedDur читає durPick
 
   async function onApply() {
     if (!selectedRows.length) return;
@@ -128,6 +141,7 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
         res.inserted ? `нових: ${res.inserted}` : null,
         res.updated ? `оновлено: ${res.updated}` : null,
         res.skippedInactive ? `пропущено вимкнених: ${res.skippedInactive}` : null,
+        res.noop ? `без змін: ${res.noop}` : null,
       ].filter(Boolean);
       onDone("Імпорт застосовано" + (parts.length ? " (" + parts.join(", ") + ")" : ""));
     } catch {
@@ -150,6 +164,19 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
       </label>
     );
   };
+
+  // Інпут ручної тривалості (у прайсах час зазвичай відсутній). preventDefault
+  // на кліку — інпут живе всередині label рядка, інакше клік перемикав би чекбокс.
+  const durInput = (i: number, fileDur: number | null) => (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, color: "var(--text-muted)" }}>
+      <input className="inp" type="number" step={5} min={5} max={480} style={{ width: 64 }}
+        placeholder={fileDur != null ? String(fileDur) : "—"} value={durPick[i] ?? ""}
+        onClick={(e) => e.preventDefault()}
+        onChange={(e) => setDurPick((p) => ({ ...p, [i]: e.target.value }))}
+        aria-label="Тривалість, хв" />
+      хв
+    </span>
+  );
 
   return (
     <div className="overlay">
@@ -210,7 +237,7 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
                     if (r.kind !== "changed") return null;
                     return rowLine(i, (
                       <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: 12.5 }}>
-                        {r.existing.price !== r.row.price && (
+                        {r.row.price != null && r.existing.price !== r.row.price && (
                           <>
                             <span style={{ color: "var(--text-faint)", textDecoration: "line-through" }}>{fmtUah(r.existing.price)}</span>
                             {" → "}<b>{fmtUah(r.row.price)}</b>
@@ -234,9 +261,29 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
                   {groups.news.map((i) => {
                     const r = preview.rows[i];
                     return rowLine(i, (
-                      <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: 12.5 }}>
-                        <b>{fmtUah(r.row.price)}</b>
-                        <span style={{ color: "var(--text-faint)", marginLeft: 8 }}>{r.row.durationMin ?? 20} хв{r.row.durationMin == null ? " (типово)" : ""}</span>
+                      <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 10 }}>
+                        <b>{fmtUah(r.row.price ?? 0)}</b>
+                        {durInput(i, r.row.durationMin)}
+                      </span>
+                    ));
+                  })}
+                </section>
+              )}
+
+              {groups.newsNoPrice.length > 0 && (
+                <section>
+                  <div style={{ fontWeight: 650, marginBottom: 4 }}>
+                    Нові без ціни ({groups.newsNoPrice.length})
+                    <span style={{ fontWeight: 400, fontSize: 12.5, color: "var(--text-muted)", marginLeft: 8 }}>
+                      ціна/час без значення = «—» у каталозі; заповніть тут або пізніше
+                    </span>
+                  </div>
+                  {groups.newsNoPrice.map((i) => {
+                    const r = preview.rows[i];
+                    return rowLine(i, (
+                      <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 10 }}>
+                        <span style={{ color: "var(--orange)" }}>— ₴</span>
+                        {durInput(i, r.row.durationMin)}
                       </span>
                     ));
                   })}
@@ -256,7 +303,7 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
                     if (r.kind !== "inactive") return null;
                     return rowLine(i, (
                       <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: 12.5 }}>
-                        <b>{fmtUah(r.row.price)}</b>
+                        {r.row.price != null ? <b>{fmtUah(r.row.price)}</b> : <span style={{ color: "var(--text-faint)" }}>ціна лишиться</span>}
                       </span>
                     ));
                   })}
@@ -288,7 +335,10 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
                             <option key={mm} value={mm}>{modalityLabel(mm)}</option>
                           ))}
                         </select>
-                        <span className="tabular" style={{ fontSize: 12.5 }}><b>{fmtUah(r.row.price)}</b></span>
+                        <span className="tabular" style={{ fontSize: 12.5 }}>
+                          {r.row.price != null ? <b>{fmtUah(r.row.price)}</b> : <span style={{ color: "var(--orange)" }}>— ₴</span>}
+                        </span>
+                        {durInput(i, r.row.durationMin)}
                       </span>
                     ), !m);
                   })}
@@ -303,8 +353,14 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
 
               {preview.rows.length === 0 && (
                 <p className="dlg-text">
-                  У файлі не знайшлося жодної позиції з назвою та ціною. Перевірте, що перший
-                  рядок аркуша — заголовки колонок («Назва послуги», «Ціна, грн»…).
+                  {preview.columns.name && preview.columns.price ? (
+                    <>Колонки розпізнано, але жоден рядок не пройшов розбір (порожні
+                    назви, дублі або заголовки розділів). Перевірте вміст колонки
+                    «{preview.columns.name}».</>
+                  ) : (
+                    <>У файлі не знайшлося таблиці з назвою та ціною. Перевірте, що на
+                    аркуші є рядок заголовків («Назва послуги», «Ціна, грн»…).</>
+                  )}
                 </p>
               )}
             </div>

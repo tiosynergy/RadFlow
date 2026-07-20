@@ -11,7 +11,7 @@
 import { useState, useEffect, useMemo } from "react";
 import PhoneInput from "@/components/PhoneInput";
 import { DobField } from "@/components/BookingModal";
-import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, type Study } from "@/lib/studies";
+import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, type Study } from "@/lib/studies";
 import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { TIME_PRESETS, timePresetKey } from "@/lib/waitlist";
@@ -154,12 +154,18 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   }, [centerId]);
   const contrastSuffix = contrast ? " з контрастом" : "";
   const regionObj = regions.find((r) => r.label === region);
-  const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (allRegions[0]?.dur ?? 20);
+  const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + (contrast ? CONTRAST_DUR : 0)) : (allRegions[0]?.dur ?? 20);
+  // 0117 (ревью M1): час основного дослідження можна ввести вручну — область із
+  // каталожним «—» інакше була б ГЛУХИМ КУТОМ (zDuration на сервері відхиляє 0,
+  // а поля вводу не було). Порожнє поле → каталожний час; «—» і порожньо → 0 (блок).
+  const [durEdit, setDurEdit] = useState("");
+  useEffect(() => { if (region) setDurEdit(computedDur > 0 ? String(computedDur) : ""); }, [region, contrast, studyType, rid]); // eslint-disable-line react-hooks/exhaustive-deps -- дефолт часу з каталогу
+  const primaryDur = (() => { const n = parseInt(durEdit, 10) || 0; if (n > 0) return normDur(n); return computedDur > 0 ? computedDur : 0; })();
   const price = regionObj ? regionObj.price + (contrast ? (regionObj.contrastPrice ?? CONTRAST_SURCHARGE) : 0) : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   // Область не обрана → 0 (порожнє дослідження не додає час, поки область не вибрана).
-  const exDur = (t: string, reg: string) => { const o = regionsFor(t, rid).find((r) => r.label === reg); return o ? o.dur : 0; };
+  const exDur = (t: string, reg: string) => { const o = regionsFor(t, rid).find((r) => r.label === reg); return o ? (o.dur ?? 0) : 0; };
   const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>(() =>
     initStudies.slice(1).filter((s) => s?.region).map((s) => ({
       type: modalityLabel(s.type),
@@ -197,14 +203,14 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   }, [availSig]);
 
   const primaryStudy: StudyOut | null = region
-    ? { type: primaryKind, region, contrast: contrast === true, dur: computedDur, price: studyPrice(primaryKind, region, contrast, rid) }
+    ? { type: primaryKind, region, contrast: contrast === true, dur: primaryDur, price: studyPrice(primaryKind, region, contrast, rid) }
     : null;
   const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : [])
     .concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, rid) })));
   const totalDur = allStudies.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
-  const miss: Record<string, boolean> = { name: !name.trim(), phone: !phone.trim(), priority: !priority, region: !region, center: needCenter && !centerId };
-  const MISS_LABELS: Record<string, string> = { name: "ПІБ", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", center: "Центр" };
+  const miss: Record<string, boolean> = { name: !name.trim(), phone: !phone.trim(), priority: !priority, region: !region, center: needCenter && !centerId, dur: !!region && primaryDur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5) };
+  const MISS_LABELS: Record<string, string> = { name: "ПІБ", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", center: "Центр", dur: "Тривалість (хв)", exdur: "Тривалість додаткових досліджень" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   const badRange = !!(dateFrom && dateTo && dateTo < dateFrom);
   /* Вікно ЦІЛКОМ у минулому → пацієнт вічно висить у «Очікують»: жоден майбутній
@@ -232,7 +238,7 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
         weight: weight ? +weight : null,
         priorityLevel: priority as PatientPriority,
         studies: allStudies,
-        durationMin: totalDur || computedDur,
+        durationMin: totalDur || primaryDur,
         bufferTimeMin: buffer,
         desiredDateFrom: dateFrom || null,
         desiredDateTo: dateTo || null,
@@ -321,15 +327,26 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
               </select>
             </label>
           </div>
-          <label className="fld">
-            <span className={"fld-lab" + (miss.region ? " bk-miss-lab" : "")}>Область дослідження <span className="req">*</span></span>
-            <select className="inp" value={region} onChange={(e) => setRegion(e.target.value)}>
-              <option value="">— Оберіть область —</option>
-              {regions.map((r) => (
-                <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur + (contrast ? CONTRAST_DUR : 0)} хв</option>
-              ))}
-            </select>
-          </label>
+          <div style={{ display: "flex", gap: 10 }}>
+            <label className="fld" style={{ flex: "1 1 auto", minWidth: 0 }}>
+              <span className={"fld-lab" + (miss.region ? " bk-miss-lab" : "")}>Область дослідження <span className="req">*</span></span>
+              <select className="inp" value={region} onChange={(e) => setRegion(e.target.value)}>
+                <option value="">— Оберіть область —</option>
+                {regions.map((r) => (
+                  <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + (contrast ? CONTRAST_DUR : 0) + " хв"}</option>
+                ))}
+              </select>
+            </label>
+            {/* 0117: ручний час — обовʼязковий, коли в каталозі «—» */}
+            <label className="fld" style={{ flex: "0 0 96px" }}>
+              <span className={"fld-lab" + (miss.dur ? " bk-miss-lab" : "")}>Тривалість</span>
+              <div className="bk-dur-row">
+                <input className="inp bk-dur-input" type="number" min="5" step="5" placeholder="—"
+                  value={durEdit} onChange={(e) => setDurEdit(e.target.value.replace(/\D/g, ""))} disabled={!region} />
+                <span className="bk-dur-unit">хв</span>
+              </div>
+            </label>
+          </div>
           {/* Додаткові дослідження (тип = тип основного, як у формі запису) */}
           <div className="fld">
             {extraStudies.length > 0 && (
@@ -344,9 +361,9 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
                       </div>
                       <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                         <option value="">— Оберіть область —</option>
-                        {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur} хв</option>)}
+                        {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}</option>)}
                       </select>
-                      <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? r.dur : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                      <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
                       <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
                     </div>
                   );
@@ -356,7 +373,7 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
             <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: extraStudies.length > 0 ? 8 : 0 }} onClick={exAdd}>＋ Додати дослідження</button>
           </div>
 
-          {price != null && <div className="ctx-hint blue">Орієнтовна вартість: {fmtPrice(price)} · блок {totalDur || computedDur} хв</div>}
+          {price != null && <div className="ctx-hint blue">Орієнтовна вартість: {fmtPrice(price)} · блок {totalDur || primaryDur} хв</div>}
 
           {!isEdit && (
             <div className="fld">

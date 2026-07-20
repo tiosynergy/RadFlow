@@ -111,6 +111,14 @@ export const zDuration = z
 /** Буфер прибирання: normBuffer клампить у 0/5/10/15. */
 export const zBuffer = z.number().finite().min(0).max(60).transform((v) => normBuffer(v));
 
+/** Ціна в грн (ЦІЛЕ 0..1e6) АБО null («не задано» / «успадкувати»).
+    ⚠️ БЕЗ z.coerce: `z.coerce.number()` робить Number(null) === 0, через що у
+    `z.union([zCoercePrice, z.null()])` null-гілка НЕДОСЯЖНА — явний null
+    перетворювався на ціну 0 і затирав реальні ціни (ревью 0116, Blocker B1).
+    Для полів, де null значущий, — ТІЛЬКИ ця схема. */
+export const PRICE_MAX = 1_000_000; // = CHECK services_price_chk (0107)
+export const zPriceNullable = z.number().int().min(0).max(PRICE_MAX).nullable();
+
 export const zPriority = z.enum(["cito", "urgent", "planned"]);
 /* ДВІ РІЗНІ СХЕМИ, і плутати їх не можна (0078).
 

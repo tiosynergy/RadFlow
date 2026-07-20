@@ -55,14 +55,17 @@ per-clinic + per-room override, формы читают override, редакто
 
 ## ЧТО ДЕЛАТЬ ДАЛЬШЕ (по приоритету)
 
-1. **Ввод 3a в строй (владелец, ~15 мин):** накатить `0115` + smoke → env `IMPORT_WEBHOOK_SECRET`/
-   `N8N_IMPORT_WEBHOOK_URL` в Vercel → заменить секрет в двух Code-нодах n8n → живой тест импорта.
-   Порядок по шагам — шапка `docs/HANDOVER.md`.
-2. **Цены УЗД/РГ/ММГ** (49 позиций с ценой 0) — теперь решается импортом xlsx через новый флоу
-   (или вручную в /services).
-3. **Фаза 3b — AI-ветка** (pdf/doc/URL → LLM-нода в том же workflow + confidence-UX).
-4. **Ротация `SUPABASE_SERVICE_ROLE_KEY` (P0)** — carryover, инфра.
-5. **(Опционально) Двухсессионные тесты гонок** по `docs/audit/CASE_CONCURRENCY_TESTS.md`.
+1. **Хвост ввода 3a (владелец):** накатить `0117` + smoke (SMOKE_OK) → коммит на `dev`
+   (npm test = 231/231) → мердж `dev → main`. 0115+0116 уже в проде, секреты настроены,
+   живой тест пройден. Детали — шапка `docs/HANDOVER.md`.
+2. **КЕЙСЫ ДЛЯ НАПРАВИТЕЛЯ — полный паритет с админом** (решение владельца 2026-07-20).
+   План ГОТОВ: `docs/plan/REFERRER_CASES.md` (миграция 0118: гейты 4 кейс-RPC +
+   RLS patient_cases + кейс-бар в ReferralPortal + smoke с RLS-имперсонацией).
+   Открытые вопросы — §6 плана, решить с владельцем на старте.
+3. **Цены УЗД/РГ/ММГ** — импортом xlsx через новый флоу (или вручную в /services).
+4. **Фаза 3b — AI-ветка импорта** (pdf/doc/URL → LLM-нода + confidence-UX).
+5. **Ротация `SUPABASE_SERVICE_ROLE_KEY` (P0)** — carryover, инфра.
+6. **(Опционально) Двухсессионные тесты гонок** по `docs/audit/CASE_CONCURRENCY_TESTS.md`.
 
 **Carryover (владелец / инфра):** `Cron` доставки outbox — ждёт n8n. Апгрейд зависимостей
 (`npm audit fix --force` НЕЛЬЗЯ). Восстановление пароля направителя по email — ждёт домен + SMTP.

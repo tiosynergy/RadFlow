@@ -246,7 +246,7 @@ export type Database = {
           clinic_id: string;
           name: string;
           modality: Database["public"]["Enums"]["modality"];
-          duration_min: number;
+          duration_min: number | null; // 0117: null = час не задано (UI «—», ручний ввід)
           contrast_allowed: boolean;
           price: number;                   // 0107: базова ціна, грн
           contrast_price: number | null;   // 0107: доплата за контраст; null = дефолт CONTRAST_SURCHARGE
@@ -261,7 +261,7 @@ export type Database = {
           clinic_id: string;
           name: string;
           modality: Database["public"]["Enums"]["modality"];
-          duration_min?: number;
+          duration_min?: number | null;
           contrast_allowed?: boolean;
           price?: number;
           contrast_price?: number | null;
@@ -276,7 +276,7 @@ export type Database = {
           clinic_id?: string;
           name?: string;
           modality?: Database["public"]["Enums"]["modality"];
-          duration_min?: number;
+          duration_min?: number | null;
           contrast_allowed?: boolean;
           price?: number;
           contrast_price?: number | null;

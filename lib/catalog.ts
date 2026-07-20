@@ -38,7 +38,7 @@ export interface ServiceLike {
   id: string;
   name: string;
   modality: string; // код enum public.modality
-  duration_min: number;
+  duration_min: number | null; // 0117: null = час не задано («—», ручний ввід у формі)
   price: number;
   contrast_allowed: boolean;
   contrast_price: number | null; // null = глобальний CONTRAST_SURCHARGE
@@ -46,8 +46,11 @@ export interface ServiceLike {
   sort_order: number;
 }
 
-/** Область каталогу — StudyRegion + per-service доплата за контраст. */
-export interface CatalogRegion extends StudyRegion {
+/** Область каталогу — StudyRegion + per-service доплата за контраст.
+    0117: dur може бути null («час не задано» — форми показують «—» і вимагають
+    ручний ввід; studyDur для такої області повертає 0). */
+export interface CatalogRegion extends Omit<StudyRegion, "dur"> {
+  dur: number | null;
   contrastPrice: number | null; // null = глобальний CONTRAST_SURCHARGE
   serviceId?: string;           // id базової послуги (для редакторів/діагностики)
 }
@@ -195,7 +198,9 @@ export function buildCatalog(
   const studyDur: Catalog["studyDur"] = (type, region, contrast, roomId) => {
     if (!isConfigured(type)) return staticStudyDur(type, region, contrast);
     const o = regionInfo(type, region, roomId);
-    if (o) return o.dur + (contrast ? CONTRAST_DUR : 0);
+    // 0117: час не задано → 0 («введіть вручну») — та сама конвенція, що
+    // порожнє дослідження; zDuration не пропустить збереження без часу.
+    if (o) return o.dur == null ? 0 : o.dur + (contrast ? CONTRAST_DUR : 0);
     // Область відсутня в каталозі: активний каталог → перейменована область (статика);
     // усі позиції вимкнені → напрям закрито, нічого не пропонуємо (0).
     return has(type) ? staticStudyDur(type, region, contrast) : 0;
