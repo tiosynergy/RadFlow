@@ -263,6 +263,98 @@ export async function clearRoomServiceOverride(roomId: string, serviceId: string
 }
 
 /* ============================================================
+   Масові дії (чекбокси в ServicesEditor): увімкнути/вимкнути/видалити
+   ВИБРАНІ позиції базового каталогу; приховати/показати/скинути ВИБРАНІ
+   в кабінеті. Той самий гейт requireAdmin + clinic-фільтр у КОЖНОМУ запиті
+   (RLS admin-write — defense-in-depth). Кап 500 = стелі імпорту.
+   ============================================================ */
+
+const zIdBatch = z.array(zUuid).min(1, "Нічого не вибрано").max(500, "Забагато позицій за раз");
+
+/** Увімкнути/вимкнути ВИБРАНІ позиції базового каталогу одним запитом. */
+export async function bulkSetServicesActive(ids: string[], active: boolean): Promise<ServiceActionResult> {
+  const v = parseInput("bulkSetServicesActive", z.object({ ids: zIdBatch, active: z.boolean() }), { ids, active });
+  if (!v.ok) return v as ServiceActionResult;
+  const supabase = await createClient();
+  const gate = await requireAdmin(supabase);
+  if ("error" in gate) return gate.error;
+  const { data, error } = await supabase.from("services")
+    .update({ active: v.data.active })
+    .in("id", v.data.ids).eq("clinic_id", gate.clinicId).select("id");
+  if (error) return mapServiceError(error.message);
+  return { ok: true, count: data?.length ?? 0 };
+}
+
+/** Видалити ВИБРАНІ позиції базового каталогу (як deleteService, але пачкою). */
+export async function bulkDeleteServices(ids: string[]): Promise<ServiceActionResult> {
+  const v = parseInput("bulkDeleteServices", zIdBatch, ids);
+  if (!v.ok) return v as ServiceActionResult;
+  const supabase = await createClient();
+  const gate = await requireAdmin(supabase);
+  if ("error" in gate) return gate.error;
+  const { data, error } = await supabase.from("services")
+    .delete().in("id", v.data).eq("clinic_id", gate.clinicId).select("id");
+  if (error) return mapServiceError(error.message);
+  return { ok: true, count: data?.length ?? 0 };
+}
+
+/** Приховати/показати ВИБРАНІ послуги в КАБІНЕТІ. Наявні override читаються
+    спершу — щоб масовий upsert НЕ затер їхні ціни/час (та сама пастка, що
+    z.coerce: «інструмент за замовчуванням» тихо нищить дані). «Показати» для
+    позиції БЕЗ override — no-op: вона й так видима базою, порожній override
+    не плодимо. */
+export async function bulkSetRoomServicesActive(
+  roomId: string, serviceIds: string[], active: boolean
+): Promise<ServiceActionResult> {
+  const rv = parseInput("bulkSetRoomServicesActive.room", zUuid, roomId);
+  if (!rv.ok) return rv as ServiceActionResult;
+  const v = parseInput("bulkSetRoomServicesActive", z.object({ ids: zIdBatch, active: z.boolean() }), { ids: serviceIds, active });
+  if (!v.ok) return v as ServiceActionResult;
+  const supabase = await createClient();
+  const gate = await requireAdmin(supabase);
+  if ("error" in gate) return gate.error;
+
+  const { data: existing, error: exErr } = await supabase.from("service_room_overrides")
+    .select("service_id, price, duration_min, contrast_price")
+    .eq("room_id", rv.data).eq("clinic_id", gate.clinicId).in("service_id", v.data.ids);
+  if (exErr) return mapSroError(exErr.message);
+  const byId = new Map((existing ?? []).map((o) => [o.service_id, o]));
+
+  const targetIds = v.data.active ? v.data.ids.filter((id) => byId.has(id)) : v.data.ids;
+  if (targetIds.length === 0) return { ok: true, count: 0 };
+
+  const rows = targetIds.map((sid) => {
+    const ex = byId.get(sid);
+    return {
+      clinic_id: gate.clinicId, room_id: rv.data, service_id: sid,
+      price: ex?.price ?? null, duration_min: ex?.duration_min ?? null,
+      contrast_price: ex?.contrast_price ?? null, active: v.data.active,
+    };
+  });
+  // Guard-тригер 0108 звірить room+service+модальність на кожному рядку.
+  const { error } = await supabase.from("service_room_overrides")
+    .upsert(rows, { onConflict: "room_id,service_id" });
+  if (error) return mapSroError(error.message);
+  return { ok: true, count: targetIds.length };
+}
+
+/** Скинути ВИБРАНІ переозначення кабінету — повернути до базового каталогу. */
+export async function bulkClearRoomOverrides(roomId: string, serviceIds: string[]): Promise<ServiceActionResult> {
+  const rv = parseInput("bulkClearRoomOverrides.room", zUuid, roomId);
+  if (!rv.ok) return rv as ServiceActionResult;
+  const v = parseInput("bulkClearRoomOverrides", zIdBatch, serviceIds);
+  if (!v.ok) return v as ServiceActionResult;
+  const supabase = await createClient();
+  const gate = await requireAdmin(supabase);
+  if ("error" in gate) return gate.error;
+  const { data, error } = await supabase.from("service_room_overrides")
+    .delete().eq("room_id", rv.data).eq("clinic_id", gate.clinicId)
+    .in("service_id", v.data).select("service_id");
+  if (error) return mapSroError(error.message);
+  return { ok: true, count: data?.length ?? 0 };
+}
+
+/* ============================================================
    Імпорт прайса (Stage 2, фаза 3a): підтвердження передперегляду.
    Розбір файла — POST /api/services/import (n8n парсить, lib/priceImport
    нормалізує). Сюди приходять ЛИШЕ обрані адміном рядки; фінальний upsert —

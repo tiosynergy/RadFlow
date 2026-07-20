@@ -247,3 +247,64 @@ describe("classifyRows", () => {
     expect(classifyRows([noPrice("МРТ колінного суглоба", "MRI")], existing)[0].kind).toBe("new");
   });
 });
+
+/* ===== Фаза 3b: AI-рядки (Grok) — НЕ довірені, перевалідовуються ===== */
+import { AI_CONF_MIN, parseAiRows } from "@/lib/priceImport";
+
+describe("parseAiRows (AI-гілка 3b)", () => {
+  it("валідні рядки проходять як є", () => {
+    const r = parseAiRows([
+      { name: "МРТ головного мозку", modality: "MRI", price: 3200, duration_min: 30, confidence: 0.98 },
+      { name: "УЗД щитоподібної залози", modality: "US", price: 650, duration_min: null, confidence: 0.95 },
+    ]);
+    expect(r.rows).toHaveLength(2);
+    expect(r.rows[0]).toMatchObject({ name: "МРТ головного мозку", modality: "MRI", price: 3200, durationMin: 30 });
+    expect(r.rows[1].durationMin).toBeNull();
+    expect(r.skipped).toBe(0);
+  });
+  it("модель — не довірене джерело: ціни/час перевалідовуються", () => {
+    const r = parseAiRows([
+      { name: "Аномальна ціна", modality: "CT", price: 99_000_000, duration_min: 20, confidence: 1 },
+      { name: "Дике число хвилин", modality: "CT", price: 100, duration_min: 5000, confidence: 1 },
+      { name: "Некратний час", modality: "CT", price: 100, duration_min: 33, confidence: 1 },
+    ]);
+    expect(r.rows[0].price).toBeNull();          // поза 0..PRICE_MAX → «не задано», не падіння
+    expect(r.rows[1].durationMin).toBeNull();    // > DUR_MAX*2 → не вгадуємо
+    expect(r.rows[2].durationMin).toBe(35);      // normDur: кратно 5
+  });
+  it("modality null → фолбэк-евристика за назвою; сміття/дублі/заголовки відкидаються", () => {
+    const r = parseAiRows([
+      { name: "МРТ колінного суглоба", modality: null, price: 2800, duration_min: null, confidence: 0.9 },
+      { name: "МРТ колінного суглоба", modality: "MRI", price: 2800, duration_min: null, confidence: 0.9 }, // дубль (той самий ключ)
+      { name: "УЗД", modality: null, price: null, duration_min: null, confidence: 0.9 },  // заголовок розділу
+      { name: "x", modality: "CT", price: 1, duration_min: null, confidence: 1 },          // закоротка назва
+      "не обʼєкт",
+      null,
+    ]);
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0].modality).toBe("MRI");
+    expect(r.skipped).toBe(5);
+  });
+  it("confidence: не число → 0.5; клампиться в 0..1", () => {
+    const r = parseAiRows([
+      { name: "Без confidence", modality: "US", price: 500, duration_min: null },
+      { name: "Дикий confidence", modality: "US", price: 500, duration_min: null, confidence: 7 },
+    ]);
+    expect(r.rows[0].confidence).toBe(0.5);
+    expect(r.rows[1].confidence).toBe(1);
+  });
+  it("низький confidence → unrecognized навіть із модальністю (рішення власника)", () => {
+    const parsed = parseAiRows([
+      { name: "Впевнена послуга", modality: "MRI", price: 3000, duration_min: null, confidence: 0.95 },
+      { name: "Сумнівна послуга", modality: "MRI", price: 100, duration_min: null, confidence: AI_CONF_MIN - 0.01 },
+    ]);
+    const cls = classifyRows(parsed.rows, []);
+    expect(cls[0].kind).toBe("new");
+    expect(cls[1].kind).toBe("unrecognized");
+  });
+  it("детермінована гілка НЕ зачеплена confidence-гейтом (confidence=1 із модальністю)", () => {
+    const parsed = parseRawRows([{ "Назва послуги": "МРТ мозку", "Ціна, грн": "3200" }]);
+    expect(parsed.rows[0].confidence).toBe(1);
+    expect(classifyRows(parsed.rows, [])[0].kind).toBe("new");
+  });
+});

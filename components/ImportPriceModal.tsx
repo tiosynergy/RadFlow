@@ -1,19 +1,22 @@
 "use client";
 
-/* ===== RadFlow — модалка «Імпорт прайса» (Stage 2, фаза 3a) =====
-   Флоу: файл (.xlsx/.csv) → POST /api/services/import (n8n парсить, сервер
+/* ===== RadFlow — модалка «Імпорт прайса» (Stage 2, фази 3a+3b) =====
+   Флоу: файл (.xlsx/.csv — детерміновано; .pdf/.docx/фото — AI Grok) АБО
+   https-посилання на прайс → POST /api/services/import (n8n парсить, сервер
    нормалізує/класифікує) → передперегляд по групах: «Зміна ціни/часу» / «Нові» /
    «Вимкнені (оживити?)» / «Нерозпізнані» (адмін обирає модальність) / «Без змін»
    → підтвердження → Server Action importServices → services_import_rpc (0115).
 
    Правила відображення = правила RPC: вимкнена позиція чіпається лише з
-   галочкою «оживити»; тривалість оновлюється лише коли була в прайсі. */
+   галочкою «оживити»; тривалість оновлюється лише коли була в прайсі.
+   3b: AI-рядки з confidence < порога сервер кладе в «Нерозпізнані» — тут
+   модальність від AI підставляється в селект як пропозиція, рішення за адміном. */
 
 import { useMemo, useRef, useState } from "react";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { importServices, type ImportServiceRow } from "@/app/services/actions";
 import { BOOKABLE_MODALITIES, modalityLabel, normDur } from "@/lib/studies";
-import type { ClassifiedRow, DetectedColumns } from "@/lib/priceImport";
+import { AI_CONF_MIN, type ClassifiedRow, type DetectedColumns } from "@/lib/priceImport";
 
 interface Preview {
   rows: ClassifiedRow[];
@@ -21,6 +24,7 @@ interface Preview {
   columns: DetectedColumns;
   totalRaw: number;
   truncated?: boolean; // файл більший за ліміт розбору — частина рядків не потрапила
+  ai?: boolean;        // 3b: розібрано AI (Grok) — перевіряти уважніше
 }
 
 interface Props {
@@ -62,12 +66,16 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
     return Number.isFinite(n) && n > 0 ? normDur(n) : fileDur;
   };
 
-  async function onUpload(file: File) {
+  // 3b: режим «посилання на прайс» (https-сторінка центру → n8n → Grok).
+  const [urlInput, setUrlInput] = useState("");
+
+  async function onUpload(file: File | null, url?: string) {
     setErr(null);
     setStep("loading");
     try {
       const fd = new FormData();
-      fd.append("file", file);
+      if (file) fd.append("file", file);
+      if (url) fd.append("url", url);
       const resp = await fetch("/api/services/import", { method: "POST", body: fd });
       const json = await resp.json().catch(() => null);
       if (!resp.ok || !json?.ok) {
@@ -80,7 +88,10 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
       pv.rows.forEach((r, i) => {
         // Нові (в т.ч. без ціни — рішення власника: скелет каталогу теж імпортується)
         // і зміни — увімкнені одразу; вимкнені/нерозпізнані — свідомий вибір адміна.
-        if (r.kind === "new" || r.kind === "changed") init[i] = true;
+        // 3b (ревʼю M3): AI-розбір НЕ пред-відмічається — зловмисний прайс міг би
+        // підсунути 200 правдоподібних «змін цін» під один клік «Застосувати».
+        // Для AI кожен рядок (або «Відмітити всі») — свідомий вибір адміна.
+        if (!pv.ai && (r.kind === "new" || r.kind === "changed")) init[i] = true;
       });
       setChecked(init);
       setModPick({});
@@ -105,6 +116,29 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
     return g;
   }, [preview]);
 
+  /* Майстер-чекбокс «Усі»: рядки, які МОЖНА ввімкнути (все, крім «без змін»
+     і нерозпізнаних без обраної модальності — тим спершу обирають модальність). */
+  const selectableIdx = useMemo(() => {
+    if (!preview) return [] as number[];
+    const out: number[] = [];
+    preview.rows.forEach((r, i) => {
+      if (r.kind === "unchanged") return;
+      if (r.kind === "unrecognized" && !modPick[i]) return;
+      out.push(i);
+    });
+    return out;
+  }, [preview, modPick]);
+  const checkedCount = selectableIdx.reduce((n, i) => n + (checked[i] ? 1 : 0), 0);
+  const allChecked = selectableIdx.length > 0 && checkedCount === selectableIdx.length;
+  function toggleAll() {
+    const target = !allChecked;
+    setChecked((p) => {
+      const next = { ...p };
+      selectableIdx.forEach((i) => { next[i] = target; });
+      return next;
+    });
+  }
+
   const selectedRows: ImportServiceRow[] = useMemo(() => {
     if (!preview) return [];
     const out: ImportServiceRow[] = [];
@@ -112,6 +146,8 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
       if (!checked[i]) return;
       if (r.kind === "unchanged") return;
       if (r.kind === "unrecognized") {
+        // 3b: модальність від AI — лише пропозиція в селекті; без явного вибору
+        // (modPick) рядок не імпортується (чекбокс вмикається разом із вибором).
         const m = modPick[i];
         if (!m) return;
         out.push({ name: r.row.name, modality: m, price: r.row.price, durationMin: pickedDur(i, r.row.durationMin), revive: false });
@@ -197,36 +233,66 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
           {step === "pick" && (
             <div>
               <p className="dlg-text" style={{ marginBottom: 12 }}>
-                Завантажте файл прайса <b>.xlsx</b> або <b>.csv</b> (до 4 МБ). Потрібні колонки
-                «назва послуги» та «ціна»; «тривалість» і «модальність» — за наявності.
-                Модальність без своєї колонки визначається за назвою (МРТ/КТ/УЗД/рентген/мамо…).
+                Завантажте файл прайса (до 4 МБ): <b>.xlsx</b> / <b>.csv</b> — точний розбір таблиці;
+                <b> .pdf</b> / <b>.docx</b> / <b>фото прайса</b> (.jpg/.png) — AI-розбір (Grok).
+                Модальність визначається за назвою чи розділом (МРТ/КТ/УЗД/рентген/мамо…).
                 Після розбору буде <b>передперегляд</b> — без підтвердження каталог не зміниться.
               </p>
-              <input ref={fileRef} type="file" accept=".xlsx,.csv" style={{ display: "none" }}
+              <input ref={fileRef} type="file" accept=".xlsx,.csv,.pdf,.docx,.jpg,.jpeg,.png,.webp" style={{ display: "none" }}
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ""; }} />
               <button className="btn btn-primary" onClick={() => fileRef.current?.click()}>Обрати файл…</button>
-              <p className="dlg-text" style={{ marginTop: 12, fontSize: 12.5, color: "var(--text-faint)" }}>
-                pdf / doc / посилання на сайт — наступна фаза (AI-розбір).
-              </p>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>або посилання на сторінку з прайсом:</span>
+                <input className="inp" type="url" placeholder="https://clinic.ua/price" value={urlInput}
+                  style={{ flex: "1 1 220px", minWidth: 200 }}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && urlInput.trim()) onUpload(null, urlInput.trim()); }} />
+                <button className="btn btn-secondary" disabled={!urlInput.trim()}
+                  onClick={() => onUpload(null, urlInput.trim())}>Розібрати</button>
+              </div>
             </div>
           )}
 
-          {step === "loading" && <p className="dlg-text">Розбираємо файл…</p>}
+          {step === "loading" && <p className="dlg-text">Розбираємо прайс… Для pdf/фото/docx/посилання працює AI — великий прайс може зайняти 1–3 хвилини, не закривайте вікно.</p>}
 
           {(step === "preview" || step === "applying") && preview && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
-                Розпізнано колонки: назва — «{preview.columns.name ?? "—"}», ціна — «{preview.columns.price ?? "—"}»
-                {preview.columns.duration ? `, тривалість — «${preview.columns.duration}»` : ""}
-                {preview.columns.modality ? `, модальність — «${preview.columns.modality}»` : ""}.
-                {preview.skipped > 0 && <> Пропущено рядків без назви/ціни або дублів: <b>{preview.skipped}</b>.</>}
-              </div>
+              {preview.ai ? (
+                <div style={{ fontSize: 12.5, color: "var(--text-muted)", border: "1px solid var(--border-strong)", borderRadius: 10, padding: "8px 12px" }}>
+                  🤖 Розібрано <b>AI (Grok)</b> — рядки НЕ відмічені: перевірте назви й ціни та
+                  відмітьте потрібні (модель могла помилитися); «Усі» нижче вмикає все разом.
+                  Невпевнені — у «Нерозпізнаних».
+                  {preview.skipped > 0 && <> Відкинуто рядків: <b>{preview.skipped}</b>.</>}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
+                  Розпізнано колонки: назва — «{preview.columns.name ?? "—"}», ціна — «{preview.columns.price ?? "—"}»
+                  {preview.columns.duration ? `, тривалість — «${preview.columns.duration}»` : ""}
+                  {preview.columns.modality ? `, модальність — «${preview.columns.modality}»` : ""}.
+                  {preview.skipped > 0 && <> Пропущено рядків без назви/ціни або дублів: <b>{preview.skipped}</b>.</>}
+                </div>
+              )}
 
               {preview.truncated && (
                 <div style={{ color: "var(--orange)", fontSize: 12.5, border: "1px solid var(--orange)", borderRadius: 10, padding: "8px 12px" }} role="alert">
                   Файл завеликий — розібрано лише перші рядки. Розбийте прайс на кілька файлів,
                   щоб імпортувати решту.
                 </div>
+              )}
+
+              {/* Майстер-чекбокс: увімкнути/зняти ВСІ рядки разом. Не чіпає «без змін»
+                  і нерозпізнані без модальності (тим спершу обирають модальність). */}
+              {selectableIdx.length > 0 && (
+                <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 8px", borderBottom: "2px solid var(--border-strong)", fontSize: 13.5, fontWeight: 650, cursor: "pointer", position: "sticky", top: 0, background: "var(--card)", zIndex: 1 }}>
+                  <input type="checkbox" checked={allChecked} disabled={step === "applying"}
+                    ref={(el) => { if (el) el.indeterminate = checkedCount > 0 && !allChecked; }}
+                    onChange={toggleAll} aria-label="Відмітити всі позиції" />
+                  <span>Усі</span>
+                  <span style={{ fontWeight: 400, fontSize: 12.5, color: "var(--text-muted)" }}>
+                    вибрано {checkedCount} із {selectableIdx.length}
+                    {groups.unrecognized.some((i) => !modPick[i]) ? " · нерозпізнані без модальності не вмикаються" : ""}
+                  </span>
+                </label>
               )}
 
               {groups.changed.length > 0 && (
@@ -321,8 +387,18 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
                   {groups.unrecognized.map((i) => {
                     const r = preview.rows[i];
                     const m = modPick[i] ?? "";
+                    // 3b: AI запропонував модальність, але не впевнений — показуємо
+                    // пропозицію і % впевненості; вибір лишається за адміном.
+                    const aiHint = preview.ai && r.row.modality ? modalityLabel(r.row.modality) : null;
+                    const lowConf = preview.ai && r.row.confidence < AI_CONF_MIN;
                     return rowLine(i, (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                        {lowConf && (
+                          <span title={"AI впевнений на " + Math.round(r.row.confidence * 100) + "%" + (aiHint ? " · пропозиція: " + aiHint : "")}
+                            style={{ fontSize: 11.5, color: "var(--orange)", whiteSpace: "nowrap" }}>
+                            ⚠ {Math.round(r.row.confidence * 100)}%{aiHint ? " · " + aiHint + "?" : ""}
+                          </span>
+                        )}
                         <select className="inp" value={m} style={{ minWidth: 130 }}
                           onClick={(e) => e.preventDefault()}
                           onChange={(e) => {

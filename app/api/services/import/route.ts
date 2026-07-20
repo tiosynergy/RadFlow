@@ -1,33 +1,45 @@
 import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { requireRole } from "@/lib/apiAuth";
-import { classifyRows, parseRawRows, type RawSheetRow } from "@/lib/priceImport";
+import { classifyRows, parseAiRows, parseRawRows, safePriceUrl, type RawSheetRow } from "@/lib/priceImport";
+import { docxToText } from "@/lib/docxText";
 
-/* ===== RadFlow — імпорт прайса: розбір файла (Stage 2, фаза 3a) =====
-   POST multipart {file} → пересилка в n8n-workflow «radflow-price-import»
-   (HMAC-підпис + request_id-nonce) → n8n детерміновано парсить xlsx/csv
-   (Extract From File, БЕЗ AI — AI-гілка pdf/doc/URL — фаза 3b) і повертає
-   СИРІ рядки «заголовок → значення» → уся нормалізація і класифікація тут
-   (lib/priceImport.ts, під vitest) → JSON-передперегляд для адміна.
+/* ===== RadFlow — імпорт прайса: розбір файла (Stage 2, фази 3a+3b) =====
+   POST multipart {file} АБО {url} → пересилка в n8n-workflow
+   «radflow-price-import» (HMAC-підпис + request_id-nonce):
+   • xlsx/csv — детермінований парсинг (Extract From File, без AI);
+   • pdf → текст → Grok; фото/скан (jpg/png/webp) → Grok vision;
+     docx → текст ТУТ (lib/docxText.ts, kind='text') → Grok;
+     url → n8n Fetch Page → Grok. Grok (grok-4.5, structured output) віддає
+     сирі рядки {name, modality, price, duration_min, confidence}.
+   Уся нормалізація і класифікація — тут (lib/priceImport.ts, під vitest):
+   AI-рядки НЕ довірені (prompt-injection із документа) — перевалідовуються
+   тими самими парсерами; confidence < AI_CONF_MIN → «Нерозпізнані».
 
    Цей роут НІЧОГО не пише в БД: підтвердження адміна йде окремим Server
-   Action importServices → services_import_rpc (0115). PII в пайплайні немає
-   (лише позиції прайса).
+   Action importServices → services_import_rpc (0115/0116). PII немає.
 
    Захист: requireRole(admin + clinic) → rl_check (10 імпортів / 10 хв на
    адміна) → ліміт розміру/типу файла → HMAC в ОБИДВА боки (n8n відповідає
    {body, sig}: sig = HMAC(body), body містить request_id — звірка nonce).
+   URL: лише https + не-IP хост (SSRF; дзеркальний гард і в n8n).
 
    ⚠️ Ліміт файла 4 МБ (НЕ 10 МБ із плану): Vercel обрізає тіло запиту
    serverless-функції на ~4.5 МБ — більший файл не долетить фізично. */
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60; // n8n-парсинг великого xlsx може бути неспішним
+/* Живий тест 3b: реальна прайс-сторінка (~140 позицій) коштує ~90 с Grok-у навіть
+   із reasoning_effort=low — 60 с не вистачає. Hobby із Fluid Compute (увімкнено
+   за замовчуванням) дозволяє до 300 с. Якщо деплой відхилить ліміт — увімкнути
+   Fluid Compute у Settings → Functions або повернути 60. */
+export const maxDuration = 300;
 
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
-const N8N_TIMEOUT_MS = 30_000;
+const N8N_TIMEOUT_MS = 30_000;      // детермінована гілка (xlsx/csv)
+const N8N_AI_TIMEOUT_MS = 180_000;  // AI-гілка: великий прайс = хвилини LLM-часу
 const MAX_RAW_ROWS = 5000; // стеля сирих рядків від n8n (до нормалізації)
 const MAX_RESP_BYTES = 20 * 1024 * 1024; // zip-бомба у 4 МБ xlsx розгортається у сотні МБ JSON
+const MAX_DOCX_TEXT = 300_000; // символів тексту з docx у n8n (LLM однаково ріже до 150k)
 
 const jerr = (error: string, status: number) => NextResponse.json({ error }, { status });
 
@@ -42,12 +54,22 @@ function transportProblem(url: string, secret: string | undefined): string | nul
   return null;
 }
 
-function fileKind(name: string): "xlsx" | "csv" | null {
+type FileKind = "xlsx" | "csv" | "pdf" | "docx" | "image";
+
+function fileKind(name: string): { kind: FileKind; mime?: string } | null {
   const n = name.toLowerCase();
-  if (n.endsWith(".xlsx")) return "xlsx";
-  if (n.endsWith(".csv")) return "csv";
+  if (n.endsWith(".xlsx")) return { kind: "xlsx" };
+  if (n.endsWith(".csv")) return { kind: "csv" };
+  if (n.endsWith(".pdf")) return { kind: "pdf" };
+  if (n.endsWith(".docx")) return { kind: "docx" };
+  if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return { kind: "image", mime: "image/jpeg" };
+  if (n.endsWith(".png")) return { kind: "image", mime: "image/png" };
+  if (n.endsWith(".webp")) return { kind: "image", mime: "image/webp" };
   return null;
 }
+
+// SSRF-гард URL живе в lib/priceImport.ts (route-файл Next.js не може
+// експортувати довільні функції) і покритий tests/priceImportUrl.test.ts.
 
 const hmac = (secret: string, body: string) =>
   crypto.createHmac("sha256", secret).update(body).digest("hex");
@@ -89,27 +111,55 @@ export async function POST(req: Request) {
     return jerr("Імпорт не налаштовано на сервері", 501);
   }
 
-  // ---- Файл ----
+  // ---- Вхід: файл АБО посилання (3b) ----
   let form: FormData;
-  try { form = await req.formData(); } catch { return jerr("Очікується multipart із файлом", 400); }
+  try { form = await req.formData(); } catch { return jerr("Очікується multipart із файлом або посиланням", 400); }
   const file = form.get("file");
-  if (!(file instanceof File)) return jerr("Додайте файл прайса (.xlsx або .csv)", 400);
-  const kind = fileKind(file.name || "");
-  if (!kind) return jerr("Підтримуються файли .xlsx та .csv (pdf/doc — наступна фаза)", 415);
-  if (file.size === 0) return jerr("Файл порожній", 400);
-  if (file.size > MAX_FILE_BYTES) return jerr("Файл завеликий (до 4 МБ)", 413);
+  const urlField = form.get("url");
 
-  const fileB64 = Buffer.from(await file.arrayBuffer()).toString("base64");
   const requestId = crypto.randomUUID();
+  // Поля payload у n8n: kind + file_b64 (файли) / text (docx уже витягнуто) / url.
+  let payload: Record<string, unknown>;
+  let aiKind = false; // AI-гілка повільніша — інший таймаут
+
+  if (typeof urlField === "string" && urlField.trim()) {
+    const safe = safePriceUrl(urlField.trim());
+    if (!safe) return jerr("Дайте пряме https-посилання на сторінку з прайсом", 400);
+    aiKind = true;
+    payload = { kind: "url", url: safe, filename: "" };
+  } else {
+    if (!(file instanceof File)) return jerr("Додайте файл прайса або посилання", 400);
+    const fk = fileKind(file.name || "");
+    if (!fk) return jerr("Підтримуються .xlsx, .csv, .pdf, .docx і фото (.jpg/.png/.webp)", 415);
+    if (file.size === 0) return jerr("Файл порожній", 400);
+    if (file.size > MAX_FILE_BYTES) return jerr("Файл завеликий (до 4 МБ)", 413);
+
+    const buf = Buffer.from(await file.arrayBuffer());
+    if (fk.kind === "docx") {
+      // docx → плоский текст ТУТ (n8n docx не вміє, а Grok приймає текст).
+      const text = await docxToText(buf);
+      if (!text || text.length < 20) {
+        return jerr("У документі не знайшлося тексту — перевірте файл або надішліть pdf/фото", 422);
+      }
+      aiKind = true;
+      payload = { kind: "text", text: text.slice(0, MAX_DOCX_TEXT), filename: file.name };
+    } else {
+      aiKind = fk.kind === "pdf" || fk.kind === "image";
+      payload = {
+        kind: fk.kind,
+        filename: file.name,
+        file_b64: buf.toString("base64"),
+        ...(fk.mime ? { mime: fk.mime } : {}),
+      };
+    }
+  }
 
   // ---- RadFlow → n8n (HMAC-підпис тіла; ts — проти нескінченного replay) ----
   const body = JSON.stringify({
     request_id: requestId,
     clinic_id: gate.me.clinic_id,
-    filename: file.name,
-    kind,
     ts: Date.now(),
-    file_b64: fileB64,
+    ...payload,
   });
 
   let resp: Response;
@@ -121,11 +171,15 @@ export async function POST(req: Request) {
         "X-RadFlow-Signature": "sha256=" + hmac(secret as string, body),
       },
       body,
-      signal: AbortSignal.timeout(N8N_TIMEOUT_MS),
+      signal: AbortSignal.timeout(aiKind ? N8N_AI_TIMEOUT_MS : N8N_TIMEOUT_MS),
     });
   } catch (e) {
     const timeout = e instanceof Error && e.name === "TimeoutError";
-    return jerr(timeout ? "Розбір файла не встиг за 30 с — спробуйте ще раз" : "Сервіс розбору недоступний", 502);
+    return jerr(
+      timeout
+        ? (aiKind ? "AI-розбір не встиг за 3 хвилини — спробуйте менший файл або ще раз" : "Розбір файла не встиг за 30 с — спробуйте ще раз")
+        : "Сервіс розбору недоступний",
+      502);
   }
   if (!resp.ok) {
     console.error(`[services/import] n8n HTTP ${resp.status}`);
@@ -149,17 +203,19 @@ export async function POST(req: Request) {
     return jerr("Підпис відповіді не пройшов перевірку", 502);
   }
 
-  let payload: { request_id?: unknown; rows?: unknown };
-  try { payload = JSON.parse(env.body); } catch { return jerr("Некоректна відповідь сервісу розбору", 502); }
-  if (payload.request_id !== requestId) return jerr("Відповідь не відповідає запиту (nonce)", 502);
-  if (!Array.isArray(payload.rows)) return jerr("Сервіс розбору не знайшов таблиці у файлі", 422);
-  const totalRaw = (payload.rows as unknown[]).length;
-  const raw = (payload.rows as unknown[])
+  let resPayload: { request_id?: unknown; rows?: unknown; ai?: unknown };
+  try { resPayload = JSON.parse(env.body); } catch { return jerr("Некоректна відповідь сервісу розбору", 502); }
+  if (resPayload.request_id !== requestId) return jerr("Відповідь не відповідає запиту (nonce)", 502);
+  if (!Array.isArray(resPayload.rows)) return jerr("Сервіс розбору не знайшов таблиці у файлі", 422);
+  const totalRaw = (resPayload.rows as unknown[]).length;
+  const raw = (resPayload.rows as unknown[])
     .slice(0, MAX_RAW_ROWS)
     .filter((r): r is RawSheetRow => !!r && typeof r === "object" && !Array.isArray(r));
 
   // ---- Нормалізація + класифікація проти каталогу центру (RLS-клієнт) ----
-  const parsed = parseRawRows(raw);
+  // AI-прапор беремо з ПІДПИСАНОГО тіла n8n (не з нашого aiKind): гілку обрав n8n.
+  const ai = resPayload.ai === true;
+  const parsed = ai ? parseAiRows(raw) : parseRawRows(raw);
   const truncated = parsed.truncated || totalRaw > MAX_RAW_ROWS;
   const { data: services, error } = await gate.supabase
     .from("services")
@@ -176,6 +232,7 @@ export async function POST(req: Request) {
       columns: parsed.columns,
       totalRaw,
       truncated, // L8: «розібрали не все» показуємо явно, а не мовчки
+      ai,        // 3b: розібрано AI — UI показує пересторогу «перевірте уважно»
     },
   });
 }

@@ -204,7 +204,7 @@ effectiveService(services, roomDurations, modality, roomId?) →
 | **2a** | `lib/catalog.ts` + подключение ВСЕХ форм (BookingModal/Waitlist/StudyEdit/ReferralPortal/CEO-доход) одной сессией + vitest на резолвер | следующая сессия |
 | **2b** | `0108 service_room_durations` + вкладка «Час по кабінетах» в `/services` + автосид из SetupWizard | после 2a |
 | **3a** | импорт xlsx/csv: API-роут + n8n workflow (детерминированная ветка) + предпросмотр + `services_import_rpc` | после 2b |
-| **3b** | AI-ветка (pdf/doc/URL) в том же workflow + confidence-UX | после 3a |
+| **3b** | AI-ветка (pdf/фото/docx/URL → Grok grok-4.5, structured output) в том же workflow + confidence-UX (AI_CONF_MIN=0.7 → «Нерозпізнані»; AI-строки не пред-отмечены — анти-injection). docx→текст в роуте (lib/docxText.ts + jszip). Отступления от §5.2: LLM в отдельной HTTP-ноде (не langchain), нормализация ПОЛНОСТЬЮ в TS (parseAiRows — AI не доверен), URL-режим с SSRF-гардами и без редиректов. Детали — шапка HANDOVER (сессия 5) | ✅ реализована 2026-07-20/5 (workflow переопубликован; нужен `npm install` + живой тест) |
 | **4** | полировка: аудит изменений цен (`audit_log`-триггер на services), отчёт CEO «прайс vs факт», при росте — история цен | по потребности |
 
 Каждая фаза: ревью субагентом (RLS/RPC — обязательно), tsc/lint/vitest,
