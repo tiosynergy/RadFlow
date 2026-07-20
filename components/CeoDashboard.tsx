@@ -8,7 +8,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { wallToday0 } from "@/lib/incidents";
-import { modalityLabel } from "@/lib/studies";
+import { modalityLabel, modalityCode, CONTRAST_SURCHARGE } from "@/lib/studies";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import "@/styles/prototype/radflow.css";
@@ -16,7 +16,7 @@ import "@/styles/prototype/radflow-screens.css";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type StudyLike = { price?: number; region?: string; contrast?: boolean; type?: string };
-type RevenueEntry = { studies?: unknown; note?: string | null };
+type RevenueEntry = { studies?: unknown; note?: string | null; clinic_id?: string | null };
 
 /* Агрегати з БД (міграція 0071). Раніше дашборд тягнув У БРАУЗЕР усі рядки за
    період по всіх центрах — разом із ПІБ і studies (до ~120k рядків у мережі з
@@ -26,7 +26,7 @@ type TotalsRow = { scheduled_date: string; status: string; cnt: number; booked_m
 type RoomsRow = { room_id: string; booked_min: number };
 /* cnt — позицій (для доходу); first_cnt — записів, де це дослідження ПЕРШЕ
    (старий топ-5 рахував саме по записах, за studies[0]). */
-type StudiesRow = { status: string; study_type: string; region: string; contrast: boolean; cnt: number; first_cnt: number; priced_sum: number; unpriced: number };
+type StudiesRow = { status: string; study_type: string; region: string; contrast: boolean; cnt: number; first_cnt: number; priced_sum: number; unpriced: number; catalog_est_sum: number };
 
 const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
@@ -39,22 +39,32 @@ function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDat
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
 function fmtUah(n: number) { return String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴"; }
 
-const PRICE: Record<string, number> = {
-  "Головний мозок": 2400, "Хребет — шийний відділ": 2100, "Хребет — грудний відділ": 2100, "Хребет — поперековий відділ": 2100,
-  "Колінний суглоб": 1800, "Плечовий суглоб": 1800, "Кульшовий суглоб": 1900, "Черевна порожнина": 2600, "Малий таз": 2600,
-  "Серце та судини": 3200, "Молочні залози": 2700,
-  "Голова / мозок": 1200, "Органи грудної клітки": 1500, "Органи черевної порожнини": 1700, "Хребет": 1400,
-  "Кінцівки": 1200, "КТ-ангіографія": 2400, "Мультизональне дослідження": 2800,
-};
-const CONTRAST_SURCHARGE = 900;
+/* Каталог scoped-центрів для CSV: clinic_id → «modalityCode|region» → ціна/контраст.
+   Дзеркалить catalog_est_sum з RPC 0114 (чистий каталог): дохід рахуємо на сервері
+   (агрегат), а для рядкового CSV — тут, тією ж логікою, БЕЗ static-фолбэку lib/studies. */
+type CsvCatalog = Map<string, Map<string, { price: number; contrastPrice: number | null }>>;
+function buildCsvCatalog(rows: { clinic_id: string; modality: string; name: string; price: number; contrast_price: number | null }[]): CsvCatalog {
+  const m: CsvCatalog = new Map();
+  for (const r of rows) {                       // лише активні, впорядковані sort_order, id
+    let inner = m.get(r.clinic_id);
+    if (!inner) { inner = new Map(); m.set(r.clinic_id, inner); }
+    const key = r.modality + "|" + r.name;
+    if (!inner.has(key)) inner.set(key, { price: r.price, contrastPrice: r.contrast_price });  // перша = пріоритетна
+  }
+  return m;
+}
 
-function entryRevenue(e: RevenueEntry): number {
+/* Дохід запису: збережена ціна (снапшот) виграє; інакше — ціна КАТАЛОГУ центру
+   (чистий каталог: лише коли послуга є і price > 0), інакше 0. Хардкод-довідник прибрано. */
+function entryRevenue(e: RevenueEntry, cat: CsvCatalog): number {
   const s: StudyLike[] = Array.isArray(e.studies) ? (e.studies as StudyLike[]) : [];
   if (!s.length) return 0;
+  const inner = e.clinic_id ? cat.get(e.clinic_id) : undefined;
   return s.reduce((sum, x) => {
-    const stored = (typeof x.price === "number") ? x.price : null;
-    const est = (PRICE[x.region || ""] || 1500) + (x.contrast ? CONTRAST_SURCHARGE : 0);
-    return sum + (stored != null ? stored : est);
+    if (typeof x.price === "number") return sum + x.price;
+    const svc = inner?.get(modalityCode(x.type) + "|" + (x.region || ""));
+    if (svc && svc.price > 0) return sum + svc.price + (x.contrast ? (svc.contrastPrice ?? CONTRAST_SURCHARGE) : 0);
+    return sum;
   }, 0);
 }
 function procName(e: RevenueEntry): string {
@@ -222,14 +232,11 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const util = capacityMin ? Math.min(100, Math.round((bookedMin / capacityMin) * 100)) : 0;
   const utilColor = util > 70 ? "var(--green)" : util >= 50 ? "var(--orange)" : "var(--red)";
 
-  /* Дохід — лише по 'done'. БД віддає суму ЗБЕРЕЖЕНИХ цін і кількість позицій без
-     ціни (по region/contrast); оцінку за довідником домножуємо тут — формула
-     лишається тією самою, що була, тож цифра не «пливе». */
+  /* Дохід — лише по 'done'. БД (RPC 0114) віддає суму ЗБЕРЕЖЕНИХ цін (снапшот) +
+     оцінку позицій без ціни ПО КАТАЛОГУ центру (catalog_est_sum, чистий каталог:
+     послуга з price > 0; інакше 0). Хардкод-довідник прибрано. */
   const doneStudies = studyRows.filter((r) => r.status === "done");
-  const revenue = doneStudies.reduce((s, r) => {
-    const est = (PRICE[r.region] || 1500) + (r.contrast ? CONTRAST_SURCHARGE : 0);
-    return s + Number(r.priced_sum || 0) + r.unpriced * est;
-  }, 0);
+  const revenue = doneStudies.reduce((s, r) => s + Number(r.priced_sum || 0) + Number(r.catalog_est_sum || 0), 0);
   // «Точний» дохід = у всіх позицій збережена ціна І немає виконаних записів БЕЗ
   // досліджень (у старому entryFullyPriced такий запис теж робив підсумок оцінковим).
   const doneWithStudies = doneStudies.filter((r) => r.cnt > 0);
@@ -285,7 +292,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       const [f, t] = periodRange(period, scopeTz);   // той самий період, що й у KPI
       const { data, error } = await supabase
         .from("queue_entries")
-        .select("status, studies, room_id, scheduled_date, patient_name, note")
+        .select("status, studies, room_id, scheduled_date, patient_name, note, clinic_id")
         .in("clinic_id", clinicIds)
         .neq("status", "cancelled")
         .gte("scheduled_date", dateKey(f))
@@ -294,6 +301,16 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
         .limit(5000);
       if (error) { notify("Не вдалося сформувати експорт — спробуйте ще раз"); return; }
 
+      // Каталог scoped-центрів для оцінки позицій без снапшот-ціни (як catalog_est_sum
+      // у RPC 0114). Впорядковано active desc → перша послуга name=region пріоритетна.
+      const { data: svc } = await supabase
+        .from("services")
+        .select("clinic_id, modality, name, price, contrast_price")
+        .in("clinic_id", clinicIds)
+        .eq("active", true)                              // лише активний каталог (як RPC 0114 / buildCatalog)
+        .order("sort_order").order("id");
+      const csvCatalog = buildCsvCatalog((svc || []) as { clinic_id: string; modality: string; name: string; price: number; contrast_price: number | null }[]);
+
       const head = ["Дата", "Пацієнт", "Процедура", "Кабінет", "Статус", "Дохід"];
       const rows = (data || []).map((e) => [
         e.scheduled_date,
@@ -301,7 +318,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
         procName(e as RevenueEntry),
         (e.room_id ? roomsById[e.room_id] : null)?.name || "",
         e.status,
-        entryRevenue(e as RevenueEntry),
+        entryRevenue(e as RevenueEntry, csvCatalog),
       ]);
       // Захист від CSV-інʼєкції: значення, що починаються з = + - @, екрануємо апострофом.
       const safe = (c: unknown) => { let v = String(c == null ? "" : c); if (/^[=+\-@]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; };
