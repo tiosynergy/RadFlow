@@ -176,6 +176,15 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
 
   const [durEdit, setDurEdit] = useState("");
   useEffect(() => { if (region) setDurEdit(String(computedDur)); }, [region, contrast, studyType, roomId]); // eslint-disable-line react-hooks/exhaustive-deps -- зміна кабінету пересчитує дефолтну тривалість (per-room 0108)
+  // Realtime-зміна каталожної тривалості (та сама область/кабінет): підхоплюємо новий
+  // default, ЛИШЕ якщо оператор не редагував поле вручну. (0111 realtime каталогу.)
+  const prevDefDurRef = useRef<number>(computedDur);
+  useEffect(() => {
+    const prev = prevDefDurRef.current;
+    prevDefDurRef.current = computedDur;
+    if (region && durEdit === String(prev) && String(prev) !== String(computedDur)) setDurEdit(String(computedDur));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- лише на realtime-зміну каталожного default
+  }, [computedDur]);
   const dur = Math.max(5, parseInt(durEdit, 10) || computedDur);
   const durCustom = region && parseInt(durEdit, 10) && parseInt(durEdit, 10) !== computedDur;
 
@@ -193,12 +202,14 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   // Обрана область стала НЕДОСТУПНОЮ (прихована в кабінеті per-room 0108, АБО адмін
   // вимкнув послугу — realtime-каталог 0111) → знімаємо «фантомний» вибір і час. Ключ —
   // підпис набору доступних областей, а не лише roomId (Nielsen; сервер теж ріже).
-  const availSig = regionsFor(studyType, roomId || undefined).map((r) => r.label).join("");
+  const availSig = regionsFor(studyType, roomId || undefined).map((r) => r.label + "|" + (r.contrast ? "1" : "0")).join("");
   useEffect(() => {
     const avail = regionsFor(studyType, roomId || undefined);
     if (region && !avail.some((r) => r.label === region)) { setRegion(""); setTime(""); }
+    // Область доступна, але контраст їй вимкнули в каталозі (realtime) → знімаємо флаг.
+    else if (region && contrast) { const sel = avail.find((r) => r.label === region); if (sel && !sel.contrast) { setContrast(false); setTime(""); } }
     setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0 } : s)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей (кабінет АБО realtime-каталог)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей / контрасту (кабінет АБО realtime-каталог)
   }, [availSig]);
 
   const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));

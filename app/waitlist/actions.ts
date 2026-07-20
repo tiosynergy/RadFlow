@@ -97,6 +97,16 @@ async function closedRegionGateWL(
   }
 }
 
+/* Мапінг помилки БД листа очікування: SERVICE_CLOSED (тригер 0112/0113 —
+   послугу вимкнули між прикладним гейтом і записом, TOCTOU) → зрозуміла дія;
+   решта — safeDbError. */
+function mapWaitlistDbError(context: string, error: { message?: string } | null): WaitlistActionResult {
+  if (error?.message && /^SERVICE_CLOSED/i.test(error.message)) {
+    return { ok: false, error: "Обрана послуга щойно була вимкнена або прихована в кабінеті — оновіть форму та виберіть іншу", code: "generic" };
+  }
+  return { ok: false, error: safeDbError(context, error), code: "generic" };
+}
+
 /* Серверний гард «бажане вікно вже минуло» (defense-in-depth до клієнтського в
    WaitlistModal). Стягуюча умова — на КІНЕЦЬ вікна: якщо desired_date_to цілком у
    минулому, жоден майбутній слот не потрапить у [from, to] і пацієнт вічно висить
@@ -237,7 +247,7 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
     .select("id")
     .single();
 
-  if (error) return { ok: false, error: safeDbError("addWaitlistEntry", error), code: "generic" };
+  if (error) return mapWaitlistDbError("addWaitlistEntry", error);
   return { ok: true, id: data.id };
 }
 
@@ -322,7 +332,7 @@ export async function addEntryToWaitlist(
     if (/duplicate|unique|23505/i.test(error.message)) {
       return { ok: false, error: "Пацієнт уже в листі очікування", code: "duplicate" };
     }
-    return { ok: false, error: safeDbError("addEntryToWaitlist", error), code: "generic" };
+    return mapWaitlistDbError("addEntryToWaitlist", error);
   }
   return { ok: true, id: data.id };
 }
@@ -402,7 +412,7 @@ export async function updateWaitlistEntry(
     .update(safePatch as TablesUpdate<"waitlist_entries">)
     .eq("id", v.data.id)
     .select("id");
-  if (error) return { ok: false, error: safeDbError("updateWaitlistEntry", error), code: "generic" };
+  if (error) return mapWaitlistDbError("updateWaitlistEntry", error);
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
   return { ok: true };
 }

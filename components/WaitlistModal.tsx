@@ -186,12 +186,14 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   // Обрана область стала НЕДОСТУПНОЮ (прихована в кабінеті per-room 0108, АБО адмін
   // вимкнув послугу — realtime-каталог 0111) → знімаємо «фантомний» вибір. Ключ —
   // підпис набору доступних областей, а не лише roomId (Nielsen; сервер теж ріже).
-  const availSig = regionsFor(studyType, rid).map((r) => r.label).join("");
+  const availSig = regionsFor(studyType, rid).map((r) => r.label + "|" + (r.contrast ? "1" : "0")).join("");
   useEffect(() => {
     const avail = regionsFor(studyType, rid);
     if (region && !avail.some((r) => r.label === region)) setRegion("");
+    // Область доступна, але контраст їй вимкнули в каталозі (realtime) → знімаємо флаг.
+    else if (region && contrast) { const sel = avail.find((r) => r.label === region); if (sel && !sel.contrast) setContrast(false); }
     setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0 } : s)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей (кабінет АБО realtime-каталог)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей / контрасту (кабінет АБО realtime-каталог)
   }, [availSig]);
 
   const primaryStudy: StudyOut | null = region

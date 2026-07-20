@@ -382,17 +382,30 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     if (pfDurRef.current != null) { setDurEdit(String(pfDurRef.current)); pfDurRef.current = null; return; }
     setDurEdit(String(computedDur));
   }, [region, contrast, studyType, roomId]); // eslint-disable-line react-hooks/exhaustive-deps -- зміна кабінету пересчитує дефолтну тривалість (per-room 0108)
+  // Realtime-зміна каталожної тривалості (та сама область/кабінет): підхоплюємо новий
+  // default, ЛИШЕ якщо оператор не редагував поле вручну (durEdit === попередній
+  // default). Ручну правку зберігаємо. (0111 realtime каталогу.)
+  const prevDefDurRef = useRef<number>(computedDur);
+  useEffect(() => {
+    const prev = prevDefDurRef.current;
+    prevDefDurRef.current = computedDur;
+    if (region && durEdit === String(prev) && String(prev) !== String(computedDur)) setDurEdit(String(computedDur));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- лише на realtime-зміну каталожного default
+  }, [computedDur]);
   // Обрана область стала НЕДОСТУПНОЮ (прихована в кабінеті per-room 0108, АБО
   // адмін вимкнув послугу — realtime-refresh каталогу 0111) → знімаємо вибір і час.
   // Ключ ефекту — підпис набору доступних областей (не лише roomId): інакше при
   // realtime-правці каталогу форма лишалася б із «фантомно обраною» закритою
   // послугою (Nielsen «запобігання помилок»/«видимість стану»; сервер теж ріже).
-  const availSig = regionsFor(studyType, roomId).map((r) => r.label).join("");
+  const availSig = regionsFor(studyType, roomId).map((r) => r.label + "|" + (r.contrast ? "1" : "0")).join("");
   useEffect(() => {
     const avail = regionsFor(studyType, roomId);
     if (region && !avail.some((r) => r.label === region)) { setRegion(""); setTime(""); }
+    // Область ще доступна, але контраст їй вимкнули в каталозі (contrast_allowed=false,
+    // realtime) → знімаємо флаг контрасту, інакше payload/ціна лишаються з контрастом.
+    else if (region && contrast) { const sel = avail.find((r) => r.label === region); if (sel && !sel.contrast) { setContrast(false); setTime(""); } }
     setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0 } : s)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей (кабінет АБО realtime-каталог)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей / контрасту (кабінет АБО realtime-каталог)
   }, [availSig]);
   // H-1: кратно 5 і в межах 5..480 — інакше «47» їхало в БД (ламає сітку слотів),
   // а «0» взагалі обходив анти-овербукінг (порожній tstzrange). CHECK у 0066 — останній рубіж.

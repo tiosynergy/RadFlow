@@ -985,6 +985,11 @@ function mapBookingError(message: string, code = ""): QueueActionResult {
   }
   // Гарди кейса (0094/0095) — за текстом ДО перевірок за SQLSTATE (CASE_SAME_ROOM = 23505).
   { const ce = caseTriggerError(message); if (ce) return ce; }
+  // SERVICE_CLOSED — тригер 0112/0113 (послуга вимкнена/прихована в кабінеті). TOCTOU:
+  // послугу вимкнули між прикладним гейтом і записом → показуємо зрозумілу дію.
+  if (/^SERVICE_CLOSED/i.test(message)) {
+    return { ok: false, error: "Обрана послуга щойно була вимкнена або прихована в кабінеті — оновіть форму та виберіть іншу", code: "modality_mismatch" };
+  }
   // MODALITY_MISMATCH — тригер 0088 (тип дослідження ↔ модальність кабінету).
   if (/MODALITY_MISMATCH/i.test(message)) return MODALITY_MISMATCH_ERR;
   // PAST_SLOT — тригер 0063 (останній рубіж; серверна перевірка стоїть вище).
@@ -1101,7 +1106,7 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
   // кабінет одразу звільняється, а запис переноситься на новий слот (та сама
   // запис, не копія) з поміткою про перенос (from_status='in_progress').
   const { data: cur } = await supabase.from("queue_entries")
-    .select("status, scheduled_date, scheduled_time, room_id, clinic_id")
+    .select("status, scheduled_date, scheduled_time, room_id, clinic_id, studies")
     .eq("id", input.id).maybeSingle();
   /* Рядок не видно під RLS (чужа клініка / не свій запис направника) або він без
      клініки — далі йти нема сенсу. Раніше при cur=null МОВЧКИ пропускались усі три
@@ -1111,6 +1116,17 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
   if (!cur?.clinic_id) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
   const clinicId = cur.clinic_id;
   const reason = (input.reason || "").trim();
+
+  /* Перенос у ІНШИЙ кабінет — це новий контекст: склад перевіряємо як актуальний
+     для цільового кабінету, БЕЗ grandfather (0113 — той самий інваріант у БД). Так
+     перенос у кабінет, де послугу приховано/вимкнено, дає зрозумілу помилку ДО RPC.
+     Той самий кабінет (лише зміна часу) не гейтимо — склад не змінюється. */
+  if (input.roomId !== cur.room_id) {
+    const g = await closedRegionGate(
+      supabase, clinicId, input.roomId,
+      cur.studies as unknown as { type?: string | null; region?: string | null }[]);
+    if (g) return g;
+  }
 
   /* Перенести в МИНУЛЕ не можна — жодною роллю. Клієнтський гейт тут не працював
      (isToday=false → перевірка "past" пропускалась), тому це і є основна діра. */
