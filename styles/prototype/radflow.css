@@ -337,7 +337,10 @@ html[data-density="spacious"] .fld { gap: 9px; }
 @media (max-width: 1080px) { .board-top { grid-template-columns: 1fr; } }
 
 /* ===== Stats bar ===== */
-.stats { display: grid; grid-template-columns: repeat(6, minmax(0, 112px)); gap: 8px; margin-bottom: 16px; justify-content: start; }
+/* Усі плашки в ОДИН рядок незалежно від кількості (7-ма «Не відбулося» раніше
+   переносилась через фіксовані 6 колонок). auto-flow column → один ряд; треки
+   до 112px, але з min 0 ужимаються, коли місця бракує (без переносу). */
+.stats { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 112px); gap: 8px; margin-bottom: 16px; justify-content: start; }
 .stat {
   background: var(--card); border: 1px solid var(--border);
   border-radius: var(--r-lg); padding: 3px 10px;
