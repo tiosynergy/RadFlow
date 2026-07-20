@@ -55,8 +55,9 @@ management.
 ## Migrations
 - Applied to prod MANUALLY via the Supabase SQL editor (no automated migration runner). A Vercel
   deploy does NOT run them — apply the SQL first, then merge `dev → main`.
-- Prod migrations **0001–0060 ALL APPLIED** (verified 2026-07-09; highest is
-  `0060_in_progress_actual_occupancy.sql`). The next new migration is **0061**. ALWAYS check the
+- Prod migrations **0001–0114 ALL APPLIED** (as of 2026-07-20; highest is
+  `0114_ceo_kpi_studies_catalog_estimate.sql`). The next new migration is **0115**. Deploy state
+  is tracked in the `docs/HANDOVER.md` header (always fresher than this file). ALWAYS check the
   highest existing migration number before adding a new one and number it sequentially (a
   duplicate/lower number is a bug).
 - Keep migrations idempotent (`do $$ … exception when duplicate_object …$$`, `create … if not

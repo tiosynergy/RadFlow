@@ -27,6 +27,7 @@ export type BoardReferral = {
   scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string;
   call_status: string | null; priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean;
   doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
+  case_id: string | null; case_step: number | null;   // 0118: кейси направника
 };
 type RescheduleOrigin = { from_date?: string | null; from_time?: string | null; from_room?: string | null; from_status?: string | null; reason?: string | null };
 function fmtOrigin(o: RescheduleOrigin | null, roomById: Record<string, RoomOpt>): string | null {
@@ -95,11 +96,15 @@ interface Props {
   onEditStudies: (r: BoardReferral) => void;
   onCancel: (r: BoardReferral) => void;
   onEditPatient: (r: BoardReferral) => void;
+  /** 0118: відкрити екран СВОГО кейса (клік по бейджу «🔗 Кейс»). */
+  onOpenCase?: (caseId: string, clinicId: string) => void;
+  /** 0118: організувати кейс зі СВОГО запису (додати крок іншої модальності). */
+  onOrganizeCase?: (r: BoardReferral) => void;
   /** Швидкий фільтр із сайдбару (клік по центру/кабінету). nonce → повторне застосування. */
   focus?: { clinicId: string; roomId: string; nonce: number } | null;
 }
 
-export default function ReferrerBoard({ referrals, activeCenters, centersById, roomsByClinic, doctorId, onReschedule, onEditStudies, onCancel, onEditPatient, focus }: Props) {
+export default function ReferrerBoard({ referrals, activeCenters, centersById, roomsByClinic, doctorId, onReschedule, onEditStudies, onCancel, onEditPatient, onOpenCase, onOrganizeCase, focus }: Props) {
   const [centerId, setCenterId] = useState<string>("all"); // "all" = Всі центри
   const [roomId, setRoomId] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>(""); // "" = всі дати
@@ -228,6 +233,14 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                         {(owned && canCancel(r)) ? (
                           <span onClick={(e) => { e.stopPropagation(); onEditPatient(r); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{r.patient_name}</span>
                         ) : r.patient_name}
+                        {/* 0118: крок кейса — бейдж відкриває екран кейса (лише свої, RLS). */}
+                        {r.case_id && onOpenCase && (
+                          <button className="btn btn-ghost btn-xs" style={{ marginLeft: 6, padding: "1px 7px", fontSize: 10.5 }}
+                            title={"Крос-модальний кейс · крок " + (r.case_step ?? "—") + " — відкрити"}
+                            onClick={(e) => { e.stopPropagation(); onOpenCase(r.case_id as string, r.clinic_id); }}>
+                            🔗 Кейс{r.case_step ? " · " + r.case_step : ""}
+                          </button>
+                        )}
                       </div>
                       <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                         {r.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {r.patient_phone}</span>}
@@ -283,6 +296,8 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                             <button className="btn btn-primary btn-sm" disabled={r.status === "in_progress"} title={r.status === "in_progress" ? "Дослідження триває — недоступно" : "Перезаписати"} onClick={() => onReschedule(r)}>🗓 Перезаписати</button>
                             <button className="btn btn-secondary btn-sm" onClick={() => onEditStudies(r)}>🩻 Дослідження</button>
                             <button className="btn btn-secondary btn-sm" onClick={() => onEditPatient(r)}>✎ Дані пацієнта</button>
+                            {/* 0118: запис без кейса → організувати кейс (крок іншої модальності). */}
+                            {!r.case_id && onOrganizeCase && <button className="btn btn-secondary btn-sm" onClick={() => onOrganizeCase(r)} title="Додати крок іншої модальності — записи стануть кейсом">🔗 Організувати кейс</button>}
                             {canCancel(r) && <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onCancel(r)}>✕ Скасувати</button>}
                           </div>
                         )}
