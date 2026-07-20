@@ -28,7 +28,7 @@ const zModality = z.enum(["MRI", "CT", "US", "XRAY", "MAMMO"]); // = BOOKABLE_MO
 const sService = z.object({
   name: z.string().trim().min(2, "Вкажіть назву послуги").max(120),
   modality: zModality,
-  durationMin: zDuration,                       // кратна 5, 5..600 (= CHECK 0107)
+  durationMin: zDuration,                       // кратна 5, 5..480 (= CHECK 0107)
   price: zPrice,
   contrastAllowed: z.boolean().optional().default(false),
   // null = глобальний дефолт CONTRAST_SURCHARGE (lib/studies.ts).
@@ -62,7 +62,7 @@ function mapServiceError(message: string): ServiceActionResult {
     return { ok: false, error: "Така послуга вже є в цій модальності", code: "duplicate" };
   }
   if (/services_duration_chk/i.test(message)) {
-    return { ok: false, error: "Тривалість — кратна 5 хв, від 5 до 600", code: "generic" };
+    return { ok: false, error: "Тривалість — кратна 5 хв, від 5 до 480", code: "generic" };
   }
   if (/services_price_chk|services_contrast_price_chk/i.test(message)) {
     return { ok: false, error: "Некоректна ціна", code: "generic" };
@@ -254,4 +254,64 @@ export async function clearRoomServiceOverride(roomId: string, serviceId: string
     .delete().eq("room_id", rv.data).eq("service_id", sv.data).eq("clinic_id", gate.clinicId);
   if (error) return mapSroError(error.message);
   return { ok: true };
+}
+
+/* ============================================================
+   Імпорт прайса (Stage 2, фаза 3a): підтвердження передперегляду.
+   Розбір файла — POST /api/services/import (n8n парсить, lib/priceImport
+   нормалізує). Сюди приходять ЛИШЕ обрані адміном рядки; фінальний upsert —
+   services_import_rpc (0115, SECURITY DEFINER: admin-гейт усередині, атомарно,
+   on conflict по expression-індексу lower(name), який PostgREST не вміє).
+   ============================================================ */
+
+const sImportRow = z.object({
+  name: z.string().trim().min(2).max(120),
+  modality: zModality,
+  price: zPrice,
+  // null = у прайсі часу не було → тривалість існуючої позиції НЕ чіпається.
+  durationMin: z.union([zDuration, z.null()]).optional().default(null),
+  // true = «оживити» вимкнену позицію (інакше RPC її пропустить).
+  revive: z.boolean().optional().default(false),
+});
+const sImportRows = z.array(sImportRow).min(1, "Немає позицій для імпорту").max(500);
+export type ImportServiceRow = z.infer<typeof sImportRow>;
+
+export type ImportServicesResult =
+  | { ok: true; inserted: number; updated: number; skippedInactive: number }
+  | { ok: false; error: string; code?: "auth" | "forbidden" | "generic" };
+
+/** Застосувати підтверджені позиції імпорту (все-або-нічого). */
+export async function importServices(raw: ImportServiceRow[]): Promise<ImportServicesResult> {
+  const v = parseInput("importServices", sImportRows, raw);
+  if (!v.ok) return v as ImportServicesResult;
+  const supabase = await createClient();
+  const gate = await requireAdmin(supabase);
+  if ("error" in gate) return gate.error as ImportServicesResult;
+
+  const { data, error } = await supabase.rpc("services_import_rpc", {
+    p_rows: v.data.map((r) => ({
+      name: r.name,
+      modality: r.modality,
+      price: r.price,
+      duration_min: r.durationMin,
+      revive: r.revive,
+    })),
+  });
+  if (error) {
+    if (/FORBIDDEN/i.test(error.message)) {
+      return { ok: false, error: "Імпорт прайса виконує адміністратор центру", code: "forbidden" };
+    }
+    if (/BAD_INPUT/i.test(error.message)) {
+      // Повідомлення RPC уже людське («рядок N — …») — віддаємо як є.
+      return { ok: false, error: error.message.replace(/^BAD_INPUT:\s*/i, ""), code: "generic" };
+    }
+    return { ok: false, error: safeDbError("services_import", { message: error.message }), code: "generic" };
+  }
+  const res = (data ?? {}) as { inserted?: number; updated?: number; skipped_inactive?: number };
+  return {
+    ok: true,
+    inserted: res.inserted ?? 0,
+    updated: res.updated ?? 0,
+    skippedInactive: res.skipped_inactive ?? 0,
+  };
 }

@@ -1,0 +1,181 @@
+import crypto from "crypto";
+import { NextResponse } from "next/server";
+import { requireRole } from "@/lib/apiAuth";
+import { classifyRows, parseRawRows, type RawSheetRow } from "@/lib/priceImport";
+
+/* ===== RadFlow — імпорт прайса: розбір файла (Stage 2, фаза 3a) =====
+   POST multipart {file} → пересилка в n8n-workflow «radflow-price-import»
+   (HMAC-підпис + request_id-nonce) → n8n детерміновано парсить xlsx/csv
+   (Extract From File, БЕЗ AI — AI-гілка pdf/doc/URL — фаза 3b) і повертає
+   СИРІ рядки «заголовок → значення» → уся нормалізація і класифікація тут
+   (lib/priceImport.ts, під vitest) → JSON-передперегляд для адміна.
+
+   Цей роут НІЧОГО не пише в БД: підтвердження адміна йде окремим Server
+   Action importServices → services_import_rpc (0115). PII в пайплайні немає
+   (лише позиції прайса).
+
+   Захист: requireRole(admin + clinic) → rl_check (10 імпортів / 10 хв на
+   адміна) → ліміт розміру/типу файла → HMAC в ОБИДВА боки (n8n відповідає
+   {body, sig}: sig = HMAC(body), body містить request_id — звірка nonce).
+
+   ⚠️ Ліміт файла 4 МБ (НЕ 10 МБ із плану): Vercel обрізає тіло запиту
+   serverless-функції на ~4.5 МБ — більший файл не долетить фізично. */
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 60; // n8n-парсинг великого xlsx може бути неспішним
+
+const MAX_FILE_BYTES = 4 * 1024 * 1024;
+const N8N_TIMEOUT_MS = 30_000;
+const MAX_RAW_ROWS = 5000; // стеля сирих рядків від n8n (до нормалізації)
+const MAX_RESP_BYTES = 20 * 1024 * 1024; // zip-бомба у 4 МБ xlsx розгортається у сотні МБ JSON
+
+const jerr = (error: string, status: number) => NextResponse.json({ error }, { status });
+
+/* Дзеркало transportProblem із lib/outbox.ts (локально: там функція модульна).
+   Прайс — не PII, але підпис без TLS не має сенсу: fail-closed однаково. */
+function transportProblem(url: string, secret: string | undefined): string | null {
+  if (!secret) return "missing_secret";
+  let u: URL;
+  try { u = new URL(url); } catch { return "invalid_url"; }
+  const localhost = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+  if (u.protocol !== "https:" && !localhost) return "insecure_transport";
+  return null;
+}
+
+function fileKind(name: string): "xlsx" | "csv" | null {
+  const n = name.toLowerCase();
+  if (n.endsWith(".xlsx")) return "xlsx";
+  if (n.endsWith(".csv")) return "csv";
+  return null;
+}
+
+const hmac = (secret: string, body: string) =>
+  crypto.createHmac("sha256", secret).update(body).digest("hex");
+
+/** Читає тіло відповіді зі стелею байтів (M2: небуферизований .json() на відповіді
+    від zip-бомби клав би serverless-функцію по памʼяті ще до зрізу рядків). */
+async function readBodyCapped(resp: Response, maxBytes: number): Promise<string | null> {
+  const reader = resp.body?.getReader();
+  if (!reader) {
+    const text = await resp.text();
+    return Buffer.byteLength(text, "utf8") > maxBytes ? null : text;
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) { void reader.cancel(); return null; }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+export async function POST(req: Request) {
+  const gate = await requireRole(["admin"], {
+    needClinic: true,
+    forbidden: "Імпорт прайса виконує адміністратор центру",
+    rateLimit: { key: "svc_import", max: 10, windowSeconds: 600 },
+  });
+  if (!gate.ok) return gate.res;
+
+  const url = process.env.N8N_IMPORT_WEBHOOK_URL;
+  const secret = process.env.IMPORT_WEBHOOK_SECRET;
+  if (!url) return jerr("Імпорт не налаштовано: задайте N8N_IMPORT_WEBHOOK_URL", 501);
+  const problem = transportProblem(url, secret);
+  if (problem) {
+    console.error(`[services/import] зупинено (${problem}): перевірте IMPORT_WEBHOOK_SECRET / https`);
+    return jerr("Імпорт не налаштовано на сервері", 501);
+  }
+
+  // ---- Файл ----
+  let form: FormData;
+  try { form = await req.formData(); } catch { return jerr("Очікується multipart із файлом", 400); }
+  const file = form.get("file");
+  if (!(file instanceof File)) return jerr("Додайте файл прайса (.xlsx або .csv)", 400);
+  const kind = fileKind(file.name || "");
+  if (!kind) return jerr("Підтримуються файли .xlsx та .csv (pdf/doc — наступна фаза)", 415);
+  if (file.size === 0) return jerr("Файл порожній", 400);
+  if (file.size > MAX_FILE_BYTES) return jerr("Файл завеликий (до 4 МБ)", 413);
+
+  const fileB64 = Buffer.from(await file.arrayBuffer()).toString("base64");
+  const requestId = crypto.randomUUID();
+
+  // ---- RadFlow → n8n (HMAC-підпис тіла; ts — проти нескінченного replay) ----
+  const body = JSON.stringify({
+    request_id: requestId,
+    clinic_id: gate.me.clinic_id,
+    filename: file.name,
+    kind,
+    ts: Date.now(),
+    file_b64: fileB64,
+  });
+
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-RadFlow-Signature": "sha256=" + hmac(secret as string, body),
+      },
+      body,
+      signal: AbortSignal.timeout(N8N_TIMEOUT_MS),
+    });
+  } catch (e) {
+    const timeout = e instanceof Error && e.name === "TimeoutError";
+    return jerr(timeout ? "Розбір файла не встиг за 30 с — спробуйте ще раз" : "Сервіс розбору недоступний", 502);
+  }
+  if (!resp.ok) {
+    console.error(`[services/import] n8n HTTP ${resp.status}`);
+    return jerr("Не вдалося розібрати файл — перевірте формат або додайте позиції вручну", 502);
+  }
+
+  // ---- n8n → RadFlow: {body, sig}; sig = HMAC(body); body = {request_id, rows} ----
+  const respText = await readBodyCapped(resp, MAX_RESP_BYTES).catch(() => null);
+  if (respText == null) return jerr("Файл розгортається завеликим — спростіть таблицю", 422);
+  let envelope: unknown;
+  try { envelope = JSON.parse(respText); } catch { return jerr("Некоректна відповідь сервісу розбору", 502); }
+  const env = envelope as { body?: unknown; sig?: unknown };
+  if (typeof env?.body !== "string" || typeof env?.sig !== "string") {
+    return jerr("Некоректна відповідь сервісу розбору", 502);
+  }
+  const expected = hmac(secret as string, env.body);
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(env.sig, "utf8");
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    console.error("[services/import] невірний підпис відповіді n8n");
+    return jerr("Підпис відповіді не пройшов перевірку", 502);
+  }
+
+  let payload: { request_id?: unknown; rows?: unknown };
+  try { payload = JSON.parse(env.body); } catch { return jerr("Некоректна відповідь сервісу розбору", 502); }
+  if (payload.request_id !== requestId) return jerr("Відповідь не відповідає запиту (nonce)", 502);
+  if (!Array.isArray(payload.rows)) return jerr("Сервіс розбору не знайшов таблиці у файлі", 422);
+  const totalRaw = (payload.rows as unknown[]).length;
+  const raw = (payload.rows as unknown[])
+    .slice(0, MAX_RAW_ROWS)
+    .filter((r): r is RawSheetRow => !!r && typeof r === "object" && !Array.isArray(r));
+
+  // ---- Нормалізація + класифікація проти каталогу центру (RLS-клієнт) ----
+  const parsed = parseRawRows(raw);
+  const truncated = parsed.truncated || totalRaw > MAX_RAW_ROWS;
+  const { data: services, error } = await gate.supabase
+    .from("services")
+    .select("id, name, modality, price, duration_min, active")
+    .eq("clinic_id", gate.me.clinic_id);
+  if (error) return jerr("Не вдалося прочитати каталог центру", 500);
+
+  const classified = classifyRows(parsed.rows, services ?? []);
+  return NextResponse.json({
+    ok: true,
+    preview: {
+      rows: classified,
+      skipped: parsed.skipped,
+      columns: parsed.columns,
+      totalRaw,
+      truncated, // L8: «розібрали не все» показуємо явно, а не мовчки
+    },
+  });
+}

@@ -1,9 +1,10 @@
 # Stage 2 — Автоматизация каталога услуг, цен и времени (n8n + AI)
 
-**Обновлено:** 2026-07-19 · **Статус:** фазы 0–1 (0107 + `/services`) и **2a**
-(формы читают каталог) и **2b** (0108 per-room override + редактор в мастере) —
-**реализованы и в проде (БД=0108)**. ⚠️ ОТКРЫТО: формы записи ещё НЕ читают override
-(см. §статус ниже). Дальше — импорт (фаза 3).
+**Обновлено:** 2026-07-20 · **Статус:** фазы 0–1, 2a, 2b — в проде (БД=0114,
+формы читают per-room override). **Фаза 3a (импорт xlsx/csv) — РЕАЛИЗОВАНА**
+(код на `dev`, миграция `0115` написана и верифицирована в откате; накатка — за
+владельцем). Детали и отступления от плана — §5.5 ниже. Дальше — 3b (AI-ветка
+pdf/doc/URL).
 
 ## 0. Решения владельца (зафиксированы; #2 ПЕРЕСМОТРЕН 2026-07-19)
 
@@ -182,15 +183,50 @@ effectiveService(services, roomDurations, modality, roomId?) →
 пайплайне нет (только прайс). Ошибки n8n → чистый тост «Не вдалося розібрати
 файл — додайте вручну», лог на сервере.
 
+### 5.5. Фаза 3a — КАК РЕАЛИЗОВАНО (2026-07-20; отступления от §5.1–5.2)
+
+- **Нормализация — в RadFlow, не в n8n Code-ноде** (`lib/priceImport.ts` под vitest):
+  эвристика колонок (union ключей первых 20 строк — sparse-парсеры опускают пустые
+  ячейки), модальность по ключевым словам (границы слова с укр. і/ї/є/ґ), цены
+  («3.200»/«2,400» = разделители тысяч; вне [0..1e6] → skipped), длительность
+  (normDur; мусор → null = «не трогать»), дедуп по (modality, lower(name)),
+  классификация new/changed/unchanged/inactive/unrecognized. n8n — только транспорт
+  и парсер бинарника (Extract From File).
+- **n8n workflow `radflow-price-import`** (id `ikpUa5PZ1QWQy8oH`, ОПУБЛИКОВАН):
+  Webhook (rawBody) → Code «Verify & Decode» (HMAC, timingSafeEqual; `require('crypto')`
+  на инстансе работает) → IF xlsx/csv → Extract From File (alwaysOutputData: пустой
+  файл тоже отвечает; csv: relaxQuotes + skipRecordsWithErrors) → Code «Sign Response»
+  → Respond. Ответ = `{body, sig}`, `sig=HMAC(body)`, `body={request_id, rows}`.
+  ⚠️ **n8n Cloud: `$env` заблокирован** → секрет константой в ОБЕИХ Code-нодах
+  (`REPLACE_ME_IMPORT_SECRET` — владелец заменяет на значение `IMPORT_WEBHOOK_SECRET`).
+  Никогда не включать вычисленный HMAC в текст ошибки (оракул подписи).
+- **Роут `POST /api/services/import`**: requireRole(admin, needClinic) + rl_check
+  (10/10 мин на админа); **файл ≤ 4 МБ** (не 10 — Vercel режет тело serverless на
+  ~4.5 МБ); ответ n8n читается с потолком 20 МБ (zip-бомба); подпись запроса
+  включает `ts` (анти-replay); превью отдаёт `truncated`-флаг при обрезке (>500
+  позиций / >5000 сырых строк).
+- **`services_import_rpc` (0115)**: SECURITY DEFINER, admin-гейт внутри, атомарно
+  всё-или-ничего, upsert по expression-индексу, порядок (modality, lower(name)) —
+  анти-deadlock двух параллельных импортов; вимкнена позиция только с revive;
+  duration null → не перезаписывается; имя существующей позиции не переписывается;
+  цена — целое 0..1e6 (границы на numeric ДО ::int). Smoke:
+  `supabase/smoke/services_import_smoke.sql` (PASS на прод-БД в откате 2026-07-20).
+- **UI**: `components/ImportPriceModal.tsx` (кнопка «⇪ Імпорт прайса» в базовом
+  режиме ServicesEditor) — группы «Зміна ціни/часу» / «Нові» / «Вимкнені (оживити?)» /
+  «Нерозпізнані» (селект модальности) / «Без змін»; закрытие заблокировано во время
+  применения; подтверждение → Server Action `importServices` → RPC.
+- **ENV (Vercel/.env.local)**: `N8N_IMPORT_WEBHOOK_URL=https://tio-synergy.app.n8n.cloud/webhook/radflow-price-import`,
+  `IMPORT_WEBHOOK_SECRET=<сильный секрет, тот же в Code-нодах n8n>`.
+
 ## 6. План реализации (по сессиям)
 
 | Фаза | Объём | Статус |
 |---|---|---|
 | **0** | `0107` (services + цены + RLS) | ✅ готово, накатить |
 | **1** | `/services` редактор + сид с кнопки | ✅ готово |
-| **2a** | `lib/catalog.ts` + подключение ВСЕХ форм (BookingModal/Waitlist/StudyEdit/ReferralPortal/CEO-доход) одной сессией + vitest на резолвер | следующая сессия |
-| **2b** | `0108 service_room_durations` + вкладка «Час по кабінетах» в `/services` + автосид из SetupWizard | после 2a |
-| **3a** | импорт xlsx/csv: API-роут + n8n workflow (детерминированная ветка) + предпросмотр + `services_import_rpc` | после 2b |
+| **2a** | `lib/catalog.ts` + подключение ВСЕХ форм (BookingModal/Waitlist/StudyEdit/ReferralPortal/CEO-доход) одной сессией + vitest на резолвер | ✅ в проде |
+| **2b** | `0108 service_room_overrides` + режим «Кабінет» в редакторе + формы читают override | ✅ в проде |
+| **3a** | импорт xlsx/csv: API-роут + n8n workflow (детерминированная ветка) + предпросмотр + `services_import_rpc` (0115) | ✅ реализовано (см. §5.5); накатить 0115 + ENV |
 | **3b** | AI-ветка (pdf/doc/URL) в том же workflow + confidence-UX | после 3a |
 | **4** | полировка: аудит изменений цен (`audit_log`-триггер на services), отчёт CEO «прайс vs факт», при росте — история цен | по потребности |
 

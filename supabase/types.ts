@@ -1153,6 +1153,11 @@ export type Database = {
         Args: { p_modality?: string | null };
         Returns: { waiting: number; cito: number; urgent: number; scheduled: number; removed: number }[];
       };
+      // 0115: фінальний upsert імпорту прайса (SECURITY DEFINER, admin-гейт усередині).
+      services_import_rpc: {
+        Args: { p_rows: Json };
+        Returns: Json;
+      };
       set_waitlist_status_rpc: {
         Args: { p_id: string; p_status: Database["public"]["Enums"]["waitlist_status"] };
         Returns: string;

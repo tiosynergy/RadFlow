@@ -16,6 +16,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import ImportPriceModal from "@/components/ImportPriceModal";
 import {
   createService, updateService, setServiceActive, deleteService, seedServicesFromCatalog,
   setRoomServiceOverride, clearRoomServiceOverride, type ServiceInput,
@@ -120,6 +121,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
   const [addOpen, setAddOpen] = useState(false);
   const [addDraft, setAddDraft] = useState<Draft>(emptyDraft());
   const [confirmDel, setConfirmDel] = useState<ServiceRow | null>(null);
+  const [importOpen, setImportOpen] = useState(false); // «Імпорт прайса» (фаза 3a)
   // Режим кабінету
   const [ovEditId, setOvEditId] = useState<string | null>(null); // service_id у режимі правки
   const [ovDraft, setOvDraft] = useState<OvDraft>(ovDraftOf());
@@ -295,6 +297,8 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
           <span style={{ display: "inline-flex", gap: 8, marginLeft: 8 }}>
             <button className="btn btn-secondary btn-sm" disabled={busy} onClick={onSeed}
               title="Разово наповнити базовий каталог позиціями з довідника">⤓ З базового довідника</button>
+            <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setImportOpen(true)}
+              title="Завантажити прайс .xlsx/.csv — з передпереглядом змін">⇪ Імпорт прайса</button>
             <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => { setAddDraft(emptyDraft()); setAddOpen(true); }}>＋ Додати</button>
           </span>
         )}
@@ -447,6 +451,13 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
             );
           })}
         </div>
+      )}
+
+      {importOpen && (
+        <ImportPriceModal
+          onClose={() => setImportOpen(false)}
+          onDone={(msg) => { setImportOpen(false); notify(msg, "success"); refresh(); }}
+        />
       )}
 
       {confirmDel && (
