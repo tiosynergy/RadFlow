@@ -6,7 +6,7 @@
 
 import type { Modality, WaitlistEntry, WaitlistStatus } from "@/supabase/types";
 import { priorityRank } from "@/lib/priority";
-import { isCT, type Study } from "@/lib/studies";
+import { modalityCode, type Study } from "@/lib/studies";
 
 export const WAITLIST_ACTIVE: WaitlistStatus = "waiting";
 
@@ -62,10 +62,15 @@ export function desiredWindowText(e: Pick<WaitlistEntry, "desired_date_from" | "
   return [dates, time].filter(Boolean).join(" · ") || "Будь-коли";
 }
 
-/** Модальність за складом досліджень (тип "КТ"/"CT" → CT, інакше MRI). */
+/** Модальність за складом досліджень — за типом ОСНОВНОГО (першого) дослідження.
+    Раніше було бінарно (КТ→CT, усе інше→MRI), через що УЗД/Рентген/Мамографія
+    зберігались як MRI і випадали з підбору кандидатів на свій слот. Тепер тип
+    (укр. лейбл, напр. "УЗД") мапиться в код enum через modalityCode. Додаткові
+    дослідження прив'язані до типу основного, тож беремо перший заданий. */
 export function modalityFromStudies(studies?: Study[] | null): Modality {
   const arr = Array.isArray(studies) ? studies : [];
-  return arr.some((s) => isCT(s?.type)) ? "CT" : "MRI";
+  const type = arr.find((s) => s?.type)?.type;
+  return type ? modalityCode(type) : "MRI";
 }
 
 /** "HH:MM" → хвилини від початку доби (null → null). */

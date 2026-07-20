@@ -1,6 +1,15 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
+import { parseBody } from "@/lib/validationHttp";
+import { safeDbError, zUuid } from "@/lib/validation";
+
+const sStaffRooms = z.object({
+  profileId: zUuid,
+  roomId: zUuid,
+  action: z.enum(["add", "remove"]).default("add"),
+});
 
 // POST /api/staff/rooms — адміністратор призначає/знімає доступ радіолога до кабінету.
 //  body: { profileId, roomId, action: "add" | "remove" }
@@ -11,11 +20,9 @@ export async function POST(req: Request) {
   if (!gate.ok) return gate.res;
   const { me } = gate;
 
-  const body = await req.json().catch(() => ({}));
-  const profileId = String(body.profileId || "");
-  const roomId = String(body.roomId || "");
-  const action = body.action === "remove" ? "remove" : "add";
-  if (!profileId || !roomId) return NextResponse.json({ error: "Не вказано радіолога або кабінет" }, { status: 400 });
+  const parsed = await parseBody("api/staff/rooms", req, sStaffRooms, "Не вказано радіолога або кабінет");
+  if (!parsed.ok) return parsed.res;
+  const { profileId, roomId, action } = parsed.data;
 
   const admin = createAdminClient();
 
@@ -31,11 +38,11 @@ export async function POST(req: Request) {
 
   if (action === "remove") {
     const { error } = await admin.from("radiologist_rooms").delete().eq("profile_id", profileId).eq("room_id", roomId);
-    if (error) return NextResponse.json({ error: "Помилка зняття доступу: " + error.message }, { status: 400 });
+    if (error) return NextResponse.json({ error: safeDbError("api/staff/rooms.remove", error) }, { status: 400 });
   } else {
     const { error } = await admin.from("radiologist_rooms")
       .upsert({ clinic_id: me.clinic_id, profile_id: profileId, room_id: roomId }, { onConflict: "profile_id,room_id", ignoreDuplicates: true });
-    if (error) return NextResponse.json({ error: "Помилка призначення доступу: " + error.message }, { status: 400 });
+    if (error) return NextResponse.json({ error: safeDbError("api/staff/rooms.add", error) }, { status: 400 });
   }
 
   return NextResponse.json({ ok: true });

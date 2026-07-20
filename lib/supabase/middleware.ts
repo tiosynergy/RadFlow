@@ -15,6 +15,7 @@ const PROTECTED = [
   "/referral",
   "/staff",
   "/referrers",
+  "/services",
 ];
 
 // Auth pages: a logged-in user is redirected to the dashboard.
@@ -58,11 +59,23 @@ export async function updateSession(request: NextRequest) {
     }
   );
 
-  // IMPORTANT: do not run code between createServerClient and getUser,
-  // otherwise the session may end unexpectedly.
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  /* IMPORTANT: do not run code between createServerClient and getUser,
+     otherwise the session may end unexpectedly.
+
+     M-11 (аудит 2026-07-12): getUser() ходить у Supabase Auth по мережі. Штатну
+     помилку auth-js віддає в { error }, АЛЕ мережевий збій (DNS, інцидент на боці
+     Supabase, обрив під час _refreshAccessToken) кидає `TypeError: fetch failed`.
+     Без try/catch цей throw валить middleware, а він висить на всьому matcher —
+     тобто 500 отримує ВЕСЬ сайт, включно з /login: користувач не може навіть
+     перезайти. Ловимо і деградуємо fail-closed: вважаємо, що сесії немає
+     (захищені сторінки → /login), публічні сторінки працюють. */
+  let user: { id: string } | null = null;
+  try {
+    const { data } = await supabase.auth.getUser();
+    user = data.user ?? null;
+  } catch {
+    user = null;   // мережа/Auth недоступні — не роняємо застосунок
+  }
 
   const path = request.nextUrl.pathname;
 

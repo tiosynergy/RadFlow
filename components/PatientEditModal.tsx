@@ -172,7 +172,9 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
                   </select>
                 </label>
                 <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Вага, кг</span>
-                  <input className="inp" type="number" min="0" value={form.patient_weight ?? ""} onChange={(e) => setF("patient_weight", e.target.value)} />
+                  {/* max = PATIENT_WEIGHT_MAX (lib/validation.ts): сервер відхилить більше,
+                      і без max у полі користувач отримав би загальний 400 замість підказки. */}
+                  <input className="inp" type="number" min="0" max="400" value={form.patient_weight ?? ""} onChange={(e) => setF("patient_weight", e.target.value)} />
                 </label>
               </div>
               <label className="fld"><span className="fld-lab">Лікар-направник</span>

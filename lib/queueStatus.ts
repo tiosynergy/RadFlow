@@ -8,7 +8,9 @@
    ВРЕМЯ: сравнение «сейчас vs слот» идёт в «настінному» пространстве (wall-as-UTC)
    по ТАЙМЗОНЕ КЛИНИКИ. now по умолчанию = wallNow() (клиника из setClinicTz);
    мультиклиничные экраны передают nowMs = wallNow(entryClinicTz) явно. */
-import { wallNow, wallMinOfDay } from "./incidents";
+import { wallNow, wallMinOfDay, wallMinOfInstant } from "./incidents";
+import { BUFFER_DEFAULT, normBuffer } from "./studies";
+import { slotFmt } from "./slots";
 
 export interface ClarifyMeta {
   label: string;
@@ -101,13 +103,20 @@ export type CallBlockOpts = {
   notToday?: boolean;
   nowMs?: number;
 };
+/* 0077: sched_overrun — це вже НЕ блок, а ПОПЕРЕДЖЕННЯ (confirmable: true).
+   Рішення власника: центр має добити день — усіх, кого записано на сьогодні,
+   можна викликати в кабінет і після закриття, але через явне підтвердження.
+   Стелі (+2 год) тут НЕМАЄ свідомо: вона обмежує НОВИЙ запис у сітці, а цей
+   пацієнт уже записаний — відмовити йому о 20:30 «бо пізно» безглуздо.
+   Решта кодів лишаються жорсткими блоками: чужий день, простій, зайнятий
+   кабінет і накладення на наступний запис підтвердженням не лікуються. */
 export type CallBlock =
-  | { code: "wrong_day" }
-  | { code: "room_blocked" }
-  | { code: "room_closed" }
-  | { code: "room_busy" }
-  | { code: "sched_overrun"; durationMin: number; end: string }
-  | { code: "clash"; durationMin: number; time: string; name?: string | null };
+  | { code: "wrong_day"; confirmable?: false }
+  | { code: "room_blocked"; confirmable?: false }
+  | { code: "room_closed"; confirmable?: false }
+  | { code: "room_busy"; confirmable?: false }
+  | { code: "sched_overrun"; durationMin: number; end: string; confirmable: true }
+  | { code: "clash"; durationMin: number; time: string; name?: string | null; confirmable?: false };
 
 export function computeCallBlock(
   p: CallBlockInfo,
@@ -121,19 +130,115 @@ export function computeCallBlock(
   if (opts.schedClosed) return { code: "room_closed" };
   if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return { code: "room_busy" };
   const durationMin = p.duration_min || 30;
+  /* Накладення на НАСТУПНИЙ запис перевіряємо ДО виходу за графік (0077).
+     Порядок важливий: обидва можуть спрацювати одночасно (кінець дня + хтось
+     записаний слідом). clash — жорсткий блок, sched_overrun — підтвердження;
+     якби першим повертався sched_overrun, оператор підтвердив би «так, поза
+     графіком» і завів пацієнта поверх наступного. Спершу — те, що не лікується
+     підтвердженням. */
+  const clash = lateCallClash(p, entries, nowMs);
+  if (clash) return { code: "clash", durationMin, time: clash.time, name: clash.name };
+
   // Виклик ЗАРАЗ має вміститись до кінця робочого графіка кабінету (саме
   // дослідження; буфер прибирання може вийти за межі — як у редакторі слотів).
+  // 0077: не блок, а підтвердження — «робочий день скінчився, все одно викликати?».
   if (p.room_id && opts.schedEnd) {
     const [eh, em] = String(opts.schedEnd).split(":").map(Number);
     const endMin = (eh || 0) * 60 + (em || 0);
     const nowMin = wallMinOfDay(nowMs);
-    if (nowMin + durationMin > endMin) return { code: "sched_overrun", durationMin, end: opts.schedEnd };
+    if (nowMin + durationMin > endMin) {
+      return { code: "sched_overrun", durationMin, end: opts.schedEnd, confirmable: true };
+    }
   }
-  // Пізній виклик: фактичне вікно (зараз + тривалість + буфер) не має налазити
-  // на наступний запис кабінету (напр. після «все ж прийшов»).
-  const clash = lateCallClash(p, entries, nowMs);
-  if (clash) return { code: "clash", durationMin, time: clash.time, name: clash.name };
   return null;
+}
+
+/* ===== Колізія черги: дослідження затягнулося і наїжджає на наступний запис =====
+   Пацієнт А в кабінеті з 10:20 (слот був 10:00, 60 хв + 5 буфер) → кабінет
+   звільниться о 11:25. Пацієнт Б записаний на 11:00 і вже під дверима.
+
+   Джерело правди — ФАКТИЧНИЙ старт (`in_progress_at`, міграція 0060), а не слот.
+   Рахуємо лише для НАЙБЛИЖЧОГО активного запису кабінету: панель рішення має
+   бути одна, а не на кожному записі до кінця дня.
+
+   Дві зони (рішення Ігоря 2026-07-11):
+     drift — кабінет відстає від плану, але до слота Б ще встигає → тихий
+             індикатор «+N хв», панелі немає (буфер для цього й існує);
+     clash — кабінет НЕ встигає до слота Б → панель рішення.
+   Сама панель пропонує лише перенос Б (не зсув усього хвоста) і не виштовхує
+   нікого за межі графіка — хто не влазить, іде в обзвон. */
+
+export type CollisionEntry = {
+  id: string;
+  room_id: string | null;
+  status: string;
+  scheduled_time: string | null;
+  duration_min: number | null;
+  buffer_time_min: number | null;
+  in_progress_at?: string | null;
+  patient_name?: string | null;
+};
+
+export type CollisionInfo = {
+  zone: "drift" | "clash";
+  freeAtMin: number;   // коли кабінет звільниться (хв доби, настінний час)
+  freeAt: string;      // те саме як "HH:MM"
+  overlapMin: number;  // наїзд на слот Б (>0 лише для clash)
+  driftMin: number;    // наскільки кабінет відстає від плану (0, якщо йде за планом)
+  running: { id: string; name: string | null; remainMin: number }; // хто в кабінеті; скільки лишилось самого дослідження
+};
+
+const bufOf = (e: { buffer_time_min: number | null }) => normBuffer(e.buffer_time_min ?? BUFFER_DEFAULT);
+const durOf = (e: { duration_min: number | null }) => e.duration_min || 30;
+
+export function collisionFor(
+  next: CollisionEntry,
+  entries: CollisionEntry[],
+  nowMs: number = wallNow()
+): CollisionInfo | null {
+  if (!next.room_id || !next.scheduled_time) return null;
+  if (next.status !== "scheduled" && next.status !== "waiting") return null;
+
+  // Хто зараз у кабінеті (фактичний старт обовʼязковий — без нього окупація невідома).
+  const run = entries.find((e) => e.room_id === next.room_id && e.status === "in_progress" && e.in_progress_at);
+  if (!run) return null;
+  const runStart = wallMinOfInstant(run.in_progress_at);
+  if (runStart == null) return null;
+
+  const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return (h || 0) * 60 + (m || 0); };
+  const nowMin = wallMinOfDay(nowMs);
+
+  /* Панель — лише в найближчого активного запису кабінету, і лише в того, ким
+     ще реально займатимуться. Записи в «Запізненні» (не прийшов, минуло понад
+     буфер) ПРОПУСКАЄМО: у них своя панель рішення (LATE_META), і саме вони
+     інакше «залипали» б першими в списку з абсурдним наїздом на пів дня
+     (протухла ранкова 09:00 при дослідженні, що йде о 14:40). */
+  const stale = (e: CollisionEntry) =>
+    e.status === "scheduled" && toMin(String(e.scheduled_time)) + bufOf(e) < nowMin;
+  const upcoming = entries
+    .filter((e) => e.room_id === next.room_id && e.id !== run.id
+      && (e.status === "scheduled" || e.status === "waiting") && e.scheduled_time && !stale(e))
+    .sort((a, b) => toMin(String(a.scheduled_time)) - toMin(String(b.scheduled_time)))[0];
+  if (!upcoming || upcoming.id !== next.id) return null;
+
+  /* Кабінет не може «звільнитися в минулому»: якщо планова тривалість уже
+     вичерпана, а «Завершити» ніхто не натиснув — пацієнт усе ще в кабінеті.
+     Без цього затримка, БІЛЬША за тривалість, схлопувала overlapMin у ≤ 0
+     і панель зникала саме тоді, коли вона найпотрібніша. */
+  const runEnd = Math.max(runStart + durOf(run), nowMin); // кінець самого дослідження (не раніше «зараз»)
+  const freeAtMin = runEnd + bufOf(run);                  // кабінет вільний (з буфером прибирання)
+  const plannedFree = run.scheduled_time ? toMin(String(run.scheduled_time)) + durOf(run) + bufOf(run) : freeAtMin;
+  const driftMin = Math.max(0, freeAtMin - plannedFree);
+  const overlapMin = freeAtMin - toMin(String(next.scheduled_time));
+  if (overlapMin <= 0 && driftMin <= 0) return null; // усе за планом
+
+  const running = { id: run.id, name: run.patient_name ?? null, remainMin: Math.max(0, runEnd - nowMin) };
+  return {
+    zone: overlapMin > 0 ? "clash" : "drift",
+    freeAtMin, freeAt: slotFmt(freeAtMin),
+    overlapMin: Math.max(0, overlapMin),
+    driftMin, running,
+  };
 }
 
 // dayDate — Date дня записи (00:00); scheduledTime — "HH:MM".

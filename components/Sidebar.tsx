@@ -10,6 +10,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
 import DensityControl from "@/components/DensityToggle";
+import { modalityShort, modalityKind } from "@/lib/studies";
 
 type SidebarRoom = {
   id: string;
@@ -28,6 +29,7 @@ interface SidebarProps {
   activeNav?: string;
   onSelectRoom?: (id: string) => void;
   onNew?: () => void;
+  onSlotsOverview?: () => void;
   incidentCount?: number;
   onBreakdown?: () => void;
   onEmergency?: () => void;
@@ -35,9 +37,6 @@ interface SidebarProps {
   stoppedRoomIds?: string[]; // кабінети з активним простоєм (аварія/поломка) — підсвічуються червоним
 }
 
-function modalityLabel(m: string): string {
-  return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше";
-}
 function initials(name?: string | null): string {
   const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return "RF";
@@ -54,6 +53,7 @@ export default function Sidebar({
   activeNav,
   onSelectRoom,
   onNew,
+  onSlotsOverview,
   incidentCount = 0,
   onBreakdown,
   onEmergency,
@@ -129,7 +129,7 @@ export default function Sidebar({
               className={"sb-cab" + (activeRoom === r.id ? " active" : "") + (stoppedRoomIds.includes(r.id) ? " stopped" : "")}
               title={stoppedRoomIds.includes(r.id) ? "Кабінет зупинено (простій)" : undefined}
               style={{ width: "100%", textAlign: "left", border: "none", cursor: "pointer" }}>
-              <span className={"sb-cab-tile " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+              <span className={"sb-cab-tile " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
               <span className="sb-cab-meta">
                 <span className="sb-cab-name">{stoppedRoomIds.includes(r.id) ? "🛑 " : ""}{r.name}</span>
                 <span className="sb-cab-model">{r.apparatus_model || ""}</span>
@@ -141,6 +141,9 @@ export default function Sidebar({
         <div className="sb-section">
           <div className="sb-label">Швидкі дії</div>
           <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span></a>
+          {isAdmin && onSlotsOverview && <button type="button" onClick={onSlotsOverview} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
+            <span className="ic">◫</span><span className="sb-item-lab">Зайнятість кабінету</span>
+          </button>}
           <button type="button" onClick={() => onNew && onNew()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">＋</span>
             <span className="sb-item-lab">Новий запис</span>

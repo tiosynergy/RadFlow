@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
+import { safeDbError } from "@/lib/validation";
 
 // Cron-бэкстоп: помечает просроченные scheduled записи (clarify_at) по ВСЕМ
 // клиникам — для headless-работы (когда доски не открыты; напр. n8n/Stage-2
@@ -24,7 +25,7 @@ async function handle(req: Request) {
   }
   const admin = createAdminClient();
   const { data, error } = await admin.rpc("sink_overdue_scheduled_all");
-  if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ ok: false, error: safeDbError("api/queue/sink-overdue", error) }, { status: 500 });
   return NextResponse.json({ ok: true, flagged: data ?? 0 });
 }
 

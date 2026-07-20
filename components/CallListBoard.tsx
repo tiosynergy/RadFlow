@@ -4,21 +4,26 @@
    Записи на завтра (або обраний день) → обдзвін/підтвердження. Статус пишеться у
    queue_entries.call_status (синхронно з дошкою), нотатка — у call_note. Realtime. */
 
-import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
-import { entryInIncidentWindow, incidentExpired, setClinicTz } from "@/lib/incidents";
+import { entryInIncidentWindow, incidentExpired, setClinicTz, wallDayKey, wallToday0 } from "@/lib/incidents";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import type { WaitlistEntry } from "@/supabase/types";
 import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies, setQueueEntryStatus } from "@/app/queue/actions";
 import { addEntryToWaitlist } from "@/app/waitlist/actions";
-import { isLate, LATE_META } from "@/lib/queueStatus";
+import { isLate } from "@/lib/queueStatus";
+import { modalityKind } from "@/lib/studies";
+import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import type { CallStatus, Json } from "@/supabase/types";
 import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
+import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -27,6 +32,7 @@ type CallEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
   priority_level?: PatientPriority | null; call_note?: string | null; studies: Json; doctor?: string | null; room_id: string | null; scheduled_date: string | null;
+  off_schedule?: boolean | null;   // 0077
 };
 type IncidentRow = { id: string; room_id: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string };
 
@@ -36,7 +42,6 @@ function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + M
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function shortDate(d: Date) { return pad(d.getDate()) + "." + pad(d.getMonth() + 1); }
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function studyKind(e: { studies?: unknown }) {
   const arr = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string }>) : [];
   const s = arr[0] ? arr[0].type : null;
@@ -115,7 +120,7 @@ function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet,
             <div className="cld-item cld-item-full"><span className="cld-lab">Пацієнт (ПІБ)</span><span className="cld-val cld-name">{p.patient_name}</span></div>
             <div className="cld-item"><span className="cld-lab">Кабінет</span><span className="cld-val">{roomName}</span></div>
             <div className="cld-item"><span className="cld-lab">Вік</span><span className="cld-val">{p.patient_age != null ? p.patient_age + " р." : "—"}</span></div>
-            <div className="cld-item cld-item-full"><span className="cld-lab">Тип дослідження</span><span className="cld-val cld-val-wrap"><span className={"cld-type " + (type === "МРТ" ? "mrt" : "ct")}>{type}</span> {procLabel(p)}</span></div>
+            <div className="cld-item cld-item-full"><span className="cld-lab">Тип дослідження</span><span className="cld-val cld-val-wrap"><span className={"cld-type " + modalityKind(type)}>{type}</span> {procLabel(p)}</span></div>
             <div className="cld-item"><span className="cld-lab">Телефон</span><span className="cld-val"><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>{p.patient_phone}</a></span></div>
             {p.doctor && <div className="cld-item"><span className="cld-lab">Направник</span><span className="cld-val">{p.doctor}</span></div>}
           </div>
@@ -239,18 +244,35 @@ function LateCallSection({ late, roomsById, onReschedule, onRecall, onToWaitlist
 
 interface CallListBoardProps {
   clinicId: string;
+  /** IANA-зона центру (clinics.timezone) — із сервера, а не з браузера. */
+  clinicTz: string;
   rooms?: RoomOpt[];
+  /** Каталог послуг центру (services, 0107) — SSR-проп, як rooms. Порожній → статика. */
+  services?: ServiceLike[];
+  /** Переозначення каталогу по кабінетах (service_room_overrides, 0108) — проброс у форми (2b). */
+  roomOverrides?: RoomOverrideRow[];
   clinicName?: string;
   adminName?: string;
   adminRole?: string;
   roleKey?: string;
 }
 
-export default function CallListBoard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: CallListBoardProps) {
-  const tomorrow = useMemo(() => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(0, 0, 0, 0); return d; }, []);
+export default function CallListBoard({ clinicId, clinicTz, rooms, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: CallListBoardProps) {
+  // Синхронно, до ініціалізаторів useState: від зони залежить і «завтра» (день
+  // обдзвону), і todayKey (секції «Запізнення» / «постраждалі»). Тільки на клієнті.
+  if (typeof window !== "undefined") setClinicTz(clinicTz);
+
+  const router = useRouter();   // 0086: зміни кабінетів (SSR-проп) → router.refresh
+
+  // «Завтра» — доба КЛІНІКИ, а не браузера: біля півночі оператор з іншої зони
+  // відкривав обдзвін не на той день.
+  const tomorrow = useMemo(() => { const d = wallToday0(clinicTz); d.setDate(d.getDate() + 1); return d; }, [clinicTz]);
   const [date, setDate] = useState(tomorrow);
   const [entries, setEntries] = useState<CallEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  // H-6: збій завантаження ≠ «записів немає» / «простоїв немає».
+  const [entriesErr, setEntriesErr] = useState(false);
+  const [incidentsErr, setIncidentsErr] = useState(false);
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -266,6 +288,11 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   // Слот звільнився (відмова) → підходящі кандидати з листа очікування.
   const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
 
+  // «Сьогодні» для секцій «Запізнення» / «постраждалі» — доба КЛІНІКИ (0059).
+  // Раніше зона прилітала клієнтським fetch уже після монтування, і перший прохід
+  // лоадерів ішов по дню БРАУЗЕРА.
+  const todayKey = wallDayKey(clinicTz);
+
   const dayKey = dateKey(date);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
 
@@ -276,30 +303,41 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
   }
 
   const reload = useCallback(async () => {
-    const supabase = createClient();
-    const { data } = await supabase
-      .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, call_note, studies, doctor, room_id, scheduled_date")
-      .eq("clinic_id", clinicId)
-      .eq("scheduled_date", dayKey)
-      .in("status", ["scheduled", "waiting"])
-      .order("scheduled_time", { ascending: true });
-    setEntries(data || []);
-    setLoading(false);
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("queue_entries")
+        .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, call_note, studies, doctor, room_id, scheduled_date, off_schedule")
+        .eq("clinic_id", clinicId)
+        .eq("scheduled_date", dayKey)
+        .in("status", ["scheduled", "waiting"])
+        .order("scheduled_time", { ascending: true });
+      // H-6: PostgREST не кидає сам — без цієї перевірки збій виглядав як «записів немає»,
+      // і оператор просто нікому не дзвонив у цей день.
+      if (error) { setEntriesErr(true); return; }
+      setEntries(data || []);
+      setEntriesErr(false);
+    } catch {
+      setEntriesErr(true);   // старий список лишається на екрані + банер
+    } finally {
+      setLoading(false);
+    }
   }, [clinicId, dayKey]);
 
   const loadIncidents = useCallback(async () => {
+    try {
     const supabase = createClient();
-    const { data: incs } = await supabase
+    const { data: incs, error } = await supabase
       .from("incidents")
       .select("id, room_id, reason_label, note, started_at, blocked_until, status")
       .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
+    if (error) { setIncidentsErr(true); return; }   // «простоїв немає» ≠ «не змогли прочитати»
+    setIncidentsErr(false);
     setIncidents(incs || []);
     if (!incs || !incs.length) { setAffectedToday([]); return; }
-    const todayKey = dateKey(new Date());
     const { data: ents } = await supabase
       .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, room_id, scheduled_date")
+      .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, room_id, scheduled_date, off_schedule")
       .eq("clinic_id", clinicId).gte("scheduled_date", todayKey)
       .in("room_id", incs.map((i) => i.room_id)).in("status", ["scheduled", "waiting"]);
     const byRoom: Record<string, IncidentRow> = {}; incs.forEach((i) => { byRoom[i.room_id] = i; });
@@ -309,7 +347,8 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
       return entryInIncidentWindow(e.scheduled_date, e.scheduled_time, inc);
     });
     setAffectedToday(aff);
-  }, [clinicId]);
+    } catch { setIncidentsErr(true); }
+  }, [clinicId, todayKey]);
 
   // Записи на СЬОГОДНІ зі статусом scheduled — джерело секції «Запізнення»
   // (обраний день колл-листа за замовчуванням завтра, тому окремий запит).
@@ -318,24 +357,18 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
       const supabase = createClient();
       const { data } = await supabase
         .from("queue_entries")
-        .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, doctor, room_id, scheduled_date")
+        .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, doctor, room_id, scheduled_date, off_schedule")
         .eq("clinic_id", clinicId)
-        .eq("scheduled_date", dateKey(new Date()))
+        .eq("scheduled_date", todayKey)
         .eq("status", "scheduled")
         .order("scheduled_time", { ascending: true });
       setTodayScheduled(data || []);
     } catch { /* транзієнтний збій — лишаємо попередній список */ }
-  }, [clinicId]);
+  }, [clinicId, todayKey]);
   useEffect(() => { loadTodayScheduled(); }, [loadTodayScheduled]);
 
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его.
   useEffect(() => { setLoading(true); }, [clinicId]);
-
-  // Таймзона клініки → похідні часу рахуються по ній (не по браузеру).
-  useEffect(() => {
-    createClient().from("clinics").select("timezone").eq("id", clinicId).single()
-      .then(({ data }) => setClinicTz(data?.timezone ?? null));
-  }, [clinicId]);
 
   // Перезапрос записей при смене дня: realtime-хук слушает только clinicId.
   useEffect(() => { reload(); }, [reload]);
@@ -346,22 +379,54 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     subscriptions: [
       { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: () => { reload(); loadIncidents(); loadTodayScheduled(); } },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
+      // 0086: rooms — SSR-проп (назви кабінетів у колл-листі); правку/видалення підхоплюємо через router.refresh.
+      { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      // Каталог послуг/цін (0107/0108) — SSR-проп у форми запису; зміна адміном → оновити.
+      { table: "services", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      { table: "service_room_overrides", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
     ],
   });
 
   // Після звільнення слота — запропонувати кандидатів з листа очікування.
   async function suggestWaitlistFor(p: CallEntry) {
     const slot: FreedSlotInfo = { date: p.scheduled_date || dayKey, time: p.scheduled_time, roomId: p.room_id };
-    const candidates = await fetchWaitlistCandidates(clinicId, slot, rooms);
+    const candidates = await fetchWaitlistCandidates(slot);
     if (candidates.length) setWlSuggest({ slot, candidates });
+  }
+
+  /* CAS-промах (аудит H-4): запис уже не в тому стані, який бачить оператор
+     колл-листа (пацієнт міг прийти і бути в кабінеті, поки список висів). Показуємо
+     причину і перезавантажуємо — мовчки перетирати чужий перехід не можна. */
+  function handledStale(res: { ok: boolean; code?: string; error?: string }): boolean {
+    if (res.ok || res.code !== "stale") return false;
+    notify(res.error || "Стан змінився — оновіть список", "error");
+    reload();
+    loadIncidents();
+    loadTodayScheduled();
+    return true;
   }
 
   async function cancelEntry(p: CallEntry) {
     const res = await cancelQueueEntry(p.id);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    if (!res.ok) {
+      if (handledStale(res)) return;
+      notify("Помилка: " + res.error, "error");
+      return;
+    }
     notify("Запис скасовано (відмова)", "success");
     reload(); loadIncidents();
     suggestWaitlistFor(p);
+  }
+
+  /* «✕ Відмова» ставить call_status='declined', а це на сервері СКАСОВУЄ запис
+     (status → cancelled). Кнопка про це не попереджала — користувач дізнавався з
+     тоста постфактум. Тепер деструктивна гілка йде через підтвердження. */
+  const [declineAsk, setDeclineAsk] = useState<{ p: CallEntry; mode: "declined" | "cancel" } | null>(null);
+  const [declineBusy, setDeclineBusy] = useState(false);
+  function setCallGuarded(id: string, call_status: CallStatus) {
+    if (call_status !== "declined") { setCall(id, call_status); return; }
+    const entry = entries.find((e) => e.id === id) || null;
+    if (entry) setDeclineAsk({ p: entry, mode: "declined" });
   }
 
   async function setCall(id: string, call_status: CallStatus) {
@@ -370,7 +435,13 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch } : e)));
     const res = await setQueueEntryCall(id, call_status);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return; }
+    if (!res.ok) {
+      // «Відмова» скасовує запис — сервер відхилить її, якщо пацієнт уже в кабінеті.
+      if (handledStale(res)) return;
+      notify("Помилка: " + res.error, "error");
+      reload();
+      return;
+    }
     if (call_status === "declined") {
       notify("Пацієнт відмовився — запис скасовано", "info");
       if (entry) suggestWaitlistFor(entry);
@@ -382,38 +453,59 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     const res = await setCallNote(id, call_note);
     if (!res.ok) notify("Помилка збереження нотатки: " + res.error, "error");
   }
-  async function confirmAll() {
-    const ids = entries.map((e) => e.id);
+  /* «✓ Всіх підтверджено» — масова НЕОЧЕВИДНА дія. Було три проблеми:
+     1) підтверджувала ВСІХ за день, ігноруючи активний фільтр/пошук (оператор
+        відфільтрував «Не відповідає» — а підтвердились і ті, кому не дзвонили);
+     2) без підтвердження — один клік, скасувати нічим;
+     3) рапортувала успіх навіть коли RLS не оновила жодного рядка.
+     Тепер: діємо рівно на видимий (відфільтрований) список, повз уже
+     підтверджених, через ConfirmDialog, і показуємо реальну кількість. */
+  const [confirmAllAsk, setConfirmAllAsk] = useState(false);
+  const [confirmAllBusy, setConfirmAllBusy] = useState(false);
+
+  async function doConfirmAll(ids: string[]) {
     if (!ids.length) return;
+    setConfirmAllBusy(true);
     const res = await confirmAllCalls(ids);
+    setConfirmAllBusy(false);
+    setConfirmAllAsk(false);
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-    notify("Усіх пацієнтів підтверджено", "success");
+    if (res.updated === 0) { notify("Жодного запису не оновлено — перевірте доступ і оновіть сторінку", "error"); reload(); return; }
+    notify(res.updated === 1 ? "Пацієнта підтверджено" : `Підтверджено пацієнтів: ${res.updated}`, "success");
     reload();
   }
 
-  async function doReschedule({ roomId, date: d, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
+  // Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
+  async function doReschedule({ roomId, date: d, time, dur, buffer, reason, offSchedule }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean }) {
     const p = reschedFor;
-    if (!p) return;
+    if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed", reason });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed", reason, offSchedule });
     if (!res.ok) {
-      if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
-      setReschedFor(null);
-      const msg = res.code === "incident" ? "Кабінет у простої — оберіть інший слот" : res.code === "slot_unavailable" ? "Слот зайнятий — оберіть інший" : "Помилка переносу: " + res.error;
-      notify(msg, "error");
-      return;
+      if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
+      reload();
+      return (res.code === "slot_taken" || res.code === "slot_unavailable")
+        ? "Слот щойно зайняли — оберіть інший"
+        : res.code === "incident" ? "Кабінет у простої — оберіть інший слот"
+        : res.error;
     }
     setReschedFor(null);
     notify("Перенесено · підтверджено", "success");
     reload();
+    return null;
   }
-  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number }) {
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number; offSchedule?: boolean }) {
     const p = editStudiesFor;
     if (!p) return;
-    const res = await editQueueEntryStudies(p.id, arr as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer);
+    // 0077: згоду віддає модалка (успадкований прапорець або нова галочка) — див. QueueBoard.doEditStudies.
+    const res = await editQueueEntryStudies(p.id, arr as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer, meta?.offSchedule);
     setEditStudiesFor(null);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    if (!res.ok) {
+      if (handledStale(res)) return;
+      notify("Помилка: " + res.error, "error");
+      return;
+    }
     notify("Дослідження оновлено", "success");
     reload();
   }
@@ -451,7 +543,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     if (filter !== "all" && (p.call_status || "not_called") !== filter) return false;
     if (query.trim()) {
       const q = query.trim().toLowerCase();
-      if (!((p.patient_name || "").toLowerCase().includes(q) || (p.patient_phone || "").includes(q) || procLabel(p).toLowerCase().includes(q))) return false;
+      if (!((p.patient_name || "").toLowerCase().includes(q) || (p.patient_phone || "").includes(formatPhoneSearch(query.trim())) || procLabel(p).toLowerCase().includes(q))) return false;
     }
     return true;
   }).sort((a, b) => {
@@ -459,6 +551,10 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
     if (pa !== pb) return pa - pb;
     return String(a.scheduled_time).localeCompare(String(b.scheduled_time));
   });
+
+  // Масове підтвердження діє на ВИДИМИЙ список (фільтр + пошук), повз уже підтверджених.
+  const isNarrowed = filter !== "all" || query.trim().length > 0;
+  const confirmTargets = filtered.filter((p) => (p.call_status || "not_called") !== "confirmed");
 
   return (
     <div className="app">
@@ -469,19 +565,25 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
             <span className="tic">☎</span>
             <div>
               <h1>Колл-лист</h1>
-              <div className="date">Записи на {fmtFull(date)} · <LiveClock /></div>
+              <div className="date">Записи на {fmtFull(date)} · <LiveClock tz={clinicTz} /></div>
             </div>
           </div>
           <div className="tb-right">
             <input className="inp tabular" type="date" value={dayKey} onChange={(e) => { const [y, m, d] = e.target.value.split("-").map(Number); setDate(new Date(y, m - 1, d)); }} style={{ width: 150 }} />
             <button className="btn btn-secondary" onClick={exportCsv}>↧ Експорт</button>
-            <button className="btn btn-primary" onClick={confirmAll}>✓ Всіх підтверджено</button>
+            <button className="btn btn-primary" disabled={loading || confirmTargets.length === 0} onClick={() => setConfirmAllAsk(true)}
+              title={isNarrowed ? "Підтвердить лише тих, кого видно за поточним фільтром" : "Підтвердить усіх непідтверджених за цей день"}>
+              ✓ Всіх підтверджено{confirmTargets.length ? ` (${confirmTargets.length})` : ""}
+            </button>
           </div>
         </header>
         <div className="content-full">
           <div className="page-max">
             {(() => {
-              const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+              // День «сьогодні» — за настінним часом клініки (той самий, за яким
+              // вибрано todayScheduled), інакше isLate рахував би не той день.
+              const [ty, tm, td] = todayKey.split("-").map(Number);
+              const t0 = new Date(ty, (tm || 1) - 1, td || 1);
               const lateList = todayScheduled.filter((e) => isLate(e.status, t0, e.scheduled_time, e.buffer_time_min));
               return (
                 <LateCallSection late={lateList} roomsById={roomsById}
@@ -491,12 +593,18 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
                     const res = await addEntryToWaitlist(p.id);
                     if (!res.ok) { notify(res.code === "duplicate" ? "Пацієнт уже в листі очікування" : "Помилка: " + res.error, res.code === "duplicate" ? "info" : "error"); return; }
                     // Слот звільняється: запис — «Не відбулося» (термінальний підсумок запізнення).
-                    const upd = await setQueueEntryStatus(p.id, "not_held");
-                    if (!upd.ok) notify("Додано до листа, але статус не оновлено: " + upd.error, "error");
+                    // expectedFrom='scheduled' (CAS): пацієнт міг прийти, поки список висів
+                    // — тоді статус не перетираємо, а показуємо, що стан змінився.
+                    const upd = await setQueueEntryStatus(p.id, "not_held", "scheduled");
+                    if (!upd.ok) notify(
+                      upd.code === "stale"
+                        ? "Додано до листа, але пацієнт уже не «Заплановано» — перевірте чергу"
+                        : "Додано до листа, але статус не оновлено: " + upd.error,
+                      "error");
                     else notify("Запізнення: додано до листа очікування, запис — «Не відбулося»", "success");
                     reload(); loadTodayScheduled();
                   }}
-                  onRefuse={(p) => cancelEntry(p)} />
+                  onRefuse={(p) => setDeclineAsk({ p, mode: "cancel" })} />
               );
             })()}
             {incidents.map((inc) => (
@@ -505,8 +613,23 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
                 affected={affectedToday.filter((a) => a.room_id === inc.room_id)}
                 onReschedule={(p) => setReschedFor(p)}
                 onRecall={(p) => setCall(p.id, "to_recall")}
-                onRefuse={(p) => cancelEntry(p)} />
+                onRefuse={(p) => setDeclineAsk({ p, mode: "cancel" })} />
             ))}
+            {(entriesErr || incidentsErr) && (
+              <div className="inc-banner fade-in" style={{ borderColor: "var(--red)" }} role="alert">
+                <span className="inc-banner-ic">⚠</span>
+                <div className="inc-banner-txt">
+                  <div className="inc-banner-title">{entriesErr ? "Список не оновився" : "Дані про простої не оновились"}</div>
+                  <div className="inc-banner-sub">
+                    {entriesErr
+                      ? "На екрані — попередні дані, частина пацієнтів може бути не показана. Оновіть сторінку."
+                      : "Секція «Обдзвін через простій» може бути неповною. Оновіть сторінку."}
+                  </div>
+                </div>
+                <button className="btn btn-secondary btn-sm" onClick={() => { reload(); loadIncidents(); loadTodayScheduled(); }}>↻ Оновити</button>
+              </div>
+            )}
+
             <div className="info-banner">
               <span className="ib-ic">🤖</span>
               <span className="ib-txt"><b>Обдзвін напередодні</b> — зателефонуйте кожному пацієнту, що записаний на цей день, і зафіксуйте статус. Статус миттєво синхронізується з чергою.</span>
@@ -532,7 +655,7 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
               </div>
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
-                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(e.target.value)} />
+                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
               </div>
             </div>
 
@@ -543,13 +666,16 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
             {loading ? (
               <div className="empty"><div className="et">Завантаження…</div></div>
             ) : filtered.length === 0 ? (
-              <div className="empty"><div className="ei">☎</div><div className="et">Немає записів</div><div className="es">{entries.length === 0 ? "На цей день записів немає" : "Змініть фільтр або пошук"}</div></div>
+              <div className="empty"><div className="ei">{entriesErr ? "⚠" : "☎"}</div>
+                <div className="et">{entriesErr ? "Список не завантажився" : "Немає записів"}</div>
+                <div className="es">{entriesErr ? "Це не означає, що записів немає — оновіть сторінку" : entries.length === 0 ? "На цей день записів немає" : "Змініть фільтр або пошук"}</div>
+              </div>
             ) : (
               <div className="clrows">
                 {filtered.map((p) => (
                   <CallRow key={p.id} p={p} roomName={(p.room_id ? roomsById[p.room_id] : undefined)?.name || "—"} roomModel={(p.room_id ? roomsById[p.room_id] : undefined)?.apparatus_model || ""} dateShort={shortDate(date)}
                     expanded={expandedId === p.id} onToggle={(id) => setExpandedId((x) => (x === id ? null : id))}
-                    onSet={setCall} onNote={setNote} onReschedule={(pt) => setReschedFor(pt)} onEditStudies={(pt) => setEditStudiesFor(pt)} />
+                    onSet={setCallGuarded} onNote={setNote} onReschedule={(pt) => setReschedFor(pt)} onEditStudies={(pt) => setEditStudiesFor(pt)} />
                 ))}
               </div>
             )}
@@ -557,15 +683,53 @@ export default function CallListBoard({ clinicId, rooms, clinicName, adminName, 
         </div>
       </div>
 
+      {/* clinicTz — ЯВНО (HANDOVER §6.1): singleton не гарантія. */}
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} incidents={incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} allowOffSchedule />
       )}
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesFor.off_schedule} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+      )}
+
+      {declineAsk && (
+        <ConfirmDialog
+          title="Скасувати запис пацієнта?"
+          text={<>«Відмова» скасовує запис <b>{declineAsk.p.patient_name}</b> о <b>{declineAsk.p.scheduled_time}</b>: статус стане «Скасовано», слот звільниться. Якщо пацієнт просто не бере слухавку — оберіть «Не відповідає» або «Передзвонити».</>}
+          confirmLabel="✕ Так, скасувати запис"
+          cancelLabel="Ні, залишити"
+          danger
+          busy={declineBusy}
+          onClose={() => setDeclineAsk(null)}
+          onConfirm={async () => {
+            const a = declineAsk;
+            if (!a) return;
+            setDeclineBusy(true);
+            if (a.mode === "declined") await setCall(a.p.id, "declined");
+            else await cancelEntry(a.p);
+            setDeclineBusy(false);
+            setDeclineAsk(null);
+          }}
+        />
+      )}
+
+      {confirmAllAsk && (
+        <ConfirmDialog
+          title="Підтвердити обдзвін масово?"
+          text={<>
+            Статус «Підтверджено» отримають <b>{confirmTargets.length}</b> {confirmTargets.length === 1 ? "пацієнт" : "пацієнтів"} на <b>{fmtFull(date)}</b>
+            {isNarrowed ? <> — <b>лише ті, кого видно за поточним фільтром</b> ({tabs.find((t) => t.key === filter)?.label || "Всі"}{query.trim() ? ` · пошук «${query.trim()}»` : ""}).</> : <> — усі, кому статус ще не проставлено.</>}
+            {" "}Дію не можна скасувати однією кнопкою — статус доведеться міняти вручну.
+          </>}
+          confirmLabel={`✓ Підтвердити (${confirmTargets.length})`}
+          cancelLabel="Скасувати"
+          busy={confirmAllBusy}
+          onClose={() => setConfirmAllAsk(false)}
+          onConfirm={() => doConfirmAll(confirmTargets.map((p) => p.id))}
+        />
       )}
 
       {wlSuggest && (
-        <WaitlistCandidatesModal clinicId={clinicId} rooms={rooms} incidents={incidents}
+        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={incidents} services={services} roomOverrides={roomOverrides}
           slot={wlSuggest.slot} candidates={wlSuggest.candidates}
           onClose={() => setWlSuggest(null)}
           onBooked={(msg) => { notify(msg, "success"); reload(); }}

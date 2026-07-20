@@ -12,23 +12,27 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock } from "@/lib/queueStatus";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
-import { diffStudies, studyText, BUFFER_DEFAULT } from "@/lib/studies";
+import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
-import { incidentEffectiveEnd, incidentExpired, wallNow, setClinicTz } from "@/lib/incidents";
-import { setQueueEntryStatus, setRadiologistNote } from "@/app/queue/actions";
+import { incidentEffectiveEnd, incidentExpired, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
+import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
+import { setQueueEntryStatus, setRadiologistNote, previewDelayPlan, type DelayPreview } from "@/app/queue/actions";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
+import ConfirmDialog from "@/components/ConfirmDialog";
+import DelayPlanModal from "@/components/DelayPlanModal";
 import type { QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radiologist.css";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown };
 type RadEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   patient_sex: string | null; patient_weight: number | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null;
   status: string; call_status: string | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; has_contrast: boolean;
   contraindications: boolean; cito: boolean; priority_level: PatientPriority; doctor: string | null; note: string | null; radiologist_note: string | null;
   indication: string | null; room_id: string | null; updated_at: string; in_progress_at: string | null; clarify_at?: string | null;
+  off_schedule?: boolean | null;   // 0077 — запис поза графіком (за підтвердженням персоналу)
 };
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
 
@@ -37,13 +41,15 @@ const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
 const MON_NOM = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
 function startOfDay(d: Date) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
-function today0() { return startOfDay(new Date()); }
+/* «Сьогодні» — за настінним часом КЛІНІКИ (зона з singleton setClinicTz, який
+   виставляється синхронно з пропа clinicTz). Раніше startOfDay(new Date()) давав
+   день БРАУЗЕРА, тоді як isLate/computeCallBlock рахувалися по клініці (M-4). */
+function today0() { return wallToday0(); }
 function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 function dowMon(d: Date) { return (d.getDay() + 6) % 7; }
 function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function procLabel(e: { studies?: unknown; note?: string | null }) {
   const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string; contrast?: boolean }>) : [];
   if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast ? " з контрастом" : "")).join(" + ");
@@ -68,8 +74,10 @@ const ST: Record<string, { label: string; cls: string; dot?: boolean }> = {
   no_show: { label: "Неявка", cls: "red" },
   not_held: { label: "Не відбулося", cls: "orange" },
   cancelled: { label: "Скасовано", cls: "gray" },
+  // 0079/0080 — слот втрачено через затримку. Радіолог це БАЧИТЬ, але переносить реєстратор/адмін.
+  needs_reschedule: { label: "Потребує переносу", cls: "orange" },
 };
-const FLOW: Record<string, number> = { in_progress: 0, waiting: 1, scheduled: 2, done: 3, not_held: 4, no_show: 5 };
+const FLOW: Record<string, number> = { in_progress: 0, waiting: 1, scheduled: 2, needs_reschedule: 2.5, done: 3, not_held: 4, no_show: 5 };
 const STAT_ITEMS = [
   { key: "all", lab: "Всього", sub: "досліджень", cls: "white" },
   { key: "scheduled", lab: "В черзі", sub: "записані", cls: "gray" },
@@ -93,10 +101,17 @@ const STEP_PRIMARY: Record<string, { icon: string; label: string; bg: string; co
   done:        { icon: "✓", label: "Дослідження виконано", bg: "var(--card)",  color: "var(--text-faint)" },
 };
 
-function LiveClock() {
+// Годинник — за часом ЦЕНТРУ (як і решта дошки), а не браузера радіолога.
+function LiveClock({ tz }: { tz?: string }) {
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => { setNow(new Date()); const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
-  return <span className="rad-clock tabular" suppressHydrationWarning>🕐 {now ? now.toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "--:--:--"}</span>;
+  const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" };
+  const txt = (() => {
+    if (!now) return "--:--:--";
+    try { return now.toLocaleTimeString("uk-UA", tz ? { ...opts, timeZone: tz } : opts); }
+    catch { return now.toLocaleTimeString("uk-UA", opts); }
+  })();
+  return <span className="rad-clock tabular" suppressHydrationWarning>🕐 {txt}</span>;
 }
 function LiveTimer({ enteredAt, children }: { enteredAt?: string | null; children: (sec: number) => ReactNode }) {
   const [now, setNow] = useState(() => Date.now());
@@ -134,12 +149,12 @@ interface RoomStatusCardProps {
 }
 
 function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedClosed, callBlockReason, onComplete, onCall }: RoomStatusCardProps) {
-  const kind = modalityLabel(room.modality);
+  const kind = modalityShort(room.modality);
   if (!blocked && schedClosed) {
     return (
       <div className="room-card blocked-card">
         <div className="rc-head">
-          <span className={"equip-tile " + (room.modality === "MRI" ? "mrt" : "ct")}>{kind}</span>
+          <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
           <div className="rc-h-meta">
             <div className="rc-name">{room.name}</div>
             <div className="rc-model">{room.apparatus_model || ""}</div>
@@ -157,7 +172,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
     return (
       <div className="room-card blocked-card">
         <div className="rc-head">
-          <span className={"equip-tile " + (room.modality === "MRI" ? "mrt" : "ct")}>{kind}</span>
+          <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
           <div className="rc-h-meta">
             <div className="rc-name">{room.name}</div>
             <div className="rc-model">{room.apparatus_model || ""}</div>
@@ -174,7 +189,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
   return (
     <div className={"room-card " + (patient ? "busy" : "free")}>
       <div className="rc-head">
-        <span className={"equip-tile " + (room.modality === "MRI" ? "mrt" : "ct")}>{kind}</span>
+        <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
         <div className="rc-h-meta">
           <div className="rc-name">{room.name}</div>
           <div className="rc-model">{room.apparatus_model || ""}</div>
@@ -229,9 +244,12 @@ interface RadQueueRowProps {
   onSetStatus: (p: RadEntry, status: string) => void;
   noteValue?: string | null;
   onSaveNote: (id: string, v: string) => void;
+  // 0078–0081 — радіолог може ІНІЦІЮВАТИ перерахунок плану при затримці (не застосовує).
+  onDelayPlan?: (p: RadEntry) => void;
+  delayLoading?: boolean;
 }
 
-function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, startBlockReason, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onSetStatus, noteValue, onSaveNote }: RadQueueRowProps) {
+function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, startBlockReason, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onSetStatus, noteValue, onSaveNote, onDelayPlan, delayLoading }: RadQueueRowProps) {
   // «Запізнення» (derived) видно й радіологу; прямий виклик такого пацієнта
   // блокується (рішення ухвалює реєстратура: повернути/перенести/зняти).
   const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
@@ -279,6 +297,10 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
         </div>
         <div className="q-status-cell">
           <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
+          {/* 0077 — запис зроблено поза графіком кабінету (підтверджено персоналом). */}
+          {p.off_schedule && (
+            <span className="badge offsched" title="Запис поза графіком кабінету (після закриття або в перерву) — підтверджено персоналом">⏰ Поза графіком</span>
+          )}
         </div>
         <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
       </div>
@@ -309,7 +331,18 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
               </div>
             )}
 
-            {!readOnly && (() => {
+            {/* 0079/0080 — «Потребує переносу»: радіолог бачить факт, але дій не має.
+                Перенос робить реєстратор/адмін (рішення власника), а степер тут відхилив би
+                тригер переходів (вийти можна лише в scheduled/cancelled/no_show). */}
+            {!readOnly && p.status === "needs_reschedule" && (
+              <div className="qd-step">
+                <div className="qd-inline-err" role="status">
+                  ⚠ Слот втрачено через затримку. Новий час підбирає реєстратура.
+                </div>
+              </div>
+            )}
+
+            {!readOnly && p.status !== "needs_reschedule" && (() => {
               const stepIdx = STEP_ORDER.indexOf(p.status);
               const pb = STEP_PRIMARY[p.status] || STEP_PRIMARY.done;
               const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
@@ -370,6 +403,18 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                     <div style={{ fontSize: 12, color: "var(--red)", padding: "2px 0 6px" }}>⚠ {startBlockReason}</div>
                   )}
 
+                  {/* 0078–0081 — радіолог бачить, як затримка цього дослідження впливає
+                      на чергу, і може ІНІЦІЮВАТИ перерахунок. Застосовує план адмін —
+                      модалка відкриється в режимі перегляду (canApply=false). */}
+                  {p.status === "in_progress" && onDelayPlan && (
+                    <div style={{ padding: "2px 0 6px" }}>
+                      <button className="btn btn-secondary btn-sm" disabled={delayLoading} onClick={act(() => onDelayPlan(p))}
+                        title="Порахувати, як затримка впливає на чергу (застосовує адміністратор)">
+                        {delayLoading ? "⏳ Рахую…" : "📋 План при затримці"}
+                      </button>
+                    </div>
+                  )}
+
                   {moreOpen && !terminal && (
                     <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }}>
                       <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNoShow)}>✕ Неявка</button>
@@ -392,8 +437,10 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
   );
 }
 
-function MiniCalendar({ selectedDate, onSelectDate, overridesByDate }: { selectedDate: Date; onSelectDate: (d: Date) => void; overridesByDate?: Record<string, DayOverride> }) {
-  const today = today0();
+function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSchedules }: { selectedDate: Date; onSelectDate: (d: Date) => void; overridesByDate?: Record<string, DayOverride>; tz?: string; roomSchedules?: unknown[] }) {
+  // tz передаємо явно: під час SSR модульний singleton не виставлений (він лише
+  // клієнтський), і «сьогодні» в сітці розійшлося б із рештою дошки.
+  const today = wallToday0(tz);
   const ovMap = overridesByDate || {};
   const [viewMonth, setViewMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
   const shift = (n: number) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
@@ -421,7 +468,7 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate }: { selecte
           const isToday = sameDay(cd, today);
           const isSel = sameDay(cd, selectedDate);
           const ov = ovMap[dateKey(cd)] || null;
-          const st = dayStatus(ov, cd);
+          const st = dayStatus(ov, cd, roomSchedules);
           const markClosed = st.kind === "closed";
           const markCustom = st.kind === "custom";
           return (
@@ -459,7 +506,7 @@ function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }: { r
           )}
           {(rooms || []).map((r) => (
             <button key={r.id} className={"sb-cab sb-cab-btn" + (roomFilter === r.id ? " active" : "")} style={{ width: "100%", textAlign: "left", border: "none", cursor: "pointer" }} onClick={() => setRoomFilter(r.id)}>
-              <span className={"sb-cab-tile " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+              <span className={"sb-cab-tile " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
               <span className="sb-cab-meta"><span className="sb-cab-name">{r.name}</span><span className="sb-cab-model">{r.apparatus_model || ""}</span></span>
             </button>
           ))}
@@ -483,21 +530,40 @@ function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }: { r
 
 interface RadiologistBoardProps {
   clinicId: string;
+  /** IANA-зона центру (clinics.timezone) — із сервера, а не з браузера. */
+  clinicTz: string;
   rooms?: RoomOpt[];
   adminName?: string;
 }
 
-export default function RadiologistBoard({ clinicId, rooms, adminName }: RadiologistBoardProps) {
+export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName }: RadiologistBoardProps) {
+  // Синхронно, до ініціалізаторів useState (selectedDate) — інакше день дошки
+  // фіксується по браузеру ще до того, як прилетить tz. Тільки на клієнті.
+  if (typeof window !== "undefined") setClinicTz(clinicTz);
+
+  const router = useRouter();   // 0086: зміни кабінетів (SSR-проп) → router.refresh
   const single = (rooms || []).length === 1;
   const [entries, setEntries] = useState<RadEntry[]>([]);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [overrides, setOverrides] = useState<Record<string, DayOverride>>({});
   const [loading, setLoading] = useState(true);
+  /* Помилка завантаження ≠ «порожньо» (аудит 2026-07-12, H-6). Найнебезпечніше —
+     простої: при збої loadIncidents ставив [] → ЗАБЛОКОВАНИЙ кабінет виглядав
+     вільним, і радіолог кликав пацієнта в апарат на ремонті. Тепер тримаємо
+     прапорці помилок окремо, старі дані НЕ затираємо, а виклик у кабінет
+     блокуємо, поки дані про простої/графік ненадійні. */
+  const [entriesErr, setEntriesErr] = useState(false);
+  const [incidentsErr, setIncidentsErr] = useState(false);
+  const [overridesErr, setOverridesErr] = useState(false);
+  const safetyErr = incidentsErr || overridesErr;
   const [roomFilter, setRoomFilter] = useState(single ? (rooms?.[0]?.id || "all") : "all");
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState(() => today0());
+  const [selectedDate, setSelectedDate] = useState(() => wallToday0(clinicTz));
+  // 0078–0081 — план при затримці: радіолог лише ІНІЦІЮЄ перерахунок (canApply=false).
+  const [delayPreview, setDelayPreview] = useState<DelayPreview | null>(null);
+  const [delayOpening, setDelayOpening] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -505,7 +571,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
   const [, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
 
-  const today = today0();
+  const today = wallToday0(clinicTz);
   const isToday = sameDay(selectedDate, today);
   const isPast = selectedDate < today;
   const readOnly = false;
@@ -519,48 +585,79 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }
 
+  /* 0078–0081 — радіолог бачить, як затримка впливає на чергу. previewDelayPlan
+     рахує все на СЕРВЕРІ (політика центру, графік, простої, настінний час). Радіолог
+     план НЕ застосовує — модалка відкриється в режимі перегляду (canApply=false). */
+  async function openDelayPlan(p: RadEntry) {
+    if (delayOpening) return;
+    setDelayOpening(true);
+    try {
+      const res = await previewDelayPlan(p.id);
+      if (!res.ok) { notify("Не вдалося порахувати план: " + res.error, "error"); return; }
+      if (!res.preview) { notify("Затримки немає — черга ще встигає", "info"); return; }
+      setDelayPreview(res.preview);
+    } catch {
+      notify("Не вдалося порахувати план — спробуйте ще раз", "error");
+    } finally {
+      setDelayOpening(false);
+    }
+  }
+
   const reload = useCallback(async () => {
-    const supabase = createClient();
-    // Авто-«Уточнити» для прострочених scheduled (persisted clarify_at). Fire-and-forget —
-    // не блокуємо reload; позначка прийде наступним realtime-циклом.
-    void supabase.rpc("sink_overdue_scheduled");
-    let q = supabase
-      .from("queue_entries")
-      .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at, clarify_at")
-      .eq("clinic_id", clinicId)
-      .eq("scheduled_date", dayKey)
-      .neq("status", "cancelled");
-    if (roomIds.length) q = q.in("room_id", roomIds);
-    const { data } = await q.order("scheduled_time", { ascending: true });
-    setEntries(data || []);
-    setLoading(false);
+    // Транзієнтний «Failed to fetch» (рефреш токена / зміна сесії / мережевий збій)
+    // НЕ повинен валитись у Next error overlay — конвенція проєкту.
+    try {
+      const supabase = createClient();
+      // Авто-«Уточнити» (clarify_at) ставить pg_cron (джоб sink-overdue, кожні 5 хв,
+      // supabase/cron_jobs.sql) — не смикаємо RPC з read-лоадера (запис у БД на кожен
+      // рефетч давав WAL + audit_log + realtime-луну на всі дошки).
+      let q = supabase
+        .from("queue_entries")
+        .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at, clarify_at, off_schedule")
+        .eq("clinic_id", clinicId)
+        .eq("scheduled_date", dayKey)
+        .neq("status", "cancelled");
+      if (roomIds.length) q = q.in("room_id", roomIds);
+      const { data, error } = await q.order("scheduled_time", { ascending: true });
+      // PostgREST не кидає — помилку треба читати самому, інакше «збій» = «записів немає».
+      if (error) { setEntriesErr(true); return; }
+      setEntries(data || []);
+      setEntriesErr(false);
+    } catch {
+      setEntriesErr(true);   // старі рядки лишаються на екрані + банер «черга не оновилась»
+    } finally {
+      setLoading(false);
+    }
   }, [clinicId, dayKey, roomIds]);
 
   const loadIncidents = useCallback(async () => {
-    const supabase = createClient();
-    const { data } = await supabase
-      .from("incidents")
-      .select("id, room_id, reason, reason_label, note, started_at, blocked_until, status, auto_unblock")
-      .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
-    setIncidents(data || []);
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("incidents")
+        .select("id, room_id, reason, reason_label, note, started_at, blocked_until, status, auto_unblock")
+        .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
+      // НЕ чистимо incidents: «простоїв немає» — найнебезпечніша брехня на цій дошці.
+      if (error) { setIncidentsErr(true); return; }
+      setIncidents(data || []);
+      setIncidentsErr(false);
+    } catch { setIncidentsErr(true); }
   }, [clinicId]);
 
   const loadOverrides = useCallback(async () => {
-    const supabase = createClient();
-    const { data } = await supabase.from("schedule_overrides").select("override_date, all_closed, label, rooms").eq("clinic_id", clinicId);
-    const m: Record<string, DayOverride> = {};
-    (data || []).forEach((o) => { m[o.override_date] = o as unknown as DayOverride; });
-    setOverrides(m);
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase.from("schedule_overrides").select("override_date, all_closed, label, rooms").eq("clinic_id", clinicId);
+      if (error) { setOverridesErr(true); return; }   // закритий день не має виглядати робочим
+      const m: Record<string, DayOverride> = {};
+      (data || []).forEach((o) => { m[o.override_date] = o as unknown as DayOverride; });
+      setOverrides(m);
+      setOverridesErr(false);
+    } catch { setOverridesErr(true); }
   }, [clinicId]);
 
   // Спинер при первой загрузке/смене клиники; лоадеры снимут его по завершении.
   useEffect(() => { setLoading(true); }, [clinicId]);
-
-  // Таймзона клініки → похідні часу рахуються по ній (не по браузеру).
-  useEffect(() => {
-    createClient().from("clinics").select("timezone").eq("id", clinicId).single()
-      .then(({ data }) => setClinicTz(data?.timezone ?? null));
-  }, [clinicId]);
 
   // Перезапрос записей при смене дня/кабинетов: realtime-хук слушает только clinicId.
   useEffect(() => { reload(); }, [reload]);
@@ -572,12 +669,17 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
       { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: reload },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
       { table: "schedule_overrides", filter: "clinic_id=eq." + clinicId, onChange: loadOverrides },
+      // 0086: rooms — SSR-проп (у радіолога ще й ВІДФІЛЬТРОВАНИЙ призначеними
+      // кабінетами); зміни долітають через router.refresh (сервер перерахує підмножину).
+      { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
     ],
   });
 
   const selectedOverride = overrides[dayKey] || null;
-  const selDayStatus = dayStatus(selectedOverride, selectedDate);
-  function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride).closed; }
+  const roomSchedules = (rooms || []).map((r) => r.schedule);
+  const selDayStatus = dayStatus(selectedOverride, selectedDate, roomSchedules);
+  const schedOf = (roomId: string) => (rooms || []).find((r) => r.id === roomId)?.schedule;
+  function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride, schedOf(roomId)).closed; }
 
   // Інциденти, що ВЖЕ діють (без авто-знятих наприкінці вікна).
   const liveIncidents = incidents.filter((i) => !incidentExpired(i));
@@ -613,32 +715,51 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     if (!res.ok) notify("Помилка збереження нотатки: " + res.error, "error");
   }
 
-  function inProgressBlockReason(p: RadEntry): string | null {
-    const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride) : null;
-    const r = computeCallBlock(p, entries, {
+  function callBlockOf(p: RadEntry) {
+    const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)) : null;
+    return computeCallBlock(p, entries, {
       notToday: !sameDay(selectedDate, today0()),
       roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
       schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
       schedEnd: sched && !sched.closed ? sched.end : null,
     });
-    if (!r) return null;
+  }
+  /* 0077: sched_overrun більше НЕ блокує радіолога — рішення власника: центр має
+     добити день, і саме радіолог заводить пацієнта в кабінет. Замість «реєстратура
+     має перенести запис» — діалог підтвердження. Решта причин лишаються жорсткими. */
+  function inProgressBlockReason(p: RadEntry): string | null {
+    /* Дані про простої/графік не завантажились — вважати кабінет вільним НЕ МОЖНА
+       (це виклик пацієнта в апарат, який може бути на ремонті). Гейт до всіх інших
+       перевірок; DB-гард 0020 однаково відхилив би, але оператор має бачити причину. */
+    if (safetyErr) return "Дані про простої/графік не оновились — виклик заблоковано, оновіть сторінку";
+    const r = callBlockOf(p);
+    if (!r || r.confirmable) return null;
     if (r.code === "wrong_day") return "Запис не на сьогодні — викликати в кабінет можна лише пацієнтів сьогоднішнього дня";
     if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
     if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
     if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
-    if (r.code === "sched_overrun") return `Дослідження ${r.durationMin} хв не вміститься до кінця графіка кабінету (${r.end}) — реєстратура має перенести запис`;
     if (r.code === "clash") return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис. Реєстратура має перенести один із записів`;
     return null;
   }
+  const [offCallAsk, setOffCallAsk] = useState<{ p: RadEntry; end: string; durationMin: number } | null>(null);
+  const [offCallBusy, setOffCallBusy] = useState(false);
   function callPatient(p: RadEntry) {
-    const reason = inProgressBlockReason(p);
-    if (reason) { notify(reason, "error"); return; }
+    // safetyErr — жорсткий гейт: підтверджувати виклик на невідомих даних про простої не можна.
+    if (safetyErr) { notify("Дані про простої/графік не оновились — виклик заблоковано, оновіть сторінку", "error"); return; }
+    const r = callBlockOf(p);
+    if (r && !r.confirmable) { notify(inProgressBlockReason(p) || "Викликати зараз неможливо", "error"); return; }
+    if (r && r.code === "sched_overrun") { setOffCallAsk({ p, end: r.end, durationMin: r.durationMin }); return; }
     setStatus(p.id, "in_progress");
   }
   function setStatusGuarded(p: RadEntry, status: string) {
     // Запізнення понад буфер: прямий виклик заблоковано (рішення — за реєстратурою).
     if (status === "in_progress" && isLate(p.status, selectedDate, p.scheduled_time, p.buffer_time_min)) {
       notify("Пацієнт запізнився понад буферний час — реєстратура має повернути його в чергу, перенести або зняти запис", "error");
+      return;
+    }
+    // «Виконано» — лише після кабінету (інваріант БД, 0069).
+    if (status === "done" && p.status !== "in_progress" && p.status !== "done") {
+      notify("«Виконано» можна поставити лише пацієнту, який був у кабінеті", "error");
       return;
     }
     if (status === "in_progress") { callPatient(p); return; }
@@ -657,10 +778,13 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
 
   const currentByRoom: Record<string, RadEntry> = {}, nextWaitingByRoom: Record<string, RadEntry> = {};
   entries.forEach((e) => { if (e.status === "in_progress" && e.room_id) currentByRoom[e.room_id] = e; });
+  // «Наступний у черзі» — як і сортування: спершу ЧАС, пріоритет — тай-брейк.
   entries.forEach((e) => {
     if (e.status !== "waiting" || !e.room_id) return;
     const cur = nextWaitingByRoom[e.room_id];
-    if (!cur || priorityRank(e.priority_level) < priorityRank(cur.priority_level)) nextWaitingByRoom[e.room_id] = e;
+    if (!cur) { nextWaitingByRoom[e.room_id] = e; return; }
+    const t = (e.scheduled_time || "").localeCompare(cur.scheduled_time || "");
+    if (t < 0 || (t === 0 && priorityRank(e.priority_level) < priorityRank(cur.priority_level))) nextWaitingByRoom[e.room_id] = e;
   });
   const cardRooms = roomFilter === "all" ? (rooms || []) : (rooms || []).filter((r) => r.id === roomFilter);
 
@@ -668,7 +792,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     if (filter !== "all" && p.status !== filter) return false;
     if (query.trim()) {
       const q = query.trim().toLowerCase();
-      if (!((p.patient_name || "").toLowerCase().includes(q) || procLabel(p).toLowerCase().includes(q) || (p.patient_phone || "").includes(q))) return false;
+      if (!((p.patient_name || "").toLowerCase().includes(q) || procLabel(p).toLowerCase().includes(q) || (p.patient_phone || "").includes(formatPhoneSearch(query.trim())))) return false;
     }
     return true;
   }).sort((a, b) => {
@@ -678,10 +802,13 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
     const clA = (a.status === "scheduled" && (!!a.clarify_at || needsClarification(a.status, selectedDate, a.scheduled_time))) ? 1 : 0;
     const clB = (b.status === "scheduled" && (!!b.clarify_at || needsClarification(b.status, selectedDate, b.scheduled_time))) ? 1 : 0;
     if (clA !== clB) return clA - clB;
+    // У межах статусу — ЗА ЧАСОМ (як на дошці адміна): пріоритет лишається
+    // бейджем, але не виносить запис угору. Тай-брейк на однаковий час — пріоритет.
+    const t = (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
+    if (t !== 0) return t;
     const ac = isActiveStatus(a.status) ? priorityRank(a.priority_level) : 9;
     const bc = isActiveStatus(b.status) ? priorityRank(b.priority_level) : 9;
-    if (ac !== bc) return ac - bc;
-    return (a.scheduled_time || "").localeCompare(b.scheduled_time || "");
+    return ac - bc;
   });
 
   return (
@@ -696,7 +823,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
           <div className="tb-right">
             <CeoDashboardLink />
             <span className="rad-date">{fmtFull(selectedDate)}</span>
-            <LiveClock />
+            <LiveClock tz={clinicTz} />
             <span className="rt-pill"><span className="pulse-dot" style={{ background: "var(--green)", width: 7, height: 7 }} />Real-time</span>
             <span className="rad-counter">Опрацьовано: <b>{counts.done}</b> / {counts.total}</span>
           </div>
@@ -738,6 +865,24 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
               </div>
             )}
 
+            {/* Збій завантаження ≠ «все добре»: кажемо прямо, що дані ненадійні. */}
+            {(safetyErr || entriesErr) && (
+              <div className="inc-banner fade-in" style={{ borderColor: "var(--red)" }} role="alert">
+                <span className="inc-banner-ic">⚠</span>
+                <div className="inc-banner-txt">
+                  <div className="inc-banner-title">
+                    {safetyErr ? "Дані про простої / графік не оновились" : "Черга не оновилась"}
+                  </div>
+                  <div className="inc-banner-sub">
+                    {safetyErr
+                      ? "Виклик у кабінет заблоковано — кабінет може бути на ремонті. Оновіть сторінку."
+                      : "На екрані — попередні дані. Оновіть сторінку."}
+                  </div>
+                </div>
+                <button className="btn btn-secondary btn-sm" onClick={() => { reload(); loadIncidents(); loadOverrides(); }}>↻ Оновити</button>
+              </div>
+            )}
+
             {!isToday && (
               <div className="day-banner" style={{ marginBottom: 14 }}>
                 <span className="db-ic">{isPast ? "🗂" : "📅"}</span>
@@ -757,7 +902,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
                   <RoomStatusCard key={r.id} room={r}
                     patient={currentByRoom[r.id]} enteredAt={enteredAtOf(currentByRoom[r.id])}
                     nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
-                    schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? selDayStatus.label : null}
+                    schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? (selDayStatus.label || "Не працює за графіком") : null}
                     callBlockReason={nextWaitingByRoom[r.id] ? inProgressBlockReason(nextWaitingByRoom[r.id]) : null}
                     onComplete={completeProc} onCall={callPatient} />
                 ))}
@@ -767,7 +912,7 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
             <div className="qctrl">
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
-                <input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} />
+                <input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
               </div>
             </div>
 
@@ -791,17 +936,52 @@ export default function RadiologistBoard({ clinicId, rooms, adminName }: Radiolo
                       startBlockReason={p.status === "waiting" ? inProgressBlockReason(p) : null}
                       onArrive={arrive} onCall={callPatient} onComplete={completeProc}
                       onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onSetStatus={setStatusGuarded}
-                      noteValue={p.radiologist_note} onSaveNote={saveNote} />
+                      noteValue={p.radiologist_note} onSaveNote={saveNote}
+                      onDelayPlan={isToday ? openDelayPlan : undefined} delayLoading={delayOpening} />
                   );
                 })}
               </div>
             )}
           </div>
           <aside className="rpanel">
-            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} />
+            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} tz={clinicTz} roomSchedules={roomSchedules} />
           </aside>
         </div>
       </div>
+
+      {/* 0077 — виклик у кабінет після кінця робочого дня: свідома дія, не заборона. */}
+      {offCallAsk && (
+        <ConfirmDialog
+          title="Викликати поза графіком?"
+          text={<><b>{offCallAsk.p.patient_name}</b> · запис о {offCallAsk.p.scheduled_time} · {offCallAsk.durationMin} хв.
+            {" "}Кабінет працює до <b>{offCallAsk.end}</b> — робота триватиме понаднормово.</>}
+          confirmLabel="⏰ Викликати"
+          cancelLabel="Ні"
+          busy={offCallBusy}
+          onClose={() => setOffCallAsk(null)}
+          onConfirm={async () => {
+            const a = offCallAsk;
+            if (!a) return;
+            setOffCallBusy(true);
+            await setStatus(a.p.id, "in_progress");
+            setOffCallBusy(false);
+            setOffCallAsk(null);
+          }}
+        />
+      )}
+
+      {/* 0078–0081 — план при затримці, режим перегляду: радіолог ініціює, але не
+          застосовує (canApply=false — і кнопки «Застосувати» в модалці не буде). */}
+      {delayPreview && (
+        <DelayPlanModal
+          preview={delayPreview}
+          roomName={roomsById[delayPreview.roomId]?.name || "Кабінет"}
+          canApply={false}
+          busy={false}
+          onClose={() => setDelayPreview(null)}
+          onApply={() => { /* радіолог не застосовує — недосяжно при canApply=false */ }}
+        />
+      )}
 
       {toast && (
         <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>

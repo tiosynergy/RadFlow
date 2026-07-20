@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
+import { parseJson } from "@/lib/validationHttp";
+import { safeDbError, zLogin, zOptText, zRoomIdsGrant } from "@/lib/validation";
 
 // POST /api/referrers/invite
 // Адмін центру запрошує лікаря-направника. Глобальний акаунт (clinic_id = NULL),
@@ -8,37 +11,62 @@ import { requireRole } from "@/lib/apiAuth";
 // email — НЕОБОВʼЯЗКОВИЙ (вхід за логіном). Якщо email не вказано — генеруємо
 // технічний email від логіну (Supabase Auth потребує email), вхід усе одно за логіном.
 // body: { login*, full_name*, phone*, email?, note?, policy?, room_ids? }
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/* ПІБ і телефон обовʼязкові лише для НОВОГО акаунта (перевірка нижче, у гілці
+   створення): якщо направник уже є в RadFlow, його дані вже збережені.
+   room_ids — канон 0061 (zRoomIdsGrant): null = усі кабінети, [] = 400, а НЕ «усі». */
+const sInvite = z.object({
+  login: zLogin,
+  full_name: zOptText(200),
+  phone: zOptText(32),
+  note: zOptText(2000),
+  policy: z.enum(["direct", "confirm"]).catch("direct"),
+  room_ids: zRoomIdsGrant,
+});
 
 export async function POST(req: Request) {
-  const gate = await requireRole(["admin"], { needClinic: true, forbidden: "Лише адміністратор центру" });
+  // Роут може СТВОРИТИ auth-акаунт направника → ліміт per-admin.
+  const gate = await requireRole(["admin"], {
+    needClinic: true,
+    forbidden: "Лише адміністратор центру",
+    rateLimit: { key: "acct:create", max: 30, windowSeconds: 3600 },
+  });
   if (!gate.ok) return gate.res;
   const { user, me } = gate;
 
-  const body = await req.json().catch(() => ({}));
-  const login = String(body.login || "").trim();
-  const fullName = String(body.full_name || "").trim();
-  const phone = String(body.phone || "").trim();
-  // Реальний email направника тепер ПРИВАТНИЙ і вводиться самим лікарем у профілі
+  const rawBody = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  const parsed = parseJson("api/referrers/invite", rawBody, sInvite, "Вкажіть логін направника (і коректні кабінети)");
+  if (!parsed.ok) return parsed.res;
+  // Реальний email направника ПРИВАТНИЙ і вводиться самим лікарем у профілі
   // (referrer_private). Адмін його не задає — для Supabase Auth завжди генеруємо
   // технічний email від логіну (вхід усе одно за логіном).
-  const note = String(body.note || "").trim() || null; // примітка ДО ГРАНТУ (referral_access)
-  const policy = body.policy === "confirm" ? "confirm" : "direct";
-  const roomIdsRaw = Array.isArray(body.room_ids) ? body.room_ids.filter((x: unknown) => UUID_RE.test(String(x))) : [];
-  const room_ids = roomIdsRaw.length ? roomIdsRaw : null; // null = усі кабінети
+  const { login, policy, room_ids } = parsed.data;
+  /* Ключ room_ids ВІДСУТНІЙ ≠ «усі кабінети». Для НОВОГО гранта null = усі (канон
+     0061), але при повторному запрошенні вже наявного направника відсутність ключа
+     не має РОЗШИРЮВАТИ його доступ до всіх кабінетів центру — просто не чіпаємо. */
+  const hasRoomIdsKey = Object.prototype.hasOwnProperty.call(rawBody, "room_ids");
+  const roomsPatch = hasRoomIdsKey ? { room_ids } : {};
+  const fullName = parsed.data.full_name ?? "";
+  const phone = parsed.data.phone ?? "";
+  const note = parsed.data.note; // примітка ДО ГРАНТУ (referral_access)
 
-  // Логін обовʼязковий завжди. ПІБ і телефон обовʼязкові ЛИШЕ для нового акаунта
-  // (перевірка нижче, у гілці створення) — якщо направник уже є в RadFlow, його
-  // дані вже збережені, і повторно вводити їх не треба (додавання за логіном).
-  if (!login) {
-    return NextResponse.json({ error: "Вкажіть логін направника" }, { status: 400 });
-  }
   // Технічний email від логіну (Supabase Auth потребує email; вхід — за логіном).
   // Реальний email лікар вкаже сам у профілі (referrer_private).
   const loginSan = login.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "") || "user";
   const effectiveEmail = loginSan + "@referrer.radflow.local";
 
   const admin = createAdminClient();
+
+  // Кабінети гранта мають належати центру адміна. Перевірки UUID-формату замало:
+  // інакше в room_ids осідають id видалених/чужих кабінетів (у списку — «?»).
+  if (room_ids) {
+    const { data: okRooms } = await admin
+      .from("rooms").select("id").eq("clinic_id", me.clinic_id).in("id", room_ids);
+    const okSet = new Set((okRooms || []).map((r) => r.id));
+    if (room_ids.some((id: string) => !okSet.has(id))) {
+      return NextResponse.json({ error: "Кабінет не належить вашому центру" }, { status: 400 });
+    }
+  }
 
   // Чи вже є направник із таким логіном? (логін унікальний)
   const { data: existingProf } = await admin
@@ -82,7 +110,7 @@ export async function POST(req: Request) {
     if (cErr || !created?.user) {
       const msg = cErr?.message || "";
       return NextResponse.json(
-        { error: /registered|already|exists/i.test(msg) ? "Email вже використовується" : "Помилка створення акаунта: " + msg },
+        { error: /registered|already|exists/i.test(msg) ? "Email вже використовується" : safeDbError("api/referrers/invite.createUser", cErr) },
         { status: 400 }
       );
     }
@@ -98,7 +126,7 @@ export async function POST(req: Request) {
     if (pErr) {
       await admin.auth.admin.deleteUser(referrerId); // відкат
       return NextResponse.json(
-        { error: /login/i.test(pErr.message) && /unique|duplicate/i.test(pErr.message) ? "Логін вже зайнятий" : "Помилка створення профілю: " + pErr.message },
+        { error: /login/i.test(pErr.message) && /unique|duplicate/i.test(pErr.message) ? "Логін вже зайнятий" : safeDbError("api/referrers/invite.profile", pErr) },
         { status: 400 }
       );
     }
@@ -117,18 +145,18 @@ export async function POST(req: Request) {
   if (existing) {
     if (existing.status === "active") return NextResponse.json({ error: "Доступ уже активний" }, { status: 409 });
     if (existing.status === "pending_referrer") {
-      await admin.from("referral_access").update({ policy, room_ids, note }).eq("id", existing.id);
+      await admin.from("referral_access").update({ policy, ...roomsPatch, note }).eq("id", existing.id);
     } else if (existing.status === "pending_clinic") {
-      await admin.from("referral_access").update({ status: "active", policy, room_ids, decided_at: new Date().toISOString() }).eq("id", existing.id);
+      await admin.from("referral_access").update({ status: "active", policy, ...roomsPatch, decided_at: new Date().toISOString() }).eq("id", existing.id);
       resultStatus = "active";
     } else {
-      await admin.from("referral_access").update({ status: "pending_referrer", policy, room_ids, initiated_by: user.id, note, decided_at: null }).eq("id", existing.id);
+      await admin.from("referral_access").update({ status: "pending_referrer", policy, ...roomsPatch, initiated_by: user.id, note, decided_at: null }).eq("id", existing.id);
     }
   } else {
     const { error: iErr } = await admin
       .from("referral_access")
       .insert({ referrer_id: referrerId, clinic_id: me.clinic_id, status: "pending_referrer", policy, room_ids, initiated_by: user.id, note });
-    if (iErr) return NextResponse.json({ error: "Помилка створення запрошення: " + iErr.message }, { status: 400 });
+    if (iErr) return NextResponse.json({ error: safeDbError("api/referrers/invite.access", iErr) }, { status: 400 });
   }
 
   return NextResponse.json({ ok: true, status: resultStatus, created_account: createdAccount, login, invite_token: inviteToken });

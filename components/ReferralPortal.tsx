@@ -23,13 +23,15 @@ import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal"
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
-import { isLate, LATE_META } from "@/lib/queueStatus";
 import type { WaitlistEntry } from "@/supabase/types";
-import { roomScheduleFor, roomBreaksFor, overlapsBreak, type DayOverride } from "@/lib/schedule";
-import { slotBlockedByIncidents, wallNow, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
-import { regionsFor, studyPrice, studyLabel, diffStudies, studiesChanged, studyText, CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer } from "@/lib/studies";
+import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
+import { buildSlots, countFit } from "@/lib/slots";
+import SlotPicker from "@/components/SlotPicker";
+import { slotBlockedByIncidents, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
+import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
+import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
-import { DobField, BookingCalendar, fmtShort, today0 } from "@/components/BookingModal";
+import { DobField, BookingCalendar, fmtShort } from "@/components/BookingModal";
 import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 
@@ -42,7 +44,12 @@ type Referral = {
 };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 type ExtraStudy = { type: string; region: string; dur: number };
-type BusySlot = { scheduled_time: string; duration_min: number; buffer_time_min: number | null };
+/* 0074: RPC віддає вікно, ОБРІЗАНЕ по добі (start_min/end_study_min/end_min) — сюди
+   потрапляють і «хвости» досліджень, що почалися вчора й перетнули опівніч. */
+type BusySlot = {
+  scheduled_time: string; duration_min: number; buffer_time_min: number | null;
+  start_min?: number | null; end_study_min?: number | null; end_min?: number | null;
+};
 type SearchClinic = { id: string; name: string; city: string | null; modalities: string[] };
 type CenterCardData = {
   name?: string; city?: string | null; policy?: string | null; note?: string | null;
@@ -56,35 +63,14 @@ function toMin(t: string | null | undefined) { const p = String(t || "").split("
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 function dateVal(d: Date) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
 function calcAge(dob: string | null | undefined) { if (!dob) return null; return Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 3600 * 1000)); }
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 function procLabel(e: { studies?: unknown; note?: string | null }) {
   const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string }>) : [];
   if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "")).join(" + ");
   return e.note || "—";
 }
 function centerLabel(c?: { name: string; city?: string | null } | null) { return c ? c.name + (c.city ? " · " + c.city : "") : "—"; }
-/** Derived «Запізнення» для направлення (та сама формула, що на дошці). */
-function refIsLate(r: { status: string; scheduled_date: string | null; scheduled_time: string | null; buffer_time_min: number | null }): boolean {
-  if (!r.scheduled_date) return false;
-  return isLate(r.status, new Date(r.scheduled_date + "T00:00:00"), r.scheduled_time, r.buffer_time_min);
-}
-
-const ST: Record<string, { label: string; cls: string }> = {
-  scheduled: { label: "Очікує", cls: "gray" },
-  waiting: { label: "В роботі", cls: "blue" },
-  in_progress: { label: "В роботі", cls: "blue" },
-  done: { label: "Виконано", cls: "green" },
-  no_show: { label: "Не відбулося", cls: "red" },
-  not_held: { label: "Не відбулося", cls: "gray" },
-  cancelled: { label: "Скасовано", cls: "gray" },
-};
-const FILTERS = [
-  { key: "all", label: "Усі" },
-  { key: "scheduled", label: "Очікує" },
-  { key: "active", label: "В роботі" },
-  { key: "done", label: "Виконано" },
-  { key: "no_show", label: "Не відбулося" },
-];
+/* Статуси/фільтри/«Запізнення» списку направлень живуть у ReferrerBoard —
+   тутешні копії лишились від старої версії порталу (мертвий код, ESLint-шум). */
 const ACCESS_ST: Record<string, { label: string; cls: string }> = {
   active: { label: "Активний", cls: "green" },
   pending_clinic: { label: "Очікує підтвердження центру", cls: "yellow" },
@@ -105,12 +91,14 @@ async function postJSON(url: string, body: unknown): Promise<ApiResult> {
 interface NewReferralProps {
   activeCenters: Center[];
   roomsByClinic: Record<string, RoomOpt[]>;
+  servicesByClinic: Record<string, ServiceLike[]>;
+  roomOverridesByClinic: Record<string, RoomOverrideRow[]>;
   doctorName: string;
   doctorId: string;
   onCreated: (nm: string | null, err?: string) => void;
 }
 
-function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCreated }: NewReferralProps) {
+function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, onCreated }: NewReferralProps) {
   const [centerId, setCenterId] = useState(() => (activeCenters.length === 1 ? activeCenters[0].clinicId : ""));
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
@@ -126,44 +114,87 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const [priority, setPriority] = useState<PatientPriority | "">("");
   const [comment, setComment] = useState("");
   const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>([]);
-  const [bookDate, setBookDate] = useState(() => { const d = today0(); d.setDate(d.getDate() + 1); return d; });
+  /* «Завтра» — від доби ЦЕНТРУ (направник глобальний, центр може бути в іншій зоні).
+     Центр ще не обрано → беремо зону ПЕРШОГО доступного: вибір довільний, але
+     детермінований і однаковий на сервері й на клієнті (undefined впав би на зону
+     процесу при SSR і на зону браузера при гідрації → розбіжність розмітки).
+     Після вибору центру дата підтягнеться ефектом нижче. */
+  const [bookDate, setBookDate] = useState(() => {
+    const d = wallToday0(activeCenters[0]?.timezone || undefined);
+    d.setDate(d.getDate() + 1);
+    return d;
+  });
   const [roomId, setRoomId] = useState<string | null>(null);
   const [time, setTime] = useState("");
   const [dayEntries, setDayEntries] = useState<BusySlot[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(true);
+  const [slotsErr, setSlotsErr] = useState(false); // зайнятість/простої не завантажились — сітку не показуємо
   const [override, setOverride] = useState<DayOverride | null>(null);
   const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule обраного кабінету (для перерв)
   const [incidents, setIncidents] = useState<IncidentLike[]>([]);
   const [busy, setBusy] = useState(false);
 
   const date = dateVal(bookDate);
-  const modality = studyType === "КТ" ? "CT" : "MRI";
+  const modality = modalityCode(studyType); // studyType тут — укр. лейбл ("МРТ"/"УЗД"…)
   const primaryKind = studyType;
   const selCenter = activeCenters.find((c) => c.clinicId === centerId) || null;
   const allRooms = roomsByClinic[centerId] || [];
   const allowedRoomIds = selCenter && Array.isArray(selCenter.room_ids) && selCenter.room_ids.length ? selCenter.room_ids : null;
   const rooms = allowedRoomIds ? allRooms.filter((r) => allowedRoomIds.includes(r.id)) : allRooms;
-  const hasMRI = rooms.some((r) => r.modality === "MRI");
-  const hasCT = rooms.some((r) => r.modality === "CT");
-  const modAllowed = (code: string) => (code === "MRI" ? hasMRI : code === "CT" ? hasCT : false);
+  // Модальності, доступні направнику в цьому центрі (є кабінет і можна записати).
+  const availableModalities = BOOKABLE_MODALITIES.filter((code) => rooms.some((r) => r.modality === code));
+  const modAllowed = (code: string) => rooms.some((r) => r.modality === code);
   const roomsOfType = rooms.filter((r) => r.modality === modality);
   const room = roomsOfType.find((r) => r.id === roomId) || null;
 
-  const allRegions = regionsFor(studyType);
+  /* Центр обрано (або змінено) → підтягуємо дату до доби ЦЕНТРУ, якщо поточний
+     вибір уже минув за його часом. Інакше направник із іншої зони відкривав день,
+     який у центрі позаду, і всі слоти були закриті гардом «минуле» (0063). */
+  const selTz = (selCenter?.timezone || activeCenters[0]?.timezone) || undefined;
+  useEffect(() => {
+    if (!selTz) return;
+    setBookDate((d) => {
+      const t0 = wallToday0(selTz);
+      if (d >= t0) return d;
+      const nx = new Date(t0); nx.setDate(nx.getDate() + 1); return nx;
+    });
+  }, [selTz]);
+
+  // Каталог послуг ОБРАНОГО центру (фаза 2a): drop-in шорткати lib/studies.
+  // Порожній (центр не обрано / без сіду) → статичний фолбэк.
+  const catalog = useMemo(() => buildCatalog(servicesByClinic[centerId], overridesToMap(roomOverridesByClinic[centerId])), [servicesByClinic, roomOverridesByClinic, centerId]);
+  const regionsFor = catalog.regionsFor;
+  const studyPrice = catalog.studyPrice;
+
+  const allRegions = regionsFor(studyType, roomId || undefined);
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const regionObj = regions.find((r) => r.label === region);
   const contrastSuffix = contrast ? " з контрастом" : "";
-  const computedDur = regionObj ? regionObj.dur + (contrast ? CONTRAST_DUR : 0) : (studyType === "КТ" ? 20 : 45);
-  const price = regionObj ? regionObj.price + (contrast ? CONTRAST_SURCHARGE : 0) : null;
+  const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + (contrast ? CONTRAST_DUR : 0)) : (allRegions[0]?.dur ?? 20);
+  const price = regionObj ? regionObj.price + (contrast ? (regionObj.contrastPrice ?? CONTRAST_SURCHARGE) : 0) : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   const [durEdit, setDurEdit] = useState("");
-  useEffect(() => { if (region) setDurEdit(String(computedDur)); }, [region, contrast, studyType]); // eslint-disable-line
-  const dur = Math.max(5, parseInt(durEdit, 10) || computedDur);
+  // 0117: каталожне «—» → порожнє поле (ручний ввід).
+  useEffect(() => { if (region) setDurEdit(computedDur > 0 ? String(computedDur) : ""); }, [region, contrast, studyType, roomId]); // eslint-disable-line react-hooks/exhaustive-deps -- зміна кабінету пересчитує дефолтну тривалість (per-room 0108)
+  // Realtime-зміна каталожної тривалості (та сама область/кабінет): підхоплюємо новий
+  // default, ЛИШЕ якщо оператор не редагував поле вручну. (0111 realtime каталогу.)
+  const prevDefDurRef = useRef<number>(computedDur);
+  useEffect(() => {
+    const prev = prevDefDurRef.current;
+    prevDefDurRef.current = computedDur;
+    if (region && durEdit === String(prev) && String(prev) !== String(computedDur)) setDurEdit(computedDur > 0 ? String(computedDur) : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- лише на realtime-зміну каталожного default
+  }, [computedDur]);
+  // 0117: час області «—» і порожнє поле → 0 (без фолбеку в 5 хв — ревью H2:
+  // направник мовчки бронював 5-хвилинний слот) — збереження блокує miss.dur.
+  const durRaw = parseInt(durEdit, 10) || computedDur;
+  const dur = durRaw > 0 ? Math.max(5, durRaw) : 0;
   const durCustom = region && parseInt(durEdit, 10) && parseInt(durEdit, 10) !== computedDur;
 
-  const exRegions = (t: string) => regionsFor(t);
-  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? o.dur : (t === "КТ" ? 20 : 45); };
+  const exRegions = (t: string) => regionsFor(t, roomId || undefined);
+  // Область не обрана → 0 (порожнє дослідження не додає час, поки область не вибрана).
+  const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? (o.dur ?? 0) : 0; };
   function changeType(t: string) {
     setStudyType(t); setRegion(""); setContrast(false); setTime("");
     setExtraStudies((a) => a.map((s) => (s.type === t ? s : { ...s, type: t, region: "", dur: exDur(t, "") })));
@@ -172,6 +203,18 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     setContrast(v);
     if (v && region && !allRegions.some((r) => r.label === region && r.contrast)) { setRegion(""); setTime(""); }
   }
+  // Обрана область стала НЕДОСТУПНОЮ (прихована в кабінеті per-room 0108, АБО адмін
+  // вимкнув послугу — realtime-каталог 0111) → знімаємо «фантомний» вибір і час. Ключ —
+  // підпис набору доступних областей, а не лише roomId (Nielsen; сервер теж ріже).
+  const availSig = regionsFor(studyType, roomId || undefined).map((r) => r.label + "|" + (r.contrast ? "1" : "0")).join("");
+  useEffect(() => {
+    const avail = regionsFor(studyType, roomId || undefined);
+    if (region && !avail.some((r) => r.label === region)) { setRegion(""); setTime(""); }
+    // Область доступна, але контраст їй вимкнули в каталозі (realtime) → знімаємо флаг.
+    else if (region && contrast) { const sel = avail.find((r) => r.label === region); if (sel && !sel.contrast) { setContrast(false); setTime(""); } }
+    setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0 } : s)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей / контрасту (кабінет АБО realtime-каталог)
+  }, [availSig]);
 
   const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
   const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
@@ -180,17 +223,16 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
   const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
 
-  const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast) } : null;
-  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false) })));
-  const procLabelTxt = region ? `${primaryKind} · ${region}${contrastSuffix}` : primaryKind;
-  const combinedLabel = allStudies.length ? allStudies.map(studyLabel).join(" + ") : procLabelTxt;
+  const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast, roomId || undefined) } : null;
+  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, roomId || undefined) })));
   const slotDur = dur + validExtra.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
   function calcAgeLocal(d: string) { const a = calcAge(d); return a == null || a < 0 ? 0 : a; }
 
   useEffect(() => {
-    if (!modAllowed(studyType === "КТ" ? "CT" : "MRI")) {
-      if (modAllowed("MRI")) setStudyType("МРТ"); else if (modAllowed("CT")) setStudyType("КТ");
+    if (!modAllowed(modalityCode(studyType))) {
+      const first = availableModalities[0];
+      if (first) setStudyType(modalityLabel(first));
       setRegion(""); setContrast(false); setTime("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -202,55 +244,99 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [centerId, studyType]);
 
-  const loadDay = useCallback(async () => {
-    setSlotsLoading(true);
+  /* Помилка завантаження ≠ «вільно» (аудит 2026-07-11). Раніше і зайнятість, і
+     простої бралися як `data || []`: при збої RPC весь день виглядав вільним, а
+     зламаний кабінет — робочим. Тепер піднімаємо slotsErr, сітку не показуємо. */
+  const loadDay = useCallback(async (silent = false) => {
+    // Гейт «Завантаження…» показуємо ЛИШЕ при первинному завантаженні / зміні
+    // кабінету-дати (silent=false). Фонові перезапити (realtime, focus/visibility)
+    // — silent: сітка не мигає в «завантаження» на кожен тик, стара лишається до
+    // приходу нових даних (як у BookingModal). Помилку/дані оновлюємо все одно.
+    if (!silent) setSlotsLoading(true);
     try {
       const supabase = createClient();
       if (centerId) {
         const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", centerId).eq("override_date", date).maybeSingle();
+        if (ov.error) throw ov.error;
         setOverride((ov.data as unknown as DayOverride) || null);
         const inc = await supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", centerId).in("status", ["active", "planned"]);
+        if (inc.error) throw inc.error;
         setIncidents(inc.data || []);
       }
-      if (!roomId) { setDayEntries([]); setRoomSchedule(null); return; }
+      if (!roomId) { setDayEntries([]); setRoomSchedule(null); setSlotsErr(false); return; }
       const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
       setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
-      const { data } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
+      // Знеособлена зайнятість: для направника RPC віддає рядки БЕЗ ПІБ/статусу/
+      // досліджень (гейт у 0062) — він бачить лише, що час зайнятий.
+      const { data, error } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
+      if (error) throw error; // PostgREST не кидає сам — інакше «зайнятий день» став би «вільним»
       setDayEntries(data || []);
+      setSlotsErr(false);
+    } catch {
+      // Транзієнтний збій (рефреш токена / мережа) — портал не рушимо, але й
+      // «усе вільно» не малюємо: показуємо помилку й ховаємо сітку.
+      setSlotsErr(true);
     } finally {
-      setSlotsLoading(false);
+      if (!silent) setSlotsLoading(false);
     }
   }, [centerId, roomId, date]);
 
   useEffect(() => { (async () => { await loadDay(); })(); }, [loadDay]);
   useEffect(() => {
-    const onVis = () => { if (document.visibilityState === "visible") loadDay(); };
+    const onVis = () => { if (document.visibilityState === "visible") loadDay(true); };
     document.addEventListener("visibilitychange", onVis); window.addEventListener("focus", onVis);
     return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); };
   }, [loadDay]);
+  /* Realtime: сітка оновлюється, поки направник заповнює форму. Увага: події
+     ходять під RLS, тож про ЧУЖІ записи направник події не отримає — його рятує
+     refetch по focus/visibility вище + повторна перевірка слота на сервері. */
+  useRealtimeRefetch({
+    channelName: centerId ? "ref-slots-" + centerId + "-" + (roomId || "none") + "-" + date : null,
+    subscriptions: [
+      { table: "queue_entries", onChange: () => loadDay(true) },
+      { table: "incidents", onChange: () => loadDay(true) },
+    ],
+  });
 
   const dateObj = new Date(date + "T00:00:00");
-  const roomSched = roomScheduleFor(dateObj, roomId || "", override);
+  const roomSched = roomScheduleFor(dateObj, roomId || "", override, roomSchedule);
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
-  const busySlots = (dayEntries || []).filter((e) => e.scheduled_time).map((e) => ({ s: toMin(e.scheduled_time), e: toMin(e.scheduled_time) + (e.duration_min || 30) + (e.buffer_time_min ?? BUFFER_DEFAULT) }));
-  const roomBreaks = roomBreaksFor(dateObj, roomSchedule); // перерви кабінету на цю дату
+  // eStudy — кінець САМОГО дослідження; e — кінець зайнятості (з буфером прибирання).
+  const busySlots = (dayEntries || []).map((e) => {
+    // 0074: пріоритет — обрізані по добі хвилини. Жодних «|| 30»: на хвостовому
+    // рядку duration_min законно 0 (у цю добу зайшов лише буфер).
+    if (e.start_min != null && e.end_min != null) {
+      return { s: e.start_min, eStudy: e.end_study_min ?? e.end_min, e: e.end_min };
+    }
+    const s = toMin(e.scheduled_time);
+    const eStudy = s + (e.duration_min ?? 30);
+    return { s, eStudy, e: eStudy + (e.buffer_time_min ?? BUFFER_DEFAULT) };
+  });
+  const roomBreaks = effectiveRoomBreaks(dateObj, roomId || "", roomSchedule, override); // перерви кабінету на цю дату
   // «Зараз» у настінному часі центру (wall-as-UTC мс): і хвилини доби, і «сьогодні».
-  const _nowW = wallNow(selCenter?.timezone || undefined);
+  const _nowW = wallNow(selTz);
   const nowMin = wallMinOfDay(_nowW);
-  const _nowD = new Date(_nowW);
-  const isBookToday = date === (_nowD.getUTCFullYear() + "-" + pad(_nowD.getUTCMonth() + 1) + "-" + pad(_nowD.getUTCDate()));
-  const slots: string[] = []; { const s0 = Math.ceil(schedStart / 30) * 30; for (let m = s0; m < schedEnd; m += 30) slots.push(fmt(m)); }
+  // «Сьогодні» ЦЕНТРУ (не браузера): направник глобальний, центр може бути в іншій зоні.
+  const centerTodayStr = wallDayKey(selTz);
+  const centerToday = wallToday0(selTz);
+  const isBookToday = date === centerTodayStr;
+  const isPastDay = date < centerTodayStr;
+  const slots: string[] = buildSlots(schedStart, schedEnd); // крок 5 хв
   function slotState(slot: string) {
     // b — кінець дослідження (має вміститись у графік); bBlock — з буфером (перетин з іншими).
     const a = toMin(slot), b = a + slotDur, bBlock = a + slotDur + buffer;
+    if (isPastDay) return "past"; // день у минулому за часом ЦЕНТРУ
     if (roomSched.closed) return "closed";
     const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60);
     if (slotBlockedByIncidents(incidents, roomId || "", slotMs)) return "blocked";
     if (a < schedStart || a >= schedEnd) return "offhours";
     if (b > schedEnd) return "tight";
-    if (overlapsBreak(a, slotDur, roomBreaks)) return "break"; // блок перетинає перерву
+    if (inBreak(a, roomBreaks)) return "break";                 // сам слот — перерва кабінету
+    if (breakClash(a, slotDur, roomBreaks)) return "tight";     // слот робочий, але дослідження заїде в перерву
     if (isBookToday && a < nowMin) return "past";
-    if (busySlots.some((x) => a >= x.s && a < x.e)) return "busy";
+    // Дослідження і буфер прибирання після нього — окремі стани (кабінет зайнятий і там, і там).
+    if (busySlots.some((x) => a >= x.s && a < x.eStudy)) return "busy";
+    if (busySlots.some((x) => a >= x.eStudy && a < x.e)) return "buffer";
     if (busySlots.some((x) => a < x.e && x.s < bBlock)) return "tight";
     return "free";
   }
@@ -259,11 +345,26 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
     const after = busySlots.filter((x) => x.s >= s).sort((a, b) => a.s - b.s)[0];
     return after ? fmt(after.s) : null;
   }
-  const freeCount = slots.filter((s) => slotState(s) === "free").length;
+  function breakLabel(slot: string) {
+    const br = inBreak(toMin(slot), roomBreaks);
+    return br ? `Перерва в роботі кабінету · ${br.start}–${br.end}` : "Перерва в роботі кабінету";
+  }
+  // Причина «не вміщується» — у тому ж порядку, що й перевірки в slotState.
+  function tightReason(slot: string) {
+    const a = toMin(slot);
+    const endLab = `кінець графіка (${fmt(schedEnd)})`;
+    if (a + slotDur > schedEnd) return endLab;
+    const br = breakClash(a, slotDur, roomBreaks);
+    if (br) return `перерву ${br.start}–${br.end}`;
+    const appt = nextApptAfter(slot);
+    return appt ? `запис о ${appt}` : endLab;
+  }
+  // Реальна місткість дня для цієї тривалості (жадібна укладка), а не к-сть 5-хв позицій.
+  const fitCount = countFit(slots, (s) => slotState(s) === "free", slotDur + buffer);
   const busyList = busySlots.slice().sort((a, b) => a.s - b.s);
 
-  const miss: Record<string, boolean> = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time };
-  const MISS_LABELS: Record<string, string> = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу" };
+  const miss: Record<string, boolean> = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time, dur: !!region && dur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5) };
+  const MISS_LABELS: Record<string, string> = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу", dur: "Тривалість (хв)", exdur: "Тривалість додаткових досліджень" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   const timeBad = time ? slotState(time) !== "free" : false;
   const valid = centerId && missingList.length === 0 && roomId && !timeBad && !roomSched.closed;
@@ -341,7 +442,8 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
               </div>
               <label className="fld" style={{ flex: "0 0 60px" }}>
                 <span className="fld-lab">Вага</span>
-                <input className="inp" placeholder="кг" value={weight} onChange={(e) => setWeight(e.target.value.replace(/\D/g, ""))} />
+                <input className="inp" placeholder="кг" value={weight}
+                  onChange={(e) => { const w = e.target.value.replace(/\D/g, "").slice(0, 3); setWeight(w && +w > 400 ? "400" : w); }} />
               </label>
             </div>
 
@@ -362,8 +464,9 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
               <div className="fld" style={{ flex: "0 0 130px" }}>
                 <span className="fld-lab">Тип <span className="req">*</span></span>
                 <div className="bk-seg">
-                  {modAllowed("MRI") && <button className={"bk-seg-btn" + (studyType === "МРТ" ? " active mrt" : "")} onClick={() => changeType("МРТ")}>МРТ</button>}
-                  {modAllowed("CT") && <button className={"bk-seg-btn" + (studyType === "КТ" ? " active ct" : "")} onClick={() => changeType("КТ")}>КТ</button>}
+                  {availableModalities.map((code) => (
+                    <button key={code} className={"bk-seg-btn" + (studyType === modalityLabel(code) ? " active " + modalityKind(code) : "")} onClick={() => changeType(modalityLabel(code))} title={modalityLabel(code)}>{modalityShort(code)}</button>
+                  ))}
                 </div>
               </div>
               <div className="fld">
@@ -404,7 +507,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                 <select className="inp" value={region} onChange={(e) => { setRegion(e.target.value); setTime(""); }}>
                   <option value="">— Оберіть область —</option>
                   {regions.map((r) => (
-                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur + (contrast ? CONTRAST_DUR : 0)} хв</option>
+                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + (contrast ? CONTRAST_DUR : 0) + " хв"}</option>
                   ))}
                 </select>
               </label>
@@ -416,7 +519,7 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                   <span className="bk-dur-unit">хв</span>
                 </div>
                 <span className={"bk-time-state " + (durCustom ? "busy" : "none")}>
-                  {!region ? "оберіть область" : durCustom ? `↺ за замовч. ${computedDur} хв` : "за тривалістю області"}
+                  {!region ? "оберіть область" : durCustom ? `↺ за замовч. ${computedDur} хв` : computedDur > 0 ? "за тривалістю області" : "час не задано — введіть"}
                 </span>
               </label>
               <label className="fld" style={{ flex: "0 0 96px" }}>
@@ -441,13 +544,13 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
                     return (
                       <div className="bk-study-row" key={i}>
                         <div className="bk-seg bk-seg-sm st-seg-locked" title="Тип = тип основного дослідження">
-                          <button className={"bk-seg-btn active " + (primaryKind === "МРТ" ? "mrt" : "ct")} disabled>{primaryKind}</button>
+                          <button className={"bk-seg-btn active " + modalityKind(studyType)} disabled>{modalityShort(studyType)}</button>
                         </div>
                         <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
-                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur} хв</option>)}
+                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}</option>)}
                         </select>
-                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.dur} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
                         <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
                       </div>
                     );
@@ -467,19 +570,23 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
             <div className="bk-sched-head">
               <span className="bk-sched-spark">✦</span>
               <span className="bk-sched-title">Розклад</span>
-              <span className={"bk-sched-mod " + (modality === "MRI" ? "mrt" : "ct")}>{studyType}</span>
+              <span className={"bk-sched-mod " + modalityKind(studyType)}>{studyType}</span>
               <span className="bk-sched-sync"><span className="pulse-dot" style={{ background: "var(--green)", width: 6, height: 6 }} /> синхр. з чергою</span>
             </div>
 
             <div className="fld">
               <span className={"fld-lab" + (miss.room ? " bk-miss-lab" : "")}>Кабінет <span className="req">*</span></span>
-              {roomsOfType.length === 0 ? (
+              {!centerId ? (
+                // Без обраного центру ще нічого не відомо про кабінети — не лякаємо
+                // червоним «немає кабінету типу …».
+                <div className="ctx-hint">Спершу оберіть центр.</div>
+              ) : roomsOfType.length === 0 ? (
                 <div className="ctx-hint red">У цьому центрі немає кабінету типу {studyType}.</div>
               ) : (
                 <>
                   <div className="bk-room-chips">
                     {roomsOfType.map((r) => (
-                      <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + (r.modality === "MRI" ? " mrt" : " ct")}
+                      <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + " " + modalityKind(r.modality)}
                         onClick={() => { setRoomId(r.id); setTime(""); }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
                         <span className="bk-room-chip-name">{r.name}</span>
                         {r.apparatus_model && <span className="bk-room-chip-model">{r.apparatus_model}</span>}
@@ -490,45 +597,66 @@ function NewReferral({ activeCenters, roomsByClinic, doctorName, doctorId, onCre
               )}
             </div>
 
-            <BookingCalendar value={bookDate} onPick={(d) => { setBookDate(d); setTime(""); }} />
+            <BookingCalendar value={bookDate} today={centerToday} onPick={(d) => { setBookDate(d); setTime(""); }} />
 
             <div className="fld">
               <div className="bk-slots-head">
                 <span className={"fld-lab" + (miss.time ? " bk-miss-lab" : "")} style={{ margin: 0 }}>Вільні слоти · {fmtShort(bookDate)} {miss.time ? "— оберіть час *" : ""}</span>
-                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {allStudies.length === 0 ? "оберіть область" : slotsLoading ? "завантаження…" : freeCount + " вільних"}</span>
+                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {allStudies.length === 0 ? "оберіть область" : slotsLoading ? "завантаження…" : "вміщується ще " + fitCount}</span>
               </div>
-              {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
-              {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
-              {!roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО у частині дня. Оберіть вільний слот або інший день.</div>}
-              {allStudies.length === 0
+              {/* Вердикт про графік має сенс ЛИШЕ коли кабінет обрано: без roomId
+                  roomScheduleFor() не знаходить кабінет в override.rooms і падає на
+                  дефолт (неділя = вихідний) → показувало хибне «Кабінет не працює»
+                  навіть у день, який override відкриває (чергування). */}
+              {roomId && roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
+              {roomId && !roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
+              {roomId && !roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО у частині дня. Оберіть вільний слот або інший день.</div>}
+              {/* Зайнятість не завантажилась — сітку НЕ показуємо: порожній день
+                  виглядав би як «усе вільно», і направник записав би пацієнта поверх чужого. */}
+              {slotsErr && !slotsLoading
+                ? <div className="ctx-hint red" style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <span>⚠ Не вдалося завантажити зайнятість кабінету — показати вільний час не можемо.</span>
+                    <button className="btn btn-secondary btn-sm" onClick={() => loadDay()}>↻ Спробувати ще раз</button>
+                  </div>
+                : allStudies.length === 0
                 ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
                 : slotsLoading
                 ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
-                : <div className={"bk-slot-grid" + (miss.time ? " bk-miss-slots" : "")}>
-                {slots.map((s) => {
-                  const st = slotState(s);
-                  const title = st === "busy" ? "Зайнято"
+                : <div className={miss.time ? "bk-miss-slots" : undefined}>
+                <SlotPicker
+                  slots={slots}
+                  value={time}
+                  onChange={setTime}
+                  spanMin={slotDur}
+                  bufferMin={buffer}
+                  resetKey={(roomId || "") + "|" + date + "|" + slotDur + "|" + buffer}
+                  stateOf={slotState}
+                  titleOf={(s, st) => st === "busy" ? "Зайнято"
+                    : st === "buffer" ? "Буфер після дослідження — кабінет ще зайнятий"
                     : st === "blocked" ? "Кабінет на ремонті/ТО"
-                    : st === "break" ? "Перерва в роботі кабінету"
-                    : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${nextApptAfter(s) ? "запис о " + nextApptAfter(s) : "кінець графіка (" + fmt(schedEnd) + ")"}`
+                    : st === "break" ? breakLabel(s)
+                    : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${tightReason(s)}`
                     : st === "past" ? "Час минув"
-                    : `Вільно · ${s}–${fmt(toMin(s) + slotDur)}`;
-                  return (
-                    <button key={s} className={"slot" + (time === s ? " sel" : "") + (st !== "free" ? " taken" : "") + (st === "tight" ? " tight" : "") + ((st === "busy" || st === "blocked" || st === "break") ? " busy" : "")}
-                      disabled={st !== "free"} onClick={() => setTime(s)} title={title}>{s}</button>
-                  );
-                })}
+                    : `Вільно · ${s}–${fmt(toMin(s) + slotDur)}`}
+                />
               </div>}
               {busyList.length > 0 && (
                 <div className="bk-busy-list">
                   <span className="bk-busy-lab">Зайнятий час:</span>
-                  {busyList.map((b, i) => <span className="bk-busy-chip" key={i}>{fmt(b.s)}–{fmt(b.e)}</span>)}
+                  {busyList.map((b, i) => (
+                    <span className="bk-busy-chip" key={i}>
+                      {fmt(b.s)}–{fmt(b.eStudy)}{b.e > b.eStudy ? <span style={{ opacity: 0.7 }}> +{b.e - b.eStudy} хв</span> : null}
+                    </span>
+                  ))}
                 </div>
               )}
               <div className="bk-slot-legend">
                 <span><span className="lg-dot free" />вільно</span>
                 <span><span className="lg-dot tight" />не вміщується</span>
                 <span><span className="lg-dot busy" />зайнято</span>
+                <span><span className="lg-dot busybuf" />буфер</span>
+                {time && buffer > 0 && <span><span className="lg-dot planbuf" />буфер цього запису</span>}
+                {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
               </div>
               {time && (() => {
                 const s = toMin(time), e = s + slotDur, eBlock = s + slotDur + buffer;
@@ -610,7 +738,7 @@ function CenterDetails({ data, loading }: { data?: CenterCardData | null; loadin
         <div className="bd-rooms">
           {rooms.map((r) => (
             <div key={r.id} className="bd-room" style={{ cursor: "default" }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
-              <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")}>{modalityLabel(r.modality)}</span>
+              <span className={"bd-room-kind " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
               <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
             </div>
           ))}
@@ -656,7 +784,6 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
       if (!error && data) setDetails((d) => ({ ...d, [expandedId]: data as unknown as CenterCardData }));
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expandedId, expandedSig]);
 
   const knownIds = useMemo(() => new Set(centers.map((c) => c.clinicId)), [centers]);
@@ -972,11 +1099,15 @@ interface ReferralPortalProps {
   role: string;
   centers: Center[];
   roomsByClinic: Record<string, RoomOpt[]>;
+  /** Каталоги послуг за центрами (clinic_id → services, 0107). RLS services_referrer_read. */
+  servicesByClinic: Record<string, ServiceLike[]>;
+  /** Переозначення каталогу по кабінетах за центрами (clinic_id → service_room_overrides, 0108). */
+  roomOverridesByClinic: Record<string, RoomOverrideRow[]>;
   doctorName: string;
   doctorId: string;
 }
 
-export default function ReferralPortal({ role, centers, roomsByClinic, doctorName, doctorId }: ReferralPortalProps) {
+export default function ReferralPortal({ role, centers, roomsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, doctorId }: ReferralPortalProps) {
   const router = useRouter();
   const canManage = role === "referrer";
   async function signOut() {
@@ -988,6 +1119,15 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
 
   const activeCenters = useMemo(() => centers.filter((c) => c.status === "active"), [centers]);
   const centersById = useMemo(() => { const m: Record<string, Center> = {}; centers.forEach((c) => { m[c.clinicId] = c; }); return m; }, [centers]);
+  // Коди модальностей, доступних направнику в центрі за грантом (room_ids; null = усі
+  // кабінети). Передаємо у WaitlistModal, щоб він не пропонував недоступні модальності
+  // (сервер addWaitlistEntry перевіряє те саме).
+  const centerModalities = (c: Center): string[] => {
+    const rs = roomsByClinic[c.clinicId] || [];
+    const ids = Array.isArray(c.room_ids) && c.room_ids.length ? c.room_ids : null;
+    const allowed = ids ? rs.filter((r) => ids.includes(r.id)) : rs;
+    return Array.from(new Set(allowed.map((r) => r.modality)));
+  };
   const pendingInvites = centers.filter((c) => c.status === "pending_referrer").length;
 
   const [tab, setTab] = useState(() => (activeCenters.length === 0 ? "centers" : "new"));
@@ -995,6 +1135,8 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
   const [boardFocus, setBoardFocus] = useState<{ clinicId: string; roomId: string; nonce: number } | null>(null);
   const [editPatientFor, setEditPatientFor] = useState<Referral | null>(null);
   const [referrals, setReferrals] = useState<Referral[]>([]);
+  // H-6: збій читання списку ≠ «направлень немає» (сітку слотів уже прикриває slotsErr).
+  const [listErr, setListErr] = useState(false);
   const [reschedFor, setReschedFor] = useState<Referral | null>(null);
   const [editStudiesFor, setEditStudiesFor] = useState<Referral | null>(null);
   const [wlEntries, setWlEntries] = useState<WaitlistEntry[]>([]);
@@ -1006,26 +1148,33 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
   function notify(msg: string, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3200); }
 
   const reload = useCallback(async () => {
-    const supabase = createClient();
-    const { data } = await supabase
-      .from("queue_entries")
-      .select("id, clinic_id, created_by, referrer_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, studies_changed_by, contraindications, doctor, note, indication, room_id, reschedule_origin")
-      .eq("referrer_id", doctorId)
-      .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
-    setReferrals(data || []);
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("queue_entries")
+        .select("id, clinic_id, created_by, referrer_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, studies_changed_by, contraindications, doctor, note, indication, room_id, reschedule_origin")
+        .eq("referrer_id", doctorId)
+        .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
+      // H-6: збій читання показувався як «Немає направлень» — лікар вважав, що
+      // його пацієнти не записані, і записував їх удруге.
+      if (error) { setListErr(true); return; }
+      setReferrals(data || []);
+      setListErr(false);
+    } catch { setListErr(true); }
   }, [doctorId]);
 
   // Лист очікування: RLS показує направнику лише власні рядки (created_by).
   const reloadWaitlist = useCallback(async () => {
     try {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("waitlist_entries")
         .select("*")
         .eq("created_by", doctorId)
         .order("created_at", { ascending: true });
+      if (error) { setListErr(true); return; }
       setWlEntries(data || []);
-    } catch { /* транзієнтний Failed to fetch — ігноруємо */ }
+    } catch { setListErr(true); }
   }, [doctorId]);
   useEffect(() => { reloadWaitlist(); }, [reloadWaitlist]);
 
@@ -1036,6 +1185,14 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
       { table: "queue_entries", filter: "referrer_id=eq." + doctorId, onChange: reload },
       { table: "waitlist_entries", filter: "created_by=eq." + doctorId, onChange: reloadWaitlist },
       { table: "referral_access", filter: "referrer_id=eq." + doctorId, onChange: () => router.refresh() },
+      // 0086: зміни кабінетів дозволених центрів (видалення/графік) → оновлюємо
+      // портал. Без filter: RLS доставляє направнику лише кабінети його центрів
+      // (REPLICA IDENTITY FULL з 0086 дає clinic_id і в подіях DELETE).
+      { table: "rooms", onChange: () => router.refresh() },
+      // Каталог послуг/цін центрів направника (0107/0108) — RLS доставляє лише
+      // доступні центри/кабінети (як rooms); зміна каталогу адміном → оновити портал.
+      { table: "services", onChange: () => router.refresh() },
+      { table: "service_room_overrides", onChange: () => router.refresh() },
     ],
   });
 
@@ -1086,25 +1243,48 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     if (!res.ok) { notify("Помилка: " + res.error, "error"); reloadWaitlist(); }
   }
 
+  /* CAS-промах: центр уже провів/скасував пацієнта, поки в направника висіла стара
+     вкладка. Показуємо причину і перечитуємо список — раніше перенос ВОСКРЕШАВ
+     завершений запис (патч містить status:'scheduled'). */
+  function handledStale(res: { ok: boolean; code?: string; error?: string }): boolean {
+    if (res.ok || res.code !== "stale") return false;
+    notify(res.error || "Стан змінився — оновіть сторінку", "error");
+    reload();
+    return true;
+  }
+
+  // Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
   async function doReschedule({ roomId, date, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
-    const p = reschedFor; if (!p) return;
+    const p = reschedFor; if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
     const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason });
     if (!res.ok) {
-      if (res.code === "slot_taken") { notify("Слот щойно зайняли — оберіть інший", "error"); return; }
-      setReschedFor(null);
-      notify(res.code === "incident" ? "Кабінет у простої — оберіть інший слот" : res.code === "slot_unavailable" ? "Слот зайнятий — оберіть інший" : "Помилка: " + res.error, "error");
-      return;
+      if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
+      reload();
+      // Перенос у минуле / поза графіком кабінету заборонено (сервер + тригер 0063).
+      return (res.code === "slot_taken" || res.code === "slot_unavailable")
+        ? "Слот щойно зайняли — оберіть інший"
+        : res.code === "incident" ? "Кабінет у простої — оберіть інший слот"
+        : res.error;
     }
     setReschedFor(null);
     notify("Перенесено", "success"); reload();
+    return null;
   }
 
+  /* Скасування направлення — незворотне (слот звільняється). Раніше йшло в один
+     клік, хоча зняття з листа очікування поруч уже питало підтвердження. */
+  const [cancelAsk, setCancelAsk] = useState<Referral | null>(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
   async function doCancel(entry: Referral) {
     if (!entry) return;
     const res = await cancelQueueEntry(entry.id);
-    if (!res.ok) { notify("Помилка скасування: " + res.error, "error"); return; }
+    if (!res.ok) {
+      if (handledStale(res)) return;   // пацієнта вже провели/скасували в центрі
+      notify("Помилка скасування: " + res.error, "error");
+      return;
+    }
     notify("Направлення скасовано", "success"); reload();
   }
 
@@ -1113,7 +1293,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
     if (!p) return;
     const res = await editQueueEntryStudies(p.id, arr as unknown as Json, meta.dur || p.duration_min || 30, meta.buffer);
     setEditStudiesFor(null);
-    if (!res.ok) { notify("Помилка збереження досліджень: " + res.error, "error"); return; }
+    if (!res.ok) {
+      if (handledStale(res)) return;
+      notify("Помилка збереження досліджень: " + res.error, "error");
+      return;
+    }
     notify("Дослідження оновлено", "success"); reload();
   }
 
@@ -1143,19 +1327,31 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
             <div><h1>{tabMeta.t}</h1></div>
           </div>
           <div className="tb-right">
-            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}><LiveClock /></span>
+            {/* Годинник — за часом центру (перший доступний): направник глобальний,
+                singleton setClinicTz тут не виставляється. */}
+            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}><LiveClock tz={activeCenters[0]?.timezone || undefined} /></span>
             <CeoDashboardLink />
           </div>
         </header>
         <div className="content" style={{ flex: 1 }}>
         {tab === "new" && (
-          <NewReferral activeCenters={activeCenters} roomsByClinic={roomsByClinic} doctorName={doctorName} doctorId={doctorId}
+          <NewReferral activeCenters={activeCenters} roomsByClinic={roomsByClinic} servicesByClinic={servicesByClinic} roomOverridesByClinic={roomOverridesByClinic} doctorName={doctorName} doctorId={doctorId}
             onCreated={(nm, err) => { if (err) notify("Помилка: " + err, "error"); else { notify("Направлення відправлено: " + nm, "success"); reload(); setTab("mine"); } }} />
         )}
         {tab === "mine" && (
-          <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} doctorId={doctorId}
-            focus={boardFocus}
-            onReschedule={(r) => setReschedFor(r)} onCancel={doCancel} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)} />
+          <>
+            {/* Збій читання ≠ «направлень немає»: інакше лікар вирішить, що пацієнт
+                не записаний, і запише його вдруге. */}
+            {listErr && (
+              <div className="ctx-hint red" style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }} role="alert">
+                <span>⚠ Список направлень не завантажився — показане може бути неповним.</span>
+                <button className="btn btn-secondary btn-sm" onClick={() => { reload(); reloadWaitlist(); }}>↻ Спробувати ще раз</button>
+              </div>
+            )}
+            <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} doctorId={doctorId}
+              focus={boardFocus}
+              onReschedule={(r) => setReschedFor(r)} onCancel={(r) => setCancelAsk(r)} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)} />
+          </>
         )}
         {tab === "waitlist" && (
           <MyWaitlist entries={wlEntries} centersById={centersById} onOpenAdd={() => setWlAddOpen(true)}
@@ -1174,14 +1370,34 @@ export default function ReferralPortal({ role, centers, roomsByClinic, doctorNam
         <RescheduleModal patient={reschedFor} rooms={reschedRooms} clinicId={reschedFor.clinic_id} clinicTz={centersById[reschedFor.clinic_id]?.timezone} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} services={servicesByClinic[editStudiesFor.clinic_id]} roomOverrides={roomOverridesByClinic[editStudiesFor.clinic_id]} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {wlAddOpen && (
-        <WaitlistModal centers={activeCenters.map((c) => ({ clinicId: c.clinicId, name: centerLabel(c) }))}
+        <WaitlistModal centers={activeCenters.map((c) => ({ clinicId: c.clinicId, name: centerLabel(c), modalities: centerModalities(c) }))}
+          servicesByCenter={servicesByClinic}
+          roomOverridesByCenter={roomOverridesByClinic}
           onClose={() => setWlAddOpen(false)} onSave={wlAdd} />
       )}
       {wlEditFor && (
-        <WaitlistModal initial={wlEditFor} onClose={() => setWlEditFor(null)} onSave={wlEditSave} />
+        <WaitlistModal initial={wlEditFor}
+          allowedModalities={centersById[wlEditFor.clinic_id] ? centerModalities(centersById[wlEditFor.clinic_id]) : undefined}
+          servicesByCenter={servicesByClinic}
+          roomOverridesByCenter={roomOverridesByClinic}
+          onClose={() => setWlEditFor(null)} onSave={wlEditSave} />
+      )}
+      {cancelAsk && (
+        <ConfirmDialog title="Скасувати направлення?"
+          text={<>Запис <b style={{ color: "var(--text)" }}>{cancelAsk.patient_name}</b> о <b style={{ color: "var(--text)" }}>{cancelAsk.scheduled_time}</b> буде скасовано, слот звільниться. Повернути можна лише новим направленням.</>}
+          confirmLabel="✕ Скасувати направлення" cancelLabel="Залишити" danger busy={cancelBusy}
+          onConfirm={async () => {
+            const p = cancelAsk;
+            if (!p) return;
+            setCancelBusy(true);
+            await doCancel(p);
+            setCancelBusy(false);
+            setCancelAsk(null);
+          }}
+          onClose={() => setCancelAsk(null)} />
       )}
       {wlConfirmRemove && (
         <ConfirmDialog title="Зняти з листа очікування"

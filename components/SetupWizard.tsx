@@ -7,16 +7,45 @@
 import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import type { Json, TablesInsert } from "@/supabase/types";
+import type { Json, TablesInsert, Tables } from "@/supabase/types";
 import CitySelect from "@/components/CitySelect";
+import ServicesEditor from "@/components/ServicesEditor";
 import StaffManager from "@/components/StaffManager";
 import ReferrersManager from "@/components/ReferrersManager";
 import CeoManager from "@/components/CeoManager";
+import QueuePolicySettings, { type QueuePolicyInitial } from "@/components/QueuePolicySettings";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import { formatPhoneUA, isValidPhoneUA } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radflow-wizard.css";
 import type { Break } from "@/lib/schedule";
+import { MODALITIES, modalityCode } from "@/lib/studies";
+
+/* ===== Таймзона центру (IANA) =====
+   Від неї залежать «Запізнення», «Уточнити», гарди виклику в кабінет і заборона
+   запису в минуле (канон wall-as-UTC, міграції 0035/0059). Тому це ЯВНЕ поле, а
+   не мовчазний авто-детект браузера при кожному збереженні. */
+function browserTz(): string {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Kyiv"; }
+  catch { return "Europe/Kyiv"; }
+}
+/** Повний список зон (сучасні рушії) з фолбеком на короткий перелік. */
+function tzList(): string[] {
+  const withValues = Intl as unknown as { supportedValuesOf?: (k: string) => string[] };
+  try {
+    const all = withValues.supportedValuesOf?.("timeZone");
+    if (all && all.length) return all;
+  } catch { /* старий рушій — фолбек нижче */ }
+  return ["Europe/Kyiv", "Europe/Warsaw", "Europe/Berlin", "Europe/Prague", "Europe/Vilnius",
+    "Europe/Riga", "Europe/Bucharest", "Europe/Chisinau", "Europe/London", "Europe/Lisbon",
+    "Europe/Madrid", "Europe/Rome", "Europe/Istanbul", "Asia/Tbilisi", "UTC"];
+}
+/** «Europe/Kyiv · 15:42» — щоб адмін одразу бачив, чи час центру збігається з реальним. */
+function tzNow(tz: string): string {
+  try { return new Intl.DateTimeFormat("uk-UA", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date()); }
+  catch { return "—"; }
+}
 
 type Toast = { id: number; msg: string; type: string; out?: boolean };
 type DayHours = { start: string; end: string; breaks: Break[] };
@@ -30,10 +59,12 @@ type EquipItem = {
 };
 type WizardData = {
   clinic: string; city: string; address: string; phones: string[]; emails: string[];
+  timezone: string;
   adminName: string; adminEmail: string; aPhones: string[]; aEmails: string[]; equip: EquipItem[];
 };
 type WizardInitial = Partial<{
   clinic: string; city: string; address: string; phones: string[]; emails: string[];
+  timezone: string;
   adminName: string; adminEmail: string; adminPhone: string; equip: EquipItem[];
 }>;
 
@@ -134,12 +165,29 @@ function breakRowError(list: Break[], bi: number, dayStart: string, dayEnd: stri
   }
   return null;
 }
+/* Валідація годин самого дня (не перерви). Порожнє поле або кінець ≤ початок
+   раніше зберігались мовчки — і сітка слотів просто зникала (roomScheduleFor
+   не дає жодного слота при start ≥ end). Тепер це помилка, що блокує «Зберегти». */
+function dayHoursError(start: string, end: string): string | null {
+  if (!start || !end) return "Вкажіть години роботи";
+  if (end <= start) return "Кінець раніший за початок";
+  return null;
+}
 /** Чи всі перерви всіх кабінетів коректні (для гейтингу «Зберегти»). */
 function equipBreaksValid(equip: EquipItem[]): boolean {
   return equip.every((e) =>
     e.perDay
       ? e.dayHours.every((dh, di) => !e.days[di] || dh.breaks.every((_, bi) => breakRowError(dh.breaks, bi, dh.start, dh.end) === null))
       : e.breaks.every((_, bi) => breakRowError(e.breaks, bi, e.start, e.end) === null)
+  );
+}
+/** Чи коректні години роботи всіх кабінетів (для гейтингу «Зберегти»).
+    perDay: перевіряємо кожен УВІМКНЕНИЙ день; інакше — єдині години кабінету. */
+function equipHoursValid(equip: EquipItem[]): boolean {
+  return equip.every((e) =>
+    e.perDay
+      ? e.dayHours.every((dh, di) => !e.days[di] || dayHoursError(dh.start, dh.end) === null)
+      : dayHoursError(e.start, e.end) === null
   );
 }
 
@@ -150,8 +198,9 @@ const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string }[]
   { label: "Профіль клініки", desc: "Назва та контакти центру", anchor: "sec-clinic" },
   { label: "Адміністратор", desc: "Обліковий запис адміна", anchor: "sec-admin" },
   { label: "Обладнання та кабінети", desc: "Апарати та розклад", anchor: "sec-equip" },
-  { label: "Послуги та прайс", desc: "Незабаром", anchor: "sec-price" },
-  { label: "Радіологи та доступи", desc: "Керування персоналом", anchor: "sec-staff" },
+  { label: "Послуги та прайс", desc: "Каталог послуг і цін центру", anchor: "sec-price" },
+  { label: "Управління чергою", desc: "Політика при затримці", anchor: "sec-queue" },
+  { label: "Персонал і доступи", desc: "Радіологи та реєстратори", anchor: "sec-staff" },
   { label: "Лікарі-направники", desc: "Направники центру", anchor: "sec-referrers" },
   { label: "Керівники (CEO)", desc: "Аналітичний доступ", anchor: "sec-ceo" },
 ];
@@ -159,12 +208,18 @@ const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string }[]
 const FORM_SECTIONS = ["sec-clinic", "sec-admin", "sec-equip", "sec-price"];
 
 /* ---------- Крок 1: Профіль клініки ---------- */
-function StepRegister({ report, onData, initial, active }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial; active: string }) {
+function StepRegister({ report, onData, initial, active, clinicId, services, rooms, roomOverrides }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial; active: string; clinicId: string; services: ServiceRow[]; rooms: SetupRoom[]; roomOverrides: SroRow[] }) {
   const [clinic, setClinic] = useState(initial.clinic || "");
   const [city, setCity] = useState(initial.city || "");
   const [address, setAddress] = useState(initial.address || "");
   const [phones, setPhones] = useState<string[]>(initial.phones && initial.phones.length ? initial.phones : [""]);
   const [emails, setEmails] = useState<string[]>(initial.emails && initial.emails.length ? initial.emails : [""]);
+  /* Таймзона ЦЕНТРУ (IANA). Раніше її мовчки перезаписувала зона БРАУЗЕРА при
+     кожному «Зберегти» — адмін з іншої країни (або з увімкненим VPN) ламав час
+     усієї клініки: від нього залежать «Запізнення», «Уточнити», гарди виклику й
+     заборона запису в минуле. Тепер це явне поле; авто-детект — лише як
+     початкове значення для НОВОЇ клініки. */
+  const [timezone, setTimezone] = useState(initial.timezone || browserTz());
 
   const [adminName, setAdminName] = useState(initial.adminName || "");
   const [adminEmail, setAdminEmail] = useState(initial.adminEmail || "");
@@ -179,11 +234,11 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
 
   useEffect(() => {
     const adminPhoneOk = aPhones.some((p) => p.trim() !== "");
-    const ok = clinic.trim() !== "" && city.trim() !== "" && adminName.trim() !== "" && adminPhoneOk && equip.length > 0 && equipBreaksValid(equip);
+    const ok = clinic.trim() !== "" && city.trim() !== "" && adminName.trim() !== "" && adminPhoneOk && equip.length > 0 && equipHoursValid(equip) && equipBreaksValid(equip);
     report(1, !!ok);
-    onData({ clinic, city, address, phones, emails, adminName, adminEmail, aPhones, aEmails, equip });
+    onData({ clinic, city, address, phones, emails, timezone, adminName, adminEmail, aPhones, aEmails, equip });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clinic, city, address, phones, emails, adminName, adminEmail, aPhones, aEmails, equip]);
+  }, [clinic, city, address, phones, emails, timezone, adminName, adminEmail, aPhones, aEmails, equip]);
 
   function setEq(i: number, k: string, v: string | boolean) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, [k]: v } : x))); }
   function toggleEqDay(i: number, d: number) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, days: x.days.map((v, k) => (k === d ? (v ? 0 : 1) : v)) } : x))); }
@@ -209,6 +264,31 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
   function addEq() { setEquip((a) => [...a, { id: Date.now(), type: "МРТ", desc: "", room: "", ...mkSched() }]); }
   function delEq(i: number) { setEquip((a) => a.filter((_, j) => j !== i)); }
 
+  /* Видалення кабінету — через ПІДТВЕРДЖЕННЯ (раніше ✕ зносив картку миттєво, без
+     попередження й без шансу відмінити). Для НАЯВНОГО кабінету (є roomId) спершу
+     перевіряємо активні записи в черзі: якщо є — видалення блокуємо (інакше save
+     усе одно відхилить, але вже після втрати картки, і незрозуміло чому). Перевірка
+     best-effort: якщо не вдалось — м'яке підтвердження (save лишається запобіжником). */
+  const [delAsk, setDelAsk] = useState<{ i: number; name: string; count: number | null; checking: boolean } | null>(null);
+  async function askDelEq(i: number) {
+    const e = equip[i];
+    const name = (e.room || e.type || "Кабінет").trim();
+    if (!e.roomId) { setDelAsk({ i, name, count: 0, checking: false }); return; }   // новий кабінет — записів бути не може
+    setDelAsk({ i, name, count: null, checking: true });
+    try {
+      const supabase = createClient();
+      const { count, error } = await supabase
+        .from("queue_entries")
+        .select("id", { count: "exact", head: true })
+        .eq("room_id", e.roomId)
+        .in("status", ["scheduled", "waiting", "in_progress", "needs_reschedule"]);
+      if (error) throw error;
+      setDelAsk((cur) => (cur && cur.i === i ? { ...cur, count: count ?? 0, checking: false } : cur));
+    } catch {
+      setDelAsk((cur) => (cur && cur.i === i ? { ...cur, count: null, checking: false } : cur)); // не змогли перевірити
+    }
+  }
+
   return (
     <div className="fade-in">
       {active === "sec-clinic" && (<>
@@ -232,6 +312,17 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
             <CitySelect value={city} onChange={setCity} required /></label>
           <label className="fld" style={{ flex: 2 }}><span className="fld-lab">Адреса</span>
             <input className="inp" placeholder="вул., будинок, поверх, індекс" value={address} onChange={(e) => setAddress(e.target.value)} /></label>
+        </div>
+        <div className="fld-row">
+          <label className="fld"><span className="fld-lab">Часовий пояс центру <Req /></span>
+            <select className="inp" value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+              {(tzList().includes(timezone) ? tzList() : [timezone, ...tzList()]).map((z) => (
+                <option key={z} value={z}>{z}</option>
+              ))}
+            </select>
+            <span className="fld-hint">Зараз у центрі: {tzNow(timezone)}. За цим часом рахуються «Запізнення», «Уточнити» та заборона запису в минуле — не змінюйте, якщо ви в іншій країні за центр.</span>
+          </label>
+          <span className="fld-spacer" />
         </div>
         <div className="contacts-grid">
           <ContactList label="Телефони" items={phones} setItems={setPhones} ph="+38 0__ ___ __ __" />
@@ -270,13 +361,11 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
       <div className="form-card" style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 16 }}>
         {equip.map((e, i) => (
           <div key={e.id} className="equip-block">
-            <button className="mini-icon equip-block-del" type="button" title="Видалити обладнання" onClick={() => delEq(i)} disabled={equip.length <= 1}>✕</button>
+            <button className="mini-icon equip-block-del" type="button" title="Видалити обладнання" onClick={() => askDelEq(i)} disabled={equip.length <= 1}>✕</button>
             <div className="equip-info">
               <div className="equip-info-row">
                 <select className="inp equip-type" value={e.type} onChange={(ev) => setEq(i, "type", ev.target.value)}>
-                  <option value="МРТ">МРТ</option>
-                  <option value="КТ">КТ</option>
-                  <option value="Інше">Інше</option>
+                  {MODALITIES.map((m) => <option key={m.code} value={m.label}>{m.label}</option>)}
                 </select>
                 <input className="inp equip-room2" placeholder="Кабінет / №" value={e.room} onChange={(ev) => setEq(i, "room", ev.target.value)} />
               </div>
@@ -295,13 +384,16 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
                 Свій час для кожного дня
               </label>
 
-              {!e.perDay && (
+              {!e.perDay && (() => {
+                const hErr = dayHoursError(e.start, e.end);
+                return (
                 <>
                   <div className="eq-hours">
-                    <input className="inp tabular eq-time" type="time" value={e.start} onChange={(ev) => setEq(i, "start", ev.target.value)} />
+                    <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" value={e.start} onChange={(ev) => setEq(i, "start", ev.target.value)} />
                     <span className="eq-dash">–</span>
-                    <input className="inp tabular eq-time" type="time" value={e.end} onChange={(ev) => setEq(i, "end", ev.target.value)} />
+                    <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" value={e.end} onChange={(ev) => setEq(i, "end", ev.target.value)} />
                   </div>
+                  {hErr && <span className="eq-break-err">{hErr}</span>}
                   <div className="eq-breaks">
                     {e.breaks.map((b, bi) => {
                       const err = breakRowError(e.breaks, bi, e.start, e.end);
@@ -321,7 +413,8 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
                     <button className="btn btn-ghost btn-sm eq-break-add" type="button" onClick={() => addEqBreak(i)}>＋ Перерва</button>
                   </div>
                 </>
-              )}
+                );
+              })()}
 
               {e.perDay && (
                 <div className="eq-perday-list">
@@ -330,11 +423,14 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
                       <div key={d} className="eq-perday-row">
                         <span className="eq-perday-day">{d}</span>
                         <div className="eq-perday-fields">
+                          {(() => { const dhErr = dayHoursError(e.dayHours[di].start, e.dayHours[di].end); return (<>
                           <div className="eq-hours">
-                            <input className="inp tabular eq-time" type="time" value={e.dayHours[di].start} onChange={(ev) => setEqDay(i, di, "start", ev.target.value)} />
+                            <input className={"inp tabular eq-time" + (dhErr ? " invalid" : "")} type="time" value={e.dayHours[di].start} onChange={(ev) => setEqDay(i, di, "start", ev.target.value)} />
                             <span className="eq-dash">–</span>
-                            <input className="inp tabular eq-time" type="time" value={e.dayHours[di].end} onChange={(ev) => setEqDay(i, di, "end", ev.target.value)} />
+                            <input className={"inp tabular eq-time" + (dhErr ? " invalid" : "")} type="time" value={e.dayHours[di].end} onChange={(ev) => setEqDay(i, di, "end", ev.target.value)} />
                           </div>
+                          {dhErr && <span className="eq-break-err">{dhErr}</span>}
+                          </>); })()}
                           <div className="eq-breaks">
                             {e.dayHours[di].breaks.map((b, bi) => {
                               const err = breakRowError(e.dayHours[di].breaks, bi, e.dayHours[di].start, e.dayHours[di].end);
@@ -371,21 +467,58 @@ function StepRegister({ report, onData, initial, active }: { report: (k: number,
 
       {active === "sec-price" && (<>
       <h1 className="wiz-h">Послуги та прайс</h1>
-      <div className="form-card" style={{ marginTop: 16 }}>
-        <div className="info-banner">
-          <span className="ib-ic" style={{ color: "var(--blue)" }}>🛠</span>
-          <span className="ib-txt"><b>Незабаром.</b> Тут зʼявиться керування переліком послуг і цінами центру — з привʼязкою до модальності та кабінетів.</span>
-        </div>
+      <div className="info-banner" style={{ marginTop: 12 }}>
+        <span className="ib-ic" style={{ color: "var(--blue)" }}>₴</span>
+        <span className="ib-txt">
+          <b>Базовий каталог центру</b> — перелік досліджень, тривалості та ціни на модальність.
+          Для <b>кожного кабінета</b> ціну/тривалість/склад можна переозначити окремо — оберіть
+          кабінет у списку «Налаштувати». Порожні поля кабінета успадковують базовий каталог.
+          {rooms.length === 0 && <> <b style={{ color: "var(--orange)" }}>Спершу додайте й збережіть кабінети</b> (крок «Обладнання та кабінети») — тоді зʼявиться налаштування по кабінетах.</>}
+        </span>
+      </div>
+      <div style={{ marginTop: 14 }}>
+        <ServicesEditor clinicId={clinicId} services={services} rooms={rooms} roomOverrides={roomOverrides} embedded />
       </div>
       </>)}
+
+      {delAsk && (() => {
+        const blocked = (delAsk.count ?? 0) > 0;   // є активні записи → видаляти не можна
+        return (
+          <ConfirmDialog
+            title={blocked ? "Не можна видалити кабінет" : "Видалити кабінет?"}
+            text={
+              delAsk.checking
+                ? <>Перевіряю записи в кабінеті <b>{delAsk.name}</b>…</>
+                : blocked
+                  ? <>У кабінеті <b>{delAsk.name}</b> — <b>{delAsk.count}</b> активних запис(ів) у черзі. Спершу перенесіть або скасуйте їх — інакше пацієнти залишаться без кабінету.</>
+                  : delAsk.count === null
+                    ? <>Не вдалося перевірити записи кабінету <b>{delAsk.name}</b>. Видалити? Якщо в ньому є пацієнти, збереження буде заблоковано.</>
+                    : <>Кабінет <b>{delAsk.name}</b> буде видалено з центру при збереженні. Скасувати дію потім не можна.</>
+            }
+            danger={!blocked}
+            busy={delAsk.checking}
+            hideCancel={blocked}
+            confirmLabel={blocked ? "Зрозуміло" : "Видалити"}
+            cancelLabel="Скасувати"
+            onClose={() => setDelAsk(null)}
+            onConfirm={() => {
+              if (delAsk.checking) return;
+              if (!blocked) delEq(delAsk.i);
+              setDelAsk(null);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }
 
 /* ---------- Майстер (контейнер) ---------- */
 type SetupRoom = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type ServiceRow = Tables<"services">;
+type SroRow = Tables<"service_room_overrides">;
 
-export default function SetupWizard({ clinicId, userId, initial, rooms = [], clinicName, adminName }: { clinicId: string; userId: string; initial: WizardInitial; rooms?: SetupRoom[]; clinicName?: string; adminName?: string }) {
+export default function SetupWizard({ clinicId, userId, initial, rooms = [], services = [], roomOverrides = [], clinicName, adminName, queuePolicy }: { clinicId: string; userId: string; initial: WizardInitial; rooms?: SetupRoom[]; services?: ServiceRow[]; roomOverrides?: SroRow[]; clinicName?: string; adminName?: string; queuePolicy: QueuePolicyInitial }) {
   const router = useRouter();
   const [activeSection, setActiveSection] = useState("sec-clinic");
   const [saving, setSaving] = useState(false);
@@ -412,6 +545,20 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
     try {
       const supabase = createClient();
 
+      /* Таймзона — ЯВНИЙ вибір адміна (поле в профілі центру). Раніше сюди щоразу
+         писалась зона БРАУЗЕРА оператора: адмін із іншої країни (або з VPN) мовчки
+         ламав час усієї клініки — а від нього залежать «Запізнення», «Уточнити»,
+         гарди виклику й заборона запису в минуле. Порожню/невалідну зону не пишемо. */
+      const tz = (d.timezone || "").trim();
+      const tzValid = !!tz && (() => {
+        try { new Intl.DateTimeFormat("uk-UA", { timeZone: tz }); return true; } catch { return false; }
+      })();
+      if (tz && !tzValid) {
+        push("Некоректний часовий пояс центру", "error");
+        setSaving(false);
+        return false;
+      }
+
       const { error: ce } = await supabase
         .from("clinics")
         .update({
@@ -420,10 +567,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
           address: d.address.trim() || null,
           phones: clean(d.phones),
           emails: clean(d.emails),
-          // Таймзона клініки — авто-детект браузера оператора при налаштуванні
-          // (браузер зазвичай у зоні клініки). Керує порогами «Уточнити»/«Запізнення»
-          // на сервері й клієнті (універсально для користувачів з усього світу).
-          timezone: (typeof Intl !== "undefined" && Intl.DateTimeFormat().resolvedOptions().timeZone) || "UTC",
+          ...(tzValid ? { timezone: tz } : {}),
           configured_at: new Date().toISOString(),
         })
         .eq("id", clinicId);
@@ -442,7 +586,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
       const roomFields = (e: EquipItem): TablesInsert<"rooms"> => ({
         clinic_id: clinicId,
         name: (e.room || e.type).trim(),
-        modality: e.type === "МРТ" ? "MRI" : e.type === "КТ" ? "CT" : "OTHER",
+        modality: modalityCode(e.type),
         apparatus_model: e.desc.trim() || null,
         schedule: {
           days: e.days, start: e.start, end: e.end,
@@ -452,6 +596,39 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
           dayHours: e.dayHours.map((dh) => ({ start: dh.start, end: dh.end, breaks: dh.breaks.filter((b) => b.start && b.end && b.end > b.start) })),
         } as unknown as Json,
       });
+      /* ⚠ Видалення кабінету — НЕ безпечна операція: queue_entries.room_id має
+         ON DELETE SET NULL (0001), тож усі записи пацієнтів (зокрема майбутні)
+         лишилися б у базі з room_id = NULL: зникають із дошки кабінету, їх не
+         можна викликати в кабінет, і ніхто про це не дізнається (раніше тут був
+         просто тост «Зміни збережено»). Тому: перевіряємо ДО будь-яких записів
+         у БД і блокуємо збереження, поки активні записи не перенесуть/скасують. */
+      const { data: existingRooms } = await supabase.from("rooms").select("id, name").eq("clinic_id", clinicId);
+      const keptIds = d.equip.map((e) => e.roomId).filter(Boolean) as string[];
+      const removedRooms = (existingRooms || []).filter((r) => !keptIds.includes(r.id));
+      if (removedRooms.length) {
+        const { data: blockers, error: be } = await supabase
+          .from("queue_entries")
+          .select("room_id")
+          .in("room_id", removedRooms.map((r) => r.id))
+          /* 0079: needs_reschedule ОБОВʼЯЗКОВО тут. Запис без слота — це все ще
+             живий пацієнт, який чекає на дзвінок реєстратури. Без нього кабінет
+             видалився б МОВЧКИ, room_id став би NULL (on delete set null) — рівно
+             та втрата записів, від якої цей блокер і ставили (P0 UX-аудиту). */
+          .in("status", ["scheduled", "waiting", "in_progress", "needs_reschedule"]);
+        if (be) throw be;
+        if (blockers && blockers.length) {
+          const byRoom: Record<string, number> = {};
+          blockers.forEach((b) => { const k = String(b.room_id); byRoom[k] = (byRoom[k] || 0) + 1; });
+          const list = removedRooms
+            .filter((r) => byRoom[r.id])
+            .map((r) => `«${r.name}» — ${byRoom[r.id]} запис(ів)`)
+            .join("; ");
+          push("Не можна видалити кабінет із активними записами: " + list + ". Спершу перенесіть або скасуйте ці записи.", "error");
+          setSaving(false);
+          return false;
+        }
+      }
+
       const keepIds: string[] = [];
       for (const e of d.equip) {
         if (e.roomId) {
@@ -464,11 +641,9 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
           if (ins) keepIds.push(ins.id);
         }
       }
-      // Прибрані в майстрі кабінети — видаляємо точково за id.
-      const { data: existingRooms } = await supabase.from("rooms").select("id").eq("clinic_id", clinicId);
-      const removed = (existingRooms || []).map((r) => r.id).filter((id) => !keepIds.includes(id));
-      for (const id of removed) {
-        const { error: de } = await supabase.from("rooms").delete().eq("id", id);
+      // Прибрані в майстрі кабінети (активних записів у них уже точно немає — перевірили вище).
+      for (const r of removedRooms) {
+        const { error: de } = await supabase.from("rooms").delete().eq("id", r.id);
         if (de) throw de;
       }
 
@@ -493,13 +668,6 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
     const ok = await save();
     setExitAsk(false);
     if (ok) router.push("/queue");
-  }
-
-  async function signOut() {
-    const supabase = createClient();
-    await supabase.auth.signOut();
-    router.push("/login");
-    router.refresh();
   }
 
   return (
@@ -539,11 +707,19 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], cli
             <>
               {/* Кожне вікно налаштувань — окремо; перемикається кружками зліва */}
               <div style={{ display: FORM_SECTIONS.includes(activeSection) ? "block" : "none" }}>
-                <StepRegister report={report} onData={onData} initial={initial} active={activeSection} />
+                <StepRegister report={report} onData={onData} initial={initial} active={activeSection}
+                  clinicId={clinicId} services={services} rooms={rooms} roomOverrides={roomOverrides} />
+              </div>
+
+              {/* 0078 — політика черги при затримці дослідження (лише адмін). */}
+              <div className="fade-in" style={{ display: activeSection === "sec-queue" ? "block" : "none" }}>
+                <h1 className="wiz-h">Управління чергою</h1>
+                <p className="wiz-hsub">Що робити, коли дослідження затягнулося і наїжджає на наступні записи.</p>
+                <QueuePolicySettings initial={queuePolicy} />
               </div>
 
               <div className="fade-in" style={{ display: activeSection === "sec-staff" ? "block" : "none" }}>
-                <h1 className="wiz-h">Радіологи та доступи</h1>
+                <h1 className="wiz-h">Персонал і доступи</h1>
                 <StaffManager embedded clinicId={clinicId} rooms={rooms} clinicName={clinicName} adminName={adminName} />
               </div>
 

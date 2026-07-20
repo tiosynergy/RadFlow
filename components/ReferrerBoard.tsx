@@ -15,8 +15,9 @@ import { useEffect, useMemo, useState } from "react";
 import MiniCalendar from "@/components/MiniCalendar";
 import { PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { isLate, LATE_META } from "@/lib/queueStatus";
-import { wallNow } from "@/lib/incidents";
-import { diffStudies, studyText, studiesChanged } from "@/lib/studies";
+import { wallNow, wallToday0 } from "@/lib/incidents";
+import { diffStudies, studyText, studiesChanged, modalityLabel } from "@/lib/studies";
+import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import type { Json } from "@/supabase/types";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
@@ -46,6 +47,10 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   no_show: { label: "Неявка", cls: "red" },
   not_held: { label: "Не відбулося", cls: "gray" },
   cancelled: { label: "Скасовано", cls: "gray" },
+  // 0079/0080 — слот пацієнта втрачено через затримку в кабінеті; новий час підбирає центр.
+  // Направник має це БАЧИТИ (інакше запис виглядав би як звичайне «Очікує»), але не діє:
+  // статусів він не змінює (гард guard_status_change_referrer, 0048).
+  needs_reschedule: { label: "Потребує переносу", cls: "orange" },
 };
 /* Статус обдзвону — read-only бейдж (направник бачить, але не змінює). */
 const CALL_META: Record<string, { label: string; icon: string }> = {
@@ -79,7 +84,6 @@ function refIsLate(r: BoardReferral, tz?: string | null): boolean {
   if (!r.scheduled_date) return false;
   return isLate(r.status, new Date(r.scheduled_date + "T00:00:00"), r.scheduled_time, r.buffer_time_min, wallNow(tz || undefined));
 }
-function modLabel(m?: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : ""; }
 
 interface Props {
   referrals: BoardReferral[];
@@ -131,7 +135,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
     if (centerId !== "all" && r.clinic_id !== centerId) return false;
     if (roomId !== "all" && r.room_id !== roomId) return false;
     if (dateFilter && r.scheduled_date !== dateFilter) return false;
-    if (query.trim()) { const q = query.trim().toLowerCase(); if (!((r.patient_name || "").toLowerCase().includes(q) || procLabel(r).toLowerCase().includes(q))) return false; }
+    if (query.trim()) { const q = query.trim().toLowerCase(); if (!((r.patient_name || "").toLowerCase().includes(q) || procLabel(r).toLowerCase().includes(q) || (r.patient_phone || "").includes(formatPhoneSearch(query.trim())))) return false; }
     return true;
   }), [referrals, centerId, roomId, dateFilter, query]);
 
@@ -150,7 +154,12 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
 
   // Календар як у адміна: вибір дня = фільтр за датою (порожньо = всі дати).
   const dk = (d: Date) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-  const calDate = dateFilter ? new Date(dateFilter + "T00:00:00") : new Date();
+  /* «Сьогодні» в календарі — за зоною ОБРАНОГО центру (портал мультиклінічний,
+     singleton setClinicTz тут не виставляється). Для «Всі центри» спільної доби не
+     існує → беремо ПЕРШИЙ центр: вибір довільний, але детермінований (fallback на
+     singleton дав би зону чужого центру з попереднього екрана). */
+  const calTz = (centerId !== "all" ? centersById[centerId]?.timezone : activeCenters[0]?.timezone) || undefined;
+  const calDate = dateFilter ? new Date(dateFilter + "T00:00:00") : wallToday0(calTz);
 
   return (
     <div style={{ maxWidth: 1280, margin: "0 auto", display: "grid", gridTemplateColumns: "minmax(0,1fr) 300px", gap: 16, alignItems: "start" }}>
@@ -181,11 +190,11 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
         {centerId !== "all" && rooms.length > 0 && (
           <select className="inp" style={{ height: 32, padding: "2px 8px", maxWidth: 240 }} value={roomId} onChange={(e) => setRoomId(e.target.value)}>
             <option value="all">Усі кабінети</option>
-            {rooms.map((r) => <option key={r.id} value={r.id}>{modLabel(r.modality)} · {r.name}</option>)}
+            {rooms.map((r) => <option key={r.id} value={r.id}>{modalityLabel(r.modality)} · {r.name}</option>)}
           </select>
         )}
         <div className="spacer" />
-        <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
+        <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} /></div>
       </div>
 
       {filtered.length === 0 ? (
@@ -201,7 +210,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
               const late = refIsLate(r, centersById[r.clinic_id]?.timezone);
               const meta = late ? LATE_META : (STATUS_META[r.status] || STATUS_META.scheduled);
               const room = r.room_id ? roomById[r.room_id] : null;
-              const km = room ? modLabel(room.modality) : "";
+              const km = room ? modalityLabel(room.modality) : "";
               const changed = studiesChanged(r.studies_original as Parameters<typeof studiesChanged>[0], r.studies as Parameters<typeof studiesChanged>[1]);
               const call = CALL_META[r.call_status || "not_called"];
               // Направник керує записом у ДВОХ випадках: він автор (created_by)
@@ -294,7 +303,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
       )}
       </div>
       <aside style={{ position: "sticky", top: 8 }}>
-        <MiniCalendar selectedDate={calDate} onSelectDate={(d) => setDateFilter(dk(d))} highlightSelected={!!dateFilter} />
+        <MiniCalendar selectedDate={calDate} onSelectDate={(d) => setDateFilter(dk(d))} highlightSelected={!!dateFilter} tz={calTz} />
         {dateFilter && (
           <button className="btn btn-secondary btn-sm" style={{ width: "100%", marginTop: 8, justifyContent: "center" }} onClick={() => setDateFilter("")}>Всі дати</button>
         )}

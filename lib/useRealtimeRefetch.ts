@@ -10,6 +10,12 @@ export type RealtimeSub = {
   filter?: string;
   /** Что вызвать при изменении этой таблицы (точечный лоадер доски). */
   onChange: () => void;
+  /* Ключ дебаунса. По умолчанию — уникальный на подписку, то есть у каждой свой
+     таймер. Если несколько подписок ведут в ОДИН лоадер (CEO: по подписке на
+     каждый центр, onChange у всех = reload), без общего ключа всплеск в 20 центрах
+     давал до 20 полных reload'ов подряд. Задайте один и тот же debounceKey — и
+     сработает один вызов. */
+  debounceKey?: string;
 };
 
 type Options = {
@@ -59,7 +65,19 @@ export function useRealtimeRefetch({
     const POLL_MAX = 60000;
     const debouncers = new Map<string, ReturnType<typeof setTimeout>>();
 
-    const callAll = () => subsRef.current.forEach((s) => s.onChange());
+    /* callAll — первинне завантаження, повернення на вкладку/фокус і кожен тик
+       поллінга. Дедуплікуємо за тим самим ключем, що й дебаунс: у CEO підписок
+       стільки ж, скільки центрів, і всі ведуть в ОДИН reload — без цього на маунті
+       й на кожному фокусі летіло по 20 повних перезавантажень дашборда. */
+    const callAll = () => {
+      const seen = new Set<string>();
+      subsRef.current.forEach((s, i) => {
+        const key = s.debounceKey ?? s.table + ":" + i;
+        if (seen.has(key)) return;
+        seen.add(key);
+        s.onChange();
+      });
+    };
 
     const scheduleDebounced = (key: string, fn: () => void) => {
       const prev = debouncers.get(key);
@@ -119,7 +137,7 @@ export function useRealtimeRefetch({
           },
           () => {
             const cur = subsRef.current[i];
-            if (cur) scheduleDebounced(cur.table + ":" + i, cur.onChange);
+            if (cur) scheduleDebounced(cur.debounceKey ?? cur.table + ":" + i, cur.onChange);
           }
         );
       });

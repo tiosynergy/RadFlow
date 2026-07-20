@@ -337,7 +337,10 @@ html[data-density="spacious"] .fld { gap: 9px; }
 @media (max-width: 1080px) { .board-top { grid-template-columns: 1fr; } }
 
 /* ===== Stats bar ===== */
-.stats { display: grid; grid-template-columns: repeat(6, minmax(0, 112px)); gap: 8px; margin-bottom: 16px; justify-content: start; }
+/* Усі плашки в ОДИН рядок незалежно від кількості (7-ма «Не відбулося» раніше
+   переносилась через фіксовані 6 колонок). auto-flow column → один ряд; треки
+   до 112px, але з min 0 ужимаються, коли місця бракує (без переносу). */
+.stats { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 112px); gap: 8px; margin-bottom: 16px; justify-content: start; }
 .stat {
   background: var(--card); border: 1px solid var(--border);
   border-radius: var(--r-lg); padding: 3px 10px;
@@ -754,6 +757,8 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .st-flab { font-size: 11px; font-weight: 500; color: var(--text-muted); }
 .st-field-type { flex: 0 0 auto; }
 .st-field-region { flex: 1 1 220px; min-width: 180px; }
+.st-field-contrast { flex: 0 0 auto; }
+.st-field-contrast .rf-check { height: 34px; }
 .st-field-dur { flex: 0 0 auto; }
 .st-seg { flex: 0 0 auto; }
 /* Зафіксований тип (модальність задана кабінетом) — нередагований бейдж */
@@ -809,7 +814,11 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .prio-seg-btn.muted.active { border-color: var(--border-strong); background: var(--gray-badge-bg); color: var(--text); }
 @media (prefers-reduced-motion: reduce) { .prio-seg-btn { transition: none; } }
 
-.toast-wrap { position: fixed; bottom: 22px; right: 22px; display: flex; flex-direction: column; gap: 10px; z-index: 100; }
+/* z-index ВИЩЕ оверлея модалки (.overlay = 200). Було 100: тост із помилкою
+   малювався ПІД відкритою модалкою, і відмова сервера («слот щойно зайняли»)
+   виглядала як «кнопка не працює». Самі модалки тепер показують помилку в собі
+   (.dlg-err), але тост має лишатись видимим і поверх них. */
+.toast-wrap { position: fixed; bottom: 22px; right: 22px; display: flex; flex-direction: column; gap: 10px; z-index: 250; }
 .toast {
   display: flex; align-items: center; gap: 11px; min-width: 290px; max-width: 380px;
   background: var(--card); border: 1px solid var(--border-strong); border-radius: var(--r-md);
@@ -972,6 +981,27 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .dlg-body { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
 .dlg-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); }
 
+/* --- Компактний діалог підтвердження (ConfirmDialog) ---
+   Це коротке «так/ні», а не форма: тісніші відступи, менша ширина, текст одним
+   абзацом. .dlg-text ОБОВʼЯЗКОВИЙ: без нього кожен вузол усередині .dlg-body
+   (flex column + gap) стає окремим рядком і речення розсипається. */
+.dlg-confirm { max-width: 380px; }
+.dlg-confirm .dlg-head { padding: 13px 16px; }
+.dlg-confirm .dlg-title { font-size: 15px; line-height: 1.35; }
+.dlg-confirm .dlg-body { padding: 14px 16px; }
+.dlg-confirm .dlg-foot { padding: 11px 16px; }
+.dlg-text { margin: 0; font-size: 13.5px; line-height: 1.5; color: var(--text-secondary); }
+.dlg-text b { color: var(--text); font-weight: 600; }
+
+/* Помилка сервера — В САМІЙ модалці (над футером): відмова бронювання/переносу
+   («слот щойно зайняли», перетин, кабінет у простої) має бути видно там, де людина
+   натиснула кнопку, а не тостом у кутку дошки. */
+.dlg-err {
+  margin: 0 18px 12px; padding: 10px 13px;
+  background: var(--red-bg); border: 1px solid rgba(255,69,58,0.35); border-radius: var(--r-md);
+  color: var(--red); font-size: 12.5px; font-weight: 500; line-height: 1.45;
+}
+
 .hint-blue { background: var(--blue-bg-soft); border: 1px solid rgba(10,132,255,0.25); border-radius: var(--r-md); padding: 10px 13px; font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; }
 .hint-blue b { color: #4da3ff; }
 
@@ -1122,6 +1152,10 @@ select.inp { cursor: pointer; }
 .bk-seg-btn.active { background: var(--card-2); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
 .bk-seg-btn.active.mrt { color: #4da3ff; background: var(--blue-bg); }
 .bk-seg-btn.active.ct  { color: var(--orange); background: var(--orange-bg); }
+.bk-seg-btn.active.us    { color: #5ac8fa; background: rgba(50,173,230,0.15); }
+.bk-seg-btn.active.xray  { color: #d9a6f5; background: rgba(191,90,242,0.15); }
+.bk-seg-btn.active.mammo { color: #ff7a92; background: rgba(255,55,95,0.15); }
+.bk-seg-btn.active.other { color: #a3a3a8; background: rgba(142,142,147,0.15); }
 
 /* Contrast toggle row — compact (no radio) */
 .bk-ct-row { display: flex; gap: 6px; }
@@ -1151,15 +1185,18 @@ select.inp { cursor: pointer; }
 /* ===== Two-column booking layout ===== */
 /* Шапка й підвал зафіксовані, прокручується лише середина — підвал із кнопкою
    «Зберегти» завжди видно, навіть на низьких екранах. */
-.bk-dialog { max-width: 840px; width: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.bk-dialog { max-width: 960px; width: 100%; display: flex; flex-direction: column; overflow: hidden; }
 .bk-dialog .dlg-head, .bk-dialog .dlg-foot { flex-shrink: 0; }
 .bk-grid {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  /* minmax(0,…) на ОБИДВІ колонки: жодна не може розпирати грід ширше за модалку
+     (ліва — широкий селект/сегменти; права — сітка/легенда). Інакше зʼявлявся
+     горизонтальний скрол і контент обрізався. */
+  grid-template-columns: minmax(0,1fr) minmax(0,372px);
   overflow-y: auto;
   min-height: 0;
 }
-.bk-col { display: flex; flex-direction: column; gap: 7px; padding: 11px 15px; }
+.bk-col { display: flex; flex-direction: column; gap: 7px; padding: 11px 15px; min-width: 0; }
 .bk-col-left { border-right: 1px solid var(--border); }
 .bk-col-right { background: var(--bg-elevated); gap: 8px; }
 .bk-dialog .dlg-head { padding: 12px 16px; }
@@ -1197,6 +1234,20 @@ select.inp { cursor: pointer; }
 .bk-room-chip.ct  { border-bottom-color: rgba(255,159,10,0.4); }
 .bk-room-chip.active.mrt { border-color: var(--blue); border-bottom-color: var(--blue); background: var(--blue-bg); color: #4da3ff; }
 .bk-room-chip.active.ct  { border-color: var(--orange); border-bottom-color: var(--orange); background: var(--orange-bg); color: var(--orange); }
+/* Нові модальності: без цих правил АКТИВНИЙ чип УЗД/РГ/ММГ був безстильним —
+   вибраний кабінет не відрізнявся від невибраного (баг-репорт власника 2026-07-20).
+   Палітра = us/xray/mammo з блоку .equip-tile нижче. */
+.bk-room-chip.us    { border-bottom-color: rgba(50,173,230,0.4); }
+.bk-room-chip.xray  { border-bottom-color: rgba(191,90,242,0.4); }
+.bk-room-chip.mammo { border-bottom-color: rgba(255,55,95,0.4); }
+.bk-room-chip.active.us    { border-color: #5ac8fa; border-bottom-color: #5ac8fa; background: rgba(50,173,230,0.15); color: #5ac8fa; }
+.bk-room-chip.active.xray  { border-color: #d9a6f5; border-bottom-color: #d9a6f5; background: rgba(191,90,242,0.15); color: #d9a6f5; }
+.bk-room-chip.active.mammo { border-color: #ff7a92; border-bottom-color: #ff7a92; background: rgba(255,55,95,0.15); color: #ff7a92; }
+.bk-room-chip.active.other { border-color: var(--blue); border-bottom-color: var(--blue); background: var(--blue-bg); color: #4da3ff; }
+/* Явний маркер вибору для БУДЬ-ЯКОЇ модальності: галочка в куті (зліва зверху —
+   правий верхній кут зайнятий крапкою .bk-room-closed-dot). */
+.bk-room-chip { position: relative; }
+.bk-room-chip.active::after { content: "✓"; position: absolute; top: 2px; left: 6px; font-size: 11px; font-weight: 800; opacity: .9; }
 .bk-room-chip.closed { position: relative; border-bottom-color: var(--red); color: var(--text-faint); }
 .bk-room-chip.closed.active { border-color: var(--red); background: var(--red-bg); color: var(--red); }
 .bk-room-closed-dot { position: absolute; top: 4px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--red); }
@@ -1236,6 +1287,45 @@ select.inp { cursor: pointer; }
 .bk-free-count { font-size: 11px; font-weight: 600; color: var(--green); }
 .bk-slot-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
 .bk-slot-grid .slot { padding: 5px 0; font-size: 11px; border-radius: 6px; }
+
+/* Слоти 5 хв: у рядку 4 півгодинні слоти × 6 частин по 5 хв */
+.slot-picker { display: flex; flex-direction: column; gap: 8px; }
+.slot-grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px 7px; max-height: 340px; overflow-y: auto; padding-right: 2px; }
+/* Підказка зайнятого слота по тапу (тач: hover/title недоступні). Живе ПІД
+   сіткою (поза скрол-контейнером), тож завжди видима. */
+.slot-hint { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 8px;
+  background: var(--card-2); border: 1px solid var(--border-strong); font-size: 12px; line-height: 1.35; color: var(--text); }
+.slot-hint-txt { flex: 1; min-width: 0; white-space: pre-line; }
+.slot-hint-x { flex: none; background: none; border: none; color: var(--text-muted); font-size: 13px; cursor: pointer; padding: 0 2px; line-height: 1; }
+.slot-hint-x:hover { color: var(--text); }
+.slot.hinted { outline: 2px solid var(--blue); outline-offset: 1px; opacity: 0.6; }
+.slot-blk { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.slot-blk-lab { font-size: 10.5px; font-weight: 700; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.slot-blk-cells { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; }
+.slot-blk-cells .slot { padding: 5px 0; font-size: 9px; border-radius: 4px; min-width: 0; }
+/* Зелені межі планованого дослідження — правило нижче (після .busy/.tight/.brk),
+   бо слот-кінець сам по собі майже завжди tight (як стартова позиція нове
+   дослідження звідти вже не влазить), а при рівній специфічності з !important
+   виграє останнє правило. */
+@media (max-width: 560px) { .slot-grid4 { grid-template-columns: repeat(2, 1fr); } }
+/* Тач-таргети 5-хв сітки (WCAG 2.5.8, ≥24px). На ДОТИКОВИХ екранах комірки
+   збільшуємо і робимо 2 блоки в рядку (ширші комірки, ~40×30px). На миші —
+   лишається щільна сітка (pointer: fine її не зачіпає). */
+@media (pointer: coarse) {
+  .slot-grid4 { grid-template-columns: repeat(2, 1fr); max-height: 60vh; }
+  .slot-blk-cells { gap: 4px; }
+  .slot-blk-cells .slot { min-height: 32px; padding: 8px 0; font-size: 12px; border-radius: 6px; }
+  .slot-blk-lab { font-size: 12px; }
+}
+
+/* Перерви в редакторі графіка на дату (ScheduleEditModal) */
+.sch-breaks { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.sch-breaks-lab { font-size: 11px; font-weight: 600; color: var(--text-muted); }
+.sch-break-row { display: flex; align-items: center; gap: 6px; }
+.sch-break-row .inp { max-width: 96px; }
+.sch-break-del { color: var(--red); width: 26px; height: 26px; }
+.sch-break-add { align-self: flex-start; font-size: 12px; font-weight: 600; color: var(--blue); background: transparent; border: 1px dashed var(--border-strong); border-radius: 7px; padding: 4px 10px; cursor: pointer; }
+.sch-break-add:hover { border-color: var(--blue); }
 
 /* Footer summary */
 .bk-summary {
@@ -1316,6 +1406,27 @@ select.inp { cursor: pointer; }
 }
 .bd-room-kind.mrt { background: var(--blue); }
 .bd-room-kind.ct { background: var(--orange); }
+
+/* ── Нові модальності (0087): УЗД=бірюза, Рентген=фіолет, Мамографія=рожевий,
+   Інше=сірий. Додано поруч із наявними mrt(синій)/ct(помаранч) для всіх видів
+   тегів кабінету. Дублюється у radiologist.css / radflow-screens.css, бо ті теги
+   визначені й там (сторінки вантажать різні CSS). ── */
+.bd-room-kind.us { background: #32ade6; }
+.bd-room-kind.xray { background: #bf5af2; }
+.bd-room-kind.mammo { background: #ff375f; }
+.bd-room-kind.other { background: #8e8e93; }
+.equip-tile.us, .sb-cab-tile.us, .rvh-tile.us, .cld-type.us, .wl-mod.us, .bk-sched-mod.us { background: rgba(50,173,230,0.15); color: #5ac8fa; }
+.equip-tile.xray, .sb-cab-tile.xray, .rvh-tile.xray, .cld-type.xray, .wl-mod.xray, .bk-sched-mod.xray { background: rgba(191,90,242,0.15); color: #d9a6f5; }
+.equip-tile.mammo, .sb-cab-tile.mammo, .rvh-tile.mammo, .cld-type.mammo, .wl-mod.mammo, .bk-sched-mod.mammo { background: rgba(255,55,95,0.15); color: #ff7a92; }
+.equip-tile.other, .sb-cab-tile.other, .rvh-tile.other, .cld-type.other, .wl-mod.other, .bk-sched-mod.other { background: rgba(142,142,147,0.15); color: #a3a3a8; }
+.sch-room-ic.us { background: rgba(50,173,230,0.15); }
+.sch-room-ic.xray { background: rgba(191,90,242,0.15); }
+.sch-room-ic.mammo { background: rgba(255,55,95,0.15); }
+.sch-room-ic.other { background: rgba(142,142,147,0.15); }
+.bk-room-chip.us { border-bottom-color: rgba(50,173,230,0.4); }
+.bk-room-chip.xray { border-bottom-color: rgba(191,90,242,0.4); }
+.bk-room-chip.mammo { border-bottom-color: rgba(255,55,95,0.4); }
+.bk-room-chip.other { border-bottom-color: rgba(142,142,147,0.4); }
 .bd-room-meta { display: flex; flex-direction: column; min-width: 0; }
 .bd-room-name { font-size: 13px; font-weight: 600; color: var(--text); }
 .bd-room-model { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1377,18 +1488,59 @@ select.inp { cursor: pointer; }
 .bk-missing::before { content: "⚠ Залишилось:"; color: var(--red); font-weight: 700; margin-right: 2px; }
 .bk-miss-chip { background: var(--red-bg); color: var(--red); border: 1px solid var(--red); border-radius: 7px; padding: 1px 8px; font-size: 11.5px; font-weight: 600; }
 
-/* --- Прозорість слотів: зайнято vs не вміщується + список зайнятості --- */
+/* --- Прозорість слотів: зайнято vs перерва vs не вміщується + список зайнятості --- */
 .slot.busy { border-color: var(--red) !important; color: var(--red) !important; background: var(--red-bg) !important; opacity: 0.9; }
 .slot.tight { border-color: var(--orange) !important; color: var(--orange) !important; background: var(--orange-bg) !important; opacity: 0.9; }
+/* Перерва кабінету — НЕ зайнятість: нейтральна сіра штриховка, без червоного алярму. */
+.slot.brk { border-color: var(--border-strong) !important; color: var(--text-faint) !important; opacity: 0.9;
+  background: repeating-linear-gradient(135deg, rgba(142,142,147,0.26) 0 3px, rgba(142,142,147,0.07) 3px 6px) !important; }
+/* 0077 — ПОЗА ГРАФІКОМ (після закриття кабінету або в перерву). Слот доступний,
+   але вибір веде до діалогу підтвердження. Тому й колір окремий: це НЕ «зайнято»
+   (червоний) і НЕ «не вміщується» (помаранчевий), а «можна, але ти береш це на
+   себе» — фіолетовий пунктир. Свій колір тут не прикраса: якби ці слоти виглядали
+   як звичайні вільні, оператор би не помітив, що виводить центр за графік. */
+.slot.offsched { border-style: dashed !important; border-color: #bf5af2 !important; color: #d9a6f5 !important;
+  background: rgba(191, 90, 242, 0.12) !important; }
+.slot.offsched:hover:not(:disabled) { background: rgba(191, 90, 242, 0.24) !important; }
+.lg-dot.offsched { border: 1px dashed #bf5af2; background: rgba(191, 90, 242, 0.35); }
+.badge.offsched { background: rgba(191, 90, 242, 0.15); color: #d9a6f5; }
+/* Банер «ти зараз виходиш за графік» — у модалках і в діалозі підтвердження. */
+.info-banner.offsched { border-color: #bf5af2; background: rgba(191, 90, 242, 0.10); }
+
+/* Буфер ЧУЖОГО запису: кабінет ще зайнятий (прибирання/переукладка), але саме
+   дослідження вже скінчилось — червона штриховка замість суцільного червоного. */
+.slot.busybuf { border-color: var(--red) !important; color: #ff8c84 !important; opacity: 0.85;
+  background: repeating-linear-gradient(135deg, rgba(255,69,58,0.22) 0 3px, rgba(255,69,58,0.05) 3px 6px) !important; }
+/* Крос-модальний кейс: слот вільний у кабінеті, але пацієнт у цей час уже зайнятий
+   ІНШИМ кроком кейса (він не може бути у двох кабінетах одночасно). Окремий колір —
+   блакитна штриховка: це НЕ «зайнято кабінетом» (червоний) і НЕ «не вміщується»
+   (помаранчевий), а «пацієнт зайнятий деінде». Слот некликабельний. */
+.slot.casebusy { border-color: #3aa0c9 !important; color: #9bd8ee !important; opacity: 0.9;
+  background: repeating-linear-gradient(135deg, rgba(58,160,201,0.24) 0 3px, rgba(58,160,201,0.06) 3px 6px) !important; }
+/* Зелені межі планованого дослідження (початок і кінець) — мають перебивати busy/tight/brk. */
+.slot.plan { border-color: var(--green) !important; color: #eafff0 !important; background: rgba(48, 209, 88, 0.28) !important; opacity: 1 !important; text-decoration: none !important; }
+/* Буфер ПЛАНОВАНОГО дослідження — видно, коли кабінет реально звільниться. */
+.slot.planbuf { border-color: rgba(48,209,88,0.55) !important; color: #bff0cd !important; opacity: 1 !important; text-decoration: none !important;
+  background: repeating-linear-gradient(135deg, rgba(48,209,88,0.24) 0 3px, rgba(48,209,88,0.05) 3px 6px) !important; }
 .bk-busy-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
 .bk-busy-lab { font-size: 11.5px; color: var(--text-muted); }
 .bk-busy-chip { font-size: 11px; font-weight: 600; color: var(--red); background: var(--red-bg); border: 1px solid var(--red); border-radius: 6px; padding: 1px 7px; font-variant-numeric: tabular-nums; }
-.bk-slot-legend { display: flex; gap: 14px; margin-top: 9px; font-size: 11px; color: var(--text-muted); }
+/* flex-wrap ОБОВʼЯЗКОВИЙ: 7 пунктів легенди в один рядок мали min-content ~500px
+   і розпирали праву колонку сітки ширше за модалку → горизонтальний скрол. */
+.bk-slot-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 9px; font-size: 11px; color: var(--text-muted); }
 .bk-slot-legend > span { display: inline-flex; align-items: center; gap: 5px; }
 .lg-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 .lg-dot.free { background: var(--card-2); border: 1px solid var(--text-muted); }
 .lg-dot.tight { background: var(--orange); }
 .lg-dot.busy { background: var(--red); }
+.lg-dot.brk { border: 1px solid var(--border-strong);
+  background: repeating-linear-gradient(135deg, rgba(142,142,147,0.95) 0 2px, rgba(142,142,147,0.3) 2px 4px); }
+.lg-dot.busybuf { border: 1px solid var(--red);
+  background: repeating-linear-gradient(135deg, rgba(255,69,58,0.95) 0 2px, rgba(255,69,58,0.25) 2px 4px); }
+.lg-dot.casebusy { border: 1px solid #3aa0c9;
+  background: repeating-linear-gradient(135deg, rgba(58,160,201,0.95) 0 2px, rgba(58,160,201,0.3) 2px 4px); }
+.lg-dot.planbuf { border: 1px solid rgba(48,209,88,0.6);
+  background: repeating-linear-gradient(135deg, rgba(48,209,88,0.95) 0 2px, rgba(48,209,88,0.25) 2px 4px); }
 .bk-slot-confirm { margin-top: 9px; font-size: 12.5px; border-radius: 8px; padding: 8px 11px; }
 .bk-slot-confirm.ok { color: var(--green); background: var(--green-bg); }
 .bk-slot-confirm.bad { color: var(--red); background: var(--red-bg); }

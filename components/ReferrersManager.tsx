@@ -13,6 +13,7 @@ import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import PhoneInput from "@/components/PhoneInput";
 import HelpTip from "@/components/HelpTip";
+import { modalityShort, modalityKind } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -24,8 +25,6 @@ type EditForm = { policy: string; room_ids: string[]; note: string };
 type LoginSug = { id: string; login: string | null; full_name: string | null };
 type StrKey = "login" | "full_name" | "email" | "phone" | "note" | "policy";
 type ApiResult = { ok: boolean; data: any }; // eslint-disable-line @typescript-eslint/no-explicit-any
-
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
 
 const ACCESS_ST: Record<string, { label: string; cls: string }> = {
   active: { label: "Активний", cls: "green" },
@@ -102,13 +101,40 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   function setF(k: StrKey, v: string) { setForm((f) => ({ ...f, [k]: v })); }
   function toggleRoom(id: string) { setForm((f) => ({ ...f, room_ids: f.room_ids.includes(id) ? f.room_ids.filter((x) => x !== id) : [...f.room_ids, id] })); }
 
+  /* Санітизація room_ids гранта: лишаємо тільки кабінети, які зараз є в центрі.
+     У старих грантах осідали id видалених кабінетів (у списку — «?»), і при
+     збереженні вони поверталися в БД. Заодно вбиває дублі. */
+  const sanitizeRooms = (ids: string[] | null | undefined): string[] =>
+    Array.from(new Set((ids || []).filter((id) => !!roomById[id])));
+  /* «Усі кабінети» (null у БД) визначаємо ПО СКЛАДУ, а не по довжині масиву:
+     якщо в гранті лежали 3 протухлі id, а в центрі теж 3 кабінети — перевірка
+     на довжину вважала це «усі кабінети» й ТИХО РОЗШИРЮВАЛА доступ при збереженні. */
+  const isAllRooms = (ids: string[]) => allRoomIds.length > 0 && allRoomIds.every((id) => ids.includes(id));
+  /* Повертає room_ids для API або null = «усі кабінети». ПОРОЖНІЙ вибір — це НЕ
+     «усі»: раніше «зняти всі галочки» відкривало доступ до всіх кабінетів
+     (прямо протилежне наміру). Тепер порожній вибір — помилка (див. guardRooms). */
+  const roomIdsForSave = (ids: string[]): string[] | null => {
+    const clean = sanitizeRooms(ids);
+    return isAllRooms(clean) ? null : clean;
+  };
+  /* Перед збереженням: кабінети мають бути завантажені (інакше sanitizeRooms
+     вичистить усе й ми запишемо «усі кабінети») і хоча б один має бути обраний. */
+  function guardRooms(ids: string[]): boolean {
+    if (allRoomIds.length === 0) { notify("Кабінети центру не завантажились — оновіть сторінку", "error"); return false; }
+    if (sanitizeRooms(ids).length === 0) { notify("Оберіть хоча б один кабінет", "error"); return false; }
+    return true;
+  }
+
   function roomsLabel(room_ids: string[] | null) {
     if (!room_ids || room_ids.length === 0) return "усі кабінети";
-    return room_ids.map((id) => {
+    const known = sanitizeRooms(room_ids);
+    const lost = room_ids.length - known.length; // id кабінетів, яких уже немає в центрі
+    const names = known.map((id) => {
       const rm = roomById[id];
-      if (!rm) return "?";
       return rm.name + (rm.apparatus_model ? " (" + rm.apparatus_model + ")" : "");
-    }).join(", ");
+    });
+    if (!known.length) return lost ? "кабінетів немає (" + lost + " видалено)" : "усі кабінети";
+    return names.join(", ") + (lost ? " · " + lost + " видалено" : "");
   }
 
   const reload = useCallback(async () => {
@@ -140,8 +166,9 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   async function invite() {
     if (!form.login.trim()) { notify("Вкажіть логін направника", "error"); return; }
     if (!existingPicked && (!form.full_name.trim() || !form.phone.trim())) { notify("Для нового направника вкажіть ПІБ і телефон", "error"); return; }
+    if (!guardRooms(form.room_ids)) return;
     setBusy(true);
-    const room_ids = (form.room_ids.length === 0 || form.room_ids.length === allRoomIds.length) ? null : form.room_ids;
+    const room_ids = roomIdsForSave(form.room_ids);
     const { ok, data } = await postJSON("/api/referrers/invite", { ...form, room_ids });
     setBusy(false);
     if (!ok) { notify(data.error || "Помилка", "error"); return; }
@@ -178,6 +205,16 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   }
 
   async function reinvite(r: AccessRow) {
+    /* Не шлемо сирий масив із БД: у старих грантах там є id видалених кабінетів —
+       сервер тепер відповість 400. Санітизуємо; якщо не лишилось жодного живого
+       кабінету — просимо адміна обрати кабінети явно (мовчки перетворювати на
+       null = «усі кабінети» не можна). */
+    const clean = r.room_ids && r.room_ids.length ? sanitizeRooms(r.room_ids) : null;
+    if (r.room_ids && r.room_ids.length && (!clean || clean.length === 0)) {
+      notify("У цього гранта не лишилось жодного кабінету — оберіть кабінети", "error");
+      startEdit(r);
+      return;
+    }
     setBusyId(r.access_id);
     const { ok, data } = await postJSON("/api/referrers/invite", {
       login: r.referrer.login || "",
@@ -186,7 +223,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
       email: "",
       note: r.note || "",
       policy: r.policy || "direct",
-      room_ids: r.room_ids || null,
+      room_ids: clean && isAllRooms(clean) ? null : clean,
     });
     setBusyId(null);
     if (!ok) { notify(data.error || "Помилка", "error"); return; }
@@ -196,12 +233,15 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
 
   function startEdit(r: AccessRow) {
     setEditingId(r.access_id);
-    setEditForm({ policy: r.policy || "direct", room_ids: (r.room_ids && r.room_ids.length ? r.room_ids : allRoomIds), note: r.note || "" });
+    // Протухлі id відсікаємо ще на відкритті — інакше просте «Зберегти» повертало б їх у БД.
+    const clean = sanitizeRooms(r.room_ids);
+    setEditForm({ policy: r.policy || "direct", room_ids: (r.room_ids && r.room_ids.length ? clean : allRoomIds), note: r.note || "" });
   }
   function toggleEditRoom(id: string) { setEditForm((f) => ({ ...f, room_ids: f.room_ids.includes(id) ? f.room_ids.filter((x) => x !== id) : [...f.room_ids, id] })); }
   async function saveEdit() {
+    if (!guardRooms(editForm.room_ids)) return;
     setSavingEdit(true);
-    const room_ids = (editForm.room_ids.length === 0 || editForm.room_ids.length === allRoomIds.length) ? null : editForm.room_ids;
+    const room_ids = roomIdsForSave(editForm.room_ids);
     const { ok, data } = await postJSON("/api/referral/access/decide", { access_id: editingId, decision: "update", policy: editForm.policy, room_ids, note: editForm.note });
     setSavingEdit(false);
     if (!ok) { notify(data.error || "Помилка", "error"); return; }
@@ -229,7 +269,17 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{r.referrer.login ? "@" + r.referrer.login : ""}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
           {r.referrer.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }} title="Примітка лікаря (редагує сам направник)">📝 {r.referrer.note}</div>}
           {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
-          {r.status === "active" && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Кабінети: {roomsLabel(r.room_ids)}</div>}
+          {r.status === "active" && (() => {
+            // Грант без жодного живого кабінету: направник фактично не може ані
+            // записувати, ані редагувати свої записи в центрі — це треба бачити.
+            const dead = !!(r.room_ids && r.room_ids.length && sanitizeRooms(r.room_ids).length === 0);
+            return (
+              <div style={{ fontSize: 12, color: dead ? "var(--red)" : "var(--text-secondary)", marginTop: 2 }}>
+                Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Кабінети: {roomsLabel(r.room_ids)}
+                {dead && <span title="Дозволені кабінети видалено — направник не може записувати. Оберіть кабінети заново."> — ⚠ доступ не працює</span>}
+              </div>
+            );
+          })()}
           {!r.referrer.password_set && r.referrer.invite_token && (
             <div style={{ fontSize: 12, marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для входу:</span>
@@ -311,7 +361,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                     return (
                       <button type="button" key={r.id} className="bd-room" onClick={() => toggleRoom(r.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}
                         style={{ padding: "5px 9px", gap: 8, borderColor: on ? "var(--green)" : undefined, background: on ? "var(--green-bg)" : undefined }}>
-                        <span className={"bd-room-kind " + (r.modality === "MRI" ? "mrt" : "ct")} style={{ width: 26, height: 26, fontSize: 10 }}>{modalityLabel(r.modality)}</span>
+                        <span className={"bd-room-kind " + modalityKind(r.modality)} style={{ width: 26, height: 26, fontSize: 10 }}>{modalityShort(r.modality)}</span>
                         <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
                       </button>
                     );
@@ -372,7 +422,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                               return (
                                 <button type="button" key={rm.id} className="bd-room" onClick={() => toggleEditRoom(rm.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}
                                   style={{ padding: "5px 9px", gap: 8, borderColor: on ? "var(--green)" : undefined, background: on ? "var(--green-bg)" : undefined }}>
-                                  <span className={"bd-room-kind " + (rm.modality === "MRI" ? "mrt" : "ct")} style={{ width: 26, height: 26, fontSize: 10 }}>{modalityLabel(rm.modality)}</span>
+                                  <span className={"bd-room-kind " + modalityKind(rm.modality)} style={{ width: 26, height: 26, fontSize: 10 }}>{modalityShort(rm.modality)}</span>
                                   <span className="bd-room-meta"><span className="bd-room-name">{rm.name}</span><span className="bd-room-model">{rm.apparatus_model || ""}</span></span>
                                 </button>
                               );

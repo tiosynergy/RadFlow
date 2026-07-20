@@ -15,8 +15,9 @@ Multi-tenant SaaS: запись пациентов, доска очереди в
 | База, авторизация, файлы | Supabase (PostgreSQL + RLS) |
 | Реальное время | Supabase Realtime (с авторизованным сокетом + поллинг-подстраховка) |
 | Привилегированные операции | Supabase service-role в серверных API-роутах |
-| Хостинг | Vercel (авто-деплой из `main`) |
-| Планируется (Stage 2) | n8n Cloud (AI-перепланирование), Resend (email), Sentry (мониторинг) |
+| Таймзона | Универсальная: своя IANA-`clinics.timezone` у каждой клиники (модель «настінний-час-як-UTC») |
+| Хостинг | Vercel (авто-деплой из `main`; Hobby-план — cron только суточный) |
+| Планируется (Stage 2) | n8n Cloud (AI-перепланирование) — первый живой хук уже есть (`event_outbox` + `emergency_stop`); Resend (email), Sentry (мониторинг) |
 
 ## Реализованные модули (Stage 1 MVP)
 
@@ -31,7 +32,9 @@ Multi-tenant SaaS: запись пациентов, доска очереди в
 | `/queue` (и `/`) | admin/registrar | **Доска очереди** — главный экран: слоты по графику, статусы в один клик, инциденты, CITO, realtime |
 | `/radiologist` | radiologist/admin | **Кабинет радиолога** — «Моя черга» по назначенным кабинетам, таймер, вызов следующего |
 | `/call-list` | admin/registrar | **Call List** — обзвон на дату, статусы звонков, заметки, CSV, обзвон через простой |
+| `/waitlist` | admin/registrar (+направитель) | **Лист очікування** — пациенты, ждущие свободного слота; подбор кандидатов при освобождении |
 | `/ceo` | admin/ceo | **CEO Dashboard** — KPI, загрузка, доход, недельный график, топ-процедур |
+| `/ceo-admin` | admin | Управление руководителями (выдача/отзыв CEO-доступа к центру) |
 | `/referral` | referrer | **Портал направляющего** — создание направлений, «Мои направления», «Мои центры» (доступ) |
 | `/referrers` | admin | Управление направителями (приглашение, доступ к кабинетам) |
 | `/staff` | admin | Управление радиологами (создание, кабинеты, пароль) |
@@ -51,8 +54,9 @@ npm run dev      # http://localhost:3000
 
 ## База данных
 
-Схема и политики управляются миграциями в `supabase/migrations/` (на текущий момент `0001`–`0037`).
-Применять по порядку в Supabase → SQL Editor. Подробно о схеме, ограничениях и RLS — в
+Схема и политики управляются миграциями в `supabase/migrations/` (на текущий момент `0001`–`0060`;
+прод на `0060`). Применять по порядку в Supabase → SQL Editor **вручную** (Vercel-деплой их не
+запускает — сначала SQL, потом мердж в `main`). Подробно о схеме, ограничениях и RLS — в
 [`docs/PRODUCT_OVERVIEW.md`](docs/PRODUCT_OVERVIEW.md) (раздел «Модель данных»).
 
 Ключевые инварианты (на уровне БД):
@@ -73,9 +77,11 @@ npm run dev      # http://localhost:3000
 - **Ключи только в окружении** (`.env.local` / Vercel Env). Секреты не коммитятся.
 - **RLS включён на каждой таблице** с `clinic_id` — данные одной клиники недоступны другой.
 - Привилегированные операции (создание аккаунтов, выдача доступа) идут через серверные
-  API-роуты, которые сами проверяют роль перед использованием service-role.
-- ⚠️ **Известные блокеры до продакшена** (см. аудит §2): переработать установку пароля на
-  одноразовые invite-токены и закрыть энумерацию аккаунтов через `email_for_login`.
+  API-роуты, которые сами проверяют роль перед использованием service-role (единый `requireRole()`).
+- ✅ **Прежние блокеры закрыты** (миграция `0032`): установка пароля — по одноразовому invite-токену;
+  энумерация аккаунтов через `email_for_login` закрыта (EXECUTE отозван у anon).
+- ⚠️ **К ротации:** `SUPABASE_SERVICE_ROLE_KEY` засветился в скриншоте — сбросить в Supabase и
+  обновить в Vercel.
 
 ## Структура
 
@@ -85,9 +91,9 @@ npm run dev      # http://localhost:3000
 │  ├─ queue/ radiologist/ ceo/ call-list/ referral/ referrers/ staff/ setup/
 │  ├─ login/ register/ set-password/ auth/callback/
 │  └─ api/                  # staff, referrers/invite, referral/access, account/set-password
-├─ components/              # React-компоненты экранов и модалок (.jsx)
-├─ lib/                     # бизнес-логика (queueStatus, incidents, schedule, studies) + supabase/*
-├─ supabase/migrations/     # 0001–0031 (схема, RLS, триггеры, RPC)
+├─ components/              # React-компоненты экранов и модалок (.tsx)
+├─ lib/                     # бизнес-логика (queueStatus, incidents/TZ-хелперы, schedule, studies) + supabase/*
+├─ supabase/migrations/     # 0001–0060 (схема, RLS, триггеры, RPC)
 ├─ middleware.ts            # сессия + защита маршрутов + роутинг по роли
 ├─ docs/                    # документация (PRODUCT_OVERVIEW, аудиты, прототипы, планы)
 └─ next.config.mjs · tsconfig.json · tailwind.config.ts · package.json

@@ -63,6 +63,11 @@ export type Database = {
           emails: Json;
           configured_at: string | null;
           timezone: string;
+          // 0078 — політика черги при затримці дослідження (пише лише адмін).
+          queue_delay_policy: QueueDelayPolicy;
+          overlap_threshold_min: number;
+          max_cascade_patients: number;
+          allow_after_hours_shift: boolean;
         };
         Insert: {
           id?: string;
@@ -74,6 +79,10 @@ export type Database = {
           emails?: Json;
           configured_at?: string | null;
           timezone?: string;
+          queue_delay_policy?: QueueDelayPolicy;
+          overlap_threshold_min?: number;
+          max_cascade_patients?: number;
+          allow_after_hours_shift?: boolean;
         };
         Update: {
           id?: string;
@@ -85,7 +94,55 @@ export type Database = {
           emails?: Json;
           configured_at?: string | null;
           timezone?: string;
+          queue_delay_policy?: QueueDelayPolicy;
+          overlap_threshold_min?: number;
+          max_cascade_patients?: number;
+          allow_after_hours_shift?: boolean;
         };
+        Relationships: [];
+      };
+      /* 0078 — НЕЗМІННИЙ журнал масових рішень при затримці. authenticated має
+         лише SELECT: рядок створює SECURITY DEFINER RPC застосування плану. */
+      queue_delay_events: {
+        Row: {
+          id: string;
+          clinic_id: string;
+          room_id: string;
+          source_entry_id: string;
+          delay_min: number;
+          strategy: "cascade_shift" | "reschedule_conflicts";
+          initiated_by: string;
+          approved_by: string | null;
+          approved_at: string | null;
+          plan: Json;
+          outcome: Json | null;
+          created_at: string;
+        };
+        Insert: never;   // писати може лише RPC / service_role
+        Update: never;   // журнал незмінний
+        Relationships: [];
+      };
+      /* 0078 — журнал ПІДТВЕРДЖЕНИХ винятків графіка (0077): хто, чому, який слот.
+         kind лише after_hours | break — закритий день і час до відкриття лишаються
+         забороненими (рішення власника). Insert можна, update/delete — ні. */
+      schedule_exceptions: {
+        Row: {
+          id: string;
+          clinic_id: string;
+          room_id: string;
+          entry_id: string | null;
+          kind: ScheduleExceptionKind;
+          reason: string;
+          from_slot: Json | null;
+          to_slot: Json;
+          confirmed_by: string;
+          created_at: string;
+        };
+        /* Ззовні — ТІЛЬКИ читання (рішення після ревʼю). Рядок пише тригер на
+           queue_entries у ТІЙ САМІЙ транзакції, що й бронь/перенос (етап 2):
+           інакше бронь і лог — два окремі запити, і журнал може розійтися з фактом. */
+        Insert: never;   // пише лише тригер / service_role
+        Update: never;   // журнал незмінний
         Relationships: [];
       };
       profiles: {
@@ -189,8 +246,14 @@ export type Database = {
           clinic_id: string;
           name: string;
           modality: Database["public"]["Enums"]["modality"];
-          duration_min: number;
+          duration_min: number | null; // 0117: null = час не задано (UI «—», ручний ввід)
           contrast_allowed: boolean;
+          price: number;                   // 0107: базова ціна, грн
+          contrast_price: number | null;   // 0107: доплата за контраст; null = дефолт CONTRAST_SURCHARGE
+          active: boolean;                 // 0107: м'яке вимкнення позиції
+          sort_order: number;              // 0107
+          source: string;                  // 0107: 'manual' | 'seed' | 'import'
+          updated_at: string;              // 0107
           created_at: string;
         };
         Insert: {
@@ -198,8 +261,14 @@ export type Database = {
           clinic_id: string;
           name: string;
           modality: Database["public"]["Enums"]["modality"];
-          duration_min?: number;
+          duration_min?: number | null;
           contrast_allowed?: boolean;
+          price?: number;
+          contrast_price?: number | null;
+          active?: boolean;
+          sort_order?: number;
+          source?: string;
+          updated_at?: string;
           created_at?: string;
         };
         Update: {
@@ -207,8 +276,14 @@ export type Database = {
           clinic_id?: string;
           name?: string;
           modality?: Database["public"]["Enums"]["modality"];
-          duration_min?: number;
+          duration_min?: number | null;
           contrast_allowed?: boolean;
+          price?: number;
+          contrast_price?: number | null;
+          active?: boolean;
+          sort_order?: number;
+          source?: string;
+          updated_at?: string;
           created_at?: string;
         };
         Relationships: [
@@ -219,6 +294,43 @@ export type Database = {
             referencedColumns: ["id"];
           }
         ];
+      };
+      service_room_overrides: {
+        // 0108: переозначення каталогу по кабінету (base services + override).
+        Row: {
+          clinic_id: string;
+          room_id: string;
+          service_id: string;
+          price: number | null;          // null = базова services.price
+          duration_min: number | null;   // null = базова services.duration_min
+          contrast_price: number | null; // null = базова services.contrast_price
+          active: boolean;               // false = послуга схована в цьому кабінеті
+          updated_at: string;
+          created_at: string;
+        };
+        Insert: {
+          clinic_id: string;
+          room_id: string;
+          service_id: string;
+          price?: number | null;
+          duration_min?: number | null;
+          contrast_price?: number | null;
+          active?: boolean;
+          updated_at?: string;
+          created_at?: string;
+        };
+        Update: {
+          clinic_id?: string;
+          room_id?: string;
+          service_id?: string;
+          price?: number | null;
+          duration_min?: number | null;
+          contrast_price?: number | null;
+          active?: boolean;
+          updated_at?: string;
+          created_at?: string;
+        };
+        Relationships: [];
       };
       queue_entries: {
         Row: {
@@ -259,6 +371,9 @@ export type Database = {
           referrer_id: string | null;
           reschedule_origin: Json | null;
           studies_changed_by: string | null;
+          off_schedule: boolean;
+          case_id: string | null;
+          case_step: number | null;
         };
         Insert: {
           id?: string;
@@ -298,6 +413,9 @@ export type Database = {
           referrer_id?: string | null;
           reschedule_origin?: Json | null;
           studies_changed_by?: string | null;
+          off_schedule?: boolean;
+          case_id?: string | null;
+          case_step?: number | null;
         };
         Update: {
           id?: string;
@@ -337,6 +455,9 @@ export type Database = {
           referrer_id?: string | null;
           reschedule_origin?: Json | null;
           studies_changed_by?: string | null;
+          off_schedule?: boolean;
+          case_id?: string | null;
+          case_step?: number | null;
         };
         Relationships: [
           {
@@ -362,6 +483,85 @@ export type Database = {
             columns: ["referrer_id"];
             referencedRelation: "profiles";
             referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "queue_entries_case_id_fkey";
+            columns: ["case_id"];
+            referencedRelation: "patient_cases";
+            referencedColumns: ["id"];
+          }
+        ];
+      };
+      patient_cases: {
+        Row: {
+          id: string;
+          clinic_id: string;
+          referrer_id: string | null;
+          created_by: string | null;
+          status: Database["public"]["Enums"]["case_status"];
+          sequential: boolean;
+          note: string | null;
+          patient_name: string;
+          patient_phone: string | null;
+          patient_dob: string | null;
+          patient_sex: string | null;
+          patient_email: string | null;
+          patient_weight: number | null;   // 0106: вага у знімку кейса (M5)
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          clinic_id: string;
+          referrer_id?: string | null;
+          created_by?: string | null;
+          status?: Database["public"]["Enums"]["case_status"];
+          sequential?: boolean;
+          note?: string | null;
+          patient_name: string;
+          patient_phone?: string | null;
+          patient_dob?: string | null;
+          patient_sex?: string | null;
+          patient_email?: string | null;
+          patient_weight?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          clinic_id?: string;
+          referrer_id?: string | null;
+          created_by?: string | null;
+          status?: Database["public"]["Enums"]["case_status"];
+          sequential?: boolean;
+          note?: string | null;
+          patient_name?: string;
+          patient_phone?: string | null;
+          patient_dob?: string | null;
+          patient_sex?: string | null;
+          patient_email?: string | null;
+          patient_weight?: number | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "patient_cases_clinic_id_fkey";
+            columns: ["clinic_id"];
+            referencedRelation: "clinics";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "patient_cases_referrer_id_fkey";
+            columns: ["referrer_id"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "patient_cases_created_by_fkey";
+            columns: ["created_by"];
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
           }
         ];
       };
@@ -371,6 +571,7 @@ export type Database = {
           clinic_id: string;
           source_entry_id: string | null;
           scheduled_entry_id: string | null;
+          claim_token: string | null;
           room_id: string | null;
           patient_name: string;
           patient_phone: string | null;
@@ -400,6 +601,7 @@ export type Database = {
           clinic_id: string;
           source_entry_id?: string | null;
           scheduled_entry_id?: string | null;
+          claim_token?: string | null;
           room_id?: string | null;
           patient_name: string;
           patient_phone?: string | null;
@@ -429,6 +631,7 @@ export type Database = {
           clinic_id?: string;
           source_entry_id?: string | null;
           scheduled_entry_id?: string | null;
+          claim_token?: string | null;
           room_id?: string | null;
           patient_name?: string;
           patient_phone?: string | null;
@@ -880,6 +1083,7 @@ export type Database = {
         Relationships: [];
       };
       event_outbox: {
+        // next_attempt_at / dead — міграція 0064 (backoff + DLQ).
         Row: {
           id: number;
           created_at: string;
@@ -889,6 +1093,8 @@ export type Database = {
           delivered_at: string | null;
           attempts: number;
           last_error: string | null;
+          next_attempt_at: string;
+          dead: boolean;
         };
         Insert: {
           created_at?: string;
@@ -898,6 +1104,8 @@ export type Database = {
           delivered_at?: string | null;
           attempts?: number;
           last_error?: string | null;
+          next_attempt_at?: string;
+          dead?: boolean;
         };
         Update: {
           created_at?: string;
@@ -907,6 +1115,8 @@ export type Database = {
           delivered_at?: string | null;
           attempts?: number;
           last_error?: string | null;
+          next_attempt_at?: string;
+          dead?: boolean;
         };
         Relationships: [];
       };
@@ -915,6 +1125,43 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      cancel_case_rpc: {
+        Args: { p_case_id: string };
+        Returns: number;
+      };
+      create_case_rpc: {
+        Args: { p_case: Json; p_steps: Json };
+        Returns: string;
+      };
+      add_case_step_rpc: {
+        Args: { p_case_id: string; p_step: Json };
+        Returns: string;
+      };
+      case_from_entry_rpc: {
+        Args: { p_entry_id: string; p_step: Json };
+        Returns: string;
+      };
+      schedule_from_waitlist_rpc: {
+        Args: { p_waitlist_id: string; p_booking: Json };
+        Returns: string;
+      };
+      waitlist_candidates_for_slot: {
+        Args: { p_room: string | null; p_date: string; p_time_min: number };
+        Returns: Database["public"]["Tables"]["waitlist_entries"]["Row"][];
+      };
+      waitlist_counts: {
+        Args: { p_modality?: string | null };
+        Returns: { waiting: number; cito: number; urgent: number; scheduled: number; removed: number }[];
+      };
+      // 0115: фінальний upsert імпорту прайса (SECURITY DEFINER, admin-гейт усередині).
+      services_import_rpc: {
+        Args: { p_rows: Json };
+        Returns: Json;
+      };
+      set_waitlist_status_rpc: {
+        Args: { p_id: string; p_status: Database["public"]["Enums"]["waitlist_status"] };
+        Returns: string;
+      };
       auth_clinic_id: {
         Args: Record<PropertyKey, never>;
         Returns: string;
@@ -953,7 +1200,24 @@ export type Database = {
       };
       room_busy_slots: {
         Args: { p_room: string; p_date: string; p_exclude?: string };
-        Returns: { scheduled_time: string; duration_min: number; buffer_time_min: number }[];
+        /* status/patient_name/studies — лише для admin/radiologist цього центру (0062),
+           для реєстратора та направника NULL (знеособлена зайнятість).
+           0074: рядки вибираються за ФАКТИЧНИМ вікном зайнятості (in_progress —
+           від in_progress_at), тож сюди потрапляють і «хвости» з попередньої доби.
+           Вікно ОБРІЗАНЕ по запитаній добі: *_min — хвилини від 00:00 (0..1440),
+           а scheduled_time/duration_min/buffer_time_min — те саме вікно у старому
+           вигляді (duration_min може бути 0, якщо в добу зайшов лише буфер). */
+        Returns: {
+          scheduled_time: string;
+          duration_min: number;
+          buffer_time_min: number;
+          start_min: number;
+          end_study_min: number;
+          end_min: number;
+          status: string | null;
+          patient_name: string | null;
+          studies: Json | null;
+        }[];
       };
       search_clinics: {
         Args: { q: string };
@@ -1017,6 +1281,128 @@ export type Database = {
           patients: Json;
         }[];
       };
+      /* 0072: резолв логін→email на вході. Лише service_role (для клієнтів це був би
+         інструмент енумерації акаунтів). Бере індекс profiles_login_lower_idx. */
+      resolve_login_email: {
+        Args: { p_login: string };
+        Returns: string | null;
+      };
+      /* 0071: агрегати CEO-дашборда рахує БД (раніше в браузер їхали всі рядки
+         за період по всіх центрах — разом із ПІБ і studies). */
+      ceo_kpi_totals: {
+        Args: { p_from: string; p_to: string; p_clinics?: string[] | null };
+        Returns: { scheduled_date: string; status: string; cnt: number; booked_min: number }[];
+      };
+      ceo_kpi_rooms: {
+        Args: { p_from: string; p_to: string; p_clinics?: string[] | null };
+        Returns: { room_id: string; booked_min: number }[];
+      };
+      ceo_kpi_studies: {
+        Args: { p_from: string; p_to: string; p_clinics?: string[] | null };
+        Returns: {
+          status: string;
+          study_type: string;
+          region: string;
+          contrast: boolean;
+          cnt: number;        // позицій (дохід)
+          first_cnt: number;  // записів, де це дослідження перше (топ-5)
+          priced_sum: number;
+          unpriced: number;
+        }[];
+      };
+      /* 0070: колонки станів (status, call_status, in_progress_at, clarify_at,
+         reschedule_origin) ВІДКЛИКАНІ в authenticated — писати їх може лише ці RPC
+         (SECURITY DEFINER), де живуть авторизація, CAS і правила переходів. */
+      queue_set_status_rpc: {
+        Args: {
+          p_id: string;
+          p_status: QueueStatus;
+          p_expected?: QueueStatus;
+          p_allowed?: QueueStatus[];
+          p_note?: string | null;
+          p_set_note?: boolean;   // true → note перезаписується (у т.ч. null = стерти)
+        };
+        Returns: { updated: boolean; current_status: QueueStatus }[];
+      };
+      queue_set_call_rpc: {
+        Args: { p_id: string; p_call: CallStatus; p_allowed?: QueueStatus[] };
+        Returns: { updated: boolean; current_status: QueueStatus; current_call: CallStatus }[];
+      };
+      queue_confirm_calls_rpc: {
+        Args: { p_ids: string[] };
+        Returns: number;
+      };
+      queue_reschedule_rpc: {
+        Args: {
+          p_id: string;
+          p_room_id: string;
+          p_date: string;
+          p_time: string;
+          p_duration: number;
+          p_buffer: number;
+          p_call?: CallStatus | null;
+          p_reason?: string | null;
+          // 0077: робота поза графіком за підтвердженням. Прапорець ставиться
+          // всередині RPC — окремим UPDATE «після» його б відхилив тригер перерви.
+          p_off_schedule?: boolean;
+        };
+        Returns: { updated: boolean; current_status: QueueStatus }[];
+      };
+      // 0066: створення/редагування простою однією транзакцією (інцидент +
+      // переведення пацієнта «у кабінеті» в not_held). Статус planned/active
+      // рахує БД у настінному часі клініки.
+      submit_incident_rpc: {
+        Args: {
+          p_room_id: string;
+          p_reason: string;
+          p_id?: string;
+          p_reason_label?: string;
+          p_note?: string;
+          p_started_at?: string;
+          p_blocked_until?: string;
+          p_auto_unblock?: boolean;
+        };
+        Returns: {
+          id: string;
+          status: string;
+          not_held: number;
+        }[];
+      };
+      /* 0080 + 0081: ЄДИНИЙ шлях, яким у системі зʼявляється статус
+         'needs_reschedule', і єдине місце, де записи кабінету рухаються масово.
+         Застосовує ЛИШЕ адмін свого центру (гейт усередині RPC — вона видана
+         authenticated). Все-або-нічого: пост-умова moved + flagged = розмір плану,
+         інакше raise і відкат.
+
+         p_plan  — [{id, kind: 'shift'|'no_fit'|'conflict', from:"HH:MM",
+                     to:"HH:MM"|null, offSchedule?: boolean,
+                     offScheduleKind?: 'after_hours'|'break',
+                     reason?: 'on_time'|'cascade'|'no_slot_today'|'overlap_with_actual'}]
+                   ⚠️ 'keep' НЕ приймається (0081): застосовувати там нічого, і в
+                   пост-умові він чекав би UPDATE, якого не буде. Фільтрує Server Action.
+         p_expected — знімок [{id, status}], який бачив адмін. ЗОБОВʼЯЗАНИЙ покривати
+                   весь p_plan (у 0080 порожній знімок мовчки вимикав stale-гард).
+
+         Повертає applied=false + stale_ids, якщо стан розійшовся зі знімком або
+         запис уже не в ('scheduled','waiting') — тоді в БД НІЧОГО не змінено. */
+      queue_apply_delay_plan_rpc: {
+        Args: {
+          p_room: string;
+          p_source: string;
+          p_delay_min: number;
+          p_strategy: "cascade_shift" | "reschedule_conflicts";
+          p_plan: Json;
+          p_expected: Json;
+          p_reason?: string | null;
+        };
+        Returns: {
+          applied: boolean;
+          moved: number;
+          flagged: number;
+          stale_ids: string[];
+          event_id: string | null;
+        }[];
+      };
       outbox_mark_failed: {
         Args: { p_id: number; p_error: string };
         Returns: undefined;
@@ -1033,7 +1419,8 @@ export type Database = {
     Enums: {
       user_role: "admin" | "radiologist" | "registrar" | "referrer" | "ceo";
       ceo_access_status: "active" | "revoked";
-      modality: "MRI" | "CT" | "OTHER";
+      case_status: "open" | "completed" | "cancelled";
+      modality: "MRI" | "CT" | "OTHER" | "US" | "XRAY" | "MAMMO";
       queue_status:
         | "scheduled"
         | "waiting"
@@ -1041,7 +1428,12 @@ export type Database = {
         | "done"
         | "no_show"
         | "cancelled"
-        | "not_held";
+        | "not_held"
+        /* 0078: слот втрачено через ОПЕРАЦІЙНУ затримку кабінету — потрібен перенос.
+           Це НЕ 'cancelled' (рішення пацієнта/центру зняти запис): пацієнт нікуди
+           не дівся, на нього чекає реєстратура. Змішування зіпсувало б і колл-лист,
+           і KPI. Тригери/переходи/RPC під цей статус — міграція 0079. */
+        | "needs_reschedule";
       call_status:
         | "not_called"
         | "to_recall"
@@ -1087,8 +1479,24 @@ export type Profile = Tables<"profiles">;
 export type ScheduleOverride = Tables<"schedule_overrides">;
 export type ReferralAccess = Tables<"referral_access">;
 export type QueueStatus = Enums<"queue_status">;
+
+/* 0078 — політика центру при затримці дослідження.
+   manual               — показати обидва плани, вирішує адмін (за замовчуванням);
+   cascade_shift        — зсунути наступні записи кабінету (кожен — у ПЕРШИЙ слот,
+                          куди він реально вміщується; не однакова дельта);
+   reschedule_conflicts — не рухати чергу, конфліктних → needs_reschedule.
+   Масове застосування ЗАВЖДИ потребує підтвердження адміна — навіть при авто-політиці. */
+export type QueueDelayPolicy = "manual" | "cascade_shift" | "reschedule_conflicts";
+
+/** Тип підтвердженого винятку графіка (0078). Закритий день і час до відкриття — НЕ виняток. */
+export type ScheduleExceptionKind = "after_hours" | "break";
+
+export type QueueDelayEvent = Tables<"queue_delay_events">;
+export type ScheduleException = Tables<"schedule_exceptions">;
 export type WaitlistEntry = Tables<"waitlist_entries">;
 export type WaitlistStatus = Enums<"waitlist_status">;
 export type CallStatus = Enums<"call_status">;
 export type Modality = Enums<"modality">;
+export type CaseStatus = Enums<"case_status">;
+export type PatientCase = Tables<"patient_cases">;
 export type UserRole = Enums<"user_role">;

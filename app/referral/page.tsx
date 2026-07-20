@@ -2,6 +2,12 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import ReferralPortal from "@/components/ReferralPortal";
 import SignOutButton from "@/components/SignOutButton";
+import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
+
+// Колонки каталогу для форм направника (services, 0107; RLS services_referrer_read).
+const SERVICE_COLS = "id, clinic_id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order";
+// Переозначення каталогу по кабінетах (service_room_overrides, 0108; RLS читає направник центру).
+const SRO_COLS = "clinic_id, room_id, service_id, price, duration_min, contrast_price, active";
 
 function Notice({ title, text }: { title: string; text: string }) {
   return (
@@ -50,6 +56,8 @@ export default async function ReferralPage() {
 
   const centers: Center[] = [];
   const roomsByClinic: Record<string, unknown[]> = {};
+  const servicesByClinic: Record<string, ServiceLike[]> = {};
+  const roomOverridesByClinic: Record<string, RoomOverrideRow[]> = {};
 
   if (profile.role === "referrer") {
     // Глобальний направник: членство — лише через referral_access.
@@ -83,13 +91,25 @@ export default async function ReferralPage() {
     if (activeIds.length) {
       const { data: rooms } = await supabase
         .from("rooms")
-        .select("id, name, modality, apparatus_model, clinic_id")
+        .select("id, name, modality, apparatus_model, clinic_id, schedule")
         .in("clinic_id", activeIds)
         .order("name");
       (rooms ?? []).forEach((r) => {
         const cid = r.clinic_id as string;
         (roomsByClinic[cid] ||= []).push(r);
       });
+      // Каталоги активних центрів (RLS services_referrer_read — лише центри з грантом).
+      // ВСІ рядки (у т.ч. active=false): buildCatalog розрізняє «не налаштовували»
+      // (→ статика) від «усі вимкнені» (→ порожньо, напрям закрито). High-2.
+      const { data: svc } = await supabase
+        .from("services").select(SERVICE_COLS)
+        .in("clinic_id", activeIds).order("sort_order");
+      (svc ?? []).forEach((s) => { (servicesByClinic[s.clinic_id as string] ||= []).push(s as ServiceLike); });
+      // Переозначення по кабінетах активних центрів (2b) — ВСІ рядки (active=false ховає позицію).
+      const { data: ov } = await supabase
+        .from("service_room_overrides").select(SRO_COLS)
+        .in("clinic_id", activeIds);
+      (ov ?? []).forEach((o) => { (roomOverridesByClinic[o.clinic_id as string] ||= []).push(o as RoomOverrideRow); });
     }
   } else {
     // Адмін: прев'ю порталу для власного центру (один «центр»).
@@ -103,10 +123,18 @@ export default async function ReferralPage() {
       centers.push({ accessId: null, clinicId: clinic.id as string, status: "active", policy: "direct", room_ids: null, name: (clinic.name as string) ?? "", city: (clinic.city as string) ?? null, timezone: (clinic.timezone as string) ?? null });
       const { data: rooms } = await supabase
         .from("rooms")
-        .select("id, name, modality, apparatus_model, clinic_id")
+        .select("id, name, modality, apparatus_model, clinic_id, schedule")
         .eq("clinic_id", profile.clinic_id as string)
         .order("name");
       roomsByClinic[clinic.id as string] = rooms ?? [];
+      const { data: svc } = await supabase
+        .from("services").select(SERVICE_COLS)   // ВСІ рядки (active=false теж) — High-2
+        .eq("clinic_id", profile.clinic_id as string).order("sort_order");
+      servicesByClinic[clinic.id as string] = (svc ?? []) as ServiceLike[];
+      const { data: ov } = await supabase
+        .from("service_room_overrides").select(SRO_COLS)
+        .eq("clinic_id", profile.clinic_id as string);
+      roomOverridesByClinic[clinic.id as string] = (ov ?? []) as RoomOverrideRow[];
     }
   }
 
@@ -115,6 +143,8 @@ export default async function ReferralPage() {
       role={profile.role as string}
       centers={centers}
       roomsByClinic={roomsByClinic as Parameters<typeof ReferralPortal>[0]["roomsByClinic"]}
+      servicesByClinic={servicesByClinic}
+      roomOverridesByClinic={roomOverridesByClinic}
       doctorName={(profile.full_name as string) ?? (user.email ?? "Лікар")}
       doctorId={user.id}
     />

@@ -71,6 +71,32 @@ export function wallMinOfDay(ms: number): number {
   return d.getUTCHours() * 60 + d.getUTCMinutes();
 }
 
+// «Сегодня» (YYYY-MM-DD) в НАСТЕННОМ времени клиники — ключ scheduled_date.
+// Не использовать dateKey(new Date()): он даёт день БРАУЗЕРА (или сервера в
+// Server Action) — в клинике с другой зоной около полуночи это другой день, и
+// «пострадавшие сегодня» считаются не за тот день. getUTC*, т.к. wallNow
+// кодирует настенное время как UTC-мс.
+export function wallDayKey(tz?: string): string {
+  const d = new Date(wallNow(tz));
+  return (
+    d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0")
+  );
+}
+
+// «Сегодня» как Date-объект ЛОКАЛЬНОЙ полуночи — но календарный день берётся из
+// НАСТЕННОГО времени клиники. Единственная замена локальным today0() в компонентах:
+// они сравнивают его с датами вида new Date("YYYY-MM-DD" + "T00:00:00") (тоже
+// локальная полночь), поэтому фрейм «Date-объект = календарная дата» сохраняется,
+// а сам день считается по клинике, а не по браузеру оператора.
+//
+// Было (баг M-4): оператор в другой зоне около полуночи видел день БРАУЗЕРА, тогда
+// как isLate/computeCallBlock/nowMin считались по клинике → доска открывалась на
+// «вчера клиники», кнопка «Викликати» разблокировалась, записи горели «⏰ Запізнення».
+export function wallToday0(tz?: string): Date {
+  const d = new Date(wallNow(tz));
+  return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0);
+}
+
 // Минуты от начала суток настенного времени клиники для РЕАЛЬНОГО момента (ISO
 // instant, напр. in_progress_at = new Date().toISOString()). Нужно, чтобы
 // начатое (возможно с опозданием) in_progress-исследование занимало сетку слотов
@@ -89,6 +115,31 @@ export function wallMinOfInstant(iso: string | null | undefined, tz?: string): n
     return g("hour") * 60 + g("minute");
   } catch {
     return d.getHours() * 60 + d.getMinutes();
+  }
+}
+
+/* РЕАЛЬНЫЙ инстант (in_progress_at) → «настенные» мс в зоне клиники — тот же фрейм,
+   что wallInstant(date,time). Нужно там, где занятость кабинета сравнивается
+   СКВОЗЬ СУТКИ: wallMinOfInstant даёт только минуты дня и теряет дату, поэтому
+   исследование, начатое в 23:30 и перешедшее полночь, в минутах дня не выражается
+   (вылезает за 1440). Канон совпадает с check_no_overlap (0068), который сравнивает
+   абсолютные tstzrange. */
+export function wallInstantOf(iso: string | null | undefined, tz?: string): number | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const zone = tz || _clinicTz;
+  if (!zone) return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds());
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone, hourCycle: "h23",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    }).formatToParts(d);
+    const g = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+    return Date.UTC(g("year"), g("month") - 1, g("day"), g("hour"), g("minute"), g("second"));
+  } catch {
+    return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds());
   }
 }
 

@@ -1,36 +1,63 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
+import { parseBody } from "@/lib/validationHttp";
+import { safeDbError, zUuid, zName, zEmail, zLogin, zOptText } from "@/lib/validation";
+
+// M-12: тіло запиту — схемою, а не String(body.x || ""). Кабінети — тільки UUID
+// (масив після dedupe); решта валідації (кабінет належить центру) — нижче, з БД.
+const sStaff = z.object({
+  role: z.enum(["radiologist", "registrar"]).default("radiologist"),
+  email: zEmail,
+  login: zLogin,
+  full_name: zName,
+  phone: zOptText(32),
+  note: zOptText(2000),
+  room_ids: z.union([z.array(zUuid), z.null(), z.undefined()]).transform((v) => (Array.isArray(v) ? Array.from(new Set(v)) : null)),
+});
 
 // POST /api/staff — адміністратор створює акаунт радіолога / лікаря-направника.
 // Пароль НЕ задається: користувач встановлює його сам на /set-password
 // (тимчасовий випадковий пароль ставимо лише щоб акаунт був валідним).
 export async function POST(req: Request) {
-  const gate = await requireRole(["admin"], { needClinic: true, forbidden: "Лише адміністратор" });
+  // Роут СТВОРЮЄ auth-акаунт → ліміт per-admin (скомпрометований акаунт інакше
+  // за хвилину наробить тисячі користувачів: квота Supabase, рахунок, сміття).
+  const gate = await requireRole(["admin"], {
+    needClinic: true,
+    forbidden: "Лише адміністратор",
+    rateLimit: { key: "acct:create", max: 30, windowSeconds: 3600 },
+  });
   if (!gate.ok) return gate.res;
   const { me } = gate;
 
-  const body = await req.json().catch(() => ({}));
-  // Цей роут створює ЛИШЕ акаунти радіологів. Лікарі-направники мають глобальний
-  // акаунт (clinic_id = NULL) і створюються через /api/referrers/invite — інакше
-  // ламається tenant-модель направника (членство через referral_access).
-  const role = "radiologist";
-  const email = String(body.email || "").trim().toLowerCase();
-  const login = String(body.login || "").trim();
-  const fullName = String(body.full_name || "").trim();
-  const phone = String(body.phone || "").trim() || null;
-  const note = String(body.note || "").trim() || null;
-  const workplace: string | null = null; // лише радіологи; поле workplace — для направників
-  const roomIds: string[] = Array.isArray(body.room_ids) ? body.room_ids : [];
+  /* Персонал ЦЕНТРУ: радіолог або реєстратор (обидва мають clinic_id).
+     Лікарі-направники мають ГЛОБАЛЬНИЙ акаунт (clinic_id = NULL) і створюються
+     через /api/referrers/invite — інакше ламається tenant-модель направника
+     (членство через referral_access). Адміна створює лише реєстрація центру.
 
-  if (!email || !login || !fullName) {
-    return NextResponse.json({ error: "Заповніть логін, ПІБ та email" }, { status: 400 });
-  }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return NextResponse.json({ error: "Некоректний email" }, { status: 400 });
-  }
+     Реєстратор довго був «мертвою» роллю: enum і маршрути були, RLS (0073) теж,
+     а створити акаунт не було чим — уся реєстратура сиділа під адміном. */
+  const parsed = await parseBody("api/staff", req, sStaff, "Заповніть логін, ПІБ та email (коректний)");
+  if (!parsed.ok) return parsed.res;
+  const { role, email, login, full_name: fullName, phone, note } = parsed.data;
+  const workplace: string | null = null; // лише радіологи; поле workplace — для направників
+  const roomIds: string[] = role === "radiologist" ? (parsed.data.room_ids ?? []) : []; // кабінети — лише радіологам
 
   const admin = createAdminClient();
+
+  /* Кабінети мають належати клініці адміна. Раніше room_id брався з тіла запиту
+     як є (service-role обходить RLS) — так у radiologist_rooms могли осісти
+     чужі/видалені кабінети. Сусідній роут /api/staff/rooms так уже перевіряє.
+     Робимо ДО створення auth-акаунта, щоб не лишати «сирітський» акаунт. */
+  if (roomIds.length) {
+    const { data: okRooms } = await admin
+      .from("rooms").select("id").eq("clinic_id", me.clinic_id).in("id", roomIds);
+    const okSet = new Set((okRooms || []).map((r) => r.id));
+    if (roomIds.some((id) => !okSet.has(id))) {
+      return NextResponse.json({ error: "Кабінет не належить вашому центру" }, { status: 400 });
+    }
+  }
   const tempPass = "Rf!" + crypto.randomUUID().replace(/-/g, "");
   // Одноразовий токен для безпечного встановлення пароля (/set-password?token=…).
   const inviteToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
@@ -44,7 +71,7 @@ export async function POST(req: Request) {
   if (cErr || !created?.user) {
     const msg = cErr?.message || "";
     return NextResponse.json(
-      { error: /registered|already|exists/i.test(msg) ? "Email вже використовується" : "Помилка створення акаунта: " + msg },
+      { error: /registered|already|exists/i.test(msg) ? "Email вже використовується" : safeDbError("api/staff.createUser", cErr) },
       { status: 400 }
     );
   }
@@ -57,16 +84,23 @@ export async function POST(req: Request) {
   if (pErr) {
     await admin.auth.admin.deleteUser(uid); // відкат, щоб не лишати «сирітський» auth-акаунт
     return NextResponse.json(
-      { error: /login/i.test(pErr.message) && /unique|duplicate/i.test(pErr.message) ? "Логін вже зайнятий" : "Помилка створення профілю: " + pErr.message },
+      { error: /login/i.test(pErr.message) && /unique|duplicate/i.test(pErr.message) ? "Логін вже зайнятий" : safeDbError("api/staff.profile", pErr) },
       { status: 400 }
     );
   }
 
+  // Помилку призначення кабінетів раніше мовчки ковтали: акаунт створювався, а
+  // радіолог лишався без кабінетів — і ніхто про це не дізнавався.
+  let roomsWarning: string | null = null;
   if (role === "radiologist" && roomIds.length) {
-    await admin.from("radiologist_rooms").insert(
+    const { error: rErr } = await admin.from("radiologist_rooms").insert(
       roomIds.map((rid) => ({ clinic_id: me.clinic_id as string, profile_id: uid, room_id: rid }))
     );
+    if (rErr) {
+      safeDbError("api/staff.rooms", rErr);   // деталі — в лог, користувачу лише факт
+      roomsWarning = "Акаунт створено, але кабінети не призначились. Призначте їх у картці радіолога.";
+    }
   }
 
-  return NextResponse.json({ ok: true, id: uid, invite_token: inviteToken });
+  return NextResponse.json({ ok: true, id: uid, invite_token: inviteToken, warning: roomsWarning });
 }

@@ -7,6 +7,7 @@
    створений запис. Realtime — таблиця waitlist_entries (0047). */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
@@ -14,17 +15,27 @@ import LiveClock from "@/components/LiveClock";
 import BookingModal, { type BookingPayload, type BookingPrefill } from "@/components/BookingModal";
 import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import { createBooking } from "@/app/queue/actions";
-import { addWaitlistEntry, markWaitlistScheduled, setWaitlistPriority, setWaitlistStatus, updateWaitlistEntry } from "@/app/waitlist/actions";
+import { scheduleFromWaitlist } from "@/app/queue/actions";
+import { addWaitlistEntry, setWaitlistPriority, setWaitlistStatus, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, compareWaitlist, desiredWindowText } from "@/lib/waitlist";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
+import { setClinicTz, wallToday0 } from "@/lib/incidents";
 import type { WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
+import { modalityLabel, modalityKind } from "@/lib/studies";
+import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
+import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type IncidentRow = { id: string; room_id: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string };
+
+// Масштабування доски листа (0104+): усі вкладки — серверні сторінки «показати ще».
+// waiting сортується СЕРВЕРНО за пріоритетом (enum patient_priority оголошений
+// 'cito','urgent','planned' → order by дає саме цей порядок) — cito видно першим
+// навіть якщо він за межами першої сторінки (RE_AUDIT 2026-07-18, Medium).
+const PAGE = 50;         // розмір сторінки («показати ще»)
 
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
@@ -78,16 +89,32 @@ function RowMenu({ disabled, onEdit, onRemove }: { disabled?: boolean; onEdit: (
 
 interface WaitlistBoardProps {
   clinicId: string;
+  /** IANA-зона центру (clinics.timezone) — із сервера, а не з браузера. */
+  clinicTz: string;
   rooms?: RoomOpt[];
+  /** Каталог послуг центру (services, 0107) — SSR-проп, як rooms. Порожній → статика. */
+  services?: ServiceLike[];
+  /** Переозначення каталогу по кабінетах (service_room_overrides, 0108) — проброс у форми (2b). */
+  roomOverrides?: RoomOverrideRow[];
   clinicName?: string;
   adminName?: string;
   adminRole?: string;
   roleKey?: string;
 }
 
-export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, adminRole, roleKey = "admin" }: WaitlistBoardProps) {
+export default function WaitlistBoard({ clinicId, clinicTz, rooms, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: WaitlistBoardProps) {
+  /* Зона центру — синхронно, до першого рендера. Раніше вона прилітала клієнтським
+     fetch уже після монтування, і wallNow() у BookingModal, відкритій із листа
+     очікування, встигав порахувати «зараз» за браузером (минулі слоти — вибірні). */
+  if (typeof window !== "undefined") setClinicTz(clinicTz);
+
+  const router = useRouter();   // 0086: зміни кабінетів (rooms — SSR-проп) підхоплюємо через router.refresh
+
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  // H-6: збій завантаження ≠ «лист порожній» / «простоїв немає».
+  const [entriesErr, setEntriesErr] = useState(false);
+  const [incidentsErr, setIncidentsErr] = useState(false);
   const [filter, setFilter] = useState<"waiting" | "scheduled" | "removed">("waiting");
   const [roomView, setRoomView] = useState("all"); // фільтр сайдбара: кабінет → модальність
   const [query, setQuery] = useState("");
@@ -103,9 +130,24 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
   const [busyId, setBusyId] = useState<string | null>(null);
   // Вступна підказка ховається назавжди (localStorage), фільтр-банер не чіпаємо.
   const [hintHidden, setHintHidden] = useState(false);
+
+  /* Масштабування (0104+): доска більше НЕ тягне select("*") усієї історії центру.
+     Активна вкладка вантажиться серверно (status + модальність + пошук), лічильники —
+     окремими COUNT-запитами, історичні вкладки — сторінками («показати ще»). */
+  const [counts, setCounts] = useState({ waiting: 0, cito: 0, urgent: 0, scheduled: 0, removed: 0 });
+  // Лічильники не оновились (RPC-збій) — числа на екрані можуть бути застарілими.
+  const [countsErr, setCountsErr] = useState(false);
+  const [qDebounced, setQDebounced] = useState("");
+  const [limit, setLimit] = useState(PAGE);
+  const [hasMore, setHasMore] = useState(false);
+  // Фільтр за кабінетом із сайдбара: рядок листа не привʼязаний до кабінету, тому
+  // фільтруємо за МОДАЛЬНІСТЮ обраного кабінету (МРТ/КТ/УЗД…). Порожня модальність — теж показуємо.
+  const viewRoom = roomView === "all" ? null : (rooms || []).find((r) => r.id === roomView) || null;
+  const viewMod = viewRoom?.modality ?? null;
   useEffect(() => {
     try { setHintHidden(localStorage.getItem("rf_waitlist_hint_hidden") === "1"); } catch { /* ignore */ }
   }, []);
+
   function hideHint() {
     setHintHidden(true);
     try { localStorage.setItem("rf_waitlist_hint_hidden", "1"); } catch { /* ignore */ }
@@ -120,28 +162,91 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
     toastTimer.current = setTimeout(() => setToast(null), action ? 6000 : 3000);
   }
 
+  /* Записати кандидата в чергу можна лише коли ДАНІ ПРО ПРОСТОЇ надійні: сітка
+     слотів у BookingModal ховає заблоковані кабінети саме за incidents, і при збої
+     завантаження (порожній масив) кабінет на ремонті виглядав би вільним. */
+  function openBooking(p: WaitlistEntry) {
+    if (incidentsErr) {
+      notify("Дані про простої не оновились — спершу оновіть сторінку, інакше можна записати в заблокований кабінет", "error");
+      loadIncidents();
+      return;
+    }
+    setBookFor(p);
+  }
+
+  const statusesFor = (f: "waiting" | "scheduled" | "removed"): ("waiting" | "scheduled" | "cancelled" | "expired")[] =>
+    f === "waiting" ? ["waiting"] : f === "scheduled" ? ["scheduled"] : ["cancelled", "expired"];
+
   const reload = useCallback(async () => {
     try {
       const supabase = createClient();
-      const { data } = await supabase
+      let q = supabase
         .from("waitlist_entries")
         .select("*")
         .eq("clinic_id", clinicId)
-        .order("created_at", { ascending: true });
+        .in("status", statusesFor(filter));
+      // Модальність (сайдбар) і пошук — СЕРВЕРНО, а не фільтром у браузері.
+      if (viewMod) q = q.or(`modality.is.null,modality.eq.${viewMod}`);
+      // Телефоноподібний запит приводимо до канонічного «+380 XX XXX XX XX» лише
+      // ДЛЯ ПОШУКУ (інпут лишається raw — Backspace/редагування ПІБ не ламаються).
+      const s = formatPhoneSearch(qDebounced.trim()).replace(/[%,()\\]/g, " ").trim();
+      if (s) q = q.or(`patient_name.ilike.%${s}%,patient_phone.ilike.%${s}%`);
+      // waiting — СЕРВЕРНИЙ порядок cito→urgent→planned (порядок оголошення enum
+      // patient_priority, звірено з БД) → давність; історичні вкладки — за updated_at.
+      // Обидва — сторінками limit («Показати ще»): раніше waiting обрізався стелею
+      // 300 за created_at, і cito за нею взагалі не потрапляв на дошку.
+      q = filter === "waiting"
+        ? q.order("priority_level", { ascending: true }).order("created_at", { ascending: true }).limit(limit)
+        : q.order("updated_at", { ascending: false }).limit(limit);
+      const { data, error } = await q;
+      // H-6: без перевірки error збій виглядав як «Лист порожній» — і кандидатів,
+      // що чекають слота, ніхто не бачив.
+      if (error) { setEntriesErr(true); return; }
       setEntries(data || []);
-    } catch { /* транзієнтний Failed to fetch (оновлення токена) — не валимо дошку */ }
-    setLoading(false);
-  }, [clinicId]);
+      setHasMore((data?.length || 0) >= limit);
+      setEntriesErr(false);
+    } catch { setEntriesErr(true); }
+    finally { setLoading(false); }
+  }, [clinicId, filter, viewMod, qDebounced, limit]);
+
+  // Лічильники StatsBar/вкладок — один RPC waitlist_counts (0105) по всіх статусах
+  // незалежно від активної вкладки (з модальність-фільтком).
+  const loadCounts = useCallback(async () => {
+    try {
+      const supabase = createClient();
+      // Один RPC (0105) замість п'яти паралельних COUNT: без сплеску запитів/503
+      // (StrictMode-дублі в dev їх 503-или) і без тихого застарівання лічильників.
+      const { data, error } = await supabase.rpc("waitlist_counts", { p_modality: viewMod });
+      // RE_AUDIT Low: раніше error ковтався мовчки, і на екрані застигали СТАРІ
+      // числа без жодної ознаки — тепер ненав'язливий індикатор «не оновились».
+      if (error) { setCountsErr(true); return; }
+      const c = data?.[0];
+      if (c) setCounts({
+        waiting: c.waiting || 0, cito: c.cito || 0, urgent: c.urgent || 0,
+        scheduled: c.scheduled || 0, removed: c.removed || 0,
+      });
+      setCountsErr(false);
+    } catch { setCountsErr(true); }
+  }, [viewMod]);
+
+  // Дебаунс пошуку (серверний ilike) + скидання пагінації при зміні фільтра/модальності/пошуку.
+  useEffect(() => { const t = setTimeout(() => setQDebounced(query), 300); return () => clearTimeout(t); }, [query]);
+  useEffect(() => { setLimit(PAGE); }, [filter, viewMod, qDebounced]);
+  useEffect(() => { loadCounts(); }, [loadCounts]);
+  // Мутації оновлюють і рядки активної вкладки, і лічильники (realtime продублює без лагу).
+  const refresh = useCallback(() => { reload(); loadCounts(); }, [reload, loadCounts]);
 
   const loadIncidents = useCallback(async () => {
     try {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("incidents")
         .select("id, room_id, reason_label, note, started_at, blocked_until, status")
         .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
+      if (error) { setIncidentsErr(true); return; }   // «простоїв немає» — небезпечна брехня і тут
       setIncidents(data || []);
-    } catch { /* ignore */ }
+      setIncidentsErr(false);
+    } catch { setIncidentsErr(true); }
   }, [clinicId]);
 
   useEffect(() => { setLoading(true); }, [clinicId]);
@@ -151,8 +256,15 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
   useRealtimeRefetch({
     channelName: clinicId ? "waitlist-" + clinicId : null,
     subscriptions: [
-      { table: "waitlist_entries", filter: "clinic_id=eq." + clinicId, onChange: reload },
+      { table: "waitlist_entries", filter: "clinic_id=eq." + clinicId, onChange: () => { reload(); loadCounts(); } },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
+      // 0086: rooms — SSR-проп; додавання/зміна модальності/видалення кабінету долітає
+      // до відкритого листа через перечитування серверних пропів (інакше стале-фільтри
+      // кабінетів і allowedModalities у WaitlistModal/BookingModal до ручного refresh).
+      { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      // Каталог послуг/цін (0107/0108) — SSR-проп у форми листа; зміна адміном → оновити.
+      { table: "services", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      { table: "service_room_overrides", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
     ],
   });
 
@@ -167,35 +279,38 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     setAddOpen(false);
     notify("Додано до листа очікування: " + w.name, "success");
-    reload();
+    refresh();
   }
 
+  // Повертає ТЕКСТ помилки — BookingModal покаже його в собі (тост тонув під оверлеєм).
   async function saveBooking(b: BookingPayload) {
     const wl = bookFor;
-    if (!wl) return;
+    if (!wl) return null;
     const [hh, mm] = b.time.split(":").map(Number);
     const at = new Date(b.date.getFullYear(), b.date.getMonth(), b.date.getDate(), hh, mm).toISOString();
-    const res = await createBooking({
+    // Атомарно: спершу застовплюємо кандидата (CAS waiting→scheduled), лише
+    // переможець створює запис — два адміністратори не задвоять пацієнта.
+    const res = await scheduleFromWaitlist(wl.id, {
       roomId: b.roomId, referrerId: b.referrerId ?? (wl.referrer_id || null),
       name: b.name, phone: b.phone || null, email: b.email ?? null,
       dob: b.dob || null, sex: b.gender || null, age: b.age || null, weight: b.weight ?? null,
       hasContra: !!b.hasContra, priorityLevel: b.priority,
       studies: b.studies || [], doctor: b.doctor ?? null, notes: b.notes ?? null, durationMin: b.dur, bufferTimeMin: b.buffer,
       scheduledDate: dateKey(b.date), scheduledTime: b.time, scheduledAt: at,
+      offSchedule: b.offSchedule,   // 0077
     });
     if (!res.ok) {
-      const msg = (res.code === "slot_taken" || res.code === "slot_unavailable")
+      // stale = кандидата саме зараз записує інший оператор → запис НЕ створено.
+      return (res.code === "slot_taken" || res.code === "slot_unavailable")
         ? "Слот щойно зайняли — оберіть інший час"
         : res.code === "incident" ? "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день"
-        : "Помилка збереження: " + res.error;
-      notify(msg, "error");
-      return;
+        : res.code === "stale" ? "Кандидата вже записує інший оператор — оновіть лист"
+        : res.error;
     }
-    const mark = await markWaitlistScheduled(wl.id, res.id ?? null);
-    if (!mark.ok) notify("Запис створено, але лист не оновився: " + mark.error, "error");
-    else notify("Записано зі списку очікування: " + b.name + " · " + b.time, "success");
+    notify("Записано зі списку очікування: " + b.name + " · " + b.time, "success");
     setBookFor(null);
-    reload();
+    refresh();
+    return null;   // запис створено — модалку закриває батько
   }
 
   // Редагування даних пацієнта/досліджень/вікна в місці ухвалення рішення.
@@ -213,7 +328,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     setEditFor(null);
     notify("Запис листа оновлено", "success");
-    reload();
+    refresh();
   }
 
   async function restore(p: WaitlistEntry) {
@@ -222,7 +337,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
       const res = await setWaitlistStatus(p.id, "waiting");
       if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
       notify("Повернено в очікування", "success");
-      reload();
+      refresh();
     } finally { setBusyId(null); }
   }
   // Мʼяке зняття + Undo в тості (замість блокуючого підтвердження).
@@ -232,7 +347,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
       const res = await setWaitlistStatus(p.id, "cancelled");
       if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
       notify("Знято з листа очікування", "info", { label: "Скасувати", onAction: () => restore(p) });
-      reload();
+      refresh();
     } finally { setBusyId(null); }
   }
   async function setPrio(p: WaitlistEntry, v: PatientPriority) {
@@ -241,41 +356,19 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
     setBusyId(p.id);
     try {
       const res = await setWaitlistPriority(p.id, v);
-      if (!res.ok) { notify("Помилка: " + res.error, "error"); reload(); return; }
+      if (!res.ok) { notify("Помилка: " + res.error, "error"); refresh(); return; }
       notify("Пріоритет: " + PRIORITY_META[v].label, "success");
     } finally { setBusyId(null); }
   }
 
-  // Фільтр за кабінетом із сайдбара: рядок листа не привʼязаний до кабінету,
-  // тому фільтруємо за МОДАЛЬНІСТЮ обраного кабінету (МРТ/КТ).
-  const viewRoom = roomView === "all" ? null : (rooms || []).find((r) => r.id === roomView) || null;
-  const scoped = useMemo(
-    () => (viewRoom ? entries.filter((e) => !e.modality || e.modality === viewRoom.modality) : entries),
-    [entries, viewRoom]
+  // Активна вкладка вже відфільтрована (status + модальність + пошук) І відсортована
+  // серверно (waiting: пріоритет enum → давність). Клієнтський compareWaitlist —
+  // лише стабілізація тієї ж формули на завантаженій сторінці (realtime-патчі
+  // могли б підмішати рядок до наступного reload); порядок ідентичний серверному.
+  const filtered = useMemo(
+    () => (filter === "waiting" ? [...entries].sort(compareWaitlist) : entries),
+    [entries, filter]
   );
-
-  const waiting = useMemo(() => scoped.filter((e) => e.status === "waiting").sort(compareWaitlist), [scoped]);
-  const counts = useMemo(() => {
-    const c = { waiting: waiting.length, cito: 0, urgent: 0, scheduled: 0, removed: 0 };
-    scoped.forEach((e) => {
-      if (e.status === "waiting") { if (e.priority_level === "cito") c.cito++; if (e.priority_level === "urgent") c.urgent++; }
-      if (e.status === "scheduled") c.scheduled++;
-      if (e.status === "cancelled" || e.status === "expired") c.removed++;
-    });
-    return c;
-  }, [scoped, waiting]);
-
-  const listForTab = filter === "waiting" ? waiting
-    : scoped.filter((e) => (filter === "scheduled" ? e.status === "scheduled" : e.status === "cancelled" || e.status === "expired"))
-        .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
-
-  const filtered = listForTab.filter((p) => {
-    if (!query.trim()) return true;
-    const q = query.trim().toLowerCase();
-    return (p.patient_name || "").toLowerCase().includes(q)
-      || (p.patient_phone || "").includes(q)
-      || procLabel(p).toLowerCase().includes(q);
-  });
 
   const tabs = [
     { key: "waiting" as const, label: "Очікують", ct: counts.waiting },
@@ -307,7 +400,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
             <span className="tic">⏳</span>
             <div>
               <h1>Лист очікування</h1>
-              <div className="date">{fmtFull(new Date())} · <LiveClock /></div>
+              <div className="date">{fmtFull(wallToday0(clinicTz))} · <LiveClock tz={clinicTz} /></div>
             </div>
           </div>
           <div className="tb-right">
@@ -328,16 +421,23 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
               {stats.map((s) => (
                 <div className="stat" key={s.lab}>
                   <div className="lab">{s.lab}</div>
-                  <div className="val tabular" style={{ color: s.color }}>{s.val}</div>
+                  <div className="val tabular" style={{ color: s.color, opacity: countsErr ? 0.55 : 1 }}>{s.val}</div>
                 </div>
               ))}
             </div>
+            {countsErr && (
+              <div role="status" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--text-muted)", margin: "2px 0 6px" }}>
+                <span aria-hidden="true">⚠</span>
+                <span>Лічильники не оновились — цифри можуть бути застарілими.</span>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={loadCounts}>↻ Оновити</button>
+              </div>
+            )}
 
             {viewRoom && (
               <div className="info-banner" style={{ padding: "8px 14px" }}>
-                <span className="ib-ic">{viewRoom.modality === "CT" ? "КТ" : "МРТ"}</span>
+                <span className="ib-ic">{modalityLabel(viewRoom.modality)}</span>
                 <span className="ib-txt">
-                  Фільтр за кабінетом <b>{viewRoom.name}</b>: показано пацієнтів модальності {viewRoom.modality === "CT" ? "КТ" : "МРТ"} (лист не привʼязаний до конкретного кабінету).
+                  Фільтр за кабінетом <b>{viewRoom.name}</b>: показано пацієнтів модальності {modalityLabel(viewRoom.modality)} (лист не привʼязаний до конкретного кабінету).
                 </span>
                 <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => setRoomView("all")}>✕ Зняти фільтр</button>
               </div>
@@ -353,7 +453,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
               </div>
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
-                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(e.target.value)} />
+                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
               </div>
             </div>
 
@@ -362,8 +462,13 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
             </div>
             {loading ? (
               <div className="empty"><div className="et">Завантаження…</div></div>
+            ) : entriesErr && filtered.length === 0 ? (
+              <div className="empty"><div className="ei">⚠</div><div className="et">Лист не завантажився</div>
+                <div className="es">Це не означає, що він порожній — оновіть сторінку</div>
+                <button className="btn btn-secondary btn-sm" style={{ marginTop: 10 }} onClick={() => { refresh(); loadIncidents(); }}>↻ Оновити</button>
+              </div>
             ) : filtered.length === 0 ? (
-              <div className="empty"><div className="ei">⏳</div><div className="et">Лист порожній</div><div className="es">{listForTab.length === 0 ? "Додайте пацієнта, що чекає на вільне вікно" : "Змініть фільтр або пошук"}</div></div>
+              <div className="empty"><div className="ei">⏳</div><div className="et">Лист порожній</div><div className="es">{(!qDebounced.trim() && !viewMod) ? "Додайте пацієнта, що чекає на вільне вікно" : "Змініть фільтр або пошук"}</div></div>
             ) : (
               <div className="clrows">
                 {filtered.map((p) => {
@@ -397,7 +502,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                         </div>
                         <div className="wl-proc-cell">
                           <div className="wl-proc-main">
-                            <span className={"wl-mod " + (p.modality === "CT" ? "ct" : "mrt")}>{p.modality === "CT" ? "КТ" : "МРТ"}</span>
+                            <span className={"wl-mod " + modalityKind(p.modality)}>{modalityLabel(p.modality)}</span>
                             <span className="cl-proc">{procLabel(p)}</span>
                           </div>
                           <div className="wl-proc-du">{p.duration_min} хв + буфер {p.buffer_time_min} хв</div>
@@ -407,7 +512,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                           {/* Дії згорнутого рядка; у розгорнутому — в картці (без дублю «дії»). */}
                           {p.status === "waiting" && !expanded && (
                             <>
-                              <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => setBookFor(p)}>{busy ? "…" : "Додати в чергу"}</button>
+                              <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => openBooking(p)}>{busy ? "…" : "Додати в чергу"}</button>
                               <RowMenu disabled={busy} onEdit={() => setEditFor(p)} onRemove={() => setConfirmRemove(p)} />
                             </>
                           )}
@@ -427,7 +532,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                               ) : p.patient_name}
                             </span></div>
                             <div className="cld-item"><span className="cld-lab">Вік</span><span className="cld-val">{p.patient_age != null ? p.patient_age + " р." : "—"}</span></div>
-                            <div className="cld-item"><span className="cld-lab">Модальність</span><span className="cld-val"><span className={"cld-type " + (p.modality === "CT" ? "ct" : "mrt")}>{p.modality === "CT" ? "КТ" : "МРТ"}</span></span></div>
+                            <div className="cld-item"><span className="cld-lab">Модальність</span><span className="cld-val"><span className={"cld-type " + modalityKind(p.modality)}>{modalityLabel(p.modality)}</span></span></div>
                             <div className="cld-item cld-item-full"><span className="cld-lab">Дослідження</span><span className="cld-val cld-val-wrap">{procLabel(p)} · {p.duration_min} хв + буфер {p.buffer_time_min} хв</span></div>
                             <div className="cld-item"><span className="cld-lab">Телефон</span><span className="cld-val"><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>{p.patient_phone}</a></span></div>
                             <div className="cld-item"><span className="cld-lab">Бажане вікно</span><span className="cld-val">{desiredWindowText(p)}</span></div>
@@ -455,7 +560,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                               </div>
                               {/* Місце ухвалення рішення: одна група дій (у рядку кнопки сховані, поки картку розгорнуто). */}
                               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => setBookFor(p)}>{busy ? "…" : "Додати в чергу"}</button>
+                                <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => openBooking(p)}>{busy ? "…" : "Додати в чергу"}</button>
                                 <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setEditFor(p)}><span aria-hidden="true">✎</span> Редагувати</button>
                                 <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} disabled={busy} onClick={() => setConfirmRemove(p)}><span aria-hidden="true">✕</span> Зняти з листа</button>
                               </div>
@@ -468,12 +573,17 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
                 })}
               </div>
             )}
+            {hasMore && (
+              <div style={{ textAlign: "center", marginTop: 12 }}>
+                <button className="btn btn-secondary btn-sm" onClick={() => setLimit((l) => l + PAGE)}>Показати ще</button>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {addOpen && <WaitlistModal rooms={rooms} onClose={() => setAddOpen(false)} onSave={onAdd} />}
-      {editFor && <WaitlistModal rooms={rooms} initial={editFor} onClose={() => setEditFor(null)} onSave={onEditSave} />}
+      {addOpen && <WaitlistModal rooms={rooms} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} onClose={() => setAddOpen(false)} onSave={onAdd} />}
+      {editFor && <WaitlistModal rooms={rooms} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} initial={editFor} onClose={() => setEditFor(null)} onSave={onEditSave} />}
       {confirmRemove && (
         <ConfirmDialog title="Зняти з листа очікування"
           text={<>Зняти <b style={{ color: "var(--text)" }}>{confirmRemove.patient_name}</b> з листа очікування? Запис перейде на вкладку «Зняті» — його можна буде повернути.</>}
@@ -482,7 +592,7 @@ export default function WaitlistBoard({ clinicId, rooms, clinicName, adminName, 
           onClose={() => setConfirmRemove(null)} />
       )}
       {bookFor && (
-        <BookingModal rooms={rooms} clinicId={clinicId} incidents={incidents} prefill={bookPrefill}
+        <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} services={services} roomOverrides={roomOverrides} prefill={bookPrefill}
           onClose={() => setBookFor(null)} onSave={saveBooking} />
       )}
 

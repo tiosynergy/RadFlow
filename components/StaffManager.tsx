@@ -1,28 +1,39 @@
 "use client";
 
-/* ===== RadFlow — Радіологи та доступи (адмін) =====
-   Адміністратор створює акаунт радіолога вручну (логін, ПІБ, телефон, email,
-   примітка) + призначає кабінети. Пароль радіолог задає сам на /set-password;
-   адміністратор може скинути або задати пароль. Доступ до кабінетів — будь-коли. */
+/* ===== RadFlow — Персонал і доступи (адмін) =====
+   Адміністратор створює акаунти ПЕРСОНАЛУ ЦЕНТРУ: радіолог або РЕЄСТРАТОР
+   (логін, ПІБ, телефон, email, примітка). Кабінети призначаються лише радіологу.
+   Пароль користувач задає сам на /set-password; адмін може скинути або задати.
+
+   Реєстратор довго був «мертвою» роллю: enum, маршрути і RLS (0073) для нього були,
+   а створити акаунт не було чим — уся реєстратура працювала під адміном, тобто з
+   правами на кабінети, прайс і таймзону центру. */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import PhoneInput from "@/components/PhoneInput";
+import { modalityLabel } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+/* Персонал центру: радіолог або РЕЄСТРАТОР. Реєстратор довго був «мертвою» роллю —
+   enum, маршрути (/queue, /call-list, /waitlist) і RLS (0073) для нього були, а
+   створити акаунт не було чим: /api/staff хардкодив radiologist. Уся реєстратура
+   через це працювала під адміном — тобто з правами на кабінети, прайс і TZ центру. */
+type StaffRole = "radiologist" | "registrar";
 type StaffForm = { login: string; full_name: string; email: string; phone: string; note: string };
 type Radiologist = {
   id: string; login: string | null; full_name: string | null; email: string | null;
   phone: string | null; note: string | null; password_set: boolean; invite_token: string | null;
+  role: StaffRole;
 };
 type RadRoom = { profile_id: string; room_id: string };
 type PwModal = { id: string; val: string; busy: boolean };
 
-function modalityLabel(m: string) { return m === "MRI" ? "МРТ" : m === "CT" ? "КТ" : "Інше"; }
+const ROLE_LABEL: Record<StaffRole, string> = { radiologist: "Радіолог", registrar: "Реєстратор" };
 const EMPTY: StaffForm = { login: "", full_name: "", email: "", phone: "", note: "" };
 
 interface StaffManagerProps {
@@ -38,6 +49,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
   const [radRooms, setRadRooms] = useState<RadRoom[]>([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState<StaffForm>(EMPTY);
+  const [formRole, setFormRole] = useState<StaffRole>("radiologist");
   const [formRooms, setFormRooms] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
@@ -60,10 +72,18 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
   const reload = useCallback(async () => {
     const supabase = createClient();
     const [{ data: profs }, { data: rr }] = await Promise.all([
-      supabase.from("profiles").select("id, login, full_name, email, phone, note, password_set, invite_token").eq("clinic_id", clinicId).eq("role", "radiologist").order("full_name"),
+      // Персонал центру = радіологи + реєстратори (адмін керує собою сам).
+      supabase.from("profiles").select("id, login, full_name, email, phone, note, password_set, invite_token, role")
+        .eq("clinic_id", clinicId).in("role", ["radiologist", "registrar"]).order("full_name"),
       supabase.from("radiologist_rooms").select("profile_id, room_id").eq("clinic_id", clinicId),
     ]);
-    setRadiologists(profs || []);
+    /* .in("role", …) звужує вибірку в БД, але типи Supabase все одно віддають увесь
+       enum user_role — тому фільтруємо ще й у TS (це і type guard, і захист від
+       несподіваного рядка з БД). */
+    setRadiologists(
+      (profs || []).filter((p): p is (typeof p & { role: StaffRole }) =>
+        p.role === "radiologist" || p.role === "registrar")
+    );
     setRadRooms(rr || []);
     setLoading(false);
   }, [clinicId]);
@@ -89,12 +109,17 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
     try {
       const res = await fetch("/api/staff", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ role: "radiologist", ...form, room_ids: formRooms }),
+        // Кабінети — лише радіологу (реєстратор працює з чергою, не з апаратом).
+        body: JSON.stringify({ role: formRole, ...form, room_ids: formRole === "radiologist" ? formRooms : [] }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { notify(data.error || "Помилка створення", "error"); setBusy(false); return; }
+      const createdRole = formRole;
       setForm(EMPTY); setFormRooms([]);
-      notify("Радіолога створено. Скопіюйте посилання для встановлення пароля в його картці нижче і передайте йому.", "success");
+      // warning: акаунт створено, але кабінети не призначились — це треба показати,
+      // інакше радіолог мовчки лишиться без жодного кабінету.
+      if (data.warning) notify(String(data.warning), "error");
+      else notify(`${ROLE_LABEL[createdRole]}а створено. Скопіюйте посилання для встановлення пароля в його картці нижче і передайте йому.`, "success");
       reload();
     } catch { notify("Помилка зʼєднання із сервером", "error"); }
     setBusy(false);
@@ -154,15 +179,31 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
           <header className="topbar">
             <div className="tb-title">
               <span className="tic">👥</span>
-              <div><h1>Радіологи та доступи</h1><div className="date">{clinicName} · <LiveClock /></div></div>
+              <div><h1>Персонал і доступи</h1><div className="date">{clinicName} · <LiveClock /></div></div>
             </div>
           </header>
         )}
 
         <div className={embedded ? undefined : "content"} style={embedded ? undefined : { overflowY: "auto", padding: "22px", maxWidth: 900 }}>
-          {/* Додати радіолога */}
+          {/* Додати співробітника */}
           <div style={card}>
-            <div className="bk-section-label" style={{ marginTop: 0 }}>Додати радіолога</div>
+            <div className="bk-section-label" style={{ marginTop: 0 }}>Додати співробітника</div>
+            <div className="fld">
+              <span className="fld-lab">Роль <span className="req">*</span></span>
+              <div style={{ display: "flex", gap: 8 }}>
+                {(["radiologist", "registrar"] as StaffRole[]).map((r) => (
+                  <button key={r} type="button" onClick={() => setFormRole(r)}
+                    className={"btn btn-sm " + (formRole === r ? "btn-primary" : "btn-secondary")}>
+                    {ROLE_LABEL[r]}
+                  </button>
+                ))}
+              </div>
+              <span style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6, display: "block" }}>
+                {formRole === "radiologist"
+                  ? "Працює з апаратом: своя дошка, статуси досліджень, доступ до призначених кабінетів."
+                  : "Реєстратура: черга, обдзвін, лист очікування, графік дня, простої. Кабінети, прайс і налаштування центру — не редагує."}
+              </span>
+            </div>
             <div className="fld-row">
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Логін <span className="req">*</span></span><input className="inp" placeholder="логін для входу" value={form.login} onChange={(e) => setF("login", e.target.value)} /></label>
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">ПІБ <span className="req">*</span></span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setF("full_name", e.target.value)} /></label>
@@ -173,6 +214,8 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
             </div>
             <label className="fld"><span className="fld-lab">Пароль</span><input className="inp" placeholder="Порожній — користувач задасть сам на /set-password" disabled /></label>
             <label className="fld"><span className="fld-lab">Примітка</span><input className="inp" placeholder="Коротка примітка (необовʼязково)" value={form.note} onChange={(e) => setF("note", e.target.value)} /></label>
+            {/* Кабінети — лише радіологу: реєстратор працює з чергою, не з апаратом. */}
+            {formRole === "radiologist" && (
             <div className="fld">
               <span className="fld-lab">Доступ до кабінетів</span>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -188,24 +231,30 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                 {(rooms || []).length === 0 && <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>Спершу додайте кабінети в Майстрі.</span>}
               </div>
             </div>
+            )}
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
               <button className="btn btn-primary" disabled={busy} onClick={createAccount}>{busy ? "Створюємо…" : "Створити акаунт"}</button>
             </div>
-            <div className="hint-blue">Пароль не задається тут: після створення скопіюйте в картці радіолога <b>персональне посилання</b> й передайте йому — він встановить пароль сам. Забув пароль — натисніть «Скинути», зʼявиться нове посилання.</div>
+            <div className="hint-blue">Пароль не задається тут: після створення скопіюйте в картці співробітника <b>персональне посилання</b> й передайте йому — він встановить пароль сам. Забув пароль — натисніть «Скинути», зʼявиться нове посилання.</div>
           </div>
 
-          {/* Радіологи */}
+          {/* Персонал центру */}
           <div style={card}>
-            <div className="bk-section-label" style={{ marginTop: 0 }}>Радіологи клініки ({radiologists.length})</div>
+            <div className="bk-section-label" style={{ marginTop: 0 }}>Персонал клініки ({radiologists.length})</div>
             {loading ? (
               <div style={{ color: "var(--text-muted)", padding: 8 }}>Завантаження…</div>
             ) : radiologists.length === 0 ? (
-              <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає радіологів. Додайте їх вище.</div>
+              <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає співробітників. Додайте їх вище.</div>
             ) : radiologists.map((r) => (
               <div key={r.id} style={{ padding: "14px 0", borderTop: "1px solid var(--border)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 180 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{r.full_name || r.login || r.email}</div>
+                    <div style={{ fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
+                      {r.full_name || r.login || r.email}
+                      <span className={"badge " + (r.role === "registrar" ? "blue" : "gray")} style={{ fontSize: 10.5 }}>
+                        {ROLE_LABEL[r.role]}
+                      </span>
+                    </div>
                     <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
                       {r.login ? "@" + r.login + " · " : ""}{r.email}{r.phone ? " · " + r.phone : ""}
                     </div>
@@ -223,6 +272,8 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                     <button className="btn btn-secondary btn-sm" onClick={() => copyLink(r.invite_token as string)}>Скопіювати</button>
                   </div>
                 )}
+                {/* Кабінети призначаються лише радіологу (/api/staff/rooms це теж вимагає). */}
+                {r.role === "radiologist" && (
                 <div style={{ marginTop: 10 }}>
                   <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Доступ до кабінетів:</span>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6 }}>
@@ -238,6 +289,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                     {(rooms || []).length === 0 && <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>Немає кабінетів.</span>}
                   </div>
                 </div>
+                )}
               </div>
             ))}
           </div>
