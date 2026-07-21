@@ -373,13 +373,22 @@ const sImportRow = z.object({
   durationMin: z.union([zDuration, z.null()]).optional().default(null),
   // true = «оживити» вимкнену позицію (інакше RPC її пропустить).
   revive: z.boolean().optional().default(false),
+  // 0119: версія існуючої позиції на момент передперегляду (services.updated_at,
+  // СТРІНГОМ — без JS Date). RPC відхиляє батч, якщо ціль змінилася після перегляду.
+  expectedUpdatedAt: z.string().min(1).nullable().optional(),
+  // 0119: true ЛИШЕ для рядків, які передперегляд визнав НОВИМИ (у каталозі збігу не було).
+  // Тоді RPC конфліктує, тільки якщо активна позиція вже зʼявилась. Для рядків без expected
+  // і без isNew (нерозпізнані з ручною модальністю — версія невідома) звірки немає (як до 0119).
+  isNew: z.boolean().optional(),
 });
 const sImportRows = z.array(sImportRow).min(1, "Немає позицій для імпорту").max(500);
 export type ImportServiceRow = z.infer<typeof sImportRow>;
 
 export type ImportServicesResult =
   | { ok: true; inserted: number; updated: number; skippedInactive: number; noop: number }
-  | { ok: false; error: string; code?: "auth" | "forbidden" | "generic" };
+  // 0119: каталог змінився між передпереглядом і застосуванням — нічого не застосовано,
+  // conflicts = назви змінених/доданих позицій; клієнт просить оновити передперегляд.
+  | { ok: false; error: string; code?: "auth" | "forbidden" | "generic" | "stale"; conflicts?: string[] };
 
 /** Застосувати підтверджені позиції імпорту (все-або-нічого). */
 export async function importServices(raw: ImportServiceRow[]): Promise<ImportServicesResult> {
@@ -396,6 +405,9 @@ export async function importServices(raw: ImportServiceRow[]): Promise<ImportSer
       price: r.price,
       duration_min: r.durationMin,
       revive: r.revive,
+      // 0119: expected_updated_at лише для існуючих (changed/inactive); is_new — лише для нових.
+      expected_updated_at: r.expectedUpdatedAt ?? null,
+      is_new: r.isNew ?? false,
     })),
   });
   if (error) {
@@ -408,7 +420,17 @@ export async function importServices(raw: ImportServiceRow[]): Promise<ImportSer
     }
     return { ok: false, error: safeDbError("services_import", { message: error.message }), code: "generic" };
   }
-  const res = (data ?? {}) as { inserted?: number; updated?: number; skipped_inactive?: number; noop?: number };
+  const res = (data ?? {}) as { stale?: boolean; conflicts?: unknown; inserted?: number; updated?: number; skipped_inactive?: number; noop?: number };
+  // 0119: каталог змінився під час передперегляду — RPC нічого не застосував.
+  if (res.stale) {
+    const conflicts = Array.isArray(res.conflicts) ? res.conflicts.filter((n): n is string => typeof n === "string") : [];
+    return {
+      ok: false,
+      code: "stale",
+      conflicts,
+      error: "Каталог центру змінився під час перегляду — оновіть передперегляд і застосуйте знову",
+    };
+  }
   return {
     ok: true,
     inserted: res.inserted ?? 0,

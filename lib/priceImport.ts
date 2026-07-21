@@ -327,6 +327,9 @@ export interface ExistingService {
   price: number;
   duration_min: number | null; // 0117: null = час не задано
   active: boolean;
+  /** 0119: версія рядка для оптимістичної блокування при застосуванні імпорту.
+      Несеться СТРІНГОМ end-to-end (JS Date зрізав би мікросекунди → хибні конфлікти). */
+  updated_at: string;
 }
 
 export type ClassifiedRow =

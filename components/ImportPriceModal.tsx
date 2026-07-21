@@ -161,6 +161,10 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
         // Ручний час із передперегляду (для нових); інакше — з файла.
         durationMin: pickedDur(i, r.row.durationMin),
         revive: r.kind === "inactive",
+        // 0119: версія існуючої позиції (changed/inactive) для optimistic-lock;
+        // нові — без версії, але з isNew (RPC конфліктує, лише якщо активна вже зʼявилась).
+        expectedUpdatedAt: "existing" in r ? r.existing.updated_at : null,
+        isNew: r.kind === "new",
       });
     });
     return out;
@@ -172,7 +176,23 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
     setStep("applying");
     try {
       const res = await importServices(selectedRows);
-      if (!res.ok) { setErr(res.error); setStep("preview"); return; }
+      if (!res.ok) {
+        // 0119: каталог змінився під час перегляду — імпорт нічого не застосував.
+        // Повертаємо на крок вибору файла/посилання, щоб адмін перезчитав актуальний
+        // каталог (передперегляд застарів; повторне застосування без цього — той самий lost-update).
+        if (res.code === "stale") {
+          const names = (res.conflicts ?? []).slice(0, 8).join(", ");
+          setErr(res.error + (names ? `. Змінилися: ${names}${(res.conflicts?.length ?? 0) > 8 ? "…" : ""}` : ""));
+          setPreview(null);
+          setChecked({});
+          setModPick({});
+          setStep("pick");
+          return;
+        }
+        setErr(res.error);
+        setStep("preview");
+        return;
+      }
       const parts = [
         res.inserted ? `нових: ${res.inserted}` : null,
         res.updated ? `оновлено: ${res.updated}` : null,

@@ -225,7 +225,7 @@ export async function POST(req: Request) {
   const truncated = parsed.truncated || totalRaw > MAX_RAW_ROWS;
   const { data: services, error } = await gate.supabase
     .from("services")
-    .select("id, name, modality, price, duration_min, active")
+    .select("id, name, modality, price, duration_min, active, updated_at") // updated_at — версія для 0119 optimistic-lock
     .eq("clinic_id", gate.me.clinic_id);
   if (error) return jerr("Не вдалося прочитати каталог центру", 500);
 
