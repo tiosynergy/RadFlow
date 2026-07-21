@@ -694,6 +694,10 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
           })}
         </div>
         <div className="wiz-foot">
+          {/* «Вийти» — над рядком «Майстер налаштувань · Підтримка», праворуч. */}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+            <button className="btn btn-green" onClick={exitSetup} disabled={saving}>Вийти</button>
+          </div>
           <div className="wiz-prog-lab">
             <span>Майстер налаштувань</span>
             <a href="mailto:support@radflow.ua?subject=Допомога%20з%20налаштуванням" title="Написати в підтримку">Підтримка</a>
@@ -744,7 +748,6 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
                   {saving ? "Зберігаємо…" : "Зберегти"}
                 </button>
               </span>
-              <button className="btn btn-secondary" onClick={exitSetup} disabled={saving}>Вийти</button>
             </div>
           </div>
         </div>

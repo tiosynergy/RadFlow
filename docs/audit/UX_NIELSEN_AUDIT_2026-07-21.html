@@ -1,0 +1,1230 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RadFlow — UI/UX аудит по 10 эвристикам Нильсена</title>
+  <style>
+    :root {
+      --bg: #1c1c1e;
+      --bg-elevated: #242426;
+      --card: #2c2c2e;
+      --card-2: #3a3a3c;
+      --border: #38383a;
+      --border-strong: #48484a;
+      --text: #f5f5f7;
+      --text-secondary: #aeaeb2;
+      --text-muted: #a3a3a8;
+      --blue: #0a84ff;
+      --blue-bg: rgba(10, 132, 255, 0.15);
+      --green: #30d158;
+      --green-bg: rgba(48, 209, 88, 0.15);
+      --red: #ff453a;
+      --red-bg: rgba(255, 69, 58, 0.15);
+      --orange: #ff9f0a;
+      --orange-bg: rgba(255, 159, 10, 0.15);
+      --yellow: #ffd60a;
+      --r: 12px;
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      --mono: "SF Mono", ui-monospace, "Cascadia Code", Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.55;
+      font-size: 15px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px 24px 80px;
+    }
+
+    /* Header */
+    header.hero {
+      background: linear-gradient(145deg, #1a2744 0%, var(--card) 55%, #2a2230 100%);
+      border: 1px solid var(--border-strong);
+      border-radius: 18px;
+      padding: 32px 36px;
+      margin-bottom: 28px;
+      position: relative;
+      overflow: hidden;
+    }
+    header.hero::before {
+      content: "";
+      position: absolute;
+      top: -40%;
+      right: -10%;
+      width: 280px;
+      height: 280px;
+      background: radial-gradient(circle, rgba(10,132,255,.25), transparent 70%);
+      pointer-events: none;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--blue);
+      letter-spacing: -0.02em;
+      margin-bottom: 18px;
+    }
+    .logo .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--blue);
+      box-shadow: 0 0 12px var(--blue);
+    }
+    header h1 {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.2;
+      margin-bottom: 10px;
+      max-width: 640px;
+    }
+    header .sub {
+      color: var(--text-secondary);
+      font-size: 14.5px;
+      max-width: 640px;
+      margin-bottom: 20px;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 999px;
+      font-size: 12.5px;
+      font-weight: 600;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      color: var(--text-secondary);
+    }
+    .chip strong { color: var(--text); font-weight: 700; }
+    .score-pill {
+      background: var(--blue-bg);
+      border-color: rgba(10,132,255,.35);
+      color: #6db3ff;
+    }
+    .score-pill strong { color: #9cc9ff; }
+
+    /* TOC */
+    nav.toc {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 18px 22px;
+      margin-bottom: 28px;
+    }
+    nav.toc h2 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+    nav.toc ol {
+      list-style: none;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px 20px;
+    }
+    @media (max-width: 700px) {
+      nav.toc ol { grid-template-columns: 1fr; }
+    }
+    nav.toc a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 13.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+      transition: color .12s;
+    }
+    nav.toc a:hover { color: var(--blue); }
+    nav.toc .n {
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      color: var(--text-muted);
+      min-width: 18px;
+    }
+
+    /* Sections */
+    section {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 24px 28px;
+      margin-bottom: 18px;
+    }
+    section h2 {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    section h2 .num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: var(--blue-bg);
+      color: #6db3ff;
+      font-size: 13px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .score-badge {
+      font-size: 12px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 999px;
+      margin-left: auto;
+    }
+    .score-high { background: var(--green-bg); color: var(--green); }
+    .score-mid  { background: var(--orange-bg); color: var(--orange); }
+    .score-low  { background: var(--red-bg); color: var(--red); }
+
+    .section-lead {
+      color: var(--text-muted);
+      font-size: 13.5px;
+      font-style: italic;
+      margin-bottom: 16px;
+    }
+
+    h3 {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin: 18px 0 10px;
+    }
+    h3:first-of-type { margin-top: 4px; }
+
+    ul.good, ul.findings-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+    ul.good li {
+      padding: 8px 12px 8px 14px;
+      background: var(--green-bg);
+      border-left: 3px solid var(--green);
+      border-radius: 0 8px 8px 0;
+      font-size: 13.5px;
+      color: var(--text-secondary);
+    }
+    ul.good li strong { color: var(--text); }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+      margin: 8px 0 4px;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      font-weight: 600;
+      background: var(--bg-elevated);
+    }
+    tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: rgba(255,255,255,0.02); }
+
+    code, .mono {
+      font-family: var(--mono);
+      font-size: 12px;
+      background: var(--bg);
+      padding: 1px 6px;
+      border-radius: 4px;
+      color: #9cc9ff;
+    }
+
+    /* Severity pills */
+    .sev {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 5px;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+    .sev-p1 { background: var(--red-bg); color: var(--red); }
+    .sev-p2 { background: var(--orange-bg); color: var(--orange); }
+    .sev-p3 { background: rgba(142,142,147,.2); color: var(--text-muted); }
+
+    .rec {
+      margin-top: 14px;
+      padding: 12px 14px;
+      background: var(--blue-bg);
+      border-radius: 10px;
+      font-size: 13.5px;
+      color: var(--text-secondary);
+      border: 1px solid rgba(10,132,255,.2);
+    }
+    .rec strong { color: #9cc9ff; }
+
+    /* Summary scorecard */
+    .scorecard {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px;
+      margin: 16px 0;
+    }
+    .score-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .score-card .sc-n {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .score-card .sc-title {
+      font-size: 12.5px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+      line-height: 1.3;
+      min-height: 2.6em;
+    }
+    .score-card .sc-val {
+      font-size: 22px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+    }
+
+    /* Priority lists */
+    .prio-block {
+      margin-bottom: 16px;
+    }
+    .prio-block h3 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 14px;
+      color: var(--text);
+      margin-bottom: 10px;
+    }
+    ol.prio {
+      list-style: none;
+      counter-reset: prio;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    ol.prio li {
+      counter-increment: prio;
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      padding: 10px 12px;
+      background: var(--bg-elevated);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      font-size: 13.5px;
+      color: var(--text-secondary);
+    }
+    ol.prio li::before {
+      content: counter(prio);
+      flex-shrink: 0;
+      width: 24px;
+      height: 24px;
+      border-radius: 7px;
+      background: var(--card-2);
+      color: var(--text);
+      font-weight: 700;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    ol.prio li strong { color: var(--text); }
+
+    .praise {
+      display: grid;
+      gap: 8px;
+    }
+    .praise div {
+      padding: 10px 14px;
+      background: var(--green-bg);
+      border-radius: 10px;
+      border: 1px solid rgba(48,209,88,.2);
+      font-size: 13.5px;
+      color: var(--text-secondary);
+    }
+    .praise div strong { color: var(--green); }
+
+    .themes {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    @media (max-width: 640px) {
+      .themes { grid-template-columns: 1fr; }
+    }
+    .theme {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 14px;
+    }
+    .theme .t-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .theme .t-name { font-weight: 600; font-size: 13.5px; }
+    .theme .t-desc { font-size: 12.5px; color: var(--text-muted); }
+
+    .verdict {
+      background: linear-gradient(135deg, rgba(10,132,255,.12), rgba(48,209,88,.08));
+      border: 1px solid rgba(10,132,255,.25);
+      border-radius: 14px;
+      padding: 20px 24px;
+      font-size: 14.5px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+    .verdict strong { color: var(--text); }
+
+    footer {
+      margin-top: 28px;
+      text-align: center;
+      font-size: 12.5px;
+      color: var(--text-muted);
+    }
+    footer a { color: var(--blue); text-decoration: none; }
+
+    .print-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 10px;
+    }
+
+    @media print {
+      body { background: #fff; color: #111; font-size: 11pt; }
+      .wrap { max-width: 100%; padding: 0; }
+      header.hero, section, nav.toc, .verdict {
+        background: #fff !important;
+        border-color: #ccc !important;
+        color: #111;
+        break-inside: avoid;
+      }
+      header h1, .logo, section h2, strong { color: #000 !important; }
+      .sub, .section-lead, .chip, td, li { color: #333 !important; }
+      ul.good li, .rec, .praise div, ol.prio li { background: #f5f5f5 !important; border-color: #ddd !important; }
+      a { color: #06c !important; }
+      .score-high, .sev-p1, .sev-p2 { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+
+    <header class="hero">
+      <div class="logo"><span class="dot"></span>RadFlow</div>
+      <h1>UI/UX-аудит по 10 эвристикам Нильсена</h1>
+      <p class="sub">
+        Глубокий разбор операционного интерфейса multi-tenant SaaS управления очередью
+        диагностических центров: доски, модалки, портал направителя, setup, каталог услуг.
+      </p>
+      <div class="meta">
+        <span class="chip score-pill">Общая оценка UX: <strong>7.5 / 10</strong></span>
+        <span class="chip">Дата: <strong>2026-07-21</strong></span>
+        <span class="chip">Метод: <strong>код + сверка с аудитами</strong></span>
+        <span class="chip">Стек: <strong>Next.js 15 · Supabase · TypeScript</strong></span>
+      </div>
+      <p class="print-hint">Отчёт самодостаточный — можно открыть локально или распечатать (Ctrl+P).</p>
+    </header>
+
+    <nav class="toc" aria-label="Содержание">
+      <h2>Содержание</h2>
+      <ol>
+        <li><a href="#summary"><span class="n">0</span> Сводка и scorecard</a></li>
+        <li><a href="#h1"><span class="n">1</span> Visibility of system status</a></li>
+        <li><a href="#h2"><span class="n">2</span> Match system ↔ real world</a></li>
+        <li><a href="#h3"><span class="n">3</span> User control and freedom</a></li>
+        <li><a href="#h4"><span class="n">4</span> Consistency and standards</a></li>
+        <li><a href="#h5"><span class="n">5</span> Error prevention</a></li>
+        <li><a href="#h6"><span class="n">6</span> Recognition rather than recall</a></li>
+        <li><a href="#h7"><span class="n">7</span> Flexibility and efficiency</a></li>
+        <li><a href="#h8"><span class="n">8</span> Aesthetic and minimalist design</a></li>
+        <li><a href="#h9"><span class="n">9</span> Error recognition &amp; recovery</a></li>
+        <li><a href="#h10"><span class="n">10</span> Help and documentation</a></li>
+        <li><a href="#themes"><span class="n">—</span> Сквозные темы</a></li>
+        <li><a href="#priorities"><span class="n">—</span> Приоритеты работ</a></li>
+        <li><a href="#praise"><span class="n">—</span> Что хвалить</a></li>
+        <li><a href="#verdict"><span class="n">—</span> Итог</a></li>
+      </ol>
+    </nav>
+
+    <!-- 0. Summary -->
+    <section id="summary">
+      <h2>Сводка оценок</h2>
+      <p class="section-lead">
+        Контекст: dense B2B-инструмент «у аппарата и стойки», не consumer-app.
+        Сильная domain-логика и защита от опасных ошибок; слабее — единообразие feedback,
+        discoverability, touch/a11y-мелочи, перегруз действий в строке.
+      </p>
+
+      <div class="scorecard">
+        <div class="score-card">
+          <div class="sc-n">#1</div>
+          <div class="sc-title">Visibility of system status</div>
+          <div class="sc-val" style="color:var(--green)">8</div>
+        </div>
+        <div class="score-card">
+          <div class="sc-n">#2</div>
+          <div class="sc-title">Match system ↔ real world</div>
+          <div class="sc-val" style="color:var(--green)">8</div>
+        </div>
+        <div class="score-card">
+          <div class="sc-n">#3</div>
+          <div class="sc-title">User control and freedom</div>
+          <div class="sc-val" style="color:var(--orange)">7</div>
+        </div>
+        <div class="score-card">
+          <div class="sc-n">#4</div>
+          <div class="sc-title">Consistency and standards</div>
+          <div class="sc-val" style="color:var(--orange)">6.5</div>
+        </div>
+        <div class="score-card">
+          <div class="sc-n">#5</div>
+          <div class="sc-title">Error prevention</div>
+          <div class="sc-val" style="color:var(--green)">9</div>
+        </div>
+        <div class="score-card">
+          <div class="sc-n">#6</div>
+          <div class="sc-title">Recognition rather than recall</div>
+          <div class="sc-val" style="color:var(--orange)">7</div>
+        </div>
+        <div class="score-card">
+          <div class="sc-n">#7</div>
+          <div class="sc-title">Flexibility and efficiency</div>
+          <div class="sc-val" style="color:var(--green)">8</div>
+        </div>
+        <div class="score-card">
+          <div class="sc-n">#8</div>
+          <div class="sc-title">Aesthetic &amp; minimalist</div>
+          <div class="sc-val" style="color:var(--orange)">6.5</div>
+        </div>
+        <div class="score-card">
+          <div class="sc-n">#9</div>
+          <div class="sc-title">Error recovery</div>
+          <div class="sc-val" style="color:var(--orange)">7.5</div>
+        </div>
+        <div class="score-card">
+          <div class="sc-n">#10</div>
+          <div class="sc-title">Help and documentation</div>
+          <div class="sc-val" style="color:var(--red)">5.5</div>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Эвристика</th>
+            <th>Оценка</th>
+            <th>Коротко</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td>Visibility of system status</td><td><strong>8/10</strong></td><td>Realtime, skeleton, таймеры, stale — сильно; тосты без <code>aria-live</code></td></tr>
+          <tr><td>2</td><td>Match system ↔ real world</td><td><strong>8/10</strong></td><td>Украинский клинический язык; «Колл-лист», emoji-жаргон</td></tr>
+          <tr><td>3</td><td>User control and freedom</td><td><strong>7/10</strong></td><td>Confirm + частичный undo; нет глобального «отменить»</td></tr>
+          <tr><td>4</td><td>Consistency and standards</td><td><strong>6.5/10</strong></td><td>Одна design system; расхождения ролей/досок/тостов</td></tr>
+          <tr><td>5</td><td>Error prevention</td><td><strong>9/10</strong></td><td>Лучшая сторона продукта</td></tr>
+          <tr><td>6</td><td>Recognition rather than recall</td><td><strong>7/10</strong></td><td>Легенды, бейджи; shortcuts и ⋯-меню слабо discoverable</td></tr>
+          <tr><td>7</td><td>Flexibility and efficiency</td><td><strong>8/10</strong></td><td>Hotkeys, density, bulk; power-user bias</td></tr>
+          <tr><td>8</td><td>Aesthetic and minimalist design</td><td><strong>6.5/10</strong></td><td>Красивая dark HIG-тема; cognitive load в expanded row</td></tr>
+          <tr><td>9</td><td>Error recognition &amp; recovery</td><td><strong>7.5/10</strong></td><td>Хорошие human-readable codes; не везде recovery path</td></tr>
+          <tr><td>10</td><td>Help and documentation</td><td><strong>5.5/10</strong></td><td>HelpTip точечно; нет onboarding / cheatsheet</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 1 -->
+    <section id="h1">
+      <h2>
+        <span class="num">1</span>
+        Visibility of system status
+        <span class="score-badge score-high">8/10</span>
+      </h2>
+      <p class="section-lead">Система должна всегда показывать, что происходит.</p>
+
+      <h3>Что сделано хорошо</h3>
+      <ul class="good">
+        <li><strong>Realtime</strong> через общий <code>useRealtimeRefetch</code> + обновление по focus/visibility.</li>
+        <li><strong>Skeleton</strong> загрузки очереди (<code>aria-busy</code>), loading-gate сетки слотов («завантаження…» вместо ложного «все вільно»).</li>
+        <li><strong>Живые таймеры</strong> <code>in_progress</code>, бейджи CITO / Запізнення / Накладення / 🔁 Перенесено.</li>
+        <li>Разделение <strong>ошибка ≠ пусто</strong>: баннеры <code>entriesErr</code> / <code>incidentsErr</code> / <code>overridesErr</code>, блок «Новий запис» при <code>safetyErr</code>.</li>
+        <li>Stale CAS: тост «Стан змінився — оновіть дошку».</li>
+        <li>Live-счётчик waitlist в сайдбаре; <code>aria-pressed</code> на аварийной остановке.</li>
+      </ul>
+
+      <h3>Находки</h3>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Sev</th><th>Суть</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">H1-1</td>
+            <td><span class="sev sev-p1">P1</span></td>
+            <td>Тосты на QueueBoard / CallListBoard / CeoDashboard — fixed <code>div</code> <strong>без <code>role="status"</code> / <code>aria-live</code></strong>. Screen reader и «слепой» оператор не слышат исход действия. Login/Register — ок.</td>
+          </tr>
+          <tr>
+            <td class="mono">H1-2</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Тост <strong>3 с</strong> и исчезает; длинная ошибка нечитаема, нет кнопки «закрыть» / «повторить».</td>
+          </tr>
+          <tr>
+            <td class="mono">H1-3</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Toast type: «пацієнт відмовився — запис скасовано» может выглядеть как success (зелёная полоска) — статус системы вводит в заблуждение.</td>
+          </tr>
+          <tr>
+            <td class="mono">H1-4</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>После смены статуса строка обновляется, но нет явного progress на кнопке (<code>aria-busy</code> есть в Confirm/export, не везде на board actions).</td>
+          </tr>
+          <tr>
+            <td class="mono">H1-5</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>Радиолог: подпись «Архів — лише перегляд», но <code>readOnly = false</code> — UI врёт о режиме.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="rec"><strong>Рекомендации:</strong> единый Toast с <code>aria-live="polite"</code>, <code>role="status"</code>, duration 5–7 с для error, dismiss; выровнять semantic type (success/warn/error); честный <code>readOnly</code> на прошлых днях у радиолога.</div>
+    </section>
+
+    <!-- 2 -->
+    <section id="h2">
+      <h2>
+        <span class="num">2</span>
+        Match between system and the real world
+        <span class="score-badge score-high">8/10</span>
+      </h2>
+      <p class="section-lead">Язык и модель пользователя, не системы.</p>
+
+      <h3>Что сделано хорошо</h3>
+      <ul class="good">
+        <li>UI на <strong>украинском</strong>, клинические термины: «В кабінеті», «Неявка», «Обзвін», «Простій», «CITO».</li>
+        <li>Модальности, кабинеты, «настінний час» клиники — соответствует реальному центру.</li>
+        <li>Сетка слотов: busy vs buffer vs break — отражает реальную занятость аппарата.</li>
+        <li>Панели решения (запізнення, накладення) формулируют <strong>действия регистратора</strong>, не SQL-статусы.</li>
+      </ul>
+
+      <h3>Находки</h3>
+      <table>
+        <thead><tr><th>ID</th><th>Sev</th><th>Суть</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="mono">H2-1</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Смесь «Колл-лист» (англицизм) vs «Лист очікування»; «CEO» в меню для UA-клиники.</td>
+          </tr>
+          <tr>
+            <td class="mono">H2-2</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Внутренние коды иногда просачиваются: <code>Помилка: </code> + raw <code>res.error</code> / code-ветки не всегда mapped.</td>
+          </tr>
+          <tr>
+            <td class="mono">H2-3</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>Emoji в primary UI (🛑 🔗 🗓 ⏳) — привычно staff, но визуальный шум и разный рендер на Windows.</td>
+          </tr>
+          <tr>
+            <td class="mono">H2-4</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>HelpTip про CITO говорит «виносяться вгору», тогда как порядок доски — <strong>время → приоритет как tie-break</strong> (расхождение product-copy).</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="rec"><strong>Рекомендации:</strong> глоссарий UA-терминов; 100% map server codes → human text; обновить HelpTip CITO под реальное правило сортировки.</div>
+    </section>
+
+    <!-- 3 -->
+    <section id="h3">
+      <h2>
+        <span class="num">3</span>
+        User control and freedom
+        <span class="score-badge score-mid">7/10</span>
+      </h2>
+      <p class="section-lead">Лёгкий выход, отмена, «аварийный люк».</p>
+
+      <h3>Что сделано хорошо</h3>
+      <ul class="good">
+        <li><code>ConfirmDialog</code> на cancel / emergency / confirm-all / case cancel; осмысленные <code>cancelLabel</code> («Залишити» vs «Скасувати запис»).</li>
+        <li><strong>↩ В чергу</strong> после «Виконано» / no-show-пути (частичный undo).</li>
+        <li>Esc + focus trap + return focus (<code>useModalA11y</code>) — отличный control для модалок.</li>
+        <li>Off-schedule: явное согласие <strong>в потоке</strong> модалки (не nested dialog «кнопка не работает»).</li>
+        <li>Слот «щойно зайняли» → сброс выбора + «Зрозуміло».</li>
+      </ul>
+
+      <h3>Находки</h3>
+      <table>
+        <thead><tr><th>ID</th><th>Sev</th><th>Суть</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="mono">H3-1</td>
+            <td><span class="sev sev-p1">P1</span></td>
+            <td>Нет <strong>undo</strong> для: смена call_status, приоритета, переноса, правок patient/studies, bulk confirm-all. Ошибку чинят только обратным действием.</td>
+          </tr>
+          <tr>
+            <td class="mono">H3-2</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Тосты не кликабельны; нельзя «відмінити» из snackbar.</td>
+          </tr>
+          <tr>
+            <td class="mono">H3-3</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>В кейс-баре портала направителя <strong>нет edit шага</strong> — только удалить и заново → лишняя работа и риск.</td>
+          </tr>
+          <tr>
+            <td class="mono">H3-4</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>Закрытие модалки записи с dirty form — не везде dirty-guard (Setup имеет; Booking — слабее).</td>
+          </tr>
+          <tr>
+            <td class="mono">H3-5</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Hotkeys при <code>emergencyOpen</code> / CaseModal / DelayPlan / waitlist-suggest <strong>не в <code>anyModalOpen</code></strong> → <code>n</code>/<code>r</code>/<code>1</code> срабатывают «под» критичным диалогом.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="rec"><strong>Рекомендации:</strong> расширить <code>anyModalOpen</code>; soft-undo 10 с для call/priority; dirty-confirm на Booking/Reschedule; edit step в referral case-bar.</div>
+    </section>
+
+    <!-- 4 -->
+    <section id="h4">
+      <h2>
+        <span class="num">4</span>
+        Consistency and standards
+        <span class="score-badge score-mid">6.5/10</span>
+      </h2>
+      <p class="section-lead">Одинаковые слова, паттерны, ожидания.</p>
+
+      <h3>Что сделано хорошо</h3>
+      <ul class="good">
+        <li>Единая dark design system (<code>.btn</code>, <code>.badge</code>, <code>.qrow</code>, <code>.dialog</code>).</li>
+        <li>Общие <code>SlotPicker</code>, <code>ConfirmDialog</code>, <code>MiniCalendar</code>, guards <code>computeCallBlock</code> на admin + radiologist.</li>
+        <li>Required fields: <code>.req</code> + красные labels — сквозной паттерн.</li>
+        <li>Login: <code>aria-invalid</code>, blur-validation — эталон форм.</li>
+      </ul>
+
+      <h3>Находки</h3>
+      <table>
+        <thead><tr><th>ID</th><th>Sev</th><th>Суть</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="mono">H4-1</td>
+            <td><span class="sev sev-p1">P1</span></td>
+            <td><strong>Разные toast-системы:</strong> inline style vs <code>register.css</code> toast; где-то type color, где-то всегда green border (CEO).</td>
+          </tr>
+          <tr>
+            <td class="mono">H4-2</td>
+            <td><span class="sev sev-p1">P1</span></td>
+            <td>Правила статусов: на <strong>прошедшей дате</strong> админ и радиолог ведут себя по-разному (и у radio <code>readOnly</code> фиктивный).</td>
+          </tr>
+          <tr>
+            <td class="mono">H4-3</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Sidebar: «Новий запис» / «Інциденти» рендерятся всегда; у registrar/роли без handlers — клик в никуда или лишний пункт. Неполная role-фильтрация nav.</td>
+          </tr>
+          <tr>
+            <td class="mono">H4-4</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Call-list status: glyph+color; queue status: badge color; CEO chart red dot — <strong>три языка</strong> индикации.</td>
+          </tr>
+          <tr>
+            <td class="mono">H4-5</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Expanded row: mix «кнопка primary», «⋯ меню», stepper-кружки — разная affordance для «сменить статус».</td>
+          </tr>
+          <tr>
+            <td class="mono">H4-6</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>Плотность: <code>btn-sm</code> min 36px vs 5-min slot cells ~9–12px font / tiny hit area на desktop.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="rec"><strong>Рекомендации:</strong> один <code>notify()</code> / ToastProvider; таблица «роль → действия» в Sidebar; единый StatusChip; выровнять archive-mode на всех досках.</div>
+    </section>
+
+    <!-- 5 -->
+    <section id="h5">
+      <h2>
+        <span class="num">5</span>
+        Error prevention
+        <span class="score-badge score-high">9/10</span>
+      </h2>
+      <p class="section-lead">Лучше не дать ошибиться, чем потом чинить. — <strong>сильнейшая эвристика продукта</strong>.</p>
+
+      <h3>Что сделано хорошо</h3>
+      <ul class="good">
+        <li>Disabled + <strong>inline reason</strong> до клика: call block, no_show до start, safetyErr блокирует new booking.</li>
+        <li>Три слоя past-slot / off-schedule / room schedule.</li>
+        <li>Busy loading fail → <strong>сетка скрыта</strong>, не «все свободно».</li>
+        <li>Confirm на деструктив; declined = cancel с явным текстом.</li>
+        <li>CAS / stale; unique in_progress; overlap triggers.</li>
+        <li>Catalog gate: нельзя записать на выключенную услугу; AI-import не pre-check галочки (anti prompt-injection UX).</li>
+        <li>Off-schedule и casebusy визуально отделены; collision panel предлагает <code>firstFittingSlot</code> без каскада.</li>
+      </ul>
+
+      <h3>Находки</h3>
+      <table>
+        <thead><tr><th>ID</th><th>Sev</th><th>Суть</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="mono">H5-1</td>
+            <td><span class="sev sev-p1">P1</span></td>
+            <td>Stepper теоретически позволяет «перепрыгнуть» в <strong>Виконано</strong> без реального in_progress — риск фейкового дохода CEO / искажения KPI.</td>
+          </tr>
+          <tr>
+            <td class="mono">H5-2</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Touch-targets 5-min grid на desktop <strong>ниже</strong> WCAG 24–44px (есть media-query boost, но default плотный).</td>
+          </tr>
+          <tr>
+            <td class="mono">H5-3</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Желаемое окно waitlist в прошлом → «вечный» waiting (если ещё не закрыто сервером).</td>
+          </tr>
+          <tr>
+            <td class="mono">H5-4</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>Некорректные часы графика «18:00–08:00» могут дать пустую сетку без объяснения «график невалиден».</td>
+          </tr>
+          <tr>
+            <td class="mono">H5-5</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Смена modality кабинета в Setup без warn о существующих записях.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="rec"><strong>Рекомендации:</strong> stepper только sequential + server guard; min date на waitlist window; validate schedule UI before save; confirm modality change.</div>
+    </section>
+
+    <!-- 6 -->
+    <section id="h6">
+      <h2>
+        <span class="num">6</span>
+        Recognition rather than recall
+        <span class="score-badge score-mid">7/10</span>
+      </h2>
+      <p class="section-lead">Показывать, не заставлять помнить.</p>
+
+      <h3>Что сделано хорошо</h3>
+      <ul class="good">
+        <li>Легенда слотов (вільно / tight / busy / buffer / break / offsched).</li>
+        <li>Бейджи origin, studies_changed_by, contraindications.</li>
+        <li>StatsBar как фильтры-состояния (recognition очереди).</li>
+        <li>Placeholders и miss-labels при валидации Booking.</li>
+        <li>Busy chips «13:25–14:35 +5 хв».</li>
+      </ul>
+
+      <h3>Находки</h3>
+      <table>
+        <thead><tr><th>ID</th><th>Sev</th><th>Суть</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="mono">H6-1</td>
+            <td><span class="sev sev-p1">P1</span></td>
+            <td><strong>Горячие клавиши</strong> (<code>n / r 1–9</code>) нигде не показаны в UI (только placeholder «( / )» у поиска). Power-feature не discoverable.</td>
+          </tr>
+          <tr>
+            <td class="mono">H6-2</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Меню <strong>⋯</strong> скрывает вторичные действия; новичок не знает, что там «організувати кейс».</td>
+          </tr>
+          <tr>
+            <td class="mono">H6-3</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Много состояний очереди (scheduled/waiting/in_progress/done/no_show/not_held/cancelled/needs_reschedule + derived late/clarify) — без legend/хелпа на доске.</td>
+          </tr>
+          <tr>
+            <td class="mono">H6-4</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>Density control в sidebar без превью «как изменится доска» до выбора.</td>
+          </tr>
+          <tr>
+            <td class="mono">H6-5</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>В call-list иконки ☎ ✓ ☏ ↩ требуют memory mapping (есть title, нет visible labels у mini-icon).</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="rec"><strong>Рекомендации:</strong> footer/cheatsheet «Клавіші»; tooltip panel «Статуси черги»; labels на call actions в expanded; progressive disclosure с подсказкой «Ще N дій».</div>
+    </section>
+
+    <!-- 7 -->
+    <section id="h7">
+      <h2>
+        <span class="num">7</span>
+        Flexibility and efficiency of use
+        <span class="score-badge score-high">8/10</span>
+      </h2>
+      <p class="section-lead">Ускорители для экспертов, простота для новичков.</p>
+
+      <h3>Что сделано хорошо</h3>
+      <ul class="good">
+        <li>Hotkeys регистратуры (раскладка-независимо через <code>e.code</code>).</li>
+        <li>Density compact / comfortable / spacious.</li>
+        <li>Bulk: «Всіх підтверджено (N)», multi-select services/import.</li>
+        <li>Collision one-click move; waitlist candidates после free slot.</li>
+        <li>Phone search normalization; MiniCalendar jump.</li>
+        <li>Referral multi-clinic switcher + aggregate.</li>
+      </ul>
+
+      <h3>Находки</h3>
+      <table>
+        <thead><tr><th>ID</th><th>Sev</th><th>Суть</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="mono">H7-1</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Нет <strong>сохранённых фильтров</strong> / «мой кабинет по умолчанию» (кроме local density).</td>
+          </tr>
+          <tr>
+            <td class="mono">H7-2</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>BookingModal — большой «god form»; нет wizard-stepper для новичка (всё на одном экране 2 col).</td>
+          </tr>
+          <tr>
+            <td class="mono">H7-3</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>Нет keyboard-nav по строкам очереди (j/k или arrows) — только click expand.</td>
+          </tr>
+          <tr>
+            <td class="mono">H7-4</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Radiologist board на узком экране прячет queue (<code>display:none</code> @820px) — tablet у аппарата теряет список.</td>
+          </tr>
+          <tr>
+            <td class="mono">H7-5</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>CEO export — ок; нет drill-down «клик по KPI → список записей».</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="rec"><strong>Рекомендации:</strong> remember last room/date per user; tablet layout для radio; optional simple booking mode (patient → study → slot).</div>
+    </section>
+
+    <!-- 8 -->
+    <section id="h8">
+      <h2>
+        <span class="num">8</span>
+        Aesthetic and minimalist design
+        <span class="score-badge score-mid">6.5/10</span>
+      </h2>
+      <p class="section-lead">Только релевантное; не конкурировать за внимание.</p>
+
+      <h3>Что сделано хорошо</h3>
+      <ul class="good">
+        <li>Чистая Apple-like dark UI, tabular nums, спокойная палитра.</li>
+        <li>Compact density для «стены из строк».</li>
+        <li><code>prefers-reduced-motion</code>.</li>
+        <li>Контраст AA для muted/faint (явно правили).</li>
+      </ul>
+
+      <h3>Находки</h3>
+      <table>
+        <thead><tr><th>ID</th><th>Sev</th><th>Суть</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="mono">H8-1</td>
+            <td><span class="sev sev-p1">P1</span></td>
+            <td><strong>Expanded QueueRow</strong> — information overload: patient fields, studies, call, priority, stepper, 6–10 buttons, collision panel, case. Decision place хороший, но <strong>visual hierarchy</strong> слабая.</td>
+          </tr>
+          <tr>
+            <td class="mono">H8-2</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Sidebar: кабинеты + actions + density + user — длинный scroll на маленьком ноутбуке.</td>
+          </tr>
+          <tr>
+            <td class="mono">H8-3</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Booking: одновременно calendar + full 5-min grid + legend + busy chips + case bar — модалка «тяжёлая».</td>
+          </tr>
+          <tr>
+            <td class="mono">H8-4</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>Дублирование статуса: badge + stepper + call glyph + late/clarify badges.</td>
+          </tr>
+          <tr>
+            <td class="mono">H8-5</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>Inline <code>style={{…}}</code> в компонентах размывает системность spacing.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="rec"><strong>Рекомендации:</strong> в expanded — primary actions strip (1–3) + secondary «Ще»; progressive sections (Пацієнт / Дослідження / Дії); уменьшить chrome в Booking (legend collapse).</div>
+    </section>
+
+    <!-- 9 -->
+    <section id="h9">
+      <h2>
+        <span class="num">9</span>
+        Help users recognize, diagnose, and recover from errors
+        <span class="score-badge score-mid">7.5/10</span>
+      </h2>
+      <p class="section-lead">Понятный язык ошибки + что делать дальше.</p>
+
+      <h3>Что сделано хорошо</h3>
+      <ul class="good">
+        <li>Mapped messages: stale, duplicate waitlist, past, off_schedule, room busy, CASE_*, forbidden priority.</li>
+        <li><code>dlg-err role="alert"</code> в модалках.</li>
+        <li>Empty states с next step: «Натисніть Новий запис» / «Змініть фільтр» / retry button.</li>
+        <li>Login: не раскрывает enumeration; общее «Невірний логін/email або пароль».</li>
+        <li>Slot taken mid-flight: конкретный слот + clear CTA.</li>
+      </ul>
+
+      <h3>Находки</h3>
+      <table>
+        <thead><tr><th>ID</th><th>Sev</th><th>Суть</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="mono">H9-1</td>
+            <td><span class="sev sev-p1">P1</span></td>
+            <td>Часть ошибок — <code>"Помилка: " + res.error</code> (сырой текст/EN/SQL-ish) без <strong>recovery CTA</strong> («Оновити», «Обрати інший слот»).</td>
+          </tr>
+          <tr>
+            <td class="mono">H9-2</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Network blip: try/catch есть, но UX = тихий fail или generic; нет offline banner.</td>
+          </tr>
+          <tr>
+            <td class="mono">H9-3</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Import AI: low confidence → unrecognized — хорошо; batch unique fail «все или ничего» без подсветки <strong>какой</strong> дубликат (known Low L3).</td>
+          </tr>
+          <tr>
+            <td class="mono">H9-4</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>404 есть; нет illustrated empty для «немає доступу до кабінетів» у radio.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="rec"><strong>Рекомендации:</strong> error catalog <code>{ code → title, body, action }</code>; всегда secondary button recovery; offline strip; import conflict row highlight.</div>
+    </section>
+
+    <!-- 10 -->
+    <section id="h10">
+      <h2>
+        <span class="num">10</span>
+        Help and documentation
+        <span class="score-badge score-low">5.5/10</span>
+      </h2>
+      <p class="section-lead">Справка должна быть под рукой, когда нужна. — <strong>слабейшая эвристика</strong>.</p>
+
+      <h3>Что сделано хорошо</h3>
+      <ul class="good">
+        <li><code>HelpTip</code> «?» (CITO, auto-unblock, referral policy) — правильный паттерн.</li>
+        <li>Placeholder hints; <code>title</code> на disabled.</li>
+        <li>PRODUCT_OVERVIEW / handover — для dev, не для end-user.</li>
+      </ul>
+
+      <h3>Находки</h3>
+      <table>
+        <thead><tr><th>ID</th><th>Sev</th><th>Суть</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="mono">H10-1</td>
+            <td><span class="sev sev-p1">P1</span></td>
+            <td>HelpTip <strong>почти нигде</strong>: нет на collision, delay plan, cases, waitlist window, priority, buffer, off-schedule.</td>
+          </tr>
+          <tr>
+            <td class="mono">H10-2</td>
+            <td><span class="sev sev-p1">P1</span></td>
+            <td>Нет <strong>first-run</strong> / empty clinic checklist (кроме ctx-hint «додайте обладнання»).</td>
+          </tr>
+          <tr>
+            <td class="mono">H10-3</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Нет in-app «Довідка» / PDF для регистратора; пароль-reset по email отложен — support friction.</td>
+          </tr>
+          <tr>
+            <td class="mono">H10-4</td>
+            <td><span class="sev sev-p2">P2</span></td>
+            <td>Hotkeys undocumented in UI.</td>
+          </tr>
+          <tr>
+            <td class="mono">H10-5</td>
+            <td><span class="sev sev-p3">P3</span></td>
+            <td>Setup Wizard: много power без guided «що далі після configure».</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="rec"><strong>Рекомендации:</strong> HelpTip на 8–10 critical concepts; page «Швидкий старт» 1 экран; keyboard overlay <code>?</code>; link «Підтримка» в sidebar.</div>
+    </section>
+
+    <!-- Themes -->
+    <section id="themes">
+      <h2>Сквозные темы</h2>
+      <p class="section-lead">Не привязаны к одной эвристике — влияют на весь продукт.</p>
+      <div class="themes">
+        <div class="theme">
+          <div class="t-head">
+            <span class="t-name">Accessibility (WCAG)</span>
+            <span class="score-badge score-mid">7/10</span>
+          </div>
+          <div class="t-desc">focus-visible, modal a11y, contrast, reduced-motion — strong; toast live regions, touch slots, some icon-only — weak.</div>
+        </div>
+        <div class="theme">
+          <div class="t-head">
+            <span class="t-name">Multi-role IA</span>
+            <span class="score-badge score-mid">7/10</span>
+          </div>
+          <div class="t-desc">Портал и radio отдельны; sidebar/role still leaky.</div>
+        </div>
+        <div class="theme">
+          <div class="t-head">
+            <span class="t-name">Mobile / tablet</span>
+            <span class="score-badge score-low">5.5/10</span>
+          </div>
+          <div class="t-desc">Desktop-first; radio @820px ломает workflow у аппарата.</div>
+        </div>
+        <div class="theme">
+          <div class="t-head">
+            <span class="t-name">Cognitive load</span>
+            <span class="score-badge score-mid">6/10</span>
+          </div>
+          <div class="t-desc">Доска = cockpit; нужна иерархия actions в expanded row.</div>
+        </div>
+        <div class="theme">
+          <div class="t-head">
+            <span class="t-name">Trust &amp; safety UX</span>
+            <span class="score-badge score-high">9/10</span>
+          </div>
+          <div class="t-desc">Fail-closed на слотах/инцидентах — образцово для SaaS-очереди.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Priorities -->
+    <section id="priorities">
+      <h2>Топ приоритетов — что чинить сначала</h2>
+
+      <div class="prio-block">
+        <h3><span class="sev sev-p1">P0 / P1</span> Высокий impact, умеренный effort</h3>
+        <ol class="prio">
+          <li><strong>Единый Toast</strong> + <code>aria-live</code> + semantic colors + longer errors.</li>
+          <li><strong>Закрыть hotkeys</strong> под всеми модалками (<code>emergencyOpen</code>, case, delay, confirm, wlSuggest…).</li>
+          <li><strong>Stepper / done:</strong> только валидный path; server reject skip.</li>
+          <li><strong>Radiologist archive <code>readOnly</code></strong> согласовать с UI-копирайтом.</li>
+          <li><strong>Role-aware Sidebar</strong> (не показывать dead actions).</li>
+          <li><strong>Discoverability hotkeys</strong> + 3–4 HelpTip на collision / buffer / case / waitlist.</li>
+        </ol>
+      </div>
+
+      <div class="prio-block">
+        <h3><span class="sev sev-p2">P2</span> Следующий спринт UX-полиша</h3>
+        <ol class="prio">
+          <li>Visual hierarchy expanded row (primary / secondary actions).</li>
+          <li>Touch targets slot grid ≥ 32–40px (или long-press + larger mode).</li>
+          <li>Dirty-guard на Booking / Reschedule.</li>
+          <li>Soft-undo / clearer recovery CTA на error toasts.</li>
+          <li>Tablet layout для радиолога.</li>
+          <li>Waitlist past-window prevention.</li>
+        </ol>
+      </div>
+
+      <div class="prio-block">
+        <h3><span class="sev sev-p3">P3</span> Backlog polish</h3>
+        <ol class="prio">
+          <li>Глоссарий терминов / меньше emoji noise.</li>
+          <li>CEO drill-down.</li>
+          <li>Keyboard row navigation.</li>
+          <li>First-run checklist.</li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- Praise -->
+    <section id="praise">
+      <h2>Что хвалить (не ломать)</h2>
+      <div class="praise">
+        <div><strong>Fail-closed</strong> занятость / простои / ошибка загрузки — редкий уровень зрелости для SaaS-очереди.</div>
+        <div><strong>Decision panels</strong> (запізнення, накладення, off-schedule confirm) — UX «на месте решения», не в отдельном wizard.</div>
+        <div><strong>Единый SlotPicker</strong> + легенда busy/buffer — объясняет физику кабинета.</div>
+        <div><strong>Modal a11y</strong> (<code>useModalA11y</code>) и density control — осознанный craft.</div>
+        <div><strong>Confirm copy</strong> с объяснением последствий (declined = cancel) — зрелый error prevention.</div>
+      </div>
+    </section>
+
+    <!-- Verdict -->
+    <section id="verdict">
+      <h2>Итог</h2>
+      <div class="verdict">
+        <p>
+          RadFlow — <strong>операционный cockpit</strong>, а не маркетинговый UI.
+          По Нильсену он особенно силён в <strong>#5 Error prevention</strong> и <strong>#1 Status</strong> (данные/realtime),
+          слабее в <strong>#10 Help</strong>, <strong>#8 Minimalism</strong> (перегруз строки)
+          и <strong>#4 Consistency</strong> (тосты, archive-mode, nav по ролям).
+        </p>
+        <p style="margin-top:14px">
+          Если брать <strong>один фокус</strong> на ближайшую итерацию:
+          <strong>«Feedback + Control under stress»</strong> —
+          единые accessible toasts, no hotkeys under critical modals,
+          честный read-only/disabled, короткая primary-action полоса в карточке пациента.
+        </p>
+        <p style="margin-top:14px">
+          <strong>Общая оценка UX: 7.5 / 10.</strong>
+          Продукт готов к ежедневной работе регистратуры; UX-долг не блокирует релиз,
+          но ограничивает скорость обучения новых сотрудников и устойчивость на tablet.
+        </p>
+      </div>
+    </section>
+
+    <footer>
+      RadFlow · UI/UX аудит (Nielsen 10 heuristics) · 2026-07-21<br />
+      Источник: <code>components/</code>, <code>styles/prototype/</code>, <code>lib/useModalA11y.ts</code>,
+      docs/audit/* · Файл: <code>docs/audit/UX_NIELSEN_AUDIT_2026-07-21.html</code>
+    </footer>
+
+  </div>
+</body>
+</html>

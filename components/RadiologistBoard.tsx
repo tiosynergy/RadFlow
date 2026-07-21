@@ -6,6 +6,7 @@
    Перенос, редагування досліджень, скасування, обдзвін і поломки — лише в адміна. */
 
 import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode, type MouseEvent } from "react";
+import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
@@ -574,7 +575,12 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
   const today = wallToday0(clinicTz);
   const isToday = sameDay(selectedDate, today);
   const isPast = selectedDate < today;
-  const readOnly = false;
+  // H1-5/H4-2: минулий день = архів. Підпис давно казав «Архів — лише перегляд»,
+  // але readOnly був фіктивним (false) — кнопки дій лишались живими, UI брехав про
+  // режим. Тепер минула дата справді read-only (як і має бути для завершеного дня):
+  // ряди без дій-кнопок, нотатки лише для читання. Сьогодні/майбутнє — без змін
+  // (майбутні ряди й далі disabled через isFutureRow з підказкою).
+  const readOnly = isPast;
   const dayKey = dateKey(selectedDate);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
   const roomIds = useMemo(() => (rooms || []).map((r) => r.id), [rooms]);
@@ -983,11 +989,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
         />
       )}
 
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>
-          {toast.msg}
-        </div>
-      )}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );
 }

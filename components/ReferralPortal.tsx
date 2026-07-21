@@ -6,6 +6,7 @@
    Зайнятість слотів — через знеособлений RPC room_busy_slots (без PII). */
 
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
+import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
@@ -1592,9 +1593,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
           onClose={() => setOrganizeFor(null)}
         />
       )}
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>{toast.msg}</div>
-      )}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );
 }

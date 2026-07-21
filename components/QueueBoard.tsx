@@ -52,6 +52,7 @@ import CollisionPanel from "@/components/CollisionPanel";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
+import Toast from "@/components/Toast";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
@@ -444,8 +445,18 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
   const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
   const canSetStatus = !isFutureRow;
   const [moreOpen, setMoreOpen] = useState(false);
+  // B-1 (аудит v2): pending-стан async-дії рядка — блокує повторний клік і показує спінер.
+  const [busy, setBusy] = useState<string | null>(null);
   const proc = procLabel(p);
-  const act = (fn: (p: QEntry) => void) => (e: MouseEvent) => { e.stopPropagation(); fn(p); };
+  const act = (fn: (p: QEntry) => void, key = "act") => (e: MouseEvent) => {
+    e.stopPropagation();
+    if (busy) return;                                   // захист від подвійного кліку / конкурентних дій
+    const r = (fn as (x: QEntry) => unknown)(p);        // обробники async повертають проміс (напр. arrive→setStatus)
+    if (r && typeof (r as { then?: unknown }).then === "function") {
+      setBusy(key);
+      (r as Promise<unknown>).finally(() => setBusy(null));
+    }
+  };
   return (
     <div className={"qrow-item " + p.status + (expanded ? " open" : "")} data-qrow={p.id}>
       <div className="qrow" role="button" tabIndex={0} onClick={() => onToggle(p.id)}
@@ -497,11 +508,14 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         <div className="qrow-detail-inner">
           <div className="qrow-detail">
             {collisionPanel}
+            {/* Дослідження (зліва) + Пріоритет пацієнта (справа, на тому ж рівні) */}
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 8 }}>
+              <div style={{ flex: "1 1 auto", minWidth: 0 }}>
             {Array.isArray(p.studies) && p.studies.length > 0 && (() => {
               const sdiff = diffStudies(p.studies_original as Parameters<typeof diffStudies>[0], p.studies as Parameters<typeof diffStudies>[1]);
               const changed = sdiff.some((d) => d.state !== "kept");
               return (
-                <div style={{ marginBottom: 8 }}>
+                <div>
                   <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
                     {sdiff.map((d, i) => (
@@ -513,6 +527,25 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                 </div>
               );
             })()}
+              </div>
+              {canSetPriority && onSetPriority && (
+                <div style={{ flex: "0 0 auto" }}>
+                  <div className="qd-sf-lab" style={{ marginBottom: 8 }}>Пріоритет пацієнта</div>
+                  <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
+                    {PRIORITY_OPTIONS.map((pv) => {
+                      const m = PRIORITY_META[pv];
+                      return (
+                        <button key={pv} type="button" role="radio" aria-checked={p.priority_level === pv}
+                          className={"prio-seg-btn " + m.tone + (p.priority_level === pv ? " active" : "")}
+                          onClick={(e) => { e.stopPropagation(); if (p.priority_level !== pv) onSetPriority(p, pv); }} title={m.desc}>
+                          {m.short}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
             {originHint && (
               <div className="ctx-hint" style={{ fontSize: 12, marginBottom: 4 }}>{originHint}</div>
             )}
@@ -576,7 +609,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                     </div>
                   </div>
 
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0", opacity: busy ? 0.7 : 1 }} aria-busy={!!busy}>
                     {terminal ? (
                       p.status === "done" ? (
                         <>
@@ -592,15 +625,15 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                       )
                     ) : (
                       <>
-                        <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn)} disabled={advanceDisabled}
+                        <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn, "advance")} disabled={advanceDisabled || !!busy}
+                          aria-busy={busy === "advance"}
                           title={!isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "")}
-                          style={{ flex: 8, minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                          style={{ flex: "1 1 auto", minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
-                          {pb.icon} {pb.label}
+                          {busy === "advance" ? <><span className="rf-spin" aria-hidden="true" /> Опрацьовується…</> : <>{pb.icon} {pb.label}</>}
                         </button>
-                        {!terminal && onEditStudies && <button className="btn btn-secondary btn-sm" style={{ flex: 4, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} onClick={act(onEditStudies)}>🩻 Редагувати дослідження</button>}
-                        <button className="btn btn-secondary btn-sm" style={{ flex: 2, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} onClick={act(onReschedule)} title={p.status === "in_progress" ? "Зупинити дослідження та перенести на новий слот" : "Перенести на слот"}>🗓 Перенести</button>
-                        <button className="btn btn-secondary btn-sm" style={{ flex: 1, minWidth: 0 }} onClick={(e) => { e.stopPropagation(); setMoreOpen((o) => !o); }} title="Більше дій">⋯</button>
+                        {/* D-1 (аудит v2): 1 primary + «Ще» — вторинні дії у меню, щоб primary не губився серед 6–10 кнопок. */}
+                        <button className="btn btn-secondary btn-sm" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }} aria-expanded={moreOpen} aria-haspopup="menu" onClick={(e) => { e.stopPropagation(); setMoreOpen((o) => !o); }} title="Інші дії з записом">Ще {moreOpen ? "⌃" : "⌄"}</button>
                       </>
                     )}
                   </div>
@@ -636,26 +669,12 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                     </div>
                   )}
 
-                  {canSetPriority && onSetPriority && (
-                    <div style={{ marginTop: 6 }}>
-                      <div className="qd-sf-lab" style={{ marginBottom: 8 }}>Пріоритет пацієнта</div>
-                      <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
-                        {PRIORITY_OPTIONS.map((pv) => {
-                          const m = PRIORITY_META[pv];
-                          return (
-                            <button key={pv} type="button" role="radio" aria-checked={p.priority_level === pv}
-                              className={"prio-seg-btn " + m.tone + (p.priority_level === pv ? " active" : "")}
-                              onClick={(e) => { e.stopPropagation(); if (p.priority_level !== pv) onSetPriority(p, pv); }} title={m.desc}>
-                              {m.short}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
+                  {/* «Пріоритет пацієнта» переміщено вгору — у рядок із «Дослідження» (справа). */}
 
                   {moreOpen && !terminal && (
-                    <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }} role="menu">
+                      {onEditStudies && <button className="btn btn-secondary btn-sm" onClick={act(onEditStudies)}>🩻 Редагувати дослідження</button>}
+                      <button className="btn btn-secondary btn-sm" onClick={act(onReschedule)} title={p.status === "in_progress" ? "Зупинити дослідження та перенести на новий слот" : "Перенести на слот"}>🗓 Перенести</button>
                       {onOrganizeCase && !p.case_id && <button className="btn btn-secondary btn-sm" onClick={act(onOrganizeCase)} title="Додати іншу модальність/кабінет — організувати крос-модальний кейс">🔗 Організувати кейс</button>}
                       <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNoShow)}>✕ Неявка</button>
                       <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNotHeld)}>✕ Не відбулося</button>
@@ -885,6 +904,9 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Слот звільнився (скасування/відмова) → підходящі кандидати з листа очікування.
   const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
+  // Оголошені тут (а не нижче біля хендлерів), бо їх читає гард хоткеїв anyModalOpen.
+  const [cancelAsk, setCancelAsk] = useState<{ p: QEntry; mode: "cancel" | "declined" } | null>(null);
+  const [offCallAsk, setOffCallAsk] = useState<{ p: QEntry; end: string; durationMin: number } | null>(null);
 
   const [nowTick, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
@@ -903,7 +925,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
   function notify(msg: string, type = "success") {
     setToast({ msg, type });
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 3000);
+    // A-1/аудит v2: помилки живуть довше (5–7 с) — оператор встигає прочитати.
+    toastTimer.current = setTimeout(() => setToast(null), type === "error" ? 6000 : 3000);
   }
 
   /* ПОМИЛКА ЗАВАНТАЖЕННЯ ≠ «ПУСТО» (аудит 2026-07-11).
@@ -988,7 +1011,11 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
   // P2.1 — гарячі клавіші реєстратури. Через e.code (незалежно від розкладки UA/RU/EN);
   // не перехоплюємо у полях вводу та при відкритих модалках.
   useEffect(() => {
-    const anyModalOpen = modalOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen;
+    // Гард має покривати УСІ оверлеї, інакше хоткеї (N/«/»/R/цифри) стріляють
+    // під відкритою модалкою. Раніше бракувало 6 станів — зокрема деструктивних
+    // ConfirmDialog (cancelAsk/emergencyConfirm) та DelayPlan/Emergency/Waitlist:
+    // під ними «N» відкривав бронювання, «R» перезавантажував дошку тощо.
+    const anyModalOpen = modalOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen || !!wlSuggest || !!delayPreview || emergencyOpen || !!offCallAsk || !!cancelAsk || !!emergencyConfirm;
     function onKey(e: KeyboardEvent) {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
@@ -1003,7 +1030,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [modalOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, reload, rooms]);
+  }, [modalOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, reload, rooms]);
 
   useRealtimeRefetch({
     channelName: clinicId ? "queue-" + clinicId : null,
@@ -1217,7 +1244,6 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
      тому лише через підтвердження (раніше було в один клік). Те саме стосується
      сегмента «✕ Відмова» у дзвінку-підтвердженні: call_status='declined' сервер
      трактує як СКАСУВАННЯ запису — кнопка про це не попереджала. */
-  const [cancelAsk, setCancelAsk] = useState<{ p: QEntry; mode: "cancel" | "declined" } | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   function setCallGuarded(p: QEntry, call_status: string) {
     if (call_status === "declined") { setCancelAsk({ p, mode: "declined" }); return; }
@@ -1428,8 +1454,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
     if (r.code === "clash") return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис${r.name ? " (" + String(r.name).split(" ").slice(0, 2).join(" ") + ")" : ""}. Перенесіть один із записів`;
     return null;
   }
-  // Виклик поза графіком — через діалог підтвердження (а не тост під оверлеєм).
-  const [offCallAsk, setOffCallAsk] = useState<{ p: QEntry; end: string; durationMin: number } | null>(null);
+  // Виклик поза графіком — через діалог підтвердження (offCallAsk оголошено вище
+  // біля кластера модалок, бо його читає гард хоткеїв).
   const [offCallBusy, setOffCallBusy] = useState(false);
   function callPatient(p: QEntry) {
     const r = callBlockOf(p);
@@ -1966,11 +1992,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
           onClose={() => setSchedEditOpen(false)} onSave={saveOverride} onReset={resetOverride} />
       )}
 
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>
-          {toast.msg}
-        </div>
-      )}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );
 }

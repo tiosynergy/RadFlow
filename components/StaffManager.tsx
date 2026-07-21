@@ -10,6 +10,7 @@
    правами на кабінети, прайс і таймзону центру. */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import Toast from "@/components/Toast";
 import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
@@ -314,9 +315,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
           </div>
         </div>
       )}
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5, maxWidth: 440 }}>{toast.msg}</div>
-      )}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );
 }

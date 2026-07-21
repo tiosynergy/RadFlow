@@ -10,6 +10,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
+import Toast from "@/components/Toast";
 import { entryInIncidentWindow, incidentExpired, setClinicTz, wallDayKey, wallToday0 } from "@/lib/incidents";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
@@ -299,7 +300,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, services, roo
   function notify(msg: string, type = "success") {
     setToast({ msg, type });
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 3000);
+    toastTimer.current = setTimeout(() => setToast(null), type === "error" ? 6000 : 3000);
   }
 
   const reload = useCallback(async () => {
@@ -736,11 +737,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, services, roo
           onError={(msg) => notify(msg, "error")} />
       )}
 
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>
-          {toast.msg}
-        </div>
-      )}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );
 }

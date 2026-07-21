@@ -11,6 +11,7 @@ import { wallToday0 } from "@/lib/incidents";
 import { modalityLabel, modalityCode, CONTRAST_SURCHARGE } from "@/lib/studies";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
+import Toast from "@/components/Toast";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -122,7 +123,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const [roomRows, setRoomRows] = useState<RoomsRow[]>([]);
   const [studyRows, setStudyRows] = useState<StudiesRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; rooms.forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
 
@@ -141,7 +142,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
     [scope, clinics]
   );
 
-  function notify(msg: string) { setToast(msg); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3000); }
+  function notify(msg: string, type = "info") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), type === "error" ? 6000 : 3000); }
 
   const [from, to] = periodRange(period, scopeTz);
 
@@ -176,7 +177,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       // Помилку RPC НЕ ковтаємо: інакше дашборд мовчки покаже нулі (напр. якщо
       // міграція не накатана або немає гранту) — і це виглядатиме як «немає роботи».
       if (tot.error || rms.error || sts.error || (wtot && wtot.error)) {
-        notify("Не вдалося оновити показники — спробуйте оновити сторінку");
+        notify("Не вдалося оновити показники — спробуйте оновити сторінку", "error");
         return;
       }
 
@@ -299,7 +300,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
         .lte("scheduled_date", dateKey(t))
         .order("scheduled_date", { ascending: true })
         .limit(5000);
-      if (error) { notify("Не вдалося сформувати експорт — спробуйте ще раз"); return; }
+      if (error) { notify("Не вдалося сформувати експорт — спробуйте ще раз", "error"); return; }
 
       // Каталог scoped-центрів для оцінки позицій без снапшот-ціни (як catalog_est_sum
       // у RPC 0114). Впорядковано active desc → перша послуга name=region пріоритетна.
@@ -325,7 +326,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       const csv = [head, ...rows].map((r) => r.map(safe).join(";")).join("\n");
       const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
       const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "ceo-" + period + ".csv"; a.click(); URL.revokeObjectURL(url);
-      notify("Експортовано у CSV" + ((data?.length ?? 0) >= 5000 ? " (перші 5000 записів)" : ""));
+      notify("Експортовано у CSV" + ((data?.length ?? 0) >= 5000 ? " (перші 5000 записів)" : ""), "success");
     } finally {
       setExporting(false);
     }
@@ -443,9 +444,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
         </div>
       </div>
 
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid var(--green)", borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>{toast}</div>
-      )}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );
 }

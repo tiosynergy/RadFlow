@@ -7,6 +7,7 @@
    створений запис. Realtime — таблиця waitlist_entries (0047). */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
@@ -597,17 +598,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, services, roo
       )}
 
       <div role="status" aria-live="polite">
-        {toast && (
-          <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>
-            <span>{toast.msg}</span>
-            {toast.action && (
-              <button type="button" className="wl-toast-action"
-                onClick={() => { const a = toast.action; setToast(null); if (toastTimer.current) clearTimeout(toastTimer.current); a?.onAction(); }}>
-                {toast.action.label}
-              </button>
-            )}
-          </div>
-        )}
+        <Toast toast={toast} onDismiss={() => setToast(null)} />
       </div>
     </div>
   );
