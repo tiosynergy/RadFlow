@@ -53,6 +53,7 @@ import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, m
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import Toast from "@/components/Toast";
+import ShortcutsOverlay from "@/components/ShortcutsOverlay";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
@@ -911,6 +912,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
   const [entries, setEntries] = useState<QEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false); // оверлей гарячих клавіш (P3, клавіша «?»)
   const [openCaseId, setOpenCaseId] = useState<string | null>(null);
   const [slotsOverviewOpen, setSlotsOverviewOpen] = useState(false);
   const [completeFor, setCompleteFor] = useState<QEntry | null>(null);
@@ -1053,22 +1055,38 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
     // під відкритою модалкою. Раніше бракувало 6 станів — зокрема деструктивних
     // ConfirmDialog (cancelAsk/emergencyConfirm) та DelayPlan/Emergency/Waitlist:
     // під ними «N» відкривав бронювання, «R» перезавантажував дошку тощо.
-    const anyModalOpen = modalOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen || !!wlSuggest || !!delayPreview || emergencyOpen || !!offCallAsk || !!cancelAsk || !!emergencyConfirm;
+    const anyModalOpen = modalOpen || helpOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen || !!wlSuggest || !!delayPreview || emergencyOpen || !!offCallAsk || !!cancelAsk || !!emergencyConfirm;
     function onKey(e: KeyboardEvent) {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
       if (anyModalOpen) return;
       const code = e.code;
-      if (code === "KeyN") { e.preventDefault(); setModalOpen(true); }
-      else if (code === "Slash" || e.key === "/") { e.preventDefault(); searchRef.current?.focus(); }
+      // «?» (Shift+/) — довідка гарячих клавіш. Перевіряємо ДО «/», бо Shift+/ теж має code="Slash".
+      if (e.key === "?" || (code === "Slash" && e.shiftKey)) { e.preventDefault(); setHelpOpen(true); }
+      else if (code === "KeyN") { e.preventDefault(); setModalOpen(true); }
+      else if ((code === "Slash" || e.key === "/") && !e.shiftKey) { e.preventDefault(); searchRef.current?.focus(); }
       else if (code === "KeyR") { e.preventDefault(); reload(); }
       else if (code === "Backquote" || code === "Digit0") { setRoomView("all"); }
       else if (/^Digit[1-9]$/.test(code)) { const i = parseInt(code.slice(5), 10) - 1; const rs = rooms || []; if (rs[i]) setRoomView(rs[i].id); }
+      else if (code === "KeyJ" || code === "KeyK") {
+        // j/k — навігація по рядках черги (vim-style). Рухаємо DOM-фокус між
+        // інтерактивними рядками (.qrow[role=button]); скелетони-заглушки пропускаємо.
+        e.preventDefault();
+        const rows = Array.from(document.querySelectorAll<HTMLElement>('.qrow[role="button"]'));
+        if (!rows.length) return;
+        const cur = document.activeElement as HTMLElement | null;
+        const idx = rows.findIndex((r) => r === cur || r.contains(cur));
+        const next = code === "KeyJ"
+          ? (idx < 0 ? 0 : Math.min(rows.length - 1, idx + 1))
+          : (idx < 0 ? rows.length - 1 : Math.max(0, idx - 1));
+        rows[next]?.focus();
+        rows[next]?.scrollIntoView({ block: "nearest" });
+      }
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [modalOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, reload, rooms]);
+  }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, reload, rooms]);
 
   useRealtimeRefetch({
     channelName: clinicId ? "queue-" + clinicId : null,
@@ -1790,6 +1808,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
               <span className="si">⌕</span>
               <input ref={searchRef} placeholder="Пошук пацієнта… ( / )" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
             </div>
+            {/* P3 discoverability: видима точка входу в довідку хоткеїв (клавіша «?»). */}
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setHelpOpen(true)} title="Гарячі клавіші (?)" aria-label="Гарячі клавіші" style={{ flexShrink: 0 }}>⌨ ?</button>
           </div>
 
           <div className="qhead">
@@ -2031,6 +2051,38 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
       {schedEditOpen && (
         <ScheduleEditModal date={selectedDate} rooms={rooms} existing={selectedOverride} entries={entries}
           onClose={() => setSchedEditOpen(false)} onSave={saveOverride} onReset={resetOverride} />
+      )}
+
+      {helpOpen && (
+        <ShortcutsOverlay
+          onClose={() => setHelpOpen(false)}
+          shortcuts={[
+            { keys: ["N"], label: "Новий запис" },
+            { keys: ["/"], label: "Пошук пацієнта" },
+            { keys: ["R"], label: "Оновити дошку" },
+            { keys: ["J", "K"], label: "Наступний / попередній рядок черги" },
+            { keys: ["1", "…", "9"], label: "Перейти до кабінету за номером" },
+            { keys: ["0"], label: "Усі кабінети" },
+            { keys: ["?"], label: "Ця довідка" },
+            { keys: ["Esc"], label: "Закрити вікно" },
+          ]}
+          glossary={[
+            { glyph: "○", term: "В черзі", desc: "Запис заплановано, пацієнт ще не прийшов." },
+            { glyph: "◔", term: "Очікує", desc: "Пацієнт прийшов і чекає виклику в кабінет." },
+            { glyph: "●", term: "В кабінеті", desc: "Дослідження триває просто зараз (живий таймер)." },
+            { glyph: "✓", term: "Виконано", desc: "Дослідження завершено — доступно лише після кабінету." },
+            { glyph: "✕", term: "Неявка", desc: "Пацієнт не прийшов у відведений час." },
+            { glyph: "⊘", term: "Не відбулося", desc: "Був у кабінеті, але дослідження не проведено (напр. протипоказання)." },
+            { glyph: "↻", term: "Потребує переносу", desc: "Слот втрачено через затримку — перенесіть на новий час." },
+            { term: "CITO", desc: "Терміновий (ургентний) запис — має пріоритет у черзі." },
+            { term: "Обзвін / Колл-лист", desc: "Підтвердження записів дзвінком напередодні." },
+            { term: "Простій", desc: "Кабінет зупинено (поломка/ТО/аварія) — виклики призупинено." },
+            { term: "Поза графіком", desc: "Слот після закриття чи в перерву — підтверджено персоналом." },
+            { term: "Накладення", desc: "Поточне дослідження наїжджає на наступний слот — потрібне рішення." },
+            { term: "Буфер", desc: "Запас часу після дослідження на прибирання/підготовку." },
+            { term: "Кейс", desc: "Крос-модальний запис: кілька досліджень одного пацієнта різними апаратами." },
+          ]}
+        />
       )}
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
