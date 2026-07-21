@@ -18,11 +18,17 @@
    цього кейса (useRealtimeRefetch) — будь-яка зміна (правка/скасування/статус) з
    іншої вкладки чи іншим оператором одразу оновлює екран.
 
-   «Скасувати кейс» → cancelCase (0092): знімає активні НЕ-in_progress кроки. */
+   «Скасувати кейс» → cancelCase (0092): знімає активні НЕ-in_progress кроки.
+
+   0118 (referralMode): екран працює і для НАПРАВНИКА — його власні кейси. Дії
+   кейса (додати крок / скасувати) йдуть через referral-обгортки; правка кроку
+   (перенос/дослідження) — ті САМІ entry-екшени, що вже доступні направнику на
+   його дошці (queue_reschedule_rpc авторизує направника-власника, RLS
+   queue_write_referrer — останній рубіж). Скасування — лише до старту кроків. */
 
 import { useCallback, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { cancelCase, rescheduleQueueEntry, editQueueEntryStudies, addCaseStep } from "@/app/queue/actions";
+import { cancelCase, rescheduleQueueEntry, editQueueEntryStudies, addCaseStep, addReferralCaseStep, cancelReferralCase } from "@/app/queue/actions";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import RescheduleModal from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
@@ -101,9 +107,14 @@ interface CaseModalProps {
   services?: ServiceLike[];
   /** Переозначення каталогу по кабінетах (service_room_overrides, 0108) — проброс у форми кроків (2b). */
   roomOverrides?: RoomOverrideRow[];
+  /** 0118: режим НАПРАВНИКА — дії кейса йдуть через referral-обгортки
+      (addReferralCaseStep / cancelReferralCase; авторизація — гілка направника
+      в RPC). rooms передавайте ВЖЕ відфільтровані грантом (room_ids). Скасування
+      можливе лише поки жоден крок не стартував (сервер — CASE_STARTED). */
+  referralMode?: boolean;
 }
 
-export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicId, clinicTz, incidents = [], services, roomOverrides }: CaseModalProps) {
+export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicId, clinicTz, incidents = [], services, roomOverrides, referralMode = false }: CaseModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [steps, setSteps] = useState<StepRow[] | null>(null);
   const [err, setErr] = useState(false);
@@ -157,10 +168,14 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
       dur: s.duration_min as number,
     }));
 
+  // 0118: направник скасовує лише НЕстартований кейс — дзеркало серверного гарда
+  // CASE_STARTED (кнопка гаситься, сервер усе одно останній рубіж).
+  const refStarted = referralMode && (steps || []).some((s) => ["in_progress", "done", "no_show", "not_held"].includes(s.status));
+
   async function doCancel() {
     setBusy(true);
     setOpErr(null);
-    const res = await cancelCase(caseId);
+    const res = referralMode ? await cancelReferralCase(caseId) : await cancelCase(caseId);
     setBusy(false);
     setAskCancel(false);
     if (!res.ok) { setOpErr(res.error); return; }
@@ -198,11 +213,15 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
   /* Додати новий крок (інша модальність/кабінет) до кейса. Помилки гардів
      (CASE_SAME_ROOM/CASE_PATIENT_OVERLAP) повертаємо в модалку — вона їх покаже. */
   async function onAddStep(b: BookingPayload): Promise<string | null> {
-    const res = await addCaseStep(caseId, {
+    const step = {
       roomId: b.roomId, studies: b.studies, durationMin: b.dur, bufferTimeMin: b.buffer,
       priorityLevel: b.priority, scheduledDate: dateKey(b.date), scheduledTime: b.time,
       contraindications: !!b.hasContra, doctor: b.doctor ?? null, note: b.notes ?? null,
-    });
+    };
+    // 0118: направник — через referral-обгортку (клініка параметром, не з профілю).
+    const res = referralMode && clinicId
+      ? await addReferralCaseStep(caseId, clinicId, step)
+      : await addCaseStep(caseId, step);
     if (!res.ok) return res.error;
     setAddOpen(false);
     load();
@@ -260,8 +279,9 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
                         {STATUS_LABEL[s.status] || s.status}
                       </span>
                     </div>
-                    {/* Правка кроку — лише персоналу центру й лише для активних кроків.
-                        Обидві дії проходять DB-гарди кейса (різні кабінети / без перетину часу). */}
+                    {/* Правка кроку — персоналу центру АБО направнику-власнику (0118),
+                        лише для активних кроків. Обидві дії проходять DB-гарди кейса
+                        (різні кабінети / без перетину часу) і власну авторизацію RPC/RLS. */}
                     {canEdit && active && (
                       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
                         <button className="btn btn-secondary btn-xs" onClick={() => { setOpErr(null); setEditStudiesStep(s); }} title="Змінити дослідження кроку">🩻 Дослідження</button>
@@ -283,7 +303,8 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
             <button className="btn btn-secondary" onClick={() => { setOpErr(null); setAddOpen(true); }} title="Додати крок іншої модальності/кабінету">＋ Додати крок</button>
           )}
           <button className="btn btn-ghost" onClick={onClose}>Закрити</button>
-          <button className="btn btn-danger" disabled={busy || nCancel === 0} onClick={() => setAskCancel(true)}>
+          <button className="btn btn-danger" disabled={busy || nCancel === 0 || refStarted} onClick={() => setAskCancel(true)}
+            title={refStarted ? "Кейс уже в роботі центру — скасування веде персонал" : undefined}>
             Скасувати кейс
           </button>
         </div>
@@ -310,7 +331,7 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
             studies: reschedStep.studies, note: reschedStep.note, status: reschedStep.status,
           }}
           rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents}
-          allowOffSchedule
+          allowOffSchedule={!referralMode}   /* 0077: направнику поза графіком зась */
           onClose={() => setReschedStep(null)}
           onConfirm={doReschedule}
         />

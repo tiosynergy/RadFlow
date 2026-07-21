@@ -36,11 +36,12 @@ begin
   exception when sqlstate '28000' then raise notice 'C1 PASS: create_case no-auth -> AUTH';
     when others then raise exception 'C1: %',sqlerrm; end;
 
+  -- 0118: направник БІЛЬШЕ НЕ заблокований глухо — без clinic_id у p_case він
+  -- отримує BAD_INPUT (повні гейти гілки направника — referrer_cases_smoke.sql).
   begin perform set_config('request.jwt.claims',format('{"sub":"%s"}',v_ref),true);
     perform public.create_case_rpc('{}'::jsonb,'[]'::jsonb);
-    raise exception 'C2 FAIL: направник пройшов';
-  exception when sqlstate '28000' then raise notice 'C2 PASS: referrer -> blocked (AUTH)';
-    when sqlstate '42501' then raise notice 'C2 PASS: referrer -> blocked (FORBIDDEN)';
+    raise exception 'C2 FAIL: направник без clinic_id пройшов';
+  exception when sqlstate '22023' then raise notice 'C2 PASS: referrer без clinic_id -> BAD_INPUT (0118)';
     when others then raise exception 'C2: %',sqlerrm; end;
 
   begin perform set_config('request.jwt.claims',format('{"sub":"%s"}',v_admin),true);

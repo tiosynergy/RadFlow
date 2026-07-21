@@ -17,7 +17,9 @@ import CitySelect from "@/components/CitySelect";
 import RescheduleModal from "@/components/RescheduleModal";
 import ReferrerBoard from "@/components/ReferrerBoard";
 import ReferrerSidebar from "@/components/ReferrerSidebar";
-import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry, editQueueEntryStudies } from "@/app/queue/actions";
+import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry, editQueueEntryStudies, createReferralCase, referralCaseFromEntry, type CaseStepInput } from "@/app/queue/actions";
+import CaseModal from "@/components/CaseModal";
+import BookingModal, { type BookingPayload } from "@/components/BookingModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -41,9 +43,12 @@ type Referral = {
   id: string; clinic_id: string; created_by: string | null; referrer_id: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
   priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean; doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
+  case_id: string | null; case_step: number | null;   // 0118: кейси направника
 };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 type ExtraStudy = { type: string; region: string; dur: number };
+/* 0118: накопичений крок майбутнього кейса (пакетний режим «＋ У кейс»). */
+type CaseDraftStep = { roomId: string; roomName: string; modality: string; date: string; time: string; dur: number; buffer: number; studies: StudyOut[]; hasContra: boolean };
 /* 0074: RPC віддає вікно, ОБРІЗАНЕ по добі (start_min/end_study_min/end_min) — сюди
    потрапляють і «хвости» досліджень, що почалися вчора й перетнули опівніч. */
 type BusySlot = {
@@ -96,9 +101,11 @@ interface NewReferralProps {
   doctorName: string;
   doctorId: string;
   onCreated: (nm: string | null, err?: string) => void;
+  /** 0118: створений кейс (id, центр, ПІБ) — портал відкриє екран кейса. */
+  onCaseCreated: (caseId: string, clinicId: string, nm: string) => void;
 }
 
-function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, onCreated }: NewReferralProps) {
+function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, onCreated, onCaseCreated }: NewReferralProps) {
   const [centerId, setCenterId] = useState(() => (activeCenters.length === 1 ? activeCenters[0].clinicId : ""));
   const [name, setName] = useState("");
   const [dob, setDob] = useState("");
@@ -133,6 +140,10 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule обраного кабінету (для перерв)
   const [incidents, setIncidents] = useState<IncidentLike[]>([]);
   const [busy, setBusy] = useState(false);
+  // 0118: пакетний режим «кейс» — накопичені кроки (паритет batch-бару BookingModal).
+  const [caseSteps, setCaseSteps] = useState<CaseDraftStep[]>([]);
+  const [caseBusy, setCaseBusy] = useState(false);
+  const [caseErr, setCaseErr] = useState<string | null>(null);
 
   const date = dateVal(bookDate);
   const modality = modalityCode(studyType); // studyType тут — укр. лейбл ("МРТ"/"УЗД"…)
@@ -226,6 +237,12 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast, roomId || undefined) } : null;
   const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, roomId || undefined) })));
   const slotDur = dur + validExtra.reduce((s, x) => s + (Number(x.dur) || 0), 0);
+
+  /* 0118: зайнятість пацієнта накопиченими кроками кейса на ЦЮ дату (casebusy у
+     сітці) + кабінети, вже задіяні в кейсі (кейс = РІЗНІ кабінети, 0095). */
+  const caseWindows = caseSteps.filter((s) => s.date === date).map((s) => { const st = toMin(s.time); return { s: st, e: st + s.dur }; });
+  const caseRoomIds = caseSteps.map((s) => s.roomId);
+  const roomInCase = !!roomId && caseRoomIds.includes(roomId);
 
   function calcAgeLocal(d: string) { const a = calcAge(d); return a == null || a < 0 ? 0 : a; }
 
@@ -338,6 +355,10 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
     if (busySlots.some((x) => a >= x.s && a < x.eStudy)) return "busy";
     if (busySlots.some((x) => a >= x.eStudy && a < x.e)) return "buffer";
     if (busySlots.some((x) => a < x.e && x.s < bBlock)) return "tight";
+    // 0118: кабінет вільний, але пацієнт у цей час уже зайнятий іншим накопиченим
+    // кроком кейса (присутність = тривалість дослідження, без буфера; фінальний
+    // рубіж — CASE_PATIENT_OVERLAP у RPC/тригерах 0094/0096).
+    if (caseWindows.some((w) => a < w.e && w.s < a + slotDur)) return "casebusy";
     return "free";
   }
   function nextApptAfter(slot: string) {
@@ -395,6 +416,58 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
     onCreated(name.trim());
   }
 
+  /* ===== 0118 — пакетний режим «кейс» =====
+     «＋ У кейс» накопичує поточний крок і скидає крок-специфічні поля (пацієнт
+     лишається спільним); «Створити кейс (N)» шле все однією атомарною дією
+     createReferralCase (create_case_rpc, гілка направника). Центр на час
+     накопичення заблоковано — кейс живе в ОДНОМУ центрі. */
+  function resetStepFields() {
+    setRegion(""); setContrast(false); setExtraStudies([]); setTime(""); setDurEdit("");
+  }
+  function draftFromForm(): CaseDraftStep | null {
+    if (!roomId || !room) return null;
+    return { roomId, roomName: room.name, modality: primaryKind, date, time, dur: slotDur, buffer, studies: allStudies, hasContra };
+  }
+  function addStepToCase() {
+    if (!valid || roomInCase) return;
+    const d = draftFromForm();
+    if (!d) return;
+    setCaseErr(null);
+    setCaseSteps((arr) => [...arr, d]);
+    resetStepFields();
+  }
+  const caseTotal = caseSteps.length + (valid && !roomInCase ? 1 : 0);
+  async function createCaseNow() {
+    if (caseBusy) return;
+    const cur = valid && !roomInCase ? draftFromForm() : null;
+    const steps = cur ? [...caseSteps, cur] : [...caseSteps];
+    if (steps.length < 2) return;   // кейс — щонайменше два кроки різних кабінетів
+    setCaseBusy(true); setCaseErr(null);
+    const res = await createReferralCase({
+      clinicId: centerId,
+      patient: {
+        name: name.trim(), phone: phone.trim() || null, email: email.trim() || null,
+        dob: dob || null, sex: gender || null, age: calcAgeLocal(dob), weight: weight ? +weight : null,
+      },
+      note: comment.trim() || null,
+      steps: steps.map((s) => ({
+        roomId: s.roomId, studies: s.studies as unknown as CaseStepInput["studies"], durationMin: s.dur,
+        bufferTimeMin: s.buffer, priorityLevel: (priority || undefined) as PatientPriority | undefined,
+        scheduledDate: s.date, scheduledTime: s.time, contraindications: s.hasContra,
+        doctor: doctorName || null, note: null,
+      })),
+    });
+    setCaseBusy(false);
+    if (!res.ok) {
+      setCaseErr(res.code === "slot_taken" || res.code === "slot_unavailable" ? "Слот щойно зайняли — оновіть сторінку й оберіть інший час" : res.error);
+      return;
+    }
+    const nm = name.trim();
+    setCaseSteps([]);
+    setName(""); setDob(""); setGender(""); setWeight(""); setPhone(""); setEmail(""); setRegion(""); setContrast(false); setHasContra(false); setPriority(""); setComment(""); setExtraStudies([]); setTime("");
+    if (res.id) onCaseCreated(res.id, centerId, nm);
+  }
+
   if (activeCenters.length === 0) {
     return (
       <div style={{ maxWidth: 560, margin: "0 auto" }}>
@@ -411,10 +484,13 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
             <div className="bk-section-label" style={{ marginTop: 0 }}>Центр</div>
             <label className="fld">
               <span className={"fld-lab" + (miss.center ? " bk-miss-lab" : "")}>Куди направляємо <span className="req">*</span></span>
-              <select className="inp" value={centerId} onChange={(e) => { setCenterId(e.target.value); setTime(""); }}>
+              <select className="inp" value={centerId} disabled={caseSteps.length > 0}
+                title={caseSteps.length > 0 ? "Кейс живе в одному центрі — приберіть кроки кейса, щоб змінити центр" : undefined}
+                onChange={(e) => { setCenterId(e.target.value); setTime(""); }}>
                 <option value="">— Оберіть центр —</option>
                 {activeCenters.map((c) => <option key={c.clinicId} value={c.clinicId}>{centerLabel(c)}</option>)}
               </select>
+              {caseSteps.length > 0 && <span className="bk-time-state none">центр заблоковано, поки формується кейс</span>}
             </label>
 
             <div className="bk-section-label">Пацієнт</div>
@@ -636,6 +712,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                     : st === "blocked" ? "Кабінет на ремонті/ТО"
                     : st === "break" ? breakLabel(s)
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${tightReason(s)}`
+                    : st === "casebusy" ? "Пацієнт зайнятий іншим кроком кейса в цей час — оберіть інший слот"
                     : st === "past" ? "Час минув"
                     : `Вільно · ${s}–${fmt(toMin(s) + slotDur)}`}
                 />
@@ -657,6 +734,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 <span><span className="lg-dot busybuf" />буфер</span>
                 {time && buffer > 0 && <span><span className="lg-dot planbuf" />буфер цього запису</span>}
                 {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
+                {caseWindows.length > 0 && <span><span className="lg-dot casebusy" />інший крок кейса</span>}
               </div>
               {time && (() => {
                 const s = toMin(time), e = s + slotDur, eBlock = s + slotDur + buffer;
@@ -675,11 +753,41 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
           </div>
         </div>
 
+        {caseErr && (
+          <div className="dlg-err" role="alert">⚠ {caseErr}</div>
+        )}
+
+        {/* 0118: batch-бар кейса (паритет BookingModal): «＋ У кейс» накопичує кроки
+            різних модальностей, «Створити кейс (N)» — одна атомарна дія. */}
+        <div className="bk-case-bar" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, padding: "8px 16px", borderTop: "1px solid var(--border)" }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", whiteSpace: "nowrap" }}>🔗 Кейс:</span>
+          {caseSteps.length === 0 && <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>додайте кроки різних модальностей — направлення підуть одним кейсом</span>}
+          {caseSteps.map((s, i) => (
+            <span key={i} style={{ fontSize: 11.5, padding: "2px 6px 2px 8px", borderRadius: 999, border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 10, opacity: 0.7 }}>{i + 1}</span>
+              {s.modality} · {s.roomName} · {s.time}–{fmt(toMin(s.time) + s.dur)}
+              <button onClick={() => { setCaseErr(null); setCaseSteps((arr) => arr.filter((_, j) => j !== i)); }} title="Прибрати крок"
+                style={{ cursor: "pointer", background: "none", border: "none", color: "var(--text-muted)", padding: 0, lineHeight: 1 }}>✕</button>
+            </span>
+          ))}
+          {roomInCase && (
+            <span style={{ flexBasis: "100%", fontSize: 11.5, color: "var(--orange, #e08a00)" }}>
+              ⚠ Кабінет «{room?.name}» уже у кейсі. Кейс — це різні кабінети/модальності; кілька досліджень одного кабінету оформіть звичайним направленням («＋ Додати дослідження»).
+            </span>
+          )}
+          <button className="btn btn-ghost btn-sm" disabled={!valid || caseBusy || roomInCase} onClick={addStepToCase} style={{ marginLeft: "auto" }}
+            title={roomInCase ? "Цей кабінет уже у кейсі — оберіть інший кабінет/модальність" : "Додати поточний крок до кейса"}>＋ У кейс</button>
+          <button className="btn btn-primary btn-sm" disabled={caseBusy || caseTotal < 2} onClick={createCaseNow} title="Кейс — щонайменше два кроки в різних кабінетах">
+            {caseBusy ? "Створення…" : `Створити кейс (${caseTotal})`}
+          </button>
+        </div>
+
         <div className="dlg-foot">
           {valid
             ? <span className="bk-summary">{name.split(" ").slice(0, 2).join(" ")} · {allStudies.length > 1 ? allStudies.length + " досл." : primaryKind} · {room ? room.name : ""} · {fmtShort(bookDate)} {time}–{fmt(toMin(time) + slotDur)}</span>
             : <span className="bk-missing">{missingList.map((m, i) => <span className="bk-miss-chip" key={i}>{m}</span>)}</span>}
-          <button className="btn btn-primary" disabled={!valid || busy} onClick={submit}>
+          <button className="btn btn-primary" disabled={!valid || busy || caseSteps.length > 0} onClick={submit}
+            title={caseSteps.length > 0 ? "Формується кейс — завершіть його кнопкою «Створити кейс» або приберіть кроки" : undefined}>
             {busy ? "Відправляємо…" : "Відправити направлення"}
           </button>
         </div>
@@ -1152,7 +1260,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
       const supabase = createClient();
       const { data, error } = await supabase
         .from("queue_entries")
-        .select("id, clinic_id, created_by, referrer_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, studies_changed_by, contraindications, doctor, note, indication, room_id, reschedule_origin")
+        .select("id, clinic_id, created_by, referrer_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, studies_changed_by, contraindications, doctor, note, indication, room_id, reschedule_origin, case_id, case_step")
         .eq("referrer_id", doctorId)
         .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
       // H-6: збій читання показувався як «Немає направлень» — лікар вважав, що
@@ -1301,6 +1409,51 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
     notify("Дослідження оновлено", "success"); reload();
   }
 
+  /* ===== 0118 — кейси направника: екран кейса + «Організувати кейс» ===== */
+  // Кабінети центру, звужені грантом (referral_access.room_ids; null/[] = усі).
+  const grantedRooms = useCallback((clinicId: string): RoomOpt[] => {
+    const all = roomsByClinic[clinicId] || [];
+    const ids = centersById[clinicId]?.room_ids;
+    const list = Array.isArray(ids) && ids.length ? ids : null;
+    return list ? all.filter((r) => list.includes(r.id)) : all;
+  }, [roomsByClinic, centersById]);
+
+  const [openCase, setOpenCase] = useState<{ caseId: string; clinicId: string; incidents: IncidentLike[] } | null>(null);
+  const [organizeFor, setOrganizeFor] = useState<{ r: Referral; incidents: IncidentLike[] } | null>(null);
+
+  // Простої центру для сітки кроку — інакше заблокований час малювався б вільним
+  // (збій читання → порожньо: сервер усе одно відхилить, це лише підказка).
+  async function centerIncidents(clinicId: string): Promise<IncidentLike[]> {
+    try {
+      const { data } = await createClient().from("incidents")
+        .select("room_id, started_at, blocked_until, status, auto_unblock")
+        .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
+      return data || [];
+    } catch { return []; }
+  }
+  async function openCaseScreen(caseId: string, clinicId: string) {
+    setOpenCase({ caseId, clinicId, incidents: await centerIncidents(clinicId) });
+  }
+  async function startOrganize(r: Referral) {
+    setOrganizeFor({ r, incidents: await centerIncidents(r.clinic_id) });
+  }
+  /* Крок іншої модальності до СВОГО запису → referralCaseFromEntry (гілка 0118).
+     Помилки гардів (той самий кабінет / перетин часу) повертаємо модалці. */
+  async function doOrganize(b: BookingPayload): Promise<string | null> {
+    const ctx = organizeFor;
+    if (!ctx) return null;
+    const res = await referralCaseFromEntry(ctx.r.id, ctx.r.clinic_id, {
+      roomId: b.roomId, studies: b.studies, durationMin: b.dur, bufferTimeMin: b.buffer,
+      priorityLevel: b.priority, scheduledDate: dateVal(b.date), scheduledTime: b.time,
+      contraindications: !!b.hasContra, doctor: b.doctor ?? null, note: b.notes ?? null,
+    });
+    if (!res.ok) return res.error;
+    setOrganizeFor(null);
+    reload();
+    if (res.id) openCaseScreen(res.id, ctx.r.clinic_id);   // одразу показуємо кейс
+    return null;
+  }
+
   function onCentersChanged() { router.refresh(); }
 
   const reschedRooms = reschedFor ? (roomsByClinic[reschedFor.clinic_id] || []) : [];
@@ -1336,7 +1489,8 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
         <div className="content" style={{ flex: 1 }}>
         {tab === "new" && (
           <NewReferral activeCenters={activeCenters} roomsByClinic={roomsByClinic} servicesByClinic={servicesByClinic} roomOverridesByClinic={roomOverridesByClinic} doctorName={doctorName} doctorId={doctorId}
-            onCreated={(nm, err) => { if (err) notify("Помилка: " + err, "error"); else { notify("Направлення відправлено: " + nm, "success"); reload(); setTab("mine"); } }} />
+            onCreated={(nm, err) => { if (err) notify("Помилка: " + err, "error"); else { notify("Направлення відправлено: " + nm, "success"); reload(); setTab("mine"); } }}
+            onCaseCreated={(caseId, clinicId, nm) => { notify("Кейс створено: " + nm, "success"); reload(); setTab("mine"); openCaseScreen(caseId, clinicId); }} />
         )}
         {tab === "mine" && (
           <>
@@ -1350,7 +1504,8 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
             )}
             <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} doctorId={doctorId}
               focus={boardFocus}
-              onReschedule={(r) => setReschedFor(r)} onCancel={(r) => setCancelAsk(r)} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)} />
+              onReschedule={(r) => setReschedFor(r)} onCancel={(r) => setCancelAsk(r)} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)}
+              onOpenCase={openCaseScreen} onOrganizeCase={startOrganize} />
           </>
         )}
         {tab === "waitlist" && (
@@ -1408,6 +1563,34 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
       )}
       {editPatientFor && (
         <PatientEditModal entryId={editPatientFor.id} canEditPriority onClose={() => setEditPatientFor(null)} onSaved={reload} />
+      )}
+      {/* 0118: екран СВОГО кейса (referralMode: дії через referral-обгортки). */}
+      {openCase && (
+        <CaseModal caseId={openCase.caseId} referralMode
+          rooms={grantedRooms(openCase.clinicId)} clinicId={openCase.clinicId}
+          clinicTz={centersById[openCase.clinicId]?.timezone} incidents={openCase.incidents}
+          services={servicesByClinic[openCase.clinicId]} roomOverrides={roomOverridesByClinic[openCase.clinicId]}
+          onClose={() => setOpenCase(null)} onCancelled={() => { notify("Кейс скасовано", "info"); reload(); }} />
+      )}
+      {/* 0118: «Організувати кейс» — крок іншої модальності до свого запису. */}
+      {organizeFor && (
+        <BookingModal
+          rooms={grantedRooms(organizeFor.r.clinic_id)} clinicId={organizeFor.r.clinic_id}
+          clinicTz={centersById[organizeFor.r.clinic_id]?.timezone} incidents={organizeFor.incidents}
+          services={servicesByClinic[organizeFor.r.clinic_id]} roomOverrides={roomOverridesByClinic[organizeFor.r.clinic_id]}
+          prefill={{
+            name: organizeFor.r.patient_name || "", phone: organizeFor.r.patient_phone || "",
+            priority: organizeFor.r.priority_level || "planned",
+            // Крок кейса — той самий візит: відкриваємо день вихідного запису.
+            date: organizeFor.r.scheduled_date || undefined,
+          }}
+          caseSiblings={organizeFor.r.room_id && organizeFor.r.scheduled_date && organizeFor.r.scheduled_time
+            ? [{ roomId: organizeFor.r.room_id, date: new Date(organizeFor.r.scheduled_date + "T00:00:00"), time: String(organizeFor.r.scheduled_time).slice(0, 5), dur: organizeFor.r.duration_min ?? 0 }]
+            : []}
+          onAddCaseStep={doOrganize}
+          onSave={() => {}}
+          onClose={() => setOrganizeFor(null)}
+        />
       )}
       {toast && (
         <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>{toast.msg}</div>

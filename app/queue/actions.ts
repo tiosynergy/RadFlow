@@ -2112,9 +2112,41 @@ const sCase = z.object({
 
 export type CaseInput = z.infer<typeof sCase>;
 
+/** Знімок пацієнта для p_case (спільний для персоналу і направника, 0118). */
+function caseRpcPatient(input: CaseInput) {
+  return {
+    patient_name: input.patient.name,
+    patient_phone: input.patient.phone ?? null,
+    patient_email: input.patient.email ?? null,
+    patient_dob: input.patient.dob ?? null,
+    patient_sex: input.patient.sex ?? null,
+    patient_age: input.patient.age ?? null,
+    patient_weight: input.patient.weight ?? null,
+    note: input.note ?? null,
+  };
+}
+
+/** p_step для case-RPC (спільний для персоналу і направника, 0118). */
+function caseRpcStep(s: CaseStepInput) {
+  return {
+    room_id: s.roomId,
+    studies: s.studies,
+    duration_min: s.durationMin,
+    buffer_time_min: normBuffer(s.bufferTimeMin ?? BUFFER_DEFAULT),
+    priority_level: normPriority(s.priorityLevel),
+    scheduled_date: s.scheduledDate,
+    scheduled_time: s.scheduledTime,
+    contraindications: !!s.contraindications,
+    doctor: s.doctor ?? null,
+    note: s.note ?? null,
+  };
+}
+
 /** Помилки RPC кейса: власні raise (FORBIDDEN/AUTH/BAD_INPUT/case_clinic_*) поверх
     booking-тригерів; решта — той самий маппінг, що й бронювання. */
 function mapCaseError(message: string, code = ""): QueueActionResult {
+  // 0118: направник може скасувати лише НЕстартований свій кейс.
+  if (/^CASE_STARTED/i.test(message)) return { ok: false, error: "Кейс уже в роботі центру — скасувати може лише персонал", code: "forbidden" };
   if (/^FORBIDDEN/i.test(message)) return { ok: false, error: "Немає прав керувати кейсом у цьому центрі", code: "forbidden" };
   if (/^AUTH/i.test(message)) return { ok: false, error: "Не авторизовано", code: "auth" };
   if (/^BAD_INPUT/i.test(message)) return { ok: false, error: "Некоректний склад кейса", code: "generic" };
@@ -2152,29 +2184,8 @@ export async function createCase(raw: CaseInput): Promise<QueueActionResult> {
     if (c) return SERVICE_CLOSED_ERR(c);
   }
 
-  const p_case = {
-    patient_name: input.patient.name,
-    patient_phone: input.patient.phone ?? null,
-    patient_email: input.patient.email ?? null,
-    patient_dob: input.patient.dob ?? null,
-    patient_sex: input.patient.sex ?? null,
-    patient_age: input.patient.age ?? null,
-    patient_weight: input.patient.weight ?? null,
-    referrer_id: input.referrerId ?? null,
-    note: input.note ?? null,
-  };
-  const p_steps = input.steps.map((s) => ({
-    room_id: s.roomId,
-    studies: s.studies,
-    duration_min: s.durationMin,
-    buffer_time_min: normBuffer(s.bufferTimeMin ?? BUFFER_DEFAULT),
-    priority_level: normPriority(s.priorityLevel),
-    scheduled_date: s.scheduledDate,
-    scheduled_time: s.scheduledTime,
-    contraindications: !!s.contraindications,
-    doctor: s.doctor ?? null,
-    note: s.note ?? null,
-  }));
+  const p_case = { ...caseRpcPatient(input), referrer_id: input.referrerId ?? null };
+  const p_steps = input.steps.map(caseRpcStep);
 
   const { data, error } = await supabase.rpc("create_case_rpc", {
     p_case: p_case as unknown as Json,
@@ -2201,18 +2212,7 @@ export async function addCaseStep(caseId: string, raw: CaseStepInput): Promise<Q
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  const p_step = {
-    room_id: s.roomId,
-    studies: s.studies,
-    duration_min: s.durationMin,
-    buffer_time_min: normBuffer(s.bufferTimeMin ?? BUFFER_DEFAULT),
-    priority_level: normPriority(s.priorityLevel),
-    scheduled_date: s.scheduledDate,
-    scheduled_time: s.scheduledTime,
-    contraindications: !!s.contraindications,
-    doctor: s.doctor ?? null,
-    note: s.note ?? null,
-  };
+  const p_step = caseRpcStep(s);
   { const g = await closedRegionGate(supabase, clinicId, s.roomId, s.studies); if (g) return g; }
   const { data, error } = await supabase.rpc("add_case_step_rpc", {
     p_case_id: idv.data,
@@ -2237,18 +2237,7 @@ export async function caseFromEntry(entryId: string, raw: CaseStepInput): Promis
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  const p_step = {
-    room_id: s.roomId,
-    studies: s.studies,
-    duration_min: s.durationMin,
-    buffer_time_min: normBuffer(s.bufferTimeMin ?? BUFFER_DEFAULT),
-    priority_level: normPriority(s.priorityLevel),
-    scheduled_date: s.scheduledDate,
-    scheduled_time: s.scheduledTime,
-    contraindications: !!s.contraindications,
-    doctor: s.doctor ?? null,
-    note: s.note ?? null,
-  };
+  const p_step = caseRpcStep(s);
   { const g = await closedRegionGate(supabase, clinicId, s.roomId, s.studies); if (g) return g; }
   const { data, error } = await supabase.rpc("case_from_entry_rpc", {
     p_entry_id: idv.data,
@@ -2262,6 +2251,150 @@ export async function caseFromEntry(entryId: string, raw: CaseStepInput): Promis
     НЕ-in_progress кроки. Повертає ok; доска/екран кейса ресинкаються realtime. */
 export async function cancelCase(caseId: string): Promise<QueueActionResult> {
   const v = parseInput("cancelCase", z.object({ caseId: zUuid }), { caseId });
+  if (!v.ok) return v;
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const { error } = await supabase.rpc("cancel_case_rpc", { p_case_id: v.data.caseId });
+  if (error) return mapCaseError(error.message, error.code ?? "");
+  return { ok: true };
+}
+
+/* ===== 0118 — кейси НАПРАВНИКА (повний паритет; docs/plan/REFERRER_CASES.md) =====
+   Тонкі referral-обгортки над ТИМИ САМИМИ case-RPC: справжню авторизацію (грант
+   центру auth_can_refer, кабінети auth_referrer_can_book_room, власність кейса
+   created_by/referrer_id) тримає гілка направника в RPC (0118). Тут — zod,
+   дружні відмови ДО RPC (як у createReferralBooking) і fail-closed каталог-гейт
+   (0112/0113). Клініка НЕ береться з профілю (у глобального направника NULL) —
+   вона їде параметром і перевіряється грантом і в дії, і в БД. */
+
+/** Активний грант направника на центр — або null (нема доступу). */
+async function referralAccessFor(supabase: SupabaseClient<Database>, userId: string, clinicId: string) {
+  const { data } = await supabase
+    .from("referral_access")
+    .select("status, room_ids")
+    .eq("referrer_id", userId)
+    .eq("clinic_id", clinicId)
+    .eq("status", "active")
+    .maybeSingle();
+  return data ?? null;
+}
+
+/** Канон room_ids (0061): NULL/[] = усі кабінети центру. */
+function refRoomAllowed(roomIds: string[] | null, roomId: string): boolean {
+  return !roomIds || roomIds.length === 0 || roomIds.includes(roomId);
+}
+
+export type ReferralCaseInput = CaseInput & { clinicId: string };
+const sReferralCase = sCase.extend({ clinicId: zUuid });
+
+/** Створити кейс направником у авторизований центр (create_case_rpc, гілка 0118).
+    referrer_id кейса RPC ставить примусово = auth.uid() — від свого імені. */
+export async function createReferralCase(raw: ReferralCaseInput): Promise<QueueActionResult> {
+  const v = parseInput("createReferralCase", sReferralCase, raw);
+  if (!v.ok) return v;
+  const input = v.data;
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const access = await referralAccessFor(supabase, user.id, input.clinicId);
+  if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
+  for (const st of input.steps) {
+    if (!refRoomAllowed(access.room_ids, st.roomId)) {
+      return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
+    }
+  }
+
+  // Гейт закритих послуг — ОДИН load каталогу центру (як у createCase). Fail-CLOSED.
+  let caseCat: Catalog;
+  try {
+    caseCat = await loadClinicCatalog(supabase, input.clinicId);
+  } catch (e) {
+    if (e instanceof CatalogUnavailableError) return CATALOG_UNAVAILABLE_ERR;
+    throw e;
+  }
+  for (const st of input.steps) {
+    const c = firstClosedStudy(
+      caseCat,
+      st.studies as { type?: string | null; region?: string | null }[],
+      st.roomId ?? undefined);
+    if (c) return SERVICE_CLOSED_ERR(c);
+  }
+
+  const p_case = { ...caseRpcPatient(input), clinic_id: input.clinicId };
+  const p_steps = input.steps.map(caseRpcStep);
+
+  const { data, error } = await supabase.rpc("create_case_rpc", {
+    p_case: p_case as unknown as Json,
+    p_steps: p_steps as unknown as Json,
+  });
+  if (error) return mapCaseError(error.message, error.code ?? "");
+  return { ok: true, id: (data as string) ?? undefined };
+}
+
+/** Додати крок до СВОГО кейса направником (add_case_step_rpc, гілка 0118).
+    clinicId — центр кейса (для гранту і каталог-гейта; БД звіряє з кейсом сама). */
+export async function addReferralCaseStep(caseId: string, clinicId: string, raw: CaseStepInput): Promise<QueueActionResult> {
+  const idv = parseInput("addReferralCaseStep.ids", z.object({ caseId: zUuid, clinicId: zUuid }), { caseId, clinicId });
+  if (!idv.ok) return idv;
+  const v = parseInput("addReferralCaseStep", sCaseStep, raw);
+  if (!v.ok) return v;
+  const s = v.data;
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const access = await referralAccessFor(supabase, user.id, idv.data.clinicId);
+  if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
+  if (!refRoomAllowed(access.room_ids, s.roomId)) {
+    return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
+  }
+
+  { const g = await closedRegionGate(supabase, idv.data.clinicId, s.roomId, s.studies); if (g) return g; }
+  const { data, error } = await supabase.rpc("add_case_step_rpc", {
+    p_case_id: idv.data.caseId,
+    p_step: caseRpcStep(s) as unknown as Json,
+  });
+  if (error) return mapCaseError(error.message, error.code ?? "");
+  return { ok: true, id: (data as string) ?? undefined };
+}
+
+/** Організувати кейс зі СВОГО запису направником (case_from_entry_rpc, гілка 0118). */
+export async function referralCaseFromEntry(entryId: string, clinicId: string, raw: CaseStepInput): Promise<QueueActionResult> {
+  const idv = parseInput("referralCaseFromEntry.ids", z.object({ entryId: zUuid, clinicId: zUuid }), { entryId, clinicId });
+  if (!idv.ok) return idv;
+  const v = parseInput("referralCaseFromEntry", sCaseStep, raw);
+  if (!v.ok) return v;
+  const s = v.data;
+
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  const access = await referralAccessFor(supabase, user.id, idv.data.clinicId);
+  if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
+  if (!refRoomAllowed(access.room_ids, s.roomId)) {
+    return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
+  }
+
+  { const g = await closedRegionGate(supabase, idv.data.clinicId, s.roomId, s.studies); if (g) return g; }
+  const { data, error } = await supabase.rpc("case_from_entry_rpc", {
+    p_entry_id: idv.data.entryId,
+    p_step: caseRpcStep(s) as unknown as Json,
+  });
+  if (error) return mapCaseError(error.message, error.code ?? "");
+  return { ok: true, id: (data as string) ?? undefined };
+}
+
+/** Скасувати СВІЙ нестартований кейс направником (cancel_case_rpc, гілка 0118).
+    Стартований (in_progress/done/no_show/not_held) — CASE_STARTED від БД. */
+export async function cancelReferralCase(caseId: string): Promise<QueueActionResult> {
+  const v = parseInput("cancelReferralCase", z.object({ caseId: zUuid }), { caseId });
   if (!v.ok) return v;
 
   const supabase = await createClient();

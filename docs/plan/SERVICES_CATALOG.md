@@ -1,10 +1,10 @@
 # Stage 2 — Автоматизация каталога услуг, цен и времени (n8n + AI)
 
-**Обновлено:** 2026-07-20 · **Статус:** фазы 0–1, 2a, 2b — в проде (БД=0114,
-формы читают per-room override). **Фаза 3a (импорт xlsx/csv) — РЕАЛИЗОВАНА**
-(код на `dev`, миграция `0115` написана и верифицирована в откате; накатка — за
-владельцем). Детали и отступления от плана — §5.5 ниже. Дальше — 3b (AI-ветка
-pdf/doc/URL).
+**Обновлено:** 2026-07-20 · **Статус:** фазы 0–1 (0107 + `/services`), **2a**
+(формы читают каталог) и **2b** (0108 per-room override + редактор в мастере, формы
+читают override) — **реализованы и в проде (БД=0114)**. Плюс hardening каталога
+0111–0113 (realtime, DB-рубеж закрытой услуги, grandfather room-guard) и CEO-доход по
+каталогу (0114) — всё в проде. **Осталась только фаза 3 — импорт прайсов.**
 
 ## 0. Решения владельца (зафиксированы; #2 ПЕРЕСМОТРЕН 2026-07-19)
 
@@ -21,22 +21,28 @@ pdf/doc/URL).
 5. Автосид услуг при создании кабинета по новой модели (2b) **НЕ нужен** —
    кабинет наследует базовый каталог центра по умолчанию.
 
-## Статус реализации (2026-07-19)
+## Статус реализации (2026-07-20)
 
 - **Фаза 0–1** ✅ `0107` + `/services` (в проде).
 - **Фаза 2a** ✅ `lib/catalog.ts buildCatalog(services)` подключён во все формы записи
   (BookingModal/WaitlistModal/StudyEditModal/ReferralPortal + доски + 4 page.tsx),
   пустой каталог → фолбэк на статику `lib/studies`.
 - **Фаза 2b** ✅ `0108 service_room_overrides` (PK room_id,service_id; guard clinic+
-  модальность; RLS) + `buildCatalog(services, roomOverrides)` + `ServicesEditor`
+  модальность; RLS) + `buildCatalog(services, overridesToMap(roomOverrides))` + `ServicesEditor`
   (режимы «Базовий каталог» / «Кабінет N», встроен в шаг Майстра «Послуги та прайс»)
   + Server Actions `setRoomServiceOverride`/`clearRoomServiceOverride`.
-- **▶ ОТКРЫТО (доделать 2b):** формы записи вызывают `buildCatalog` БЕЗ `roomOverrides`
-  и без `roomId` → booking берёт БАЗОВЫЕ цены центра, не per-room. Надо: helper
-  `overridesToMap(SroRow[])`; SSR-проброс `roomOverrides` в формы (как `services` в 2a);
-  region-вызовы с `roomId` выбранного кабинета; `roomId` в deps effect'а дефолта времени.
-  Резолвер к этому уже готов.
-- **CEO-доход по каталогу** — открытый пункт (оценка legacy-unpriced на хардкоде).
+- **Формы читают per-room override** ✅ (2b доделан, в проде): SSR-проброс `roomOverrides`,
+  `overridesToMap`, region-вызовы с `roomId`, `roomId` в deps effect'а дефолта времени.
+- **Hardening каталога 0111–0113** ✅ (в проде): `0111` realtime каталога + звужение
+  overrides направителя; `0112` DB-рубеж против записи закрытой услуги (триггер
+  `check_studies_active_catalog` на queue+waitlist, зеркалит резолвер) + fail-closed
+  serviceGate; `0113` grandfather только при неизменном кабинете (перенос в скрытый
+  кабинет закрыт). Детали — `docs/HANDOVER.md` (блок 0109–0114).
+- **CEO-доход по каталогу** ✅ `0114` (в проде): `ceo_kpi_studies.catalog_est_sum` —
+  оценка позиций без снимка цены по каталогу центра («чистый каталог»: активная услуга
+  с `price>0`, +контраст; иначе 0). Хардкод-справочник `PRICE` в `CeoDashboard` убран.
+- **⚠️ Владельцу:** проставить реальные цены УЗД/РГ/ММГ в базовом каталоге (часть = 0 →
+  «чистый каталог» оценивает такие позиции в 0).
 
 ## 1. Архитектура (потоки данных)
 
@@ -77,6 +83,12 @@ Per-clinic позиция: `name`, `modality`, `duration_min` (дефолт це
 staff + направитель (`auth_can_refer`) + CEO (`auth_is_ceo_of`); пишет админ.
 
 ### 2.2. `service_room_durations` (0108 — фаза 2b)
+
+> ⚠️ **УСТАРЕЛО (проект до пересмотра 2026-07-19).** Реализовано как
+> **`service_room_overrides`** (PK `(room_id, service_id)`; override не только времени, а
+> **цены/времени/состава/скрытия** — `price`/`duration_min`/`contrast_price` nullable = наследовать
+> базу, `active=false` = скрыть в кабинете). См. §0 (решение #2) и `docs/HANDOVER.md`. Блок ниже
+> оставлен как исторический контекст первоначального плана «оверрайд только времени».
 
 Оверрайд времени на конкретном аппарате:
 
@@ -183,51 +195,16 @@ effectiveService(services, roomDurations, modality, roomId?) →
 пайплайне нет (только прайс). Ошибки n8n → чистый тост «Не вдалося розібрати
 файл — додайте вручну», лог на сервере.
 
-### 5.5. Фаза 3a — КАК РЕАЛИЗОВАНО (2026-07-20; отступления от §5.1–5.2)
-
-- **Нормализация — в RadFlow, не в n8n Code-ноде** (`lib/priceImport.ts` под vitest):
-  эвристика колонок (union ключей первых 20 строк — sparse-парсеры опускают пустые
-  ячейки), модальность по ключевым словам (границы слова с укр. і/ї/є/ґ), цены
-  («3.200»/«2,400» = разделители тысяч; вне [0..1e6] → skipped), длительность
-  (normDur; мусор → null = «не трогать»), дедуп по (modality, lower(name)),
-  классификация new/changed/unchanged/inactive/unrecognized. n8n — только транспорт
-  и парсер бинарника (Extract From File).
-- **n8n workflow `radflow-price-import`** (id `ikpUa5PZ1QWQy8oH`, ОПУБЛИКОВАН):
-  Webhook (rawBody) → Code «Verify & Decode» (HMAC, timingSafeEqual; `require('crypto')`
-  на инстансе работает) → IF xlsx/csv → Extract From File (alwaysOutputData: пустой
-  файл тоже отвечает; csv: relaxQuotes + skipRecordsWithErrors) → Code «Sign Response»
-  → Respond. Ответ = `{body, sig}`, `sig=HMAC(body)`, `body={request_id, rows}`.
-  ⚠️ **n8n Cloud: `$env` заблокирован** → секрет константой в ОБЕИХ Code-нодах
-  (`REPLACE_ME_IMPORT_SECRET` — владелец заменяет на значение `IMPORT_WEBHOOK_SECRET`).
-  Никогда не включать вычисленный HMAC в текст ошибки (оракул подписи).
-- **Роут `POST /api/services/import`**: requireRole(admin, needClinic) + rl_check
-  (10/10 мин на админа); **файл ≤ 4 МБ** (не 10 — Vercel режет тело serverless на
-  ~4.5 МБ); ответ n8n читается с потолком 20 МБ (zip-бомба); подпись запроса
-  включает `ts` (анти-replay); превью отдаёт `truncated`-флаг при обрезке (>500
-  позиций / >5000 сырых строк).
-- **`services_import_rpc` (0115)**: SECURITY DEFINER, admin-гейт внутри, атомарно
-  всё-или-ничего, upsert по expression-индексу, порядок (modality, lower(name)) —
-  анти-deadlock двух параллельных импортов; вимкнена позиция только с revive;
-  duration null → не перезаписывается; имя существующей позиции не переписывается;
-  цена — целое 0..1e6 (границы на numeric ДО ::int). Smoke:
-  `supabase/smoke/services_import_smoke.sql` (PASS на прод-БД в откате 2026-07-20).
-- **UI**: `components/ImportPriceModal.tsx` (кнопка «⇪ Імпорт прайса» в базовом
-  режиме ServicesEditor) — группы «Зміна ціни/часу» / «Нові» / «Вимкнені (оживити?)» /
-  «Нерозпізнані» (селект модальности) / «Без змін»; закрытие заблокировано во время
-  применения; подтверждение → Server Action `importServices` → RPC.
-- **ENV (Vercel/.env.local)**: `N8N_IMPORT_WEBHOOK_URL=https://tio-synergy.app.n8n.cloud/webhook/radflow-price-import`,
-  `IMPORT_WEBHOOK_SECRET=<сильный секрет, тот же в Code-нодах n8n>`.
-
 ## 6. План реализации (по сессиям)
 
 | Фаза | Объём | Статус |
 |---|---|---|
 | **0** | `0107` (services + цены + RLS) | ✅ готово, накатить |
 | **1** | `/services` редактор + сид с кнопки | ✅ готово |
-| **2a** | `lib/catalog.ts` + подключение ВСЕХ форм (BookingModal/Waitlist/StudyEdit/ReferralPortal/CEO-доход) одной сессией + vitest на резолвер | ✅ в проде |
-| **2b** | `0108 service_room_overrides` + режим «Кабінет» в редакторе + формы читают override | ✅ в проде |
-| **3a** | импорт xlsx/csv: API-роут + n8n workflow (детерминированная ветка) + предпросмотр + `services_import_rpc` (0115) | ✅ реализовано (см. §5.5); накатить 0115 + ENV |
-| **3b** | AI-ветка (pdf/doc/URL) в том же workflow + confidence-UX | после 3a |
+| **2a** | `lib/catalog.ts` + подключение ВСЕХ форм (BookingModal/Waitlist/StudyEdit/ReferralPortal/CEO-доход) одной сессией + vitest на резолвер | следующая сессия |
+| **2b** | `0108 service_room_durations` + вкладка «Час по кабінетах» в `/services` + автосид из SetupWizard | после 2a |
+| **3a** | импорт xlsx/csv: API-роут + n8n workflow (детерминированная ветка) + предпросмотр + `services_import_rpc` | после 2b |
+| **3b** | AI-ветка (pdf/фото/docx/URL → Grok grok-4.5, structured output) в том же workflow + confidence-UX (AI_CONF_MIN=0.7 → «Нерозпізнані»; AI-строки не пред-отмечены — анти-injection). docx→текст в роуте (lib/docxText.ts + jszip). Отступления от §5.2: LLM в отдельной HTTP-ноде (не langchain), нормализация ПОЛНОСТЬЮ в TS (parseAiRows — AI не доверен), URL-режим с SSRF-гардами и без редиректов. Детали — шапка HANDOVER (сессия 5) | ✅ реализована 2026-07-20/5 (workflow переопубликован; нужен `npm install` + живой тест) |
 | **4** | полировка: аудит изменений цен (`audit_log`-триггер на services), отчёт CEO «прайс vs факт», при росте — история цен | по потребности |
 
 Каждая фаза: ревью субагентом (RLS/RPC — обязательно), tsc/lint/vitest,

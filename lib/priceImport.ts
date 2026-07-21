@@ -258,6 +258,65 @@ export function parseRawRows(raw: RawSheetRow[] | null | undefined): ParseResult
   return { rows, skipped, columns: cols, truncated };
 }
 
+/* ---------------- AI-гілка (фаза 3b): рядки від LLM ---------------- */
+
+/** SSRF-гард для режиму «посилання на прайс»: лише https і лише доменні імена
+    (IP-літерали/localhost/IPv6/.local — відмова; хвостова крапка нормалізується).
+    Дзеркальний гард — у n8n «Verify & Decode»; редиректи Fetch Page ВИМКНЕНО
+    (302 на приватний http-хост знімав би обидва гарди). Живе тут (не в route.ts):
+    Next.js дозволяє з route-файла експортувати лише HTTP-хендлери/конфіг. */
+export function safePriceUrl(raw: string): string | null {
+  let u: URL;
+  try { u = new URL(raw); } catch { return null; }
+  if (u.protocol !== "https:") return null;
+  const host = u.hostname.toLowerCase().replace(/\.$/, "");
+  if (!host || host === "localhost" || host.endsWith(".local")) return null;
+  if (host.includes(":") || /^(\d+\.){3}\d+$/.test(host)) return null;
+  return u.toString();
+}
+
+/** Поріг упевненості AI: нижче — рядок іде в «Нерозпізнані» на ручне
+    підтвердження (рішення власника 2026-07-20). Детермінованої гілки не
+    зачіпає: там confidence 1 (модальність є) або 0.5 (і так unrecognized). */
+export const AI_CONF_MIN = 0.7;
+
+/** Сирий рядок AI-гілки n8n (Grok, structured output): контракт —
+    { name, modality: MRI|CT|US|XRAY|MAMMO|null, price, duration_min, confidence }.
+    Модель НЕ довірена (prompt-injection із документа) — тут усе валідується
+    заново тими самими парсерами, що й детермінована гілка. */
+export function parseAiRows(raw: unknown[] | null | undefined): ParseResult {
+  const rows: ImportRow[] = [];
+  let skipped = 0;
+  let truncated = false;
+  const list = Array.isArray(raw) ? raw : [];
+  const seen = new Set<string>();
+  for (const r of list) {
+    if (!r || typeof r !== "object" || Array.isArray(r)) { skipped++; continue; }
+    const o = r as Record<string, unknown>;
+    const name = String(o.name ?? "").slice(0, 512).replace(/\s+/g, " ").trim();
+    if (name.length < 2 || name.length > IMPORT_NAME_MAX) { skipped++; continue; }
+
+    // Модальність від моделі (enum) АБО фолбэк-евристика за назвою — та сама,
+    // що в детермінованій гілці (модель могла лишити null там, де назва явна).
+    const modality = inferModality(o.modality) ?? inferModality(name);
+    const price = parsePrice(o.price);           // межі 0..PRICE_MAX — не довіряємо
+    const durationMin = parseDuration(o.duration_min); // normDur 5..480 кратно 5
+    if (price == null && durationMin == null && isSectionHeader(name)) { skipped++; continue; }
+
+    const cRaw = typeof o.confidence === "number" && Number.isFinite(o.confidence) ? o.confidence : 0.5;
+    const confidence = Math.max(0, Math.min(1, cRaw));
+
+    const key = (modality ?? "?") + "|" + name.toLowerCase();
+    if (seen.has(key)) { skipped++; continue; }
+    seen.add(key);
+
+    rows.push({ name, modality, price, durationMin, confidence });
+    if (rows.length >= IMPORT_ROWS_MAX) { truncated = true; break; }
+  }
+  // «Колонок» в AI-гілці немає — UI показує режим AI за прапором preview.ai.
+  return { rows, skipped, columns: { name: null, price: null, duration: null, modality: null }, truncated };
+}
+
 /* ---------------- Класифікація проти каталогу центру ---------------- */
 
 /** Мінімальний контракт рядка services для матчингу (підмножина Tables<"services">). */
@@ -285,7 +344,8 @@ export function classifyRows(rows: ImportRow[], existing: ExistingService[]): Cl
     byKey.set(modalityCode(s.modality) + "|" + s.name.trim().toLowerCase(), s);
   }
   return rows.map((row): ClassifiedRow => {
-    if (!row.modality) return { kind: "unrecognized", row };
+    // Без модальності АБО AI не впевнений (нижче порога) → ручне підтвердження.
+    if (!row.modality || row.confidence < AI_CONF_MIN) return { kind: "unrecognized", row };
     const ex = byKey.get(row.modality + "|" + row.name.toLowerCase());
     if (!ex) return { kind: "new", row };
     if (!ex.active) return { kind: "inactive", row, existing: ex };
