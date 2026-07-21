@@ -214,9 +214,9 @@ describe("parseRawRows", () => {
 
 describe("classifyRows", () => {
   const existing: ExistingService[] = [
-    { id: "1", name: "МРТ головного мозку", modality: "MRI", price: 3000, duration_min: 30, active: true },
-    { id: "2", name: "КТ легень", modality: "CT", price: 1800, duration_min: 20, active: true },
-    { id: "3", name: "УЗД нирок", modality: "US", price: 600, duration_min: 20, active: false },
+    { id: "1", name: "МРТ головного мозку", modality: "MRI", price: 3000, duration_min: 30, active: true, updated_at: "2026-07-20T10:00:00.000000+00:00" },
+    { id: "2", name: "КТ легень", modality: "CT", price: 1800, duration_min: 20, active: true, updated_at: "2026-07-20T10:00:00.000000+00:00" },
+    { id: "3", name: "УЗД нирок", modality: "US", price: 600, duration_min: 20, active: false, updated_at: "2026-07-20T10:00:00.000000+00:00" },
   ];
   const row = (name: string, modality: "MRI" | "CT" | "US" | null, price: number, durationMin: number | null = null) =>
     ({ name, modality, price, durationMin, confidence: modality ? 1 : 0.5 });
@@ -245,6 +245,16 @@ describe("classifyRows", () => {
     expect(classifyRows([noPrice("КТ легень", "CT", 40)], existing)[0].kind).toBe("changed");
     // Нової немає в каталозі → new із price null (створиться з ціною 0).
     expect(classifyRows([noPrice("МРТ колінного суглоба", "MRI")], existing)[0].kind).toBe("new");
+  });
+  it("0119: existing несе updated_at (версію для optimistic-lock) у changed/inactive", () => {
+    const out = classifyRows([row("мрт головного мозку", "MRI", 3200), row("УЗД нирок", "US", 700)], existing);
+    const changed = out[0];
+    const inactive = out[1];
+    expect(changed.kind).toBe("changed");
+    expect(inactive.kind).toBe("inactive");
+    // Тип-звужування: у changed/inactive є existing.updated_at (стрінг, без Date).
+    if (changed.kind === "changed") expect(changed.existing.updated_at).toBe("2026-07-20T10:00:00.000000+00:00");
+    if (inactive.kind === "inactive") expect(inactive.existing.updated_at).toBe("2026-07-20T10:00:00.000000+00:00");
   });
 });
 

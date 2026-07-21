@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { requireRole } from "@/lib/apiAuth";
 import { classifyRows, parseAiRows, parseRawRows, safePriceUrl, type RawSheetRow } from "@/lib/priceImport";
 import { docxToText } from "@/lib/docxText";
+import { hostResolvesPublic } from "@/lib/ssrfGuard";
 
 /* ===== RadFlow — імпорт прайса: розбір файла (Stage 2, фази 3a+3b) =====
    POST multipart {file} АБО {url} → пересилка в n8n-workflow
@@ -125,6 +126,11 @@ export async function POST(req: Request) {
   if (typeof urlField === "string" && urlField.trim()) {
     const safe = safePriceUrl(urlField.trim());
     if (!safe) return jerr("Дайте пряме https-посилання на сторінку з прайсом", 400);
+    // SSRF: синтаксичний гард не резолвить DNS — домен може вказувати на приватну
+    // адресу. Резолвимо тут (fail-closed), поки n8n «Fetch Page» ще не сходив.
+    if (!(await hostResolvesPublic(new URL(safe).hostname))) {
+      return jerr("Хост посилання недоступний або вказує на внутрішню адресу", 400);
+    }
     aiKind = true;
     payload = { kind: "url", url: safe, filename: "" };
   } else {
@@ -219,7 +225,7 @@ export async function POST(req: Request) {
   const truncated = parsed.truncated || totalRaw > MAX_RAW_ROWS;
   const { data: services, error } = await gate.supabase
     .from("services")
-    .select("id, name, modality, price, duration_min, active")
+    .select("id, name, modality, price, duration_min, active, updated_at") // updated_at — версія для 0119 optimistic-lock
     .eq("clinic_id", gate.me.clinic_id);
   if (error) return jerr("Не вдалося прочитати каталог центру", 500);
 
