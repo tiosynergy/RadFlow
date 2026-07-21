@@ -23,6 +23,7 @@ const eslintConfig = [
       "styles/**",
       "public/**",
       "docs/**", // прототипні/довідкові файли — не код застосунку
+      "automation/**", // n8n Code-ноди (require('crypto') у пісочниці n8n) + білдер — не код застосунку
     ],
   },
   ...compat.extends("next/core-web-vitals", "next/typescript"),
