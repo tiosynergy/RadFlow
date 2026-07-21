@@ -45,7 +45,16 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
   // а onDone/refresh — ні, і адмін бачитиме старий каталог (ревью L6).
   const stepRef = useRef(step);
   stepRef.current = step;
-  const safeClose = () => { if (stepRef.current !== "applying") onClose(); };
+  const safeClose = () => {
+    // Застосування — жорсткий блок: імпорт на сервері завершиться, а onDone/refresh — ні
+    // (адмін бачив би старий каталог; ревью L6).
+    if (stepRef.current === "applying") return;
+    // Розбір (файл/URL → Grok, до ~3 хв) — перепитуємо: закриття втратить передперегляд
+    // і змарнує виклик AI. Гард від випадкового Esc / кліку повз модалку під час очікування.
+    if (stepRef.current === "loading" &&
+        !window.confirm("Розбір прайса ще триває. Закрити й скасувати перегляд?")) return;
+    onClose();
+  };
   const dialogRef = useModalA11y<HTMLDivElement>(safeClose);
   const fileRef = useRef<HTMLInputElement>(null);
   const [err, setErr] = useState<string | null>(null);
