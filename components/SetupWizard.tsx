@@ -756,7 +756,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
       {exitAsk && (
         <div className="overlay" onClick={() => !saving && setExitAsk(false)}>
           <div className="dialog fade-in" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
-            <div className="dlg-head"><div className="dlg-title">Незбережені зміни</div><button className="icon-btn" onClick={() => setExitAsk(false)} disabled={saving}>✕</button></div>
+            <div className="dlg-head"><div className="dlg-title">Незбережені зміни</div><button className="icon-btn" aria-label="Закрити" onClick={() => setExitAsk(false)} disabled={saving}>✕</button></div>
             <div className="dlg-body">У налаштуваннях є незбережені зміни. Зберегти їх перед виходом?</div>
             <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button className="btn btn-ghost" onClick={() => setExitAsk(false)} disabled={saving}>Скасувати</button>

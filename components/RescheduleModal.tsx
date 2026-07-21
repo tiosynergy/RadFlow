@@ -234,7 +234,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
       <div className="dialog fade-in" style={{ maxWidth: 520 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Перенесення запису">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue)" }}>🗓</span>Перенести на новий слот</div>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body">
           <div className="ctx-hint blue" style={{ fontSize: 13 }}>Пацієнт: <b>{patient.patient_name}</b> · {procLabel(patient)} · {dur} хв{buffer > 0 ? ` + ${buffer} буфер` : ""}</div>

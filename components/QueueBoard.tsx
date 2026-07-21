@@ -164,6 +164,25 @@ function StatsBar({ counts, filter, setFilter }: { counts: Record<string, number
   );
 }
 
+/* B-1: pending-стан для async-кнопок карток (Викликати/Розблокувати). Обробник
+   може повертати проміс (реальний виклик) або нічого (блокер) — спінер вмикаємо
+   лише коли є thenable, і глушимо повторний клік, поки він летить. Оптимістичні
+   гілки (setStatus) і так миттєво перемальовують картку; спінер важливий там, де
+   раунд-тріп видимий (Розблокувати не оптимістичний). */
+function useCardBusy() {
+  const [busy, setBusy] = useState<string | null>(null);
+  const run = (fn: () => void | Promise<unknown>, key: string) => (e?: MouseEvent) => {
+    e?.stopPropagation();
+    if (busy) return;
+    const r = fn();
+    if (r && typeof (r as { then?: unknown }).then === "function") {
+      setBusy(key);
+      (r as Promise<unknown>).finally(() => setBusy(null));
+    }
+  };
+  return { busy, run };
+}
+
 /* ── Картка кабінету ── */
 interface RoomStatusCardProps {
   room: RoomOpt;
@@ -178,6 +197,7 @@ interface RoomStatusCardProps {
 }
 function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedClosed, onComplete, onCall, onUnblock }: RoomStatusCardProps) {
   const kind = modalityShort(room.modality);
+  const { busy, run } = useCardBusy();
   if (!blocked && schedClosed) {
     return (
       <div className="room-card blocked-card">
@@ -211,7 +231,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
           <div className="rc-blocked-reason">🔧 {blocked.reason_label || "Поломка"}{blocked.note ? " · " + blocked.note : ""}</div>
           <div className="rc-foot">
             <span className="rc-blocked-hint">Нові виклики призупинено</span>
-            <button className="btn btn-green btn-sm" onClick={() => onUnblock(blocked)}>🔓 Розблокувати</button>
+            <button className="btn btn-green btn-sm" onClick={run(() => onUnblock(blocked), "unblock")} disabled={!!busy} aria-busy={busy === "unblock"}>{busy === "unblock" ? <><span className="rf-spin" aria-hidden="true" /> Опрацьовується…</> : "🔓 Розблокувати"}</button>
           </div>
         </div>
       </div>
@@ -244,8 +264,10 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
         <div className="rc-body empty">
           <div className="rc-free-row"><span className="rc-free-dot" /><span className="rc-free">Кабінет вільний</span></div>
           {nextWaiting && (
-            <button className="btn btn-primary btn-sm" onClick={() => onCall(nextWaiting)}>
-              Викликати: {(nextWaiting.patient_name || "").split(" ").slice(0, 2).join(" ")} · {nextWaiting.scheduled_time}
+            <button className="btn btn-primary btn-sm" onClick={run(() => onCall(nextWaiting), "call")} disabled={!!busy} aria-busy={busy === "call"}>
+              {busy === "call"
+                ? <><span className="rf-spin" aria-hidden="true" /> Опрацьовується…</>
+                : <>Викликати: {(nextWaiting.patient_name || "").split(" ").slice(0, 2).join(" ")} · {nextWaiting.scheduled_time}</>}
             </button>
           )}
         </div>
@@ -266,6 +288,7 @@ interface CurrentCardProps {
   onReschedule?: (p: QEntry) => void;
 }
 function CurrentCard({ patient, roomName, roomModel, enteredAt, nextWaiting, onCall, onComplete, onReschedule }: CurrentCardProps) {
+  const { busy, run } = useCardBusy();
   if (!patient) {
     return (
       <div className="current" style={{ background: "var(--border)", boxShadow: "none" }}>
@@ -276,7 +299,7 @@ function CurrentCard({ patient, roomName, roomModel, enteredAt, nextWaiting, onC
               {nextWaiting ? "Наступний у черзі: " + nextWaiting.patient_name + " · " + nextWaiting.scheduled_time : "Немає пацієнтів у черзі"}
             </div>
           </div>
-          {nextWaiting && <button className="btn btn-primary" onClick={() => onCall(nextWaiting)} style={{ flexShrink: 0 }}>Викликати наступного</button>}
+          {nextWaiting && <button className="btn btn-primary" onClick={run(() => onCall(nextWaiting), "call")} disabled={!!busy} aria-busy={busy === "call"} style={{ flexShrink: 0 }}>{busy === "call" ? <><span className="rf-spin" aria-hidden="true" /> Опрацьовується…</> : "Викликати наступного"}</button>}
         </div>
       </div>
     );
@@ -593,10 +616,21 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                         const isDone = stepIdx >= 0 && i < stepIdx;
                         const isCur = i === stepIdx;
                         const m = STEP_META[key];
+                        // Інваріант БД (0069): у 'done' лише з 'in_progress'. Раніше крок
+                        // «Виконано» був клікабельний завжди й ловився тостом-помилкою вже
+                        // після кліку — тепер він disabled, поки пацієнт не в кабінеті, тож
+                        // степпер показує лише валідний шлях (а не помилку постфактум).
+                        const stepBlocked = key === "done" && p.status !== "in_progress" && p.status !== "done";
+                        const stepDisabled = !canSetStatus || stepBlocked;
+                        const stepTitle = !canSetStatus
+                          ? "Майбутній запис — статус зміните в день запису"
+                          : stepBlocked
+                            ? "«Виконано» доступне лише коли пацієнт у кабінеті — спершу проведіть його через кабінет"
+                            : "Встановити статус: " + m.label;
                         return (
                           <div key={key} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 72 }}>
-                            <button onClick={canSetStatus ? act(() => onSetStatus(p, key)) : undefined} disabled={!canSetStatus} title={canSetStatus ? "Встановити статус: " + m.label : "Майбутній запис — статус зміните в день запису"}
-                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: canSetStatus ? "pointer" : "default",
+                            <button onClick={stepDisabled ? undefined : act(() => onSetStatus(p, key))} disabled={stepDisabled} title={stepTitle} aria-disabled={stepDisabled}
+                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: stepDisabled ? "not-allowed" : "pointer", opacity: stepBlocked ? 0.4 : 1,
                                 background: isDone ? "var(--green)" : (isCur ? m.color : "transparent"),
                                 border: "1.5px solid " + ((isDone || isCur) ? "transparent" : "var(--border-strong)"),
                                 color: isDone ? "#04210d" : (isCur ? "#1c1c1e" : "var(--text-faint)") }}>
@@ -1457,11 +1491,14 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
   // Виклик поза графіком — через діалог підтвердження (offCallAsk оголошено вище
   // біля кластера модалок, бо його читає гард хоткеїв).
   const [offCallBusy, setOffCallBusy] = useState(false);
-  function callPatient(p: QEntry) {
+  // Повертає проміс setStatus у гілці реального виклику — щоб картка/рядок могли
+  // показати pending-стан (спінер) і заблокувати повторний клік. Гілки-блокери
+  // (notify / offCallAsk) завершуються синхронно й повертають undefined.
+  function callPatient(p: QEntry): void | Promise<void> {
     const r = callBlockOf(p);
     if (r && !r.confirmable) { notify(inProgressBlockReason(p) || "Викликати зараз неможливо", "error"); return; }
     if (r && r.code === "sched_overrun") { setOffCallAsk({ p, end: r.end, durationMin: r.durationMin }); return; }
-    setStatus(p.id, "in_progress");
+    return setStatus(p.id, "in_progress");
   }
   function setStatusGuarded(p: QEntry, status: string) {
     // Запізнення понад буфер: прямий виклик у кабінет заблоковано — спершу

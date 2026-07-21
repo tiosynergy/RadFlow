@@ -300,7 +300,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
       {pwModal && (
         <div className="overlay" onClick={() => !pwModal.busy && setPwModal(null)}>
           <div className="dialog fade-in" style={{ maxWidth: 380 }} onClick={(e) => e.stopPropagation()}>
-            <div className="dlg-head"><div className="dlg-title">Задати пароль</div><button className="icon-btn" onClick={() => setPwModal(null)}>✕</button></div>
+            <div className="dlg-head"><div className="dlg-title">Задати пароль</div><button className="icon-btn" aria-label="Закрити" onClick={() => setPwModal(null)}>✕</button></div>
             <div className="dlg-body">
               <label className="fld" style={{ marginBottom: 0 }}><span className="fld-lab">Новий пароль (мінімум 8 символів)</span>
                 <input className="inp" type="password" autoFocus value={pwModal.val}

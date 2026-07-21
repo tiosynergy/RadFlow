@@ -804,7 +804,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
       <div className="dialog fade-in bk-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Новий запис пацієнта">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic">{addMode ? "🔗" : "＋"}</span>{addMode ? "Додати крок до кейса" : "Новий запис"}</div>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
 
         <div className="bk-grid">

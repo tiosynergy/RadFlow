@@ -358,10 +358,19 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                         const isDone = stepIdx >= 0 && i < stepIdx;
                         const isCur = i === stepIdx;
                         const m = STEP_META[key];
+                        // Інваріант БД (0069): у 'done' лише з 'in_progress' — крок «Виконано»
+                        // disabled, поки пацієнт не в кабінеті (паритет із дошкою адміна).
+                        const stepBlocked = key === "done" && p.status !== "in_progress" && p.status !== "done";
+                        const stepDisabled = !canSetStatus || stepBlocked;
+                        const stepTitle = !canSetStatus
+                          ? "Майбутній запис — статус зміните в день запису"
+                          : stepBlocked
+                            ? "«Виконано» доступне лише коли пацієнт у кабінеті — спершу проведіть його через кабінет"
+                            : "Встановити статус: " + m.label;
                         return (
                           <div key={key} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 72 }}>
-                            <button onClick={canSetStatus ? act(() => onSetStatus(p, key)) : undefined} disabled={!canSetStatus} title={canSetStatus ? "Встановити статус: " + m.label : "Майбутній запис — статус зміните в день запису"}
-                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: canSetStatus ? "pointer" : "default",
+                            <button onClick={stepDisabled ? undefined : act(() => onSetStatus(p, key))} disabled={stepDisabled} title={stepTitle} aria-disabled={stepDisabled}
+                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: stepDisabled ? "not-allowed" : "pointer", opacity: stepBlocked ? 0.4 : 1,
                                 background: isDone ? "var(--green)" : (isCur ? m.color : "transparent"),
                                 border: "1.5px solid " + ((isDone || isCur) ? "transparent" : "var(--border-strong)"),
                                 color: isDone ? "#04210d" : (isCur ? "#1c1c1e" : "var(--text-faint)") }}>
@@ -457,8 +466,8 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSch
       <div className="cal-head">
         <span className="cal-month">{MON_NOM[mo]} {y}</span>
         <div className="cal-nav">
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)}>‹</button>
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)}>›</button>
+          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць" aria-label="Попередній місяць">‹</button>
+          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць" aria-label="Наступний місяць">›</button>
         </div>
       </div>
       <div className="cal-grid">

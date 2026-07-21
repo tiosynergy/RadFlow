@@ -32,7 +32,7 @@ export default function AddDoctorModal({ existing = [], onClose, onSave }: AddDo
       <div className="dialog fade-in" style={{ maxWidth: 540 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Додавання лікаря-направника">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--green-bg)", color: "var(--green)" }}>🩺</span>Додати лікаря-направляча</div>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body">
           <div className="hint-blue">Лікарі-направлячі прив'язуються до записів — це дозволяє формувати звіти за джерелами направлень.</div>

@@ -256,7 +256,7 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
       <div className="dialog fade-in" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Додати до листа очікування" style={{ maxWidth: 560 }}>
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic">{isEdit ? "✎" : "⏳"}</span>{isEdit ? "Редагувати запис листа" : "До листа очікування"}</div>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
 
         <div className="dlg-body" style={{ display: "flex", flexDirection: "column", gap: 10 }}>

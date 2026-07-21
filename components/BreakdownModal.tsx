@@ -241,7 +241,7 @@ export default function BreakdownModal({ rooms, incidents = [], overrides = {}, 
       <div className="dialog fade-in" style={{ maxWidth: 600 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Поломка або технічне обслуговування">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--red-bg)", color: "var(--red)" }}>🔧</span>Поломка / Технічне обслуговування</div>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <div className="fld" style={{ marginBottom: 0 }}>

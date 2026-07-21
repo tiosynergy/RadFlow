@@ -138,7 +138,7 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
       <div className="dialog fade-in" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Кандидати з листа очікування" style={{ maxWidth: 520 }}>
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic">⏳</span>Слот звільнився</div>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="info-banner">
