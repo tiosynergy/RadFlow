@@ -115,13 +115,13 @@ html[data-density="compact"] .contacts-grid { gap: 8px 12px; }
 html[data-density="compact"] .fld { gap: 3px; }
 /* трохи менший текст у щільному режимі (за бажанням користувача) */
 html[data-density="compact"] .q-time { font-size: 13px; }
-html[data-density="compact"] .q-time .td { font-size: 10.5px; }
+html[data-density="compact"] .q-time .td { font-size: 12px; }
 html[data-density="compact"] .q-pat .nm { font-size: 12.5px; }
 html[data-density="compact"] .q-pat .det,
 html[data-density="compact"] .q-proc .pp,
-html[data-density="compact"] .q-proc .du { font-size: 11px; }
+html[data-density="compact"] .q-proc .du { font-size: 12px; }
 html[data-density="compact"] .stat .val { font-size: 13px; }
-html[data-density="compact"] .qhead { font-size: 11px; }
+html[data-density="compact"] .qhead { font-size: 12px; }
 
 /* --- Просторо --- */
 html[data-density="spacious"] .content { padding: 32px 36px 56px; }
@@ -1036,7 +1036,11 @@ select.inp { cursor: pointer; }
 .city-opt-meta { font-size: 11.5px; color: var(--text-muted); }
 
 .slot-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-.slot { background: var(--card-2); border: 1px solid var(--border-strong); border-radius: 9px; padding: 9px 0; font-size: 13px; font-weight: 600; text-align: center; transition: all .12s; }
+/* A11y тач-мішень слота ≥32px. Базове ~34px, але компактні варіанти
+   (.bk-slot-grid .slot, .slot-blk-cells .slot: padding 5px, шрифт 9–11px) давали
+   ~22–24px — надто дрібно для пальця. min-height каскадує на всі .slot (вони його
+   не перевизначають); flex-центрування тримає текст по центру попри малий padding. */
+.slot { background: var(--card-2); border: 1px solid var(--border-strong); border-radius: 9px; padding: 9px 0; font-size: 13px; font-weight: 600; text-align: center; transition: all .12s; min-height: 32px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; }
 .slot:hover:not(.taken) { border-color: var(--blue); color: #4da3ff; }
 .slot.sel { background: var(--blue); border-color: var(--blue); color: #fff; }
 .slot.taken { opacity: 0.32; text-decoration: line-through; cursor: not-allowed; }

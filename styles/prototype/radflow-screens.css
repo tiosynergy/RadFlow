@@ -232,7 +232,7 @@ html[data-density="compact"] .wlhead { column-gap: 8px; }
 html[data-density="compact"] .wl-name { font-size: 12.5px; }
 html[data-density="compact"] .wl-meta,
 html[data-density="compact"] .wlrow .cl-proc,
-html[data-density="compact"] .wl-proc-du { font-size: 11px; }
+html[data-density="compact"] .wl-proc-du { font-size: 12px; }
 html[data-density="spacious"] .wlrow,
 html[data-density="spacious"] .wlhead { padding-top: 18px; padding-bottom: 18px; }
 

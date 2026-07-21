@@ -7,6 +7,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import PhoneInput from "@/components/PhoneInput";
 import {
   roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, offScheduleKind, OFF_SCHED_GRACE_MIN,
@@ -270,7 +271,14 @@ interface BookingModalProps {
 }
 
 export default function BookingModal({ rooms, clinicId, clinicTz, incidents = [], services, roomOverrides, prefill, onClose, onSave, onCreateCase, onAddCaseStep, caseSiblings }: BookingModalProps) {
-  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
+  // Dirty-guard: не втрачати заповнену форму при випадковому закритті (Esc/✕/Скасувати).
+  // dirty вмикається будь-якою зміною поля (onChangeCapture на діалозі); requestClose
+  // питає підтвердження лише коли є незбережені зміни. useModalA11y читає колбек через
+  // ref (завжди свіжий), тож requestClose бачить актуальний dirty.
+  const [dirty, setDirty] = useState(false);
+  const [askClose, setAskClose] = useState(false);
+  const requestClose = () => { if (dirty) setAskClose(true); else onClose(); };
+  const dialogRef = useModalA11y<HTMLDivElement>(requestClose);
   // Каталог послуг центру (фаза 2a) + переозначення по кабінетах (фаза 2b): drop-in
   // шорткати з тими самими сигнатурами, що статичні lib/studies. Виклики нижче
   // передають roomId обраного кабінету → ціна/тривалість/склад per-room (0108).
@@ -801,10 +809,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   return (
     <>
     <div className="overlay">
-      <div className="dialog fade-in bk-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Новий запис пацієнта">
+      <div className="dialog fade-in bk-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Новий запис пацієнта" onChangeCapture={() => setDirty(true)}>
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic">{addMode ? "🔗" : "＋"}</span>{addMode ? "Додати крок до кейса" : "Новий запис"}</div>
-          <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
+          <button className="icon-btn" onClick={requestClose} aria-label="Закрити">✕</button>
         </div>
 
         <div className="bk-grid">
@@ -1155,7 +1163,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
           {valid
             ? <span className="bk-summary">{name.split(" ").slice(0, 2).join(" ")} · {allStudies.length > 1 ? allStudies.length + " досл." : primaryKind} · {room ? room.name : ""} · {fmtShort(bookDate)} {time}–{fmtMin(toMin(time) + slotDur)}</span>
             : <span className="bk-missing">{missingList.map((m, i) => <span className="bk-miss-chip" key={i}>{m}</span>)}</span>}
-          <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Скасувати</button>
+          <button className="btn btn-ghost" onClick={requestClose} disabled={saving}>Скасувати</button>
           {addMode
             ? <button className="btn btn-primary" disabled={!valid || saving || roomInCase} onClick={handleAddCaseStep} title={roomInCase ? "Цей кабінет уже у кейсі — оберіть іншу модальність/кабінет" : "Додати крок до кейса"}>
                 {saving ? "Додавання…" : "Додати крок до кейса"}
@@ -1173,6 +1181,17 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
         if (!error && data) { setDocs((arr) => [...arr, data]); setDoctorId(String(data.id)); }
         setAddDoc(false);
       }} />
+    )}
+    {askClose && (
+      <ConfirmDialog
+        title="Незбережені зміни"
+        text="Форму запису заповнено, але не збережено. Закрити без збереження?"
+        confirmLabel="Закрити без збереження"
+        cancelLabel="Продовжити редагування"
+        danger
+        onConfirm={() => { setAskClose(false); onClose(); }}
+        onClose={() => setAskClose(false)}
+      />
     )}
     </>
   );

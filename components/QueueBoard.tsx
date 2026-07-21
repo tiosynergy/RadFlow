@@ -91,18 +91,22 @@ function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + M
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 
-const ST: Record<string, { label: string; cls: string; dot?: boolean }> = {
-  scheduled:   { label: "В черзі",      cls: "gray" },
-  waiting:     { label: "Очікує",       cls: "yellow" },
+// H4-4: статус НЕ лише кольором. Раніше беджі черги різнились тільки cls (колір) +
+// текст, тоді як колл-лист уже мав гліф (CALL_META.icon). Додаємо гліф до кожного
+// статусу (як у колл-листі) → впізнаваність за формою, а не лише кольором
+// (дальтонізм, швидкий скан). in_progress лишає «живий» pulse-dot замість гліфа.
+const ST: Record<string, { label: string; cls: string; dot?: boolean; icon?: string }> = {
+  scheduled:   { label: "В черзі",      cls: "gray",   icon: "○" },
+  waiting:     { label: "Очікує",       cls: "yellow", icon: "◔" },
   in_progress: { label: "В кабінеті",   cls: "blue", dot: true },
-  done:        { label: "Виконано",     cls: "green" },
-  no_show:     { label: "Неявка",       cls: "red" },
-  not_held:    { label: "Не відбулося", cls: "orange" },
-  cancelled:   { label: "Скасовано",    cls: "gray" },
+  done:        { label: "Виконано",     cls: "green",  icon: "✓" },
+  no_show:     { label: "Неявка",       cls: "red",    icon: "✕" },
+  not_held:    { label: "Не відбулося", cls: "orange", icon: "⊘" },
+  cancelled:   { label: "Скасовано",    cls: "gray",   icon: "⊗" },
   // 0079/0080: слот втрачено через затримку, пацієнта треба перенести вручну.
   // БЕЗ цього рядка запис малювався б як звичайна «В черзі» (ST[status] || ST.scheduled)
   // — оператор повів би його в кабінет і впіймав сиру помилку тригера переходів.
-  needs_reschedule: { label: "Потребує переносу", cls: "orange" },
+  needs_reschedule: { label: "Потребує переносу", cls: "orange", icon: "↻" },
 };
 // needs_reschedule стоїть одразу за «В черзі»: слота вже немає, але дія потрібна
 // СЬОГОДНІ — до терміналів (done/not_held/no_show) його опускати не можна.
@@ -462,7 +466,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
   // «Неявка»/«Не відбулося» можна ставити лише ПІСЛЯ часу початку дослідження (не наперед).
   const beforeStart = _startMs != null && _nowW < _startMs;
   const overdue = needsClarification(p.status, dayDate, p.scheduled_time) || (p.status === "scheduled" && !!p.clarify_at);
-  const meta: { label: string; cls: string; dot?: boolean; title?: string } = late ? LATE_META : overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
+  const meta: { label: string; cls: string; dot?: boolean; title?: string; icon?: string } = late ? LATE_META : overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
   const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
@@ -509,7 +513,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
           {roomModel ? <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{roomModel}</span> : null}
         </div>
         <div className="q-status-cell">
-          <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
+          <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{!meta.dot && meta.icon && <span aria-hidden="true" style={{ marginRight: 3 }}>{meta.icon}</span>}{meta.label}</span>
           {rescheduling && <span className="badge red" title="Апарат заблоковано — потрібен перенос на інший слот">🔧 Перезапис</span>}
           {/* 0077 — слід рішення: цей запис зробили/перенесли ПОЗА графіком кабінету
               (після закриття або в перерву) за явним підтвердженням персоналу. */}

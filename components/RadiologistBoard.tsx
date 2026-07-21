@@ -67,16 +67,17 @@ function fmtTimer(sec: number) {
 }
 function enteredAtOf(e: RadEntry | null | undefined): string | null { return e ? (e.in_progress_at || e.updated_at) : null; }
 
-const ST: Record<string, { label: string; cls: string; dot?: boolean }> = {
-  scheduled: { label: "В черзі", cls: "gray" },
-  waiting: { label: "Очікує", cls: "yellow" },
+// H4-4: статус гліфом+кольором (паритет із колл-листом і дошкою адміна), а не лише кольором.
+const ST: Record<string, { label: string; cls: string; dot?: boolean; icon?: string }> = {
+  scheduled: { label: "В черзі", cls: "gray", icon: "○" },
+  waiting: { label: "Очікує", cls: "yellow", icon: "◔" },
   in_progress: { label: "В кабінеті", cls: "blue", dot: true },
-  done: { label: "Виконано", cls: "green" },
-  no_show: { label: "Неявка", cls: "red" },
-  not_held: { label: "Не відбулося", cls: "orange" },
-  cancelled: { label: "Скасовано", cls: "gray" },
+  done: { label: "Виконано", cls: "green", icon: "✓" },
+  no_show: { label: "Неявка", cls: "red", icon: "✕" },
+  not_held: { label: "Не відбулося", cls: "orange", icon: "⊘" },
+  cancelled: { label: "Скасовано", cls: "gray", icon: "⊗" },
   // 0079/0080 — слот втрачено через затримку. Радіолог це БАЧИТЬ, але переносить реєстратор/адмін.
-  needs_reschedule: { label: "Потребує переносу", cls: "orange" },
+  needs_reschedule: { label: "Потребує переносу", cls: "orange", icon: "↻" },
 };
 const FLOW: Record<string, number> = { in_progress: 0, waiting: 1, scheduled: 2, needs_reschedule: 2.5, done: 3, not_held: 4, no_show: 5 };
 const STAT_ITEMS = [
@@ -258,7 +259,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
   // «Неявка»/«Не відбулося» — лише ПІСЛЯ часу початку дослідження (не наперед).
   const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
   const beforeStart = _startMs != null && wallNow() < _startMs;
-  const meta: { label: string; cls: string; dot?: boolean; title?: string } = late ? LATE_META : overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
+  const meta: { label: string; cls: string; dot?: boolean; title?: string; icon?: string } = late ? LATE_META : overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
   const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
@@ -297,7 +298,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
           {roomModel ? <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{roomModel}</span> : null}
         </div>
         <div className="q-status-cell">
-          <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
+          <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{!meta.dot && meta.icon && <span aria-hidden="true" style={{ marginRight: 3 }}>{meta.icon}</span>}{meta.label}</span>
           {/* 0077 — запис зроблено поза графіком кабінету (підтверджено персоналом). */}
           {p.off_schedule && (
             <span className="badge offsched" title="Запис поза графіком кабінету (після закриття або в перерву) — підтверджено персоналом">⏰ Поза графіком</span>
