@@ -47,10 +47,11 @@ import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
 import RoomDayOverviewModal from "@/components/RoomDayOverviewModal";
 import { roomScheduleFor, dayStatus, offScheduleKind, effectiveRoomBreaks, type DayOverride } from "@/lib/schedule";
-import { slotToMin } from "@/lib/slots";
+import { slotToMin, slotFmt } from "@/lib/slots";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, collisionFor, type CollisionInfo } from "@/lib/queueStatus";
 import CollisionPanel from "@/components/CollisionPanel";
 import QuickRescheduleButton from "@/components/QuickRescheduleButton";
+import StudyTimer from "@/components/StudyTimer";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
@@ -252,15 +253,16 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
           <div className="rc-name">{room.name}</div>
           <div className="rc-model">{room.apparatus_model || ""}</div>
         </div>
+        {/* Таймер зворотного відліку (0093) — у шапці плитки, навпроти модальності/назви
+            кабінету; розмір вміщує год:хв:сек. ≤5 хв — червоне з пульсацією. */}
+        {patient && (
+          <StudyTimer variant="mini" size={60} startAt={enteredAt} durationMin={patient.duration_min || 30} bufferMin={patient.buffer_time_min ?? BUFFER_DEFAULT} />
+        )}
       </div>
       {patient ? (
         <div className="rc-body rc-body-busy">
           <div className="rc-brow">
             <span className="rc-pat"><span className="pulse-dot" />{patient.patient_name}</span>
-            <LiveTimer enteredAt={enteredAt}>{(sec) => {
-              const over = sec > ((patient.duration_min || 30) + (patient.buffer_time_min ?? BUFFER_DEFAULT)) * 60;
-              return <span className={"rc-timer tabular" + (over ? " over" : "")} title={over ? "Час перевищено" : "Зараз в кабінеті"}>{fmtTimer(sec)}</span>;
-            }}</LiveTimer>
           </div>
           <div className="rc-brow">
             <span className="rc-proc" title={procLabel(patient)}>{procLabel(patient)} · {patient.duration_min} хв · {patient.scheduled_time}</span>
@@ -465,8 +467,11 @@ interface QueueRowProps {
   delayLoading?: boolean;
   onOpenCase?: (caseId: string) => void;
   onOrganizeCase?: (p: QEntry) => void;
+  // Крос-модальний кейс: сукупне вікно маршруту (найраніший старт → найпізніший кінець
+  // серед усіх кроків із тим самим case_id) + кількість кроків. Рахує батько з entries.
+  caseSpan?: { startMin: number; endMin: number; count: number } | null;
 }
-function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel, quickReschedule, schedDrift, onDelayPlan, delayLoading, onOpenCase, onOrganizeCase }: QueueRowProps) {
+function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel, quickReschedule, schedDrift, onDelayPlan, delayLoading, onOpenCase, onOrganizeCase, caseSpan }: QueueRowProps) {
   // «Запізнення» — derived: пацієнт не прийшов, минуло понад буферний час.
   const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
   const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
@@ -495,24 +500,60 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
   const isTerminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
   // Дзвінок-підтвердження — тепер у правій колонці під «Пріоритет пацієнта» (перенесено з низу картки).
   const showCall = !readOnly && p.status !== "needs_reschedule" && !isTerminal && !!onSetCall;
-  const callSeg = showCall && onSetCall ? (
-    <div style={{ marginTop: (canSetPriority && onSetPriority) ? 12 : 0 }}>
-      <div className="qd-sf-lab" style={{ marginBottom: 8 }}>Дзвінок-підтвердження</div>
-      <div style={{ display: "flex", background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 10, padding: 3, gap: 2 }}>
-        {CALL_SEG_ORDER.map((key) => {
-          const cm = CALL_META[key]; const cs = CALL_SEG_STYLE[key];
-          const active = (p.call_status || "not_called") === key;
-          return (
-            <button key={key} onClick={act(() => onSetCall(p, key))}
-              style={{ flex: 1, textAlign: "center", padding: "8px 4px", borderRadius: 8, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", border: "none",
-                background: active ? cs.bg : "transparent", color: active ? cs.color : "var(--text-muted)", fontWeight: active ? 600 : 400 }}>
-              {cm.icon} {cm.label}
-            </button>
-          );
-        })}
+  // Дзвінок-підтвердження — компактний випадаючий список (замість сегментів).
+  // Обрана опція зберігає колірний стиль статусу (bg/border/color з CALL_SEG_STYLE).
+  const callSeg = showCall && onSetCall ? (() => {
+    const cur = (p.call_status || "not_called") as CallStatus;
+    const cs = CALL_SEG_STYLE[cur]; const cm = CALL_META[cur];
+    return (
+      <div style={{ marginTop: (canSetPriority && onSetPriority) ? 10 : 0 }}>
+        <div className="qd-sf-lab" style={{ marginBottom: 6 }}>Дзвінок-підтвердження</div>
+        <div className="qd-call-wrap">
+          <select className="qd-call-select" value={cur} title={"Дзвінок: " + cm.label} aria-label="Дзвінок-підтвердження"
+            style={{ background: cs.bg, color: cs.color, borderColor: cs.color }}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => { e.stopPropagation(); onSetCall(p, e.target.value as CallStatus); }}>
+            {CALL_SEG_ORDER.map((key) => (
+              <option key={key} value={key}>{CALL_META[key].icon + "  " + CALL_META[key].label}</option>
+            ))}
+          </select>
+          <span className="qd-call-caret" aria-hidden="true">⌄</span>
+        </div>
       </div>
+    );
+  })() : null;
+
+  // ── Компактна смуга «час і маршрут» (верх розкритого рядка) ──
+  // Раніше в деталях було видно лише СТАРТ (scheduled_time). Кінець дослідження
+  // (старт + тривалість) — те, чого бракувало: коли САМЕ звільниться кабінет від
+  // цього запису. Для кейса показуємо ще й сукупне вікно всього маршруту.
+  const _sMin = p.scheduled_time ? slotToMin(p.scheduled_time) : null;
+  const studyEndMin = _sMin != null ? _sMin + (p.duration_min || 0) : null;
+  const buf = p.buffer_time_min ?? 0;
+  const metaStrip = (_sMin != null || caseSpan) ? (
+    <div className="qd-meta">
+      {_sMin != null && studyEndMin != null && p.status !== "in_progress" && (
+        <span className="qd-chip" title={"Планове вікно дослідження" + (buf ? ` · +${buf} хв буфер (прибирання/переукладка)` : "")}>
+          <span aria-hidden="true">🕐</span>
+          <b>{slotFmt(_sMin)}–{slotFmt(studyEndMin)}</b>
+          <span className="qd-chip-sub">{p.duration_min} хв{buf ? ` +${buf}` : ""}</span>
+        </span>
+      )}
+      {caseSpan && (
+        <span className={"qd-chip" + (p.case_id ? " case" : "")}
+          role={p.case_id ? "button" : undefined} tabIndex={p.case_id ? 0 : undefined}
+          title={`Крос-модальний кейс · маршрут із ${caseSpan.count} кроків · весь кейс ${slotFmt(caseSpan.startMin)}–${slotFmt(caseSpan.endMin)}` + (p.case_id ? ". Натисніть, щоб відкрити" : "")}
+          onClick={p.case_id ? (e) => { e.stopPropagation(); onOpenCase?.(p.case_id!); } : undefined}
+          onKeyDown={p.case_id ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onOpenCase?.(p.case_id!); } } : undefined}>
+          <span aria-hidden="true">🔗</span>
+          Кейс
+          <b>{slotFmt(caseSpan.startMin)}–{slotFmt(caseSpan.endMin)}</b>
+          <span className="qd-chip-sub">{caseSpan.count} кр.</span>
+        </span>
+      )}
     </div>
   ) : null;
+
   return (
     <div className={"qrow-item " + p.status + (expanded ? " open" : "")} data-qrow={p.id}>
       <div className="qrow" role="button" tabIndex={0} onClick={() => onToggle(p.id)}
@@ -567,8 +608,17 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         <div className="qrow-detail-inner">
           <div className="qrow-detail">
             {collisionPanel}
+            {/* Пацієнт у кабінеті — таймер зворотного відліку (0093) у правому нижньому
+                куті деталей: кільце убуває до кінця дослідження + буфер, зверху час
+                завершення, ≤5 хв — червоне з пульсацією. Планове вікно (чип) тоді ховаємо. */}
+            {p.status === "in_progress" && (
+              <div className="qd-timer-corner">
+                <StudyTimer variant="full" size={128} startAt={p.in_progress_at} durationMin={p.duration_min || 30} bufferMin={p.buffer_time_min ?? BUFFER_DEFAULT} />
+              </div>
+            )}
+            {metaStrip}
             {/* Дослідження (зліва) + Пріоритет пацієнта (справа, на тому ж рівні) */}
-            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 8, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 4, flexWrap: "wrap" }}>
               <div style={{ flex: "1 1 auto", minWidth: 0 }}>
             {Array.isArray(p.studies) && p.studies.length > 0 && (() => {
               const sdiff = diffStudies(p.studies_original as Parameters<typeof diffStudies>[0], p.studies as Parameters<typeof diffStudies>[1]);
@@ -588,11 +638,11 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
             })()}
               </div>
               {((canSetPriority && onSetPriority) || showCall) && (
-                <div style={{ flex: "0 0 340px", maxWidth: "100%" }}>
+                <div style={{ flex: "0 0 auto", maxWidth: "100%" }}>
                   {canSetPriority && onSetPriority && (
                     <>
-                      <div className="qd-sf-lab" style={{ marginBottom: 8 }}>Пріоритет пацієнта</div>
-                      <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта" style={{ display: "flex" }}>
+                      <div className="qd-sf-lab" style={{ marginBottom: 6 }}>Пріоритет пацієнта</div>
+                      <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
                         {PRIORITY_OPTIONS.map((pv) => {
                           const m = PRIORITY_META[pv];
                           return (
@@ -652,8 +702,8 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                 <div className="qd-step">
                   {/* Степпер звужено (аудит-фікс): останній крок «Виконано» завершується
                       до колонки «Кабінет», а не тягнеться на всю ширину картки. */}
-                  <div style={{ position: "relative", padding: "14px 32px 4px", maxWidth: "62%" }}>
-                    <div style={{ position: "absolute", top: 29, left: 56, right: 56, height: 2, background: "var(--border)" }} />
+                  <div style={{ position: "relative", padding: "2px 32px 4px", maxWidth: "62%" }}>
+                    <div style={{ position: "absolute", top: 17, left: 56, right: 56, height: 2, background: "var(--border)" }} />
                     <div style={{ position: "relative", display: "flex", justifyContent: "space-between" }}>
                       {STEP_ORDER.map((key, i) => {
                         const isDone = stepIdx >= 0 && i < stepIdx;
@@ -1962,6 +2012,15 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
                 const room = p.room_id ? roomsById[p.room_id] : undefined;
                 // Колізія можлива лише «сьогодні» (йде дослідження) і лише в найближчого запису кабінету.
                 const collision = isToday ? collisionFor(p, entries) : null;
+                // Сукупне вікно крос-модального кейса: найраніший старт → найпізніший кінець
+                // серед активних кроків із тим самим case_id (скасовані/втрачені слоти не рахуємо).
+                const caseSpan = p.case_id ? (() => {
+                  const sib = entries.filter((e) => e.case_id === p.case_id && e.scheduled_time && e.status !== "cancelled" && e.status !== "needs_reschedule");
+                  if (!sib.length) return null;
+                  let a = Infinity, b = -Infinity;
+                  for (const e of sib) { const s = slotToMin(e.scheduled_time as string); const en = s + (e.duration_min || 0); if (s < a) a = s; if (en > b) b = en; }
+                  return { startMin: a, endMin: b, count: sib.length };
+                })() : null;
                 return (
                   <QueueRow key={p.id} p={p} dayDate={selectedDate}
                     roomName={room?.name || "—"} roomModel={room?.apparatus_model || ""} roomKind={modalityLabel(room?.modality || "")}
@@ -1981,6 +2040,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
                     delayLoading={delayOpening}
                     onOpenCase={setOpenCaseId}
                     onOrganizeCase={openCaseFromEntry}
+                    caseSpan={caseSpan}
                     collisionPanel={collision?.zone === "clash" && expandedRow === p.id ? (
                       <CollisionPanel
                         entry={p} info={collision} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz}

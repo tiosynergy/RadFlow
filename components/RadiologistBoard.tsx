@@ -5,8 +5,9 @@
    статуси досліджень (кроки + Неявка/Не відбулося/Повернути) та власні нотатки.
    Перенос, редагування досліджень, скасування, обдзвін і поломки — лише в адміна. */
 
-import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode, type MouseEvent } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, type MouseEvent } from "react";
 import Toast from "@/components/Toast";
+import StudyTimer from "@/components/StudyTimer";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
@@ -60,11 +61,6 @@ function regionOf(e: { studies?: unknown }) {
   const s = Array.isArray(e.studies) ? (e.studies as Array<{ region?: string }>) : [];
   return s.map((x) => x.region).filter(Boolean).join(", ");
 }
-function fmtTimer(sec: number) {
-  const m = Math.floor(sec / 60), s = sec % 60, h = Math.floor(m / 60);
-  if (h) return h + ":" + String(m % 60).padStart(2, "0") + ":" + String(s).padStart(2, "0");
-  return m + ":" + String(s).padStart(2, "0");
-}
 function enteredAtOf(e: RadEntry | null | undefined): string | null { return e ? (e.in_progress_at || e.updated_at) : null; }
 
 // H4-4: статус гліфом+кольором (паритет із колл-листом і дошкою адміна), а не лише кольором.
@@ -114,12 +110,6 @@ function LiveClock({ tz }: { tz?: string }) {
     catch { return now.toLocaleTimeString("uk-UA", opts); }
   })();
   return <span className="rad-clock tabular" suppressHydrationWarning>🕐 {txt}</span>;
-}
-function LiveTimer({ enteredAt, children }: { enteredAt?: string | null; children: (sec: number) => ReactNode }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
-  const sec = enteredAt ? Math.max(0, Math.floor((now - new Date(enteredAt).getTime()) / 1000)) : 0;
-  return children(sec);
 }
 
 function StatsBar({ counts, filter, setFilter }: { counts: Record<string, number>; filter: string; setFilter: (f: string) => void }) {
@@ -196,16 +186,16 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
           <div className="rc-name">{room.name}</div>
           <div className="rc-model">{room.apparatus_model || ""}</div>
         </div>
+        {/* Таймер зворотного відліку (0093) — у шапці плитки, навпроти модальності/назви
+            кабінету; розмір вміщує год:хв:сек. ≤5 хв — червоне з пульсацією. */}
+        {patient && (
+          <StudyTimer variant="mini" size={60} startAt={enteredAt} durationMin={patient.duration_min || 30} bufferMin={patient.buffer_time_min ?? BUFFER_DEFAULT} />
+        )}
       </div>
       {patient ? (
         <div className="rc-body rc-body-busy">
           <div className="rc-brow">
             <span className="rc-pat"><span className="pulse-dot" />{patient.patient_name}</span>
-            <LiveTimer enteredAt={enteredAt}>{(sec) => {
-              // Перевищення рахуємо з урахуванням буфера (дослідження + переукладка/дезінфекція).
-              const over = sec > ((patient.duration_min || 30) + (patient.buffer_time_min ?? BUFFER_DEFAULT)) * 60;
-              return <span className={"rc-timer tabular" + (over ? " over" : "")} title={over ? "Час перевищено" : "Зараз в кабінеті"}>{fmtTimer(sec)}</span>;
-            }}</LiveTimer>
           </div>
           <div className="rc-brow">
             <span className="rc-proc" title={procLabel(patient)}>{procLabel(patient)} · {patient.duration_min} хв · {patient.scheduled_time}</span>
@@ -310,6 +300,13 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
       <div className="qrow-detail-wrap">
         <div className="qrow-detail-inner">
           <div className="qrow-detail">
+            {/* Пацієнт у кабінеті — таймер зворотного відліку (0093) у правому
+                нижньому куті деталей; ≤5 хв — червоне з пульсацією. */}
+            {p.status === "in_progress" && (
+              <div className="qd-timer-corner">
+                <StudyTimer variant="full" size={128} startAt={p.in_progress_at} durationMin={p.duration_min || 30} bufferMin={p.buffer_time_min ?? BUFFER_DEFAULT} />
+              </div>
+            )}
             {Array.isArray(p.studies) && p.studies.length > 0 && (() => {
               const sdiff = diffStudies(p.studies_original as Parameters<typeof diffStudies>[0], p.studies as Parameters<typeof diffStudies>[1]);
               const changed = sdiff.some((d) => d.state !== "kept");
@@ -352,8 +349,8 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
               const terminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
               return (
                 <div className="qd-step">
-                  <div style={{ position: "relative", padding: "14px 32px 4px" }}>
-                    <div style={{ position: "absolute", top: 29, left: 56, right: 56, height: 2, background: "var(--border)" }} />
+                  <div style={{ position: "relative", padding: "2px 32px 4px" }}>
+                    <div style={{ position: "absolute", top: 17, left: 56, right: 56, height: 2, background: "var(--border)" }} />
                     <div style={{ position: "relative", display: "flex", justifyContent: "space-between" }}>
                       {STEP_ORDER.map((key, i) => {
                         const isDone = stepIdx >= 0 && i < stepIdx;
