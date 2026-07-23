@@ -46,13 +46,15 @@ import MiniCalendar from "@/components/MiniCalendar";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
 import RoomDayOverviewModal from "@/components/RoomDayOverviewModal";
-import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, dayStatus, offScheduleKind, effectiveRoomBreaks, type DayOverride } from "@/lib/schedule";
+import { slotToMin } from "@/lib/slots";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, collisionFor, type CollisionInfo } from "@/lib/queueStatus";
 import CollisionPanel from "@/components/CollisionPanel";
+import QuickRescheduleButton from "@/components/QuickRescheduleButton";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
-import Toast from "@/components/Toast";
+import Toast, { type ToastData } from "@/components/Toast";
 import ShortcutsOverlay from "@/components/ShortcutsOverlay";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
@@ -453,13 +455,18 @@ interface QueueRowProps {
   // collision — для бейджа у згорнутій строці; collisionPanel — панель рішення в розкритій.
   collision?: CollisionInfo | null;
   collisionPanel?: ReactNode;
+  // §5.5 — інлайн «перенос на найближче вільне вікно» (готова кнопка з батька,
+  // рендериться лише для розгорнутого рядка, щоб RPC не бив по всій дошці).
+  quickReschedule?: ReactNode;
+  // Похідне попередження «Не за графіком» (tooltip) — null якщо запис у графіку.
+  schedDrift?: string | null;
   // 0078–0081 — план при затримці: кнопка на записі, що ЗАРАЗ у кабінеті.
   onDelayPlan?: (p: QEntry) => void;
   delayLoading?: boolean;
   onOpenCase?: (caseId: string) => void;
   onOrganizeCase?: (p: QEntry) => void;
 }
-function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel, onDelayPlan, delayLoading, onOpenCase, onOrganizeCase }: QueueRowProps) {
+function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel, quickReschedule, schedDrift, onDelayPlan, delayLoading, onOpenCase, onOrganizeCase }: QueueRowProps) {
   // «Запізнення» — derived: пацієнт не прийшов, минуло понад буферний час.
   const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
   const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
@@ -485,6 +492,27 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
       (r as Promise<unknown>).finally(() => setBusy(null));
     }
   };
+  const isTerminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
+  // Дзвінок-підтвердження — тепер у правій колонці під «Пріоритет пацієнта» (перенесено з низу картки).
+  const showCall = !readOnly && p.status !== "needs_reschedule" && !isTerminal && !!onSetCall;
+  const callSeg = showCall && onSetCall ? (
+    <div style={{ marginTop: (canSetPriority && onSetPriority) ? 12 : 0 }}>
+      <div className="qd-sf-lab" style={{ marginBottom: 8 }}>Дзвінок-підтвердження</div>
+      <div style={{ display: "flex", background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 10, padding: 3, gap: 2 }}>
+        {CALL_SEG_ORDER.map((key) => {
+          const cm = CALL_META[key]; const cs = CALL_SEG_STYLE[key];
+          const active = (p.call_status || "not_called") === key;
+          return (
+            <button key={key} onClick={act(() => onSetCall(p, key))}
+              style={{ flex: 1, textAlign: "center", padding: "8px 4px", borderRadius: 8, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", border: "none",
+                background: active ? cs.bg : "transparent", color: active ? cs.color : "var(--text-muted)", fontWeight: active ? 600 : 400 }}>
+              {cm.icon} {cm.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  ) : null;
   return (
     <div className={"qrow-item " + p.status + (expanded ? " open" : "")} data-qrow={p.id}>
       <div className="qrow" role="button" tabIndex={0} onClick={() => onToggle(p.id)}
@@ -521,6 +549,9 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
           {p.off_schedule && (
             <span className="badge offsched" title="Запис поза графіком кабінету (після закриття або в перерву) — підтверджено персоналом">⏰ Поза графіком</span>
           )}
+          {schedDrift && (
+            <span className="badge red" title={schedDrift}>⚠ Не за графіком</span>
+          )}
           {collision?.zone === "clash" && (
             <span className="badge red" title={`Кабінет звільниться о ${collision.freeAt} — дослідження, що триває, наїжджає на цей слот на ${collision.overlapMin} хв. Розгорніть запис, щоб обрати рішення`}>⚠ Накладення</span>
           )}
@@ -537,7 +568,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
           <div className="qrow-detail">
             {collisionPanel}
             {/* Дослідження (зліва) + Пріоритет пацієнта (справа, на тому ж рівні) */}
-            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 8 }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 8, flexWrap: "wrap" }}>
               <div style={{ flex: "1 1 auto", minWidth: 0 }}>
             {Array.isArray(p.studies) && p.studies.length > 0 && (() => {
               const sdiff = diffStudies(p.studies_original as Parameters<typeof diffStudies>[0], p.studies as Parameters<typeof diffStudies>[1]);
@@ -556,21 +587,26 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
               );
             })()}
               </div>
-              {canSetPriority && onSetPriority && (
-                <div style={{ flex: "0 0 auto" }}>
-                  <div className="qd-sf-lab" style={{ marginBottom: 8 }}>Пріоритет пацієнта</div>
-                  <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
-                    {PRIORITY_OPTIONS.map((pv) => {
-                      const m = PRIORITY_META[pv];
-                      return (
-                        <button key={pv} type="button" role="radio" aria-checked={p.priority_level === pv}
-                          className={"prio-seg-btn " + m.tone + (p.priority_level === pv ? " active" : "")}
-                          onClick={(e) => { e.stopPropagation(); if (p.priority_level !== pv) onSetPriority(p, pv); }} title={m.desc}>
-                          {m.short}
-                        </button>
-                      );
-                    })}
-                  </div>
+              {((canSetPriority && onSetPriority) || showCall) && (
+                <div style={{ flex: "0 0 340px", maxWidth: "100%" }}>
+                  {canSetPriority && onSetPriority && (
+                    <>
+                      <div className="qd-sf-lab" style={{ marginBottom: 8 }}>Пріоритет пацієнта</div>
+                      <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта" style={{ display: "flex" }}>
+                        {PRIORITY_OPTIONS.map((pv) => {
+                          const m = PRIORITY_META[pv];
+                          return (
+                            <button key={pv} type="button" role="radio" aria-checked={p.priority_level === pv}
+                              className={"prio-seg-btn " + m.tone + (p.priority_level === pv ? " active" : "")}
+                              onClick={(e) => { e.stopPropagation(); if (p.priority_level !== pv) onSetPriority(p, pv); }} title={m.desc}>
+                              {m.short}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                  {callSeg}
                 </div>
               )}
             </div>
@@ -614,7 +650,9 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
               const blockReason = !advanceFn ? "" : late ? "Запізнення понад буферний час — оберіть дію нижче (повернути, перенести, до листа очікування або зняти)" : !isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && startBlockReason ? startBlockReason : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""));
               return (
                 <div className="qd-step">
-                  <div style={{ position: "relative", padding: "14px 32px 4px" }}>
+                  {/* Степпер звужено (аудит-фікс): останній крок «Виконано» завершується
+                      до колонки «Кабінет», а не тягнеться на всю ширину картки. */}
+                  <div style={{ position: "relative", padding: "14px 32px 4px", maxWidth: "62%" }}>
                     <div style={{ position: "absolute", top: 29, left: 56, right: 56, height: 2, background: "var(--border)" }} />
                     <div style={{ position: "relative", display: "flex", justifyContent: "space-between" }}>
                       {STEP_ORDER.map((key, i) => {
@@ -648,7 +686,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                     </div>
                   </div>
 
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0", opacity: busy ? 0.7 : 1 }} aria-busy={!!busy}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", flexWrap: "wrap", opacity: busy ? 0.7 : 1 }} aria-busy={!!busy}>
                     {terminal ? (
                       p.status === "done" ? (
                         <>
@@ -664,14 +702,21 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                       )
                     ) : (
                       <>
+                        {/* Primary звужено: тепер за шириною контенту (flex 0 1 auto), а не на весь рядок —
+                            щоб поруч помістилися видимі «Редагувати дослідження» та «Перенести». */}
                         <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn, "advance")} disabled={advanceDisabled || !!busy}
                           aria-busy={busy === "advance"}
                           title={!isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "")}
-                          style={{ flex: "1 1 auto", minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                          style={{ flex: "0 1 auto", minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 16px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
                           {busy === "advance" ? <><span className="rf-spin" aria-hidden="true" /> Опрацьовується…</> : <>{pb.icon} {pb.label}</>}
                         </button>
-                        {/* D-1 (аудит v2): 1 primary + «Ще» — вторинні дії у меню, щоб primary не губився серед 6–10 кнопок. */}
+                        {/* Вторинні часті дії — видимі поруч із primary (винесено з меню «Ще»). */}
+                        {onEditStudies && <button className="btn btn-secondary btn-sm" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }} onClick={act(onEditStudies)}>🩻 Редагувати дослідження</button>}
+                        {quickReschedule}
+                        <button className="btn btn-secondary btn-sm" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }} onClick={act(onReschedule)} title={p.status === "in_progress" ? "Зупинити дослідження та перенести на новий слот" : "Обрати інший слот вручну"}>🗓 Перенести</button>
+                        {onOrganizeCase && !p.case_id && <button className="btn btn-secondary btn-sm" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }} onClick={act(onOrganizeCase)} title="Додати іншу модальність/кабінет — організувати крос-модальний кейс">🔗 Організувати кейс</button>}
+                        {/* D-1 (аудит v2): «Ще» тримає лише деструктивні дії (Неявка / Не відбулося / Скасувати). */}
                         <button className="btn btn-secondary btn-sm" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }} aria-expanded={moreOpen} aria-haspopup="menu" onClick={(e) => { e.stopPropagation(); setMoreOpen((o) => !o); }} title="Інші дії з записом">Ще {moreOpen ? "⌃" : "⌄"}</button>
                       </>
                     )}
@@ -712,33 +757,13 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
 
                   {moreOpen && !terminal && (
                     <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }} role="menu">
-                      {onEditStudies && <button className="btn btn-secondary btn-sm" onClick={act(onEditStudies)}>🩻 Редагувати дослідження</button>}
-                      <button className="btn btn-secondary btn-sm" onClick={act(onReschedule)} title={p.status === "in_progress" ? "Зупинити дослідження та перенести на новий слот" : "Перенести на слот"}>🗓 Перенести</button>
-                      {onOrganizeCase && !p.case_id && <button className="btn btn-secondary btn-sm" onClick={act(onOrganizeCase)} title="Додати іншу модальність/кабінет — організувати крос-модальний кейс">🔗 Організувати кейс</button>}
                       <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNoShow)}>✕ Неявка</button>
                       <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNotHeld)}>✕ Не відбулося</button>
                       <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onCancel)}>✕ Скасувати запис</button>
                     </div>
                   )}
 
-                  {onSetCall && !terminal && (
-                    <div style={{ marginTop: 6 }}>
-                      <div className="qd-sf-lab" style={{ marginBottom: 8 }}>Дзвінок-підтвердження</div>
-                      <div style={{ display: "flex", background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 10, padding: 3, gap: 2 }}>
-                        {CALL_SEG_ORDER.map((key) => {
-                          const cm = CALL_META[key]; const cs = CALL_SEG_STYLE[key];
-                          const active = (p.call_status || "not_called") === key;
-                          return (
-                            <button key={key} onClick={act(() => onSetCall(p, key))}
-                              style={{ flex: 1, textAlign: "center", padding: "8px 4px", borderRadius: 8, fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", border: "none",
-                                background: active ? cs.bg : "transparent", color: active ? cs.color : "var(--text-muted)", fontWeight: active ? 600 : 400 }}>
-                              {cm.icon} {cm.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
+                  {/* Дзвінок-підтвердження перенесено у праву колонку під «Пріоритет пацієнта» (callSeg). */}
                 </div>
               );
             })()}
@@ -940,13 +965,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
   const searchRef = useRef<HTMLInputElement>(null);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState(() => wallToday0(clinicTz));
-  const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
+  const [toast, setToast] = useState<ToastData | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Слот звільнився (скасування/відмова) → підходящі кандидати з листа очікування.
   const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
   // Оголошені тут (а не нижче біля хендлерів), бо їх читає гард хоткеїв anyModalOpen.
   const [cancelAsk, setCancelAsk] = useState<{ p: QEntry; mode: "cancel" | "declined" } | null>(null);
-  const [offCallAsk, setOffCallAsk] = useState<{ p: QEntry; end: string; durationMin: number } | null>(null);
+  const [offCallAsk, setOffCallAsk] = useState<
+    | { p: QEntry; kind: "overrun"; end: string; durationMin: number }
+    | { p: QEntry; kind: "clash"; time: string; name: string | null; durationMin: number }
+    | null
+  >(null);
 
   const [nowTick, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
@@ -962,11 +991,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
     return m;
   }, [rooms]);
 
-  function notify(msg: string, type = "success") {
-    setToast({ msg, type });
+  function notify(msg: string, type = "success", action?: ToastData["action"]) {
+    setToast({ msg, type, action });
     if (toastTimer.current) clearTimeout(toastTimer.current);
     // A-1/аудит v2: помилки живуть довше (5–7 с) — оператор встигає прочитати.
-    toastTimer.current = setTimeout(() => setToast(null), type === "error" ? 6000 : 3000);
+    // Тости з дією (soft-undo) теж 6 с — щоб устигнути натиснути «↩ Відмінити».
+    toastTimer.current = setTimeout(() => setToast(null), (type === "error" || action) ? 6000 : 3000);
   }
 
   /* ПОМИЛКА ЗАВАНТАЖЕННЯ ≠ «ПУСТО» (аудит 2026-07-11).
@@ -1126,6 +1156,26 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
   }
   const schedOf = (roomId: string) => (rooms || []).find((r) => r.id === roomId)?.schedule;
   function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride, schedOf(roomId)).closed; }
+  /* Похідне попередження «Не за графіком»: час запису не вкладається в ПОТОЧНИЙ графік
+     кабінета (закритий день / до відкриття / за кінець / у перерву). На відміну від
+     `off_schedule` (осознанний запис за графіком, підтверджений персоналом), це
+     «дрейф» — напр. графік ужали ПІСЛЯ запису, і про це ніхто не попередив. Показуємо
+     лише для не-осознанних і живих записів; фікс поруч — «→ Найближче вільне». */
+  function schedDriftFor(p: QEntry): string | null {
+    if (!p.room_id || !p.scheduled_time || p.off_schedule) return null;
+    if (["done", "no_show", "not_held", "cancelled", "needs_reschedule"].includes(p.status)) return null;
+    const osk = offScheduleKind(
+      slotToMin(p.scheduled_time), p.duration_min || 30,
+      roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)),
+      effectiveRoomBreaks(selectedDate, p.room_id, schedOf(p.room_id), selectedOverride),
+    );
+    if (!osk) return null;
+    const why = osk.kind === "closed" ? "кабінет не працює цього дня"
+      : osk.kind === "before_start" ? "запис раніше відкриття кабінета"
+      : (osk.kind === "after_end" || osk.kind === "too_late") ? ("виходить за кінець графіка" + (osk.end ? " (до " + osk.end + ")" : ""))
+      : osk.brk ? ("припадає на перерву " + osk.brk.start + "–" + osk.brk.end) : "поза графіком кабінета";
+    return "⚠ Не за графіком: " + why + ". Можливо, графік змінили після запису — перенесіть на вільне вікно.";
+  }
 
   const liveIncidents = incidents.filter((i) => !incidentExpired(i));
   // Аварійна зупинка: активні інциденти reason='emergency' → кабінети зупинено.
@@ -1216,7 +1266,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
     reload();
   }
 
-  async function setStatus(id: string, status: string) {
+  async function setStatus(id: string, status: string): Promise<boolean> {
     // H-2: фиксируем статус, который сейчас видит оператор (до оптимистичного
     // обновления) — как expectedFrom для CAS на сервере.
     const expectedFrom = entries.find((e) => e.id === id)?.status as QueueStatus | undefined;
@@ -1232,14 +1282,30 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
       else msg = "Помилка: " + res.error;
       notify(msg, "error");
       reload();
-      return;
+      return false;
     }
     reload();
+    return true;
   }
   const arrive = (p: QEntry) => setStatus(p.id, "waiting");
-  const noShow = (p: QEntry) => setStatus(p.id, "no_show");
-  const notHeld = (p: QEntry) => setStatus(p.id, "not_held");
   const undo = (p: QEntry) => setStatus(p.id, "scheduled");
+  /* Soft-undo (принцип «реверсивність замість підтверджень», UX-схема §5.3):
+     деструктивна дія виконується ОДРАЗУ, а тост дає 6 с на відкат — без блокуючої
+     модалки. Відкат повертає САМЕ той статус, який оператор бачив до дії
+     (guard_status_transition 0069 дозволяє будь-який перехід, крім →done не з кабінету;
+     якщо сервер відхилить відкат — покажемо помилку й синхронізуємо дошку). */
+  const noShow = async (p: QEntry) => {
+    const prev = (entries.find((e) => e.id === p.id)?.status ?? p.status) as string;
+    if (await setStatus(p.id, "no_show")) {
+      notify("Позначено: неявка", "info", { label: "↩ Відмінити", onAction: () => setStatus(p.id, prev) });
+    }
+  };
+  const notHeld = async (p: QEntry) => {
+    const prev = (entries.find((e) => e.id === p.id)?.status ?? p.status) as string;
+    if (await setStatus(p.id, "not_held")) {
+      notify("Позначено: не відбулося", "info", { label: "↩ Відмінити", onAction: () => setStatus(p.id, prev) });
+    }
+  };
   const openComplete = (p: QEntry) => setCompleteFor(p);
 
   async function finishComplete(status: "done" | "no_show" | "not_held", extraNote: string) {
@@ -1316,6 +1382,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
     reload();
     suggestWaitlistFor(p);
   }
+  /* Скасування в один клік + soft-undo (UX-схема §5.3): без блокуючої модалки.
+     Явна кнопка «✕ Скасувати запис» діє одразу; на «Відмову» в дзвінку лишається
+     ConfirmDialog (там скасування — побічний ефект неочевидної дії). */
+  async function cancelUndo(p: QEntry) {
+    const prev = (entries.find((e) => e.id === p.id)?.status ?? p.status) as string;
+    const res = await cancelQueueEntry(p.id);
+    if (!res.ok) { if (handledStale(res)) return; notify("Помилка: " + res.error, "error"); return; }
+    reload();
+    suggestWaitlistFor(p);
+    notify("Запис скасовано", "info", { label: "↩ Відмінити", onAction: () => setStatus(p.id, prev) });
+  }
 
   async function setCall(p: QEntry, call_status: string) {
     const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
@@ -1355,6 +1432,32 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
     notify("Перенесено на " + fmtShort(date) + " " + time, "success");
     reload();
     return null;
+  }
+
+  /* §5.5 — інлайн-перенос у ТОЙ САМИЙ кабінет на найближче вільне вікно (слот уже
+     порахувала QuickRescheduleButton через firstFittingSlot). Прямий виклик
+     rescheduleQueueEntry (без модалки reschedFor); сервер валідує check_no_overlap —
+     якщо слот щойно зайняли, показуємо помилку й лишаємо повний модал «Перенести». */
+  async function quickRescheduleTo(p: QEntry, time: string) {
+    if (!p.room_id) return;
+    const [hh, mm] = time.split(":").map(Number);
+    const at = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate(), hh || 0, mm || 0).toISOString();
+    const res = await rescheduleQueueEntry({
+      id: p.id, roomId: p.room_id, scheduledDate: dateKey(selectedDate), scheduledTime: time, scheduledAt: at,
+      durationMin: p.duration_min || 30, bufferTimeMin: p.buffer_time_min ?? BUFFER_DEFAULT,
+      reason: "Перенос на найближче вільне вікно", offSchedule: false,
+    });
+    if (!res.ok) {
+      if (res.code === "stale") { handledStale(res); return; }
+      notify((res.code === "slot_taken" || res.code === "slot_unavailable")
+        ? "Слот щойно зайняли — оберіть «🗓 Перенести» вручну"
+        : res.code === "incident" ? "Кабінет у простої (поломка/ТО) — оберіть інший слот"
+        : "Помилка: " + res.error, "error");
+      reload();
+      return;
+    }
+    notify("Перенесено на " + time, "success");
+    reload();
   }
 
   /* Колізія: перенос Б в один клік на слот, запропонований CollisionPanel.
@@ -1507,7 +1610,9 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
     if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат";
     if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
     if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
-    if (r.code === "clash") return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис${r.name ? " (" + String(r.name).split(" ").slice(0, 2).join(" ") + ")" : ""}. Перенесіть один із записів`;
+    // clash БІЛЬШЕ не жорсткий блок для адміністратора (принцип «override з попередженням»):
+    // реєстратура володіє розкладом і вирішує сама — виклик через підтвердження
+    // «Викликати все одно» (callPatient нижче), а не глуха стіна. Кнопку не вимикаємо.
     return null;
   }
   // Виклик поза графіком — через діалог підтвердження (offCallAsk оголошено вище
@@ -1518,9 +1623,13 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
   // (notify / offCallAsk) завершуються синхронно й повертають undefined.
   function callPatient(p: QEntry): void | Promise<void> {
     const r = callBlockOf(p);
+    // clash — накладення на НАСТУПНИЙ запис. Не жорсткий блок, а підтвердження
+    // («Викликати все одно»): перехоплюємо ДО жорсткого блоку. Сервер override
+    // пропустить — кабінет не зайнятий (інакше раніше спрацював би room_busy).
+    if (r && r.code === "clash") { setOffCallAsk({ p, kind: "clash", time: r.time, name: r.name ?? null, durationMin: r.durationMin }); return; }
     if (r && !r.confirmable) { notify(inProgressBlockReason(p) || "Викликати зараз неможливо", "error"); return; }
-    if (r && r.code === "sched_overrun") { setOffCallAsk({ p, end: r.end, durationMin: r.durationMin }); return; }
-    return setStatus(p.id, "in_progress");
+    if (r && r.code === "sched_overrun") { setOffCallAsk({ p, kind: "overrun", end: r.end, durationMin: r.durationMin }); return; }
+    return setStatus(p.id, "in_progress").then(() => {});
   }
   function setStatusGuarded(p: QEntry, status: string) {
     // Запізнення понад буфер: прямий виклик у кабінет заблоковано — спершу
@@ -1860,13 +1969,14 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
                     readOnly={false}
                     canCall={!(p.room_id && currentByRoom[p.room_id])} rescheduling={affectedIds.has(p.id)}
                     onArrive={arrive} onCall={callPatient} onComplete={openComplete}
-                    onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onCancel={(pt) => setCancelAsk({ p: pt, mode: "cancel" })} onSetStatus={setStatusGuarded} onSetCall={setCallGuarded}
+                    onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onCancel={cancelUndo} onSetStatus={setStatusGuarded} onSetCall={setCallGuarded}
                     onReschedule={openReschedule} onEditStudies={openEditStudies} onEditPatient={(pt) => setEditPatientFor(pt)}
                     onToWaitlist={lateToWaitlist}
                     canSetPriority={canEditPriority} onSetPriority={doSetPriority}
                     originHint={fmtOrigin(p.reschedule_origin as unknown as RescheduleOrigin | null, roomsById)}
                     startBlockReason={p.status === "waiting" ? inProgressBlockReason(p) : null}
                     collision={collision}
+                    schedDrift={schedDriftFor(p)}
                     onDelayPlan={isToday && (roleKey === "admin" || roleKey === "registrar") ? openDelayPlan : undefined}
                     delayLoading={delayOpening}
                     onOpenCase={setOpenCaseId}
@@ -1878,6 +1988,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
                         onMove={(roomId, time) => doCollisionMove(p, roomId, time)}
                         onRecall={() => doCollisionRecall(p)}
                         onManual={() => openReschedule(p)}
+                      />
+                    ) : null}
+                    quickReschedule={expandedRow === p.id && isToday && p.room_id && (p.status === "scheduled" || p.status === "waiting") ? (
+                      <QuickRescheduleButton
+                        entry={p} clinicTz={clinicTz} date={selectedDate} override={selectedOverride}
+                        incidents={liveIncidents} onPick={(time) => quickRescheduleTo(p, time)}
                       />
                     ) : null} />
                 );
@@ -1988,11 +2104,13 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
           (не галочка, як у модалках): виклик робиться одним кліком просто з дошки. */}
       {offCallAsk && (
         <ConfirmDialog
-          title="Викликати поза графіком?"
-          text={<><b>{offCallAsk.p.patient_name}</b> · запис о {offCallAsk.p.scheduled_time} · {offCallAsk.durationMin} хв.
-            {" "}Кабінет працює до <b>{offCallAsk.end}</b> — робота триватиме понаднормово.</>}
-          confirmLabel="⏰ Викликати"
+          title={offCallAsk.kind === "clash" ? "Викликати попри наступний запис?" : "Викликати поза графіком?"}
+          text={offCallAsk.kind === "clash"
+            ? <><b>{offCallAsk.p.patient_name}</b> · {offCallAsk.durationMin} хв. Наступний запис о <b>{offCallAsk.time}</b>{offCallAsk.name ? " (" + offCallAsk.name.split(" ").slice(0, 2).join(" ") + ")" : ""} — виклик зараз накладеться на нього. Далі перенесіть наступного пацієнта, інакше він зачекає.</>
+            : <><b>{offCallAsk.p.patient_name}</b> · запис о {offCallAsk.p.scheduled_time} · {offCallAsk.durationMin} хв.{" "}Кабінет працює до <b>{offCallAsk.end}</b> — робота триватиме понаднормово.</>}
+          confirmLabel={offCallAsk.kind === "clash" ? "⚠ Викликати все одно" : "⏰ Викликати"}
           cancelLabel="Ні"
+          danger={offCallAsk.kind === "clash"}
           busy={offCallBusy}
           onClose={() => setOffCallAsk(null)}
           onConfirm={async () => {

@@ -21,6 +21,7 @@ import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/pri
 import { useModalA11y } from "@/lib/useModalA11y";
 import { countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
+import HelpTip from "@/components/HelpTip";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type DocOpt = { id: string; name: string; spec?: string | null; clinic_name?: string | null; phone?: string | null };
@@ -926,7 +927,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                 </span>
               </label>
               <label className="fld" style={{ flex: "0 0 76px" }}>
-                <span className="fld-lab">Буфер</span>
+                <span className="fld-lab">Буфер <HelpTip label="Що таке буфер" text={<>Буфер — запас часу <b>після</b> дослідження на переукладку, дезінфекцію та підготовку кабінета до наступного пацієнта. Кабінет вважається зайнятим на «тривалість + буфер», тож буфер оберігає наступний слот від накладення.</>} /></span>
                 <select className="inp" value={buffer} onChange={(e) => setBuffer(Number(e.target.value))} title="Час на переукладку/дезінфекцію після дослідження">
                   {BUFFER_OPTIONS.map((b) => <option key={b} value={b}>{b} хв</option>)}
                 </select>
