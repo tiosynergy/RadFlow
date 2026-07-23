@@ -441,6 +441,20 @@ _Раздел давно **в проде** (прод на 0086) — оставл
 - **Серверная валидация длительности** в `editQueueEntryStudies` (кратность 5, потолок 600, график, перерывы).
 - **vitest + `tests/`** — 59 тестов, все зелёные. ESLint — 0 warnings.
 
+### 2.10. Черга: пакет UX сесії 8 (коммиты `7649e14` + `1256842`)
+
+Два коммита на `dev` (**ждут мерджа `dev→main`**). Живой daytime-тест таймера/компактной строки — задача на 24.07 12:00 (см. §8).
+
+**`7649e14` — пакет UX + фиксы:**
+- **Свобода + простота (из UX-схемы `radflow-queue-ux-scheme`):** soft-undo (Скасувати/Неявка/Не відбулося одним кликом + тост «↩ Відмінити» 6с вместо ConfirmDialog); override clash (`clash` не глухой блок на **админ**-доске — `ConfirmDialog` «⚠ Викликати все одно»; **RadiologistBoard/lib/queueStatus.ts не тронуты**, у радиолога clash жёсткий); инлайн-перенос (новый `components/QuickRescheduleButton.tsx` — «→ Найближче вільне · HH:MM», RPC `room_busy_slots` → `firstFittingSlot()`).
+- **«⚠ Не за графіком»:** бейдж на доске (запись вне текущего графика кабинета и не `off_schedule`, хелпер `schedDriftFor` через `offScheduleKind`) + предупреждение в `SetupWizard.save()` при сужении графика («Записи поза новим графіком: N»).
+- **CEO drill-down** по KPI-плиткам (`CeoDashboard`, клиентский, без миграции); **HelpTip** на «Буфер» в `BookingModal`; фикс двойного TZ-сдвига в `RoomDayOverviewModal` (`wallMinOfDay`).
+
+**`1256842` — таймер дослідження + компактная развёрнутая строка:**
+- **`components/StudyTimer.tsx` (новый, общий):** кольцевой countdown (`variant='full'|'mini'`, `size?`). Синее SVG-кольцо убывает; **≤5 мин — красное с пульсацией** (`@keyframes stTimerPulse`); превышение → «+MM:SS». Основа = **дослідження + буфер**; время окончания = `wallNow()+remaining*1000` → `getUTCHours/Minutes` (стенное, **без Intl-double-shift**; модульный clinicTz из `setClinicTz`, вызывается в обеих досках до рендера). **Большой** — в правом нижнем углу развёрнутой строки (`.qd-timer-corner`, size 128, `position:absolute`). **Мини** — в шапке плитки кабинета (`.rc-head`, size 60, вмещает ч:мм:сс), напротив модальности/названия. Обе доски синхронно; удалён старый count-up `LiveTimer` из плиток (в `QueueBoard` остался для виджета «Зараз в кабінеті»).
+- **Компактная смуга «час і маршрут» (`.qd-meta`):** чип планового окна (старт→конец) + синий кликабельный чип сукупного окна **кейса** (min старт→max конец активных сиблингов `case_id`); при `in_progress` study-чип скрыт (его заменяет таймер).
+- **Компактификация деталей:** «Дзвінок-підтвердження» → `<select class="qd-call-select">` (закрытый контрол красится в `CALL_SEG_STYLE[cur]`); «Пріоритет» сужен (колонка `flex:0 0 auto`, кнопки `flex:0 0 auto`); степпер поднят (padding-top 14→2, коннектор `top` 29→17); зазоры уменьшены.
+
 ---
 
 ## 3. Current State of the Project
@@ -498,7 +512,7 @@ _Раздел давно **в проде** (прод на 0086) — оставл
 
 ### UI-компоненты
 
-`QueueBoard.tsx` · `BookingModal.tsx` · `RescheduleModal.tsx` · `StudyEditModal.tsx` · `ScheduleEditModal.tsx` · **`CollisionPanel.tsx`** · `BreakdownModal.tsx` / `EmergencyModal.tsx` · `CallListBoard.tsx` · `WaitlistBoard.tsx` / `WaitlistModal.tsx` · `ReferralPortal.tsx` / `ReferrerBoard.tsx` · `RadiologistBoard.tsx` · `CeoDashboard.tsx` · `SetupWizard.tsx` · `ConfirmDialog.tsx`
+`QueueBoard.tsx` · `BookingModal.tsx` · `RescheduleModal.tsx` · `StudyEditModal.tsx` · `ScheduleEditModal.tsx` · **`CollisionPanel.tsx`** · **`QuickRescheduleButton.tsx`** (инлайн «→ Найближче вільне») · **`StudyTimer.tsx`** (кольцевой countdown дослідження — big в развёрнутой строке, mini в шапке плитки; общий для админ+радиолог) · `BreakdownModal.tsx` / `EmergencyModal.tsx` · `CallListBoard.tsx` · `WaitlistBoard.tsx` / `WaitlistModal.tsx` · `ReferralPortal.tsx` / `ReferrerBoard.tsx` · `RadiologistBoard.tsx` · `CeoDashboard.tsx` · `SetupWizard.tsx` · `ConfirmDialog.tsx`
 
 ### БД
 
@@ -576,6 +590,7 @@ _Раздел давно **в проде** (прод на 0086) — оставл
 ✅ Закрыто (сессия 8, 2026-07-23):
 - Невалидные часы/перерывы: `dayHoursError`/`breakRowError` → красная подсветка `.invalid` + текст ошибки инлайн + гейтинг «Зберегти» (`equipHoursValid`/`equipBreaksValid`). Сессия 8 закрыла последнюю дыру: `save()` сам отклоняет невалидный график (защищает и «Зберегти й вийти», который `valid[1]` не проверял), а тултип задизейбленной кнопки называет реальную причину.
 - Состояние занятого слота на планшете: `SlotPicker` — тап по занятому слоту показывает детали видимой строкой `.slot-hint` (`role=status` + `aria-label`); `disabled` снят, чтобы тап срабатывал на тач.
+- **Пакет UX очереди (`7649e14` + `1256842`) — см. §2.10:** soft-undo, override clash (админ), инлайн-перенос, «⚠ Не за графіком», CEO drill-down, кольцевой таймер дослідження (big в углу строки + mini в шапке плитки), компактная развёрнутая строка (Дзвінок списком, узкий приоритет, степпер выше). Живой рендер таймера/компакта — daytime-тест 24.07 12:00.
 
 ### 5.4. Stage 2 / архитектурный долг
 
@@ -765,7 +780,7 @@ npm run dev         # http://localhost:3000
 1. **Прочитать [`docs/PRODUCT_OVERVIEW.md`](PRODUCT_OVERVIEW.md)** — источник правды по продукту. Затем этот файл целиком, **особенно §6** (решения, отвергнутые варианты, ловушки): память предыдущего агента в новую сессию не переезжает, и §6 — единственное место, где сохранено «почему так, а не иначе».
 2. **Проверить факты по коду и `git status` / `git log`.** Документация отражает момент написания; код — истину. Особенно: **максимальный номер миграции** перед созданием новой и **какие миграции реально применены к проду**.
 3. **Свериться по коду о применённых миграциях** — прод на `0086` (0061–0086 применены), следующая новая = `0087`. Мердж `dev → main` не гоняет миграции: SQL к проду применяется **до** мерджа.
-4. **Уточнить приоритет.** Открытые кандидаты (§5): живой тест realtime кабинетов (0086), ротация ключа (P0, владелец), admin-reset пароля направителям, опц. `ceo_list_for_clinic()`, cron outbox (ждёт n8n), Stage 2.
+4. **Уточнить приоритет.** Открытые кандидаты (§5): **мердж `dev→main`** (сессия 8: `7649e14` + `1256842` — см. §2.10 — ещё НЕ мержены; мердж через GitHub-веб, сеть с устройства к GitHub закрыта); **живой daytime-тест** таймера дослідження + компактной строки (задача на 24.07 12:00, `trig_01L5Afkqe8kcvTHmTVEcUmRk`); ротация ключа (P0, владелец); цены УЗД/РГ/ММГ импортом; admin-reset пароля направителям; Stage 2.
 
 ### Разделение труда
 
