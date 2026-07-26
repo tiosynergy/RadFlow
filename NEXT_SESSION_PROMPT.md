@@ -7,280 +7,208 @@
 **Стек:** Next.js 15 (App Router) + React 19 + Supabase (Postgres + RLS + Auth + Realtime) +
 TypeScript + Tailwind + zod, Vercel (Hobby + Fluid Compute, maxDuration=300). Репозиторий:
 `D:\RadFlowDev`, ветка `dev` (мердж `dev → main` = автодеплой в прод `rad-flow-tau.vercel.app`).
-Автоматизация: n8n Cloud + xAI Grok (grok-4.5).
+Автоматизация: n8n Cloud + OpenAI `gpt-5-nano` (эскалация — `gpt-5-mini`/`gpt-5`/`grok-4.5`).
 
 ## Сначала прочитай
 
 1. **Проект claude.ai «RadFlow»** — durable-хранилище между сессиями. Инструмент `Projects`
    (`project_info` → `project_read` / `project_search`). Там лежит документ состояния
-   `claude/radflow-handoff.md` (актуальнее любого файла в репо) и дизайн автономного режима.
-   ⚠️ Инструмента `project_memory_read` из прежних сессий **больше нет** — все ссылки на ключи
-   вида `radflow-state`, `radflow-ui-0092` в старых документах мертвы; знания перенесены в
-   `docs/HANDOVER.md` и в проект.
-2. `docs/HANDOVER.md` — главный документ репозитория. **Шапка + блок «сессия 10» = актуальный
-   срез**; ниже — история сессий 1–9 и §6 «почему так».
-3. `docs/README.md` — карта всей документации (аудиты, дизайны, юзерфлоу, планы).
-4. `docs/PRODUCT_OVERVIEW.md` — устройство продукта.
-5. Проверяй факты по коду и по прод-БД (Supabase MCP `execute_sql`, ref `rdiqjxzibdqbhwileret`):
-   документы отражают момент написания.
+   `claude/radflow-handoff.md` (актуальнее любого файла в репо) и планы.
+2. `docs/HANDOVER.md` — главный документ репозитория. **Шапка + блок «сессия 11» = актуальный
+   срез**; ниже — история сессий и «почему так».
+3. `docs/README.md` — карта всей документации. `docs/PRODUCT_OVERVIEW.md` — устройство продукта.
+4. Проверяй факты по коду и по прод-БД (Supabase MCP `execute_sql`, ref `rdiqjxzibdqbhwileret`):
+   документы отражают момент написания. **Урок сессии 11: документы могут врать о состоянии
+   прод-БД** — сессия 10 писала «0120 не применять», а владелец её уже применил и использовал.
 
 ---
 
-## Состояние на конец сессии 2026-07-26 (сессия 10)
+## Состояние на конец сессии 2026-07-26 (сессия 11)
 
-**Git:** ветка `dev`, HEAD **`9e508b5`**. Дерево **НЕ чистое** — 7 изменённых + 3 новых файла
-(UI-пакет + AI-правки + планы; полный список ниже). **Коммитит владелец.**
+**Git:** ветка `dev`, HEAD **`d783696`** (владелец закоммитил пакет сессии 10). Дерево на конец
+сессии 11: **+2 новых файла** (`supabase/migrations/0121_services_room_owned.sql`,
+`supabase/smoke/services_room_owned_smoke.sql`) + обновлённые доки. **Коммитит владелец.**
 
-**Прод-код АКТУАЛЕН:** `dev → main` **смёржен в сессии 10** — PR #7, merge-коммит **`18768c9`**,
-влиты 10 коммитов (`1bd912a`, `f33f350`, `485654d`, `c7e16ee`, `1768129`, `7e300e2`, `7649e14`,
-`1256842`, `f0d8f49`, `6d7bb74`). Vercel-автодеплой прошёл; позже — ещё **редеплой** под
-исправленный `N8N_IMPORT_WEBHOOK_URL`. ⚠️ Локальный ref `origin/main` обновится только после
-`git fetch` (сеть с устройства к GitHub = 403 proxy) — верь GitHub-вебу, а не локальному ref.
+**Прод-код:** `main` = merge `18768c9` (PR #7) + `dev`-хвост не смёржен (docs + 0121).
 
-**Прод-БД на `0119`**. **Следующая новая миграция = `0120`.** ⚠️ Лежащий в репо
-`supabase/migrations/0120_services_import_room_overrides.sql` — **НЕ ПРИМЕНЯТЬ**, он подлежит
-замене (см. «Услуги кабінета»).
+**Прод-БД на `0120`(!)** — владелец применил `0120_services_import_room_overrides.sql` и
+импортировал через неё прайсы в два МРТ-кабинета («Ревуцького, 44a» — 136 позиций,
+«Закревського, 9» — 52; итого 185 услуг source='import' + 188 оверрайдов, 3 услуги — в обоих
+кабинетах). Файл 0120 остаётся в репо как история. Затем в этой же сессии **владелец НАКАТИЛ
+`0121_services_room_owned.sql`** — смоук на проде дал SMOKE_OK, итог сверен по БД: 188 room-owned
+услуг (136 «Ревуцького» + 52 «Закревського»), оверрайдов 0, база = 34 seed, новые редакции всех
+4 функций подтверждены. **Прод-БД на `0121`; следующая новая миграция = `0122`.**
 
-### Незакоммиченное на `dev`
+### 🎯 Миграция 0121 — написана, верифицирована и НАКАЧЕНА (прод на 0121)
 
-**Изменённые (7):** `components/ImportPriceModal.tsx`, `components/ServicesEditor.tsx`,
-`components/SetupWizard.tsx`, `styles/prototype/radflow-wizard.css`, `styles/prototype/radflow.css`,
-`app/services/actions.ts`, `supabase/types.ts`.
-**Новые (3):** `docs/plan/AI_INTEGRATION_GPT54NANO.md`, `docs/plan/ROOM_OWNED_SERVICES.md`,
-`supabase/migrations/0120_services_import_room_overrides.sql` (⚠️ к замене).
+**`supabase/migrations/0121_services_room_owned.sql`** — переход на утверждённую модель
+**room-owned услуг** (nullable `services.room_id`: NULL = базовая, = X = услуга кабинета X):
 
-### AI: перешли на OpenAI `gpt-5-nano`
+- `services.room_id` + индекс + гард-триггер `check_service_room` (clinic+modality room↔service);
+- уникальность 0107 пересобрана в **два partial-индекса** (база / кабинет) — одинаковое имя
+  в базе и в кабинете допустимо (Q4-дефолт «показывать обе»);
+- **конвертация данных 0120:** все пары «базовая import-услуга + оверрайд» → room-owned услуги
+  (цена/время из оверрайда; 3 услуги с двумя кабинетами → по копии на кабинет), оверрайды
+  удаляются. Конвертация гейтится маркером «room-owned уже существуют» (идемпотентность);
+- `check_service_room_override`: оверрайды 0108 — **только на базовые** услуги
+  (`SRO_ROOM_OWNED_SERVICE`);
+- `check_studies_active_catalog` (queue + waitlist): room-видимость (база не скрытая оверрайдом
+  ИЛИ услуга кабинета записи); **легаси-ветка считает только ВИДИМЫЕ услуги** (иначе кабинеты
+  без своего прайса блокировались бы); **grandfather расширен на `new.room_id IS NULL`**
+  (FK SET NULL при удалении кабинета не блокирует DELETE);
+- `ceo_kpi_studies`: каталожная оценка учитывает room-услуги (приоритет услуги кабинета записи);
+- `services_import_rpc(p_rows, p_room_id)`: сигнатура та же; room-режим пишет **ТОЛЬКО
+  room-owned** услуги (база не трогается, оверрайды не создаются); оптимистичная блокировка
+  0119 — в границах набора через `room_id is not distinct from p_room_id`; `on conflict`
+  переведён на partial-индексы; ключ `overrides` в ответе остался (=0) для совместимости.
 
-- Рабочая модель RadFlow — **`gpt-5-nano` (OpenAI API)**; эскалация — `gpt-5-mini`/`gpt-5` или
-  прежний `grok-4.5`. ⚠️ `gpt-5.4-nano` в аккаунте владельца НЕТ.
-- **n8n `radflow-price-import` (`ikpUa5PZ1QWQy8oH`) переключён:** нода `Call LLM` (бывш. `Call Grok`),
-  `api.openai.com/v1/chat/completions`, credential `OpenAI account` (`openAiApi`, `lFbHuwzDmntoEq82`),
-  `model: 'gpt-5-nano'`, `reasoning_effort: 'low'`. ⚠️ **`temperature` УБРАН** — GPT-5 его не
-  принимает (400). Живой импорт прошёл (107 и 130+ позиций). Grok-credential на месте (откат).
-- Прод-env `N8N_IMPORT_WEBHOOK_URL` починен + редеплой. ⚠️ Vercel: переменные в
-  **Settings → Environment Variables**, применяются только новым деплоем.
-- План тиеринга по 6 внедрениям — `docs/plan/AI_INTEGRATION_GPT54NANO.md`.
+**Верификация:** dry-run на прод-БД в откате — SMOKE_OK v2, точная сверка конвертации
+(все 188 пар бит-в-бит против снапшота до миграции). **Ревью субагентом: NO-SHIP → SHIP**
+(High-находка «легаси-ветка блокирует кабинеты с пустым каталогом» и ещё 4 исправлены;
+Low-находки №7–11 приняты и задокументированы в header миграции).
 
-### Услуги кабінета — СЛЕДУЮЩАЯ БОЛЬШАЯ ФИЧА (план готов, кода нет)
+**✅ Накатка выполнена владельцем в конце сессии 11:** 0121 применена одним скриптом, смоук на
+проде дал `SMOKE_OK` (тестовые данные откатил сам). Состояние прод-БД сверено — конвертация и
+все новые редакции функций на месте.
 
-Требование владельца: услуги, созданные/импортированные **для конкретного кабінета**, принадлежат
-**только ему**; базовый каталог — общий (AI сам распознаёт модальности, базовые видны всем
-аппаратам своей модальности). **Утверждённая модель — nullable `services.room_id`**
-(`NULL` = базовая, `= X` = кабінета X). Полный план — **`docs/plan/ROOM_OWNED_SERVICES.md`**
-(инвентарь 11 точек чтения услуг, DB-триггеры `check_studies_active_catalog`/`catalog_est_sum`,
-содержимое миграции, 5 фаз, вопросы Q1–Q4). Клиентские правки сессии 10 совместимы — меняется
-серверная семантика.
+**⚠️ Операционные последствия накатки (задокументированы в header 0121):**
+- у центра НЕ останется базовых услуг: все 185 уйдут в room-owned двух кабинетов. Кабинеты
+  «1,5Т» и «Aperto Lucent» останутся с пустым каталогом → **нестрогий режим** (запись не
+  ограничивается каталогом, цен нет). **После накатки импортировать прайсы в остальные
+  кабинеты** (или в базу — для общих позиций);
+- удаление кабинета теперь **безвозвратно удаляет его прайс** (CASCADE);
+- первый импорт из старой вкладки даст массовый stale — просто обновить превью;
+- запись `71ff4420` (2026-07-27, «Закревського», регион «МР ангіографія артерій головного
+  мозку, 3D реконструкція» — услуга после конвертации принадлежит «Ревуцького»): перенос/
+  редактирование состава заблокируются — известное следствие модели.
 
-**Тулчейн** (замер сессии 10 на `6d7bb74`): `tsc` чист, `lint` 0, **`vitest` 257/257** (16 файлов).
+### Что сделано в сессии 11
 
-### Что сделано в сессии 10
+Только БД-артефакты + доки; **TS-код не менялся** (типы `services_import_rpc` уже актуальны
+в `d783696`, сигнатура RPC не изменилась). Тулчейн не перегонялся (нечего мерить).
 
-Деплой + миграция AI на OpenAI + UI-пакет + план услуг кабінета. **Миграций БД не применено.**
-
-- Сверка с устройством: владелец уже закоммитил UI-пакет сессии 9 → HEAD `6d7bb74`, дерево чистое.
-- Тулчейн собран в облаке из git HEAD, маркеры анти-отката чистые: **typecheck 0, lint 0, 257/257**.
-- **Мердж `dev → main`** через GitHub-веб в Claude-in-Chrome (PR #7, `18768c9`) = автодеплой в прод;
-  проверено, прод жив.
-- Автономный режим — **отложен владельцем** в этой сессии.
-- Обновлены `claude/radflow-handoff.md`, `docs/HANDOVER.md`, этот файл.
-
-### Что было сделано в сессии 9
-
-Только документация и дизайн — **кода не написано, миграций не применено**.
-
-- **`docs/design/AUTONOMOUS_MODE_DESIGN.md`** (v2.0, 977 строк) — дизайн аварийного режима
-  RadFlow без онлайн-доступа к БД + периодический **`.xls`-снапшот очереди отдельным файлом
-  для каждого медцентра**. Прошёл ревью субагентом; 6 находок изменили архитектуру.
-  **Статус: предложение к утверждению.**
-- **`docs/userflows/autonomous-mode-flow.mermaid`** (v2.0) + отрендеренный **`.svg`** —
-  детальная блок-схема с точками принятия решений D1, D1b, D2, D3, D10, D4, D5, D5b, D6, D7,
-  D8, D9. Нумерация совпадает с §6 дизайна. Рендер проверен `@mermaid-js/mermaid-cli@11`.
-- **`docs/README.md`**, **`docs/HANDOVER.md`** (блок сессии 9), **`AGENTS.md`**,
-  **`docs/AGENT_ONBOARDING.md`**, **этот файл** — актуализированы.
-
-### Ключевые решения дизайна автономного режима (если будешь его реализовывать)
-
-- **Два независимых сетевых пути.** Чтение очереди: браузер → Supabase напрямую
-  (`QueueBoard` → `lib/supabase/client`). Запись: Server Action на Vercel → SECURITY DEFINER RPC.
-  Они падают независимо → **пять состояний связи**: `online` / `degraded` / `offline` /
-  `autonomous` / `auth-lost`. В `degraded` (лежит Vercel) браузер зовёт те же definer-RPC
-  напрямую через `supabase.rpc()` — журнал офлайна там не нужен.
-- **Ресинк-RPC обязан быть `security definer`.** Миграция `0070` сделала
-  `revoke update (status, call_status, in_progress_at, clarify_at, reschedule_origin)` у
-  `authenticated`/`anon` (это фикс **H-12**) — вернуть grant = регресс безопасности.
-- **`savepoint` на каждое событие** внутри ресинк-RPC: 30+ гард-триггеров кидают исключения,
-  без сейвпоинта одна отклонённая правка убивает весь батч.
-- **`middleware.ts` `updateSession` — fail-closed → 307 на `/login`** при мёртвой БД, поэтому
-  Service-Worker-фолбэк для этого сценария не срабатывает: нужна ветка **D1b**
-  (`HEAD /rest/v1/rooms?select=id&limit=1`: 401 = сессия кончилась, 5xx/сеть = БД недоступна).
-- **Проекция** = `replay(cache.entries, journal.filter(e => e.syncState !== 'applied').sortBy(seq))`.
-- `call_status = 'declined'` — терминальный (`status='cancelled'`, миграции 0070/0075/0085);
-  звонок — только desk (admin/registrar, 0085).
-- **Формат файлов:** SpreadsheetML 2003 XML с расширением `.xls` (ноль зависимостей) + OOXML
-  `.xlsx` через уже установленный `jszip`. SheetJS отклонён по supply-chain.
-- **File System Access API:** хендл папки в IndexedDB; persistent permissions с Chrome 122;
-  нужен установленный PWA; `requestPermission()` требует user activation;
-  `createWritable()` **обрезает файл** → пиши `.tmp` → архив → `rename` в `_CURRENT`.
-- `pg_cron`/`pg_net` уже включены (`supabase/cron_jobs.sql`, живой `sink-overdue` каждые 5 мин);
-  на Vercel Hobby cron только суточный.
-- **Открытых вопросов к владельцу — 8** (см. §12 дизайна). Блокирующий — **№5**: обязателен ли
-  установленный PWA + Chrome для записи в папку центра, или нужен фолбэк на ручное «Зберегти».
-- **Фаза 0 (подготовка кода, до фичи):** `lib/useRealtimeRefetch.ts` должен возвращать
-  `{ status, lastEventAt }`; добавить `scheduled_date` в select `QueueBoard`; исключить
-  `/autonomous` из matcher'а `middleware.ts`; `public/` сейчас пуст — туда лягут SW и манифест.
-- **Ловушка при копировании кода:** в `app/api/outbox/deliver/route.ts` проверка
-  `N8N_WEBHOOK_URL` идёт **раньше** проверки секрета и возвращает 200 — не копируй этот порядок
-  в новые роуты.
+- Сверка с прод-БД вскрыла: 0120 применена и использована (документы сессии 10 устарели
+  в момент написания). Решения владельца: миграция = 0121 (0120 — история), сегодняшние
+  данные — **конвертировать** в room-owned.
+- Написана и верифицирована 0121 + смоук (см. выше).
+- Обновлены `claude/radflow-handoff.md` (проект), `docs/HANDOVER.md`, `docs/README.md`,
+  `docs/plan/ROOM_OWNED_SERVICES.md` (статус), этот файл.
 
 ---
 
 ## ЧТО ДЕЛАТЬ ДАЛЬШЕ (по приоритету)
 
-> ✅ **Закрыто в сессиях 9–10:** коммит UI-пакета (владелец, `6d7bb74`); мердж `dev → main`
-> (PR #7, `18768c9`, автодеплой в прод); переход AI на OpenAI `gpt-5-nano`; починка прод-env
-> импорта; UI-пакет (модалки/мастер); планы AI-тиеринга и услуг кабінета.
+1. ✅ ~~Накатка 0121 + смоук~~ — **сделано владельцем в сессии 11** (SMOKE_OK на проде).
+2. **Владелец коммитит** 0121 + смоук + доки (`npm run typecheck && npm run lint && npm test`
+   перед коммитом; ожидается 257/257 — TS не менялся).
+3. **🎯 Фазы 2–5 плана `docs/plan/ROOM_OWNED_SERVICES.md` — главный приоритет следующей сессии:**
+   - Ф2 каталог-ядро: `lib/catalog.ts`, `lib/serviceGate.ts`, vitest-кейсы room-услуг;
+   - Ф3 CRUD/импорт: `app/services/actions.ts` (`createService`+roomId), превью импорта
+     room-diff в `/api/services/import`, `ServicesEditor` (группы «Послуги кабінета» /
+     «Базові (успадковано)»), `ImportPriceModal`;
+   - Ф4 точки бронирования: queue/call-list/waitlist/referral/CeoDashboard — фильтры видимости
+     (11 точек чтения услуг — инвентарь в плане §2);
+   - Ф5 живой тест (Claude-in-Chrome против `npm run dev`).
+   Q1–Q4 плана: дефолты утверждены поведением 0121 (Q3 — только база для вейтлиста без
+   кабинета; Q4 — показывать обе).
+4. **Импорт прайсов в «1,5Т» и «Aperto Lucent»** (после 0121; иначе они без каталога) +
+   цены УЗД/РГ/ММГ (импортом через `gpt-5-nano` или вручную).
+5. **Автономный режим — отложен владельцем (сессия 10).** Дизайн ждёт утверждения
+   (8 вопросов §12, блокирующий — №5 про PWA/Chrome).
+6. **Отложенные пункты UX-аудита v2:** rem-масштаб + zoom 200% (WCAG 1.4.4 / 1.4.10).
+7. **Ротация `SUPABASE_SERVICE_ROLE_KEY` (P0, carryover).**
+8. **Плановый апгрейд зависимостей** (`npm audit fix --force` НЕЛЬЗЯ — предлагает next@9).
+9. (Опционально) тесты гонок, durable-импорт, edit шага в кейс-баре портала.
 
-1. **🎯 УСЛУГИ КАБІНЕТА — ФАЗА 1** (главный приоритет). По плану
-   **`docs/plan/ROOM_OWNED_SERVICES.md`**: новая миграция **`0120_services_room_owned.sql`**
-   (`services.room_id` + partial unique-индексы + гард-триггеры + переработанный
-   `services_import_rpc(p_rows, p_room_id)`), смоук в `begin;…rollback;`, **ревью субагентом**
-   (обязательно — RPC+триггеры), обновление `supabase/types.ts`.
-   ⚠️ Старый файл `0120_services_import_room_overrides.sql` **удалить/заменить** (в прод не шёл).
-   Далее фазы 2–5 плана (каталог-ядро → CRUD/импорт → точки бронирования → живой тест).
-2. **Владелец коммитит пакет сессии 10** (7 изменённых + планы) — лучше вместе с фазой 1,
-   затем мердж `dev → main`. Перед коммитом: `npm run typecheck && npm run lint && npm test`.
-3. **Автономный режим — ОТЛОЖЕН владельцем (сессия 10).** Когда вернётесь: утвердить или отложить
-   `docs/design/AUTONOMOUS_MODE_DESIGN.md`, начав с 8 открытых вопросов §12 (блокирующий — №5 про
-   PWA/Chrome). Если утверждён — реализация по фазам §9, начиная с фазы 0.
-4. **Отложенные пункты UX-аудита v2** (нужен живой рендер + дизайн-решение; план до реализации):
-   rem-масштаб + zoom 200% (WCAG 1.4.4 / 1.4.10). *(BookingModal-визард — **❌ отклонён
-   владельцем**, оставить монолитом; CEO drill-down — **✅ сделан** в `7649e14`.)*
-5. **Цены УЗД/РГ/ММГ** — импортом (теперь через `gpt-5-nano`; xlsx/pdf/фото/ссылка; ловушка
-   редиректов и http — см. `docs/HANDOVER.md`) или вручную в `/services`.
-6. **Ротация `SUPABASE_SERVICE_ROLE_KEY` (P0, carryover)** — сброс в Supabase → Vercel env →
-   redeploy.
-7. **Плановый апгрейд зависимостей** (npm audit: vitest/vite мажор + next 15.x patch).
-   **`npm audit fix --force` НЕЛЬЗЯ** — предлагает next@9, сломает всё. Отдельной сессией.
-8. **(Опционально)** фаза 4 каталога; двухсессионные тесты гонок
-   (`docs/audit/CASE_CONCURRENCY_TESTS.md`); durable-импорт; edit шага в кейс-баре портала.
-
-**Carryover — действия владельца:** закоммитить пакет сессии 10; удалить тестовые строки из прод-БД
-(«ТЕСТ Таймер Перевірка» `95dea758-688f-4ab0-b2ee-bd0b9a04791e` и «тест тест»); удалить папку
-`D:\RadFlowDev\_to_delete\`; поставить **месячный spending limit в OpenAI** (сейчас pay-as-you-go,
-баланс $20 + auto-recharge без потолка).
+**Carryover — действия владельца:** удалить тестовые строки из прод-БД («ТЕСТ Таймер Перевірка»
+`95dea758-688f-4ab0-b2ee-bd0b9a04791e` и «тест тест»); удалить папку `D:\RadFlowDev\_to_delete\`;
+поставить **месячный spending limit в OpenAI** (pay-as-you-go, auto-recharge без потолка).
 
 **Carryover (инфра):** cron доставки outbox — ждёт n8n-расписания; восстановление пароля
 направителя по email — ждёт домен + SMTP; Vercel Hobby — crons только суточные.
-
-**Закрыто:** живой daytime-тест таймера (`trig_01L5Afkqe8kcvTHmTVEcUmRk`) — задача
-**уже отработала** (`run_once_fired`), её отчёт лежит в отдельной сессии и в сессии 9
-не разбирался. Не жди её и не создавай заново без запроса владельца.
 
 ---
 
 ## Правила работы (не нарушать)
 
 - **Миграции применяет владелец вручную** через Supabase SQL Editor. Номер — следующий за
-  максимальным (**0120**). Идемпотентность обязательна.
+  максимальным ПРИМЕНЁННЫМ (сейчас прод на 0120; после накатки 0121 → следующая 0122).
+  Идемпотентность обязательна. **Сверяй применённость по прод-БД, а не по докам.**
 - **`create or replace` — всегда диффай с ПОСЛЕДНЕЙ действующей редакцией** (сверь с
   `pg_get_functiondef` прод-БД). Смена return-сигнатуры → `drop function` + `create` + заново
   revoke/grant. Новый DEFAULT-параметр = перегрузка (42725) — дропай явно.
-- **Любое изменение RLS/политик/RPC/триггеров → ревью субагентом.** Ловит блокеры почти каждый раз.
-- **DB-триггеры, зеркалящие TS** (`check_studies_active_catalog`, `catalog_est_sum` ↔ lib/catalog.ts,
-  `guard_status_transition` ↔ степпер досок), держать в синхроне (+ smoke).
+- **Любое изменение RLS/политик/RPC/триггеров → ревью субагентом.** В сессии 11 ревью 0121
+  дало NO-SHIP с High-находкой (блокировка кабинетов без каталога) — ловит почти каждый раз.
+- **DB-триггеры, зеркалящие TS** (`check_studies_active_catalog` ↔ lib/catalog.ts,
+  `guard_status_transition` ↔ степпер досок), держать в синхроне (+ smoke). После 0121
+  в `lib/catalog.ts`/`lib/serviceGate.ts` появится room-видимость — она ОБЯЗАНА совпадать
+  с exists-логикой триггера.
 - **Порядок локов кейса:** `patient_cases → queue_entries → advisory` (0106/0109).
 - Гард прав НЕЛЬЗЯ вешать на «значение изменилось»; `UPDATE OF col` срабатывает от УПОМИНАНИЯ.
 - Новая колонка queue/waitlist → `grant update (col)`; типы колонок сверяй по БД
   (`scheduled_time` — text!); прод-дефолт `plpgsql.variable_conflict = error`.
 - **Время:** только `wallNow(tz)` / `wallDayKey(tz)` / `wallToday0(tz)`. **НИКОГДА не переформатируй
   `wallNow(tz)` через `Intl.DateTimeFormat({timeZone})` — двойной сдвиг.**
-  `StudyTimer` считает время окончания как `wallNow()+remaining` → `getUTCHours/Minutes`.
 - **fail-CLOSED** в write-гейтах; нормализация импорта — ТОЛЬКО в TS (`lib/priceImport.ts`) под
   vitest; AI-строки не доверены — перевалидация; HMAC никогда в текст ошибки.
-- **UI-инварианты:** доступные модалки — через `useModalA11y`; тосты — единый `components/Toast.tsx`
-  (тип success/error/info/warn = цвет; ошибки 6с; опц. `action` для soft-undo); pending async-кнопок —
-  `.rf-spin` + `aria-busy` + гард двойного клика; иконки-кнопки — с `aria-label`; статус — глифом И
-  цветом. **Таймеры в кабинетах = общий `components/StudyTimer.tsx`** (обе доски синхронно; не
-  плодить свои тикеры). SetupWizard использует свой стек `useToasts` (НЕ трогать единым Toast).
+- **UI-инварианты:** доступные модалки — через `useModalA11y`; тосты — единый `components/Toast.tsx`;
+  pending async-кнопок — `.rf-spin` + `aria-busy` + гард двойного клика; иконки-кнопки — с
+  `aria-label`; статус — глифом И цветом. Таймеры в кабинетах = общий `components/StudyTimer.tsx`.
+  SetupWizard использует свой стек `useToasts` (НЕ трогать единым Toast).
 - `npm run typecheck && npm run lint && npm test` (**257/257**) перед коммитом. **Коммитит владелец.**
 
 ### Среда/инструменты (важно)
 
 - **Тулчейн — в облачной среде:** тарбол `git archive HEAD` с устройства → `/tmp/radflow` →
   `npm install` → tsc/lint/vitest. Виндовый `node_modules` под Linux-мост не идёт.
-- **⚠️ ИСТОЧНИК ИСТИНЫ — git HEAD на устройстве, НЕ облачный `/tmp` и НЕ staged-файл.** Два
-  наблюдаемых сбоя: (а) `device_stage_files`/чтение моста может отдать СТАЛЕ-копию; (б) сам
-  `/tmp/radflow` может самопроизвольно откатиться к старому снапшоту между ходами. **Признаки
-  отката** — сверяй маркеры: `test -f components/StudyTimer.tsx`, `grep -c 'StudyTimer'
-  components/QueueBoard.tsx` (=3), `grep -c 'from "@/components/Toast"'
-  components/QueueBoard.tsx` (=1 — импорт выглядит как
-  `import Toast, { type ToastData } from "@/components/Toast";`, поэтому старый маркер
-  `grep -c 'import Toast from'` даёт 0 и это НЕ откат).
-  **Если откат** — НЕ коммить из `/tmp`! Пересобери `/tmp` из git и заново наложи незакоммиченные
-  правки. Перед КАЖДЫМ `device_commit_files` серии — проверь маркеры.
-- **Шелл на устройстве — Desktop Commander MCP**, а НЕ `device_bash`. В сессии 9
-  `mcp__remote-devices__device_bash` возвращал «Workspace unavailable… The isolated Linux
-  environment on this device failed to start». Работающая связка:
-  `mcp__remote-devices__Desktop_Commander__start_process` с `powershell.exe -NoProfile -Command …`
-  (плюс `read_file`, `edit_block`, `create_directory`, `move_file`), а для переноса файлов —
-  `device_stage_files` / `device_commit_files`.
-- **Точечная правка большого файла** (`docs/HANDOVER.md` ~150 КБ) — через Desktop Commander
-  `edit_block`, чтобы не тянуть весь файл в контекст и не спамить чат.
-- **Пути `device_commit_files` — Windows-абсолютные** (`D:\\RadFlowDev\\components\\Foo.tsx`).
-  Записывать уже отправленный файл можно по `file_uuid` от `SendUserFile` — повторно отдавать
-  контент не нужно.
-- **Мост к `D:\RadFlowDev` для удаления запрещён** (`rm` = Operation not permitted) → `mv` в
-  `_to_delete/` (владелец удаляет сам). **`.git/index.lock`** застревает от прерванных git-операций/
-  GitLens и блокирует commit владельца: `mv .git/index.lock .git/trash-old-index-lock`
-  (git не трогает не-`index.lock` в `.git`), либо владелец
-  `del "D:\RadFlowDev\.git\index.lock"`.
+- **⚠️ ИСТОЧНИК ИСТИНЫ — git HEAD на устройстве, НЕ облачный `/tmp` и НЕ staged-файл.** Мост
+  может отдать стале-копию; `/tmp` может откатиться между ходами. Маркеры анти-отката:
+  `test -f components/StudyTimer.tsx`, `grep -c 'StudyTimer' components/QueueBoard.tsx` (=3),
+  `grep -c 'from "@/components/Toast"' components/QueueBoard.tsx` (=1). Перед КАЖДЫМ
+  `device_commit_files` серии кодовых файлов — проверь маркеры.
+- **Шелл на устройстве — Desktop Commander MCP** (`start_process` c `powershell.exe -NoProfile
+  -Command …`, `read_file`, `edit_block`), НЕ `device_bash` («Workspace unavailable»).
+  ⚠️ PowerShell-ловушка: `$_` в конвейере и вложенные `\"` ломаются при передаче через
+  start_process — пиши команды без `$_` (сессия 11 это подтвердила).
+- **Стейджинг/коммит файлов** — `device_request_folder_access(["D:\\RadFlowDev"])` →
+  `device_stage_files` / `device_commit_files` (пути Windows-абсолютные, повторная запись —
+  по `file_uuid` от `SendUserFile`).
+- **Мост не удаляет файлы** (`rm` = Operation not permitted) → `mv` в `_to_delete/` (владелец
+  удаляет сам; `_to_delete/` НЕ в `.gitignore`). Desktop Commander `Remove-Item` — РАБОТАЕТ.
+  **`.git/index.lock`** застрял → `mv` в `.git/trash-old-index-lock` или владелец удалит.
 - **Мердж/пуш — через GitHub-веб в Claude-in-Chrome** (сеть с устройства к GitHub = 403 proxy,
-  `gh` там НЕТ; владелец залогинен как `tiosynergy`).
-- **Живой рендер UI** (в т.ч. `StudyTimer` — тикер+SVG) — только Claude-in-Chrome против `npm run dev`
-  (hot-reload ловит правки на диске устройства). Сеть-трекер Claude-in-Chrome НЕ видит cross-origin
-  Supabase-запросы — RPC так не проверить, юзать `execute_sql`. **Пароли вводит владелец.**
-- **SQL верифицируй через Supabase MCP `execute_sql`** в `begin;…;rollback;` (одна транзакция).
-  Smoke: один DO-блок, `raise exception 'SMOKE_OK'` откатывает всё (и DDL). Имперсонация:
+  `gh` НЕТ; владелец залогинен как `tiosynergy`).
+- **Живой рендер UI** — Claude-in-Chrome против `npm run dev`. Сеть-трекер НЕ видит cross-origin
+  Supabase-запросы — RPC проверяй `execute_sql`. **Пароли вводит владелец.**
+- **SQL верифицируй через Supabase MCP `execute_sql`**: смоук-паттерн — DDL + DO-блок,
+  финальный `raise exception 'SMOKE_OK'` откатывает всю транзакцию (и DDL). Точную сверку
+  конвертаций делай через temp-таблицу-снапшот ДО DDL (паттерн сессии 11). Имперсонация:
   `set_config('request.jwt.claims', json_build_object('sub',uid,'role','authenticated')::text, true)`.
+  `execute_sql` отдаёт результат ТОЛЬКО последнего запроса — агрегируй в `json_build_object`.
   dev и prod = ОДИН проект (`rdiqjxzibdqbhwileret`).
 - **n8n — через n8n MCP** (`execute_workflow` сортирует ключи webhook-body ПО АЛФАВИТУ — HMAC
-  подписывать с этим порядком; песочница Code-нод: только `require('crypto')`, URL/dns НЕТ; секрет
-  в 2 нодах; Fetch Page — редиректы OFF).
-- **Mermaid-схемы валидируй рендером:** `npx @mermaid-js/mermaid-cli@11` с puppeteer-конфигом
-  `{"executablePath":"/opt/pw-browsers/chromium","args":["--no-sandbox","--disable-dev-shm-usage"]}`.
-- **vitest-ловушка:** `beforeEach(mockReset)` рядом с throw-моком конфликтует с трекером — не ставить.
-- **Планировщик:** только `mcp__claude-code-remote__*` (create_trigger/list_triggers/…), НЕ локальный
-  cron — локальный умирает вместе с сессией. `list_triggers` может вернуть >130 КБ — парси выборочно.
+  подписывать с этим порядком; песочница Code-нод: только `require('crypto')`; секрет в 2 нодах;
+  Fetch Page — редиректы OFF).
+- **Планировщик:** только `mcp__claude-code-remote__*`, НЕ локальный cron.
 - **Durable-состояние между сессиями — инструмент `Projects`** (проект claude.ai «RadFlow»):
-  `project_read` / `project_search` / `project_write`. В конце сессии обнови
-  `claude/radflow-handoff.md`.
-- **`execute_sql` (Supabase MCP) отдаёт результат ТОЛЬКО последнего запроса** — шли по одному
-  или агрегируй в `json_build_object`. Смоук: один DO-блок + `raise exception 'SMOKE_OK …'`.
-- **Vercel:** env-переменные в **Settings → Environment Variables** (НЕ в «Environments»);
-  изменение применяется только новым деплоем → Deployments → ⋯ → **Redeploy**.
-- **CSS-ловушка:** `animation-fill-mode: both` оставляет остаточный identity-`transform`, который
-  делает элемент containing block для `position:fixed` → модалки внутри липнут к верху. Именно
-  поэтому у `.fade-in` в `radflow.css` НЕТ `both` — не возвращать.
-- **Layout-баги диагностируй через Claude-in-Chrome `javascript_tool`** (`getComputedStyle`,
-  `getBoundingClientRect`, `offsetParent`) — быстрее, чем гадать по скриншотам.
-- **OpenAI-модели GPT-5 не принимают `temperature`** (400 Bad Request) — только `reasoning_effort`
-  (+ опц. `verbosity`); детерминизм даёт strict json_schema.
+  в конце сессии обнови `claude/radflow-handoff.md`.
+- **Vercel:** env-переменные в **Settings → Environment Variables**; применяются только новым
+  деплоем → Deployments → ⋯ → Redeploy.
+- **CSS-ловушка:** `animation-fill-mode: both` → остаточный identity-`transform` → containing
+  block для `position:fixed` → модалки липнут к верху. У `.fade-in` в `radflow.css` НЕТ `both`.
+- **OpenAI GPT-5 не принимают `temperature`** (400) — только `reasoning_effort` (+ `verbosity`);
+  детерминизм даёт strict json_schema.
 
 ## Первое сообщение
 
-Прочитай `claude/radflow-handoff.md` в проекте claude.ai «RadFlow» (`Projects` → `project_info`,
-затем `project_read`), шапку + блок «сессия 10» в `docs/HANDOVER.md` и **план
-`docs/plan/ROOM_OWNED_SERVICES.md`** (это задача №1). Проверь на устройстве через Desktop Commander:
-`git --no-optional-locks log --oneline -3`, `git status` (ожидается HEAD `9e508b5` и **7 изменённых
-+ 3 новых файла** — если владелец их уже закоммитил, HEAD будет другим и дерево чистым) и
-максимальный номер миграции (**прод на 0119; следующая = 0120**).
-
-**Задача №1 — фаза 1 плана «услуги кабінета»:** написать миграцию `0120_services_room_owned.sql`
-(nullable `services.room_id`; partial unique-индексы для базы и для кабінета; гард-триггер
-room↔service по clinic+модальности; правка `check_service_room_override` и
-`check_studies_active_catalog`; переработанный `services_import_rpc(p_rows, p_room_id)` — в
-room-режиме пишет ТОЛЬКО room-owned услуги, база не трогается). Обязательно: диффать
-`create or replace` с `pg_get_functiondef` прод-БД, смоук в `begin;…rollback;` через Supabase MCP,
-**ревью субагентом**, обновить `supabase/types.ts`. Старый файл
-`0120_services_import_room_overrides.sql` (подход «база+оверрайд») — удалить/заменить, в прод он
-НЕ применялся. **Миграцию применяет владелец вручную.**
+Прочитай `claude/radflow-handoff.md` в проекте claude.ai «RadFlow», шапку + блок «сессия 11»
+в `docs/HANDOVER.md` и план `docs/plan/ROOM_OWNED_SERVICES.md` (§2 инвентарь, §8 статус).
+**0121 накачена (прод-БД на 0121)** — задача №1: **фаза 2** плана (каталог-ядро:
+`lib/catalog.ts` + `lib/serviceGate.ts` — room-видимость ОБЯЗАНА совпадать с exists-логикой
+`check_studies_active_catalog` из 0121, включая легаси-ветку «только видимые»; vitest-кейсы
+room-услуг). Быстрая сверка перед стартом: по прод-БД
+`select exists(select 1 from information_schema.columns where table_name='services' and
+column_name='room_id')` (ожидается true) и git-статус на устройстве через Desktop Commander
+(`git --no-optional-locks log --oneline -3`, `git status`) — ожидается HEAD `d783696` +
+незакоммиченные 0121/смоук/доки, либо уже свежий коммит владельца. Помни: тулчейн гоняй в
+облаке из git HEAD; после Ф2 — Ф3 CRUD/импорт, Ф4 точки бронирования, Ф5 живой тест.
