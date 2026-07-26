@@ -1190,8 +1190,10 @@ select.inp { cursor: pointer; }
 .rcl-refuse:hover { color: var(--red); border-color: var(--red); }
 
 /* fade in (transform only — opacity-entrance animations are unreliable here) */
-.fade-in { animation: riseIn .26s cubic-bezier(.2,.8,.2,1) both; }
-@keyframes riseIn { from { transform: translateY(6px); } to { transform: translateY(0); } }
+/* NB: без animation-fill-mode:both — інакше залишковий identity-transform робить
+   .fade-in containing block для position:fixed нащадків (модалки липнуть до верху). */
+.fade-in { animation: riseIn .26s cubic-bezier(.2,.8,.2,1); }
+@keyframes riseIn { from { transform: translateY(6px); } to { transform: none; } }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 /* ===== New Booking Modal — extended fields ===== */

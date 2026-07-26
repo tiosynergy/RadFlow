@@ -36,7 +36,12 @@
     [`userflows/autonomous-mode-flow.mermaid`](userflows/autonomous-mode-flow.mermaid)
     (рендер: [`autonomous-mode-flow.svg`](userflows/autonomous-mode-flow.svg)).
   - `REFERRAL_PORTAL_*` — портал направлений.
-- **plan/** — актуальные планы: [`SERVICES_CATALOG.md`](plan/SERVICES_CATALOG.md),
+- **plan/** — актуальные планы:
+  [`ROOM_OWNED_SERVICES.md`](plan/ROOM_OWNED_SERVICES.md) — **услуги, принадлежащие кабінету
+  (`services.room_id`), v1.0 (2026-07-26) — следующая большая фича; миграция 0120 к написанию**;
+  [`AI_INTEGRATION_GPT54NANO.md`](plan/AI_INTEGRATION_GPT54NANO.md) — тиеринг AI-моделей
+  (рабочая — OpenAI `gpt-5-nano`, эскалация — mini/full/grok);
+  [`SERVICES_CATALOG.md`](plan/SERVICES_CATALOG.md),
   [`CATALOG_N8N_AI_INTEGRATION_PLAN.md`](plan/CATALOG_N8N_AI_INTEGRATION_PLAN.md),
   [`CROSS_MODAL_CASE.md`](plan/CROSS_MODAL_CASE.md), [`REFERRER_CASES.md`](plan/REFERRER_CASES.md).
 

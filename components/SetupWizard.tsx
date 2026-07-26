@@ -696,6 +696,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
       savedRef.current = JSON.stringify(d);
       setDirty(false);
       push("Зміни збережено", "success");
+      router.refresh(); // підтягнути свіжі rooms/services у крок «Послуги» без ручного перезавантаження
       setSaving(false);
       return true;
     } catch (e) {
@@ -789,8 +790,8 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
         <div className="wiz-bar">
           <div className="wiz-bar-inner">
             <div className="wiz-bar-right" style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-              <span className="wiz-cta-wrap" title={valid[1] ? undefined : (() => { const eq = dataRef.current?.equip ?? []; return (!equipHoursValid(eq) || !equipBreaksValid(eq)) ? "Виправте години або перерви кабінетів — вони підсвічені червоним" : "Заповніть назву клініки, місто, ПІБ і телефон адміністратора та хоча б один апарат"; })()}>
-                <button className="btn btn-green" onClick={() => save()} disabled={!valid[1] || saving}>
+              <span className="wiz-cta-wrap" title={!valid[1] ? (() => { const eq = dataRef.current?.equip ?? []; return (!equipHoursValid(eq) || !equipBreaksValid(eq)) ? "Виправте години або перерви кабінетів — вони підсвічені червоним" : "Заповніть назву клініки, місто, ПІБ і телефон адміністратора та хоча б один апарат"; })() : (!dirty ? "Немає незбережених змін" : undefined)}>
+                <button className="btn btn-green" onClick={() => save()} disabled={!valid[1] || saving || !dirty}>
                   {saving ? "Зберігаємо…" : "Зберегти"}
                 </button>
               </span>

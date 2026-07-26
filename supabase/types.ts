@@ -1155,7 +1155,7 @@ export type Database = {
       };
       // 0115: фінальний upsert імпорту прайса (SECURITY DEFINER, admin-гейт усередині).
       services_import_rpc: {
-        Args: { p_rows: Json };
+        Args: { p_rows: Json; p_room_id?: string | null };
         Returns: Json;
       };
       set_waitlist_status_rpc: {

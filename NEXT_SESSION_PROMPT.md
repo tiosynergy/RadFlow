@@ -28,23 +28,54 @@ TypeScript + Tailwind + zod, Vercel (Hobby + Fluid Compute, maxDuration=300). Р
 
 ## Состояние на конец сессии 2026-07-26 (сессия 10)
 
-**Git:** ветка `dev`, HEAD **`6d7bb74`**. Дерево **чистое**. (Владелец закоммитил UI-пакет
-сессии 9 — те 3 файла теперь в `6d7bb74`.)
+**Git:** ветка `dev`, HEAD **`9e508b5`**. Дерево **НЕ чистое** — 7 изменённых + 3 новых файла
+(UI-пакет + AI-правки + планы; полный список ниже). **Коммитит владелец.**
 
 **Прод-код АКТУАЛЕН:** `dev → main` **смёржен в сессии 10** — PR #7, merge-коммит **`18768c9`**,
 влиты 10 коммитов (`1bd912a`, `f33f350`, `485654d`, `c7e16ee`, `1768129`, `7e300e2`, `7649e14`,
-`1256842`, `f0d8f49`, `6d7bb74`). Vercel-автодеплой прошёл, прод отдаёт `/login`. `origin/main..dev`
-теперь **пусто**. ⚠️ Локальный ref `origin/main` на устройстве обновится только после `git fetch`
-(сеть с устройства к GitHub = 403 proxy) — при подсчёте backlog верь GitHub-вебу, а не локальному ref.
+`1256842`, `f0d8f49`, `6d7bb74`). Vercel-автодеплой прошёл; позже — ещё **редеплой** под
+исправленный `N8N_IMPORT_WEBHOOK_URL`. ⚠️ Локальный ref `origin/main` обновится только после
+`git fetch` (сеть с устройства к GitHub = 403 proxy) — верь GitHub-вебу, а не локальному ref.
 
-**Прод-БД на `0119`** (`0119_services_import_optimistic_lock.sql`), в `supabase/migrations/`
-121 файл. **Следующая новая миграция = `0120`.** В сессиях 9–10 миграций не было.
+**Прод-БД на `0119`**. **Следующая новая миграция = `0120`.** ⚠️ Лежащий в репо
+`supabase/migrations/0120_services_import_room_overrides.sql` — **НЕ ПРИМЕНЯТЬ**, он подлежит
+замене (см. «Услуги кабінета»).
+
+### Незакоммиченное на `dev`
+
+**Изменённые (7):** `components/ImportPriceModal.tsx`, `components/ServicesEditor.tsx`,
+`components/SetupWizard.tsx`, `styles/prototype/radflow-wizard.css`, `styles/prototype/radflow.css`,
+`app/services/actions.ts`, `supabase/types.ts`.
+**Новые (3):** `docs/plan/AI_INTEGRATION_GPT54NANO.md`, `docs/plan/ROOM_OWNED_SERVICES.md`,
+`supabase/migrations/0120_services_import_room_overrides.sql` (⚠️ к замене).
+
+### AI: перешли на OpenAI `gpt-5-nano`
+
+- Рабочая модель RadFlow — **`gpt-5-nano` (OpenAI API)**; эскалация — `gpt-5-mini`/`gpt-5` или
+  прежний `grok-4.5`. ⚠️ `gpt-5.4-nano` в аккаунте владельца НЕТ.
+- **n8n `radflow-price-import` (`ikpUa5PZ1QWQy8oH`) переключён:** нода `Call LLM` (бывш. `Call Grok`),
+  `api.openai.com/v1/chat/completions`, credential `OpenAI account` (`openAiApi`, `lFbHuwzDmntoEq82`),
+  `model: 'gpt-5-nano'`, `reasoning_effort: 'low'`. ⚠️ **`temperature` УБРАН** — GPT-5 его не
+  принимает (400). Живой импорт прошёл (107 и 130+ позиций). Grok-credential на месте (откат).
+- Прод-env `N8N_IMPORT_WEBHOOK_URL` починен + редеплой. ⚠️ Vercel: переменные в
+  **Settings → Environment Variables**, применяются только новым деплоем.
+- План тиеринга по 6 внедрениям — `docs/plan/AI_INTEGRATION_GPT54NANO.md`.
+
+### Услуги кабінета — СЛЕДУЮЩАЯ БОЛЬШАЯ ФИЧА (план готов, кода нет)
+
+Требование владельца: услуги, созданные/импортированные **для конкретного кабінета**, принадлежат
+**только ему**; базовый каталог — общий (AI сам распознаёт модальности, базовые видны всем
+аппаратам своей модальности). **Утверждённая модель — nullable `services.room_id`**
+(`NULL` = базовая, `= X` = кабінета X). Полный план — **`docs/plan/ROOM_OWNED_SERVICES.md`**
+(инвентарь 11 точек чтения услуг, DB-триггеры `check_studies_active_catalog`/`catalog_est_sum`,
+содержимое миграции, 5 фаз, вопросы Q1–Q4). Клиентские правки сессии 10 совместимы — меняется
+серверная семантика.
 
 **Тулчейн** (замер сессии 10 на `6d7bb74`): `tsc` чист, `lint` 0, **`vitest` 257/257** (16 файлов).
 
 ### Что сделано в сессии 10
 
-Только деплой — **кода не написано, миграций не применено**.
+Деплой + миграция AI на OpenAI + UI-пакет + план услуг кабінета. **Миграций БД не применено.**
 
 - Сверка с устройством: владелец уже закоммитил UI-пакет сессии 9 → HEAD `6d7bb74`, дерево чистое.
 - Тулчейн собран в облаке из git HEAD, маркеры анти-отката чистые: **typecheck 0, lint 0, 257/257**.
@@ -105,27 +136,38 @@ TypeScript + Tailwind + zod, Vercel (Hobby + Fluid Compute, maxDuration=300). Р
 
 ## ЧТО ДЕЛАТЬ ДАЛЬШЕ (по приоритету)
 
-> ✅ **Закрыто в сессиях 9–10:** коммит UI-пакета (владелец, `6d7bb74`) и мердж `dev → main`
-> (PR #7, merge-коммит `18768c9`, Vercel-автодеплой в прод). Прод-код актуален.
+> ✅ **Закрыто в сессиях 9–10:** коммит UI-пакета (владелец, `6d7bb74`); мердж `dev → main`
+> (PR #7, `18768c9`, автодеплой в прод); переход AI на OpenAI `gpt-5-nano`; починка прод-env
+> импорта; UI-пакет (модалки/мастер); планы AI-тиеринга и услуг кабінета.
 
-1. **Автономный режим — ОТЛОЖЕН владельцем (сессия 10).** Когда вернётесь: утвердить или отложить
+1. **🎯 УСЛУГИ КАБІНЕТА — ФАЗА 1** (главный приоритет). По плану
+   **`docs/plan/ROOM_OWNED_SERVICES.md`**: новая миграция **`0120_services_room_owned.sql`**
+   (`services.room_id` + partial unique-индексы + гард-триггеры + переработанный
+   `services_import_rpc(p_rows, p_room_id)`), смоук в `begin;…rollback;`, **ревью субагентом**
+   (обязательно — RPC+триггеры), обновление `supabase/types.ts`.
+   ⚠️ Старый файл `0120_services_import_room_overrides.sql` **удалить/заменить** (в прод не шёл).
+   Далее фазы 2–5 плана (каталог-ядро → CRUD/импорт → точки бронирования → живой тест).
+2. **Владелец коммитит пакет сессии 10** (7 изменённых + планы) — лучше вместе с фазой 1,
+   затем мердж `dev → main`. Перед коммитом: `npm run typecheck && npm run lint && npm test`.
+3. **Автономный режим — ОТЛОЖЕН владельцем (сессия 10).** Когда вернётесь: утвердить или отложить
    `docs/design/AUTONOMOUS_MODE_DESIGN.md`, начав с 8 открытых вопросов §12 (блокирующий — №5 про
    PWA/Chrome). Если утверждён — реализация по фазам §9, начиная с фазы 0.
-2. **Отложенные пункты UX-аудита v2** (нужен живой рендер + дизайн-решение; план до реализации):
+4. **Отложенные пункты UX-аудита v2** (нужен живой рендер + дизайн-решение; план до реализации):
    rem-масштаб + zoom 200% (WCAG 1.4.4 / 1.4.10). *(BookingModal-визард — **❌ отклонён
    владельцем**, оставить монолитом; CEO drill-down — **✅ сделан** в `7649e14`.)*
-3. **Цены УЗД/РГ/ММГ** — импортом (xlsx/pdf/фото/ссылка; ловушка редиректов и http — см.
-   `docs/HANDOVER.md`) или вручную в `/services`.
-4. **Ротация `SUPABASE_SERVICE_ROLE_KEY` (P0, carryover)** — сброс в Supabase → Vercel env →
+5. **Цены УЗД/РГ/ММГ** — импортом (теперь через `gpt-5-nano`; xlsx/pdf/фото/ссылка; ловушка
+   редиректов и http — см. `docs/HANDOVER.md`) или вручную в `/services`.
+6. **Ротация `SUPABASE_SERVICE_ROLE_KEY` (P0, carryover)** — сброс в Supabase → Vercel env →
    redeploy.
-5. **Плановый апгрейд зависимостей** (npm audit: vitest/vite мажор + next 15.x patch).
+7. **Плановый апгрейд зависимостей** (npm audit: vitest/vite мажор + next 15.x patch).
    **`npm audit fix --force` НЕЛЬЗЯ** — предлагает next@9, сломает всё. Отдельной сессией.
-6. **(Опционально)** фаза 4 каталога; двухсессионные тесты гонок
+8. **(Опционально)** фаза 4 каталога; двухсессионные тесты гонок
    (`docs/audit/CASE_CONCURRENCY_TESTS.md`); durable-импорт; edit шага в кейс-баре портала.
 
-**Carryover — действия владельца:** удалить тестовые строки из прод-БД («ТЕСТ Таймер Перевірка»
-`95dea758-688f-4ab0-b2ee-bd0b9a04791e` и «тест тест»); удалить папку `D:\RadFlowDev\_to_delete\`.
-*(Коммит UI-пакета и мердж `dev → main` — выполнены в сессиях 9–10.)*
+**Carryover — действия владельца:** закоммитить пакет сессии 10; удалить тестовые строки из прод-БД
+(«ТЕСТ Таймер Перевірка» `95dea758-688f-4ab0-b2ee-bd0b9a04791e` и «тест тест»); удалить папку
+`D:\RadFlowDev\_to_delete\`; поставить **месячный spending limit в OpenAI** (сейчас pay-as-you-go,
+баланс $20 + auto-recharge без потолка).
 
 **Carryover (инфра):** cron доставки outbox — ждёт n8n-расписания; восстановление пароля
 направителя по email — ждёт домен + SMTP; Vercel Hobby — crons только суточные.
@@ -212,15 +254,33 @@ TypeScript + Tailwind + zod, Vercel (Hobby + Fluid Compute, maxDuration=300). Р
 - **Durable-состояние между сессиями — инструмент `Projects`** (проект claude.ai «RadFlow»):
   `project_read` / `project_search` / `project_write`. В конце сессии обнови
   `claude/radflow-handoff.md`.
+- **`execute_sql` (Supabase MCP) отдаёт результат ТОЛЬКО последнего запроса** — шли по одному
+  или агрегируй в `json_build_object`. Смоук: один DO-блок + `raise exception 'SMOKE_OK …'`.
+- **Vercel:** env-переменные в **Settings → Environment Variables** (НЕ в «Environments»);
+  изменение применяется только новым деплоем → Deployments → ⋯ → **Redeploy**.
+- **CSS-ловушка:** `animation-fill-mode: both` оставляет остаточный identity-`transform`, который
+  делает элемент containing block для `position:fixed` → модалки внутри липнут к верху. Именно
+  поэтому у `.fade-in` в `radflow.css` НЕТ `both` — не возвращать.
+- **Layout-баги диагностируй через Claude-in-Chrome `javascript_tool`** (`getComputedStyle`,
+  `getBoundingClientRect`, `offsetParent`) — быстрее, чем гадать по скриншотам.
+- **OpenAI-модели GPT-5 не принимают `temperature`** (400 Bad Request) — только `reasoning_effort`
+  (+ опц. `verbosity`); детерминизм даёт strict json_schema.
 
 ## Первое сообщение
 
 Прочитай `claude/radflow-handoff.md` в проекте claude.ai «RadFlow» (`Projects` → `project_info`,
-затем `project_read`) и шапку + блок «сессия 10» в `docs/HANDOVER.md`. Проверь на устройстве
-через Desktop Commander: `git --no-optional-locks log --oneline -6`, `git status`,
-`git --no-optional-locks rev-list --count origin/main..dev` (ожидается: HEAD `6d7bb74`, дерево
-чистое; локальный `origin/main..dev` может показать 10 из-за устаревшего ref — но на GitHub `main`
-уже содержит merge `18768c9`, backlog реально пуст) и максимальный номер миграции (**прод на 0119;
-следующая = 0120**). Прод-код актуален (мердж сделан в сессии 10). Затем предложи план по
-приоритетам «Что делать дальше» — автономный режим владельцем **отложен**, так что верхние живые
-пункты: UX-долг (rem/zoom 200%), цены УЗД/РГ/ММГ, ротация `SUPABASE_SERVICE_ROLE_KEY`.
+затем `project_read`), шапку + блок «сессия 10» в `docs/HANDOVER.md` и **план
+`docs/plan/ROOM_OWNED_SERVICES.md`** (это задача №1). Проверь на устройстве через Desktop Commander:
+`git --no-optional-locks log --oneline -3`, `git status` (ожидается HEAD `9e508b5` и **7 изменённых
++ 3 новых файла** — если владелец их уже закоммитил, HEAD будет другим и дерево чистым) и
+максимальный номер миграции (**прод на 0119; следующая = 0120**).
+
+**Задача №1 — фаза 1 плана «услуги кабінета»:** написать миграцию `0120_services_room_owned.sql`
+(nullable `services.room_id`; partial unique-индексы для базы и для кабінета; гард-триггер
+room↔service по clinic+модальности; правка `check_service_room_override` и
+`check_studies_active_catalog`; переработанный `services_import_rpc(p_rows, p_room_id)` — в
+room-режиме пишет ТОЛЬКО room-owned услуги, база не трогается). Обязательно: диффать
+`create or replace` с `pg_get_functiondef` прод-БД, смоук в `begin;…rollback;` через Supabase MCP,
+**ревью субагентом**, обновить `supabase/types.ts`. Старый файл
+`0120_services_import_room_overrides.sql` (подход «база+оверрайд») — удалить/заменить, в прод он
+НЕ применялся. **Миграцию применяет владелец вручную.**

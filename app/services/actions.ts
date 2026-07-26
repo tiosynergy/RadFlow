@@ -385,20 +385,28 @@ const sImportRows = z.array(sImportRow).min(1, "Немає позицій для
 export type ImportServiceRow = z.infer<typeof sImportRow>;
 
 export type ImportServicesResult =
-  | { ok: true; inserted: number; updated: number; skippedInactive: number; noop: number }
+  | { ok: true; inserted: number; updated: number; skippedInactive: number; noop: number; overrides: number }
   // 0119: каталог змінився між передпереглядом і застосуванням — нічого не застосовано,
   // conflicts = назви змінених/доданих позицій; клієнт просить оновити передперегляд.
   | { ok: false; error: string; code?: "auth" | "forbidden" | "generic" | "stale"; conflicts?: string[] };
 
 /** Застосувати підтверджені позиції імпорту (все-або-нічого). */
-export async function importServices(raw: ImportServiceRow[]): Promise<ImportServicesResult> {
+export async function importServices(raw: ImportServiceRow[], roomId?: string): Promise<ImportServicesResult> {
   const v = parseInput("importServices", sImportRows, raw);
   if (!v.ok) return v as ImportServicesResult;
+  // 0120: опційний імпорт У КАБІНЕТ (база + переозначення). null = базовий каталог.
+  let roomUuid: string | null = null;
+  if (roomId != null) {
+    const rv = parseInput("importServices.room", zUuid, roomId);
+    if (!rv.ok) return rv as ImportServicesResult;
+    roomUuid = rv.data;
+  }
   const supabase = await createClient();
   const gate = await requireAdmin(supabase);
   if ("error" in gate) return gate.error as ImportServicesResult;
 
   const { data, error } = await supabase.rpc("services_import_rpc", {
+    p_room_id: roomUuid,
     p_rows: v.data.map((r) => ({
       name: r.name,
       modality: r.modality,
@@ -420,7 +428,7 @@ export async function importServices(raw: ImportServiceRow[]): Promise<ImportSer
     }
     return { ok: false, error: safeDbError("services_import", { message: error.message }), code: "generic" };
   }
-  const res = (data ?? {}) as { stale?: boolean; conflicts?: unknown; inserted?: number; updated?: number; skipped_inactive?: number; noop?: number };
+  const res = (data ?? {}) as { stale?: boolean; conflicts?: unknown; inserted?: number; updated?: number; skipped_inactive?: number; noop?: number; overrides?: number };
   // 0119: каталог змінився під час передперегляду — RPC нічого не застосував.
   if (res.stale) {
     const conflicts = Array.isArray(res.conflicts) ? res.conflicts.filter((n): n is string => typeof n === "string") : [];
@@ -438,5 +446,7 @@ export async function importServices(raw: ImportServiceRow[]): Promise<ImportSer
     skippedInactive: res.skipped_inactive ?? 0,
     // 0116: рядки без змін (гонка «каталог змінився між передпереглядом і apply»).
     noop: res.noop ?? 0,
+    // 0120: кількість переозначень кабінета (0 у базовому режимі).
+    overrides: res.overrides ?? 0,
   };
 }

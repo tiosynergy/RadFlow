@@ -12,7 +12,7 @@
    3b: AI-рядки з confidence < порога сервер кладе в «Нерозпізнані» — тут
    модальність від AI підставляється в селект як пропозиція, рішення за адміном. */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { importServices, type ImportServiceRow } from "@/app/services/actions";
 import { BOOKABLE_MODALITIES, modalityLabel, normDur } from "@/lib/studies";
@@ -31,6 +31,10 @@ interface Props {
   onClose: () => void;
   /** Викликається ПІСЛЯ успішного імпорту (батько робить notify + refresh). */
   onDone: (msg: string) => void;
+  /** 0120: якщо задано — імпорт У КАБІНЕТ (база + переозначення) лише цієї модальності. */
+  roomModality?: ImportServiceRow["modality"];
+  /** 0120: id кабінета для переозначень (обовʼязковий разом із roomModality). */
+  roomId?: string;
 }
 
 type Step = "pick" | "loading" | "preview" | "applying";
@@ -39,7 +43,7 @@ type BookableMod = ImportServiceRow["modality"];
 
 const fmtUah = (n: number) => n.toLocaleString("uk-UA") + " ₴";
 
-export default function ImportPriceModal({ onClose, onDone }: Props) {
+export default function ImportPriceModal({ onClose, onDone, roomModality, roomId }: Props) {
   const [step, setStep] = useState<Step>("pick");
   // Під час застосування закривати не можна (Esc/✕): імпорт на сервері завершиться,
   // а onDone/refresh — ні, і адмін бачитиме старий каталог (ревью L6).
@@ -125,6 +129,17 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
     return g;
   }, [preview]);
 
+  // 0120: у режимі кабінета нерозпізнаним рядкам одразу проставляємо модальність кабінета —
+  // тоді вони стають вибірними й імпортуються без ручного вибору (модальність кабінета відома).
+  useEffect(() => {
+    if (!roomModality || !preview) return;
+    setModPick((p) => {
+      const next = { ...p };
+      preview.rows.forEach((r, i) => { if (r.kind === "unrecognized" && next[i] == null) next[i] = roomModality; });
+      return next;
+    });
+  }, [roomModality, preview]);
+
   /* Майстер-чекбокс «Усі»: рядки, які МОЖНА ввімкнути (все, крім «без змін»
      і нерозпізнаних без обраної модальності — тим спершу обирають модальність). */
   const selectableIdx = useMemo(() => {
@@ -159,9 +174,13 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
         // (modPick) рядок не імпортується (чекбокс вмикається разом із вибором).
         const m = modPick[i];
         if (!m) return;
+        // 0120: у режимі кабінета застосовуємо ЛИШЕ його модальність.
+        if (roomModality && m !== roomModality) return;
         out.push({ name: r.row.name, modality: m, price: r.row.price, durationMin: pickedDur(i, r.row.durationMin), revive: false });
         return;
       }
+      // 0120: у режимі кабінета відкидаємо чужу модальність (RPC теж фільтрує — це UI-рубіж).
+      if (roomModality && (r.row.modality as BookableMod) !== roomModality) return;
       out.push({
         name: r.row.name,
         // ImportRow.modality тут завжди booking-модальність (unrecognized відсіяні вище).
@@ -177,14 +196,14 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
       });
     });
     return out;
-  }, [preview, checked, modPick, durPick]); // eslint-disable-line react-hooks/exhaustive-deps -- pickedDur читає durPick
+  }, [preview, checked, modPick, durPick, roomModality]); // eslint-disable-line react-hooks/exhaustive-deps -- pickedDur читає durPick
 
   async function onApply() {
     if (!selectedRows.length) return;
     setErr(null);
     setStep("applying");
     try {
-      const res = await importServices(selectedRows);
+      const res = await importServices(selectedRows, roomId);
       if (!res.ok) {
         // 0119: каталог змінився під час перегляду — імпорт нічого не застосував.
         // Повертаємо на крок вибору файла/посилання, щоб адмін перезчитав актуальний
@@ -205,6 +224,7 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
       const parts = [
         res.inserted ? `нових: ${res.inserted}` : null,
         res.updated ? `оновлено: ${res.updated}` : null,
+        res.overrides ? `у кабінет: ${res.overrides}` : null,
         res.skippedInactive ? `пропущено вимкнених: ${res.skippedInactive}` : null,
         res.noop ? `без змін: ${res.noop}` : null,
       ].filter(Boolean);
@@ -252,16 +272,24 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
   return (
     <div className="overlay">
       <div className="dialog fade-in" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Імпорт прайса"
-        style={{ maxWidth: 720, width: "min(720px, 94vw)" }}>
+        style={{ maxWidth: 720, width: "min(720px, 94vw)", maxHeight: "90vh", display: "flex", flexDirection: "column" }}>
         <div className="dlg-head">
           <div className="dlg-title">⇪ Імпорт прайса</div>
           <button className="icon-btn" onClick={safeClose} disabled={step === "applying"} aria-label="Закрити">✕</button>
         </div>
 
-        <div className="dlg-body" style={{ maxHeight: "min(68vh, 640px)", overflowY: "auto" }}>
+        <div className="dlg-body" style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>
           {err && (
             <div style={{ color: "var(--red)", fontSize: 13.5, border: "1px solid var(--red)", borderRadius: 10, padding: "8px 12px" }} role="alert">
               {err}
+            </div>
+          )}
+
+          {roomModality && (
+            <div style={{ fontSize: 12.5, color: "var(--text-secondary)", border: "1px solid var(--blue)", borderRadius: 10, padding: "8px 12px", background: "var(--blue-bg)" }}>
+              🏥 Імпорт у кабінет — застосуються <b>лише позиції {modalityLabel(roomModality)}</b>:
+              вони створяться в базовому каталозі, а ціна/час ляжуть переозначенням для цього кабінета.
+              Інші модальності з прайса ігноруються.
             </div>
           )}
 
@@ -269,7 +297,7 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
             <div>
               <p className="dlg-text" style={{ marginBottom: 12 }}>
                 Завантажте файл прайса (до 4 МБ): <b>.xlsx</b> / <b>.csv</b> — точний розбір таблиці;
-                <b> .pdf</b> / <b>.docx</b> / <b>фото прайса</b> (.jpg/.png) — AI-розбір (Grok).
+                <b> .pdf</b> / <b>.docx</b> / <b>фото прайса</b> (.jpg/.png) — AI-розбір.
                 Модальність визначається за назвою чи розділом (МРТ/КТ/УЗД/рентген/мамо…).
                 Після розбору буде <b>передперегляд</b> — без підтвердження каталог не зміниться.
               </p>
@@ -294,7 +322,7 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               {preview.ai ? (
                 <div style={{ fontSize: 12.5, color: "var(--text-muted)", border: "1px solid var(--border-strong)", borderRadius: 10, padding: "8px 12px" }}>
-                  🤖 Розібрано <b>AI (Grok)</b> — рядки НЕ відмічені: перевірте назви й ціни та
+                  🤖 Розібрано <b>AI</b> — рядки НЕ відмічені: перевірте назви й ціни та
                   відмітьте потрібні (модель могла помилитися); «Усі» нижче вмикає все разом.
                   Невпевнені — у «Нерозпізнаних».
                   {preview.skipped > 0 && <> Відкинуто рядків: <b>{preview.skipped}</b>.</>}

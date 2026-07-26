@@ -245,9 +245,19 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
   async function onAdd() {
     setBusy(true);
     try {
-      const res = await createService(draftToInput(addDraft, tab as BookableModality));
+      // effTab = модальність активної вкладки (база) або кабінета (у режимі кабінета — фіксована).
+      const res = await createService(draftToInput(addDraft, effTab as BookableModality));
       if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-      notify("Послугу додано: " + addDraft.name.trim(), "success");
+      // 0120: у режимі кабінета ціна/час із форми йдуть переозначенням саме для цього кабінета
+      // (послуга вже у базовому каталозі — вимога гарда 0108). База + переозначення.
+      if (room && res.id) {
+        const ov = await setRoomServiceOverride(room.id, res.id, {
+          price: numOrNull(addDraft.price), durationMin: numOrNull(addDraft.durationMin),
+          contrastPrice: null, active: true,
+        });
+        if (!ov.ok) { notify("Послугу створено, але переозначення кабінета не збережено: " + ov.error, "warn"); }
+      }
+      notify("Послугу додано: " + addDraft.name.trim() + (room ? " (кабінет «" + room.name + "»)" : ""), "success");
       setAddOpen(false); setAddDraft(emptyDraft()); refresh();
     } finally { setBusy(false); }
   }
@@ -384,21 +394,27 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
         <div className="search"><span className="si">⌕</span>
           <input placeholder="Пошук послуги…" value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
-        {scope === "base" && (
-          <span style={{ display: "inline-flex", gap: 8, marginLeft: 8 }}>
+        <span style={{ display: "inline-flex", gap: 8, marginLeft: 8 }}>
+          {scope === "base" && (
             <button className="btn btn-secondary btn-sm" disabled={busy} onClick={onSeed}
               title="Разово наповнити базовий каталог позиціями з довідника">⤓ З базового довідника</button>
-            <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setImportOpen(true)}
-              title="Завантажити прайс .xlsx/.csv — з передпереглядом змін">⇪ Імпорт прайса</button>
-            <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => { setAddDraft(emptyDraft()); setAddOpen(true); }}>＋ Додати</button>
-          </span>
-        )}
+          )}
+          <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setImportOpen(true)}
+            title={room ? "Імпорт прайса у цей кабінет — тільки його модальність (база + переозначення)" : "Завантажити прайс .xlsx/.csv/.pdf/фото — з передпереглядом змін"}>⇪ Імпорт прайса</button>
+          <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => { setAddDraft(emptyDraft()); setAddOpen(true); }}>＋ Додати</button>
+        </span>
       </div>
 
-      {scope === "base" && addOpen && (
+      {addOpen && (
         <div className="cl-detail" style={{ marginBottom: 12 }}>
+          {room && (
+            <div style={{ fontSize: 12.5, color: "var(--text-secondary)", marginBottom: 8 }}>
+              Додавання у кабінет «{room.name}»: послуга створиться в базовому каталозі ({modalityLabel(effTab)}),
+              а ціна/час стануть переозначенням саме для цього кабінета.
+            </div>
+          )}
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-            <span className={"wl-mod " + modalityKind(tab)}>{modalityLabel(tab)}</span>
+            <span className={"wl-mod " + modalityKind(effTab)}>{modalityLabel(effTab)}</span>
             <DraftFields d={addDraft} setD={setAddDraft} />
             <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
               <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setAddOpen(false)}>Скасувати</button>
@@ -577,6 +593,8 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
         <ImportPriceModal
           onClose={() => setImportOpen(false)}
           onDone={(msg) => { setImportOpen(false); notify(msg, "success"); refresh(); }}
+          roomModality={room ? (effTab as "MRI" | "CT" | "US" | "XRAY" | "MAMMO") : undefined}
+          roomId={room?.id}
         />
       )}
 
