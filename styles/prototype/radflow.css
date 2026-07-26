@@ -521,9 +521,12 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .q-time .td { font-size: 11px; color: var(--text-faint); font-weight: 500; margin-top: 2px; }
 .q-pat .nm { font-size: 14px; font-weight: 600; line-height: 1.25; }
 .q-pat .det { font-size: 11.5px; color: var(--text-muted); margin-top: 3px; }
-/* Уся інформація має бути видна у згорнутому рядку — без обрізання й трикрапки. */
-.q-proc .pp { font-size: 12px; color: var(--text-secondary); line-height: 1.35; overflow-wrap: anywhere; }
-.q-proc .du { font-size: 11.5px; color: var(--text-faint); margin-top: 3px; }
+/* Згорнутий рядок: перелік процедур не довший за 4 рядки, далі «…»; повний список — у розкритій інформації. */
+.q-proc .pp { font-size: 12px; color: var(--text-secondary); line-height: 1.35; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden; }
+.q-proc .du { font-size: 11.5px; color: var(--text-faint); margin-top: 3px;
+  /* Другорядний підпис (модальність · ділянка) — один рядок з «…», щоб згорнутий рядок не роздувався. */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .q-status-cell { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0; text-align: center; }
 .q-status-cell .badge { max-width: 100%; }
 .badge.q-resched-badge { padding: 2px 7px; font-size: 11px; gap: 4px; }
@@ -831,10 +834,12 @@ html[data-density="spacious"] .fld { gap: 9px; }
 
 /* Дзвінок-підтвердження — компактний випадаючий список (0094). Закритий контрол
    зберігає колірний стиль обраного статусу (bg/border/color задаються інлайн). */
-.qd-call-wrap { position: relative; display: inline-flex; width: 210px; max-width: 100%; }
+.qd-call-wrap { position: relative; display: inline-flex; width: 150px; max-width: 100%; }
 .qd-call-select { width: 100%; appearance: none; -webkit-appearance: none; -moz-appearance: none;
-  padding: 7px 26px 7px 11px; border-radius: 8px; border: 1.5px solid var(--border); font: inherit;
+  padding: 7px 24px 7px 10px; border-radius: 8px; border: 1.5px solid var(--border); font: inherit;
   font-size: 12.5px; font-weight: 600; cursor: pointer; line-height: 1.2; }
+/* Розгорнутий список — темна тема RadFlow (нативний option); колір тексту опції задає статус інлайн. */
+.qd-call-select option { background: var(--bg-elevated); }
 .qd-call-select:focus-visible { outline: 2px solid #4da3ff; outline-offset: 1px; }
 .qd-call-caret { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none;
   font-size: 12px; font-weight: 700; opacity: .85; }
@@ -947,6 +952,11 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .qd-timer-corner .study-timer.full .st-remain { font-size: 22px; font-weight: 400; letter-spacing: -0.5px; }
 .qd-timer-corner .study-timer.full .st-finish { font-size: 10.5px; gap: 4px; }
 .qd-timer-corner .st-cap { display: none; }
+/* Таймер угорі праворуч, поряд із «Дослідження» (адмін + радіолог) — компактний (106px). */
+.qd-timer-top .study-timer.full .st-remain { font-size: 19px; font-weight: 500; letter-spacing: -0.5px; }
+.qd-timer-top .study-timer.full .st-finish { font-size: 11px; gap: 3px; }
+.qd-timer-top .study-timer.full .st-face { gap: 1px; }
+.qd-timer-top .st-cap { display: none; }
 /* Вузькі екрани — повертаємо у потік (по центру), щоб не перекрити контент. */
 @media (max-width: 720px) {
   .qd-timer-corner { position: static; align-self: center; right: auto; bottom: auto; margin: 4px 0 2px; }

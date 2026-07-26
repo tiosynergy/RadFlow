@@ -300,35 +300,38 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
       <div className="qrow-detail-wrap">
         <div className="qrow-detail-inner">
           <div className="qrow-detail">
-            {/* Пацієнт у кабінеті — таймер зворотного відліку (0093) у правому
-                нижньому куті деталей; ≤5 хв — червоне з пульсацією. */}
-            {p.status === "in_progress" && (
-              <div className="qd-timer-corner">
-                <StudyTimer variant="full" size={128} startAt={p.in_progress_at} durationMin={p.duration_min || 30} bufferMin={p.buffer_time_min ?? BUFFER_DEFAULT} />
-              </div>
-            )}
-            {Array.isArray(p.studies) && p.studies.length > 0 && (() => {
-              const sdiff = diffStudies(p.studies_original as Parameters<typeof diffStudies>[0], p.studies as Parameters<typeof diffStudies>[1]);
-              const changed = sdiff.some((d) => d.state !== "kept");
-              return (
-                <div style={{ marginBottom: 8 }}>
-                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
-                    {sdiff.map((d, i) => (
-                      <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
-                        {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
+            {/* Дослідження + Показання/Примітка (ліворуч) обтікають таймер (справа, угорі) — як на дошці адміна. */}
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 4, flexWrap: "nowrap" }}>
+              <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+                {Array.isArray(p.studies) && p.studies.length > 0 && (() => {
+                  const sdiff = diffStudies(p.studies_original as Parameters<typeof diffStudies>[0], p.studies as Parameters<typeof diffStudies>[1]);
+                  const changed = sdiff.some((d) => d.state !== "kept");
+                  return (
+                    <div style={{ marginBottom: 8 }}>
+                      <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
+                        {sdiff.map((d, i) => (
+                          <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
+                            {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    </div>
+                  );
+                })()}
+                {(p.note || p.indication) && (
+                  <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
+                    {p.indication && <span style={{ color: "var(--text-muted)" }}>Показання: {p.indication}</span>}
+                    {p.note && <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>}
                   </div>
-                </div>
-              );
-            })()}
-            {(p.note || p.indication) && (
-              <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
-                {p.indication && <span style={{ color: "var(--text-muted)" }}>Показання: {p.indication}</span>}
-                {p.note && <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>}
+                )}
               </div>
-            )}
+              {p.status === "in_progress" && (
+                <div className="qd-timer-top" style={{ flex: "0 0 auto" }}>
+                  <StudyTimer variant="full" size={106} startAt={p.in_progress_at} durationMin={p.duration_min || 30} bufferMin={p.buffer_time_min ?? BUFFER_DEFAULT} />
+                </div>
+              )}
+            </div>
 
             {/* 0079/0080 — «Потребує переносу»: радіолог бачить факт, але дій не має.
                 Перенос робить реєстратор/адмін (рішення власника), а степер тут відхилив би

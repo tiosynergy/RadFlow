@@ -506,15 +506,15 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
     const cur = (p.call_status || "not_called") as CallStatus;
     const cs = CALL_SEG_STYLE[cur]; const cm = CALL_META[cur];
     return (
-      <div style={{ marginTop: (canSetPriority && onSetPriority) ? 10 : 0 }}>
-        <div className="qd-sf-lab" style={{ marginBottom: 6 }}>Дзвінок-підтвердження</div>
+      <div>
+        <div className="qd-sf-lab" style={{ marginBottom: 6 }}><span aria-hidden="true">📞</span> Дзвінок-підтвердження</div>
         <div className="qd-call-wrap">
           <select className="qd-call-select" value={cur} title={"Дзвінок: " + cm.label} aria-label="Дзвінок-підтвердження"
             style={{ background: cs.bg, color: cs.color, borderColor: cs.color }}
             onClick={(e) => e.stopPropagation()}
             onChange={(e) => { e.stopPropagation(); onSetCall(p, e.target.value as CallStatus); }}>
             {CALL_SEG_ORDER.map((key) => (
-              <option key={key} value={key}>{CALL_META[key].icon + "  " + CALL_META[key].label}</option>
+              <option key={key} value={key} style={{ background: "var(--bg-elevated)", color: CALL_SEG_STYLE[key].color }}>{CALL_META[key].icon + "  " + CALL_META[key].label}</option>
             ))}
           </select>
           <span className="qd-call-caret" aria-hidden="true">⌄</span>
@@ -608,17 +608,9 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         <div className="qrow-detail-inner">
           <div className="qrow-detail">
             {collisionPanel}
-            {/* Пацієнт у кабінеті — таймер зворотного відліку (0093) у правому нижньому
-                куті деталей: кільце убуває до кінця дослідження + буфер, зверху час
-                завершення, ≤5 хв — червоне з пульсацією. Планове вікно (чип) тоді ховаємо. */}
-            {p.status === "in_progress" && (
-              <div className="qd-timer-corner">
-                <StudyTimer variant="full" size={128} startAt={p.in_progress_at} durationMin={p.duration_min || 30} bufferMin={p.buffer_time_min ?? BUFFER_DEFAULT} />
-              </div>
-            )}
             {metaStrip}
-            {/* Дослідження (зліва) + Пріоритет пацієнта (справа, на тому ж рівні) */}
-            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 4, flexWrap: "wrap" }}>
+            {/* Дослідження (зліва, обтікає) + таймер (справа, угорі) — без переносу, щоб таймер лишався праворуч. */}
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 4, flexWrap: "nowrap" }}>
               <div style={{ flex: "1 1 auto", minWidth: 0 }}>
             {Array.isArray(p.studies) && p.studies.length > 0 && (() => {
               const sdiff = diffStudies(p.studies_original as Parameters<typeof diffStudies>[0], p.studies as Parameters<typeof diffStudies>[1]);
@@ -636,38 +628,22 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                 </div>
               );
             })()}
+                {/* «Перенесено» і «Примітка» — у лівій колонці поряд із таймером, щоб не лишати порожнечі. */}
+                {originHint && (
+                  <div className="ctx-hint" style={{ fontSize: 12, marginTop: 6 }}>{originHint}</div>
+                )}
+                {p.note && (
+                  <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginTop: 6 }}>
+                    <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>
+                  </div>
+                )}
               </div>
-              {((canSetPriority && onSetPriority) || showCall) && (
-                <div style={{ flex: "0 0 auto", maxWidth: "100%" }}>
-                  {canSetPriority && onSetPriority && (
-                    <>
-                      <div className="qd-sf-lab" style={{ marginBottom: 6 }}>Пріоритет пацієнта</div>
-                      <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
-                        {PRIORITY_OPTIONS.map((pv) => {
-                          const m = PRIORITY_META[pv];
-                          return (
-                            <button key={pv} type="button" role="radio" aria-checked={p.priority_level === pv}
-                              className={"prio-seg-btn " + m.tone + (p.priority_level === pv ? " active" : "")}
-                              onClick={(e) => { e.stopPropagation(); if (p.priority_level !== pv) onSetPriority(p, pv); }} title={m.desc}>
-                              {m.short}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </>
-                  )}
-                  {callSeg}
+              {p.status === "in_progress" && (
+                <div className="qd-timer-top" style={{ flex: "0 0 auto" }}>
+                  <StudyTimer variant="full" size={106} startAt={p.in_progress_at} durationMin={p.duration_min || 30} bufferMin={p.buffer_time_min ?? BUFFER_DEFAULT} />
                 </div>
               )}
             </div>
-            {originHint && (
-              <div className="ctx-hint" style={{ fontSize: 12, marginBottom: 4 }}>{originHint}</div>
-            )}
-            {p.note && (
-              <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
-                <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>
-              </div>
-            )}
 
             {/* 0079/0080 — «Потребує переносу». Степер тут НЕ показуємо взагалі:
                 матриця переходів у БД дозволяє вийти лише в scheduled / cancelled / no_show,
@@ -765,8 +741,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                         {onEditStudies && <button className="btn btn-secondary btn-sm" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }} onClick={act(onEditStudies)}>🩻 Редагувати дослідження</button>}
                         {quickReschedule}
                         <button className="btn btn-secondary btn-sm" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }} onClick={act(onReschedule)} title={p.status === "in_progress" ? "Зупинити дослідження та перенести на новий слот" : "Обрати інший слот вручну"}>🗓 Перенести</button>
-                        {onOrganizeCase && !p.case_id && <button className="btn btn-secondary btn-sm" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }} onClick={act(onOrganizeCase)} title="Додати іншу модальність/кабінет — організувати крос-модальний кейс">🔗 Організувати кейс</button>}
-                        {/* D-1 (аудит v2): «Ще» тримає лише деструктивні дії (Неявка / Не відбулося / Скасувати). */}
+                        {/* «Організувати кейс» перенесено під меню «Ще» (рідка дія) — у рядку лишаємо лише часті. */}
                         <button className="btn btn-secondary btn-sm" style={{ flex: "0 0 auto", whiteSpace: "nowrap" }} aria-expanded={moreOpen} aria-haspopup="menu" onClick={(e) => { e.stopPropagation(); setMoreOpen((o) => !o); }} title="Інші дії з записом">Ще {moreOpen ? "⌃" : "⌄"}</button>
                       </>
                     )}
@@ -776,12 +751,23 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                       кабінеті: саме він може затягнутися і наїхати на чергу. Чи є
                       затримка насправді — вирішує СЕРВЕР (previewDelayPlan); якщо ні,
                       покаже «черга ще встигає». */}
-                  {p.status === "in_progress" && onDelayPlan && (
-                    <div style={{ padding: "2px 0 6px" }}>
-                      <button className="btn btn-secondary btn-sm" disabled={delayLoading} onClick={act(onDelayPlan)}
-                        title="Порахувати, як затримка впливає на чергу, і за потреби зсунути записи">
-                        {delayLoading ? "⏳ Рахую…" : "📋 План при затримці"}
-                      </button>
+                  {/* «План при затримці» (ліворуч) + деструктивні дії з меню «Ще» (праворуч, на тому ж рівні). */}
+                  {((p.status === "in_progress" && onDelayPlan) || (moreOpen && !terminal)) && (
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap", padding: "2px 0 6px" }}>
+                      {p.status === "in_progress" && onDelayPlan && (
+                        <button className="btn btn-secondary btn-sm" disabled={delayLoading} onClick={act(onDelayPlan)}
+                          title="Порахувати, як затримка впливає на чергу, і за потреби зсунути записи">
+                          {delayLoading ? "⏳ Рахую…" : "📋 План при затримці"}
+                        </button>
+                      )}
+                      {moreOpen && !terminal && (
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginLeft: "auto" }} role="menu">
+                          {onOrganizeCase && !p.case_id && <button className="btn btn-secondary btn-sm" style={{ whiteSpace: "nowrap" }} onClick={act(onOrganizeCase)} title="Додати іншу модальність/кабінет — організувати крос-модальний кейс">🔗 Організувати кейс</button>}
+                          <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNoShow)}>✕ Неявка</button>
+                          <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNotHeld)}>✕ Не відбулося</button>
+                          <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onCancel)}>✕ Скасувати запис</button>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -803,20 +789,33 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                     </div>
                   )}
 
-                  {/* «Пріоритет пацієнта» переміщено вгору — у рядок із «Дослідження» (справа). */}
-
-                  {moreOpen && !terminal && (
-                    <div style={{ display: "flex", gap: 6, padding: "2px 0 6px", flexWrap: "wrap" }} role="menu">
-                      <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNoShow)}>✕ Неявка</button>
-                      <button className="btn btn-secondary btn-sm qd-act-red" disabled={beforeStart} title={beforeStart ? "Доступно від часу початку дослідження" : ""} onClick={act(onNotHeld)}>✕ Не відбулося</button>
-                      <button className="btn btn-secondary btn-sm qd-act-red" onClick={act(onCancel)}>✕ Скасувати запис</button>
-                    </div>
-                  )}
-
-                  {/* Дзвінок-підтвердження перенесено у праву колонку під «Пріоритет пацієнта» (callSeg). */}
+                  {/* Деструктивні дії «Ще» — тепер у рядку з «План при затримці» (праворуч), вище. */}
                 </div>
               );
             })()}
+            {/* Пріоритет пацієнта + Дзвінок-підтвердження — вниз праворуч, в один ряд на одному рівні. */}
+            {((canSetPriority && onSetPriority) || showCall) && (
+              <div style={{ display: "flex", gap: 18, alignItems: "flex-start", flexWrap: "wrap", justifyContent: "flex-end", marginTop: 4 }}>
+                {canSetPriority && onSetPriority && (
+                  <div>
+                    <div className="qd-sf-lab" style={{ marginBottom: 6 }}>Пріоритет пацієнта</div>
+                    <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
+                      {PRIORITY_OPTIONS.map((pv) => {
+                        const m = PRIORITY_META[pv];
+                        return (
+                          <button key={pv} type="button" role="radio" aria-checked={p.priority_level === pv}
+                            className={"prio-seg-btn " + m.tone + (p.priority_level === pv ? " active" : "")}
+                            onClick={(e) => { e.stopPropagation(); if (p.priority_level !== pv) onSetPriority(p, pv); }} title={m.desc}>
+                            {m.short}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                {callSeg}
+              </div>
+            )}
 
           </div>
         </div>

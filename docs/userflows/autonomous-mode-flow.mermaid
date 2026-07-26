@@ -1,0 +1,95 @@
+%% RadFlow — Автономний (аварійний) режим + періодичний .xls-снапшот черги
+%% Версія 2.0 · 26.07.2026 · відповідає §6 документа AUTONOMOUS_MODE_DESIGN.md
+%% Точки прийняття рішень: D1, D1b, D2, D3, D10, D4, D5, D5b, D6, D7, D8, D9
+
+flowchart TD
+    START(["Адміністратор відкриває RadFlow"]) --> D1{"D1 · Що віддав сервер на /queue?"}
+
+    D1 -- "200: сторінка відрендерена" --> LOAD["RSC /queue → QueueBoard"]
+    D1 -- "помилка мережі, fetch не вдався (F1, F5)" --> SW["Service Worker віддає /autonomous з precache"]
+    D1 -- "307 → /login (F2, F4)" --> D1B{"D1b · Чому редірект?"}
+
+    D1B -- "HEAD /rest/v1/rooms → 401: сесія завершилась" --> AUTHLOST["⚠ Сесія завершилась. Журнал НЕ чистимо, пропонуємо вхід"]
+    D1B -- "HEAD → мережева помилка або 5xx: база недоступна" --> OFFERAUTO["Кнопка «↪ Відкрити автономний режим (дані станом на HH:MM)»"]
+    D1B -- "meta порожня або lastSyncAt старше добу" --> NOCOPY
+
+    AUTHLOST --> D3
+    OFFERAUTO --> D3
+    SW --> D3
+
+    LOAD --> D2{"D2 · Дані черги з Supabase отримано?"}
+    D2 -- "так" --> D10{"D10 · Запис через Server Action проходить?"}
+    D2 -- "ні" --> D3{"D3 · Є локальна копія в IndexedDB?"}
+
+    D10 -- "так" --> ONLINE["🟢 ОНЛАЙН — жива черга + realtime"]
+    D10 -- "ні, але читання живе (F3: Vercel лежить)" --> DEGRADED["🟡 ЗВʼЯЗОК НЕСТАБІЛЬНИЙ — той самий RPC напряму з браузера: CAS, гарди, валідація на місці"]
+    D10 -- "ні, і читання мертве" --> D3
+
+    DEGRADED --> ONLINE
+
+    ONLINE --> CACHE["Пишемо копію в IndexedDB: entries, rooms, services, waitlist, incidents, schedule_overrides, lastSyncAt, serverTimeOffsetMs"]
+    CACHE --> TIMER["⏱ Тригер копії: таймер N хв / перехід у offline / 10 змін статусу / кнопка «Зберегти зараз»"]
+    ONLINE --> D4{"D4 · Дія у whitelist автономного режиму?"}
+
+    D3 -- "так" --> AUTO["🟠 АВТОНОМНИЙ РЕЖИМ — проекція = кеш + реплей журналу за seq"]
+    D3 -- "ні" --> NOCOPY["Екран «Немає локальної копії» → відкрийте останній _CURRENT.xls з папки центру"]
+    NOCOPY --> PAPER["К2/К3: робота в Excel або на папері + порожній аварійний бланк A4"]
+    PAPER --> RETURN(["Продовження роботи"])
+
+    AUTO --> D4
+
+    D4 -- "так: статус, дзвінок (desk), пріоритет, примітка, пацієнт з вулиці" --> JOURNAL["Запис події у журнал (uuid = ключ ідемпотентності, seq) + проекція, позначка «⛯ локально»"]
+    D4 -- "ні: перенос часу, зміна дослідження, кейси, аварійна зупинка кабінету" --> BLOCK["Кнопка disabled: «Доступно після відновлення звʼязку»"]
+    BLOCK --> ASNOTE["Пропозиція «Записати як примітку»"]
+    ASNOTE --> JOURNAL
+
+    JOURNAL --> TIMER
+    JOURNAL --> D7{"D7 · Звʼязок відновився?"}
+
+    TIMER --> D5{"D5 · Вміст змінився? hash SHA-256 усіх листів, крім «Довідки»"}
+    D5 -- "ні" --> SKIP["Пропускаємо запис, оновлюємо lastCheckedAt"]
+    D5 -- "так" --> LOCK{"D5b · Ця вкладка — лідер запису? navigator.locks + BroadcastChannel"}
+
+    LOCK -- "ні: пише інша вкладка" --> SKIP
+    LOCK -- "так" --> D6{"D6 · Доступ до папки живий? queryPermission"}
+
+    D6 -- "granted" --> WRITE["Атомарний запис: .tmp → close → копія в archive → rename у _CURRENT.xls та _CURRENT.xlsx"]
+    D6 -- "prompt: потрібен клік, requestPermission вимагає user activation" --> ASKDIR["Плашка «Підтвердіть доступ до папки центру»"]
+    D6 -- "API недоступний (Firefox, Safari)" --> FALLBACK["Копія в IndexedDB (≤5 файлів / ≤10 МБ) + кнопка «💾 Зберегти зараз» + нагадування кожні N хв"]
+
+    ASKDIR --> WRITE
+    WRITE --> ROTATE["Ротація: archive старше 14 днів видаляємо, лише файли за нашим шаблоном; .tmp старше добу прибираємо"]
+    ROTATE --> RETURN
+    FALLBACK --> RETURN
+    SKIP --> RETURN
+
+    D7 -- "ні" --> AUTO
+    D7 -- "так" --> D9{"D9 · Доступне оновлення застосунку?"}
+
+    D9 -- "журнал не порожній" --> WAITSYNC["Оновлення SW відкладаємо: спершу синхронізація"]
+    D9 -- "журнал порожній" --> APPLYSW["Застосовуємо оновлення SW"]
+    WAITSYNC --> SYNC["Авто-ресинк пачками по 50 → RPC apply_offline_events (security definer), ідемпотентно за id події"]
+    APPLYSW --> SYNC
+
+    SYNC --> SP["savepoint на кожну подію: гард кинув виключення → rollback to savepoint, outcome = rejected із SQLSTATE; повтор віддає збережений outcome"]
+    SP --> ARB["Серверний арбітраж: термінальний статус або declined → conflict; updated_at новіший → conflict; note.append → застосовуємо завжди; walkin → needs_reschedule без часу"]
+    ARB --> D8{"D8 · Є конфлікти або відмови?"}
+
+    D8 -- "ні" --> TOAST["Тост «Синхронізовано N дій»"]
+    D8 -- "так" --> RESOLVE["Екран «Потребує рішення»: застосувати попри все / відхилити / відкрити запис"]
+
+    TOAST --> AUDIT["event_outbox: offline.resynced → n8n; метрика в CEO-дашборд"]
+    RESOLVE --> AUDIT
+    AUDIT --> ONLINE
+
+    classDef ok fill:#123d2a,stroke:#2f9e6a,color:#eaf7f0
+    classDef warn fill:#3d3312,stroke:#c99a2e,color:#fdf6e3
+    classDef bad fill:#3d1a1a,stroke:#c94f4f,color:#fdeaea
+    classDef dec fill:#16233d,stroke:#4da3ff,color:#e8f1ff
+    classDef file fill:#1d2b1d,stroke:#7bbf5a,color:#eef7e8
+
+    class ONLINE,TOAST,AUDIT,APPLYSW ok
+    class AUTO,DEGRADED,AUTHLOST,OFFERAUTO,BLOCK,ASKDIR,FALLBACK,WAITSYNC,ASNOTE,SP,ARB warn
+    class NOCOPY,PAPER,RESOLVE bad
+    class D1,D1B,D2,D3,D4,D5,D6,D7,D8,D9,D10,LOCK dec
+    class WRITE,ROTATE,SKIP,TIMER,CACHE,JOURNAL file

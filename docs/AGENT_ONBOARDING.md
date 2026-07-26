@@ -1,9 +1,16 @@
 # RadFlow — Agent Onboarding
 
-Context for an AI agent (Claude Code / Cowork) continuing work on RadFlow. Read this first,
-together with the memory files (`MEMORY.md`, and especially `TODO.md`),
-`docs/PRODUCT_OVERVIEW.md`, `docs/audit/FULL_AUDIT_2026-06-25.md`, and the latest
-`docs/audit/DATA_ARCHITECTURE_AUDIT_2026-07-08.md` + `docs/audit/BACKLOG_RESIDUAL.md`.
+Context for an AI agent (Claude Code / Cowork) continuing work on RadFlow. This file holds the
+STABLE rules. For the CURRENT state of the work read, in this order: `NEXT_SESSION_PROMPT.md`
+(repo root — the new-session start message), the header + latest session block of
+`docs/HANDOVER.md`, and `claude/radflow-handoff.md` in the claude.ai project "RadFlow"
+(`Projects` tool). Background: `docs/PRODUCT_OVERVIEW.md`, `docs/README.md` (documentation map),
+`docs/audit/FULL_AUDIT_2026-06-25.md`, `docs/audit/DATA_ARCHITECTURE_AUDIT_2026-07-12.md`,
+`docs/audit/BACKLOG_RESIDUAL.md`.
+
+> ⚠️ `MEMORY.md` and `TODO.md` **no longer exist** in this repository, and the
+> `project_memory_read` tool is gone — anything that tells you to read them is out of date.
+> The durable cross-session store is the claude.ai project.
 
 You are a Senior Full-Stack Engineer on RadFlow — a multi-tenant SaaS for radiology queue
 management.
@@ -55,8 +62,8 @@ management.
 ## Migrations
 - Applied to prod MANUALLY via the Supabase SQL editor (no automated migration runner). A Vercel
   deploy does NOT run them — apply the SQL first, then merge `dev → main`.
-- Prod migrations **0001–0114 ALL APPLIED** (as of 2026-07-20; highest is
-  `0114_ceo_kpi_studies_catalog_estimate.sql`). The next new migration is **0115**. Deploy state
+- Prod migrations **0001–0119 ALL APPLIED** (as of 2026-07-26; highest is
+  `0119_services_import_optimistic_lock.sql`). The next new migration is **0120**. Deploy state
   is tracked in the `docs/HANDOVER.md` header (always fresher than this file). ALWAYS check the
   highest existing migration number before adding a new one and number it sequentially (a
   duplicate/lower number is a bug).
@@ -140,7 +147,7 @@ management.
     REMOVED from `vercel.json` (it blocked the deploy); `vercel.json` now only carries `$schema`.
     Re-add a cron only when upgrading to Pro.
 
-## Open work — see `TODO.md` for the live list
+## Open work — the live list is `NEXT_SESSION_PROMPT.md` («ЧТО ДЕЛАТЬ ДАЛЬШЕ»)
 - Run `npm run typecheck` (== `tsc --noEmit`) and `npm run lint` (== `eslint .`). Note: bare `tsc`
   is NOT on PATH — use `npx` or the npm script.
 - **Stage-2 (n8n + AI):** delivery infra now exists — `emergency_stop` webhook + transactional
@@ -162,9 +169,21 @@ management.
   removed; reschedule-of-in_progress; universal timezone.)
 
 ## Environment & workflow notes
-- The isolated Linux sandbox/bash may be unavailable (disk space) — prefer file tools.
+- The device shell is **Desktop Commander MCP** (`start_process` with `powershell.exe -NoProfile
+  -Command …`, plus `read_file` / `edit_block` / `create_directory` / `move_file`).
+  `mcp__remote-devices__device_bash` did not work at all as of session 9. File transfer:
+  `device_stage_files` (device → cloud) and `device_commit_files` (cloud → device, Windows
+  absolute paths).
+- Deleting on the device is not permitted (`rm` → Operation not permitted) — `mv` into
+  `_to_delete/` and let the owner delete it.
+- Merge/push goes through the GitHub web UI in Claude-in-Chrome (the device network gets a 403
+  proxy to GitHub, `gh` is not installed).
+- The toolchain runs in the cloud sandbox: `git archive HEAD` from the device → `/tmp/radflow` →
+  `npm install` → typecheck / lint / test. Windows `node_modules` will not work over the bridge.
 - For browser testing, use the Claude-in-Chrome connector against the local dev server
   (`npm run dev`, `localhost:3000`). Do NOT enter passwords to authenticate — ask the user to log
   in as the needed role, then inspect.
 - Use a subagent for RLS/security review on anything touching multi-tenant policies.
-- Track work with the task list; keep `MEMORY.md` / `TODO.md` updated as facts and items change.
+- Track work with the task list. At the end of a session update `docs/HANDOVER.md` (new session
+  block), `NEXT_SESSION_PROMPT.md` (priorities) and `claude/radflow-handoff.md` in the claude.ai
+  project.
