@@ -19,7 +19,8 @@ import { formatPhoneUA, isValidPhoneUA } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radflow-wizard.css";
-import type { Break } from "@/lib/schedule";
+import { roomScheduleFor, effectiveRoomBreaks, offScheduleKind, dateKeyOf, type Break } from "@/lib/schedule";
+import { slotToMin } from "@/lib/slots";
 import { MODALITIES, modalityCode } from "@/lib/studies";
 
 /* ===== Таймзона центру (IANA) =====
@@ -525,6 +526,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
   const [valid, setValid] = useState<Record<number, boolean>>({});
   const [dirty, setDirty] = useState(false);
   const [exitAsk, setExitAsk] = useState(false);
+  const [schedWarnAsk, setSchedWarnAsk] = useState<number | null>(null); // N майбутніх записів поза новим графіком
   const [toasts, push] = useToasts();
   const dataRef = useRef<WizardData | null>(null);
   const savedRef = useRef<string | null>(null); // знімок збережених даних форми
@@ -537,12 +539,21 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
     setDirty(snap !== savedRef.current);
   }
 
-  async function save(): Promise<boolean> {
+  async function save(skipSchedWarn = false): Promise<boolean> {
     const d = dataRef.current;
     if (!d || saving) return false;
     setSaving(true);
     const clean = (a: string[]) => a.map((x) => x.trim()).filter(Boolean);
     try {
+      /* Невалідний графік (кінець ≤ початок / порожні години / перетин перерв) НЕ
+         зберігаємо — інакше сітка слотів зникає мовчки (roomScheduleFor не дасть
+         жодного слота). Гейтить УСІ шляхи: і «Зберегти», і «Зберегти й вийти»
+         (кнопка виходу valid[1] не перевіряє), і програмний виклик. */
+      if (!equipHoursValid(d.equip) || !equipBreaksValid(d.equip)) {
+        push("Виправте години або перерви кабінетів — вони підсвічені червоним", "error");
+        setSaving(false);
+        return false;
+      }
       const supabase = createClient();
 
       /* Таймзона — ЯВНИЙ вибір адміна (поле в профілі центру). Раніше сюди щоразу
@@ -557,6 +568,53 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
         push("Некоректний часовий пояс центру", "error");
         setSaving(false);
         return false;
+      }
+
+      // Поля кабінета для БД (винесено вгору — потрібне і для перевірки нижче).
+      const roomFields = (e: EquipItem): TablesInsert<"rooms"> => ({
+        clinic_id: clinicId,
+        name: (e.room || e.type).trim(),
+        modality: modalityCode(e.type),
+        apparatus_model: e.desc.trim() || null,
+        schedule: {
+          days: e.days, start: e.start, end: e.end,
+          // Не зберігаємо некоректні інтервали (кінець ≤ початку / незаповнені).
+          breaks: e.breaks.filter((b) => b.start && b.end && b.end > b.start),
+          perDay: e.perDay,
+          dayHours: e.dayHours.map((dh) => ({ start: dh.start, end: dh.end, breaks: dh.breaks.filter((b) => b.start && b.end && b.end > b.start) })),
+        } as unknown as Json,
+      });
+
+      /* Попередження ПЕРЕД збереженням: чи є МАЙБУТНІ живі записи, що НЕ вкладаються в
+         графік, який зберігаємо (ужали години / додали перерву / закрили день). Не
+         блокуємо — питаємо підтвердження (на дошці ці записи підсвітяться «Не за
+         графіком»). Осознанні off_schedule не рахуємо. Перевіряємо ДО будь-яких
+         записів у БД, тож «Скасувати» не лишає часткових змін. */
+      if (!skipSchedWarn) {
+        const kept = d.equip.filter((e) => e.roomId);
+        if (kept.length) {
+          const { data: fut, error: fe } = await supabase
+            .from("queue_entries")
+            .select("room_id, scheduled_date, scheduled_time, duration_min, off_schedule, status")
+            .in("room_id", kept.map((e) => e.roomId as string))
+            .gte("scheduled_date", dateKeyOf(new Date()))
+            .in("status", ["scheduled", "waiting", "in_progress", "needs_reschedule"]);
+          if (fe) throw fe;
+          const schedByRoom: Record<string, unknown> = {};
+          kept.forEach((e) => { schedByRoom[e.roomId as string] = roomFields(e).schedule; });
+          let bad = 0;
+          for (const q of (fut || [])) {
+            if (q.off_schedule || !q.scheduled_time || !q.scheduled_date) continue;
+            const sch = schedByRoom[String(q.room_id)];
+            if (!sch) continue;
+            const [yy, mm, dd] = String(q.scheduled_date).split("-").map(Number);
+            const date = new Date(yy, (mm || 1) - 1, dd || 1);
+            const sched = roomScheduleFor(date, String(q.room_id), null, sch);
+            const breaks = effectiveRoomBreaks(date, String(q.room_id), sch, null);
+            if (offScheduleKind(slotToMin(String(q.scheduled_time)), q.duration_min || 30, sched, breaks)) bad++;
+          }
+          if (bad > 0) { setSchedWarnAsk(bad); setSaving(false); return false; }
+        }
       }
 
       const { error: ce } = await supabase
@@ -583,19 +641,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
       if (pe) throw pe;
 
       // Кабінети: оновлюємо наявні за id, додаємо нові, видаляємо лише прибрані.
-      const roomFields = (e: EquipItem): TablesInsert<"rooms"> => ({
-        clinic_id: clinicId,
-        name: (e.room || e.type).trim(),
-        modality: modalityCode(e.type),
-        apparatus_model: e.desc.trim() || null,
-        schedule: {
-          days: e.days, start: e.start, end: e.end,
-          // Не зберігаємо некоректні інтервали (кінець ≤ початку / незаповнені).
-          breaks: e.breaks.filter((b) => b.start && b.end && b.end > b.start),
-          perDay: e.perDay,
-          dayHours: e.dayHours.map((dh) => ({ start: dh.start, end: dh.end, breaks: dh.breaks.filter((b) => b.start && b.end && b.end > b.start) })),
-        } as unknown as Json,
-      });
+      // (roomFields визначено вище — потрібне і для перевірки графіка перед збереженням.)
       /* ⚠ Видалення кабінету — НЕ безпечна операція: queue_entries.room_id має
          ON DELETE SET NULL (0001), тож усі записи пацієнтів (зокрема майбутні)
          лишилися б у базі з room_id = NULL: зникають із дошки кабінету, їх не
@@ -694,6 +740,10 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
           })}
         </div>
         <div className="wiz-foot">
+          {/* «Вийти» — над рядком «Майстер налаштувань · Підтримка», праворуч. */}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+            <button className="btn btn-green" onClick={exitSetup} disabled={saving}>Вийти</button>
+          </div>
           <div className="wiz-prog-lab">
             <span>Майстер налаштувань</span>
             <a href="mailto:support@radflow.ua?subject=Допомога%20з%20налаштуванням" title="Написати в підтримку">Підтримка</a>
@@ -739,12 +789,11 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
         <div className="wiz-bar">
           <div className="wiz-bar-inner">
             <div className="wiz-bar-right" style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-              <span className="wiz-cta-wrap" title={valid[1] ? undefined : "Заповніть назву клініки, місто, ПІБ і телефон адміністратора та хоча б один апарат"}>
-                <button className="btn btn-green" onClick={save} disabled={!valid[1] || saving}>
+              <span className="wiz-cta-wrap" title={valid[1] ? undefined : (() => { const eq = dataRef.current?.equip ?? []; return (!equipHoursValid(eq) || !equipBreaksValid(eq)) ? "Виправте години або перерви кабінетів — вони підсвічені червоним" : "Заповніть назву клініки, місто, ПІБ і телефон адміністратора та хоча б один апарат"; })()}>
+                <button className="btn btn-green" onClick={() => save()} disabled={!valid[1] || saving}>
                   {saving ? "Зберігаємо…" : "Зберегти"}
                 </button>
               </span>
-              <button className="btn btn-secondary" onClick={exitSetup} disabled={saving}>Вийти</button>
             </div>
           </div>
         </div>
@@ -753,7 +802,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
       {exitAsk && (
         <div className="overlay" onClick={() => !saving && setExitAsk(false)}>
           <div className="dialog fade-in" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
-            <div className="dlg-head"><div className="dlg-title">Незбережені зміни</div><button className="icon-btn" onClick={() => setExitAsk(false)} disabled={saving}>✕</button></div>
+            <div className="dlg-head"><div className="dlg-title">Незбережені зміни</div><button className="icon-btn" aria-label="Закрити" onClick={() => setExitAsk(false)} disabled={saving}>✕</button></div>
             <div className="dlg-body">У налаштуваннях є незбережені зміни. Зберегти їх перед виходом?</div>
             <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button className="btn btn-ghost" onClick={() => setExitAsk(false)} disabled={saving}>Скасувати</button>
@@ -762,6 +811,17 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
             </div>
           </div>
         </div>
+      )}
+      {schedWarnAsk != null && (
+        <ConfirmDialog
+          title="Записи поза новим графіком"
+          text={<>Майбутніх записів пацієнтів, що не вкладаються в графік, який ви зберігаєте (кабінет закритий цього дня, поза годинами роботи або в перерву): <b>{schedWarnAsk}</b>. На дошці черги їх буде підсвічено «⚠ Не за графіком». Зберегти графік усе одно?</>}
+          confirmLabel="Зберегти графік"
+          cancelLabel="Скасувати"
+          busy={saving}
+          onClose={() => setSchedWarnAsk(null)}
+          onConfirm={() => { setSchedWarnAsk(null); save(true); }}
+        />
       )}
       <Toasts toasts={toasts} />
     </div>

@@ -4,29 +4,50 @@
 
 ## Актуальное (источник правды по продукту)
 
-> Схема БД: прод на миграции **0114** (2026-07-20; следующая новая — `0115`). Актуальное состояние
+> Схема БД: прод на миграции **0119** (2026-07-26; следующая новая — `0120`). Актуальное состояние
 > деплоя и «почему так» — в шапке **[`HANDOVER.md`](HANDOVER.md)** (номера миграций там всегда свежее).
-> Доступность — внедрён UX-аудит P0/P1/P2 (WCAG 2.1 AA, см. §4.11 в PRODUCT_OVERVIEW).
+> Доступность — внедрён UX-аудит P0/P1/P2 + аудит Нільсена v2 (WCAG 2.1 AA, см. §4.11 в PRODUCT_OVERVIEW).
+> Стартовое сообщение для новой сессии — **[`../NEXT_SESSION_PROMPT.md`](../NEXT_SESSION_PROMPT.md)**.
 
 - **[`PRODUCT_OVERVIEW.md`](PRODUCT_OVERVIEW.md)** — полный обзор реализованного продукта:
   роли, модули и сценарии, статусы, модель данных, эволюция схемы. **Начинать отсюда.**
 - **[`AGENT_ONBOARDING.md`](AGENT_ONBOARDING.md)** — контекст для AI-агента, продолжающего работу:
   стек, конвенции, модель ролей/доступа, статус миграций, незакрытый бэклог.
-- **audit/** — аудиты:
+- **audit/** — аудиты (свежие — выше):
+  - [`RE_AUDIT_2026-07-18.md`](audit/RE_AUDIT_2026-07-18.md) — повторный аудит; закрытые находки.
+  - [`UX_AUDIT_V2_STATUS_2026-07-21.md`](audit/UX_AUDIT_V2_STATUS_2026-07-21.md) — статус аудита
+    Нільсена v2 (что внедрено, что отложено: rem-масштаб + zoom 200%, WCAG 1.4.4/1.4.10) +
+    [`UX_NIELSEN_AUDIT_2026-07-21.html`](audit/UX_NIELSEN_AUDIT_2026-07-21.html).
+  - [`DATA_ARCHITECTURE_AUDIT_2026-07-12.md`](audit/DATA_ARCHITECTURE_AUDIT_2026-07-12.md) —
+    аудит архитектуры данных (актуальная редакция; находка H-12 закрыта миграцией 0070).
+  - [`CASE_CONCURRENCY_TESTS.md`](audit/CASE_CONCURRENCY_TESTS.md) — сценарии двухсессионных
+    тестов гонок по кейсам (не прогнаны).
   - [`DATA_ARCHITECTURE_AUDIT_2026-07-08.md`](audit/DATA_ARCHITECTURE_AUDIT_2026-07-08.md) —
     аудит архитектуры данных (audit_log, outbox, целостность инцидентов, CAS) + [`BACKLOG_RESIDUAL.md`](audit/BACKLOG_RESIDUAL.md).
   - [`FULL_AUDIT_2026-06-25.md`](audit/FULL_AUDIT_2026-06-25.md) — сквозной аудит всех ролей,
     список дефектов и журнал исправлений.
   - [`QUEUE_AUDIT_2026-06-19.md`](audit/QUEUE_AUDIT_2026-06-19.md) — аудит логики очереди (закрыт).
 - **setup/** — установка инфраструктуры (`02-supabase-setup.md`).
-- **design/** — проектные решения портала направлений (`REFERRAL_PORTAL_*`).
+- **design/** — проектные решения:
+  - [`AUTONOMOUS_MODE_DESIGN.md`](design/AUTONOMOUS_MODE_DESIGN.md) — **автономный (аварийный)
+    режим без доступа к БД + периодический .xls-снапшот очереди по центрам, v2.0 (2026-07-26).
+    Предложение к утверждению: код не написан, миграция 0120 не применялась.** Блок-схема
+    User Flow с 12 точками принятия решений —
+    [`userflows/autonomous-mode-flow.mermaid`](userflows/autonomous-mode-flow.mermaid)
+    (рендер: [`autonomous-mode-flow.svg`](userflows/autonomous-mode-flow.svg)).
+  - `REFERRAL_PORTAL_*` — портал направлений.
+- **plan/** — актуальные планы: [`SERVICES_CATALOG.md`](plan/SERVICES_CATALOG.md),
+  [`CATALOG_N8N_AI_INTEGRATION_PLAN.md`](plan/CATALOG_N8N_AI_INTEGRATION_PLAN.md),
+  [`CROSS_MODAL_CASE.md`](plan/CROSS_MODAL_CASE.md), [`REFERRER_CASES.md`](plan/REFERRER_CASES.md).
 
 ## Исторический контекст (замысел, расходится с кодом — см. §9 в PRODUCT_OVERVIEW)
 
-- **plan/** — ранний пошаговый план реализации MVP.
+- **plan/** — ранний пошаговый план реализации MVP (`RadFlow_План_реализации_MVP_v5_радиолог.docx`);
+  остальные файлы в `plan/` — актуальные, см. выше.
 - **architecture/** — изначальная архитектура и эскиз таблиц (имена таблиц устарели).
 - **userflows/**, **scenarios/** — каталог UX-сценариев и воркфлоу (часть фич, напр. AI-парсинг
-  прайса и n8n-воркфлоу, отнесена в Stage 2).
+  прайса и n8n-воркфлоу, отнесена в Stage 2). **Исключение:** `userflows/autonomous-mode-flow.*` —
+  актуальная схема автономного режима (2026-07-26).
 - **prototypes/** — HTML/JSX/CSS прототипы и спецификации экранов (визуальный референс).
 - **diagram/** — SVG-диаграмма потока работы.
 

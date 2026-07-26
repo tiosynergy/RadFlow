@@ -48,7 +48,7 @@ export default function EmergencyModal({ rooms = [], stoppedRoomIds = [], affect
       <div className="dialog fade-in" style={{ maxWidth: 560 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Аварійна зупинка">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--red-bg)", color: "var(--red)" }}>🛑</span>Аварійна зупинка</div>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div className="ctx-hint red" style={{ fontSize: 13 }}>

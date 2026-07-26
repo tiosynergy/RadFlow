@@ -4,13 +4,14 @@
    Виконавчий дашборд: KPI, тижневий графік, топ-процедури, завантаженість апаратів.
    Метрики рахуються з queue_entries (період: сьогодні / тиждень / місяць). Realtime. */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode, type CSSProperties } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { wallToday0 } from "@/lib/incidents";
 import { modalityLabel, modalityCode, CONTRAST_SURCHARGE } from "@/lib/studies";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
+import Toast from "@/components/Toast";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -102,6 +103,21 @@ function ProgressCircle({ pct, color }: { pct: number; color: string }) {
 
 const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20 };
 
+const STATUS_LABEL: Record<string, string> = {
+  scheduled: "В черзі", waiting: "Очікує", in_progress: "В кабінеті",
+  done: "Виконано", no_show: "Неявка", not_held: "Не відбулося", needs_reschedule: "Потребує переносу", cancelled: "Скасовано",
+};
+type DrillRow = { date: string; name: string; proc: string; room: string; status: string; rev: number };
+/* Клікабельний KPI → drill-down зі списком записів (доступно: role=button + Enter/Space). */
+function Drillable({ onOpen, label, style, children }: { onOpen: () => void; label: string; style?: CSSProperties; children: ReactNode }) {
+  return (
+    <span role="button" tabIndex={0} title={"Показати записи: " + label} style={{ cursor: "pointer", ...style }}
+      onClick={onOpen} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}>
+      {children}
+    </span>
+  );
+}
+
 type ClinicOpt = { id: string; name: string; timezone?: string | null };
 
 interface CeoDashboardProps {
@@ -122,9 +138,12 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const [roomRows, setRoomRows] = useState<RoomsRow[]>([]);
   const [studyRows, setStudyRows] = useState<StudiesRow[]>([]);
   const [loading, setLoading] = useState(true);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; rooms.forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
+  const [drill, setDrill] = useState<{ statuses: string[] | null; label: string } | null>(null);
+  const [drillRows, setDrillRows] = useState<DrillRow[] | null>(null);
+  const [drillLoading, setDrillLoading] = useState(false);
 
   /* Зона, за якою рахується «сьогодні»/«цей тиждень»: обраного центру, а при
      «Всі центри» — ПЕРШОГО доступного. Спільної доби в кількох зонах не існує,
@@ -141,7 +160,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
     [scope, clinics]
   );
 
-  function notify(msg: string) { setToast(msg); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3000); }
+  function notify(msg: string, type = "info") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), type === "error" ? 6000 : 3000); }
 
   const [from, to] = periodRange(period, scopeTz);
 
@@ -176,7 +195,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       // Помилку RPC НЕ ковтаємо: інакше дашборд мовчки покаже нулі (напр. якщо
       // міграція не накатана або немає гранту) — і це виглядатиме як «немає роботи».
       if (tot.error || rms.error || sts.error || (wtot && wtot.error)) {
-        notify("Не вдалося оновити показники — спробуйте оновити сторінку");
+        notify("Не вдалося оновити показники — спробуйте оновити сторінку", "error");
         return;
       }
 
@@ -299,7 +318,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
         .lte("scheduled_date", dateKey(t))
         .order("scheduled_date", { ascending: true })
         .limit(5000);
-      if (error) { notify("Не вдалося сформувати експорт — спробуйте ще раз"); return; }
+      if (error) { notify("Не вдалося сформувати експорт — спробуйте ще раз", "error"); return; }
 
       // Каталог scoped-центрів для оцінки позицій без снапшот-ціни (як catalog_est_sum
       // у RPC 0114). Впорядковано active desc → перша послуга name=region пріоритетна.
@@ -325,9 +344,46 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       const csv = [head, ...rows].map((r) => r.map(safe).join(";")).join("\n");
       const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
       const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "ceo-" + period + ".csv"; a.click(); URL.revokeObjectURL(url);
-      notify("Експортовано у CSV" + ((data?.length ?? 0) >= 5000 ? " (перші 5000 записів)" : ""));
+      notify("Експортовано у CSV" + ((data?.length ?? 0) >= 5000 ? " (перші 5000 записів)" : ""), "success");
     } finally {
       setExporting(false);
+    }
+  }
+
+  /* Drill-down: клік по KPI → список записів за той самий період (переиспользує
+     запит exportCsv + ту саму оцінку доходу). Клієнтський — без нового RPC/міграції.
+     RLS ceo_access вже пускає CEO до цих записів (як і CSV-експорт). */
+  async function openDrill(statuses: string[] | null, label: string) {
+    setDrill({ statuses, label });
+    setDrillRows(null);
+    setDrillLoading(true);
+    try {
+      const supabase = createClient();
+      const [f, t] = periodRange(period, scopeTz);
+      let q = supabase
+        .from("queue_entries")
+        .select("status, studies, room_id, scheduled_date, patient_name, note, clinic_id")
+        .in("clinic_id", clinicIds)
+        .gte("scheduled_date", dateKey(f))
+        .lte("scheduled_date", dateKey(t));
+      q = statuses ? q.in("status", statuses as ("scheduled" | "waiting" | "in_progress" | "done" | "no_show" | "not_held" | "needs_reschedule" | "cancelled")[]) : q.neq("status", "cancelled");
+      const { data, error } = await q.order("scheduled_date", { ascending: true }).limit(1000);
+      if (error) { notify("Не вдалося завантажити список — спробуйте ще раз", "error"); return; }
+      const { data: svc } = await supabase
+        .from("services")
+        .select("clinic_id, modality, name, price, contrast_price")
+        .in("clinic_id", clinicIds).eq("active", true).order("sort_order").order("id");
+      const cat = buildCsvCatalog((svc || []) as { clinic_id: string; modality: string; name: string; price: number; contrast_price: number | null }[]);
+      setDrillRows(((data || []) as Array<RevenueEntry & { scheduled_date: string; patient_name: string | null; room_id: string | null; status: string }>).map((e) => ({
+        date: e.scheduled_date,
+        name: e.patient_name || "—",
+        proc: procName(e),
+        room: (e.room_id ? roomsById[e.room_id] : null)?.name || "—",
+        status: e.status,
+        rev: entryRevenue(e, cat),
+      })));
+    } finally {
+      setDrillLoading(false);
     }
   }
 
@@ -345,13 +401,13 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
           </div>
           <div className="tb-right">
             {clinics.length > 1 && (
-              <select className="inp" style={{ width: "auto", minWidth: 160 }} value={scope} onChange={(e) => setScope(e.target.value)} title="Оберіть центр">
+              <select className="inp" style={{ width: "auto", minWidth: 160 }} value={scope} onChange={(e) => { setScope(e.target.value); setDrill(null); }} title="Оберіть центр">
                 <option value="all">Всі центри ({clinics.length})</option>
                 {clinics.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             )}
             <div className="bk-seg">
-              {PERIODS.map((p) => <button key={p.k} className={"bk-seg-btn" + (period === p.k ? " active" : "")} onClick={() => setPeriod(p.k)}>{p.l}</button>)}
+              {PERIODS.map((p) => <button key={p.k} className={"bk-seg-btn" + (period === p.k ? " active" : "")} onClick={() => { setPeriod(p.k); setDrill(null); }}>{p.l}</button>)}
             </div>
             <button className="btn btn-secondary" onClick={exportCsv} disabled={exporting} aria-busy={exporting}>
               {exporting ? "Готуємо…" : "↧ Експортувати CSV"}
@@ -368,12 +424,12 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
                 <div style={card}>
                   <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>Записи · {PERIODS.find((p) => p.k === period)?.l.toLowerCase()}</div>
-                  <div style={{ fontSize: 40, fontWeight: 700 }} className="tabular">{total}</div>
+                  <div style={{ fontSize: 40, fontWeight: 700 }} className="tabular"><Drillable label="Усі записи" onOpen={() => openDrill(null, "Усі записи")}>{total}</Drillable></div>
                   <div style={{ display: "flex", gap: 16, marginTop: 14, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 13 }}><b style={{ color: "var(--green)" }} className="tabular">{done}</b> <span style={{ color: "var(--text-muted)" }}>виконано</span></span>
-                    <span style={{ fontSize: 13 }}><b style={{ color: "var(--red)" }} className="tabular">{noShow}</b> <span style={{ color: "var(--text-muted)" }}>неявка</span></span>
-                    <span style={{ fontSize: 13 }}><b style={{ color: "var(--orange)" }} className="tabular">{notHeld}</b> <span style={{ color: "var(--text-muted)" }}>не відбулося</span></span>
-                    <span style={{ fontSize: 13 }}><b style={{ color: "var(--blue)" }} className="tabular">{active}</b> <span style={{ color: "var(--text-muted)" }}>в процесі</span></span>
+                    <Drillable label="Виконано" onOpen={() => openDrill(["done"], "Виконано")} style={{ fontSize: 13 }}><b style={{ color: "var(--green)" }} className="tabular">{done}</b> <span style={{ color: "var(--text-muted)" }}>виконано</span></Drillable>
+                    <Drillable label="Неявка" onOpen={() => openDrill(["no_show"], "Неявка")} style={{ fontSize: 13 }}><b style={{ color: "var(--red)" }} className="tabular">{noShow}</b> <span style={{ color: "var(--text-muted)" }}>неявка</span></Drillable>
+                    <Drillable label="Не відбулося" onOpen={() => openDrill(["not_held"], "Не відбулося")} style={{ fontSize: 13 }}><b style={{ color: "var(--orange)" }} className="tabular">{notHeld}</b> <span style={{ color: "var(--text-muted)" }}>не відбулося</span></Drillable>
+                    <Drillable label="В процесі" onOpen={() => openDrill(["scheduled", "waiting", "in_progress"], "В процесі")} style={{ fontSize: 13 }}><b style={{ color: "var(--blue)" }} className="tabular">{active}</b> <span style={{ color: "var(--text-muted)" }}>в процесі</span></Drillable>
                   </div>
                 </div>
 
@@ -388,7 +444,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
 
                 <div style={card}>
                   <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>{revenueExact ? "Дохід · виконані" : "Дохід (частково оцінка) · виконані"}</div>
-                  <div style={{ fontSize: 34, fontWeight: 700, color: "var(--green)" }} className="tabular">{fmtUah(revenue)}</div>
+                  <div style={{ fontSize: 34, fontWeight: 700, color: "var(--green)" }} className="tabular"><Drillable label="Дохід · виконані" onOpen={() => openDrill(["done"], "Дохід · виконані")}>{fmtUah(revenue)}</Drillable></div>
                   <div style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 12 }}>За цінами довідника досліджень · {done} виконаних</div>
                 </div>
               </div>
@@ -443,9 +499,48 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
         </div>
       </div>
 
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid var(--green)", borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>{toast}</div>
+      {drill && (
+        <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) setDrill(null); }}>
+          <div className="dialog fade-in" style={{ maxWidth: 860, width: "92vw", maxHeight: "86vh", display: "flex", flexDirection: "column" }} role="dialog" aria-modal="true" aria-label={"Записи: " + drill.label}>
+            <div className="dlg-head">
+              <div className="dlg-title">{drill.label} · {periodLabel}{drillRows ? ` · ${drillRows.length}` : ""}</div>
+              <button className="icon-btn" aria-label="Закрити" onClick={() => setDrill(null)}>✕</button>
+            </div>
+            <div className="dlg-body" style={{ overflow: "auto" }}>
+              {drillLoading ? (
+                <div className="ctx-hint" style={{ textAlign: "center", padding: "22px 0", color: "var(--text-muted)" }}>⏳ Завантаження…</div>
+              ) : !drillRows || drillRows.length === 0 ? (
+                <div className="ctx-hint">Немає записів за цей період.</div>
+              ) : (() => {
+                const tdS: CSSProperties = { padding: "6px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
+                const thS: CSSProperties = { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--text-muted)", fontSize: 11, textTransform: "uppercase", position: "sticky", top: 0, background: "var(--card)" };
+                return (
+                  <>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                      <thead><tr>{["Дата", "Пацієнт", "Процедура", "Кабінет", "Статус", "Дохід"].map((h) => <th key={h} style={thS}>{h}</th>)}</tr></thead>
+                      <tbody>
+                        {drillRows.map((r, i) => (
+                          <tr key={i}>
+                            <td style={{ ...tdS, whiteSpace: "nowrap" }} className="tabular">{r.date}</td>
+                            <td style={tdS}>{r.name}</td>
+                            <td style={tdS}>{r.proc}</td>
+                            <td style={tdS}>{r.room}</td>
+                            <td style={tdS}>{STATUS_LABEL[r.status] || r.status}</td>
+                            <td style={{ ...tdS, whiteSpace: "nowrap" }} className="tabular">{r.rev ? fmtUah(r.rev) : "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {drillRows.length >= 1000 && <div className="ctx-hint" style={{ marginTop: 8 }}>Показано перші 1000 записів — звузьте період або скористайтесь «Експортувати CSV» для повного списку.</div>}
+                  </>
+                );
+              })()}
+            </div>
+            <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end" }}><button className="btn btn-primary" onClick={() => setDrill(null)}>Готово</button></div>
+          </div>
+        </div>
       )}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );
 }

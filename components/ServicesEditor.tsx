@@ -14,6 +14,7 @@
    defense-in-depth. Після мутації — router.refresh (низькооборотна таблиця). */
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import ImportPriceModal from "@/components/ImportPriceModal";
@@ -315,11 +316,11 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
   }
 
   const fmtUah = (n: number) => n.toLocaleString("uk-UA") + " ₴";
-  // Компактні колонки — щоб таблиця влазила і у вужчу колонку Майстра (~680px),
-  // без горизонтального скролу. Назва — minmax(0,…) (стискається/еліпсис), дії — іконки.
-  // Перша колонка 26px — чекбокс масового вибору.
-  const GRID_BASE = "26px minmax(100px,2.4fr) 66px 78px 80px 68px 112px";
-  const GRID_ROOM = "26px minmax(120px,2.4fr) 74px 96px 116px 84px";
+  // Компактні колонки — щоб таблиця влазила і у вужчу колонку Майстра (~680px).
+  // Назва — ширша (min 150px) і ПЕРЕНОСИТЬСЯ на новий рядок, якщо не влазить (замість
+  // обрізання еліпсисом); дії — іконки. Перша колонка 26px — чекбокс масового вибору.
+  const GRID_BASE = "26px minmax(150px,3fr) 66px 78px 80px 68px 112px";
+  const GRID_ROOM = "26px minmax(150px,3fr) 74px 96px 116px 84px";
 
   // Чекбокс рядка (спільний для обох режимів).
   const rowCheckbox = (id: string, name: string) => (
@@ -359,15 +360,16 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
           <select className="inp" value={scope} onChange={(e) => { setScope(e.target.value); setEditId(null); setOvEditId(null); setSelected({}); }} style={{ minWidth: 220 }}>
             <option value="base">Базовий каталог центру</option>
             {roomList.length > 0 && <optgroup label="Кабінети (своя ціна/час)">
-              {roomList.map((r) => <option key={r.id} value={r.id}>{modalityLabel(r.modality)} · {r.name}</option>)}
+              {roomList.map((r) => <option key={r.id} value={r.id}>{modalityLabel(r.modality)} · {r.name}{r.apparatus_model ? " · " + r.apparatus_model : ""}</option>)}
             </optgroup>}
           </select>
         </label>
         {room && <span className="badge" title="Порожні поля успадковують базовий каталог">кабінет «{room.name}» · {modalityLabel(room.modality)}</span>}
       </div>
 
-      <div className="qctrl">
-        <div className="pills">
+      {/* Модальності — окремим рядком і в ОДИН ряд (nowrap), щоб не переносились. */}
+      <div className="qctrl" style={{ marginBottom: 8 }}>
+        <div className="pills" style={{ flexWrap: "nowrap", overflowX: "auto", maxWidth: "100%" }}>
           {(room ? [effTab] : (BOOKABLE_MODALITIES as ModalityCode[])).map((m) => (
             <button key={m} className={"pill" + (effTab === m ? " active" : "")} disabled={!!room}
               onClick={() => { setTab(m); setEditId(null); setSelected({}); }}>
@@ -375,6 +377,9 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="qctrl">
         <div className="spacer" />
         <div className="search"><span className="si">⌕</span>
           <input placeholder="Пошук послуги…" value={query} onChange={(e) => setQuery(e.target.value)} />
@@ -464,7 +469,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
                   ) : (
                     <>
                       {rowCheckbox(s.id, s.name)}
-                      <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.name}>{s.name}
+                      <div style={{ fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }} title={s.name}>{s.name}
                         {s.source === "import" && <span className="badge" style={{ marginLeft: 8 }} title="Завантажено імпортом">імпорт</span>}</div>
                       <div className="tabular" style={{ textAlign: "right" }}>{s.duration_min != null ? s.duration_min + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано — введіть у редакторі або вручну при записі">—</span>}</div>
                       <div className="tabular" style={{ textAlign: "right" }}>{s.price ? fmtUah(s.price) : <span style={{ color: "var(--orange)" }} title="Ціну ще не задано">—</span>}</div>
@@ -544,7 +549,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
                 style={{ borderLeft: "3px solid " + (hidden ? "var(--border-strong)" : changed ? "var(--blue)" : "transparent") }}>
                 <div className="wlrow" style={{ gridTemplateColumns: GRID_ROOM, opacity: hidden ? 0.62 : 1 }}>
                   {rowCheckbox(s.id, s.name)}
-                  <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.name}>{s.name}</div>
+                  <div style={{ fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }} title={s.name}>{s.name}</div>
                   <div className="tabular" style={{ textAlign: "right" }}>
                     <span style={durChanged ? { color: "var(--blue)", fontWeight: 600 } : undefined}>{effDur != null ? effDur + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано">—</span>}</span>
                     {durChanged && <div style={{ fontSize: 11, color: "var(--text-faint)" }}>база {s.duration_min ?? "—"}</div>}
@@ -593,11 +598,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
       )}
 
       <div role="status" aria-live="polite">
-        {toast && (
-          <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>
-            {toast.msg}
-          </div>
-        )}
+        <Toast toast={toast} onDismiss={() => setToast(null)} />
       </div>
     </div>
   );

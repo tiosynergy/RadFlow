@@ -57,7 +57,7 @@ export default function CompletionModal({ patient, proc, roomName, enteredAt, on
       <div className="dialog fade-in" style={{ maxWidth: 540 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Підтвердження завершення процедури">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--green-bg)", color: "var(--green)" }}>✓</span>Завершення процедури</div>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body">
           <div className="pc-card">

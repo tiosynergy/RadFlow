@@ -6,7 +6,7 @@ import { useModalA11y } from "@/lib/useModalA11y";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { buildSlots, slotToMin } from "@/lib/slots";
 import { effectiveRoomBreaks, inBreak, roomScheduleFor, type DayOverride } from "@/lib/schedule";
-import { incidentEffectiveEnd, wallNow, wallToday0, type IncidentLike } from "@/lib/incidents";
+import { incidentEffectiveEnd, wallNow, wallToday0, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
 import { modalityShort, modalityKind } from "@/lib/studies";
 
 type Room = {
@@ -53,9 +53,11 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
     () => schedule.closed ? [] : buildSlots(slotToMin(schedule.start), slotToMin(schedule.end)),
     [schedule.closed, schedule.start, schedule.end],
   );
-  const nowMin = slotToMin(new Intl.DateTimeFormat("en-GB", {
-    timeZone: clinicTz, hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  }).format(wallNow(clinicTz)));
+  // Настінний час клініки як хвилини доби. wallNow(tz) уже повертає wall-as-UTC,
+  // тож БЕРЕМО wallMinOfDay (UTC-поля), а НЕ форматуємо ще раз у clinicTz —
+  // інакше зсув таймзони застосовувався б ДВІЧІ (13:42 ставало 16:42, і всі
+  // слоти до 16:40 хибно позначались «Цей час уже минув»).
+  const nowMin = wallMinOfDay(wallNow(clinicTz));
   const isToday = day === dateKey(wallToday0(clinicTz));
   const roomIncidents = incidents.filter((i) => i.room_id === roomId);
 

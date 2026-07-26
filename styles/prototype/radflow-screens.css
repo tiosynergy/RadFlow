@@ -232,7 +232,7 @@ html[data-density="compact"] .wlhead { column-gap: 8px; }
 html[data-density="compact"] .wl-name { font-size: 12.5px; }
 html[data-density="compact"] .wl-meta,
 html[data-density="compact"] .wlrow .cl-proc,
-html[data-density="compact"] .wl-proc-du { font-size: 11px; }
+html[data-density="compact"] .wl-proc-du { font-size: 12px; }
 html[data-density="spacious"] .wlrow,
 html[data-density="spacious"] .wlhead { padding-top: 18px; padding-bottom: 18px; }
 
@@ -252,3 +252,8 @@ html[data-density="spacious"] .wlhead { padding-top: 18px; padding-bottom: 18px;
 /* Тост із дією (Undo) */
 .wl-toast-action { margin-left: 12px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--card-2); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
 .wl-toast-action:hover { background: var(--border-strong); }
+
+/* Інлайн-спінер для pending-стану дій (UX-аудит v2 · B-1). Поважає reduced-motion. */
+@keyframes rf-spin { to { transform: rotate(360deg); } }
+.rf-spin { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; animation: rf-spin .7s linear infinite; vertical-align: -1px; }
+@media (prefers-reduced-motion: reduce) { .rf-spin { animation: none; } }

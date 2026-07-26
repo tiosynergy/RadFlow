@@ -17,6 +17,7 @@ import { BUFFER_DEFAULT, normBuffer, modalityLabel, modalityShort, modalityKind 
 import { useModalA11y } from "@/lib/useModalA11y";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
+import ConfirmDialog from "@/components/ConfirmDialog";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 // Минимально необходимый набор полей записи (доски передают разные подмножества).
@@ -53,7 +54,11 @@ function procLabel(e: { studies?: unknown; note?: string | null }) {
 }
 
 export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, incidents = [], onClose, onConfirm, allowOffSchedule = false }: RescheduleModalProps) {
-  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
+  // Dirty-guard: не втрачати обраний слот/причину при випадковому закритті.
+  const [dirty, setDirty] = useState(false);
+  const [askClose, setAskClose] = useState(false);
+  const requestClose = () => { if (dirty) setAskClose(true); else onClose(); };
+  const dialogRef = useModalA11y<HTMLDivElement>(requestClose);
   const curRoom = (rooms || []).find((r) => r.id === patient.room_id);
   const modality = curRoom ? curRoom.modality : "MRI";
   const kind = modalityLabel(modality);
@@ -230,11 +235,12 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   }
 
   return (
+    <>
     <div className="overlay">
-      <div className="dialog fade-in" style={{ maxWidth: 520 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Перенесення запису">
+      <div className="dialog fade-in" style={{ maxWidth: 520 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Перенесення запису" onChangeCapture={() => setDirty(true)}>
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue)" }}>🗓</span>Перенести на новий слот</div>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <button className="icon-btn" onClick={requestClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body">
           <div className="ctx-hint blue" style={{ fontSize: 13 }}>Пацієнт: <b>{patient.patient_name}</b> · {procLabel(patient)} · {dur} хв{buffer > 0 ? ` + ${buffer} буфер` : ""}</div>
@@ -275,7 +281,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
               : <SlotPicker
                   slots={slots}
                   value={time}
-                  onChange={setTime}
+                  onChange={(s) => { setTime(s); setDirty(true); }}
                   spanMin={dur}
                   bufferMin={buffer}
                   resetKey={roomId + "|" + dateStr + "|" + dur + "|" + buffer}
@@ -327,12 +333,24 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
           {valid
             ? <span className="bk-summary">{room ? room.name : ""} · {dateStr} {time}–{fmt(toMin(time) + dur)}{buffer > 0 ? " (+" + buffer + " хв буфер → вільно з " + fmt(toMin(time) + dur + buffer) + ")" : ""}</span>
             : <span style={{ fontSize: 12, color: "var(--text-faint)", marginRight: "auto", alignSelf: "center" }}>Оберіть кабінет, дату та слот</span>}
-          <button className="btn btn-ghost" onClick={onClose} disabled={saving}>Скасувати</button>
+          <button className="btn btn-ghost" onClick={requestClose} disabled={saving}>Скасувати</button>
           <button className="btn btn-primary" disabled={!valid || saving} onClick={handleConfirm}>
             {saving ? "Перенесення…" : "✓ Перенести на цей слот"}
           </button>
         </div>
       </div>
     </div>
+    {askClose && (
+      <ConfirmDialog
+        title="Незбережені зміни"
+        text="Обрано новий слот/причину, але перенесення не збережено. Закрити без збереження?"
+        confirmLabel="Закрити без збереження"
+        cancelLabel="Продовжити"
+        danger
+        onConfirm={() => { setAskClose(false); onClose(); }}
+        onClose={() => setAskClose(false)}
+      />
+    )}
+    </>
   );
 }

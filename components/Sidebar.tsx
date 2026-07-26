@@ -139,15 +139,20 @@ export default function Sidebar({
         </div>
 
         <div className="sb-section">
+          {/* H4-3: дії-кнопки рендеряться лише коли батько передав хендлер. «Новий
+              запис»/«Інциденти» раніше показувались на КОЖНІЙ сторінці (колл-лист,
+              лист очікування, налаштування), але onNew/onBreakdown передає лише
+              дошка черги — на решті це був клік у нікуди. Тепер — як onSlotsOverview
+              /onEmergency: немає хендлера → немає пункту (не показуємо dead actions). */}
           <div className="sb-label">Швидкі дії</div>
           <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span></a>
           {isAdmin && onSlotsOverview && <button type="button" onClick={onSlotsOverview} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">◫</span><span className="sb-item-lab">Зайнятість кабінету</span>
           </button>}
-          <button type="button" onClick={() => onNew && onNew()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
+          {onNew && <button type="button" onClick={() => onNew()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">＋</span>
             <span className="sb-item-lab">Новий запис</span>
-          </button>
+          </button>}
           <a href="/call-list" className={"sb-item" + (activeNav === "calls" ? " active" : "")}><span className="ic">☎</span><span className="sb-item-lab">Колл-лист</span></a>
           <a href="/waitlist" className={"sb-item" + (activeNav === "waitlist" ? " active" : "")}>
             <span className="ic">⏳</span>
@@ -155,11 +160,11 @@ export default function Sidebar({
             {waitCount ? <span className="sb-badge">{waitCount}</span> : null}
           </a>
           {isAdmin && <a href="/referral" className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span></a>}
-          <button type="button" onClick={() => onBreakdown && onBreakdown()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
+          {onBreakdown && <button type="button" onClick={() => onBreakdown()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">⚠</span>
             <span className="sb-item-lab">Інциденти</span>
             {incidentCount ? <span className="sb-badge sb-badge-red">{incidentCount}</span> : null}
-          </button>
+          </button>}
           {onEmergency && (
             <button type="button" onClick={() => onEmergency()} aria-pressed={emergencyActive}
               className={"sb-item sb-emergency" + (emergencyActive ? " on" : "")} style={{ width: "100%", textAlign: "left", cursor: "pointer" }}

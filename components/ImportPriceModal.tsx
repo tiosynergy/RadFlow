@@ -45,7 +45,16 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
   // а onDone/refresh — ні, і адмін бачитиме старий каталог (ревью L6).
   const stepRef = useRef(step);
   stepRef.current = step;
-  const safeClose = () => { if (stepRef.current !== "applying") onClose(); };
+  const safeClose = () => {
+    // Застосування — жорсткий блок: імпорт на сервері завершиться, а onDone/refresh — ні
+    // (адмін бачив би старий каталог; ревью L6).
+    if (stepRef.current === "applying") return;
+    // Розбір (файл/URL → Grok, до ~3 хв) — перепитуємо: закриття втратить передперегляд
+    // і змарнує виклик AI. Гард від випадкового Esc / кліку повз модалку під час очікування.
+    if (stepRef.current === "loading" &&
+        !window.confirm("Розбір прайса ще триває. Закрити й скасувати перегляд?")) return;
+    onClose();
+  };
   const dialogRef = useModalA11y<HTMLDivElement>(safeClose);
   const fileRef = useRef<HTMLInputElement>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -206,28 +215,34 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
     }
   }
 
+  // A11y/мобільні (ревʼю): інтерактивні контроли (`extra` — select / поле часу) живуть
+  // ПОЗА <label>, який зв'язує лише чекбокс + назву. Раніше все було в одному <label>, і
+  // клік по select/інпуту довелося глушити preventDefault — а на тачі це блокувало відкриття
+  // нативного пікера select. Тепер label — тільки для чекбокса; extra не тригерить чекбокс,
+  // preventDefault не потрібен. Клік по назві перемикає рядок, як і раніше.
   const rowLine = (i: number, extra?: React.ReactNode, disabled?: boolean) => {
     const r = preview!.rows[i];
     return (
-      <label key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 13.5, cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.6 : 1 }}>
-        <input type="checkbox" checked={!!checked[i]} disabled={disabled}
-          onChange={(e) => setChecked((p) => ({ ...p, [i]: e.target.checked }))} />
-        <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.row.name}>
-          {r.row.name}
-        </span>
-        {r.row.modality && <span className="badge">{modalityLabel(r.row.modality)}</span>}
+      <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 13.5, opacity: disabled ? 0.6 : 1 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 10, flex: "1 1 auto", minWidth: 0, cursor: disabled ? "default" : "pointer" }}>
+          <input type="checkbox" checked={!!checked[i]} disabled={disabled}
+            onChange={(e) => setChecked((p) => ({ ...p, [i]: e.target.checked }))} />
+          <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.row.name}>
+            {r.row.name}
+          </span>
+          {r.row.modality && <span className="badge">{modalityLabel(r.row.modality)}</span>}
+        </label>
         {extra}
-      </label>
+      </div>
     );
   };
 
-  // Інпут ручної тривалості (у прайсах час зазвичай відсутній). preventDefault
-  // на кліку — інпут живе всередині label рядка, інакше клік перемикав би чекбокс.
+  // Інпут ручної тривалості (у прайсах час зазвичай відсутній). Живе ПОЗА <label>
+  // рядка (див. rowLine) — тому preventDefault на кліку більше не потрібен.
   const durInput = (i: number, fileDur: number | null) => (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, color: "var(--text-muted)" }}>
       <input className="inp" type="number" step={5} min={5} max={480} style={{ width: 64 }}
         placeholder={fileDur != null ? String(fileDur) : "—"} value={durPick[i] ?? ""}
-        onClick={(e) => e.preventDefault()}
         onChange={(e) => setDurPick((p) => ({ ...p, [i]: e.target.value }))}
         aria-label="Тривалість, хв" />
       хв
@@ -420,7 +435,6 @@ export default function ImportPriceModal({ onClose, onDone }: Props) {
                           </span>
                         )}
                         <select className="inp" value={m} style={{ minWidth: 130 }}
-                          onClick={(e) => e.preventDefault()}
                           onChange={(e) => {
                             const val = e.target.value as BookableMod | "";
                             setModPick((p) => ({ ...p, [i]: val }));

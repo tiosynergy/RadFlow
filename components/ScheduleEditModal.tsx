@@ -125,7 +125,7 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
       <div className="dialog fade-in" style={{ maxWidth: 560 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Графік роботи на день">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic">🗓</span>Режим роботи · {fmtShort(date)}</div>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body">
           <div className="ctx-hint blue">Графік на <b>{fmtShort(date)}</b>. Закрийте всю клініку на свято/вихідний або змініть години окремих кабінетів. Зміни одразу відображаються в календарі та черзі.</div>

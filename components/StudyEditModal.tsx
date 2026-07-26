@@ -258,7 +258,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
       <div className="dialog fade-in bk-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Редагування дослідження">
         <div className="dlg-head">
           <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue)" }}>🩻</span>Дослідження пацієнта</div>
-          <button className="icon-btn" onClick={onClose}>✕</button>
+          <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="bk-grid">
         <div className="bk-col bk-col-left" style={{ gap: 11 }}>

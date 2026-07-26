@@ -5,7 +5,9 @@
    статуси досліджень (кроки + Неявка/Не відбулося/Повернути) та власні нотатки.
    Перенос, редагування досліджень, скасування, обдзвін і поломки — лише в адміна. */
 
-import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode, type MouseEvent } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, type MouseEvent } from "react";
+import Toast from "@/components/Toast";
+import StudyTimer from "@/components/StudyTimer";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
@@ -59,23 +61,19 @@ function regionOf(e: { studies?: unknown }) {
   const s = Array.isArray(e.studies) ? (e.studies as Array<{ region?: string }>) : [];
   return s.map((x) => x.region).filter(Boolean).join(", ");
 }
-function fmtTimer(sec: number) {
-  const m = Math.floor(sec / 60), s = sec % 60, h = Math.floor(m / 60);
-  if (h) return h + ":" + String(m % 60).padStart(2, "0") + ":" + String(s).padStart(2, "0");
-  return m + ":" + String(s).padStart(2, "0");
-}
 function enteredAtOf(e: RadEntry | null | undefined): string | null { return e ? (e.in_progress_at || e.updated_at) : null; }
 
-const ST: Record<string, { label: string; cls: string; dot?: boolean }> = {
-  scheduled: { label: "В черзі", cls: "gray" },
-  waiting: { label: "Очікує", cls: "yellow" },
+// H4-4: статус гліфом+кольором (паритет із колл-листом і дошкою адміна), а не лише кольором.
+const ST: Record<string, { label: string; cls: string; dot?: boolean; icon?: string }> = {
+  scheduled: { label: "В черзі", cls: "gray", icon: "○" },
+  waiting: { label: "Очікує", cls: "yellow", icon: "◔" },
   in_progress: { label: "В кабінеті", cls: "blue", dot: true },
-  done: { label: "Виконано", cls: "green" },
-  no_show: { label: "Неявка", cls: "red" },
-  not_held: { label: "Не відбулося", cls: "orange" },
-  cancelled: { label: "Скасовано", cls: "gray" },
+  done: { label: "Виконано", cls: "green", icon: "✓" },
+  no_show: { label: "Неявка", cls: "red", icon: "✕" },
+  not_held: { label: "Не відбулося", cls: "orange", icon: "⊘" },
+  cancelled: { label: "Скасовано", cls: "gray", icon: "⊗" },
   // 0079/0080 — слот втрачено через затримку. Радіолог це БАЧИТЬ, але переносить реєстратор/адмін.
-  needs_reschedule: { label: "Потребує переносу", cls: "orange" },
+  needs_reschedule: { label: "Потребує переносу", cls: "orange", icon: "↻" },
 };
 const FLOW: Record<string, number> = { in_progress: 0, waiting: 1, scheduled: 2, needs_reschedule: 2.5, done: 3, not_held: 4, no_show: 5 };
 const STAT_ITEMS = [
@@ -112,12 +110,6 @@ function LiveClock({ tz }: { tz?: string }) {
     catch { return now.toLocaleTimeString("uk-UA", opts); }
   })();
   return <span className="rad-clock tabular" suppressHydrationWarning>🕐 {txt}</span>;
-}
-function LiveTimer({ enteredAt, children }: { enteredAt?: string | null; children: (sec: number) => ReactNode }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
-  const sec = enteredAt ? Math.max(0, Math.floor((now - new Date(enteredAt).getTime()) / 1000)) : 0;
-  return children(sec);
 }
 
 function StatsBar({ counts, filter, setFilter }: { counts: Record<string, number>; filter: string; setFilter: (f: string) => void }) {
@@ -194,16 +186,16 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
           <div className="rc-name">{room.name}</div>
           <div className="rc-model">{room.apparatus_model || ""}</div>
         </div>
+        {/* Таймер зворотного відліку (0093) — у шапці плитки, навпроти модальності/назви
+            кабінету; розмір вміщує год:хв:сек. ≤5 хв — червоне з пульсацією. */}
+        {patient && (
+          <StudyTimer variant="mini" size={60} startAt={enteredAt} durationMin={patient.duration_min || 30} bufferMin={patient.buffer_time_min ?? BUFFER_DEFAULT} />
+        )}
       </div>
       {patient ? (
         <div className="rc-body rc-body-busy">
           <div className="rc-brow">
             <span className="rc-pat"><span className="pulse-dot" />{patient.patient_name}</span>
-            <LiveTimer enteredAt={enteredAt}>{(sec) => {
-              // Перевищення рахуємо з урахуванням буфера (дослідження + переукладка/дезінфекція).
-              const over = sec > ((patient.duration_min || 30) + (patient.buffer_time_min ?? BUFFER_DEFAULT)) * 60;
-              return <span className={"rc-timer tabular" + (over ? " over" : "")} title={over ? "Час перевищено" : "Зараз в кабінеті"}>{fmtTimer(sec)}</span>;
-            }}</LiveTimer>
           </div>
           <div className="rc-brow">
             <span className="rc-proc" title={procLabel(patient)}>{procLabel(patient)} · {patient.duration_min} хв · {patient.scheduled_time}</span>
@@ -257,7 +249,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
   // «Неявка»/«Не відбулося» — лише ПІСЛЯ часу початку дослідження (не наперед).
   const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
   const beforeStart = _startMs != null && wallNow() < _startMs;
-  const meta: { label: string; cls: string; dot?: boolean; title?: string } = late ? LATE_META : overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
+  const meta: { label: string; cls: string; dot?: boolean; title?: string; icon?: string } = late ? LATE_META : overdue ? CLARIFY_META : (ST[p.status] || ST.scheduled);
   const dateStr = dayDate ? String(dayDate.getDate()).padStart(2, "0") + "." + String(dayDate.getMonth() + 1).padStart(2, "0") + "." + dayDate.getFullYear() : "";
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
   const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
@@ -296,7 +288,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
           {roomModel ? <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{roomModel}</span> : null}
         </div>
         <div className="q-status-cell">
-          <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{meta.label}</span>
+          <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{!meta.dot && meta.icon && <span aria-hidden="true" style={{ marginRight: 3 }}>{meta.icon}</span>}{meta.label}</span>
           {/* 0077 — запис зроблено поза графіком кабінету (підтверджено персоналом). */}
           {p.off_schedule && (
             <span className="badge offsched" title="Запис поза графіком кабінету (після закриття або в перерву) — підтверджено персоналом">⏰ Поза графіком</span>
@@ -308,28 +300,38 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
       <div className="qrow-detail-wrap">
         <div className="qrow-detail-inner">
           <div className="qrow-detail">
-            {Array.isArray(p.studies) && p.studies.length > 0 && (() => {
-              const sdiff = diffStudies(p.studies_original as Parameters<typeof diffStudies>[0], p.studies as Parameters<typeof diffStudies>[1]);
-              const changed = sdiff.some((d) => d.state !== "kept");
-              return (
-                <div style={{ marginBottom: 8 }}>
-                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
-                    {sdiff.map((d, i) => (
-                      <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
-                        {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
+            {/* Дослідження + Показання/Примітка (ліворуч) обтікають таймер (справа, угорі) — як на дошці адміна. */}
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 4, flexWrap: "nowrap" }}>
+              <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+                {Array.isArray(p.studies) && p.studies.length > 0 && (() => {
+                  const sdiff = diffStudies(p.studies_original as Parameters<typeof diffStudies>[0], p.studies as Parameters<typeof diffStudies>[1]);
+                  const changed = sdiff.some((d) => d.state !== "kept");
+                  return (
+                    <div style={{ marginBottom: 8 }}>
+                      <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
+                        {sdiff.map((d, i) => (
+                          <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
+                            {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    </div>
+                  );
+                })()}
+                {(p.note || p.indication) && (
+                  <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
+                    {p.indication && <span style={{ color: "var(--text-muted)" }}>Показання: {p.indication}</span>}
+                    {p.note && <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>}
                   </div>
-                </div>
-              );
-            })()}
-            {(p.note || p.indication) && (
-              <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
-                {p.indication && <span style={{ color: "var(--text-muted)" }}>Показання: {p.indication}</span>}
-                {p.note && <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>}
+                )}
               </div>
-            )}
+              {p.status === "in_progress" && (
+                <div className="qd-timer-top" style={{ flex: "0 0 auto" }}>
+                  <StudyTimer variant="full" size={106} startAt={p.in_progress_at} durationMin={p.duration_min || 30} bufferMin={p.buffer_time_min ?? BUFFER_DEFAULT} />
+                </div>
+              )}
+            </div>
 
             {/* 0079/0080 — «Потребує переносу»: радіолог бачить факт, але дій не має.
                 Перенос робить реєстратор/адмін (рішення власника), а степер тут відхилив би
@@ -350,17 +352,26 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
               const terminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
               return (
                 <div className="qd-step">
-                  <div style={{ position: "relative", padding: "14px 32px 4px" }}>
-                    <div style={{ position: "absolute", top: 29, left: 56, right: 56, height: 2, background: "var(--border)" }} />
+                  <div style={{ position: "relative", padding: "2px 32px 4px" }}>
+                    <div style={{ position: "absolute", top: 17, left: 56, right: 56, height: 2, background: "var(--border)" }} />
                     <div style={{ position: "relative", display: "flex", justifyContent: "space-between" }}>
                       {STEP_ORDER.map((key, i) => {
                         const isDone = stepIdx >= 0 && i < stepIdx;
                         const isCur = i === stepIdx;
                         const m = STEP_META[key];
+                        // Інваріант БД (0069): у 'done' лише з 'in_progress' — крок «Виконано»
+                        // disabled, поки пацієнт не в кабінеті (паритет із дошкою адміна).
+                        const stepBlocked = key === "done" && p.status !== "in_progress" && p.status !== "done";
+                        const stepDisabled = !canSetStatus || stepBlocked;
+                        const stepTitle = !canSetStatus
+                          ? "Майбутній запис — статус зміните в день запису"
+                          : stepBlocked
+                            ? "«Виконано» доступне лише коли пацієнт у кабінеті — спершу проведіть його через кабінет"
+                            : "Встановити статус: " + m.label;
                         return (
                           <div key={key} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 72 }}>
-                            <button onClick={canSetStatus ? act(() => onSetStatus(p, key)) : undefined} disabled={!canSetStatus} title={canSetStatus ? "Встановити статус: " + m.label : "Майбутній запис — статус зміните в день запису"}
-                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: canSetStatus ? "pointer" : "default",
+                            <button onClick={stepDisabled ? undefined : act(() => onSetStatus(p, key))} disabled={stepDisabled} title={stepTitle} aria-disabled={stepDisabled}
+                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: stepDisabled ? "not-allowed" : "pointer", opacity: stepBlocked ? 0.4 : 1,
                                 background: isDone ? "var(--green)" : (isCur ? m.color : "transparent"),
                                 border: "1.5px solid " + ((isDone || isCur) ? "transparent" : "var(--border-strong)"),
                                 color: isDone ? "#04210d" : (isCur ? "#1c1c1e" : "var(--text-faint)") }}>
@@ -456,8 +467,8 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSch
       <div className="cal-head">
         <span className="cal-month">{MON_NOM[mo]} {y}</span>
         <div className="cal-nav">
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)}>‹</button>
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)}>›</button>
+          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць" aria-label="Попередній місяць">‹</button>
+          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць" aria-label="Наступний місяць">›</button>
         </div>
       </div>
       <div className="cal-grid">
@@ -574,7 +585,12 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
   const today = wallToday0(clinicTz);
   const isToday = sameDay(selectedDate, today);
   const isPast = selectedDate < today;
-  const readOnly = false;
+  // H1-5/H4-2: минулий день = архів. Підпис давно казав «Архів — лише перегляд»,
+  // але readOnly був фіктивним (false) — кнопки дій лишались живими, UI брехав про
+  // режим. Тепер минула дата справді read-only (як і має бути для завершеного дня):
+  // ряди без дій-кнопок, нотатки лише для читання. Сьогодні/майбутнє — без змін
+  // (майбутні ряди й далі disabled через isFutureRow з підказкою).
+  const readOnly = isPast;
   const dayKey = dateKey(selectedDate);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
   const roomIds = useMemo(() => (rooms || []).map((r) => r.id), [rooms]);
@@ -983,11 +999,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
         />
       )}
 
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--card)", border: "1px solid var(--border-strong)", borderLeft: "4px solid " + (toast.type === "error" ? "var(--red)" : "var(--green)"), borderRadius: 12, padding: "12px 18px", boxShadow: "var(--shadow-pop)", zIndex: 50, fontSize: 13.5 }}>
-          {toast.msg}
-        </div>
-      )}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );
 }
