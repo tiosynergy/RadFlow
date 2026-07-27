@@ -62,11 +62,11 @@ management.
 ## Migrations
 - Applied to prod MANUALLY via the Supabase SQL editor (no automated migration runner). A Vercel
   deploy does NOT run them — apply the SQL first, then merge `dev → main`.
-- Prod migrations **0001–0119 ALL APPLIED** (as of 2026-07-26; highest is
-  `0119_services_import_optimistic_lock.sql`). The next new migration is **0120**. Deploy state
-  is tracked in the `docs/HANDOVER.md` header (always fresher than this file). ALWAYS check the
-  highest existing migration number before adding a new one and number it sequentially (a
-  duplicate/lower number is a bug).
+- Do NOT trust any hardcoded migration number in docs — this very bullet once said "prod on
+  0119" while prod was on 0124 (2026-07 tech audit, High-2). The `docs/HANDOVER.md` header is
+  fresher than this file, and the FINAL source of truth is the prod DB itself: check the highest
+  APPLIED migration (schema objects it creates) before numbering a new one. Number sequentially;
+  a duplicate/lower number is a bug.
 - Keep migrations idempotent (`do $$ … exception when duplicate_object …$$`, `create … if not
   exists`, `drop policy if exists` before `create policy`).
 

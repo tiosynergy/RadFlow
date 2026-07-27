@@ -32,7 +32,7 @@ import {
   type DelayEntry, type DelayPlan,
 } from "@/lib/delayPlan";
 import {
-  parseInput, safeDbError, zUuid, zDateKey, zTime, zIsoInstant, zName, zOptText, zOptEmail,
+  parseInput, safeDbError, zUuid, zDateKey, zTime, zSlotTime, zIsoInstant, zName, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
   zDuration, zBuffer, zPriority, zQueueStatus, zCallStatus, zStudiesRequired, zIdList,
   zQueueDelayPolicy, zOverlapThreshold, zMaxCascade, zQueueStatusAny,
@@ -98,7 +98,9 @@ const sPatientFields = {
   durationMin: zDuration,
   bufferTimeMin: zBuffer.optional(),
   scheduledDate: zDateKey,
-  scheduledTime: zTime,
+  // Слот запису — на сітці 5 хв (zSlotTime, техаудит High-1): '09:03' повз UI
+  // створював би запис, невидимий у сітці SlotPicker. Дзеркало в БД — 0125.
+  scheduledTime: zSlotTime,
   scheduledAt: zIsoInstant,
 };
 
@@ -125,7 +127,7 @@ const sReschedule = z.object({
   id: zUuid,
   roomId: zUuid,
   scheduledDate: zDateKey,
-  scheduledTime: zTime,
+  scheduledTime: zSlotTime,   // сітка 5 хв — як у створенні (техаудит High-1)
   scheduledAt: zIsoInstant,
   durationMin: zDuration,
   bufferTimeMin: zBuffer.optional(),
@@ -1003,6 +1005,13 @@ function mapBookingError(message: string, code = ""): QueueActionResult {
   }
   // MODALITY_MISMATCH — тригер 0088 (тип дослідження ↔ модальність кабінету).
   if (/MODALITY_MISMATCH/i.test(message)) return MODALITY_MISMATCH_ERR;
+  // SLOT_GRID — тригер 0125 (час слота на сітці 5 хв). Сюди доходити не має
+  // (zSlotTime блокує раніше), але якщо клієнт і БД колись розійдуться —
+  // діагноз мусить лишатись видимим, а не «Не вдалося виконати операцію».
+  if (/^SLOT_GRID/i.test(message)) {
+    safeDbError("booking.slot_grid", { message });
+    return { ok: false, error: "Час слота має бути кратним 5 хвилинам — оберіть слот у сітці", code: "generic" };
+  }
   // PAST_SLOT — тригер 0063 (останній рубіж; серверна перевірка стоїть вище).
   if (/PAST_SLOT/i.test(message)) return PAST_ERR;
   // 0066: CHECK тривалості. Сюди доходити не має (клієнт клампить, сервер нормалізує),
@@ -1958,8 +1967,12 @@ const sDelayItem = z.object({
   id: zUuid,
   // 'keep' сюди не приходить: застосовувати там нічого, а RPC (0081) його відхиляє.
   kind: z.enum(["shift", "no_fit", "conflict"]),
+  /* 'from' — провенанс (плановий час ДО зсуву) і їде лише в журнал; строгість
+     сітки тут блокувала б увесь план, якби в кабінеті сидів легасі-запис поза
+     сіткою. 'to' — НОВИЙ слот, його дає firstFittingSlot по кроку SLOT_STEP,
+     тож сітку вимагаємо. */
   from: zTime,
-  to: zTime.nullable(),
+  to: zSlotTime.nullable(),
 });
 
 const sApplyDelayPlan = z.object({
@@ -2123,7 +2136,7 @@ const sCaseStep = z.object({
   bufferTimeMin: zBuffer.optional(),
   priorityLevel: zPriority.optional(),
   scheduledDate: zDateKey,
-  scheduledTime: zTime,
+  scheduledTime: zSlotTime,   // сітка 5 хв (техаудит High-1)
   contraindications: z.boolean().optional(),
   doctor: zOptText(200),
   note: zOptText(2000),

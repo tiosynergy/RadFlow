@@ -24,6 +24,33 @@ TypeScript + Tailwind + zod, Vercel (Hobby + Fluid Compute, maxDuration=300). Р
 
 ---
 
+## Состояние на конец сессии 2026-07-28 (сессия 15)
+
+**Незакоммичено — пакет сессии 15 (фиксы внешнего техаудита, 12 файлов).** Коммитит владелец.
+Тулчейн: tsc 0, lint 0, **vitest 315/315**, build зелёный. Аудит и полная диспозиция находок —
+`docs/audit/TECH_AUDIT_2026-07-27.md` (раздел «Верификация и статус исправлений»).
+
+- **Миграция `0125_slot_grid_guard.sql` НАПИСАНА, dry-run `SMOKE_OK`, НЕ накачена** —
+  сетка 5 мин для `scheduled_time` (триггер) + нормализация двух легаси `HH:MM:SS`.
+  Смоук: `supabase/smoke/slot_grid_smoke.sql` (⚠️ ACCESS EXCLUSIVE на queue_entries —
+  гонять вне пика). Порядок «БД → клиент» здесь не критичен (клиент уже шлёт только
+  сетку), но накатить стоит до следующего плана задержек в «Закревського, 9».
+  **После накатки следующая новая = `0126`.**
+- Клиент: `zSlotTime` (слот/перенос/шаг кейса/`to` плана), `useRealtimeRefetch`
+  (джиттер, subscriptionKey, гард `cancelled` — High из ревью), `SLOT_GRID` в
+  `mapBookingError`, README/ONBOARDING без зашитых номеров миграций.
+- **✅ Outbox ВКЛЮЧЁН и проверен живьём** (2026-07-27 22:05 UTC): цепочка pg_cron →
+  `/api/outbox/deliver` (Bearer из Vault) → n8n `radflow-outbox-events` (HMAC, дедуп,
+  журнал `radflow_outbox_journal`) → `delivered_at`. Зависший `emergency_stop` от 24.07
+  доставлен (n8n execution #71 success). Джоба `outbox-deliver` — каждую минуту.
+  Три грабли записаны в раннбуке `2026-07-28_enable_outbox_cron.sql`: секрет — через
+  Vault (не `alter database`, 42501); URL вебхука — КОРОТКИЙ (`/webhook/<path>`, без
+  uuid — с uuid был 404); правка n8n-ноды живёт черновиком, пока не нажат Publish.
+- Бэклог из аудита: TS↔SQL контракт-тесты расписания (overrides, per-day, breaks,
+  границы, DST, off-schedule grace) — отдельная сессия.
+
+---
+
 ## Состояние на конец сессии 2026-07-28 (сессия 14)
 
 **Git: всё смёржено и задеплоено.** `dev` == `origin/main` == **`b8dd817`** (пакет сессии 14
