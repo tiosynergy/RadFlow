@@ -68,7 +68,7 @@ const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recal
 function StatusBadge({ status }: { status: string | null | undefined }) {
   const key = status || "not_called";
   const m = CL_META[key];
-  return <span title={m.label} style={{ fontSize: 17, lineHeight: 1, color: CALL_COLOR[key] }}>☎</span>;
+  return <span title={m.label} style={{ fontSize: "1.0625rem", lineHeight: 1, color: CALL_COLOR[key] }}>☎</span>;
 }
 
 interface CallRowProps {
@@ -96,7 +96,7 @@ function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet,
         <button className="cl-name cl-name-btn" onClick={() => onToggle(p.id)}>{p.priority_level && p.priority_level !== "planned" && isActiveStatus(p.status) && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone} style={{ marginRight: 6 }}>{PRIORITY_META[p.priority_level].short}</span>}{p.patient_name}</button>
         <div><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>☎ {p.patient_phone}</a></div>
         <div className="cl-proc">{procLabel(p)}</div>
-        <div className="cl-room">{roomName}{roomModel ? <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{roomModel}</div> : null}</div>
+        <div className="cl-room">{roomName}{roomModel ? <div style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}</div> : null}</div>
         <div><StatusBadge status={p.call_status} /></div>
         <div>
           <input key={p.id + ":" + (p.call_note || "")} className="note-input" placeholder="Нотатка…" defaultValue={p.call_note || ""} onBlur={(e) => onNote(p.id, e.target.value)} />

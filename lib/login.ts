@@ -73,9 +73,13 @@ export function randomRadiologistEmail(): string {
   return "rad." + rnd + "@" + RADIOLOGIST_EMAIL_DOMAIN;
 }
 
-/** Чи є адреса службовою (будь-який із наших внутрішніх доменів). */
+/* Чи є адреса службовою (будь-який із наших внутрішніх доменів).
+   `(^|[.@])` замість просто `\.`: варіант із крапкою пропускав голий
+   `x@radflow.local` — адресу в нашій же неіснуючій зоні, яку форма приймала б
+   як «справжню пошту для звʼязку», а лист туди нікуди б не пішов. Межа `[.@]`
+   при цьому не ловить чужий домен-двійник `evil@radflow.local.example.com`. */
 export function isTechnicalEmail(email: string | null | undefined): boolean {
-  return typeof email === "string" && /\.radflow\.local$/i.test(email.trim());
+  return typeof email === "string" && /(^|[.@])radflow\.local$/i.test(email.trim());
 }
 
 /* Запасний логін для акаунта, створеного повз наші форми (напр. через

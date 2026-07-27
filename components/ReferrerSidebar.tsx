@@ -64,7 +64,7 @@ export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, ac
         <div className="sb-section">
           <div className="sb-label">Мої центри</div>
           {centers.length === 0 ? (
-            <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "4px 10px" }}>Немає активних центрів</div>
+            <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", padding: "4px 10px" }}>Немає активних центрів</div>
           ) : centers.map((c) => {
             const all = roomsByClinic[c.clinicId] || [];
             // Показуємо лише ДОЗВОЛЕНІ кабінети (room_ids). null/порожньо = усі
@@ -77,10 +77,10 @@ export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, ac
               <div key={c.clinicId} style={{ marginBottom: 8 }}>
                 <button type="button" onClick={() => onSelectRoom && onSelectRoom(c.clinicId, "all")}
                   className={"sb-cab-all" + (centerActive ? " active" : "")}
-                  style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: onSelectRoom ? "pointer" : "default", fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", padding: "4px 10px 2px" }}
+                  style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: onSelectRoom ? "pointer" : "default", fontSize: "0.75rem", fontWeight: 600, color: "var(--text-secondary)", padding: "4px 10px 2px" }}
                   title={c.city ? c.name + " · " + c.city : c.name}>{c.name}</button>
                 {rooms.length === 0 ? (
-                  <div style={{ fontSize: 11.5, color: "var(--text-faint)", padding: "0 10px 2px" }}>обладнання не вказано</div>
+                  <div style={{ fontSize: "0.71875rem", color: "var(--text-faint)", padding: "0 10px 2px" }}>обладнання не вказано</div>
                 ) : rooms.map((r) => (
                   <button type="button" key={r.id} onClick={() => onSelectRoom && onSelectRoom(c.clinicId, r.id)}
                     className={"sb-cab" + (activeClinic === c.clinicId && activeRoom === r.id ? " active" : "")}

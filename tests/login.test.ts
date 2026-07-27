@@ -66,6 +66,13 @@ describe("isTechnicalEmail", () => {
   });
   it("не ведеться на схожий чужий домен", () => {
     expect(isTechnicalEmail("evil@radflow.local.example.com")).toBe(false);
+    expect(isTechnicalEmail("evil@notradflow.local")).toBe(false);
+  });
+  /* Голий домен теж наш: поштової скриньки за ним не існує, тож у полі «пошта
+     для звʼязку» він означав би лист у нікуди (знахідка ревʼю сесії 14). */
+  it("ловить голий radflow.local без піддомену", () => {
+    expect(isTechnicalEmail("x@radflow.local")).toBe(true);
+    expect(isTechnicalEmail("  X@RadFlow.Local  ")).toBe(true);
   });
 });
 

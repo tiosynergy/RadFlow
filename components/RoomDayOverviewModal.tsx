@@ -104,7 +104,7 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
           <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body">
-          <div className="ctx-hint blue" style={{ fontSize: 13 }}>
+          <div className="ctx-hint blue" style={{ fontSize: "0.8125rem" }}>
             Карта дня оновлюється автоматично. Зайнятий час включає дослідження та буфер прибирання.
           </div>
 
@@ -128,7 +128,7 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
             <div className="fld" style={{ paddingBottom: 8 }}>
               <span className="fld-lab">Режим дня</span>
               <b>{schedule.closed ? "Кабінет не працює" : `${schedule.start}–${schedule.end}`}</b>
-              {schedule.custom && <span style={{ marginLeft: 6, color: "var(--blue)", fontSize: 12 }}>особливий графік</span>}
+              {schedule.custom && <span style={{ marginLeft: 6, color: "var(--blue)", fontSize: "0.75rem" }}>особливий графік</span>}
             </div>
           </div>
 
@@ -162,7 +162,7 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
             </>
           )}
         </div>
-        <div className="dlg-foot"><span style={{ fontSize: 12, color: "var(--text-faint)", marginRight: "auto" }}>Дані оновлюються при зміні черги або інциденту.</span><button className="btn btn-primary" onClick={onClose}>Готово</button></div>
+        <div className="dlg-foot"><span style={{ fontSize: "0.75rem", color: "var(--text-faint)", marginRight: "auto" }}>Дані оновлюються при зміні черги або інциденту.</span><button className="btn btn-primary" onClick={onClose}>Готово</button></div>
       </div>
     </div>
   );

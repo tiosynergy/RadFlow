@@ -427,7 +427,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, services, roo
               ))}
             </div>
             {countsErr && (
-              <div role="status" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--text-muted)", margin: "2px 0 6px" }}>
+              <div role="status" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.78125rem", color: "var(--text-muted)", margin: "2px 0 6px" }}>
                 <span aria-hidden="true">⚠</span>
                 <span>Лічильники не оновились — цифри можуть бути застарілими.</span>
                 <button type="button" className="btn btn-secondary btn-sm" onClick={loadCounts}>↻ Оновити</button>

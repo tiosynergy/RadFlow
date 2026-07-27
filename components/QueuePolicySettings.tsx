@@ -74,7 +74,7 @@ export default function QueuePolicySettings({ initial }: { initial: QueuePolicyI
 
   return (
     <div className="qp-wrap">
-      <div className="ctx-hint blue" style={{ fontSize: 13, marginBottom: 14 }}>
+      <div className="ctx-hint blue" style={{ fontSize: "0.8125rem", marginBottom: 14 }}>
         Коли дослідження затягується і <b>фактично</b> перекриває наступний запис більше ніж на поріг,
         система рахує план і показує його вам. <b>Застосування завжди підтверджує адміністратор</b> —
         навіть якщо обрано автоматичну стратегію.
@@ -145,7 +145,7 @@ export default function QueuePolicySettings({ initial }: { initial: QueuePolicyI
           {saving ? "Зберігаємо…" : "Зберегти політику"}
         </button>
         {msg && (
-          <span style={{ fontSize: 13, color: msg.ok ? "var(--green)" : "var(--red)" }}>{msg.text}</span>
+          <span style={{ fontSize: "0.8125rem", color: msg.ok ? "var(--green)" : "var(--red)" }}>{msg.text}</span>
         )}
       </div>
     </div>

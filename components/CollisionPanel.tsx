@@ -167,20 +167,20 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
 
   return (
     <div className="ctx-hint red" style={{ marginBottom: 8, display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+      <div style={{ fontSize: "0.78125rem", lineHeight: 1.5 }}>
         <b>⚠ Накладення.</b> {roomName} звільниться о <b className="tabular">{info.freeAt}</b>
         {info.running.name ? <> — {shortName(info.running.name)} ще ~{info.running.remainMin} хв у кабінеті</> : null}.
         {" "}Запис о <b className="tabular">{entry.scheduled_time}</b> ({dur} хв) не вміщується — наїзд <b>{info.overlapMin} хв</b>.
       </div>
 
-      {loading && <div style={{ fontSize: 12, color: "var(--text-muted)" }}>⏳ Шукаю найближчий вільний слот…</div>}
+      {loading && <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>⏳ Шукаю найближчий вільний слот…</div>}
 
       {busyErr && !loading && (
-        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Не вдалося порахувати вільний час кабінету — перенесіть вручну.</div>
+        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Не вдалося порахувати вільний час кабінету — перенесіть вручну.</div>
       )}
 
       {noSlot && !busyErr && (
-        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
           До кінця робочого графіка запис уже не влазить. Лишається обзвін або ручний перенос на інший день —
           за межі графіка кабінету ми нікого не виштовхуємо.
         </div>

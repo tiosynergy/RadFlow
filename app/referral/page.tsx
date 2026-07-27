@@ -14,9 +14,9 @@ function Notice({ title, text }: { title: string; text: string }) {
   return (
     <div style={{ minHeight: "100vh", background: "#1c1c1e", color: "#f5f5f7", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "-apple-system, system-ui, sans-serif" }}>
       <div style={{ maxWidth: 460, textAlign: "center", padding: 28, background: "#2c2c2e", border: "1px solid #38383a", borderRadius: 16 }}>
-        <div style={{ fontSize: 38, marginBottom: 12 }}>🩺</div>
-        <h1 style={{ fontSize: 20, fontWeight: 650 }}>{title}</h1>
-        <p style={{ fontSize: 14, color: "#8e8e93", marginTop: 10, lineHeight: 1.5 }}>{text}</p>
+        <div style={{ fontSize: "2.375rem", marginBottom: 12 }}>🩺</div>
+        <h1 style={{ fontSize: "1.25rem", fontWeight: 650 }}>{title}</h1>
+        <p style={{ fontSize: "0.875rem", color: "#8e8e93", marginTop: 10, lineHeight: 1.5 }}>{text}</p>
         <div style={{ marginTop: 20 }}><SignOutButton /></div>
       </div>
     </div>

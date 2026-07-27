@@ -206,7 +206,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
         <div className="empty"><div className="ei">📄</div><div className="et">Направлень немає</div><div className="es">Змініть фільтр або створіть направлення</div></div>
       ) : (
         <>
-          <div className="qhead" style={{ display: "grid", gridTemplateColumns: "54px minmax(0,2fr) minmax(0,2.4fr) minmax(120px,1.2fr) 130px 26px", gap: 12, padding: "6px 16px", fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-faint)" }}>
+          <div className="qhead" style={{ display: "grid", gridTemplateColumns: "54px minmax(0,2fr) minmax(0,2.4fr) minmax(120px,1.2fr) 130px 26px", gap: 12, padding: "6px 16px", fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-faint)" }}>
             <div>Час</div><div>Пацієнт</div><div>Дослідження</div><div>Кабінет</div><div>Статус</div><div />
           </div>
           <div className="qrows">
@@ -235,7 +235,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                         ) : r.patient_name}
                         {/* 0118: крок кейса — бейдж відкриває екран кейса (лише свої, RLS). */}
                         {r.case_id && onOpenCase && (
-                          <button className="btn btn-ghost btn-xs" style={{ marginLeft: 6, padding: "1px 7px", fontSize: 10.5 }}
+                          <button className="btn btn-ghost btn-xs" style={{ marginLeft: 6, padding: "1px 7px", fontSize: "0.65625rem" }}
                             title={"Крос-модальний кейс · крок " + (r.case_step ?? "—") + " — відкрити"}
                             onClick={(e) => { e.stopPropagation(); onOpenCase(r.case_id as string, r.clinic_id); }}>
                             🔗 Кейс{r.case_step ? " · " + r.case_step : ""}
@@ -252,13 +252,13 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                       <div className="du">{km}</div>
                     </div>
                     <div className="q-room" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3 }}>
-                      {km && <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: km === "КТ" ? "var(--orange-bg)" : "var(--blue-bg)", color: km === "КТ" ? "var(--orange)" : "#4da3ff" }}>{km}</span>}
+                      {km && <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: km === "КТ" ? "var(--orange-bg)" : "var(--blue-bg)", color: km === "КТ" ? "var(--orange)" : "#4da3ff" }}>{km}</span>}
                       <b>{room ? room.name : (centersById[r.clinic_id]?.name || "—")}</b>
-                      {room?.apparatus_model ? <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{room.apparatus_model}</span> : null}
+                      {room?.apparatus_model ? <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{room.apparatus_model}</span> : null}
                     </div>
                     <div className="q-status-cell">
                       <span className={"badge " + meta.cls} title={"title" in meta ? meta.title : undefined}>{meta.label}</span>
-                      <span title={"Дзвінок: " + call.label} aria-label={"Статус дзвінка: " + call.label} style={{ fontSize: 11.5, display: "inline-flex", alignItems: "center", gap: 4, color: CALL_COLOR[r.call_status || "not_called"], fontWeight: 600 }}>
+                      <span title={"Дзвінок: " + call.label} aria-label={"Статус дзвінка: " + call.label} style={{ fontSize: "0.71875rem", display: "inline-flex", alignItems: "center", gap: 4, color: CALL_COLOR[r.call_status || "not_called"], fontWeight: 600 }}>
                         <span aria-hidden="true">{call.icon}</span>{call.label}
                       </span>
                     </div>
@@ -290,7 +290,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                             </div>
                           );
                         })()}
-                        {(() => { const h = fmtOrigin(r.reschedule_origin as unknown as RescheduleOrigin | null, roomById); return h ? <div className="ctx-hint" style={{ fontSize: 12 }}>{h}</div> : null; })()}
+                        {(() => { const h = fmtOrigin(r.reschedule_origin as unknown as RescheduleOrigin | null, roomById); return h ? <div className="ctx-hint" style={{ fontSize: "0.75rem" }}>{h}</div> : null; })()}
                         {owned && r.status !== "done" && r.status !== "cancelled" && r.status !== "no_show" && r.status !== "not_held" && (
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                             <button className="btn btn-primary btn-sm" disabled={r.status === "in_progress"} title={r.status === "in_progress" ? "Дослідження триває — недоступно" : "Перезаписати"} onClick={() => onReschedule(r)}>🗓 Перезаписати</button>
@@ -302,10 +302,10 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                           </div>
                         )}
                         {owned && r.status === "in_progress" && (
-                          <div className="ctx-hint blue" style={{ fontSize: 12 }}>Дослідження вже почалося — зміни через центр.</div>
+                          <div className="ctx-hint blue" style={{ fontSize: "0.75rem" }}>Дослідження вже почалося — зміни через центр.</div>
                         )}
                         {!owned && (
-                          <div className="ctx-hint" style={{ fontSize: 12 }}>Запис створив центр — керується центром (зміни недоступні).</div>
+                          <div className="ctx-hint" style={{ fontSize: "0.75rem" }}>Запис створив центр — керується центром (зміни недоступні).</div>
                         )}
                       </div>
                     </div>

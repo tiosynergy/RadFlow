@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
-import { parseBody } from "@/lib/validationHttp";
+import { parseBody, parseJson } from "@/lib/validationHttp";
 import { safeDbError, zUuid, zName, zEmail, zLogin, zOptText } from "@/lib/validation";
 import { randomRadiologistEmail, isTechnicalEmail } from "@/lib/login";
 
@@ -23,6 +23,109 @@ const sStaff = z.object({
   note: zOptText(2000),
   room_ids: z.union([z.array(zUuid), z.null(), z.undefined()]).transform((v) => (Array.isArray(v) ? Array.from(new Set(v)) : null)),
 });
+
+/* PATCH /api/staff — редагування картки співробітника (сесія 14).
+   До цього картку не можна було правити ВЗАГАЛІ: у роуті був лише POST, а в
+   StaffManager — пароль і кабінети. Опечатка в ПІБ чи телефоні лікувалась
+   тільки «видалити акаунт і створити заново», а контактну пошту радіолога
+   (0124) після створення вписати було нічим — і єдиний канал звʼязку з лікарем
+   зникав назавжди (саме так вийшло з `zast2`: створений без email 27.07).
+
+   Свідомо НЕ редагуються:
+   - `login` — після створення акаунта не змінюється взагалі: /api/account/login
+     править ЛИШЕ власний рядок (`.eq("id", user.id)`), а /setup доступний тільки
+     адміну. Дати адміну змінювати чужий логін = ще один резолв унікальності й
+     ще один шлях відібрати людині вхід; поки що чесніше сказати «перестворіть».
+   - `email` — це адреса ВХОДУ в auth.users. Її зміна вимагає синхронно правити
+     auth.users і profiles, а атомарності між Auth API і базою немає: збій
+     посередині лишає людину без входу (та сама причина, через яку в 0124
+     службова адреса радіолога стала випадковою);
+   - `role`, `clinic_id`, `approved`, `password_set`, `invite_token` — службові.
+   Список колонок нижче — БІЛИЙ, а не «все, крім». Роут ходить під service-role,
+   тобто `guard_profile_privileges` його пропускає (auth.uid() = NULL), і БД тут
+   не підстрахує.
+
+   Семантика справжнього PATCH: ключа немає в тілі → колонку НЕ чіпаємо (канон
+   0061 з room_ids, розрізняється через parseJson по сирому обʼєкту). Інакше
+   будь-який наступний клієнт, що надішле скорочене тіло, мовчки занулив би
+   телефон, примітку й контактну пошту — а саме через втрату контактної пошти
+   ця ручка й зʼявилась. `""` у полі — це явне стирання, і воно навмисне. */
+const sStaffPatch = z.object({
+  userId: zUuid,
+  full_name: zName.optional(),
+  phone: zOptText(32).optional(),
+  note: zOptText(2000).optional(),
+  // Порожній рядок = «стерти пошту», а не «помилка формату».
+  contact_email: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+    z.union([zEmail, z.null()]),
+  ).optional(),
+});
+
+export async function PATCH(req: Request) {
+  const gate = await requireRole(["admin"], {
+    needClinic: true,
+    forbidden: "Лише адміністратор",
+    rateLimit: { key: "acct:edit", max: 120, windowSeconds: 3600 },
+  });
+  if (!gate.ok) return gate.res;
+  const { me } = gate;
+
+  const raw: unknown = await req.json().catch(() => ({}));
+  const parsed = parseJson("api/staff.patch", raw, sStaffPatch,
+    "Перевірте поля: ПІБ (до 200), email (коректний), телефон (до 32), примітка (до 2000)");
+  if (!parsed.ok) return parsed.res;
+  const { userId } = parsed.data;
+  const sent = (k: string) =>
+    typeof raw === "object" && raw !== null && Object.prototype.hasOwnProperty.call(raw, k);
+
+  const admin = createAdminClient();
+  const { data: target } = await admin
+    .from("profiles").select("clinic_id, role").eq("id", userId).single();
+  if (!target) return NextResponse.json({ error: "Профіль не знайдено" }, { status: 404 });
+
+  /* Персонал СВОГО центру і лише персонал. Адміна (в тому числі себе), CEO й
+     направника цей роут не чіпає: у них свої картки й свої правила членства
+     (ceo_access / referral_access), а тут гейт — простий clinic_id. */
+  if ((target.role !== "radiologist" && target.role !== "registrar")
+      || target.clinic_id !== me.clinic_id) {
+    return NextResponse.json({ error: "Немає прав редагувати цей акаунт" }, { status: 403 });
+  }
+
+  const contactEmail = parsed.data.contact_email ?? null;
+  /* contact_email має сенс лише в радіолога: у реєстратора `email` і є
+     справжньою поштою (вона ж адреса входу), і друга «контактна» поруч читалась
+     би як робочий канал, якого ніхто не читає. */
+  if (sent("contact_email") && target.role !== "radiologist" && contactEmail) {
+    return NextResponse.json(
+      { error: "Контактна пошта — лише для радіолога; у реєстратора email є адресою входу" },
+      { status: 400 },
+    );
+  }
+  // Службова адреса в полі «для звʼязку» — це лист у нікуди: домен наш, поштової
+  // скриньки за ним не існує. Той самий захист, що в POST.
+  if (contactEmail && isTechnicalEmail(contactEmail)) {
+    return NextResponse.json({ error: "Ця адреса службова — вкажіть справжню пошту" }, { status: 400 });
+  }
+
+  const patch: { full_name?: string; phone?: string | null; note?: string | null; contact_email?: string | null } = {};
+  if (sent("full_name") && parsed.data.full_name !== undefined) patch.full_name = parsed.data.full_name;
+  if (sent("phone")) patch.phone = parsed.data.phone ?? null;
+  if (sent("note")) patch.note = parsed.data.note ?? null;
+  // Реєстратору колонку не чіпаємо навіть при `null`: у нього її просто немає сенсу.
+  if (sent("contact_email") && target.role === "radiologist") patch.contact_email = contactEmail;
+
+  // Порожній patch — це не «успішно нічого не зробили»: PostgREST на update без
+  // колонок відповість помилкою, а клієнт покаже «збережено». Ловимо тут.
+  if (Object.keys(patch).length === 0) {
+    return NextResponse.json({ error: "Немає що зберігати" }, { status: 400 });
+  }
+
+  const { error: uErr } = await admin.from("profiles").update(patch).eq("id", userId);
+  if (uErr) return NextResponse.json({ error: safeDbError("api/staff.patch", uErr) }, { status: 400 });
+
+  return NextResponse.json({ ok: true });
+}
 
 // POST /api/staff — адміністратор створює акаунт радіолога / лікаря-направника.
 // Пароль НЕ задається: користувач встановлює його сам на /set-password

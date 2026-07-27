@@ -262,8 +262,8 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
         </div>
         <div className="bk-grid">
         <div className="bk-col bk-col-left" style={{ gap: 11 }}>
-          <div className="ctx-hint blue" style={{ fontSize: 13 }}>Пацієнт: <b>{patient.patient_name}</b> · слот {scheduledDate ? <><b>{scheduledDate.split("-").reverse().join(".")}</b> о </> : "о "}<b>{patient.scheduled_time}</b>{room ? <> · {room.name}{lockType ? <> · <b>{roomKind}</b></> : null}</> : null}. {lockType ? <>Усі дослідження слота — лише <b>{roomKind}</b>.</> : null}</div>
-          <div className={"ctx-hint " + (overflow ? "red" : "blue")} style={{ fontSize: 12.5 }}>
+          <div className="ctx-hint blue" style={{ fontSize: "0.8125rem" }}>Пацієнт: <b>{patient.patient_name}</b> · слот {scheduledDate ? <><b>{scheduledDate.split("-").reverse().join(".")}</b> о </> : "о "}<b>{patient.scheduled_time}</b>{room ? <> · {room.name}{lockType ? <> · <b>{roomKind}</b></> : null}</> : null}. {lockType ? <>Усі дослідження слота — лише <b>{roomKind}</b>.</> : null}</div>
+          <div className={"ctx-hint " + (overflow ? "red" : "blue")} style={{ fontSize: "0.78125rem" }}>
             {overflow
               ? <>⚠ Не вміщується: разом <b>{totalDur} хв</b>, доступно <b>{availableDur} хв</b> ({windowLabel}). Скоротіть на {totalDur - availableDur} хв.</>
               : <>Доступно у слоті: <b>{availableDur} хв</b> ({windowLabel}). Вільно ще <b>{remaining} хв</b>.</>}
@@ -271,14 +271,14 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
           {/* Поки зайнятість кабінету не підтверджена — не даємо збільшувати тривалість
               (fail-closed). При помилці читання це не транзієнт «пусто», а невідомий стан. */}
           {!busyReady && (
-            <div className={"ctx-hint " + (busyErr ? "orange" : "blue")} style={{ fontSize: 12 }}>
+            <div className={"ctx-hint " + (busyErr ? "orange" : "blue")} style={{ fontSize: "0.75rem" }}>
               {busyErr
                 ? <>⚠ Не вдалося перевірити зайнятість кабінету — збільшувати тривалість поки не можна. Закрийте й відкрийте вікно, щоб спробувати ще раз.</>
                 : <>Перевіряю зайнятість кабінету…</>}
             </div>
           )}
           {!overflow && realClash && (
-            <div className="ctx-hint red" style={{ fontSize: 12.5 }}>
+            <div className="ctx-hint red" style={{ fontSize: "0.78125rem" }}>
               ⚠ Пацієнт запізнюється/у кабінеті: за фактом (з ~<b>{fmt(refStartMin)}</b>) дослідження + буфер закінчаться о ~<b>{fmt(projectedEndMin)}</b> і перекриють наступний запис о <b>{fmt(nextStart ?? 0)}</b>. Зберегти можна, але перенесіть наступний запис.
             </div>
           )}
@@ -352,21 +352,21 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
         {/* Права колонка — сітка слотів дня кабінету (read-only, realtime). */}
         <div className="bk-col bk-col-right">
           <div className="bk-sched-head" style={{ marginBottom: 6 }}>
-            <span style={{ fontWeight: 600, fontSize: 13 }}>Розклад кабінету</span>
+            <span style={{ fontWeight: 600, fontSize: "0.8125rem" }}>Розклад кабінету</span>
             {room && <span className={"bk-sched-mod " + modalityKind(room.modality)}>{roomKind}</span>}
-            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--green)" }} title="Оновлюється в реальному часі">● наживо</span>
+            <span style={{ marginLeft: "auto", fontSize: "0.6875rem", color: "var(--green)" }} title="Оновлюється в реальному часі">● наживо</span>
           </div>
           {!showGrid
-            ? <div className="ctx-hint" style={{ fontSize: 12.5 }}>Слот запису не визначено — сітку показати нема для чого.</div>
+            ? <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>Слот запису не визначено — сітку показати нема для чого.</div>
             : busyErr
-            ? <div className="ctx-hint red" style={{ fontSize: 12.5 }}>⚠ Не вдалося завантажити зайнятість кабінету — оновіть вікно.</div>
+            ? <div className="ctx-hint red" style={{ fontSize: "0.78125rem" }}>⚠ Не вдалося завантажити зайнятість кабінету — оновіть вікно.</div>
             : busyLoading
-            ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження зайнятості…</div>
+            ? <div className="ctx-hint" style={{ fontSize: "0.8125rem", padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження зайнятості…</div>
             : roomSched.closed
-            ? <div className="ctx-hint" style={{ fontSize: 12.5 }}>Кабінет у цей день не працює.</div>
+            ? <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>Кабінет у цей день не працює.</div>
             : (
               <>
-                <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>
+                <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: 4 }}>
                   Слот запису — <b style={{ color: "var(--green)" }}>зелена рамка</b>; блок росте/меншає з тривалістю досліджень.
                 </div>
                 <SlotPicker

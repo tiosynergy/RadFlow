@@ -93,7 +93,7 @@ export default function DelayPlanModal({ preview, roomName, canApply, busy, onCl
 
         <div className="dlg-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {/* Факт затримки. */}
-          <div className="ctx-hint red" style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+          <div className="ctx-hint red" style={{ fontSize: "0.78125rem", lineHeight: 1.5 }}>
             <b>Наїзд на чергу — {preview.delayMin} хв</b> (поріг центру {preview.thresholdMin} хв).
             {" "}Кабінет реально звільниться о <b className="tabular">{fmtMin(preview.freeAtMin)}</b>.
           </div>
@@ -110,7 +110,7 @@ export default function DelayPlanModal({ preview, roomName, canApply, busy, onCl
                 </button>
               ))}
             </div>
-            <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 6 }}>
+            <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", marginTop: 6 }}>
               {strategy === "cascade_shift"
                 ? "Кожен наступний запис їде на перший слот, куди вміщується цілком. Хто не влазить у день — у «Потребує переносу»."
                 : "Чергу не рухаємо. Записи, що перетнулися з фактичним вікном кабінету, — у «Потребує переносу» (обдзвонить реєстратура)."}
@@ -121,11 +121,11 @@ export default function DelayPlanModal({ preview, roomName, canApply, busy, onCl
           <div>
             <div className="fld-lab" style={{ marginBottom: 6, display: "flex", justifyContent: "space-between" }}>
               <span>Зміни ({affected.length})</span>
-              {plan.needsReschedule > 0 && <span className="badge orange" style={{ fontSize: 10.5 }}>у переносі: {plan.needsReschedule}</span>}
+              {plan.needsReschedule > 0 && <span className="badge orange" style={{ fontSize: "0.65625rem" }}>у переносі: {plan.needsReschedule}</span>}
             </div>
 
             {nothingToDo ? (
-              <div style={{ fontSize: 12.5, color: "var(--text-muted)", padding: "8px 0" }}>
+              <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)", padding: "8px 0" }}>
                 Черга встигає — зсувати нікого. Можливо, дослідження вже завершили.
               </div>
             ) : (
@@ -134,16 +134,16 @@ export default function DelayPlanModal({ preview, roomName, canApply, busy, onCl
                   const m = KIND_META[i.kind];
                   return (
                     <div key={i.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderTop: "1px solid var(--border)" }}>
-                      <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: "0.8125rem", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                         {shortName(i.name)}
                       </span>
-                      <span className="tabular" style={{ fontSize: 12.5, color: "var(--text-muted)", flexShrink: 0 }}>
+                      <span className="tabular" style={{ fontSize: "0.78125rem", color: "var(--text-muted)", flexShrink: 0 }}>
                         {i.kind === "shift" && i.to
                           ? <>{i.from} → <b style={{ color: "var(--text)" }}>{i.to}</b>{i.shiftMin ? <> (+{i.shiftMin})</> : null}</>
                           : <>{i.from} →</>}
                       </span>
-                      <span className={"badge " + m.cls} style={{ fontSize: 10, flexShrink: 0 }}>{m.label}</span>
-                      {i.offSchedule && <span className="badge orange" style={{ fontSize: 10, flexShrink: 0 }} title="Слот виходить за робочий графік — потрібна причина">⏰</span>}
+                      <span className={"badge " + m.cls} style={{ fontSize: "0.625rem", flexShrink: 0 }}>{m.label}</span>
+                      {i.offSchedule && <span className="badge orange" style={{ fontSize: "0.625rem", flexShrink: 0 }} title="Слот виходить за робочий графік — потрібна причина">⏰</span>}
                     </div>
                   );
                 })}
@@ -151,7 +151,7 @@ export default function DelayPlanModal({ preview, roomName, canApply, busy, onCl
             )}
 
             {plan.truncated && (
-              <div style={{ fontSize: 11.5, color: "var(--orange)", marginTop: 6 }}>
+              <div style={{ fontSize: "0.71875rem", color: "var(--orange)", marginTop: 6 }}>
                 ⚠ План уперся в стелю центру — частину записів дня він не чіпає. Їх доведеться перенести окремо.
               </div>
             )}
@@ -166,14 +166,14 @@ export default function DelayPlanModal({ preview, roomName, canApply, busy, onCl
               <textarea id="delay-reason" value={reason} onChange={(e) => setReason(e.target.value)}
                 rows={2} maxLength={500} placeholder="Напр.: погоджено із завідувачем, пацієнт із області"
                 style={{ width: "100%", resize: "vertical", marginTop: 4 }} />
-              <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2 }}>
+              <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", marginTop: 2 }}>
                 Хоча б один слот виходить за робочий графік кабінету — причина ляже в журнал винятків.
               </div>
             </div>
           )}
 
           {!canApply && (
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
               Масову зміну черги підтверджує адміністратор центру. Ви бачите план, але не застосовуєте його.
             </div>
           )}
