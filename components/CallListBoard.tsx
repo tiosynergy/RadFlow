@@ -5,6 +5,7 @@
    queue_entries.call_status (синхронно з дошкою), нотатка — у call_note. Realtime. */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { isRoomBookable } from "@/lib/rooms";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
@@ -12,7 +13,7 @@ import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
 import { entryInIncidentWindow, incidentExpired, setClinicTz, wallDayKey, wallToday0 } from "@/lib/incidents";
-import RescheduleModal from "@/components/RescheduleModal";
+import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -28,7 +29,7 @@ import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type CallEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
@@ -390,6 +391,10 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, services, roo
 
   // Після звільнення слота — запропонувати кандидатів з листа очікування.
   async function suggestWaitlistFor(p: CallEntry) {
+    /* 0123: у вимкненому кабінеті звільнений слот нікому не пропонуємо — запис
+       туди відхилить тригер, і панель кандидатів була б дорогою в нікуди. */
+    const rm = (rooms || []).find((r) => r.id === p.room_id);
+    if (rm && !isRoomBookable(rm)) return;
     const slot: FreedSlotInfo = { date: p.scheduled_date || dayKey, time: p.scheduled_time, roomId: p.room_id };
     const candidates = await fetchWaitlistCandidates(slot);
     if (candidates.length) setWlSuggest({ slot, candidates });
@@ -477,12 +482,12 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, services, roo
   }
 
   // Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
-  async function doReschedule({ roomId, date: d, time, dur, buffer, reason, offSchedule }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean }) {
+  async function doReschedule({ roomId, date: d, time, dur, buffer, reason, offSchedule, studies }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean; studies?: RescheduleStudy[] }) {
     const p = reschedFor;
     if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed", reason, offSchedule });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed", reason, offSchedule, studies });
     if (!res.ok) {
       if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
       reload();

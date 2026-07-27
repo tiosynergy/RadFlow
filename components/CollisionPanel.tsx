@@ -16,6 +16,7 @@
    стартом — міграція 0060), а не з дошки: так пропозиція не бреше. */
 
 import { useEffect, useState } from "react";
+import { isRoomBookable } from "@/lib/rooms";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFor, effectiveRoomBreaks, type DayOverride, type Break } from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallInstant, type IncidentLike } from "@/lib/incidents";
@@ -24,7 +25,7 @@ import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import type { BusyRow } from "@/lib/slotBusy";   // 0074: рядок room_busy_slots — один тип на всіх
 import type { CollisionInfo } from "@/lib/queueStatus";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type PanelEntry = {
   id: string;
   room_id: string | null;
@@ -75,7 +76,10 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
       try {
         const supabase = createClient();
         // Кандидати: свій кабінет + паралельні тієї ж модальності.
-        const cands = (rooms || []).filter((r) => r.id === entry.room_id || (modality && r.modality === modality));
+        /* 0123: вимкнені кабінети в кандидати не беремо (перенести туди не можна),
+           але ПОТОЧНИЙ кабінет лишаємо завжди — зсув усередині нього дозволений. */
+        const cands = (rooms || []).filter((r) => r.id === entry.room_id
+          || (modality && r.modality === modality && isRoomBookable(r)));
         if (!cands.length) { if (!cancel) { setHere(null); setAlt(null); setBusyErr(true); } return; } // немає даних про кабінети — не «не влазить»
 
         /* Перерви кабінетів живуть у rooms.schedule (JSONB) — одним запитом.

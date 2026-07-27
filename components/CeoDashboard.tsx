@@ -17,7 +17,7 @@ import "@/styles/prototype/radflow-screens.css";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type StudyLike = { price?: number; region?: string; contrast?: boolean; type?: string };
-type RevenueEntry = { studies?: unknown; note?: string | null; clinic_id?: string | null };
+type RevenueEntry = { studies?: unknown; note?: string | null; clinic_id?: string | null; room_id?: string | null };
 
 /* Агрегати з БД (міграція 0071). Раніше дашборд тягнув У БРАУЗЕР усі рядки за
    період по всіх центрах — разом із ПІБ і studies (до ~120k рядків у мережі з
@@ -41,29 +41,48 @@ function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
 function fmtUah(n: number) { return String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴"; }
 
 /* Каталог scoped-центрів для CSV: clinic_id → «modalityCode|region» → ціна/контраст.
-   Дзеркалить catalog_est_sum з RPC 0114 (чистий каталог): дохід рахуємо на сервері
-   (агрегат), а для рядкового CSV — тут, тією ж логікою, БЕЗ static-фолбэку lib/studies. */
-type CsvCatalog = Map<string, Map<string, { price: number; contrastPrice: number | null }>>;
-function buildCsvCatalog(rows: { clinic_id: string; modality: string; name: string; price: number; contrast_price: number | null }[]): CsvCatalog {
-  const m: CsvCatalog = new Map();
+   Дзеркалить catalog_est_sum з RPC 0114/0121 (чистий каталог): дохід рахуємо на
+   сервері (агрегат), а для рядкового CSV — тут, тією ж логікою, БЕЗ static-фолбэку.
+   0121 (room-owned): видимі запису послуги = базові (room_id NULL) + власні кабінету
+   запису; власна кабінету має ПРІОРИТЕТ над базовою при дублі імені — дзеркало
+   `order by (sv.room_id is not null) desc, sort_order, id` у ceo_kpi_studies.
+   (Відоме обмеження, як і в RPC: override-и 0108 тут свідомо не враховуються.) */
+type CsvSvc = { price: number; contrastPrice: number | null };
+type CsvCatalog = {
+  base: Map<string, Map<string, CsvSvc>>;                    // clinic → key → послуга
+  room: Map<string, Map<string, Map<string, CsvSvc>>>;       // clinic → room → key → послуга
+};
+function buildCsvCatalog(rows: { clinic_id: string; modality: string; name: string; price: number; contrast_price: number | null; room_id: string | null }[]): CsvCatalog {
+  const cat: CsvCatalog = { base: new Map(), room: new Map() };
   for (const r of rows) {                       // лише активні, впорядковані sort_order, id
-    let inner = m.get(r.clinic_id);
-    if (!inner) { inner = new Map(); m.set(r.clinic_id, inner); }
     const key = r.modality + "|" + r.name;
-    if (!inner.has(key)) inner.set(key, { price: r.price, contrastPrice: r.contrast_price });  // перша = пріоритетна
+    if ((r.room_id ?? null) === null) {
+      let inner = cat.base.get(r.clinic_id);
+      if (!inner) { inner = new Map(); cat.base.set(r.clinic_id, inner); }
+      if (!inner.has(key)) inner.set(key, { price: r.price, contrastPrice: r.contrast_price });  // перша = пріоритетна
+    } else {
+      let byRoom = cat.room.get(r.clinic_id);
+      if (!byRoom) { byRoom = new Map(); cat.room.set(r.clinic_id, byRoom); }
+      let inner = byRoom.get(r.room_id as string);
+      if (!inner) { inner = new Map(); byRoom.set(r.room_id as string, inner); }
+      if (!inner.has(key)) inner.set(key, { price: r.price, contrastPrice: r.contrast_price });
+    }
   }
-  return m;
+  return cat;
 }
 
 /* Дохід запису: збережена ціна (снапшот) виграє; інакше — ціна КАТАЛОГУ центру
-   (чистий каталог: лише коли послуга є і price > 0), інакше 0. Хардкод-довідник прибрано. */
+   (чистий каталог: лише коли послуга видима запису і price > 0), інакше 0.
+   0121: спершу власна послуга кабінету запису, потім базова (пріоритет RPC). */
 function entryRevenue(e: RevenueEntry, cat: CsvCatalog): number {
   const s: StudyLike[] = Array.isArray(e.studies) ? (e.studies as StudyLike[]) : [];
   if (!s.length) return 0;
-  const inner = e.clinic_id ? cat.get(e.clinic_id) : undefined;
+  const roomInner = e.clinic_id && e.room_id ? cat.room.get(e.clinic_id)?.get(e.room_id) : undefined;
+  const baseInner = e.clinic_id ? cat.base.get(e.clinic_id) : undefined;
   return s.reduce((sum, x) => {
     if (typeof x.price === "number") return sum + x.price;
-    const svc = inner?.get(modalityCode(x.type) + "|" + (x.region || ""));
+    const key = modalityCode(x.type) + "|" + (x.region || "");
+    const svc = roomInner?.get(key) ?? baseInner?.get(key);
     if (svc && svc.price > 0) return sum + svc.price + (x.contrast ? (svc.contrastPrice ?? CONTRAST_SURCHARGE) : 0);
     return sum;
   }, 0);
@@ -324,11 +343,11 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       // у RPC 0114). Впорядковано active desc → перша послуга name=region пріоритетна.
       const { data: svc } = await supabase
         .from("services")
-        .select("clinic_id, modality, name, price, contrast_price")
+        .select("clinic_id, modality, name, price, contrast_price, room_id") // 0121: room_id — пріоритет власної послуги кабінету запису
         .in("clinic_id", clinicIds)
         .eq("active", true)                              // лише активний каталог (як RPC 0114 / buildCatalog)
         .order("sort_order").order("id");
-      const csvCatalog = buildCsvCatalog((svc || []) as { clinic_id: string; modality: string; name: string; price: number; contrast_price: number | null }[]);
+      const csvCatalog = buildCsvCatalog((svc || []) as { clinic_id: string; modality: string; name: string; price: number; contrast_price: number | null; room_id: string | null }[]);
 
       const head = ["Дата", "Пацієнт", "Процедура", "Кабінет", "Статус", "Дохід"];
       const rows = (data || []).map((e) => [
@@ -371,9 +390,9 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       if (error) { notify("Не вдалося завантажити список — спробуйте ще раз", "error"); return; }
       const { data: svc } = await supabase
         .from("services")
-        .select("clinic_id, modality, name, price, contrast_price")
+        .select("clinic_id, modality, name, price, contrast_price, room_id") // 0121: room_id — пріоритет власної послуги кабінету запису
         .in("clinic_id", clinicIds).eq("active", true).order("sort_order").order("id");
-      const cat = buildCsvCatalog((svc || []) as { clinic_id: string; modality: string; name: string; price: number; contrast_price: number | null }[]);
+      const cat = buildCsvCatalog((svc || []) as { clinic_id: string; modality: string; name: string; price: number; contrast_price: number | null; room_id: string | null }[]);
       setDrillRows(((data || []) as Array<RevenueEntry & { scheduled_date: string; patient_name: string | null; room_id: string | null; status: string }>).map((e) => ({
         date: e.scheduled_date,
         name: e.patient_name || "—",

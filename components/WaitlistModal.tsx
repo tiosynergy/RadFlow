@@ -9,6 +9,7 @@
    Збереження — через Server Action (батько). */
 
 import { useState, useEffect, useMemo } from "react";
+import { bookableRooms, isRoomBookable, ROOM_OFF_LABEL } from "@/lib/rooms";
 import PhoneInput from "@/components/PhoneInput";
 import { DobField } from "@/components/BookingModal";
 import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, type Study } from "@/lib/studies";
@@ -21,7 +22,7 @@ import { useModalA11y } from "@/lib/useModalA11y";
 
 type ExtraStudy = { type: string; region: string; dur: number };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 
 export type WaitlistFormOut = {
   clinicId?: string; // при виборі центру (портал направника)
@@ -122,7 +123,7 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   const gateMods = allowedModalities ?? centerMods;   // явний перелік (edit направника) або грант центру
   const availableModalities: string[] = gateMods
     ? BOOKABLE_MODALITIES.filter((m) => gateMods.includes(m))
-    : (rooms && rooms.length ? BOOKABLE_MODALITIES.filter((m) => rooms.some((r) => r.modality === m)) : BOOKABLE_MODALITIES);
+    : (bookableRooms(rooms).length ? BOOKABLE_MODALITIES.filter((m) => bookableRooms(rooms).some((r) => r.modality === m)) : BOOKABLE_MODALITIES);
   // Каталог послуг (фаза 2a): персонал — свій центр (services); направник —
   // каталог ОБРАНОГО центру (add) або центру рядка (edit). Порожній → статика.
   const effClinicId = isEdit ? (initial?.clinic_id ?? null) : (needCenter ? centerId : null);
@@ -141,7 +142,14 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
   const primaryKind = modalityLabel(studyType);
   // Кабінети поточної модальності — для опційної жорсткої прив'язки (адмін-флоу).
-  const roomOptions = (rooms || []).filter((r) => r.modality === studyType);
+  /* 0123: у вимкнений кабінет не можна ні записати, ні забронювати місце в листі.
+     ВИНЯТОК — кабінет, до якого цей запис уже привʼязаний: його лишаємо в списку
+     з міткою «вимкнено». Інакше контрольований <select> не знайшов би свого
+     значення, поле показувалось би порожнім, а в стані лишався б той самий
+     room_id і мовчки їхав би назад на сервер (ревʼю 0123, Medium-3). */
+  const pinnedId = initial?.room_id || "";
+  const roomOptions = (rooms || []).filter((r) => r.modality === studyType
+    && (isRoomBookable(r) || r.id === pinnedId));
 
   // Направник обрав/змінив центр → якщо поточний тип недоступний за грантом цього
   // центру, перемикаємо на першу доступну модальність (і скидаємо область/кабінет).
@@ -419,7 +427,10 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
               <select className="inp" value={roomId} onChange={(e) => setRoomId(e.target.value)}>
                 <option value="">Будь-який кабінет ({primaryKind})</option>
                 {roomOptions.map((r) => (
-                  <option key={r.id} value={r.id}>{r.name}{r.apparatus_model ? " · " + r.apparatus_model : ""}</option>
+                  <option key={r.id} value={r.id}>
+                    {r.name}{r.apparatus_model ? " · " + r.apparatus_model : ""}
+                    {isRoomBookable(r) ? "" : " · " + ROOM_OFF_LABEL}
+                  </option>
                 ))}
               </select>
             </label>

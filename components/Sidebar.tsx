@@ -5,7 +5,7 @@
    Деякі операції (Колл-лист, Інцидент, Кабінет радіолога) — окремі етапи (disabled). */
 
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
@@ -61,6 +61,7 @@ export default function Sidebar({
   stoppedRoomIds = [],
 }: SidebarProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const isAdmin = roleKey === "admin";
   const isCeo = roleKey === "ceo";
 
@@ -159,7 +160,10 @@ export default function Sidebar({
             <span className="sb-item-lab">Лист очікування</span>
             {waitCount ? <span className="sb-badge">{waitCount}</span> : null}
           </a>
-          {isAdmin && <a href="/referral" className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span></a>}
+          {/* ?from= — щоб портал знав, куди повернути адміна. Значення звіряється
+              зі списком маршрутів на сервері (lib/portalBack), тож підроблений
+              параметр в адресному рядку просто дає /queue. */}
+          {isAdmin && <a href={"/referral?from=" + encodeURIComponent(pathname || "/queue")} className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span></a>}
           {onBreakdown && <button type="button" onClick={() => onBreakdown()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">⚠</span>
             <span className="sb-item-lab">Інциденти</span>

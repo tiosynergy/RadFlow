@@ -30,9 +30,15 @@ interface Props {
   counts: { mine: number; waitlist: number; pendingInvites: number };
   canManage: boolean;
   onSignOut: () => void;
+  /* Адмін відкрив портал з свого робочого місця (Sidebar → «Портал направлень»).
+     Портал підміняє ВЕСЬ чром: адмінський сайдбар зникає, і без цієї кнопки
+     єдиним виходом лишався ⏻ — тобто повний вихід із системи. */
+  backHref?: string | null;
+  backLabel?: string | null;
 }
 
-export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, activeTab, onNav, onSelectRoom, activeClinic, activeRoom, counts, canManage, onSignOut }: Props) {
+export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, activeTab, onNav, onSelectRoom, activeClinic, activeRoom, counts, canManage, onSignOut, backHref = null, backLabel = null }: Props) {
+  const isPreview = !!backHref;   // адмін дивиться портал, а не працює в ньому
   const nav: Array<{ key: string; label: string; icon: string; badge?: number; badgeBlue?: boolean }> = [
     { key: "new", label: "Нове направлення", icon: "＋" },
     { key: "mine", label: "Мої направлення", icon: "▦", badge: counts.mine },
@@ -44,8 +50,14 @@ export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, ac
   return (
     <aside className="sidebar">
       <div className="sb-head">
-        <span className="sb-logo"><span className="dot" />Referral RadFlow</span>
-        <div className="sb-sub">Лікар-направник{doctorName ? " • " + doctorName : ""}</div>
+        {/* Клікабельний логотип — те, що адмін пробує першим: у власному
+            сайдбарі (Sidebar.tsx) він теж веде на робоче місце. */}
+        {isPreview
+          ? <a href={backHref!} className="sb-logo" title={"Повернутися: " + (backLabel || "мій центр")}><span className="dot" />Referral RadFlow</a>
+          : <span className="sb-logo"><span className="dot" />Referral RadFlow</span>}
+        {/* Підпис ролі був жорстко «Лікар-направник» — адмін бачив чуже звання
+            і не розумів, чи він досі під своїм акаунтом. */}
+        <div className="sb-sub">{isPreview ? "Перегляд порталу" : "Лікар-направник"}{doctorName ? " • " + doctorName : ""}</div>
       </div>
 
       <nav className="sb-nav">
@@ -101,6 +113,12 @@ export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, ac
       </nav>
 
       <div className="sb-settings">
+        {isPreview && (
+          <a href={backHref!} className="sb-item sb-back" title={"Повернутися до робочого місця: " + (backLabel || "мій центр")}>
+            <span className="ic" aria-hidden>←</span>
+            <span className="sb-item-lab">Повернутися: {backLabel || "мій центр"}</span>
+          </a>
+        )}
         <div className="sb-density-box"><DensityControl /></div>
       </div>
 
@@ -108,9 +126,11 @@ export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, ac
         <div className="avatar" style={{ background: "linear-gradient(135deg,#0a84ff,#7b5cff)" }}>{initials(doctorName)}</div>
         <div className="meta">
           <div className="nm">{doctorName || "Направник"}</div>
-          <div className="rl">Лікар-направник</div>
+          <div className="rl">{isPreview ? "Адміністратор" : "Лікар-направник"}</div>
         </div>
-        <button className="icon-btn" title="Вийти" onClick={onSignOut}>⏻</button>
+        {/* Для адміна уточнюємо, що це ВИХІД ІЗ СИСТЕМИ, а не з порталу:
+            поруч стоїть кнопка повернення, і переплутати їх коштує сесії. */}
+        <button className="icon-btn" title={isPreview ? "Вийти з системи (щоб просто закрити портал — «Повернутися»)" : "Вийти"} onClick={onSignOut}>⏻</button>
       </div>
     </aside>
   );

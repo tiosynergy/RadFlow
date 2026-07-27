@@ -9,6 +9,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Toast from "@/components/Toast";
 import { createClient } from "@/lib/supabase/client";
+import { isTechnicalEmail } from "@/lib/login";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import PhoneInput from "@/components/PhoneInput";
@@ -177,7 +178,12 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
                   <div style={{ flex: 1, minWidth: 180 }}>
                     <div style={{ fontWeight: 600, fontSize: 14 }}>{r.full_name || r.login || r.email}</div>
                     <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
-                      {r.login ? "@" + r.login + " · " : ""}{r.email}{r.phone ? " · " + r.phone : ""}
+                      {/* Службову адресу (<логін>@ceo.radflow.local) не показуємо:
+                          вона виглядає як пошта, і адмін написав би на неї
+                          листа, якого ніхто ніколи не отримає. */}
+                      {r.login ? "@" + r.login + " · " : ""}
+                      {isTechnicalEmail(r.email) ? "вхід за логіном" : r.email}
+                      {r.phone ? " · " + r.phone : ""}
                     </div>
                     {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
                   </div>

@@ -4,7 +4,7 @@
    Портовано з queue-app.jsx (NewBookingModal + BookingCalendar + DobField).
    Кабінети беруться з БД (rooms), зайняті слоти — з Supabase (queue_entries). */
 
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -22,8 +22,10 @@ import { useModalA11y } from "@/lib/useModalA11y";
 import { countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import HelpTip from "@/components/HelpTip";
+import RoomSelect, { ROOM_LIST_MAX_CHIPS } from "@/components/RoomSelect";
+import { bookableRooms } from "@/lib/rooms";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type DocOpt = { id: string; name: string; spec?: string | null; clinic_name?: string | null; phone?: string | null };
 type ExtraStudy = { type: string; region: string; dur: number };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
@@ -269,9 +271,24 @@ interface BookingModalProps {
   /** Наявні (активні) кроки кейса — для контролю пересічень у режимі onAddCaseStep:
       той самий кабінет заблоковано, зайнятий іншим кроком час — casebusy у сітці. */
   caseSiblings?: { roomId: string; date: Date; time: string; dur: number }[];
+  /* 0122/UX: РЕЖИМ ПЕРЕНОСУ В ІНШИЙ КАБІНЕТ (рішення власника 2026-07-27).
+     Та сама форма, але це НЕ нова запис: дані пацієнта підставлені, перелік
+     досліджень обирається заново під каталог цільового кабінету, а зберігається
+     все через перенос (id запису не змінюється — кейс, направник та історія
+     переносів лишаються). Направника й пріоритет тут не редагують — вони живуть
+     у картці пацієнта, де є перевірка ролі. */
+  moveMode?: boolean;
+  /* 0077: чи пропонувати слоти ПОЗА графіком (з підтвердженням). За замовчуванням
+     так — як було. Портал направника передає false: сервер (isStaff) такий перенос
+     усе одно відхилить, тож сітка не має його й малювати. */
+  allowOffSchedule?: boolean;
+  /* Додаткові поля форми (рендеряться під «Примітками»). Використовує режим
+     переносу — щоб «Причина переносу» лишалась у формі, а не губилась при
+     перемиканні кабінету. */
+  extraFields?: ReactNode;
 }
 
-export default function BookingModal({ rooms, clinicId, clinicTz, incidents = [], services, roomOverrides, prefill, onClose, onSave, onCreateCase, onAddCaseStep, caseSiblings }: BookingModalProps) {
+export default function BookingModal({ rooms, clinicId, clinicTz, incidents = [], services, roomOverrides, prefill, onClose, onSave, onCreateCase, onAddCaseStep, caseSiblings, moveMode = false, allowOffSchedule = true, extraFields }: BookingModalProps) {
   // Dirty-guard: не втрачати заповнену форму при випадковому закритті (Esc/✕/Скасувати).
   // dirty вмикається будь-якою зміною поля (onChangeCapture на діалозі); requestClose
   // питає підтвердження лише коли є незбережені зміни. useModalA11y читає колбек через
@@ -292,7 +309,11 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const pfPrimary = pfStudies[0] || null;
   /* Модальності, для яких у центрі Є кабінети (у порядку реєстру). Сегменти типу
      показуємо лише для них — не пропонуємо записати на модальність без обладнання. */
-  const availableModalities = BOOKABLE_MODALITIES.filter((code) => (rooms || []).some((r) => r.modality === code));
+  /* 0123: вимкнені кабінети форма не пропонує — ні в сегментах модальності, ні в
+     списку кабінетів. Останній рубіж усе одно тригер check_room_active, але
+     показувати те, що впаде на збереженні, не можна. */
+  const bookable = bookableRooms(rooms);
+  const availableModalities = BOOKABLE_MODALITIES.filter((code) => bookable.some((r) => r.modality === code));
   const pfCode = pfPrimary ? modalityCode(pfPrimary.type) : "";
   // studyType тепер тримає КОД модальності (MRI/CT/US/XRAY/MAMMO/OTHER), а не MRT/CT.
   const pfType: string = (pfCode && availableModalities.includes(pfCode)) ? pfCode : (availableModalities[0] || "MRI");
@@ -341,7 +362,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     return () => { cancel = true; };
   }, [clinicId]);
 
-  const roomsOfType = (code: string) => (rooms || []).filter((r) => r.modality === code);
+  const roomsOfType = (code: string) => bookable.filter((r) => r.modality === code);
   // Авто-вибір лише коли кабінет один; якщо їх кілька — користувач обирає вручну.
   // Передзаповнений слот (кандидат на вікно, що звільнилося) має пріоритет; кабінет
   // приймаємо лише якщо він підходить за модальністю дослідження.
@@ -574,12 +595,15 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     // іншим кроком кейса (присутність = тривалість дослідження, без буфера).
     if (caseBusyWindows.some((w) => s < w.e && w.s < s + slotDur)) return "casebusy";
     const off = offScheduleKind(s, slotDur, roomSched, roomBreaks);
-    if (off) return off.confirmable ? "offsched" : "offhours";
+    // Без права на овертайм (портал направника) слот поза графіком — просто
+    // «кабінет не працює»: підсвічувати його як підтверджуваний не можна, сервер
+    // (isStaff) такий запис усе одно відхилить.
+    if (off) return (off.confirmable && allowOffSchedule) ? "offsched" : "offhours";
     return "free";
   }
   /** Обраний слот поза графіком? (null — у межах графіка) */
   const selOff = time ? offScheduleKind(toMin(time), slotDur, roomSched, roomBreaks) : null;
-  const needsOffConfirm = !!selOff?.confirmable;
+  const needsOffConfirm = allowOffSchedule && !!selOff?.confirmable;
   function nextApptAfter(slot: string) {
     const s = toMin(slot);
     const after = roomBusy.filter((b) => b.s >= s).sort((a, b) => a.s - b.s)[0];
@@ -627,7 +651,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   /* Сітка добудовується на OFF_SCHED_GRACE_MIN за кінець графіка (0077): без цього
      слотів після закриття у сітці фізично немає — клікати нема по чому. Слоти далі
      стелі лишаються поза сіткою взагалі (offScheduleKind → too_late, не підтверджуваний). */
-  const slots = slotsList(schedStartMin, schedEndMin + OFF_SCHED_GRACE_MIN);
+  // Запас за кінець графіка потрібен ЛИШЕ тим, хто має право на овертайм: інакше
+  // це дві години мертвих клітинок, яких сітка переносу поруч не показує.
+  const slots = slotsList(schedStartMin, schedEndMin + (allowOffSchedule ? OFF_SCHED_GRACE_MIN : 0));
   // Скільки ще досліджень цієї тривалості реально вміщується (жадібна укладка),
   // а не к-сть вільних 5-хв позицій — вони перетинаються і завищують число.
   const fitCount = countFit(slots, (s) => slotState(s) === "free", slotDur + buffer);
@@ -636,7 +662,13 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   // Режим «додати крок до кейса»: пацієнта бере зі знімка кейса add_case_step_rpc,
   // тож поля пацієнта у формі — лише передзаповнення, вони НЕ блокують збереження.
   const addMode = !!onAddCaseStep;
-  const miss: Record<string, boolean> = { name: !addMode && !name.trim(), dob: !addMode && !dob, gender: !addMode && !gender, phone: !addMode && !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time, dur: !!region && dur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5) };
+  /* Дані пацієнта не блокують збереження там, де запис УЖЕ існує: крок кейса бере
+     їх зі знімка case-RPC, а перенос — із самого запису. Інакше перенос старого
+     запису без дати народження/статі (портал, імпорт) став би неможливим, хоча
+     переносимо ми час і кабінет, а не пацієнта. Правки полів у режимі переносу
+     зберігаються окремим патчем — див. RescheduleModal.handleMoveSave. */
+  const softPatient = addMode || moveMode;
+  const miss: Record<string, boolean> = { name: !softPatient && !name.trim(), dob: !softPatient && !dob, gender: !softPatient && !gender, phone: !softPatient && !phone.trim(), priority: !moveMode && !priority, region: !region, room: !roomId, time: !time, dur: !!region && dur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5) };
   const MISS_LABELS: Record<string, string> = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу", dur: "Тривалість (хв)", exdur: "Тривалість додаткових досліджень" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   // 0077: «поза графіком» — теж легальний вибір, тому НЕ timeBad. Але зберегти
@@ -645,7 +677,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   // а тригер графіка 0084 тепер бачить канонічний 'HH:MM' і реально їх перевіряє;
   // раніше 'HH:MM:SS' повз regex — слот «підтверджувався», а сервер усе одно
   // впав би). У режимі додавання кроку offsched-слот невибірний.
-  const SELECTABLE = onAddCaseStep ? ["free"] : ["free", "offsched"];
+  const SELECTABLE = (onAddCaseStep || !allowOffSchedule) ? ["free"] : ["free", "offsched"];
   const timeBad = time ? !SELECTABLE.includes(slotState(time)) : false;
   const room = (rooms || []).find((r) => r.id === roomId) || null;
   const [offOk, setOffOk] = useState(false);
@@ -810,9 +842,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   return (
     <>
     <div className="overlay">
-      <div className="dialog fade-in bk-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-label="Новий запис пацієнта" onChangeCapture={() => setDirty(true)}>
+      <div className="dialog fade-in bk-dialog" ref={dialogRef} role="dialog" aria-modal="true"
+        aria-label={moveMode ? "Перенесення запису в інший кабінет" : "Новий запис пацієнта"} onChangeCapture={() => setDirty(true)}>
         <div className="dlg-head">
-          <div className="dlg-title"><span className="tic">{addMode ? "🔗" : "＋"}</span>{addMode ? "Додати крок до кейса" : "Новий запис"}</div>
+          <div className="dlg-title"><span className="tic">{moveMode ? "🗓" : addMode ? "🔗" : "＋"}</span>{moveMode ? "Перенести в інший кабінет" : addMode ? "Додати крок до кейса" : "Новий запис"}</div>
           <button className="icon-btn" onClick={requestClose} aria-label="Закрити">✕</button>
         </div>
 
@@ -822,17 +855,17 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
             <div className="bk-section-label">Пацієнт</div>
 
             <label className="fld">
-              <span className={"fld-lab" + (miss.name ? " bk-miss-lab" : "")}>ПІБ <span className="req">*</span></span>
+              <span className={"fld-lab" + (miss.name ? " bk-miss-lab" : "")}>ПІБ {!softPatient && <span className="req">*</span>}</span>
               <input className="inp" placeholder="Прізвище Ім'я По батькові" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
             </label>
 
             <div className="fld-row">
               <div className="fld" style={{ flex: "0 0 150px" }}>
-                <span className={"fld-lab" + (miss.dob ? " bk-miss-lab" : "")}>Дата народження <span className="req">*</span></span>
+                <span className={"fld-lab" + (miss.dob ? " bk-miss-lab" : "")}>Дата народження {!softPatient && <span className="req">*</span>}</span>
                 <DobField value={dob} onChange={setDob} invalid={miss.dob} />
               </div>
               <div className="fld" style={{ flex: "0 0 auto" }}>
-                <span className={"fld-lab" + (miss.gender ? " bk-miss-lab" : "")}>Стать <span className="req">*</span></span>
+                <span className={"fld-lab" + (miss.gender ? " bk-miss-lab" : "")}>Стать {!softPatient && <span className="req">*</span>}</span>
                 <div className="bk-gender-row">
                   <button className={"bk-gender-btn" + (gender === "М" ? " active" : "")} onClick={() => setGender("М")} title="Чоловіча">♂</button>
                   <button className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} onClick={() => setGender("Ж")} title="Жіноча">♀</button>
@@ -853,7 +886,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
 
             <div className="fld-row">
               <label className="fld">
-                <span className={"fld-lab" + (miss.phone ? " bk-miss-lab" : "")}>Телефон <span className="req">*</span></span>
+                <span className={"fld-lab" + (miss.phone ? " bk-miss-lab" : "")}>Телефон {!softPatient && <span className="req">*</span>}</span>
                 <PhoneInput value={phone} onChange={setPhone} />
               </label>
               <label className="fld">
@@ -888,21 +921,29 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
               </div>
             </div>
 
+            {/* У режимі переносу пріоритет ЛИШЕ показуємо: змінює його окрема дія
+                з перевіркою ролі (адмін або направник-власник), тож реєстратор
+                отримав би 403 і перенос не відбувся б узагалі. Правиться в картці
+                пацієнта, де ця перевірка вже врахована в UI. */}
             <div className="fld">
-              <span className={"fld-lab" + (miss.priority ? " bk-miss-lab" : "")}>Пріоритет пацієнта <span className="req">*</span></span>
-              <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
+              <span className={"fld-lab" + (miss.priority ? " bk-miss-lab" : "")}>Пріоритет пацієнта {!moveMode && <span className="req">*</span>}</span>
+              <div className="prio-seg" role={moveMode ? "group" : "radiogroup"} aria-label="Пріоритет пацієнта">
                 {PRIORITY_OPTIONS.map((pv) => {
                   const m = PRIORITY_META[pv];
+                  if (moveMode && pv !== priority) return null;
                   return (
-                    <button key={pv} type="button" role="radio" aria-checked={priority === pv}
+                    <button key={pv} type="button" role={moveMode ? undefined : "radio"} aria-checked={moveMode ? undefined : priority === pv}
                       className={"prio-seg-btn " + m.tone + (priority === pv ? " active" : "")}
+                      disabled={moveMode}
                       onClick={() => setPriority(pv)} title={m.desc}>
                       {m.short}
                     </button>
                   );
                 })}
               </div>
-              <span className="bk-time-state none">{priority ? PRIORITY_META[priority as PatientPriority].desc : "оберіть пріоритет — впливає на порядок у черзі"}</span>
+              <span className="bk-time-state none">{moveMode
+                ? "перенос пріоритет не змінює — правиться в картці пацієнта"
+                : priority ? PRIORITY_META[priority as PatientPriority].desc : "оберіть пріоритет — впливає на порядок у черзі"}</span>
             </div>
 
             <div className="fld-row" style={{ alignItems: "flex-start" }}>
@@ -965,6 +1006,12 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
               <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: extraStudies.length > 0 ? 8 : 0 }} onClick={exAdd}>＋ Додати дослідження</button>
             </div>
 
+            {/* Перенос НЕ змінює направника: у цьому режимі поле ховаємо, інакше
+                порожній селект виглядав би як «направника прибрали», а зберегти
+                його все одно нікуди — RPC переносу цієї колонки не чіпає. Правити
+                направника треба в картці пацієнта, де є замок «запис внесено
+                направником». */}
+            {!moveMode && (
             <div className="fld">
               <span className="fld-lab">Лікар-направник</span>
               <div style={{ display: "flex", gap: 8 }}>
@@ -975,11 +1022,15 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => setAddDoc(true)}>＋ Додати</button>
               </div>
             </div>
+            )}
 
             <label className="fld" style={{ flex: 1 }}>
               <span className="fld-lab">Примітки</span>
               <textarea className="inp bk-notes" placeholder="Додаткова інформація, скеровання, особливі вимоги…" value={notes} onChange={(e) => setNotes(e.target.value)} />
             </label>
+
+            {/* Слот для полів режиму-власника форми (режим переносу — «Причина переносу»). */}
+            {extraFields}
           </div>
 
           {/* ПРАВА КОЛОНКА — Scheduler */}
@@ -997,6 +1048,12 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                 <div className="ctx-hint red">Немає кабінетів типу {modalityLabel(studyType)}. Додайте обладнання в налаштуваннях.</div>
               ) : (
                 <>
+                  {/* Понад 3 кабінети модальності — випадний список: чипи мають
+                      flex:1 і при 4+ стискають назви до нечитабельного (RoomSelect). */}
+                  {roomKeys.length > ROOM_LIST_MAX_CHIPS ? (
+                    <RoomSelect rooms={roomKeys} value={roomId}
+                      onChange={(id) => { setRoomId(id); setTime(""); }} />
+                  ) : (
                   <div className="bk-room-chips">
                     {roomKeys.map((r) => (
                       <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + " " + modalityKind(studyType)}
@@ -1006,6 +1063,16 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                       </button>
                     ))}
                   </div>
+                  )}
+                  {/* 0095: два кроки одного кейса не можуть жити в одному кабінеті.
+                      У режимі переносу кейс-бару немає, тож причину кажемо тут —
+                      інакше кнопка просто «не працює». */}
+                  {moveMode && roomInCase && (
+                    <div className="ctx-hint red" style={{ fontSize: 12.5, marginTop: 8 }} role="status" aria-live="polite">
+                      ⚠ У цьому кабінеті вже є інший крок кейса — перенести сюди не
+                      можна. Оберіть інший кабінет.
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -1071,7 +1138,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                 {time && buffer > 0 && <span><span className="lg-dot planbuf" />буфер цього запису</span>}
                 {caseBusyWindows.length > 0 && <span><span className="lg-dot casebusy" />інший крок кейса</span>}
                 {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
-                <span><span className="lg-dot offsched" />поза графіком</span>
+                {allowOffSchedule && <span><span className="lg-dot offsched" />поза графіком</span>}
               </div>
               {/* 0077 — підтвердження роботи поза графіком. Це НЕ вкладений діалог:
                   тост/модалка поверх модалки в цьому проекті вже давали «кнопка не
@@ -1169,8 +1236,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
             ? <button className="btn btn-primary" disabled={!valid || saving || roomInCase} onClick={handleAddCaseStep} title={roomInCase ? "Цей кабінет уже у кейсі — оберіть іншу модальність/кабінет" : "Додати крок до кейса"}>
                 {saving ? "Додавання…" : "Додати крок до кейса"}
               </button>
-            : <button className="btn btn-primary" disabled={!valid || saving} onClick={handleSave}>
-                {saving ? "Збереження…" : "Зберегти запис"}
+            : <button className="btn btn-primary" disabled={!valid || saving || (moveMode && roomInCase)} onClick={handleSave}
+                title={moveMode && roomInCase ? "Цей кабінет уже зайнятий іншим кроком кейса — оберіть інший" : undefined}>
+                {saving ? "Збереження…" : moveMode ? "Перенести" : "Зберегти запис"}
               </button>}
         </div>
       </div>

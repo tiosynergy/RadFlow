@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
 import { parseBody } from "@/lib/validationHttp";
 import { safeDbError, zLogin, zOptEmail, zOptText } from "@/lib/validation";
+import { technicalEmail, CEO_EMAIL_DOMAIN } from "@/lib/login";
 
 // ПІБ і телефон обовʼязкові лише для НОВОГО CEO-акаунта (перевірка нижче).
 const sGrant = z.object({
@@ -35,8 +36,8 @@ export async function POST(req: Request) {
   const fullName = parsed.data.full_name ?? "";
   const phone = parsed.data.phone ?? "";
 
-  const loginSan = login.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "") || "user";
-  const effectiveEmail = parsed.data.email || (loginSan + "@ceo.radflow.local");
+  // 0124: та сама однозначна адреса з нормалізованого логіна (див. lib/login).
+  let effectiveEmail = parsed.data.email || technicalEmail(login, CEO_EMAIL_DOMAIN);
 
   const admin = createAdminClient();
 
@@ -44,7 +45,7 @@ export async function POST(req: Request) {
   const { data: existingProf } = await admin
     .from("profiles")
     .select("id, role, login, password_set, invite_token")
-    .ilike("login", login)
+    .eq("login", login)   // 0124: логін нормалізований у zLogin
     .maybeSingle();
 
   let ceoId: string;
@@ -67,12 +68,28 @@ export async function POST(req: Request) {
     }
     const tempPass = "Rf!" + crypto.randomUUID().replace(/-/g, "");
     inviteToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
-    const { data: created, error: cErr } = await admin.auth.admin.createUser({
+    /* Службова адреса похідна від логіна, а логін тепер можна змінити
+       (/api/account/login). Перейменований CEO лишає стару адресу за собою, і
+       наступний акаунт із тим самим логіном падав би на «Email вже
+       використовується» — при тому, що адміністратор email узагалі не вводив.
+       Друга спроба — з випадковою адресою (той самий фолбек, що в
+       /api/referrers/invite): для входу вона не потрібна, вхід за логіном. */
+    let { data: created, error: cErr } = await admin.auth.admin.createUser({
       email: effectiveEmail,
       email_confirm: true,
       password: tempPass,
       user_metadata: { managed: "true", login },
     });
+    if (cErr && !parsed.data.email && /registered|already|exists/i.test(cErr.message || "")) {
+      const fallback = "ceo." + crypto.randomUUID().replace(/-/g, "") + "@" + CEO_EMAIL_DOMAIN;
+      ({ data: created, error: cErr } = await admin.auth.admin.createUser({
+        email: fallback,
+        email_confirm: true,
+        password: tempPass,
+        user_metadata: { managed: "true", login },
+      }));
+      if (!cErr && created?.user) effectiveEmail = fallback;
+    }
     if (cErr || !created?.user) {
       const msg = cErr?.message || "";
       return NextResponse.json(

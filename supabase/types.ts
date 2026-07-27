@@ -155,7 +155,8 @@ export type Database = {
           role: Database["public"]["Enums"]["user_role"];
           created_at: string;
           approved: boolean;
-          login: string | null;
+          login: string;                    // 0124: not null
+          contact_email: string | null;     // 0124: справжня пошта радіолога (НЕ для входу)
           note: string | null;
           workplace: string | null;
           city: string | null;
@@ -171,7 +172,8 @@ export type Database = {
           role?: Database["public"]["Enums"]["user_role"];
           created_at?: string;
           approved?: boolean;
-          login?: string | null;
+          login: string;                    // 0124: not null
+          contact_email?: string | null;
           note?: string | null;
           workplace?: string | null;
           city?: string | null;
@@ -187,7 +189,8 @@ export type Database = {
           role?: Database["public"]["Enums"]["user_role"];
           created_at?: string;
           approved?: boolean;
-          login?: string | null;
+          login?: string;
+          contact_email?: string | null;
           note?: string | null;
           workplace?: string | null;
           city?: string | null;
@@ -212,6 +215,9 @@ export type Database = {
           apparatus_model: string | null;
           created_at: string;
           schedule: Json;
+          /* 0123: false = кабінет вимкнено (нові записи/переноси сюди заборонені
+             тригером check_room_active; наявні лишаються робочими). */
+          active: boolean;
         };
         Insert: {
           id?: string;
@@ -221,6 +227,7 @@ export type Database = {
           apparatus_model?: string | null;
           created_at?: string;
           schedule?: Json;
+          active?: boolean;
         };
         Update: {
           id?: string;
@@ -230,6 +237,7 @@ export type Database = {
           apparatus_model?: string | null;
           created_at?: string;
           schedule?: Json;
+          active?: boolean;
         };
         Relationships: [
           {
@@ -252,6 +260,7 @@ export type Database = {
           contrast_price: number | null;   // 0107: доплата за контраст; null = дефолт CONTRAST_SURCHARGE
           active: boolean;                 // 0107: м'яке вимкнення позиції
           sort_order: number;              // 0107
+          room_id: string | null;          // 0121: null = базова, = X = послуга кабінету X
           source: string;                  // 0107: 'manual' | 'seed' | 'import'
           updated_at: string;              // 0107
           created_at: string;
@@ -267,6 +276,7 @@ export type Database = {
           contrast_price?: number | null;
           active?: boolean;
           sort_order?: number;
+          room_id?: string | null;         // 0121
           source?: string;
           updated_at?: string;
           created_at?: string;
@@ -282,6 +292,7 @@ export type Database = {
           contrast_price?: number | null;
           active?: boolean;
           sort_order?: number;
+          room_id?: string | null;         // 0121
           source?: string;
           updated_at?: string;
           created_at?: string;
@@ -291,6 +302,12 @@ export type Database = {
             foreignKeyName: "services_clinic_id_fkey";
             columns: ["clinic_id"];
             referencedRelation: "clinics";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "services_room_id_fkey";
+            columns: ["room_id"];
+            referencedRelation: "rooms";
             referencedColumns: ["id"];
           }
         ];
@@ -1155,7 +1172,7 @@ export type Database = {
       };
       // 0115: фінальний upsert імпорту прайса (SECURITY DEFINER, admin-гейт усередині).
       services_import_rpc: {
-        Args: { p_rows: Json };
+        Args: { p_rows: Json; p_room_id?: string | null };
         Returns: Json;
       };
       set_waitlist_status_rpc: {
@@ -1254,8 +1271,18 @@ export type Database = {
         Args: { p_key: string; p_max: number; p_window_seconds: number };
         Returns: boolean;
       };
-      email_for_login: {
-        Args: { p_login: string };
+      /* 0124: службові функції логіна. Усі — лише під service_role; клієнтом
+         не викликаються, тримаємо тут для повноти схеми. */
+      login_from_email: {
+        Args: { p_email: string };
+        Returns: string;
+      };
+      unique_login: {
+        Args: { p_base: string };
+        Returns: string;
+      };
+      unique_login_from_email: {
+        Args: { p_email: string };
         Returns: string;
       };
       ceo_list_for_clinic: {
@@ -1282,7 +1309,9 @@ export type Database = {
         }[];
       };
       /* 0072: резолв логін→email на вході. Лише service_role (для клієнтів це був би
-         інструмент енумерації акаунтів). Бере індекс profiles_login_lower_idx. */
+         інструмент енумерації акаунтів). Індекс — profiles_login_uidx (0013),
+         вираз lower(login); коментарі 0072 називають його profiles_login_lower_idx,
+         але такої назви в схемі немає. */
       resolve_login_email: {
         Args: { p_login: string };
         Returns: string | null;
@@ -1345,6 +1374,11 @@ export type Database = {
           // 0077: робота поза графіком за підтвердженням. Прапорець ставиться
           // всередині RPC — окремим UPDATE «після» його б відхилив тригер перерви.
           p_off_schedule?: boolean;
+          /* 0122: новий склад досліджень при переносі в кабінет з ІНШИМ прайсом.
+             Пишеться тим самим UPDATE, що й room_id — інакше ніяк: тригер
+             trg_c2_studies_active_catalog стоїть на UPDATE OF studies, room_id і
+             при зміні кабінету перевіряє склад проти ЦІЛЬОВОГО. null = не чіпати. */
+          p_studies?: Json | null;
         };
         Returns: { updated: boolean; current_status: QueueStatus }[];
       };

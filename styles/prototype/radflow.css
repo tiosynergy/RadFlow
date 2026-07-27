@@ -1151,6 +1151,14 @@ select.inp { cursor: pointer; }
 .ctx-hint.red a { color: var(--red); }
 .ctx-hint.blue { background: var(--blue-bg-soft); color: var(--text-secondary); border: 1px solid rgba(10,132,255,0.2); }
 .ctx-hint.blue a { color: #4da3ff; }
+/* Попередження (не помилка): наслідки дії, яку користувач щойно обрав свідомо —
+   напр. вимкнення кабінету (0123). Червоний тут читався б як «щось зламалось». */
+.ctx-hint.orange { background: var(--orange-bg); color: var(--orange); border: 1px solid rgba(255,159,10,0.28); }
+/* Вихід із порталу направлень назад у робоче місце адміна: єдиний шлях назовні
+   в чужому чромі, тож підсвічуємо його, а не ховаємо серед пунктів. */
+.sb-item.sb-back { color: var(--blue); font-weight: 600; }
+.sb-item.sb-back:hover { background: var(--blue-bg-soft); }
+.ctx-hint.orange b { color: var(--orange); }
 
 /* ===== Перенесення записів після зміни графіка ===== */
 .sch-affected { display: flex; flex-direction: column; gap: 6px; }
@@ -1190,8 +1198,10 @@ select.inp { cursor: pointer; }
 .rcl-refuse:hover { color: var(--red); border-color: var(--red); }
 
 /* fade in (transform only — opacity-entrance animations are unreliable here) */
-.fade-in { animation: riseIn .26s cubic-bezier(.2,.8,.2,1) both; }
-@keyframes riseIn { from { transform: translateY(6px); } to { transform: translateY(0); } }
+/* NB: без animation-fill-mode:both — інакше залишковий identity-transform робить
+   .fade-in containing block для position:fixed нащадків (модалки липнуть до верху). */
+.fade-in { animation: riseIn .26s cubic-bezier(.2,.8,.2,1); }
+@keyframes riseIn { from { transform: translateY(6px); } to { transform: none; } }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 /* ===== New Booking Modal — extended fields ===== */

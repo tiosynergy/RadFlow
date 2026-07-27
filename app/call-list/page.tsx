@@ -30,7 +30,7 @@ export default async function CallListPage() {
 
   const { data: rooms } = await supabase
     .from("rooms")
-    .select("id, name, modality, apparatus_model, schedule")
+    .select("id, name, modality, apparatus_model, schedule, active")
     .eq("clinic_id", profile.clinic_id as string)
     .order("name");
 
@@ -39,7 +39,7 @@ export default async function CallListPage() {
   // (→ статика) від «усі вимкнені» (→ порожньо, напрям закрито). High-2.
   const { data: services } = await supabase
     .from("services")
-    .select("id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order")
+    .select("id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order, room_id") // 0121: room_id — видимість послуги залежить від кабінету запису
     .eq("clinic_id", profile.clinic_id as string)
     .order("sort_order");
 

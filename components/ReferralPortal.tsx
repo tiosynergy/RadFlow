@@ -6,6 +6,7 @@
    Зайнятість слотів — через знеособлений RPC room_busy_slots (без PII). */
 
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
+import { bookableRooms } from "@/lib/rooms";
 import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -15,7 +16,7 @@ import CeoDashboardLink from "@/components/CeoDashboardLink";
 import PatientEditModal from "@/components/PatientEditModal";
 import PhoneInput from "@/components/PhoneInput";
 import CitySelect from "@/components/CitySelect";
-import RescheduleModal from "@/components/RescheduleModal";
+import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import ReferrerBoard from "@/components/ReferrerBoard";
 import ReferrerSidebar from "@/components/ReferrerSidebar";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry, editQueueEntryStudies, createReferralCase, referralCaseFromEntry, type CaseStepInput } from "@/app/queue/actions";
@@ -35,10 +36,11 @@ import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKA
 import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { DobField, BookingCalendar, fmtShort } from "@/components/BookingModal";
+import RoomSelect, { ROOM_LIST_MAX_CHIPS } from "@/components/RoomSelect";
 import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null; timezone?: string | null };
 type Referral = {
   id: string; clinic_id: string; created_by: string | null; referrer_id: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
@@ -152,7 +154,10 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const selCenter = activeCenters.find((c) => c.clinicId === centerId) || null;
   const allRooms = roomsByClinic[centerId] || [];
   const allowedRoomIds = selCenter && Array.isArray(selCenter.room_ids) && selCenter.room_ids.length ? selCenter.room_ids : null;
-  const rooms = allowedRoomIds ? allRooms.filter((r) => allowedRoomIds.includes(r.id)) : allRooms;
+  /* 0123: вимкнені кабінети направнику не показуємо взагалі — на його дошці
+     немає «ведення» записів, лише запис і перегляд своїх; кабінет, у якому вже
+     є його запис, лишається видимим у самому рядку запису (там назва з БД). */
+  const rooms = bookableRooms(allowedRoomIds ? allRooms.filter((r) => allowedRoomIds.includes(r.id)) : allRooms);
   // Модальності, доступні направнику в цьому центрі (є кабінет і можна записати).
   const availableModalities = BOOKABLE_MODALITIES.filter((code) => rooms.some((r) => r.modality === code));
   const modAllowed = (code: string) => rooms.some((r) => r.modality === code);
@@ -661,6 +666,12 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 <div className="ctx-hint red">У цьому центрі немає кабінету типу {studyType}.</div>
               ) : (
                 <>
+                  {/* Той самий поріг, що й у персонала: роль не має міняти
+                      поведінку вибору кабінету (вимога власника). */}
+                  {roomsOfType.length > ROOM_LIST_MAX_CHIPS ? (
+                    <RoomSelect rooms={roomsOfType} value={roomId || ""}
+                      onChange={(id) => { setRoomId(id); setTime(""); }} />
+                  ) : (
                   <div className="bk-room-chips">
                     {roomsOfType.map((r) => (
                       <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + " " + modalityKind(r.modality)}
@@ -670,6 +681,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                       </button>
                     ))}
                   </div>
+                  )}
                 </>
               )}
             </div>
@@ -1214,9 +1226,13 @@ interface ReferralPortalProps {
   roomOverridesByClinic: Record<string, RoomOverrideRow[]>;
   doctorName: string;
   doctorId: string;
+  /** Адмін у режимі перегляду порталу: куди його повернути (null для направника). */
+  backHref?: string | null;
+  /** Назва власного центру адміна — підпис кнопки повернення. */
+  backLabel?: string | null;
 }
 
-export default function ReferralPortal({ role, centers, roomsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, doctorId }: ReferralPortalProps) {
+export default function ReferralPortal({ role, centers, roomsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, doctorId, backHref = null, backLabel = null }: ReferralPortalProps) {
   const router = useRouter();
   const canManage = role === "referrer";
   async function signOut() {
@@ -1363,11 +1379,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
   }
 
   // Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
-  async function doReschedule({ roomId, date, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
+  async function doReschedule({ roomId, date, time, dur, buffer, reason, studies }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; studies?: RescheduleStudy[] }) {
     const p = reschedFor; if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason, studies });
     if (!res.ok) {
       if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
       reload();
@@ -1467,6 +1483,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
   return (
     <div className="app">
       <ReferrerSidebar centers={activeCenters} roomsByClinic={roomsByClinic} doctorName={doctorName}
+        backHref={backHref} backLabel={backLabel}
         activeTab={tab}
         onNav={(key) => { if (key === "mine") setBoardFocus({ clinicId: "all", roomId: "all", nonce: Date.now() }); setTab(key); }}
         onSelectRoom={(clinicId, roomId) => { setBoardFocus({ clinicId, roomId, nonce: Date.now() }); setTab("mine"); }}
@@ -1484,6 +1501,13 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
             {/* Годинник — за часом центру (перший доступний): направник глобальний,
                 singleton setClinicTz тут не виставляється. */}
             <span style={{ fontSize: 13, color: "var(--text-secondary)" }}><LiveClock tz={activeCenters[0]?.timezone || undefined} /></span>
+            {/* Дубль кнопки з сайдбару: на вузькому екрані сайдбар згортається,
+                і єдиний вихід із порталу зникав би разом із ним. */}
+            {backHref && (
+              <a href={backHref} className="btn btn-secondary btn-sm" title={"Повернутися до робочого місця: " + (backLabel || "мій центр")}>
+                <span aria-hidden>←</span> {backLabel || "Мій центр"}
+              </a>
+            )}
             <CeoDashboardLink />
           </div>
         </header>

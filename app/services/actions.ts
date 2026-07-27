@@ -61,9 +61,21 @@ async function requireAdmin(
 }
 
 function mapServiceError(message: string): ServiceActionResult {
-  // 0107: унікальність (clinic_id, modality, lower(name)).
-  if (/services_clinic_mod_name_uniq|duplicate key/i.test(message)) {
+  // 0107/0121: унікальність — partial-індекси база/кабінет (0121 пересобрала 0107).
+  // Q4: дубль імені база↔кабінет ЛЕГАЛЬНИЙ, тож конфлікт кабінетного індексу
+  // означає дубль саме У ЦЬОМУ КАБІНЕТІ (ревю Ф3 №5 — інакше текст збивав би).
+  if (/services_room_mod_name_uniq/i.test(message)) {
+    return { ok: false, error: "Така послуга вже є у цьому кабінеті", code: "duplicate" };
+  }
+  if (/services_base_mod_name_uniq|services_clinic_mod_name_uniq|duplicate key/i.test(message)) {
     return { ok: false, error: "Така послуга вже є в цій модальності", code: "duplicate" };
+  }
+  // 0121: гард room-owned послуги (clinic+modality кабінету ↔ послуги).
+  if (/SVC_ROOM_MODALITY_MISMATCH/i.test(message)) {
+    return { ok: false, error: "Модальність послуги не збігається з кабінетом", code: "generic" };
+  }
+  if (/SVC_ROOM_CLINIC_MISMATCH|SVC_ROOM_BAD_REF/i.test(message)) {
+    return { ok: false, error: "Кабінет не з цього центру", code: "forbidden" };
   }
   if (/services_duration_chk/i.test(message)) {
     return { ok: false, error: "Тривалість — кратна 5 хв, від 5 до 480", code: "generic" };
@@ -74,16 +86,27 @@ function mapServiceError(message: string): ServiceActionResult {
   return { ok: false, error: safeDbError("services", { message }), code: "generic" };
 }
 
-/** Створити позицію каталогу. */
-export async function createService(raw: ServiceInput): Promise<ServiceActionResult> {
+/** Створити позицію каталогу.
+    0121 (room-owned): roomId задано → послуга належить ЛИШЕ цьому кабінету
+    (services.room_id = roomId; видима і бронюється тільки в ньому). Без roomId —
+    базова послуга центру (успадковується всіма кабінетами модальності).
+    Гард-тригер check_service_room звіряє clinic+modality кабінету ↔ послуги. */
+export async function createService(raw: ServiceInput, roomId?: string): Promise<ServiceActionResult> {
   const v = parseInput("createService", sService, raw);
   if (!v.ok) return v as ServiceActionResult;
+  let roomUuid: string | null = null;
+  if (roomId != null) {
+    const rv = parseInput("createService.room", zUuid, roomId);
+    if (!rv.ok) return rv as ServiceActionResult;
+    roomUuid = rv.data;
+  }
   const supabase = await createClient();
   const gate = await requireAdmin(supabase);
   if ("error" in gate) return gate.error;
 
   const { data, error } = await supabase.from("services").insert({
     clinic_id: gate.clinicId,
+    room_id: roomUuid,
     name: v.data.name,
     modality: v.data.modality,
     duration_min: v.data.durationMin,
@@ -156,9 +179,11 @@ export async function seedServicesFromCatalog(): Promise<ServiceActionResult> {
   const gate = await requireAdmin(supabase);
   if ("error" in gate) return gate.error;
 
-  // Наявні позиції — щоб не ловити unique-помилку на повторному сіді.
+  // Наявні БАЗОВІ позиції — щоб не ловити unique-помилку на повторному сіді.
+  // 0121: room-owned не враховуємо — дубль імені база↔кабінет допустимий (Q4),
+  // і кабінетна послуга не мусить блокувати сід базової.
   const { data: existing, error: exErr } = await supabase
-    .from("services").select("modality, name").eq("clinic_id", gate.clinicId);
+    .from("services").select("modality, name").eq("clinic_id", gate.clinicId).is("room_id", null);
   if (exErr) return mapServiceError(exErr.message);
   const seen = new Set((existing ?? []).map((r) => r.modality + "|" + r.name.trim().toLowerCase()));
 
@@ -385,20 +410,29 @@ const sImportRows = z.array(sImportRow).min(1, "Немає позицій для
 export type ImportServiceRow = z.infer<typeof sImportRow>;
 
 export type ImportServicesResult =
-  | { ok: true; inserted: number; updated: number; skippedInactive: number; noop: number }
+  | { ok: true; inserted: number; updated: number; skippedInactive: number; noop: number; overrides: number }
   // 0119: каталог змінився між передпереглядом і застосуванням — нічого не застосовано,
   // conflicts = назви змінених/доданих позицій; клієнт просить оновити передперегляд.
   | { ok: false; error: string; code?: "auth" | "forbidden" | "generic" | "stale"; conflicts?: string[] };
 
 /** Застосувати підтверджені позиції імпорту (все-або-нічого). */
-export async function importServices(raw: ImportServiceRow[]): Promise<ImportServicesResult> {
+export async function importServices(raw: ImportServiceRow[], roomId?: string): Promise<ImportServicesResult> {
   const v = parseInput("importServices", sImportRows, raw);
   if (!v.ok) return v as ImportServicesResult;
+  // 0121: опційний імпорт У КАБІНЕТ — RPC пише ТІЛЬКИ room-owned послуги кабінету
+  // (база не торкається, переозначення не створюються). null = базовий каталог.
+  let roomUuid: string | null = null;
+  if (roomId != null) {
+    const rv = parseInput("importServices.room", zUuid, roomId);
+    if (!rv.ok) return rv as ImportServicesResult;
+    roomUuid = rv.data;
+  }
   const supabase = await createClient();
   const gate = await requireAdmin(supabase);
   if ("error" in gate) return gate.error as ImportServicesResult;
 
   const { data, error } = await supabase.rpc("services_import_rpc", {
+    p_room_id: roomUuid,
     p_rows: v.data.map((r) => ({
       name: r.name,
       modality: r.modality,
@@ -420,7 +454,7 @@ export async function importServices(raw: ImportServiceRow[]): Promise<ImportSer
     }
     return { ok: false, error: safeDbError("services_import", { message: error.message }), code: "generic" };
   }
-  const res = (data ?? {}) as { stale?: boolean; conflicts?: unknown; inserted?: number; updated?: number; skipped_inactive?: number; noop?: number };
+  const res = (data ?? {}) as { stale?: boolean; conflicts?: unknown; inserted?: number; updated?: number; skipped_inactive?: number; noop?: number; overrides?: number };
   // 0119: каталог змінився під час передперегляду — RPC нічого не застосував.
   if (res.stale) {
     const conflicts = Array.isArray(res.conflicts) ? res.conflicts.filter((n): n is string => typeof n === "string") : [];
@@ -438,5 +472,7 @@ export async function importServices(raw: ImportServiceRow[]): Promise<ImportSer
     skippedInactive: res.skipped_inactive ?? 0,
     // 0116: рядки без змін (гонка «каталог змінився між передпереглядом і apply»).
     noop: res.noop ?? 0,
+    // 0120: кількість переозначень кабінета (0 у базовому режимі).
+    overrides: res.overrides ?? 0,
   };
 }

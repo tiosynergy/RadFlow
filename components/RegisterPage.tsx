@@ -5,6 +5,7 @@
 
 import { useState, type ChangeEvent, type FormEvent, type InputHTMLAttributes } from "react";
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { normalizeLogin, isValidLogin, LOGIN_HINT } from "@/lib/login";
 import { formatPhoneUA, isValidPhoneUA, normalizePhoneUA } from "@/lib/phone";
 import "./register.css";
 
@@ -19,7 +20,11 @@ function validateField(name: string, values: Record<string, string | boolean>): 
   const v = String(values[name] ?? "");
   switch (name) {
     case "login":
-      return !v.trim() ? REQUIRED : v.trim().length < 3 ? "Логін має містити щонайменше 3 символи" : "";
+      // 0124: той самий формат, що в CHECK profiles_login_format_chk і в zLogin.
+      // Раніше клієнт вимагав ≥3 символів, а сервер приймав 1 — і логін із «@»
+      // проходив обидві перевірки, після чого людина не могла ним увійти:
+      // /api/auth/login вважає такий рядок email.
+      return !v.trim() ? REQUIRED : !isValidLogin(normalizeLogin(v)) ? LOGIN_HINT : "";
     case "email":
       return !v.trim() ? REQUIRED : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim()) ? "Введіть коректну електронну адресу" : "";
     case "phone":
@@ -44,6 +49,24 @@ async function registerUser(values: RegValues): Promise<RegisterResult> {
   }
 
   try {
+    /* 0124: логін глобально унікальний. Якщо він зайнятий, тригер handle_new_user
+       мовчки додасть суфікс («ivanov» → «ivanov2»), бо інакше падає весь signUp
+       із непрозорим «Database error saving new user». Але тоді людина
+       зареєструвалась би одним логіном, а входити мусила іншим — і дізналась би
+       про це лише на невдалому вході. Тому питаємо ДО створення акаунта.
+       Мережеву відмову тут ковтаємо свідомо: перевірка — зручність, а не гейт,
+       і через неї не можна не пустити людину в реєстрацію. */
+    try {
+      const chk = await fetch("/api/auth/login-available", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ login: normalizeLogin(values.login) }),
+      });
+      const cd = await chk.json().catch(() => ({}));
+      if (chk.ok && cd?.available === false && cd?.valid !== false) {
+        return { ok: false, field: "login", message: "Логін вже зайнятий — оберіть інший" };
+      }
+    } catch { /* мережа недоступна — реєструємо далі */ }
+
     const supabase = createClient();
     const { error } = await supabase.auth.signUp({
       email: values.email.trim(),
@@ -51,9 +74,9 @@ async function registerUser(values: RegValues): Promise<RegisterResult> {
       options: {
         // Метадані для тригера handle_new_user (створює клініку + профіль).
         data: {
-          login: values.login.trim(),
+          login: normalizeLogin(values.login),
           phone: normalizePhoneUA(values.phone),
-          clinic_name: values.login.trim(),
+          clinic_name: normalizeLogin(values.login),
         },
         emailRedirectTo:
           typeof window !== "undefined"

@@ -7,6 +7,7 @@
 import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { normalizeLogin, isValidLogin, LOGIN_HINT } from "@/lib/login";
 import type { Json, TablesInsert, Tables } from "@/supabase/types";
 import CitySelect from "@/components/CitySelect";
 import ServicesEditor from "@/components/ServicesEditor";
@@ -22,6 +23,12 @@ import "@/styles/prototype/radflow-wizard.css";
 import { roomScheduleFor, effectiveRoomBreaks, offScheduleKind, dateKeyOf, type Break } from "@/lib/schedule";
 import { slotToMin } from "@/lib/slots";
 import { MODALITIES, modalityCode } from "@/lib/studies";
+import { wallDayKey } from "@/lib/incidents";
+
+/* Статуси «живого» запису: пацієнт іще чекає на кабінет. needs_reschedule — теж
+   живий (запис без слота, реєстратура має передзвонити). Спільні для діалогу
+   видалення кабінету і для гарда збереження — критерій мусить бути ОДИН. */
+const OPEN_STATUSES = ["scheduled", "waiting", "in_progress", "needs_reschedule"] as const;
 
 /* ===== Таймзона центру (IANA) =====
    Від неї залежать «Запізнення», «Уточнити», гарди виклику в кабінет і заборона
@@ -57,16 +64,20 @@ type EquipItem = {
   start: string; end: string; breaks: Break[];
   perDay: boolean; dayHours: DayHours[];
   roomId?: string;
+  /* 0123: false = кабінет вимкнено. Нові записи в нього не приймаються (тригер
+     check_room_active), наявні лишаються робочими, прайс/інциденти/привязки
+     радіологів цілі. Видалити рядок можна ЛИШЕ вимкнений. */
+  active?: boolean;
 };
 type WizardData = {
   clinic: string; city: string; address: string; phones: string[]; emails: string[];
   timezone: string;
-  adminName: string; adminEmail: string; aPhones: string[]; aEmails: string[]; equip: EquipItem[];
+  adminName: string; adminEmail: string; adminLogin: string; aPhones: string[]; aEmails: string[]; equip: EquipItem[];
 };
 type WizardInitial = Partial<{
   clinic: string; city: string; address: string; phones: string[]; emails: string[];
   timezone: string;
-  adminName: string; adminEmail: string; adminPhone: string; equip: EquipItem[];
+  adminName: string; adminEmail: string; adminLogin: string; adminPhone: string; equip: EquipItem[];
 }>;
 
 /* ---------- Toasts ---------- */
@@ -209,7 +220,7 @@ const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string }[]
 const FORM_SECTIONS = ["sec-clinic", "sec-admin", "sec-equip", "sec-price"];
 
 /* ---------- Крок 1: Профіль клініки ---------- */
-function StepRegister({ report, onData, initial, active, clinicId, services, rooms, roomOverrides }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial; active: string; clinicId: string; services: ServiceRow[]; rooms: SetupRoom[]; roomOverrides: SroRow[] }) {
+function StepRegister({ report, onData, initial, active, clinicId, services, rooms, roomOverrides, notify }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial; active: string; clinicId: string; services: ServiceRow[]; rooms: SetupRoom[]; roomOverrides: SroRow[]; notify: (msg: string, type?: string) => void }) {
   const [clinic, setClinic] = useState(initial.clinic || "");
   const [city, setCity] = useState(initial.city || "");
   const [address, setAddress] = useState(initial.address || "");
@@ -223,7 +234,17 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
   const [timezone, setTimezone] = useState(initial.timezone || browserTz());
 
   const [adminName, setAdminName] = useState(initial.adminName || "");
-  const [adminEmail, setAdminEmail] = useState(initial.adminEmail || "");
+  // Email лише показуємо: адресу входу міняє служба підтримки, не майстер.
+  const adminEmail = initial.adminEmail || "";
+  /* 0124: логін — друга (а для декого єдина зручна) форма входу, і донедавна
+     задати його можна було лише один раз, при реєстрації центру. Там же він
+     підставлявся в назву клініки, тож люди вводили випадкове. Тепер редагуємо. */
+  const [adminLogin, setAdminLogin] = useState(initial.adminLogin || "");
+  const [loginSaved, setLoginSaved] = useState(initial.adminLogin || "");
+  const [loginBusy, setLoginBusy] = useState(false);
+  const loginNorm = normalizeLogin(adminLogin);
+  const loginOk = isValidLogin(loginNorm);
+  const loginDirty = loginNorm !== loginSaved;
   const [aPhones, setAPhones] = useState<string[]>([initial.adminPhone || ""]);
   const [aEmails, setAEmails] = useState<string[]>([""]);
 
@@ -237,9 +258,9 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
     const adminPhoneOk = aPhones.some((p) => p.trim() !== "");
     const ok = clinic.trim() !== "" && city.trim() !== "" && adminName.trim() !== "" && adminPhoneOk && equip.length > 0 && equipHoursValid(equip) && equipBreaksValid(equip);
     report(1, !!ok);
-    onData({ clinic, city, address, phones, emails, timezone, adminName, adminEmail, aPhones, aEmails, equip });
+    onData({ clinic, city, address, phones, emails, timezone, adminName, adminEmail, adminLogin, aPhones, aEmails, equip });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clinic, city, address, phones, emails, timezone, adminName, adminEmail, aPhones, aEmails, equip]);
+  }, [clinic, city, address, phones, emails, timezone, adminName, adminEmail, adminLogin, aPhones, aEmails, equip]);
 
   function setEq(i: number, k: string, v: string | boolean) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, [k]: v } : x))); }
   function toggleEqDay(i: number, d: number) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, days: x.days.map((v, k) => (k === d ? (v ? 0 : 1) : v)) } : x))); }
@@ -270,7 +291,48 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
      перевіряємо активні записи в черзі: якщо є — видалення блокуємо (інакше save
      усе одно відхилить, але вже після втрати картки, і незрозуміло чому). Перевірка
      best-effort: якщо не вдалось — м'яке підтвердження (save лишається запобіжником). */
-  const [delAsk, setDelAsk] = useState<{ i: number; name: string; count: number | null; checking: boolean } | null>(null);
+  /* 2026-07-27 (вимога власника): блокують лише МАЙБУТНІ активні записи (дата ≥
+     «сьогодні» центру). Раніше рахувались усі `scheduled` без огляду на дату, тож
+     кабінет із «зависшими» минулими записами (їх ніхто не закрив у done/no_show)
+     не можна було видалити НІКОЛИ. Минулі відкриті рахуємо окремо — показуємо
+     в попередженні, але видаляти не заважаємо. */
+  /* 0123: скільки МАЙБУТНІХ активних записів лишиться за кабінетом, який щойно
+     вимкнули. Рішення власника — вимикати можна завжди, але з чесним попередженням:
+     інакше апарат зникає з форм запису, а про людей, записаних на завтра, ніхто не
+     дізнається. Рахуємо ліниво, лише в момент вимкнення. */
+  const [offInfo, setOffInfo] = useState<Record<number, { checking: boolean; count: number | null }>>({});
+  async function toggleEqActive(i: number, on: boolean) {
+    setEq(i, "active", on);
+    if (on) { setOffInfo((m) => { const n = { ...m }; delete n[i]; return n; }); return; }
+    const roomId = equip[i]?.roomId;
+    if (!roomId) { setOffInfo((m) => ({ ...m, [i]: { checking: false, count: 0 } })); return; }  // новий кабінет
+    setOffInfo((m) => ({ ...m, [i]: { checking: true, count: null } }));
+    try {
+      const supabase = createClient();
+      // «Сьогодні» — за настінним часом ЦЕНТРУ (канон проєкту), як і в askDelEq.
+      const { count, error } = await supabase.from("queue_entries")
+        .select("id", { count: "exact", head: true })
+        .eq("room_id", roomId).in("status", OPEN_STATUSES)
+        .gte("scheduled_date", wallDayKey(timezone || undefined));
+      if (error) throw error;
+      setOffInfo((m) => ({ ...m, [i]: { checking: false, count: count ?? 0 } }));
+    } catch {
+      // Не змогли порахувати — попередження лишається, просто без числа.
+      setOffInfo((m) => ({ ...m, [i]: { checking: false, count: null } }));
+    }
+  }
+
+  const [delAsk, setDelAsk] = useState<{
+    i: number; name: string; checking: boolean;
+    count: number | null;      // майбутні активні — блокують видалення
+    pastOpen?: number;         // минулі незакриті — лишаться в історії без кабінету
+    services?: number;         // власний прайс кабінету (0121) — піде каскадом
+    /* 0123: кабінет ЩЕ АКТИВНИЙ у базі → видаляти рано. Перевіряємо саме в базі, а
+       не за перемикачем у формі: інакше «вимкнув → одразу видалив → Зберегти»
+       проходило б одним збереженням, і двокроковість була б косметикою
+       (ревʼю Medium-2). Тригер guard_delete_active_room тримає те саме правило. */
+    stillActive?: boolean;
+  } | null>(null);
   async function askDelEq(i: number) {
     const e = equip[i];
     const name = (e.room || e.type || "Кабінет").trim();
@@ -278,15 +340,26 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
     setDelAsk({ i, name, count: null, checking: true });
     try {
       const supabase = createClient();
-      const { count, error } = await supabase
-        .from("queue_entries")
-        .select("id", { count: "exact", head: true })
-        .eq("room_id", e.roomId)
-        .in("status", ["scheduled", "waiting", "in_progress", "needs_reschedule"]);
-      if (error) throw error;
-      setDelAsk((cur) => (cur && cur.i === i ? { ...cur, count: count ?? 0, checking: false } : cur));
+      // «Сьогодні» — за настінним часом ЦЕНТРУ (правило проекту: лише wallDayKey).
+      const today = wallDayKey(timezone || undefined);
+      const q = () => supabase.from("queue_entries").select("id", { count: "exact", head: true })
+        .eq("room_id", e.roomId as string).in("status", OPEN_STATUSES);
+      const [fut, past, svc, room] = await Promise.all([
+        q().gte("scheduled_date", today),   // майбутні/сьогоднішні — блокують
+        q().lt("scheduled_date", today),    // минулі незакриті — лише попередження
+        supabase.from("services").select("id", { count: "exact", head: true }).eq("room_id", e.roomId as string),
+        supabase.from("rooms").select("active").eq("id", e.roomId as string).maybeSingle(),
+      ]);
+      if (fut.error || past.error) throw fut.error || past.error;
+      setDelAsk((cur) => (cur && cur.i === i
+        ? { ...cur, count: fut.count ?? 0, pastOpen: past.count ?? 0, services: svc.count ?? 0,
+            stillActive: (room.data as { active?: boolean } | null)?.active !== false, checking: false }
+        : cur));
     } catch {
-      setDelAsk((cur) => (cur && cur.i === i ? { ...cur, count: null, checking: false } : cur)); // не змогли перевірити
+      /* Не змогли перевірити → fail-closed на обидві причини: stillActive = true
+         тримає діалог у стані «спершу вимкніть», інакше він пропонував би
+         «Видалити», а тригер 0123 віддав би сирий ROOM_ACTIVE_DELETE у тост. */
+      setDelAsk((cur) => (cur && cur.i === i ? { ...cur, count: null, stillActive: true, checking: false } : cur));
     }
   }
 
@@ -344,9 +417,54 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
           </label>
           <label className="fld">
             <span className="fld-lab">Email для входу <Req /></span>
-            <input className="inp" type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} readOnly />
-            <span className="fld-hint">Логін · роль: Адміністратор</span>
+            <input className="inp" type="email" value={adminEmail} readOnly />
+            {/* Раніше тут писалось «Логін · роль: Адміністратор» — підпис називав
+                логіном те, що ним не є, а справжній логін ніде не показувався. */}
+            <span className="fld-hint">Роль: Адміністратор. Змінюється у службі підтримки.</span>
           </label>
+        </div>
+        <div className="fld-row">
+          <label className="fld">
+            <span className="fld-lab">Логін для входу <Req /></span>
+            <input className={"inp" + (loginOk ? "" : " invalid")} value={adminLogin}
+              autoComplete="username" placeholder="напр. ivanov"
+              onChange={(e) => setAdminLogin(e.target.value)} />
+            <span className="fld-hint">{loginOk ? LOGIN_HINT : <span style={{ color: "var(--red)" }}>{LOGIN_HINT}</span>}</span>
+          </label>
+          <div className="fld">
+            <span className="fld-lab">&nbsp;</span>
+            {/* Логін зберігається ОКРЕМОЮ кнопкою, а не разом із майстром: його
+                міняє службовий роут під service-role (тригер 0064 не пускає
+                зміну login з клієнта), і відмова «логін зайнятий» має прийти
+                одразу, а не сховатись у загальному «Зберегти». */}
+            <button type="button" className="btn btn-secondary"
+              disabled={!loginOk || !loginDirty || loginBusy}
+              onClick={async () => {
+                setLoginBusy(true);
+                try {
+                  const res = await fetch("/api/account/login", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ login: loginNorm }),
+                  });
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok) { notify(data.error || "Не вдалося змінити логін", "error"); return; }
+                  setLoginSaved(loginNorm); setAdminLogin(loginNorm);
+                  notify("Логін збережено: " + loginNorm, "success");
+                } catch {
+                  notify("Мережа недоступна — логін не змінено", "error");
+                } finally { setLoginBusy(false); }
+              }}>
+              {loginBusy ? "Зберігаю…" : loginDirty ? "Зберегти логін" : "Логін збережено"}
+            </button>
+            {/* Логін не входить у загальне «Зберегти» — без цього рядка людина
+                редагує поле, тисне «Зберегти» внизу й лишається зі старим
+                логіном, ніде не побачивши, що зміна не застосувалась. */}
+            {loginDirty && (
+              <span className="fld-hint" style={{ color: "var(--orange)" }} role="status" aria-live="polite">
+                Логін не збережено — натисніть «Зберегти логін».
+              </span>
+            )}
+          </div>
         </div>
         <div className="contacts-grid">
           <ContactList label="Телефони" items={aPhones} setItems={setAPhones} ph="+38 0__ ___ __ __" required />
@@ -361,8 +479,11 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
       <p className="wiz-hsub">Апарати центру та їхній графік роботи.</p>
       <div className="form-card" style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 16 }}>
         {equip.map((e, i) => (
-          <div key={e.id} className="equip-block">
-            <button className="mini-icon equip-block-del" type="button" title="Видалити обладнання" onClick={() => askDelEq(i)} disabled={equip.length <= 1}>✕</button>
+          <div key={e.id} className={"equip-block" + (e.active === false ? " equip-off" : "")}>
+            <button className="mini-icon equip-block-del" type="button"
+              title={equip.length <= 1 ? "Останній кабінет видалити не можна" : "Видалити обладнання"}
+              onClick={() => askDelEq(i)}
+              disabled={equip.length <= 1}>✕</button>
             <div className="equip-info">
               <div className="equip-info-row">
                 <select className="inp equip-type" value={e.type} onChange={(ev) => setEq(i, "type", ev.target.value)}>
@@ -371,6 +492,38 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                 <input className="inp equip-room2" placeholder="Кабінет / №" value={e.room} onChange={(ev) => setEq(i, "room", ev.target.value)} />
               </div>
               <input className="inp" placeholder="Модель / опис обладнання" value={e.desc} onChange={(ev) => setEq(i, "desc", ev.target.value)} />
+
+              {/* 0123. Вимкнення — мʼякий і зворотний крок: кабінет перестає приймати
+                  нові записи, але прайс, інциденти, привязки радіологів і вся історія
+                  лишаються. Видалення (✕) — незворотний каскад, і воно доступне лише
+                  для ВЖЕ вимкненого кабінету (той самий порядок тримає тригер
+                  guard_delete_active_room у БД).
+                  Це саме чекбокс, а не кнопка-перемикач: стан несе `checked`, і
+                  скрінрідер читає «Кабінет працює, прапорець знято» без суперечності,
+                  яку давала пара «мінлива мітка + aria-pressed». */}
+              <label className="eq-active-lab">
+                <input type="checkbox" checked={e.active !== false}
+                  onChange={(ev) => toggleEqActive(i, ev.target.checked)} />
+                Кабінет працює
+              </label>
+              {e.active === false && (
+                <div className="ctx-hint orange eq-off-warn" role="status" aria-live="polite">
+                  <b>⚠ Кабінет буде вимкнено.</b> Після збереження в нього не можна буде
+                  ні записати пацієнта, ні перенести запис, ні забронювати місце в листі
+                  очікування.
+                  <br />Наявні записи <b>не зникають</b>: їх ведуть, викликають, завершують і
+                  рухають по часу в цьому ж кабінеті або переносять в інший. Прайс кабінету,
+                  інциденти та привʼязки радіологів зберігаються.
+                  {offInfo[i]?.checking
+                    ? <><br />Перевіряю майбутні записи…</>
+                    : offInfo[i]?.count == null
+                    ? null
+                    : offInfo[i]!.count! > 0
+                    ? <><br /><b>Зараз у кабінеті {offInfo[i]!.count} майбутніх активних записів.</b>{" "}
+                        Вони залишаться за ним — перенесіть або скасуйте їх, якщо апарат уже не працює.</>
+                    : <><br />Майбутніх активних записів у ньому немає.</>}
+                </div>
+              )}
             </div>
             <div className="equip-sched">
               <span className="equip-sched-lab">Розклад роботи</span>
@@ -483,18 +636,39 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
       </>)}
 
       {delAsk && (() => {
-        const blocked = (delAsk.count ?? 0) > 0;   // є активні записи → видаляти не можна
+        /* Дві різні причини відмови, і плутати їх не можна: «ще активний»
+           (0123 — треба спершу вимкнути й зберегти) і «є майбутні записи»
+           (їх треба перенести або скасувати). */
+        const stillOn = delAsk.stillActive === true;
+        const blocked = stillOn || (delAsk.count ?? 0) > 0;
         return (
           <ConfirmDialog
-            title={blocked ? "Не можна видалити кабінет" : "Видалити кабінет?"}
+            title={stillOn ? "Спершу вимкніть кабінет" : blocked ? "Не можна видалити кабінет" : "Видалити кабінет?"}
             text={
               delAsk.checking
                 ? <>Перевіряю записи в кабінеті <b>{delAsk.name}</b>…</>
+                : stillOn
+                  ? <>Кабінет <b>{delAsk.name}</b> ще працює. Видалення незворотне, тому спершу
+                      <b> вимкніть</b> його перемикачем на картці й <b>збережіть зміни</b> — після цього
+                      кабінет можна буде видалити. Часто вимкнення і є тим, що потрібно: кабінет
+                      перестає приймати нові записи, а прайс, історія та привʼязки лишаються цілими.</>
                 : blocked
-                  ? <>У кабінеті <b>{delAsk.name}</b> — <b>{delAsk.count}</b> активних запис(ів) у черзі. Спершу перенесіть або скасуйте їх — інакше пацієнти залишаться без кабінету.</>
+                  ? <>У кабінеті <b>{delAsk.name}</b> — <b>{delAsk.count}</b> майбутніх активних запис(ів). Спершу перенесіть або скасуйте їх — інакше пацієнти залишаться без кабінету.</>
                   : delAsk.count === null
                     ? <>Не вдалося перевірити записи кабінету <b>{delAsk.name}</b>. Видалити? Якщо в ньому є пацієнти, збереження буде заблоковано.</>
-                    : <>Кабінет <b>{delAsk.name}</b> буде видалено з центру при збереженні. Скасувати дію потім не можна.</>
+                    : <>
+                        Кабінет <b>{delAsk.name}</b> буде видалено з центру при збереженні. Скасувати дію потім не можна.
+                        {/* 0123: у цей діалог тепер можна потрапити лише з ВИМКНЕНОГО
+                            кабінету, тож нагадуємо, що видаляти взагалі не обовʼязково. */}
+                        <br /><br />Якщо потрібно було просто прибрати апарат із роботи — <b>цього вже досягнуто</b>:
+                        кабінет вимкнено, нових записів він не приймає, а прайс, історія та привʼязки цілі.
+                        Видаляти не обовʼязково.
+                        {/* Чесний перелік наслідків: історія НЕ видаляється (FK on delete set null),
+                            а от прайс кабінета, інциденти й привʼязки радіологів — так (cascade). */}
+                        {!!delAsk.services && <><br /><br />Разом із кабінетом <b>назавжди зникне його власний прайс — {delAsk.services} послуг(и)</b>, а також інциденти (поломки/ТО) і привʼязки радіологів до нього.</>}
+                        {!!delAsk.pastOpen && <><br /><br />Записи пацієнтів <b>не видаляються</b>: {delAsk.pastOpen} незакритих минулих (і всі завершені) залишаться в історії, але <b>без кабінету</b> — на дошці кабінета їх більше не буде.</>}
+                        {!delAsk.pastOpen && <><br /><br />Записи пацієнтів <b>не видаляються</b>: історія залишиться, але без привʼязки до кабінета.</>}
+                      </>
             }
             danger={!blocked}
             busy={delAsk.checking}
@@ -515,7 +689,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
 }
 
 /* ---------- Майстер (контейнер) ---------- */
-type SetupRoom = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type SetupRoom = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type ServiceRow = Tables<"services">;
 type SroRow = Tables<"service_room_overrides">;
 
@@ -576,6 +750,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
         name: (e.room || e.type).trim(),
         modality: modalityCode(e.type),
         apparatus_model: e.desc.trim() || null,
+        active: e.active !== false,   // 0123
         schedule: {
           days: e.days, start: e.start, end: e.end,
           // Не зберігаємо некоректні інтервали (кінець ≤ початку / незаповнені).
@@ -660,7 +835,11 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
              живий пацієнт, який чекає на дзвінок реєстратури. Без нього кабінет
              видалився б МОВЧКИ, room_id став би NULL (on delete set null) — рівно
              та втрата записів, від якої цей блокер і ставили (P0 UX-аудиту). */
-          .in("status", ["scheduled", "waiting", "in_progress", "needs_reschedule"]);
+          .in("status", OPEN_STATUSES)
+          /* 2026-07-27: ТОЙ САМИЙ критерій, що й у діалозі askDelEq — блокують лише
+             МАЙБУТНІ активні записи. Інакше діалог пропускав би видалення, а
+             збереження мовчки падало б із «активними записами» (минулими). */
+          .gte("scheduled_date", wallDayKey(d.timezone || undefined));
         if (be) throw be;
         if (blockers && blockers.length) {
           const byRoom: Record<string, number> = {};
@@ -669,7 +848,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
             .filter((r) => byRoom[r.id])
             .map((r) => `«${r.name}» — ${byRoom[r.id]} запис(ів)`)
             .join("; ");
-          push("Не можна видалити кабінет із активними записами: " + list + ". Спершу перенесіть або скасуйте ці записи.", "error");
+          push("Не можна видалити кабінет із майбутніми активними записами: " + list + ". Спершу перенесіть або скасуйте ці записи.", "error");
           setSaving(false);
           return false;
         }
@@ -687,7 +866,11 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
           if (ins) keepIds.push(ins.id);
         }
       }
-      // Прибрані в майстрі кабінети (активних записів у них уже точно немає — перевірили вище).
+      /* Прибрані в майстрі кабінети (активних записів у них уже точно немає —
+         перевірили вище). 0123: DELETE тут завжди по ВЖЕ вимкненому кабінету —
+         кнопка «✕» доступна лише для збереженого active=false, — тож тригер
+         guard_delete_active_room лишається справжнім рубежем, а не формальністю,
+         яку клієнт сам собі й обходить. */
       for (const r of removedRooms) {
         const { error: de } = await supabase.from("rooms").delete().eq("id", r.id);
         if (de) throw de;
@@ -696,6 +879,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
       savedRef.current = JSON.stringify(d);
       setDirty(false);
       push("Зміни збережено", "success");
+      router.refresh(); // підтягнути свіжі rooms/services у крок «Послуги» без ручного перезавантаження
       setSaving(false);
       return true;
     } catch (e) {
@@ -758,7 +942,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
               {/* Кожне вікно налаштувань — окремо; перемикається кружками зліва */}
               <div style={{ display: FORM_SECTIONS.includes(activeSection) ? "block" : "none" }}>
                 <StepRegister report={report} onData={onData} initial={initial} active={activeSection}
-                  clinicId={clinicId} services={services} rooms={rooms} roomOverrides={roomOverrides} />
+                  clinicId={clinicId} services={services} rooms={rooms} roomOverrides={roomOverrides} notify={push} />
               </div>
 
               {/* 0078 — політика черги при затримці дослідження (лише адмін). */}
@@ -789,8 +973,8 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
         <div className="wiz-bar">
           <div className="wiz-bar-inner">
             <div className="wiz-bar-right" style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
-              <span className="wiz-cta-wrap" title={valid[1] ? undefined : (() => { const eq = dataRef.current?.equip ?? []; return (!equipHoursValid(eq) || !equipBreaksValid(eq)) ? "Виправте години або перерви кабінетів — вони підсвічені червоним" : "Заповніть назву клініки, місто, ПІБ і телефон адміністратора та хоча б один апарат"; })()}>
-                <button className="btn btn-green" onClick={() => save()} disabled={!valid[1] || saving}>
+              <span className="wiz-cta-wrap" title={!valid[1] ? (() => { const eq = dataRef.current?.equip ?? []; return (!equipHoursValid(eq) || !equipBreaksValid(eq)) ? "Виправте години або перерви кабінетів — вони підсвічені червоним" : "Заповніть назву клініки, місто, ПІБ і телефон адміністратора та хоча б один апарат"; })() : (!dirty ? "Немає незбережених змін" : undefined)}>
+                <button className="btn btn-green" onClick={() => save()} disabled={!valid[1] || saving || !dirty}>
                   {saving ? "Зберігаємо…" : "Зберегти"}
                 </button>
               </span>

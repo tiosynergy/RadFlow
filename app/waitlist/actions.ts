@@ -72,9 +72,10 @@ export type WaitlistActionResult =
   // записати інший адміністратор). UI має оновитись, а не мовчки перетерти.
   | { ok: false; error: string; code?: "forbidden" | "auth" | "duplicate" | "stale" | "generic" };
 
-/* Defense-in-depth (High): послуга вимкнена в каталозі центру / прихована в кабінеті. */
+/* Defense-in-depth (High): послуга вимкнена в каталозі центру / прихована в
+   кабінеті / належить ІНШОМУ кабінету (room-owned, 0121). */
 const SERVICE_CLOSED_WL = (region: string): WaitlistActionResult => ({
-  ok: false, error: `Послуга «${region}» вимкнена в центрі або кабінеті — оновіть форму`, code: "generic",
+  ok: false, error: `Послуга «${region}» вимкнена, прихована або належить іншому кабінету — оновіть форму`, code: "generic",
 });
 // Fail-CLOSED: збій читання каталогу → відмова у записі (а не легасі-фолбэк).
 const CATALOG_UNAVAILABLE_WL: WaitlistActionResult = {
@@ -103,6 +104,12 @@ async function closedRegionGateWL(
 function mapWaitlistDbError(context: string, error: { message?: string } | null): WaitlistActionResult {
   if (error?.message && /^SERVICE_CLOSED/i.test(error.message)) {
     return { ok: false, error: "Обрана послуга щойно була вимкнена або прихована в кабінеті — оновіть форму та виберіть іншу", code: "generic" };
+  }
+  /* 0123: кабінет вимкнули, поки модалка була відкрита. Без цього рядка гард
+     віддавав би загальне «спробуйте ще раз» — пропозицію повторити те, що ніколи
+     не пройде (та сама TOCTOU-ситуація, заради якої на черзі є schedTriggerError). */
+  if (error?.message && /^ROOM_INACTIVE/.test(error.message)) {
+    return { ok: false, error: "Кабінет вимкнено — бронювати місце в ньому не можна. Оберіть інший кабінет", code: "forbidden" };
   }
   return { ok: false, error: safeDbError(context, error), code: "generic" };
 }
@@ -158,12 +165,24 @@ export type WaitlistInput = {
     RLS-клієнт: направник бачить кабінети центрів, до яких має referral_access. */
 async function referrerModalityAllowed(
   supabase: SupabaseClient<Database>, clinicId: string, roomIds: string[] | null, modality: string,
-): Promise<boolean> {
-  let q = supabase.from("rooms").select("modality").eq("clinic_id", clinicId);
+): Promise<boolean | null> {
+  // 0123: вимкнений кабінет не робить модальність доступною — інакше направник
+  // клав би в лист очікування напрям, якого центр більше не виконує.
+  let q = supabase.from("rooms").select("modality").eq("clinic_id", clinicId).eq("active", true);
   if (roomIds && roomIds.length) q = q.in("id", roomIds);
-  const { data } = await q;
+  const { data, error } = await q;
+  /* Помилку НЕ ковтаємо (ревʼю 0123, High-2): раніше будь-який транзієнтний збій
+     тихо перетворювався на «цей напрям у центрі недоступний» — заборону, якої
+     насправді немає і яку неможливо продіагностувати. null = «не змогли
+     перевірити», і виклик повертає про це чесний текст. */
+  if (error) return null;
   return (data || []).some((r) => r.modality === modality);
 }
+const MOD_CHECK_ERR = {
+  ok: false as const,
+  error: "Не вдалося перевірити доступні напрями центру — спробуйте ще раз",
+  code: "generic" as const,
+};
 
 /** Додати пацієнта до листа очікування (новий або з наявного запису).
     Персонал — свій центр; направник — авторизований центр (referral_access). */
@@ -195,7 +214,9 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
     // 5 модальностей і давав завести напр. мамографію там, де доступ лише МРТ).
     const grantRooms = access.room_ids as string[] | null;
     const entryMod = modalityFromStudies(input.studies as Study[] | null);
-    if (!(await referrerModalityAllowed(supabase, input.clinicId, grantRooms, entryMod))) {
+    const modOk = await referrerModalityAllowed(supabase, input.clinicId, grantRooms, entryMod);
+    if (modOk === null) return MOD_CHECK_ERR;
+    if (!modOk) {
       return { ok: false, error: "Ця модальність недоступна за вашим доступом до центру", code: "forbidden" };
     }
     // Якщо направник жорстко привʼязав кабінет — він теж має бути в його гранті
@@ -298,6 +319,17 @@ export async function addEntryToWaitlist(
   if (opts?.desiredDateTo && entry.clinic_id
       && opts.desiredDateTo < await clinicTodayKey(supabase, entry.clinic_id)) return PAST_WINDOW;
 
+  // Гейт закритих послуг (0121/Ф2, ревю Ф2 №4): новий рядок листа БЕЗ кабінету —
+  // видимі лише БАЗОВІ послуги (Q3). Room-послуга запису-джерела тут недоступна:
+  // без гейта відмову давав би тільки БД-тригер із невлучним текстом. INSERT у
+  // тригері без grandfather — тому й тут його немає.
+  {
+    const g = await closedRegionGateWL(
+      supabase, entry.clinic_id as string, null,
+      entry.studies as unknown as { type?: string | null; region?: string | null }[]);
+    if (g) return g;
+  }
+
   const { data, error } = await supabase
     .from("waitlist_entries")
     .insert({
@@ -375,8 +407,12 @@ export async function updateWaitlistEntry(
       .select("room_ids").eq("referrer_id", caller.userId).eq("clinic_id", row.clinic_id).eq("status", "active").maybeSingle();
     if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
     const grantRooms = access.room_ids as string[] | null;
-    if (newMod !== undefined && !(await referrerModalityAllowed(supabase, row.clinic_id, grantRooms, newMod))) {
-      return { ok: false, error: "Ця модальність недоступна за вашим доступом до центру", code: "forbidden" };
+    if (newMod !== undefined) {
+      const modOk = await referrerModalityAllowed(supabase, row.clinic_id, grantRooms, newMod);
+      if (modOk === null) return MOD_CHECK_ERR;
+      if (!modOk) {
+        return { ok: false, error: "Ця модальність недоступна за вашим доступом до центру", code: "forbidden" };
+      }
     }
     // Кабінет у патчі (не null) має бути в гранті (null/[] = усі кабінети центру).
     if (safePatch.room_id != null && grantRooms && grantRooms.length > 0 && !grantRooms.includes(safePatch.room_id as string)) {
@@ -384,17 +420,24 @@ export async function updateWaitlistEntry(
     }
   }
 
-  // Гейт закритих послуг при зміні складу (grandfather: області, вже наявні в
-  // записі-снапшоті, не ріжемо — тільки нові вимкнені/приховані в кабінеті).
-  if (safePatch.studies !== undefined) {
+  // Гейт закритих послуг при зміні складу АБО кабінету (0121/Ф2, ревю Ф2 №1-2).
+  // Grandfather — ДЗЕРКАЛО умови тригера 0113/0121: старі області пропускаються
+  // ЛИШЕ коли кабінет не змінюється або патч знімає кабінет (new.room_id IS NULL);
+  // перенос у ІНШИЙ кабінет перевіряє ВСІ дослідження як нові для цільового
+  // кабінету (room-послуга джерела там недоступна). Патч самого лише room_id теж
+  // гейтиться — інакше відмову давала б тільки БД із невлучним текстом.
+  if (safePatch.studies !== undefined || safePatch.room_id !== undefined) {
     const { data: row } = await supabase.from("waitlist_entries")
       .select("clinic_id, room_id, studies").eq("id", v.data.id).maybeSingle();
     if (row?.clinic_id) {
       const effRoom = (safePatch.room_id !== undefined ? safePatch.room_id : row.room_id) as string | null;
-      const gf = studiesKeySet(row.studies as unknown as { type?: string | null; region?: string | null }[]);
-      const g = await closedRegionGateWL(
-        supabase, row.clinic_id, effRoom,
-        safePatch.studies as unknown as { type?: string | null; region?: string | null }[], gf);
+      const effStudies = (safePatch.studies !== undefined ? safePatch.studies : row.studies) as unknown as
+        { type?: string | null; region?: string | null }[];
+      const gfApplies = effRoom == null || effRoom === (row.room_id as string | null);
+      const gf = gfApplies
+        ? studiesKeySet(row.studies as unknown as { type?: string | null; region?: string | null }[])
+        : undefined;
+      const g = await closedRegionGateWL(supabase, row.clinic_id, effRoom, effStudies, gf);
       if (g) return g;
     }
   }

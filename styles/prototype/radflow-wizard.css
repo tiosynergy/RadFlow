@@ -32,8 +32,8 @@
 .wiz-prog-lab a { color: #4da3ff; text-decoration: none; }
 
 /* Wizard main */
-.wiz-main { overflow-y: auto; height: 100%; }
-.wiz-main-inner { max-width: 720px; margin: 0 auto; padding: 40px 40px 120px; }
+.wiz-main { overflow-y: auto; height: 100%; display: flex; flex-direction: column; }
+.wiz-main-inner { max-width: 720px; margin: 0 auto; padding: 40px 40px 120px; flex: 1 0 auto; }
 .wiz-h { font-size: 27px; font-weight: 700; letter-spacing: -0.02em; }
 .wiz-hsub { font-size: 14px; color: var(--text-secondary); margin-top: 8px; line-height: 1.5; }
 .wiz-bar { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 40%); padding: 24px 40px; }
@@ -133,6 +133,22 @@
 .equip-block { position: relative; display: flex; gap: 16px; align-items: stretch;
   background: var(--card-2); border: 1px solid var(--border); border-radius: var(--r-md); padding: 12px 14px; }
 .equip-block-del { position: absolute; top: 8px; right: 8px; z-index: 2; }
+/* 0123: вимкнений кабінет лишається в списку (прайс, історія й привязки цілі),
+   але має читатись як неробочий з першого погляду — не ховаємо, а приглушуємо.
+   Приглушуємо САМІ поля, а не блок цілком: попередження всередині мусить лишатись
+   контрастним, інакше воно тьмяніє рівно тоді, коли його треба прочитати. */
+.equip-block.equip-off { border-style: dashed; }
+.equip-block.equip-off .equip-info > input,
+.equip-block.equip-off .equip-info-row,
+.equip-block.equip-off .equip-sched { opacity: .55; }
+
+/* Перемикач «Кабінет працює» — внизу лівої колонки, під моделлю обладнання:
+   у верхньому правому куті він налазив на заголовок «Розклад роботи». */
+.eq-active-lab { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 4px;
+  font-size: 13px; color: var(--text-muted); cursor: pointer; user-select: none; }
+.eq-active-lab input { cursor: pointer; }
+.equip-block.equip-off .eq-active-lab { color: var(--orange); font-weight: 600; }
+.eq-off-warn { font-size: 12.5px; line-height: 1.5; }
 .equip-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding-right: 22px; }
 .equip-info-row { display: flex; gap: 8px; }
 .equip-info .equip-type { flex: 0 0 92px; }

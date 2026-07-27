@@ -3,6 +3,7 @@
 /* ===== RadFlow — Дошка черги (повна) ===== */
 
 import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode, type MouseEvent } from "react";
+import { isRoomBookable, ROOM_OFF_LABEL } from "@/lib/rooms";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
@@ -35,7 +36,7 @@ import { addEntryToWaitlist } from "@/app/waitlist/actions";
 import type { WaitlistEntry } from "@/supabase/types";
 import PatientEditModal from "@/components/PatientEditModal";
 import CompletionModal from "@/components/CompletionModal";
-import RescheduleModal from "@/components/RescheduleModal";
+import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import CaseModal from "@/components/CaseModal";
 import BreakdownModal from "@/components/BreakdownModal";
@@ -65,7 +66,7 @@ import "@/styles/prototype/radflow-screens.css";
 
 // schedule — базовий графік кабінету (rooms.schedule, JSONB): дні тижня + години.
 // Без нього дошка рахувала графік по хардкоду «Пн–Сб 08:00–18:00» (аудит 2026-07-11).
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown; active?: boolean | null };
 type QEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null; patient_weight: number | null;
   patient_dob: string | null; patient_sex: string | null; patient_email: string | null;   // перенос у крок кейса
@@ -79,7 +80,7 @@ type QEntry = {
 type RescheduleOrigin = { from_date?: string | null; from_time?: string | null; from_room?: string | null; from_status?: string | null; reason?: string | null };
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
 type IncidentPayload = { id?: string; roomId: string; reason: string; reasonLabel: string; note: string; startedAt: string; blockedUntil: string | null; autoUnblock: boolean };
-type RoomLoadItem = { roomKey: string; name: string; kind: string; pct: number; closed: boolean; color: string };
+type RoomLoadItem = { roomKey: string; name: string; kind: string; pct: number; closed: boolean; color: string; off?: boolean };
 
 /* ── Дати ── */
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
@@ -368,7 +369,7 @@ function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: 
     // Інакше завантаженість показувала б хвилини, яких у кабінеті вже немає.
     const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "cancelled" && e.status !== "not_held" && e.status !== "needs_reschedule").reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
     const pct = cap > 0 ? Math.min(100, Math.round((mins / cap) * 100)) : 0;
-    return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)" };
+    return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)", off: !isRoomBookable(r) };
   });
 }
 function RoomLoad({ rooms, onSelectRoom }: { rooms: RoomLoadItem[]; onSelectRoom?: (id: string) => void }) {
@@ -388,7 +389,11 @@ function RoomLoad({ rooms, onSelectRoom }: { rooms: RoomLoadItem[]; onSelectRoom
               onClick={() => onSelectRoom && onSelectRoom(r.roomKey)} title={"Відкрити чергу: " + r.name}
               style={{ width: "100%", textAlign: "left", border: "none", background: "none", cursor: "pointer" }}>
               <div className="load-top">
-                <span className="load-name">{r.name} {r.kind} <span className="load-go" aria-hidden>→</span></span>
+                {/* 0123: вимкнений кабінет із дошки НЕ ховаємо — у ньому можуть
+                    лишатись пацієнти, і їх треба довести до кінця. Але позначаємо. */}
+                <span className="load-name">{r.name} {r.kind}
+                  {r.off && <span className="badge gray" style={{ marginLeft: 6 }} title="Кабінет вимкнено: нові записи в нього не приймаються">{ROOM_OFF_LABEL}</span>}
+                  {" "}<span className="load-go" aria-hidden>→</span></span>
                 <span className="load-pct" style={{ color: r.color }}>{r.pct}%</span>
               </div>
               <div className="load-bar"><div className="load-fill" style={{ width: r.pct + "%", background: r.color }} /></div>
@@ -1386,6 +1391,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
 
   // Після звільнення слота — запропонувати кандидатів з листа очікування.
   async function suggestWaitlistFor(p: QEntry) {
+    /* 0123: у вимкненому кабінеті звільнений слот нікому не пропонуємо — запис
+       туди відхилить тригер, і панель кандидатів була б дорогою в нікуди. */
+    const rm = (rooms || []).find((r) => r.id === p.room_id);
+    if (rm && !isRoomBookable(rm)) return;
     const slot: FreedSlotInfo = { date: dayKey, time: p.scheduled_time, roomId: p.room_id };
     const candidates = await fetchWaitlistCandidates(slot);
     if (candidates.length) setWlSuggest({ slot, candidates });
@@ -1463,12 +1472,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
   /* Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
      Виняток — 'stale': переносити вже нічого (запис завершено/скасовано), модалку
      закриваємо і синхронізуємо дошку. */
-  async function doReschedule({ roomId, date, time, dur, buffer, reason, offSchedule }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean }) {
+  async function doReschedule({ roomId, date, time, dur, buffer, reason, offSchedule, studies }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean; studies?: RescheduleStudy[] }) {
     const p = reschedFor;
     if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason, offSchedule });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason, offSchedule, studies });
     if (!res.ok) {
       if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
       reload();   // сітка модалки підтягне свіжу зайнятість

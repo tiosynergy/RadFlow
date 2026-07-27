@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { clientIp, rateLimitOk, rlKey } from "@/lib/rateLimit";
 import { parseBody } from "@/lib/validationHttp";
+import { isTechnicalEmail } from "@/lib/login";
 
 /* Межа довжини — теж захист: identifier іде в ключ rate-limit (хешується) і в
    резолв логіна, password — у Supabase Auth. Повідомлення про помилку — те саме
@@ -36,7 +37,16 @@ export async function POST(req: Request) {
   }
 
   let email = ident.toLowerCase();
-  if (!ident.includes("@")) {
+  if (ident.includes("@")) {
+    /* 0124: службові домени — не спосіб входу. У радіолога адреса ще й
+       випадкова (rad.<hex>@…), тож підібрати її не можна; але в направників і
+       CEO вона будується з логіна й цілком вгадувана, а логін — публічний
+       ідентифікатор. Тому глушимо весь службовий домен, а не одну роль:
+       для цих акаунтів вхід має йти логіном. */
+    if (isTechnicalEmail(email)) {
+      return NextResponse.json({ error: FAIL }, { status: 400 });
+    }
+  } else {
     if (!isAdminConfigured()) {
       return NextResponse.json({ error: "Сервер не налаштовано (SUPABASE_SERVICE_ROLE_KEY)" }, { status: 500 });
     }

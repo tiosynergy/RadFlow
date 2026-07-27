@@ -132,6 +132,10 @@ const sReschedule = z.object({
   callStatus: zCallStatus.optional(),
   reason: zOptText(500),
   offSchedule: z.boolean().optional(),   // 0077 — див. scheduleBlock()
+  /* 0122: НОВИЙ склад досліджень — коли переносимо в кабінет з ІНШИМ прайсом
+     (0121) і позиції довелось перепризначити на каталог цільового кабінету.
+     Не передано → склад лишається як був (канон 0070). */
+  studies: sStudies.optional(),
 });
 
 const sIncident = z.object({
@@ -313,11 +317,18 @@ const BREAK_ERR = {
   code: "off_schedule" as const,
 };
 
-/* Мапінг тригера графіка check_room_schedule (0084) — останній рубіж у БД.
-   Нормальний шлях відхиляє scheduleBlock раніше з тим самим кодом; сюди доходить
-   прямий виклик/розсинхрон (напр. графік змінили між preview і apply плану затримки).
-   Коди тригера — префікси повідомлень; сирий текст користувачу не показуємо. */
+/* Мапінг гардів КАБІНЕТУ — останній рубіж у БД: графік check_room_schedule (0084)
+   і вимкнення check_room_active (0123). Нормальний шлях відхиляє scheduleBlock /
+   не пропонує вимкнений кабінет раніше; сюди доходить прямий виклик або
+   розсинхрон (графік змінили між preview і apply плану затримки; кабінет вимкнули,
+   поки модалка була відкрита). Коди тригерів — префікси повідомлень; сирий текст
+   користувачу не показуємо. */
 function schedTriggerError(message: string): QueueActionResult | null {
+  /* 0123. Код НЕ slot_unavailable свідомо: дошки підміняють його своїм «слот щойно
+     зайняли», і причина «кабінет вимкнено» загубилась би. */
+  if (/^ROOM_INACTIVE/.test(message)) {
+    return { ok: false, error: "Кабінет вимкнено — записувати в нього не можна. Оберіть інший кабінет", code: "forbidden" };
+  }
   if (/^ROOM_CLOSED/.test(message)) return { ok: false, error: "Кабінет не працює цього дня — оберіть іншу дату", code: "off_schedule" };
   if (/^BEFORE_OPEN/.test(message)) return { ok: false, error: "Кабінет ще не відкрито в цей час — оберіть слот у межах графіка", code: "off_schedule" };
   if (/^TOO_LATE/.test(message))    return { ok: false, error: "Занадто пізно — за межами дозволеного вікна роботи кабінету", code: "off_schedule" };
@@ -434,7 +445,7 @@ const MODALITY_MISMATCH_ERR: QueueActionResult = {
    кабінеті (0107/0108). DB-тригер стереже лише модальність↔кабінет, тож крафтовий/
    застарілий запит міг записати на закриту послугу. Гейт — firstClosedService. */
 const SERVICE_CLOSED_ERR = (region: string): QueueActionResult => ({
-  ok: false, error: `Послуга «${region}» вимкнена в центрі або кабінеті — оновіть форму`, code: "modality_mismatch",
+  ok: false, error: `Послуга «${region}» вимкнена, прихована або належить іншому кабінету — оновіть форму`, code: "modality_mismatch",
 });
 // Fail-CLOSED: збій читання каталогу → відмова у записі (а не мовчазний легасі-фолбэк).
 const CATALOG_UNAVAILABLE_ERR: QueueActionResult = {
@@ -1089,6 +1100,9 @@ export type RescheduleInput = {
   callStatus?: CallStatus; // напр. колл-лист підтверджує слот при переносі
   reason?: string | null; // причина переносу (обовʼязкова для «не відбулося»/неявки)
   offSchedule?: boolean;  // 0077 — оператор підтвердив роботу поза графіком
+  /* 0122: НОВИЙ склад — коли переносимо в кабінет з іншим прайсом (0121) і
+     позиції перепризначено на його каталог. Не передано → склад не змінюється. */
+  studies?: { type?: string; region?: string; contrast?: boolean; dur?: number; price?: number | null }[];
 };
 
 /** Перенос записи на другой кабинет/дату/время (с пред-проверкой пересечения). */
@@ -1121,10 +1135,27 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
      для цільового кабінету, БЕЗ grandfather (0113 — той самий інваріант у БД). Так
      перенос у кабінет, де послугу приховано/вимкнено, дає зрозумілу помилку ДО RPC.
      Той самий кабінет (лише зміна часу) не гейтимо — склад не змінюється. */
-  if (input.roomId !== cur.room_id) {
+  /* 0122: перенос може ЗАОДНО перепризначити склад — у цільового кабінету свій
+     прайс, і стара позиція там може просто не існувати. Гейтимо той склад, який
+     реально поїде: новий, якщо переданий, інакше поточний. Модальність нового
+     складу звіряємо окремо — інакше «КТ у МРТ-кабінет» дійшов би до тригера і
+     повернувся сирою помилкою замість зрозумілої. */
+  const nextStudies = input.studies as unknown as { type?: string | null; region?: string | null }[] | undefined;
+  if (input.roomId !== cur.room_id || nextStudies) {
+    if (nextStudies && await studiesRoomMismatch(supabase, input.roomId, nextStudies)) {
+      return MODALITY_MISMATCH_ERR;
+    }
+    /* Grandfather — ДЗЕРКАЛО умови тригера (0113/0121): він пропускає старі
+       позиції, поки кабінет НЕ змінився. Без цього зміна складу в тому самому
+       кабінеті була б суворішою за БД і впиралась у той самий глухий кут, від
+       якого рятує 0122 (ревʼю 0122 №8). Перенос у ІНШИЙ кабінет — усе нове. */
+    const gf = input.roomId === cur.room_id
+      ? studiesKeySet(cur.studies as unknown as { type?: string | null; region?: string | null }[])
+      : undefined;
     const g = await closedRegionGate(
       supabase, clinicId, input.roomId,
-      cur.studies as unknown as { type?: string | null; region?: string | null }[]);
+      (nextStudies ?? cur.studies) as unknown as { type?: string | null; region?: string | null }[],
+      gf);
     if (g) return g;
   }
 
@@ -1169,6 +1200,9 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
     // 0077: прапорець ставиться ВСЕРЕДИНІ RPC — інакше check_not_during_break
     // відхилив би перенос у перерву ще до того, як мітку встигли б записати.
     p_off_schedule: offSchedule,
+    // 0122: склад їде ТИМ САМИМ UPDATE, що й кабінет (двома кроками неможливо —
+    // див. шапку міграції). null → RPC склад не чіпає.
+    p_studies: (input.studies ?? null) as unknown as Json,
   });
 
   if (error) {

@@ -15,7 +15,7 @@ export default async function SetupPage() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("clinic_id, full_name, role, phone, clinics(name, city, address, phones, emails, timezone, queue_delay_policy, overlap_threshold_min, max_cascade_patients, allow_after_hours_shift)")
+    .select("clinic_id, full_name, role, phone, login, clinics(name, city, address, phones, emails, timezone, queue_delay_policy, overlap_threshold_min, max_cascade_patients, allow_after_hours_shift)")
     .eq("id", user.id)
     .single();
 
@@ -61,7 +61,7 @@ export default async function SetupPage() {
 
   const { data: rooms } = await supabase
     .from("rooms")
-    .select("id, name, modality, apparatus_model, schedule")
+    .select("id, name, modality, apparatus_model, schedule, active")
     .eq("clinic_id", profile.clinic_id as string);
 
   const equip = (rooms ?? []).map((r: Record<string, unknown>, i: number) => {
@@ -74,6 +74,8 @@ export default async function SetupPage() {
       type: modalityLabel(modality),
       desc: (r.apparatus_model as string) ?? "",
       room: (r.name as string) ?? "",
+      active: r.active !== false,        // 0123 — стан перемикача у формі
+      activeSaved: r.active !== false,   // …і те саме значення, яке вже в базі
       ...sched,
     };
   });
@@ -88,6 +90,7 @@ export default async function SetupPage() {
     timezone: clinic?.timezone ?? "",
     adminName: profile.full_name ?? "",
     adminEmail: user.email ?? "",
+    adminLogin: (profile.login as string) ?? "",   // 0124: друга форма входу, редагована
     adminPhone: profile.phone ?? "",
     equip: equip.length ? equip : undefined,
   };
@@ -97,6 +100,7 @@ export default async function SetupPage() {
     name: (r.name as string) ?? "",
     modality: r.modality as string,
     apparatus_model: (r.apparatus_model as string) ?? null,
+    active: r.active !== false,   // 0123
   }));
 
   // Каталог послуг (0107) + переозначення по кабінетах (0108) — крок «Послуги та прайс».

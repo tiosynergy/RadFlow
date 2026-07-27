@@ -8,12 +8,13 @@
    Якщо подія вже існує — показується з можливістю редагувати / зняти. */
 
 import { useState } from "react";
+import { bookableRooms } from "@/lib/rooms";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
 import { wallNow } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { modalityShort, modalityKind } from "@/lib/studies";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown; active?: boolean | null };
 type IncidentRow = {
   id: string;
   room_id: string;
@@ -247,7 +248,8 @@ export default function BreakdownModal({ rooms, incidents = [], overrides = {}, 
           <div className="fld" style={{ marginBottom: 0 }}>
             <span className="fld-lab">Який апарат? <span className="req">*</span></span>
             <div className="bd-rooms">
-              {(rooms || []).map((r) => (
+              {/* 0123: вимкнений кабінет у простій не ставимо — він уже не працює. */}
+              {bookableRooms(rooms).map((r) => (
                 <button key={r.id} className={"bd-room" + (roomId === r.id ? " active" : "")} onClick={() => setRoomId(r.id)} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
                   <span className={"bd-room-kind " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
                   <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>

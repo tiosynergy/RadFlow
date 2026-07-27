@@ -1,4 +1,4 @@
-/* ===== RadFlow — резолвер каталогу послуг (Stage 2, фаза 2a) =====
+/* ===== RadFlow — резолвер каталогу послуг (Stage 2, фаза 2a · room-owned 0121/Ф2) =====
    ЄДИНА точка читання per-clinic каталогу `services` (0107) у booking-флоу.
    До 2a форми брали області/тривалості/ціни зі статичного lib/studies.ts
    (`regionsFor`/`studyDur`/`studyPrice`). Тепер вони йдуть через buildCatalog():
@@ -12,12 +12,30 @@
    сама поведінка, що й сьогодні (fault-tolerant: пропущена точка інтеграції
    деградує до статики, а не ламається).
 
+   ─── Room-owned послуги (0121, Ф2) ───
+   `services.room_id`: NULL = базова послуга центру (успадковується всіма
+   кабінетами своєї модальності), = X = послуга КАБІНЕТУ X (видима і бронюється
+   лише в ньому). Видимість для контексту кабінету R (може бути відсутній —
+   вейтліст/запис без кабінету):
+     • базова (room_id NULL), НЕ прихована override-ом кабінету R (0108); АБО
+     • власна послуга кабінету R (room_id = R).
+   Без кабінету видимі ЛИШЕ базові (Q3-дефолт; NULL-семантика тригера).
+   «Налаштованість» модальності (isConfigured) — теж room-контекстна: є хоч один
+   рядок (активний чи ні), видимий контексту (базовий АБО власний кабінету R) —
+   дзеркало легасі-гілки тригера check_studies_active_catalog (0121, ревю №2):
+   кабінет без єдиної видимої послуги модальності = легасі (статика/нестрогий),
+   навіть якщо в ІНШИХ кабінетах центру послуги є.
+   Дублі імен база↔кабінет ДОПУСТИМІ (Q4-дефолт «показувати обидві»); пошук за
+   назвою (regionInfo/studyDur/studyPrice) віддає пріоритет власній послузі
+   кабінету (дзеркало `order by (room_id is not null) desc` у ceo_kpi_studies).
+   Override-и 0108 застосовуються ЛИШЕ до базових послуг (на room-owned їх
+   забороняє тригер SRO_ROOM_OWNED_SERVICE; якщо історичний рядок все ж
+   трапиться — ігноруємо). ЦЕЙ РЕЗОЛВЕР ЗОБОВ'ЯЗАНИЙ бити біт-у-біт з exists-
+   логікою тригера check_studies_active_catalog (0121) — правило проекту.
+
    Правила (docs/plan/SERVICES_CATALOG.md §2.3):
    - `active=false` позиції не пропонуються (історія записів не чіпається —
      studies це jsonb-снімок).
-   - Тривалість override на рівні кабінета (service_room_durations, 0108) —
-     параметр `roomDurations`/`roomId` вже підтримано резолвером; проброс із
-     форм завершується у фазі 2b (зараз roomDurations порожній → dur = базова).
    - Ціна контрасту: per-service `contrast_price` (null = глобальний
      CONTRAST_SURCHARGE), на відміну від статики, де доплата завжди глобальна.
    - Межі тривалості єдині (5..480 кратно 5) — гарантовані CHECK 0107 та normDur. */
@@ -33,7 +51,12 @@ import {
   type StudyRegion,
 } from "@/lib/studies";
 
-/** Мінімальний контракт рядка каталогу (підмножина Tables<"services">, 0107). */
+/** Мінімальний контракт рядка каталогу (підмножина Tables<"services">, 0107/0121).
+    ⚠️ `room_id` НЕОБОВ'ЯЗКОВИЙ для сумісності зі старими SSR-селектами (Ф4 додає
+    його в усі точки читання): undefined трактується як базова послуга. Селект БЕЗ
+    room_id покаже room-owned послуги як базові в усіх кабінетах модальності — UI
+    буде щедрішим за БД, але тригер check_studies_active_catalog запис відхилить
+    (последний рубіж). Серверний гейт (lib/serviceGate.ts) room_id селектить ЗАВЖДИ. */
 export interface ServiceLike {
   id: string;
   name: string;
@@ -44,6 +67,7 @@ export interface ServiceLike {
   contrast_price: number | null; // null = глобальний CONTRAST_SURCHARGE
   active: boolean;
   sort_order: number;
+  room_id?: string | null; // 0121: NULL/undefined = базова, = X = послуга кабінету X
 }
 
 /** Область каталогу — StudyRegion + per-service доплата за контраст.
@@ -52,12 +76,14 @@ export interface ServiceLike {
 export interface CatalogRegion extends Omit<StudyRegion, "dur"> {
   dur: number | null;
   contrastPrice: number | null; // null = глобальний CONTRAST_SURCHARGE
-  serviceId?: string;           // id базової послуги (для редакторів/діагностики)
+  serviceId?: string;           // id послуги (для редакторів/діагностики)
+  /** 0121: кабінет-власник послуги (null = базова). Для бейджів «Кабінетна» в UI. */
+  serviceRoomId?: string | null;
 }
 
 /** Переозначення каталогу ПО КАБІНЕТУ (service_room_overrides, 0108).
     NULL price/duration_min/contrast_price = успадкувати базу; active=false =
-    послуга схована в цьому кабінеті. */
+    послуга схована в цьому кабінеті. 0121: застосовні ЛИШЕ до БАЗОВИХ послуг. */
 export interface RoomOverride {
   price: number | null;
   duration_min: number | null;
@@ -100,16 +126,21 @@ export function overridesToMap(
   return outer;
 }
 
-/** Резолвер каталогу зі сталими сигнатурами (drop-in для lib/studies). */
+/** Резолвер каталогу зі сталими сигнатурами (drop-in для lib/studies).
+    0121: усі методи приймають необов'язковий roomId — контекст кабінету запису.
+    Без roomId видимі лише базові послуги (вейтліст/запис без кабінету, Q3). */
 export interface Catalog {
-  /** Чи має каталог центру активні позиції цієї модальності (інакше — статика). */
-  has(type?: string | null): boolean;
-  /** Чи налаштована модальність у каталозі (є позиція, хай і вимкнена) — true навіть
-      коли всі вимкнені. Саме це (а не has) визначає легасі-фолбэк і серверний гейт. */
-  isConfigured(type?: string | null): boolean;
-  /** Області модальності (drop-in для regionsFor). */
+  /** Чи має контекст (модальність + кабінет) активні ВИДИМІ позиції (інакше — статика). */
+  has(type?: string | null, roomId?: string): boolean;
+  /** Чи налаштована модальність ДЛЯ ЦЬОГО КОНТЕКСТУ: є хоч один рядок (хай і
+      вимкнений), видимий контексту — базовий або власний кабінету roomId. Саме це
+      (а не has) визначає легасі-фолбэк і серверний гейт — дзеркало легасі-гілки
+      тригера check_studies_active_catalog (0121). */
+  isConfigured(type?: string | null, roomId?: string): boolean;
+  /** Області модальності, видимі контексту кабінету (drop-in для regionsFor).
+      Порядок: власні послуги кабінету, потім базові; всередині — sort_order → name. */
   regionsFor(type?: string, roomId?: string): CatalogRegion[];
-  /** Область за назвою (drop-in для regionInfo). */
+  /** Область за назвою (drop-in для regionInfo). Пріоритет — власна послуга кабінету. */
   regionInfo(type?: string, region?: string, roomId?: string): CatalogRegion | null;
   /** Тривалість дослідження з урахуванням контрасту (drop-in для studyDur). */
   studyDur(type?: string, region?: string, contrast?: boolean, roomId?: string): number;
@@ -119,36 +150,51 @@ export interface Catalog {
 
 /** Побудувати резолвер для КОНКРЕТНОГО центру (services — вже його рядки).
     roomOverrides — переозначення каталогу per-кабінет (0108): якщо для (roomId,
-    serviceId) є override, він перекриває ціну/тривалість/контраст-доплату, а
-    active=false ховає позицію в цьому кабінеті. Немає override → база центру. */
+    serviceId) є override БАЗОВОЇ послуги, він перекриває ціну/тривалість/контраст-
+    доплату, а active=false ховає позицію в цьому кабінеті. Немає override → база
+    центру. Room-owned послуги (0121) override-ів не мають — ціна/час власні. */
 export function buildCatalog(
   services: ServiceLike[] | null | undefined,
   roomOverrides?: RoomOverrides
 ): Catalog {
   const rows = Array.isArray(services) ? services : [];
 
-  // High-2: розрізняємо «модальність НЕ налаштовували» (немає жодного рядка →
-  // легасі-фолбэк на lib/studies) від «налаштували, але ВСІ позиції вимкнені»
-  // (→ порожній список, запис заборонено — центр свідомо закрив напрям). Раніше
-  // обидва випадки давали порожній byMod і мовчки поверталися до статики, тож
-  // адмін, вимкнувши всі УЗД, знову бачив стандартний каталог УЗД.
-  const configured = new Set<string>();   // модальності з ≥1 позицією (активна чи ні)
-  // Активні позиції, згруповані за кодом модальності, у порядку sort_order → name.
-  const byMod = new Map<string, ServiceLike[]>();
+  // High-2: розрізняємо «модальність НЕ налаштовували» (немає жодного видимого
+  // рядка → легасі-фолбэк на lib/studies) від «налаштували, але ВСІ позиції
+  // вимкнені» (→ порожній список, запис заборонено — центр свідомо закрив
+  // напрям). 0121: «налаштованість» room-контекстна — власні послуги ІНШОГО
+  // кабінету не вмикають строгий режим цьому (легасі-гілка тригера, ревю №2).
+  const configuredBase = new Set<string>();                 // базові рядки (активні чи ні)
+  const configuredRoom = new Map<string, Set<string>>();    // room_id → модальності його рядків
+  // Активні позиції, згруповані за кодом модальності: базові та по кабінетах.
+  const baseByMod = new Map<string, ServiceLike[]>();
+  const roomByMod = new Map<string, Map<string, ServiceLike[]>>(); // room_id → (code → rows)
   for (const s of rows) {
     if (!s) continue;
     const code = modalityCode(s.modality);
     if (code === "OTHER") continue; // OTHER не має форм запису (сознательно)
-    configured.add(code);
-    if (s.active === false) continue;
-    (byMod.get(code) ?? byMod.set(code, []).get(code)!).push(s);
+    const owner = s.room_id ?? null;
+    if (owner === null) {
+      configuredBase.add(code);
+      if (s.active === false) continue;
+      (baseByMod.get(code) ?? baseByMod.set(code, []).get(code)!).push(s);
+    } else {
+      (configuredRoom.get(owner) ?? configuredRoom.set(owner, new Set()).get(owner)!).add(code);
+      if (s.active === false) continue;
+      const byCode = roomByMod.get(owner) ?? roomByMod.set(owner, new Map()).get(owner)!;
+      (byCode.get(code) ?? byCode.set(code, []).get(code)!).push(s);
+    }
   }
-  for (const arr of byMod.values()) {
-    arr.sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name, "uk"));
-  }
+  const bySort = (a: ServiceLike, b: ServiceLike) =>
+    (a.sort_order - b.sort_order) || a.name.localeCompare(b.name, "uk");
+  for (const arr of baseByMod.values()) arr.sort(bySort);
+  for (const byCode of roomByMod.values()) for (const arr of byCode.values()) arr.sort(bySort);
 
+  // Override застосовний ЛИШЕ до базової послуги (0121: SRO_ROOM_OWNED_SERVICE).
   const ovOf = (s: ServiceLike, roomId?: string): RoomOverride | undefined =>
-    roomId ? roomOverrides?.get(roomId)?.get(s.id) : undefined;
+    roomId && (s.room_id ?? null) === null
+      ? roomOverrides?.get(roomId)?.get(s.id)
+      : undefined;
 
   // Ефективна область послуги в контексті кабінету (override ?? база).
   const toRegion = (s: ServiceLike, ov?: RoomOverride): CatalogRegion => ({
@@ -158,56 +204,71 @@ export function buildCatalog(
     contrast: s.contrast_allowed,
     contrastPrice: ov?.contrast_price ?? s.contrast_price,
     serviceId: s.id,
+    serviceRoomId: s.room_id ?? null,
   });
 
-  // Чи є активні позиції цієї модальності (публічний has — семантика без змін).
-  const has: Catalog["has"] = (type) => {
-    const code = modalityCode(type);
-    return (byMod.get(code)?.length ?? 0) > 0;
-  };
-  // Чи налаштований каталог модальності (є позиції, хай і вимкнені). Саме це, а не
-  // has(), вирішує «легасі-фолбэк на статику (ні) чи каталог центру, можливо
-  // порожній (так)» — інакше вимкнення всіх позицій відкривало б статику (High-2).
-  const isConfigured = (type?: string | null): boolean => configured.has(modalityCode(type));
-
-  const regionsFor: Catalog["regionsFor"] = (type, roomId) => {
-    const code = modalityCode(type);
-    // Модальність НЕ налаштовували → статичний фолбэк (легасі-центр).
-    if (!configured.has(code)) return staticRegionsFor(type) as CatalogRegion[];
-    // Налаштували, але всі позиції вимкнені (byMod порожній) → ПОРОЖНЬО: напрям
-    // закрито, форми не дадуть створити запис (область обов'язкова). High-2.
-    const arr = byMod.get(code) ?? [];
+  // Видимі АКТИВНІ послуги контексту (модальність + кабінет): власні кабінету
+  // ПЕРШИМИ (пріоритет пошуку за назвою — дзеркало ceo_kpi_studies), потім
+  // базові, не приховані override-ом цього кабінету.
+  const visibleActive = (code: string, roomId?: string): CatalogRegion[] => {
     const out: CatalogRegion[] = [];
-    for (const s of arr) {
+    if (roomId) {
+      for (const s of roomByMod.get(roomId)?.get(code) ?? []) out.push(toRegion(s));
+    }
+    for (const s of baseByMod.get(code) ?? []) {
       const ov = ovOf(s, roomId);
-      if (ov && ov.active === false) continue; // послуга схована в цьому кабінеті
+      if (ov && ov.active === false) continue; // базова прихована в цьому кабінеті
       out.push(toRegion(s, ov));
     }
     return out;
   };
 
+  // Чи є активні видимі позиції цього контексту.
+  const has: Catalog["has"] = (type, roomId) =>
+    visibleActive(modalityCode(type), roomId).length > 0;
+  // Чи налаштований каталог модальності ДЛЯ КОНТЕКСТУ (є видимі рядки, хай і
+  // вимкнені). Саме це, а не has(), вирішує «легасі-фолбэк на статику (ні) чи
+  // каталог центру, можливо порожній (так)» — інакше вимкнення всіх позицій
+  // відкривало б статику (High-2). Дзеркало легасі-гілки тригера 0121.
+  const isConfigured: Catalog["isConfigured"] = (type, roomId) => {
+    const code = modalityCode(type);
+    return configuredBase.has(code) || (!!roomId && (configuredRoom.get(roomId)?.has(code) ?? false));
+  };
+
+  const regionsFor: Catalog["regionsFor"] = (type, roomId) => {
+    const code = modalityCode(type);
+    // Модальність НЕ налаштовували для цього контексту → статичний фолбэк
+    // (легасі-центр / кабінет без видимого каталогу — нестрогий режим).
+    if (!isConfigured(code, roomId)) return staticRegionsFor(type) as CatalogRegion[];
+    // Налаштували, але всі видимі позиції вимкнені → ПОРОЖНЬО: напрям закрито,
+    // форми не дадуть створити запис (область обов'язкова). High-2.
+    return visibleActive(code, roomId);
+  };
+
   const regionInfo: Catalog["regionInfo"] = (type, region, roomId) => {
-    if (!isConfigured(type)) {
+    if (!isConfigured(type, roomId)) {
       // Делегуємо статиці; contrastPrice=null (глобальна доплата).
       const st = staticRegionInfo(type, region);
       return st ? { ...st, contrastPrice: null } : null;
     }
+    // Q4: дубль імені база↔кабінет → перемагає власна послуга кабінету
+    // (visibleActive ставить її першою).
     return regionsFor(type, roomId).find((r) => r.label === region) ?? null;
   };
 
   const studyDur: Catalog["studyDur"] = (type, region, contrast, roomId) => {
-    if (!isConfigured(type)) return staticStudyDur(type, region, contrast);
+    if (!isConfigured(type, roomId)) return staticStudyDur(type, region, contrast);
     const o = regionInfo(type, region, roomId);
     // 0117: час не задано → 0 («введіть вручну») — та сама конвенція, що
     // порожнє дослідження; zDuration не пропустить збереження без часу.
     if (o) return o.dur == null ? 0 : o.dur + (contrast ? CONTRAST_DUR : 0);
     // Область відсутня в каталозі: активний каталог → перейменована область (статика);
     // усі позиції вимкнені → напрям закрито, нічого не пропонуємо (0).
-    return has(type) ? staticStudyDur(type, region, contrast) : 0;
+    return has(type, roomId) ? staticStudyDur(type, region, contrast) : 0;
   };
 
   const studyPrice: Catalog["studyPrice"] = (type, region, contrast, roomId) => {
-    if (!isConfigured(type)) return staticStudyPrice(type, region, contrast);
+    if (!isConfigured(type, roomId)) return staticStudyPrice(type, region, contrast);
     const o = regionInfo(type, region, roomId);
     if (o) {
       if (o.price == null) return null;
@@ -215,16 +276,18 @@ export function buildCatalog(
       return o.price + surcharge;
     }
     // Область відсутня: активний каталог → статика (перейменована); закрито → null.
-    return has(type) ? staticStudyPrice(type, region, contrast) : null;
+    return has(type, roomId) ? staticStudyPrice(type, region, contrast) : null;
   };
 
   return { has, isConfigured, regionsFor, regionInfo, studyDur, studyPrice };
 }
 
 /** Серверний гейт складу дослідження проти каталогу центру (defense-in-depth).
-    Повертає назву ПЕРШОЇ області, ЗАКРИТОЇ каталогом — модальність налаштована,
-    але область неактивна або прихована в кабінеті (regionInfo → null); або null,
-    якщо все дозволено. Легасі-модальність (не налаштована) НЕ чіпається. Порожні
+    Повертає назву ПЕРШОЇ області, ЗАКРИТОЇ каталогом — модальність налаштована
+    для контексту кабінету, але область неактивна, прихована в кабінеті або
+    належить ІНШОМУ кабінету (regionInfo → null); або null, якщо все дозволено.
+    Легасі-контекст (модальність не налаштована для кабінету) НЕ чіпається —
+    дзеркало легасі-гілки тригера check_studies_active_catalog (0121). Порожні
     рядки (без type/region) ігноруються (їх ловить zStudiesRequired). grandfather —
     набір "type|region", який уже є в записі (редагування снапшота → пропускаємо). */
 export function firstClosedStudy(
@@ -239,21 +302,23 @@ export function firstClosedStudy(
     const region = s?.region ?? undefined;
     if (!type || !region) continue;
     if (grandfather?.has(type + "|" + region)) continue;
-    if (cat.isConfigured(type) && !cat.regionInfo(type, region, roomId)) return region;
+    if (cat.isConfigured(type, roomId) && !cat.regionInfo(type, region, roomId)) return region;
   }
   return null;
 }
 
 /** Сумарна ціна набору досліджень за каталогом центру: пріоритет — збережена
     s.price (снімок запису), інакше рахунок із каталогу (fallback — статика).
-    Дзеркало studiesTotalPrice (lib/studies), але через каталог центру. */
+    Дзеркало studiesTotalPrice (lib/studies), але через каталог центру.
+    0121: roomId — кабінет запису (без нього room-owned ціни не резолвляться). */
 export function catalogTotalPrice(
   cat: Catalog,
-  arr: Array<{ type?: string; region?: string; contrast?: boolean; price?: number | null }> | null | undefined
+  arr: Array<{ type?: string; region?: string; contrast?: boolean; price?: number | null }> | null | undefined,
+  roomId?: string
 ): number {
   if (!Array.isArray(arr)) return 0;
   return arr.reduce((sum, s) => {
-    const p = typeof s.price === "number" ? s.price : cat.studyPrice(s.type, s.region, s.contrast);
+    const p = typeof s.price === "number" ? s.price : cat.studyPrice(s.type, s.region, s.contrast, roomId);
     return sum + (p || 0);
   }, 0);
 }

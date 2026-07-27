@@ -4,12 +4,19 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
 import { parseBody } from "@/lib/validationHttp";
 import { safeDbError, zUuid, zName, zEmail, zLogin, zOptText } from "@/lib/validation";
+import { randomRadiologistEmail, isTechnicalEmail } from "@/lib/login";
 
 // M-12: тіло запиту — схемою, а не String(body.x || ""). Кабінети — тільки UUID
 // (масив після dedupe); решта валідації (кабінет належить центру) — нижче, з БД.
 const sStaff = z.object({
   role: z.enum(["radiologist", "registrar"]).default("radiologist"),
-  email: zEmail,
+  // 0124: у радіолога адреса СЛУЖБОВА й випадкова, тож email тут —
+  // необовʼязкова контактна пошта. Для реєстратора це, як і раніше, адреса
+  // входу, тому обовʼязковість перевіряємо нижче, знаючи роль.
+  email: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.union([zEmail, z.null(), z.undefined()]),
+  ).transform((v) => (v ? String(v) : null)),
   login: zLogin,
   full_name: zName,
   phone: zOptText(32),
@@ -40,7 +47,29 @@ export async function POST(req: Request) {
      а створити акаунт не було чим — уся реєстратура сиділа під адміном. */
   const parsed = await parseBody("api/staff", req, sStaff, "Заповніть логін, ПІБ та email (коректний)");
   if (!parsed.ok) return parsed.res;
-  const { role, email, login, full_name: fullName, phone, note } = parsed.data;
+  const { role, login, full_name: fullName, phone, note } = parsed.data;
+  const inputEmail = parsed.data.email;
+
+  /* 0124 — рішення власника: радіолог входить ЛИШЕ за логіном.
+     Адреса входу в нього службова і ВИПАДКОВА (rad.<hex>@…): її не знає ні він,
+     ні адмін, і вивести з логіна не можна — тож увійти по пошті нічим. Справжню пошту, якщо адмін її
+     вказав, зберігаємо окремо в contact_email — інакше втрачаємо єдиний канал
+     звʼязку з лікарем. Той самий канон, що в направників (0041) і CEO.
+     Реєстратор — навпаки: у нього справжня адреса, і вхід по email лишається. */
+  const isRad = role === "radiologist";
+  if (!isRad && !inputEmail) {
+    return NextResponse.json({ error: "Вкажіть email — реєстратор входить логіном або поштою" }, { status: 400 });
+  }
+  /* Службові адреси — не для вводу ззовні. Реєстратор із адресою
+     @radiologist.radflow.local втратив би вхід по пошті (її глушить
+     /api/auth/login), хоча форма обіцяє протилежне. */
+  if (inputEmail && !isRad && isTechnicalEmail(inputEmail)) {
+    return NextResponse.json({ error: "Ця адреса службова — вкажіть справжню пошту" }, { status: 400 });
+  }
+  // Адреса радіолога ВИПАДКОВА, не похідна від логіна: інакше вона вгадується
+  // з логіна, а зміна логіна вимагала б синхронно правити auth.users (див. lib/login).
+  const email = isRad ? randomRadiologistEmail() : (inputEmail as string);
+  const contactEmail = isRad ? inputEmail : null;
   const workplace: string | null = null; // лише радіологи; поле workplace — для направників
   const roomIds: string[] = role === "radiologist" ? (parsed.data.room_ids ?? []) : []; // кабінети — лише радіологам
 
@@ -71,7 +100,9 @@ export async function POST(req: Request) {
   if (cErr || !created?.user) {
     const msg = cErr?.message || "";
     return NextResponse.json(
-      { error: /registered|already|exists/i.test(msg) ? "Email вже використовується" : safeDbError("api/staff.createUser", cErr) },
+      { error: /registered|already|exists/i.test(msg)
+          ? (isRad ? "Не вдалося створити акаунт — спробуйте ще раз" : "Email вже використовується")
+          : safeDbError("api/staff.createUser", cErr) },
       { status: 400 }
     );
   }
@@ -79,7 +110,8 @@ export async function POST(req: Request) {
   const uid = created.user.id;
   const { error: pErr } = await admin.from("profiles").insert({
     id: uid, clinic_id: me.clinic_id, role, login, full_name: fullName,
-    email, phone, note, workplace, approved: true, password_set: false, invite_token: inviteToken,
+    email, contact_email: contactEmail, phone, note, workplace,
+    approved: true, password_set: false, invite_token: inviteToken,
   });
   if (pErr) {
     await admin.auth.admin.deleteUser(uid); // відкат, щоб не лишати «сирітський» auth-акаунт

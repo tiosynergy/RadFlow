@@ -15,6 +15,7 @@ import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import PhoneInput from "@/components/PhoneInput";
+import { normalizeLogin, isValidLogin, LOGIN_HINT } from "@/lib/login";
 import { modalityLabel } from "@/lib/studies";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -28,6 +29,7 @@ type StaffRole = "radiologist" | "registrar";
 type StaffForm = { login: string; full_name: string; email: string; phone: string; note: string };
 type Radiologist = {
   id: string; login: string | null; full_name: string | null; email: string | null;
+  contact_email: string | null;   // 0124: справжня пошта радіолога (email — службовий)
   phone: string | null; note: string | null; password_set: boolean; invite_token: string | null;
   role: StaffRole;
 };
@@ -74,7 +76,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
     const supabase = createClient();
     const [{ data: profs }, { data: rr }] = await Promise.all([
       // Персонал центру = радіологи + реєстратори (адмін керує собою сам).
-      supabase.from("profiles").select("id, login, full_name, email, phone, note, password_set, invite_token, role")
+      supabase.from("profiles").select("id, login, full_name, email, contact_email, phone, note, password_set, invite_token, role")
         .eq("clinic_id", clinicId).in("role", ["radiologist", "registrar"]).order("full_name"),
       supabase.from("radiologist_rooms").select("profile_id, room_id").eq("clinic_id", clinicId),
     ]);
@@ -105,13 +107,17 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
   const hasRoom = (profileId: string, roomId: string) => radRooms.some((x) => x.profile_id === profileId && x.room_id === roomId);
 
   async function createAccount() {
-    if (!form.login.trim() || !form.full_name.trim() || !form.email.trim()) { notify("Заповніть логін, ПІБ та email", "error"); return; }
+    const loginNorm = normalizeLogin(form.login);
+    if (!loginNorm || !form.full_name.trim()) { notify("Заповніть логін і ПІБ", "error"); return; }
+    if (!isValidLogin(loginNorm)) { notify(LOGIN_HINT, "error"); return; }
+    // Email обовʼязковий лише там, де він і є адресою входу (0124).
+    if (formRole !== "radiologist" && !form.email.trim()) { notify("Вкажіть email — реєстратор входить логіном або поштою", "error"); return; }
     setBusy(true);
     try {
       const res = await fetch("/api/staff", {
         method: "POST", headers: { "Content-Type": "application/json" },
         // Кабінети — лише радіологу (реєстратор працює з чергою, не з апаратом).
-        body: JSON.stringify({ role: formRole, ...form, room_ids: formRole === "radiologist" ? formRooms : [] }),
+        body: JSON.stringify({ role: formRole, ...form, login: loginNorm, room_ids: formRole === "radiologist" ? formRooms : [] }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { notify(data.error || "Помилка створення", "error"); setBusy(false); return; }
@@ -210,7 +216,23 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">ПІБ <span className="req">*</span></span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setF("full_name", e.target.value)} /></label>
             </div>
             <div className="fld-row">
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Email <span className="req">*</span></span><input className="inp" type="email" placeholder="radiologist@clinic.ua" value={form.email} onChange={(e) => setF("email", e.target.value)} /></label>
+              {/* 0124: радіолог входить ЛИШЕ за логіном — адреса входу в нього
+                  службова й ВИПАДКОВА (rad.<hex>@…), її генерує сервер.
+                  Тут лишається контактна пошта, і вона необовʼязкова. У реєстратора
+                  email — справжня адреса входу, тож обовʼязкова. */}
+              <label className="fld" style={{ flex: 1 }}>
+                <span className="fld-lab">
+                  {formRole === "radiologist" ? "Email для звʼязку" : <>Email <span className="req">*</span></>}
+                </span>
+                <input className="inp" type="email"
+                  placeholder={formRole === "radiologist" ? "необовʼязково" : "registrar@clinic.ua"}
+                  value={form.email} onChange={(e) => setF("email", e.target.value)} />
+                <span className="fld-hint">
+                  {formRole === "radiologist"
+                    ? "Не для входу: радіолог входить лише логіном і паролем."
+                    : "Реєстратор входить логіном або цією поштою."}
+                </span>
+              </label>
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Телефон</span><PhoneInput value={form.phone} onChange={(v) => setF("phone", v)} /></label>
             </div>
             <label className="fld"><span className="fld-lab">Пароль</span><input className="inp" placeholder="Порожній — користувач задасть сам на /set-password" disabled /></label>
@@ -257,7 +279,16 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                       </span>
                     </div>
                     <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
-                      {r.login ? "@" + r.login + " · " : ""}{r.email}{r.phone ? " · " + r.phone : ""}
+                      {/* 0124: у радіолога profiles.email — СЛУЖБОВА адреса
+                          (rad.<hex>@radiologist.radflow.local). Показувати її як
+                          пошту означало б підсунути адміну адресу, на яку він
+                          напише й ніколи не отримає відповіді. Показуємо
+                          контактну, а спосіб входу називаємо прямо. */}
+                      {r.login ? "@" + r.login + " · " : ""}
+                      {r.role === "radiologist"
+                        ? (r.contact_email || "вхід лише за логіном")
+                        : r.email}
+                      {r.phone ? " · " + r.phone : ""}
                     </div>
                     {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
                   </div>

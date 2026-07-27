@@ -4,7 +4,8 @@
 
 ## Актуальное (источник правды по продукту)
 
-> Схема БД: прод на миграции **0119** (2026-07-26; следующая новая — `0120`). Актуальное состояние
+> Схема БД: прод на миграции **0121** (2026-07-26, room-owned услуги кабинетов; следующая
+> новая — `0122`). Актуальное состояние
 > деплоя и «почему так» — в шапке **[`HANDOVER.md`](HANDOVER.md)** (номера миграций там всегда свежее).
 > Доступность — внедрён UX-аудит P0/P1/P2 + аудит Нільсена v2 (WCAG 2.1 AA, см. §4.11 в PRODUCT_OVERVIEW).
 > Стартовое сообщение для новой сессии — **[`../NEXT_SESSION_PROMPT.md`](../NEXT_SESSION_PROMPT.md)**.
@@ -36,7 +37,13 @@
     [`userflows/autonomous-mode-flow.mermaid`](userflows/autonomous-mode-flow.mermaid)
     (рендер: [`autonomous-mode-flow.svg`](userflows/autonomous-mode-flow.svg)).
   - `REFERRAL_PORTAL_*` — портал направлений.
-- **plan/** — актуальные планы: [`SERVICES_CATALOG.md`](plan/SERVICES_CATALOG.md),
+- **plan/** — актуальные планы:
+  [`ROOM_OWNED_SERVICES.md`](plan/ROOM_OWNED_SERVICES.md) — **услуги, принадлежащие кабінету
+  (`services.room_id`), v1.1 (2026-07-26) — фаза 1 сделана: миграция 0121 + смоук написаны и
+  верифицированы (§8 статуса), ждут накатки; дальше фазы 2–5**;
+  [`AI_INTEGRATION_GPT54NANO.md`](plan/AI_INTEGRATION_GPT54NANO.md) — тиеринг AI-моделей
+  (рабочая — OpenAI `gpt-5-nano`, эскалация — mini/full/grok);
+  [`SERVICES_CATALOG.md`](plan/SERVICES_CATALOG.md),
   [`CATALOG_N8N_AI_INTEGRATION_PLAN.md`](plan/CATALOG_N8N_AI_INTEGRATION_PLAN.md),
   [`CROSS_MODAL_CASE.md`](plan/CROSS_MODAL_CASE.md), [`REFERRER_CASES.md`](plan/REFERRER_CASES.md).
 

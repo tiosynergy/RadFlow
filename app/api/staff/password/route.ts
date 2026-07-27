@@ -35,7 +35,11 @@ export async function POST(req: Request) {
   // центру адміна. Глобальні акаунти (CEO/referrer) мають clinic_id IS NULL,
   // тож звіряємося через ceo_access / referral_access.
   let authorized = false;
-  if (target.role === "radiologist" && target.clinic_id === me.clinic_id) {
+  /* Персонал ЦЕНТРУ — радіолог і реєстратор. Реєстратора тут бракувало: картка
+     в StaffManager малює йому «Скинути пароль», а роут відповідав 403, тож
+     реєстратор, який забув пароль, був невідновлюваний. */
+  if ((target.role === "radiologist" || target.role === "registrar")
+      && target.clinic_id === me.clinic_id) {
     authorized = true;
   } else if (target.role === "ceo") {
     const { data: link } = await admin

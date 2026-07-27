@@ -1,14 +1,19 @@
 "use client";
 
-/* ===== RadFlow — Редактор каталогу послуг (Stage 2, фаза 2b) =====
+/* ===== RadFlow — Редактор каталогу послуг (Stage 2, фаза 2b · room-owned 0121/Ф3) =====
    Ядро редактора, спільне для сторінки /services (ServicesManager) і кроку
    Майстра налаштувань «Послуги та прайс» (embedded). Два режими (селектор зверху):
 
    • «Базовий каталог центру» — перелік/тривалості/ціни на модальність (services,
-     0107): додати/редагувати/увімк-вимк/видалити + сід із базового довідника.
-   • «Кабінет N» — переозначення каталогу ПО КАБІНЕТУ (service_room_overrides,
-     0108): для послуг модальності кабінету — своя ціна/тривалість/контраст або
-     «сховати тут». Порожньо → кабінет успадковує базу. «Скинути» повертає до бази.
+     0107, room_id IS NULL): додати/редагувати/увімк-вимк/видалити + сід із довідника.
+   • «Кабінет N» — ДВІ групи (0121):
+     — «Послуги кабінета» (services.room_id = кабінет): ВЛАСНИЙ прайс кабінета,
+       повний CRUD як у базі; «＋ Додати» та «⇪ Імпорт» створюють саме їх;
+     — «Базові (успадковано)» (room_id IS NULL тієї ж модальності): переозначення
+       ПО КАБІНЕТУ (service_room_overrides, 0108) — своя ціна/тривалість/контраст
+       або «сховати тут»; порожньо → успадкувати базу; «Скинути» повертає до бази.
+     Дубль імені база↔кабінет допустимий (Q4) — у формах запису видимі обидві,
+     пошук за назвою віддає пріоритет кабінетній (lib/catalog.ts).
 
    Мутації — Server Actions (app/services/actions.ts); RLS admin-write як
    defense-in-depth. Після мутації — router.refresh (низькооборотна таблиця). */
@@ -147,28 +152,62 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
     return m;
   }, [overrides, room]);
 
-  const rows = useMemo(() => {
+  // 0121: базові (room_id NULL) та власні послуги кабінету — РІЗНІ набори.
+  // База показує лише базові; режим кабінета — дві групи (власні + успадковані).
+  const rowsAll = useMemo(() => {
     const q = query.trim().toLowerCase();
     return items
       .filter((s) => s.modality === effTab)
       .filter((s) => !q || s.name.toLowerCase().includes(q))
       .sort((a, b) => Number(b.active) - Number(a.active) || a.sort_order - b.sort_order || a.name.localeCompare(b.name, "uk"));
   }, [items, effTab, query]);
+  const baseRows = useMemo(() => rowsAll.filter((s) => (s.room_id ?? null) === null), [rowsAll]);
+  const roomRows = useMemo(
+    () => (room ? rowsAll.filter((s) => s.room_id === room.id) : []),
+    [rowsAll, room]
+  );
+  // Видимі рядки поточного режиму (вибір/лічильники панелі масових дій).
+  const rows = useMemo(
+    () => (scope === "base" ? baseRows : [...roomRows, ...baseRows]),
+    [scope, baseRows, roomRows]
+  );
 
   const counts = useMemo(() => {
+    // Активні послуги, видимі поточному контексту: база — лише базові;
+    // кабінет — власні кабінету + базові, НЕ приховані override-ом (дзеркало
+    // room-видимості 0121; ревю Ф3 №6).
     const m: Record<string, number> = {};
-    for (const s of items) m[s.modality] = (m[s.modality] || 0) + (s.active ? 1 : 0);
+    for (const s of items) {
+      const owner = s.room_id ?? null;
+      if (room ? owner !== null && owner !== room.id : owner !== null) continue;
+      if (!s.active) continue;
+      if (room && owner === null && ovByService.get(s.id)?.active === false) continue;
+      m[s.modality] = (m[s.modality] || 0) + 1;
+    }
     return m;
-  }, [items]);
+  }, [items, room, ovByService]);
 
   /* ---------- Масовий вибір ---------- */
   const selIds = useMemo(() => rows.filter((s) => selected[s.id]).map((s) => s.id), [rows, selected]);
+  // 0121: у режимі кабінета масові дії розходяться за групами.
+  const selRoomIds = useMemo(() => roomRows.filter((s) => selected[s.id]).map((s) => s.id), [roomRows, selected]);
+  const selBaseIds = useMemo(() => baseRows.filter((s) => selected[s.id]).map((s) => s.id), [baseRows, selected]);
   const allSelected = rows.length > 0 && selIds.length === rows.length;
   function toggleSelectAll() {
     const target = !allSelected;
     setSelected((p) => {
       const next = { ...p };
       rows.forEach((s) => { next[s.id] = target; });
+      return next;
+    });
+  }
+  // Селект-все для ОКРЕМОЇ групи режиму кабінета (шапка кожної групи має свій).
+  const listAllSelected = (list: ServiceRow[]) => list.length > 0 && list.every((s) => selected[s.id]);
+  function toggleSelectList(list: ServiceRow[]) {
+    const target = !listAllSelected(list);
+    setSelected((p) => {
+      const next = { ...p };
+      list.forEach((s) => { next[s.id] = target; });
       return next;
     });
   }
@@ -186,46 +225,69 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
     } finally { setBusy(false); }
   }
   async function onBulkDelete() {
+    // 0121: у режимі кабінета видаляються ЛИШЕ власні послуги кабінету
+    // (успадковані базові з режиму кабінета не видаляються — їх «Приховати»).
+    const ids = scope === "base" ? selIds : selRoomIds;
+    if (!ids.length) return;
     setBusy(true);
     try {
-      const res = await bulkDeleteServices(selIds);
+      const res = await bulkDeleteServices(ids);
       if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-      const idSet = new Set(selIds);
+      const idSet = new Set(ids);
       setItems((arr) => arr.filter((x) => !idSet.has(x.id)));
-      notify("Видалено послуг: " + (res.count ?? selIds.length), "info");
+      notify("Видалено послуг: " + (res.count ?? ids.length), "info");
       clearSelection(); refresh();
     } finally { setBusy(false); }
   }
+  /* 0121: «Показати/Приховати» в режимі кабінета — ДВІ групи одним натиском:
+     власні послуги кабінету вмикаються/вимикаються самі (bulkSetServicesActive —
+     вони існують лише тут), успадковані базові — через override show/hide (0108). */
   async function onBulkRoomActive(active: boolean) {
     if (!room) return;
     setBusy(true);
     try {
-      const res = await bulkSetRoomServicesActive(room.id, selIds, active);
-      if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-      const idSet = new Set(selIds);
-      setOverrides((arr) => {
-        const present = new Set(arr.filter((o) => o.room_id === room.id).map((o) => o.service_id));
-        const updated = arr.map((o) => (o.room_id === room.id && idSet.has(o.service_id) ? { ...o, active } : o));
-        if (active) return updated; // «показати» без override — no-op (видима базою)
-        const now = new Date(0).toISOString();
-        const added: SroRow[] = selIds.filter((id) => !present.has(id)).map((sid) => ({
-          clinic_id: items.find((x) => x.id === sid)?.clinic_id ?? "", room_id: room.id, service_id: sid,
-          price: null, duration_min: null, contrast_price: null, active: false,
-          created_at: now, updated_at: now,
-        }));
-        return [...updated, ...added];
-      });
-      notify((active ? "Показано в кабінеті: " : "Приховано в кабінеті: ") + (res.count ?? 0), "info");
+      let done = 0;
+      if (selRoomIds.length) {
+        const res = await bulkSetServicesActive(selRoomIds, active);
+        if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+        const idSet = new Set(selRoomIds);
+        setItems((arr) => arr.map((x) => (idSet.has(x.id) ? { ...x, active } : x)));
+        done += res.count ?? selRoomIds.length;
+      }
+      if (selBaseIds.length) {
+        const res = await bulkSetRoomServicesActive(room.id, selBaseIds, active);
+        if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+        const idSet = new Set(selBaseIds);
+        setOverrides((arr) => {
+          const present = new Set(arr.filter((o) => o.room_id === room.id).map((o) => o.service_id));
+          const updated = arr.map((o) => (o.room_id === room.id && idSet.has(o.service_id) ? { ...o, active } : o));
+          if (active) return updated; // «показати» без override — no-op (видима базою)
+          const now = new Date(0).toISOString();
+          const added: SroRow[] = selBaseIds.filter((id) => !present.has(id)).map((sid) => ({
+            clinic_id: items.find((x) => x.id === sid)?.clinic_id ?? "", room_id: room.id, service_id: sid,
+            price: null, duration_min: null, contrast_price: null, active: false,
+            created_at: now, updated_at: now,
+          }));
+          return [...updated, ...added];
+        });
+        done += res.count ?? 0;
+      }
+      // Ревю Ф3 №3: «показати» видимі базою без override — серверний no-op (0 by design).
+      notify(
+        active
+          ? (done > 0 ? "Показано в кабінеті: " + done : "Вибрані вже видимі (успадковано базою)")
+          : "Приховано в кабінеті: " + done,
+        "info");
       clearSelection(); refresh();
     } finally { setBusy(false); }
   }
   async function onBulkRoomClear() {
-    if (!room) return;
+    if (!room || !selBaseIds.length) return; // власних послуг «до базового» не існує
     setBusy(true);
     try {
-      const res = await bulkClearRoomOverrides(room.id, selIds);
+      const res = await bulkClearRoomOverrides(room.id, selBaseIds);
       if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-      const idSet = new Set(selIds);
+      const idSet = new Set(selBaseIds);
       setOverrides((arr) => arr.filter((o) => !(o.room_id === room.id && idSet.has(o.service_id))));
       notify("Повернено до базового: " + (res.count ?? 0), "info");
       clearSelection(); refresh();
@@ -245,9 +307,12 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
   async function onAdd() {
     setBusy(true);
     try {
-      const res = await createService(draftToInput(addDraft, tab as BookableModality));
+      // effTab = модальність активної вкладки (база) або кабінета (у режимі кабінета — фіксована).
+      // 0121: у режимі кабінета послуга створюється ВЛАСНОЮ для кабінета
+      // (services.room_id = кабінет) — база не торкається, переозначення не потрібне.
+      const res = await createService(draftToInput(addDraft, effTab as BookableModality), room?.id);
       if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-      notify("Послугу додано: " + addDraft.name.trim(), "success");
+      notify("Послугу додано: " + addDraft.name.trim() + (room ? " (кабінет «" + room.name + "»)" : ""), "success");
       setAddOpen(false); setAddDraft(emptyDraft()); refresh();
     } finally { setBusy(false); }
   }
@@ -339,16 +404,56 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
     return <span style={{ ...base, color: "var(--text-faint)", borderColor: "var(--border)" }}>Базове</span>;
   };
 
+  /* Рядок «повного CRUD» (базовий каталог АБО власна послуга кабінета — 0121):
+     редагування DraftFields, увімк/вимк, видалення. Хелпер-функція, НЕ вкладений
+     компонент (правило B-1: вкладений компонент = ремоунт піддерева щорендер). */
+  const renderCatalogRow = (s: ServiceRow, roomOwned: boolean) => {
+    const editing = editId === s.id;
+    return (
+      <div className="clrow-wrap" key={s.id} style={roomOwned ? { borderLeft: "3px solid var(--blue)" } : undefined}>
+        <div className="wlrow" style={{ gridTemplateColumns: GRID_BASE, opacity: s.active ? 1 : 0.55 }}>
+          {editing ? (
+            <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", padding: "4px 0" }}>
+              <DraftFields d={draft} setD={setDraft} />
+              <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
+                <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setEditId(null)}>Скасувати</button>
+                <button className="btn btn-primary btn-sm" disabled={busy || draft.name.trim().length < 2} onClick={() => onSaveEdit(s)}>Зберегти</button>
+              </span>
+            </div>
+          ) : (
+            <>
+              {rowCheckbox(s.id, s.name)}
+              <div style={{ fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }} title={s.name}>{s.name}
+                {roomOwned && <span className="badge" style={{ marginLeft: 8, color: "var(--blue)" }} title="Власна послуга кабінета — видима і бронюється лише в ньому">Кабінетна</span>}
+                {s.source === "import" && <span className="badge" style={{ marginLeft: 8 }} title="Завантажено імпортом">імпорт</span>}</div>
+              <div className="tabular" style={{ textAlign: "right" }}>{s.duration_min != null ? s.duration_min + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано — введіть у редакторі або вручну при записі">—</span>}</div>
+              <div className="tabular" style={{ textAlign: "right" }}>{s.price ? fmtUah(s.price) : <span style={{ color: "var(--orange)" }} title="Ціну ще не задано">—</span>}</div>
+              <div style={{ textAlign: "right" }}>{s.contrast_allowed ? <span title="Доплата за контраст">＋{fmtUah(s.contrast_price ?? CONTRAST_SURCHARGE)}</span> : <span style={{ color: "var(--text-faint)" }}>—</span>}</div>
+              <div>{s.active ? <span style={{ color: "var(--green)" }}>активна</span> : <span style={{ color: "var(--text-faint)" }}>вимкнена</span>}</div>
+              <div className="cl-actions" style={{ justifyContent: "flex-end" }}>
+                <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => { setEditId(s.id); setDraft(draftOf(s)); }} title="Редагувати" aria-label={"Редагувати " + s.name}>✎</button>
+                <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onToggleActive(s)}
+                  title={s.active ? "Вимкнути (прибрати з форм)" : "Увімкнути"} aria-label={s.active ? "Вимкнути" : "Увімкнути"}>⏻</button>
+                <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} disabled={busy} onClick={() => setConfirmDel(s)} title="Видалити" aria-label={"Видалити " + s.name}>✕</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div>
       {!embedded && (
         <div className="info-banner">
           <span className="ib-ic" aria-hidden="true">₴</span>
           <span className="ib-txt">
-            <b>Каталог послуг центру</b> — базовий перелік, тривалості та ціни на модальність.
-            Для кожного <b>кабінета</b> ціну/тривалість/склад можна переозначити окремо
-            (оберіть кабінет у списку нижче). Вимкнена послуга зникає з форм запису, але
-            лишається в історії.
+            <b>Каталог послуг центру</b> — базовий перелік, тривалості та ціни на модальність
+            (успадковується всіма кабінетами). Кожен <b>кабінет</b> може мати і <b>власний
+            прайс</b> (оберіть кабінет у списку нижче): його послуги видимі лише в ньому,
+            а базові можна переозначити або сховати. Вимкнена послуга зникає з форм запису,
+            але лишається в історії.
           </span>
         </div>
       )}
@@ -359,7 +464,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
           Налаштувати:
           <select className="inp" value={scope} onChange={(e) => { setScope(e.target.value); setEditId(null); setOvEditId(null); setSelected({}); }} style={{ minWidth: 220 }}>
             <option value="base">Базовий каталог центру</option>
-            {roomList.length > 0 && <optgroup label="Кабінети (своя ціна/час)">
+            {roomList.length > 0 && <optgroup label="Кабінети (власний прайс)">
               {roomList.map((r) => <option key={r.id} value={r.id}>{modalityLabel(r.modality)} · {r.name}{r.apparatus_model ? " · " + r.apparatus_model : ""}</option>)}
             </optgroup>}
           </select>
@@ -384,21 +489,28 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
         <div className="search"><span className="si">⌕</span>
           <input placeholder="Пошук послуги…" value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
-        {scope === "base" && (
-          <span style={{ display: "inline-flex", gap: 8, marginLeft: 8 }}>
+        <span style={{ display: "inline-flex", gap: 8, marginLeft: 8 }}>
+          {scope === "base" && (
             <button className="btn btn-secondary btn-sm" disabled={busy} onClick={onSeed}
               title="Разово наповнити базовий каталог позиціями з довідника">⤓ З базового довідника</button>
-            <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setImportOpen(true)}
-              title="Завантажити прайс .xlsx/.csv — з передпереглядом змін">⇪ Імпорт прайса</button>
-            <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => { setAddDraft(emptyDraft()); setAddOpen(true); }}>＋ Додати</button>
-          </span>
-        )}
+          )}
+          <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setImportOpen(true)}
+            title={room ? "Імпорт прайса у цей кабінет — власні послуги кабінета, тільки його модальність" : "Завантажити прайс .xlsx/.csv/.pdf/фото — з передпереглядом змін"}>⇪ Імпорт прайса</button>
+          <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => { setAddDraft(emptyDraft()); setAddOpen(true); }}>＋ Додати</button>
+        </span>
       </div>
 
-      {scope === "base" && addOpen && (
+      {addOpen && (
         <div className="cl-detail" style={{ marginBottom: 12 }}>
+          {room && (
+            <div style={{ fontSize: 12.5, color: "var(--text-secondary)", marginBottom: 8 }}>
+              Додавання у кабінет «{room.name}»: послуга ({modalityLabel(effTab)}) належатиме
+              <b> лише цьому кабінету</b> — видима й бронюється тільки в ньому. Базовий каталог
+              центру не змінюється.
+            </div>
+          )}
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-            <span className={"wl-mod " + modalityKind(tab)}>{modalityLabel(tab)}</span>
+            <span className={"wl-mod " + modalityKind(effTab)}>{modalityLabel(effTab)}</span>
             <DraftFields d={addDraft} setD={setAddDraft} />
             <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
               <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setAddOpen(false)}>Скасувати</button>
@@ -420,78 +532,81 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
             </>
           ) : (
             <>
-              <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onBulkRoomActive(true)} title="Показати вибрані послуги в цьому кабінеті">Показати</button>
-              <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onBulkRoomActive(false)} title="Приховати вибрані послуги в цьому кабінеті">Приховати</button>
-              <button className="btn btn-secondary btn-sm" disabled={busy} onClick={onBulkRoomClear} title="Прибрати переозначення вибраних — успадкувати базовий каталог">↺ До базового</button>
+              <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onBulkRoomActive(true)} title="Показати вибрані послуги в цьому кабінеті (власні — увімкнути)">Показати</button>
+              <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onBulkRoomActive(false)} title="Приховати вибрані послуги в цьому кабінеті (власні — вимкнути)">Приховати</button>
+              {selBaseIds.length > 0 && (
+                <button className="btn btn-secondary btn-sm" disabled={busy} onClick={onBulkRoomClear} title="Прибрати переозначення вибраних базових — успадкувати базовий каталог">↺ До базового ({selBaseIds.length})</button>
+              )}
+              {selRoomIds.length > 0 && (
+                <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} disabled={busy} onClick={() => setConfirmBulkDel(true)} title="Видалити вибрані ВЛАСНІ послуги кабінета назовсім (базові не зачіпаються)">✕ Видалити кабінетні ({selRoomIds.length})</button>
+              )}
             </>
           )}
           <button className="btn btn-ghost btn-sm" style={{ marginLeft: "auto" }} disabled={busy} onClick={clearSelection}>Зняти вибір</button>
         </div>
       )}
 
-      {/* Заголовок таблиці */}
+      {/* Таблиця: база — один список; кабінет — ДВІ групи (0121) */}
       {scope === "base" ? (
-        <div className="wlhead" style={{ gridTemplateColumns: GRID_BASE, alignItems: "center" }}>
-          <input type="checkbox" checked={allSelected} disabled={busy || rows.length === 0}
-            ref={(el) => { if (el) el.indeterminate = selIds.length > 0 && !allSelected; }}
-            onChange={toggleSelectAll} title="Вибрати всі (видимі)" aria-label="Вибрати всі послуги" />
-          <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div style={{ textAlign: "right" }}>Контраст</div><div>Стан</div><div style={{ textAlign: "right" }}>Дії</div>
-        </div>
+        <>
+          <div className="wlhead" style={{ gridTemplateColumns: GRID_BASE, alignItems: "center" }}>
+            <input type="checkbox" checked={allSelected} disabled={busy || rows.length === 0}
+              ref={(el) => { if (el) el.indeterminate = selIds.length > 0 && !allSelected; }}
+              onChange={toggleSelectAll} title="Вибрати всі (видимі)" aria-label="Вибрати всі послуги" />
+            <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div style={{ textAlign: "right" }}>Контраст</div><div>Стан</div><div style={{ textAlign: "right" }}>Дії</div>
+          </div>
+          {rows.length === 0 ? (
+            <div className="empty"><div className="ei">₴</div>
+              <div className="et">У модальності {modalityLabel(effTab)} поки немає послуг</div>
+              <div className="es">Додайте вручну або натисніть «З базового довідника»</div></div>
+          ) : (
+            <div className="clrows">{rows.map((s) => renderCatalogRow(s, false))}</div>
+          )}
+        </>
       ) : (
-        <div className="wlhead" style={{ gridTemplateColumns: GRID_ROOM, alignItems: "center" }}>
-          <input type="checkbox" checked={allSelected} disabled={busy || rows.length === 0}
-            ref={(el) => { if (el) el.indeterminate = selIds.length > 0 && !allSelected; }}
-            onChange={toggleSelectAll} title="Вибрати всі (видимі)" aria-label="Вибрати всі послуги" />
-          <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div>У кабінеті</div><div style={{ textAlign: "right" }}>Дії</div>
-        </div>
-      )}
+        <>
+          {/* ---------- Група 1: ВЛАСНІ послуги кабінета (room-owned, 0121) ---------- */}
+          <div style={{ fontWeight: 650, fontSize: 13.5, margin: "10px 0 4px", color: "var(--blue)" }}>
+            Послуги кабінета ({roomRows.length})
+            <span style={{ fontWeight: 400, fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>
+              власний прайс — видимі й бронюються лише в цьому кабінеті
+            </span>
+          </div>
+          <div className="wlhead" style={{ gridTemplateColumns: GRID_BASE, alignItems: "center" }}>
+            <input type="checkbox" checked={listAllSelected(roomRows)} disabled={busy || roomRows.length === 0}
+              ref={(el) => { if (el) el.indeterminate = selRoomIds.length > 0 && !listAllSelected(roomRows); }}
+              onChange={() => toggleSelectList(roomRows)} title="Вибрати всі власні послуги кабінета" aria-label="Вибрати всі власні послуги кабінета" />
+            <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div style={{ textAlign: "right" }}>Контраст</div><div>Стан</div><div style={{ textAlign: "right" }}>Дії</div>
+          </div>
+          {roomRows.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: "var(--text-muted)", padding: "10px 8px", borderBottom: "1px solid var(--border)" }}>
+              У кабінета ще немає власного прайса — «⇪ Імпорт прайса» або «＋ Додати»
+              створять послуги саме цього кабінета.
+            </div>
+          ) : (
+            <div className="clrows">{roomRows.map((s) => renderCatalogRow(s, true))}</div>
+          )}
 
-      {rows.length === 0 ? (
-        <div className="empty"><div className="ei">₴</div>
-          <div className="et">У модальності {modalityLabel(effTab)} поки немає послуг</div>
-          <div className="es">{scope === "base" ? "Додайте вручну або натисніть «З базового довідника»" : "Спершу наповніть базовий каталог центру"}</div></div>
-      ) : scope === "base" ? (
-        /* ---------- РЯДКИ: базовий каталог ---------- */
+          {/* ---------- Група 2: БАЗОВІ (успадковано) + переозначення 0108 ---------- */}
+          <div style={{ fontWeight: 650, fontSize: 13.5, margin: "16px 0 4px" }}>
+            Базові (успадковано) ({baseRows.length})
+            <span style={{ fontWeight: 400, fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>
+              спільні для всіх кабінетів {modalityLabel(effTab)}; тут можна переозначити ціну/час або сховати
+            </span>
+          </div>
+          <div className="wlhead" style={{ gridTemplateColumns: GRID_ROOM, alignItems: "center" }}>
+            <input type="checkbox" checked={listAllSelected(baseRows)} disabled={busy || baseRows.length === 0}
+              ref={(el) => { if (el) el.indeterminate = selBaseIds.length > 0 && !listAllSelected(baseRows); }}
+              onChange={() => toggleSelectList(baseRows)} title="Вибрати всі базові (успадковані)" aria-label="Вибрати всі базові послуги" />
+            <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div>У кабінеті</div><div style={{ textAlign: "right" }}>Дії</div>
+          </div>
+          {baseRows.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: "var(--text-muted)", padding: "10px 8px" }}>
+              Базовий каталог {modalityLabel(effTab)} порожній — центр веде прайси по кабінетах.
+            </div>
+          ) : (
         <div className="clrows">
-          {rows.map((s) => {
-            const editing = editId === s.id;
-            return (
-              <div className="clrow-wrap" key={s.id}>
-                <div className="wlrow" style={{ gridTemplateColumns: GRID_BASE, opacity: s.active ? 1 : 0.55 }}>
-                  {editing ? (
-                    <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", padding: "4px 0" }}>
-                      <DraftFields d={draft} setD={setDraft} />
-                      <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
-                        <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setEditId(null)}>Скасувати</button>
-                        <button className="btn btn-primary btn-sm" disabled={busy || draft.name.trim().length < 2} onClick={() => onSaveEdit(s)}>Зберегти</button>
-                      </span>
-                    </div>
-                  ) : (
-                    <>
-                      {rowCheckbox(s.id, s.name)}
-                      <div style={{ fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }} title={s.name}>{s.name}
-                        {s.source === "import" && <span className="badge" style={{ marginLeft: 8 }} title="Завантажено імпортом">імпорт</span>}</div>
-                      <div className="tabular" style={{ textAlign: "right" }}>{s.duration_min != null ? s.duration_min + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано — введіть у редакторі або вручну при записі">—</span>}</div>
-                      <div className="tabular" style={{ textAlign: "right" }}>{s.price ? fmtUah(s.price) : <span style={{ color: "var(--orange)" }} title="Ціну ще не задано">—</span>}</div>
-                      <div style={{ textAlign: "right" }}>{s.contrast_allowed ? <span title="Доплата за контраст">＋{fmtUah(s.contrast_price ?? CONTRAST_SURCHARGE)}</span> : <span style={{ color: "var(--text-faint)" }}>—</span>}</div>
-                      <div>{s.active ? <span style={{ color: "var(--green)" }}>активна</span> : <span style={{ color: "var(--text-faint)" }}>вимкнена</span>}</div>
-                      <div className="cl-actions" style={{ justifyContent: "flex-end" }}>
-                        <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => { setEditId(s.id); setDraft(draftOf(s)); }} title="Редагувати" aria-label={"Редагувати " + s.name}>✎</button>
-                        <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onToggleActive(s)}
-                          title={s.active ? "Вимкнути (прибрати з форм)" : "Увімкнути"} aria-label={s.active ? "Вимкнути" : "Увімкнути"}>⏻</button>
-                        <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} disabled={busy} onClick={() => setConfirmDel(s)} title="Видалити" aria-label={"Видалити " + s.name}>✕</button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        /* ---------- РЯДКИ: переозначення кабінету ---------- */
-        <div className="clrows">
-          {rows.map((s) => {
+          {baseRows.map((s) => {
             const ov = ovByService.get(s.id);
             const editing = ovEditId === s.id;
             const effDur = ov?.duration_min ?? s.duration_min;
@@ -571,12 +686,16 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
             );
           })}
         </div>
+          )}
+        </>
       )}
 
       {importOpen && (
         <ImportPriceModal
           onClose={() => setImportOpen(false)}
           onDone={(msg) => { setImportOpen(false); notify(msg, "success"); refresh(); }}
+          roomModality={room ? (effTab as "MRI" | "CT" | "US" | "XRAY" | "MAMMO") : undefined}
+          roomId={room?.id}
         />
       )}
 
@@ -589,10 +708,11 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
       )}
 
       {confirmBulkDel && (
-        <ConfirmDialog title="Видалити вибрані послуги"
-          text={<>Видалити <b style={{ color: "var(--text)" }}>{selIds.length}</b> вибраних послуг назовсім?
-            Якщо ще можуть знадобитись — краще «Вимкнути» (лишаться в історії).</>}
-          confirmLabel={"Видалити (" + selIds.length + ")"} danger busy={busy}
+        <ConfirmDialog title={scope === "base" ? "Видалити вибрані послуги" : "Видалити власні послуги кабінета"}
+          text={<>Видалити <b style={{ color: "var(--text)" }}>{scope === "base" ? selIds.length : selRoomIds.length}</b> вибраних
+            послуг назовсім?{scope !== "base" && <> Це <b>власні послуги кабінета</b> — базові (успадковані) не зачіпаються.</>}
+            {" "}Якщо ще можуть знадобитись — краще «Вимкнути» (лишаться в історії).</>}
+          confirmLabel={"Видалити (" + (scope === "base" ? selIds.length : selRoomIds.length) + ")"} danger busy={busy}
           onConfirm={async () => { setConfirmBulkDel(false); await onBulkDelete(); }}
           onClose={() => setConfirmBulkDel(false)} />
       )}
