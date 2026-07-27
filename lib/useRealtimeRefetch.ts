@@ -54,6 +54,18 @@ export function useRealtimeRefetch({
   const subsRef = useRef(subscriptions);
   subsRef.current = subscriptions;
 
+  /* СТРУКТУРНЫЙ ключ подписок (техаудит 2026-07-27, Medium-2). Эффект ниже
+     намеренно не зависит от массива subscriptions (его identity меняется каждый
+     рендер), но раньше он не зависел и от СТРУКТУРЫ: смена table/filter/числа
+     подписок без смены channelName оставляла серверную подписку старой, а
+     обработчик по индексу мог попасть в чужой лоадер. Ключ — строка из
+     table|filter в порядке массива: пока структура прежняя, он стабилен
+     (переподписки нет), изменилась — канал пересоздаётся, и индексы обработчиков
+     снова совпадают с серверными подписками по построению. */
+  const subscriptionKey = subscriptions
+    .map((s) => s.table + "|" + (s.filter ?? ""))
+    .join(";");
+
   useEffect(() => {
     if (!channelName) return;
 
@@ -63,6 +75,12 @@ export function useRealtimeRefetch({
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let pollDelay = 8000;
     const POLL_MAX = 60000;
+    /* Джиттер ±25% на КАЖДЫЙ интервал (техаудит Medium-1): без него все клиенты,
+       потерявшие realtime в один момент (рестарт Realtime, сетевой сбой), стартуют
+       поллинг синхронно и бьют в Supabase одновременными полными reload'ами —
+       и остаются синхронными на каждом следующем тике, потому что backoff у всех
+       считается одинаково. Случайный множитель разводит их по времени. */
+    const jittered = (ms: number) => Math.round(ms * (0.75 + Math.random() * 0.5));
     const debouncers = new Map<string, ReturnType<typeof setTimeout>>();
 
     /* callAll — первинне завантаження, повернення на вкладку/фокус і кожен тик
@@ -102,11 +120,12 @@ export function useRealtimeRefetch({
     const startPolling = () => {
       if (pollTimer) return; // уже идёт
       const tick = () => {
+        if (cancelled) return; // страховка от тика, запланированного до cleanup
         callAll();
         pollDelay = Math.min(Math.round(pollDelay * 1.5), POLL_MAX);
-        pollTimer = setTimeout(tick, pollDelay);
+        pollTimer = setTimeout(tick, jittered(pollDelay));
       };
-      pollTimer = setTimeout(tick, pollDelay);
+      pollTimer = setTimeout(tick, jittered(pollDelay));
     };
 
     (async () => {
@@ -142,6 +161,11 @@ export function useRealtimeRefetch({
         );
       });
       channel = ch.subscribe((status) => {
+        /* Ревью с15 (High-1): removeChannel в cleanup сам вызывает этот callback
+           со статусом CLOSED — УЖЕ ПОСЛЕ stopPolling(). Без гарда каждая отписка
+           (закрытие модалки слотов, смена даты/канала, смена subscriptionKey)
+           заводила бы осиротевший поллинг-цикл, который никто не остановит. */
+        if (cancelled) return;
         if (status === "SUBSCRIBED") stopPolling();
         else startPolling(); // CHANNEL_ERROR / TIMED_OUT / CLOSED
       });
@@ -161,6 +185,7 @@ export function useRealtimeRefetch({
       debouncers.forEach((t) => clearTimeout(t));
       if (channel) supabase.removeChannel(channel);
     };
-    // subscriptions намеренно вне зависимостей — через subsRef (ref стабилен).
-  }, [channelName, debounceMs]);
+    /* subscriptions (identity) намеренно вне зависимостей — через subsRef;
+       subscriptionKey держит СТРУКТУРУ: смена table/filter/состава → переподписка. */
+  }, [channelName, debounceMs, subscriptionKey]);
 }

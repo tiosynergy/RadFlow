@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import {
-  zUuid, zDateKey, zTime, zDuration, zBuffer, zStudies, zRoomIdsGrant, zIdList, zOptText, zOptEmail,
+  zUuid, zDateKey, zTime, zSlotTime, zDuration, zBuffer, zStudies, zRoomIdsGrant, zIdList, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight,
 } from "@/lib/validation";
+import { SLOT_STEP, slotFmt } from "@/lib/slots";
 
 /* Валідація на межі (M-12). Тести фіксують саме ті випадки, через які раніше
    сміття доїжджало до БД, і ті канони, які НЕ можна зламати (0061 room_ids). */
@@ -19,6 +20,32 @@ describe("zTime — формат «HH:MM» (M-1)", () => {
   it("відхиляє «8:5», «25:00», «12:60» і сміття", () => {
     for (const bad of ["8:5", "8:05", "25:00", "12:60", "12:5a", "", "1200"]) {
       expect(zTime.safeParse(bad).success, bad).toBe(false);
+    }
+  });
+});
+
+/* Техаудит 2026-07-27, High-1: '09:03' проходив zTime і через Server Action
+   давав off-grid запис — «є», займає час, але не видимий у жодній клітинці
+   сітки SlotPicker. zSlotTime — лише для часу СЛОТА (не для годин роботи).
+   Дзеркало в БД — guard_slot_grid (0125); зміна кроку сітки = міняти всі три
+   (SLOT_STEP, zSlotTime, тригер). */
+describe("zSlotTime — слот на сітці 5 хв", () => {
+  /* Звʼязка трьох констант «5» (ревʼю с15, Low-2): SLOT_STEP (сітка UI),
+     zSlotTime (сервер) і guard_slot_grid 0125 (БД). Якщо SLOT_STEP стане
+     некратним 5 (напр., 3) — SlotPicker почне видавати часи, які сервер і БД
+     відкинуть, і першою це побачить реєстратура. Хай першим падає ЦЕЙ тест. */
+  it("узгоджений із SLOT_STEP: перший крок сітки — валідний слот", () => {
+    expect(SLOT_STEP % 5, "SLOT_STEP має лишатися кратним 5 (інакше міняй і zSlotTime, і тригер 0125)").toBe(0);
+    expect(zSlotTime.safeParse(slotFmt(SLOT_STEP)).success).toBe(true);
+  });
+  it("приймає часи, кратні 5 хвилинам", () => {
+    for (const ok of ["09:05", "00:00", "23:55", "12:30"]) {
+      expect(zSlotTime.safeParse(ok).success, ok).toBe(true);
+    }
+  });
+  it("відхиляє off-grid і сміття (зокрема 23:59 — валідний zTime, але не слот)", () => {
+    for (const bad of ["09:03", "23:59", "12:01", "8:05", "09:05:00", ""]) {
+      expect(zSlotTime.safeParse(bad).success, bad).toBe(false);
     }
   });
 });

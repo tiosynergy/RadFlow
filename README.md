@@ -54,8 +54,10 @@ npm run dev      # http://localhost:3000
 
 ## База данных
 
-Схема и политики управляются миграциями в `supabase/migrations/` (на текущий момент `0001`–`0114`;
-прод на `0114`, следующая новая — `0115`). Применять по порядку в Supabase → SQL Editor **вручную**
+Схема и политики управляются миграциями в `supabase/migrations/`. **Номера здесь не фиксируем —
+они протухают** (этот абзац дважды ловили на «прод на 0114», когда прод был на 0124): актуальный
+номер смотри в шапке `docs/HANDOVER.md`, а окончательная истина — прод-БД (максимальная
+ПРИМЕНЁННАЯ миграция). Применять по порядку в Supabase → SQL Editor **вручную**
 (Vercel-деплой их не запускает — сначала SQL, потом мердж в `main`). Актуальное состояние деплоя —
 в шапке [`docs/HANDOVER.md`](docs/HANDOVER.md). Подробно о схеме, ограничениях и RLS — в
 [`docs/PRODUCT_OVERVIEW.md`](docs/PRODUCT_OVERVIEW.md) (раздел «Модель данных»).
@@ -94,7 +96,7 @@ npm run dev      # http://localhost:3000
 │  └─ api/                  # staff, referrers/invite, referral/access, account/set-password
 ├─ components/              # React-компоненты экранов и модалок (.tsx)
 ├─ lib/                     # бизнес-логика (queueStatus, incidents/TZ-хелперы, schedule, studies) + supabase/*
-├─ supabase/migrations/     # 0001–0060 (схема, RLS, триггеры, RPC)
+├─ supabase/migrations/     # схема, RLS, триггеры, RPC (нумерация 00xx, применяются вручную)
 ├─ middleware.ts            # сессия + защита маршрутов + роутинг по роли
 ├─ docs/                    # документация (PRODUCT_OVERVIEW, аудиты, прототипы, планы)
 └─ next.config.mjs · tsconfig.json · tailwind.config.ts · package.json
