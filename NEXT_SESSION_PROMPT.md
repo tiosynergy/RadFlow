@@ -47,8 +47,9 @@ CallListBoard,CaseModal,ReferralPortal}.tsx`, `app/queue/actions.ts`, `supabase/
 ⚠️ **Данные:** владелец НАМЕРЕННО удалил весь каталог Medicom после сессии 11 — сейчас
 0 room-owned, 0 оверрайдов, у Medicom 0 услуг (34 seed у Medicom-Odessa). Все 8 кабинетов целы.
 План владельца — ре-импорт прайсов по кабинетам через обновлённый импорт.
-✅ **`0122_reschedule_with_studies.sql` НАКАЧЕНА** (SMOKE_OK). Прод-БД на **0122**,
-следующая новая = **0123**.
+✅ **0122 и 0123 НАКАЧЕНЫ** (обе SMOKE_OK). Прод-БД на **0123**.
+🎯 **`0124_login_required.sql` НАПИСАНА, dry-run на проде SMOKE_OK (откат чистый), НЕ НАКАЧЕНА.**
+Следующая новая после неё = **0125**.
 
 ### 🎯 Сессия 12: фазы 2–4 плана ROOM_OWNED_SERVICES — РЕАЛИЗОВАНЫ (TS-код, БД не менялась)
 
@@ -114,14 +115,29 @@ CallListBoard,CaseModal,ReferralPortal}.tsx`, `app/queue/actions.ts`, `supabase/
 
 ## ЧТО ДЕЛАТЬ ДАЛЬШЕ (по приоритету)
 
-1. ✅ **`0122_reschedule_with_studies.sql` НАКАЧЕНА владельцем** (2026-07-27), смоук —
-   `SMOKE_OK`. Сверено по прод-БД: 10 аргументов с `p_studies jsonb`, атрибуция
-   `studies_changed_by` пишется, перегрузки нет, хвостов смоука нет.
-   ⚠️ **Хвост:** при накатке `anon` получил execute через default privileges Supabase —
-   владелец выполняет `revoke execute … from anon` (строка добавлена в файл миграции и в
-   смоук, см. правило ниже). **Прод-БД на 0122, следующая новая = 0123.**
-2. **Владелец коммитит пакет 0123** (~30 файлов: миграция + смоук + `lib/rooms.ts` +
-   тесты + фильтры точек записи + SetupWizard + SSR-селекты; тулчейн **285/285**).
+1. ✅ **`0122` НАКАЧЕНА, хвост ACL ЗАКРЫТ** (2026-07-27), смоук — `SMOKE_OK`.
+   Сверено по прод-БД: 10 аргументов с `p_studies jsonb`, атрибуция `studies_changed_by`
+   пишется, перегрузки нет, хвостов смоука нет. ✅ `revoke execute … from anon` выполнен:
+   в `proacl` у `queue_reschedule_rpc` остались только `postgres`, `authenticated`,
+   `service_role`; `has_function_privilege('anon', …)` = false.
+
+   **Заодно проведён аудит ACL всей схемы `public`** (2026-07-27): `anon` имеет execute на
+   30 функциях проекта + функциях `pg_trgm`. Проверено — дыры нет:
+   • триггерные функции (`check_*`, `guard_*`, `fn_audit`, `handle_new_user`, `touch_updated_at`
+     и т.п.) через PostgREST вызвать нельзя в принципе — «trigger functions can only be
+     called as triggers»;
+   • `auth_*` — RLS-хелперы, они и должны быть доступны; при `auth.uid() = NULL` возвращают
+     NULL/false/пусто;
+   • четыре вызываемые `security definer` проверены по телу и защищены изнутри:
+     `services_import_rpc` (`auth.uid() is null → raise AUTH`), `search_referrers`
+     (`auth_is_admin()` в WHERE), `sink_overdue_scheduled` (`auth_clinic_id() is null → 0`),
+     `referral_center_card` (`ra.referrer_id = auth.uid()`);
+   • `pg_trgm` — из расширения, нужны операторам и индексам.
+   Правило «revoke после каждого drop+create» (ниже) остаётся в силе для НОВЫХ функций.
+2. **🎯 Владелец накатывает 0124** в Supabase SQL Editor, затем прогоняет
+   `supabase/smoke/login_required_smoke.sql` (ждём `SMOKE_OK`). Пакет 0124 уже закоммичен.
+   ⚠️ **Порядок: сперва 0124 в БД, потом деплой клиента** — новый клиент называет
+   `profiles.contact_email`, против старой схемы PostgREST даст 42703.
    Пакет сессии 12 (перенос + room-owned) владелец уже закоммитил: HEAD `59d4e96`.
    ✅ **Ф5 живой тест ПРОЙДЕН в сессии 12** (все 7 сценариев — см. HANDOVER блок с12; тестовые
    данные убраны, отменённую запись `dff4d053` «ТЕСТ Пацієнт с12» владелец может удалить).
@@ -134,6 +150,24 @@ CallListBoard,CaseModal,ReferralPortal}.tsx`, `app/queue/actions.ts`, `supabase/
    выбирать scope импорта осознанно.
    ⚠️ Ловушка dev-среды: системный `NODE_ENV=production` ломает `next dev` (EvalError в
    middleware → 404 на всех роутах) — запускать со снятым NODE_ENV и чистым `.next`.
+4b. **🎯 0124 «ЛОГІН ОБОВʼЯЗКОВИЙ» — НАПИСАНА, dry-run SMOKE_OK, ЖДЁТ НАКАТКИ.**
+   Требование владельца: логин обязателен у каждого аккаунта; все роли входят логином и
+   почтой; **радиологи — только логином**. `profiles.login` → not null + CHECK формата
+   (латиница/цифры/`._-`, 3–64, без краевых, lowercase); новая `profiles.contact_email`;
+   функции `login_from_email`/`unique_login`/`unique_login_from_email`; гард
+   `check_radiologist_email`; `resolve_login_email` переписана на `join auth.users`;
+   мёртвая `email_for_login` удалена.
+   **Служебный адрес радиолога СЛУЧАЙНЫЙ** (`rad.<32hex>@radiologist.radflow.local`), НЕ
+   производный от логина — иначе он угадывается, а смена логина требует неатомарного
+   обновления auth.users + profiles (сбой = врач не может войти вообще).
+   Бэкфилл: `Zast`→`zast`, владелец получит логин `tiosynergy`, радиолог — случайный адрес
+   со своей почтой в `contact_email`.
+   Новое в UI: поле «Логін для входу» в Мастере (+ роут `/api/account/login`),
+   `/api/auth/login-available` с двойным лимитом. Тулчейн **311/311**.
+   Два состязательных ревью (оба NO-SHIP → исправлено). Осознанный разрыв: гонка двух
+   одновременных signUp с одним логином → 500 с непрозрачным текстом GoTrue.
+   Файлы: 19, см. блок «Сессия 13» в `docs/HANDOVER.md`.
+
 5. **✅ 0123 «Вимкнути кабінет» — НАКАЧЕНА владельцем (2026-07-27), смоук SMOKE_OK.**
    Сверено по прод-БД: `rooms.active` (not null default true), 9/9 active, обе функции,
    три триггера, индекс, `anon` без execute, хвостов нет. **Прод на 0123, следующая = 0124.**

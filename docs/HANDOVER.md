@@ -7,7 +7,82 @@ room-owned** (15 файлов): `lib/catalog.ts`, `lib/serviceGate.ts`, `supabas
 `app/services/actions.ts`, `app/api/services/import/route.ts`, `components/ServicesEditor.tsx`,
 `components/ImportPriceModal.tsx`, `components/CeoDashboard.tsx`, `app/{queue,call-list,waitlist,referral}/page.tsx`
 + доки. **Коммитит владелец.**
-**PROD-БД на `0122`** (0122 накачена владельцем 2026-07-27, SMOKE_OK; следующая новая = 0123).
+**PROD-БД на `0123`** (0122 и 0123 накачены владельцем 2026-07-27, обе SMOKE_OK).
+✅ **Хвост ACL 0122 закрыт:** `revoke execute … from anon` на `queue_reschedule_rpc` выполнен
+(в `proacl` только postgres/authenticated/service_role). Аудит ACL всей схемы `public`
+2026-07-27: у `anon` есть execute на триггерных функциях, `auth_*`-хелперах и `pg_trgm` —
+дыры нет; четыре вызываемые `security definer` (`services_import_rpc`, `search_referrers`,
+`sink_overdue_scheduled`, `referral_center_card`) защищены внутренними гейтами по `auth.uid()`.
+**🎯 `0124_login_required.sql` НАПИСАНА и ПРОВЕРЕНА dry-run на проде (SMOKE_OK, откат чистый),
+но НЕ НАКАЧЕНА.** Следующая новая после неё = 0125.
+> ### 🎯 Сессия 13 — 0124 «ЛОГІН ОБОВʼЯЗКОВИЙ» (написана, dry-run SMOKE_OK, НЕ накачена)
+>
+> **Требование владельца:** логин — обязательный атрибут каждого аккаунта; все роли входят
+> и логином, и email; **исключение — радиологи: только внутренняя авторизация по логину.**
+>
+> Вход логином ИЛИ почтой работал и раньше (`/api/auth/login` различает по «@»). Не хватало:
+> логин не был обязательным (у владельца его вообще не было), не имел формата, а у радиолога
+> почта была настоящей — то есть полноценным вторым входом.
+>
+> **БД (0124):** `profiles.login` → not null + CHECK `^[a-z0-9][a-z0-9._-]{1,62}[a-z0-9]$`
+> (латиница, цифры, точка, дефис, подчёркивание; 3–64; без краевых разделителей; lowercase).
+> Кириллица запрещена намеренно: латинская «a» и кириллическая «а» неотличимы на глаз.
+> Новая колонка `profiles.contact_email`. Функции `login_from_email` / `unique_login` /
+> `unique_login_from_email`, гард `check_radiologist_email` + триггер `trg_radiologist_email`.
+> Мёртвая `email_for_login` (0013, права отозваны в 0032) удалена.
+> Бэкфилл: логины в нижний регистр (`Zast` → `zast`), отсутствующим — из левой части почты
+> (владелец получит `tiosynergy`). **Строка за строкой, а НЕ одним UPDATE:** `unique_login`
+> читает profiles и не видит строк, изменяемых этим же оператором.
+>
+> **⚠️ Ключевое решение: служебный адрес радиолога СЛУЧАЙНЫЙ** —
+> `rad.<32hex>@radiologist.radflow.local`, а НЕ `<login>@radiologist.radflow.local`.
+> Первая версия была производной, ревью показало три причины отказаться: (1) адрес выводится
+> из логина, а логин видит каждый админ → «вход только по логину» держался бы на том, что
+> никто не наберёт адрес напрямую в GoTrue (у браузера anon-ключ, эндпоинт публичный);
+> (2) смена логина требовала бы синхронно править `auth.users.email` и `profiles.email`, а
+> атомарности между Auth API и базой НЕТ — сбой посередине оставлял бы врача, который не может
+> войти вообще; (3) переименование освобождает логин, но оставляет адрес занятым.
+> Настоящая почта радиолога уходит в `contact_email` (в карточке показывается именно она).
+>
+> **`resolve_login_email` переписана на `join auth.users`** — адрес берётся из источника
+> истины, `profiles.email` остаётся копией для показа. Иначе любой рассинхрон = вход на
+> адрес, которого в Auth уже нет, видно только на неудачной попытке.
+>
+> **Клиент:** `lib/login.ts` (normalizeLogin / isValidLogin / technicalEmail /
+> randomRadiologistEmail / isTechnicalEmail / loginFromEmail, +20 тестов) — заменяет три
+> копипастных инлайн-санитайзера. `zLogin` нормализует и проверяет формат. Мастер настроек:
+> поле «Логін для входу» + отдельная кнопка сохранения (через новый `/api/account/login` под
+> service-role — триггер 0064 не пускает смену login с клиента) + предупреждение о
+> несохранённом. Карточка персонала: email радиолога стал контактным и необязательным.
+> Новый `/api/auth/login-available` (двойной лимит: по IP 10/5мин и по хешу логина 5/час).
+> `.ilike("login")` → `.eq` в трёх роутах.
+>
+> **Попутно (вне 0124):** `/api/staff/password` не покрывал регистратора — карточка рисует
+> «Скинути пароль», сервер отвечал 403; регистратор, забывший пароль, был невосстановим.
+>
+> **Ревью:** два состязательных прохода субагентом, оба NO-SHIP → исправлено. Проход 1:
+> безвозвратная потеря доступа радиолога; молчаливое переименование занятого логина;
+> contact_email сохранялся, но не показывался; NULL-слепота гарда (и смоук был слеп так же);
+> порядок усечения в login_from_email оставлял краевую точку → весь signUp падал.
+> Проход 2: проверка логина отвечала «свободен» при отказе БД; тот же дефект адреса остался
+> в `/api/ceo/grant`; миграция фильтровала радиологов по `profiles.email`, а обновляла
+> `auth.users`.
+>
+> **Осознанно не исправлено:** гонка двух одновременных signUp с одним логином → 500 с
+> непрозрачным текстом GoTrue (pre-check почти всегда опережает).
+>
+> **Файлы (19):** `supabase/migrations/0124_login_required.sql`,
+> `supabase/smoke/login_required_smoke.sql`, `lib/login.ts`, `tests/login.test.ts`,
+> `app/api/account/login/route.ts`, `app/api/auth/login-available/route.ts`,
+> `app/api/auth/login/route.ts`, `app/api/staff/route.ts`, `app/api/staff/password/route.ts`,
+> `app/api/referrers/invite/route.ts`, `app/api/ceo/grant/route.ts`,
+> `app/api/referral/profile/route.ts`, `lib/validation.ts`, `supabase/types.ts`,
+> `app/setup/page.tsx`, `components/{SetupWizard,StaffManager,RegisterPage,CeoManager}.tsx`.
+> Тулчейн: tsc 0, lint 0, **vitest 311/311**. Закоммичено владельцем.
+>
+> **⚠️ ПОРЯДОК ВЫКАТКИ: сперва 0124 в БД, потом клиент** — новый клиент называет
+> `profiles.contact_email` в карточке персонала; против старой схемы PostgREST даст 42703.
+
 Ранее: **`0121`** (схема сверена: room_id, оба partial-индекса, гард-триггер, 4 функции в
 редакциях 0121). ⚠️ **Данные: владелец НАМЕРЕННО удалил весь каталог Medicom** (все 185/188
 конвертированных услуг) после сессии 11 — сейчас 0 room-owned, 0 оверрайдов, у Medicom 0 услуг
