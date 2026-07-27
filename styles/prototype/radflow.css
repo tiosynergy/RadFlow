@@ -1151,6 +1151,10 @@ select.inp { cursor: pointer; }
 .ctx-hint.red a { color: var(--red); }
 .ctx-hint.blue { background: var(--blue-bg-soft); color: var(--text-secondary); border: 1px solid rgba(10,132,255,0.2); }
 .ctx-hint.blue a { color: #4da3ff; }
+/* Попередження (не помилка): наслідки дії, яку користувач щойно обрав свідомо —
+   напр. вимкнення кабінету (0123). Червоний тут читався б як «щось зламалось». */
+.ctx-hint.orange { background: var(--orange-bg); color: var(--orange); border: 1px solid rgba(255,159,10,0.28); }
+.ctx-hint.orange b { color: var(--orange); }
 
 /* ===== Перенесення записів після зміни графіка ===== */
 .sch-affected { display: flex; flex-direction: column; gap: 6px; }

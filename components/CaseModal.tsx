@@ -44,7 +44,7 @@ import type { CaseStatus, Json } from "@/supabase/types";
 import type { IncidentLike } from "@/lib/incidents";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 
 type StepRow = CaseStepLite & {
   id: string;

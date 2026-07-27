@@ -31,7 +31,7 @@ export default async function QueuePage() {
 
   const { data: rooms } = await supabase
     .from("rooms")
-    .select("id, name, modality, apparatus_model, schedule")
+    .select("id, name, modality, apparatus_model, schedule, active")
     .eq("clinic_id", profile.clinic_id as string)
     .order("name");
 

@@ -6,6 +6,7 @@
    Зайнятість слотів — через знеособлений RPC room_busy_slots (без PII). */
 
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
+import { bookableRooms } from "@/lib/rooms";
 import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -39,7 +40,7 @@ import RoomSelect, { ROOM_LIST_MAX_CHIPS } from "@/components/RoomSelect";
 import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null; timezone?: string | null };
 type Referral = {
   id: string; clinic_id: string; created_by: string | null; referrer_id: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
@@ -153,7 +154,10 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const selCenter = activeCenters.find((c) => c.clinicId === centerId) || null;
   const allRooms = roomsByClinic[centerId] || [];
   const allowedRoomIds = selCenter && Array.isArray(selCenter.room_ids) && selCenter.room_ids.length ? selCenter.room_ids : null;
-  const rooms = allowedRoomIds ? allRooms.filter((r) => allowedRoomIds.includes(r.id)) : allRooms;
+  /* 0123: вимкнені кабінети направнику не показуємо взагалі — на його дошці
+     немає «ведення» записів, лише запис і перегляд своїх; кабінет, у якому вже
+     є його запис, лишається видимим у самому рядку запису (там назва з БД). */
+  const rooms = bookableRooms(allowedRoomIds ? allRooms.filter((r) => allowedRoomIds.includes(r.id)) : allRooms);
   // Модальності, доступні направнику в цьому центрі (є кабінет і можна записати).
   const availableModalities = BOOKABLE_MODALITIES.filter((code) => rooms.some((r) => r.modality === code));
   const modAllowed = (code: string) => rooms.some((r) => r.modality === code);

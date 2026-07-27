@@ -18,7 +18,7 @@ import type { WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type IncidentLite = { id: string; room_id: string; reason_label?: string | null; note?: string | null; started_at: string; blocked_until: string | null; status: string };
 
 export type FreedSlotInfo = {

@@ -212,6 +212,9 @@ export type Database = {
           apparatus_model: string | null;
           created_at: string;
           schedule: Json;
+          /* 0123: false = кабінет вимкнено (нові записи/переноси сюди заборонені
+             тригером check_room_active; наявні лишаються робочими). */
+          active: boolean;
         };
         Insert: {
           id?: string;
@@ -221,6 +224,7 @@ export type Database = {
           apparatus_model?: string | null;
           created_at?: string;
           schedule?: Json;
+          active?: boolean;
         };
         Update: {
           id?: string;
@@ -230,6 +234,7 @@ export type Database = {
           apparatus_model?: string | null;
           created_at?: string;
           schedule?: Json;
+          active?: boolean;
         };
         Relationships: [
           {

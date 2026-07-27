@@ -23,8 +23,9 @@ import { countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import HelpTip from "@/components/HelpTip";
 import RoomSelect, { ROOM_LIST_MAX_CHIPS } from "@/components/RoomSelect";
+import { bookableRooms } from "@/lib/rooms";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type DocOpt = { id: string; name: string; spec?: string | null; clinic_name?: string | null; phone?: string | null };
 type ExtraStudy = { type: string; region: string; dur: number };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
@@ -308,7 +309,11 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const pfPrimary = pfStudies[0] || null;
   /* Модальності, для яких у центрі Є кабінети (у порядку реєстру). Сегменти типу
      показуємо лише для них — не пропонуємо записати на модальність без обладнання. */
-  const availableModalities = BOOKABLE_MODALITIES.filter((code) => (rooms || []).some((r) => r.modality === code));
+  /* 0123: вимкнені кабінети форма не пропонує — ні в сегментах модальності, ні в
+     списку кабінетів. Останній рубіж усе одно тригер check_room_active, але
+     показувати те, що впаде на збереженні, не можна. */
+  const bookable = bookableRooms(rooms);
+  const availableModalities = BOOKABLE_MODALITIES.filter((code) => bookable.some((r) => r.modality === code));
   const pfCode = pfPrimary ? modalityCode(pfPrimary.type) : "";
   // studyType тепер тримає КОД модальності (MRI/CT/US/XRAY/MAMMO/OTHER), а не MRT/CT.
   const pfType: string = (pfCode && availableModalities.includes(pfCode)) ? pfCode : (availableModalities[0] || "MRI");
@@ -357,7 +362,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     return () => { cancel = true; };
   }, [clinicId]);
 
-  const roomsOfType = (code: string) => (rooms || []).filter((r) => r.modality === code);
+  const roomsOfType = (code: string) => bookable.filter((r) => r.modality === code);
   // Авто-вибір лише коли кабінет один; якщо їх кілька — користувач обирає вручну.
   // Передзаповнений слот (кандидат на вікно, що звільнилося) має пріоритет; кабінет
   // приймаємо лише якщо він підходить за модальністю дослідження.

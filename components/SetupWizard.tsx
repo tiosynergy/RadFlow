@@ -63,6 +63,10 @@ type EquipItem = {
   start: string; end: string; breaks: Break[];
   perDay: boolean; dayHours: DayHours[];
   roomId?: string;
+  /* 0123: false = кабінет вимкнено. Нові записи в нього не приймаються (тригер
+     check_room_active), наявні лишаються робочими, прайс/інциденти/привязки
+     радіологів цілі. Видалити рядок можна ЛИШЕ вимкнений. */
+  active?: boolean;
 };
 type WizardData = {
   clinic: string; city: string; address: string; phones: string[]; emails: string[];
@@ -281,11 +285,42 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
      кабінет із «зависшими» минулими записами (їх ніхто не закрив у done/no_show)
      не можна було видалити НІКОЛИ. Минулі відкриті рахуємо окремо — показуємо
      в попередженні, але видаляти не заважаємо. */
+  /* 0123: скільки МАЙБУТНІХ активних записів лишиться за кабінетом, який щойно
+     вимкнули. Рішення власника — вимикати можна завжди, але з чесним попередженням:
+     інакше апарат зникає з форм запису, а про людей, записаних на завтра, ніхто не
+     дізнається. Рахуємо ліниво, лише в момент вимкнення. */
+  const [offInfo, setOffInfo] = useState<Record<number, { checking: boolean; count: number | null }>>({});
+  async function toggleEqActive(i: number, on: boolean) {
+    setEq(i, "active", on);
+    if (on) { setOffInfo((m) => { const n = { ...m }; delete n[i]; return n; }); return; }
+    const roomId = equip[i]?.roomId;
+    if (!roomId) { setOffInfo((m) => ({ ...m, [i]: { checking: false, count: 0 } })); return; }  // новий кабінет
+    setOffInfo((m) => ({ ...m, [i]: { checking: true, count: null } }));
+    try {
+      const supabase = createClient();
+      // «Сьогодні» — за настінним часом ЦЕНТРУ (канон проєкту), як і в askDelEq.
+      const { count, error } = await supabase.from("queue_entries")
+        .select("id", { count: "exact", head: true })
+        .eq("room_id", roomId).in("status", OPEN_STATUSES)
+        .gte("scheduled_date", wallDayKey(timezone || undefined));
+      if (error) throw error;
+      setOffInfo((m) => ({ ...m, [i]: { checking: false, count: count ?? 0 } }));
+    } catch {
+      // Не змогли порахувати — попередження лишається, просто без числа.
+      setOffInfo((m) => ({ ...m, [i]: { checking: false, count: null } }));
+    }
+  }
+
   const [delAsk, setDelAsk] = useState<{
     i: number; name: string; checking: boolean;
     count: number | null;      // майбутні активні — блокують видалення
     pastOpen?: number;         // минулі незакриті — лишаться в історії без кабінету
     services?: number;         // власний прайс кабінету (0121) — піде каскадом
+    /* 0123: кабінет ЩЕ АКТИВНИЙ у базі → видаляти рано. Перевіряємо саме в базі, а
+       не за перемикачем у формі: інакше «вимкнув → одразу видалив → Зберегти»
+       проходило б одним збереженням, і двокроковість була б косметикою
+       (ревʼю Medium-2). Тригер guard_delete_active_room тримає те саме правило. */
+    stillActive?: boolean;
   } | null>(null);
   async function askDelEq(i: number) {
     const e = equip[i];
@@ -298,17 +333,22 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
       const today = wallDayKey(timezone || undefined);
       const q = () => supabase.from("queue_entries").select("id", { count: "exact", head: true })
         .eq("room_id", e.roomId as string).in("status", OPEN_STATUSES);
-      const [fut, past, svc] = await Promise.all([
+      const [fut, past, svc, room] = await Promise.all([
         q().gte("scheduled_date", today),   // майбутні/сьогоднішні — блокують
         q().lt("scheduled_date", today),    // минулі незакриті — лише попередження
         supabase.from("services").select("id", { count: "exact", head: true }).eq("room_id", e.roomId as string),
+        supabase.from("rooms").select("active").eq("id", e.roomId as string).maybeSingle(),
       ]);
       if (fut.error || past.error) throw fut.error || past.error;
       setDelAsk((cur) => (cur && cur.i === i
-        ? { ...cur, count: fut.count ?? 0, pastOpen: past.count ?? 0, services: svc.count ?? 0, checking: false }
+        ? { ...cur, count: fut.count ?? 0, pastOpen: past.count ?? 0, services: svc.count ?? 0,
+            stillActive: (room.data as { active?: boolean } | null)?.active !== false, checking: false }
         : cur));
     } catch {
-      setDelAsk((cur) => (cur && cur.i === i ? { ...cur, count: null, checking: false } : cur)); // не змогли перевірити
+      /* Не змогли перевірити → fail-closed на обидві причини: stillActive = true
+         тримає діалог у стані «спершу вимкніть», інакше він пропонував би
+         «Видалити», а тригер 0123 віддав би сирий ROOM_ACTIVE_DELETE у тост. */
+      setDelAsk((cur) => (cur && cur.i === i ? { ...cur, count: null, stillActive: true, checking: false } : cur));
     }
   }
 
@@ -383,8 +423,11 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
       <p className="wiz-hsub">Апарати центру та їхній графік роботи.</p>
       <div className="form-card" style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 16 }}>
         {equip.map((e, i) => (
-          <div key={e.id} className="equip-block">
-            <button className="mini-icon equip-block-del" type="button" title="Видалити обладнання" onClick={() => askDelEq(i)} disabled={equip.length <= 1}>✕</button>
+          <div key={e.id} className={"equip-block" + (e.active === false ? " equip-off" : "")}>
+            <button className="mini-icon equip-block-del" type="button"
+              title={equip.length <= 1 ? "Останній кабінет видалити не можна" : "Видалити обладнання"}
+              onClick={() => askDelEq(i)}
+              disabled={equip.length <= 1}>✕</button>
             <div className="equip-info">
               <div className="equip-info-row">
                 <select className="inp equip-type" value={e.type} onChange={(ev) => setEq(i, "type", ev.target.value)}>
@@ -393,6 +436,38 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                 <input className="inp equip-room2" placeholder="Кабінет / №" value={e.room} onChange={(ev) => setEq(i, "room", ev.target.value)} />
               </div>
               <input className="inp" placeholder="Модель / опис обладнання" value={e.desc} onChange={(ev) => setEq(i, "desc", ev.target.value)} />
+
+              {/* 0123. Вимкнення — мʼякий і зворотний крок: кабінет перестає приймати
+                  нові записи, але прайс, інциденти, привязки радіологів і вся історія
+                  лишаються. Видалення (✕) — незворотний каскад, і воно доступне лише
+                  для ВЖЕ вимкненого кабінету (той самий порядок тримає тригер
+                  guard_delete_active_room у БД).
+                  Це саме чекбокс, а не кнопка-перемикач: стан несе `checked`, і
+                  скрінрідер читає «Кабінет працює, прапорець знято» без суперечності,
+                  яку давала пара «мінлива мітка + aria-pressed». */}
+              <label className="eq-active-lab">
+                <input type="checkbox" checked={e.active !== false}
+                  onChange={(ev) => toggleEqActive(i, ev.target.checked)} />
+                Кабінет працює
+              </label>
+              {e.active === false && (
+                <div className="ctx-hint orange eq-off-warn" role="status" aria-live="polite">
+                  <b>⚠ Кабінет буде вимкнено.</b> Після збереження в нього не можна буде
+                  ні записати пацієнта, ні перенести запис, ні забронювати місце в листі
+                  очікування.
+                  <br />Наявні записи <b>не зникають</b>: їх ведуть, викликають, завершують і
+                  рухають по часу в цьому ж кабінеті або переносять в інший. Прайс кабінету,
+                  інциденти та привʼязки радіологів зберігаються.
+                  {offInfo[i]?.checking
+                    ? <><br />Перевіряю майбутні записи…</>
+                    : offInfo[i]?.count == null
+                    ? null
+                    : offInfo[i]!.count! > 0
+                    ? <><br /><b>Зараз у кабінеті {offInfo[i]!.count} майбутніх активних записів.</b>{" "}
+                        Вони залишаться за ним — перенесіть або скасуйте їх, якщо апарат уже не працює.</>
+                    : <><br />Майбутніх активних записів у ньому немає.</>}
+                </div>
+              )}
             </div>
             <div className="equip-sched">
               <span className="equip-sched-lab">Розклад роботи</span>
@@ -505,19 +580,33 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
       </>)}
 
       {delAsk && (() => {
-        const blocked = (delAsk.count ?? 0) > 0;   // є активні записи → видаляти не можна
+        /* Дві різні причини відмови, і плутати їх не можна: «ще активний»
+           (0123 — треба спершу вимкнути й зберегти) і «є майбутні записи»
+           (їх треба перенести або скасувати). */
+        const stillOn = delAsk.stillActive === true;
+        const blocked = stillOn || (delAsk.count ?? 0) > 0;
         return (
           <ConfirmDialog
-            title={blocked ? "Не можна видалити кабінет" : "Видалити кабінет?"}
+            title={stillOn ? "Спершу вимкніть кабінет" : blocked ? "Не можна видалити кабінет" : "Видалити кабінет?"}
             text={
               delAsk.checking
                 ? <>Перевіряю записи в кабінеті <b>{delAsk.name}</b>…</>
+                : stillOn
+                  ? <>Кабінет <b>{delAsk.name}</b> ще працює. Видалення незворотне, тому спершу
+                      <b> вимкніть</b> його перемикачем на картці й <b>збережіть зміни</b> — після цього
+                      кабінет можна буде видалити. Часто вимкнення і є тим, що потрібно: кабінет
+                      перестає приймати нові записи, а прайс, історія та привʼязки лишаються цілими.</>
                 : blocked
                   ? <>У кабінеті <b>{delAsk.name}</b> — <b>{delAsk.count}</b> майбутніх активних запис(ів). Спершу перенесіть або скасуйте їх — інакше пацієнти залишаться без кабінету.</>
                   : delAsk.count === null
                     ? <>Не вдалося перевірити записи кабінету <b>{delAsk.name}</b>. Видалити? Якщо в ньому є пацієнти, збереження буде заблоковано.</>
                     : <>
                         Кабінет <b>{delAsk.name}</b> буде видалено з центру при збереженні. Скасувати дію потім не можна.
+                        {/* 0123: у цей діалог тепер можна потрапити лише з ВИМКНЕНОГО
+                            кабінету, тож нагадуємо, що видаляти взагалі не обовʼязково. */}
+                        <br /><br />Якщо потрібно було просто прибрати апарат із роботи — <b>цього вже досягнуто</b>:
+                        кабінет вимкнено, нових записів він не приймає, а прайс, історія та привʼязки цілі.
+                        Видаляти не обовʼязково.
                         {/* Чесний перелік наслідків: історія НЕ видаляється (FK on delete set null),
                             а от прайс кабінета, інциденти й привʼязки радіологів — так (cascade). */}
                         {!!delAsk.services && <><br /><br />Разом із кабінетом <b>назавжди зникне його власний прайс — {delAsk.services} послуг(и)</b>, а також інциденти (поломки/ТО) і привʼязки радіологів до нього.</>}
@@ -544,7 +633,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
 }
 
 /* ---------- Майстер (контейнер) ---------- */
-type SetupRoom = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type SetupRoom = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type ServiceRow = Tables<"services">;
 type SroRow = Tables<"service_room_overrides">;
 
@@ -605,6 +694,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
         name: (e.room || e.type).trim(),
         modality: modalityCode(e.type),
         apparatus_model: e.desc.trim() || null,
+        active: e.active !== false,   // 0123
         schedule: {
           days: e.days, start: e.start, end: e.end,
           // Не зберігаємо некоректні інтервали (кінець ≤ початку / незаповнені).
@@ -720,7 +810,11 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
           if (ins) keepIds.push(ins.id);
         }
       }
-      // Прибрані в майстрі кабінети (активних записів у них уже точно немає — перевірили вище).
+      /* Прибрані в майстрі кабінети (активних записів у них уже точно немає —
+         перевірили вище). 0123: DELETE тут завжди по ВЖЕ вимкненому кабінету —
+         кнопка «✕» доступна лише для збереженого active=false, — тож тригер
+         guard_delete_active_room лишається справжнім рубежем, а не формальністю,
+         яку клієнт сам собі й обходить. */
       for (const r of removedRooms) {
         const { error: de } = await supabase.from("rooms").delete().eq("id", r.id);
         if (de) throw de;

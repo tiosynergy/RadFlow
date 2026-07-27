@@ -5,6 +5,7 @@
    queue_entries.call_status (синхронно з дошкою), нотатка — у call_note. Realtime. */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { isRoomBookable } from "@/lib/rooms";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
@@ -28,7 +29,7 @@ import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type CallEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
@@ -390,6 +391,10 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, services, roo
 
   // Після звільнення слота — запропонувати кандидатів з листа очікування.
   async function suggestWaitlistFor(p: CallEntry) {
+    /* 0123: у вимкненому кабінеті звільнений слот нікому не пропонуємо — запис
+       туди відхилить тригер, і панель кандидатів була б дорогою в нікуди. */
+    const rm = (rooms || []).find((r) => r.id === p.room_id);
+    if (rm && !isRoomBookable(rm)) return;
     const slot: FreedSlotInfo = { date: p.scheduled_date || dayKey, time: p.scheduled_time, roomId: p.room_id };
     const candidates = await fetchWaitlistCandidates(slot);
     if (candidates.length) setWlSuggest({ slot, candidates });

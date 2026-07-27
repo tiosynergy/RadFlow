@@ -6,10 +6,11 @@
    Відкривається кнопкою-тумблером «Аварійна зупинка» в сайдбарі. */
 
 import { useState } from "react";
+import { isRoomBookable } from "@/lib/rooms";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { modalityShort, modalityKind } from "@/lib/studies";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 
 interface EmergencyModalProps {
   rooms?: RoomOpt[];
@@ -24,7 +25,10 @@ interface EmergencyModalProps {
 export default function EmergencyModal({ rooms = [], stoppedRoomIds = [], affectedCount, busy, onClose, onStop, onResume }: EmergencyModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const stopped = new Set(stoppedRoomIds);
-  const free = rooms.filter((r) => !stopped.has(r.id));
+  /* 0123: вимкнений кабінет зупиняти нема сенсу — він і так не приймає записів.
+     У списку ВІДНОВЛЕННЯ (stoppedList) лишається: якщо аварія висіла на ньому до
+     вимкнення, її треба мати змогу зняти. */
+  const free = rooms.filter((r) => !stopped.has(r.id) && isRoomBookable(r));
   const stoppedList = rooms.filter((r) => stopped.has(r.id));
   const [sel, setSel] = useState<Set<string>>(() => new Set()); // за замовч. — нічого не обрано (свідомий вибір)
   const [note, setNote] = useState("");

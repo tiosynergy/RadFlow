@@ -30,9 +30,10 @@ import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import BookingModal, { type BookingPrefill, type BookingPayload } from "@/components/BookingModal";
 import { updatePatientDetails } from "@/app/queue/actions";
 import type { PatientPriority } from "@/lib/priority";
+import { isRoomBookable, ROOM_OFF_LABEL } from "@/lib/rooms";
 import type { TablesUpdate } from "@/supabase/types";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 /* 0122: склад, обраний заново в каталозі ЦІЛЬОВОГО кабінету. Їде в
    rescheduleQueueEntry і далі в RPC тим самим UPDATE, що й room_id — інакше
    тригер 0121 перевіряв би новий кабінет проти старого складу. */
@@ -104,8 +105,14 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const kind = modalityLabel(modality);
   const baseDur = patient.duration_min || 30;   // у режимі 1 склад не змінюється → dur той самий
   const buffer = normBuffer(patient.buffer_time_min ?? BUFFER_DEFAULT); // переноситься разом із записом
-  // Кабінети тієї ж модальності, зокрема заблоковані — щоб можна було перенести на дату ПІСЛЯ відновлення.
-  const options = (rooms || []).filter((r) => r.modality === modality);
+  /* Кабінети тієї ж модальності, зокрема заблоковані простоєм — щоб можна було
+     перенести на дату ПІСЛЯ відновлення. 0123: ВИМКНЕНІ кабінети зі списку
+     прибираємо (записувати в них не можна), КРІМ поточного кабінету запису —
+     інакше запис, що лишився у вимкненому кабінеті, не можна було б навіть
+     посунути по часу, а в списку не було б жодного обраного чипа. */
+  const options = (rooms || []).filter((r) => r.modality === modality
+    && (isRoomBookable(r) || r.id === patient.room_id));
+  const curRoomOff = !!curRoom && !isRoomBookable(curRoom);
 
   const [roomId, setRoomId] = useState<string>(() => patient.room_id || options[0]?.id || "");
   // «Завтра» — від доби КЛІНІКИ, а не браузера: біля півночі в іншій зоні
@@ -454,13 +461,25 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
               ? <RoomSelect rooms={options} value={roomId}
                   onChange={(id) => { setRoomId(id); setTime(""); }} />
               : <div className="bd-rooms">
-                  {options.map((r) => (
-                    <button key={r.id} className={"bd-room" + (roomId === r.id ? " active" : "")} onClick={() => { setRoomId(r.id); setTime(""); }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
+                  {options.map((r) => {
+                    const off = !isRoomBookable(r);   // 0123: лише поточний кабінет запису
+                    return (
+                    <button key={r.id} className={"bd-room" + (roomId === r.id ? " active" : "")} onClick={() => { setRoomId(r.id); setTime(""); }}
+                      title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "") + (off ? " · " + ROOM_OFF_LABEL : "")}>
                       <span className={"bd-room-kind " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
-                      <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
+                      <span className="bd-room-meta"><span className="bd-room-name">{r.name}{off ? " · " + ROOM_OFF_LABEL : ""}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>}
+            {/* 0123: запис лишився у вимкненому кабінеті — час міняти можна, і це
+                треба сказати прямо, інакше зникнення інших чипів виглядає як збій. */}
+            {curRoomOff && (
+              <div className="ctx-hint blue" style={{ fontSize: 12.5, marginTop: 8 }} role="status" aria-live="polite">
+                ℹ Кабінет <b>{curRoom?.name}</b> вимкнено. Час у ньому змінити можна,
+                а щоб перевести пацієнта — оберіть інший кабінет зі списку.
+              </div>
+            )}
             {moveBlocked && (
               <div className="ctx-hint red" style={{ fontSize: 12.5, marginTop: 8 }} role="status" aria-live="polite">
                 ⚠ Не вдалося прочитати {catalogErr ? "прайс кабінетів" : "картку пацієнта"} —

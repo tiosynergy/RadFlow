@@ -317,11 +317,18 @@ const BREAK_ERR = {
   code: "off_schedule" as const,
 };
 
-/* Мапінг тригера графіка check_room_schedule (0084) — останній рубіж у БД.
-   Нормальний шлях відхиляє scheduleBlock раніше з тим самим кодом; сюди доходить
-   прямий виклик/розсинхрон (напр. графік змінили між preview і apply плану затримки).
-   Коди тригера — префікси повідомлень; сирий текст користувачу не показуємо. */
+/* Мапінг гардів КАБІНЕТУ — останній рубіж у БД: графік check_room_schedule (0084)
+   і вимкнення check_room_active (0123). Нормальний шлях відхиляє scheduleBlock /
+   не пропонує вимкнений кабінет раніше; сюди доходить прямий виклик або
+   розсинхрон (графік змінили між preview і apply плану затримки; кабінет вимкнули,
+   поки модалка була відкрита). Коди тригерів — префікси повідомлень; сирий текст
+   користувачу не показуємо. */
 function schedTriggerError(message: string): QueueActionResult | null {
+  /* 0123. Код НЕ slot_unavailable свідомо: дошки підміняють його своїм «слот щойно
+     зайняли», і причина «кабінет вимкнено» загубилась би. */
+  if (/^ROOM_INACTIVE/.test(message)) {
+    return { ok: false, error: "Кабінет вимкнено — записувати в нього не можна. Оберіть інший кабінет", code: "forbidden" };
+  }
   if (/^ROOM_CLOSED/.test(message)) return { ok: false, error: "Кабінет не працює цього дня — оберіть іншу дату", code: "off_schedule" };
   if (/^BEFORE_OPEN/.test(message)) return { ok: false, error: "Кабінет ще не відкрито в цей час — оберіть слот у межах графіка", code: "off_schedule" };
   if (/^TOO_LATE/.test(message))    return { ok: false, error: "Занадто пізно — за межами дозволеного вікна роботи кабінету", code: "off_schedule" };

@@ -105,6 +105,12 @@ function mapWaitlistDbError(context: string, error: { message?: string } | null)
   if (error?.message && /^SERVICE_CLOSED/i.test(error.message)) {
     return { ok: false, error: "Обрана послуга щойно була вимкнена або прихована в кабінеті — оновіть форму та виберіть іншу", code: "generic" };
   }
+  /* 0123: кабінет вимкнули, поки модалка була відкрита. Без цього рядка гард
+     віддавав би загальне «спробуйте ще раз» — пропозицію повторити те, що ніколи
+     не пройде (та сама TOCTOU-ситуація, заради якої на черзі є schedTriggerError). */
+  if (error?.message && /^ROOM_INACTIVE/.test(error.message)) {
+    return { ok: false, error: "Кабінет вимкнено — бронювати місце в ньому не можна. Оберіть інший кабінет", code: "forbidden" };
+  }
   return { ok: false, error: safeDbError(context, error), code: "generic" };
 }
 
@@ -159,12 +165,24 @@ export type WaitlistInput = {
     RLS-клієнт: направник бачить кабінети центрів, до яких має referral_access. */
 async function referrerModalityAllowed(
   supabase: SupabaseClient<Database>, clinicId: string, roomIds: string[] | null, modality: string,
-): Promise<boolean> {
-  let q = supabase.from("rooms").select("modality").eq("clinic_id", clinicId);
+): Promise<boolean | null> {
+  // 0123: вимкнений кабінет не робить модальність доступною — інакше направник
+  // клав би в лист очікування напрям, якого центр більше не виконує.
+  let q = supabase.from("rooms").select("modality").eq("clinic_id", clinicId).eq("active", true);
   if (roomIds && roomIds.length) q = q.in("id", roomIds);
-  const { data } = await q;
+  const { data, error } = await q;
+  /* Помилку НЕ ковтаємо (ревʼю 0123, High-2): раніше будь-який транзієнтний збій
+     тихо перетворювався на «цей напрям у центрі недоступний» — заборону, якої
+     насправді немає і яку неможливо продіагностувати. null = «не змогли
+     перевірити», і виклик повертає про це чесний текст. */
+  if (error) return null;
   return (data || []).some((r) => r.modality === modality);
 }
+const MOD_CHECK_ERR = {
+  ok: false as const,
+  error: "Не вдалося перевірити доступні напрями центру — спробуйте ще раз",
+  code: "generic" as const,
+};
 
 /** Додати пацієнта до листа очікування (новий або з наявного запису).
     Персонал — свій центр; направник — авторизований центр (referral_access). */
@@ -196,7 +214,9 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
     // 5 модальностей і давав завести напр. мамографію там, де доступ лише МРТ).
     const grantRooms = access.room_ids as string[] | null;
     const entryMod = modalityFromStudies(input.studies as Study[] | null);
-    if (!(await referrerModalityAllowed(supabase, input.clinicId, grantRooms, entryMod))) {
+    const modOk = await referrerModalityAllowed(supabase, input.clinicId, grantRooms, entryMod);
+    if (modOk === null) return MOD_CHECK_ERR;
+    if (!modOk) {
       return { ok: false, error: "Ця модальність недоступна за вашим доступом до центру", code: "forbidden" };
     }
     // Якщо направник жорстко привʼязав кабінет — він теж має бути в його гранті
@@ -387,8 +407,12 @@ export async function updateWaitlistEntry(
       .select("room_ids").eq("referrer_id", caller.userId).eq("clinic_id", row.clinic_id).eq("status", "active").maybeSingle();
     if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
     const grantRooms = access.room_ids as string[] | null;
-    if (newMod !== undefined && !(await referrerModalityAllowed(supabase, row.clinic_id, grantRooms, newMod))) {
-      return { ok: false, error: "Ця модальність недоступна за вашим доступом до центру", code: "forbidden" };
+    if (newMod !== undefined) {
+      const modOk = await referrerModalityAllowed(supabase, row.clinic_id, grantRooms, newMod);
+      if (modOk === null) return MOD_CHECK_ERR;
+      if (!modOk) {
+        return { ok: false, error: "Ця модальність недоступна за вашим доступом до центру", code: "forbidden" };
+      }
     }
     // Кабінет у патчі (не null) має бути в гранті (null/[] = усі кабінети центру).
     if (safePatch.room_id != null && grantRooms && grantRooms.length > 0 && !grantRooms.includes(safePatch.room_id as string)) {
