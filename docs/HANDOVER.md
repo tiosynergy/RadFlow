@@ -1,21 +1,29 @@
 # RadFlow — Handover для новой сессии
 
-**Дата:** 2026-07-27 (сессия 12, финал) · **Ветка:** `dev`, HEAD **`9d6f0fe`** (владелец закоммитил
-пакет сессии 11: 0121 + смоук + доки). Незакоммичено после сессии 12 — **TS-пакет фаз 2–4
-room-owned** (15 файлов): `lib/catalog.ts`, `lib/serviceGate.ts`, `supabase/types.ts`,
-`tests/catalog.test.ts`, `app/queue/actions.ts`, `app/waitlist/actions.ts`,
-`app/services/actions.ts`, `app/api/services/import/route.ts`, `components/ServicesEditor.tsx`,
-`components/ImportPriceModal.tsx`, `components/CeoDashboard.tsx`, `app/{queue,call-list,waitlist,referral}/page.tsx`
-+ доки. **Коммитит владелец.**
-**PROD-БД на `0123`** (0122 и 0123 накачены владельцем 2026-07-27, обе SMOKE_OK).
+**Дата:** 2026-07-27 (сессия 13, финал) · **Ветка:** `dev`, HEAD **`1f58405`**.
+**Всё смёржено и задеплоено:** `dev` и `main` указывают на один коммит (merge `dev → main`),
+расхождение 0/0, рабочее дерево чистое, незакоммиченного нет. Прод
+(`rad-flow-tau.vercel.app`) собран из этого коммита.
+Тулчейн на смердженном дереве: tsc 0, lint 0, **vitest 311/311**, `npm run build` — успешно.
+
+**PROD-БД на `0124`** — 0122, 0123 и 0124 накачены владельцем 2026-07-27, все три SMOKE_OK.
+**Следующая новая миграция = `0125`.**
 ✅ **Хвост ACL 0122 закрыт:** `revoke execute … from anon` на `queue_reschedule_rpc` выполнен
 (в `proacl` только postgres/authenticated/service_role). Аудит ACL всей схемы `public`
 2026-07-27: у `anon` есть execute на триггерных функциях, `auth_*`-хелперах и `pg_trgm` —
 дыры нет; четыре вызываемые `security definer` (`services_import_rpc`, `search_referrers`,
 `sink_overdue_scheduled`, `referral_center_card`) защищены внутренними гейтами по `auth.uid()`.
-**🎯 `0124_login_required.sql` НАПИСАНА и ПРОВЕРЕНА dry-run на проде (SMOKE_OK, откат чистый),
-но НЕ НАКАЧЕНА.** Следующая новая после неё = 0125.
-> ### 🎯 Сессия 13 — 0124 «ЛОГІН ОБОВʼЯЗКОВИЙ» (написана, dry-run SMOKE_OK, НЕ накачена)
+
+⚠️ **Урок сессии 13 про ветки.** Локальная `main` отставала от `origin/main` на 124 коммита,
+и первый мердж ушёл в устаревшую ветку — прошёл «чисто», но результат был бы неверным
+(откатил, подтянул `origin/main`, смерджил заново). Причина расхождения: коммит «Справочник
+городов (КАТОТТГ)» (`631e119`) сделали прямо в `main` и обратно в `dev` не влили. Теперь влит.
+**Правило: перед мерджем `git fetch` + `git pull --ff-only origin main`; после мерджа —
+tsc + vitest + build НА СМЕРДЖЕННОМ ДЕРЕВЕ и только потом пуш; затем `main` обратно в `dev`.**
+Git мержит построчно и семантический конфликт (одни файлы правили обе стороны — `SetupWizard`,
+`ReferralPortal`, `supabase/types.ts`, `referral/profile/route.ts`) пропускает молча.
+
+> ### ✅ Сессия 13 — 0124 «ЛОГІН ОБОВʼЯЗКОВИЙ» (накачена, SMOKE_OK, смёржена, задеплоена)
 >
 > **Требование владельца:** логин — обязательный атрибут каждого аккаунта; все роли входят
 > и логином, и email; **исключение — радиологи: только внутренняя авторизация по логину.**
@@ -80,8 +88,12 @@ room-owned** (15 файлов): `lib/catalog.ts`, `lib/serviceGate.ts`, `supabas
 > `app/setup/page.tsx`, `components/{SetupWizard,StaffManager,RegisterPage,CeoManager}.tsx`.
 > Тулчейн: tsc 0, lint 0, **vitest 311/311**. Закоммичено владельцем.
 >
-> **⚠️ ПОРЯДОК ВЫКАТКИ: сперва 0124 в БД, потом клиент** — новый клиент называет
-> `profiles.contact_email` в карточке персонала; против старой схемы PostgREST даст 42703.
+> **Порядок выкатки соблюдён:** сперва 0124 в БД (SMOKE_OK), потом деплой клиента, затем
+> мердж `dev → main`. Сверено по прод-БД после накатки: `login` not null + CHECK,
+> `contact_email`, четыре функции, триггер `trg_radiologist_email`, `resolve_login_email`
+> читает `auth.users`, `email_for_login` удалена, `anon` без execute. Данные: логин владельца
+> `tiosynergy`, радиолог `zast` со случайным служебным адресом и настоящей почтой в
+> `contact_email`, профилей без логина 0.
 
 Ранее: **`0121`** (схема сверена: room_id, оба partial-индекса, гард-триггер, 4 функции в
 редакциях 0121). ⚠️ **Данные: владелец НАМЕРЕННО удалил весь каталог Medicom** (все 185/188
