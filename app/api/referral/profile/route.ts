@@ -36,7 +36,7 @@ export async function POST(req: Request) {
   const { data: dup } = await admin
     .from("profiles")
     .select("id")
-    .ilike("login", login)
+    .eq("login", login)   // 0124: логін нормалізований у zLogin
     .neq("id", user.id)
     .maybeSingle();
   if (dup) return NextResponse.json({ error: "Логін вже зайнятий" }, { status: 409 });

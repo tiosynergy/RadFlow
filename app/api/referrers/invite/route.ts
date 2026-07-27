@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
 import { parseJson } from "@/lib/validationHttp";
 import { safeDbError, zLogin, zOptText, zRoomIdsGrant } from "@/lib/validation";
+import { technicalEmail, REFERRER_EMAIL_DOMAIN } from "@/lib/login";
 
 // POST /api/referrers/invite
 // Адмін центру запрошує лікаря-направника. Глобальний акаунт (clinic_id = NULL),
@@ -52,8 +53,11 @@ export async function POST(req: Request) {
 
   // Технічний email від логіну (Supabase Auth потребує email; вхід — за логіном).
   // Реальний email лікар вкаже сам у профілі (referrer_private).
-  const loginSan = login.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "") || "user";
-  const effectiveEmail = loginSan + "@referrer.radflow.local";
+  /* 0124: службова адреса будується з ВЖЕ нормалізованого логіна (zLogin), тож
+     вона однозначна. Раніше тут був власний інлайн-санітайзер, і два різні
+     логіни, що схлопувались в один рядок, давали одну адресу — другий
+     createUser падав на «Email вже використовується», хоча логін був вільний. */
+  let effectiveEmail = technicalEmail(login, REFERRER_EMAIL_DOMAIN);
 
   const admin = createAdminClient();
 
@@ -72,7 +76,7 @@ export async function POST(req: Request) {
   const { data: existingProf } = await admin
     .from("profiles")
     .select("id, role, login, password_set, invite_token")
-    .ilike("login", login)
+    .eq("login", login)   // 0124: логін нормалізований у zLogin — рівність бере profiles_login_uidx
     .maybeSingle();
 
   let referrerId: string;
@@ -101,16 +105,32 @@ export async function POST(req: Request) {
     const tempPass = "Rf!" + crypto.randomUUID().replace(/-/g, "");
     // Одноразовий токен для безпечного встановлення пароля (/set-password?token=…).
     inviteToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
-    const { data: created, error: cErr } = await admin.auth.admin.createUser({
+    /* Службова адреса похідна від логіна, і вона може бути ЗАЙНЯТА при вільному
+       логіні: направник, який колись перейменувався (/api/referral/profile
+       міняє лише profiles.login), лишив за собою стару адресу. Тоді createUser
+       падав із «Email вже використовується» — повідомленням про поле, якого в
+       цій формі взагалі немає. Другу спробу робимо з випадковою адресою:
+       людині вона не потрібна (вхід за логіном), а логін лишається тим, який
+       адмін і вводив. */
+    let { data: created, error: cErr } = await admin.auth.admin.createUser({
       email: effectiveEmail,
       email_confirm: true,
       password: tempPass,
       user_metadata: { managed: "true", login },
     });
+    if (cErr && /registered|already|exists/i.test(cErr.message || "")) {
+      const fallback = "ref." + crypto.randomUUID().replace(/-/g, "") + "@" + REFERRER_EMAIL_DOMAIN;
+      ({ data: created, error: cErr } = await admin.auth.admin.createUser({
+        email: fallback,
+        email_confirm: true,
+        password: tempPass,
+        user_metadata: { managed: "true", login },
+      }));
+      if (!cErr && created?.user) effectiveEmail = fallback;
+    }
     if (cErr || !created?.user) {
-      const msg = cErr?.message || "";
       return NextResponse.json(
-        { error: /registered|already|exists/i.test(msg) ? "Email вже використовується" : safeDbError("api/referrers/invite.createUser", cErr) },
+        { error: safeDbError("api/referrers/invite.createUser", cErr) },
         { status: 400 }
       );
     }

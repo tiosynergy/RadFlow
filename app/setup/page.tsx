@@ -15,7 +15,7 @@ export default async function SetupPage() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("clinic_id, full_name, role, phone, clinics(name, city, address, phones, emails, timezone, queue_delay_policy, overlap_threshold_min, max_cascade_patients, allow_after_hours_shift)")
+    .select("clinic_id, full_name, role, phone, login, clinics(name, city, address, phones, emails, timezone, queue_delay_policy, overlap_threshold_min, max_cascade_patients, allow_after_hours_shift)")
     .eq("id", user.id)
     .single();
 
@@ -90,6 +90,7 @@ export default async function SetupPage() {
     timezone: clinic?.timezone ?? "",
     adminName: profile.full_name ?? "",
     adminEmail: user.email ?? "",
+    adminLogin: (profile.login as string) ?? "",   // 0124: друга форма входу, редагована
     adminPhone: profile.phone ?? "",
     equip: equip.length ? equip : undefined,
   };

@@ -24,6 +24,7 @@
    поведінка для легальних значень не змінилась, а сміття відсікалось. */
 
 import { z } from "zod";
+import { normalizeLogin, isValidLogin, LOGIN_HINT } from "@/lib/login";
 import { hasBookableStudy, normBuffer, normDur } from "@/lib/studies";
 
 /* ── Примітиви ─────────────────────────────────────────────────────────────── */
@@ -57,7 +58,16 @@ export const zIsoInstant = z
   .refine((s) => !Number.isNaN(Date.parse(s)), "Некоректна мітка часу");
 
 export const zName = z.string().trim().min(1, "Вкажіть ПІБ").max(200);
-export const zLogin = z.string().trim().min(1, "Вкажіть логін").max(64);
+/* 0124: логін — обовʼязковий атрибут КОЖНОГО акаунта й одна з двох форм входу.
+   Нормалізуємо тут (trim + нижній регістр), щоб у БД потрапляла єдина форма:
+   унікальність і резолв і так по lower(), а «Zast» проти «zast» у списках
+   персоналу читається як два різні акаунти. Формат дзеркалить CHECK
+   profiles_login_format_chk (0124) і lib/login.ts. */
+export const zLogin = z
+  .string()
+  .transform((s) => normalizeLogin(s))
+  .refine((s) => s.length > 0, "Вкажіть логін")
+  .refine((s) => isValidLogin(s), LOGIN_HINT);
 /** Пароль — той самий мінімум, що був у роутах (8 символів). */
 export const zPassword = z.string().min(8, "Пароль мінімум 8 символів").max(200);
 

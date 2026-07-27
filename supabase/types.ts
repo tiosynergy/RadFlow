@@ -155,7 +155,8 @@ export type Database = {
           role: Database["public"]["Enums"]["user_role"];
           created_at: string;
           approved: boolean;
-          login: string | null;
+          login: string;                    // 0124: not null
+          contact_email: string | null;     // 0124: справжня пошта радіолога (НЕ для входу)
           note: string | null;
           workplace: string | null;
           city: string | null;
@@ -171,7 +172,8 @@ export type Database = {
           role?: Database["public"]["Enums"]["user_role"];
           created_at?: string;
           approved?: boolean;
-          login?: string | null;
+          login: string;                    // 0124: not null
+          contact_email?: string | null;
           note?: string | null;
           workplace?: string | null;
           city?: string | null;
@@ -187,7 +189,8 @@ export type Database = {
           role?: Database["public"]["Enums"]["user_role"];
           created_at?: string;
           approved?: boolean;
-          login?: string | null;
+          login?: string;
+          contact_email?: string | null;
           note?: string | null;
           workplace?: string | null;
           city?: string | null;
@@ -1268,8 +1271,18 @@ export type Database = {
         Args: { p_key: string; p_max: number; p_window_seconds: number };
         Returns: boolean;
       };
-      email_for_login: {
-        Args: { p_login: string };
+      /* 0124: службові функції логіна. Усі — лише під service_role; клієнтом
+         не викликаються, тримаємо тут для повноти схеми. */
+      login_from_email: {
+        Args: { p_email: string };
+        Returns: string;
+      };
+      unique_login: {
+        Args: { p_base: string };
+        Returns: string;
+      };
+      unique_login_from_email: {
+        Args: { p_email: string };
         Returns: string;
       };
       ceo_list_for_clinic: {
@@ -1296,7 +1309,9 @@ export type Database = {
         }[];
       };
       /* 0072: резолв логін→email на вході. Лише service_role (для клієнтів це був би
-         інструмент енумерації акаунтів). Бере індекс profiles_login_lower_idx. */
+         інструмент енумерації акаунтів). Індекс — profiles_login_uidx (0013),
+         вираз lower(login); коментарі 0072 називають його profiles_login_lower_idx,
+         але такої назви в схемі немає. */
       resolve_login_email: {
         Args: { p_login: string };
         Returns: string | null;

@@ -7,6 +7,7 @@
 import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { normalizeLogin, isValidLogin, LOGIN_HINT } from "@/lib/login";
 import type { Json, TablesInsert, Tables } from "@/supabase/types";
 import CitySelect from "@/components/CitySelect";
 import ServicesEditor from "@/components/ServicesEditor";
@@ -71,12 +72,12 @@ type EquipItem = {
 type WizardData = {
   clinic: string; city: string; address: string; phones: string[]; emails: string[];
   timezone: string;
-  adminName: string; adminEmail: string; aPhones: string[]; aEmails: string[]; equip: EquipItem[];
+  adminName: string; adminEmail: string; adminLogin: string; aPhones: string[]; aEmails: string[]; equip: EquipItem[];
 };
 type WizardInitial = Partial<{
   clinic: string; city: string; address: string; phones: string[]; emails: string[];
   timezone: string;
-  adminName: string; adminEmail: string; adminPhone: string; equip: EquipItem[];
+  adminName: string; adminEmail: string; adminLogin: string; adminPhone: string; equip: EquipItem[];
 }>;
 
 /* ---------- Toasts ---------- */
@@ -219,7 +220,7 @@ const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string }[]
 const FORM_SECTIONS = ["sec-clinic", "sec-admin", "sec-equip", "sec-price"];
 
 /* ---------- Крок 1: Профіль клініки ---------- */
-function StepRegister({ report, onData, initial, active, clinicId, services, rooms, roomOverrides }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial; active: string; clinicId: string; services: ServiceRow[]; rooms: SetupRoom[]; roomOverrides: SroRow[] }) {
+function StepRegister({ report, onData, initial, active, clinicId, services, rooms, roomOverrides, notify }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial; active: string; clinicId: string; services: ServiceRow[]; rooms: SetupRoom[]; roomOverrides: SroRow[]; notify: (msg: string, type?: string) => void }) {
   const [clinic, setClinic] = useState(initial.clinic || "");
   const [city, setCity] = useState(initial.city || "");
   const [address, setAddress] = useState(initial.address || "");
@@ -233,7 +234,17 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
   const [timezone, setTimezone] = useState(initial.timezone || browserTz());
 
   const [adminName, setAdminName] = useState(initial.adminName || "");
-  const [adminEmail, setAdminEmail] = useState(initial.adminEmail || "");
+  // Email лише показуємо: адресу входу міняє служба підтримки, не майстер.
+  const adminEmail = initial.adminEmail || "";
+  /* 0124: логін — друга (а для декого єдина зручна) форма входу, і донедавна
+     задати його можна було лише один раз, при реєстрації центру. Там же він
+     підставлявся в назву клініки, тож люди вводили випадкове. Тепер редагуємо. */
+  const [adminLogin, setAdminLogin] = useState(initial.adminLogin || "");
+  const [loginSaved, setLoginSaved] = useState(initial.adminLogin || "");
+  const [loginBusy, setLoginBusy] = useState(false);
+  const loginNorm = normalizeLogin(adminLogin);
+  const loginOk = isValidLogin(loginNorm);
+  const loginDirty = loginNorm !== loginSaved;
   const [aPhones, setAPhones] = useState<string[]>([initial.adminPhone || ""]);
   const [aEmails, setAEmails] = useState<string[]>([""]);
 
@@ -247,9 +258,9 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
     const adminPhoneOk = aPhones.some((p) => p.trim() !== "");
     const ok = clinic.trim() !== "" && city.trim() !== "" && adminName.trim() !== "" && adminPhoneOk && equip.length > 0 && equipHoursValid(equip) && equipBreaksValid(equip);
     report(1, !!ok);
-    onData({ clinic, city, address, phones, emails, timezone, adminName, adminEmail, aPhones, aEmails, equip });
+    onData({ clinic, city, address, phones, emails, timezone, adminName, adminEmail, adminLogin, aPhones, aEmails, equip });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clinic, city, address, phones, emails, timezone, adminName, adminEmail, aPhones, aEmails, equip]);
+  }, [clinic, city, address, phones, emails, timezone, adminName, adminEmail, adminLogin, aPhones, aEmails, equip]);
 
   function setEq(i: number, k: string, v: string | boolean) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, [k]: v } : x))); }
   function toggleEqDay(i: number, d: number) { setEquip((a) => a.map((x, j) => (j === i ? { ...x, days: x.days.map((v, k) => (k === d ? (v ? 0 : 1) : v)) } : x))); }
@@ -406,9 +417,54 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
           </label>
           <label className="fld">
             <span className="fld-lab">Email для входу <Req /></span>
-            <input className="inp" type="email" value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} readOnly />
-            <span className="fld-hint">Логін · роль: Адміністратор</span>
+            <input className="inp" type="email" value={adminEmail} readOnly />
+            {/* Раніше тут писалось «Логін · роль: Адміністратор» — підпис називав
+                логіном те, що ним не є, а справжній логін ніде не показувався. */}
+            <span className="fld-hint">Роль: Адміністратор. Змінюється у службі підтримки.</span>
           </label>
+        </div>
+        <div className="fld-row">
+          <label className="fld">
+            <span className="fld-lab">Логін для входу <Req /></span>
+            <input className={"inp" + (loginOk ? "" : " invalid")} value={adminLogin}
+              autoComplete="username" placeholder="напр. ivanov"
+              onChange={(e) => setAdminLogin(e.target.value)} />
+            <span className="fld-hint">{loginOk ? LOGIN_HINT : <span style={{ color: "var(--red)" }}>{LOGIN_HINT}</span>}</span>
+          </label>
+          <div className="fld">
+            <span className="fld-lab">&nbsp;</span>
+            {/* Логін зберігається ОКРЕМОЮ кнопкою, а не разом із майстром: його
+                міняє службовий роут під service-role (тригер 0064 не пускає
+                зміну login з клієнта), і відмова «логін зайнятий» має прийти
+                одразу, а не сховатись у загальному «Зберегти». */}
+            <button type="button" className="btn btn-secondary"
+              disabled={!loginOk || !loginDirty || loginBusy}
+              onClick={async () => {
+                setLoginBusy(true);
+                try {
+                  const res = await fetch("/api/account/login", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ login: loginNorm }),
+                  });
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok) { notify(data.error || "Не вдалося змінити логін", "error"); return; }
+                  setLoginSaved(loginNorm); setAdminLogin(loginNorm);
+                  notify("Логін збережено: " + loginNorm, "success");
+                } catch {
+                  notify("Мережа недоступна — логін не змінено", "error");
+                } finally { setLoginBusy(false); }
+              }}>
+              {loginBusy ? "Зберігаю…" : loginDirty ? "Зберегти логін" : "Логін збережено"}
+            </button>
+            {/* Логін не входить у загальне «Зберегти» — без цього рядка людина
+                редагує поле, тисне «Зберегти» внизу й лишається зі старим
+                логіном, ніде не побачивши, що зміна не застосувалась. */}
+            {loginDirty && (
+              <span className="fld-hint" style={{ color: "var(--orange)" }} role="status" aria-live="polite">
+                Логін не збережено — натисніть «Зберегти логін».
+              </span>
+            )}
+          </div>
         </div>
         <div className="contacts-grid">
           <ContactList label="Телефони" items={aPhones} setItems={setAPhones} ph="+38 0__ ___ __ __" required />
@@ -886,7 +942,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
               {/* Кожне вікно налаштувань — окремо; перемикається кружками зліва */}
               <div style={{ display: FORM_SECTIONS.includes(activeSection) ? "block" : "none" }}>
                 <StepRegister report={report} onData={onData} initial={initial} active={activeSection}
-                  clinicId={clinicId} services={services} rooms={rooms} roomOverrides={roomOverrides} />
+                  clinicId={clinicId} services={services} rooms={rooms} roomOverrides={roomOverrides} notify={push} />
               </div>
 
               {/* 0078 — політика черги при затримці дослідження (лише адмін). */}
