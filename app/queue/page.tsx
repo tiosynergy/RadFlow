@@ -42,7 +42,7 @@ export default async function QueuePage() {
   // би статику при вимкненні всіх послуг модальності (High-2).
   const { data: services } = await supabase
     .from("services")
-    .select("id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order")
+    .select("id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order, room_id") // 0121: room_id — видимість послуги залежить від кабінету запису
     .eq("clinic_id", profile.clinic_id as string)
     .order("sort_order");
 

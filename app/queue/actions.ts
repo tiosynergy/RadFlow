@@ -434,7 +434,7 @@ const MODALITY_MISMATCH_ERR: QueueActionResult = {
    кабінеті (0107/0108). DB-тригер стереже лише модальність↔кабінет, тож крафтовий/
    застарілий запит міг записати на закриту послугу. Гейт — firstClosedService. */
 const SERVICE_CLOSED_ERR = (region: string): QueueActionResult => ({
-  ok: false, error: `Послуга «${region}» вимкнена в центрі або кабінеті — оновіть форму`, code: "modality_mismatch",
+  ok: false, error: `Послуга «${region}» вимкнена, прихована або належить іншому кабінету — оновіть форму`, code: "modality_mismatch",
 });
 // Fail-CLOSED: збій читання каталогу → відмова у записі (а не мовчазний легасі-фолбэк).
 const CATALOG_UNAVAILABLE_ERR: QueueActionResult = {

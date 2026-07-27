@@ -252,6 +252,7 @@ export type Database = {
           contrast_price: number | null;   // 0107: доплата за контраст; null = дефолт CONTRAST_SURCHARGE
           active: boolean;                 // 0107: м'яке вимкнення позиції
           sort_order: number;              // 0107
+          room_id: string | null;          // 0121: null = базова, = X = послуга кабінету X
           source: string;                  // 0107: 'manual' | 'seed' | 'import'
           updated_at: string;              // 0107
           created_at: string;
@@ -267,6 +268,7 @@ export type Database = {
           contrast_price?: number | null;
           active?: boolean;
           sort_order?: number;
+          room_id?: string | null;         // 0121
           source?: string;
           updated_at?: string;
           created_at?: string;
@@ -282,6 +284,7 @@ export type Database = {
           contrast_price?: number | null;
           active?: boolean;
           sort_order?: number;
+          room_id?: string | null;         // 0121
           source?: string;
           updated_at?: string;
           created_at?: string;
@@ -291,6 +294,12 @@ export type Database = {
             foreignKeyName: "services_clinic_id_fkey";
             columns: ["clinic_id"];
             referencedRelation: "clinics";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "services_room_id_fkey";
+            columns: ["room_id"];
+            referencedRelation: "rooms";
             referencedColumns: ["id"];
           }
         ];

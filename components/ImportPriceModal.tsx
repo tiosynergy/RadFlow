@@ -89,6 +89,10 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
       const fd = new FormData();
       if (file) fd.append("file", file);
       if (url) fd.append("url", url);
+      // 0121: у режимі кабінета превʼю рахує diff проти ВЛАСНИХ послуг кабінету
+      // (той самий набір, що оновлює RPC) — інакше класифікація і optimistic-lock
+      // зʼїхали б на базовий каталог, якого кабінетний імпорт не торкається.
+      if (roomId) fd.append("room_id", roomId);
       const resp = await fetch("/api/services/import", { method: "POST", body: fd });
       const json = await resp.json().catch(() => null);
       if (!resp.ok || !json?.ok) {
@@ -104,10 +108,14 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
         // 3b (ревʼю M3): AI-розбір НЕ пред-відмічається — зловмисний прайс міг би
         // підсунути 200 правдоподібних «змін цін» під один клік «Застосувати».
         // Для AI кожен рядок (або «Відмітити всі») — свідомий вибір адміна.
+        // 0121 (ревю Ф3 №2): у режимі кабінета чужа модальність не пред-відмічається —
+        // вона однаково відкидається при застосуванні (баннер «ігноруються»).
+        if (roomModality && r.row.modality && r.row.modality !== roomModality) return;
         if (!pv.ai && (r.kind === "new" || r.kind === "changed")) init[i] = true;
       });
       setChecked(init);
       setModPick({});
+      setDurPick({}); // ревю Ф3 №1: ручні тривалості привʼязані до індексів СТАРОГО превʼю
       setPreview(pv);
       setStep("preview");
     } catch {
@@ -148,10 +156,13 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
     preview.rows.forEach((r, i) => {
       if (r.kind === "unchanged") return;
       if (r.kind === "unrecognized" && !modPick[i]) return;
+      // 0121 (ревю Ф3 №2): чужа модальність у режимі кабінета не вибирається —
+      // інакше лічильник «вибрано X із Y» рахував би рядки, які не застосуються.
+      if (roomModality && r.kind !== "unrecognized" && r.row.modality && r.row.modality !== roomModality) return;
       out.push(i);
     });
     return out;
-  }, [preview, modPick]);
+  }, [preview, modPick, roomModality]);
   const checkedCount = selectableIdx.reduce((n, i) => n + (checked[i] ? 1 : 0), 0);
   const allChecked = selectableIdx.length > 0 && checkedCount === selectableIdx.length;
   function toggleAll() {
@@ -214,6 +225,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
           setPreview(null);
           setChecked({});
           setModPick({});
+          setDurPick({}); // ревю Ф3 №1: інакше тривалості прилипнуть до нового превʼю
           setStep("pick");
           return;
         }
@@ -221,10 +233,11 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
         setStep("preview");
         return;
       }
+      // 0121: room-режим RPC пише ТІЛЬКИ власні послуги кабінета (ключ overrides
+      // завжди 0 — мертву гілку прибрано, ревю Ф3 №4); формулювання це відбиває.
       const parts = [
-        res.inserted ? `нових: ${res.inserted}` : null,
-        res.updated ? `оновлено: ${res.updated}` : null,
-        res.overrides ? `у кабінет: ${res.overrides}` : null,
+        res.inserted ? (roomId ? `нових у кабінеті: ${res.inserted}` : `нових: ${res.inserted}`) : null,
+        res.updated ? (roomId ? `оновлено в кабінеті: ${res.updated}` : `оновлено: ${res.updated}`) : null,
         res.skippedInactive ? `пропущено вимкнених: ${res.skippedInactive}` : null,
         res.noop ? `без змін: ${res.noop}` : null,
       ].filter(Boolean);
@@ -288,8 +301,8 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
           {roomModality && (
             <div style={{ fontSize: 12.5, color: "var(--text-secondary)", border: "1px solid var(--blue)", borderRadius: 10, padding: "8px 12px", background: "var(--blue-bg)" }}>
               🏥 Імпорт у кабінет — застосуються <b>лише позиції {modalityLabel(roomModality)}</b>:
-              вони створяться в базовому каталозі, а ціна/час ляжуть переозначенням для цього кабінета.
-              Інші модальності з прайса ігноруються.
+              вони стануть <b>послугами саме цього кабінета</b> (його власний прайс).
+              Базовий каталог центру не змінюється; інші модальності з прайса ігноруються.
             </div>
           )}
 

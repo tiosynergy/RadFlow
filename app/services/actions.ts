@@ -61,9 +61,21 @@ async function requireAdmin(
 }
 
 function mapServiceError(message: string): ServiceActionResult {
-  // 0107: унікальність (clinic_id, modality, lower(name)).
-  if (/services_clinic_mod_name_uniq|duplicate key/i.test(message)) {
+  // 0107/0121: унікальність — partial-індекси база/кабінет (0121 пересобрала 0107).
+  // Q4: дубль імені база↔кабінет ЛЕГАЛЬНИЙ, тож конфлікт кабінетного індексу
+  // означає дубль саме У ЦЬОМУ КАБІНЕТІ (ревю Ф3 №5 — інакше текст збивав би).
+  if (/services_room_mod_name_uniq/i.test(message)) {
+    return { ok: false, error: "Така послуга вже є у цьому кабінеті", code: "duplicate" };
+  }
+  if (/services_base_mod_name_uniq|services_clinic_mod_name_uniq|duplicate key/i.test(message)) {
     return { ok: false, error: "Така послуга вже є в цій модальності", code: "duplicate" };
+  }
+  // 0121: гард room-owned послуги (clinic+modality кабінету ↔ послуги).
+  if (/SVC_ROOM_MODALITY_MISMATCH/i.test(message)) {
+    return { ok: false, error: "Модальність послуги не збігається з кабінетом", code: "generic" };
+  }
+  if (/SVC_ROOM_CLINIC_MISMATCH|SVC_ROOM_BAD_REF/i.test(message)) {
+    return { ok: false, error: "Кабінет не з цього центру", code: "forbidden" };
   }
   if (/services_duration_chk/i.test(message)) {
     return { ok: false, error: "Тривалість — кратна 5 хв, від 5 до 480", code: "generic" };
@@ -74,16 +86,27 @@ function mapServiceError(message: string): ServiceActionResult {
   return { ok: false, error: safeDbError("services", { message }), code: "generic" };
 }
 
-/** Створити позицію каталогу. */
-export async function createService(raw: ServiceInput): Promise<ServiceActionResult> {
+/** Створити позицію каталогу.
+    0121 (room-owned): roomId задано → послуга належить ЛИШЕ цьому кабінету
+    (services.room_id = roomId; видима і бронюється тільки в ньому). Без roomId —
+    базова послуга центру (успадковується всіма кабінетами модальності).
+    Гард-тригер check_service_room звіряє clinic+modality кабінету ↔ послуги. */
+export async function createService(raw: ServiceInput, roomId?: string): Promise<ServiceActionResult> {
   const v = parseInput("createService", sService, raw);
   if (!v.ok) return v as ServiceActionResult;
+  let roomUuid: string | null = null;
+  if (roomId != null) {
+    const rv = parseInput("createService.room", zUuid, roomId);
+    if (!rv.ok) return rv as ServiceActionResult;
+    roomUuid = rv.data;
+  }
   const supabase = await createClient();
   const gate = await requireAdmin(supabase);
   if ("error" in gate) return gate.error;
 
   const { data, error } = await supabase.from("services").insert({
     clinic_id: gate.clinicId,
+    room_id: roomUuid,
     name: v.data.name,
     modality: v.data.modality,
     duration_min: v.data.durationMin,
@@ -156,9 +179,11 @@ export async function seedServicesFromCatalog(): Promise<ServiceActionResult> {
   const gate = await requireAdmin(supabase);
   if ("error" in gate) return gate.error;
 
-  // Наявні позиції — щоб не ловити unique-помилку на повторному сіді.
+  // Наявні БАЗОВІ позиції — щоб не ловити unique-помилку на повторному сіді.
+  // 0121: room-owned не враховуємо — дубль імені база↔кабінет допустимий (Q4),
+  // і кабінетна послуга не мусить блокувати сід базової.
   const { data: existing, error: exErr } = await supabase
-    .from("services").select("modality, name").eq("clinic_id", gate.clinicId);
+    .from("services").select("modality, name").eq("clinic_id", gate.clinicId).is("room_id", null);
   if (exErr) return mapServiceError(exErr.message);
   const seen = new Set((existing ?? []).map((r) => r.modality + "|" + r.name.trim().toLowerCase()));
 
@@ -394,7 +419,8 @@ export type ImportServicesResult =
 export async function importServices(raw: ImportServiceRow[], roomId?: string): Promise<ImportServicesResult> {
   const v = parseInput("importServices", sImportRows, raw);
   if (!v.ok) return v as ImportServicesResult;
-  // 0120: опційний імпорт У КАБІНЕТ (база + переозначення). null = базовий каталог.
+  // 0121: опційний імпорт У КАБІНЕТ — RPC пише ТІЛЬКИ room-owned послуги кабінету
+  // (база не торкається, переозначення не створюються). null = базовий каталог.
   let roomUuid: string | null = null;
   if (roomId != null) {
     const rv = parseInput("importServices.room", zUuid, roomId);

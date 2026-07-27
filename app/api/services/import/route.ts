@@ -112,11 +112,29 @@ export async function POST(req: Request) {
     return jerr("Імпорт не налаштовано на сервері", 501);
   }
 
-  // ---- Вхід: файл АБО посилання (3b) ----
+  // ---- Вхід: файл АБО посилання (3b) + опційний кабінет (0121, room-owned) ----
   let form: FormData;
   try { form = await req.formData(); } catch { return jerr("Очікується multipart із файлом або посиланням", 400); }
   const file = form.get("file");
   const urlField = form.get("url");
+  // 0121: room_id задано → превʼю рахує diff проти ВЛАСНИХ послуг кабінету
+  // (services.room_id = кабінет) — саме цей набір оновлює services_import_rpc у
+  // кабінетному режимі (on conflict по partial-індексу кабінету; optimistic-lock
+  // 0119 теж у межах набору). База в кабінетному імпорті НЕ торкається, тож diff
+  // проти неї дав би хибні «зміни» і масовий stale.
+  const roomField = form.get("room_id");
+  let roomId: string | null = null;
+  if (typeof roomField === "string" && roomField.trim()) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomField.trim())) {
+      return jerr("Некоректний кабінет", 400);
+    }
+    roomId = roomField.trim();
+    // Кабінет мусить належати центру адміна (дзеркало BAD_INPUT-гейта RPC).
+    const { data: roomRow, error: roomErr } = await gate.supabase
+      .from("rooms").select("id").eq("id", roomId).eq("clinic_id", gate.me.clinic_id).maybeSingle();
+    if (roomErr) return jerr("Не вдалося перевірити кабінет", 500);
+    if (!roomRow) return jerr("Кабінет не знайдено в цьому центрі", 400);
+  }
 
   const requestId = crypto.randomUUID();
   // Поля payload у n8n: kind + file_b64 (файли) / text (docx уже витягнуто) / url.
@@ -223,10 +241,15 @@ export async function POST(req: Request) {
   const ai = resPayload.ai === true;
   const parsed = ai ? parseAiRows(raw) : parseRawRows(raw);
   const truncated = parsed.truncated || totalRaw > MAX_RAW_ROWS;
-  const { data: services, error } = await gate.supabase
+  // 0121: diff у МЕЖАХ НАБОРУ, який оновлюватиме RPC — база (room_id IS NULL)
+  // або власні послуги кабінету (room_id = X). Змішування наборів давало б
+  // невірну класифікацію та хибний optimistic-lock (0119).
+  let svcQuery = gate.supabase
     .from("services")
     .select("id, name, modality, price, duration_min, active, updated_at") // updated_at — версія для 0119 optimistic-lock
     .eq("clinic_id", gate.me.clinic_id);
+  svcQuery = roomId ? svcQuery.eq("room_id", roomId) : svcQuery.is("room_id", null);
+  const { data: services, error } = await svcQuery;
   if (error) return jerr("Не вдалося прочитати каталог центру", 500);
 
   const classified = classifyRows(parsed.rows, services ?? []);

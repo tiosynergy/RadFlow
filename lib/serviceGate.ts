@@ -5,6 +5,11 @@
    створити запис на ВИМКНЕНУ або приховану в кабінеті послугу, хоча UI її вже не
    показує. Цей гейт дзеркалить резолвер lib/catalog.ts на серверній межі write-дій.
 
+   0121 (room-owned, Ф2): SERVICE_COLS селектить `room_id` — видимість послуги
+   залежить від кабінету запису (базова / власна кабінету), і гейт ЗОБОВ'ЯЗАНИЙ
+   бити з exists-логікою тригера check_studies_active_catalog, включно з легасі-
+   гілкою «немає видимих послуг модальності → каталог не обмежує».
+
    Легасі-центр (модальність без каталогу) НЕ чіпаємо — проходить як раніше. */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/supabase/types";
@@ -14,7 +19,7 @@ import {
 } from "@/lib/catalog";
 
 const SERVICE_COLS =
-  "id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order";
+  "id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order, room_id";
 const SRO_COLS = "room_id, service_id, price, duration_min, contrast_price, active";
 
 /** Резолвер каталогу центру для серверної валідації — ВСІ послуги (у т.ч.

@@ -5,7 +5,7 @@ import SignOutButton from "@/components/SignOutButton";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 
 // Колонки каталогу для форм направника (services, 0107; RLS services_referrer_read).
-const SERVICE_COLS = "id, clinic_id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order";
+const SERVICE_COLS = "id, clinic_id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order, room_id"; // 0121: room_id — база + власні послуги кабінетів
 // Переозначення каталогу по кабінетах (service_room_overrides, 0108; RLS читає направник центру).
 const SRO_COLS = "clinic_id, room_id, service_id, price, duration_min, contrast_price, active";
 

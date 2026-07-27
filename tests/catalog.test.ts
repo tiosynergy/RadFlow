@@ -18,6 +18,7 @@ const svc = (o: Partial<ServiceLike> & { name: string; modality: string }): Serv
   contrast_price: o.contrast_price ?? null,
   active: o.active ?? true,
   sort_order: o.sort_order ?? 0,
+  room_id: o.room_id ?? null, // 0121: null = базова, = X = послуга кабінету X
 });
 
 describe("buildCatalog — пріоритет каталогу центру", () => {
@@ -183,6 +184,148 @@ describe("catalogTotalPrice", () => {
     expect(catalogTotalPrice(cat, [{ type: "MRI", region: "Мозок", price: 1111 }])).toBe(1111); // снімок
     expect(catalogTotalPrice(cat, [{ type: "MRI", region: "Мозок" }])).toBe(2400); // з каталогу
     expect(catalogTotalPrice(cat, null)).toBe(0);
+  });
+
+  it("0121: roomId резолвить ціну room-owned послуги (без нього — база/статика)", () => {
+    const own = svc({ id: "own-p", name: "Мозок", modality: "MRI", price: 2700, room_id: "roomA" });
+    const cat = buildCatalog([svc({ name: "Мозок", modality: "MRI", price: 2400 }), own]);
+    expect(catalogTotalPrice(cat, [{ type: "MRI", region: "Мозок" }], "roomA")).toBe(2700); // власна перемагає
+    expect(catalogTotalPrice(cat, [{ type: "MRI", region: "Мозок" }])).toBe(2400);          // база
+  });
+});
+
+describe("buildCatalog — room-owned послуги (0121, Ф2)", () => {
+  // Дзеркало exists-логіки тригера check_studies_active_catalog (0121):
+  // видима = базова (не прихована override-ом кабінету) АБО власна кабінету запису.
+  const base = svc({ name: "Коліно", modality: "MRI", price: 1800, duration_min: 30 });
+  const ownA = svc({ id: "own-a", name: "МР ангіографія", modality: "MRI", price: 3000, duration_min: 40, room_id: "roomA" });
+  const ownB = svc({ id: "own-b", name: "Хребет", modality: "MRI", price: 2000, room_id: "roomB" });
+
+  it("власна послуга кабінету видима ЛИШЕ в ньому; без кабінету — лише базові (Q3)", () => {
+    const cat = buildCatalog([base, ownA, ownB]);
+    expect(cat.regionsFor("MRI", "roomA").map((r) => r.label)).toEqual(["МР ангіографія", "Коліно"]);
+    expect(cat.regionsFor("MRI", "roomB").map((r) => r.label)).toEqual(["Хребет", "Коліно"]);
+    expect(cat.regionsFor("MRI").map((r) => r.label)).toEqual(["Коліно"]); // вейтліст без кабінету
+  });
+
+  it("власні послуги кабінету йдуть ПЕРШИМИ, база — після (порядок regionsFor)", () => {
+    const cat = buildCatalog([base, ownA]);
+    const labels = cat.regionsFor("MRI", "roomA").map((r) => r.label);
+    expect(labels[0]).toBe("МР ангіографія");
+    expect(labels[1]).toBe("Коліно");
+  });
+
+  it("serviceRoomId: власна послуга несе кабінет-власника, базова — null (бейджі UI)", () => {
+    const cat = buildCatalog([base, ownA]);
+    const rs = cat.regionsFor("MRI", "roomA");
+    expect(rs.find((r) => r.label === "МР ангіографія")?.serviceRoomId).toBe("roomA");
+    expect(rs.find((r) => r.label === "Коліно")?.serviceRoomId).toBeNull();
+  });
+
+  it("Q4: дубль імені база↔кабінет — видимі ОБИДВІ, пошук за назвою віддає власну кабінету", () => {
+    const roomDup = svc({ id: "own-dup", name: "Коліно", modality: "MRI", price: 1500, duration_min: 20, room_id: "roomA" });
+    const cat = buildCatalog([base, roomDup]);
+    // Обидві позиції в списку (це різні послуги — Q4-дефолт «показувати обидві»).
+    expect(cat.regionsFor("MRI", "roomA").filter((r) => r.label === "Коліно").length).toBe(2);
+    // Пошук за назвою — пріоритет власної (дзеркало ceo_kpi_studies: room-owned перша).
+    expect(cat.regionInfo("MRI", "Коліно", "roomA")?.serviceId).toBe("own-dup");
+    expect(cat.studyPrice("MRI", "Коліно", false, "roomA")).toBe(1500);
+    expect(cat.studyDur("MRI", "Коліно", false, "roomA")).toBe(20);
+    // Інший кабінет / без кабінету — базова.
+    expect(cat.studyPrice("MRI", "Коліно", false, "roomB")).toBe(1800);
+    expect(cat.studyPrice("MRI", "Коліно", false)).toBe(1800);
+  });
+
+  it("легасі-гілка тригера: кабінет БЕЗ видимих послуг модальності → статика (нестрогий режим)", () => {
+    // Центр має ЛИШЕ room-owned MRI-послуги кабінету roomA (пост-конвертаційний
+    // стан 0121: базових немає). roomB без свого прайса → легасі/нестрогий.
+    const cat = buildCatalog([ownA]);
+    expect(cat.isConfigured("MRI", "roomA")).toBe(true);
+    expect(cat.isConfigured("MRI", "roomB")).toBe(false);     // чужі room-owned НЕ вмикають строгий режим
+    expect(cat.isConfigured("MRI")).toBe(false);              // без кабінету — лише база (порожня)
+    expect(cat.regionsFor("MRI", "roomB").length).toBeGreaterThan(0); // статичний фолбэк
+    expect(cat.regionsFor("MRI").length).toBeGreaterThan(0);          // вейтліст → статика
+  });
+
+  it("вимкнена власна послуга: кабінет налаштований, але позиція не пропонується (строгий режим)", () => {
+    const offOwn = svc({ id: "own-off", name: "Суглоб", modality: "MRI", active: false, room_id: "roomA" });
+    const cat = buildCatalog([offOwn]);
+    expect(cat.isConfigured("MRI", "roomA")).toBe(true);  // рядок є → налаштовано
+    expect(cat.has("MRI", "roomA")).toBe(false);
+    expect(cat.regionsFor("MRI", "roomA")).toEqual([]);   // напрям закрито, НЕ статика
+    expect(cat.studyDur("MRI", "Суглоб", false, "roomA")).toBe(0);
+    expect(cat.studyPrice("MRI", "Суглоб", false, "roomA")).toBeNull();
+  });
+
+  it("базова прихована override-ом кабінету, але власна з тим самим імʼям видима", () => {
+    const roomDup = svc({ id: "own-dup", name: "Коліно", modality: "MRI", price: 1500, room_id: "roomA" });
+    const cat = buildCatalog(
+      [base, roomDup],
+      overridesToMap([{ room_id: "roomA", service_id: base.id, price: null, duration_min: null, contrast_price: null, active: false }])
+    );
+    const labels = cat.regionsFor("MRI", "roomA").map((r) => r.label);
+    expect(labels).toEqual(["Коліно"]); // лише власна; базова прихована
+    expect(cat.regionInfo("MRI", "Коліно", "roomA")?.serviceId).toBe("own-dup");
+  });
+
+  it("override на room-owned послугу ІГНОРУЄТЬСЯ (0108 — лише для базових)", () => {
+    // БД такий рядок забороняє (SRO_ROOM_OWNED_SERVICE); історичний — не застосовуємо.
+    const cat = buildCatalog(
+      [ownA],
+      overridesToMap([{ room_id: "roomA", service_id: ownA.id, price: 111, duration_min: 10, contrast_price: null, active: false }])
+    );
+    expect(cat.regionsFor("MRI", "roomA").map((r) => r.label)).toEqual(["МР ангіографія"]); // не схована
+    expect(cat.studyPrice("MRI", "МР ангіографія", false, "roomA")).toBe(3000);            // власна ціна
+    expect(cat.studyDur("MRI", "МР ангіографія", false, "roomA")).toBe(40);
+  });
+
+  it("контраст власної послуги: per-service contrast_price, null → глобальна доплата", () => {
+    const ownC = svc({ id: "own-c", name: "Мозок", modality: "MRI", price: 2400, contrast_allowed: true, contrast_price: 500, room_id: "roomA" });
+    const ownG = svc({ id: "own-g", name: "Шия", modality: "MRI", price: 2000, contrast_allowed: true, contrast_price: null, room_id: "roomA" });
+    const cat = buildCatalog([ownC, ownG]);
+    expect(cat.studyPrice("MRI", "Мозок", true, "roomA")).toBe(2400 + 500);
+    expect(cat.studyPrice("MRI", "Шия", true, "roomA")).toBe(2000 + CONTRAST_SURCHARGE);
+  });
+
+  it("room_id undefined (старий селект без колонки) = базова — сумісність до Ф4", () => {
+    // Явно ВИКИДАЄМО room_id з рядка (селект без колонки → поля немає взагалі).
+    const { room_id: _omit, ...legacyRow } = svc({ name: "Ліктьовий суглоб", modality: "MRI" });
+    void _omit;
+    const cat = buildCatalog([legacyRow]);
+    expect(cat.regionsFor("MRI").map((r) => r.label)).toEqual(["Ліктьовий суглоб"]);
+    expect(cat.regionsFor("MRI", "будь-який").map((r) => r.label)).toEqual(["Ліктьовий суглоб"]);
+  });
+});
+
+describe("firstClosedStudy — room-owned послуги (0121, дзеркало тригера)", () => {
+  const ownA = svc({ id: "own-a", name: "МР ангіографія", modality: "MRI", price: 3000, room_id: "roomA" });
+  const base = svc({ name: "Коліно", modality: "MRI" });
+
+  it("власна послуга у СВОЄМУ кабінеті → дозволена; в чужому/без кабінету → закрита", () => {
+    const cat = buildCatalog([base, ownA]);
+    const studies = [{ type: "MRI", region: "МР ангіографія" }];
+    expect(firstClosedStudy(cat, studies, "roomA")).toBeNull();
+    expect(firstClosedStudy(cat, studies, "roomB")).toBe("МР ангіографія"); // чужа room-owned
+    expect(firstClosedStudy(cat, studies)).toBe("МР ангіографія");          // без кабінету — лише база
+  });
+
+  it("кабінет без видимого каталогу модальності → легасі, НЕ закриваємо (ревю №2 0121)", () => {
+    const cat = buildCatalog([ownA]); // базових MRI немає; roomB не має своїх
+    expect(firstClosedStudy(cat, [{ type: "MRI", region: "Що завгодно" }], "roomB")).toBeNull();
+    expect(firstClosedStudy(cat, [{ type: "MRI", region: "Що завгодно" }])).toBeNull(); // вейтліст
+    // А в кабінеті-власнику каталог СТРОГИЙ: невідома область → закрита.
+    expect(firstClosedStudy(cat, [{ type: "MRI", region: "Що завгодно" }], "roomA")).toBe("Що завгодно");
+  });
+
+  it("базова послуга видима в кабінеті з власним прайсом (успадкування бази)", () => {
+    const cat = buildCatalog([base, ownA]);
+    expect(firstClosedStudy(cat, [{ type: "MRI", region: "Коліно" }], "roomA")).toBeNull();
+  });
+
+  it("grandfather пропускає room-owned область при редагуванні снапшота", () => {
+    const cat = buildCatalog([base, ownA]);
+    expect(firstClosedStudy(cat, [{ type: "MRI", region: "МР ангіографія" }], "roomB",
+      new Set(["MRI|МР ангіографія"]))).toBeNull();
   });
 });
 

@@ -72,9 +72,10 @@ export type WaitlistActionResult =
   // записати інший адміністратор). UI має оновитись, а не мовчки перетерти.
   | { ok: false; error: string; code?: "forbidden" | "auth" | "duplicate" | "stale" | "generic" };
 
-/* Defense-in-depth (High): послуга вимкнена в каталозі центру / прихована в кабінеті. */
+/* Defense-in-depth (High): послуга вимкнена в каталозі центру / прихована в
+   кабінеті / належить ІНШОМУ кабінету (room-owned, 0121). */
 const SERVICE_CLOSED_WL = (region: string): WaitlistActionResult => ({
-  ok: false, error: `Послуга «${region}» вимкнена в центрі або кабінеті — оновіть форму`, code: "generic",
+  ok: false, error: `Послуга «${region}» вимкнена, прихована або належить іншому кабінету — оновіть форму`, code: "generic",
 });
 // Fail-CLOSED: збій читання каталогу → відмова у записі (а не легасі-фолбэк).
 const CATALOG_UNAVAILABLE_WL: WaitlistActionResult = {
@@ -298,6 +299,17 @@ export async function addEntryToWaitlist(
   if (opts?.desiredDateTo && entry.clinic_id
       && opts.desiredDateTo < await clinicTodayKey(supabase, entry.clinic_id)) return PAST_WINDOW;
 
+  // Гейт закритих послуг (0121/Ф2, ревю Ф2 №4): новий рядок листа БЕЗ кабінету —
+  // видимі лише БАЗОВІ послуги (Q3). Room-послуга запису-джерела тут недоступна:
+  // без гейта відмову давав би тільки БД-тригер із невлучним текстом. INSERT у
+  // тригері без grandfather — тому й тут його немає.
+  {
+    const g = await closedRegionGateWL(
+      supabase, entry.clinic_id as string, null,
+      entry.studies as unknown as { type?: string | null; region?: string | null }[]);
+    if (g) return g;
+  }
+
   const { data, error } = await supabase
     .from("waitlist_entries")
     .insert({
@@ -384,17 +396,24 @@ export async function updateWaitlistEntry(
     }
   }
 
-  // Гейт закритих послуг при зміні складу (grandfather: області, вже наявні в
-  // записі-снапшоті, не ріжемо — тільки нові вимкнені/приховані в кабінеті).
-  if (safePatch.studies !== undefined) {
+  // Гейт закритих послуг при зміні складу АБО кабінету (0121/Ф2, ревю Ф2 №1-2).
+  // Grandfather — ДЗЕРКАЛО умови тригера 0113/0121: старі області пропускаються
+  // ЛИШЕ коли кабінет не змінюється або патч знімає кабінет (new.room_id IS NULL);
+  // перенос у ІНШИЙ кабінет перевіряє ВСІ дослідження як нові для цільового
+  // кабінету (room-послуга джерела там недоступна). Патч самого лише room_id теж
+  // гейтиться — інакше відмову давала б тільки БД із невлучним текстом.
+  if (safePatch.studies !== undefined || safePatch.room_id !== undefined) {
     const { data: row } = await supabase.from("waitlist_entries")
       .select("clinic_id, room_id, studies").eq("id", v.data.id).maybeSingle();
     if (row?.clinic_id) {
       const effRoom = (safePatch.room_id !== undefined ? safePatch.room_id : row.room_id) as string | null;
-      const gf = studiesKeySet(row.studies as unknown as { type?: string | null; region?: string | null }[]);
-      const g = await closedRegionGateWL(
-        supabase, row.clinic_id, effRoom,
-        safePatch.studies as unknown as { type?: string | null; region?: string | null }[], gf);
+      const effStudies = (safePatch.studies !== undefined ? safePatch.studies : row.studies) as unknown as
+        { type?: string | null; region?: string | null }[];
+      const gfApplies = effRoom == null || effRoom === (row.room_id as string | null);
+      const gf = gfApplies
+        ? studiesKeySet(row.studies as unknown as { type?: string | null; region?: string | null }[])
+        : undefined;
+      const g = await closedRegionGateWL(supabase, row.clinic_id, effRoom, effStudies, gf);
       if (g) return g;
     }
   }
