@@ -1154,6 +1154,10 @@ select.inp { cursor: pointer; }
 /* Попередження (не помилка): наслідки дії, яку користувач щойно обрав свідомо —
    напр. вимкнення кабінету (0123). Червоний тут читався б як «щось зламалось». */
 .ctx-hint.orange { background: var(--orange-bg); color: var(--orange); border: 1px solid rgba(255,159,10,0.28); }
+/* Вихід із порталу направлень назад у робоче місце адміна: єдиний шлях назовні
+   в чужому чромі, тож підсвічуємо його, а не ховаємо серед пунктів. */
+.sb-item.sb-back { color: var(--blue); font-weight: 600; }
+.sb-item.sb-back:hover { background: var(--blue-bg-soft); }
 .ctx-hint.orange b { color: var(--orange); }
 
 /* ===== Перенесення записів після зміни графіка ===== */

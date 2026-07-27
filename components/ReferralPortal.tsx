@@ -1226,9 +1226,13 @@ interface ReferralPortalProps {
   roomOverridesByClinic: Record<string, RoomOverrideRow[]>;
   doctorName: string;
   doctorId: string;
+  /** Адмін у режимі перегляду порталу: куди його повернути (null для направника). */
+  backHref?: string | null;
+  /** Назва власного центру адміна — підпис кнопки повернення. */
+  backLabel?: string | null;
 }
 
-export default function ReferralPortal({ role, centers, roomsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, doctorId }: ReferralPortalProps) {
+export default function ReferralPortal({ role, centers, roomsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, doctorId, backHref = null, backLabel = null }: ReferralPortalProps) {
   const router = useRouter();
   const canManage = role === "referrer";
   async function signOut() {
@@ -1479,6 +1483,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
   return (
     <div className="app">
       <ReferrerSidebar centers={activeCenters} roomsByClinic={roomsByClinic} doctorName={doctorName}
+        backHref={backHref} backLabel={backLabel}
         activeTab={tab}
         onNav={(key) => { if (key === "mine") setBoardFocus({ clinicId: "all", roomId: "all", nonce: Date.now() }); setTab(key); }}
         onSelectRoom={(clinicId, roomId) => { setBoardFocus({ clinicId, roomId, nonce: Date.now() }); setTab("mine"); }}
@@ -1496,6 +1501,13 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
             {/* Годинник — за часом центру (перший доступний): направник глобальний,
                 singleton setClinicTz тут не виставляється. */}
             <span style={{ fontSize: 13, color: "var(--text-secondary)" }}><LiveClock tz={activeCenters[0]?.timezone || undefined} /></span>
+            {/* Дубль кнопки з сайдбару: на вузькому екрані сайдбар згортається,
+                і єдиний вихід із порталу зникав би разом із ним. */}
+            {backHref && (
+              <a href={backHref} className="btn btn-secondary btn-sm" title={"Повернутися до робочого місця: " + (backLabel || "мій центр")}>
+                <span aria-hidden>←</span> {backLabel || "Мій центр"}
+              </a>
+            )}
             <CeoDashboardLink />
           </div>
         </header>

@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import ReferralPortal from "@/components/ReferralPortal";
 import SignOutButton from "@/components/SignOutButton";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
+import { safeBackHref } from "@/lib/portalBack";
 
 // Колонки каталогу для форм направника (services, 0107; RLS services_referrer_read).
 const SERVICE_COLS = "id, clinic_id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order, room_id"; // 0121: room_id — база + власні послуги кабінетів
@@ -33,7 +34,8 @@ type Center = {
   timezone: string | null;
 };
 
-export default async function ReferralPage() {
+export default async function ReferralPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  const backFrom = safeBackHref((await searchParams)?.from);
   const supabase = await createClient();
   const {
     data: { user },
@@ -113,6 +115,8 @@ export default async function ReferralPage() {
     }
   } else {
     // Адмін: прев'ю порталу для власного центру (один «центр»).
+    // Його назва йде і в підпис кнопки повернення — «← Medicom» зрозуміліше,
+    // ніж безадресне «Назад»: адмін бачить, куди саме він вийде.
     const { data: clinic } = await supabase
       .from("clinics")
       .select("id, name, city, configured_at, timezone")
@@ -141,6 +145,8 @@ export default async function ReferralPage() {
   return (
     <ReferralPortal
       role={profile.role as string}
+      backHref={profile.role === "admin" ? backFrom : null}
+      backLabel={profile.role === "admin" ? (centers[0]?.name || "Мій центр") : null}
       centers={centers}
       roomsByClinic={roomsByClinic as Parameters<typeof ReferralPortal>[0]["roomsByClinic"]}
       servicesByClinic={servicesByClinic}
