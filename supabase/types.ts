@@ -1354,6 +1354,11 @@ export type Database = {
           // 0077: робота поза графіком за підтвердженням. Прапорець ставиться
           // всередині RPC — окремим UPDATE «після» його б відхилив тригер перерви.
           p_off_schedule?: boolean;
+          /* 0122: новий склад досліджень при переносі в кабінет з ІНШИМ прайсом.
+             Пишеться тим самим UPDATE, що й room_id — інакше ніяк: тригер
+             trg_c2_studies_active_catalog стоїть на UPDATE OF studies, room_id і
+             при зміні кабінету перевіряє склад проти ЦІЛЬОВОГО. null = не чіпати. */
+          p_studies?: Json | null;
         };
         Returns: { updated: boolean; current_status: QueueStatus }[];
       };

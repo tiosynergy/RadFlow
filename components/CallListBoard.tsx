@@ -12,7 +12,7 @@ import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
 import { entryInIncidentWindow, incidentExpired, setClinicTz, wallDayKey, wallToday0 } from "@/lib/incidents";
-import RescheduleModal from "@/components/RescheduleModal";
+import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -477,12 +477,12 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, services, roo
   }
 
   // Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
-  async function doReschedule({ roomId, date: d, time, dur, buffer, reason, offSchedule }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean }) {
+  async function doReschedule({ roomId, date: d, time, dur, buffer, reason, offSchedule, studies }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean; studies?: RescheduleStudy[] }) {
     const p = reschedFor;
     if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed", reason, offSchedule });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(d), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, callStatus: "confirmed", reason, offSchedule, studies });
     if (!res.ok) {
       if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
       reload();

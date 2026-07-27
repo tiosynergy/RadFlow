@@ -30,7 +30,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { cancelCase, rescheduleQueueEntry, editQueueEntryStudies, addCaseStep, addReferralCaseStep, cancelReferralCase } from "@/app/queue/actions";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import RescheduleModal from "@/components/RescheduleModal";
+import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import BookingModal, { type BookingPayload } from "@/components/BookingModal";
 import { useModalA11y } from "@/lib/useModalA11y";
@@ -162,6 +162,7 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
   const activeSiblings = (steps || [])
     .filter((s) => isActiveStep(s.status) && s.room_id && s.scheduled_date && s.scheduled_time && s.duration_min)
     .map((s) => ({
+      id: s.id,   // щоб при переносі виключити САМ крок, що переносимо
       roomId: s.room_id as string,
       date: new Date((s.scheduled_date as string) + "T00:00:00"),
       time: String(s.scheduled_time).slice(0, 5),
@@ -185,7 +186,7 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
 
   /* Перенос кроку. Помилки гардів кейса (CASE_SAME_ROOM/CASE_PATIENT_OVERLAP) і
      звичайні booking-помилки повертаємо в RescheduleModal — вона їх покаже. */
-  async function doReschedule(sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean }): Promise<string | null> {
+  async function doReschedule(sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean; studies?: RescheduleStudy[] }): Promise<string | null> {
     const st = reschedStep;
     if (!st) return null;
     const [hh, mm] = sel.time.split(":").map(Number);
@@ -193,6 +194,7 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
     const res = await rescheduleQueueEntry({
       id: st.id, roomId: sel.roomId, scheduledDate: dateKey(sel.date), scheduledTime: sel.time,
       scheduledAt: at, durationMin: sel.dur, bufferTimeMin: sel.buffer, reason: sel.reason, offSchedule: sel.offSchedule,
+      studies: sel.studies,   // 0122: перепризначений склад для іншого кабінету
     });
     if (!res.ok) return res.error;   // успіх → закриваємо модалку тут
     setReschedStep(null);
@@ -332,6 +334,10 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
           }}
           rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents}
           allowOffSchedule={!referralMode}   /* 0077: направнику поза графіком зась */
+          /* Інші активні кроки кейса, БЕЗ того, що переносимо: форма переоформлення
+             в інший кабінет має бачити зайнятість пацієнта (0095/0096), інакше про
+             конфлікт скаже тригер уже після того, як правки пацієнта пішли в базу. */
+          caseSiblings={activeSiblings.filter((s) => s.id !== reschedStep.id)}
           onClose={() => setReschedStep(null)}
           onConfirm={doReschedule}
         />

@@ -35,7 +35,7 @@ import { addEntryToWaitlist } from "@/app/waitlist/actions";
 import type { WaitlistEntry } from "@/supabase/types";
 import PatientEditModal from "@/components/PatientEditModal";
 import CompletionModal from "@/components/CompletionModal";
-import RescheduleModal from "@/components/RescheduleModal";
+import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import CaseModal from "@/components/CaseModal";
 import BreakdownModal from "@/components/BreakdownModal";
@@ -1463,12 +1463,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
   /* Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
      Виняток — 'stale': переносити вже нічого (запис завершено/скасовано), модалку
      закриваємо і синхронізуємо дошку. */
-  async function doReschedule({ roomId, date, time, dur, buffer, reason, offSchedule }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean }) {
+  async function doReschedule({ roomId, date, time, dur, buffer, reason, offSchedule, studies }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean; studies?: RescheduleStudy[] }) {
     const p = reschedFor;
     if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason, offSchedule });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason, offSchedule, studies });
     if (!res.ok) {
       if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
       reload();   // сітка модалки підтягне свіжу зайнятість

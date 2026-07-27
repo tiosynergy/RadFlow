@@ -22,6 +22,12 @@ import "@/styles/prototype/radflow-wizard.css";
 import { roomScheduleFor, effectiveRoomBreaks, offScheduleKind, dateKeyOf, type Break } from "@/lib/schedule";
 import { slotToMin } from "@/lib/slots";
 import { MODALITIES, modalityCode } from "@/lib/studies";
+import { wallDayKey } from "@/lib/incidents";
+
+/* Статуси «живого» запису: пацієнт іще чекає на кабінет. needs_reschedule — теж
+   живий (запис без слота, реєстратура має передзвонити). Спільні для діалогу
+   видалення кабінету і для гарда збереження — критерій мусить бути ОДИН. */
+const OPEN_STATUSES = ["scheduled", "waiting", "in_progress", "needs_reschedule"] as const;
 
 /* ===== Таймзона центру (IANA) =====
    Від неї залежать «Запізнення», «Уточнити», гарди виклику в кабінет і заборона
@@ -270,7 +276,17 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
      перевіряємо активні записи в черзі: якщо є — видалення блокуємо (інакше save
      усе одно відхилить, але вже після втрати картки, і незрозуміло чому). Перевірка
      best-effort: якщо не вдалось — м'яке підтвердження (save лишається запобіжником). */
-  const [delAsk, setDelAsk] = useState<{ i: number; name: string; count: number | null; checking: boolean } | null>(null);
+  /* 2026-07-27 (вимога власника): блокують лише МАЙБУТНІ активні записи (дата ≥
+     «сьогодні» центру). Раніше рахувались усі `scheduled` без огляду на дату, тож
+     кабінет із «зависшими» минулими записами (їх ніхто не закрив у done/no_show)
+     не можна було видалити НІКОЛИ. Минулі відкриті рахуємо окремо — показуємо
+     в попередженні, але видаляти не заважаємо. */
+  const [delAsk, setDelAsk] = useState<{
+    i: number; name: string; checking: boolean;
+    count: number | null;      // майбутні активні — блокують видалення
+    pastOpen?: number;         // минулі незакриті — лишаться в історії без кабінету
+    services?: number;         // власний прайс кабінету (0121) — піде каскадом
+  } | null>(null);
   async function askDelEq(i: number) {
     const e = equip[i];
     const name = (e.room || e.type || "Кабінет").trim();
@@ -278,13 +294,19 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
     setDelAsk({ i, name, count: null, checking: true });
     try {
       const supabase = createClient();
-      const { count, error } = await supabase
-        .from("queue_entries")
-        .select("id", { count: "exact", head: true })
-        .eq("room_id", e.roomId)
-        .in("status", ["scheduled", "waiting", "in_progress", "needs_reschedule"]);
-      if (error) throw error;
-      setDelAsk((cur) => (cur && cur.i === i ? { ...cur, count: count ?? 0, checking: false } : cur));
+      // «Сьогодні» — за настінним часом ЦЕНТРУ (правило проекту: лише wallDayKey).
+      const today = wallDayKey(timezone || undefined);
+      const q = () => supabase.from("queue_entries").select("id", { count: "exact", head: true })
+        .eq("room_id", e.roomId as string).in("status", OPEN_STATUSES);
+      const [fut, past, svc] = await Promise.all([
+        q().gte("scheduled_date", today),   // майбутні/сьогоднішні — блокують
+        q().lt("scheduled_date", today),    // минулі незакриті — лише попередження
+        supabase.from("services").select("id", { count: "exact", head: true }).eq("room_id", e.roomId as string),
+      ]);
+      if (fut.error || past.error) throw fut.error || past.error;
+      setDelAsk((cur) => (cur && cur.i === i
+        ? { ...cur, count: fut.count ?? 0, pastOpen: past.count ?? 0, services: svc.count ?? 0, checking: false }
+        : cur));
     } catch {
       setDelAsk((cur) => (cur && cur.i === i ? { ...cur, count: null, checking: false } : cur)); // не змогли перевірити
     }
@@ -491,10 +513,17 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
               delAsk.checking
                 ? <>Перевіряю записи в кабінеті <b>{delAsk.name}</b>…</>
                 : blocked
-                  ? <>У кабінеті <b>{delAsk.name}</b> — <b>{delAsk.count}</b> активних запис(ів) у черзі. Спершу перенесіть або скасуйте їх — інакше пацієнти залишаться без кабінету.</>
+                  ? <>У кабінеті <b>{delAsk.name}</b> — <b>{delAsk.count}</b> майбутніх активних запис(ів). Спершу перенесіть або скасуйте їх — інакше пацієнти залишаться без кабінету.</>
                   : delAsk.count === null
                     ? <>Не вдалося перевірити записи кабінету <b>{delAsk.name}</b>. Видалити? Якщо в ньому є пацієнти, збереження буде заблоковано.</>
-                    : <>Кабінет <b>{delAsk.name}</b> буде видалено з центру при збереженні. Скасувати дію потім не можна.</>
+                    : <>
+                        Кабінет <b>{delAsk.name}</b> буде видалено з центру при збереженні. Скасувати дію потім не можна.
+                        {/* Чесний перелік наслідків: історія НЕ видаляється (FK on delete set null),
+                            а от прайс кабінета, інциденти й привʼязки радіологів — так (cascade). */}
+                        {!!delAsk.services && <><br /><br />Разом із кабінетом <b>назавжди зникне його власний прайс — {delAsk.services} послуг(и)</b>, а також інциденти (поломки/ТО) і привʼязки радіологів до нього.</>}
+                        {!!delAsk.pastOpen && <><br /><br />Записи пацієнтів <b>не видаляються</b>: {delAsk.pastOpen} незакритих минулих (і всі завершені) залишаться в історії, але <b>без кабінету</b> — на дошці кабінета їх більше не буде.</>}
+                        {!delAsk.pastOpen && <><br /><br />Записи пацієнтів <b>не видаляються</b>: історія залишиться, але без привʼязки до кабінета.</>}
+                      </>
             }
             danger={!blocked}
             busy={delAsk.checking}
@@ -660,7 +689,11 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
              живий пацієнт, який чекає на дзвінок реєстратури. Без нього кабінет
              видалився б МОВЧКИ, room_id став би NULL (on delete set null) — рівно
              та втрата записів, від якої цей блокер і ставили (P0 UX-аудиту). */
-          .in("status", ["scheduled", "waiting", "in_progress", "needs_reschedule"]);
+          .in("status", OPEN_STATUSES)
+          /* 2026-07-27: ТОЙ САМИЙ критерій, що й у діалозі askDelEq — блокують лише
+             МАЙБУТНІ активні записи. Інакше діалог пропускав би видалення, а
+             збереження мовчки падало б із «активними записами» (минулими). */
+          .gte("scheduled_date", wallDayKey(d.timezone || undefined));
         if (be) throw be;
         if (blockers && blockers.length) {
           const byRoom: Record<string, number> = {};
@@ -669,7 +702,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
             .filter((r) => byRoom[r.id])
             .map((r) => `«${r.name}» — ${byRoom[r.id]} запис(ів)`)
             .join("; ");
-          push("Не можна видалити кабінет із активними записами: " + list + ". Спершу перенесіть або скасуйте ці записи.", "error");
+          push("Не можна видалити кабінет із майбутніми активними записами: " + list + ". Спершу перенесіть або скасуйте ці записи.", "error");
           setSaving(false);
           return false;
         }

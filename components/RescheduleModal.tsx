@@ -3,7 +3,14 @@
 /* ===== RadFlow — Перенести на новий слот =====
    Портовано з rf-shell.jsx (RescheduleModal). Кабінети — з props (та сама модальність),
    зайняті слоти — через знеособлений RPC room_busy_slots (без PII; для направника
-   обходить RLS-сліпоту на чужі записи). p_exclude прибирає сам перенесений запис. */
+   обходить RLS-сліпоту на чужі записи). p_exclude прибирає сам перенесений запис.
+
+   ДВА РЕЖИМИ (рішення власника 2026-07-27):
+   1) той самий кабінет — сітка слотів, склад дослідженнь недоторканий;
+   2) ІНШИЙ кабінет — переоформлення: віддаємо BookingModal у moveMode із
+      підставленими даними пацієнта і ПОРОЖНІМ переліком, бо в кожного кабінету
+      свій прайс. Запис лишається тим самим (id не змінюється), тож кейс,
+      направник і історія переносів на місці. */
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -18,8 +25,18 @@ import { useModalA11y } from "@/lib/useModalA11y";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import RoomSelect, { ROOM_LIST_MAX_CHIPS } from "@/components/RoomSelect";
+import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
+import BookingModal, { type BookingPrefill, type BookingPayload } from "@/components/BookingModal";
+import { updatePatientDetails } from "@/app/queue/actions";
+import type { PatientPriority } from "@/lib/priority";
+import type { TablesUpdate } from "@/supabase/types";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+/* 0122: склад, обраний заново в каталозі ЦІЛЬОВОГО кабінету. Їде в
+   rescheduleQueueEntry і далі в RPC тим самим UPDATE, що й room_id — інакше
+   тригер 0121 перевіряв би новий кабінет проти старого складу. */
+export interface RescheduleStudy { type: string; region: string; contrast?: boolean; dur?: number; price?: number | null }
 // Минимально необходимый набор полей записи (доски передают разные подмножества).
 type ReschedulePatient = { id: string; room_id: string | null; duration_min: number | null; buffer_time_min?: number | null; patient_name: string | null; studies?: unknown; note?: string | null; status?: string };
 
@@ -35,12 +52,17 @@ interface RescheduleModalProps {
      не сталося». Тут це критичніше: без блокування кнопки подвійний клік проходив
      ДВІЧІ (M-6), і другий виклик перезаписував reschedule_origin знімком уже нового
      слота — історія переносу псувалась. */
-  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean }) => Promise<string | null> | void;
+  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean; studies?: RescheduleStudy[] }) => Promise<string | null> | void;
   /* 0077: чи можна переносити ПОЗА графік (після закриття / у перерву) з підтвердженням.
      true — лише дошки ПЕРСОНАЛУ (черга, колл-лист). Портал направника НЕ передає цей
      проп: направник записує пацієнтів ззовні й не знає, чи лишиться зміна. Сервер і
      тригер БД тримають те саме правило — але сітка не має й пропонувати того, що впаде. */
   allowOffSchedule?: boolean;
+  /* Активні кроки ТОГО САМОГО кейса (без кроку, що переносимо). Потрібні формі
+     переоформлення: інакше вона намалює вільним слот, який перетинає інший крок
+     пацієнта, і про конфлікт скаже вже тригер 0095/0096 — після того, як правки
+     пацієнта пішли в базу. */
+  caseSiblings?: { roomId: string; date: Date; time: string; dur: number }[];
 }
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
@@ -53,16 +75,34 @@ function procLabel(e: { studies?: unknown; note?: string | null }) {
   return e.note || "—";
 }
 
-export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, incidents = [], onClose, onConfirm, allowOffSchedule = false }: RescheduleModalProps) {
+/* Проміжний стан «читаємо картку»: власний діалог із власною пасткою фокуса —
+   інакше фокус на час завантаження падав би на <body> (WCAG 2.4.3). */
+function MoveFormLoading({ onClose }: { onClose: () => void }) {
+  const ref = useModalA11y<HTMLDivElement>(onClose);
+  return (
+    <div className="overlay">
+      <div className="dialog fade-in" style={{ maxWidth: 420 }} ref={ref} role="dialog" aria-modal="true" aria-label="Підготовка форми переоформлення">
+        <div className="dlg-body">
+          <div style={{ fontSize: 13, padding: "24px 0", textAlign: "center", color: "var(--text-muted)" }}
+            role="status" aria-live="polite">⏳ Готуємо форму переоформлення…</div>
+        </div>
+        <div className="dlg-foot">
+          <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, incidents = [], onClose, onConfirm, allowOffSchedule = false, caseSiblings }: RescheduleModalProps) {
   // Dirty-guard: не втрачати обраний слот/причину при випадковому закритті.
   const [dirty, setDirty] = useState(false);
   const [askClose, setAskClose] = useState(false);
   const requestClose = () => { if (dirty) setAskClose(true); else onClose(); };
-  const dialogRef = useModalA11y<HTMLDivElement>(requestClose);
   const curRoom = (rooms || []).find((r) => r.id === patient.room_id);
   const modality = curRoom ? curRoom.modality : "MRI";
   const kind = modalityLabel(modality);
-  const dur = patient.duration_min || 30;
+  const baseDur = patient.duration_min || 30;   // у режимі 1 склад не змінюється → dur той самий
   const buffer = normBuffer(patient.buffer_time_min ?? BUFFER_DEFAULT); // переноситься разом із записом
   // Кабінети тієї ж модальності, зокрема заблоковані — щоб можна було перенести на дату ПІСЛЯ відновлення.
   const options = (rooms || []).filter((r) => r.modality === modality);
@@ -79,6 +119,74 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const [schedErr, setSchedErr] = useState(false); // графік/перерви кабінету не завантажились
   // Слот, який ми обрали, зайняли, поки модалка була відкрита (realtime).
   const [taken, setTaken] = useState<string | null>(null);
+
+  /* ===== Перенос в ІНШИЙ кабінет = переоформлення (рішення власника 2026-07-27) =====
+     Спочатку тут був автопідбір замін позиція-в-позицію. Власник спростив правило:
+     склад між кабінетами НЕ переноситься взагалі — у кожного кабінету свій прайс,
+     тож дослідження обираються заново. Тому при зміні кабінету відкривається
+     звичайна форма запису з ПІДСТАВЛЕНИМИ даними пацієнта і порожнім переліком.
+     Запис лишається ТІЄЮ САМОЮ (id не змінюється) — зберігаються кейс, направник,
+     історія переносів; збереження йде через перенос, а не створення нової. */
+  const [svcRows, setSvcRows] = useState<ServiceLike[]>([]);
+  const [ovRows, setOvRows] = useState<RoomOverrideRow[]>([]);
+  const [entryRow, setEntryRow] = useState<Record<string, unknown> | null>(null);
+  /* Форму переоформлення НЕ можна малювати, поки картка не прочитана: BookingModal
+     бере prefill лише у початкових значеннях useState, тож змонтована з порожнім
+     prefill вона так і лишиться порожньою. */
+  const [entryReady, setEntryReady] = useState(false);
+  /* Прайс не прочитався → buildCatalog([]) мовчки відкотився б до СТАТИЧНОГО
+     довідника lib/studies, і форма запропонувала б послуги, яких у кабінеті
+     немає: сервер відповів би «оновіть форму», а оновлювати нічого. Тому
+     блокуємо так само, як і нечитану картку. */
+  const [catalogErr, setCatalogErr] = useState(false);
+  useEffect(() => {
+    let cancel = false;
+    if (!clinicId) { setEntryReady(true); return; }
+    (async () => {
+      try {
+        const supabase = createClient();
+        const [svc, ov, ent] = await Promise.all([
+          supabase.from("services")
+            .select("id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order, room_id")
+            .eq("clinic_id", clinicId),
+          supabase.from("service_room_overrides")
+            .select("room_id, service_id, price, duration_min, contrast_price, active")
+            .eq("clinic_id", clinicId),
+          // Дані пацієнта для передзаповнення: дошки передають різні підмножини,
+          // тож читаємо рядок самі — інакше довелось би правити 4 точки виклику.
+          supabase.from("queue_entries")
+            .select("patient_name, patient_phone, patient_email, patient_dob, patient_age, patient_sex, patient_weight, priority_level, note, contraindications")
+            .eq("id", patient.id).maybeSingle(),
+        ]);
+        if (cancel) return;
+        // PostgREST не кидає: помилка приходить полем error із data = null.
+        setCatalogErr(!!(svc.error || ov.error));
+        setSvcRows((svc.data ?? []) as ServiceLike[]);
+        setOvRows((ov.data ?? []) as RoomOverrideRow[]);
+        setEntryRow((ent.data ?? null) as Record<string, unknown> | null);
+      } catch {
+        // Картку/прайс не прочитали → переоформлення блокуємо (див. moveBlocked):
+        // краще чесна відмова, ніж форма з порожнім ПІБ і чужим переліком послуг.
+        if (!cancel) { setEntryRow(null); setCatalogErr(true); }
+      } finally {
+        if (!cancel) setEntryReady(true);
+      }
+    })();
+    return () => { cancel = true; };
+  }, [clinicId, patient.id]);
+
+  /* Кабінет змінили → переоформлення. Запис БЕЗ кабінету (room_id = null) сюди не
+     потрапляє: там перший же автовибір зі списку виглядав би як «зміна». */
+  const roomChanged = !!patient.room_id && roomId !== patient.room_id;
+  const moveBlocked = roomChanged && entryReady && (!entryRow || catalogErr);
+  const showMove = roomChanged && entryReady && !moveBlocked;
+  const showMoveLoading = roomChanged && !entryReady;
+  const dur = baseDur;
+
+  /* Поки видно форму переоформлення, ЦЕЙ діалог у DOM відсутній — його пастка
+     фокуса й Esc мають замовкнути (див. useModalA11y): інакше Tab гасне в
+     порожнечу, а Esc закриває все дерево замість верхнього вікна. */
+  const dialogRef = useModalA11y<HTMLDivElement>(requestClose, !showMove && !showMoveLoading);
 
   useEffect(() => {
     let cancel = false;
@@ -202,7 +310,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const [offOk, setOffOk] = useState(false);
   useEffect(() => { setOffOk(false); }, [time, roomId, dateStr]);   // згода протухає при зміні слота
   const valid = roomId && time && !roomSched.closed && SELECTABLE.includes(slotState(time))
-    && (!needsOffConfirm || offOk);
+    && (!needsOffConfirm || offOk) && !moveBlocked;
 
   /* Realtime: слот, який ми вже обрали, щойно зайняли (або кабінет закрили) —
      знімаємо вибір і кажемо про це, щоб «Перенести» не впало помилкою в лоб. */
@@ -234,6 +342,94 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
     }
   }
 
+  /* ===== Гілка «інший кабінет» ===== */
+  const er = entryRow || {};
+  const erStr = (k: string) => { const v = er[k]; return typeof v === "string" && v.trim() ? v : null; };
+  const erNum = (k: string) => { const v = er[k]; return typeof v === "number" ? v : null; };
+  const movePrefill: BookingPrefill = {
+    name: erStr("patient_name") ?? patient.patient_name,
+    phone: erStr("patient_phone"),
+    email: erStr("patient_email"),
+    dob: erStr("patient_dob"),
+    gender: erStr("patient_sex"),
+    weight: erNum("patient_weight"),
+    hasContra: er.contraindications === true,
+    priority: erStr("priority_level") as PatientPriority | null,
+    notes: erStr("note"),
+    buffer,
+    studies: [],          // склад обирається заново під прайс цільового кабінету
+    roomId,
+    date: dateStr,
+  };
+
+  /* Зберігаємо у ДВА кроки, саме в такому порядку: спершу правки пацієнта, потім
+     перенос. Зворотний порядок при відмові патча лишав би запис уже перенесеним, і
+     користувач тиснув би «Перенести» вдруге — а другий перенос перезаписує
+     reschedule_origin знімком уже нового слота (та сама пастка, що й M-6).
+     Пріоритет тут НЕ чіпаємо: це окрема дія з перевіркою ролі (403 для
+     реєстратора зірвав би весь перенос) — у формі він показаний лише для читання. */
+  async function handleMoveSave(b: BookingPayload): Promise<string | null> {
+    const patch: TablesUpdate<"queue_entries"> = {};
+    const p = patch as Record<string, unknown>;
+    const put = (col: string, val: unknown) => { if ((er[col] ?? null) !== (val ?? null)) p[col] = val; };
+    // ПІБ у режимі переносу не обовʼязковий (поле могло бути порожнім у старому
+    // записі), але порожнім його НЕ пишемо: серверна схема вимагає мін. 1 символ,
+    // і патч упав би generic-помилкою без підсвіченого поля.
+    if (b.name.trim()) put("patient_name", b.name.trim());
+    put("patient_phone", b.phone);
+    put("patient_email", b.email);
+    put("patient_sex", b.gender || null);
+    put("patient_weight", b.weight);
+    put("contraindications", b.hasContra);
+    put("note", b.notes);
+    // Вік — похідний від дати народження: без дати не чіпаємо (calcAge('') не число).
+    if (b.dob) { put("patient_dob", b.dob); put("patient_age", b.age); }
+    let patched = false;
+    if (Object.keys(p).length) {
+      const res = await updatePatientDetails(patient.id, patch);
+      if (!res.ok) return res.error;
+      patched = true;
+    }
+    const err = await onConfirm({
+      roomId: b.roomId, date: b.date, time: b.time, dur: b.dur, buffer: b.buffer,
+      reason: reason.trim(), offSchedule: b.offSchedule,
+      studies: b.studies as RescheduleStudy[],
+    });
+    // Правки пацієнта вже в базі — кажемо про це прямо, інакше користувач закриє
+    // форму в упевненості, що «нічого не збереглося», і введе їх удруге.
+    if (err) return patched ? "Дані пацієнта збережено, але перенести не вдалося: " + err : err;
+    return null;
+  }
+
+  /* Обрали ІНШИЙ кабінет → це переоформлення, а не зсув по сітці: показуємо форму
+     запису з даними пацієнта і порожнім переліком досліджень (див. блок вище).
+     Вихід ✕ повертає до звичайного переносу — кабінет скидаємо на поточний. */
+  const backToSlots = () => { setRoomId(patient.room_id || options[0]?.id || ""); setTime(""); };
+  if (showMoveLoading) return <MoveFormLoading onClose={backToSlots} />;
+  if (showMove) {
+    return (
+      <BookingModal
+        moveMode
+        rooms={options.filter((r) => r.id !== patient.room_id)}
+        clinicId={clinicId}
+        clinicTz={clinicTz}
+        incidents={incidents}
+        services={svcRows}
+        roomOverrides={ovRows}
+        caseSiblings={caseSiblings}
+        allowOffSchedule={allowOffSchedule}
+        prefill={movePrefill}
+        onClose={backToSlots}
+        onSave={handleMoveSave}
+        extraFields={
+          <label className="fld"><span className="fld-lab">Причина переносу (необовʼязково)</span>
+            <input className="inp" value={reason} onChange={(e) => setReason(e.target.value)}
+              placeholder="Напр.: пацієнт запізнився / за бажанням пацієнта / апарат зайнятий" /></label>
+        }
+      />
+    );
+  }
+
   return (
     <>
     <div className="overlay">
@@ -243,6 +439,8 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
           <button className="icon-btn" onClick={requestClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body">
+          {/* Тут склад НІКОЛИ не змінюється (зміна кабінету відкриває форму
+              переоформлення вище), тож шапка описує запис як є. */}
           <div className="ctx-hint blue" style={{ fontSize: 13 }}>Пацієнт: <b>{patient.patient_name}</b> · {procLabel(patient)} · {dur} хв{buffer > 0 ? ` + ${buffer} буфер` : ""}</div>
           <label className="fld"><span className="fld-lab">Причина переносу (необовʼязково)</span>
             <input className="inp" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Напр.: пацієнт запізнився / за бажанням пацієнта / апарат зайнятий" /></label>
@@ -250,6 +448,11 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
             <span className="fld-lab">Кабінет ({kind})</span>
             {options.length === 0
               ? <div className="ctx-hint red" style={{ fontSize: 12.5 }}>Немає кабінетів типу {kind}.</div>
+              : options.length > ROOM_LIST_MAX_CHIPS
+              // Понад 3 кабінети — список (єдиний поріг з BookingModal/порталом):
+              // картки .bd-room у вузькій модалці переносу тиснуть назви ще сильніше.
+              ? <RoomSelect rooms={options} value={roomId}
+                  onChange={(id) => { setRoomId(id); setTime(""); }} />
               : <div className="bd-rooms">
                   {options.map((r) => (
                     <button key={r.id} className={"bd-room" + (roomId === r.id ? " active" : "")} onClick={() => { setRoomId(r.id); setTime(""); }} title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
@@ -258,7 +461,15 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
                     </button>
                   ))}
                 </div>}
+            {moveBlocked && (
+              <div className="ctx-hint red" style={{ fontSize: 12.5, marginTop: 8 }} role="status" aria-live="polite">
+                ⚠ Не вдалося прочитати {catalogErr ? "прайс кабінетів" : "картку пацієнта"} —
+                переоформлення в інший кабінет зараз недоступне. Оновіть сторінку
+                або поверніть поточний кабінет, щоб просто змінити час.
+              </div>
+            )}
           </div>
+
           <div className="fld-row">
             <label className="fld" style={{ maxWidth: 180 }}><span className="fld-lab">Дата</span>
               {/* Клампимо в onChange: атрибут min лише малює межу, але не блокує

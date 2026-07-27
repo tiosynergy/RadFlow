@@ -15,7 +15,7 @@ import CeoDashboardLink from "@/components/CeoDashboardLink";
 import PatientEditModal from "@/components/PatientEditModal";
 import PhoneInput from "@/components/PhoneInput";
 import CitySelect from "@/components/CitySelect";
-import RescheduleModal from "@/components/RescheduleModal";
+import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import ReferrerBoard from "@/components/ReferrerBoard";
 import ReferrerSidebar from "@/components/ReferrerSidebar";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry, editQueueEntryStudies, createReferralCase, referralCaseFromEntry, type CaseStepInput } from "@/app/queue/actions";
@@ -35,6 +35,7 @@ import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKA
 import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { DobField, BookingCalendar, fmtShort } from "@/components/BookingModal";
+import RoomSelect, { ROOM_LIST_MAX_CHIPS } from "@/components/RoomSelect";
 import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 
@@ -661,6 +662,12 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 <div className="ctx-hint red">У цьому центрі немає кабінету типу {studyType}.</div>
               ) : (
                 <>
+                  {/* Той самий поріг, що й у персонала: роль не має міняти
+                      поведінку вибору кабінету (вимога власника). */}
+                  {roomsOfType.length > ROOM_LIST_MAX_CHIPS ? (
+                    <RoomSelect rooms={roomsOfType} value={roomId || ""}
+                      onChange={(id) => { setRoomId(id); setTime(""); }} />
+                  ) : (
                   <div className="bk-room-chips">
                     {roomsOfType.map((r) => (
                       <button key={r.id} className={"bk-room-chip" + (roomId === r.id ? " active" : "") + " " + modalityKind(r.modality)}
@@ -670,6 +677,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                       </button>
                     ))}
                   </div>
+                  )}
                 </>
               )}
             </div>
@@ -1363,11 +1371,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
   }
 
   // Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
-  async function doReschedule({ roomId, date, time, dur, buffer, reason }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string }) {
+  async function doReschedule({ roomId, date, time, dur, buffer, reason, studies }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; studies?: RescheduleStudy[] }) {
     const p = reschedFor; if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason, studies });
     if (!res.ok) {
       if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
       reload();

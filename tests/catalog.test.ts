@@ -329,6 +329,55 @@ describe("firstClosedStudy — room-owned послуги (0121, дзеркало
   });
 });
 
+/* 0122 — перенос у кабінет з ІНШИМ прайсом. Логіка перепризначення в
+   RescheduleModal — чиста функція від (каталог, склад, кабінет), тож інваріанти
+   тримаємо тут: саме вони ловлять High-знахідку ревʼю (знімок ціни/часу лишався
+   від СТАРОГО кабінету, коли послуга з тією ж назвою є в цільовому). */
+describe("каталог при переносі між кабінетами (0122)", () => {
+  const roomA = "roomA", roomB = "roomB";
+  // Та сама НАЗВА в обох кабінетах, але свої ціна й час — норма після 0121.
+  const inA = svc({ id: "a1", name: "Головний мозок", modality: "MRI", price: 1200, duration_min: 20, room_id: roomA });
+  const inB = svc({ id: "b1", name: "Головний мозок", modality: "MRI", price: 1800, duration_min: 30, room_id: roomB });
+
+  it("однакова назва в цільовому кабінеті → ціна й час беруться з ЙОГО каталогу", () => {
+    const cat = buildCatalog([inA, inB]);
+    expect(cat.studyPrice("MRI", "Головний мозок", false, roomA)).toBe(1200);
+    expect(cat.studyDur("MRI", "Головний мозок", false, roomA)).toBe(20);
+    // Ключовий інваріант: після переносу в B знімок МУСИТЬ стати 1800/30.
+    expect(cat.studyPrice("MRI", "Головний мозок", false, roomB)).toBe(1800);
+    expect(cat.studyDur("MRI", "Головний мозок", false, roomB)).toBe(30);
+  });
+
+  it("позиції немає в цільовому кабінеті → firstClosedStudy показує, що саме перепризначати", () => {
+    const onlyA = svc({ id: "a2", name: "МР ангіографія", modality: "MRI", room_id: roomA });
+    const otherB = svc({ id: "b2", name: "Хребет", modality: "MRI", room_id: roomB });
+    const cat = buildCatalog([onlyA, otherB]);
+    const studies = [{ type: "MRI", region: "МР ангіографія" }];
+    expect(firstClosedStudy(cat, studies, roomA)).toBeNull();
+    expect(firstClosedStudy(cat, studies, roomB)).toBe("МР ангіографія");
+    // …і список замін для кабінету B — саме його каталог.
+    expect(cat.regionsFor("MRI", roomB).map((r) => r.label)).toEqual(["Хребет"]);
+  });
+
+  it("контраст: замінити можна лише послугою, що дозволяє контраст", () => {
+    const withC = svc({ id: "b3", name: "Мозок", modality: "MRI", contrast_allowed: true, contrast_price: 500, price: 2000, room_id: roomB });
+    const noC = svc({ id: "b4", name: "Шия", modality: "MRI", contrast_allowed: false, price: 900, room_id: roomB });
+    const cat = buildCatalog([withC, noC]);
+    const opts = cat.regionsFor("MRI", roomB).filter((r) => r.contrast);
+    expect(opts.map((r) => r.label)).toEqual(["Мозок"]);
+    expect(cat.studyPrice("MRI", "Мозок", true, roomB)).toBe(2000 + 500);
+  });
+
+  it("час у цільовому кабінеті не заданий (0117) → studyDur 0, перенос має блокуватись", () => {
+    // ⚠️ Хелпер svc() робить `duration_min ?? 30`, тож null треба ставити ЯВНО —
+    // інакше тест мовчки перевіряв би 30 хв замість «час не задано» (0117).
+    const noDur: ServiceLike = { ...svc({ id: "b5", name: "Хребет", modality: "MRI", price: 700, room_id: roomB }), duration_min: null };
+    const cat = buildCatalog([noDur]);
+    expect(cat.studyDur("MRI", "Хребет", false, roomB)).toBe(0);
+    expect(cat.studyPrice("MRI", "Хребет", false, roomB)).toBe(700);
+  });
+});
+
 describe("firstClosedStudy — серверний гейт закритих послуг (defense-in-depth)", () => {
   const knee = svc({ name: "Коліно", modality: "MRI", active: true });
   // US налаштована (рядок є), але вимкнена:
