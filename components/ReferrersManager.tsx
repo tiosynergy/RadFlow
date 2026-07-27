@@ -264,27 +264,27 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     const name = r.referrer.full_name || r.referrer.login || "Лікар";
     return (
       <div onClick={onClick} title={expandable ? (expanded ? "Згорнути налаштування" : "Натисніть, щоб змінити налаштування") : undefined} style={{ padding: "14px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
-        {expandable && <span style={{ color: "var(--text-muted)", fontSize: 13, width: 12, flexShrink: 0, display: "inline-block", transition: "transform .15s", transform: expanded ? "rotate(90deg)" : "none" }}>▸</span>}
+        {expandable && <span style={{ color: "var(--text-muted)", fontSize: "0.8125rem", width: 12, flexShrink: 0, display: "inline-block", transition: "transform .15s", transform: expanded ? "rotate(90deg)" : "none" }}>▸</span>}
         <div style={{ flex: 1, minWidth: 180 }}>
-          <div style={{ fontWeight: 600, fontSize: 14 }}>{name}</div>
-          <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{r.referrer.login ? "@" + r.referrer.login : ""}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
-          {r.referrer.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }} title="Примітка лікаря (редагує сам направник)">📝 {r.referrer.note}</div>}
-          {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
+          <div style={{ fontWeight: 600, fontSize: "0.875rem" }}>{name}</div>
+          <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{r.referrer.login ? "@" + r.referrer.login : ""}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
+          {r.referrer.note && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: 2 }} title="Примітка лікаря (редагує сам направник)">📝 {r.referrer.note}</div>}
+          {r.note && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
           {r.status === "active" && (() => {
             // Грант без жодного живого кабінету: направник фактично не може ані
             // записувати, ані редагувати свої записи в центрі — це треба бачити.
             const dead = !!(r.room_ids && r.room_ids.length && sanitizeRooms(r.room_ids).length === 0);
             return (
-              <div style={{ fontSize: 12, color: dead ? "var(--red)" : "var(--text-secondary)", marginTop: 2 }}>
+              <div style={{ fontSize: "0.75rem", color: dead ? "var(--red)" : "var(--text-secondary)", marginTop: 2 }}>
                 Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Кабінети: {roomsLabel(r.room_ids)}
                 {dead && <span title="Дозволені кабінети видалено — направник не може записувати. Оберіть кабінети заново."> — ⚠ доступ не працює</span>}
               </div>
             );
           })()}
           {!r.referrer.password_set && r.referrer.invite_token && (
-            <div style={{ fontSize: 12, marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <div style={{ fontSize: "0.75rem", marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для входу:</span>
-              <code style={{ fontSize: 11.5, color: "var(--text-secondary)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
+              <code style={{ fontSize: "0.71875rem", color: "var(--text-secondary)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
               <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); copyLink(r.referrer.invite_token as string); }}>Скопіювати</button>
             </div>
           )}
@@ -324,8 +324,8 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                     {loginSug.map((s) => (
                       <button type="button" key={s.id} onMouseDown={(e) => { e.preventDefault(); pickReferrer(s); }}
                         style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", background: "transparent", border: "none", borderTop: "1px solid var(--border)", cursor: "pointer", color: "var(--text)" }}>
-                        <span style={{ fontWeight: 600, fontSize: 13 }}>@{s.login}</span>
-                        {s.full_name ? <span style={{ color: "var(--text-muted)", fontSize: 12.5 }}> · {s.full_name}</span> : null}
+                        <span style={{ fontWeight: 600, fontSize: "0.8125rem" }}>@{s.login}</span>
+                        {s.full_name ? <span style={{ color: "var(--text-muted)", fontSize: "0.78125rem" }}> · {s.full_name}</span> : null}
                       </button>
                     ))}
                   </div>
@@ -354,7 +354,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
             <div className="fld">
               <span className="fld-lab">Доступні кабінети</span>
               {(rooms || []).length === 0 ? (
-                <div className="ctx-hint" style={{ fontSize: 12.5 }}>У центрі ще немає кабінетів — додайте їх у Майстрі налаштування.</div>
+                <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>У центрі ще немає кабінетів — додайте їх у Майстрі налаштування.</div>
               ) : (
                 <div className="bd-rooms">
                   {(rooms || []).map((r) => {
@@ -362,7 +362,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                     return (
                       <button type="button" key={r.id} className="bd-room" onClick={() => toggleRoom(r.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}
                         style={{ padding: "5px 9px", gap: 8, borderColor: on ? "var(--green)" : undefined, background: on ? "var(--green-bg)" : undefined }}>
-                        <span className={"bd-room-kind " + modalityKind(r.modality)} style={{ width: 26, height: 26, fontSize: 10 }}>{modalityShort(r.modality)}</span>
+                        <span className={"bd-room-kind " + modalityKind(r.modality)} style={{ width: 26, height: 26, fontSize: "0.625rem" }}>{modalityShort(r.modality)}</span>
                         <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
                       </button>
                     );
@@ -393,7 +393,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           <div style={card}>
             <div className="bk-section-label" style={{ marginTop: 0 }}>Активні направники ({active.length})</div>
             {loading ? <div style={{ color: "var(--text-muted)", padding: 8 }}>Завантаження…</div>
-              : active.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає активних направників. Запросіть лікаря вище.</div>
+              : active.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: "0.8125rem" }}>Поки немає активних направників. Запросіть лікаря вище.</div>
               : active.map((r) => (
                 <div key={r.access_id}>
                   <Row r={r} expandable expanded={editingId === r.access_id} onClick={() => (editingId === r.access_id ? setEditingId(null) : startEdit(r))}>
@@ -404,7 +404,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                   </Row>
                   {editingId === r.access_id && (
                     <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: 16, margin: "4px 0 8px" }}>
-                      <div className="ctx-hint" style={{ fontSize: 12, marginBottom: 10 }}>Дані направника (ПІБ, телефон, примітки) лікар редагує сам у своєму профілі. Тут — лише налаштування доступу до вашого центру.</div>
+                      <div className="ctx-hint" style={{ fontSize: "0.75rem", marginBottom: 10 }}>Дані направника (ПІБ, телефон, примітки) лікар редагує сам у своєму профілі. Тут — лише налаштування доступу до вашого центру.</div>
                       <div className="fld-row">
                         <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Режим бронювання <HelpTip label="Режим бронювання направника" text={<><b>Пряма черга</b> — направлення направника одразу потрапляє в чергу. <b>З підтвердженням оператора</b> — спершу реєстратор підтверджує запис, і лише тоді він стає в чергу.</>} /></span>
                           <select className="inp" value={editForm.policy} onChange={(e) => setEditForm((f) => ({ ...f, policy: e.target.value }))}>
@@ -416,14 +416,14 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                       </div>
                       <div className="fld">
                         <span className="fld-lab">Доступні кабінети</span>
-                        {(rooms || []).length === 0 ? <div className="ctx-hint" style={{ fontSize: 12.5 }}>У центрі немає кабінетів.</div> : (
+                        {(rooms || []).length === 0 ? <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>У центрі немає кабінетів.</div> : (
                           <div className="bd-rooms">
                             {(rooms || []).map((rm) => {
                               const on = editForm.room_ids.includes(rm.id);
                               return (
                                 <button type="button" key={rm.id} className="bd-room" onClick={() => toggleEditRoom(rm.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}
                                   style={{ padding: "5px 9px", gap: 8, borderColor: on ? "var(--green)" : undefined, background: on ? "var(--green-bg)" : undefined }}>
-                                  <span className={"bd-room-kind " + modalityKind(rm.modality)} style={{ width: 26, height: 26, fontSize: 10 }}>{modalityShort(rm.modality)}</span>
+                                  <span className={"bd-room-kind " + modalityKind(rm.modality)} style={{ width: 26, height: 26, fontSize: "0.625rem" }}>{modalityShort(rm.modality)}</span>
                                   <span className="bd-room-meta"><span className="bd-room-name">{rm.name}</span><span className="bd-room-model">{rm.apparatus_model || ""}</span></span>
                                 </button>
                               );

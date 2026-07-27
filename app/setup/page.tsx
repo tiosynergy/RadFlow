@@ -30,7 +30,7 @@ export default async function SetupPage() {
     return (
       <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24 }}>
         <div style={{ maxWidth: 460, textAlign: "center" }}>
-          <h1 style={{ fontSize: 20, marginBottom: 8 }}>Центр ще не налаштовано</h1>
+          <h1 style={{ fontSize: "1.25rem", marginBottom: 8 }}>Центр ще не налаштовано</h1>
           <p style={{ color: "var(--text-muted)", lineHeight: 1.55 }}>
             Майстер налаштувань доступний лише адміністратору центру. Зверніться до адміністратора —
             після налаштування кабінетів і графіка черга запрацює.

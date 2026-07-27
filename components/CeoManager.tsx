@@ -171,13 +171,13 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
             {loading ? (
               <div style={{ color: "var(--text-muted)", padding: 8 }}>Завантаження…</div>
             ) : ceos.length === 0 ? (
-              <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає керівників. Призначте їх вище.</div>
+              <div style={{ color: "var(--text-muted)", padding: 8, fontSize: "0.8125rem" }}>Поки немає керівників. Призначте їх вище.</div>
             ) : ceos.map((r) => (
               <div key={r.id} style={{ padding: "14px 0", borderTop: "1px solid var(--border)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 180 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{r.full_name || r.login || r.email}</div>
-                    <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
+                    <div style={{ fontWeight: 600, fontSize: "0.875rem" }}>{r.full_name || r.login || r.email}</div>
+                    <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>
                       {/* Службову адресу (<логін>@ceo.radflow.local) не показуємо:
                           вона виглядає як пошта, і адмін написав би на неї
                           листа, якого ніхто ніколи не отримає. */}
@@ -185,7 +185,7 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
                       {isTechnicalEmail(r.email) ? "вхід за логіном" : r.email}
                       {r.phone ? " · " + r.phone : ""}
                     </div>
-                    {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
+                    {r.note && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
                   </div>
                   <span className={"badge " + (r.password_set ? "green" : "yellow")}>{r.password_set ? "🔒 Пароль встановлено" : "Пароль не задано"}</span>
                   <button className="btn btn-secondary btn-sm" title="Керівник задасть пароль наново" onClick={() => resetPassword(r.id, r.full_name || r.login)}>Скинути пароль</button>
@@ -196,9 +196,9 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
                   )}
                 </div>
                 {!r.password_set && r.invite_token && (
-                  <div style={{ fontSize: 12, marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: "0.75rem", marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для встановлення пароля:</span>
-                    <code style={{ fontSize: 11.5, color: "var(--text-secondary)", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
+                    <code style={{ fontSize: "0.71875rem", color: "var(--text-secondary)", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
                     <button className="btn btn-secondary btn-sm" onClick={() => copyLink(r.invite_token as string)}>Скопіювати</button>
                   </div>
                 )}

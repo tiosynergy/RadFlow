@@ -84,7 +84,7 @@ function MoveFormLoading({ onClose }: { onClose: () => void }) {
     <div className="overlay">
       <div className="dialog fade-in" style={{ maxWidth: 420 }} ref={ref} role="dialog" aria-modal="true" aria-label="Підготовка форми переоформлення">
         <div className="dlg-body">
-          <div style={{ fontSize: 13, padding: "24px 0", textAlign: "center", color: "var(--text-muted)" }}
+          <div style={{ fontSize: "0.8125rem", padding: "24px 0", textAlign: "center", color: "var(--text-muted)" }}
             role="status" aria-live="polite">⏳ Готуємо форму переоформлення…</div>
         </div>
         <div className="dlg-foot">
@@ -448,13 +448,13 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
         <div className="dlg-body">
           {/* Тут склад НІКОЛИ не змінюється (зміна кабінету відкриває форму
               переоформлення вище), тож шапка описує запис як є. */}
-          <div className="ctx-hint blue" style={{ fontSize: 13 }}>Пацієнт: <b>{patient.patient_name}</b> · {procLabel(patient)} · {dur} хв{buffer > 0 ? ` + ${buffer} буфер` : ""}</div>
+          <div className="ctx-hint blue" style={{ fontSize: "0.8125rem" }}>Пацієнт: <b>{patient.patient_name}</b> · {procLabel(patient)} · {dur} хв{buffer > 0 ? ` + ${buffer} буфер` : ""}</div>
           <label className="fld"><span className="fld-lab">Причина переносу (необовʼязково)</span>
             <input className="inp" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Напр.: пацієнт запізнився / за бажанням пацієнта / апарат зайнятий" /></label>
           <div className="fld">
             <span className="fld-lab">Кабінет ({kind})</span>
             {options.length === 0
-              ? <div className="ctx-hint red" style={{ fontSize: 12.5 }}>Немає кабінетів типу {kind}.</div>
+              ? <div className="ctx-hint red" style={{ fontSize: "0.78125rem" }}>Немає кабінетів типу {kind}.</div>
               : options.length > ROOM_LIST_MAX_CHIPS
               // Понад 3 кабінети — список (єдиний поріг з BookingModal/порталом):
               // картки .bd-room у вузькій модалці переносу тиснуть назви ще сильніше.
@@ -475,13 +475,13 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
             {/* 0123: запис лишився у вимкненому кабінеті — час міняти можна, і це
                 треба сказати прямо, інакше зникнення інших чипів виглядає як збій. */}
             {curRoomOff && (
-              <div className="ctx-hint blue" style={{ fontSize: 12.5, marginTop: 8 }} role="status" aria-live="polite">
+              <div className="ctx-hint blue" style={{ fontSize: "0.78125rem", marginTop: 8 }} role="status" aria-live="polite">
                 ℹ Кабінет <b>{curRoom?.name}</b> вимкнено. Час у ньому змінити можна,
                 а щоб перевести пацієнта — оберіть інший кабінет зі списку.
               </div>
             )}
             {moveBlocked && (
-              <div className="ctx-hint red" style={{ fontSize: 12.5, marginTop: 8 }} role="status" aria-live="polite">
+              <div className="ctx-hint red" style={{ fontSize: "0.78125rem", marginTop: 8 }} role="status" aria-live="polite">
                 ⚠ Не вдалося прочитати {catalogErr ? "прайс кабінетів" : "картку пацієнта"} —
                 переоформлення в інший кабінет зараз недоступне. Оновіть сторінку
                 або поверніть поточний кабінет, щоб просто змінити час.
@@ -507,7 +507,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
             {(busyError || schedErr) && !slotsLoading
               ? <div className="ctx-hint red">⚠ Не вдалося завантажити {busyError ? "зайнятість" : "графік"} кабінету — оновіть сторінку. Показувати вільний час не можемо.</div>
               : slotsLoading
-              ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
+              ? <div className="ctx-hint" style={{ fontSize: "0.8125rem", padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
               : <SlotPicker
                   slots={slots}
                   value={time}
@@ -562,7 +562,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
         <div className="dlg-foot">
           {valid
             ? <span className="bk-summary">{room ? room.name : ""} · {dateStr} {time}–{fmt(toMin(time) + dur)}{buffer > 0 ? " (+" + buffer + " хв буфер → вільно з " + fmt(toMin(time) + dur + buffer) + ")" : ""}</span>
-            : <span style={{ fontSize: 12, color: "var(--text-faint)", marginRight: "auto", alignSelf: "center" }}>Оберіть кабінет, дату та слот</span>}
+            : <span style={{ fontSize: "0.75rem", color: "var(--text-faint)", marginRight: "auto", alignSelf: "center" }}>Оберіть кабінет, дату та слот</span>}
           <button className="btn btn-ghost" onClick={requestClose} disabled={saving}>Скасувати</button>
           <button className="btn btn-primary" disabled={!valid || saving} onClick={handleConfirm}>
             {saving ? "Перенесення…" : "✓ Перенести на цей слот"}

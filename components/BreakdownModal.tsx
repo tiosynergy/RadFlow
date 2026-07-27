@@ -110,13 +110,13 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
   return (
     <div style={{ border: "1px solid var(--red)", borderRadius: 12, padding: 14, background: "var(--red-bg)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: 16 }}>🔧</span>
+        <span style={{ fontSize: "1rem" }}>🔧</span>
         <b style={{ color: "var(--red)" }}>Поломка обладнання</b>
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>несправність — потрібен ремонт</span>
+        <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>несправність — потрібен ремонт</span>
       </div>
       {existing && !open ? (
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ flex: 1, fontSize: 13 }}>Активна з <b>{fmtDT(existing.started_at)}</b>{existing.blocked_until ? <> до <b>{fmtDT(existing.blocked_until)}</b></> : null}</span>
+          <span style={{ flex: 1, fontSize: "0.8125rem" }}>Активна з <b>{fmtDT(existing.started_at)}</b>{existing.blocked_until ? <> до <b>{fmtDT(existing.blocked_until)}</b></> : null}</span>
           <button className="btn btn-secondary btn-sm" onClick={() => setOpen(true)}>✎ Редагувати</button>
           <button className="btn btn-secondary btn-sm" onClick={() => onResolve(existing.id)}>🔓 Розблокувати</button>
         </div>
@@ -139,7 +139,7 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
             <input type="checkbox" checked={autoUnblock} onChange={(e) => setAutoUnblock(e.target.checked)} />
             <span className="rf-box" /><span>Автоматично зняти блокування у вказаний час {autoUnblock ? "" : "— інакше підтвердьте зняття вручну"}</span>
           </label>
-          {err && <div className="ctx-hint red" style={{ fontSize: 12.5 }}>⚠ {err}</div>}
+          {err && <div className="ctx-hint red" style={{ fontSize: "0.78125rem" }}>⚠ {err}</div>}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
             {existing && <button className="btn btn-ghost btn-sm" onClick={() => setOpen(false)}>Скасувати</button>}
             <button className="btn btn-danger btn-sm" onClick={save}>{existing ? "💾 Зберегти" : "🔒 Заблокувати"}</button>
@@ -183,13 +183,13 @@ function MaintenanceSection({ roomId, existing, others, onSave, onResolve }: Mai
   return (
     <div style={{ border: "1px solid var(--orange)", borderRadius: 12, padding: 14, background: "var(--orange-bg)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: 16 }}>⚙️</span>
+        <span style={{ fontSize: "1rem" }}>⚙️</span>
         <b style={{ color: "var(--orange)" }}>Планове ТО</b>
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>заплановане технічне обслуговування</span>
+        <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>заплановане технічне обслуговування</span>
       </div>
       {existing && !open ? (
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ flex: 1, fontSize: 13 }}>Заплановано <b>{fmtDT(existing.started_at)}</b>{existing.blocked_until ? <> – <b>{fmtDT(existing.blocked_until)}</b></> : null}</span>
+          <span style={{ flex: 1, fontSize: "0.8125rem" }}>Заплановано <b>{fmtDT(existing.started_at)}</b>{existing.blocked_until ? <> – <b>{fmtDT(existing.blocked_until)}</b></> : null}</span>
           <button className="btn btn-secondary btn-sm" onClick={() => setOpen(true)}>✎ Редагувати</button>
           <button className="btn btn-secondary btn-sm" onClick={() => onResolve(existing.id)}>✕ Скасувати</button>
         </div>
@@ -207,7 +207,7 @@ function MaintenanceSection({ roomId, existing, others, onSave, onResolve }: Mai
             <input type="checkbox" checked={autoUnblock} onChange={(e) => setAutoUnblock(e.target.checked)} />
             <span className="rf-box" /><span>Автоматично зняти ТО наприкінці {autoUnblock ? "" : "— інакше підтвердьте зняття вручну"}</span>
           </label>
-          {err && <div className="ctx-hint red" style={{ fontSize: 12.5 }}>⚠ {err}</div>}
+          {err && <div className="ctx-hint red" style={{ fontSize: "0.78125rem" }}>⚠ {err}</div>}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
             {existing && <button className="btn btn-ghost btn-sm" onClick={() => setOpen(false)}>Скасувати</button>}
             <button className="btn btn-primary btn-sm" onClick={save}>{existing ? "💾 Зберегти" : "🗓 Запланувати ТО"}</button>
@@ -260,9 +260,9 @@ export default function BreakdownModal({ rooms, incidents = [], overrides = {}, 
 
           {emergencyInc && (
             <div style={{ border: "1px solid var(--red)", borderRadius: 12, padding: 14, background: "var(--red-bg)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 16 }}>🛑</span>
+              <span style={{ fontSize: "1rem" }}>🛑</span>
               <b style={{ color: "var(--red)" }}>Аварійна зупинка</b>
-              <span style={{ flex: 1, fontSize: 13 }}>Активна з <b>{fmtDT(emergencyInc.started_at)}</b> — до зʼясування обставин</span>
+              <span style={{ flex: 1, fontSize: "0.8125rem" }}>Активна з <b>{fmtDT(emergencyInc.started_at)}</b> — до зʼясування обставин</span>
               <button className="btn btn-secondary btn-sm" onClick={() => onResolve(emergencyInc.id)}>🔓 Розблокувати</button>
             </div>
           )}

@@ -55,7 +55,7 @@ export default function EmergencyModal({ rooms = [], stoppedRoomIds = [], affect
           <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div className="ctx-hint red" style={{ fontSize: 13 }}>
+          <div className="ctx-hint red" style={{ fontSize: "0.8125rem" }}>
             Зупинка блокує обрані кабінети <b>до з'ясування обставин</b>. Пацієнтів цього дня буде позначено на <b>обдзвон</b> (Колл-лист) і надіслано подію в автоматизацію.
           </div>
 
@@ -93,7 +93,7 @@ export default function EmergencyModal({ rooms = [], stoppedRoomIds = [], affect
               </label>
             </>
           ) : (
-            <div className="ctx-hint blue" style={{ fontSize: 12.5 }}>Усі кабінети вже зупинено.</div>
+            <div className="ctx-hint blue" style={{ fontSize: "0.78125rem" }}>Усі кабінети вже зупинено.</div>
           )}
         </div>
         <div className="dlg-foot">

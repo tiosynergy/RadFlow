@@ -247,13 +247,13 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
           </div>
 
           {opErr && (
-            <div style={{ fontSize: 12.5, color: "var(--danger, #c0392b)" }}>{opErr}</div>
+            <div style={{ fontSize: "0.78125rem", color: "var(--danger, #c0392b)" }}>{opErr}</div>
           )}
           {err && (
-            <div style={{ fontSize: 12.5, color: "var(--danger, #c0392b)" }}>Не вдалося завантажити кроки кейса — оновіть сторінку.</div>
+            <div style={{ fontSize: "0.78125rem", color: "var(--danger, #c0392b)" }}>Не вдалося завантажити кроки кейса — оновіть сторінку.</div>
           )}
           {!err && steps === null && (
-            <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Завантаження…</div>
+            <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)" }}>Завантаження…</div>
           )}
 
           {!err && steps !== null && (
@@ -268,16 +268,16 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
                 return (
                   <div key={s.id} style={{ display: "flex", flexDirection: "column", gap: 8, background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: "9px 12px", opacity: active ? 1 : 0.55 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", minWidth: 18, textAlign: "center" }}>{s.case_step ?? i + 1}</span>
+                      <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--text-muted)", minWidth: 18, textAlign: "center" }}>{s.case_step ?? i + 1}</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        <div style={{ fontSize: "0.84375rem", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                           {modalityLabel(s.room?.modality || "")} · {s.room?.name || "—"}
                         </div>
-                        <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                           {label}{dateTxt ? " · " + dateTxt : ""}{timeTxt ? " " + timeTxt + endTxt : ""}
                         </div>
                       </div>
-                      <span style={{ flexShrink: 0, fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 999, border: "1px solid var(--border)", color: "var(--text-muted)" }}>
+                      <span style={{ flexShrink: 0, fontSize: "0.6875rem", fontWeight: 600, padding: "2px 8px", borderRadius: 999, border: "1px solid var(--border)", color: "var(--text-muted)" }}>
                         {STATUS_LABEL[s.status] || s.status}
                       </span>
                     </div>

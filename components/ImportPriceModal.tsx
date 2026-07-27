@@ -256,7 +256,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
   const rowLine = (i: number, extra?: React.ReactNode, disabled?: boolean) => {
     const r = preview!.rows[i];
     return (
-      <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: 13.5, opacity: disabled ? 0.6 : 1 }}>
+      <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderBottom: "1px solid var(--border)", fontSize: "0.84375rem", opacity: disabled ? 0.6 : 1 }}>
         <label style={{ display: "flex", alignItems: "center", gap: 10, flex: "1 1 auto", minWidth: 0, cursor: disabled ? "default" : "pointer" }}>
           <input type="checkbox" checked={!!checked[i]} disabled={disabled}
             onChange={(e) => setChecked((p) => ({ ...p, [i]: e.target.checked }))} />
@@ -273,7 +273,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
   // Інпут ручної тривалості (у прайсах час зазвичай відсутній). Живе ПОЗА <label>
   // рядка (див. rowLine) — тому preventDefault на кліку більше не потрібен.
   const durInput = (i: number, fileDur: number | null) => (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, color: "var(--text-muted)" }}>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", color: "var(--text-muted)" }}>
       <input className="inp" type="number" step={5} min={5} max={480} style={{ width: 64 }}
         placeholder={fileDur != null ? String(fileDur) : "—"} value={durPick[i] ?? ""}
         onChange={(e) => setDurPick((p) => ({ ...p, [i]: e.target.value }))}
@@ -293,13 +293,13 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
 
         <div className="dlg-body" style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>
           {err && (
-            <div style={{ color: "var(--red)", fontSize: 13.5, border: "1px solid var(--red)", borderRadius: 10, padding: "8px 12px" }} role="alert">
+            <div style={{ color: "var(--red)", fontSize: "0.84375rem", border: "1px solid var(--red)", borderRadius: 10, padding: "8px 12px" }} role="alert">
               {err}
             </div>
           )}
 
           {roomModality && (
-            <div style={{ fontSize: 12.5, color: "var(--text-secondary)", border: "1px solid var(--blue)", borderRadius: 10, padding: "8px 12px", background: "var(--blue-bg)" }}>
+            <div style={{ fontSize: "0.78125rem", color: "var(--text-secondary)", border: "1px solid var(--blue)", borderRadius: 10, padding: "8px 12px", background: "var(--blue-bg)" }}>
               🏥 Імпорт у кабінет — застосуються <b>лише позиції {modalityLabel(roomModality)}</b>:
               вони стануть <b>послугами саме цього кабінета</b> (його власний прайс).
               Базовий каталог центру не змінюється; інші модальності з прайса ігноруються.
@@ -318,7 +318,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ""; }} />
               <button className="btn btn-primary" onClick={() => fileRef.current?.click()}>Обрати файл…</button>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>або посилання на сторінку з прайсом:</span>
+                <span style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>або посилання на сторінку з прайсом:</span>
                 <input className="inp" type="url" placeholder="https://clinic.ua/price" value={urlInput}
                   style={{ flex: "1 1 220px", minWidth: 200 }}
                   onChange={(e) => setUrlInput(e.target.value)}
@@ -334,14 +334,14 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
           {(step === "preview" || step === "applying") && preview && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               {preview.ai ? (
-                <div style={{ fontSize: 12.5, color: "var(--text-muted)", border: "1px solid var(--border-strong)", borderRadius: 10, padding: "8px 12px" }}>
+                <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)", border: "1px solid var(--border-strong)", borderRadius: 10, padding: "8px 12px" }}>
                   🤖 Розібрано <b>AI</b> — рядки НЕ відмічені: перевірте назви й ціни та
                   відмітьте потрібні (модель могла помилитися); «Усі» нижче вмикає все разом.
                   Невпевнені — у «Нерозпізнаних».
                   {preview.skipped > 0 && <> Відкинуто рядків: <b>{preview.skipped}</b>.</>}
                 </div>
               ) : (
-                <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
+                <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>
                   Розпізнано колонки: назва — «{preview.columns.name ?? "—"}», ціна — «{preview.columns.price ?? "—"}»
                   {preview.columns.duration ? `, тривалість — «${preview.columns.duration}»` : ""}
                   {preview.columns.modality ? `, модальність — «${preview.columns.modality}»` : ""}.
@@ -350,7 +350,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
               )}
 
               {preview.truncated && (
-                <div style={{ color: "var(--orange)", fontSize: 12.5, border: "1px solid var(--orange)", borderRadius: 10, padding: "8px 12px" }} role="alert">
+                <div style={{ color: "var(--orange)", fontSize: "0.78125rem", border: "1px solid var(--orange)", borderRadius: 10, padding: "8px 12px" }} role="alert">
                   Файл завеликий — розібрано лише перші рядки. Розбийте прайс на кілька файлів,
                   щоб імпортувати решту.
                 </div>
@@ -359,12 +359,12 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
               {/* Майстер-чекбокс: увімкнути/зняти ВСІ рядки разом. Не чіпає «без змін»
                   і нерозпізнані без модальності (тим спершу обирають модальність). */}
               {selectableIdx.length > 0 && (
-                <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 8px", borderBottom: "2px solid var(--border-strong)", fontSize: 13.5, fontWeight: 650, cursor: "pointer", position: "sticky", top: 0, background: "var(--card)", zIndex: 1 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 8px", borderBottom: "2px solid var(--border-strong)", fontSize: "0.84375rem", fontWeight: 650, cursor: "pointer", position: "sticky", top: 0, background: "var(--card)", zIndex: 1 }}>
                   <input type="checkbox" checked={allChecked} disabled={step === "applying"}
                     ref={(el) => { if (el) el.indeterminate = checkedCount > 0 && !allChecked; }}
                     onChange={toggleAll} aria-label="Відмітити всі позиції" />
                   <span>Усі</span>
-                  <span style={{ fontWeight: 400, fontSize: 12.5, color: "var(--text-muted)" }}>
+                  <span style={{ fontWeight: 400, fontSize: "0.78125rem", color: "var(--text-muted)" }}>
                     вибрано {checkedCount} із {selectableIdx.length}
                     {groups.unrecognized.some((i) => !modPick[i]) ? " · нерозпізнані без модальності не вмикаються" : ""}
                   </span>
@@ -378,7 +378,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
                     const r = preview.rows[i];
                     if (r.kind !== "changed") return null;
                     return rowLine(i, (
-                      <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: 12.5 }}>
+                      <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: "0.78125rem" }}>
                         {r.row.price != null && r.existing.price !== r.row.price && (
                           <>
                             <span style={{ color: "var(--text-faint)", textDecoration: "line-through" }}>{fmtUah(r.existing.price)}</span>
@@ -403,7 +403,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
                   {groups.news.map((i) => {
                     const r = preview.rows[i];
                     return rowLine(i, (
-                      <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 10 }}>
+                      <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: "0.78125rem", display: "inline-flex", alignItems: "center", gap: 10 }}>
                         <b>{fmtUah(r.row.price ?? 0)}</b>
                         {durInput(i, r.row.durationMin)}
                       </span>
@@ -416,14 +416,14 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
                 <section>
                   <div style={{ fontWeight: 650, marginBottom: 4 }}>
                     Нові без ціни ({groups.newsNoPrice.length})
-                    <span style={{ fontWeight: 400, fontSize: 12.5, color: "var(--text-muted)", marginLeft: 8 }}>
+                    <span style={{ fontWeight: 400, fontSize: "0.78125rem", color: "var(--text-muted)", marginLeft: 8 }}>
                       ціна/час без значення = «—» у каталозі; заповніть тут або пізніше
                     </span>
                   </div>
                   {groups.newsNoPrice.map((i) => {
                     const r = preview.rows[i];
                     return rowLine(i, (
-                      <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: 12.5, display: "inline-flex", alignItems: "center", gap: 10 }}>
+                      <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: "0.78125rem", display: "inline-flex", alignItems: "center", gap: 10 }}>
                         <span style={{ color: "var(--orange)" }}>— ₴</span>
                         {durInput(i, r.row.durationMin)}
                       </span>
@@ -436,7 +436,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
                 <section>
                   <div style={{ fontWeight: 650, marginBottom: 4 }}>
                     Вимкнені в каталозі ({groups.inactive.length})
-                    <span style={{ fontWeight: 400, fontSize: 12.5, color: "var(--text-muted)", marginLeft: 8 }}>
+                    <span style={{ fontWeight: 400, fontSize: "0.78125rem", color: "var(--text-muted)", marginLeft: 8 }}>
                       позначте, щоб «оживити» з новою ціною — інакше не чіпаємо
                     </span>
                   </div>
@@ -444,7 +444,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
                     const r = preview.rows[i];
                     if (r.kind !== "inactive") return null;
                     return rowLine(i, (
-                      <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: 12.5 }}>
+                      <span className="tabular" style={{ whiteSpace: "nowrap", fontSize: "0.78125rem" }}>
                         {r.row.price != null ? <b>{fmtUah(r.row.price)}</b> : <span style={{ color: "var(--text-faint)" }}>ціна лишиться</span>}
                       </span>
                     ));
@@ -456,7 +456,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
                 <section>
                   <div style={{ fontWeight: 650, marginBottom: 4 }}>
                     Нерозпізнана модальність ({groups.unrecognized.length})
-                    <span style={{ fontWeight: 400, fontSize: 12.5, color: "var(--text-muted)", marginLeft: 8 }}>
+                    <span style={{ fontWeight: 400, fontSize: "0.78125rem", color: "var(--text-muted)", marginLeft: 8 }}>
                       оберіть модальність або залиште — такі рядки не імпортуються
                     </span>
                   </div>
@@ -471,7 +471,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                         {lowConf && (
                           <span title={"AI впевнений на " + Math.round(r.row.confidence * 100) + "%" + (aiHint ? " · пропозиція: " + aiHint : "")}
-                            style={{ fontSize: 11.5, color: "var(--orange)", whiteSpace: "nowrap" }}>
+                            style={{ fontSize: "0.71875rem", color: "var(--orange)", whiteSpace: "nowrap" }}>
                             ⚠ {Math.round(r.row.confidence * 100)}%{aiHint ? " · " + aiHint + "?" : ""}
                           </span>
                         )}
@@ -486,7 +486,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
                             <option key={mm} value={mm}>{modalityLabel(mm)}</option>
                           ))}
                         </select>
-                        <span className="tabular" style={{ fontSize: 12.5 }}>
+                        <span className="tabular" style={{ fontSize: "0.78125rem" }}>
                           {r.row.price != null ? <b>{fmtUah(r.row.price)}</b> : <span style={{ color: "var(--orange)" }}>— ₴</span>}
                         </span>
                         {durInput(i, r.row.durationMin)}
@@ -497,7 +497,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
               )}
 
               {groups.unchanged > 0 && (
-                <div style={{ fontSize: 12.5, color: "var(--text-faint)" }}>
+                <div style={{ fontSize: "0.78125rem", color: "var(--text-faint)" }}>
                   Без змін (ціна й час збігаються з каталогом): {groups.unchanged}
                 </div>
               )}

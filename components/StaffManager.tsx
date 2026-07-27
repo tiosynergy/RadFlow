@@ -35,6 +35,17 @@ type Radiologist = {
 };
 type RadRoom = { profile_id: string; room_id: string };
 type PwModal = { id: string; val: string; busy: boolean };
+/* Сесія 14: редагування картки. Логіна й адреси входу тут НЕМАЄ свідомо —
+   логін міняється окремим роутом (/api/account/login), а email — це адреса
+   входу в auth.users, і правити її разом із профілем неатомарно (див.
+   коментар у app/api/staff/route.ts). */
+type EditFields = { full_name: string; phone: string; contact_email: string; note: string };
+/* `initial` — знімок значень на момент відкриття форми. Зберігаємо ЛИШЕ те, що
+   відрізняється від нього: інакше форма, відкрита до `reload()` (він спрацьовує
+   на кожен фокус вкладки), відправляла б назад свою застарілу копію і мовчки
+   затирала правку, зроблену в іншій вкладці — рівно ту втрату контактної пошти,
+   заради якої ручку й робили. */
+type EditForm = EditFields & { id: string; busy: boolean; initial: EditFields };
 
 const ROLE_LABEL: Record<StaffRole, string> = { radiologist: "Радіолог", registrar: "Реєстратор" };
 const EMPTY: StaffForm = { login: "", full_name: "", email: "", phone: "", note: "" };
@@ -58,6 +69,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const [origin, setOrigin] = useState("");
   const [pwModal, setPwModal] = useState<PwModal | null>(null);
+  const [edit, setEdit] = useState<EditForm | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
   void roomsById;
@@ -130,6 +142,71 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
       reload();
     } catch { notify("Помилка зʼєднання із сервером", "error"); }
     setBusy(false);
+  }
+
+  function startEdit(r: Radiologist) {
+    const init: EditFields = {
+      full_name: r.full_name || "",
+      phone: r.phone || "",
+      // Реєстратор контактної пошти не має: у нього справжня пошта — в `email`,
+      // і вона ж адреса входу (роут відхилить contact_email для нього).
+      contact_email: r.role === "radiologist" ? (r.contact_email || "") : "",
+      note: r.note || "",
+    };
+    setEdit({ id: r.id, ...init, busy: false, initial: init });
+  }
+  function setE(k: keyof EditFields, v: string) {
+    setEdit((e) => (e ? { ...e, [k]: v } : e));
+  }
+  async function saveEdit(role: StaffRole) {
+    if (!edit || edit.busy) return;              // гард подвійного кліка
+    if (!edit.full_name.trim()) { notify("ПІБ не може бути порожнім", "error"); return; }
+
+    /* Тіло — тільки змінені поля (справжній PATCH). Роут відсутній ключ
+       трактує як «не чіпати колонку». */
+    const editId = edit.id;                      // фіксуємо ДО await: поки летить
+    const body: Record<string, string> = { userId: editId };  // запит, користувач
+    const keys: (keyof EditFields)[] = role === "radiologist"  // може відкрити іншу
+      ? ["full_name", "phone", "contact_email", "note"]        // картку
+      : ["full_name", "phone", "note"];
+    const changed = keys.filter((k) => edit[k] !== edit.initial[k]);
+    if (changed.length === 0) { setEdit(null); notify("Змін немає", "info"); return; }
+    changed.forEach((k) => { body[k] = edit[k]; });
+
+    setEdit((e) => (e && e.id === editId ? { ...e, busy: true } : e));
+    try {
+      const res = await fetch("/api/staff", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        notify(data.error || "Помилка збереження", "error");
+        setEdit((e) => (e && e.id === editId ? { ...e, busy: false } : e));
+        return;
+      }
+      /* У списку оновлюємо РІВНО ті поля, що пішли на сервер, і в тій самій
+         нормалізації (trim / lowercase / «» → NULL): інакше UI показував би
+         стан, якого в БД немає. */
+      const patched: Partial<Radiologist> = {};
+      if (changed.includes("full_name")) patched.full_name = edit.full_name.trim();
+      if (changed.includes("phone")) patched.phone = edit.phone.trim() || null;
+      if (changed.includes("note")) patched.note = edit.note.trim() || null;
+      if (changed.includes("contact_email")) patched.contact_email = edit.contact_email.trim().toLowerCase() || null;
+      setRadiologists((rs) => {
+        const next = rs.map((r) => (r.id === editId ? { ...r, ...patched } : r));
+        // Вибірка йде з .order("full_name") — після перейменування рядок має
+        // переїхати, а не лишатись на старому місці до наступного reload().
+        return changed.includes("full_name")
+          ? next.sort((a, b) => (a.full_name || "").localeCompare(b.full_name || "", "uk"))
+          : next;
+      });
+      setEdit((e) => (e && e.id === editId ? null : e));
+      notify("Картку збережено", "success");
+    } catch {
+      notify("Помилка зʼєднання із сервером", "error");
+      setEdit((e) => (e && e.id === editId ? { ...e, busy: false } : e));
+    }
   }
 
   async function resetPassword(profileId: string, label: string | null) {
@@ -205,7 +282,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                   </button>
                 ))}
               </div>
-              <span style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6, display: "block" }}>
+              <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 6, display: "block" }}>
                 {formRole === "radiologist"
                   ? "Працює з апаратом: своя дошка, статуси досліджень, доступ до призначених кабінетів."
                   : "Реєстратура: черга, обдзвін, лист очікування, графік дня, простої. Кабінети, прайс і налаштування центру — не редагує."}
@@ -251,7 +328,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                     </button>
                   );
                 })}
-                {(rooms || []).length === 0 && <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>Спершу додайте кабінети в Майстрі.</span>}
+                {(rooms || []).length === 0 && <span style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>Спершу додайте кабінети в Майстрі.</span>}
               </div>
             </div>
             )}
@@ -267,18 +344,18 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
             {loading ? (
               <div style={{ color: "var(--text-muted)", padding: 8 }}>Завантаження…</div>
             ) : radiologists.length === 0 ? (
-              <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає співробітників. Додайте їх вище.</div>
+              <div style={{ color: "var(--text-muted)", padding: 8, fontSize: "0.8125rem" }}>Поки немає співробітників. Додайте їх вище.</div>
             ) : radiologists.map((r) => (
               <div key={r.id} style={{ padding: "14px 0", borderTop: "1px solid var(--border)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 180 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ fontWeight: 600, fontSize: "0.875rem", display: "flex", alignItems: "center", gap: 8 }}>
                       {r.full_name || r.login || r.email}
-                      <span className={"badge " + (r.role === "registrar" ? "blue" : "gray")} style={{ fontSize: 10.5 }}>
+                      <span className={"badge " + (r.role === "registrar" ? "blue" : "gray")} style={{ fontSize: "0.65625rem" }}>
                         {ROLE_LABEL[r.role]}
                       </span>
                     </div>
-                    <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
+                    <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>
                       {/* 0124: у радіолога profiles.email — СЛУЖБОВА адреса
                           (rad.<hex>@radiologist.radflow.local). Показувати її як
                           пошту означало б підсунути адміну адресу, на яку він
@@ -290,24 +367,84 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                         : r.email}
                       {r.phone ? " · " + r.phone : ""}
                     </div>
-                    {r.note && <div style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
+                    {r.note && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
                   </div>
                   <span className={"badge " + (r.password_set ? "green" : "yellow")}>{r.password_set ? "🔒 Пароль встановлено" : "Пароль не задано"}</span>
+                  {/* Поки летить збереження — жоден тогл не активний: інакше
+                      відповідь застосувалась би до вже іншої відкритої картки. */}
+                  <button className="btn btn-secondary btn-sm" title="Редагувати ПІБ, телефон, пошту для звʼязку та примітку"
+                    aria-expanded={edit?.id === r.id} aria-controls={"staff-edit-" + r.id}
+                    disabled={!!edit?.busy}
+                    onClick={() => (edit?.id === r.id ? setEdit(null) : startEdit(r))}>
+                    {edit?.id === r.id ? "Згорнути" : "✏️ Редагувати"}
+                  </button>
                   <button className="btn btn-secondary btn-sm" title="Користувач задасть пароль наново" onClick={() => resetPassword(r.id, r.full_name || r.login)}>Скинути пароль</button>
                   <button className="btn btn-secondary btn-sm" title="Задати пароль вручну" onClick={() => setPassword(r.id)}>Задати пароль</button>
                   <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити акаунт назавжди" onClick={() => deleteRadiologist(r.id, r.full_name || r.login)}>🗑</button>
                 </div>
+                {/* Форма редагування — інлайн, а не модалка: поля прості, а
+                    модалка тут вимагала б пастки фокуса й Esc (useModalA11y)
+                    поверх уже наявного вікна пароля. */}
+                {edit?.id === r.id && (
+                  <div id={"staff-edit-" + r.id} role="group" aria-label={"Редагування картки: " + (r.full_name || r.login || "")}
+                    style={{ marginTop: 12, padding: 14, background: "var(--bg-soft, var(--card))", border: "1px solid var(--border)", borderRadius: "var(--r-md, 8px)" }}>
+                    <div className="fld-row">
+                      <label className="fld" style={{ flex: 1 }}>
+                        <span className="fld-lab">ПІБ <span className="req">*</span></span>
+                        <input className="inp" maxLength={200} value={edit.full_name} onChange={(e) => setE("full_name", e.target.value)} />
+                      </label>
+                      <label className="fld" style={{ flex: 1 }}>
+                        <span className="fld-lab">Телефон</span>
+                        <PhoneInput value={edit.phone} onChange={(v) => setE("phone", v)} />
+                      </label>
+                    </div>
+                    <div className="fld-row">
+                      {r.role === "radiologist" ? (
+                        <label className="fld" style={{ flex: 1 }}>
+                          <span className="fld-lab">Email для звʼязку</span>
+                          <input className="inp" type="email" placeholder="необовʼязково" maxLength={254}
+                            value={edit.contact_email} onChange={(e) => setE("contact_email", e.target.value)} />
+                          <span className="fld-hint">Не для входу: радіолог входить лише логіном і паролем. Порожнє поле стирає пошту.</span>
+                        </label>
+                      ) : (
+                        /* readOnly, а НЕ disabled: disabled-поле випадає з
+                           таб-порядку, і читач екрана до значення не дістанеться.
+                           Обгортка — <label>, інакше в інпута немає доступного
+                           імені (WCAG 1.3.1 / 4.1.2). */
+                        <label className="fld" style={{ flex: 1 }}>
+                          <span className="fld-lab">Email (адреса входу)</span>
+                          <input className="inp" value={r.email || ""} readOnly />
+                          <span className="fld-hint">Адресу входу тут не змінити — вона живе в акаунті, не в картці.</span>
+                        </label>
+                      )}
+                      <label className="fld" style={{ flex: 1 }}>
+                        <span className="fld-lab">Примітка</span>
+                        <input className="inp" maxLength={2000} value={edit.note} onChange={(e) => setE("note", e.target.value)} />
+                      </label>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                      <button className="btn btn-ghost btn-sm" disabled={edit.busy} onClick={() => setEdit(null)}>Скасувати</button>
+                      <button className="btn btn-primary btn-sm" disabled={edit.busy} aria-busy={edit.busy} onClick={() => saveEdit(r.role)}>
+                        {edit.busy ? <><span className="rf-spin" aria-hidden="true" /> Зберігаємо…</> : "Зберегти"}
+                      </button>
+                    </div>
+                    <div className="fld-hint" style={{ marginTop: 6 }}>
+                      Логін ({r.login ? "@" + r.login : "—"}) після створення не змінюється: щоб дати
+                      співробітнику інший логін, доведеться створити акаунт заново.
+                    </div>
+                  </div>
+                )}
                 {!r.password_set && r.invite_token && (
-                  <div style={{ fontSize: 12, marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: "0.75rem", marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для встановлення пароля:</span>
-                    <code style={{ fontSize: 11.5, color: "var(--text-secondary)", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
+                    <code style={{ fontSize: "0.71875rem", color: "var(--text-secondary)", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
                     <button className="btn btn-secondary btn-sm" onClick={() => copyLink(r.invite_token as string)}>Скопіювати</button>
                   </div>
                 )}
                 {/* Кабінети призначаються лише радіологу (/api/staff/rooms це теж вимагає). */}
                 {r.role === "radiologist" && (
                 <div style={{ marginTop: 10 }}>
-                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Доступ до кабінетів:</span>
+                  <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Доступ до кабінетів:</span>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6 }}>
                     {(rooms || []).map((rm) => {
                       const on = hasRoom(r.id, rm.id);
@@ -318,7 +455,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                         </button>
                       );
                     })}
-                    {(rooms || []).length === 0 && <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>Немає кабінетів.</span>}
+                    {(rooms || []).length === 0 && <span style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>Немає кабінетів.</span>}
                   </div>
                 </div>
                 )}

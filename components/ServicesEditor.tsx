@@ -71,7 +71,7 @@ function DraftFields({ d, setD }: { d: Draft; setD: (f: (p: Draft) => Draft) => 
         <input className="inp" type="number" min={0} step={50} style={{ width: 96 }}
           value={d.price} onChange={(e) => setD((p) => ({ ...p, price: e.target.value }))} /> ₴
       </label>
-      <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, cursor: "pointer" }}>
+      <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "0.78125rem", cursor: "pointer" }}>
         <input type="checkbox" checked={d.contrastAllowed}
           onChange={(e) => setD((p) => ({ ...p, contrastAllowed: e.target.checked }))} />
         Контраст
@@ -398,7 +398,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
   // рядку). Функція-хелпер, НЕ вкладений компонент (правило: вкладений компонент =
   // ремоунт піддерева щорендер).
   const statusChip = (hidden: boolean, changed: boolean) => {
-    const base: CSSProperties = { display: "inline-block", fontSize: 12, fontWeight: 600, padding: "2px 9px", borderRadius: 999, border: "1px solid" };
+    const base: CSSProperties = { display: "inline-block", fontSize: "0.75rem", fontWeight: 600, padding: "2px 9px", borderRadius: 999, border: "1px solid" };
     if (hidden) return <span style={{ ...base, color: "var(--text-muted)", borderColor: "var(--border-strong)" }}>Прихована</span>;
     if (changed) return <span style={{ ...base, color: "var(--blue)", borderColor: "var(--blue)", background: "color-mix(in srgb, var(--blue) 12%, transparent)" }}>Змінено</span>;
     return <span style={{ ...base, color: "var(--text-faint)", borderColor: "var(--border)" }}>Базове</span>;
@@ -503,7 +503,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
       {addOpen && (
         <div className="cl-detail" style={{ marginBottom: 12 }}>
           {room && (
-            <div style={{ fontSize: 12.5, color: "var(--text-secondary)", marginBottom: 8 }}>
+            <div style={{ fontSize: "0.78125rem", color: "var(--text-secondary)", marginBottom: 8 }}>
               Додавання у кабінет «{room.name}»: послуга ({modalityLabel(effTab)}) належатиме
               <b> лише цьому кабінету</b> — видима й бронюється тільки в ньому. Базовий каталог
               центру не змінюється.
@@ -523,7 +523,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
       {/* Панель масових дій — зʼявляється, коли щось вибрано */}
       {selIds.length > 0 && (
         <div className="cl-detail" style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", borderLeft: "3px solid var(--blue)" }}>
-          <b style={{ fontSize: 13.5 }}>Вибрано: {selIds.length}</b>
+          <b style={{ fontSize: "0.84375rem" }}>Вибрано: {selIds.length}</b>
           {scope === "base" ? (
             <>
               <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onBulkActive(true)} title="Увімкнути вибрані послуги">⏻ Увімкнути</button>
@@ -566,9 +566,9 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
       ) : (
         <>
           {/* ---------- Група 1: ВЛАСНІ послуги кабінета (room-owned, 0121) ---------- */}
-          <div style={{ fontWeight: 650, fontSize: 13.5, margin: "10px 0 4px", color: "var(--blue)" }}>
+          <div style={{ fontWeight: 650, fontSize: "0.84375rem", margin: "10px 0 4px", color: "var(--blue)" }}>
             Послуги кабінета ({roomRows.length})
-            <span style={{ fontWeight: 400, fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>
+            <span style={{ fontWeight: 400, fontSize: "0.75rem", color: "var(--text-muted)", marginLeft: 8 }}>
               власний прайс — видимі й бронюються лише в цьому кабінеті
             </span>
           </div>
@@ -579,7 +579,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
             <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div style={{ textAlign: "right" }}>Контраст</div><div>Стан</div><div style={{ textAlign: "right" }}>Дії</div>
           </div>
           {roomRows.length === 0 ? (
-            <div style={{ fontSize: 12.5, color: "var(--text-muted)", padding: "10px 8px", borderBottom: "1px solid var(--border)" }}>
+            <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)", padding: "10px 8px", borderBottom: "1px solid var(--border)" }}>
               У кабінета ще немає власного прайса — «⇪ Імпорт прайса» або «＋ Додати»
               створять послуги саме цього кабінета.
             </div>
@@ -588,9 +588,9 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
           )}
 
           {/* ---------- Група 2: БАЗОВІ (успадковано) + переозначення 0108 ---------- */}
-          <div style={{ fontWeight: 650, fontSize: 13.5, margin: "16px 0 4px" }}>
+          <div style={{ fontWeight: 650, fontSize: "0.84375rem", margin: "16px 0 4px" }}>
             Базові (успадковано) ({baseRows.length})
-            <span style={{ fontWeight: 400, fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>
+            <span style={{ fontWeight: 400, fontSize: "0.75rem", color: "var(--text-muted)", marginLeft: 8 }}>
               спільні для всіх кабінетів {modalityLabel(effTab)}; тут можна переозначити ціну/час або сховати
             </span>
           </div>
@@ -601,7 +601,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
             <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div>У кабінеті</div><div style={{ textAlign: "right" }}>Дії</div>
           </div>
           {baseRows.length === 0 ? (
-            <div style={{ fontSize: 12.5, color: "var(--text-muted)", padding: "10px 8px" }}>
+            <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)", padding: "10px 8px" }}>
               Базовий каталог {modalityLabel(effTab)} порожній — центр веде прайси по кабінетах.
             </div>
           ) : (
@@ -621,34 +621,34 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
               return (
                 <div className="cl-detail" key={s.id} style={{ marginBottom: 8, borderLeft: "3px solid var(--blue)" }}>
                   <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 12 }}>
-                    <span style={{ fontWeight: 650, fontSize: 14.5 }}>{s.name}</span>
+                    <span style={{ fontWeight: 650, fontSize: "0.90625rem" }}>{s.name}</span>
                     {room && <span className="badge" style={{ color: "var(--text-muted)" }}>кабінет «{room.name}»</span>}
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-end" }}>
-                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75rem", color: "var(--text-muted)" }}>
                       Тривалість, хв
                       <input className="inp" type="number" step={5} min={5} max={480} style={{ width: 110 }} placeholder={s.duration_min != null ? String(s.duration_min) : "—"}
                         value={ovDraft.durationMin} onChange={(e) => setOvDraft((p) => ({ ...p, durationMin: e.target.value }))} />
                     </label>
-                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75rem", color: "var(--text-muted)" }}>
                       Ціна, ₴
                       <input className="inp" type="number" min={0} step={50} style={{ width: 130 }} placeholder={String(s.price)}
                         value={ovDraft.price} onChange={(e) => setOvDraft((p) => ({ ...p, price: e.target.value }))} />
                     </label>
                     {s.contrast_allowed && (
-                      <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--text-muted)" }}>
+                      <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75rem", color: "var(--text-muted)" }}>
                         Доплата за контраст, ₴
                         <input className="inp" type="number" min={0} step={50} style={{ width: 150 }} placeholder={String(s.contrast_price ?? CONTRAST_SURCHARGE)}
                           value={ovDraft.contrastPrice} onChange={(e) => setOvDraft((p) => ({ ...p, contrastPrice: e.target.value }))} />
                       </label>
                     )}
-                    <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13.5, paddingBottom: 8 }}>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "0.84375rem", paddingBottom: 8 }}>
                       <input type="checkbox" checked={ovDraft.active} onChange={(e) => setOvDraft((p) => ({ ...p, active: e.target.checked }))} />
                       Пропонується в цьому кабінеті
                     </label>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 14, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 12, color: "var(--text-faint)" }}>Порожнє поле = як у базовому каталозі ({s.duration_min != null ? s.duration_min + " хв" : "—"} · {s.price ? fmtUah(s.price) : "—"}).</span>
+                    <span style={{ fontSize: "0.75rem", color: "var(--text-faint)" }}>Порожнє поле = як у базовому каталозі ({s.duration_min != null ? s.duration_min + " хв" : "—"} · {s.price ? fmtUah(s.price) : "—"}).</span>
                     <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
                       {changed && <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onClearOverride(s)} title="Прибрати переозначення — успадкувати базовий каталог">↺ До базового</button>}
                       <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setOvEditId(null)}>Скасувати</button>
@@ -667,13 +667,13 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
                   <div style={{ fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }} title={s.name}>{s.name}</div>
                   <div className="tabular" style={{ textAlign: "right" }}>
                     <span style={durChanged ? { color: "var(--blue)", fontWeight: 600 } : undefined}>{effDur != null ? effDur + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано">—</span>}</span>
-                    {durChanged && <div style={{ fontSize: 11, color: "var(--text-faint)" }}>база {s.duration_min ?? "—"}</div>}
+                    {durChanged && <div style={{ fontSize: "0.6875rem", color: "var(--text-faint)" }}>база {s.duration_min ?? "—"}</div>}
                   </div>
                   <div className="tabular" style={{ textAlign: "right" }}>
                     {effPrice
                       ? <span style={priceChanged ? { color: "var(--blue)", fontWeight: 600 } : undefined}>{fmtUah(effPrice)}</span>
                       : <span style={{ color: "var(--orange)" }} title="Ціну не задано ні в кабінеті, ні в базі">—</span>}
-                    {priceChanged && <div style={{ fontSize: 11, color: "var(--text-faint)" }}>база {fmtUah(s.price)}</div>}
+                    {priceChanged && <div style={{ fontSize: "0.6875rem", color: "var(--text-faint)" }}>база {fmtUah(s.price)}</div>}
                   </div>
                   <div>{statusChip(hidden, changed)}</div>
                   <div className="cl-actions" style={{ justifyContent: "flex-end" }}>

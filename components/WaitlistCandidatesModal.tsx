@@ -154,11 +154,11 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
               return (
                 <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: "9px 12px" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ fontSize: "0.84375rem", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
                       {p.priority_level !== "planned" && <span className={"prio-tag " + m.tone}>{m.short}</span>}
                       <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.patient_name}</span>
                     </div>
-                    <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {studiesLabel(p)} · {desiredWindowText(p)}{p.patient_phone ? " · " + p.patient_phone : ""}
                     </div>
                   </div>

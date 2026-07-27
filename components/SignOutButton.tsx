@@ -20,7 +20,7 @@ export default function SignOutButton() {
         borderRadius: 10,
         background: "#3a3a3c",
         color: "#f5f5f7",
-        fontSize: 14,
+        fontSize: "0.875rem",
         fontWeight: 500,
         cursor: "pointer",
       }}

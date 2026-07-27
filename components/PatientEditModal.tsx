@@ -181,7 +181,7 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
                 {lockDoctor ? (
                   <>
                     <input className="inp" value={curDoctor || "— не вказано —"} disabled readOnly title="Запис внесено лікарем-направником" />
-                    <span style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>🔒 Запис внесено лікарем-направником — зміна недоступна.</span>
+                    <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 4 }}>🔒 Запис внесено лікарем-направником — зміна недоступна.</span>
                   </>
                 ) : (
                   <select className="inp" value={curDoctor} onChange={(e) => setF("doctor", e.target.value)}>
@@ -215,7 +215,7 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
               <label className="fld" style={{ marginBottom: 0 }}><span className="fld-lab">Примітка</span>
                 <input className="inp" value={form.note || ""} onChange={(e) => setF("note", e.target.value)} />
               </label>
-              {err && <div className="ctx-hint red" style={{ fontSize: 12.5, marginTop: 8 }}>⚠ {err}</div>}
+              {err && <div className="ctx-hint red" style={{ fontSize: "0.78125rem", marginTop: 8 }}>⚠ {err}</div>}
             </>
           )}
         </div>

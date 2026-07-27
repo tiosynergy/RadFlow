@@ -1068,7 +1068,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                       У режимі переносу кейс-бару немає, тож причину кажемо тут —
                       інакше кнопка просто «не працює». */}
                   {moveMode && roomInCase && (
-                    <div className="ctx-hint red" style={{ fontSize: 12.5, marginTop: 8 }} role="status" aria-live="polite">
+                    <div className="ctx-hint red" style={{ fontSize: "0.78125rem", marginTop: 8 }} role="status" aria-live="polite">
                       ⚠ У цьому кабінеті вже є інший крок кейса — перенести сюди не
                       можна. Оберіть інший кабінет.
                     </div>
@@ -1095,9 +1095,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
               {(busyError || schedErr) && !slotsLoading
                 ? <div className="ctx-hint red" style={{ marginBottom: 10 }}>⚠ Не вдалося завантажити {busyError ? "зайнятість" : "графік"} кабінету — оновіть сторінку. Показувати вільний час не можемо.</div>
                 : allStudies.length === 0
-                ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
+                ? <div className="ctx-hint" style={{ fontSize: "0.8125rem", padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
                 : slotsLoading
-                ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
+                ? <div className="ctx-hint" style={{ fontSize: "0.8125rem", padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
                 : <div className={miss.time ? "bk-miss-slots" : undefined}>
                 <SlotPicker
                   slots={slots}
@@ -1182,8 +1182,8 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
 
         {onCreateCase && (
           <div className="bk-case-bar" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, padding: "8px 16px", borderTop: "1px solid var(--border)" }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", whiteSpace: "nowrap" }}>🔗 Кейс:</span>
-            {caseSteps.length === 0 && <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>додайте кроки різних модальностей і створіть кейс</span>}
+            <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--text-muted)", whiteSpace: "nowrap" }}>🔗 Кейс:</span>
+            {caseSteps.length === 0 && <span style={{ fontSize: "0.71875rem", color: "var(--text-muted)" }}>додайте кроки різних модальностей і створіть кейс</span>}
             {caseSteps.map((s, i) => {
               const rm = (rooms || []).find((r) => r.id === s.roomId);
               const editing = editIndex === i;
@@ -1192,12 +1192,12 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                   key={i}
                   onClick={() => (editing ? cancelEdit() : loadStepForEdit(i))}
                   title={editing ? "Редагується — натисніть, щоб вийти" : "Редагувати крок (час, дослідження, слот…)"}
-                  style={{ cursor: "pointer", fontSize: 11.5, padding: "2px 6px 2px 8px", borderRadius: 999,
+                  style={{ cursor: "pointer", fontSize: "0.71875rem", padding: "2px 6px 2px 8px", borderRadius: 999,
                     border: "1px solid " + (editing ? "var(--accent, #3b82f6)" : "var(--border)"),
                     background: editing ? "color-mix(in srgb, var(--accent, #3b82f6) 14%, transparent)" : "transparent",
                     display: "inline-flex", alignItems: "center", gap: 6 }}
                 >
-                  <span style={{ fontSize: 10, opacity: 0.7 }}>{i + 1}</span>
+                  <span style={{ fontSize: "0.625rem", opacity: 0.7 }}>{i + 1}</span>
                   {modalityLabel(rm?.modality || "")} · {rm?.name || "—"} · {s.time}–{fmtMin(toMin(s.time) + s.dur)}
                   <button
                     onClick={(e) => { e.stopPropagation(); setCaseSteps((arr) => arr.filter((_, j) => j !== i)); if (editIndex !== null) cancelEdit(); }}
@@ -1209,7 +1209,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
             })}
             {/* Кейс = різні кабінети: підказка, коли поточний кабінет уже у кейсі. */}
             {editIndex === null && roomInCase && (
-              <span style={{ flexBasis: "100%", fontSize: 11.5, color: "var(--orange, #e08a00)" }}>
+              <span style={{ flexBasis: "100%", fontSize: "0.71875rem", color: "var(--orange, #e08a00)" }}>
                 ⚠ Кабінет «{room?.name}» уже у кейсі. Кейс — це різні кабінети/модальності; кілька досліджень одного кабінету оформіть звичайним записом («＋ Додати дослідження»).
               </span>
             )}

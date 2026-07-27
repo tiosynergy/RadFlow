@@ -42,15 +42,15 @@ export default function Toast({ toast, onDismiss }: { toast: ToastData | null; o
             pointerEvents: "auto", display: "flex", alignItems: "center", gap: 10,
             background: "var(--card)", border: "1px solid var(--border-strong)",
             borderLeft: "4px solid " + TONE[kind], borderRadius: 12, padding: "12px 18px",
-            boxShadow: "var(--shadow-pop)", fontSize: 13.5, maxWidth: "min(90vw, 520px)",
+            boxShadow: "var(--shadow-pop)", fontSize: "0.84375rem", maxWidth: "min(90vw, 520px)",
           }}
         >
-          <span aria-hidden="true" style={{ color: TONE[kind], fontSize: 15, lineHeight: 1 }}>{ICON[kind]}</span>
+          <span aria-hidden="true" style={{ color: TONE[kind], fontSize: "0.9375rem", lineHeight: 1 }}>{ICON[kind]}</span>
           <span style={{ flex: "1 1 auto", minWidth: 0 }}>{toast.msg}</span>
           {toast.action && (
             <button
               type="button" onClick={() => { toast.action?.onAction(); onDismiss?.(); }}
-              style={{ background: "none", border: "none", color: TONE[kind], cursor: "pointer", fontSize: 13, fontWeight: 700, textDecoration: "underline", padding: "2px 4px", flexShrink: 0, whiteSpace: "nowrap" }}
+              style={{ background: "none", border: "none", color: TONE[kind], cursor: "pointer", fontSize: "0.8125rem", fontWeight: 700, textDecoration: "underline", padding: "2px 4px", flexShrink: 0, whiteSpace: "nowrap" }}
             >
               {toast.action.label}
             </button>
@@ -58,7 +58,7 @@ export default function Toast({ toast, onDismiss }: { toast: ToastData | null; o
           {onDismiss && (
             <button
               type="button" onClick={onDismiss} aria-label="Закрити повідомлення"
-              style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 2, flexShrink: 0 }}
+              style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "1rem", lineHeight: 1, padding: 2, flexShrink: 0 }}
             >
               ✕
             </button>

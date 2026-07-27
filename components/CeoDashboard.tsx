@@ -442,48 +442,48 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
               {/* KPI row */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
                 <div style={card}>
-                  <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>Записи · {PERIODS.find((p) => p.k === period)?.l.toLowerCase()}</div>
-                  <div style={{ fontSize: 40, fontWeight: 700 }} className="tabular"><Drillable label="Усі записи" onOpen={() => openDrill(null, "Усі записи")}>{total}</Drillable></div>
+                  <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginBottom: 12 }}>Записи · {PERIODS.find((p) => p.k === period)?.l.toLowerCase()}</div>
+                  <div style={{ fontSize: "2.5rem", fontWeight: 700 }} className="tabular"><Drillable label="Усі записи" onOpen={() => openDrill(null, "Усі записи")}>{total}</Drillable></div>
                   <div style={{ display: "flex", gap: 16, marginTop: 14, flexWrap: "wrap" }}>
-                    <Drillable label="Виконано" onOpen={() => openDrill(["done"], "Виконано")} style={{ fontSize: 13 }}><b style={{ color: "var(--green)" }} className="tabular">{done}</b> <span style={{ color: "var(--text-muted)" }}>виконано</span></Drillable>
-                    <Drillable label="Неявка" onOpen={() => openDrill(["no_show"], "Неявка")} style={{ fontSize: 13 }}><b style={{ color: "var(--red)" }} className="tabular">{noShow}</b> <span style={{ color: "var(--text-muted)" }}>неявка</span></Drillable>
-                    <Drillable label="Не відбулося" onOpen={() => openDrill(["not_held"], "Не відбулося")} style={{ fontSize: 13 }}><b style={{ color: "var(--orange)" }} className="tabular">{notHeld}</b> <span style={{ color: "var(--text-muted)" }}>не відбулося</span></Drillable>
-                    <Drillable label="В процесі" onOpen={() => openDrill(["scheduled", "waiting", "in_progress"], "В процесі")} style={{ fontSize: 13 }}><b style={{ color: "var(--blue)" }} className="tabular">{active}</b> <span style={{ color: "var(--text-muted)" }}>в процесі</span></Drillable>
+                    <Drillable label="Виконано" onOpen={() => openDrill(["done"], "Виконано")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--green)" }} className="tabular">{done}</b> <span style={{ color: "var(--text-muted)" }}>виконано</span></Drillable>
+                    <Drillable label="Неявка" onOpen={() => openDrill(["no_show"], "Неявка")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--red)" }} className="tabular">{noShow}</b> <span style={{ color: "var(--text-muted)" }}>неявка</span></Drillable>
+                    <Drillable label="Не відбулося" onOpen={() => openDrill(["not_held"], "Не відбулося")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--orange)" }} className="tabular">{notHeld}</b> <span style={{ color: "var(--text-muted)" }}>не відбулося</span></Drillable>
+                    <Drillable label="В процесі" onOpen={() => openDrill(["scheduled", "waiting", "in_progress"], "В процесі")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--blue)" }} className="tabular">{active}</b> <span style={{ color: "var(--text-muted)" }}>в процесі</span></Drillable>
                   </div>
                 </div>
 
                 <div style={{ ...card, display: "flex", alignItems: "center", gap: 18 }}>
                   <ProgressCircle pct={util} color={utilColor} />
                   <div>
-                    <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Завантаженість</div>
-                    <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 8 }}>{(rooms || []).length} апаратів · {workdays} роб. дн.</div>
-                    <div style={{ fontSize: 12.5, color: utilColor, marginTop: 6, fontWeight: 600 }}>{util > 70 ? "Висока" : util >= 50 ? "Помірна" : "Низька"}</div>
+                    <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)" }}>Завантаженість</div>
+                    <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: 8 }}>{(rooms || []).length} апаратів · {workdays} роб. дн.</div>
+                    <div style={{ fontSize: "0.78125rem", color: utilColor, marginTop: 6, fontWeight: 600 }}>{util > 70 ? "Висока" : util >= 50 ? "Помірна" : "Низька"}</div>
                   </div>
                 </div>
 
                 <div style={card}>
-                  <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 12 }}>{revenueExact ? "Дохід · виконані" : "Дохід (частково оцінка) · виконані"}</div>
-                  <div style={{ fontSize: 34, fontWeight: 700, color: "var(--green)" }} className="tabular"><Drillable label="Дохід · виконані" onOpen={() => openDrill(["done"], "Дохід · виконані")}>{fmtUah(revenue)}</Drillable></div>
-                  <div style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 12 }}>За цінами довідника досліджень · {done} виконаних</div>
+                  <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginBottom: 12 }}>{revenueExact ? "Дохід · виконані" : "Дохід (частково оцінка) · виконані"}</div>
+                  <div style={{ fontSize: "2.125rem", fontWeight: 700, color: "var(--green)" }} className="tabular"><Drillable label="Дохід · виконані" onOpen={() => openDrill(["done"], "Дохід · виконані")}>{fmtUah(revenue)}</Drillable></div>
+                  <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)", marginTop: 12 }}>За цінами довідника досліджень · {done} виконаних</div>
                 </div>
               </div>
 
               {/* Chart + sidebar */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, marginTop: 16 }}>
                 <div style={card}>
-                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Дослідження за тиждень</div>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16 }}>Стовпці — всього, червоні позначки — зрив (неявка + не відбулося)</div>
+                  <div style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: 4 }}>Дослідження за тиждень</div>
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: 16 }}>Стовпці — всього, червоні позначки — зрив (неявка + не відбулося)</div>
                   <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 180, paddingTop: 10 }}>
                     {weekData.map((x, i) => (
                       <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-                        <div style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 600 }} className="tabular">{x.total}</div>
+                        <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", fontWeight: 600 }} className="tabular">{x.total}</div>
                         <div style={{ width: "100%", display: "flex", alignItems: "flex-end", justifyContent: "center", height: 130, position: "relative" }}>
                           {(() => { const barH = x.total ? Math.max(4, Math.round((x.total / maxBar) * 130)) : 0; return (<>
                           <div style={{ width: 26, height: barH + "px", background: "var(--blue)", borderRadius: "6px 6px 0 0" }} />
                           {x.noShow > 0 && <div title={x.noShow + " не відбулось"} style={{ position: "absolute", bottom: barH + 2, width: 10, height: 10, borderRadius: "50%", background: "var(--red)" }} />}
                         </>); })()}
                         </div>
-                        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{WK_SHORT[i]}</div>
+                        <div style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{WK_SHORT[i]}</div>
                       </div>
                     ))}
                   </div>
@@ -491,19 +491,19 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                   <div style={card}>
-                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Топ-5 процедур</div>
-                    {topProcs.length === 0 ? <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>Немає даних</div> : topProcs.map(([n, c], i) => (
-                      <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", borderTop: i ? "1px solid var(--border)" : "none", fontSize: 13 }}>
+                    <div style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: 12 }}>Топ-5 процедур</div>
+                    {topProcs.length === 0 ? <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>Немає даних</div> : topProcs.map(([n, c], i) => (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", borderTop: i ? "1px solid var(--border)" : "none", fontSize: "0.8125rem" }}>
                         <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{n}</span>
                         <b className="tabular" style={{ color: "var(--blue)" }}>{c}</b>
                       </div>
                     ))}
                   </div>
                   <div style={card}>
-                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Завантаженість по апаратах</div>
-                    {roomUtil.length === 0 ? <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>Кабінетів немає</div> : roomUtil.map((r, i) => (
+                    <div style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: 12 }}>Завантаженість по апаратах</div>
+                    {roomUtil.length === 0 ? <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>Кабінетів немає</div> : roomUtil.map((r, i) => (
                       <div key={i} style={{ marginBottom: 10 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 4 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78125rem", marginBottom: 4 }}>
                           <span>{r.name} <span style={{ color: "var(--text-muted)" }}>{r.kind}</span></span>
                           <b className="tabular" style={{ color: r.color }}>{r.pct}%</b>
                         </div>
@@ -532,10 +532,10 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                 <div className="ctx-hint">Немає записів за цей період.</div>
               ) : (() => {
                 const tdS: CSSProperties = { padding: "6px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
-                const thS: CSSProperties = { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--text-muted)", fontSize: 11, textTransform: "uppercase", position: "sticky", top: 0, background: "var(--card)" };
+                const thS: CSSProperties = { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--text-muted)", fontSize: "0.6875rem", textTransform: "uppercase", position: "sticky", top: 0, background: "var(--card)" };
                 return (
                   <>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8125rem" }}>
                       <thead><tr>{["Дата", "Пацієнт", "Процедура", "Кабінет", "Статус", "Дохід"].map((h) => <th key={h} style={thS}>{h}</th>)}</tr></thead>
                       <tbody>
                         {drillRows.map((r, i) => (

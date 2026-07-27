@@ -282,10 +282,10 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
             const km = (arr[0] && arr[0].type) || ((roomKind === "МРТ" || roomKind === "КТ") ? roomKind : "");
             if (!km) return null;
             const isCt = km === "КТ";
-            return <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "#4da3ff" }}>{km}</span>;
+            return <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "#4da3ff" }}>{km}</span>;
           })()}
           <b>{roomName}</b>
-          {roomModel ? <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{roomModel}</span> : null}
+          {roomModel ? <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}</span> : null}
         </div>
         <div className="q-status-cell">
           <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{!meta.dot && meta.icon && <span aria-hidden="true" style={{ marginRight: 3 }}>{meta.icon}</span>}{meta.label}</span>
@@ -309,7 +309,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                   return (
                     <div style={{ marginBottom: 8 }}>
                       <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 13 }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: "0.8125rem" }}>
                         {sdiff.map((d, i) => (
                           <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
                             {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
@@ -320,7 +320,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                   );
                 })()}
                 {(p.note || p.indication) && (
-                  <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, marginBottom: 4 }}>
+                  <div className="qd-info" style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.8125rem", marginBottom: 4 }}>
                     {p.indication && <span style={{ color: "var(--text-muted)" }}>Показання: {p.indication}</span>}
                     {p.note && <span style={{ color: "var(--text-muted)" }}>Примітка: {p.note}</span>}
                   </div>
@@ -371,13 +371,13 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                         return (
                           <div key={key} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 72 }}>
                             <button onClick={stepDisabled ? undefined : act(() => onSetStatus(p, key))} disabled={stepDisabled} title={stepTitle} aria-disabled={stepDisabled}
-                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: stepDisabled ? "not-allowed" : "pointer", opacity: stepBlocked ? 0.4 : 1,
+                              style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.8125rem", fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: stepDisabled ? "not-allowed" : "pointer", opacity: stepBlocked ? 0.4 : 1,
                                 background: isDone ? "var(--green)" : (isCur ? m.color : "transparent"),
                                 border: "1.5px solid " + ((isDone || isCur) ? "transparent" : "var(--border-strong)"),
                                 color: isDone ? "#04210d" : (isCur ? "#1c1c1e" : "var(--text-faint)") }}>
                               {isDone ? "✓" : i + 1}
                             </button>
-                            <span style={{ marginTop: 8, fontSize: 12, textAlign: "center", color: isCur ? "var(--text)" : (isDone ? "var(--text-secondary)" : "var(--text-faint)"), fontWeight: isCur ? 700 : 400 }}>{m.label}</span>
+                            <span style={{ marginTop: 8, fontSize: "0.75rem", textAlign: "center", color: isCur ? "var(--text)" : (isDone ? "var(--text-secondary)" : "var(--text-faint)"), fontWeight: isCur ? 700 : 400 }}>{m.label}</span>
                           </div>
                         );
                       })}
@@ -401,7 +401,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                       <>
                         <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn)} disabled={advanceDisabled}
                           title={late ? "Запізнення понад буферний час — рішення ухвалює реєстратура (повернути/перенести/зняти)" : isFutureRow ? "Майбутній запис — дія доступна в день запису" : (p.status === "waiting" && startBlockReason ? startBlockReason : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""))}
-                          style={{ flex: 8, minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: 13.5, fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                          style={{ flex: 8, minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: "0.84375rem", fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
                           {pb.icon} {pb.label}
                         </button>
@@ -411,7 +411,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                   </div>
 
                   {p.status === "waiting" && advanceDisabled && startBlockReason && (
-                    <div style={{ fontSize: 12, color: "var(--red)", padding: "2px 0 6px" }}>⚠ {startBlockReason}</div>
+                    <div style={{ fontSize: "0.75rem", color: "var(--red)", padding: "2px 0 6px" }}>⚠ {startBlockReason}</div>
                   )}
 
                   {/* 0078–0081 — радіолог бачить, як затримка цього дослідження впливає
@@ -531,7 +531,7 @@ function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }: { r
         <div className="avatar" style={{ background: "linear-gradient(135deg,#30d158,#1a7a36)" }}>{initials}</div>
         <div className="meta"><div className="nm">{adminName || "Радіолог"}</div><div className="rl">Радіолог</div></div>
         <button onClick={signOut} title="Вийти з акаунта" aria-label="Вийти"
-          style={{ marginLeft: "auto", background: "transparent", border: "1px solid var(--border-strong)", color: "var(--text-secondary)", borderRadius: 8, padding: "6px 10px", fontSize: 12.5, cursor: "pointer" }}>
+          style={{ marginLeft: "auto", background: "transparent", border: "1px solid var(--border-strong)", color: "var(--text-secondary)", borderRadius: 8, padding: "6px 10px", fontSize: "0.78125rem", cursor: "pointer" }}>
           Вийти
         </button>
       </div>

@@ -708,9 +708,9 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                     <button className="btn btn-secondary btn-sm" onClick={() => loadDay()}>↻ Спробувати ще раз</button>
                   </div>
                 : allStudies.length === 0
-                ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
+                ? <div className="ctx-hint" style={{ fontSize: "0.8125rem", padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
                 : slotsLoading
-                ? <div className="ctx-hint" style={{ fontSize: 13, padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
+                ? <div className="ctx-hint" style={{ fontSize: "0.8125rem", padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
                 : <div className={miss.time ? "bk-miss-slots" : undefined}>
                 <SlotPicker
                   slots={slots}
@@ -773,18 +773,18 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
         {/* 0118: batch-бар кейса (паритет BookingModal): «＋ У кейс» накопичує кроки
             різних модальностей, «Створити кейс (N)» — одна атомарна дія. */}
         <div className="bk-case-bar" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, padding: "8px 16px", borderTop: "1px solid var(--border)" }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", whiteSpace: "nowrap" }}>🔗 Кейс:</span>
-          {caseSteps.length === 0 && <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>додайте кроки різних модальностей — направлення підуть одним кейсом</span>}
+          <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--text-muted)", whiteSpace: "nowrap" }}>🔗 Кейс:</span>
+          {caseSteps.length === 0 && <span style={{ fontSize: "0.71875rem", color: "var(--text-muted)" }}>додайте кроки різних модальностей — направлення підуть одним кейсом</span>}
           {caseSteps.map((s, i) => (
-            <span key={i} style={{ fontSize: 11.5, padding: "2px 6px 2px 8px", borderRadius: 999, border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 10, opacity: 0.7 }}>{i + 1}</span>
+            <span key={i} style={{ fontSize: "0.71875rem", padding: "2px 6px 2px 8px", borderRadius: 999, border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: "0.625rem", opacity: 0.7 }}>{i + 1}</span>
               {s.modality} · {s.roomName} · {s.time}–{fmt(toMin(s.time) + s.dur)}
               <button onClick={() => { setCaseErr(null); setCaseSteps((arr) => arr.filter((_, j) => j !== i)); }} title="Прибрати крок"
                 style={{ cursor: "pointer", background: "none", border: "none", color: "var(--text-muted)", padding: 0, lineHeight: 1 }}>✕</button>
             </span>
           ))}
           {roomInCase && (
-            <span style={{ flexBasis: "100%", fontSize: 11.5, color: "var(--orange, #e08a00)" }}>
+            <span style={{ flexBasis: "100%", fontSize: "0.71875rem", color: "var(--orange, #e08a00)" }}>
               ⚠ Кабінет «{room?.name}» уже у кейсі. Кейс — це різні кабінети/модальності; кілька досліджень одного кабінету оформіть звичайним направленням («＋ Додати дослідження»).
             </span>
           )}
@@ -815,15 +815,15 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
 /* ---------- Розгорнута картка центру ---------- */
 function CenterDetails({ data, loading }: { data?: CenterCardData | null; loading: boolean }) {
   const panel = { background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: 16, margin: "4px 0 8px" };
-  if (loading) return <div style={panel}><div style={{ color: "var(--text-muted)", fontSize: 13 }}>Завантаження…</div></div>;
-  if (!data) return <div style={panel}><div style={{ color: "var(--text-muted)", fontSize: 13 }}>Не вдалося завантажити деталі центру.</div></div>;
+  if (loading) return <div style={panel}><div style={{ color: "var(--text-muted)", fontSize: "0.8125rem" }}>Завантаження…</div></div>;
+  if (!data) return <div style={panel}><div style={{ color: "var(--text-muted)", fontSize: "0.8125rem" }}>Не вдалося завантажити деталі центру.</div></div>;
   const admins = Array.isArray(data.admins) ? data.admins : [];
   const rooms = Array.isArray(data.rooms) ? data.rooms : [];
   const realEmail = (e?: string | null) => e && !/@referrer\.radflow\.local$/i.test(e);
-  const lbl = { color: "var(--text-muted)", fontSize: 11.5, textTransform: "uppercase" as const, letterSpacing: ".04em", margin: "0 0 8px" };
+  const lbl = { color: "var(--text-muted)", fontSize: "0.71875rem", textTransform: "uppercase" as const, letterSpacing: ".04em", margin: "0 0 8px" };
   return (
     <div style={panel}>
-      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", rowGap: 8, columnGap: 10, fontSize: 13, marginBottom: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", rowGap: 8, columnGap: 10, fontSize: "0.8125rem", marginBottom: 16 }}>
         <span style={{ color: "var(--text-muted)" }}>Центр</span><span style={{ fontWeight: 600 }}>{data.name}</span>
         <span style={{ color: "var(--text-muted)" }}>Місто</span><span>{data.city || "—"}</span>
         <span style={{ color: "var(--text-muted)" }}>Режим бронювання</span><span>{data.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга (одразу в чергу)"}</span>
@@ -832,14 +832,14 @@ function CenterDetails({ data, loading }: { data?: CenterCardData | null; loadin
 
       <div style={lbl}>Адміністратор центру</div>
       {admins.length === 0 ? (
-        <div style={{ color: "var(--text-muted)", fontSize: 13, marginBottom: 16 }}>Контакти не вказані.</div>
+        <div style={{ color: "var(--text-muted)", fontSize: "0.8125rem", marginBottom: 16 }}>Контакти не вказані.</div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
           {admins.map((a, i) => {
             const phone = a.phone || "";
             const email = realEmail(a.email) ? a.email : "";
             return (
-              <div key={i} style={{ fontSize: 13 }}>
+              <div key={i} style={{ fontSize: "0.8125rem" }}>
                 <div style={{ fontWeight: 600 }}>{a.full_name || "Адміністратор"}</div>
                 <div style={{ color: "var(--text-secondary)", display: "flex", gap: 16, flexWrap: "wrap", marginTop: 3 }}>
                   {phone ? <a href={"tel:" + phone} style={{ color: "var(--blue)", textDecoration: "none" }}>📞 {phone}</a> : null}
@@ -854,7 +854,7 @@ function CenterDetails({ data, loading }: { data?: CenterCardData | null; loadin
 
       <div style={lbl}>Доступне обладнання для вас</div>
       {rooms.length === 0 ? (
-        <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Кабінети не вказані.</div>
+        <div style={{ color: "var(--text-muted)", fontSize: "0.8125rem" }}>Кабінети не вказані.</div>
       ) : (
         <div className="bd-rooms">
           {rooms.map((r) => (
@@ -960,10 +960,10 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
     const m = ACCESS_ST[c.status] || ACCESS_ST.active;
     return (
       <div onClick={onClick} title={expandable ? (expanded ? "Згорнути" : "Натисніть, щоб переглянути деталі центру") : undefined} style={{ padding: "12px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
-        {expandable && <span style={{ color: "var(--text-muted)", fontSize: 13, width: 12, flexShrink: 0, display: "inline-block", transition: "transform .15s", transform: expanded ? "rotate(90deg)" : "none" }}>▸</span>}
+        {expandable && <span style={{ color: "var(--text-muted)", fontSize: "0.8125rem", width: 12, flexShrink: 0, display: "inline-block", transition: "transform .15s", transform: expanded ? "rotate(90deg)" : "none" }}>▸</span>}
         <div style={{ flex: 1, minWidth: 180 }}>
-          <div style={{ fontWeight: 600, fontSize: 14 }}>{c.name}</div>
-          <div style={{ fontSize: 12.5, color: "var(--text-muted)" }}>{c.city || "—"}{c.status === "active" ? " · режим: " + (c.policy === "confirm" ? "з підтвердженням" : "пряма черга") : ""}</div>
+          <div style={{ fontWeight: 600, fontSize: "0.875rem" }}>{c.name}</div>
+          <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{c.city || "—"}{c.status === "active" ? " · режим: " + (c.policy === "confirm" ? "з підтвердженням" : "пряма черга") : ""}</div>
         </div>
         <span className={"badge " + m.cls}>{m.label}</span>
         {children}
@@ -983,12 +983,12 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
           {q.trim().length >= 2 && (
             <div style={{ marginTop: 10 }}>
               {results.length === 0 ? (
-                <div style={{ fontSize: 12.5, color: "var(--text-muted)", padding: "8px 0" }}>{searching ? "Шукаємо…" : "Нічого не знайдено. Уточніть назву або місто."}</div>
+                <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)", padding: "8px 0" }}>{searching ? "Шукаємо…" : "Нічого не знайдено. Уточніть назву або місто."}</div>
               ) : results.map((r) => (
                 <div key={r.id} style={{ padding: "10px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12 }}>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13.5 }}>{r.name}</div>
-                    <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{r.city || "—"}{Array.isArray(r.modalities) && r.modalities.length ? " · " + r.modalities.map(modalityLabel).join(", ") : ""}</div>
+                    <div style={{ fontWeight: 600, fontSize: "0.84375rem" }}>{r.name}</div>
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>{r.city || "—"}{Array.isArray(r.modalities) && r.modalities.length ? " · " + r.modalities.map(modalityLabel).join(", ") : ""}</div>
                   </div>
                   <button className="btn btn-primary btn-sm" disabled={busyId === r.id} onClick={() => sendRequest(r.id)}>{busyId === r.id ? "…" : "Надіслати запит"}</button>
                 </div>
@@ -1015,7 +1015,7 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
 
       <div style={card}>
         <div className="bk-section-label" style={{ marginTop: 0 }}>Активні центри ({active.length})</div>
-        {active.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: 13 }}>Поки немає активних центрів.</div>
+        {active.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: "0.8125rem" }}>Поки немає активних центрів.</div>
           : active.map((c) => (
             <div key={c.accessId || c.clinicId}>
               <Row c={c} expandable={!!c.accessId} expanded={expandedId === c.accessId} onClick={c.accessId ? () => toggleExpand(c) : undefined}>
@@ -1172,7 +1172,7 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
           return (
             <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: "10px 14px", opacity: p.status === "waiting" ? 1 : 0.72 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <div style={{ fontSize: "0.84375rem", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   {p.status !== "waiting" && <span className="badge">{st.label}</span>}
                   {p.priority_level !== "planned" && p.status === "waiting" && <span className={"prio-tag " + m.tone}>{m.short}</span>}
                   {p.status === "waiting" ? (
@@ -1182,7 +1182,7 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
                     <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.patient_name}</span>
                   )}
                 </div>
-                <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2 }}>
+                <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", marginTop: 2 }}>
                   {centerLabel(center)} · {procLabel(p)} · {desiredWindowText(p)}
                 </div>
               </div>
@@ -1500,7 +1500,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
           <div className="tb-right">
             {/* Годинник — за часом центру (перший доступний): направник глобальний,
                 singleton setClinicTz тут не виставляється. */}
-            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}><LiveClock tz={activeCenters[0]?.timezone || undefined} /></span>
+            <span style={{ fontSize: "0.8125rem", color: "var(--text-secondary)" }}><LiveClock tz={activeCenters[0]?.timezone || undefined} /></span>
             {/* Дубль кнопки з сайдбару: на вузькому екрані сайдбар згортається,
                 і єдиний вихід із порталу зникав би разом із ним. */}
             {backHref && (
