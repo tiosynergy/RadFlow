@@ -17,10 +17,11 @@ import LiveClock from "@/components/LiveClock";
 import PhoneInput from "@/components/PhoneInput";
 import { normalizeLogin, isValidLogin, LOGIN_HINT } from "@/lib/login";
 import { modalityLabel } from "@/lib/studies";
+import { bookableRooms, isRoomBookable, visibleRooms, ROOM_OFF_LABEL } from "@/lib/rooms";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 /* Персонал центру: радіолог або РЕЄСТРАТОР. Реєстратор довго був «мертвою» роллю —
    enum, маршрути (/queue, /call-list, /waitlist) і RLS (0073) для нього були, а
    створити акаунт не було чим: /api/staff хардкодив radiologist. Уся реєстратура
@@ -117,6 +118,20 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
   }, [reload]);
 
   const hasRoom = (profileId: string, roomId: string) => radRooms.some((x) => x.profile_id === profileId && x.room_id === roomId);
+
+  /* ===== Вимкнені кабінети в доступах (див. lib/rooms.ts) =====
+     Тут працює НЕ правило видимості робочих списків (жодних «залишків» і tz на цій
+     сторінці немає), а простіше:
+       • ВИДАТИ новий доступ можна лише в кабінет, що працює (bookableRooms) —
+         інакше адмін роздавав би права на апарат, у який усе одно не запишеш;
+       • доступ, який радіологу ВЖЕ видано, а кабінет потім вимкнули, мовчки
+         викидати не можна. Прив'язку відновити нізвідки, і при поверненні
+         кабінету в стрій виявилось би, що її хтось стер. Показуємо приглушено з
+         підписом «кабінет вимкнено»: зняти доступ можна, видати заново — ні. */
+  const newAccessRooms = useMemo(() => bookableRooms(rooms), [rooms]);
+  /** Чипи в картці співробітника: активні + вимкнені, які цьому профілю вже видано. */
+  const accessRoomsFor = (profileId: string): RoomOpt[] =>
+    (rooms || []).filter((r) => isRoomBookable(r) || hasRoom(profileId, r.id));
 
   async function createAccount() {
     const loginNorm = normalizeLogin(form.login);
@@ -257,7 +272,11 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
 
   return (
     <div className={embedded ? "setup-embed" : "app"}>
-      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={rooms} activeNav="staff" />}
+      {/* Сайдбар — робочий список кабінетів, тож вимкнені звідси ховаємо. Залишки
+          на цій сторінці не рахуємо (їх нема звідки взяти без tz центру), тому
+          спрацьовує документований fail-closed із lib/rooms.ts: без residual
+          видимими лишаються активні. Пацієнта це не зачіпає — тут немає записів. */}
+      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={visibleRooms(rooms)} activeNav="staff" />}
       <div className={embedded ? "setup-embed-main" : "main"}>
         {!embedded && (
           <header className="topbar">
@@ -319,7 +338,9 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
             <div className="fld">
               <span className="fld-lab">Доступ до кабінетів</span>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {(rooms || []).map((r) => {
+                {/* Новий акаунт — лише активні кабінети: доступів «наперед» у
+                    виведений з експлуатації апарат не роздаємо. */}
+                {newAccessRooms.map((r) => {
                   const on = formRooms.includes(r.id);
                   return (
                     <button key={r.id} type="button" onClick={() => setFormRooms((s) => (on ? s.filter((x) => x !== r.id) : [...s, r.id]))}
@@ -328,7 +349,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                     </button>
                   );
                 })}
-                {(rooms || []).length === 0 && <span style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>Спершу додайте кабінети в Майстрі.</span>}
+                {newAccessRooms.length === 0 && <span style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>Спершу додайте кабінети в Майстрі.</span>}
               </div>
             </div>
             )}
@@ -446,16 +467,22 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                 <div style={{ marginTop: 10 }}>
                   <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Доступ до кабінетів:</span>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6 }}>
-                    {(rooms || []).map((rm) => {
+                    {accessRoomsFor(r.id).map((rm) => {
                       const on = hasRoom(r.id, rm.id);
+                      // Вимкнений кабінет тут може бути лише тоді, коли доступ уже
+                      // видано: приглушений чип, зняти можна, видати заново — ні.
+                      const off = !isRoomBookable(rm);
                       return (
                         <button key={rm.id} type="button" onClick={() => toggleRoom(r.id, rm.id)}
-                          className={"btn btn-sm " + (on ? "btn-primary" : "btn-secondary")}>
+                          className={"btn btn-sm " + (on ? "btn-primary" : "btn-secondary")}
+                          style={off ? { opacity: 0.6 } : undefined}
+                          title={off ? `Кабінет ${ROOM_OFF_LABEL}. Доступ можна лише зняти.` : undefined}>
                           {on ? "✓ " : ""}{rm.name} · {modalityLabel(rm.modality)}
+                          {off && <span style={{ marginLeft: 6, fontSize: "0.6875rem", opacity: 0.85 }}>· кабінет {ROOM_OFF_LABEL}</span>}
                         </button>
                       );
                     })}
-                    {(rooms || []).length === 0 && <span style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>Немає кабінетів.</span>}
+                    {accessRoomsFor(r.id).length === 0 && <span style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>Немає кабінетів.</span>}
                   </div>
                 </div>
                 )}

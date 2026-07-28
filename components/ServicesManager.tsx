@@ -10,13 +10,14 @@ import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import ServicesEditor from "@/components/ServicesEditor";
 import { setClinicTz, wallToday0 } from "@/lib/incidents";
+import { visibleRooms, residualSet, roomOffLabel } from "@/lib/rooms";
 import type { Tables } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
 type ServiceRow = Tables<"services">;
 type SroRow = Tables<"service_room_overrides">;
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
@@ -28,16 +29,35 @@ interface Props {
   initialServices: ServiceRow[];
   roomOverrides?: SroRow[];
   rooms?: RoomOpt[];
+  /** id вимкнених кабінетів, у яких ЩЕ лишились живі записи («кабінети-залишки»).
+   *  Вимкнений кабінет ховаємо зі списків, але поки в ньому щось є — він спливає
+   *  назад із підписом «вимкнено · N записів». Див. lib/rooms.ts. */
+  residualRoomIds?: string[];
+  /** Скільки саме лишилось у кожному такому кабінеті — для підпису. */
+  residualRoomCounts?: Record<string, number>;
   clinicName?: string;
   adminName?: string;
 }
 
-export default function ServicesManager({ clinicId, clinicTz, initialServices, roomOverrides, rooms, clinicName, adminName }: Props) {
+export default function ServicesManager({ clinicId, clinicTz, initialServices, roomOverrides, rooms, residualRoomIds, residualRoomCounts, clinicName, adminName }: Props) {
   if (typeof window !== "undefined") setClinicTz(clinicTz);
+
+  /* Списки кабінетів на цьому екрані — активні + вимкнені із залишками. Сюди ж
+     іде вибір «Кабінети (власний прайс)» у ServicesEditor: заводити окремий прайс
+     виведеному з експлуатації кабінету немає сенсу. Рядок service_room_overrides
+     при цьому нікуди не дінеться — він просто не редагується звідси; повний
+     перелік кабінетів лишається в Майстрі налаштувань (/setup). */
+  const residual = residualSet(residualRoomIds);
+  const visRooms = visibleRooms(rooms, residual);
+  const offNote = (roomId: string): string | null => {
+    const r = (rooms || []).find((x) => x.id === roomId);
+    return r && r.active === false ? roomOffLabel(residualRoomCounts?.[roomId]) : null;
+  };
+
   return (
     <div className="app">
       <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin"
-        rooms={rooms} activeNav="services" />
+        rooms={visRooms} roomNoteOf={offNote} activeNav="services" />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">
@@ -50,7 +70,7 @@ export default function ServicesManager({ clinicId, clinicTz, initialServices, r
         </header>
         <div className="content-full">
           <div className="page-max">
-            <ServicesEditor clinicId={clinicId} services={initialServices} rooms={rooms} roomOverrides={roomOverrides} />
+            <ServicesEditor clinicId={clinicId} services={initialServices} rooms={visRooms} roomOverrides={roomOverrides} />
           </div>
         </div>
       </div>

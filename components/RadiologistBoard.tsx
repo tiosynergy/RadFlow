@@ -27,8 +27,9 @@ import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radiologist.css";
 import NavDrawer from "@/components/NavDrawer";
+import { visibleRooms, residualSet, roomOffLabel, bookableRooms } from "@/lib/rooms";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown; active?: boolean | null };
 type RadEntry = {
   id: string; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
   patient_sex: string | null; patient_weight: number | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null;
@@ -496,7 +497,7 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSch
   );
 }
 
-function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }: { rooms?: RoomOpt[]; roomFilter: string; setRoomFilter: (s: string) => void; counts: Record<string, number>; adminName?: string }) {
+function RadSidebar({ rooms, roomNoteOf, roomFilter, setRoomFilter, counts, adminName }: { rooms?: RoomOpt[]; roomNoteOf?: (roomId: string) => string | null; roomFilter: string; setRoomFilter: (s: string) => void; counts: Record<string, number>; adminName?: string }) {
   const router = useRouter();
   const single = (rooms || []).length === 1;
   const initials = (() => { const p = String(adminName || "").trim().split(/\s+/); return ((p[0] || "Р")[0] + (p[1] ? p[1][0] : "")).toUpperCase(); })();
@@ -519,7 +520,9 @@ function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }: { r
           {(rooms || []).map((r) => (
             <button key={r.id} className={"sb-cab sb-cab-btn" + (roomFilter === r.id ? " active" : "")} style={{ width: "100%", textAlign: "left", border: "none", cursor: "pointer" }} onClick={() => setRoomFilter(r.id)}>
               <span className={"sb-cab-tile " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
-              <span className="sb-cab-meta"><span className="sb-cab-name">{r.name}</span><span className="sb-cab-model">{r.apparatus_model || ""}</span></span>
+              {/* У вимкненого кабінету-залишку замість моделі апарата — причина,
+                  чому він досі тут: «вимкнено · 3 записи» (як у Sidebar). */}
+              <span className="sb-cab-meta"><span className="sb-cab-name">{r.name}</span><span className="sb-cab-model">{roomNoteOf?.(r.id) || r.apparatus_model || ""}</span></span>
             </button>
           ))}
         </div>
@@ -545,16 +548,31 @@ interface RadiologistBoardProps {
   /** IANA-зона центру (clinics.timezone) — із сервера, а не з браузера. */
   clinicTz: string;
   rooms?: RoomOpt[];
+  /** id вимкнених кабінетів, у яких ЩЕ лишились живі записи («кабінети-залишки»).
+   *  Вимкнений кабінет ховаємо зі списків, але поки в ньому щось є — він спливає
+   *  назад із підписом «вимкнено · N записів». Див. lib/rooms.ts. */
+  residualRoomIds?: string[];
+  /** Скільки саме лишилось у кожному такому кабінеті — для підпису. */
+  residualRoomCounts?: Record<string, number>;
   adminName?: string;
 }
 
-export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName }: RadiologistBoardProps) {
+export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, adminName }: RadiologistBoardProps) {
   // Синхронно, до ініціалізаторів useState (selectedDate) — інакше день дошки
   // фіксується по браузеру ще до того, як прилетить tz. Тільки на клієнті.
   if (typeof window !== "undefined") setClinicTz(clinicTz);
 
   const router = useRouter();   // 0086: зміни кабінетів (SSR-проп) → router.refresh
-  const single = (rooms || []).length === 1;
+
+  /* Списки кабінетів (сайдбар, плитки апаратів) — активні + вимкнені із залишками.
+     Самі ЗАПИСИ фільтром не чіпаємо: запит черги й далі йде по ПОВНОМУ переліку
+     призначених кабінетів, інакше архів минулого дня у вимкненому кабінеті став
+     би невидимим саме тому, що кабінет уже спорожнів. */
+  const residual = useMemo(() => residualSet(residualRoomIds), [residualRoomIds]);
+  const visRooms = useMemo(() => visibleRooms(rooms, residual), [rooms, residual]);
+  // «Єдиний кабінет» рахуємо по ВИДИМИХ: інакше радіолог із двома кабінетами, з
+  // яких один вимкнено, не отримав би авто-вибір і сидів би на порожньому «Усі».
+  const single = visRooms.length === 1;
   const [entries, setEntries] = useState<RadEntry[]>([]);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [overrides, setOverrides] = useState<Record<string, DayOverride>>({});
@@ -568,7 +586,16 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
   const [incidentsErr, setIncidentsErr] = useState(false);
   const [overridesErr, setOverridesErr] = useState(false);
   const safetyErr = incidentsErr || overridesErr;
-  const [roomFilter, setRoomFilter] = useState(single ? (rooms?.[0]?.id || "all") : "all");
+  const [roomFilter, setRoomFilter] = useState(single ? (visRooms[0]?.id || "all") : "all");
+  /* Кабінет-залишок може зникнути зі списку просто під час зміни (закрили останній
+     запис) — і фільтр лишився б на кабінеті, якого вже немає у сайдбарі: дошка
+     порожня, а кнопки «Усі кабінети» при одному видимому кабінеті теж немає, тобто
+     повернутись нічим. Скидаємо на «всі» (або на єдиний, що лишився). */
+  useEffect(() => {
+    if (roomFilter === "all") return;
+    if (visRooms.some((r) => r.id === roomFilter)) return;
+    setRoomFilter(single ? (visRooms[0]?.id || "all") : "all");
+  }, [visRooms, roomFilter, single]);
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
@@ -593,8 +620,15 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
   // (майбутні ряди й далі disabled через isFutureRow з підказкою).
   const readOnly = isPast;
   const dayKey = dateKey(selectedDate);
+  /* roomsById — ПОВНИЙ список призначених кабінетів: за ним резолвиться назва
+     кабінету в рядку черги. Ховаємо кабінет зі СПИСКІВ, а не з записів. */
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
   const roomIds = useMemo(() => (rooms || []).map((r) => r.id), [rooms]);
+  const visRoomIds = useMemo(() => visRooms.map((r) => r.id), [visRooms]);
+  const offNote = (roomId: string): string | null => {
+    const r = roomsById[roomId];
+    return r && r.active === false ? roomOffLabel(residualRoomCounts?.[roomId]) : null;
+  };
 
   function notify(msg: string, type = "success") {
     setToast({ msg, type });
@@ -683,7 +717,11 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
   useRealtimeRefetch({
     channelName: clinicId ? "rad-" + clinicId : null,
     subscriptions: [
-      { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: reload },
+      /* Поки є кабінет-залишок, зміна запису може прибрати його зі списку —
+         а residual приходить SSR-пропом. Без refresh підпис «вимкнено · N»
+         лишався б старим. Умова обов'язкова: без залишків це зайвий refresh. */
+      { table: "queue_entries", filter: "clinic_id=eq." + clinicId,
+        onChange: () => { reload(); if ((residualRoomIds?.length ?? 0) > 0) router.refresh(); } },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
       { table: "schedule_overrides", filter: "clinic_id=eq." + clinicId, onChange: loadOverrides },
       // 0086: rooms — SSR-проп (у радіолога ще й ВІДФІЛЬТРОВАНИЙ призначеними
@@ -693,8 +731,11 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
   });
 
   const selectedOverride = overrides[dayKey] || null;
-  const roomSchedules = (rooms || []).map((r) => r.schedule);
+  /* Лише за графіками кабінетів, які реально працюють: вимкнений кабінет із
+     робочою неділею інакше показував би неділю робочою для всього центру. */
+  const roomSchedules = bookableRooms(rooms).map((r) => r.schedule);
   const selDayStatus = dayStatus(selectedOverride, selectedDate, roomSchedules);
+  // Графік конкретного кабінету — за ПОВНИМ списком (резолв за id).
   const schedOf = (roomId: string) => (rooms || []).find((r) => r.id === roomId)?.schedule;
   function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride, schedOf(roomId)).closed; }
 
@@ -803,7 +844,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
     const t = (e.scheduled_time || "").localeCompare(cur.scheduled_time || "");
     if (t < 0 || (t === 0 && priorityRank(e.priority_level) < priorityRank(cur.priority_level))) nextWaitingByRoom[e.room_id] = e;
   });
-  const cardRooms = roomFilter === "all" ? (rooms || []) : (rooms || []).filter((r) => r.id === roomFilter);
+  const cardRooms = roomFilter === "all" ? visRooms : visRooms.filter((r) => r.id === roomFilter);
 
   const filtered = scoped.filter((p) => {
     if (filter !== "all" && p.status !== filter) return false;
@@ -830,7 +871,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
 
   return (
     <div className="app">
-      <RadSidebar rooms={rooms} roomFilter={roomFilter} setRoomFilter={setRoomFilter} counts={counts} adminName={adminName} />
+      <RadSidebar rooms={visRooms} roomNoteOf={offNote} roomFilter={roomFilter} setRoomFilter={setRoomFilter} counts={counts} adminName={adminName} />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">
@@ -856,7 +897,10 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, adminName 
                 </div>
               </div>
             )}
-            {!isPast && liveIncidents.filter((inc) => roomIds.includes(inc.room_id)).map((inc) => {
+            {/* Банер простою — лише по ВИДИМИХ кабінетах: у виведеного з експлуатації
+                й уже порожнього кабінету простій нікого не стосується, а сам кабінет
+                на екрані ніде не показано — банер посилався б у нікуди. */}
+            {!isPast && liveIncidents.filter((inc) => visRoomIds.includes(inc.room_id)).map((inc) => {
               const r = roomsById[inc.room_id];
               const nowBlocking = !!blockingByRoom[inc.room_id] && blockingByRoom[inc.room_id].id === inc.id;
               const startStr = new Date(inc.started_at).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });

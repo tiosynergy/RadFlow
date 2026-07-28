@@ -91,6 +91,10 @@ interface Props {
   activeCenters: Center[];
   centersById: Record<string, Center>;
   roomsByClinic: Record<string, RoomOpt[]>;
+  /** Те саме, але вже без вимкнених кабінетів (окрім «залишків») — ЛИШЕ для
+   *  випадайки «Кабінет». Назву кабінету в рядку резолвимо з повного
+   *  roomsByClinic: ховаємо списки, а не записи. Див. lib/rooms.ts. */
+  visRoomsByClinic?: Record<string, RoomOpt[]>;
   doctorId: string;
   onReschedule: (r: BoardReferral) => void;
   onEditStudies: (r: BoardReferral) => void;
@@ -104,7 +108,7 @@ interface Props {
   focus?: { clinicId: string; roomId: string; nonce: number } | null;
 }
 
-export default function ReferrerBoard({ referrals, activeCenters, centersById, roomsByClinic, doctorId, onReschedule, onEditStudies, onCancel, onEditPatient, onOpenCase, onOrganizeCase, focus }: Props) {
+export default function ReferrerBoard({ referrals, activeCenters, centersById, roomsByClinic, visRoomsByClinic, doctorId, onReschedule, onEditStudies, onCancel, onEditPatient, onOpenCase, onOrganizeCase, focus }: Props) {
   const [centerId, setCenterId] = useState<string>("all"); // "all" = Всі центри
   const [roomId, setRoomId] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<string>(""); // "" = всі дати
@@ -122,13 +126,24 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
 
   const multiCenter = activeCenters.length > 1;
   // Лише ДОЗВОЛЕНІ кабінети напрямника (referral_access.room_ids). null/порожньо = усі — як у сайдбарі.
+  // Це ВИПАДАЙКА фільтра, тож беремо видимі кабінети (без вимкнених-порожніх).
   const rooms = useMemo(() => {
     if (centerId === "all") return [];
-    const all = roomsByClinic[centerId] || [];
+    const all = (visRoomsByClinic || roomsByClinic)[centerId] || [];
     const allowed = centersById[centerId]?.room_ids;
     const list = Array.isArray(allowed) && allowed.length ? allowed : null;
     return list ? all.filter((r) => list.includes(r.id)) : all;
-  }, [centerId, roomsByClinic, centersById]);
+  }, [centerId, visRoomsByClinic, roomsByClinic, centersById]);
+  /* Кабінет-залишок може зникнути з випадайки просто під час сесії (закрили
+     останній запис). Сам `<select>` рендериться лише при rooms.length > 0, тож
+     направник лишився б із порожньою дошкою і БЕЗ видимого фільтра, яким це
+     скасувати. Скидаємо на «всі». */
+  useEffect(() => {
+    if (roomId === "all") return;
+    if (rooms.some((r) => r.id === roomId)) return;
+    setRoomId("all");
+  }, [rooms, roomId]);
+
   const roomById = useMemo(() => {
     const m: Record<string, RoomOpt> = {};
     Object.values(roomsByClinic).forEach((arr) => arr.forEach((r) => { m[r.id] = r; }));

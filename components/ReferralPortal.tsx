@@ -6,7 +6,7 @@
    Зайнятість слотів — через знеособлений RPC room_busy_slots (без PII). */
 
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
-import { bookableRooms } from "@/lib/rooms";
+import { bookableRooms, visibleRooms, residualSet, roomOffLabel } from "@/lib/rooms";
 import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -1220,6 +1220,12 @@ interface ReferralPortalProps {
   role: string;
   centers: Center[];
   roomsByClinic: Record<string, RoomOpt[]>;
+  /** clinic_id → id вимкнених кабінетів, у яких ЩЕ лишились живі записи направника
+   *  («кабінети-залишки»): вимкнений кабінет ховаємо зі списків, але поки в ньому
+   *  щось є — він спливає назад із підписом «вимкнено · N». Див. lib/rooms.ts. */
+  residualRoomIdsByClinic?: Record<string, string[]>;
+  /** clinic_id → room_id → скільки саме лишилось (для підпису). */
+  residualRoomCountsByClinic?: Record<string, Record<string, number>>;
   /** Каталоги послуг за центрами (clinic_id → services, 0107). RLS services_referrer_read. */
   servicesByClinic: Record<string, ServiceLike[]>;
   /** Переозначення каталогу по кабінетах за центрами (clinic_id → service_room_overrides, 0108). */
@@ -1232,7 +1238,7 @@ interface ReferralPortalProps {
   backLabel?: string | null;
 }
 
-export default function ReferralPortal({ role, centers, roomsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, doctorId, backHref = null, backLabel = null }: ReferralPortalProps) {
+export default function ReferralPortal({ role, centers, roomsByClinic, residualRoomIdsByClinic, residualRoomCountsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, doctorId, backHref = null, backLabel = null }: ReferralPortalProps) {
   const router = useRouter();
   const canManage = role === "referrer";
   async function signOut() {
@@ -1244,11 +1250,31 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
 
   const activeCenters = useMemo(() => centers.filter((c) => c.status === "active"), [centers]);
   const centersById = useMemo(() => { const m: Record<string, Center> = {}; centers.forEach((c) => { m[c.clinicId] = c; }); return m; }, [centers]);
+
+  /* Кабінети для СПИСКІВ порталу (сайдбар, фільтр доски): активні + вимкнені, у яких
+     ще лишились живі записи цього направника. `roomsByClinic` лишається ПОВНИМ і далі
+     йде туди, де за room_id резолвиться назва кабінету в рядку направлення чи в кейсі,
+     — фільтруємо списки, а не записи (див. lib/rooms.ts). */
+  const visRoomsByClinic = useMemo(() => {
+    const m: Record<string, RoomOpt[]> = {};
+    for (const [cid, rs] of Object.entries(roomsByClinic)) {
+      m[cid] = visibleRooms(rs, residualSet(residualRoomIdsByClinic?.[cid]));
+    }
+    return m;
+  }, [roomsByClinic, residualRoomIdsByClinic]);
+  const offNote = useCallback((clinicId: string, roomId: string): string | null => {
+    const r = (roomsByClinic[clinicId] || []).find((x) => x.id === roomId);
+    return r && r.active === false ? roomOffLabel(residualRoomCountsByClinic?.[clinicId]?.[roomId]) : null;
+  }, [roomsByClinic, residualRoomCountsByClinic]);
+
   // Коди модальностей, доступних направнику в центрі за грантом (room_ids; null = усі
   // кабінети). Передаємо у WaitlistModal, щоб він не пропонував недоступні модальності
   // (сервер addWaitlistEntry перевіряє те саме).
+  // Вимкнені кабінети сюди не рахуємо: у листі очікування напрямок існує лише щоб
+  // із нього ЗАПИСАТИ, а в непрацюючий апарат не запишеш — модальність, у якій усі
+  // кабінети центру вимкнено, направник пропонувати не повинен.
   const centerModalities = (c: Center): string[] => {
-    const rs = roomsByClinic[c.clinicId] || [];
+    const rs = bookableRooms(roomsByClinic[c.clinicId] || []);
     const ids = Array.isArray(c.room_ids) && c.room_ids.length ? c.room_ids : null;
     const allowed = ids ? rs.filter((r) => ids.includes(r.id)) : rs;
     return Array.from(new Set(allowed.map((r) => r.modality)));
@@ -1427,7 +1453,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
   }
 
   /* ===== 0118 — кейси направника: екран кейса + «Організувати кейс» ===== */
-  // Кабінети центру, звужені грантом (referral_access.room_ids; null/[] = усі).
+  /* Кабінети центру, звужені грантом (referral_access.room_ids; null/[] = усі).
+     ПОВНИЙ перелік, вимкнені НЕ ріжемо: звідси кабінети йдуть у CaseModal (назви
+     кроків уже створеного кейса — це запис, а не список) і в BookingModal, яка
+     сама фільтрує через bookableRooms. Вирізати вимкнені тут означало б показати
+     крок кейса без назви кабінету. */
   const grantedRooms = useCallback((clinicId: string): RoomOpt[] => {
     const all = roomsByClinic[clinicId] || [];
     const ids = centersById[clinicId]?.room_ids;
@@ -1482,7 +1512,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
 
   return (
     <div className="app">
-      <ReferrerSidebar centers={activeCenters} roomsByClinic={roomsByClinic} doctorName={doctorName}
+      <ReferrerSidebar centers={activeCenters} roomsByClinic={visRoomsByClinic} roomNoteOf={offNote} doctorName={doctorName}
         backHref={backHref} backLabel={backLabel}
         activeTab={tab}
         onNav={(key) => { if (key === "mine") setBoardFocus({ clinicId: "all", roomId: "all", nonce: Date.now() }); setTab(key); }}
@@ -1527,7 +1557,9 @@ export default function ReferralPortal({ role, centers, roomsByClinic, servicesB
                 <button className="btn btn-secondary btn-sm" onClick={() => { reload(); reloadWaitlist(); }}>↻ Спробувати ще раз</button>
               </div>
             )}
-            <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} doctorId={doctorId}
+            {/* roomsByClinic — ПОВНИЙ (назва кабінету в рядку направлення),
+                visRoomsByClinic — лише для випадайки «Кабінет» у фільтрі. */}
+            <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} visRoomsByClinic={visRoomsByClinic} doctorId={doctorId}
               focus={boardFocus}
               onReschedule={(r) => setReschedFor(r)} onCancel={(r) => setCancelAsk(r)} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)}
               onOpenCase={openCaseScreen} onOrganizeCase={startOrganize} />

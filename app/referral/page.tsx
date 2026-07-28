@@ -4,6 +4,7 @@ import ReferralPortal from "@/components/ReferralPortal";
 import SignOutButton from "@/components/SignOutButton";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { safeBackHref } from "@/lib/portalBack";
+import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 
 // Колонки каталогу для форм направника (services, 0107; RLS services_referrer_read).
 const SERVICE_COLS = "id, clinic_id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order, room_id"; // 0121: room_id — база + власні послуги кабінетів
@@ -142,6 +143,27 @@ export default async function ReferralPage({ searchParams }: { searchParams: Pro
     }
   }
 
+  /* Вимкнені кабінети в порталі направника (див. lib/rooms.ts). Центрів тут може
+     бути кілька, і в кожного СВОЯ таймзона, тому залишки рахуємо окремо по кожному
+     центру — одним tz на всіх «сьогодні» біля півночі поїхало б.
+     Для направника RLS (0024) віддає з queue_entries лише ВЛАСНІ записи, тож
+     «залишок» тут означає рівно те, що треба: кабінет тримається у списку, поки в
+     ньому лишились ЙОГО пацієнти. У прев'ю адміна той самий запит бачить увесь
+     центр — теж коректно для того, хто дивиться.
+     Запиту не буде взагалі, якщо у центрі немає вимкнених кабінетів. */
+  const residualRoomIdsByClinic: Record<string, string[]> = {};
+  const residualRoomCountsByClinic: Record<string, Record<string, number>> = {};
+  await Promise.all(
+    centers
+      .filter((c) => c.status === "active")
+      .map(async (c) => {
+        const offIds = offRoomIdsOf(roomsByClinic[c.clinicId] as Array<{ id: string; active?: boolean | null }> | undefined);
+        const res = await residualOffRooms(supabase, c.clinicId, offIds, c.timezone);
+        residualRoomIdsByClinic[c.clinicId] = res.ids;
+        residualRoomCountsByClinic[c.clinicId] = res.counts;
+      }),
+  );
+
   return (
     <ReferralPortal
       role={profile.role as string}
@@ -149,6 +171,8 @@ export default async function ReferralPage({ searchParams }: { searchParams: Pro
       backLabel={profile.role === "admin" ? (centers[0]?.name || "Мій центр") : null}
       centers={centers}
       roomsByClinic={roomsByClinic as Parameters<typeof ReferralPortal>[0]["roomsByClinic"]}
+      residualRoomIdsByClinic={residualRoomIdsByClinic}
+      residualRoomCountsByClinic={residualRoomCountsByClinic}
       servicesByClinic={servicesByClinic}
       roomOverridesByClinic={roomOverridesByClinic}
       doctorName={(profile.full_name as string) ?? (user.email ?? "Лікар")}

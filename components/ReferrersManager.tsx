@@ -15,10 +15,11 @@ import LiveClock from "@/components/LiveClock";
 import PhoneInput from "@/components/PhoneInput";
 import HelpTip from "@/components/HelpTip";
 import { modalityShort, modalityKind } from "@/lib/studies";
+import { bookableRooms, isRoomBookable, visibleRooms, ROOM_OFF_LABEL } from "@/lib/rooms";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type ReferrerProfile = { id?: string; login?: string | null; full_name?: string | null; phone?: string | null; note?: string | null; password_set?: boolean; invite_token?: string | null };
 type AccessRow = { access_id: string; referrer_id: string; status: string; policy: string | null; room_ids: string[] | null; note: string | null; referrer: ReferrerProfile };
 type InviteForm = { login: string; full_name: string; email: string; phone: string; note: string; policy: string; room_ids: string[] };
@@ -52,9 +53,26 @@ interface ReferrersManagerProps {
 }
 
 export default function ReferrersManager({ clinicId, rooms, clinicName, adminName, embedded = false }: ReferrersManagerProps) {
+  /* allRoomIds / roomById — ПОВНИЙ перелік, включно з вимкненими кабінетами, і
+     саме таким має лишитись: на ньому тримаються sanitizeRooms і isAllRooms. Якби
+     вимкнені звідси зникли, sanitizeRooms вичищав би їх із уже виданого гранта, і
+     перше ж збереження картки ТИХО забирало б у направника доступ, який ніхто не
+     знімав (а відновити його після повернення кабінету в стрій — нізвідки).
+     Фільтруємо лише ЧИПИ вибору — див. newAccessRooms / accessRoomsFor. */
   const allRoomIds = (rooms || []).map((r) => r.id);
   const roomById: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { roomById[r.id] = r; });
-  const emptyForm = (): InviteForm => ({ login: "", full_name: "", email: "", phone: "", note: "", policy: "direct", room_ids: allRoomIds });
+
+  /* Видати НОВИЙ доступ можна лише в кабінет, що працює. Побічний ефект: поки в
+     центрі є вимкнений кабінет, новий грант зберігається ЯВНИМ списком, а не null
+     («усі кабінети») — бо «усі» мовчки включало б і виведений з експлуатації
+     апарат, і направник отримав би його назад разом із поверненням у стрій.
+     Коли вимкнених кабінетів немає (звичайний випадок) — поведінка не змінюється. */
+  const newAccessRooms = bookableRooms(rooms);
+  /** Чипи для вже виданого гранта: активні + вимкнені, які в цьому гранті вже є. */
+  const accessRoomsFor = (selected: string[]): RoomOpt[] =>
+    (rooms || []).filter((r) => isRoomBookable(r) || selected.includes(r.id));
+
+  const emptyForm = (): InviteForm => ({ login: "", full_name: "", email: "", phone: "", note: "", policy: "direct", room_ids: newAccessRooms.map((r) => r.id) });
 
   const [rows, setRows] = useState<AccessRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -297,7 +315,11 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
 
   return (
     <div className={embedded ? "setup-embed" : "app"}>
-      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={rooms} activeNav="referrers" />}
+      {/* Сайдбар — робочий список кабінетів, тож вимкнені звідси ховаємо. Залишки
+          на цій сторінці не рахуємо (їх нема звідки взяти без tz центру), тому
+          спрацьовує документований fail-closed із lib/rooms.ts: без residual
+          видимими лишаються активні. На гранти це не впливає — вони вище. */}
+      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={visibleRooms(rooms)} activeNav="referrers" />}
       <div className={embedded ? "setup-embed-main" : "main"}>
         {!embedded && (
           <header className="topbar">
@@ -353,11 +375,16 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
             </div>
             <div className="fld">
               <span className="fld-lab">Доступні кабінети</span>
-              {(rooms || []).length === 0 ? (
-                <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>У центрі ще немає кабінетів — додайте їх у Майстрі налаштування.</div>
+              {newAccessRooms.length === 0 ? (
+                <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>
+                  {(rooms || []).length === 0
+                    ? "У центрі ще немає кабінетів — додайте їх у Майстрі налаштування."
+                    : "Усі кабінети центру вимкнено — надати доступ немає до чого."}
+                </div>
               ) : (
                 <div className="bd-rooms">
-                  {(rooms || []).map((r) => {
+                  {/* Новий доступ — лише в активні кабінети (див. newAccessRooms). */}
+                  {newAccessRooms.map((r) => {
                     const on = form.room_ids.includes(r.id);
                     return (
                       <button type="button" key={r.id} className="bd-room" onClick={() => toggleRoom(r.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}
@@ -416,15 +443,20 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                       </div>
                       <div className="fld">
                         <span className="fld-lab">Доступні кабінети</span>
-                        {(rooms || []).length === 0 ? <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>У центрі немає кабінетів.</div> : (
+                        {accessRoomsFor(editForm.room_ids).length === 0 ? <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>У центрі немає кабінетів.</div> : (
                           <div className="bd-rooms">
-                            {(rooms || []).map((rm) => {
+                            {accessRoomsFor(editForm.room_ids).map((rm) => {
                               const on = editForm.room_ids.includes(rm.id);
+                              /* Вимкнений кабінет тут може бути лише тоді, коли він
+                                 у гранті вже є: приглушений чип, зняти доступ можна,
+                                 видати заново — ні (зі списку він одразу зникне). */
+                              const off = !isRoomBookable(rm);
                               return (
-                                <button type="button" key={rm.id} className="bd-room" onClick={() => toggleEditRoom(rm.id)} title={on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати"}
-                                  style={{ padding: "5px 9px", gap: 8, borderColor: on ? "var(--green)" : undefined, background: on ? "var(--green-bg)" : undefined }}>
+                                <button type="button" key={rm.id} className="bd-room" onClick={() => toggleEditRoom(rm.id)}
+                                  title={off ? `Кабінет ${ROOM_OFF_LABEL}. Доступ можна лише зняти.` : (on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати")}
+                                  style={{ padding: "5px 9px", gap: 8, borderColor: on ? "var(--green)" : undefined, background: on ? "var(--green-bg)" : undefined, opacity: off ? 0.6 : undefined }}>
                                   <span className={"bd-room-kind " + modalityKind(rm.modality)} style={{ width: 26, height: 26, fontSize: "0.625rem" }}>{modalityShort(rm.modality)}</span>
-                                  <span className="bd-room-meta"><span className="bd-room-name">{rm.name}</span><span className="bd-room-model">{rm.apparatus_model || ""}</span></span>
+                                  <span className="bd-room-meta"><span className="bd-room-name">{rm.name}</span><span className="bd-room-model">{off ? `кабінет ${ROOM_OFF_LABEL}` : (rm.apparatus_model || "")}</span></span>
                                 </button>
                               );
                             })}

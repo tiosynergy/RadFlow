@@ -12,10 +12,11 @@ import { modalityLabel, modalityCode, CONTRAST_SURCHARGE } from "@/lib/studies";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
+import { visibleRooms } from "@/lib/rooms";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type StudyLike = { price?: number; region?: string; contrast?: boolean; type?: string };
 type RevenueEntry = { studies?: unknown; note?: string | null; clinic_id?: string | null; room_id?: string | null };
 
@@ -159,7 +160,23 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* roomsById — ПОВНИЙ перелік, включно з вимкненими: за ним резолвиться назва
+     кабінету в CSV і в drill-down. Це рядки ЗАПИСІВ, а не список кабінетів. */
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; rooms.forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
+
+  /* ===== Вимкнені кабінети на дашборді: ділимо оперативне й історичне =====
+     ОПЕРАТИВНЕ (сайдбар, «Завантаженість», смужки по апаратах) рахуємо БЕЗ
+     вимкнених: виведений з експлуатації апарат тримав би в знаменнику 8 годин
+     на день, яких фізично немає, і завантаженість центру виглядала б нижчою,
+     ніж вона є, — рівно тоді, коли керівник дивиться, чи не пора докупити апарат.
+     ІСТОРИЧНЕ (дохід, кількість виконаних, топ-процедури, тижневий графік, CSV,
+     drill-down) лишається ПОВНИМ: воно рахується агрегатами БД по queue_entries і
+     кабінети там не фільтруються взагалі. Інакше вимкнення апарата заднім числом
+     зменшило б торішній дохід — цифри, які вже пішли у звіти.
+     Залишків («вимкнено · N») тут не рахуємо: у scope може бути 20 центрів у
+     різних зонах, і це були б 20 додаткових запитів на кожен рефетч. Спрацьовує
+     документований fail-closed із lib/rooms.ts — видимими лишаються активні. */
+  const visRooms = useMemo(() => visibleRooms(rooms), [rooms]);
   const [drill, setDrill] = useState<{ statuses: string[] | null; label: string } | null>(null);
   const [drillRows, setDrillRows] = useState<DrillRow[] | null>(null);
   const [drillLoading, setDrillLoading] = useState(false);
@@ -196,7 +213,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
 
       const { data: rdata } = await supabase
         .from("rooms")
-        .select("id, name, modality, apparatus_model")
+        .select("id, name, modality, apparatus_model, active")   // active — для поділу «оперативне / історичне», див. visRooms
         .in("clinic_id", clinicIds);
       setRooms(rdata || []);
 
@@ -262,11 +279,29 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
 
   const _t0 = today0(scopeTz);
   const workdays = Math.max(1, workdaysBetween(from, to < _t0 ? to : _t0));
-  const capacityMin = (rooms || []).length * 480 * workdays;
-  // Ефективна зайнятість = тривалість + буфер (буфер теж споживає ємність кабінету);
-  // неявка / «не відбулося» кабінет не займали.
-  const bookedMin = totals.reduce(
-    (s, r) => (r.status !== "no_show" && r.status !== "not_held" ? s + (r.booked_min || 0) : s), 0);
+  const capacityMin = visRooms.length * 480 * workdays;
+  /* Ефективна зайнятість = тривалість + буфер (буфер теж споживає ємність кабінету);
+     неявка / «не відбулося» кабінет не займали.
+     Рахуємо по ceo_kpi_rooms (roomRows), а не по totals: лише так із чисельника
+     можна прибрати ХВИЛИНИ ВИМКНЕНИХ кабінетів — інакше їх ємності вже немає в
+     знаменнику, а хвилини лишились, і коло показувало б 100% на рівному місці.
+     Набір статусів у обох RPC однаковий (0079: cancelled/needs_reschedule ріже
+     ceo_kpi_totals, no_show/not_held — фільтр нижче).
+
+     ⚠️ АЛЕ цифра МОЖЕ помітно змінитись, і применшувати це не можна: ceo_kpi_rooms
+     не бачить записів із room_id IS NULL, а на проді станом на 2026-07 таких було
+     37 із 95 на тій самій популяції, що рахують обидва RPC (≈2215 хв).
+     Такий запис не займає ЖОДНОГО апарата,
+     тож у завантаженість кабінетів він і не мав входити — але керівник, який
+     пам'ятає стару цифру, прочитає падіння як баг. Тому нижче ми показуємо
+     «N хв без кабінету» окремим рядком, а не ховаємо різницю.
+     Ця ж сума живить смужки «по апаратах» нижче. */
+  const bookedMin = visRooms.reduce((s, r) => s + (roomRows.find((x) => x.room_id === r.id)?.booked_min || 0), 0);
+  /* Хвилини, які НЕ лягли в жоден видимий кабінет: записи без room_id + вимкнені
+     кабінети. Показуємо їх явно — інакше знаменник і чисельник «не сходяться»
+     з рештою дашборда, і це виглядає як втрата даних. */
+  const bookedMinAll = totals.reduce((s, r) => (["no_show", "not_held"].includes(r.status) ? s : s + (r.booked_min || 0)), 0);
+  const unroomedMin = Math.max(0, bookedMinAll - bookedMin);
   const util = capacityMin ? Math.min(100, Math.round((bookedMin / capacityMin) * 100)) : 0;
   const utilColor = util > 70 ? "var(--green)" : util >= 50 ? "var(--orange)" : "var(--red)";
 
@@ -311,7 +346,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   /* завантаженість по апаратах */
   const minsByRoom: Record<string, number> = {};
   roomRows.forEach((r) => { if (r.room_id) minsByRoom[r.room_id] = r.booked_min || 0; });
-  const roomUtil = (rooms || []).map((r) => {
+  const roomUtil = visRooms.map((r) => {
     const mins = minsByRoom[r.id] || 0;
     const cap = 480 * workdays;
     return { name: r.name, kind: modalityLabel(r.modality), pct: cap ? Math.min(100, Math.round((mins / cap) * 100)) : 0, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)" };
@@ -411,7 +446,8 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
 
   return (
     <div className="app">
-      <Sidebar clinicName={scopeName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={rooms} activeNav="ceo" />
+      {/* Сайдбар — робочий список кабінетів (див. visRooms вище). */}
+      <Sidebar clinicName={scopeName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={visRooms} activeNav="ceo" />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">
@@ -456,7 +492,13 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                   <ProgressCircle pct={util} color={utilColor} />
                   <div>
                     <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)" }}>Завантаженість</div>
-                    <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: 8 }}>{(rooms || []).length} апаратів · {workdays} роб. дн.</div>
+                    <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: 8 }}>{visRooms.length} апаратів · {workdays} роб. дн.</div>
+                    {unroomedMin > 0 && (
+                      <div style={{ fontSize: "0.75rem", color: "var(--text-faint)", marginTop: 4 }}
+                        title="Записи без призначеного кабінету (і кабінетів, виведених з експлуатації) не займають апарат, тому в завантаженість не входять">
+                        + {unroomedMin} хв поза кабінетами
+                      </div>
+                    )}
                     <div style={{ fontSize: "0.78125rem", color: utilColor, marginTop: 6, fontWeight: 600 }}>{util > 70 ? "Висока" : util >= 50 ? "Помірна" : "Низька"}</div>
                   </div>
                 </div>
@@ -501,7 +543,9 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                   </div>
                   <div style={card}>
                     <div style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: 12 }}>Завантаженість по апаратах</div>
-                    {roomUtil.length === 0 ? <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>Кабінетів немає</div> : roomUtil.map((r, i) => (
+                    {/* «Кабінетів немає» і «всі вимкнено» — різні ситуації: у другій
+                        керівник має бачити причину, а не думати, що дані не прийшли. */}
+                    {roomUtil.length === 0 ? <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{rooms.length > 0 ? "Усі кабінети вимкнено" : "Кабінетів немає"}</div> : roomUtil.map((r, i) => (
                       <div key={i} style={{ marginBottom: 10 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78125rem", marginBottom: 4 }}>
                           <span>{r.name} <span style={{ color: "var(--text-muted)" }}>{r.kind}</span></span>

@@ -5,7 +5,7 @@
    queue_entries.call_status (синхронно з дошкою), нотатка — у call_note. Realtime. */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { isRoomBookable } from "@/lib/rooms";
+import { isRoomBookable, visibleRooms, residualSet, roomOffLabel } from "@/lib/rooms";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
@@ -249,6 +249,12 @@ interface CallListBoardProps {
   /** IANA-зона центру (clinics.timezone) — із сервера, а не з браузера. */
   clinicTz: string;
   rooms?: RoomOpt[];
+  /** id вимкнених кабінетів, у яких ЩЕ лишились живі записи («кабінети-залишки»).
+   *  Вимкнений кабінет ховаємо зі списків, але поки в ньому щось є — він спливає
+   *  назад із підписом «вимкнено · N записів». Див. lib/rooms.ts. */
+  residualRoomIds?: string[];
+  /** Скільки саме лишилось у кожному такому кабінеті — для підпису. */
+  residualRoomCounts?: Record<string, number>;
   /** Каталог послуг центру (services, 0107) — SSR-проп, як rooms. Порожній → статика. */
   services?: ServiceLike[];
   /** Переозначення каталогу по кабінетах (service_room_overrides, 0108) — проброс у форми (2b). */
@@ -259,7 +265,7 @@ interface CallListBoardProps {
   roleKey?: string;
 }
 
-export default function CallListBoard({ clinicId, clinicTz, rooms, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: CallListBoardProps) {
+export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: CallListBoardProps) {
   // Синхронно, до ініціалізаторів useState: від зони залежить і «завтра» (день
   // обдзвону), і todayKey (секції «Запізнення» / «постраждалі»). Тільки на клієнті.
   if (typeof window !== "undefined") setClinicTz(clinicTz);
@@ -296,7 +302,17 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, services, roo
   const todayKey = wallDayKey(clinicTz);
 
   const dayKey = dateKey(date);
+  /* roomsById — ПОВНИЙ список, включно з вимкненими: за ним резолвиться назва
+     кабінету в рядку обдзвону й у CSV. Ховаємо кабінет зі СПИСКІВ, а не з записів. */
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
+
+  /* …а `visRooms` — те, що показуємо у списках: активні + вимкнені із залишками. */
+  const residual = useMemo(() => residualSet(residualRoomIds), [residualRoomIds]);
+  const visRooms = useMemo(() => visibleRooms(rooms, residual), [rooms, residual]);
+  const offNote = (roomId: string): string | null => {
+    const r = roomsById[roomId];
+    return r && r.active === false ? roomOffLabel(residualRoomCounts?.[roomId]) : null;
+  };
 
   function notify(msg: string, type = "success") {
     setToast({ msg, type });
@@ -379,7 +395,12 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, services, roo
   useRealtimeRefetch({
     channelName: clinicId ? "calllist-" + clinicId : null,
     subscriptions: [
-      { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: () => { reload(); loadIncidents(); loadTodayScheduled(); } },
+      /* + router.refresh, поки в центрі є кабінет-залишок: residual — SSR-проп,
+         і без цього підпис «вимкнено · N» лишався б старим саме на екрані, де
+         статуси міняють пачками. Умова обов'язкова — інакше зайвий refresh на
+         кожен дзвінок. */
+      { table: "queue_entries", filter: "clinic_id=eq." + clinicId,
+        onChange: () => { reload(); loadIncidents(); loadTodayScheduled(); if ((residualRoomIds?.length ?? 0) > 0) router.refresh(); } },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
       // 0086: rooms — SSR-проп (назви кабінетів у колл-листі); правку/видалення підхоплюємо через router.refresh.
       { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
@@ -564,7 +585,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, services, roo
 
   return (
     <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={rooms} activeNav="calls" />
+      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={visRooms} roomNoteOf={offNote} activeNav="calls" />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">

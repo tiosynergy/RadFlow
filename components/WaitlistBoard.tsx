@@ -26,6 +26,7 @@ import type { Study } from "@/lib/studies";
 import { modalityLabel, modalityKind } from "@/lib/studies";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
+import { visibleRooms, residualSet, roomOffLabel } from "@/lib/rooms";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -93,6 +94,12 @@ interface WaitlistBoardProps {
   /** IANA-зона центру (clinics.timezone) — із сервера, а не з браузера. */
   clinicTz: string;
   rooms?: RoomOpt[];
+  /** id вимкнених кабінетів, у яких ЩЕ лишились живі рядки («кабінети-залишки»).
+   *  Вимкнений кабінет ховаємо зі списків, але поки в ньому щось є — він спливає
+   *  назад із підписом «вимкнено · N записів». Див. lib/rooms.ts. */
+  residualRoomIds?: string[];
+  /** Скільки саме лишилось у кожному такому кабінеті — для підпису. */
+  residualRoomCounts?: Record<string, number>;
   /** Каталог послуг центру (services, 0107) — SSR-проп, як rooms. Порожній → статика. */
   services?: ServiceLike[];
   /** Переозначення каталогу по кабінетах (service_room_overrides, 0108) — проброс у форми (2b). */
@@ -103,7 +110,7 @@ interface WaitlistBoardProps {
   roleKey?: string;
 }
 
-export default function WaitlistBoard({ clinicId, clinicTz, rooms, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: WaitlistBoardProps) {
+export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: WaitlistBoardProps) {
   /* Зона центру — синхронно, до першого рендера. Раніше вона прилітала клієнтським
      fetch уже після монтування, і wallNow() у BookingModal, відкритій із листа
      очікування, встигав порахувати «зараз» за браузером (минулі слоти — вибірні). */
@@ -143,8 +150,18 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, services, roo
   const [hasMore, setHasMore] = useState(false);
   // Фільтр за кабінетом із сайдбара: рядок листа не привʼязаний до кабінету, тому
   // фільтруємо за МОДАЛЬНІСТЮ обраного кабінету (МРТ/КТ/УЗД…). Порожня модальність — теж показуємо.
+  /* Резолв обраного кабінету — за ПОВНИМ списком: користувач міг залишитись на
+     кабінеті-залишку, а нам треба лише його модальність для фільтра. */
   const viewRoom = roomView === "all" ? null : (rooms || []).find((r) => r.id === roomView) || null;
   const viewMod = viewRoom?.modality ?? null;
+
+  /* Списки кабінетів (сайдбар) — активні + вимкнені із залишками. */
+  const residual = useMemo(() => residualSet(residualRoomIds), [residualRoomIds]);
+  const visRooms = useMemo(() => visibleRooms(rooms, residual), [rooms, residual]);
+  const offNote = (roomId: string): string | null => {
+    const r = (rooms || []).find((x) => x.id === roomId);
+    return r && r.active === false ? roomOffLabel(residualRoomCounts?.[roomId]) : null;
+  };
   useEffect(() => {
     try { setHintHidden(localStorage.getItem("rf_waitlist_hint_hidden") === "1"); } catch { /* ignore */ }
   }, []);
@@ -257,7 +274,11 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, services, roo
   useRealtimeRefetch({
     channelName: clinicId ? "waitlist-" + clinicId : null,
     subscriptions: [
-      { table: "waitlist_entries", filter: "clinic_id=eq." + clinicId, onChange: () => { reload(); loadCounts(); } },
+      /* Залишок може триматись САМЕ вейтліст-броню (residualOffRooms рахує обидві
+         таблиці) — тож знята остання бронь мусить прибрати кабінет зі списку без
+         перезавантаження сторінки. */
+      { table: "waitlist_entries", filter: "clinic_id=eq." + clinicId,
+        onChange: () => { reload(); loadCounts(); if ((residualRoomIds?.length ?? 0) > 0) router.refresh(); } },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
       // 0086: rooms — SSR-проп; додавання/зміна модальності/видалення кабінету долітає
       // до відкритого листа через перечитування серверних пропів (інакше стале-фільтри
@@ -393,7 +414,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, services, roo
 
   return (
     <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={rooms}
+      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={visRooms} roomNoteOf={offNote}
         activeNav="waitlist" activeRoom={roomView} onSelectRoom={setRoomView} />
       <div className="main">
         <header className="topbar">
