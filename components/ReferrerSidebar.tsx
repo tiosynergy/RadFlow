@@ -7,6 +7,7 @@
 
 import DensityControl from "@/components/DensityToggle";
 import { modalityShort, modalityKind } from "@/lib/studies";
+import NavDrawer from "@/components/NavDrawer";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null };
@@ -48,7 +49,7 @@ export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, ac
   ];
 
   return (
-    <aside className="sidebar">
+    <NavDrawer label="мої центри та направлення">
       <div className="sb-head">
         {/* Клікабельний логотип — те, що адмін пробує першим: у власному
             сайдбарі (Sidebar.tsx) він теж веде на робоче місце. */}
@@ -132,6 +133,6 @@ export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, ac
             поруч стоїть кнопка повернення, і переплутати їх коштує сесії. */}
         <button className="icon-btn" title={isPreview ? "Вийти з системи (щоб просто закрити портал — «Повернутися»)" : "Вийти"} onClick={onSignOut}>⏻</button>
       </div>
-    </aside>
+    </NavDrawer>
   );
 }

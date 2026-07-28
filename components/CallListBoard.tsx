@@ -94,11 +94,11 @@ function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet,
         </button>
         <div className="cl-time tabular">{p.scheduled_time}<div className="cl-date">{dateShort}</div></div>
         <button className="cl-name cl-name-btn" onClick={() => onToggle(p.id)}>{p.priority_level && p.priority_level !== "planned" && isActiveStatus(p.status) && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone} style={{ marginRight: 6 }}>{PRIORITY_META[p.priority_level].short}</span>}{p.patient_name}</button>
-        <div><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>☎ {p.patient_phone}</a></div>
+        <div className="cl-tel-cell"><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>☎ {p.patient_phone}</a></div>
         <div className="cl-proc">{procLabel(p)}</div>
         <div className="cl-room">{roomName}{roomModel ? <div style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}</div> : null}</div>
-        <div><StatusBadge status={p.call_status} /></div>
-        <div>
+        <div className="cl-status-cell"><StatusBadge status={p.call_status} /></div>
+        <div className="cl-note-cell">
           <input key={p.id + ":" + (p.call_note || "")} className="note-input" placeholder="Нотатка…" defaultValue={p.call_note || ""} onBlur={(e) => onNote(p.id, e.target.value)} />
         </div>
         <div className="cl-actions">

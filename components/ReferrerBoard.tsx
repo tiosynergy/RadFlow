@@ -167,7 +167,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
   const calDate = dateFilter ? new Date(dateFilter + "T00:00:00") : wallToday0(calTz);
 
   return (
-    <div style={{ maxWidth: 1280, margin: "0 auto", display: "grid", gridTemplateColumns: "minmax(0,1fr) 300px", gap: 16, alignItems: "start" }}>
+    <div className="ref-board-grid">
       <div style={{ minWidth: 0 }}>
       {/* Перемикач центрів */}
       {multiCenter && (
@@ -180,7 +180,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
       )}
 
       {/* Stat-картки як фільтри статусу */}
-      <div className="stats" role="tablist" aria-label="Фільтр за статусом" style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))" }}>
+      <div className="stats stats-ref7" role="tablist" aria-label="Фільтр за статусом">
         {STATUS_FILTERS.map((f) => (
           <button key={f.key} role="tab" aria-selected={filter === f.key}
             className={"stat clickable" + (filter === f.key ? " active" : "")} onClick={() => setFilter(f.key)}>
@@ -206,7 +206,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
         <div className="empty"><div className="ei">📄</div><div className="et">Направлень немає</div><div className="es">Змініть фільтр або створіть направлення</div></div>
       ) : (
         <>
-          <div className="qhead" style={{ display: "grid", gridTemplateColumns: "54px minmax(0,2fr) minmax(0,2.4fr) minmax(120px,1.2fr) 130px 26px", gap: 12, padding: "6px 16px", fontSize: "0.6875rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-faint)" }}>
+          <div className="qhead qhead-ref">
             <div>Час</div><div>Пацієнт</div><div>Дослідження</div><div>Кабінет</div><div>Статус</div><div />
           </div>
           <div className="qrows">
@@ -223,7 +223,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
               const owned = r.created_by === doctorId || r.referrer_id === doctorId;
               return (
                 <div className={"qrow-item " + r.status + (expanded ? " open" : "")} key={r.id}>
-                  <div className="qrow" role="button" tabIndex={0} style={{ gridTemplateColumns: "54px minmax(0,2fr) minmax(0,2.4fr) minmax(120px,1.2fr) 130px 26px" }}
+                  <div className="qrow qrow-ref" role="button" tabIndex={0}
                     onClick={() => setExpandedId((x) => (x === r.id ? null : r.id))}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId((x) => (x === r.id ? null : r.id)); } }}>
                     <div className="q-time tabular">{r.scheduled_time || "—"}<div className="td">{r.duration_min ? r.duration_min + " хв" : ""}</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{r.scheduled_date}</div></div>
@@ -251,7 +251,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                       <div className="pp">{procLabel(r)}{changed && <span style={{ color: "var(--orange)", marginLeft: 6 }}>✎ змінено {r.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}</div>
                       <div className="du">{km}</div>
                     </div>
-                    <div className="q-room" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3 }}>
+                    <div className="q-room">
                       {km && <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: km === "КТ" ? "var(--orange-bg)" : "var(--blue-bg)", color: km === "КТ" ? "var(--orange)" : "#4da3ff" }}>{km}</span>}
                       <b>{room ? room.name : (centersById[r.clinic_id]?.name || "—")}</b>
                       {room?.apparatus_model ? <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{room.apparatus_model}</span> : null}
@@ -271,7 +271,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                         {(() => {
                           const sdiff = diffStudies(r.studies_original as Parameters<typeof diffStudies>[0], r.studies as Parameters<typeof diffStudies>[1]);
                           return (
-                            <div className="qd-info" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "11px 22px", paddingTop: 4 }}>
+                            <div className="qd-info" style={{ paddingTop: 4 }}>
                               <div className="qd-row"><span className="qd-k">Центр</span><span className="qd-v">{centerLabel(centersById[r.clinic_id])}</span></div>
                               <div className="qd-row"><span className="qd-k">Телефон</span><span className="qd-v">{r.patient_phone || "—"}</span></div>
                               <div className="qd-row"><span className="qd-k">Дзвінок</span><span className="qd-v" style={{ color: CALL_COLOR[r.call_status || "not_called"] }}>{call.label}</span></div>

@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "sync-board": "node scripts/sync-board.mjs",
     "seed:cities": "node scripts/seed-cities.mjs",
-    "seed:testdata": "node scripts/seed-test-data.mjs"
+    "seed:testdata": "node scripts/seed-test-data.mjs",
+    "gen:schedule-contract": "node scripts/gen-schedule-contract-sql.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
