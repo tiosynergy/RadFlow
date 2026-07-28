@@ -14,40 +14,58 @@ TypeScript + Tailwind + zod, Vercel (Hobby + Fluid Compute, maxDuration=300). Р
 1. **Проект claude.ai «RadFlow»** — durable-хранилище между сессиями. Инструмент `Projects`
    (`project_info` → `project_read` / `project_search`). Там лежит документ состояния
    `claude/radflow-handoff.md` (актуальнее любого файла в репо) и планы.
-2. `docs/HANDOVER.md` — главный документ репозитория. **Шапка + блок «Сессия 13» = актуальный
-   срез**; ниже — история сессий и «почему так».
+2. `docs/HANDOVER.md` — главный документ репозитория. **Шапка + ПЕРВЫЙ блок сессии =
+   актуальный срез**; ниже — история сессий и «почему так».
 3. `docs/README.md` — карта всей документации. `docs/PRODUCT_OVERVIEW.md` — устройство продукта.
+   `docs/DEV_ENVIRONMENT.md` — локальная разработка (замеры памяти dev, Windows-специфика).
 4. Проверяй факты по коду и по прод-БД (Supabase MCP `execute_sql`, ref `rdiqjxzibdqbhwileret`):
-   документы отражают момент написания. **Уроки сессий 11–12: сверяй и СХЕМУ, и ДАННЫЕ прод-БД**
-   — с11: «0120 не применять» была уже применена; с12: 188 room-owned услуг из доков оказались
-   намеренно удалены владельцем.
+   документы отражают момент написания. **Уроки сессий 11–15: сверяй и СХЕМУ, и ДАННЫЕ прод-БД,
+   и не верь номерам миграций в доках** — с11: «0120 не применять» была уже применена;
+   с12: 188 room-owned услуг из доков оказались намеренно удалены владельцем; с14: доки
+   говорили «каталог пуст», а там 230 услуг; с15: внешний аудит нашёл в README номер 0114
+   при проде на 0124. Номера теперь выпилены из README/ONBOARDING намеренно.
 
 ---
 
 ## Состояние на конец сессии 2026-07-28 (сессия 15)
 
-**Незакоммичено — пакет сессии 15 (фиксы внешнего техаудита, 12 файлов).** Коммитит владелец.
-Тулчейн: tsc 0, lint 0, **vitest 315/315**, build зелёный. Аудит и полная диспозиция находок —
-`docs/audit/TECH_AUDIT_2026-07-27.md` (раздел «Верификация и статус исправлений»).
+**Git: всё смёржено и задеплоено.** `dev` == `origin/main` == **`eef0450`** (пакет с15 ушёл
+через PR #9, оба чека зелёные; `dev` подтянута fast-forward'ом), расхождение 0/0, дерево чистое.
+Тулчейн: tsc 0, lint 0, **vitest 315/315**, `npm run build` — успешно.
+**Прод-БД на `0125`** → **следующая новая миграция = `0126`**.
+**Хвостов нет.**
 
-- **Миграция `0125_slot_grid_guard.sql` НАПИСАНА, dry-run `SMOKE_OK`, НЕ накачена** —
-  сетка 5 мин для `scheduled_time` (триггер) + нормализация двух легаси `HH:MM:SS`.
-  Смоук: `supabase/smoke/slot_grid_smoke.sql` (⚠️ ACCESS EXCLUSIVE на queue_entries —
-  гонять вне пика). Порядок «БД → клиент» здесь не критичен (клиент уже шлёт только
-  сетку), но накатить стоит до следующего плана задержек в «Закревського, 9».
-  **После накатки следующая новая = `0126`.**
-- Клиент: `zSlotTime` (слот/перенос/шаг кейса/`to` плана), `useRealtimeRefetch`
-  (джиттер, subscriptionKey, гард `cancelled` — High из ревью), `SLOT_GRID` в
-  `mapBookingError`, README/ONBOARDING без зашитых номеров миграций.
-- **✅ Outbox ВКЛЮЧЁН и проверен живьём** (2026-07-27 22:05 UTC): цепочка pg_cron →
-  `/api/outbox/deliver` (Bearer из Vault) → n8n `radflow-outbox-events` (HMAC, дедуп,
-  журнал `radflow_outbox_journal`) → `delivered_at`. Зависший `emergency_stop` от 24.07
-  доставлен (n8n execution #71 success). Джоба `outbox-deliver` — каждую минуту.
-  Три грабли записаны в раннбуке `2026-07-28_enable_outbox_cron.sql`: секрет — через
-  Vault (не `alter database`, 42501); URL вебхука — КОРОТКИЙ (`/webhook/<path>`, без
-  uuid — с uuid был 404); правка n8n-ноды живёт черновиком, пока не нажат Publish.
-- Бэклог из аудита: TS↔SQL контракт-тесты расписания (overrides, per-day, breaks,
-  границы, DST, off-schedule grace) — отдельная сессия.
+Сессия 15 — верификация внешнего техаудита (`docs/audit/TECH_AUDIT_2026-07-27.md`, диспозиция
+каждой находки — в конце того же файла):
+
+- **High-1 «сетка 5 минут не инвариант» — закрыта с двух сторон.** `09:03`, посланный повз UI
+  прямо в Server Action, создавал запись, невидимую в сетке SlotPicker. Клиент: `zSlotTime`
+  на слоте записи/переноса/шага кейса/`to` плана затримок (рабочие часы, перерывы и `from`
+  плана — сознательно остались `zTime`). БД: **0125** — нормализация двух легасі-рядків
+  `HH:MM:SS` (они роняли план задержек своего кабинета) + триггер `guard_slot_grid`
+  (BEFORE INSERT / UPDATE OF scheduled_time; триггер, а не CHECK — CHECK блокировал бы даже
+  отмену легаси-ряда). Накачена, смоук `supabase/smoke/slot_grid_smoke.sql` → `SMOKE_OK`.
+- **High-3 «outbox без cron» — закрыта, проверена живьём.** Цепочка: pg_cron `outbox-deliver`
+  (ежеминутно, Bearer из **Supabase Vault**) → `/api/outbox/deliver` → n8n workflow
+  `radflow-outbox-events` (timing-safe HMAC → дедуп по Idempotency-Key → журнал в Data Table
+  `radflow_outbox_journal` → 200). Висевший 3,5 суток `emergency_stop` от 24.07 доставлен.
+  Оповещений пока нет — решение владельца «приёмка без оповещения»; канал (Telegram/email)
+  добавляется одним узлом после `Journal Upsert`.
+- **Medium-1/2 `useRealtimeRefetch`** — джиттер ±25% на каждый тик поллинга; структурный
+  `subscriptionKey` в deps. Ревью пакета: **NO-SHIP → SHIP**, нашло High: `removeChannel` в
+  cleanup сам вызывает subscribe-callback со статусом `CLOSED` уже ПОСЛЕ `stopPolling()` —
+  каждая отписка (закрытие модалки слотов, смена даты) заводила бессмертный осиротевший
+  поллинг-цикл; закрыт гардом `cancelled`.
+- **High-2/Low** — README/AGENT_ONBOARDING/docs/README без зашитых номеров миграций.
+- **Побочно:** `docs/DEV_ENVIRONMENT.md` — замеры RAM `next dev` на этом проекте.
+
+### Три грабли включения outbox (записаны в раннбуке `2026-07-28_enable_outbox_cron.sql`)
+
+1. `alter database postgres set app.…` на Supabase запрещён (**42501**) — секреты для pg_cron
+   класть в **Vault** (`vault.create_secret`), джоба читает `vault.decrypted_secrets`.
+2. Продовый URL n8n-вебхука со статическим путём — **короткий** `/webhook/<path>`; вариант
+   с uuid-сегментом, который показывает n8n MCP в `triggerInfo`, даёт **404**.
+3. Правка ноды в n8n сохраняется **черновиком** — не действует, пока не нажат Publish.
 
 ---
 
@@ -183,11 +201,11 @@ waitlist 12 → 11, кейсы 12 → 3, тестовых записей 0. Хв
 
 ## ЧТО ДЕЛАТЬ ДАЛЬШЕ (по приоритету)
 
-**Хвостов от 0121–0124 нет.** Всё накачено, проверено смоуками, смёржено в `main` и
-задеплоено. Сессия 14 миграций не добавляла. Что именно сделано — в `docs/HANDOVER.md`
-(блоки «Сессия 12», «Сессия 13», «Сессия 14»). Ниже — только незакрытое.
+**Хвостов нет.** 0121–0125 накачены и проверены смоуками, всё смёржено в `main` и
+задеплоено, outbox доставляет. Что именно сделано — в `docs/HANDOVER.md` (блоки «Сессия 12»…
+«Сессия 15») и в диспозиции аудита. Ниже — только незакрытое.
 
-1. **Живая проверка входа после 0124 и правки карточки** (пароли вводит владелец):
+1. **Живая проверка входа и правки карточки** (пароли вводит владелец):
    вход админа логином `tiosynergy` И почтой; радиолог `zast2` — ТОЛЬКО логином;
    регистрация нового центра с занятым логином → «Логін вже зайнятий» ДО создания аккаунта;
    **новое:** кнопка «✏️ Редагувати» в карточке персонала — вписать радиологу контактную
@@ -202,35 +220,45 @@ waitlist 12 → 11, кейсы 12 → 3, тестовых записей 0. Хв
    `ReferrerBoard` `repeat(7,…)`, `BookingModal`/`WaitlistModal` `flex: 0 0 150px`.
    Самый низкий существующий брейкпойнт — 560px, ниже нет ничего. **Проверять живьём в браузере.**
 
-3. **Ротация `SUPABASE_SERVICE_ROLE_KEY` (P0, carryover).** ⚠️ После ротации проверить
+3. **TS↔SQL контракт-тесты расписания** (Medium-3 техаудита, бэклог). `lib/schedule.ts` и
+   `check_room_schedule` (0084) реализуют один алгоритм дважды — расхождение даст либо
+   «интерфейс разрешил, БД отказала», либо обход инварианта. Нужен общий набор сценариев
+   (overrides, per-day, breaks, границы графика, DST, off-schedule grace), прогоняемый через
+   TS-функции и через SQL-смоук.
+
+4. **Канал оповещения для outbox** — сейчас n8n-workflow `radflow-outbox-events` только
+   принимает, проверяет HMAC и журналит (решение владельца от 28.07 — «приёмка без
+   оповещения»). Telegram/email добавляется ОДНИМ узлом после `Journal Upsert`; секреты
+   вводит владелец. В пейлоаде `emergency_stop` — кабинет, причина и список пациентов на
+   обзвон с телефонами.
+
+5. **Ротация `SUPABASE_SERVICE_ROLE_KEY` (P0, carryover).** ⚠️ После ротации проверить
    `/api/auth/login-available`: при отказе БД он отвечает `available: null` («не знаю»),
    а не «свободен» — это лечили в ревью 0124, но живьём не проверяли.
 
-4. **Автономный режим — отложен владельцем (сессия 10).** Дизайн ждёт утверждения
+6. **Автономный режим — отложен владельцем (сессия 10).** Дизайн ждёт утверждения
    (8 вопросов §12, блокирующий — №5 про PWA/Chrome). Док:
    `docs/design/AUTONOMOUS_MODE_DESIGN.md`, флоу — `docs/userflows/autonomous-mode-flow.mermaid`.
 
-5. **Смена логина сотрудника админом** — сейчас логин после создания не меняется НИГДЕ
+7. **Смена логина сотрудника админом** — сейчас логин после создания не меняется НИГДЕ
    (`/api/account/login` правит только свою строку, `/setup` — только для админа). Если
    владельцу это нужно — отдельный роут с резолвом уникальности, как в `/api/account/login`.
 
-6. **Плановый апгрейд зависимостей** (`npm audit fix --force` НЕЛЬЗЯ — предлагает next@9).
+8. **Плановый апгрейд зависимостей** (`npm audit fix --force` НЕЛЬЗЯ — предлагает next@9).
 
-7. **Известный и осознанный разрыв 0124:** гонка двух одновременных `signUp` с одинаковым
+9. **Известный и осознанный разрыв 0124:** гонка двух одновременных `signUp` с одинаковым
    логином даёт 500 с непрозрачным текстом GoTrue («Database error saving new user»).
    Pre-check (`/api/auth/login-available`) её почти всегда опережает; чинить пришлось бы
    блокировкой в триггере или таблицей резервов — дороже последствия. Трогать только если
    пользователи реально это поймают.
 
-8. (Опционально) Q2 авто-замена по имени при переносе; тесты гонок; durable-импорт; edit шага
+10. (Опционально) Q2 авто-замена по имени при переносе; тесты гонок; durable-импорт; edit шага
    в кейс-баре портала.
 
-**Carryover — действия владельца:** закоммитить пакет сессии 14; выполнить
-`supabase/maintenance/2026-07-28_cleanup_test_data.sql` (чистка 27 тестовых записей — SQL
-готов и проверен dry-run'ом); удалить папку `D:\RadFlowDev\_to_delete\` (она в git — там же
-лежит `_head.tar` на 5.6 МБ, тянется в каждый клон; агент удалить не может — на смонтированных
-папках `rm` запрещён); поставить **месячный spending limit в OpenAI** (pay-as-you-go,
-auto-recharge без потолка).
+**Carryover — действия владельца:** удалить папку `D:\RadFlowDev\_to_delete\` (она в git —
+там же лежит `_head.tar` на 5.6 МБ, тянется в каждый клон; агент удалить не может — на
+смонтированных папках `rm` запрещён); поставить **месячный spending limit в OpenAI**
+(pay-as-you-go, auto-recharge без потолка).
 
 **Carryover (инфра):** cron доставки outbox — ждёт n8n-расписания; восстановление пароля
 направителя по email — ждёт домен + SMTP; Vercel Hobby — crons только суточные.
@@ -240,7 +268,7 @@ auto-recharge без потолка).
 ## Правила работы (не нарушать)
 
 - **Миграции применяет владелец вручную** через Supabase SQL Editor. Номер — следующий за
-  максимальным ПРИМЕНЁННЫМ (прод на 0124 → следующая 0125). Идемпотентность обязательна.
+  максимальным ПРИМЕНЁННЫМ (**прод на 0125 → следующая 0126**). Идемпотентность обязательна.
   **Сверяй применённость по прод-БД, а не по докам.**
 - **Порядок выкатки: СПЕРВА миграция в БД, ПОТОМ клиент.** Новый клиент называет колонки,
   которых в старой схеме нет (PostgREST → 42703, данные «исчезают» на досках). Схема впереди
@@ -255,7 +283,9 @@ auto-recharge без потолка).
   `pg_get_functiondef` прод-БД). Смена return-сигнатуры → `drop function` + `create` + заново
   revoke/grant. Новый DEFAULT-параметр = перегрузка (42725) — дропай явно.
 - **⚠️ После КАЖДОГО `drop`+`create` функции в схеме `public` — явный `revoke execute … from
-  anon`** (поймано на живой накатке 0122). У Supabase стоит `alter default privileges … grant
+  public, anon, authenticated`** (поймано на 0122; уточнено смоуком 0125: у функции ЕЩЁ и
+  неявный EXECUTE для PUBLIC, и `revoke … from anon` его НЕ снимает — проверяй
+  `has_function_privilege`). У Supabase стоит `alter default privileges … grant
   execute on functions to anon, authenticated, service_role`, поэтому новосозданная функция
   автоматически получает `anon`, даже если старая его не имела; `revoke … from public` этого
   НЕ снимает (это прямой грант роли). Для SECURITY DEFINER RPC анонима отбивает внутренняя
@@ -272,6 +302,14 @@ auto-recharge без потолка).
   иначе он угадывается, а смена логина требует неатомарного обновления `auth.users` +
   `profiles` (сбой между ними = человек не может войти вообще). `profiles.email` — копия для
   показа, источник истины для входа — `auth.users` (`resolve_login_email` джойнит его).
+- **Сетка слотов — ТРОЙНАЯ константа:** `SLOT_STEP` (lib/slots.ts) ↔ `zSlotTime`
+  (lib/validation.ts) ↔ `guard_slot_grid` (0125). Менять только втроём; тест-связка в
+  `tests/validation.test.ts` упадёт первой, если `SLOT_STEP` станет некратным 5.
+  `zTime` остаётся общим — рабочие часы и перерывы МОГУТ быть некратными.
+- **Удаление данных прода — только по явному списку ID из свежего снимка** (урок с14: условие
+  «всё, что подходит под критерий» захватило посторонний кейс, восстановить было нечем —
+  на `patient_cases` нет аудит-триггера). Обязательны страховка «снимок протух → падаем» и
+  dry-run через `raise exception` с откатом.
 - **DB-триггеры, зеркалящие TS** (`check_studies_active_catalog` ↔ lib/catalog.ts,
   `guard_status_transition` ↔ степпер досок), держать в синхроне (+ smoke). Room-видимость
   в `lib/catalog.ts` ОБЯЗАНА совпадать с exists-логикой триггера 0121 (включая легаси-ветку
@@ -288,7 +326,7 @@ auto-recharge без потолка).
   pending async-кнопок — `.rf-spin` + `aria-busy` + гард двойного клика; иконки-кнопки — с
   `aria-label`; статус — глифом И цветом. Таймеры в кабинетах = общий `components/StudyTimer.tsx`.
   SetupWizard использует свой стек `useToasts` (НЕ трогать единым Toast).
-- `npm run typecheck && npm run lint && npm test` (**311/311** на конец сессии 13) перед
+- `npm run typecheck && npm run lint && npm test` (**315/315** на конец сессии 15) перед
   коммитом. **Коммитит владелец.**
 
 ### Среда/инструменты (важно)
@@ -311,8 +349,19 @@ auto-recharge без потолка).
   удаляет сам; `_to_delete/` НЕ в `.gitignore`). Desktop Commander `Remove-Item` — РАБОТАЕТ
   (временный `_archive_head.tar` удаляй сразу). **`.git/index.lock`** застрял → `mv` в
   `.git/trash-old-index-lock` или владелец удалит.
-- **Мердж/пуш — через GitHub-веб в Claude-in-Chrome** (сеть с устройства к GitHub = 403 proxy,
-  `gh` НЕТ; владелец залогинен как `tiosynergy`).
+- **⚠️ Desktop Commander может отвалиться посреди сессии и не вернуться** (так прошла вся
+  сессия 15). Тогда живы только `device_stage_files` / `device_commit_files`: пакет правок
+  вози ОДНИМ тарболом (`tar.gz` в облаке → `SendUserFile` → `device_commit_files` в
+  `D:\RadFlowDev\_sNN.tar.gz`), распаковку (`tar -xzf`, `Remove-Item`) делает владелец;
+  git-команды тоже он. Отдельные 1–3 файла проще класть напрямую `device_commit_files`.
+- **Мердж — через GitHub-веб в Claude-in-Chrome** (сеть с устройства к GitHub = 403 proxy,
+  `gh` НЕТ; владелец залогинен как `tiosynergy`). Порядок: `compare/dev...main` → должно быть
+  **0 файлов** (иначе `main` разошлась — разбираться!), затем `compare/main...dev?expand=1` →
+  Create pull request → Merge → Confirm merge. Кнопка Merge пару секунд серая
+  («Checking for the ability to merge automatically…») — дождаться. Ветку `dev` НЕ удалять.
+  **После мерджа обязательно вернуть merge-коммит в `dev`:** `git fetch origin` +
+  `git merge --ff-only origin/main` + `git push origin dev` (иначе следующий мердж будет не
+  fast-forward и семантический конфликт пройдёт молча — так потерялся «Справочник городов»).
 - **Живой рендер UI** — Claude-in-Chrome против `npm run dev`. Сеть-трекер НЕ видит cross-origin
   Supabase-запросы — RPC проверяй `execute_sql`. **Пароли вводит владелец.**
 - **SQL верифицируй через Supabase MCP `execute_sql`**: смоук-паттерн — DDL + DO-блок,
@@ -322,13 +371,28 @@ auto-recharge без потолка).
   `execute_sql` отдаёт результат ТОЛЬКО последнего запроса — агрегируй в `json_build_object`.
   dev и prod = ОДИН проект (`rdiqjxzibdqbhwileret`).
 - **n8n — через n8n MCP** (`execute_workflow` сортирует ключи webhook-body ПО АЛФАВИТУ — HMAC
-  подписывать с этим порядком; песочница Code-нод: только `require('crypto')`; секрет в 2 нодах;
-  Fetch Page — редиректы OFF).
+  подписывать с этим порядком; песочница Code-нод: только `require('crypto')`, СЕТИ НЕТ;
+  секреты живут прямо в Code-нодах, Cloud блокирует `$env`; Fetch Page — редиректы OFF).
+  Постройка workflow: `get_sdk_reference` → `search_nodes` → `get_node_types` →
+  `validate_workflow` → `create_workflow_from_code` → **`publish_workflow`**.
+  ⚠️ **Правка ноды = ЧЕРНОВИК, пока не нажат Publish** (`activeVersionId` ≠ `versionId`).
+  ⚠️ **Продовый URL вебхука со статическим путём — КОРОТКИЙ `/webhook/<path>`**; uuid-вариант
+  из `triggerInfo` даёт 404. Диагностика «долетает ли вообще»: `search_executions` по
+  workflowId — 0 выполнений значит проблема в URL/сети, а не в коде ноды.
+- **Supabase managed-ограничения:** `alter database … set app.*` ЗАПРЕЩЁН (42501) — секреты
+  для pg_cron класть в **Vault** (`vault.create_secret('<val>','<name>')`), джоба читает
+  `(select decrypted_secret from vault.decrypted_secrets where name='…')`. В SQL Editor НЕ
+  работают temp-таблицы и явные `begin/commit` (пул) → разовые скрипты пиши ОДНИМ `do $$…$$`,
+  отчёт — отдельным `select` после него.
 - **Планировщик:** только `mcp__claude-code-remote__*`, НЕ локальный cron.
 - **Durable-состояние между сессиями — инструмент `Projects`** (проект claude.ai «RadFlow»):
   в конце сессии обнови `claude/radflow-handoff.md`.
-- **Vercel:** env-переменные в **Settings → Environment Variables**; применяются только новым
-  деплоем → Deployments → ⋯ → Redeploy.
+- **Vercel:** env-переменные теперь в **Settings → Environments → Production** (не отдельным
+  пунктом меню); применяются только новым деплоем → Deployments → ⋯ → Redeploy.
+  ⚠️ **Sensitive-переменные после сохранения не читаются** — пустое поле Value НЕ значит «не
+  сохранилось» (смотри «Updated N ago»); не пересохраняй пустую форму.
+- **Локальный dev тяжёлый** (~900 МБ RSS после обхода 10 маршрутов) — это норма, не утечка;
+  что работает и что нет — `docs/DEV_ENVIRONMENT.md` (замеры сессии 15).
 - **CSS-ловушка:** `animation-fill-mode: both` → остаточный identity-`transform` → containing
   block для `position:fixed` → модалки липнут к верху. У `.fade-in` в `radflow.css` НЕТ `both`.
 - **OpenAI GPT-5 не принимают `temperature`** (400) — только `reasoning_effort` (+ `verbosity`);
@@ -336,34 +400,39 @@ auto-recharge без потолка).
 
 ## Первое сообщение
 
-Прочитай `claude/radflow-handoff.md` в проекте claude.ai «RadFlow» и шапку + блок «Сессия 14»
+Прочитай `claude/radflow-handoff.md` в проекте claude.ai «RadFlow» и шапку + блок «Сессия 15»
 в `docs/HANDOVER.md`.
 
-**Состояние:** миграций-хвостов нет (прод на `0124`, сессия 14 схему не трогала). В `dev`
-может лежать НЕзакоммиченный пакет сессии 14 (43 файла) — **сначала проверь `git status`**:
-если чисто, значит владелец закоммитил и, возможно, уже смерджил.
+**Состояние на старте:** хвостов нет. `dev` == `origin/main` == `eef0450`, дерево чистое,
+прод-БД на `0125` (следующая новая — `0126`), тулчейн 315/315, outbox доставляет.
+Всё равно **начни с `git status`** — владелец мог что-то поправить между сессиями.
 
-Сверь факты по прод-БД (Supabase MCP `execute_sql`, ref `rdiqjxzibdqbhwileret`), а не по докам —
-за три сессии подряд доки расходились с реальностью:
+Сверь факты по прод-БД (Supabase MCP `execute_sql`, ref `rdiqjxzibdqbhwileret`), а не по
+докам — за четыре сессии подряд доки расходились с реальностью:
 
 ```sql
-select (select is_nullable from information_schema.columns
-         where table_schema='public' and table_name='profiles' and column_name='login') as login_nullable,
-       (select count(*) from public.services where room_id is not null) as room_owned_services,
+select (select count(*) from pg_trigger
+         where tgrelid='public.queue_entries'::regclass
+           and tgname='trg_guard_slot_grid' and tgenabled='O')          as guard_0125,
+       (select count(*) from public.queue_entries where scheduled_time is not null
+         and (scheduled_time !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+              or (split_part(scheduled_time,':',2)::int % 5) <> 0))     as offgrid,
+       (select count(*) from public.event_outbox
+         where delivered_at is null and dead = false)                   as outbox_backlog,
+       (select count(*) from public.event_outbox where dead)            as outbox_dlq,
+       (select count(*) from public.services where room_id is not null) as room_owned,
        (select count(*) from public.rooms where not active)             as rooms_off,
-       (select count(*) from public.queue_entries)                      as queue_rows,
-       (select count(*) from public.queue_entries
-         where patient_name ~* '(тест|test)')                           as test_rows,
-       (select count(*) from public.profiles where contact_email is not null) as with_contact;
+       (select count(*) from public.profiles where contact_email is not null) as with_contact,
+       (select count(*) from public.queue_entries)                      as queue_rows;
 ```
 
-Ориентиры на конец сессии 14: `login_nullable` = `NO`, `room_owned_services` = 230,
-`rooms_off` = 3, `queue_rows` = 140 и `test_rows` = 27 (если 113 и 0 — владелец выполнил
-скрипт чистки), `with_contact` = 0 (если >0 — владелец вписал контактную почту радиологу
-через новую форму, то есть фича сессии 14 проверена живьём).
+Ориентиры на конец сессии 15: `guard_0125` = 1, `offgrid` = 0, `outbox_backlog` = 0,
+`outbox_dlq` = 0, `room_owned` = 230, `rooms_off` = 3, `with_contact` = **0**
+(если > 0 — владелец наконец вписал радиологу контактную почту через форму «Редагувати»,
+то есть пункт 1 плана закрыт), `queue_rows` = 113.
 
-Дальше — по списку «ЧТО ДЕЛАТЬ ДАЛЬШЕ»: живая проверка входа и правки карточки, затем
-reflow-часть UX-аудита (1.4.10). Автономный режим по-прежнему ждёт ответов владельца
-на 8 вопросов.
+Дальше — по списку «ЧТО ДЕЛАТЬ ДАЛЬШЕ»: живая проверка входа и формы правки карточки, затем
+reflow-часть UX-аудита (1.4.10) или контракт-тесты расписания. Автономный режим по-прежнему
+ждёт ответов владельца на 8 вопросов §12.
 
 Спроси у Игоря, с чего начинаем, если приоритет неочевиден.

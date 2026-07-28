@@ -440,7 +440,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
           ) : (
             <>
               {/* KPI row */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+              <div className="ceo-kpi-row">
                 <div style={card}>
                   <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginBottom: 12 }}>Записи · {PERIODS.find((p) => p.k === period)?.l.toLowerCase()}</div>
                   <div style={{ fontSize: "2.5rem", fontWeight: 700 }} className="tabular"><Drillable label="Усі записи" onOpen={() => openDrill(null, "Усі записи")}>{total}</Drillable></div>
@@ -469,7 +469,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
               </div>
 
               {/* Chart + sidebar */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, marginTop: 16 }}>
+              <div className="ceo-chart-row">
                 <div style={card}>
                   <div style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: 4 }}>Дослідження за тиждень</div>
                   <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: 16 }}>Стовпці — всього, червоні позначки — зрив (неявка + не відбулося)</div>

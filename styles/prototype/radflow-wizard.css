@@ -267,3 +267,67 @@
   border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px 14px; }
 .invite-mail { flex: 1; font-size: 0.84375rem; font-weight: 500; }
 .invite-status { font-size: 0.78125rem; color: var(--orange); }
+
+/* Кнопка-крок: ширина й вирівнювання жили інлайном у SetupWizard і перебивали
+   б мобільну стрічку кроків (інлайн > медіазапит). Значення — копії колишніх. */
+.wstep-btn { width: 100%; text-align: left; border: none; font: inherit; cursor: pointer; }
+
+/* ===================================================================
+   WCAG 2.1 AA · 1.4.10 Reflow — майстер налаштувань
+   ===================================================================
+   `.wiz` був `304px 1fr` + `overflow: hidden`: на 320px від форми лишалось
+   16px, і сховати їх було нічим — контейнер обрізав, а не прокручував.
+   Нижче 480px бічна колонка кроків стає горизонтальною стрічкою над
+   формою (класичний мобільний патерн майстра), форма — на всю ширину.
+   Стрічка кроків прокручується всередині себе; це самодостатній віджет,
+   а не сторінка, тож двовимірної прокрутки сторінки не виникає. */
+
+@media (max-width: 480px) {
+  /* minmax(0,…), а не 1fr: `1fr` = `minmax(auto,1fr)`, і auto-мінімум тягнеться
+     за min-content стрічки кроків — колонка розпиралась до 660px на 320px екрані. */
+  .wiz {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .wiz-side {
+    height: auto;
+    min-width: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .wiz-main { min-width: 0; }
+  .wiz-head { padding: 10px 14px 6px; }
+  .wiz-sub { margin-top: 2px; }
+
+  /* Кроки — стрічка. Сполучна лінія й описи в такому вигляді лише шумлять. */
+  .wiz-steps {
+    display: flex; gap: 4px;
+    min-width: 0;
+    overflow-x: auto; overflow-y: hidden;
+    padding: 4px 12px 8px;
+    scrollbar-width: thin;
+    overscroll-behavior-x: contain;
+  }
+  .wstep {
+    flex: 0 0 auto; width: 5.5rem;
+    flex-direction: column; align-items: center; gap: 3px;
+    padding: 4px; text-align: center;
+  }
+  .wstep-line, .wstep-desc { display: none; }
+  .wstep-txt { padding-top: 0; }
+  /* Назви кроків довгі («Обладнання та кабінети») — переносимо, а не ріжемо:
+     обрізаний підпис у навігації читається як інший крок. */
+  .wstep-title { font-size: 0.6875rem; line-height: 1.15; overflow-wrap: anywhere; }
+  .wstep-num { width: 26px; height: 26px; font-size: 0.75rem; }
+
+  .wiz-foot { padding: 8px 14px; }
+  .wiz-prog-bar { margin-bottom: 6px; }
+  .wiz-main-inner { padding: 20px 14px 96px; }
+  .wiz-bar { padding: 14px; }
+
+  /* Рядки з фіксованою колонкою-міткою */
+  .invite-role { flex: 1 1 100%; }
+  .equip-info .equip-type { flex: 1 1 100%; }
+}

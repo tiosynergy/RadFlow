@@ -411,7 +411,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
     const editing = editId === s.id;
     return (
       <div className="clrow-wrap" key={s.id} style={roomOwned ? { borderLeft: "3px solid var(--blue)" } : undefined}>
-        <div className="wlrow" style={{ gridTemplateColumns: GRID_BASE, opacity: s.active ? 1 : 0.55 }}>
+        <div className="wlrow svc-row" style={{ "--svc-cols": GRID_BASE, opacity: s.active ? 1 : 0.55 } as CSSProperties}>
           {editing ? (
             <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", padding: "4px 0" }}>
               <DraftFields d={draft} setD={setDraft} />
@@ -423,14 +423,14 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
           ) : (
             <>
               {rowCheckbox(s.id, s.name)}
-              <div style={{ fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }} title={s.name}>{s.name}
+              <div data-lab="Послуга" style={{ fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }} title={s.name}>{s.name}
                 {roomOwned && <span className="badge" style={{ marginLeft: 8, color: "var(--blue)" }} title="Власна послуга кабінета — видима і бронюється лише в ньому">Кабінетна</span>}
                 {s.source === "import" && <span className="badge" style={{ marginLeft: 8 }} title="Завантажено імпортом">імпорт</span>}</div>
-              <div className="tabular" style={{ textAlign: "right" }}>{s.duration_min != null ? s.duration_min + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано — введіть у редакторі або вручну при записі">—</span>}</div>
-              <div className="tabular" style={{ textAlign: "right" }}>{s.price ? fmtUah(s.price) : <span style={{ color: "var(--orange)" }} title="Ціну ще не задано">—</span>}</div>
-              <div style={{ textAlign: "right" }}>{s.contrast_allowed ? <span title="Доплата за контраст">＋{fmtUah(s.contrast_price ?? CONTRAST_SURCHARGE)}</span> : <span style={{ color: "var(--text-faint)" }}>—</span>}</div>
-              <div>{s.active ? <span style={{ color: "var(--green)" }}>активна</span> : <span style={{ color: "var(--text-faint)" }}>вимкнена</span>}</div>
-              <div className="cl-actions" style={{ justifyContent: "flex-end" }}>
+              <div className="tabular svc-num" data-lab="Тривалість">{s.duration_min != null ? s.duration_min + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано — введіть у редакторі або вручну при записі">—</span>}</div>
+              <div className="tabular svc-num" data-lab="Ціна">{s.price ? fmtUah(s.price) : <span style={{ color: "var(--orange)" }} title="Ціну ще не задано">—</span>}</div>
+              <div className="svc-num" data-lab="Контраст">{s.contrast_allowed ? <span title="Доплата за контраст">＋{fmtUah(s.contrast_price ?? CONTRAST_SURCHARGE)}</span> : <span style={{ color: "var(--text-faint)" }}>—</span>}</div>
+              <div data-lab="Стан">{s.active ? <span style={{ color: "var(--green)" }}>активна</span> : <span style={{ color: "var(--text-faint)" }}>вимкнена</span>}</div>
+              <div className="cl-actions svc-act">
                 <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => { setEditId(s.id); setDraft(draftOf(s)); }} title="Редагувати" aria-label={"Редагувати " + s.name}>✎</button>
                 <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onToggleActive(s)}
                   title={s.active ? "Вимкнути (прибрати з форм)" : "Увімкнути"} aria-label={s.active ? "Вимкнути" : "Увімкнути"}>⏻</button>
@@ -460,9 +460,9 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
 
       {/* Селектор області: базовий каталог або конкретний кабінет */}
       <div className="qctrl" style={{ marginBottom: 8 }}>
-        <label className="fld-lab" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <label className="fld-lab svc-scope">
           Налаштувати:
-          <select className="inp" value={scope} onChange={(e) => { setScope(e.target.value); setEditId(null); setOvEditId(null); setSelected({}); }} style={{ minWidth: 220 }}>
+          <select className="inp" value={scope} onChange={(e) => { setScope(e.target.value); setEditId(null); setOvEditId(null); setSelected({}); }}>
             <option value="base">Базовий каталог центру</option>
             {roomList.length > 0 && <optgroup label="Кабінети (власний прайс)">
               {roomList.map((r) => <option key={r.id} value={r.id}>{modalityLabel(r.modality)} · {r.name}{r.apparatus_model ? " · " + r.apparatus_model : ""}</option>)}
@@ -489,7 +489,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
         <div className="search"><span className="si">⌕</span>
           <input placeholder="Пошук послуги…" value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
-        <span style={{ display: "inline-flex", gap: 8, marginLeft: 8 }}>
+        <span className="svc-toolbar">
           {scope === "base" && (
             <button className="btn btn-secondary btn-sm" disabled={busy} onClick={onSeed}
               title="Разово наповнити базовий каталог позиціями з довідника">⤓ З базового довідника</button>
@@ -549,10 +549,13 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
       {/* Таблиця: база — один список; кабінет — ДВІ групи (0121) */}
       {scope === "base" ? (
         <>
-          <div className="wlhead" style={{ gridTemplateColumns: GRID_BASE, alignItems: "center" }}>
-            <input type="checkbox" checked={allSelected} disabled={busy || rows.length === 0}
-              ref={(el) => { if (el) el.indeterminate = selIds.length > 0 && !allSelected; }}
-              onChange={toggleSelectAll} title="Вибрати всі (видимі)" aria-label="Вибрати всі послуги" />
+          <div className="wlhead svc-row" style={{ "--svc-cols": GRID_BASE, alignItems: "center" } as CSSProperties}>
+            <label className="svc-selall" title="Вибрати всі (видимі)">
+              <input type="checkbox" checked={allSelected} disabled={busy || rows.length === 0}
+                ref={(el) => { if (el) el.indeterminate = selIds.length > 0 && !allSelected; }}
+                onChange={toggleSelectAll} aria-label="Вибрати всі послуги" />
+              <span className="svc-selall-txt">Вибрати всі</span>
+            </label>
             <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div style={{ textAlign: "right" }}>Контраст</div><div>Стан</div><div style={{ textAlign: "right" }}>Дії</div>
           </div>
           {rows.length === 0 ? (
@@ -572,10 +575,13 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
               власний прайс — видимі й бронюються лише в цьому кабінеті
             </span>
           </div>
-          <div className="wlhead" style={{ gridTemplateColumns: GRID_BASE, alignItems: "center" }}>
-            <input type="checkbox" checked={listAllSelected(roomRows)} disabled={busy || roomRows.length === 0}
-              ref={(el) => { if (el) el.indeterminate = selRoomIds.length > 0 && !listAllSelected(roomRows); }}
-              onChange={() => toggleSelectList(roomRows)} title="Вибрати всі власні послуги кабінета" aria-label="Вибрати всі власні послуги кабінета" />
+          <div className="wlhead svc-row" style={{ "--svc-cols": GRID_BASE, alignItems: "center" } as CSSProperties}>
+            <label className="svc-selall" title="Вибрати всі власні послуги кабінета">
+              <input type="checkbox" checked={listAllSelected(roomRows)} disabled={busy || roomRows.length === 0}
+                ref={(el) => { if (el) el.indeterminate = selRoomIds.length > 0 && !listAllSelected(roomRows); }}
+                onChange={() => toggleSelectList(roomRows)} aria-label="Вибрати всі власні послуги кабінета" />
+              <span className="svc-selall-txt">Вибрати всі</span>
+            </label>
             <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div style={{ textAlign: "right" }}>Контраст</div><div>Стан</div><div style={{ textAlign: "right" }}>Дії</div>
           </div>
           {roomRows.length === 0 ? (
@@ -594,10 +600,13 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
               спільні для всіх кабінетів {modalityLabel(effTab)}; тут можна переозначити ціну/час або сховати
             </span>
           </div>
-          <div className="wlhead" style={{ gridTemplateColumns: GRID_ROOM, alignItems: "center" }}>
-            <input type="checkbox" checked={listAllSelected(baseRows)} disabled={busy || baseRows.length === 0}
-              ref={(el) => { if (el) el.indeterminate = selBaseIds.length > 0 && !listAllSelected(baseRows); }}
-              onChange={() => toggleSelectList(baseRows)} title="Вибрати всі базові (успадковані)" aria-label="Вибрати всі базові послуги" />
+          <div className="wlhead svc-row" style={{ "--svc-cols": GRID_ROOM, alignItems: "center" } as CSSProperties}>
+            <label className="svc-selall" title="Вибрати всі базові (успадковані)">
+              <input type="checkbox" checked={listAllSelected(baseRows)} disabled={busy || baseRows.length === 0}
+                ref={(el) => { if (el) el.indeterminate = selBaseIds.length > 0 && !listAllSelected(baseRows); }}
+                onChange={() => toggleSelectList(baseRows)} aria-label="Вибрати всі базові послуги" />
+              <span className="svc-selall-txt">Вибрати всі</span>
+            </label>
             <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div>У кабінеті</div><div style={{ textAlign: "right" }}>Дії</div>
           </div>
           {baseRows.length === 0 ? (
@@ -662,21 +671,21 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
             return (
               <div className="clrow-wrap" key={s.id}
                 style={{ borderLeft: "3px solid " + (hidden ? "var(--border-strong)" : changed ? "var(--blue)" : "transparent") }}>
-                <div className="wlrow" style={{ gridTemplateColumns: GRID_ROOM, opacity: hidden ? 0.62 : 1 }}>
+                <div className="wlrow svc-row" style={{ "--svc-cols": GRID_ROOM, opacity: hidden ? 0.62 : 1 } as CSSProperties}>
                   {rowCheckbox(s.id, s.name)}
-                  <div style={{ fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }} title={s.name}>{s.name}</div>
-                  <div className="tabular" style={{ textAlign: "right" }}>
+                  <div data-lab="Послуга" style={{ fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }} title={s.name}>{s.name}</div>
+                  <div className="tabular svc-num" data-lab="Тривалість">
                     <span style={durChanged ? { color: "var(--blue)", fontWeight: 600 } : undefined}>{effDur != null ? effDur + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано">—</span>}</span>
                     {durChanged && <div style={{ fontSize: "0.6875rem", color: "var(--text-faint)" }}>база {s.duration_min ?? "—"}</div>}
                   </div>
-                  <div className="tabular" style={{ textAlign: "right" }}>
+                  <div className="tabular svc-num" data-lab="Ціна">
                     {effPrice
                       ? <span style={priceChanged ? { color: "var(--blue)", fontWeight: 600 } : undefined}>{fmtUah(effPrice)}</span>
                       : <span style={{ color: "var(--orange)" }} title="Ціну не задано ні в кабінеті, ні в базі">—</span>}
                     {priceChanged && <div style={{ fontSize: "0.6875rem", color: "var(--text-faint)" }}>база {fmtUah(s.price)}</div>}
                   </div>
-                  <div>{statusChip(hidden, changed)}</div>
-                  <div className="cl-actions" style={{ justifyContent: "flex-end" }}>
+                  <div data-lab="У кабінеті">{statusChip(hidden, changed)}</div>
+                  <div className="cl-actions svc-act">
                     <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => { setOvEditId(s.id); setOvDraft(ovDraftOf(ov)); }}
                       title={"Налаштувати «" + s.name + "» для цього кабінету"} aria-label={"Налаштувати " + s.name}>✎</button>
                     {changed && <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onClearOverride(s)} title="Повернути до базового каталогу" aria-label="Повернути до базового">↺</button>}

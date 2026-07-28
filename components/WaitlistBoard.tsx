@@ -458,7 +458,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, services, roo
               </div>
             </div>
 
-            <div className="wlhead">
+            <div className="wlhead wl-queue">
               <div /><div>Пацієнт</div><div>Дослідження</div><div>Бажане вікно</div><div style={{ textAlign: "right" }}>Дії</div>
             </div>
             {loading ? (
@@ -480,7 +480,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, services, roo
                   const boundRoom = p.room_id ? (rooms || []).find((r) => r.id === p.room_id) : null;
                   return (
                     <div className={"clrow-wrap" + (expanded ? " open" : "")} key={p.id}>
-                      <div className="wlrow">
+                      <div className="wlrow wl-queue">
                         <button className="cl-exp-btn" onClick={() => setExpandedId((x) => (x === p.id ? null : p.id))}
                           title={expanded ? "Згорнути" : "Розгорнути"} aria-label={expanded ? "Згорнути деталі" : "Розгорнути деталі"} aria-expanded={expanded}>
                           <span className={"cl-chev" + (expanded ? " open" : "")} aria-hidden="true">›</span>

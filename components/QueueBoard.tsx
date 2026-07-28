@@ -576,7 +576,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
           <div className="pp">{proc}</div>
           <div className="du">{roomKind}</div>
         </div>
-        <div className="q-room" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3 }}>
+        <div className="q-room">
           {(() => {
             const arr = Array.isArray(p.studies) ? (p.studies as Array<{ type?: string }>) : [];
             const km = (arr[0] && arr[0].type) || ((roomKind === "МРТ" || roomKind === "КТ") ? roomKind : "");

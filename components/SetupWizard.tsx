@@ -696,6 +696,19 @@ type SroRow = Tables<"service_room_overrides">;
 export default function SetupWizard({ clinicId, userId, initial, rooms = [], services = [], roomOverrides = [], clinicName, adminName, queuePolicy }: { clinicId: string; userId: string; initial: WizardInitial; rooms?: SetupRoom[]; services?: ServiceRow[]; roomOverrides?: SroRow[]; clinicName?: string; adminName?: string; queuePolicy: QueuePolicyInitial }) {
   const router = useRouter();
   const [activeSection, setActiveSection] = useState("sec-clinic");
+
+  /* Нижче 480px список кроків — горизонтальна стрічка (WCAG 1.4.10), і активний
+     крок легко опиняється за її правим краєм: користувач відкриває майстер на
+     кроці 6 і бачить кроки 1–3 без жодної позначки, де він. Доскролюємо його в
+     центр — лише в drawer-режимі й з повагою до prefers-reduced-motion. */
+  const activeStepRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    const el = activeStepRef.current;
+    if (!el) return;
+    if (!window.matchMedia("(max-width: 480px)").matches) return;
+    const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollIntoView({ inline: "center", block: "nearest", behavior: smooth ? "smooth" : "auto" });
+  }, [activeSection]);
   const [saving, setSaving] = useState(false);
   const [valid, setValid] = useState<Record<number, boolean>>({});
   const [dirty, setDirty] = useState(false);
@@ -911,9 +924,10 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
           {WIZ_NAV.map((s) => {
             const on = activeSection === s.anchor;
             return (
-              <button key={s.label} type="button" className={"wstep" + (on ? " done" : "")} title={s.desc}
+              <button key={s.label} type="button" className={"wstep wstep-btn" + (on ? " done" : "")} title={s.desc}
+                ref={on ? activeStepRef : undefined}
                 aria-current={on ? "true" : undefined} onClick={() => setActiveSection(s.anchor as string)}
-                style={{ width: "100%", textAlign: "left", background: on ? "var(--card-hover)" : "none", border: "none", font: "inherit", cursor: "pointer" }}>
+                style={{ background: on ? "var(--card-hover)" : "none" }}>
                 <span className="wstep-num" aria-hidden />
                 <span className="wstep-txt">
                   <span className="wstep-title">{s.label}</span>

@@ -257,3 +257,133 @@ html[data-density="spacious"] .wlhead { padding-top: 18px; padding-bottom: 18px;
 @keyframes rf-spin { to { transform: rotate(360deg); } }
 .rf-spin { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; animation: rf-spin .7s linear infinite; vertical-align: -1px; }
 @media (prefers-reduced-motion: reduce) { .rf-spin { animation: none; } }
+
+/* ===================================================================
+   WCAG 2.1 AA · 1.4.10 Reflow — колл-лист, лист очікування, послуги, портал
+   ===================================================================
+   Продовження блоку в radflow.css. Той самий принцип: НІЧОГО не діє вище
+   480px. Табличні рядки на 320px перестають бути таблицею й стають картками
+   з іменованими областями гріда — 9 і 5 треків там не поміщаються ніяк.
+
+   ⚠️ Порядок у файлі важливий: медіазапит НЕ додає специфічності, тож базові
+   розкладки мусять стояти ВИЩЕ за свій брейкпойнт, інакше «десктопне»
+   правило, написане нижче, перекриє мобільне за порядком джерела. */
+
+/* ----- Розкладки, зняті з інлайн-стилів -----
+   Інлайновий `grid-template-columns` має вищу вагу за будь-який медіазапит,
+   тому кожну таку сітку винесено в клас (а параметризовану — у змінну). */
+
+/* Довідник послуг: набір колонок приходить із TS (GRID_BASE/GRID_ROOM). */
+.svc-row { grid-template-columns: var(--svc-cols); }
+/* Числові комірки та вирівнювання дій — класами, а не інлайном: інакше
+   мобільна розкладка не змогла б їх перевизначити. */
+.svc-num { text-align: right; }
+.svc-act { justify-content: flex-end; }
+/* «Вибрати всі» — справжній <label>: підпис видно лише на вузьких екранах, але
+   він частина мітки завжди, тож тап по тексту перемикає прапорець і ціль
+   натискання виростає до 44px (2.5.5), а не лишається квадратиком 13px.
+   Генерований ::after цього б не дав (він не клікабельний і зникає в
+   reader-режимах). */
+.svc-selall { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.svc-selall-txt { display: none; }
+/* Селектор області («Налаштувати: <select>») — теж знято з інлайна: підпис і
+   випадайка не вміщувались в один рядок на 320px і вилазили за край екрана. */
+.svc-scope { display: inline-flex; align-items: center; gap: 8px; }
+.svc-scope .inp { min-width: 13.75rem; }
+/* Група кнопок довідника («⤓ З базового довідника», «⇪ Імпорт прайса», «＋ Додати»)
+   теж жила інлайном із `nowrap` — на 320px вилазила за край. Значення ті самі. */
+.svc-toolbar { display: inline-flex; gap: 8px; margin-left: 8px; }
+
+/* CEO-дашборд */
+.ceo-kpi-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+.ceo-chart-row { display: grid; grid-template-columns: 1fr 320px; gap: 16px; margin-top: 16px; }
+
+@media (max-width: 480px) {
+  /* ---------- Колл-лист ---------- */
+  .cl-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+
+  .clhead { display: none; }
+  .clrow {
+    grid-template-columns: 1.75rem minmax(0, 1fr);
+    grid-template-areas:
+      "exp  time"
+      ".    name"
+      ".    tel"
+      ".    proc"
+      ".    room"
+      ".    stat"
+      ".    note"
+      ".    act";
+    gap: 4px 8px;
+    align-items: start;
+    padding: 10px 12px;
+  }
+  .clrow > .cl-exp-btn     { grid-area: exp; align-self: start; }
+  .clrow > .cl-time        { grid-area: time; }
+  .clrow > .cl-name        { grid-area: name; }
+  .clrow > .cl-tel-cell    { grid-area: tel; }
+  .clrow > .cl-proc        { grid-area: proc; white-space: normal; overflow: visible; text-overflow: clip; }
+  .clrow > .cl-room        { grid-area: room; white-space: normal; }
+  .clrow > .cl-status-cell { grid-area: stat; }
+  .clrow > .cl-note-cell   { grid-area: note; }
+  .clrow > .cl-actions     { grid-area: act; flex-wrap: wrap; justify-content: flex-start; }
+
+  /* ---------- Лист очікування ---------- */
+  /* Модифікатор `wl-queue` — бо ті самі .wlhead/.wlrow використовує ще й
+     довідник послуг зі своїм набором комірок; його розкладка нижче. */
+  .wlhead.wl-queue { display: none; }
+  .wlrow.wl-queue {
+    grid-template-columns: 1.75rem minmax(0, 1fr);
+    grid-template-areas:
+      "exp pat"
+      ".   proc"
+      ".   win"
+      ".   act";
+    gap: 6px 8px;
+    align-items: start;
+    padding: 10px 12px;
+  }
+  .wlrow.wl-queue > .cl-exp-btn   { grid-area: exp; align-self: start; }
+  .wlrow.wl-queue > .wl-pat       { grid-area: pat; }
+  .wlrow.wl-queue > .wl-proc-cell { grid-area: proc; }
+  .wlrow.wl-queue > .wl-win       { grid-area: win; }
+  .wlrow.wl-queue > .cl-actions   { grid-area: act; flex-wrap: wrap; justify-content: flex-start; }
+
+  /* ---------- Довідник послуг ---------- */
+  /* Шапку НЕ ховаємо цілком: її перша комірка — робочий чекбокс «вибрати всі»
+     (він же керує панеллю масових дій). Ховаємо лише підписи колонок, а
+     чекбоксу додаємо видиму назву — самотній квадратик без тексту на телефоні
+     не читається (3.3.2 «підписи та інструкції»). */
+  .wlhead.svc-row { grid-template-columns: minmax(0, 1fr); gap: 4px 8px; }
+  .wlhead.svc-row > *:not(:first-child) { display: none; }
+  .svc-selall { min-height: 2.75rem; }
+  .svc-selall-txt {
+    display: inline;
+    font-size: 0.75rem; font-weight: 600; color: var(--text-secondary);
+    text-transform: none; letter-spacing: 0;
+  }
+  .wlrow.svc-row { grid-template-columns: 1.625rem minmax(0, 1fr); gap: 4px 8px; align-items: start; }
+  /* Прапорець лишається в першій колонці, решта комірок стають рядками другої. */
+  .wlrow.svc-row > * { grid-column: 2; }
+  .wlrow.svc-row > *:first-child { grid-column: 1; grid-row: 1; }
+  /* Без шапки цифри «30 хв / 2400 ₴ / —» нічого не значать — підпис бере на себе
+     сама комірка через data-lab (той самий текст, що стояв у прихованій шапці). */
+  .wlrow.svc-row > [data-lab]::before {
+    content: attr(data-lab) ": ";
+    color: var(--text-faint); font-weight: 600; font-size: 0.6875rem;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .wlrow.svc-row .svc-num { text-align: left; }
+  .wlrow.svc-row .svc-act { justify-content: flex-start; }
+
+  /* Підпис і випадайка стають двома рядками, випадайка — на всю ширину. */
+  .svc-scope { display: flex; flex-wrap: wrap; row-gap: 4px; }
+  .svc-scope .inp { min-width: 0; width: 100%; }
+  .svc-toolbar { display: flex; flex-wrap: wrap; row-gap: 8px; margin-left: 0; }
+
+  /* ---------- CEO-дашборд ---------- */
+  .ceo-kpi-row, .ceo-chart-row { grid-template-columns: 1fr; }
+
+  /* Довідники-картки */
+  .cld-grid { grid-template-columns: 1fr; }
+}

@@ -1,0 +1,357 @@
+{
+  "$comment": [
+    "КОНТРАКТ РОЗКЛАДУ — ОДИН набір сценаріїв для ДВОХ реалізацій одного алгоритму.",
+    "",
+    "TS:  lib/schedule.ts — roomScheduleFor + effectiveRoomBreaks + offScheduleKind",
+    "     (з них живуть сітка слотів SlotPicker і серверний гард scheduleBlock).",
+    "SQL: тригери queue_entries — trg_h_not_during_break (check_not_during_break, 0067/0077)",
+    "     і trg_i_room_schedule (check_room_schedule, 0084).",
+    "",
+    "Навіщо: Medium-3 зовнішнього техаудиту 2026-07-27. Один алгоритм написаний двічі;",
+    "розходження дає або «інтерфейс дозволив, БД відмовила» (пацієнт стоїть біля стійки,",
+    "запис не зберігається), або обхід інваріанта (сітка показала слот, якого нема).",
+    "",
+    "Файл читають ОБИДВІ сторони:",
+    "  • tests/scheduleContract.test.ts        — прогін через TS (vitest);",
+    "  • scripts/gen-schedule-contract-sql.mjs — генерує supabase/smoke/schedule_contract_smoke.sql.",
+    "Додати сценарій = дописати сюди один об'єкт і перегенерувати смоук.",
+    "",
+    "ПОЛЯ",
+    "  id            — унікальний ключ сценарію (йде в текст помилки смоуку).",
+    "  weekday       — 0=Пн … 6=Нд. Абсолютної дати немає СВІДОМО: обидві сторони",
+    "                  рахують день тижня (TS `(getDay()+6)%7`, SQL `isodow-1`), і",
+    "                  прив'язка до конкретного числа зробила б тест таким, що тухне.",
+    "  roomSchedule  — вміст rooms.schedule (JSONB) або null. УВАГА: сама колонка",
+    "                  NOT NULL з дефолтом '{}', тож null тут означає JSON-null —",
+    "                  саме той стан, який обидві сторони трактують як «графіка немає»",
+    "                  (SQL: jsonb_typeof <> 'object'; TS: PostgREST віддає JS null).",
+    "  override      — вміст рядка schedule_overrides на дату або null.",
+    "                  Плейсхолдер \"$ROOM\" у ключах rooms підставляється обома",
+    "                  сторонами на реальний id кабінету.",
+    "  time          — scheduled_time \"HH:MM\" (кратність 5 хв вимагає 0125).",
+    "  durationMin   — duration_min (БЕЗ буфера прибирання — так рахують обидві сторони).",
+    "  offSchedule   — прапорець off_schedule (свідома робота поза графіком, 0077).",
+    "  expect        — очікуваний вердикт TS-реалізації.",
+    "  expectSql     — вердикт БД, ЯКЩО він свідомо інший (порядок тригерів). Немає → той самий.",
+    "  note          — навіщо цей сценарій.",
+    "",
+    "ВЕРДИКТИ: ok | ROOM_CLOSED | BEFORE_OPEN | TOO_LATE | OFF_SCHEDULE | BREAK",
+    "",
+    "ПРО durationMin=0: такого сценарію тут немає, бо в БД він недосяжний —",
+    "перший прогін смоуку впав саме на ньому: `queue_entries_duration_min_chk`",
+    "відбиває нуль ЩЕ ДО тригерів розкладу. `Math.max(0, durMin)` у",
+    "offScheduleKind() лишається суто захисним: до БД такий запис не доходить.",
+    "",
+    "ПРО DST: сценаріїв із переходом на літній час тут немає СВІДОМО, а не за недоглядом.",
+    "Обидві реалізації рахують у ХВИЛИНАХ НАСТІННОГО ЧАСУ доби (TS — split(':') і",
+    "арифметика int; SQL — split_part по scheduled_time::text) і жодного разу не",
+    "конвертують дату в UTC і назад. Зона центру живе окремо, у wallNow()-сімействі,",
+    "і в цей алгоритм не заходить. Тобто поверхні для DST-розходження між TS і SQL",
+    "тут просто немає — тест на неї був би тестом порожнечі.",
+    "Що DST реально зачіпає — вибір ДНЯ (який день «сьогодні» в зоні центру) — покрито",
+    "в tests/wallclock.test.ts."
+  ],
+  "cases": [
+    {
+      "id": "def-mon-mid",
+      "note": "Дефолт (schedule=null): Пн–Сб 08:00–18:00, робочий слот усередині",
+      "weekday": 0, "roomSchedule": null, "override": null,
+      "time": "09:00", "durationMin": 30, "offSchedule": false, "expect": "ok"
+    },
+    {
+      "id": "def-sun-closed",
+      "note": "Дефолт: неділя вихідна (TS defaultClosed, SQL v_widx=6)",
+      "weekday": 6, "roomSchedule": null, "override": null,
+      "time": "09:00", "durationMin": 30, "offSchedule": false, "expect": "ROOM_CLOSED"
+    },
+    {
+      "id": "def-sat-open",
+      "note": "Дефолт БЕЗ schedule: субота робоча (а з schedule без days — ні, див. sched-nodays-sat)",
+      "weekday": 5, "roomSchedule": null, "override": null,
+      "time": "09:00", "durationMin": 30, "offSchedule": false, "expect": "ok"
+    },
+    {
+      "id": "def-before-open",
+      "note": "Межа зліва: 07:30 < 08:00 → заборонено ЗАВЖДИ (confirmable=false)",
+      "weekday": 0, "roomSchedule": null, "override": null,
+      "time": "07:30", "durationMin": 30, "offSchedule": false, "expect": "BEFORE_OPEN"
+    },
+    {
+      "id": "def-before-open-flag-does-not-help",
+      "note": "off_schedule НЕ відкриває кабінет раніше: персоналу на місці ще немає",
+      "weekday": 0, "roomSchedule": null, "override": null,
+      "time": "07:30", "durationMin": 30, "offSchedule": true, "expect": "BEFORE_OPEN"
+    },
+    {
+      "id": "def-ends-exactly-at-close",
+      "note": "Межа справа: 17:30+30 = рівно 18:00 — це ще В графіку",
+      "weekday": 0, "roomSchedule": null, "override": null,
+      "time": "17:30", "durationMin": 30, "offSchedule": false, "expect": "ok"
+    },
+    {
+      "id": "def-tail-needs-confirm",
+      "note": "17:45+30 = 18:15 — хвіст після закриття, потрібне підтвердження",
+      "weekday": 0, "roomSchedule": null, "override": null,
+      "time": "17:45", "durationMin": 30, "offSchedule": false, "expect": "OFF_SCHEDULE"
+    },
+    {
+      "id": "def-tail-confirmed",
+      "note": "Той самий слот із прапорцем — дозволено (after_end, confirmable)",
+      "weekday": 0, "roomSchedule": null, "override": null,
+      "time": "17:45", "durationMin": 30, "offSchedule": true, "expect": "ok"
+    },
+    {
+      "id": "def-grace-exact",
+      "note": "Стеля grace: 18:00+120 = 20:00 рівно → ще after_end, не too_late",
+      "weekday": 0, "roomSchedule": null, "override": null,
+      "time": "18:00", "durationMin": 120, "offSchedule": true, "expect": "ok"
+    },
+    {
+      "id": "def-grace-exact-unconfirmed",
+      "note": "Той самий, але без прапорця — відмова саме OFF_SCHEDULE, а не TOO_LATE",
+      "weekday": 0, "roomSchedule": null, "override": null,
+      "time": "18:00", "durationMin": 120, "offSchedule": false, "expect": "OFF_SCHEDULE"
+    },
+    {
+      "id": "def-grace-over",
+      "note": "20:05 > стелі 20:00 → заборонено навіть із прапорцем",
+      "weekday": 0, "roomSchedule": null, "override": null,
+      "time": "18:00", "durationMin": 125, "offSchedule": true, "expect": "TOO_LATE"
+    },
+    {
+      "id": "def-min-duration",
+      "note": "Мінімальна тривалість (крок сітки 5 хв) впритул до закриття: 17:55+5 = 18:00 — ок",
+      "weekday": 0, "roomSchedule": null, "override": null,
+      "time": "17:55", "durationMin": 5, "offSchedule": false, "expect": "ok"
+    },
+
+    {
+      "id": "sched-days-sat-open",
+      "note": "days[] з майстра: субота увімкнена → слот проходить",
+      "weekday": 5,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 1, 0], "start": "08:00", "end": "18:00" },
+      "override": null,
+      "time": "10:00", "durationMin": 30, "offSchedule": false, "expect": "ok"
+    },
+    {
+      "id": "sched-days-sun-closed",
+      "note": "days[] з майстра: неділя вимкнена",
+      "weekday": 6,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 1, 0], "start": "08:00", "end": "18:00" },
+      "override": null,
+      "time": "10:00", "durationMin": 30, "offSchedule": false, "expect": "ROOM_CLOSED"
+    },
+    {
+      "id": "sched-days-false-literal",
+      "note": "days елементами true/false, а не 0/1 — обидві сторони мусять читати однаково",
+      "weekday": 2,
+      "roomSchedule": { "days": [true, true, false, true, true, false, false], "start": "08:00", "end": "18:00" },
+      "override": null,
+      "time": "10:00", "durationMin": 30, "offSchedule": false, "expect": "ROOM_CLOSED"
+    },
+    {
+      "id": "sched-nodays-sat",
+      "note": "days неправильної довжини → дефолт [1,1,1,1,1,0,0]: субота ЗАКРИТА (на відміну від schedule=null)",
+      "weekday": 5,
+      "roomSchedule": { "days": [1, 1, 1], "start": "08:00", "end": "18:00" },
+      "override": null,
+      "time": "10:00", "durationMin": 30, "offSchedule": false, "expect": "ROOM_CLOSED"
+    },
+    {
+      "id": "sched-hours-before",
+      "note": "Власні години 09:00–15:00: 08:30 — до відкриття",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "09:00", "end": "15:00" },
+      "override": null,
+      "time": "08:30", "durationMin": 30, "offSchedule": false, "expect": "BEFORE_OPEN"
+    },
+    {
+      "id": "sched-hours-tail",
+      "note": "Власні години 09:00–15:00: 14:45+30 = 15:15 — хвіст",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "09:00", "end": "15:00" },
+      "override": null,
+      "time": "14:45", "durationMin": 30, "offSchedule": false, "expect": "OFF_SCHEDULE"
+    },
+    {
+      "id": "sched-hours-empty-string-fallback",
+      "note": "Порожні start/end у JSON → обидві сторони падають на 08:00–18:00, а не на 00:00",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "", "end": "" },
+      "override": null,
+      "time": "07:30", "durationMin": 30, "offSchedule": false, "expect": "BEFORE_OPEN"
+    },
+
+    {
+      "id": "perday-wed-late-open",
+      "note": "perDay: середа 10:00–12:00, 09:00 — до відкриття саме середи",
+      "weekday": 2,
+      "roomSchedule": {
+        "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00", "perDay": true,
+        "dayHours": [{}, {}, { "start": "10:00", "end": "12:00" }, {}, {}, {}, {}]
+      },
+      "override": null,
+      "time": "09:00", "durationMin": 30, "offSchedule": false, "expect": "BEFORE_OPEN"
+    },
+    {
+      "id": "perday-wed-inside",
+      "note": "perDay: 11:30+30 = 12:00 рівно — усередині середи",
+      "weekday": 2,
+      "roomSchedule": {
+        "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00", "perDay": true,
+        "dayHours": [{}, {}, { "start": "10:00", "end": "12:00" }, {}, {}, {}, {}]
+      },
+      "override": null,
+      "time": "11:30", "durationMin": 30, "offSchedule": false, "expect": "ok"
+    },
+    {
+      "id": "perday-thu-falls-back-to-top",
+      "note": "perDay, але dayHours[чт] порожній → фолбек на верхні 08:00–18:00, а не на дефолт",
+      "weekday": 3,
+      "roomSchedule": {
+        "days": [1, 1, 1, 1, 1, 0, 0], "start": "07:00", "end": "16:00", "perDay": true,
+        "dayHours": [{}, {}, { "start": "10:00", "end": "12:00" }, {}, {}, {}, {}]
+      },
+      "override": null,
+      "time": "06:30", "durationMin": 30, "offSchedule": false, "expect": "BEFORE_OPEN"
+    },
+    {
+      "id": "perday-off-ignores-dayhours",
+      "note": "perDay=false → dayHours ігноруються навіть якщо заповнені",
+      "weekday": 2,
+      "roomSchedule": {
+        "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00", "perDay": false,
+        "dayHours": [{}, {}, { "start": "10:00", "end": "12:00" }, {}, {}, {}, {}]
+      },
+      "override": null,
+      "time": "09:00", "durationMin": 30, "offSchedule": false, "expect": "ok"
+    },
+
+    {
+      "id": "ov-all-closed",
+      "note": "override.all_closed б'є будь-який графік кабінету",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00" },
+      "override": { "all_closed": true, "label": "Свято" },
+      "time": "10:00", "durationMin": 30, "offSchedule": false, "expect": "ROOM_CLOSED"
+    },
+    {
+      "id": "ov-room-closed",
+      "note": "override.rooms[кабінет].closed=true — закритий лише цей кабінет",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00" },
+      "override": { "rooms": { "$ROOM": { "closed": true } } },
+      "time": "10:00", "durationMin": 30, "offSchedule": false, "expect": "ROOM_CLOSED"
+    },
+    {
+      "id": "ov-room-hours-before",
+      "note": "override.rooms[кабінет] з годинами 12:00–14:00: 11:30 — рано",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00" },
+      "override": { "rooms": { "$ROOM": { "start": "12:00", "end": "14:00" } } },
+      "time": "11:30", "durationMin": 30, "offSchedule": false, "expect": "BEFORE_OPEN"
+    },
+    {
+      "id": "ov-room-hours-inside",
+      "note": "…той самий override: 13:00+30 усередині",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00" },
+      "override": { "rooms": { "$ROOM": { "start": "12:00", "end": "14:00" } } },
+      "time": "13:00", "durationMin": 30, "offSchedule": false, "expect": "ok"
+    },
+    {
+      "id": "ov-room-hours-opens-closed-day",
+      "note": "override ВІДКРИВАЄ неділю, яку базовий графік закрив — override має пріоритет",
+      "weekday": 6,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00" },
+      "override": { "rooms": { "$ROOM": { "start": "12:00", "end": "14:00" } } },
+      "time": "13:00", "durationMin": 30, "offSchedule": false, "expect": "ok"
+    },
+    {
+      "id": "ov-other-room-untouched",
+      "note": "override іншого кабінету цей запис не стосується",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00" },
+      "override": { "rooms": { "00000000-0000-0000-0000-0000000000ff": { "closed": true } } },
+      "time": "10:00", "durationMin": 30, "offSchedule": false, "expect": "ok"
+    },
+
+    {
+      "id": "brk-overlap-head",
+      "note": "Перерва 13:00–14:00, слот 12:45+30 заїжджає хвостом → BREAK",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00", "breaks": [{ "start": "13:00", "end": "14:00" }] },
+      "override": null,
+      "time": "12:45", "durationMin": 30, "offSchedule": false, "expect": "BREAK"
+    },
+    {
+      "id": "brk-overlap-confirmed",
+      "note": "…той самий слот із підтвердженням — дозволено (0077, break confirmable)",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00", "breaks": [{ "start": "13:00", "end": "14:00" }] },
+      "override": null,
+      "time": "12:45", "durationMin": 30, "offSchedule": true, "expect": "ok"
+    },
+    {
+      "id": "brk-touch-start",
+      "note": "Межа: 12:30+30 = рівно 13:00 — дотик, не перетин",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00", "breaks": [{ "start": "13:00", "end": "14:00" }] },
+      "override": null,
+      "time": "12:30", "durationMin": 30, "offSchedule": false, "expect": "ok"
+    },
+    {
+      "id": "brk-touch-end",
+      "note": "Межа: слот рівно о 14:00 — перерва вже скінчилась",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00", "breaks": [{ "start": "13:00", "end": "14:00" }] },
+      "override": null,
+      "time": "14:00", "durationMin": 30, "offSchedule": false, "expect": "ok"
+    },
+    {
+      "id": "brk-legacy-lunch",
+      "note": "Старий формат (lunch/lunchS/lunchE) мусить читатись обома сторонами",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00", "lunch": true, "lunchS": "13:00", "lunchE": "14:00" },
+      "override": null,
+      "time": "13:15", "durationMin": 15, "offSchedule": false, "expect": "BREAK"
+    },
+    {
+      "id": "brk-perday",
+      "note": "perDay: перерва живе в dayHours[widx], а не на верхньому рівні",
+      "weekday": 2,
+      "roomSchedule": {
+        "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00", "perDay": true,
+        "dayHours": [{}, {}, { "start": "08:00", "end": "18:00", "breaks": [{ "start": "11:00", "end": "11:30" }] }, {}, {}, {}, {}]
+      },
+      "override": null,
+      "time": "11:00", "durationMin": 15, "offSchedule": false, "expect": "BREAK"
+    },
+    {
+      "id": "brk-override-clears",
+      "note": "override кабінету БЕЗ breaks стирає базові перерви (обидві сторони)",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00", "breaks": [{ "start": "13:00", "end": "14:00" }] },
+      "override": { "rooms": { "$ROOM": { "start": "08:00", "end": "18:00" } } },
+      "time": "13:15", "durationMin": 15, "offSchedule": false, "expect": "ok"
+    },
+    {
+      "id": "brk-override-own",
+      "note": "override кабінету зі СВОЇМИ перервами",
+      "weekday": 0,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00" },
+      "override": { "rooms": { "$ROOM": { "start": "08:00", "end": "18:00", "breaks": [{ "start": "15:00", "end": "15:30" }] } } },
+      "time": "15:15", "durationMin": 15, "offSchedule": false, "expect": "BREAK"
+    },
+
+    {
+      "id": "order-closed-day-with-break",
+      "note": "ЗАФІКСОВАНЕ РОЗХОДЖЕННЯ ПОРЯДКУ, не баг доступу. Неділя закрита І перекрита перервою. TS перевіряє closed ПЕРШИМ (offScheduleKind), БД — навпаки: trg_h_not_during_break стоїть за алфавітом ПЕРЕД trg_i_room_schedule, а перерви він читає з базового графіка незалежно від дня. Вердикт «відмовити» однаковий з обох боків — різниться лише текст. Якщо колись знадобиться однаковий текст, у check_not_during_break треба буде додати перевірку дня тижня.",
+      "weekday": 6,
+      "roomSchedule": { "days": [1, 1, 1, 1, 1, 0, 0], "start": "08:00", "end": "18:00", "breaks": [{ "start": "13:00", "end": "14:00" }] },
+      "override": null,
+      "time": "13:15", "durationMin": 15, "offSchedule": false,
+      "expect": "ROOM_CLOSED", "expectSql": "BREAK"
+    }
+  ]
+}

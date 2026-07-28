@@ -10,6 +10,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
 import DensityControl from "@/components/DensityToggle";
+import NavDrawer from "@/components/NavDrawer";
 import { modalityShort, modalityKind } from "@/lib/studies";
 
 type SidebarRoom = {
@@ -110,7 +111,7 @@ export default function Sidebar({
   }
 
   return (
-    <aside className="sidebar">
+    <NavDrawer label="кабінети та швидкі дії">
       <div className="sb-head">
         <a href="/queue" className="sb-logo"><span className="dot" />RadFlow</a>
         <div className="sb-sub">{adminRole || "Адміністратор"}{clinicName ? " • " + clinicName : ""}</div>
@@ -195,6 +196,6 @@ export default function Sidebar({
         </div>
         <button className="icon-btn" title="Вийти" onClick={signOut}>⏻</button>
       </div>
-    </aside>
+    </NavDrawer>
   );
 }

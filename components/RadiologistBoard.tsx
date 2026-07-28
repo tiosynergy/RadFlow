@@ -26,6 +26,7 @@ import type { QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radiologist.css";
+import NavDrawer from "@/components/NavDrawer";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown };
 type RadEntry = {
@@ -276,7 +277,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
           <div className="pp">{proc}</div>
           <div className="du">{roomKind}{regionOf(p) ? " · " + regionOf(p) : ""}</div>
         </div>
-        <div className="q-room" style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3 }}>
+        <div className="q-room">
           {(() => {
             const arr = Array.isArray(p.studies) ? (p.studies as Array<{ type?: string }>) : [];
             const km = (arr[0] && arr[0].type) || ((roomKind === "МРТ" || roomKind === "КТ") ? roomKind : "");
@@ -501,7 +502,7 @@ function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }: { r
   const initials = (() => { const p = String(adminName || "").trim().split(/\s+/); return ((p[0] || "Р")[0] + (p[1] ? p[1][0] : "")).toUpperCase(); })();
   async function signOut() { await signOutAndRedirect(router); }
   return (
-    <aside className="sidebar">
+    <NavDrawer label="авторизовані кабінети">
       <div className="sb-head">
         <a href="/queue" className="sb-logo"><span className="dot" />RadFlow</a>
         <div className="sb-sub">Радіолог · робоче місце</div>
@@ -535,7 +536,7 @@ function RadSidebar({ rooms, roomFilter, setRoomFilter, counts, adminName }: { r
           Вийти
         </button>
       </div>
-    </aside>
+    </NavDrawer>
   );
 }
 
