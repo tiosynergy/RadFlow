@@ -20,7 +20,11 @@ function initials(name?: string | null) {
 
 interface Props {
   centers: Center[]; // активні центри
+  /** Уже відфільтровані для показу кабінети (див. lib/rooms.ts): вимкнені сюди
+   *  потрапляють лише як «залишки» — поки в них є живі записи направника. */
   roomsByClinic: Record<string, RoomOpt[]>;
+  /** Підпис замість моделі апарата для такого залишку: «вимкнено · 3 записи». */
+  roomNoteOf?: (clinicId: string, roomId: string) => string | null;
   doctorName: string;
   activeTab: string;
   onNav: (key: string) => void;
@@ -38,7 +42,7 @@ interface Props {
   backLabel?: string | null;
 }
 
-export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, activeTab, onNav, onSelectRoom, activeClinic, activeRoom, counts, canManage, onSignOut, backHref = null, backLabel = null }: Props) {
+export default function ReferrerSidebar({ centers, roomsByClinic, roomNoteOf, doctorName, activeTab, onNav, onSelectRoom, activeClinic, activeRoom, counts, canManage, onSignOut, backHref = null, backLabel = null }: Props) {
   const isPreview = !!backHref;   // адмін дивиться портал, а не працює в ньому
   const nav: Array<{ key: string; label: string; icon: string; badge?: number; badgeBlue?: boolean }> = [
     { key: "new", label: "Нове направлення", icon: "＋" },
@@ -80,20 +84,30 @@ export default function ReferrerSidebar({ centers, roomsByClinic, doctorName, ac
                   className={"sb-cab-all" + (centerActive ? " active" : "")}
                   style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: onSelectRoom ? "pointer" : "default", fontSize: "0.75rem", fontWeight: 600, color: "var(--text-secondary)", padding: "4px 10px 2px" }}
                   title={c.city ? c.name + " · " + c.city : c.name}>{c.name}</button>
+                {/* «Обладнання не вказано» і «всі кабінети вимкнено» — різні речі:
+                    у другій направник має розуміти, чому центр порожній, а не
+                    думати, що центр не заповнив профіль. */}
                 {rooms.length === 0 ? (
-                  <div style={{ fontSize: "0.71875rem", color: "var(--text-faint)", padding: "0 10px 2px" }}>обладнання не вказано</div>
-                ) : rooms.map((r) => (
+                  <div style={{ fontSize: "0.71875rem", color: "var(--text-faint)", padding: "0 10px 2px" }}>
+                    {all.length > 0 ? "усі кабінети вимкнено" : "обладнання не вказано"}
+                  </div>
+                ) : rooms.map((r) => {
+                  // Вимкнений кабінет-залишок: замість моделі апарата — причина,
+                  // чому він досі в списку («вимкнено · 2 записи»), як у Sidebar.
+                  const note = roomNoteOf?.(c.clinicId, r.id) || null;
+                  return (
                   <button type="button" key={r.id} onClick={() => onSelectRoom && onSelectRoom(c.clinicId, r.id)}
                     className={"sb-cab" + (activeClinic === c.clinicId && activeRoom === r.id ? " active" : "")}
                     style={{ width: "100%", textAlign: "left", border: "none", cursor: onSelectRoom ? "pointer" : "default" }}
-                    title={r.name + (r.apparatus_model ? " · " + r.apparatus_model : "")}>
+                    title={r.name + (note ? " · " + note : (r.apparatus_model ? " · " + r.apparatus_model : ""))}>
                     <span className={"sb-cab-tile " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
                     <span className="sb-cab-meta">
                       <span className="sb-cab-name">{r.name}</span>
-                      <span className="sb-cab-model">{r.apparatus_model || ""}</span>
+                      <span className="sb-cab-model">{note || r.apparatus_model || ""}</span>
                     </span>
                   </button>
-                ))}
+                  );
+                })}
               </div>
             );
           })}

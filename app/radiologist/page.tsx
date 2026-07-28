@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import RadiologistBoard from "@/components/RadiologistBoard";
 import SignOutButton from "@/components/SignOutButton";
+import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
+import { residualSet, visibleRooms } from "@/lib/rooms";
 
 function Notice({ title, text }: { title: string; text: string }) {
   return (
@@ -43,6 +45,9 @@ export default async function RadiologistPage() {
     .order("name");
 
   let rooms = allRooms ?? [];
+  // Чи звузили список до кабінетів, призначених саме цьому радіологу (для
+  // порожнього стану нижче: в адміна «немає кабінетів» — це інша історія).
+  let radiologistScoped = false;
 
   if (profile.role === "radiologist") {
     if (!profile.approved) {
@@ -57,10 +62,23 @@ export default async function RadiologistPage() {
     if (rooms.length === 0) {
       return <Notice title="Кабінети не призначено" text="Адміністратор ще не надав вам доступ до жодного кабінету. Зверніться до адміністратора клініки." />;
     }
+    radiologistScoped = true;
   } else if (profile.role === "referrer") {
     redirect("/referral");
   } else if (profile.role !== "admin") {
     redirect("/queue");
+  }
+
+  /* Вимкнений кабінет ховаємо зі списків — але поки в ньому лишились живі записи,
+     він «спливає» назад із підписом «вимкнено · N». Див. lib/rooms.ts. */
+  const residual = await residualOffRooms(supabase, profile.clinic_id as string, offRoomIdsOf(rooms), clinic?.timezone);
+
+  /* Прив'язки є, але після фільтра не лишилось жодного кабінету: усі призначені
+     вимкнено й розбирати в них нічого. Порожня дошка без пояснення виглядала б
+     як поламаний екран — краще прямо сказати, куди йти. Прив'язки при цьому
+     НЕ чіпаємо: повернуть кабінет у стрій — радіолог одразу побачить свою чергу. */
+  if (radiologistScoped && visibleRooms(rooms, residualSet(residual.ids)).length === 0) {
+    return <Notice title="Усі ваші кабінети вимкнено" text="Зверніться до адміністратора центру — він увімкне кабінет або призначить вам інший." />;
   }
 
   return (
@@ -68,6 +86,8 @@ export default async function RadiologistPage() {
       clinicId={profile.clinic_id as string}
       clinicTz={clinic?.timezone || "UTC"}
       rooms={rooms}
+      residualRoomIds={residual.ids}
+      residualRoomCounts={residual.counts}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
     />
   );

@@ -30,11 +30,12 @@ import {
   type ServiceInput,
 } from "@/app/services/actions";
 import { BOOKABLE_MODALITIES, CONTRAST_SURCHARGE, modalityLabel, modalityKind, modalityCode, type ModalityCode } from "@/lib/studies";
+import { isRoomBookable } from "@/lib/rooms";
 import type { Tables } from "@/supabase/types";
 
 type ServiceRow = Tables<"services">;
 type SroRow = Tables<"service_room_overrides">;
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 
 /* ---- Базовий каталог: чернетка рядка (як у попередній версії ServicesManager) ---- */
 interface Draft { name: string; durationMin: string; price: string; contrastAllowed: boolean; contrastPrice: string; sortOrder: string }
@@ -108,7 +109,20 @@ interface Props {
 
 export default function ServicesEditor({ services, rooms, roomOverrides, embedded }: Props) {
   const router = useRouter();
-  const roomList = (rooms || []).filter((r) => BOOKABLE_MODALITIES.includes(modalityCode(r.modality)));
+  // Мемо, бо roomList — залежність ефекту-скидання scope нижче.
+  const roomList = useMemo(() => (rooms || []).filter((r) => BOOKABLE_MODALITIES.includes(modalityCode(r.modality))), [rooms]);
+  /* Вимкнені кабінети в селекторі «Налаштувати:» (див. lib/rooms.ts).
+     Прайс вимкненого кабінету лишається РЕДАГОВАНИМ — інакше центр, який вимкнув
+     апарат на час заміни, повернув би його з мертвим прайсом і не міг би підготувати
+     ціни заздалегідь. Але виносимо такі кабінети в окрему групу, щоб адмін не правив
+     їх помилково замість робочого, і поруч показуємо банер: послуги нікуди не
+     бронюються, поки кабінет вимкнено.
+     ЯКІ саме вимкнені сюди дійдуть — вирішує той, хто передав `rooms`: Майстер дає
+     повний перелік (це єдиний екран, де кабінет видно завжди), сторінка /services —
+     уже відфільтрований visibleRooms, тобто лише «залишки». Тут ми лише розкладаємо
+     по групах, свого правила видимості не вигадуємо. */
+  const roomListOn = roomList.filter(isRoomBookable);
+  const roomListOff = roomList.filter((r) => !isRoomBookable(r));
 
   const [items, setItems] = useState<ServiceRow[]>(services);
   const [overrides, setOverrides] = useState<SroRow[]>(roomOverrides || []);
@@ -140,6 +154,13 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
   const [confirmBulkDel, setConfirmBulkDel] = useState(false);
 
   const room = scope === "base" ? null : roomList.find((r) => r.id === scope) || null;
+  /* Обраний кабінет зник зі списку (видалили; або на /services останній живий запис
+     у вимкненому кабінеті закрили — і кабінет-залишок перестав бути видимим після
+     router.refresh) → повертаємось у базовий каталог. Інакше екран лишався б у
+     режимі кабінету з room=null: порожні таблиці й кнопки, що нікуди не пишуть. */
+  useEffect(() => {
+    if (scope !== "base" && !roomList.some((r) => r.id === scope)) { setScope("base"); setOvEditId(null); setSelected({}); }
+  }, [scope, roomList]);
   const roomMod: ModalityCode | null = room ? modalityCode(room.modality) : null;
   const effTab: ModalityCode = roomMod ?? tab; // у режимі кабінету модальність фіксована
 
@@ -464,13 +485,27 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
           Налаштувати:
           <select className="inp" value={scope} onChange={(e) => { setScope(e.target.value); setEditId(null); setOvEditId(null); setSelected({}); }}>
             <option value="base">Базовий каталог центру</option>
-            {roomList.length > 0 && <optgroup label="Кабінети (власний прайс)">
-              {roomList.map((r) => <option key={r.id} value={r.id}>{modalityLabel(r.modality)} · {r.name}{r.apparatus_model ? " · " + r.apparatus_model : ""}</option>)}
+            {roomListOn.length > 0 && <optgroup label="Кабінети (власний прайс)">
+              {roomListOn.map((r) => <option key={r.id} value={r.id}>{modalityLabel(r.modality)} · {r.name}{r.apparatus_model ? " · " + r.apparatus_model : ""}</option>)}
+            </optgroup>}
+            {roomListOff.length > 0 && <optgroup label="Вимкнені">
+              {roomListOff.map((r) => <option key={r.id} value={r.id}>{modalityLabel(r.modality)} · {r.name}{r.apparatus_model ? " · " + r.apparatus_model : ""}</option>)}
             </optgroup>}
           </select>
         </label>
         {room && <span className="badge" title="Порожні поля успадковують базовий каталог">кабінет «{room.name}» · {modalityLabel(room.modality)}</span>}
       </div>
+
+      {/* Вибрано вимкнений кабінет: правки тут дозволені, але ефекту «зараз» не дають —
+          кажемо це прямо, інакше адмін вважатиме, що ціна вже працює. */}
+      {room && !isRoomBookable(room) && (
+        <div className="info-banner orange">
+          <span className="ib-ic" aria-hidden="true">⏻</span>
+          <span className="ib-txt">
+            <b>Кабінет вимкнено.</b> Ці послуги ніде не бронюються — вони запрацюють, коли кабінет увімкнуть.
+          </span>
+        </div>
+      )}
 
       {/* Модальності — окремим рядком і в ОДИН ряд (nowrap), щоб не переносились. */}
       <div className="qctrl" style={{ marginBottom: 8 }}>

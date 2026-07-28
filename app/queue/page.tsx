@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import QueueBoard from "@/components/QueueBoard";
 
 export default async function QueuePage() {
@@ -35,6 +36,10 @@ export default async function QueuePage() {
     .eq("clinic_id", profile.clinic_id as string)
     .order("name");
 
+  /* Вимкнений кабінет ховаємо зі списків — але поки в ньому лишились живі записи,
+     він «спливає» назад із підписом «вимкнено · N». Див. lib/rooms.ts. */
+  const residual = await residualOffRooms(supabase, profile.clinic_id as string, offRoomIdsOf(rooms), clinic?.timezone);
+
   // Каталог послуг центру (services, 0107) — SSR-проп у форми запису (фаза 2a).
   // ВСІ рядки (у т.ч. active=false): buildCatalog сам відсіює неактивні, але за
   // наявністю рядка розрізняє «модальність не налаштовували» (→ статика) від «усі
@@ -61,6 +66,8 @@ export default async function QueuePage() {
       // початкова дата дошки встигала зафіксуватися по браузеру (M-4).
       clinicTz={clinic?.timezone || "UTC"}
       rooms={rooms ?? []}
+      residualRoomIds={residual.ids}
+      residualRoomCounts={residual.counts}
       services={services ?? []}
       roomOverrides={roomOverrides ?? []}
       clinicName={clinic?.name ?? ""}

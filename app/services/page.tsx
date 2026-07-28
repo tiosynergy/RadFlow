@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import ServicesManager from "@/components/ServicesManager";
 
 /* Каталог послуг клініки (Stage 2, фаза 1): перелік / ціни / тривалості.
@@ -31,6 +32,10 @@ export default async function ServicesPage() {
     .eq("clinic_id", profile.clinic_id as string)
     .order("name");
 
+  /* Вимкнений кабінет ховаємо зі списків — але поки в ньому лишились живі записи,
+     він «спливає» назад із підписом «вимкнено · N». Див. lib/rooms.ts. */
+  const residual = await residualOffRooms(supabase, profile.clinic_id as string, offRoomIdsOf(rooms), clinic?.timezone);
+
   const { data: services } = await supabase
     .from("services")
     .select("*")
@@ -50,6 +55,8 @@ export default async function ServicesPage() {
       initialServices={services ?? []}
       roomOverrides={roomOverrides ?? []}
       rooms={rooms ?? []}
+      residualRoomIds={residual.ids}
+      residualRoomCounts={residual.counts}
       clinicName={clinic?.name ?? ""}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
     />

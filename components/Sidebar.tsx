@@ -29,6 +29,9 @@ interface SidebarProps {
   activeRoom?: string;
   activeNav?: string;
   onSelectRoom?: (id: string) => void;
+  /** Підпис під назвою кабінету замість моделі апарата — для вимкнених
+   *  кабінетів-залишків («вимкнено · 3 записи»). Повертає null для звичайних. */
+  roomNoteOf?: (roomId: string) => string | null;
   onNew?: () => void;
   onSlotsOverview?: () => void;
   incidentCount?: number;
@@ -50,6 +53,7 @@ export default function Sidebar({
   adminRole,
   roleKey = "admin",
   rooms,
+  roomNoteOf,
   activeRoom = "all",
   activeNav,
   onSelectRoom,
@@ -134,7 +138,10 @@ export default function Sidebar({
               <span className={"sb-cab-tile " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
               <span className="sb-cab-meta">
                 <span className="sb-cab-name">{stoppedRoomIds.includes(r.id) ? "🛑 " : ""}{r.name}</span>
-                <span className="sb-cab-model">{r.apparatus_model || ""}</span>
+                {/* У вимкненого кабінету-залишку замість моделі апарата — причина,
+                    чому він досі тут: «вимкнено · 3 записи». Модель у цей момент
+                    менш важлива за те, що в кабінеті лишились люди. */}
+                <span className="sb-cab-model">{roomNoteOf?.(r.id) || r.apparatus_model || ""}</span>
               </span>
             </button>
           ))}

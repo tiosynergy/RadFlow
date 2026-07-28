@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import WaitlistBoard from "@/components/WaitlistBoard";
 
 export default async function WaitlistPage() {
@@ -35,6 +36,10 @@ export default async function WaitlistPage() {
     .eq("clinic_id", profile.clinic_id as string)
     .order("name");
 
+  /* Вимкнений кабінет ховаємо зі списків — але поки в ньому лишились живі записи,
+     він «спливає» назад із підписом «вимкнено · N». Див. lib/rooms.ts. */
+  const residual = await residualOffRooms(supabase, profile.clinic_id as string, offRoomIdsOf(rooms), clinic?.timezone);
+
   // Каталог послуг центру (services, 0107) — форми листа очікування (фаза 2a).
   // ВСІ рядки (у т.ч. active=false) — buildCatalog розрізняє «не налаштовували»
   // (→ статика) від «усі вимкнені» (→ порожньо, напрям закрито). High-2.
@@ -55,6 +60,8 @@ export default async function WaitlistPage() {
       clinicId={profile.clinic_id as string}
       clinicTz={clinic?.timezone || "UTC"}
       rooms={rooms ?? []}
+      residualRoomIds={residual.ids}
+      residualRoomCounts={residual.counts}
       services={services ?? []}
       roomOverrides={roomOverrides ?? []}
       clinicName={clinic?.name ?? ""}

@@ -3,7 +3,7 @@
 /* ===== RadFlow — Дошка черги (повна) ===== */
 
 import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode, type MouseEvent } from "react";
-import { isRoomBookable, ROOM_OFF_LABEL } from "@/lib/rooms";
+import { isRoomBookable, ROOM_OFF_LABEL, visibleRooms, residualSet, roomOffLabel, bookableRooms } from "@/lib/rooms";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
@@ -970,6 +970,12 @@ interface QueueBoardProps {
   /** IANA-зона центру (clinics.timezone) — приходить із сервера, а не читається з браузера. */
   clinicTz: string;
   rooms?: RoomOpt[];
+  /** id вимкнених кабінетів, у яких ЩЕ лишились живі записи («кабінети-залишки»).
+   *  Вимкнений кабінет ховаємо зі списків, але поки в ньому щось є — він спливає
+   *  назад із підписом «вимкнено · N записів». Див. lib/rooms.ts. */
+  residualRoomIds?: string[];
+  /** Скільки саме лишилось у кожному такому кабінеті — для підпису. */
+  residualRoomCounts?: Record<string, number>;
   /** Каталог послуг центру (services, 0107) — SSR-проп, як rooms. Порожній → статика. */
   services?: ServiceLike[];
   /** Переозначення каталогу по кабінетах (service_room_overrides, 0108) — SSR-проп; проброс у форми запису (2b). */
@@ -980,7 +986,7 @@ interface QueueBoardProps {
   roleKey?: string;
 }
 
-export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: QueueBoardProps) {
+export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: QueueBoardProps) {
   /* Зона центру виставляється СИНХРОННО, до першого рендера й до ініціалізаторів
      useState — інакше selectedDate = today0() зафіксував би день БРАУЗЕРА назавжди
      (раніше tz прилітала з клієнтського fetch уже ПІСЛЯ монтування).
@@ -1039,11 +1045,21 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
   const isPast = selectedDate < today;
   const dayKey = dateKey(selectedDate);
 
+  /* roomsById — ПОВНИЙ список, включно з вимкненими: за ним резолвиться назва
+     кабінету в рядку запису. Ховаємо кабінет зі СПИСКІВ, а не з записів. */
   const roomsById = useMemo(() => {
     const m: Record<string, RoomOpt> = {};
     (rooms || []).forEach((r) => { m[r.id] = r; });
     return m;
   }, [rooms]);
+
+  /* …а `visRooms` — те, що показуємо у списках: активні + вимкнені із залишками. */
+  const residual = useMemo(() => residualSet(residualRoomIds), [residualRoomIds]);
+  const visRooms = useMemo(() => visibleRooms(rooms, residual), [rooms, residual]);
+  const offNote = (roomId: string): string | null => {
+    const r = roomsById[roomId];
+    return r && r.active === false ? roomOffLabel(residualRoomCounts?.[roomId]) : null;
+  };
 
   function notify(msg: string, type = "success", action?: ToastData["action"]) {
     setToast({ msg, type, action });
@@ -1152,7 +1168,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
       else if ((code === "Slash" || e.key === "/") && !e.shiftKey) { e.preventDefault(); searchRef.current?.focus(); }
       else if (code === "KeyR") { e.preventDefault(); reload(); }
       else if (code === "Backquote" || code === "Digit0") { setRoomView("all"); }
-      else if (/^Digit[1-9]$/.test(code)) { const i = parseInt(code.slice(5), 10) - 1; const rs = rooms || []; if (rs[i]) setRoomView(rs[i].id); }
+      else if (/^Digit[1-9]$/.test(code)) { const i = parseInt(code.slice(5), 10) - 1; const rs = visRooms; if (rs[i]) setRoomView(rs[i].id); }
       else if (code === "KeyJ" || code === "KeyK") {
         // j/k — навігація по рядках черги (vim-style). Рухаємо DOM-фокус між
         // інтерактивними рядками (.qrow[role=button]); скелетони-заглушки пропускаємо.
@@ -1170,12 +1186,24 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, reload, rooms]);
+  }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, reload, visRooms]);
 
   useRealtimeRefetch({
     channelName: clinicId ? "queue-" + clinicId : null,
     subscriptions: [
-      { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: reload },
+      /* `reload()` перечитує лише записи. Але поки в центрі є кабінет-залишок,
+         зміна запису може ще й ПРИБРАТИ його зі списку («вимкнено · 1 запис» →
+         кабінет зникає) — а residual приходить SSR-пропом, тож без refresh підпис
+         брехав би саме тоді, коли на нього дивляться. Умова обов'язкова: без
+         залишків це був би зайвий refresh на кожну зміну статусу. */
+      { table: "queue_entries", filter: "clinic_id=eq." + clinicId,
+        onChange: () => { reload(); if ((residualRoomIds?.length ?? 0) > 0) router.refresh(); } },
+      /* Залишок може триматись САМЕ вейтліст-броню (residualOffRooms рахує обидві
+         таблиці), а дошка черги на waitlist_entries інакше не підписана — тоді
+         кабінет висів би в сайдбарі до перезавантаження. Підписка потрібна ЛИШЕ
+         заради цього, тож нічого, крім refresh, вона не робить. */
+      { table: "waitlist_entries", filter: "clinic_id=eq." + clinicId,
+        onChange: () => { if ((residualRoomIds?.length ?? 0) > 0) router.refresh(); } },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
       { table: "schedule_overrides", filter: "clinic_id=eq." + clinicId, onChange: loadOverrides },
       // 0086: rooms — SSR-проп; видалення/правка базового графіка кабінету долітає
@@ -1191,7 +1219,9 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
 
   const selectedOverride = overrides[dayKey] || null;
   // Базові графіки кабінетів → «вихідний» у календарі за реальним графіком, не лише неділею.
-  const roomSchedules = (rooms || []).map((r) => r.schedule);
+  /* Лише за графіками кабінетів, які реально працюють: вимкнений кабінет із
+     робочою неділею інакше показував би неділю робочою для всього центру. */
+  const roomSchedules = bookableRooms(rooms).map((r) => r.schedule);
   const selDayStatus = dayStatus(selectedOverride, selectedDate, roomSchedules);
 
   async function saveOverride(ov: { all_closed: boolean; label?: string; rooms: Record<string, { closed?: boolean; start?: string; end?: string; breaks?: { start: string; end: string }[] }> }) {
@@ -1787,7 +1817,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
     }
   });
 
-  const roomLoad = computeRoomLoad(rooms, entries, selectedDate, selectedOverride, incidents);
+  const roomLoad = computeRoomLoad(visRooms, entries, selectedDate, selectedOverride, incidents);
 
   /* Порядок черги (рішення Ігоря 2026-07-11): у межах статусу — ЗА ЧАСОМ.
      Пріоритет (CITO/Терміново) лишається кольоровим бейджем, але НЕ виносить
@@ -1824,7 +1854,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
     <div className="app">
       <Sidebar
         clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey}
-        rooms={rooms} activeRoom={roomView} onSelectRoom={setRoomView} onNew={() => setModalOpen(true)}
+        rooms={visRooms} roomNoteOf={offNote} activeRoom={roomView} onSelectRoom={setRoomView} onNew={() => setModalOpen(true)}
         onSlotsOverview={roleKey === "admin" ? () => setSlotsOverviewOpen(true) : undefined}
         incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }}
         onEmergency={handleEmergencyClick}
@@ -1937,15 +1967,23 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
               </div>
             ) : roomView === "all" ? (
               <div className="room-cards">
-                {(rooms || []).map((r) => (
+                {visRooms.map((r) => (
                   <RoomStatusCard key={r.id} room={r}
                     patient={currentByRoom[r.id]} enteredAt={enteredAtOf(currentByRoom[r.id])}
                     nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
                     schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? (selDayStatus.label || "Не працює за графіком") : null}
                     onComplete={openComplete} onCall={callPatient} onUnblock={resolveIncident} />
                 ))}
-                {(rooms || []).length === 0 && (
-                  <div className="ctx-hint blue">Кабінетів ще немає. Додайте обладнання в <a href="/setup">Налаштуваннях</a>.</div>
+                {/* Дві різні ситуації, які легко злити в одну: кабінетів не
+                    заводили взагалі — і всі заведені вимкнено. У другій адміну
+                    треба сказати причину, інакше він піде «додавати обладнання»,
+                    якого й так вистачає. */}
+                {visRooms.length === 0 && (
+                  (rooms || []).length > 0 ? (
+                    <div className="ctx-hint blue">Усі кабінети вимкнено. Увімкніть потрібний у <a href="/setup">Налаштуваннях</a>.</div>
+                  ) : (
+                    <div className="ctx-hint blue">Кабінетів ще немає. Додайте обладнання в <a href="/setup">Налаштуваннях</a>.</div>
+                  )
                 )}
               </div>
             ) : (
@@ -2072,7 +2110,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
 
           <aside className="rpanel">
             <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} onEditSchedule={() => setSchedEditOpen(true)} tz={clinicTz} roomSchedules={roomSchedules} />
-            {isToday && (rooms || []).length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} />}
+            {isToday && visRooms.length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} />}
             {!isPast && <NeedsReschedulePanel entries={needsResched} roomsById={roomsById} onReschedule={openReschedule} onToWaitlist={toWaitlist} onCancel={(pt) => setCancelAsk({ p: pt, mode: "cancel" })} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}
             {!isPast && <CallListPanel entries={entries} onSetCall={setCall} dateLabel={fmtShort(selectedDate)} />}
@@ -2107,7 +2145,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
           onClose={() => setCaseFromEntryFor(null)}
         />
       )}
-      {slotsOverviewOpen && <RoomDayOverviewModal rooms={rooms || []} clinicTz={clinicTz} incidents={liveIncidents} overrides={overrides} onClose={() => setSlotsOverviewOpen(false)} />}
+      {slotsOverviewOpen && <RoomDayOverviewModal rooms={visRooms} clinicTz={clinicTz} incidents={liveIncidents} overrides={overrides} onClose={() => setSlotsOverviewOpen(false)} />}
 
       {wlSuggest && (
         <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={liveIncidents} services={services} roomOverrides={roomOverrides}
@@ -2235,7 +2273,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, services, roomOv
       )}
 
       {schedEditOpen && (
-        <ScheduleEditModal date={selectedDate} rooms={rooms} existing={selectedOverride} entries={entries}
+        <ScheduleEditModal date={selectedDate} rooms={visRooms} existing={selectedOverride} entries={entries}
           onClose={() => setSchedEditOpen(false)} onSave={saveOverride} onReset={resetOverride} />
       )}
 
