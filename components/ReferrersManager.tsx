@@ -68,9 +68,24 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
      апарат, і направник отримав би його назад разом із поверненням у стрій.
      Коли вимкнених кабінетів немає (звичайний випадок) — поведінка не змінюється. */
   const newAccessRooms = bookableRooms(rooms);
-  /** Чипи для вже виданого гранта: активні + вимкнені, які в цьому гранті вже є. */
-  const accessRoomsFor = (selected: string[]): RoomOpt[] =>
-    (rooms || []).filter((r) => isRoomBookable(r) || selected.includes(r.id));
+  /** Чипи для вже виданого гранта: активні + вимкнені з переданого списку.
+   *
+   *  ⚠️ Список вимкнених сюди йде ЗАМОРОЖЕНИЙ на момент відкриття картки
+   *  (`editOffIds`), а НЕ поточний `editForm.room_ids` (ревʼю с17, Low). З
+   *  поточним виходив глухий кут: клік по приглушеному чипу прибирав кабінет із
+   *  room_ids, після чого цей самий чип зникав зі списку — і повернути доступ у
+   *  тій самій формі було нічим, лише «Скасувати» й відкрити картку заново.
+   *  Із замороженим списком чип лишається на місці до збереження, тож клік
+   *  оборотний. Видати доступ у вимкнений кабінет, якого в гранті НЕ БУЛО,
+   *  це так само не дозволяє: у заморожений список він не потрапить.
+   *
+   *  Третій доданок — поточний `editForm.room_ids` (ревʼю с18b, N3): кабінет могли
+   *  вимкнути в майстрі, поки картка відкрита (він змонтований поруч, і збереження
+   *  там робить router.refresh), — без нього чип зник би цілком, разом із самою
+   *  можливістю зняти доступ. Інваріант тримається по індукції: `room_ids` стартує
+   *  з гранта й поповнюється лише кліком по вже відрисованому чипу. */
+  const accessRoomsFor = (frozenOffIds: string[]): RoomOpt[] =>
+    (rooms || []).filter((r) => isRoomBookable(r) || frozenOffIds.includes(r.id) || editForm.room_ids.includes(r.id));
 
   const emptyForm = (): InviteForm => ({ login: "", full_name: "", email: "", phone: "", note: "", policy: "direct", room_ids: newAccessRooms.map((r) => r.id) });
 
@@ -83,6 +98,9 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const [origin, setOrigin] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({ policy: "direct", room_ids: [], note: "" });
+  /** Вимкнені кабінети, що були в гранті на момент відкриття картки. Заморожені
+   *  до закриття форми, щоб чип не зникав із першого кліку — див. accessRoomsFor. */
+  const [editOffIds, setEditOffIds] = useState<string[]>([]);
   const [savingEdit, setSavingEdit] = useState(false);
   const [loginSug, setLoginSug] = useState<LoginSug[]>([]);
   const [sugOpen, setSugOpen] = useState(false);
@@ -254,7 +272,10 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     setEditingId(r.access_id);
     // Протухлі id відсікаємо ще на відкритті — інакше просте «Зберегти» повертало б їх у БД.
     const clean = sanitizeRooms(r.room_ids);
-    setEditForm({ policy: r.policy || "direct", room_ids: (r.room_ids && r.room_ids.length ? clean : allRoomIds), note: r.note || "" });
+    const initialRooms = (r.room_ids && r.room_ids.length ? clean : allRoomIds);
+    setEditForm({ policy: r.policy || "direct", room_ids: initialRooms, note: r.note || "" });
+    // Заморожуємо вимкнені кабінети гранта — див. accessRoomsFor.
+    setEditOffIds(initialRooms.filter((id) => roomById[id] && !isRoomBookable(roomById[id])));
   }
   function toggleEditRoom(id: string) { setEditForm((f) => ({ ...f, room_ids: f.room_ids.includes(id) ? f.room_ids.filter((x) => x !== id) : [...f.room_ids, id] })); }
   async function saveEdit() {
@@ -443,18 +464,25 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                       </div>
                       <div className="fld">
                         <span className="fld-lab">Доступні кабінети</span>
-                        {accessRoomsFor(editForm.room_ids).length === 0 ? <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>У центрі немає кабінетів.</div> : (
+                        {accessRoomsFor(editOffIds).length === 0 ? <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>У центрі немає кабінетів.</div> : (
                           <div className="bd-rooms">
-                            {accessRoomsFor(editForm.room_ids).map((rm) => {
+                            {accessRoomsFor(editOffIds).map((rm) => {
+                              /* Вимкнений кабінет тут може бути лише тоді, коли він був
+                                 у гранті на момент відкриття картки (editOffIds). Знімати
+                                 й повертати доступ можна вільно до «Зберегти»; видати його
+                                 в кабінет, якого в гранті не було, — не можна, такий чип
+                                 у список просто не потрапляє. */
                               const on = editForm.room_ids.includes(rm.id);
-                              /* Вимкнений кабінет тут може бути лише тоді, коли він
-                                 у гранті вже є: приглушений чип, зняти доступ можна,
-                                 видати заново — ні (зі списку він одразу зникне). */
                               const off = !isRoomBookable(rm);
                               return (
-                                <button type="button" key={rm.id} className="bd-room" onClick={() => toggleEditRoom(rm.id)}
-                                  title={off ? `Кабінет ${ROOM_OFF_LABEL}. Доступ можна лише зняти.` : (on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати")}
-                                  style={{ padding: "5px 9px", gap: 8, borderColor: on ? "var(--green)" : undefined, background: on ? "var(--green-bg)" : undefined, opacity: off ? 0.6 : undefined }}>
+                                /* aria-pressed: стан «доступ виданий» тут несуть лише колір
+                                   рамки й заливка, тобто для скрінрідера його не існувало
+                                   (4.1.2 + 1.4.1). Конвенція проєкту — DensityToggle, Sidebar. */
+                                <button type="button" key={rm.id} aria-pressed={on} className={"bd-room" + (off ? " bd-room-off" : "")} onClick={() => toggleEditRoom(rm.id)}
+                                  title={off
+                                    ? `Кабінет ${ROOM_OFF_LABEL}. ` + (on ? "Доступ можна зняти; після збереження повернути його не вийде, поки кабінет не ввімкнуть." : "Доступ знято — повернеться, якщо натиснути ще раз до збереження.")
+                                    : (on ? "Доступний — натисніть, щоб прибрати" : "Недоступний — натисніть, щоб додати")}
+                                  style={{ padding: "5px 9px", gap: 8, borderColor: on ? "var(--green)" : undefined, background: on ? "var(--green-bg)" : undefined }}>
                                   <span className={"bd-room-kind " + modalityKind(rm.modality)} style={{ width: 26, height: 26, fontSize: "0.625rem" }}>{modalityShort(rm.modality)}</span>
                                   <span className="bd-room-meta"><span className="bd-room-name">{rm.name}</span><span className="bd-room-model">{off ? `кабінет ${ROOM_OFF_LABEL}` : (rm.apparatus_model || "")}</span></span>
                                 </button>

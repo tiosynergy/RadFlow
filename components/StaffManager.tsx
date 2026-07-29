@@ -73,7 +73,6 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
   const [edit, setEdit] = useState<EditForm | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
-  void roomsById;
 
   useEffect(() => { setOrigin(window.location.origin); }, []);
 
@@ -126,12 +125,40 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
          інакше адмін роздавав би права на апарат, у який усе одно не запишеш;
        • доступ, який радіологу ВЖЕ видано, а кабінет потім вимкнули, мовчки
          викидати не можна. Прив'язку відновити нізвідки, і при поверненні
-         кабінету в стрій виявилось би, що її хтось стер. Показуємо приглушено з
-         підписом «кабінет вимкнено»: зняти доступ можна, видати заново — ні. */
+         кабінету в стрій виявилось би, що її хтось стер. Показуємо пунктирним чипом
+         із підписом «кабінет вимкнено»: зняти доступ можна, видати в кабінет, якого
+         в списку не було, — ні.
+
+     ⚠️ `offShown` — МОНОТОННИЙ слід: сюди потрапляє кожен вимкнений кабінет, доступ
+     до якого ми бодай раз бачили виданим, і звідси вже не зникає до перезавантаження
+     сторінки (ревʼю с18b). Дві причини:
+       1. без нього клік «зняти доступ» був глухим кутом: чип зникав тієї ж миті,
+          бо список рахувався з живого radRooms, і повернути доступ було нічим;
+       2. просте «заморозити на момент reload» теж не годилось: `rooms` приходить
+          пропом і оновлюється БЕЗ reload (майстер налаштувань тримає цей компонент
+          змонтованим, вимкнення кабінету там робить router.refresh) — заморожений на
+          старті список тоді не містив би щойно вимкненого кабінету, і чип зникав би
+          цілком, разом із можливістю зняти доступ.
+     Інваріант не тече: у слід нічого не додається, крім реально виданих доступів. */
   const newAccessRooms = useMemo(() => bookableRooms(rooms), [rooms]);
-  /** Чипи в картці співробітника: активні + вимкнені, які цьому профілю вже видано. */
+  const [offShown, setOffShown] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    setOffShown((prev) => {
+      let changed = false;
+      const m: Record<string, string[]> = { ...prev };
+      for (const x of radRooms) {
+        const rm = roomsById[x.room_id];
+        if (!rm || isRoomBookable(rm)) continue;
+        if ((m[x.profile_id] || []).includes(x.room_id)) continue;
+        m[x.profile_id] = [...(m[x.profile_id] || []), x.room_id];
+        changed = true;
+      }
+      return changed ? m : prev;   // без цього кожен прогін ефекту давав би зайвий рендер
+    });
+  }, [radRooms, roomsById]);
+  /** Чипи в картці співробітника: активні + вимкнені, доступ до яких є або щойно був. */
   const accessRoomsFor = (profileId: string): RoomOpt[] =>
-    (rooms || []).filter((r) => isRoomBookable(r) || hasRoom(profileId, r.id));
+    (rooms || []).filter((r) => isRoomBookable(r) || hasRoom(profileId, r.id) || (offShown[profileId] || []).includes(r.id));
 
   async function createAccount() {
     const loginNorm = normalizeLogin(form.login);
@@ -469,16 +496,25 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6 }}>
                     {accessRoomsFor(r.id).map((rm) => {
                       const on = hasRoom(r.id, rm.id);
-                      // Вимкнений кабінет тут може бути лише тоді, коли доступ уже
-                      // видано: приглушений чип, зняти можна, видати заново — ні.
+                      // Чому вимкнений кабінет узагалі тут — див. accessRoomsFor / offShown вище.
                       const off = !isRoomBookable(rm);
                       return (
-                        <button key={rm.id} type="button" onClick={() => toggleRoom(r.id, rm.id)}
-                          className={"btn btn-sm " + (on ? "btn-primary" : "btn-secondary")}
-                          style={off ? { opacity: 0.6 } : undefined}
-                          title={off ? `Кабінет ${ROOM_OFF_LABEL}. Доступ можна лише зняти.` : undefined}>
+                        /* Стан «кабінет вимкнено» несуть пунктирна рамка + підпис у самому
+                           чипі, а НЕ opacity: прозорість топила дрібний підпис нижче 4.5:1
+                           (WCAG 1.4.3) — тобто найгірше читався саме той текст, що пояснює стан.
+                           ⚠️ Вимкнений чип лишається btn-secondary навіть при виданому доступі.
+                           На btn-primary (синій --blue) підпис 0.6875rem білим дає 3.65:1 —
+                           той самий провал 1.4.3, який ми й прибирали. На --card біле дає 12.8:1.
+                           Факт доступу несе «✓» і зелена рамка, а не заливка; для скрінрідера —
+                           aria-pressed. */
+                        <button key={rm.id} type="button" onClick={() => toggleRoom(r.id, rm.id)} aria-pressed={on}
+                          className={"btn btn-sm " + (on && !off ? "btn-primary" : "btn-secondary")}
+                          style={off ? { borderStyle: "dashed", borderColor: on ? "var(--green)" : "var(--orange)" } : undefined}
+                          title={off
+                            ? `Кабінет ${ROOM_OFF_LABEL}. Доступ можна зняти; повернути — доки ви не залишили цю сторінку.`
+                            : undefined}>
                           {on ? "✓ " : ""}{rm.name} · {modalityLabel(rm.modality)}
-                          {off && <span style={{ marginLeft: 6, fontSize: "0.6875rem", opacity: 0.85 }}>· кабінет {ROOM_OFF_LABEL}</span>}
+                          {off && <span style={{ marginLeft: 6, fontSize: "0.6875rem" }}>· кабінет {ROOM_OFF_LABEL}</span>}
                         </button>
                       );
                     })}

@@ -121,9 +121,25 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   // до кабінету, але бізнес-обмеження гранту тут теж діє (дубль перевірки — на сервері).
   const centerMods = needCenter ? (centers!.find((c) => c.clinicId === centerId)?.modalities ?? null) : null;
   const gateMods = allowedModalities ?? centerMods;   // явний перелік (edit направника) або грант центру
-  const availableModalities: string[] = gateMods
+  const gatedModalities: string[] = gateMods
     ? BOOKABLE_MODALITIES.filter((m) => gateMods.includes(m))
     : (bookableRooms(rooms).length ? BOOKABLE_MODALITIES.filter((m) => bookableRooms(rooms).some((r) => r.modality === m)) : BOOKABLE_MODALITIES);
+  /* ⚠️ У режимі РЕДАГУВАННЯ власна модальність рядка лишається в списку завжди
+     (ревʼю с17, Low) — та сама конвенція, що з `pinnedId` для кабінету нижче.
+     Обидва джерела обмежень рахуються по bookableRooms, тож коли всі кабінети цієї
+     модальності в центрі вимкнули, вона зникала зі списку вже наявної броні.
+     Дані при цьому не мінялись самі (тип — сегментна група, а не select; `studyType`
+     лишався в стані, автоперемикач при isEdit не працює, зберігалась та сама
+     модальність), але екран ставав глухим кутом: жоден сегмент не підсвічений, а
+     клікнувши на чужий, повернутись до свого вже нічим.
+     Завести НОВУ бронь у такій модальності це не дозволяє: гілка живе лише при isEdit.
+     Легасі-рядок із модальністю поза каноном (modalityCode → "OTHER") сюди свідомо
+     не потрапляє: BOOKABLE_MODALITIES лишається джерелом істини для порядку й складу,
+     і «OTHER» у списку бронювання не місце. */
+  const ownMod = isEdit && initPrimary ? modalityCode(initPrimary.type) : null;
+  const availableModalities: string[] = (ownMod && !gatedModalities.includes(ownMod))
+    ? BOOKABLE_MODALITIES.filter((m) => gatedModalities.includes(m) || m === ownMod)  // порядок канону зберігаємо
+    : gatedModalities;
   // Каталог послуг (фаза 2a): персонал — свій центр (services); направник —
   // каталог ОБРАНОГО центру (add) або центру рядка (edit). Порожній → статика.
   const effClinicId = isEdit ? (initial?.clinic_id ?? null) : (needCenter ? centerId : null);
