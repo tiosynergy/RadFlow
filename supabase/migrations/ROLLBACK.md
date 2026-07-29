@@ -4,6 +4,48 @@
 для миграций, добавленных в ходе аудита 2026-06-25. Выполнять в **обратном** порядке
 (0037 → 0031) и только при необходимости. Все скрипты идемпотентны.
 
+## Откат 0126 (запрет удаления кабинета с историей)
+
+> Единственная миграция, которая **дропает** объект предыдущей: `guard_delete_active_room()`
+> из 0123. Поэтому откат в два шага — иначе между `drop trigger` и восстановлением
+> кабинеты останутся вообще без гарда, и `ON DELETE SET NULL` снова начнёт молча
+> обезличивать историю.
+
+```sql
+begin;
+-- 1. вернуть функцию 0123 (правило «удалять можно только выключенный»)
+create or replace function public.guard_delete_active_room()
+returns trigger language plpgsql security definer set search_path to 'public', 'pg_temp'
+as $fn$
+begin
+  if old.active and pg_trigger_depth() = 1 then
+    raise exception 'ROOM_ACTIVE_DELETE: спершу вимкніть кабінет «%», потім видаляйте', old.name
+      using errcode = 'check_violation';
+  end if;
+  return old;
+end;
+$fn$;
+revoke all on function public.guard_delete_active_room() from public;
+revoke execute on function public.guard_delete_active_room() from anon;
+
+-- 2. и только теперь снять новый гард
+drop trigger if exists trg_guard_delete_room on public.rooms;
+drop trigger if exists trg_guard_delete_active_room on public.rooms;
+create trigger trg_guard_delete_active_room
+  before delete on public.rooms
+  for each row execute function public.guard_delete_active_room();
+drop function if exists public.guard_delete_room();
+
+comment on column public.rooms.active is
+  'false = кабінет вимкнено: нові записи/переноси сюди заборонені (тригер '
+  'check_room_active), наявні записи лишаються робочими. Видалити рядок можна '
+  'лише при active=false (тригер guard_delete_active_room). 0123.';
+commit;
+```
+
+> ⚠️ Клиент после отката тоже надо откатить: он показывает диалог «кабинет с историей
+> удалить нельзя» и блокирует сохранение по тому же критерию.
+
 ## Откат 0037 (drop queue_entry_services, MAJ-12)
 
 ```sql
