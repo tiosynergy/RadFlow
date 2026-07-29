@@ -1511,6 +1511,17 @@ select.inp { cursor: pointer; }
 }
 .bd-room:hover { border-color: var(--text-muted); }
 .bd-room.active { border-color: var(--red); background: var(--red-bg); }
+/* Вимкнений кабінет у чипах доступу (с17).
+   ⚠️ БЕЗ `opacity`. Приглушення прозорістю давало для дрібного тексту
+   `.bd-room-model` (0.6875rem) ≈2.6:1 на тлі --card-2 при вимозі WCAG 1.4.3 AA
+   4.5:1 — тобто саме той підпис, який пояснює стан, і був найгірше читаним.
+   Стан несуть пунктирна рамка ПЛЮС підпис «кабінет вимкнено» у самому чипі,
+   тож і 1.4.1 (не лише кольором) виконано. --orange на --card-2 = 5.5:1.
+   Колір рамки тут ОБОВʼЯЗКОВИЙ: без нього діяв успадкований --border (#38383a),
+   а це 1.03:1 на тлі --card-2 — пунктиру фізично не видно, і з двох обіцяних
+   сигналів лишався один. Інлайновий --green при виданому доступі це перекриває. */
+.bd-room-off { border-style: dashed; border-color: var(--orange); }
+.bd-room-off .bd-room-model { color: var(--orange); }
 .bd-room-kind {
   width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;

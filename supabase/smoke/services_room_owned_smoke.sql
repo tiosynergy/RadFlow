@@ -23,6 +23,7 @@ declare
   v_clinic     uuid;
   v_room_a     uuid;
   v_room_b     uuid;
+  v_room_del   uuid;      -- порожній кабінет лише для блоку (h): каскад прайсу
   v_other_room uuid;                      -- кабінет ЧУЖОГО центру
   v_res        jsonb;
   v_cnt        int;
@@ -287,18 +288,41 @@ begin
             '[{"type":"МРТ","region":"SMOKE OnlyInA"}]'::jsonb);
 
   -- ------------------------------------------------------------------
-  -- (h) Видалення кабінету: cascade зносить його прайс, FK SET NULL на
-  -- записах НЕ блокується каталогом (grandfather при new.room_id IS NULL)
+  -- (h) Видалення кабінету: cascade зносить його прайс; і окремо — обнулення
+  -- room_id у наявному записі НЕ блокується каталогом (grandfather при
+  -- new.room_id IS NULL).
+  --
+  -- ⚠️ ПЕРЕПИСАНО 2026-07-28 (0126). Раніше блок видаляв v_room_a — кабінет, у
+  -- якому до цього моменту вже є і запис (SMOKE PT1), і бронь (SMOKE WL2), і
+  -- який жодного разу не вимикався. Після 0126 таке видалення падає з
+  -- ROOM_HAS_HISTORY (а після 0123 — з ROOM_ACTIVE_DELETE), тож блок був би
+  -- червоним не по своїй темі, і наступна сесія «лагодила» б гард. Гірше: його
+  -- твердження h2 («запис відвʼязався від видаленого кабінету») закріплювало
+  -- РІВНО ту поведінку, яку 0126 оголосив дефектом — мовчазне осиротіння
+  -- історії. Тепер каскад прайсу перевіряємо на окремому ПОРОЖНЬОМУ вимкненому
+  -- кабінеті, а grandfather на `room_id is null` — явним UPDATE. Саме правило
+  -- 0126 перевіряє supabase/smoke/rooms_delete_history_smoke.sql.
   -- ------------------------------------------------------------------
-  delete from public.rooms where id = v_room_a;
-  select count(*) into v_cnt from public.services where room_id = v_room_a;
+  insert into public.rooms (clinic_id, name, modality, schedule)
+    values (v_clinic, 'SMOKE ROOM DEL', 'MRI', v_room_src.schedule) returning id into v_room_del;
+  insert into public.services (clinic_id, room_id, name, modality, price)
+    values (v_clinic, v_room_del, 'SMOKE OnlyInDel', 'MRI', 111);
+  update public.rooms set active = false where id = v_room_del;
+
+  delete from public.rooms where id = v_room_del;
+  select count(*) into v_cnt from public.services where room_id = v_room_del;
   if v_cnt <> 0 then
     raise exception 'SMOKE_FAIL h1: послуги видаленого кабінету лишились (%)', v_cnt;
   end if;
+
+  /* Обнулення room_id у наявному записі: каталог тут має мовчати, інакше запис
+     неможливо було б вивести з кабінету. Раніше цю гілку тестував каскад SET
+     NULL від видалення кабінету — тепер робимо це прямо. */
+  update public.queue_entries set room_id = null where patient_name = 'SMOKE PT1';
   select count(*) into v_cnt from public.queue_entries
    where patient_name = 'SMOKE PT1' and room_id is null;
   if v_cnt <> 1 then
-    raise exception 'SMOKE_FAIL h2: запис не відвʼязався від видаленого кабінету';
+    raise exception 'SMOKE_FAIL h2: каталог заблокував обнулення room_id у записі';
   end if;
 
   alter table public.waitlist_entries enable trigger user;
@@ -308,5 +332,6 @@ begin
     'кабінетний імпорт room-owned без торкання бази (c1-c8), гарди clinic/modality (d), '
     'заборона override на room-owned (e), room-видимість каталогу в чергах/без кабінету/'
     'через прихований override (f1-f5), ceo_kpi бере ціну кабінету (g1), вейтліст (w1-w2), '
-    'видалення кабінету не блокується (h1-h2). Усе відкочено.';
+    'каскад прайсу при видаленні порожнього кабінету + обнулення room_id у записі (h1-h2). '
+    'Усе відкочено.';
 end $smoke$;

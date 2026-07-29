@@ -158,8 +158,15 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
      у вимкненому кабінеті закрили — і кабінет-залишок перестав бути видимим після
      router.refresh) → повертаємось у базовий каталог. Інакше екран лишався б у
      режимі кабінету з room=null: порожні таблиці й кнопки, що нікуди не пишуть. */
+  /* setEditId і setAddOpen ОБОВʼЯЗКОВО тут разом із рештою (ревʼю с17/с18b, Low).
+     Ручна зміна кабінету в «Налаштувати:» їх скидає, а цей автоматичний відкат — ні,
+     і відкриті редактор рядка чи форма «Додати» з режиму кабінету лишались висіти вже
+     в базовому каталозі: поля показують одну область, «Зберегти» пише в іншу
+     (onAdd бере `room?.id`, а `room` тут уже null). */
   useEffect(() => {
-    if (scope !== "base" && !roomList.some((r) => r.id === scope)) { setScope("base"); setOvEditId(null); setSelected({}); }
+    if (scope !== "base" && !roomList.some((r) => r.id === scope)) {
+      setScope("base"); setEditId(null); setOvEditId(null); setAddOpen(false); setSelected({});
+    }
   }, [scope, roomList]);
   const roomMod: ModalityCode | null = room ? modalityCode(room.modality) : null;
   const effTab: ModalityCode = roomMod ?? tab; // у режимі кабінету модальність фіксована
@@ -432,7 +439,13 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
     const editing = editId === s.id;
     return (
       <div className="clrow-wrap" key={s.id} style={roomOwned ? { borderLeft: "3px solid var(--blue)" } : undefined}>
-        <div className="wlrow svc-row" style={{ "--svc-cols": GRID_BASE, opacity: s.active ? 1 : 0.55 } as CSSProperties}>
+        {/* Вимкнена послуга приглушується КОЛЬОРОМ, а не opacity (ревʼю с18b, Low-5).
+            `opacity` створює групу композитингу: діти не можуть її скасувати, тож
+            підпис «вимкнена» (--text-faint) падав до 2.4:1 при вимозі WCAG 1.4.3 AA
+            4.5:1 — найгірше читався саме той текст, що пояснює стан. Успадкований
+            `color` дає той самий візуальний ефект, на верстку не впливає взагалі,
+            а діти з власним кольором (бейджі, помаранчеві «—») лишаються читаними. */}
+        <div className="wlrow svc-row" style={{ "--svc-cols": GRID_BASE, color: s.active ? undefined : "var(--text-muted)" } as CSSProperties}>
           {editing ? (
             <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", padding: "4px 0" }}>
               <DraftFields d={draft} setD={setDraft} />
@@ -483,7 +496,8 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
       <div className="qctrl" style={{ marginBottom: 8 }}>
         <label className="fld-lab svc-scope">
           Налаштувати:
-          <select className="inp" value={scope} onChange={(e) => { setScope(e.target.value); setEditId(null); setOvEditId(null); setSelected({}); }}>
+          {/* Той самий набір скидань, що й в автоматичному відкаті вище — розійтись їм не можна. */}
+          <select className="inp" value={scope} onChange={(e) => { setScope(e.target.value); setEditId(null); setOvEditId(null); setAddOpen(false); setSelected({}); }}>
             <option value="base">Базовий каталог центру</option>
             {roomListOn.length > 0 && <optgroup label="Кабінети (власний прайс)">
               {roomListOn.map((r) => <option key={r.id} value={r.id}>{modalityLabel(r.modality)} · {r.name}{r.apparatus_model ? " · " + r.apparatus_model : ""}</option>)}

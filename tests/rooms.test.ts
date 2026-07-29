@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   isRoomBookable, bookableRooms, ROOM_OFF_LABEL,
   isRoomVisible, visibleRooms, residualSet, pluralZapys, roomOffLabel,
+  roomDeleteBlockReason,
 } from "../lib/rooms";
 import { offRoomIdsOf } from "../lib/roomsResidual";
 
@@ -121,6 +122,55 @@ describe("offRoomIdsOf", () => {
   it("undefined / null → порожній масив (жодного запиту за залишками)", () => {
     expect(offRoomIdsOf(undefined)).toEqual([]);
     expect(offRoomIdsOf(null)).toEqual([]);
+  });
+});
+
+/* ===== Видалення кабінету (0126) =====
+   Це найдрейфовіша частина правила: те саме мусить збігатись у трьох місцях —
+   діалог майстра, преflight збереження і тригер guard_delete_room. Тримаємо
+   рішення чистою функцією, щоб розходження ловилось тут, а не в проді. */
+
+describe("roomDeleteBlockReason", () => {
+  it("порожній вимкнений кабінет — видаляти можна (єдиний легітимний сценарій «✕»)", () => {
+    expect(roomDeleteBlockReason({ queue: 0, waitlist: 0, active: false })).toBe(null);
+  });
+
+  it("порожній, але ще ввімкнений — спершу вимкнути (0123)", () => {
+    expect(roomDeleteBlockReason({ queue: 0, waitlist: 0, active: true })).toBe("active");
+  });
+
+  it("active невідомий → вважаємо ввімкненим (fail-closed)", () => {
+    expect(roomDeleteBlockReason({ queue: 0, waitlist: 0 })).toBe("active");
+    expect(roomDeleteBlockReason({ queue: 0, waitlist: 0, active: null })).toBe("active");
+  });
+
+  it("ЗАКРИТА МИНУЛА історія теж блокує — саме її пропускало старе правило", () => {
+    expect(roomDeleteBlockReason({ queue: 1, waitlist: 0, active: false })).toBe("history");
+  });
+
+  it("сама лише бронь вейтліста — теж історія (room_id → SET NULL і тут)", () => {
+    expect(roomDeleteBlockReason({ queue: 0, waitlist: 1, active: false })).toBe("history");
+  });
+
+  it("історія важливіша за «ще ввімкнений»: порядок як у тригері", () => {
+    // Інакше власник вимкнув би кабінет, зберіг і лише потім дізнався,
+    // що видалити не можна взагалі.
+    expect(roomDeleteBlockReason({ queue: 3, waitlist: 2, active: true })).toBe("history");
+  });
+
+  it("не порахували історію → блокуємо, а не «ризикнемо»", () => {
+    expect(roomDeleteBlockReason({ queue: null, waitlist: 0, active: false })).toBe("unknown");
+    expect(roomDeleteBlockReason({ queue: 0, waitlist: null, active: false })).toBe("unknown");
+    expect(roomDeleteBlockReason({ active: false })).toBe("unknown");
+    expect(roomDeleteBlockReason({})).toBe("unknown");
+  });
+
+  it("NaN — теж «не порахували», а не нуль", () => {
+    expect(roomDeleteBlockReason({ queue: NaN, waitlist: 0, active: false })).toBe("unknown");
+  });
+
+  it("«не порахували» важливіше за все інше", () => {
+    expect(roomDeleteBlockReason({ queue: null, waitlist: 5, active: true })).toBe("unknown");
   });
 });
 

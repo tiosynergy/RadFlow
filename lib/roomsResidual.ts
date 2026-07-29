@@ -35,9 +35,24 @@ export interface ResidualRooms {
   ids: string[];
   /** id → скільки живих рядків (для підпису «вимкнено · N записів»). */
   counts: Record<string, number>;
+  /** Хоч один підрахунок не вдався → `ids` містить УСІ вимкнені кабінети (fail-open),
+   *  а `counts` неповні. Див. коментар до residualOffRooms. */
+  degraded?: boolean;
 }
 
 export const EMPTY_RESIDUAL: ResidualRooms = { ids: [], counts: {} };
+
+/** По скільки кабінетів кладемо в один `.in(...)`. Розмір пачки, а НЕ стеля:
+ *  кабінетів може бути скільки завгодно, просто питаємо їх партіями. Стеля тут
+ *  була б міною сповільненої дії — 0126 забороняє видаляти кабінет із історією,
+ *  тож виведені з експлуатації накопичуються назавжди. */
+const CHUNK = 30;
+
+const chunk = <T,>(xs: T[], n: number): T[][] => {
+  const out: T[][] = [];
+  for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
+  return out;
+};
 
 /**
  * Порахувати залишки у вимкнених кабінетах центру.
@@ -47,10 +62,18 @@ export const EMPTY_RESIDUAL: ResidualRooms = { ids: [], counts: {} };
  * результат без жодного запиту: у переважній більшості центрів вимкнених
  * кабінетів немає взагалі.
  *
- * Помилка запиту НЕ валить сторінку: повертаємо те, що встигли порахувати.
- * Наслідок деградації — вимкнений кабінет може не з'явитись у списку, хоча в
- * ньому є записи; сам запис при цьому нікуди не дінеться (він резолвиться за
- * room_id з повного списку кабінетів), тож це косметика, а не втрата даних.
+ * ⚠️ ПОМИЛКА ЗАПИТУ → FAIL-OPEN: показуємо ВСІ вимкнені кабінети, просто без
+ * числа в підписі (ревʼю с18b, High-1). Раніше збій був невідрізнимий від
+ * справжньої порожнечі, і наслідок був не косметичний, як тут колись написали:
+ * на /radiologist кабінети радіолога рахуються саме за видимими, тож єдиний
+ * невдалий запит показував радіологу «усі ваші кабінети вимкнено» і відрізав
+ * його від власної черги. Зайвий кабінет у сайдбарі — прийнятна ціна; зниклий
+ * кабінет із живими записами — ні.
+ *
+ * ⚠️ Читаємо `select("room_id")` пачками по CHUNK, а не рядок за рядком і не
+ * все одним запитом без ліміту (ревʼю с17, Low + с18b, Medium-2). `.limit()`
+ * тут поставити не можна: зріз рядків мовчки занизив би лічильники, а це вже
+ * брехня в підписі. Пачка обмежує РОЗМІР запиту, а не повноту відповіді.
  */
 export async function residualOffRooms(
   supabase: SupabaseClient,
@@ -62,33 +85,41 @@ export async function residualOffRooms(
 
   const today = wallDayKey(tz || undefined);
   const counts: Record<string, number> = {};
+  let degraded = false;
+
   const bump = (roomId: unknown) => {
     if (typeof roomId !== "string" || !roomId) return;
     counts[roomId] = (counts[roomId] || 0) + 1;
   };
 
-  const [queueRes, waitRes] = await Promise.all([
-    supabase
-      .from("queue_entries")
-      .select("room_id")
-      .eq("clinic_id", clinicId)
-      .in("room_id", offRoomIds)
-      .gte("scheduled_date", today)
-      .not("status", "in", `(${DEAD_QUEUE.join(",")})`),
-    supabase
-      .from("waitlist_entries")
-      .select("room_id")
-      .eq("clinic_id", clinicId)
-      .in("room_id", offRoomIds)
-      .in("status", LIVE_WAITLIST as unknown as string[]),
-  ]);
-
-  for (const row of queueRes.data || []) bump((row as { room_id?: unknown }).room_id);
-  for (const row of waitRes.data || []) bump((row as { room_id?: unknown }).room_id);
+  await Promise.all(chunk(offRoomIds, CHUNK).map(async (ids) => {
+    const [queueRes, waitRes] = await Promise.all([
+      supabase
+        .from("queue_entries")
+        .select("room_id")
+        .eq("clinic_id", clinicId)
+        .in("room_id", ids)
+        .gte("scheduled_date", today)
+        .not("status", "in", `(${DEAD_QUEUE.join(",")})`),
+      supabase
+        .from("waitlist_entries")
+        .select("room_id")
+        .eq("clinic_id", clinicId)
+        .in("room_id", ids)
+        .in("status", LIVE_WAITLIST as unknown as string[]),
+    ]);
+    if (queueRes.error || waitRes.error) {
+      degraded = true;
+      console.warn(`[roomsResidual] ${clinicId}: ${(queueRes.error || waitRes.error)?.message ?? "невідома помилка"}`);
+      return;
+    }
+    for (const row of queueRes.data || []) bump((row as { room_id?: unknown }).room_id);
+    for (const row of waitRes.data || []) bump((row as { room_id?: unknown }).room_id);
+  }));
 
   // Порядок як у вхідному списку — щоб сайдбар не «стрибав» між рендерами.
-  const ids = offRoomIds.filter((id) => (counts[id] || 0) > 0);
-  return { ids, counts };
+  if (degraded) return { ids: [...offRoomIds], counts, degraded: true };
+  return { ids: offRoomIds.filter((id) => (counts[id] || 0) > 0), counts };
 }
 
 /** Дістати id вимкнених кабінетів зі списку, який сторінка вже завантажила. */

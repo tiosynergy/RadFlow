@@ -80,6 +80,49 @@ export function residualSet(ids: string[] | null | undefined): ReadonlySet<strin
   return new Set(ids || []);
 }
 
+/* ===== Видалення кабінету (0123 + 0126) =====
+
+   ТРИ причини відмови, і плутати їх не можна:
+     "unknown" — не вдалось порахувати історію. Fail-closed: не пропускаємо.
+                 Тригер БД усе одно відмовить, але вже сирим кодом у тості й уже
+                 ПІСЛЯ того, як картку кабінету прибрали з форми.
+     "history" — у кабінеті є хоч один рядок черги або вейтліста, БУДЬ-ЯКОГО
+                 статусу й дати. Заборона НАЗАВЖДИ (0126): `room_id` в обох
+                 таблицях має ON DELETE SET NULL, тож видалення мовчки знеособило
+                 б історію, а відновити звʼязок було б нічим. Правильна дія —
+                 ВИМКНУТИ кабінет.
+     "active"  — історії немає, але кабінет ще ввімкнений. Тимчасово (0123):
+                 вимкнути + зберегти, і тоді видалення відкриється.
+
+   ПОРЯДОК саме такий, і він дзеркалить порядок перевірок у тригері
+   guard_delete_room. Якби "active" стояв першим, власник кабінету з історією
+   спершу вимикав би його, зберігав, повертався видаляти — і лише тоді
+   дізнавався, що видалити не можна взагалі.
+
+   `active` тут — стан у БАЗІ, а не перемикач у формі: інакше «вимкнув → одразу
+   видалив → Зберегти» проходило б одним збереженням і двокроковість була б
+   косметикою. undefined трактуємо як ввімкнений (fail-closed). */
+export type RoomDeleteFacts = {
+  /** рядків у queue_entries за кабінетом; null/undefined = порахувати не вдалось */
+  queue?: number | null;
+  /** рядків у waitlist_entries за кабінетом; null/undefined = порахувати не вдалось */
+  waitlist?: number | null;
+  /** rooms.active із БАЗИ */
+  active?: boolean | null;
+};
+export type RoomDeleteBlock = "unknown" | "history" | "active" | null;
+
+/** Чому не можна видалити кабінет. null → можна. */
+export function roomDeleteBlockReason(f: RoomDeleteFacts): RoomDeleteBlock {
+  const q = f.queue;
+  const w = f.waitlist;
+  if (typeof q !== "number" || !Number.isFinite(q)) return "unknown";
+  if (typeof w !== "number" || !Number.isFinite(w)) return "unknown";
+  if (q + w > 0) return "history";
+  if (f.active !== false) return "active";
+  return null;
+}
+
 /* Українська множина для «запис»: 1 запис, 2–4 записи, 5–20 записів,
    далі — за останньою цифрою (21 запис, 22 записи, 25 записів). */
 export function pluralZapys(n: number): string {

@@ -28,7 +28,10 @@
 --       була б хибно-зеленою;
 --   (f2) повідомлення не містить назви кабінету (оракул назви через BEFORE-тригер,
 --       який відпрацьовує раніше за RLS WITH CHECK);
---   (g) DELETE активного кабінету → ROOM_ACTIVE_DELETE; вимкненого → ок;
+--   (g) DELETE активного ПОРОЖНЬОГО кабінету → ROOM_ACTIVE_DELETE; вимкненого
+--       порожнього → ок. Порожнього — бо 0126 (2026-07-28) заборонив видаляти
+--       кабінет із будь-якою історією; це правило перевіряє окремий смоук
+--       rooms_delete_history_smoke.sql, а тут ми доводимо саме правило 0123;
 --   (h) ACL: anon не має execute на нових функціях (через has_function_privilege —
 --       порожній proacl означає EXECUTE для PUBLIC, а не «нікому»).
 --
@@ -44,6 +47,8 @@ declare
   v_room_on    uuid;      -- активний кабінет
   v_room_off   uuid;      -- вимкнений кабінет
   v_room_alien uuid;      -- вимкнений кабінет ЧУЖОЇ клініки
+  v_room_del_on  uuid;    -- порожній активний кабінет — лише для блоку (g)
+  v_room_del_off uuid;    -- порожній вимкнений кабінет — лише для блоку (g)
   v_entry      uuid;
   v_wl         uuid;
   v_dead       uuid;
@@ -70,10 +75,6 @@ begin
   -- ==================================================================
   -- (a) Наявні кабінети переїхали в active = true
   -- ==================================================================
-  /* Перевірка має сенс ЛИШЕ у dry-run одразу після DDL: пізніше власник законно
-     вимкне якийсь кабінет, і жорсткий count пішов би червоним на порожньому місці.
-     Тому дивимось на кабінети, створені ДО цієї транзакції, і лише коли вимкнених
-     ще немає взагалі (тобто це справді перший прогін). */
   /* Перевіряємо дефолт на СВОЇХ щойно створених рядках: жорсткий count по всій
      таблиці пішов би червоним, щойно власник законно вимкне перший кабінет, а
      саме дефолт `not null default true` тут і треба довести. */
@@ -279,10 +280,25 @@ begin
 
   -- ==================================================================
   -- (g) DELETE: активний — ні, вимкнений — так
+  --
+  -- ⚠️ 2026-07-28, 0126. Перевірку ПЕРЕНЕСЕНО на ПОРОЖНІ кабінети (v_room_del_*),
+  -- а не на v_room_on / v_room_off, у яких до цього моменту вже накопичилась
+  -- історія цього ж смоуку. Причина: 0126 забороняє видаляти кабінет із будь-якою
+  -- історією, і на v_room_off ми б отримали ROOM_HAS_HISTORY замість успіху, а на
+  -- v_room_on — ROOM_HAS_HISTORY замість ROOM_ACTIVE_DELETE. Правило 0123, яке
+  -- перевіряє цей блок, від того не змінилось — змінилось лише те, що для його
+  -- перевірки потрібен кабінет БЕЗ історії. Саме правило 0126 перевіряє
+  -- окремий смоук rooms_delete_history_smoke.sql.
   -- ==================================================================
+  insert into public.rooms (clinic_id, name, modality, schedule)
+    values (v_clinic, 'SMOKE RA DEL ON', 'MRI', v_room_src.schedule) returning id into v_room_del_on;
+  insert into public.rooms (clinic_id, name, modality, schedule)
+    values (v_clinic, 'SMOKE RA DEL OFF', 'MRI', v_room_src.schedule) returning id into v_room_del_off;
+  update public.rooms set active = false where id = v_room_del_off;
+
   v_ok := false;
   begin
-    delete from public.rooms where id = v_room_on;
+    delete from public.rooms where id = v_room_del_on;
   exception when check_violation then
     v_ok := true; v_msg := sqlerrm;
   end;
@@ -293,10 +309,10 @@ begin
     raise exception 'SMOKE_FAIL g1: очікували ROOM_ACTIVE_DELETE, отримали «%»', v_msg;
   end if;
 
-  -- Вимкнений видаляється (записи підуть у room_id = null через SET NULL).
-  delete from public.rooms where id = v_room_off;
-  if exists (select 1 from public.rooms where id = v_room_off) then
-    raise exception 'SMOKE_FAIL g2: вимкнений кабінет не видалився';
+  -- Вимкнений і порожній видаляється.
+  delete from public.rooms where id = v_room_del_off;
+  if exists (select 1 from public.rooms where id = v_room_del_off) then
+    raise exception 'SMOKE_FAIL g2: вимкнений порожній кабінет не видалився';
   end if;
 
   -- ==================================================================
@@ -308,8 +324,20 @@ begin
   if has_function_privilege('anon', 'public.check_room_active()', 'execute') then
     raise exception 'SMOKE_FAIL h1: anon має execute на check_room_active';
   end if;
-  if has_function_privilege('anon', 'public.guard_delete_active_room()', 'execute') then
-    raise exception 'SMOKE_FAIL h2: anon має execute на guard_delete_active_room';
+  /* Гард видалення після 0126 називається guard_delete_room(), до неї —
+     guard_delete_active_room(). Смоук має лишатись зеленим по обидва боки
+     накатки, тому перевіряємо ту функцію, яка справді існує; повна її
+     відсутність — теж помилка (гард зник). */
+  if to_regprocedure('public.guard_delete_room()') is not null then
+    if has_function_privilege('anon', 'public.guard_delete_room()', 'execute') then
+      raise exception 'SMOKE_FAIL h2: anon має execute на guard_delete_room';
+    end if;
+  elsif to_regprocedure('public.guard_delete_active_room()') is not null then
+    if has_function_privilege('anon', 'public.guard_delete_active_room()', 'execute') then
+      raise exception 'SMOKE_FAIL h2: anon має execute на guard_delete_active_room';
+    end if;
+  else
+    raise exception 'SMOKE_FAIL h2: гарда видалення кабінету немає взагалі';
   end if;
 
   raise exception 'SMOKE_OK: 0123 вимкнення кабінету — усі перевірки пройдено (відкат)';
