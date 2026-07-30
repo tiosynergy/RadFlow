@@ -40,11 +40,14 @@
 }
 .clrow > * { min-width: 0; }
 .clrow:hover { background: var(--card-hover); }
-.clrow.confirmed { border-left-color: var(--green); opacity: 0.72; }
-.clrow.confirmed:hover { opacity: 0.92; }
+/* Приглушення відпрацьованих рядків — кольором, не `opacity`: повне пояснення
+   й заміри у radflow.css біля `.qrow-item.done`. Стан несе лівий акцент. */
+.clrow.confirmed { border-left-color: var(--green); color: var(--text-muted); }
+.clrow.confirmed:hover { color: var(--text); }
 .clrow.noanswer { border-left-color: var(--orange); }
 .clrow.callback { border-left-color: var(--blue); }
-.clrow.refused { border-left-color: var(--red); opacity: 0.6; }
+.clrow.refused { border-left-color: var(--red); color: var(--text-muted); }
+.clrow.refused:hover { color: var(--text); }
 .clrow.flash { animation: rowFlash 1.2s ease-out; }
 
 .cl-time { font-size: 0.9375rem; font-weight: 700; line-height: 1.1; }
@@ -173,7 +176,10 @@
 .cl-inc-list { display: flex; flex-direction: column; gap: 6px; }
 .cl-inc-item { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; }
 .cl-inc-item.open { border-color: var(--red); }
-.cl-inc-item.done { opacity: 0.62; }
+/* Не opacity — див. radflow.css біля `.qrow-item.done`. `.cl-inc-row` нижче
+   задає color явно, тож самого кольору на контейнері мало — прокидаємо inherit. */
+.cl-inc-item.done { color: var(--text-muted); }
+.cl-inc-item.done .cl-inc-row { color: inherit; }
 .cl-inc-row { width: 100%; display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: none; border: none; cursor: pointer; text-align: left; font: inherit; color: var(--text); }
 .cl-inc-row:hover { background: var(--card-2); }
 .cl-inc-row .cl-chev { flex-shrink: 0; color: var(--text-faint); transition: transform .15s ease; display: inline-block; }
@@ -257,6 +263,84 @@ html[data-density="spacious"] .wlhead { padding-top: 18px; padding-bottom: 18px;
 @keyframes rf-spin { to { transform: rotate(360deg); } }
 .rf-spin { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; animation: rf-spin .7s linear infinite; vertical-align: -1px; }
 @media (prefers-reduced-motion: reduce) { .rf-spin { animation: none; } }
+
+/* ===================================================================
+   Імпорт прайса: зона завантаження і смужки прогресу
+   ===================================================================
+   Дві смужки навмисно різні, бо різні за суттю (див. коментар до `Step` у
+   components/ImportPriceModal.tsx): вивантаження файла має справжній відсоток
+   і показує ЗАПОВНЕННЯ, розбір на сервері відсотка не має в принципі й показує
+   БІГУНЕЦЬ. Якщо колись захочеться «щоб виглядало однаково» — це буде
+   повернення до вигаданого прогресу, від якого й пішли. */
+.imp-pick { display: flex; flex-direction: column; gap: 14px; }
+/* Довідку про формати робимо штатним `.info-banner`; його власний нижній відступ
+   тут зайвий — вертикаль тримає gap контейнера. */
+.imp-pick .info-banner { margin-bottom: 0; }
+.imp-pick .info-banner .ib-ic { color: var(--blue-text); }
+
+/* Сама зона. Це <button>, тож скидаємо кнопкові дефолти вручну. */
+.imp-drop {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; width: 100%; min-height: 128px; padding: 18px 16px;
+  background: var(--bg-elevated); color: var(--text);
+  /* Рамка тут — не декор, а ЄДИНА межа елемента керування, тож на неї діє
+     WCAG 1.4.11 (3:1). Звичний --border-strong дає на цьому тлі лише 1.53:1 —
+     зони фактично не видно. --text-faint тримає 5.1:1 і лишається спокійним. */
+  border: 2px dashed var(--text-faint); border-radius: var(--r-md);
+  cursor: pointer; text-align: center; font: inherit;
+  transition: border-color .12s, background .12s;
+}
+.imp-drop:hover { border-color: var(--blue); background: var(--card); }
+.imp-drop:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+/* Стан «над зоною тягнуть файл». Не лише колір: рамка стає суцільною (1.4.1). */
+.imp-drop.is-over { border-style: solid; border-color: var(--blue); background: var(--blue-bg); }
+/* Під час надсилання зона неактивна. `opacity` тут НЕ використовуємо — див.
+   правило біля `.qrow-item.done` у radflow.css: імʼя файла має лишатись читаним
+   саме тоді, коли на нього дивляться. */
+/* `aria-disabled`, а не `disabled` — щоб не втратити фокус (див. коментар у
+   ImportPriceModal.tsx). Отже і стилі чіпляємо за атрибут. */
+.imp-drop[aria-disabled="true"] { cursor: default; border-color: var(--text-muted); }
+.imp-drop[aria-disabled="true"]:hover { border-color: var(--text-muted); background: var(--bg-elevated); }
+.imp-drop.is-busy .imp-drop-sub { color: var(--blue-text); }
+.imp-drop-ic { font-size: 1.5rem; line-height: 1; color: var(--text-muted); }
+.imp-drop-name { font-size: 0.875rem; font-weight: 600; max-width: 100%; overflow-wrap: anywhere; }
+.imp-drop-sub { font-size: 0.75rem; color: var(--text-muted); }
+
+/* Смужка прогресу. */
+.imp-prog { display: flex; flex-direction: column; gap: 6px; }
+.imp-prog-bar {
+  position: relative; overflow: hidden;
+  height: 6px; border-radius: 999px; background: var(--card-2);
+}
+.imp-prog-fill { display: block; height: 100%; border-radius: 999px; background: var(--blue); transition: width .18s linear; }
+/* Невизначений стан: бігунець їздить туди-сюди. Ширина фіксована — саме
+   відсутність краю й читається як «скільки лишилось, невідомо». */
+.imp-prog-bar.is-indeterminate .imp-prog-fill { width: 34%; animation: imp-slide 1.4s ease-in-out infinite; }
+@keyframes imp-slide {
+  0%   { transform: translateX(-110%); }
+  100% { transform: translateX(320%); }
+}
+.imp-prog-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  font-size: 0.78125rem; color: var(--text-secondary);
+}
+.imp-prog-hint { color: var(--text-muted); }
+
+/* Альтернатива — посилання на прайс. */
+.imp-url { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.imp-url-lab { font-size: 0.78125rem; color: var(--text-muted); }
+.imp-url .inp { flex: 1 1 220px; min-width: 200px; }
+.imp-foot-note { font-size: 0.78125rem; color: var(--text-muted); margin: 0; }
+.imp-foot-note b { color: var(--text); font-weight: 600; }
+
+/* WCAG 2.3.3: нескінченна анімація вимикається. Смужка лишається видимою —
+   вона й далі повідомляє «йде робота», просто нерухомо; час поруч показує, що
+   процес живий, тому інформації користувач не втрачає. */
+@media (prefers-reduced-motion: reduce) {
+  .imp-prog-bar.is-indeterminate .imp-prog-fill { animation: none; width: 100%; }
+  .imp-prog-fill { transition: none; }
+  .imp-drop { transition: none; }
+}
 
 /* ===================================================================
    WCAG 2.1 AA · 1.4.10 Reflow — колл-лист, лист очікування, послуги, портал

@@ -1,7 +1,7 @@
 "use client";
 
 /* ===== RadFlow — модалка «Імпорт прайса» (Stage 2, фази 3a+3b) =====
-   Флоу: файл (.xlsx/.csv — детерміновано; .pdf/.docx/фото — AI Grok) АБО
+   Флоу: файл (.xlsx/.csv — детерміновано; .pdf/.docx — AI Grok) АБО
    https-посилання на прайс → POST /api/services/import (n8n парсить, сервер
    нормалізує/класифікує) → передперегляд по групах: «Зміна ціни/часу» / «Нові» /
    «Вимкнені (оживити?)» / «Нерозпізнані» (адмін обирає модальність) / «Без змін»
@@ -16,7 +16,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { importServices, type ImportServiceRow } from "@/app/services/actions";
 import { BOOKABLE_MODALITIES, modalityLabel, normDur } from "@/lib/studies";
-import { AI_CONF_MIN, type ClassifiedRow, type DetectedColumns } from "@/lib/priceImport";
+import {
+  AI_CONF_MIN, importFileKind, isAiFileKind,
+  IMPORT_ACCEPT_ATTR, IMPORT_ACCEPT_EXT_TEXT, IMPORT_FORMATS_HINT, IMPORT_MAX_FILE_BYTES,
+  type ClassifiedRow, type DetectedColumns, type ImportFileKind,
+} from "@/lib/priceImport";
 
 interface Preview {
   rows: ClassifiedRow[];
@@ -37,11 +41,26 @@ interface Props {
   roomId?: string;
 }
 
-type Step = "pick" | "loading" | "preview" | "applying";
+/* Крок `loading` розділено надвоє (2026-07-29). Це не косметика: у двох фаз
+   принципово різна природа, і зливати їх в одну «крутилку» — обманювати.
+     uploading — байти летять на сервер. Прогрес ВІДОМИЙ, тож смужка визначена
+                 (XMLHttpRequest.upload.onprogress; fetch такого не вміє — саме
+                 тому тут XHR, а не fetch).
+     parsing   — сервер + n8n + LLM. Прогрес НЕ відомий у принципі, тож смужка
+                 невизначена, а поруч — лічильник часу й чесне очікування
+                 («секунди» для таблиці, «1–3 хвилини» для AI). Малювати тут
+                 відсотки означало б їх вигадати. */
+type Step = "pick" | "uploading" | "parsing" | "preview" | "applying";
 /** Модальності з формами запису (без OTHER) — тип збігається з ImportServiceRow.modality. */
 type BookableMod = ImportServiceRow["modality"];
 
 const fmtUah = (n: number) => n.toLocaleString("uk-UA") + " ₴";
+/** Розмір файла людською мовою. КБ до мегабайта — щоб «0,0 МБ» не лякало. */
+const fmtSize = (b: number) =>
+  b < 1024 * 1024
+    ? `${Math.max(1, Math.round(b / 1024))} КБ`
+    : `${(b / 1024 / 1024).toFixed(1).replace(".", ",")} МБ`;
+const fmtClock = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
 export default function ImportPriceModal({ onClose, onDone, roomModality, roomId }: Props) {
   const [step, setStep] = useState<Step>("pick");
@@ -49,14 +68,17 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
   // а onDone/refresh — ні, і адмін бачитиме старий каталог (ревью L6).
   const stepRef = useRef(step);
   stepRef.current = step;
+  const xhrRef = useRef<XMLHttpRequest | null>(null);
+  const abort = () => { const x = xhrRef.current; xhrRef.current = null; x?.abort(); };
   const safeClose = () => {
     // Застосування — жорсткий блок: імпорт на сервері завершиться, а onDone/refresh — ні
     // (адмін бачив би старий каталог; ревью L6).
     if (stepRef.current === "applying") return;
-    // Розбір (файл/URL → Grok, до ~3 хв) — перепитуємо: закриття втратить передперегляд
-    // і змарнує виклик AI. Гард від випадкового Esc / кліку повз модалку під час очікування.
-    if (stepRef.current === "loading" &&
+    // Завантаження/розбір (файл/URL → Grok, до ~3 хв) — перепитуємо: закриття втратить
+    // передперегляд і змарнує виклик AI. Гард від випадкового Esc / кліку повз модалку.
+    if ((stepRef.current === "uploading" || stepRef.current === "parsing") &&
         !window.confirm("Розбір прайса ще триває. Закрити й скасувати перегляд?")) return;
+    abort();
     onClose();
   };
   const dialogRef = useModalA11y<HTMLDivElement>(safeClose);
@@ -82,47 +104,115 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
   // 3b: режим «посилання на прайс» (https-сторінка центру → n8n → Grok).
   const [urlInput, setUrlInput] = useState("");
 
-  async function onUpload(file: File | null, url?: string) {
+  /* Стан зони завантаження. `picked` живе окремо від `step`, бо чип із іменем
+     файла має бути видимий і поки байти летять, і якщо розбір упав з помилкою —
+     інакше після відмови користувач не бачить, ЯКИЙ саме файл не підійшов. */
+  const [picked, setPicked] = useState<{ name: string; size: number } | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [upFrac, setUpFrac] = useState(0);   // 0..1, реальні байти з XHR
+  const [aiExpected, setAiExpected] = useState(false);
+  const [elapsed, setElapsed] = useState(0); // секунди на кроці parsing
+
+  // Лічильник часу розбору. Не прогрес — просто чесна відповідь на «воно живе?».
+  useEffect(() => {
+    if (step !== "parsing") return;
+    const t = setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [step]);
+
+  /* Розмонтування (батько прибрав модалку) не повинно лишати запит у польоті:
+     інакше `xhr.onload` спрацював би вже на знятому компоненті. Логіку повторюємо
+     тут замість виклику `abort`, щоб замикання йшло лише на стабільний ref і не
+     доводилось писати в ref під час рендера (React 19 це забороняє). */
+  useEffect(() => () => { const x = xhrRef.current; xhrRef.current = null; x?.abort(); }, []);
+
+  /** Перевірка ДО відправки: формат і розмір. Сервер перевіряє те саме (415/413)
+      і лишається справжнім рубежем — але ганяти 4 МБ по мережі, щоб дізнатись
+      «не той формат», безглуздо, а на повільному каналі ще й довго. */
+  function rejectReason(file: File): string | null {
+    if (!importFileKind(file.name)) {
+      return `Формат не підтримується. ${IMPORT_FORMATS_HINT}.`;
+    }
+    if (file.size === 0) return "Файл порожній.";
+    if (file.size > IMPORT_MAX_FILE_BYTES) {
+      return `Файл завеликий — ${fmtSize(file.size)}. Ліміт 4 МБ.`;
+    }
+    return null;
+  }
+
+  function onPick(file: File | null) {
+    if (!file) return;
+    setPicked({ name: file.name, size: file.size });
+    const bad = rejectReason(file);
+    if (bad) { setErr(bad); setStep("pick"); return; }
+    onUpload(file);
+  }
+
+  function onUpload(file: File | null, url?: string) {
     setErr(null);
-    setStep("loading");
-    try {
-      const fd = new FormData();
-      if (file) fd.append("file", file);
-      if (url) fd.append("url", url);
-      // 0121: у режимі кабінета превʼю рахує diff проти ВЛАСНИХ послуг кабінету
-      // (той самий набір, що оновлює RPC) — інакше класифікація і optimistic-lock
-      // зʼїхали б на базовий каталог, якого кабінетний імпорт не торкається.
-      if (roomId) fd.append("room_id", roomId);
-      const resp = await fetch("/api/services/import", { method: "POST", body: fd });
-      const json = await resp.json().catch(() => null);
-      if (!resp.ok || !json?.ok) {
+    setUpFrac(0);
+    setElapsed(0);
+    const kind: ImportFileKind | null = file ? importFileKind(file.name) : null;
+    setAiExpected(url ? true : !!kind && isAiFileKind(kind));
+    // URL-режим нічого не вивантажує — одразу в розбір.
+    setStep(file ? "uploading" : "parsing");
+
+    const fd = new FormData();
+    if (file) fd.append("file", file);
+    if (url) fd.append("url", url);
+    // 0121: у режимі кабінета превʼю рахує diff проти ВЛАСНИХ послуг кабінету
+    // (той самий набір, що оновлює RPC) — інакше класифікація і optimistic-lock
+    // зʼїхали б на базовий каталог, якого кабінетний імпорт не торкається.
+    if (roomId) fd.append("room_id", roomId);
+
+    /* XHR, а не fetch: `fetch` не повідомляє прогрес ВИВАНТАЖЕННЯ (ReadableStream
+       на запиті в браузерах не працює як duplex), а саме він тут і потрібен —
+       прайс до 4 МБ на мобільному каналі йде відчутно довго. */
+    const xhr = new XMLHttpRequest();
+    xhrRef.current = xhr;
+    xhr.open("POST", "/api/services/import");
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) setUpFrac(e.loaded / e.total); };
+    // Байти пішли — далі чекаємо на сервер: визначену смужку міняємо на невизначену.
+    xhr.upload.onload = () => { setUpFrac(1); setStep("parsing"); };
+    xhr.onabort = () => { xhrRef.current = null; };
+    xhr.onerror = () => {
+      xhrRef.current = null;
+      // Транзієнтний збій мережі — не валимо модалку в overlay (канон try/catch).
+      setErr("Не вдалося звʼязатися з сервером — спробуйте ще раз");
+      setStep("pick");
+    };
+    xhr.onload = () => {
+      xhrRef.current = null;
+      let json: { ok?: boolean; error?: string; preview?: Preview } | null = null;
+      try { json = JSON.parse(xhr.responseText); } catch { json = null; }
+      if (xhr.status < 200 || xhr.status >= 300 || !json?.ok || !json.preview) {
         setErr(json?.error || "Не вдалося розібрати файл — додайте позиції вручну");
         setStep("pick");
         return;
       }
-      const pv = json.preview as Preview;
-      const init: Record<number, boolean> = {};
-      pv.rows.forEach((r, i) => {
-        // Нові (в т.ч. без ціни — рішення власника: скелет каталогу теж імпортується)
-        // і зміни — увімкнені одразу; вимкнені/нерозпізнані — свідомий вибір адміна.
-        // 3b (ревʼю M3): AI-розбір НЕ пред-відмічається — зловмисний прайс міг би
-        // підсунути 200 правдоподібних «змін цін» під один клік «Застосувати».
-        // Для AI кожен рядок (або «Відмітити всі») — свідомий вибір адміна.
-        // 0121 (ревю Ф3 №2): у режимі кабінета чужа модальність не пред-відмічається —
-        // вона однаково відкидається при застосуванні (баннер «ігноруються»).
-        if (roomModality && r.row.modality && r.row.modality !== roomModality) return;
-        if (!pv.ai && (r.kind === "new" || r.kind === "changed")) init[i] = true;
-      });
-      setChecked(init);
-      setModPick({});
-      setDurPick({}); // ревю Ф3 №1: ручні тривалості привʼязані до індексів СТАРОГО превʼю
-      setPreview(pv);
-      setStep("preview");
-    } catch {
-      // Транзієнтний збій мережі — не валимо модалку в overlay (канон try/catch).
-      setErr("Не вдалося звʼязатися з сервером — спробуйте ще раз");
-      setStep("pick");
-    }
+      applyPreview(json.preview);
+    };
+    xhr.send(fd);
+  }
+
+  function applyPreview(pv: Preview) {
+    const init: Record<number, boolean> = {};
+    pv.rows.forEach((r, i) => {
+      // Нові (в т.ч. без ціни — рішення власника: скелет каталогу теж імпортується)
+      // і зміни — увімкнені одразу; вимкнені/нерозпізнані — свідомий вибір адміна.
+      // 3b (ревʼю M3): AI-розбір НЕ пред-відмічається — зловмисний прайс міг би
+      // підсунути 200 правдоподібних «змін цін» під один клік «Застосувати».
+      // Для AI кожен рядок (або «Відмітити всі») — свідомий вибір адміна.
+      // 0121 (ревю Ф3 №2): у режимі кабінета чужа модальність не пред-відмічається —
+      // вона однаково відкидається при застосуванні (баннер «ігноруються»).
+      if (roomModality && r.row.modality && r.row.modality !== roomModality) return;
+      if (!pv.ai && (r.kind === "new" || r.kind === "changed")) init[i] = true;
+    });
+    setChecked(init);
+    setModPick({});
+    setDurPick({}); // ревю Ф3 №1: ручні тривалості привʼязані до індексів СТАРОГО превʼю
+    setPreview(pv);
+    setStep("preview");
   }
 
   const groups = useMemo(() => {
@@ -306,30 +396,126 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
             </div>
           )}
 
-          {step === "pick" && (
-            <div>
-              <p className="dlg-text" style={{ marginBottom: 12 }}>
-                Завантажте файл прайса (до 4 МБ): <b>.xlsx</b> / <b>.csv</b> — точний розбір таблиці;
-                <b> .pdf</b> / <b>.docx</b> / <b>фото прайса</b> (.jpg/.png) — AI-розбір.
-                Модальність визначається за назвою чи розділом (МРТ/КТ/УЗД/рентген/мамо…).
-                Після розбору буде <b>передперегляд</b> — без підтвердження каталог не зміниться.
-              </p>
-              <input ref={fileRef} type="file" accept=".xlsx,.csv,.pdf,.docx,.jpg,.jpeg,.png,.webp" style={{ display: "none" }}
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ""; }} />
-              <button className="btn btn-primary" onClick={() => fileRef.current?.click()}>Обрати файл…</button>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-                <span style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>або посилання на сторінку з прайсом:</span>
+          {(step === "pick" || step === "uploading" || step === "parsing") && (
+            <div className="imp-pick">
+              {/* Довідка про формати — окремим блоком, а не абзацом у полотні тексту:
+                  це те, що читають ПЕРЕД вибором файла, і саме через неї найчастіше
+                  повертаються після відмови. Клас `.info-banner` уже є в проєкті
+                  (колл-лист, послуги) — свій не заводимо. */}
+              <div className="info-banner" role="note">
+                <span className="ib-ic" aria-hidden="true">ⓘ</span>
+                <span className="ib-txt">
+                  <b>.xlsx</b> та <b>.csv</b> розбираються точно, як таблиця.
+                  <b> .pdf</b> і <b>.docx</b> читає AI — перевірте результат у передперегляді.
+                  Розмір — до <b>4 МБ</b>. Модальність визначається за назвою чи розділом
+                  (МРТ/КТ/УЗД/рентген/мамо…).
+                </span>
+              </div>
+
+              <input ref={fileRef} type="file" accept={IMPORT_ACCEPT_ATTR} style={{ display: "none" }}
+                onChange={(e) => { onPick(e.target.files?.[0] ?? null); e.target.value = ""; }} />
+
+              {/* Зона завантаження — саме <button>, а не div з onClick: так вона
+                  фокусується з клавіатури, спрацьовує на Enter/Space і читається
+                  скрінрідером як кнопка без жодного ARIA-милиця. Drag&drop —
+                  надбудова для миші, не єдиний шлях.
+                  ⚠️ `aria-disabled`, а НЕ `disabled`: користувач із клавіатури
+                  активує зону, стоячи на ній фокусом, і справжній `disabled`
+                  миттю викинув би фокус у <body> — усередині модалки з пасткою
+                  фокусу це глухий кут. Клік у неробочому стані просто
+                  ігноруємо. */}
+              <button
+                type="button"
+                className={"imp-drop" + (dragOver ? " is-over" : "") + (step !== "pick" ? " is-busy" : "")}
+                aria-disabled={step !== "pick"}
+                onClick={() => { if (step === "pick") fileRef.current?.click(); }}
+                onDragOver={(e) => { if (step !== "pick") return; e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  if (step !== "pick") return;
+                  e.preventDefault();
+                  setDragOver(false);
+                  onPick(e.dataTransfer.files?.[0] ?? null);
+                }}
+              >
+                {picked ? (
+                  <>
+                    <span className="imp-drop-name">{picked.name}</span>
+                    <span className="imp-drop-sub">
+                      {fmtSize(picked.size)}
+                      {step === "uploading" && " · надсилаємо…"}
+                      {step === "parsing" && " · розбираємо…"}
+                      {step === "pick" && " · натисніть, щоб обрати інший"}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="imp-drop-ic" aria-hidden="true">⇪</span>
+                    <span className="imp-drop-name">Перетягніть файл прайса сюди</span>
+                    <span className="imp-drop-sub">або натисніть, щоб обрати · {IMPORT_ACCEPT_EXT_TEXT}</span>
+                  </>
+                )}
+              </button>
+
+              {/* Фаза 1: байти. Прогрес справжній, тож смужка визначена. */}
+              {step === "uploading" && (
+                <div className="imp-prog">
+                  <div className="imp-prog-bar" role="progressbar" aria-label="Завантаження файла на сервер"
+                    aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(upFrac * 100)}>
+                    <span className="imp-prog-fill" style={{ width: `${Math.round(upFrac * 100)}%` }} />
+                  </div>
+                  <div className="imp-prog-row">
+                    <span>Надсилаємо файл…</span>
+                    <span className="tabular">{Math.round(upFrac * 100)}%</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Фаза 2: сервер + n8n + LLM. Скільки лишилось — не знає ніхто, тож
+                  смужка невизначена, а замість вигаданих відсотків показуємо
+                  реальний час і чесне очікування. */}
+              {step === "parsing" && (
+                <div className="imp-prog">
+                  <div className="imp-prog-bar is-indeterminate" role="progressbar"
+                    aria-label="Розбір прайса" aria-valuemin={0} aria-valuemax={100}>
+                    <span className="imp-prog-fill" />
+                  </div>
+                  {/* ⚠️ Лічильник часу — ПОЗА живою областю і з aria-hidden.
+                      Інакше `aria-live` перечитував би весь рядок щосекунди, і
+                      скрінрідер перетворився б на метроном на всі три хвилини
+                      очікування. У живій області лишається тільки стадія: вона
+                      змінюється двічі за весь розбір, і саме її варто почути.
+                      Видимий таймер від цього нічого не втрачає — він для ока. */}
+                  <div className="imp-prog-row">
+                    <span role="status" aria-live="polite">
+                      {aiExpected ? "Розбирає AI…" : "Розбираємо таблицю…"}
+                      {" "}
+                      <span className="imp-prog-hint">
+                        {aiExpected
+                          ? (elapsed > 180 ? "довше за звичайне — ще працюємо, не закривайте вікно" : "зазвичай 1–3 хвилини")
+                          : (elapsed > 30 ? "довше за звичайне — ще працюємо" : "зазвичай кілька секунд")}
+                      </span>
+                    </span>
+                    <span className="tabular" aria-hidden="true">{fmtClock(elapsed)}</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="imp-url">
+                <span className="imp-url-lab">або посилання на сторінку з прайсом:</span>
                 <input className="inp" type="url" placeholder="https://clinic.ua/price" value={urlInput}
-                  style={{ flex: "1 1 220px", minWidth: 200 }}
+                  disabled={step !== "pick"}
                   onChange={(e) => setUrlInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && urlInput.trim()) onUpload(null, urlInput.trim()); }} />
-                <button className="btn btn-secondary" disabled={!urlInput.trim()}
+                  onKeyDown={(e) => { if (e.key === "Enter" && urlInput.trim() && step === "pick") onUpload(null, urlInput.trim()); }} />
+                <button className="btn btn-secondary" disabled={!urlInput.trim() || step !== "pick"}
                   onClick={() => onUpload(null, urlInput.trim())}>Розібрати</button>
               </div>
+
+              <p className="imp-foot-note">
+                Після розбору буде <b>передперегляд</b> — без підтвердження каталог не зміниться.
+              </p>
             </div>
           )}
-
-          {step === "loading" && <p className="dlg-text">Розбираємо прайс… Для pdf/фото/docx/посилання працює AI — великий прайс може зайняти 1–3 хвилини, не закривайте вікно.</p>}
 
           {(step === "preview" || step === "applying") && preview && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>

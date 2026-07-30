@@ -12,7 +12,7 @@
 .rqh-count { font-size: 0.75rem; font-weight: 700; color: var(--text-secondary); background: var(--card-2); border-radius: 10px; padding: 2px 9px; }
 .rad-pills { display: flex; gap: 6px; padding: 0 18px 12px; flex-wrap: wrap; border-bottom: 1px solid var(--border); }
 .pill-sm { padding: 5px 10px; font-size: 0.75rem; }
-.pill-sm .ct { margin-left: 5px; opacity: .6; }
+.pill-sm .ct { margin-left: 5px; }   /* приглушення успадковується від .pill .ct — не opacity */
 .rad-queue-list { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; }
 
 .rq-item { display: flex; align-items: center; gap: 11px; width: 100%; text-align: left;
@@ -21,9 +21,12 @@
 .rq-item:hover { background: var(--card-hover); }
 .rq-item.active { border-color: var(--blue); background: var(--blue-bg-soft); }
 .rq-item.st-cabinet { border-left-color: var(--blue); }
-.rq-item.st-done { opacity: .62; }
-.rq-item.st-done.active { opacity: 1; }
-.rq-item.st-noshow { opacity: .5; border-left-color: var(--red); }
+/* Приглушення відпрацьованих — кольором, не `opacity`: пояснення й заміри у
+   radflow.css біля `.qrow-item.done`. Стан несе лівий акцент і бейдж. */
+.rq-item.st-done { color: var(--text-muted); }
+.rq-item.st-done.active { color: var(--text); }
+.rq-item.st-noshow { color: var(--text-muted); border-left-color: var(--red); }
+.rq-item.st-noshow.active { color: var(--text); }
 .rq-time { font-size: 0.8125rem; font-weight: 700; flex-shrink: 0; width: 38px; }
 .rq-tile { width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 0.6875rem; font-weight: 700; }
 .rq-tile.mrt { background: var(--blue-bg); color: #4da3ff; }
