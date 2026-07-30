@@ -11,6 +11,7 @@ import StudyTimer from "@/components/StudyTimer";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
+import { useQueueSounds } from "@/lib/useQueueSounds";
 import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock } from "@/lib/queueStatus";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
@@ -27,6 +28,7 @@ import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radiologist.css";
 import NavDrawer from "@/components/NavDrawer";
+import SoundToggle from "@/components/SoundToggle";
 import { visibleRooms, residualSet, roomOffLabel, bookableRooms } from "@/lib/rooms";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown; active?: boolean | null };
@@ -531,6 +533,10 @@ function RadSidebar({ rooms, roomNoteOf, roomFilter, setRoomFilter, counts, admi
           <a href="/radiologist" className="sb-item active"><span className="ic">⌂</span><span className="sb-item-lab">Моя черга</span></a>
         </div>
       </nav>
+      <div className="sb-settings">
+        {/* Звукові сповіщення: «пацієнт готовий» + критичні по призначених кабінетах. */}
+        <SoundToggle />
+      </div>
       <div className="sb-user">
         <div className="avatar" style={{ background: "linear-gradient(135deg,#30d158,#1a7a36)" }}>{initials}</div>
         <div className="meta"><div className="nm">{adminName || "Радіолог"}</div><div className="rl">Радіолог</div></div>
@@ -586,6 +592,9 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   const [incidentsErr, setIncidentsErr] = useState(false);
   const [overridesErr, setOverridesErr] = useState(false);
   const safetyErr = incidentsErr || overridesErr;
+  /* Для звуку: стартовий [] — «ще не завантажено», а не «простоїв немає» (див.
+     QueueBoard): без прапорця давно активний простій звучав би на маунті. */
+  const [incidentsLoaded, setIncidentsLoaded] = useState(false);
   const [roomFilter, setRoomFilter] = useState(single ? (visRooms[0]?.id || "all") : "all");
   /* Кабінет-залишок може зникнути зі списку просто під час зміни (закрили останній
      запис) — і фільтр лишився б на кабінеті, якого вже немає у сайдбарі: дошка
@@ -692,6 +701,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
       if (error) { setIncidentsErr(true); return; }
       setIncidents(data || []);
       setIncidentsErr(false);
+      setIncidentsLoaded(true);
     } catch { setIncidentsErr(true); }
   }, [clinicId]);
 
@@ -728,6 +738,24 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
       // кабінетами); зміни долітають через router.refresh (сервер перерахує підмножину).
       { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
     ],
+  });
+
+  /* Звукові сповіщення радіолога — ЛИШЕ призначені йому кабінети: записи вже
+     обмежені запитом (roomIds), інциденти звужує incidentRoomIds (лоадер бере
+     всю клініку). «Пацієнт готовий» — лише сьогодні; критичні — needs_reschedule
+     та інцидент, що фактично став активним. Snapshot-логіка поверх лоадерів,
+     помилкові snapshot'и baseline не чіпають. */
+  useQueueSounds({
+    scopeKey: "rad|" + clinicId + "|" + dayKey,
+    /* Без призначених кабінетів запит записів іде по всій клініці (roomIds
+       порожній → без .in-фільтра) — такому радіологу звуки глушимо, щоб не
+       озвучувати чужі кабінети. */
+    active: roomIds.length > 0,
+    entries: loading || entriesErr ? null : entries,
+    readyEnabled: isToday,
+    incidents: !incidentsLoaded || incidentsErr ? null : incidents,
+    incidentRoomIds: roomIds,
+    incidentScopeKey: clinicId + "|" + roomIds.join(","), // поза денним scope; новий кабінет → тихий re-baseline
   });
 
   const selectedOverride = overrides[dayKey] || null;

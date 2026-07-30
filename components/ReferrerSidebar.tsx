@@ -8,6 +8,7 @@
 import DensityControl from "@/components/DensityToggle";
 import { modalityShort, modalityKind } from "@/lib/studies";
 import NavDrawer from "@/components/NavDrawer";
+import SoundToggle from "@/components/SoundToggle";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null };
@@ -134,6 +135,8 @@ export default function ReferrerSidebar({ centers, roomsByClinic, roomNoteOf, do
             <span className="sb-item-lab">Повернутися: {backLabel || "мій центр"}</span>
           </a>
         )}
+        {/* Критичні події власних направлень (needs_reschedule / not_held). */}
+        <SoundToggle />
         <div className="sb-density-box"><DensityControl /></div>
       </div>
 
