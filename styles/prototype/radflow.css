@@ -956,7 +956,13 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .rt-state.busy { background: var(--blue-bg); color: #4da3ff; }
 .rt-state.free { background: var(--green-bg); color: var(--green); }
 
-.room-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 18px; align-items: start; align-content: start; }
+/* align-items: stretch (дефолт) — картки ОДНОГО РЯДКА однакової висоти.
+   Було `start`: вільний кабінет (92px) поруч із зайнятим (153px) лишав під собою
+   61px порожнечі, і в колонці між вільною карткою та зайнятою під нею зяяла діра
+   замість звичайного відступу. Висоту рядка все одно задає найвища картка, тож
+   `start` цю висоту не економив — лише робив низ рядка рваним.
+   `align-content: start` лишається: він притискає РЯДКИ до верху контейнера. */
+.room-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 18px; align-content: start; }
 .room-card {
   background: var(--card); border: 1px solid var(--border); border-radius: var(--r-xl);
   padding: 11px 14px; display: flex; flex-direction: column; gap: 8px;
@@ -1022,7 +1028,10 @@ html[data-density="spacious"] .fld { gap: 9px; }
   .study-timer .st-arc { transition: none; }
 }
 .rc-body-busy .btn-sm { flex-shrink: 0; }
-.rc-body.empty { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; justify-content: center; padding: 2px 0; text-align: left; }
+/* flex: 1 — тіло вільного кабінету займає всю висоту картки, а `justify-content:
+   center` ставить «Кабінет вільний» по центру. Без цього розтягнута картка
+   тримала б текст угорі, а порожнеча просто переїхала б усередину. */
+.rc-body.empty { display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 4px; justify-content: center; padding: 2px 0; text-align: left; }
 .rc-body.empty .btn-sm { padding: 3px 11px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rc-free-row { display: flex; align-items: center; gap: 8px; }
 .rc-free-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
