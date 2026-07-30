@@ -173,7 +173,7 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 - **Realtime (0111):** `services`/`service_room_overrides` у публікації → правка каталогу адміном одразу оновлює відкриті форми/дошки; вибрана закрита область/контраст знімається у модалці.
 - **Захист цілісності (0112/0113):** прикладний гейт `firstClosedService` (у Server Actions) + **DB-рубіж** `check_studies_active_catalog` на `queue_entries`/`waitlist_entries` (останній рубіж проти прямого Data API: не можна записати пацієнта на вимкнену/приховану послугу; grandfather лише при незмінному кабінеті — перенос у кабінет зі скритою послугою закрито).
 - **CEO-дохід по каталогу (0114):** `ceo_kpi_studies.catalog_est_sum` оцінює позиції без знімка ціни за каталогом центру («чистий каталог»: активна послуга з `price>0`, +контраст; інакше 0).
-- **Фаза 3 (заплановано):** імпорт прайсів з файлів (xlsx/csv/pdf/doc) та URL через n8n + AI-парсинг → upsert у `services` через SECURITY DEFINER RPC. План — `docs/plan/SERVICES_CATALOG.md`.
+- **Фаза 3 (реалізовано):** імпорт прайсів із файлів (`.xlsx` / `.csv` — детермінований розбір; `.pdf` / `.docx` — AI) та з URL через n8n → передперегляд → upsert у `services` через SECURITY DEFINER RPC. Ліміт файла 4 МБ; фото прайса не приймаються (прибрано 2026-07-29). План — `docs/plan/SERVICES_CATALOG.md`.
 
 ---
 

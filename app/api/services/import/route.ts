@@ -1,7 +1,11 @@
 import crypto from "crypto";
 import { NextResponse } from "next/server";
 import { requireRole } from "@/lib/apiAuth";
-import { classifyRows, parseAiRows, parseRawRows, safePriceUrl, type RawSheetRow } from "@/lib/priceImport";
+import {
+  classifyRows, parseAiRows, parseRawRows, safePriceUrl,
+  importFileKind, isAiFileKind, IMPORT_MAX_FILE_BYTES, IMPORT_FORMATS_HINT,
+  type RawSheetRow,
+} from "@/lib/priceImport";
 import { docxToText } from "@/lib/docxText";
 import { hostResolvesPublic } from "@/lib/ssrfGuard";
 
@@ -9,10 +13,15 @@ import { hostResolvesPublic } from "@/lib/ssrfGuard";
    POST multipart {file} АБО {url} → пересилка в n8n-workflow
    «radflow-price-import» (HMAC-підпис + request_id-nonce):
    • xlsx/csv — детермінований парсинг (Extract From File, без AI);
-   • pdf → текст → Grok; фото/скан (jpg/png/webp) → Grok vision;
-     docx → текст ТУТ (lib/docxText.ts, kind='text') → Grok;
+   • pdf → текст → Grok; docx → текст ТУТ (lib/docxText.ts, kind='text') → Grok;
      url → n8n Fetch Page → Grok. Grok (grok-4.5, structured output) віддає
      сирі рядки {name, modality, price, duration_min, confidence}.
+
+   ⚠️ ФОТО ПРАЙСА (jpg/png/webp → Grok vision) ПРИБРАНО 2026-07-29 за рішенням
+   власника. Перелік форматів і ліміт розміру тепер живуть у lib/priceImport.ts
+   (importFileKind / IMPORT_MAX_FILE_BYTES) — одне джерело для клієнта й сервера
+   і, нарешті, під тестами. Гілка kind='image' у n8n лишилась, але RadFlow її
+   більше не надсилає.
    Уся нормалізація і класифікація — тут (lib/priceImport.ts, під vitest):
    AI-рядки НЕ довірені (prompt-injection із документа) — перевалідовуються
    тими самими парсерами; confidence < AI_CONF_MIN → «Нерозпізнані».
@@ -35,7 +44,6 @@ export const dynamic = "force-dynamic";
    Fluid Compute у Settings → Functions або повернути 60. */
 export const maxDuration = 300;
 
-const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const N8N_TIMEOUT_MS = 30_000;      // детермінована гілка (xlsx/csv)
 const N8N_AI_TIMEOUT_MS = 180_000;  // AI-гілка: великий прайс = хвилини LLM-часу
 const MAX_RAW_ROWS = 5000; // стеля сирих рядків від n8n (до нормалізації)
@@ -55,22 +63,9 @@ function transportProblem(url: string, secret: string | undefined): string | nul
   return null;
 }
 
-type FileKind = "xlsx" | "csv" | "pdf" | "docx" | "image";
-
-function fileKind(name: string): { kind: FileKind; mime?: string } | null {
-  const n = name.toLowerCase();
-  if (n.endsWith(".xlsx")) return { kind: "xlsx" };
-  if (n.endsWith(".csv")) return { kind: "csv" };
-  if (n.endsWith(".pdf")) return { kind: "pdf" };
-  if (n.endsWith(".docx")) return { kind: "docx" };
-  if (n.endsWith(".jpg") || n.endsWith(".jpeg")) return { kind: "image", mime: "image/jpeg" };
-  if (n.endsWith(".png")) return { kind: "image", mime: "image/png" };
-  if (n.endsWith(".webp")) return { kind: "image", mime: "image/webp" };
-  return null;
-}
-
-// SSRF-гард URL живе в lib/priceImport.ts (route-файл Next.js не може
-// експортувати довільні функції) і покритий tests/priceImportUrl.test.ts.
+// Перелік форматів, ліміт розміру і SSRF-гард URL живуть у lib/priceImport.ts
+// (route-файл Next.js не може експортувати довільні функції) і покриті
+// tests/priceImport.test.ts + tests/priceImportUrl.test.ts.
 
 const hmac = (secret: string, body: string) =>
   crypto.createHmac("sha256", secret).update(body).digest("hex");
@@ -153,28 +148,23 @@ export async function POST(req: Request) {
     payload = { kind: "url", url: safe, filename: "" };
   } else {
     if (!(file instanceof File)) return jerr("Додайте файл прайса або посилання", 400);
-    const fk = fileKind(file.name || "");
-    if (!fk) return jerr("Підтримуються .xlsx, .csv, .pdf, .docx і фото (.jpg/.png/.webp)", 415);
+    const kind = importFileKind(file.name || "");
+    if (!kind) return jerr(IMPORT_FORMATS_HINT, 415);
     if (file.size === 0) return jerr("Файл порожній", 400);
-    if (file.size > MAX_FILE_BYTES) return jerr("Файл завеликий (до 4 МБ)", 413);
+    if (file.size > IMPORT_MAX_FILE_BYTES) return jerr("Файл завеликий (до 4 МБ)", 413);
 
     const buf = Buffer.from(await file.arrayBuffer());
-    if (fk.kind === "docx") {
+    if (kind === "docx") {
       // docx → плоский текст ТУТ (n8n docx не вміє, а Grok приймає текст).
       const text = await docxToText(buf);
       if (!text || text.length < 20) {
-        return jerr("У документі не знайшлося тексту — перевірте файл або надішліть pdf/фото", 422);
+        return jerr("У документі не знайшлося тексту — перевірте файл або надішліть pdf чи таблицю", 422);
       }
       aiKind = true;
       payload = { kind: "text", text: text.slice(0, MAX_DOCX_TEXT), filename: file.name };
     } else {
-      aiKind = fk.kind === "pdf" || fk.kind === "image";
-      payload = {
-        kind: fk.kind,
-        filename: file.name,
-        file_b64: buf.toString("base64"),
-        ...(fk.mime ? { mime: fk.mime } : {}),
-      };
+      aiKind = isAiFileKind(kind);
+      payload = { kind, filename: file.name, file_b64: buf.toString("base64") };
     }
   }
 

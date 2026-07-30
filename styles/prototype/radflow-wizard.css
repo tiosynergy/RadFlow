@@ -141,10 +141,16 @@
    `opacity` створює групу композитингу, тож дочірній текст скасувати її не може, і
    розклад падав до ≈2.2:1 при вимозі WCAG 1.4.3 AA 4.5:1. Успадкований `color` дає
    той самий вигляд, на верстку не впливає взагалі, а --text-muted тримає 4.5:1+.
-   Інпути тут СВІДОМО лишаються на opacity: у них власна заливка й placeholder, для
-   них `color` не еквівалент — це окрема правка з живою перевіркою. */
+   Інпути — окремий випадок, дороблено в с18b після живої перевірки. У них власна
+   заливка, тож просто прибрати opacity означало б, що поле перестане «гаснути»
+   разом із карткою. Відтворюємо ТУ САМУ картинку статичними кольорами: #2e2e30 —
+   це --bg-elevated, змішаний із тлом картки --card-2 у пропорції 0.55, #424244 —
+   так само змішаний --border-strong. Вигляд не змінився, але текст у полі більше
+   не тоне: --text-muted на #2e2e30 дає ≈5.4:1 замість ≈3.2:1 у прозорого. */
 .equip-block.equip-off { border-style: dashed; }
-.equip-block.equip-off .equip-info > input { opacity: .55; }
+.equip-block.equip-off .equip-info > input {
+  background: #2e2e30; border-color: #424244; color: var(--text-muted);
+}
 .equip-block.equip-off .equip-info-row,
 .equip-block.equip-off .equip-sched { color: var(--text-muted); }
 

@@ -152,9 +152,15 @@ effectiveService(services, roomDurations, modality, roomId?) →
 ### 5.1. Контракт
 
 - **RadFlow → n8n**: API-роут `POST /api/services/import` (admin-гейт,
-  rate-limit `rl_check`): принимает файл (multipart, ≤10 МБ; xlsx/csv/doc/pdf)
-  или `{ url }` → пересылает в n8n Webhook с HMAC-подписью
+  rate-limit `rl_check`): принимает файл (multipart, **≤4 МБ**; `.xlsx` / `.csv` /
+  `.pdf` / `.docx`) или `{ url }` → пересылает в n8n Webhook с HMAC-подписью
   (`IMPORT_WEBHOOK_SECRET`) + `clinic_id` + `request_id` (nonce).
+  > ⚠️ Правки от факта. **4 МБ, а не 10**: Vercel обрезает тело serverless-функции
+  > на ~4.5 МБ, больший файл физически не долетает. **Фото прайса (jpg/png/webp →
+  > Grok vision) убрано 2026-07-29** по решению владельца — и на клиенте, и на
+  > сервере (415). Перечень форматов и лимит теперь живут в одном месте:
+  > `lib/priceImport.ts` (`importFileKind` / `IMPORT_MAX_FILE_BYTES`), под тестами.
+  > Ветка `kind: "image"` в n8n осталась физически, но недостижима.
 - **n8n → RadFlow**: ответ (sync или callback `POST /api/services/import/result`)
   с той же HMAC + `request_id` (анти-replay) + массив позиций:
   `{ name, modality?, duration_min?, price, contrast? , confidence }`.

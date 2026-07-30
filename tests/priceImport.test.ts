@@ -7,10 +7,83 @@ import {
   parseDuration,
   parsePrice,
   parseRawRows,
+  importFileKind,
+  isAiFileKind,
+  IMPORT_ACCEPT_EXT,
+  IMPORT_ACCEPT_ATTR,
+  IMPORT_ACCEPT_EXT_TEXT,
+  IMPORT_MAX_FILE_BYTES,
   type ExistingService,
 } from "@/lib/priceImport";
 import { z } from "zod";
 import { zPriceNullable } from "@/lib/validation";
+
+/* ===== Формати файла прайса =====
+   Перелік розширень раніше жив у чотирьох місцях (accept, текст модалки, title
+   кнопки, fileKind у route-файлі) і вже встиг розійтися: `.webp` приймався, але
+   в тексті для користувача його не було. Покрити це тестами було неможливо —
+   Next.js не дає експортувати з route-файла нічого, крім хендлерів. Тепер
+   джерело одне (lib/priceImport.ts), і ось тут воно й зафіксовано. */
+
+describe("формати файла прайса", () => {
+  it("фото більше НЕ приймаються (рішення власника 2026-07-29)", () => {
+    // Було: jpg/jpeg/png/webp → Grok vision. Прибрано і з клієнта, і з сервера,
+    // тож це не косметика тексту — сервер відповідає 415.
+    expect(importFileKind("price.jpg")).toBe(null);
+    expect(importFileKind("price.jpeg")).toBe(null);
+    expect(importFileKind("scan.png")).toBe(null);
+    expect(importFileKind("scan.webp")).toBe(null);
+    expect(IMPORT_ACCEPT_ATTR).not.toMatch(/jpg|jpeg|png|webp/);
+    expect(IMPORT_ACCEPT_EXT_TEXT).not.toMatch(/jpg|jpeg|png|webp|фото/i);
+  });
+
+  it("розпізнає підтримувані розширення", () => {
+    expect(importFileKind("прайс.xlsx")).toBe("xlsx");
+    expect(importFileKind("прайс.csv")).toBe("csv");
+    expect(importFileKind("прайс.pdf")).toBe("pdf");
+    expect(importFileKind("прайс.docx")).toBe("docx");
+  });
+
+  it("регістр і крапки в імені не збивають визначення", () => {
+    expect(importFileKind("PRICE.XLSX")).toBe("xlsx");
+    expect(importFileKind("прайс.2026.07.CSV")).toBe("csv");
+  });
+
+  it("невідоме, порожнє й «розширення в середині імені» → null", () => {
+    expect(importFileKind("price.xls")).toBe(null);   // старий Excel n8n не розбирає
+    expect(importFileKind("price.doc")).toBe(null);
+    expect(importFileKind("price.txt")).toBe(null);
+    expect(importFileKind("archive.zip")).toBe(null);
+    expect(importFileKind("")).toBe(null);
+    expect(importFileKind("xlsx")).toBe(null);              // без крапки
+    expect(importFileKind("price.pdf.exe")).toBe(null);     // подвійне розширення
+  });
+
+  it("accept і видимий перелік зібрані з ОДНОГО масиву — розійтись їм нічим", () => {
+    expect(IMPORT_ACCEPT_ATTR).toBe(IMPORT_ACCEPT_EXT.join(","));
+    expect(IMPORT_ACCEPT_EXT_TEXT).toBe(IMPORT_ACCEPT_EXT.map((e) => e.slice(1)).join(" · "));
+    // Кожне розширення з accept мусить бути відоме importFileKind, інакше інпут
+    // пропустив би файл, який сервер одразу відхилить 415-м.
+    IMPORT_ACCEPT_EXT.forEach((ext) => {
+      expect(importFileKind("price" + ext), ext).not.toBe(null);
+    });
+  });
+
+  it("AI-гілка: таблиці розбираються детерміновано, документи — через LLM", () => {
+    // Від цього залежить не лише таймаут звернення до n8n, а й текст очікування
+    // в модалці: «кілька секунд» проти «1–3 хвилини».
+    expect(isAiFileKind("xlsx")).toBe(false);
+    expect(isAiFileKind("csv")).toBe(false);
+    expect(isAiFileKind("pdf")).toBe(true);
+    expect(isAiFileKind("docx")).toBe(true);
+  });
+
+  it("ліміт розміру — 4 МБ, і це не випадкове число", () => {
+    // Vercel обрізає тіло serverless-функції на ~4.5 МБ: більший файл фізично
+    // не долетить, тож піднімати ліміт без зміни хостингу немає сенсу.
+    expect(IMPORT_MAX_FILE_BYTES).toBe(4 * 1024 * 1024);
+  });
+});
 
 /* ===== Регресія ревью 0116 B1: null-ціна НЕ сміє коерситись у 0 =====
    z.coerce.number() робить Number(null) === 0 → у z.union([zCoerce, z.null()])

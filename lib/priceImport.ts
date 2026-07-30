@@ -258,6 +258,60 @@ export function parseRawRows(raw: RawSheetRow[] | null | undefined): ParseResult
   return { rows, skipped, columns: cols, truncated };
 }
 
+/* ---------------- Формати файла прайса: ЄДИНЕ ДЖЕРЕЛО ІСТИНИ ----------------
+
+   Раніше перелік розширень жив у ЧОТИРЬОХ місцях одночасно: атрибут `accept`
+   інпута, видимий текст модалки, `title` кнопки в ServicesEditor і функція
+   `fileKind` усередині route-файла. Вони вже встигли розійтися (`.webp` був у
+   `accept` і на сервері, але не в тексті для користувача), а покрити тестами
+   `fileKind` було неможливо: Next.js не дає експортувати з route-файла нічого,
+   крім HTTP-хендлерів. Тому перелік переїхав сюди — як і `safePriceUrl` вище,
+   і з тієї самої причини.
+
+   ⚠️ ФОТО ПРАЙСА БІЛЬШЕ НЕ ПРИЙМАЄМО (рішення власника 2026-07-29). Було:
+   .jpg/.jpeg/.png/.webp → Grok vision. Прибрано і з клієнта, і з сервера —
+   тобто це не косметика тексту: сервер тепер відповідає 415 на зображення.
+   Гілка `kind === 'image'` у n8n лишилась фізично, але стала недосяжною:
+   RadFlow її більше не надсилає. Прибирати її з воркфлоу — окрема дія власника
+   (правка ноди = чернетка до Publish), і без неї нічого не ламається. */
+
+/** Ліміт розміру файла. НЕ 10 МБ із плану: Vercel обрізає тіло serverless-
+    функції на ~4.5 МБ, тож більший файл фізично не долетить. Клієнт перевіряє
+    ще до відправки, сервер — як справжній рубіж (413). */
+export const IMPORT_MAX_FILE_BYTES = 4 * 1024 * 1024;
+
+/** Як обробляється файл: детерміновано (таблиця) чи через AI. */
+export type ImportFileKind = "xlsx" | "csv" | "pdf" | "docx";
+
+/** Розширення для `accept` і для перевірки на клієнті. Порядок — як у тексті. */
+export const IMPORT_ACCEPT_EXT = [".xlsx", ".csv", ".pdf", ".docx"] as const;
+export const IMPORT_ACCEPT_ATTR = IMPORT_ACCEPT_EXT.join(",");
+/** Той самий перелік для ока — щоб підпис у зоні завантаження не набирали руками. */
+export const IMPORT_ACCEPT_EXT_TEXT = IMPORT_ACCEPT_EXT.map((e) => e.slice(1)).join(" · ");
+
+/** Один текст відмови на клієнті й на сервері — щоб не розійшлися. */
+export const IMPORT_FORMATS_HINT = "Підтримуються .xlsx, .csv, .pdf і .docx";
+
+/** Тип файла за РОЗШИРЕННЯМ імені. MIME від клієнта свідомо не дивимось: він
+    підробляється тривіально, а справжній вміст усе одно перевіряє парсер далі
+    по ланцюжку (n8n / docxToText). Розширення тут — це маршрутизація, не
+    безпека. Невідоме розширення → null → 415. */
+export function importFileKind(name: string): ImportFileKind | null {
+  const n = (name || "").toLowerCase();
+  if (n.endsWith(".xlsx")) return "xlsx";
+  if (n.endsWith(".csv")) return "csv";
+  if (n.endsWith(".pdf")) return "pdf";
+  if (n.endsWith(".docx")) return "docx";
+  return null;
+}
+
+/** Чи піде файл в AI-гілку. Важливо для очікувань користувача (секунди проти
+    хвилин) і для таймауту звернення до n8n. xlsx/csv — детермінований розбір;
+    pdf — текст → Grok; docx — текст витягуємо на сервері, далі теж Grok. */
+export function isAiFileKind(kind: ImportFileKind): boolean {
+  return kind === "pdf" || kind === "docx";
+}
+
 /* ---------------- AI-гілка (фаза 3b): рядки від LLM ---------------- */
 
 /** SSRF-гард для режиму «посилання на прайс»: лише https і лише доменні імена

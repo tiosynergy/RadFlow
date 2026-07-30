@@ -23,6 +23,7 @@ import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import ImportPriceModal from "@/components/ImportPriceModal";
+import { IMPORT_ACCEPT_EXT_TEXT } from "@/lib/priceImport";
 import {
   createService, updateService, setServiceActive, deleteService, seedServicesFromCatalog,
   setRoomServiceOverride, clearRoomServiceOverride,
@@ -544,7 +545,8 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
               title="Разово наповнити базовий каталог позиціями з довідника">⤓ З базового довідника</button>
           )}
           <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setImportOpen(true)}
-            title={room ? "Імпорт прайса у цей кабінет — власні послуги кабінета, тільки його модальність" : "Завантажити прайс .xlsx/.csv/.pdf/фото — з передпереглядом змін"}>⇪ Імпорт прайса</button>
+            /* Перелік форматів не набираємо руками: він уже розійшовся одного разу. */
+            title={room ? "Імпорт прайса у цей кабінет — власні послуги кабінета, тільки його модальність" : `Завантажити прайс ${IMPORT_ACCEPT_EXT_TEXT} — з передпереглядом змін`}>⇪ Імпорт прайса</button>
           <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => { setAddDraft(emptyDraft()); setAddOpen(true); }}>＋ Додати</button>
         </span>
       </div>
