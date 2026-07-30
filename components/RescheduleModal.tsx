@@ -20,7 +20,7 @@ import {
 } from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
-import { BUFFER_DEFAULT, normBuffer, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
+import { BUFFER_DEFAULT, normBuffer, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
@@ -72,7 +72,7 @@ function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 function dateVal(d: Date) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
 function procLabel(e: { studies?: unknown; note?: string | null }) {
   const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string; contrast?: boolean }>) : [];
-  if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast ? " з контрастом" : "")).join(" + ");
+  if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast && !isContrastName(x.region) ? " з контрастом" : "")).join(" + ");
   return e.note || "—";
 }
 

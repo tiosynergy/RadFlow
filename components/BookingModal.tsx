@@ -381,7 +381,12 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const [schedErr, setSchedErr] = useState(false);
 
   const allRegions = regionsFor(studyType, roomId);
-  const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
+  /* «Контраст» — ФІЛЬТР списку послуг; правило одне на весь продукт і живе в
+     lib/catalog (regionsWithContrast). Знято → повний список; увімкнено → у
+     каталозі лише позиції з ключовим словом у назві, у легасі-статиці — старий
+     прапорець «контраст дозволено». */
+  const regions = catalog.regionsWithContrast(studyType, roomId, contrast);
+  const contrastFilters = catalog.contrastIsFilter(studyType, roomId);
   const primaryKind = modalityLabel(studyType); // укр. текст, який кладеться в studies[].type
 
   function changeType(code: string) {
@@ -393,15 +398,21 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   }
   function toggleContrast(v: boolean) {
     setContrast(v);
-    if (v && region && !allRegions.some((r) => r.label === region && r.contrast)) { setRegion(""); setTime(""); }
+    // Обрана область не переживає новий фільтр → знімаємо вибір (і час).
+    if (v && region && !catalog.regionsWithContrast(studyType, roomId, true).some((r) => r.label === region)) { setRegion(""); setTime(""); }
   }
   function calcAge(d: string) { if (!d) return 0; const b = new Date(d); if (isNaN(b.getTime())) return 0; const n = new Date(); let a = n.getFullYear() - b.getFullYear(); const m = n.getMonth() - b.getMonth(); if (m < 0 || (m === 0 && n.getDate() < b.getDate())) a--; return a < 0 ? 0 : a; }
 
-  const contrastSuffix = contrast ? " з контрастом" : "";
+  /* Суфікс « з контрастом» і доплата/+CONTRAST_DUR — ЛИШЕ модифікаторний режим
+     (легасі-статика). У каталозі контрастність написана в самій назві послуги, а
+     ціна позиції вже контрастна: суфікс дублював би слово, доплата дала б 4900+900. */
+  const contrastSuffix = contrast && !contrastFilters ? " з контрастом" : "";
   const procLabel = region ? `${primaryKind} · ${region}${contrastSuffix}` : primaryKind;
   const regionObj = regions.find((r) => r.label === region);
-  const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + (contrast ? CONTRAST_DUR : 0)) : (allRegions[0]?.dur ?? 20);
-  const price = regionObj ? regionObj.price + (contrast ? (regionObj.contrastPrice ?? CONTRAST_SURCHARGE) : 0) : null;
+  const durBump = contrast && !contrastFilters ? CONTRAST_DUR : 0;
+  const priceBump = contrast && !contrastFilters ? (regionObj?.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
+  const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + durBump) : (allRegions[0]?.dur ?? 20);
+  const price = regionObj ? regionObj.price + priceBump : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   const [durEdit, setDurEdit] = useState("");
@@ -428,13 +439,16 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   // Ключ ефекту — підпис набору доступних областей (не лише roomId): інакше при
   // realtime-правці каталогу форма лишалася б із «фантомно обраною» закритою
   // послугою (Nielsen «запобігання помилок»/«видимість стану»; сервер теж ріже).
-  const availSig = regionsFor(studyType, roomId).map((r) => r.label + "|" + (r.contrast ? "1" : "0")).join("");
+  const availSig = regionsFor(studyType, roomId).map((r) => r.label + "|" + (r.isContrast ? "1" : "0") + (r.contrast ? "1" : "0")).join("");
   useEffect(() => {
     const avail = regionsFor(studyType, roomId);
     if (region && !avail.some((r) => r.label === region)) { setRegion(""); setTime(""); }
     // Область ще доступна, але контраст їй вимкнули в каталозі (contrast_allowed=false,
     // realtime) → знімаємо флаг контрасту, інакше payload/ціна лишаються з контрастом.
-    else if (region && contrast) { const sel = avail.find((r) => r.label === region); if (sel && !sel.contrast) { setContrast(false); setTime(""); } }
+    /* Область ще доступна, але вже НЕ проходить фільтр «Контраст» (адмін
+       перейменував послугу або зняв прапорець у статиці — realtime-каталог) →
+       знімаємо галочку, інакше список і ціна розходяться з обраним. */
+    else if (region && contrast && !catalog.regionsWithContrast(studyType, roomId, true).some((r) => r.label === region)) { setContrast(false); setTime(""); }
     setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0 } : s)));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей / контрасту (кабінет АБО realtime-каталог)
   }, [availSig]);
@@ -464,8 +478,19 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
 
-  const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast, roomId) } : null;
-  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, roomId) })));
+  /* studies[].contrast (сервер рахує з нього has_contrast для дошки радіолога):
+     у режимі фільтра це ВЛАСТИВІСТЬ обраної позиції прайсу, а не стан чекбокса —
+     інакше знята галочка після вибору контрастної послуги дала б has_contrast=false
+     на реально контрастному дослідженні. */
+  const primaryContrast = contrastFilters ? (regionObj?.isContrast === true) : contrast === true;
+  const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: primaryContrast, dur, price: studyPrice(primaryKind, region, contrast, roomId) } : null;
+/* Додаткові дослідження теж можуть бути контрастними позиціями прайсу (їх
+   список НЕ фільтрується — це свідомо), тож contrast беремо з САМОЇ позиції.
+   Інакше «основне без контрасту + додаткове з в/в контрастуванням» давало б
+   has_contrast=false на всю запис (ревʼю, High-4). */
+  const exContrast = (t: string, reg: string) =>
+    catalog.contrastIsFilter(t, roomId) ? (exRegions(t).find((r) => r.label === reg)?.isContrast === true) : false;
+  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, contrast: exContrast(s.type, s.region), dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, roomId) })));
   const combinedLabel = allStudies.length ? allStudies.map(studyLabel).join(" + ") : procLabel;
   const slotDur = dur + validExtra.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
@@ -952,7 +977,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                 <select className="inp" value={region} onChange={(e) => setRegion(e.target.value)}>
                   <option value="">— Оберіть область —</option>
                   {regions.map((r) => (
-                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + (contrast ? CONTRAST_DUR : 0) + " хв"}</option>
+                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + durBump + " хв"}</option>
                   ))}
                 </select>
               </label>

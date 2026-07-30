@@ -20,10 +20,14 @@ import { useModalA11y } from "@/lib/useModalA11y";
 const MIN_STUDY = 15;
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
-type StudyRow = { type: string; region: string; dur: number; contrast: boolean };
+/* filterOn — стан ЧЕКБОКСА «Контраст» у режимі фільтра. Живе В РЯДКУ, а не в
+   мапі по індексу: рядки додають і видаляють, а індекси зсуваються — окрема
+   мапа лишала б галочку від видаленого рядка новому (ревʼю, M-A). undefined =
+   ще не чіпали, показуємо контрастність самого дослідження. */
+type StudyRow = { type: string; region: string; dur: number; contrast: boolean; filterOn?: boolean };
 /** Те, що летить у studies (jsonb) — як у BookingModal: з контрастом і ціною. */
 type StudyOut = { type: string; region: string; contrast: boolean; dur: number; price: number | null };
-type StudyLike = { type?: string; region?: string; dur?: number; contrast?: boolean };
+type StudyLike = { type?: string; region?: string; dur?: number; contrast?: boolean; price?: number | null };
 type StudyPatient = { id: string; room_id: string | null; scheduled_time: string | null; buffer_time_min?: number | null; duration_min?: number | null; patient_name: string | null; studies?: unknown };
 
 interface StudyEditModalProps {
@@ -154,7 +158,8 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
       ? ("до наступного запису о " + fmt(nextStart) + (buffer > 0 ? ` − ${buffer} буфер` : ""))
       : ("до кінця графіка (" + fmt(schedEnd) + ")");
 
-  // Тривалість за довідником + CONTRAST_DUR, якщо дослідження з контрастом.
+  // Тривалість за довідником (у каталозі — час позиції як є; CONTRAST_DUR
+  // додається лише в легасі-статиці — див. lib/catalog.studyDur).
   function recalc(type: string, region: string, contrast: boolean, prevDur?: number): number {
     if (!region) return 0; // область не обрана → 0: не додаємо час, поки не вибрано
     const ro = regionsFor(type, roomId).find((r) => r.label === region);
@@ -173,16 +178,55 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
     });
   }
   const [rows, setRows] = useState<StudyRow[]>(seed);
+  /* Знімок складу НА ВІДКРИТТІ: "type|region" → позиція. Потрібен для
+     гранфазерингу ціни (див. save) — рахується один раз, бо patient.studies
+     під час редагування не змінюється. */
+  const origStudies = useMemo(() => {
+    const m = new Map<string, StudyLike>();
+    const src = Array.isArray(patient.studies) ? (patient.studies as StudyLike[]) : [];
+    for (const s of src) if (s?.type && s?.region) m.set(s.type + "|" + s.region + "|" + (s.contrast ? "c" : ""), s);
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- знімок на відкриття
+  }, []);
+  /* Видимий стан чекбокса: у режимі фільтра — власний прапорець рядка, інакше
+     контрастність самого дослідження. */
+  const rowContrastChecked = (r: StudyRow) =>
+    catalog.contrastIsFilter(r.type, roomId) ? (r.filterOn ?? r.contrast) : r.contrast;
 
   function patch(i: number, p: Partial<StudyRow>) { setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...p } : r))); }
-  function setType(i: number, type: string) { if (lockType) return; patch(i, { type, region: "", contrast: false, dur: recalc(type, "", false) }); }
-  function setRegion(i: number, region: string) { const r = rows[i]; patch(i, { region, dur: recalc(r.type, region, r.contrast, r.dur) }); }
-  // Контраст: ±CONTRAST_DUR до поточної тривалості (зберігає ручні правки тривалості).
+  function setType(i: number, type: string) { if (lockType) return; patch(i, { type, region: "", contrast: false, filterOn: false, dur: recalc(type, "", false) }); }
+  function setRegion(i: number, region: string) {
+    const r = rows[i];
+    /* У режимі фільтра контрастність — властивість обраної позиції прайсу
+       (з неї сервер рахує has_contrast), а не стан чекбокса. */
+    const contrast = catalog.contrastIsFilter(r.type, roomId)
+      ? (catalog.regionInfo(r.type, region, roomId)?.isContrast === true)
+      : r.contrast;
+    patch(i, { region, contrast, dur: recalc(r.type, region, contrast, r.dur) });
+  }
+  /* Контраст. У КАТАЛОЗІ це фільтр списку послуг рядка: час не чіпаємо (він
+     прийде з обраної позиції), а якщо поточна область фільтр не переживає —
+     скидаємо її. У легасі-статиці лишається модифікатор ±CONTRAST_DUR. */
   function setContrast(i: number, contrast: boolean) {
     const r = rows[i];
-    if (r.contrast === contrast) return;
+    /* Гард — по ВИДИМОМУ стану чекбокса, а не по r.contrast: у режимі фільтра ці
+       значення навмисне розходяться, і порівняння з r.contrast залишало галочку
+       залиплою (ревʼю, H-A). */
+    if (rowContrastChecked(r) === contrast) return;
+    if (catalog.contrastIsFilter(r.type, roomId)) {
+      /* Режим фільтра: чекбокс керує лише СПИСКОМ. Сам прапорець дослідження —
+         властивість обраної позиції прайсу, тож знята галочка НЕ робить
+         контрастне дослідження неконтрастним (інакше has_contrast=false на
+         в/в контрастуванні: кабінет не готує розхідники й не перевіряє алергію).
+         Щоб прибрати контраст — треба обрати іншу позицію; якщо поточна не
+         переживає новий фільтр, скидаємо її разом із часом. */
+      const survives = !r.region
+        || catalog.regionsWithContrast(r.type, roomId, contrast).some((x) => x.label === r.region);
+      patch(i, survives ? { filterOn: contrast } : { filterOn: contrast, region: "", contrast: false, dur: 0 });
+      return;
+    }
     const delta = contrast ? CONTRAST_DUR : -CONTRAST_DUR;
-    patch(i, { contrast, dur: Math.max(5, (Number(r.dur) || 0) + delta) });
+    patch(i, { contrast, filterOn: contrast, dur: Math.max(5, (Number(r.dur) || 0) + delta) });
   }
   // H-1: кратно 5, 5..480 — те саме обмеження, що CHECK у БД (0066).
   // 0117: порожнє поле → 0 (БЕЗ normDur-фолбеку 30) — збереження блокує valid.
@@ -238,15 +282,29 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   }
 
   function save() {
-    // Пишемо повний склад (як BookingModal): контраст + ціна. Раніше вони губилися
-    // при редагуванні — has_contrast на сервері рахується саме зі studies.
-    const arr: StudyOut[] = rows.filter((r) => r.region).map((r) => ({
-      type: r.type,
-      region: r.region,
-      contrast: r.contrast,
-      dur: Number(r.dur) || 0,
-      price: studyPrice(r.type, r.region, r.contrast, roomId),
-    }));
+    /* Пишемо повний склад (як BookingModal): контраст + ціна. Раніше вони губилися
+       при редагуванні — has_contrast на сервері рахується саме зі studies.
+
+       ГРАНФАЗЕРИНГ (ревʼю, M3): у рядка, який оператор НЕ чіпав (той самий
+       type|region, що й у знімку запису), лишаємо ЗБЕРЕЖЕНУ ціну. Інакше запис,
+       створений за старим правилом (2400 + 900 доплати), після будь-якої правки
+       буфера мовчки дешевшав би до 2400 — історія доходу переписувалась би
+       заднім числом. Нову/змінену позицію рахуємо за поточним каталогом. */
+    const arr: StudyOut[] = rows.filter((r) => r.region).map((r) => {
+      /* Ключ включає контраст: у модифікаторному режимі перемикання галочки
+         змінює ціну (±доплата), і без цього снапшот повертав би стару (ревʼю, M-B). */
+      const snap = origStudies.get(r.type + "|" + r.region + "|" + (r.contrast ? "c" : ""));
+      const price = snap && typeof snap.price === "number"
+        ? snap.price
+        : studyPrice(r.type, r.region, r.contrast, roomId);
+      return {
+        type: r.type,
+        region: r.region,
+        contrast: r.contrast,
+        dur: Number(r.dur) || 0,
+        price,
+      };
+    });
     /* offSchedule: або запис і був поза графіком (успадкований прапорець), або
        оператор щойно підтвердив нове перетинання межі. Сервер однаково перерахує
        факт сам (scheduleBlock) — сюди їде саме ЗГОДА, а не «стан слота». */
@@ -299,7 +357,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
           )}
           <div className="st-rows">
             {rows.map((r, i) => {
-              const regions = regionsFor(r.type, roomId);
+              const regions = catalog.regionsWithContrast(r.type, roomId, rowContrastChecked(r));
               const hasRegion = !r.region || regions.some((x) => x.label === r.region);
               return (
                 <div className="st-row" key={i}>
@@ -332,9 +390,12 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                     </label>
                     <div className="st-field st-field-contrast">
                       <span className="st-flab">Контраст</span>
-                      <label className={"rf-check" + (r.contrast ? " on" : "")} title={`Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
-                        <input type="checkbox" checked={r.contrast} onChange={(e) => setContrast(i, e.target.checked)} />
-                        <span className="rf-box" /><span>+{CONTRAST_DUR} хв</span>
+                      <label className={"rf-check" + (rowContrastChecked(r) ? " on" : "")}
+                        title={catalog.contrastIsFilter(r.type, roomId)
+                          ? "Показати лише послуги з контрастуванням"
+                          : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
+                        <input type="checkbox" checked={rowContrastChecked(r)} onChange={(e) => setContrast(i, e.target.checked)} />
+                        <span className="rf-box" /><span>{catalog.contrastIsFilter(r.type, roomId) ? "лише з контрастом" : `+${CONTRAST_DUR} хв`}</span>
                       </label>
                     </div>
                     <label className="st-field st-field-dur">

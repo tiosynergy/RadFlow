@@ -7,6 +7,7 @@
    /waitlist). Та сама логіка матчингу піде в n8n/AI-автоматизацію (Stage 2). */
 
 import { useState } from "react";
+import { isContrastName } from "@/lib/studies";
 import { createClient } from "@/lib/supabase/client";
 import BookingModal, { type BookingPayload, type BookingPrefill } from "@/components/BookingModal";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
@@ -30,7 +31,7 @@ export type FreedSlotInfo = {
 function studiesLabel(e: WaitlistEntry): string {
   const s = Array.isArray(e.studies) ? (e.studies as Study[]) : [];
   if (!s.length) return "—";
-  return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast ? " з контрастом" : "")).join(" + ");
+  return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast && !isContrastName(x.region) ? " з контрастом" : "")).join(" + ");
 }
 
 /** Підібрати кандидатів з листа під звільнений слот (для рішення «показувати чи ні»).

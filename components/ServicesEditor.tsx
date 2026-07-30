@@ -30,7 +30,7 @@ import {
   bulkSetServicesActive, bulkDeleteServices, bulkSetRoomServicesActive, bulkClearRoomOverrides,
   type ServiceInput,
 } from "@/app/services/actions";
-import { BOOKABLE_MODALITIES, CONTRAST_SURCHARGE, modalityLabel, modalityKind, modalityCode, type ModalityCode } from "@/lib/studies";
+import { BOOKABLE_MODALITIES, isContrastName, modalityLabel, modalityKind, modalityCode, type ModalityCode } from "@/lib/studies";
 import { isRoomBookable } from "@/lib/rooms";
 import type { Tables } from "@/supabase/types";
 
@@ -73,18 +73,6 @@ function DraftFields({ d, setD }: { d: Draft; setD: (f: (p: Draft) => Draft) => 
         <input className="inp" type="number" min={0} step={50} style={{ width: 96 }}
           value={d.price} onChange={(e) => setD((p) => ({ ...p, price: e.target.value }))} /> ₴
       </label>
-      <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: "0.78125rem", cursor: "pointer" }}>
-        <input type="checkbox" checked={d.contrastAllowed}
-          onChange={(e) => setD((p) => ({ ...p, contrastAllowed: e.target.checked }))} />
-        Контраст
-      </label>
-      {d.contrastAllowed && (
-        <label className="fld-lab" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          Доплата
-          <input className="inp" type="number" min={0} step={50} style={{ width: 96 }} placeholder={String(CONTRAST_SURCHARGE)}
-            value={d.contrastPrice} onChange={(e) => setD((p) => ({ ...p, contrastPrice: e.target.value }))} /> ₴
-        </label>
-      )}
     </>
   );
 }
@@ -352,7 +340,10 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
       if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
       setItems((arr) => arr.map((x) => (x.id === s.id ? {
         ...x, name: draft.name.trim(), duration_min: draft.durationMin.trim() === "" ? null : (Number(draft.durationMin) || x.duration_min),
-        price: Number(draft.price) || 0, contrast_allowed: draft.contrastAllowed,
+        price: Number(draft.price) || 0,
+        // Дзеркало серверного правила (app/services/actions.ts), інакше каталог
+        // у памʼяті бреше до наступного refresh.
+        contrast_allowed: isContrastName(draft.name) || draft.contrastAllowed,
         contrast_price: draft.contrastAllowed && draft.contrastPrice.trim() !== "" ? Number(draft.contrastPrice) : null,
         sort_order: Number(draft.sortOrder) || 0,
       } : x)));
@@ -413,7 +404,10 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
   // Компактні колонки — щоб таблиця влазила і у вужчу колонку Майстра (~680px).
   // Назва — ширша (min 150px) і ПЕРЕНОСИТЬСЯ на новий рядок, якщо не влазить (замість
   // обрізання еліпсисом); дії — іконки. Перша колонка 26px — чекбокс масового вибору.
-  const GRID_BASE = "26px minmax(150px,3fr) 66px 78px 80px 68px 112px";
+  // Колонки: чекбокс · назва · тривалість · ціна · стан · дії.
+  // Колонку «Контраст» прибрано: контрастність визначається НАЗВОЮ послуги
+  // (див. isContrastName у lib/studies) — окремого прапорця більше немає.
+  const GRID_BASE = "26px minmax(150px,3fr) 66px 78px 68px 112px";
   const GRID_ROOM = "26px minmax(150px,3fr) 74px 96px 116px 84px";
 
   // Чекбокс рядка (спільний для обох режимів).
@@ -463,7 +457,6 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
                 {s.source === "import" && <span className="badge" style={{ marginLeft: 8 }} title="Завантажено імпортом">імпорт</span>}</div>
               <div className="tabular svc-num" data-lab="Тривалість">{s.duration_min != null ? s.duration_min + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано — введіть у редакторі або вручну при записі">—</span>}</div>
               <div className="tabular svc-num" data-lab="Ціна">{s.price ? fmtUah(s.price) : <span style={{ color: "var(--orange)" }} title="Ціну ще не задано">—</span>}</div>
-              <div className="svc-num" data-lab="Контраст">{s.contrast_allowed ? <span title="Доплата за контраст">＋{fmtUah(s.contrast_price ?? CONTRAST_SURCHARGE)}</span> : <span style={{ color: "var(--text-faint)" }}>—</span>}</div>
               <div data-lab="Стан">{s.active ? <span style={{ color: "var(--green)" }}>активна</span> : <span style={{ color: "var(--text-faint)" }}>вимкнена</span>}</div>
               <div className="cl-actions svc-act">
                 <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => { setEditId(s.id); setDraft(draftOf(s)); }} title="Редагувати" aria-label={"Редагувати " + s.name}>✎</button>
@@ -607,7 +600,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
                 onChange={toggleSelectAll} aria-label="Вибрати всі послуги" />
               <span className="svc-selall-txt">Вибрати всі</span>
             </label>
-            <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div style={{ textAlign: "right" }}>Контраст</div><div>Стан</div><div style={{ textAlign: "right" }}>Дії</div>
+            <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div>Стан</div><div style={{ textAlign: "right" }}>Дії</div>
           </div>
           {rows.length === 0 ? (
             <div className="empty"><div className="ei">₴</div>
@@ -633,7 +626,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
                 onChange={() => toggleSelectList(roomRows)} aria-label="Вибрати всі власні послуги кабінета" />
               <span className="svc-selall-txt">Вибрати всі</span>
             </label>
-            <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div style={{ textAlign: "right" }}>Контраст</div><div>Стан</div><div style={{ textAlign: "right" }}>Дії</div>
+            <div>Послуга</div><div style={{ textAlign: "right" }}>Тривалість</div><div style={{ textAlign: "right" }}>Ціна</div><div>Стан</div><div style={{ textAlign: "right" }}>Дії</div>
           </div>
           {roomRows.length === 0 ? (
             <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)", padding: "10px 8px", borderBottom: "1px solid var(--border)" }}>
@@ -695,13 +688,6 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
                       <input className="inp" type="number" min={0} step={50} style={{ width: 130 }} placeholder={String(s.price)}
                         value={ovDraft.price} onChange={(e) => setOvDraft((p) => ({ ...p, price: e.target.value }))} />
                     </label>
-                    {s.contrast_allowed && (
-                      <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                        Доплата за контраст, ₴
-                        <input className="inp" type="number" min={0} step={50} style={{ width: 150 }} placeholder={String(s.contrast_price ?? CONTRAST_SURCHARGE)}
-                          value={ovDraft.contrastPrice} onChange={(e) => setOvDraft((p) => ({ ...p, contrastPrice: e.target.value }))} />
-                      </label>
-                    )}
                     <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: "0.84375rem", paddingBottom: 8 }}>
                       <input type="checkbox" checked={ovDraft.active} onChange={(e) => setOvDraft((p) => ({ ...p, active: e.target.checked }))} />
                       Пропонується в цьому кабінеті

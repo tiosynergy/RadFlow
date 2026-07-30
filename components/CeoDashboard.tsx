@@ -8,7 +8,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode, type
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { wallToday0 } from "@/lib/incidents";
-import { modalityLabel, modalityCode, CONTRAST_SURCHARGE } from "@/lib/studies";
+import { modalityLabel, modalityCode } from "@/lib/studies";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
@@ -84,7 +84,10 @@ function entryRevenue(e: RevenueEntry, cat: CsvCatalog): number {
     if (typeof x.price === "number") return sum + x.price;
     const key = modalityCode(x.type) + "|" + (x.region || "");
     const svc = roomInner?.get(key) ?? baseInner?.get(key);
-    if (svc && svc.price > 0) return sum + svc.price + (x.contrast ? (svc.contrastPrice ?? CONTRAST_SURCHARGE) : 0);
+    /* Ціна каталогу — БЕЗ доплати за контраст: контрастна позиція прайсу має
+       власну ціну (4900 проти 2200), доплата рахувала б контраст двічі. Записи
+       зі збереженим снапшотом ціни (гілка вище) історію не змінюють. */
+    if (svc && svc.price > 0) return sum + svc.price;
     return sum;
   }, 0);
 }

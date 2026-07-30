@@ -186,11 +186,17 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const studyPrice = catalog.studyPrice;
 
   const allRegions = regionsFor(studyType, roomId || undefined);
-  const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
+  /* «Контраст» — ФІЛЬТР списку послуг (правило одне на продукт, lib/catalog). */
+  const regions = catalog.regionsWithContrast(studyType, roomId || undefined, contrast);
+  const contrastFilters = catalog.contrastIsFilter(studyType, roomId || undefined);
   const regionObj = regions.find((r) => r.label === region);
-  const contrastSuffix = contrast ? " з контрастом" : "";
-  const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + (contrast ? CONTRAST_DUR : 0)) : (allRegions[0]?.dur ?? 20);
-  const price = regionObj ? regionObj.price + (contrast ? (regionObj.contrastPrice ?? CONTRAST_SURCHARGE) : 0) : null;
+  /* Суфікс і доплата/+CONTRAST_DUR — лише модифікаторний режим (легасі-статика):
+     у каталозі контрастність уже в назві, а ціна позиції вже контрастна. */
+  const contrastSuffix = contrast && !contrastFilters ? " з контрастом" : "";
+  const durBump = contrast && !contrastFilters ? CONTRAST_DUR : 0;
+  const priceBump = contrast && !contrastFilters ? (regionObj?.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
+  const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + durBump) : (allRegions[0]?.dur ?? 20);
+  const price = regionObj ? regionObj.price + priceBump : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   const [durEdit, setDurEdit] = useState("");
@@ -220,17 +226,19 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   }
   function toggleContrast(v: boolean) {
     setContrast(v);
-    if (v && region && !allRegions.some((r) => r.label === region && r.contrast)) { setRegion(""); setTime(""); }
+    // Обрана область не переживає новий фільтр → знімаємо вибір (і час).
+    if (v && region && !catalog.regionsWithContrast(studyType, roomId || undefined, true).some((r) => r.label === region)) { setRegion(""); setTime(""); }
   }
   // Обрана область стала НЕДОСТУПНОЮ (прихована в кабінеті per-room 0108, АБО адмін
   // вимкнув послугу — realtime-каталог 0111) → знімаємо «фантомний» вибір і час. Ключ —
   // підпис набору доступних областей, а не лише roomId (Nielsen; сервер теж ріже).
-  const availSig = regionsFor(studyType, roomId || undefined).map((r) => r.label + "|" + (r.contrast ? "1" : "0")).join("");
+  const availSig = regionsFor(studyType, roomId || undefined).map((r) => r.label + "|" + (r.isContrast ? "1" : "0") + (r.contrast ? "1" : "0")).join("");
   useEffect(() => {
     const avail = regionsFor(studyType, roomId || undefined);
     if (region && !avail.some((r) => r.label === region)) { setRegion(""); setTime(""); }
     // Область доступна, але контраст їй вимкнули в каталозі (realtime) → знімаємо флаг.
-    else if (region && contrast) { const sel = avail.find((r) => r.label === region); if (sel && !sel.contrast) { setContrast(false); setTime(""); } }
+    // Область ще доступна, але вже не проходить фільтр «Контраст» → знімаємо галочку.
+    else if (region && contrast && !catalog.regionsWithContrast(studyType, roomId || undefined, true).some((r) => r.label === region)) { setContrast(false); setTime(""); }
     setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0 } : s)));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей / контрасту (кабінет АБО realtime-каталог)
   }, [availSig]);
@@ -242,8 +250,17 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
 
-  const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: contrast === true, dur, price: studyPrice(primaryKind, region, contrast, roomId || undefined) } : null;
-  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, roomId || undefined) })));
+  /* studies[].contrast у режимі фільтра — властивість обраної позиції прайсу,
+     а не стан чекбокса (з нього сервер рахує has_contrast). */
+  const primaryContrast = contrastFilters ? (regionObj?.isContrast === true) : contrast === true;
+  const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: primaryContrast, dur, price: studyPrice(primaryKind, region, contrast, roomId || undefined) } : null;
+/* Додаткові дослідження теж можуть бути контрастними позиціями прайсу (їх
+   список НЕ фільтрується — це свідомо), тож contrast беремо з САМОЇ позиції.
+   Інакше «основне без контрасту + додаткове з в/в контрастуванням» давало б
+   has_contrast=false на всю запис (ревʼю, High-4). */
+  const exContrast = (t: string, reg: string) =>
+    catalog.contrastIsFilter(t, roomId || undefined) ? (exRegions(t).find((r) => r.label === reg)?.isContrast === true) : false;
+  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, contrast: exContrast(s.type, s.region), dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, roomId || undefined) })));
   const slotDur = dur + validExtra.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
   /* 0118: зайнятість пацієнта накопиченими кроками кейса на ЦЮ дату (casebusy у
@@ -591,7 +608,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 <select className="inp" value={region} onChange={(e) => { setRegion(e.target.value); setTime(""); }}>
                   <option value="">— Оберіть область —</option>
                   {regions.map((r) => (
-                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + (contrast ? CONTRAST_DUR : 0) + " хв"}</option>
+                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + durBump + " хв"}</option>
                   ))}
                 </select>
               </label>

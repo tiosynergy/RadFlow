@@ -155,7 +155,9 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   const rid = roomId || undefined;
 
   const allRegions = regionsFor(studyType, rid);
-  const regions = contrast ? allRegions.filter((r) => r.contrast) : allRegions;
+  /* «Контраст» — ФІЛЬТР списку послуг (правило одне на продукт, lib/catalog). */
+  const regions = catalog.regionsWithContrast(studyType, rid, contrast);
+  const contrastFilters = catalog.contrastIsFilter(studyType, rid);
   const primaryKind = modalityLabel(studyType);
   // Кабінети поточної модальності — для опційної жорсткої прив'язки (адмін-флоу).
   /* 0123: у вимкнений кабінет не можна ні записати, ні забронювати місце в листі.
@@ -176,20 +178,25 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [centerId]);
-  const contrastSuffix = contrast ? " з контрастом" : "";
+  /* Суфікс і доплата/+CONTRAST_DUR — лише модифікаторний режим (легасі-статика). */
+  const contrastSuffix = contrast && !contrastFilters ? " з контрастом" : "";
   const regionObj = regions.find((r) => r.label === region);
-  const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + (contrast ? CONTRAST_DUR : 0)) : (allRegions[0]?.dur ?? 20);
+  const durBump = contrast && !contrastFilters ? CONTRAST_DUR : 0;
+  const priceBump = contrast && !contrastFilters ? (regionObj?.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
+  const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + durBump) : (allRegions[0]?.dur ?? 20);
   // 0117 (ревью M1): час основного дослідження можна ввести вручну — область із
   // каталожним «—» інакше була б ГЛУХИМ КУТОМ (zDuration на сервері відхиляє 0,
   // а поля вводу не було). Порожнє поле → каталожний час; «—» і порожньо → 0 (блок).
   const [durEdit, setDurEdit] = useState("");
   useEffect(() => { if (region) setDurEdit(computedDur > 0 ? String(computedDur) : ""); }, [region, contrast, studyType, rid]); // eslint-disable-line react-hooks/exhaustive-deps -- дефолт часу з каталогу
   const primaryDur = (() => { const n = parseInt(durEdit, 10) || 0; if (n > 0) return normDur(n); return computedDur > 0 ? computedDur : 0; })();
-  const price = regionObj ? regionObj.price + (contrast ? (regionObj.contrastPrice ?? CONTRAST_SURCHARGE) : 0) : null;
+  const price = regionObj ? regionObj.price + priceBump : null;
   const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 
   // Область не обрана → 0 (порожнє дослідження не додає час, поки область не вибрана).
   const exDur = (t: string, reg: string) => { const o = regionsFor(t, rid).find((r) => r.label === reg); return o ? (o.dur ?? 0) : 0; };
+  const exContrast = (t: string, reg: string) =>
+    catalog.contrastIsFilter(t, rid) ? (regionsFor(t, rid).find((r) => r.label === reg)?.isContrast === true) : false;
   const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>(() =>
     initStudies.slice(1).filter((s) => s?.region).map((s) => ({
       type: modalityLabel(s.type),
@@ -211,26 +218,30 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   }
   function toggleContrast(v: boolean) {
     setContrast(v);
-    if (v && region && !allRegions.some((r) => r.label === region && r.contrast)) setRegion("");
+    if (v && region && !catalog.regionsWithContrast(studyType, rid, true).some((r) => r.label === region)) setRegion("");
   }
   // Обрана область стала НЕДОСТУПНОЮ (прихована в кабінеті per-room 0108, АБО адмін
   // вимкнув послугу — realtime-каталог 0111) → знімаємо «фантомний» вибір. Ключ —
   // підпис набору доступних областей, а не лише roomId (Nielsen; сервер теж ріже).
-  const availSig = regionsFor(studyType, rid).map((r) => r.label + "|" + (r.contrast ? "1" : "0")).join("");
+  const availSig = regionsFor(studyType, rid).map((r) => r.label + "|" + (r.isContrast ? "1" : "0") + (r.contrast ? "1" : "0")).join("");
   useEffect(() => {
     const avail = regionsFor(studyType, rid);
     if (region && !avail.some((r) => r.label === region)) setRegion("");
-    // Область доступна, але контраст їй вимкнули в каталозі (realtime) → знімаємо флаг.
-    else if (region && contrast) { const sel = avail.find((r) => r.label === region); if (sel && !sel.contrast) setContrast(false); }
+    // Область доступна, але вже не проходить фільтр «Контраст» (realtime-каталог) → знімаємо галочку.
+    else if (region && contrast && !catalog.regionsWithContrast(studyType, rid, true).some((r) => r.label === region)) setContrast(false);
     setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0 } : s)));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей / контрасту (кабінет АБО realtime-каталог)
   }, [availSig]);
 
   const primaryStudy: StudyOut | null = region
-    ? { type: primaryKind, region, contrast: contrast === true, dur: primaryDur, price: studyPrice(primaryKind, region, contrast, rid) }
+    ? { type: primaryKind, region, contrast: contrastFilters ? (regionObj?.isContrast === true) : contrast === true, dur: primaryDur, price: studyPrice(primaryKind, region, contrast, rid) }
     : null;
   const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : [])
-    .concat(validExtra.map((s) => ({ type: s.type, region: s.region, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, rid) })));
+/* Додаткові дослідження теж можуть бути контрастними позиціями прайсу (їх
+   список НЕ фільтрується — це свідомо), тож contrast беремо з САМОЇ позиції.
+   Інакше «основне без контрасту + додаткове з в/в контрастуванням» давало б
+   has_contrast=false на всю запис (ревʼю, High-4). */
+    .concat(validExtra.map((s) => ({ type: s.type, region: s.region, contrast: exContrast(s.type, s.region), dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, rid) })));
   const totalDur = allStudies.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
   const miss: Record<string, boolean> = { name: !name.trim(), phone: !phone.trim(), priority: !priority, region: !region, center: needCenter && !centerId, dur: !!region && primaryDur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5) };
@@ -357,7 +368,7 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
               <select className="inp" value={region} onChange={(e) => setRegion(e.target.value)}>
                 <option value="">— Оберіть область —</option>
                 {regions.map((r) => (
-                  <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + (contrast ? CONTRAST_DUR : 0) + " хв"}</option>
+                  <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + durBump + " хв"}</option>
                 ))}
               </select>
             </label>
