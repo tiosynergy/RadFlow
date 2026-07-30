@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hasBookableStudy } from "@/lib/studies";
+import { hasBookableStudy, isContrastName, studyLabel } from "@/lib/studies";
 import { zStudiesRequired, zStudies } from "@/lib/validation";
 
 /* Гард «неповний / без типу склад» (Medium-знахідка): НОВА запис мусить мати
@@ -74,5 +74,55 @@ describe("zStudies — базова схема лишилась мʼякою (л
   });
   it("позиція без типу досі валідна для базової схеми", () => {
     expect(zStudies.safeParse([{ region: "щось" }]).success).toBe(true);
+  });
+});
+
+/* isContrastName — єдине джерело правди для фільтра «Контраст» (сесія 19). */
+describe("isContrastName", () => {
+  it("ловить укр./рос. форми кореня «контраст»", () => {
+    expect(isContrastName("МРТ мозку до та після в/в контрастування")).toBe(true);
+    expect(isContrastName("КТ однієї ділянки (з контрастом)")).toBe(true);
+    expect(isContrastName("МРТ с контрастированием")).toBe(true);
+    expect(isContrastName("Комплексна МРТ до та з КОНТРАСТУВАННЯМ")).toBe(true);
+  });
+  it("звичайні позиції — false", () => {
+    expect(isContrastName("МРТ головного мозку")).toBe(false);
+    expect(isContrastName("УЗД щитоподібної залози")).toBe(false);
+  });
+  it("«без контрасту» — НЕ контрастна позиція (усі форми написання)", () => {
+    expect(isContrastName("МРТ колінного суглобу без контрасту")).toBe(false);
+    expect(isContrastName("МРТ без контрастирования")).toBe(false);
+    // Злите написання й дефіс — ревʼю M1: /без\s+контраст/ їх пропускав.
+    expect(isContrastName("Безконтрастна МР-ангіографія")).toBe(false);
+    expect(isContrastName("МРТ без-контрастний протокол")).toBe(false);
+  });
+
+  it("«контраст» НЕ про речовину (техніка зйомки / властивість зображення)", () => {
+    expect(isContrastName("Фазово-контрастна МР-венографія")).toBe(false);
+    expect(isContrastName("МРТ з високою контрастністю тканин")).toBe(false);
+  });
+
+  it("змішана назва «без ... ТА З контрастуванням» → контрастна (безпечний бік)", () => {
+    // Ревʼю M2: пропустити контраст небезпечніше, ніж показати зайву позицію —
+    // від цього залежить підготовка пацієнта й перевірка алергії на гадоліній.
+    expect(isContrastName("МРТ гіпофіза без контрастування та з контрастуванням")).toBe(true);
+    expect(isContrastName("МРТ до та після в/в контрастування")).toBe(true);
+  });
+  it("порожнє/невизначене — false, не кидає", () => {
+    expect(isContrastName("")).toBe(false);
+    expect(isContrastName(null)).toBe(false);
+    expect(isContrastName(undefined)).toBe(false);
+  });
+});
+
+/* Суфікс « з контрастом» не дублюється, коли контраст уже в назві позиції (L1). */
+describe("studyLabel — суфікс контрасту", () => {
+  it("каталожна контрастна позиція: слово «контраст» лише один раз", () => {
+    const label = studyLabel({ type: "МРТ", region: "МРТ мозку до та після в/в контрастування", contrast: true });
+    expect(label).toBe("МРТ · МРТ мозку до та після в/в контрастування");
+  });
+  it("легасі-область (generic): суфікс лишається", () => {
+    expect(studyLabel({ type: "МРТ", region: "Головний мозок", contrast: true }))
+      .toBe("МРТ · Головний мозок з контрастом");
   });
 });

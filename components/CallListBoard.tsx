@@ -21,7 +21,7 @@ import type { WaitlistEntry } from "@/supabase/types";
 import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies, setQueueEntryStatus } from "@/app/queue/actions";
 import { addEntryToWaitlist } from "@/app/waitlist/actions";
 import { isLate } from "@/lib/queueStatus";
-import { modalityKind } from "@/lib/studies";
+import { modalityKind, isContrastName} from "@/lib/studies";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import type { CallStatus, Json } from "@/supabase/types";
 import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
@@ -51,7 +51,7 @@ function studyKind(e: { studies?: unknown }) {
 }
 function procLabel(e: { studies?: unknown; note?: string | null }) {
   const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string; contrast?: boolean }>) : [];
-  if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast ? " з контрастом" : "")).join(" + ");
+  if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast && !isContrastName(x.region) ? " з контрастом" : "")).join(" + ");
   return e.note || "—";
 }
 

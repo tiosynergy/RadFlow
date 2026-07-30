@@ -14,7 +14,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
-import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
+import { BUFFER_DEFAULT, normBuffer, isContrastName} from "@/lib/studies";
 
 /** Рядок RPC room_busy_slots. Три останні поля — NULL, якщо ролі не можна їх бачити.
     0074: *_min — вікно зайнятості, ОБРІЗАНЕ по запитаній добі (хвилини від 00:00).
@@ -80,7 +80,7 @@ export const ST_LABEL: Record<string, string> = {
 export function studiesText(studies: unknown): string {
   const arr = Array.isArray(studies) ? (studies as Array<{ type?: string; region?: string; contrast?: boolean }>) : [];
   if (!arr.length) return "";
-  return arr.map((s) => (s.type || "") + (s.region ? " · " + s.region : "") + (s.contrast ? " з контрастом" : "")).join(" + ");
+  return arr.map((s) => (s.type || "") + (s.region ? " · " + s.region : "") + (s.contrast && !isContrastName(s.region) ? " з контрастом" : "")).join(" + ");
 }
 
 /** Тултип зайнятої пʼятихвилинки. Деталі показуються, лише якщо сервер їх віддав

@@ -70,25 +70,35 @@ describe("buildCatalog — пріоритет каталогу центру", ()
 });
 
 describe("buildCatalog — тривалість і ціна", () => {
-  it("studyPrice = каталожна ціна + per-service доплата за контраст", () => {
+  /* ПРАВИЛО ЗМІНЕНО (контраст = фільтр): у каталозі ціна й час беруться з
+     ПОЗИЦІЇ як є. Доплата означала б подвійний рахунок — контрастна позиція
+     прайсу вже коштує дорожче. Старі смоуки нижче стверджували протилежне. */
+  it("studyPrice = каталожна ціна БЕЗ доплати за контраст (contrast ігнорується)", () => {
+    // Каталог мусить МАТИ контрастну позицію — інакше він за правилом H5
+    // лишається в модифікаторному режимі, і доплата законно повертається.
     const cat = buildCatalog([
       svc({ name: "Мозок", modality: "MRI", price: 2400, contrast_allowed: true, contrast_price: 500 }),
+      svc({ id: "kw", name: "Мозок з контрастуванням", modality: "MRI", price: 4900 }),
     ]);
     expect(cat.studyPrice("MRI", "Мозок", false)).toBe(2400);
-    expect(cat.studyPrice("MRI", "Мозок", true)).toBe(2400 + 500);
+    expect(cat.studyPrice("MRI", "Мозок", true)).toBe(2400);
   });
 
-  it("contrast_price=null → глобальний CONTRAST_SURCHARGE", () => {
+  it("контрастна позиція прайсу коштує СВОЮ ціну, а не базову + доплату", () => {
     const cat = buildCatalog([
-      svc({ name: "Мозок", modality: "MRI", price: 2400, contrast_allowed: true, contrast_price: null }),
+      svc({ id: "a", name: "МРТ мозку", modality: "MRI", price: 2200 }),
+      svc({ id: "b", name: "МРТ мозку до та після в/в контрастування", modality: "MRI", price: 4900 }),
     ]);
-    expect(cat.studyPrice("MRI", "Мозок", true)).toBe(2400 + CONTRAST_SURCHARGE);
+    expect(cat.studyPrice("MRI", "МРТ мозку до та після в/в контрастування", true)).toBe(4900);
   });
 
-  it("studyDur = каталожна тривалість (+ контраст)", () => {
-    const cat = buildCatalog([svc({ name: "Мозок", modality: "MRI", duration_min: 60 })]);
+  it("studyDur = каталожна тривалість БЕЗ +CONTRAST_DUR", () => {
+    const cat = buildCatalog([
+      svc({ name: "Мозок", modality: "MRI", duration_min: 60 }),
+      svc({ id: "kw", name: "Мозок з контрастуванням", modality: "MRI", duration_min: 75 }),
+    ]);
     expect(cat.studyDur("MRI", "Мозок", false)).toBe(60);
-    expect(cat.studyDur("MRI", "Мозок", true)).toBe(60 + CONTRAST_DUR);
+    expect(cat.studyDur("MRI", "Мозок", true)).toBe(60);
   });
 
   it("невідома область у наявній модальності → фолбэк на статику (не кидає)", () => {
@@ -129,10 +139,12 @@ describe("buildCatalog — override каталогу ПО КАБІНЕТУ (0108
     expect(cat.regionsFor("MRI").map((r) => r.label)).toEqual(["Коліно"]);  // база не зачеплена
   });
 
-  it("contrast_price override per-кабінет", () => {
-    const cat = buildCatalog([s], ro({ "room-c": { [s.id]: { contrast_price: 300 } } }));
-    expect(cat.studyPrice("MRI", "Коліно", true, "room-c")).toBe(1800 + 300);
-    expect(cat.studyPrice("MRI", "Коліно", true)).toBe(1800 + CONTRAST_SURCHARGE); // база: null → глобальний
+  it("contrast_price override per-кабінет більше НЕ впливає на ціну", () => {
+    // Колонка лишилась у БД, але контраст у каталозі — не доплата (правило змінено).
+    const kw = svc({ id: "kw", name: "Коліно з контрастуванням", modality: "MRI", price: 3000 });
+    const cat = buildCatalog([s, kw], ro({ "room-c": { [s.id]: { contrast_price: 300 } } }));
+    expect(cat.studyPrice("MRI", "Коліно", true, "room-c")).toBe(1800);
+    expect(cat.studyPrice("MRI", "Коліно", true)).toBe(1800);
   });
 });
 
@@ -279,12 +291,13 @@ describe("buildCatalog — room-owned послуги (0121, Ф2)", () => {
     expect(cat.studyDur("MRI", "МР ангіографія", false, "roomA")).toBe(40);
   });
 
-  it("контраст власної послуги: per-service contrast_price, null → глобальна доплата", () => {
+  it("власна послуга кабінету: ціна без доплати за контраст (правило змінено)", () => {
     const ownC = svc({ id: "own-c", name: "Мозок", modality: "MRI", price: 2400, contrast_allowed: true, contrast_price: 500, room_id: "roomA" });
     const ownG = svc({ id: "own-g", name: "Шия", modality: "MRI", price: 2000, contrast_allowed: true, contrast_price: null, room_id: "roomA" });
-    const cat = buildCatalog([ownC, ownG]);
-    expect(cat.studyPrice("MRI", "Мозок", true, "roomA")).toBe(2400 + 500);
-    expect(cat.studyPrice("MRI", "Шия", true, "roomA")).toBe(2000 + CONTRAST_SURCHARGE);
+    const ownK = svc({ id: "own-k", name: "Мозок з контрастуванням", modality: "MRI", price: 4900, room_id: "roomA" });
+    const cat = buildCatalog([ownC, ownG, ownK]);
+    expect(cat.studyPrice("MRI", "Мозок", true, "roomA")).toBe(2400);
+    expect(cat.studyPrice("MRI", "Шия", true, "roomA")).toBe(2000);
   });
 
   it("room_id undefined (старий селект без колонки) = базова — сумісність до Ф4", () => {
@@ -359,13 +372,13 @@ describe("каталог при переносі між кабінетами (01
     expect(cat.regionsFor("MRI", roomB).map((r) => r.label)).toEqual(["Хребет"]);
   });
 
-  it("контраст: замінити можна лише послугою, що дозволяє контраст", () => {
-    const withC = svc({ id: "b3", name: "Мозок", modality: "MRI", contrast_allowed: true, contrast_price: 500, price: 2000, room_id: roomB });
-    const noC = svc({ id: "b4", name: "Шия", modality: "MRI", contrast_allowed: false, price: 900, room_id: roomB });
+  it("контраст при переносі: заміну шукаємо за НАЗВОЮ, ціна — позиції (без доплати)", () => {
+    // Правило змінено (сесія 19): контрастність визначає назва позиції прайсу.
+    const withC = svc({ id: "b3", name: "Мозок з контрастуванням", modality: "MRI", price: 2500, room_id: roomB });
+    const noC = svc({ id: "b4", name: "Шия", modality: "MRI", price: 900, room_id: roomB });
     const cat = buildCatalog([withC, noC]);
-    const opts = cat.regionsFor("MRI", roomB).filter((r) => r.contrast);
-    expect(opts.map((r) => r.label)).toEqual(["Мозок"]);
-    expect(cat.studyPrice("MRI", "Мозок", true, roomB)).toBe(2000 + 500);
+    expect(cat.regionsWithContrast("MRI", roomB, true).map((r) => r.label)).toEqual(["Мозок з контрастуванням"]);
+    expect(cat.studyPrice("MRI", "Мозок з контрастуванням", true, roomB)).toBe(2500);
   });
 
   it("час у цільовому кабінеті не заданий (0117) → studyDur 0, перенос має блокуватись", () => {
@@ -417,5 +430,136 @@ describe("firstClosedStudy — серверний гейт закритих по
     const cat = buildCatalog([usOff]);
     expect(firstClosedStudy(cat, [{ type: "US", region: "" }, { type: "", region: "X" }])).toBeNull();
     expect(firstClosedStudy(cat, null)).toBeNull();
+  });
+});
+
+/* ===== «Контраст» = ФІЛЬТР списку послуг (правило власника, сесія 19) =====
+   У каталозі контрастні дослідження — окремі позиції прайсу зі своєю ціною, тож
+   чекбокс фільтрує список за ключовим словом у НАЗВІ, а не додає доплату.
+   Легасі-статика (центр без каталогу) зберігає стару модифікаторну семантику. */
+describe("контраст як фільтр (regionsWithContrast / contrastIsFilter)", () => {
+  const plain    = svc({ id: "s1", name: "МРТ головного мозку", modality: "MRI", price: 2200 });
+  const withCon  = svc({ id: "s2", name: "МРТ головного мозку до та після в/в контрастування", modality: "MRI", price: 4900 });
+  const dynamic  = svc({ id: "s3", name: "Комплексна МРТ: черевна порожнина до та з контрастуванням (динамічна)", modality: "MRI", price: 8700 });
+  const noCon    = svc({ id: "s4", name: "МРТ колінного суглобу без контрасту", modality: "MRI", price: 2000 });
+  const cat = buildCatalog([plain, withCon, dynamic, noCon]);
+
+  it("знято → ПОВНИЙ список (фільтр односторонній, нічого не ховаємо)", () => {
+    // Порядок — той самий, що й у regionsFor: sort_order, потім назва (uk).
+    expect(cat.regionsWithContrast("MRI", undefined, false).map((r) => r.label))
+      .toEqual([dynamic.name, plain.name, withCon.name, noCon.name]);
+  });
+
+  it("увімкнено → лише позиції з ключовим словом у назві", () => {
+    expect(cat.regionsWithContrast("MRI", undefined, true).map((r) => r.label))
+      .toEqual([dynamic.name, withCon.name]);
+  });
+
+  it("«без контрасту» НЕ вважається контрастною позицією", () => {
+    expect(cat.regionInfo("MRI", noCon.name)?.isContrast).toBe(false);
+    expect(cat.regionsWithContrast("MRI", undefined, true).map((r) => r.label)).not.toContain(noCon.name);
+  });
+
+  it("isContrast рахується з назви, а не з прапорця contrast_allowed", () => {
+    const c = buildCatalog([
+      svc({ id: "f1", name: "МРТ шиї", modality: "MRI", contrast_allowed: true }),          // прапорець є, слова немає
+      svc({ id: "f2", name: "МРТ шиї з контрастуванням", modality: "MRI", contrast_allowed: false }), // навпаки
+    ]);
+    expect(c.regionsWithContrast("MRI", undefined, true).map((r) => r.label)).toEqual(["МРТ шиї з контрастуванням"]);
+  });
+
+  it("contrastIsFilter: каталог із контрастними позиціями → true, статика → false", () => {
+    expect(cat.contrastIsFilter("MRI")).toBe(true);
+    expect(buildCatalog([]).contrastIsFilter("MRI")).toBe(false);
+  });
+
+  /* Ревʼю H5: каталог, заповнений із БАЗОВОГО довідника, контрастних НАЗВ не має.
+     Якби фільтр умикався від самого факту «каталог налаштовано», чекбокс давав би
+     ЗАВЖДИ порожній список — записати на контраст стало б неможливо взагалі.
+     Такий центр лишається в модифікаторній семантиці, доки не з'явиться перша
+     контрастна позиція. */
+  it("каталог БЕЗ контрастних позицій → режим модифікатора, а не порожній фільтр", () => {
+    const noContrastCat = buildCatalog([
+      svc({ id: "n1", name: "Головний мозок", modality: "MRI", price: 2400, contrast_allowed: true }),
+      svc({ id: "n2", name: "Шийний відділ хребта", modality: "MRI", price: 2000, contrast_allowed: false }),
+    ]);
+    expect(noContrastCat.contrastIsFilter("MRI")).toBe(false);
+    // Фільтр працює за старим прапорцем «контраст дозволено», список не порожній.
+    expect(noContrastCat.regionsWithContrast("MRI", undefined, true).map((r) => r.label)).toEqual(["Головний мозок"]);
+    // І доплата з +CONTRAST_DUR у цьому режимі повертаються.
+    expect(noContrastCat.studyPrice("MRI", "Головний мозок", true)).toBe(2400 + CONTRAST_SURCHARGE);
+    expect(noContrastCat.studyDur("MRI", "Головний мозок", true)).toBe(30 + CONTRAST_DUR);
+  });
+
+  it("перша контрастна позиція вмикає режим фільтра для цієї модальності", () => {
+    const mixed = buildCatalog([
+      svc({ id: "m1", name: "Головний мозок", modality: "MRI", price: 2400, contrast_allowed: true }),
+      svc({ id: "m2", name: "Головний мозок з контрастуванням", modality: "MRI", price: 4900 }),
+    ]);
+    expect(mixed.contrastIsFilter("MRI")).toBe(true);
+    expect(mixed.studyPrice("MRI", "Головний мозок", true)).toBe(2400); // доплати вже немає
+  });
+
+  /* Ревʼю M4: область поза каталогом (перейменували послугу, у записі лишився
+     старий снапшот) не має воскрешати доплату в контексті, що живе за фільтром. */
+  it("легасі-область у каталожному контексті: без доплати й без +CONTRAST_DUR", () => {
+    const c = buildCatalog([
+      svc({ id: "x1", name: "МРТ мозку з контрастуванням", modality: "MRI", price: 4900 }),
+      svc({ id: "x2", name: "МРТ мозку", modality: "MRI", price: 2200 }),
+    ]);
+    const withC = c.studyPrice("МРТ", "Головний мозок", true);   // статична область
+    const noC = c.studyPrice("МРТ", "Головний мозок", false);
+    expect(withC).toBe(noC);
+    expect(c.studyDur("МРТ", "Головний мозок", true)).toBe(c.studyDur("МРТ", "Головний мозок", false));
+  });
+
+  it("порожній фільтр: у каталозі немає контрастних позицій → порожній список", () => {
+    const c = buildCatalog([svc({ name: "УЗД щитоподібної залози", modality: "US" })]);
+    expect(c.regionsWithContrast("US", undefined, true)).toEqual([]);
+  });
+
+  it("фільтр по кабінету: власні позиції кабінету теж фільтруються за назвою", () => {
+    const own = svc({ id: "o1", name: "КТ грудної клітки з контрастуванням", modality: "CT", room_id: "roomA", price: 3800 });
+    const base = svc({ id: "o2", name: "КТ грудної клітки", modality: "CT", price: 1800 });
+    const c = buildCatalog([own, base]);
+    expect(c.regionsWithContrast("CT", "roomA", true).map((r) => r.label)).toEqual([own.name]);
+    expect(c.regionsWithContrast("CT", "roomA", false).map((r) => r.label)).toEqual([own.name, base.name]);
+  });
+
+  it("ЛЕГАСІ-СТАТИКА: контраст лишається модифікатором — фільтр за прапорцем + доплата", () => {
+    const stat = buildCatalog([]); // модальність не налаштована → статика
+    const all = stat.regionsWithContrast("МРТ", undefined, false);
+    const onlyContrast = stat.regionsWithContrast("МРТ", undefined, true);
+    expect(all.length).toBeGreaterThan(onlyContrast.length);
+    expect(onlyContrast.every((r) => r.contrast)).toBe(true);
+    // Доплата й +CONTRAST_DUR у статиці працюють як раніше.
+    const r0 = onlyContrast[0];
+    expect(stat.studyPrice("МРТ", r0.label, true)).toBe((stat.studyPrice("МРТ", r0.label, false) as number) + CONTRAST_SURCHARGE);
+    expect(stat.studyDur("МРТ", r0.label, true)).toBe(stat.studyDur("МРТ", r0.label, false) + CONTRAST_DUR);
+  });
+});
+
+/* Ревʼю H-A/M-A: стан чекбокса «Контраст» у режимі фільтра — це НЕ прапорець
+   дослідження. Логіка живе в StudyEditModal (компонентних тестів немає), тож
+   фіксуємо тут інваріант резолвера, на якому вона тримається: список для
+   ввімкненого й вимкненого чекбокса різний, а сам прапорець позиції незмінний. */
+describe("фільтр не змінює контрастність позиції", () => {
+  const cat = buildCatalog([
+    svc({ id: "p1", name: "МРТ мозку", modality: "MRI", price: 2200 }),
+    svc({ id: "p2", name: "МРТ мозку з контрастуванням", modality: "MRI", price: 4900 }),
+  ]);
+  it("isContrast позиції не залежить від стану чекбокса", () => {
+    const onList = cat.regionsWithContrast("MRI", undefined, true);
+    const offList = cat.regionsWithContrast("MRI", undefined, false);
+    const inOn = onList.find((r) => r.label === "МРТ мозку з контрастуванням");
+    const inOff = offList.find((r) => r.label === "МРТ мозку з контрастуванням");
+    expect(inOn?.isContrast).toBe(true);
+    expect(inOff?.isContrast).toBe(true);   // видима і при знятій галочці
+    expect(offList.find((r) => r.label === "МРТ мозку")?.isContrast).toBe(false);
+  });
+  it("ціна позиції однакова незалежно від стану чекбокса", () => {
+    expect(cat.studyPrice("MRI", "МРТ мозку з контрастуванням", true)).toBe(4900);
+    expect(cat.studyPrice("MRI", "МРТ мозку з контрастуванням", false)).toBe(4900);
+    expect(cat.studyPrice("MRI", "МРТ мозку", true)).toBe(2200);
   });
 });

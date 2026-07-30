@@ -23,7 +23,7 @@ import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/pri
 import { setClinicTz, wallToday0 } from "@/lib/incidents";
 import type { WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
-import { modalityLabel, modalityKind } from "@/lib/studies";
+import { modalityLabel, modalityKind, isContrastName} from "@/lib/studies";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
 import { visibleRooms, residualSet, roomOffLabel } from "@/lib/rooms";
@@ -46,7 +46,7 @@ function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() +
 
 function procLabel(e: { studies?: unknown; note?: string | null }) {
   const s = Array.isArray(e.studies) ? (e.studies as Study[]) : [];
-  if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast ? " з контрастом" : "")).join(" + ");
+  if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast && !isContrastName(x.region) ? " з контрастом" : "")).join(" + ");
   return e.note || "—";
 }
 

@@ -36,8 +36,11 @@
    Правила (docs/plan/SERVICES_CATALOG.md §2.3):
    - `active=false` позиції не пропонуються (історія записів не чіпається —
      studies це jsonb-снімок).
-   - Ціна контрасту: per-service `contrast_price` (null = глобальний
-     CONTRAST_SURCHARGE), на відміну від статики, де доплата завжди глобальна.
+   - Контраст у каталозі — НЕ доплата, а окрема позиція прайсу: чекбокс
+     «Контраст» фільтрує список за ключовим словом у назві (isContrastName), ціна
+     й час беруться з позиції як є. Доплата CONTRAST_SURCHARGE/CONTRAST_DUR
+     лишилась ЛИШЕ для легасі-статики (центр без каталогу). Колонки
+     `contrast_allowed`/`contrast_price` більше ні на що не впливають.
    - Межі тривалості єдині (5..480 кратно 5) — гарантовані CHECK 0107 та normDur. */
 
 import {
@@ -48,6 +51,7 @@ import {
   regionInfo as staticRegionInfo,
   studyDur as staticStudyDur,
   studyPrice as staticStudyPrice,
+  isContrastName,
   type StudyRegion,
 } from "@/lib/studies";
 
@@ -75,7 +79,11 @@ export interface ServiceLike {
     ручний ввід; studyDur для такої області повертає 0). */
 export interface CatalogRegion extends Omit<StudyRegion, "dur"> {
   dur: number | null;
-  contrastPrice: number | null; // null = глобальний CONTRAST_SURCHARGE
+  contrastPrice: number | null; // null = глобальний CONTRAST_SURCHARGE (лише статика)
+  /** Контрастна позиція прайсу — за НАЗВОЮ послуги (isContrastName). Це і є
+      предмет фільтра «Контраст» у формах запису. НЕ плутати з `contrast`
+      (успадковане від StudyRegion «контраст ДОЗВОЛЕНО» — модифікатор статики). */
+  isContrast: boolean;
   serviceId?: string;           // id послуги (для редакторів/діагностики)
   /** 0121: кабінет-власник послуги (null = базова). Для бейджів «Кабінетна» в UI. */
   serviceRoomId?: string | null;
@@ -146,6 +154,17 @@ export interface Catalog {
   studyDur(type?: string, region?: string, contrast?: boolean, roomId?: string): number;
   /** Ціна дослідження з урахуванням контрасту або null (drop-in для studyPrice). */
   studyPrice(type?: string, region?: string, contrast?: boolean, roomId?: string): number | null;
+  /** Чи працює чекбокс «Контраст» як ФІЛЬТР (каталог налаштовано) чи як
+      МОДИФІКАТОР із доплатою (легасі-статика). Одна межа для форм і цін. */
+  contrastIsFilter(type?: string | null, roomId?: string): boolean;
+  /** Області з урахуванням чекбокса «Контраст» — ЄДИНЕ місце правила фільтра,
+      яке зобов'язані звати всі форми запису (дошка, портал направника, вейтліст,
+      редактор складу).
+        • contrast=false → ПОВНИЙ список (рішення власника: фільтр односторонній,
+          нічого не ховаємо);
+        • contrast=true + каталог → лише позиції з ключовим словом у назві;
+        • contrast=true + легасі-статика → старий фільтр за прапорцем «дозволено». */
+  regionsWithContrast(type: string | undefined, roomId: string | undefined, contrast: boolean): CatalogRegion[];
 }
 
 /** Побудувати резолвер для КОНКРЕТНОГО центру (services — вже його рядки).
@@ -203,6 +222,7 @@ export function buildCatalog(
     price: ov?.price ?? s.price,
     contrast: s.contrast_allowed,
     contrastPrice: ov?.contrast_price ?? s.contrast_price,
+    isContrast: isContrastName(s.name),
     serviceId: s.id,
     serviceRoomId: s.room_id ?? null,
   });
@@ -239,7 +259,13 @@ export function buildCatalog(
     const code = modalityCode(type);
     // Модальність НЕ налаштовували для цього контексту → статичний фолбэк
     // (легасі-центр / кабінет без видимого каталогу — нестрогий режим).
-    if (!isConfigured(code, roomId)) return staticRegionsFor(type) as CatalogRegion[];
+    // Статичні області generic («Голова / мозок») — контраст там модифікатор,
+    // тож позиція сама по собі НЕ контрастна: isContrast=false завжди.
+    if (!isConfigured(code, roomId)) {
+      return staticRegionsFor(type).map((r) => ({
+        ...r, contrastPrice: null, isContrast: false,
+      })) as CatalogRegion[];
+    }
     // Налаштували, але всі видимі позиції вимкнені → ПОРОЖНЬО: напрям закрито,
     // форми не дадуть створити запис (область обов'язкова). High-2.
     return visibleActive(code, roomId);
@@ -249,7 +275,7 @@ export function buildCatalog(
     if (!isConfigured(type, roomId)) {
       // Делегуємо статиці; contrastPrice=null (глобальна доплата).
       const st = staticRegionInfo(type, region);
-      return st ? { ...st, contrastPrice: null } : null;
+      return st ? { ...st, contrastPrice: null, isContrast: false } : null;
     }
     // Q4: дубль імені база↔кабінет → перемагає власна послуга кабінету
     // (visibleActive ставить її першою).
@@ -261,25 +287,70 @@ export function buildCatalog(
     const o = regionInfo(type, region, roomId);
     // 0117: час не задано → 0 («введіть вручну») — та сама конвенція, що
     // порожнє дослідження; zDuration не пропустить збереження без часу.
-    if (o) return o.dur == null ? 0 : o.dur + (contrast ? CONTRAST_DUR : 0);
+    /* Каталог у режимі ФІЛЬТРА: час позиції як є (+CONTRAST_DUR не додаємо —
+       контрастне дослідження тут окремий рядок прайсу зі своїм часом).
+       Каталог БЕЗ контрастних позицій лишається модифікатором — там +CONTRAST_DUR
+       ще потрібен, інакше центр втратив би і фільтр, і доплату (ревʼю H5). */
+    if (o) {
+      if (o.dur == null) return 0;
+      return o.dur + (contrast && !contrastIsFilter(type, roomId) ? CONTRAST_DUR : 0);
+    }
     // Область відсутня в каталозі: активний каталог → перейменована область (статика);
     // усі позиції вимкнені → напрям закрито, нічого не пропонуємо (0).
-    return has(type, roomId) ? staticStudyDur(type, region, contrast) : 0;
+    /* Область поза каталогом (перейменована / легасі-снапшот). Делегуємо статиці,
+       але в режимі фільтра гасимо contrast: інакше +CONTRAST_DUR повернувся б у
+       контекст, який уже живе за правилом «час позиції як є» (ревʼю, M4). */
+    return has(type, roomId)
+      ? staticStudyDur(type, region, contrastIsFilter(type, roomId) ? false : contrast)
+      : 0;
   };
 
   const studyPrice: Catalog["studyPrice"] = (type, region, contrast, roomId) => {
     if (!isConfigured(type, roomId)) return staticStudyPrice(type, region, contrast);
     const o = regionInfo(type, region, roomId);
+    /* Каталог у режимі ФІЛЬТРА: ціна позиції як є — у контрастного рядка прайсу
+       вона вже контрастна (4900 проти 2200), доплата дала б 5800. Каталог без
+       контрастних позицій — модифікатор зі старою доплатою (ревʼю H5). */
     if (o) {
       if (o.price == null) return null;
-      const surcharge = contrast ? (o.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
+      const surcharge = contrast && !contrastIsFilter(type, roomId)
+        ? (o.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
       return o.price + surcharge;
     }
     // Область відсутня: активний каталог → статика (перейменована); закрито → null.
-    return has(type, roomId) ? staticStudyPrice(type, region, contrast) : null;
+    // У режимі фільтра доплату не воскрешаємо (ревʼю, M4).
+    return has(type, roomId)
+      ? staticStudyPrice(type, region, contrastIsFilter(type, roomId) ? false : contrast)
+      : null;
   };
 
-  return { has, isConfigured, regionsFor, regionInfo, studyDur, studyPrice };
+  /* Режим чекбокса «Контраст».
+       ФІЛЬТР — каталог налаштовано І в ньому реально Є контрастні позиції;
+       МОДИФІКАТОР (стара доплата) — легасі-статика АБО каталог, у якому жодної
+       контрастної позиції немає.
+     Друга умова обов'язкова (ревʼю, High-5): центр, який заповнив каталог із
+     базового довідника (там контрастних назв немає), інакше отримав би фільтр,
+     що завжди дає ПОРОЖНІЙ список — записати на контраст стало б неможливо
+     взагалі, і доплата теж зникла б. Поки прайс без контрастних позицій, центр
+     працює по-старому; щойно з'явиться перша — вмикається фільтр. */
+  const contrastIsFilter: Catalog["contrastIsFilter"] = (type, roomId) => {
+    if (!isConfigured(type, roomId)) return false;
+    return visibleActive(modalityCode(type), roomId).some((r) => r.isContrast);
+  };
+
+  const regionsWithContrast: Catalog["regionsWithContrast"] = (type, roomId, contrast) => {
+    const all = regionsFor(type, roomId);
+    if (!contrast) return all;  // знято → повний список (рішення власника)
+    const filtered = contrastIsFilter(type, roomId)
+      ? all.filter((r) => r.isContrast)   // каталог: ключове слово в назві
+      : all.filter((r) => r.contrast);    // легасі-статика: «контраст дозволено»
+    return filtered;
+  };
+
+  return {
+    has, isConfigured, regionsFor, regionInfo, studyDur, studyPrice,
+    contrastIsFilter, regionsWithContrast,
+  };
 }
 
 /** Серверний гейт складу дослідження проти каталогу центру (defense-in-depth).

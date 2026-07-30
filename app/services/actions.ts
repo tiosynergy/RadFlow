@@ -15,7 +15,7 @@ import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/supabase/types";
 import { parseInput, safeDbError, zUuid, zDuration, zPriceNullable } from "@/lib/validation";
-import { BOOKABLE_MODALITIES, regionsFor, type ModalityCode } from "@/lib/studies";
+import { BOOKABLE_MODALITIES, regionsFor, type ModalityCode , isContrastName} from "@/lib/studies";
 
 export type ServiceActionResult =
   | { ok: true; id?: string; count?: number }
@@ -111,8 +111,16 @@ export async function createService(raw: ServiceInput, roomId?: string): Promise
     modality: v.data.modality,
     duration_min: v.data.durationMin,
     price: v.data.price,
-    contrast_allowed: v.data.contrastAllowed,
-    contrast_price: v.data.contrastAllowed ? v.data.contrastPrice : null,
+    /* Колонку прибрано з UI редактора (контраст визначає НАЗВА позиції), але
+       лишаємо її правдивою — виводимо з назви. Інакше всі нові послуги мовчки
+       отримували б false, і «оживлена» колонка брехала б (ревʼю, L3). */
+    /* Колонку прибрано з UI редактора (контраст визначає НАЗВА позиції), але
+       лишаємо її правдивою. Вивід із назви лише ДОДАЄ істину, ніколи не знімає
+       раніше виставлений вручну прапорець: у центрів, чий прайс без контрастних
+       назв, саме за цією колонкою ще працює старий фільтр-модифікатор, і
+       безумовний перезапис у false ламав би їм запис на контраст (ревʼю, H-C). */
+    contrast_allowed: isContrastName(v.data.name) || v.data.contrastAllowed,
+    contrast_price: (isContrastName(v.data.name) || v.data.contrastAllowed) ? v.data.contrastPrice : null,
     active: v.data.active,
     sort_order: v.data.sortOrder,
     source: "manual",
@@ -135,8 +143,16 @@ export async function updateService(id: string, raw: ServiceInput): Promise<Serv
     name: v.data.name,
     duration_min: v.data.durationMin,
     price: v.data.price,
-    contrast_allowed: v.data.contrastAllowed,
-    contrast_price: v.data.contrastAllowed ? v.data.contrastPrice : null,
+    /* Колонку прибрано з UI редактора (контраст визначає НАЗВА позиції), але
+       лишаємо її правдивою — виводимо з назви. Інакше всі нові послуги мовчки
+       отримували б false, і «оживлена» колонка брехала б (ревʼю, L3). */
+    /* Колонку прибрано з UI редактора (контраст визначає НАЗВА позиції), але
+       лишаємо її правдивою. Вивід із назви лише ДОДАЄ істину, ніколи не знімає
+       раніше виставлений вручну прапорець: у центрів, чий прайс без контрастних
+       назв, саме за цією колонкою ще працює старий фільтр-модифікатор, і
+       безумовний перезапис у false ламав би їм запис на контраст (ревʼю, H-C). */
+    contrast_allowed: isContrastName(v.data.name) || v.data.contrastAllowed,
+    contrast_price: (isContrastName(v.data.name) || v.data.contrastAllowed) ? v.data.contrastPrice : null,
     active: v.data.active,
     sort_order: v.data.sortOrder,
   }).eq("id", idv.data).eq("clinic_id", gate.clinicId).select("id");
@@ -197,7 +213,7 @@ export async function seedServicesFromCatalog(): Promise<ServiceActionResult> {
         modality: mod,
         duration_min: r.dur,
         price: r.price,
-        contrast_allowed: !!r.contrast,
+        contrast_allowed: isContrastName(r.label) || !!r.contrast,
         contrast_price: null,           // дефолт CONTRAST_SURCHARGE
         active: true,
         sort_order: (i + 1) * 10,
