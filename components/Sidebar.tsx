@@ -11,6 +11,7 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { signOutAndRedirect } from "@/lib/auth";
 import DensityControl from "@/components/DensityToggle";
 import NavDrawer from "@/components/NavDrawer";
+import SoundToggle from "@/components/SoundToggle";
 import { modalityShort, modalityKind } from "@/lib/studies";
 
 type SidebarRoom = {
@@ -192,6 +193,8 @@ export default function Sidebar({
       <div className="sb-settings">
         {showCeoLink && <a href="/ceo" className={"sb-item" + (activeNav === "ceo" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Дашборд CEO</span></a>}
         {isAdmin && <a href="/setup" className="sb-item"><span className="ic">⚙</span><span className="sb-item-lab">Майстер налаштування</span></a>}
+        {/* Звукові сповіщення отримують admin/registrar; CEO — ні (і перемикач не бачить). */}
+        {!isCeo && <SoundToggle />}
         <div className="sb-density-box"><DensityControl /></div>
       </div>
 

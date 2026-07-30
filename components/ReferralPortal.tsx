@@ -11,6 +11,8 @@ import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
+import { useQueueSounds } from "@/lib/useQueueSounds";
+import { REFERRER_CRITICAL_STATUSES } from "@/lib/soundEvents";
 import LiveClock from "@/components/LiveClock";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
 import PatientEditModal from "@/components/PatientEditModal";
@@ -1345,6 +1347,18 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
       { table: "services", onChange: () => router.refresh() },
       { table: "service_room_overrides", onChange: () => router.refresh() },
     ],
+  });
+
+  /* Звукові сповіщення направника: ЛИШЕ критичні події ВЛАСНИХ направлень —
+     перший перехід у needs_reschedule або not_held. «Пацієнт готовий» та
+     інциденти направника не стосуються (readyEnabled=false, incidents не
+     передаємо — доступ до даних заради звуку не розширюємо). Snapshot-логіка
+     поверх reload(); помилковий snapshot (listErr) baseline не чіпає. */
+  useQueueSounds({
+    scopeKey: "ref|" + doctorId,
+    entries: listErr ? null : referrals,
+    readyEnabled: false,
+    criticalStatuses: REFERRER_CRITICAL_STATUSES,
   });
 
   async function wlAdd(w: WaitlistFormOut) {

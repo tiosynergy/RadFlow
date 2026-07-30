@@ -7,6 +7,7 @@ import { isRoomBookable, ROOM_OFF_LABEL, visibleRooms, residualSet, roomOffLabel
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
+import { useQueueSounds } from "@/lib/useQueueSounds";
 import {
   setQueueEntryStatus,
   cancelQueueEntry,
@@ -1082,6 +1083,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   const [incidentsErr, setIncidentsErr] = useState(false);
   const [overridesErr, setOverridesErr] = useState(false);
   const safetyErr = incidentsErr || overridesErr; // простої / графіки — критично для брони
+  /* Для звуку: стартовий стан incidents=[] — це «ще не завантажено», а не «простоїв
+     немає». Без цього прапорця перший справжній список став би ДРУГИМ snapshot'ом,
+     і давно активний простій «зазвучав» би прямо на маунті дошки. */
+  const [incidentsLoaded, setIncidentsLoaded] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -1123,6 +1128,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       const list = data || [];
       setIncidents(list);
       setIncidentsErr(false);
+      setIncidentsLoaded(true);
     } catch {
       setIncidentsErr(true);
     }
@@ -1215,6 +1221,22 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       { table: "services", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
       { table: "service_room_overrides", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
     ],
+  });
+
+  /* Звукові сповіщення (мінімальні, два профілі): «пацієнт готовий»
+     (scheduled → waiting, лише сьогодні за TZ клініки) + критичні (перший
+     перехід у needs_reschedule, інцидент, що фактично став активним).
+     Snapshot-логіка сидить ПОВЕРХ наявних лоадерів — useRealtimeRefetch не
+     чіпаємо; стан дошки вже включає оптимістичні оновлення, тож власна дія
+     оператора і realtime-refetch за нею дають один перехід, не два. Помилкові
+     snapshot'и (entriesErr/incidentsErr) baseline не чіпають. */
+  useQueueSounds({
+    scopeKey: "queue|" + clinicId + "|" + dayKey,
+    active: roleKey === "admin" || roleKey === "registrar",
+    entries: loading || entriesErr ? null : entries,
+    readyEnabled: isToday,
+    incidents: !incidentsLoaded || incidentsErr ? null : incidents,
+    incidentScopeKey: clinicId, // інциденти живуть поза денним scope
   });
 
   const selectedOverride = overrides[dayKey] || null;
