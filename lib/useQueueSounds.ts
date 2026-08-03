@@ -35,6 +35,7 @@ import { wallNow } from "./incidents";
 import {
   dedupeHash,
   diffIncidents,
+  diffOverruns,
   diffQueueEntries,
   resolveBurst,
   settleEvents,
@@ -42,7 +43,7 @@ import {
   type SoundIncident,
   type SoundQueueEntry,
 } from "./soundEvents";
-import { armAutoUnlock, playCriticalAttention, playPatientReady } from "./soundEngine";
+import { armAutoUnlock, playCriticalAttention, playPatientReady, playStudyOverrun } from "./soundEngine";
 import { soundEnabled, subscribeSoundPref } from "./soundPrefs";
 import { TabSoundDedupe } from "./soundTabDedupe";
 
@@ -61,6 +62,10 @@ type Options = {
   incidents?: SoundIncident[] | null;
   /** Звузити інциденти до кабінетів (радіолог — лише призначені йому). */
   incidentRoomIds?: readonly string[] | null;
+  /** Озвучувати перевищення планового часу дослідження (таймер став червоним).
+   *  Лише для СЬОГОДНІШНЬОЇ дошки: в інші дні in_progress не буває. Направнику
+   *  не передається — перевищення не його зона відповідальності. */
+  overrunEnabled?: boolean;
   /** Ключ області ІНЦИДЕНТІВ (клініка + набір кабінетів, БЕЗ дати). Зміна →
    *  тихий re-baseline: інцидент, що «увійшов у scope» (радіологу видали новий
    *  кабінет із давнім простоєм), не видається за щойно активований. */
@@ -70,6 +75,8 @@ type Options = {
 const BURST_MS = 360;           // вікно агрегації сплеску подій
 const BURST_JITTER_MS = 140;    // випадковий зсув (разом ≤ 500 мс), щоб вкладки не флашили одночасно
 const INCIDENT_TICK_MS = 15000; // період перевірки «planned дійшов до started_at»
+const OVERRUN_TICK_MS = 10000;  // період перевірки «дослідження вийшло за план»
+const HIDDEN_GRACE_MS = 3000;   // коротше приховування вкладки історію не накопичує
 
 export function useQueueSounds({
   scopeKey,
@@ -80,6 +87,7 @@ export function useQueueSounds({
   incidents = null,
   incidentRoomIds = null,
   incidentScopeKey = "",
+  overrunEnabled = false,
 }: Options): void {
   const [enabled, setEnabled] = useState(false);
   useEffect(() => {
@@ -101,6 +109,16 @@ export function useQueueSounds({
   const scopeFreshRef = useRef(true);
   const knownIncRef = useRef<Map<string, boolean> | null>(null);
   const lastIncidentsRef = useRef<SoundIncident[] | null>(null);
+  /* Перевищення живе на тих самих записах, але подія народжується ПЛИНОМ ЧАСУ,
+     без жодної зміни в БД — тому окремий baseline і власний тік, як в інцидентів. */
+  const knownOverRef = useRef<Map<string, boolean> | null>(null);
+  const lastEntriesArrRef = useRef<SoundQueueEntry[] | null>(null);
+  const overrunSilentOnceRef = useRef(false);
+  /* Той самий гейт, що й у лінії записів (ревʼю M2): у момент перемикання дати
+     проп ще тримає масив ПОПЕРЕДНЬОГО дня (дошки не вмикають loading на зміну
+     dayKey), і без цієї перевірки baseline перевищень засівався б чужим днем. */
+  const overrunScopeFreshRef = useRef(true);
+  const lastOverrunIdentityRef = useRef<SoundQueueEntry[] | null>(null);
   /* fired — «спожиті» ключі подій: гарантія «впервые» (повтор того самого факту
      не звучить) і тиша для історії, накопиченої при вимкненому звуку/прихованій
      вкладці. Живе на весь маунт дошки; назовні (BroadcastChannel) ідуть лише хеші. */
@@ -108,6 +126,7 @@ export function useQueueSounds({
   const pendingRef = useRef<SoundEvent[]>([]);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dedupeRef = useRef<TabSoundDedupe | null>(null);
+  const hiddenAtRef = useRef<number>(0);
   /* «Тихий перший дифф після повернення на вкладку» — окремо для записів та
      інцидентів. Заморожена вкладка не дифала взагалі, тож перший дифф після
      повернення порівнює стан «до сну» зі станом «після» — це і є накопичена
@@ -120,10 +139,17 @@ export function useQueueSounds({
     const d = new TabSoundDedupe();
     dedupeRef.current = d;
     const onVis = () => {
-      if (document.visibilityState === "visible") {
-        entriesSilentOnceRef.current = true;
-        incidentsSilentOnceRef.current = true;
-      }
+      if (document.visibilityState !== "visible") { hiddenAtRef.current = Date.now(); return; }
+      /* Тиха синхронізація потрібна лише коли вкладка була прихована ДОСТАТНЬО
+         довго, щоб щось накопичилось. Інакше швидке перемикання вкладок туди-сюди
+         тримало б прапорець вічно взведеним, і жодне перевищення не прозвучало б
+         (ревʼю L9): у лінії перевищень прапорець гасить тік раз на 10 с, а не
+         найближчий snapshot. */
+      const hiddenMs = Date.now() - hiddenAtRef.current;
+      if (hiddenMs < HIDDEN_GRACE_MS) return;
+      entriesSilentOnceRef.current = true;
+      incidentsSilentOnceRef.current = true;
+      overrunSilentOnceRef.current = true;
     };
     document.addEventListener("visibilitychange", onVis);
     return () => {
@@ -144,6 +170,10 @@ export function useQueueSounds({
   useEffect(() => {
     prevEntriesRef.current = null;
     scopeFreshRef.current = true;
+    // Перевищення прив'язане до дня дошки так само, як записи.
+    knownOverRef.current = null;
+    lastEntriesArrRef.current = null;
+    overrunScopeFreshRef.current = true;
   }, [scopeKey]);
 
   /* Зміна scope ІНЦИДЕНТІВ (клініка / набір кабінетів) → тихий re-baseline.
@@ -185,6 +215,7 @@ export function useQueueSounds({
         if (!mine.length) return; // усе вже зіграла інша вкладка
         try {
           if (kind === "critical") playCriticalAttention();
+          else if (kind === "overrun") playStudyOverrun();
           else playPatientReady();
         } catch {
           /* звук не має права зламати дошку */
@@ -243,4 +274,35 @@ export function useQueueSounds({
     const t = setInterval(evalIncidents, INCIDENT_TICK_MS);
     return () => clearInterval(t);
   }, [active, incidents, incidentRoomIds, queueEvents]);
+
+  /* Перевищення планового часу: подія настає САМА, без події в БД, тож окрім
+     звірки на кожен успішний snapshot тікаємо таймером. Помилка завантаження
+     (entries === null) список не затирає — рахуємо по останньому успішному. */
+  useEffect(() => {
+    if (!active || !overrunEnabled) return;
+    /* Чекаємо СВІЖИЙ знімок поточного scope (див. overrunScopeFreshRef). */
+    if (overrunScopeFreshRef.current) {
+      if (lastOverrunIdentityRef.current === entries) return;
+      overrunScopeFreshRef.current = false;
+    }
+    lastOverrunIdentityRef.current = entries;
+    /* Помилка завантаження (entries === null): baseline лишаємо, але НЕ тікаємо.
+       Подія тут народжується самим ходом годинника, тож тік по застарілому
+       списку озвучив би перевищення для вже завершеного дослідження (ревʼю L10).
+       Дані повернулись → ефект перезапуститься і тік відновиться. */
+    if (!entries) return;
+    lastEntriesArrRef.current = entries;
+    const evalOverruns = () => {
+      const list = lastEntriesArrRef.current;
+      if (!list) return;
+      const silentSync = overrunSilentOnceRef.current;
+      overrunSilentOnceRef.current = false;
+      const { events, next } = diffOverruns(knownOverRef.current, list, Date.now());
+      knownOverRef.current = next;
+      queueEvents(events, silentSync);
+    };
+    evalOverruns();
+    const t = setInterval(evalOverruns, OVERRUN_TICK_MS);
+    return () => clearInterval(t);
+  }, [active, overrunEnabled, entries, scopeKey, queueEvents]);
 }

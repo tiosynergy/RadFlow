@@ -1,9 +1,12 @@
 /* ===== RadFlow — звукові сповіщення: чисті класифікатори =====
-   Мінімальний набір: ДВА звукові профілі на весь продукт.
+   Мінімальний набір: ТРИ звукові профілі на весь продукт.
      • ready    — «пацієнт готовий до виклику»: реальний перехід scheduled → waiting;
      • critical — «критичне втручання»: перший перехід запису в needs_reschedule
                   (для направника — також not_held) або інцидент, що ФАКТИЧНО
-                  став активним (новий активний чи planned, який дійшов до started_at).
+                  став активним (новий активний чи planned, який дійшов до started_at);
+     • overrun  — «дослідження триває довше запланованого»: мить, коли таймер
+                  кабінету стає червоним («+MM:SS»). Рішення власника: третій
+                  профіль, бо це «пора завершувати», а не аварія.
 
    Джерело подій — порівняння послідовних УСПІШНИХ snapshot'ів стану дошки
    (useRealtimeRefetch не передає payload, лише смикає лоадер, тому дифаємо стани).
@@ -20,7 +23,7 @@
 
 import { incidentActiveAt, type IncidentLike } from "./incidents";
 
-export type QueueSoundKind = "ready" | "critical";
+export type QueueSoundKind = "ready" | "critical" | "overrun";
 
 /** Подія зі стабільним ключем: той самий бізнес-факт → той самий ключ (дедуп). */
 export type SoundEvent = { kind: QueueSoundKind; key: string };
@@ -103,11 +106,90 @@ export function diffIncidents(
   return { events, next };
 }
 
-/* Burst-агрегація: кілька подій в одному вікні → ОДИН звук; критичний має
-   пріоритет над «пацієнт готовий». */
+/* ===== Перевищення планового часу дослідження =====
+   ДЗЕРКАЛО components/StudyTimer: відлік іде від in_progress_at і охоплює
+   дослідження ПЛЮС буфер прибирання («коли кабінет повністю звільниться» —
+   рішення власника). Це мить, коли таймер перемикається на «+MM:SS».
+   ⚠️ Уточнення (ревʼю M3): ЧЕРВОНИМ кільце стає РАНІШЕ — за 5 хв до кінця
+   (`CRIT_SEC` у StudyTimer, клас `.crit` має той самий `--red`, що й `.over`).
+   Тобто звук збігається з появою «+», а не з появою червоного кольору.
+
+   ⚠️ Це РЕАЛЬНА тривалість (різниця двох інстантів), а не «настінний» час: сюди
+   НЕ можна підставляти wallNow(), інакше величина поїде на зміщенні таймзони.
+   Дефолти теж дзеркальні дошкам: duration_min || 30, buffer_time_min ?? 5. */
+export type SoundOverrunEntry = {
+  id: string;
+  status?: string | null;
+  in_progress_at?: string | null;
+  duration_min?: number | null;
+  buffer_time_min?: number | null;
+};
+
+/* КОНТРАКТ джерела перевищень (ревʼю M4). Поля тут ОБОВ'ЯЗКОВІ як ключі (значення
+   можуть бути null) — на відміну від SoundOverrunEntry, де вони опційні заради
+   зручності класифікатора. Дошки, які вмикають overrunEnabled, ОБОВ'ЯЗАНІ
+   анотувати свій масив цим типом: якщо колонку приберуть із select, TS впаде
+   тут, а не мовчки перейде на дефолти 30+5 і розійдеться з таймером. */
+export type OverrunSource = {
+  id: string;
+  status: string | null;
+  in_progress_at: string | null;
+  duration_min: number | null;
+  buffer_time_min: number | null;
+};
+
+const OVERRUN_BUFFER_DEFAULT = 5; // = BUFFER_DEFAULT (lib/studies)
+
+/** Чи вичерпано планове вікно кабінету (дослідження + буфер) для запису. */
+export function isStudyOverrun(e: SoundOverrunEntry | null | undefined, nowMs: number): boolean {
+  if (!e || e.status !== "in_progress" || !e.in_progress_at) return false;
+  const start = new Date(e.in_progress_at).getTime();
+  if (!Number.isFinite(start)) return false;
+  const totalMs = ((e.duration_min || 30) + (e.buffer_time_min ?? OVERRUN_BUFFER_DEFAULT)) * 60000;
+  return nowMs - start > totalMs;
+}
+
+/* Диф перевищень: prevKnown — мапа id → «чи вже перевищував» (null = baseline).
+   Перше обчислення тихе: дослідження, яке ВЖЕ висіло понад план, коли дошку
+   відкрили, не сигналить — інакше кожне відкриття вкладки давало б звук.
+   Подія — лише перехід false → true.
+   Ключ `qe-over:<id>` без часової компоненти — СВІДОМО: одне перевищення на
+   запис за весь час життя вкладки. Якщо оператор продовжить тривалість і запис
+   вийде за план удруге, звуку вже не буде (ревʼю L6): краще недосказати, ніж
+   пищати повторно на те саме дослідження. */
+export function diffOverruns(
+  prevKnown: ReadonlyMap<string, boolean> | null,
+  entries: readonly SoundOverrunEntry[],
+  nowMs: number
+): { events: SoundEvent[]; next: Map<string, boolean> } {
+  const next = new Map<string, boolean>();
+  const events: SoundEvent[] = [];
+  for (const e of entries) {
+    if (!e || !e.id) continue;
+    const over = isStudyOverrun(e, nowMs);
+    next.set(e.id, over);
+    if (!prevKnown) continue;            // baseline — фіксуємо, не звучимо
+    /* `has` обов'язковий (ревʼю H1): запис, якого в попередньому знімку НЕ БУЛО,
+       не може «щойно перетнути поріг» — поріг настає щонайменше через 35 хв
+       після старту, тож нове id з over=true це ЗАВЖДИ історія (інший день,
+       щойно виданий радіологу кабінет), а не новина. Без `has` повернення на
+       сьогоднішню дату озвучувало б дослідження, яке триває понад план годину.
+       Те саме правило, що й у diffQueueEntries: порівнюємо лише наявні. */
+    if (over && prevKnown.has(e.id) && prevKnown.get(e.id) !== true) {
+      events.push({ kind: "overrun", key: "qe-over:" + e.id });
+    }
+  }
+  return { events, next };
+}
+
+/* Burst-агрегація: кілька подій в одному вікні → ОДИН звук.
+   Пріоритет: critical > overrun > ready — від «щось зламалось» до «просто
+   готовий пацієнт». */
 export function resolveBurst(events: readonly SoundEvent[]): QueueSoundKind | null {
   if (!events.length) return null;
-  return events.some((e) => e.kind === "critical") ? "critical" : "ready";
+  if (events.some((e) => e.kind === "critical")) return "critical";
+  if (events.some((e) => e.kind === "overrun")) return "overrun";
+  return "ready";
 }
 
 /* Гейт відтворення. Події СПОЖИВАЮТЬСЯ (потрапляють у fired) незалежно від того,

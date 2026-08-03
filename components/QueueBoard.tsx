@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { useQueueSounds } from "@/lib/useQueueSounds";
+import { isStudyOverrun, type OverrunSource } from "@/lib/soundEvents";
 import {
   setQueueEntryStatus,
   cancelQueueEntry,
@@ -331,7 +332,13 @@ function CurrentCard({ patient, roomName, roomModel, enteredAt, nextWaiting, onC
         </div>
         <div className="cur-timer">
           <LiveTimer enteredAt={enteredAt}>{(sec) => {
-            const over = sec > ((patient.duration_min || 30) + (patient.buffer_time_min ?? BUFFER_DEFAULT)) * 60;
+            // Той самий поріг, що й у StudyTimer і в звуці перевищення — через
+            // спільний предикат, щоб три копії формули не розійшлись (ревʼю L7).
+            const over = isStudyOverrun(
+              { id: patient.id, status: "in_progress", in_progress_at: enteredAt,
+                duration_min: patient.duration_min, buffer_time_min: patient.buffer_time_min },
+              (enteredAt ? new Date(enteredAt).getTime() : Date.now()) + sec * 1000
+            );
             return (<>
               <div className="t tabular" style={over ? { color: "var(--orange)" } : undefined}>{fmtTimer(sec)}</div>
               <div className="tl">{over ? "перевищено час" : "хв у кабінеті"}</div>
@@ -1223,13 +1230,18 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     ],
   });
 
-  /* Звукові сповіщення (мінімальні, два профілі): «пацієнт готовий»
+  /* Звукові сповіщення (три профілі): «пацієнт готовий»
      (scheduled → waiting, лише сьогодні за TZ клініки) + критичні (перший
      перехід у needs_reschedule, інцидент, що фактично став активним).
      Snapshot-логіка сидить ПОВЕРХ наявних лоадерів — useRealtimeRefetch не
      чіпаємо; стан дошки вже включає оптимістичні оновлення, тож власна дія
      оператора і realtime-refetch за нею дають один перехід, не два. Помилкові
      snapshot'и (entriesErr/incidentsErr) baseline не чіпають. */
+  /* Контракт джерела перевищень: якщо з select приберуть in_progress_at /
+     duration_min / buffer_time_min, TS впаде саме тут, а не мовчки перейде на
+     дефолти 30+5 і розійдеться з таймером кабінету (ревʼю M4). */
+  const overrunSource: OverrunSource[] = entries;
+  void overrunSource;
   useQueueSounds({
     scopeKey: "queue|" + clinicId + "|" + dayKey,
     active: roleKey === "admin" || roleKey === "registrar",
@@ -1237,6 +1249,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     readyEnabled: isToday,
     incidents: !incidentsLoaded || incidentsErr ? null : incidents,
     incidentScopeKey: clinicId, // інциденти живуть поза денним scope
+    overrunEnabled: isToday,    // «дослідження довше плану» — лише сьогоднішня дошка
   });
 
   const selectedOverride = overrides[dayKey] || null;
