@@ -19,7 +19,7 @@ export interface ToastData {
 const TONE: Record<string, string> = {
   success: "var(--green)",
   error: "var(--red)",
-  info: "#4da3ff",
+  info: "var(--blue-text)",
   warn: "var(--orange)",
 };
 const ICON: Record<string, string> = { success: "✓", error: "⚠", info: "ℹ", warn: "⚠" };

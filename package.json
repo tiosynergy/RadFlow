@@ -10,6 +10,7 @@
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "audit:contrast": "node scripts/contrast-audit.mjs",
     "test:watch": "vitest",
     "sync-board": "node scripts/sync-board.mjs",
     "seed:cities": "node scripts/seed-cities.mjs",

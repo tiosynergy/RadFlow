@@ -52,6 +52,7 @@ import RoomDayOverviewModal from "@/components/RoomDayOverviewModal";
 import { roomScheduleFor, dayStatus, offScheduleKind, effectiveRoomBreaks, type DayOverride } from "@/lib/schedule";
 import { slotToMin, slotFmt } from "@/lib/slots";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, collisionFor, type CollisionInfo } from "@/lib/queueStatus";
+import { visibleStuckByRoom, stuckUnknownOf, stuckDateLabel, stuckDeepLink, stuckBlockReason, canCallIntoRoom, STUCK_UNKNOWN_REASON, type StuckStudy } from "@/lib/stuckStudy";
 import CollisionPanel from "@/components/CollisionPanel";
 import QuickRescheduleButton from "@/components/QuickRescheduleButton";
 import StudyTimer from "@/components/StudyTimer";
@@ -61,7 +62,7 @@ import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type Pat
 import Toast, { type ToastData } from "@/components/Toast";
 import ShortcutsOverlay from "@/components/ShortcutsOverlay";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
-import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
+import { quickSearchMatch } from "@/lib/quickSearch";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -198,6 +199,13 @@ function useCardBusy() {
 interface RoomStatusCardProps {
   room: RoomOpt;
   patient?: QEntry | null;
+  /* с24: незавершене дослідження з іншої дати. Кабінет фізично зайнятий ним
+     (індекс 0018 не дасть другий in_progress), але на дошці цього дня його
+     немає — тому картка мусить сказати про це сама. */
+  stuck?: StuckStudy | null;
+  /** Про «хвости» ще нічого не відомо (не завантажились / запит упав) — fail-closed. */
+  stuckUnknown?: boolean;
+  onFinishStuck?: (s: StuckStudy) => void;
   enteredAt?: string | null;
   nextWaiting?: QEntry | null;
   blocked?: IncidentRow | null;
@@ -206,7 +214,7 @@ interface RoomStatusCardProps {
   onCall: (p: QEntry) => void;
   onUnblock: (inc: IncidentRow) => void;
 }
-function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedClosed, onComplete, onCall, onUnblock }: RoomStatusCardProps) {
+function RoomStatusCard({ room, patient, stuck, stuckUnknown, onFinishStuck, enteredAt, nextWaiting, blocked, schedClosed, onComplete, onCall, onUnblock }: RoomStatusCardProps) {
   const kind = modalityShort(room.modality);
   const { busy, run } = useCardBusy();
   if (!blocked && schedClosed) {
@@ -249,7 +257,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
     );
   }
   return (
-    <div className={"room-card " + (patient ? "busy" : "free")}>
+    <div className={"room-card " + (patient ? "busy" : stuck ? "stuck" : "free")}>
       <div className="rc-head">
         <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
         <div className="rc-h-meta">
@@ -272,6 +280,32 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
             <button className="btn btn-green btn-sm" onClick={() => onComplete(patient)}>✓ Завершити</button>
           </div>
         </div>
+      ) : stuck ? (
+        /* Кабінет НЕ вільний: у ньому висить незавершене дослідження іншого дня.
+           Показуємо ПІБ і дату, даємо закрити прямо звідси, а перехід лишаємо
+           для випадків, де потрібні причина/нотатка («не відбулося»). Раніше тут
+           писало «Кабінет вільний», кнопка виклику була активною, а сервер
+           відповідав «у кабінеті вже є пацієнт» про пацієнта, якого не видно. */
+        <div className="rc-body rc-body-stuck">
+          <div className="rc-stuck-reason"><span aria-hidden="true">⏳</span> Незавершене дослідження від {stuckDateLabel(stuck.scheduled_date)}</div>
+          <div className="rc-brow">
+            <span className="rc-proc" title={stuck.patient_name}>{stuck.patient_name}</span>
+            {onFinishStuck && <button className="btn btn-green btn-sm" onClick={() => onFinishStuck(stuck)}>✓ Завершити</button>}
+          </div>
+          <div className="rc-brow">
+            <a className="btn btn-secondary btn-sm" href={stuckDeepLink(stuck)}
+               aria-label={"Відкрити " + stuckDateLabel(stuck.scheduled_date) + " — кабінет " + room.name}>
+              Відкрити {stuckDateLabel(stuck.scheduled_date)}
+            </a>
+          </div>
+        </div>
+      ) : stuckUnknown ? (
+        /* Не знаємо, чи є хвіст → не стверджуємо «вільний» і не показуємо кнопку
+           виклику (ревʼю с24, H1: «помилка завантаження ≠ пусто»). */
+        <div className="rc-body empty">
+          <div className="rc-free-row"><span aria-hidden="true">⚠</span><span className="rc-free">Стан кабінету не оновився</span></div>
+          <div className="rc-free-sub">Дані про незавершені дослідження не завантажились — оновіть сторінку</div>
+        </div>
       ) : (
         <div className="rc-body empty">
           <div className="rc-free-row"><span className="rc-free-dot" /><span className="rc-free">Кабінет вільний</span></div>
@@ -291,6 +325,10 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
 /* ── Одиночний вид кабінету ── */
 interface CurrentCardProps {
   patient?: QEntry | null;
+  /** с24 — незавершене дослідження цього кабінету з іншої дати (див. RoomStatusCard). */
+  stuck?: StuckStudy | null;
+  stuckUnknown?: boolean;
+  onFinishStuck?: (s: StuckStudy) => void;
   roomName: string;
   roomModel?: string | null;
   enteredAt?: string | null;
@@ -299,8 +337,43 @@ interface CurrentCardProps {
   onComplete: (p: QEntry) => void;
   onReschedule?: (p: QEntry) => void;
 }
-function CurrentCard({ patient, roomName, roomModel, enteredAt, nextWaiting, onCall, onComplete, onReschedule }: CurrentCardProps) {
+function CurrentCard({ patient, stuck, stuckUnknown, onFinishStuck, roomName, roomModel, enteredAt, nextWaiting, onCall, onComplete, onReschedule }: CurrentCardProps) {
   const { busy, run } = useCardBusy();
+  if (!patient && stuck) {
+    return (
+      <div className="current" style={{ background: "var(--border)", boxShadow: "none" }}>
+        <div className="current-inner" style={{ background: "var(--card)", padding: "22px 24px", gap: 18 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: "0.9375rem", fontWeight: 600, color: "var(--orange)" }}>
+              <span aria-hidden="true">⏳</span> {roomName}: незавершене дослідження від {stuckDateLabel(stuck.scheduled_date)}
+            </div>
+            <div style={{ fontSize: "0.8125rem", marginTop: 4, color: "var(--text-muted)" }}>
+              {stuck.patient_name} — поки запис не завершено, викликати наступного не можна
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+            {onFinishStuck && <button className="btn btn-green" onClick={() => onFinishStuck(stuck)}>✓ Завершити</button>}
+            <a className="btn btn-secondary" href={stuckDeepLink(stuck)}
+               aria-label={"Відкрити " + stuckDateLabel(stuck.scheduled_date) + " — кабінет " + roomName}>
+              Відкрити {stuckDateLabel(stuck.scheduled_date)}
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (!patient && stuckUnknown) {
+    return (
+      <div className="current" style={{ background: "var(--border)", boxShadow: "none" }}>
+        <div className="current-inner" style={{ background: "var(--card)", padding: "22px 24px", gap: 18 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: "0.9375rem", fontWeight: 600, color: "var(--orange)" }}><span aria-hidden="true">⚠</span> Стан кабінету {roomName} не оновився</div>
+            <div style={{ fontSize: "0.8125rem", marginTop: 4, color: "var(--text-muted)" }}>Дані про незавершені дослідження не завантажились — оновіть сторінку</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (!patient) {
     return (
       <div className="current" style={{ background: "var(--border)", boxShadow: "none" }}>
@@ -377,7 +450,7 @@ function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: 
     // Інакше завантаженість показувала б хвилини, яких у кабінеті вже немає.
     const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "cancelled" && e.status !== "not_held" && e.status !== "needs_reschedule").reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
     const pct = cap > 0 ? Math.min(100, Math.round((mins / cap) * 100)) : 0;
-    return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)", off: !isRoomBookable(r) };
+    return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue-text)" : "var(--orange)", off: !isRoomBookable(r) };
   });
 }
 function RoomLoad({ rooms, onSelectRoom }: { rooms: RoomLoadItem[]; onSelectRoom?: (id: string) => void }) {
@@ -421,7 +494,7 @@ const CALL_META: Record<string, { label: string; cls: string; icon: string }> = 
   declined:   { label: "Відмова", cls: "red", icon: "✕" },
   not_called: { label: "Не дзвонили", cls: "gray", icon: "○" },
 };
-const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "#4da3ff", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
+const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
 // Довідка «звідки перенесено» → короткий рядок для розгорнутої картки.
 function fmtOrigin(o: RescheduleOrigin | null | undefined, roomsById: Record<string, { name?: string | null }>): string | null {
   if (!o || (!o.from_date && !o.from_time)) return null;
@@ -437,14 +510,18 @@ const STEP_ORDER = ["scheduled", "waiting", "in_progress", "done"];
 const STEP_META: Record<string, { label: string; color: string }> = {
   scheduled:   { label: "В черзі",    color: "#aeaeb2" },
   waiting:     { label: "Очікує",     color: "#ffd60a" },
-  in_progress: { label: "В кабінеті", color: "#4da3ff" },
+  in_progress: { label: "В кабінеті", color: "var(--blue-text)" },
   done:        { label: "Виконано",   color: "#30d158" },
 };
-const STEP_PRIMARY: Record<string, { icon: string; label: string; bg: string; color: string }> = {
-  scheduled:   { icon: "✓", label: "Пацієнт прийшов",      bg: "var(--blue)",  color: "#fff" },
-  waiting:     { icon: "▶", label: "Викликати в кабінет",  bg: "var(--blue)",  color: "#fff" },
-  in_progress: { icon: "✓", label: "Завершити процедуру",  bg: "var(--green)", color: "#04210d" },
-  done:        { icon: "✓", label: "Дослідження виконано", bg: "var(--card)",  color: "var(--text-faint)" },
+/* border — не косметика: заливка --blue (#0d6ecf) дає лише 2.75:1 проти --card
+   рядка, тобто найнатискуваніша кнопка дошки не відділяється від фону
+   (WCAG 1.4.11, поріг 3:1). --blue-line тримає 3.82. Зелена заливка
+   відділяється сама (6.89), сірій «виконано» межа теж не завадить. */
+const STEP_PRIMARY: Record<string, { icon: string; label: string; bg: string; color: string; border: string }> = {
+  scheduled:   { icon: "✓", label: "Пацієнт прийшов",      bg: "var(--blue)",  color: "#fff", border: "1px solid var(--blue-line)" },
+  waiting:     { icon: "▶", label: "Викликати в кабінет",  bg: "var(--blue)",  color: "#fff", border: "1px solid var(--blue-line)" },
+  in_progress: { icon: "✓", label: "Завершити процедуру",  bg: "var(--green)", color: "#04210d", border: "none" },
+  done:        { icon: "✓", label: "Дослідження виконано", bg: "var(--card)",  color: "var(--text-faint)", border: "1px solid var(--border-strong)" },
 };
 const CALL_SEG_ORDER: CallStatus[] = ["not_called", "confirmed", "to_recall", "no_answer", "declined"];
 const CALL_SEG_STYLE: Record<string, { color: string; bg: string }> = {
@@ -497,6 +574,15 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
   const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
   const canSetStatus = !isFutureRow;
+  /* с24. «Дія доступна в день запису» правильна для ПОЧАТКУ дослідження — завести
+     пацієнта в кабінет заднім числом не можна. Але для ЗАВЕРШЕННЯ вона створювала
+     глухий кут: адміністратор забув натиснути «Завершити», наступного дня кабінет
+     заблоковано індексом 0018, а кнопка на вчорашній дошці вимкнена.
+     Інтерфейс при цьому сам собі суперечив — кружок «Виконано» в степері
+     працював (canSetStatus = !isFutureRow), а велика кнопка того ж переходу ні.
+     Сервер дату не перевіряє взагалі (queue_set_status_rpc), тож блок був суто
+     клієнтським. Завершити «хвіст» дозволяємо, почати новий — ні. */
+  const canFinishPastDay = p.status === "in_progress" && !isFutureRow;
   const [moreOpen, setMoreOpen] = useState(false);
   // B-1 (аудит v2): pending-стан async-дії рядка — блокує повторний клік і показує спінер.
   const [busy, setBusy] = useState<string | null>(null);
@@ -590,7 +676,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
             const km = (arr[0] && arr[0].type) || ((roomKind === "МРТ" || roomKind === "КТ") ? roomKind : "");
             if (!km) return null;
             const isCt = km === "КТ";
-            return <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "#4da3ff" }}>{km}</span>;
+            return <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "var(--blue-text)" }}>{km}</span>;
           })()}
           <b>{roomName}</b>
           {roomModel ? <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}</span> : null}
@@ -681,12 +767,12 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
               const stepIdx = STEP_ORDER.indexOf(p.status);
               const pb = STEP_PRIMARY[p.status] || STEP_PRIMARY.done;
               const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
-              const advanceDisabled = !advanceFn || (p.status === "waiting" && (!canCall || !!startBlockReason)) || !isTodayRow || late;
+              const advanceDisabled = !advanceFn || (p.status === "waiting" && (!canCall || !!startBlockReason)) || (!isTodayRow && !canFinishPastDay) || late;
               const terminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
               // P2.4 — причина блокування дії показується інлайн (не лише в tooltip), поки актуальна.
               // startBlockReason (з батька) — вичерпна причина, чому «Викликати в кабінет» неможливий
               // (кабінет зайнятий/зачинено/на ремонті, або дослідження не вміститься до закриття/наступного запису).
-              const blockReason = !advanceFn ? "" : late ? "Запізнення понад буферний час — оберіть дію нижче (повернути, перенести, до листа очікування або зняти)" : !isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && startBlockReason ? startBlockReason : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""));
+              const blockReason = !advanceFn ? "" : late ? "Запізнення понад буферний час — оберіть дію нижче (повернути, перенести, до листа очікування або зняти)" : (!isTodayRow && !canFinishPastDay) ? "Дія доступна в день запису" : (p.status === "waiting" && startBlockReason ? startBlockReason : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""));
               return (
                 <div className="qd-step">
                   {/* Степпер звужено (аудит-фікс): останній крок «Виконано» завершується
@@ -745,8 +831,8 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                             щоб поруч помістилися видимі «Редагувати дослідження» та «Перенести». */}
                         <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn, "advance")} disabled={advanceDisabled || !!busy}
                           aria-busy={busy === "advance"}
-                          title={!isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "")}
-                          style={{ flex: "0 1 auto", minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 16px", borderRadius: 10, fontSize: "0.84375rem", fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                          title={(!isTodayRow && !canFinishPastDay) ? "Дія доступна в день запису" : (canFinishPastDay && !isTodayRow ? "Незавершене дослідження з минулого дня — завершіть, щоб звільнити кабінет" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""))}
+                          style={{ flex: "0 1 auto", minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 16px", borderRadius: 10, fontSize: "0.84375rem", fontWeight: 600, border: pb.border, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
                           {busy === "advance" ? <><span className="rf-spin" aria-hidden="true" /> Опрацьовується…</> : <>{pb.icon} {pb.label}</>}
                         </button>
@@ -858,7 +944,7 @@ function CallListPanel({ entries, onSetCall, dateLabel }: { entries: QEntry[]; o
                 <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", flexShrink: 0 }}>{e.scheduled_time}</span>
               </div>
               <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", margin: "2px 0 4px" }}>{procLabel(e)}</div>
-              {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "#4da3ff", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
+              {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "var(--blue-text)", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                 <span className={"qd-call " + cm.cls} style={{ fontSize: "0.6875rem" }}>{cm.icon} {cm.label}</span>
                 <button className="btn btn-green btn-xs" onClick={() => onSetCall(e, "confirmed")} title="Підтверджено">✓</button>
@@ -890,7 +976,7 @@ function AffectedPanel({ affected, roomsById, onReschedule }: { affected: QEntry
               <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", flexShrink: 0 }}>{e.scheduled_time}</span>
             </div>
             <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", margin: "2px 0 4px" }}>{procLabel(e)} · {(e.room_id ? roomsById[e.room_id] : undefined)?.name}</div>
-            {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "#4da3ff", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
+            {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "var(--blue-text)", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <button className="btn btn-primary btn-xs" onClick={() => onReschedule(e)}>🗓 Перенести</button>
             </div>
@@ -923,7 +1009,7 @@ function NeedsReschedulePanel({ entries, roomsById, onReschedule, onToWaitlist, 
               <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", flexShrink: 0 }}>було {e.scheduled_time}</span>
             </div>
             <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", margin: "2px 0 4px" }}>{procLabel(e)} · {(e.room_id ? roomsById[e.room_id] : undefined)?.name}</div>
-            {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "#4da3ff", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
+            {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "var(--blue-text)", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               <button className="btn btn-primary btn-xs" onClick={() => onReschedule(e)}>🗓 Перенести</button>
               <button className="btn btn-secondary btn-xs" title="Пацієнт чекатиме на вільне вікно" onClick={() => onToWaitlist(e)}>⏳ В лист очікування</button>
@@ -992,9 +1078,13 @@ interface QueueBoardProps {
   adminName?: string;
   adminRole?: string;
   roleKey?: string;
+  /** с22 (deep-link зі сторінки «Пошук»): відкрити дошку на цій даті (YYYY-MM-DD). */
+  initialDate?: string | null;
+  /** с22: id запису, який треба розгорнути після завантаження дня. */
+  initialEntry?: string | null;
 }
 
-export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: QueueBoardProps) {
+export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin", initialDate = null, initialEntry = null }: QueueBoardProps) {
   /* Зона центру виставляється СИНХРОННО, до першого рендера й до ініціалізаторів
      useState — інакше selectedDate = today0() зафіксував би день БРАУЗЕРА назавжди
      (раніше tz прилітала з клієнтського fetch уже ПІСЛЯ монтування).
@@ -1032,7 +1122,14 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   const [roomView, setRoomView] = useState("all");
   const searchRef = useRef<HTMLInputElement>(null);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState(() => wallToday0(clinicTz));
+  // с22: deep-link «Пошук» → дошка відкривається на даті знайденого запису.
+  const [selectedDate, setSelectedDate] = useState(() => {
+    if (initialDate && /^\d{4}-\d{2}-\d{2}$/.test(initialDate)) {
+      const d = new Date(initialDate + "T00:00:00");
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+    return wallToday0(clinicTz);
+  });
   const [toast, setToast] = useState<ToastData | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Слот звільнився (скасування/відмова) → підходящі кандидати з листа очікування.
@@ -1047,6 +1144,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
 
   const [nowTick, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
+
+  // с22: deep-link «Пошук» → після першого завантаження дня розгортаємо знайдений
+  // запис і скролимо до нього. Одноразово: далі оператор керує дошкою сам.
+  const deepLinkDone = useRef(false);
+  useEffect(() => {
+    if (deepLinkDone.current || !initialEntry || loading) return;
+    if (!entries.some((e) => e.id === initialEntry)) { deepLinkDone.current = true; return; }
+    deepLinkDone.current = true;
+    setExpandedRow(initialEntry);
+    setTimeout(() => { document.querySelector(`[data-qrow="${initialEntry}"]`)?.scrollIntoView({ block: "center" }); }, 60);
+  }, [entries, loading, initialEntry]);
 
   const today = wallToday0(clinicTz);
   const isToday = sameDay(selectedDate, today);
@@ -1094,8 +1202,29 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      немає». Без цього прапорця перший справжній список став би ДРУГИМ snapshot'ом,
      і давно активний простій «зазвучав» би прямо на маунті дошки. */
   const [incidentsLoaded, setIncidentsLoaded] = useState(false);
+  /* с24: незавершені дослідження цієї клініки з ІНШИХ дат. Тримаємо ОКРЕМО від
+     `entries` навмисно: на entries зав'язані звук перевищення (useQueueSounds),
+     таймери кабінетів і лічильники дня — учорашній запис давав би вічне
+     «перевищено час» і псував статистику. Тут вони потрібні рівно для двох
+     речей: заблокувати виклик і показати, куди йти закривати. */
+  const [stuck, setStuck] = useState<StuckStudy[]>([]);
+  /* Стартове `[]` не відрізнити від «хвостів немає» — а від цього залежить, чи
+     пускати пацієнта в апарат. Тому окремі прапорці, як у incidents (ревʼю с24,
+     H1): поки НЕ завантажено або запит упав — виклик блокуємо (fail-CLOSED) і
+     не пишемо «Кабінет вільний». Хибно заблокувати = хвилина затримки й «↻»;
+     хибно дозволити = оператор веде пацієнта в зайнятий кабінет і ловить 23505
+     про пацієнта, якого на дошці немає. */
+  const [stuckFinish, setStuckFinish] = useState<StuckStudy | null>(null);
+  const [stuckFinishBusy, setStuckFinishBusy] = useState(false);
+  const [stuckLoaded, setStuckLoaded] = useState(false);
+  const [stuckErr, setStuckErr] = useState(false);
+  /* Два запити в одному reload → відповіді можуть приземлитись урозбій (швидке
+     перемикання дат: entries від reload#2 + stuck від reload#1). Лічильник
+     поколінь відсікає застарілі (ревʼю с24, M2). */
+  const reqGen = useRef(0);
 
   const reload = useCallback(async () => {
+    const gen = ++reqGen.current;
     try {
       const supabase = createClient();
       /* Авто-«Уточнити» (clarify_at) ставить pg_cron: джоб sink-overdue кожні 5 хв
@@ -1109,13 +1238,33 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         .eq("clinic_id", clinicId)
         .eq("scheduled_date", dayKey)
         .order("scheduled_time", { ascending: true });
-      if (error) { setEntriesErr(true); return; }
+      if (gen !== reqGen.current) return;              // приїхала відповідь застарілого запиту
+      if (error) { setEntriesErr(true); setStuckErr(true); return; }   // до хвостів не дійшли — отже не знаємо
       setEntries((data || []) as unknown as QEntry[]);
       setEntriesErr(false);
+
+      /* Окремий запит — «хвости» in_progress з інших дат. Рядків тут не більше,
+         ніж кабінетів (унікальний індекс 0018), тож він дешевий.
+         ⚠️ Помилку НЕ ескалюємо в entriesErr — черга від неї не бреше. Але й не
+         ковтаємо: піднімаємо stuckErr, який блокує виклик і показує банер. */
+      const { data: st, error: stErr } = await supabase
+        .from("queue_entries")
+        .select("id, room_id, patient_name, scheduled_date")
+        .eq("clinic_id", clinicId)
+        .eq("status", "in_progress")
+        .neq("scheduled_date", dayKey)
+        .not("room_id", "is", null);
+      if (gen !== reqGen.current) return;
+      if (stErr) { setStuckErr(true); return; }         // список НЕ чистимо: старі дані краще за порожні
+      setStuck((st || []) as unknown as StuckStudy[]);
+      setStuckErr(false);
+      setStuckLoaded(true);
     } catch {
+      if (gen !== reqGen.current) return;
       setEntriesErr(true); // транзієнтний «Failed to fetch» — не рушимо дошку
+      setStuckErr(true);   // ...але про хвости ми теж більше нічого не знаємо
     } finally {
-      setLoading(false);
+      if (gen === reqGen.current) setLoading(false);
     }
   }, [clinicId, dayKey]);
 
@@ -1159,6 +1308,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   }, [clinicId]);
 
   useEffect(() => { setLoading(true); }, [clinicId]);
+  /* M-1 ревʼю раунду 2: `stuckLoaded` мусить згасати РАЗОМ із датою й клінікою.
+     Інакше після «← Сьогодні» список хвостів ще належить попередньому дню, але
+     прапорець каже «дані свіжі» — і в кадрі до відповіді другого запиту картка
+     знову писала б «Кабінет вільний» із живою кнопкою виклику. Тобто вихідний
+     дефект відтворювався б у вікні 100–300 мс. */
+  useEffect(() => { setStuckLoaded(false); }, [clinicId, dayKey]);
   useEffect(() => { reload(); }, [reload]);
 
   // P2.1 — гарячі клавіші реєстратури. Через e.code (незалежно від розкладки UA/RU/EN);
@@ -1168,7 +1323,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     // під відкритою модалкою. Раніше бракувало 6 станів — зокрема деструктивних
     // ConfirmDialog (cancelAsk/emergencyConfirm) та DelayPlan/Emergency/Waitlist:
     // під ними «N» відкривав бронювання, «R» перезавантажував дошку тощо.
-    const anyModalOpen = modalOpen || helpOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen || !!wlSuggest || !!delayPreview || emergencyOpen || !!offCallAsk || !!cancelAsk || !!emergencyConfirm;
+    const anyModalOpen = modalOpen || helpOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen || !!wlSuggest || !!delayPreview || emergencyOpen || !!offCallAsk || !!cancelAsk || !!emergencyConfirm || !!stuckFinish;
     function onKey(e: KeyboardEvent) {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
@@ -1199,7 +1354,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, reload, visRooms]);
+  }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, stuckFinish, reload, visRooms]);
 
   useRealtimeRefetch({
     channelName: clinicId ? "queue-" + clinicId : null,
@@ -1383,6 +1538,38 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     notify("Знято", "success");
     loadIncidents();
     reload();
+  }
+
+  /* Закриття «хвоста» прямо з картки кабінету (ревʼю с24, H2).
+     ⚠️ НЕ через локальний setStatus(): той бере expectedFrom із `entries`, а
+     хвоста там немає за визначенням (він з іншої дати) — CAS би просто зник.
+     Тут expectedFrom задаємо явно: якщо запис уже закрив колега, сервер поверне
+     stale, і ми скажемо про це замість тихого перезапису чужої дії.
+     Тільки «виконано»: якщо дослідження НЕ відбулося, потрібні причина й
+     нотатка — для цього лишається перехід на ту дату з повним набором дій. */
+  async function confirmStuckFinish() {
+    if (!stuckFinish) return;
+    const s = stuckFinish;
+    setStuckFinishBusy(true);
+    try {
+      const res = await setQueueEntryStatus(s.id, "done" as QueueStatus, "in_progress" as QueueStatus);
+      if (!res.ok) {
+        notify(res.code === "stale" ? "Запис уже змінив інший користувач — дошку оновлено" : "Помилка: " + res.error, "error");
+        return;
+      }
+      /* Гасимо картку одразу, не чекаючи відповіді reload: інакше «✓ Завершити»
+         ще секунду виглядає доступною і провокує другий клік (ревʼю р2, L1). */
+      setStuck((list) => list.filter((x) => x.id !== s.id));
+      notify("Дослідження від " + stuckDateLabel(s.scheduled_date) + " завершено — кабінет вільний", "success");
+    } catch {
+      /* Обрив мережі: Server Action реджектиться. Без catch діалог замерзав із
+         вимкненою кнопкою — і для радіолога це єдиний шлях закрити хвіст. */
+      notify("Не вдалося завершити — перевірте зв'язок і спробуйте ще раз", "error");
+    } finally {
+      setStuckFinishBusy(false);
+      setStuckFinish(null);
+      reload();
+    }
   }
 
   async function setStatus(id: string, status: string): Promise<boolean> {
@@ -1718,6 +1905,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)) : null;
     return computeCallBlock(p, entries, {
       notToday: !isToday,
+      roomStuck: p.room_id ? stuckRooms[p.room_id] ?? null : null,
+      stuckUnknown,
       roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
       schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
       schedEnd: sched && !sched.closed ? sched.end : null,
@@ -1733,6 +1922,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат";
     if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
     if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    if (r.code === "room_stuck") return stuckBlockReason(r);
+    if (r.code === "stuck_unknown") return STUCK_UNKNOWN_REASON;
     // clash БІЛЬШЕ не жорсткий блок для адміністратора (принцип «override з попередженням»):
     // реєстратура володіє розкладом і вирішує сама — виклик через підтвердження
     // «Викликати все одно» (callPatient нижче), а не глуха стіна. Кнопку не вимикаємо.
@@ -1838,6 +2029,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scoped, selectedDate, nowTick]);
 
+  const stuckRooms = useMemo(() => visibleStuckByRoom(stuck, dayKey), [stuck, dayKey]);
+  const stuckUnknown = stuckUnknownOf(stuckLoaded, stuckErr);
   const currentByRoom: Record<string, QEntry> = {}, nextWaitingByRoom: Record<string, QEntry> = {};
   entries.forEach((e) => { if (e.status === "in_progress" && e.room_id) currentByRoom[e.room_id] = e; });
   // «Наступний у черзі» — той самий канон, що й сортування дошки: спершу ЧАС,
@@ -1877,7 +2070,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     if (filter === "late") {
       if (!isLate(e.status, selectedDate, e.scheduled_time, e.buffer_time_min)) return false;
     } else if (filter !== "all" && e.status !== filter) return false;
-    if (query.trim()) { const q = query.trim().toLowerCase(); return (e.patient_name || "").toLowerCase().includes(q) || (e.patient_phone || "").includes(formatPhoneSearch(query.trim())); }
+    // с22: швидкий пошук — спільний предикат (прізвище з будь-якого місця,
+    // телефон ЗА ЦИФРАМИ: код оператора / середина / останні цифри). Порядок
+    // рядків не змінюється — фільтр застосовується ПІСЛЯ штатного сортування.
+    if (!quickSearchMatch(query, e)) return false;
     return true;
   });
 
@@ -1925,6 +2121,19 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                   <div className="inc-banner-sub">Кабінет на ремонті може виглядати вільним, а закритий день — робочим. Новий запис заблоковано до оновлення.</div>
                 </div>
                 <button className="btn btn-secondary btn-sm" onClick={() => { loadIncidents(); loadOverrides(); }}>↻ Оновити</button>
+              </div>
+            )}
+            {/* Хвости не оновились → виклики заблоковано fail-closed. Без банера
+                оператор бачив би лише «Стан кабінету не оновився» на картках
+                (а вони є тільки на «сьогодні») і не мав би кнопки повтору. */}
+            {stuckErr && (
+              <div className="inc-banner fade-in" style={{ borderColor: "var(--orange)" }} role="alert">
+                <span className="inc-banner-ic" aria-hidden="true">⚠</span>
+                <div className="inc-banner-txt">
+                  <div className="inc-banner-title">Не завантажились дані про незавершені дослідження</div>
+                  <div className="inc-banner-sub">Кабінет із забутим дослідженням виглядав би вільним, тому виклики заблоковано до оновлення.</div>
+                </div>
+                <button className="btn btn-secondary btn-sm" onClick={() => reload()}>↻ Оновити</button>
               </div>
             )}
             {/* Черга не оновилась, але старі рядки на екрані — інакше користувач
@@ -1978,7 +2187,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
               );
             })}
             {selectedOverride && selDayStatus.kind !== "none" && (
-              <div className="inc-banner fade-in" style={{ borderColor: selDayStatus.kind === "closed" ? "var(--red)" : "var(--blue)" }}>
+              <div className="inc-banner fade-in" style={{ borderColor: selDayStatus.kind === "closed" ? "var(--red)" : "var(--blue-line)" }}>
                 <span className="inc-banner-ic">{selDayStatus.kind === "closed" ? "🚫" : "🕐"}</span>
                 <div className="inc-banner-txt">
                   <div className="inc-banner-title">{selDayStatus.kind === "closed" ? "Неробочий день" : "Особливий графік"} · {fmtShort(selectedDate)}</div>
@@ -2005,6 +2214,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                 {visRooms.map((r) => (
                   <RoomStatusCard key={r.id} room={r}
                     patient={currentByRoom[r.id]} enteredAt={enteredAtOf(currentByRoom[r.id])}
+                    stuck={stuckRooms[r.id]} stuckUnknown={stuckUnknown} onFinishStuck={setStuckFinish}
                     nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
                     schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? (selDayStatus.label || "Не працює за графіком") : null}
                     onComplete={openComplete} onCall={callPatient} onUnblock={resolveIncident} />
@@ -2032,6 +2242,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                 </div>
                 <CurrentCard
                   patient={currentByRoom[roomView]}
+                  stuck={stuckRooms[roomView]} stuckUnknown={stuckUnknown} onFinishStuck={setStuckFinish}
                   roomName={roomViewRoom?.name || "—"}
                   roomModel={roomViewRoom?.apparatus_model}
                   enteredAt={enteredAtOf(currentByRoom[roomView])}
@@ -2046,7 +2257,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
             <div className="spacer" />
             <div className="search">
               <span className="si">⌕</span>
-              <input ref={searchRef} placeholder="Пошук пацієнта… ( / )" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
+              {/* с22 (ревью HIGH-1): ввід НЕ канонізуємо — formatPhoneSearch зрізав
+                  ведучі цифри і вбивав пошук за серединою/останніми цифрами номера.
+                  Матчинг тепер цифровий (quickSearchMatch), формат вводу не важливий. */}
+              <input ref={searchRef} placeholder="Пошук пацієнта… ( / )" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
             {/* P3 discoverability: видима точка входу в довідку хоткеїв (клавіша «?»). */}
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => setHelpOpen(true)} title="Гарячі клавіші (?)" aria-label="Гарячі клавіші" style={{ flexShrink: 0 }}>⌨ ?</button>
@@ -2107,7 +2321,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                     roomName={room?.name || "—"} roomModel={room?.apparatus_model || ""} roomKind={modalityLabel(room?.modality || "")}
                     expanded={expandedRow === p.id} onToggle={toggleRow}
                     readOnly={false}
-                    canCall={!(p.room_id && currentByRoom[p.room_id])} rescheduling={affectedIds.has(p.id)}
+                    canCall={!stuckUnknown && canCallIntoRoom(p.room_id ? currentByRoom[p.room_id] : null, p.room_id ? stuckRooms[p.room_id] : null)} rescheduling={affectedIds.has(p.id)}
                     onArrive={arrive} onCall={callPatient} onComplete={openComplete}
                     onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onCancel={cancelUndo} onSetStatus={setStatusGuarded} onSetCall={setCallGuarded}
                     onReschedule={openReschedule} onEditStudies={openEditStudies} onEditPatient={(pt) => setEditPatientFor(pt)}
@@ -2224,6 +2438,22 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       )}
       {editPatientFor && (
         <PatientEditModal entryId={editPatientFor.id} canEditPriority={canEditPriority} onClose={() => setEditPatientFor(null)} onSaved={reload} />
+      )}
+
+      {stuckFinish && (
+        <ConfirmDialog
+          title="Завершити дослідження з минулого дня?"
+          text={<>
+            <b>{stuckFinish.patient_name}</b> — запис від <b>{stuckDateLabel(stuckFinish.scheduled_date)}</b>, який лишився «у кабінеті».
+            Поки він відкритий, кабінет <b>{(rooms || []).find((r) => r.id === stuckFinish.room_id)?.name || "—"}</b> зайнятий і викликати наступного пацієнта не можна.
+            {" "}Позначити як <b>виконане</b>? Якщо дослідження насправді не відбулося, відкрийте {stuckDateLabel(stuckFinish.scheduled_date)} і виберіть «Не відбулося» — там можна вказати причину.
+          </>}
+          confirmLabel="✓ Завершити"
+          cancelLabel="Не чіпати"
+          busy={stuckFinishBusy}
+          onConfirm={confirmStuckFinish}
+          onClose={() => setStuckFinish(null)}
+        />
       )}
 
       {breakdownOpen && (

@@ -100,7 +100,7 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
     <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="dialog fade-in" style={{ maxWidth: 620 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Зайнятість кабінету">
         <div className="dlg-head">
-          <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue)" }}>▦</span>Зайнятість кабінету</div>
+          <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue-text)" }}>▦</span>Зайнятість кабінету</div>
           <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body">
@@ -128,7 +128,7 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
             <div className="fld" style={{ paddingBottom: 8 }}>
               <span className="fld-lab">Режим дня</span>
               <b>{schedule.closed ? "Кабінет не працює" : `${schedule.start}–${schedule.end}`}</b>
-              {schedule.custom && <span style={{ marginLeft: 6, color: "var(--blue)", fontSize: "0.75rem" }}>особливий графік</span>}
+              {schedule.custom && <span style={{ marginLeft: 6, color: "var(--blue-text)", fontSize: "0.75rem" }}>особливий графік</span>}
             </div>
           </div>
 

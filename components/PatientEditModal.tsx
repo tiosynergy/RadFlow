@@ -144,7 +144,7 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
     <div className="overlay" onClick={() => { if (!busy) onClose(); }}>
       <div className="dialog fade-in" style={{ maxWidth: 460 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Редагування даних пацієнта" onClick={(e) => e.stopPropagation()}>
         <div className="dlg-head">
-          <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue)" }}>👤</span>Дані пацієнта</div>
+          <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue-text)" }}>👤</span>Дані пацієнта</div>
           <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body">

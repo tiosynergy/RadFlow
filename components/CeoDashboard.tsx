@@ -9,6 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { wallToday0 } from "@/lib/incidents";
 import { modalityLabel, modalityCode } from "@/lib/studies";
+import { quickSearchMatch } from "@/lib/quickSearch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
@@ -183,6 +184,10 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const [drill, setDrill] = useState<{ statuses: string[] | null; label: string } | null>(null);
   const [drillRows, setDrillRows] = useState<DrillRow[] | null>(null);
   const [drillLoading, setDrillLoading] = useState(false);
+  // с22: швидкий пошук у read-only drill-списку (еквівалент дневної черги CEO) —
+  // фільтрує ЛИШЕ вже завантажені рядки, порядок не змінює, нікуди не пишеться.
+  const [drillQuery, setDrillQuery] = useState("");
+  useEffect(() => { setDrillQuery(""); }, [drill]);
 
   /* Зона, за якою рахується «сьогодні»/«цей тиждень»: обраного центру, а при
      «Всі центри» — ПЕРШОГО доступного. Спільної доби в кількох зонах не існує,
@@ -352,7 +357,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const roomUtil = visRooms.map((r) => {
     const mins = minsByRoom[r.id] || 0;
     const cap = 480 * workdays;
-    return { name: r.name, kind: modalityLabel(r.modality), pct: cap ? Math.min(100, Math.round((mins / cap) * 100)) : 0, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)" };
+    return { name: r.name, kind: modalityLabel(r.modality), pct: cap ? Math.min(100, Math.round((mins / cap) * 100)) : 0, color: r.modality === "MRI" ? "var(--blue-text)" : "var(--orange)" };
   });
 
   const [exporting, setExporting] = useState(false);
@@ -487,7 +492,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                     <Drillable label="Виконано" onOpen={() => openDrill(["done"], "Виконано")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--green)" }} className="tabular">{done}</b> <span style={{ color: "var(--text-muted)" }}>виконано</span></Drillable>
                     <Drillable label="Неявка" onOpen={() => openDrill(["no_show"], "Неявка")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--red)" }} className="tabular">{noShow}</b> <span style={{ color: "var(--text-muted)" }}>неявка</span></Drillable>
                     <Drillable label="Не відбулося" onOpen={() => openDrill(["not_held"], "Не відбулося")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--orange)" }} className="tabular">{notHeld}</b> <span style={{ color: "var(--text-muted)" }}>не відбулося</span></Drillable>
-                    <Drillable label="В процесі" onOpen={() => openDrill(["scheduled", "waiting", "in_progress"], "В процесі")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--blue)" }} className="tabular">{active}</b> <span style={{ color: "var(--text-muted)" }}>в процесі</span></Drillable>
+                    <Drillable label="В процесі" onOpen={() => openDrill(["scheduled", "waiting", "in_progress"], "В процесі")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--blue-text)" }} className="tabular">{active}</b> <span style={{ color: "var(--text-muted)" }}>в процесі</span></Drillable>
                   </div>
                 </div>
 
@@ -524,7 +529,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                         <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", fontWeight: 600 }} className="tabular">{x.total}</div>
                         <div style={{ width: "100%", display: "flex", alignItems: "flex-end", justifyContent: "center", height: 130, position: "relative" }}>
                           {(() => { const barH = x.total ? Math.max(4, Math.round((x.total / maxBar) * 130)) : 0; return (<>
-                          <div style={{ width: 26, height: barH + "px", background: "var(--blue)", borderRadius: "6px 6px 0 0" }} />
+                          <div style={{ width: 26, height: barH + "px", background: "var(--blue-line)", borderRadius: "6px 6px 0 0" }} />
                           {x.noShow > 0 && <div title={x.noShow + " не відбулось"} style={{ position: "absolute", bottom: barH + 2, width: 10, height: 10, borderRadius: "50%", background: "var(--red)" }} />}
                         </>); })()}
                         </div>
@@ -540,7 +545,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                     {topProcs.length === 0 ? <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>Немає даних</div> : topProcs.map(([n, c], i) => (
                       <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", borderTop: i ? "1px solid var(--border)" : "none", fontSize: "0.8125rem" }}>
                         <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{n}</span>
-                        <b className="tabular" style={{ color: "var(--blue)" }}>{c}</b>
+                        <b className="tabular" style={{ color: "var(--blue-text)" }}>{c}</b>
                       </div>
                     ))}
                   </div>
@@ -580,12 +585,22 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
               ) : (() => {
                 const tdS: CSSProperties = { padding: "6px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
                 const thS: CSSProperties = { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--text-muted)", fontSize: "0.6875rem", textTransform: "uppercase", position: "sticky", top: 0, background: "var(--card)" };
+                // с22: швидкий пошук — той самий спільний предикат, що на дошках
+                // (прізвище з будь-якого місця; телефону в drill немає — лише ПІБ/процедура).
+                const visRows = drillQuery.trim()
+                  ? drillRows.filter((r) => quickSearchMatch(drillQuery, { patient_name: r.name, patient_phone: null }, r.proc))
+                  : drillRows;
                 return (
                   <>
+                    <div className="search" style={{ marginBottom: 8 }}>
+                      <span className="si" aria-hidden="true">⌕</span>
+                      <input aria-label="Пошук за прізвищем" placeholder="Пошук за прізвищем…" value={drillQuery} onChange={(e) => setDrillQuery(e.target.value)} />
+                    </div>
+                    {visRows.length === 0 ? <div className="ctx-hint">Нічого не знайдено — змініть запит.</div> : (
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8125rem" }}>
                       <thead><tr>{["Дата", "Пацієнт", "Процедура", "Кабінет", "Статус", "Дохід"].map((h) => <th key={h} style={thS}>{h}</th>)}</tr></thead>
                       <tbody>
-                        {drillRows.map((r, i) => (
+                        {visRows.map((r, i) => (
                           <tr key={i}>
                             <td style={{ ...tdS, whiteSpace: "nowrap" }} className="tabular">{r.date}</td>
                             <td style={tdS}>{r.name}</td>
@@ -597,6 +612,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                         ))}
                       </tbody>
                     </table>
+                    )}
                     {drillRows.length >= 1000 && <div className="ctx-hint" style={{ marginTop: 8 }}>Показано перші 1000 записів — звузьте період або скористайтесь «Експортувати CSV» для повного списку.</div>}
                   </>
                 );

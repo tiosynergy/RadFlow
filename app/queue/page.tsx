@@ -3,7 +3,21 @@ import { createClient } from "@/lib/supabase/server";
 import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import QueueBoard from "@/components/QueueBoard";
 
-export default async function QueuePage() {
+// с22: deep-link зі сторінки «Пошук» — ?date=YYYY-MM-DD&entry=<uuid>. Валідуємо
+// формат тут (сторінка — межа довіри), PII в URL немає: тільки id та дата.
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function firstParam(v: string | string[] | undefined): string | null {
+  return typeof v === "string" ? v : Array.isArray(v) ? v[0] ?? null : null;
+}
+
+export default async function QueuePage({ searchParams }: { searchParams?: Promise<Record<string, string | string[] | undefined>> }) {
+  const sp = searchParams ? await searchParams : {};
+  const rawDate = firstParam(sp.date);
+  const rawEntry = firstParam(sp.entry);
+  const initialDate = rawDate && DATE_RE.test(rawDate) ? rawDate : null;
+  const initialEntry = rawEntry && UUID_RE.test(rawEntry) ? rawEntry : null;
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -74,6 +88,8 @@ export default async function QueuePage() {
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
       adminRole={profile.role ? ROLE_LABELS[profile.role as string] ?? (profile.role as string) : "Адміністратор"}
       roleKey={(profile.role as string) ?? "admin"}
+      initialDate={initialDate}
+      initialEntry={initialEntry}
     />
   );
 }

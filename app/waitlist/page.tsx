@@ -3,7 +3,19 @@ import { createClient } from "@/lib/supabase/server";
 import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import WaitlistBoard from "@/components/WaitlistBoard";
 
-export default async function WaitlistPage() {
+// с22: deep-link зі сторінки «Пошук» — ?tab=waiting|scheduled|removed&entry=<uuid>.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function firstParam(v: string | string[] | undefined): string | null {
+  return typeof v === "string" ? v : Array.isArray(v) ? v[0] ?? null : null;
+}
+
+export default async function WaitlistPage({ searchParams }: { searchParams?: Promise<Record<string, string | string[] | undefined>> }) {
+  const sp = searchParams ? await searchParams : {};
+  const rawTab = firstParam(sp.tab);
+  const rawEntry = firstParam(sp.entry);
+  const initialTab = rawTab === "waiting" || rawTab === "scheduled" || rawTab === "removed" ? rawTab : null;
+  const initialEntry = rawEntry && UUID_RE.test(rawEntry) ? rawEntry : null;
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -68,6 +80,8 @@ export default async function WaitlistPage() {
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
       adminRole={profile.role ? ROLE_LABELS[profile.role as string] ?? (profile.role as string) : "Адміністратор"}
       roleKey={(profile.role as string) ?? "admin"}
+      initialTab={initialTab}
+      initialEntry={initialEntry}
     />
   );
 }

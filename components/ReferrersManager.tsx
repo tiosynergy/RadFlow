@@ -377,7 +377,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
               <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: existingPicked ? "var(--text-muted)" : "var(--red)" }}>ПІБ{existingPicked ? "" : req}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} readOnly={existingPicked} style={existingPicked ? { opacity: 0.6 } : undefined} onChange={(e) => setF("full_name", e.target.value)} /></label>
             </div>
             {existingPicked && (
-              <div className="hint-blue" style={{ marginTop: 0 }}>Лікар <b>@{form.login}</b> уже зареєстрований у RadFlow. ПІБ, телефон і пароль уже є — повторно вводити не треба. Він підтвердить запрошення у вкладці «Мої центри». <span style={{ color: "var(--blue)", cursor: "pointer" }} onClick={() => { setExistingPicked(false); setForm((f) => ({ ...f, login: "", full_name: "" })); }}>Скинути</span></div>
+              <div className="hint-blue" style={{ marginTop: 0 }}>Лікар <b>@{form.login}</b> уже зареєстрований у RadFlow. ПІБ, телефон і пароль уже є — повторно вводити не треба. Він підтвердить запрошення у вкладці «Мої центри». <span style={{ color: "var(--blue-text)", cursor: "pointer" }} onClick={() => { setExistingPicked(false); setForm((f) => ({ ...f, login: "", full_name: "" })); }}>Скинути</span></div>
             )}
             {!existingPicked && (
               <div className="fld-row">

@@ -861,8 +861,8 @@ function CenterDetails({ data, loading }: { data?: CenterCardData | null; loadin
               <div key={i} style={{ fontSize: "0.8125rem" }}>
                 <div style={{ fontWeight: 600 }}>{a.full_name || "Адміністратор"}</div>
                 <div style={{ color: "var(--text-secondary)", display: "flex", gap: 16, flexWrap: "wrap", marginTop: 3 }}>
-                  {phone ? <a href={"tel:" + phone} style={{ color: "var(--blue)", textDecoration: "none" }}>📞 {phone}</a> : null}
-                  {email ? <a href={"mailto:" + email} style={{ color: "var(--blue)", textDecoration: "none" }}>✉ {email}</a> : null}
+                  {phone ? <a href={"tel:" + phone} style={{ color: "var(--blue-text)", textDecoration: "none" }}>📞 {phone}</a> : null}
+                  {email ? <a href={"mailto:" + email} style={{ color: "var(--blue-text)", textDecoration: "none" }}>✉ {email}</a> : null}
                   {!phone && !email ? <span style={{ color: "var(--text-muted)" }}>контакти не вказані</span> : null}
                 </div>
               </div>
@@ -1162,7 +1162,7 @@ function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m
 }
 
 /* ── Лист очікування направника: власні пацієнти в усіх авторизованих центрах ── */
-function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onRestore, onPriority }: {
+function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onRestore, onPriority, highlightId = null }: {
   entries: WaitlistEntry[];
   centersById: Record<string, Center>;
   onOpenAdd: () => void;
@@ -1170,10 +1170,16 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
   onCancel: (e: WaitlistEntry) => void;
   onRestore: (e: WaitlistEntry) => void;
   onPriority: (e: WaitlistEntry, v: PatientPriority) => void;
+  /** с22 (deep-link «Пошук»): підсвітити знайдений рядок і проскролити до нього. */
+  highlightId?: string | null;
 }) {
   const waiting = entries.filter((e) => e.status === "waiting").sort(compareWaitlist);
   const rest = entries.filter((e) => e.status !== "waiting").sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
   const list = [...waiting, ...rest];
+  /* Скрол до підсвіченого рядка — ОДНОРАЗОВО (ревью с22 р2 MEDIUM-A): inline
+     ref-колбек викликається на кожен ре-рендер (realtime-оновлення листа), і без
+     прапорця сторінку постійно повертало б до підсвіченого рядка. */
+  const didScrollHighlight = useRef(false);
   return (
     <div style={{ maxWidth: 1040, margin: "0 auto", display: "flex", flexDirection: "column", gap: 10 }}>
       <div className="info-banner">
@@ -1189,7 +1195,9 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
           const st = WAITLIST_STATUS_META[p.status];
           const center = centersById[p.clinic_id];
           return (
-            <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: "10px 14px", opacity: p.status === "waiting" ? 1 : 0.72 }}>
+            <div key={p.id}
+              ref={p.id === highlightId ? (el) => { if (el && !didScrollHighlight.current) { didScrollHighlight.current = true; el.scrollIntoView({ block: "center" }); } } : undefined}
+              style={{ display: "flex", alignItems: "center", gap: 12, background: "var(--card)", border: "1px solid " + (p.id === highlightId ? "var(--blue-line)" : "var(--border)"), borderRadius: "var(--r-md)", padding: "10px 14px", opacity: p.status === "waiting" ? 1 : 0.72 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: "0.84375rem", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   {p.status !== "waiting" && <span className="badge">{st.label}</span>}
@@ -1255,9 +1263,15 @@ interface ReferralPortalProps {
   backHref?: string | null;
   /** Назва власного центру адміна — підпис кнопки повернення. */
   backLabel?: string | null;
+  /** с22 (deep-link зі сторінки «Пошук»): стартова вкладка порталу. */
+  initialTab?: "mine" | "waitlist" | null;
+  /** с22: стартовий фільтр дати дошки «Мої направлення» (YYYY-MM-DD). */
+  initialDate?: string | null;
+  /** с22: id направлення, яке розгорнути одразу. */
+  initialEntry?: string | null;
 }
 
-export default function ReferralPortal({ role, centers, roomsByClinic, residualRoomIdsByClinic, residualRoomCountsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, doctorId, backHref = null, backLabel = null }: ReferralPortalProps) {
+export default function ReferralPortal({ role, centers, roomsByClinic, residualRoomIdsByClinic, residualRoomCountsByClinic, servicesByClinic, roomOverridesByClinic, doctorName, doctorId, backHref = null, backLabel = null, initialTab = null, initialDate = null, initialEntry = null }: ReferralPortalProps) {
   const router = useRouter();
   const canManage = role === "referrer";
   async function signOut() {
@@ -1300,7 +1314,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
   };
   const pendingInvites = centers.filter((c) => c.status === "pending_referrer").length;
 
-  const [tab, setTab] = useState(() => (activeCenters.length === 0 ? "centers" : "new"));
+  // с22: deep-link «Пошук» веде одразу на вкладку знайденого запису (mine/waitlist).
+  const [tab, setTab] = useState(() => {
+    if (initialTab && activeCenters.length > 0) return initialTab;
+    return activeCenters.length === 0 ? "centers" : "new";
+  });
   // Швидкий фільтр з сайдбару: клік по центру/кабінету → доска «Мої направлення».
   const [boardFocus, setBoardFocus] = useState<{ clinicId: string; roomId: string; nonce: number } | null>(null);
   const [editPatientFor, setEditPatientFor] = useState<Referral | null>(null);
@@ -1591,13 +1609,13 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
             {/* roomsByClinic — ПОВНИЙ (назва кабінету в рядку направлення),
                 visRoomsByClinic — лише для випадайки «Кабінет» у фільтрі. */}
             <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} visRoomsByClinic={visRoomsByClinic} doctorId={doctorId}
-              focus={boardFocus}
+              focus={boardFocus} initialDate={initialDate} initialEntry={initialEntry}
               onReschedule={(r) => setReschedFor(r)} onCancel={(r) => setCancelAsk(r)} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)}
               onOpenCase={openCaseScreen} onOrganizeCase={startOrganize} />
           </>
         )}
         {tab === "waitlist" && (
-          <MyWaitlist entries={wlEntries} centersById={centersById} onOpenAdd={() => setWlAddOpen(true)}
+          <MyWaitlist entries={wlEntries} centersById={centersById} highlightId={initialEntry} onOpenAdd={() => setWlAddOpen(true)}
             onEdit={(e) => setWlEditFor(e)} onCancel={(e) => setWlConfirmRemove(e)} onRestore={wlRestore} onPriority={wlPrio} />
         )}
         {tab === "centers" && (

@@ -15,11 +15,12 @@ import { useQueueSounds } from "@/lib/useQueueSounds";
 import type { OverrunSource } from "@/lib/soundEvents";
 import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock } from "@/lib/queueStatus";
+import { visibleStuckByRoom, stuckUnknownOf, stuckDateLabel, stuckDeepLink, stuckBlockReason, canCallIntoRoom, STUCK_UNKNOWN_REASON, type StuckStudy } from "@/lib/stuckStudy";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
-import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
+import { quickSearchMatch } from "@/lib/quickSearch";
 import { setQueueEntryStatus, setRadiologistNote, previewDelayPlan, type DelayPreview } from "@/app/queue/actions";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -94,14 +95,18 @@ const STEP_ORDER = ["scheduled", "waiting", "in_progress", "done"];
 const STEP_META: Record<string, { label: string; color: string }> = {
   scheduled:   { label: "В черзі",    color: "#aeaeb2" },
   waiting:     { label: "Очікує",     color: "#ffd60a" },
-  in_progress: { label: "В кабінеті", color: "#4da3ff" },
+  in_progress: { label: "В кабінеті", color: "var(--blue-text)" },
   done:        { label: "Виконано",   color: "#30d158" },
 };
-const STEP_PRIMARY: Record<string, { icon: string; label: string; bg: string; color: string }> = {
-  scheduled:   { icon: "✓", label: "Пацієнт прийшов",      bg: "var(--blue)",  color: "#fff" },
-  waiting:     { icon: "▶", label: "Викликати в кабінет",  bg: "var(--blue)",  color: "#fff" },
-  in_progress: { icon: "✓", label: "Завершити дослідження", bg: "var(--green)", color: "#04210d" },
-  done:        { icon: "✓", label: "Дослідження виконано", bg: "var(--card)",  color: "var(--text-faint)" },
+/* border — не косметика: заливка --blue (#0d6ecf) дає лише 2.75:1 проти --card
+   рядка, тобто найнатискуваніша кнопка дошки не відділяється від фону
+   (WCAG 1.4.11, поріг 3:1). --blue-line тримає 3.82. Зелена заливка
+   відділяється сама (6.89), сірій «виконано» межа теж не завадить. */
+const STEP_PRIMARY: Record<string, { icon: string; label: string; bg: string; color: string; border: string }> = {
+  scheduled:   { icon: "✓", label: "Пацієнт прийшов",      bg: "var(--blue)",  color: "#fff", border: "1px solid var(--blue-line)" },
+  waiting:     { icon: "▶", label: "Викликати в кабінет",  bg: "var(--blue)",  color: "#fff", border: "1px solid var(--blue-line)" },
+  in_progress: { icon: "✓", label: "Завершити дослідження", bg: "var(--green)", color: "#04210d", border: "none" },
+  done:        { icon: "✓", label: "Дослідження виконано", bg: "var(--card)",  color: "var(--text-faint)", border: "1px solid var(--border-strong)" },
 };
 
 // Годинник — за часом ЦЕНТРУ (як і решта дошки), а не браузера радіолога.
@@ -136,6 +141,11 @@ function StatsBar({ counts, filter, setFilter }: { counts: Record<string, number
 interface RoomStatusCardProps {
   room: RoomOpt;
   patient?: RadEntry | null;
+  /** с24 — незавершене дослідження цього кабінету з іншої дати (див. lib/stuckStudy.ts). */
+  stuck?: StuckStudy | null;
+  /** Про «хвости» ще нічого не відомо — не стверджуємо «вільний» (fail-closed). */
+  stuckUnknown?: boolean;
+  onFinishStuck?: (s: StuckStudy) => void;
   enteredAt?: string | null;
   nextWaiting?: RadEntry | null;
   blocked?: IncidentRow | null;
@@ -145,7 +155,7 @@ interface RoomStatusCardProps {
   onCall: (p: RadEntry) => void;
 }
 
-function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedClosed, callBlockReason, onComplete, onCall }: RoomStatusCardProps) {
+function RoomStatusCard({ room, patient, stuck, stuckUnknown, onFinishStuck, enteredAt, nextWaiting, blocked, schedClosed, callBlockReason, onComplete, onCall }: RoomStatusCardProps) {
   const kind = modalityShort(room.modality);
   if (!blocked && schedClosed) {
     return (
@@ -184,7 +194,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
     );
   }
   return (
-    <div className={"room-card " + (patient ? "busy" : "free")}>
+    <div className={"room-card " + (patient ? "busy" : stuck ? "stuck" : "free")}>
       <div className="rc-head">
         <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
         <div className="rc-h-meta">
@@ -206,6 +216,33 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
             <span className="rc-proc" title={procLabel(patient)}>{procLabel(patient)} · {patient.duration_min} хв · {patient.scheduled_time}</span>
             <button className="btn btn-green btn-sm" onClick={() => onComplete(patient)}>✓ Завершити</button>
           </div>
+        </div>
+      ) : stuck ? (
+        /* Кабінет фізично зайнятий незавершеним дослідженням іншого дня: індекс
+           0018 не дасть другий in_progress. Закрити можна ПРЯМО ТУТ — перехід на
+           архівну дату радіологу не допоможе, бо там уся дошка readOnly
+           (ревʼю с24, H2): саме та роль, яка найчастіше й забуває натиснути
+           «Завершити», інакше не могла б звільнити власний кабінет. */
+        <div className="rc-body rc-body-stuck">
+          <div className="rc-stuck-reason"><span aria-hidden="true">⏳</span> Незавершене дослідження від {stuckDateLabel(stuck.scheduled_date)}</div>
+          <div className="rc-brow">
+            <span className="rc-proc" title={stuck.patient_name}>{stuck.patient_name}</span>
+            {onFinishStuck && <button className="btn btn-green btn-sm" onClick={() => onFinishStuck(stuck)}>✓ Завершити</button>}
+          </div>
+          <div className="rc-brow">
+            {/* На архівній даті дошка радіолога readOnly — тому «переглянути», а не
+                «відкрити»: закривають хвіст кнопкою вище, тут лише подивитись деталі. */}
+            <a className="btn btn-secondary btn-sm" href={stuckDeepLink(stuck, "radiologist")}
+               title="Перегляд запису на дошці того дня (дії там недоступні)"
+               aria-label={"Переглянути " + stuckDateLabel(stuck.scheduled_date) + " — кабінет " + room.name}>
+              Переглянути {stuckDateLabel(stuck.scheduled_date)}
+            </a>
+          </div>
+        </div>
+      ) : stuckUnknown ? (
+        <div className="rc-body empty">
+          <div className="rc-free-row"><span aria-hidden="true">⚠</span><span className="rc-free">Стан кабінету не оновився</span></div>
+          <div className="rc-free-sub">Дані про незавершені дослідження не завантажились — оновіть сторінку</div>
         </div>
       ) : (
         <div className="rc-body empty">
@@ -287,7 +324,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
             const km = (arr[0] && arr[0].type) || ((roomKind === "МРТ" || roomKind === "КТ") ? roomKind : "");
             if (!km) return null;
             const isCt = km === "КТ";
-            return <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "#4da3ff" }}>{km}</span>;
+            return <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "var(--blue-text)" }}>{km}</span>;
           })()}
           <b>{roomName}</b>
           {roomModel ? <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}</span> : null}
@@ -406,7 +443,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                       <>
                         <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn)} disabled={advanceDisabled}
                           title={late ? "Запізнення понад буферний час — рішення ухвалює реєстратура (повернути/перенести/зняти)" : isFutureRow ? "Майбутній запис — дія доступна в день запису" : (p.status === "waiting" && startBlockReason ? startBlockReason : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""))}
-                          style={{ flex: 8, minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: "0.84375rem", fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                          style={{ flex: 8, minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: "0.84375rem", fontWeight: 600, border: pb.border, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
                           {pb.icon} {pb.label}
                         </button>
@@ -532,6 +569,8 @@ function RadSidebar({ rooms, roomNoteOf, roomFilter, setRoomFilter, counts, admi
         <div className="sb-section">
           <div className="sb-label">Перейти</div>
           <a href="/radiologist" className="sb-item active"><span className="ic">⌂</span><span className="sb-item-lab">Моя черга</span></a>
+          {/* с22: універсальний пошук (область — лише призначені кабінети). */}
+          <a href="/search" className="sb-item"><span className="ic">⌕</span><span className="sb-item-lab">Пошук</span></a>
         </div>
       </nav>
       <div className="sb-settings">
@@ -539,7 +578,7 @@ function RadSidebar({ rooms, roomNoteOf, roomFilter, setRoomFilter, counts, admi
         <SoundToggle />
       </div>
       <div className="sb-user">
-        <div className="avatar" style={{ background: "linear-gradient(135deg,#30d158,#1a7a36)" }}>{initials}</div>
+        <div className="avatar" style={{ background: "linear-gradient(135deg,#1a7a36,#0f5d27)" }}>{initials}</div>
         <div className="meta"><div className="nm">{adminName || "Радіолог"}</div><div className="rl">Радіолог</div></div>
         <button onClick={signOut} title="Вийти з акаунта" aria-label="Вийти"
           style={{ marginLeft: "auto", background: "transparent", border: "1px solid var(--border-strong)", color: "var(--text-secondary)", borderRadius: 8, padding: "6px 10px", fontSize: "0.78125rem", cursor: "pointer" }}>
@@ -562,9 +601,13 @@ interface RadiologistBoardProps {
   /** Скільки саме лишилось у кожному такому кабінеті — для підпису. */
   residualRoomCounts?: Record<string, number>;
   adminName?: string;
+  /** с22 (deep-link зі сторінки «Пошук»): відкрити дошку на цій даті (YYYY-MM-DD). */
+  initialDate?: string | null;
+  /** с22: id запису, який треба розгорнути після завантаження дня. */
+  initialEntry?: string | null;
 }
 
-export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, adminName }: RadiologistBoardProps) {
+export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, adminName, initialDate = null, initialEntry = null }: RadiologistBoardProps) {
   // Синхронно, до ініціалізаторів useState (selectedDate) — інакше день дошки
   // фіксується по браузеру ще до того, як прилетить tz. Тільки на клієнті.
   if (typeof window !== "undefined") setClinicTz(clinicTz);
@@ -590,6 +633,19 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
      прапорці помилок окремо, старі дані НЕ затираємо, а виклик у кабінет
      блокуємо, поки дані про простої/графік ненадійні. */
   const [entriesErr, setEntriesErr] = useState(false);
+  /* с24: незавершені дослідження ПРИЗНАЧЕНИХ кабінетів з інших дат. Окремо від
+     `entries` — інакше вчорашній запис давав би вічний звук перевищення і
+     ламав лічильники дня. RLS у радіолога ширша за його кабінети, тому область
+     звужує сам запит (`.in("room_id", roomIds)`), як і основний лоадер. */
+  const [stuck, setStuck] = useState<StuckStudy[]>([]);
+  /* Стартове `[]` не відрізнити від «хвостів немає» (ревʼю с24, H1) — тому
+     fail-CLOSED: поки не завантажили або запит упав, виклик блокуємо. */
+  const [stuckLoaded, setStuckLoaded] = useState(false);
+  const [stuckErr, setStuckErr] = useState(false);
+  const [stuckFinish, setStuckFinish] = useState<StuckStudy | null>(null);
+  const [stuckFinishBusy, setStuckFinishBusy] = useState(false);
+  /* Два запити в одному reload — відсікаємо приземлення застарілих (M2). */
+  const reqGen = useRef(0);
   const [incidentsErr, setIncidentsErr] = useState(false);
   const [overridesErr, setOverridesErr] = useState(false);
   const safetyErr = incidentsErr || overridesErr;
@@ -609,7 +665,14 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState(() => wallToday0(clinicTz));
+  // с22: deep-link «Пошук» → дошка відкривається на даті знайденого запису.
+  const [selectedDate, setSelectedDate] = useState(() => {
+    if (initialDate && /^\d{4}-\d{2}-\d{2}$/.test(initialDate)) {
+      const d = new Date(initialDate + "T00:00:00");
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+    return wallToday0(clinicTz);
+  });
   // 0078–0081 — план при затримці: радіолог лише ІНІЦІЮЄ перерахунок (canApply=false).
   const [delayPreview, setDelayPreview] = useState<DelayPreview | null>(null);
   const [delayOpening, setDelayOpening] = useState(false);
@@ -619,6 +682,16 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   // Лёгкий тикер для авто-появи статусу «⚠ Уточнити» та перерахунку простоїв.
   const [, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
+
+  // с22: deep-link «Пошук» → одноразово розгорнути знайдений запис і проскролити.
+  const deepLinkDone = useRef(false);
+  useEffect(() => {
+    if (deepLinkDone.current || !initialEntry || loading) return;
+    if (!entries.some((e) => e.id === initialEntry)) { deepLinkDone.current = true; return; }
+    deepLinkDone.current = true;
+    setExpandedRow(initialEntry);
+    setTimeout(() => { document.querySelector(`[data-qrow="${initialEntry}"]`)?.scrollIntoView({ block: "center" }); }, 60);
+  }, [entries, loading, initialEntry]);
 
   const today = wallToday0(clinicTz);
   const isToday = sameDay(selectedDate, today);
@@ -667,6 +740,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   const reload = useCallback(async () => {
     // Транзієнтний «Failed to fetch» (рефреш токена / зміна сесії / мережевий збій)
     // НЕ повинен валитись у Next error overlay — конвенція проєкту.
+    const gen = ++reqGen.current;
     try {
       const supabase = createClient();
       // Авто-«Уточнити» (clarify_at) ставить pg_cron (джоб sink-overdue, кожні 5 хв,
@@ -681,13 +755,37 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
       if (roomIds.length) q = q.in("room_id", roomIds);
       const { data, error } = await q.order("scheduled_time", { ascending: true });
       // PostgREST не кидає — помилку треба читати самому, інакше «збій» = «записів немає».
-      if (error) { setEntriesErr(true); return; }
+      if (gen !== reqGen.current) return;              // відповідь застарілого запиту
+      if (error) { setEntriesErr(true); setStuckErr(true); return; }   // до хвостів не дійшли — отже не знаємо
       setEntries(data || []);
       setEntriesErr(false);
+
+      /* «Хвости» in_progress з інших дат. Без призначених кабінетів не питаємо
+         взагалі: інакше запит пішов би по всій клініці, а радіолог не має
+         бачити чужі кабінети. Помилку НЕ ковтаємо — вона блокує виклик. */
+      if (roomIds.length) {
+        const { data: st, error: stErr } = await supabase
+          .from("queue_entries")
+          .select("id, room_id, patient_name, scheduled_date")
+          .eq("clinic_id", clinicId)
+          .eq("status", "in_progress")
+          .neq("scheduled_date", dayKey)
+          .in("room_id", roomIds);
+        if (gen !== reqGen.current) return;
+        if (stErr) { setStuckErr(true); return; }       // список НЕ чистимо
+        setStuck((st || []) as unknown as StuckStudy[]);
+        setStuckErr(false);
+        setStuckLoaded(true);
+      } else {
+        /* Кабінетів не призначено — викликати нікуди, блокувати нічого. */
+        setStuck([]); setStuckErr(false); setStuckLoaded(true);
+      }
     } catch {
+      if (gen !== reqGen.current) return;
       setEntriesErr(true);   // старі рядки лишаються на екрані + банер «черга не оновилась»
+      setStuckErr(true);
     } finally {
-      setLoading(false);
+      if (gen === reqGen.current) setLoading(false);
     }
   }, [clinicId, dayKey, roomIds]);
 
@@ -722,6 +820,12 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   useEffect(() => { setLoading(true); }, [clinicId]);
 
   // Перезапрос записей при смене дня/кабинетов: realtime-хук слушает только clinicId.
+  /* M-1 ревʼю раунду 2: `stuckLoaded` мусить згасати РАЗОМ із датою й клінікою.
+     Інакше після «← Сьогодні» список хвостів ще належить попередньому дню, але
+     прапорець каже «дані свіжі» — і в кадрі до відповіді другого запиту картка
+     знову писала б «Кабінет вільний» із живою кнопкою виклику. Тобто вихідний
+     дефект відтворювався б у вікні 100–300 мс. */
+  useEffect(() => { setStuckLoaded(false); }, [clinicId, dayKey]);
   useEffect(() => { reload(); }, [reload]);
 
   // TD-3: единый realtime-паттерн.
@@ -784,6 +888,37 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     if (wallNow() >= s && wallNow() < incidentEffectiveEnd(i)) blockingByRoom[i.room_id] = i;
   });
 
+  /* Закриття «хвоста» прямо з картки кабінету (ревʼю с24, H2). Для радіолога це
+     ЄДИНИЙ шлях: перехід веде на архівну дату, а там уся дошка readOnly.
+     ⚠️ НЕ через локальний setStatus(): той бере expectedFrom із `entries`, а
+     хвоста там немає за визначенням (він з іншої дати) — CAS би просто зник.
+     Тут expectedFrom задаємо явно: якщо запис уже закрив колега, сервер поверне
+     stale, і ми скажемо про це замість тихого перезапису чужої дії. */
+  async function confirmStuckFinish() {
+    if (!stuckFinish) return;
+    const s = stuckFinish;
+    setStuckFinishBusy(true);
+    try {
+      const res = await setQueueEntryStatus(s.id, "done" as QueueStatus, "in_progress" as QueueStatus);
+      if (!res.ok) {
+        notify(res.code === "stale" ? "Запис уже змінив інший користувач — дошку оновлено" : "Помилка: " + res.error, "error");
+        return;
+      }
+      /* Гасимо картку одразу, не чекаючи відповіді reload: інакше «✓ Завершити»
+         ще секунду виглядає доступною і провокує другий клік (ревʼю р2, L1). */
+      setStuck((list) => list.filter((x) => x.id !== s.id));
+      notify("Дослідження від " + stuckDateLabel(s.scheduled_date) + " завершено — кабінет вільний", "success");
+    } catch {
+      /* Обрив мережі: Server Action реджектиться. Без catch діалог замерзав із
+         вимкненою кнопкою — і для радіолога це єдиний шлях закрити хвіст. */
+      notify("Не вдалося завершити — перевірте зв'язок і спробуйте ще раз", "error");
+    } finally {
+      setStuckFinishBusy(false);
+      setStuckFinish(null);
+      reload();
+    }
+  }
+
   async function setStatus(id: string, status: string) {
     const cur = entries.find((e) => e.id === id);
     if (status === "done" && cur && cur.status !== "in_progress") { notify("«Виконано» можна лише для пацієнта в кабінеті", "error"); return; }
@@ -814,6 +949,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)) : null;
     return computeCallBlock(p, entries, {
       notToday: !sameDay(selectedDate, today0()),
+      roomStuck: p.room_id ? stuckRooms[p.room_id] ?? null : null,
+      stuckUnknown,
       roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
       schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
       schedEnd: sched && !sched.closed ? sched.end : null,
@@ -833,6 +970,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
     if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
     if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    if (r.code === "room_stuck") return stuckBlockReason(r);
+    if (r.code === "stuck_unknown") return STUCK_UNKNOWN_REASON;
     if (r.code === "clash") return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис. Реєстратура має перенести один із записів`;
     return null;
   }
@@ -871,6 +1010,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   scoped.forEach((e) => { if (counts[e.status] != null) counts[e.status]++; });
   const citoList = scoped.filter((e) => e.cito && (e.status === "scheduled" || e.status === "waiting" || e.status === "in_progress"));
 
+  const stuckRooms = useMemo(() => visibleStuckByRoom(stuck, dayKey), [stuck, dayKey]);
+  const stuckUnknown = stuckUnknownOf(stuckLoaded, stuckErr);
   const currentByRoom: Record<string, RadEntry> = {}, nextWaitingByRoom: Record<string, RadEntry> = {};
   entries.forEach((e) => { if (e.status === "in_progress" && e.room_id) currentByRoom[e.room_id] = e; });
   // «Наступний у черзі» — як і сортування: спершу ЧАС, пріоритет — тай-брейк.
@@ -885,10 +1026,9 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
 
   const filtered = scoped.filter((p) => {
     if (filter !== "all" && p.status !== filter) return false;
-    if (query.trim()) {
-      const q = query.trim().toLowerCase();
-      if (!((p.patient_name || "").toLowerCase().includes(q) || procLabel(p).toLowerCase().includes(q) || (p.patient_phone || "").includes(formatPhoneSearch(query.trim())))) return false;
-    }
+    // с22: швидкий пошук — спільний предикат (прізвище з будь-якого місця, телефон
+    // ЗА ЦИФРАМИ, процедура як і раніше). Порядок рядків не змінюється.
+    if (!quickSearchMatch(query, p, procLabel(p))) return false;
     return true;
   }).sort((a, b) => {
     const d = (FLOW[a.status] ?? 9) - (FLOW[b.status] ?? 9);
@@ -954,7 +1094,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
               );
             })}
             {selectedOverride && selDayStatus.kind !== "none" && (
-              <div className="inc-banner fade-in" style={{ borderColor: selDayStatus.kind === "closed" ? "var(--red)" : "var(--blue)" }}>
+              <div className="inc-banner fade-in" style={{ borderColor: selDayStatus.kind === "closed" ? "var(--red)" : "var(--blue-line)" }}>
                 <span className="inc-banner-ic">{selDayStatus.kind === "closed" ? "🚫" : "🕐"}</span>
                 <div className="inc-banner-txt">
                   <div className="inc-banner-title">{selDayStatus.kind === "closed" ? "Неробочий день" : "Особливий графік"} · {fmtShort(selectedDate)}</div>
@@ -964,6 +1104,16 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
             )}
 
             {/* Збій завантаження ≠ «все добре»: кажемо прямо, що дані ненадійні. */}
+            {stuckErr && !safetyErr && !entriesErr && (
+              <div className="inc-banner fade-in" style={{ borderColor: "var(--orange)" }} role="alert">
+                <span className="inc-banner-ic" aria-hidden="true">⚠</span>
+                <div className="inc-banner-txt">
+                  <div className="inc-banner-title">Не завантажились дані про незавершені дослідження</div>
+                  <div className="inc-banner-sub">Кабінет із забутим дослідженням виглядав би вільним, тому виклики заблоковано до оновлення.</div>
+                </div>
+                <button className="btn btn-secondary btn-sm" onClick={() => reload()}>↻ Оновити</button>
+              </div>
+            )}
             {(safetyErr || entriesErr) && (
               <div className="inc-banner fade-in" style={{ borderColor: "var(--red)" }} role="alert">
                 <span className="inc-banner-ic">⚠</span>
@@ -999,6 +1149,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                 {cardRooms.map((r) => (
                   <RoomStatusCard key={r.id} room={r}
                     patient={currentByRoom[r.id]} enteredAt={enteredAtOf(currentByRoom[r.id])}
+                    stuck={stuckRooms[r.id]} stuckUnknown={stuckUnknown} onFinishStuck={setStuckFinish}
                     nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
                     schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? (selDayStatus.label || "Не працює за графіком") : null}
                     callBlockReason={nextWaitingByRoom[r.id] ? inProgressBlockReason(nextWaitingByRoom[r.id]) : null}
@@ -1010,7 +1161,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
             <div className="qctrl">
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
-                <input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
+                {/* с22 (ревью HIGH-1): ввід не канонізуємо — цифровий матчинг quickSearchMatch. */}
+                <input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} />
               </div>
             </div>
 
@@ -1030,7 +1182,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                     <RadQueueRow key={p.id} p={p} dayDate={selectedDate}
                       roomName={r?.name || "—"} roomModel={r?.apparatus_model || ""} roomKind={modalityLabel(r?.modality || "")}
                       expanded={expandedRow === p.id} onToggle={(id) => setExpandedRow((x) => (x === id ? null : id))}
-                      readOnly={readOnly} canCall={!(p.room_id && currentByRoom[p.room_id])}
+                      readOnly={readOnly} canCall={!stuckUnknown && canCallIntoRoom(p.room_id ? currentByRoom[p.room_id] : null, p.room_id ? stuckRooms[p.room_id] : null)}
                       startBlockReason={p.status === "waiting" ? inProgressBlockReason(p) : null}
                       onArrive={arrive} onCall={callPatient} onComplete={completeProc}
                       onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onSetStatus={setStatusGuarded}
@@ -1048,6 +1200,22 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
       </div>
 
       {/* 0077 — виклик у кабінет після кінця робочого дня: свідома дія, не заборона. */}
+      {stuckFinish && (
+        <ConfirmDialog
+          title="Завершити дослідження з минулого дня?"
+          text={<>
+            <b>{stuckFinish.patient_name}</b> — запис від <b>{stuckDateLabel(stuckFinish.scheduled_date)}</b>, який лишився «у кабінеті».
+            Поки він відкритий, кабінет <b>{(rooms || []).find((r) => r.id === stuckFinish.room_id)?.name || "—"}</b> зайнятий і викликати наступного пацієнта не можна.
+            {" "}Позначити як <b>виконане</b>? Якщо дослідження не відбулося, це має оформити реєстратура на дошці того дня.
+          </>}
+          confirmLabel="✓ Завершити"
+          cancelLabel="Не чіпати"
+          busy={stuckFinishBusy}
+          onConfirm={confirmStuckFinish}
+          onClose={() => setStuckFinish(null)}
+        />
+      )}
+
       {offCallAsk && (
         <ConfirmDialog
           title="Викликати поза графіком?"

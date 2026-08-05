@@ -122,9 +122,12 @@ export default function ReferrerSidebar({ centers, roomsByClinic, roomNoteOf, do
               style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
               <span className="ic">{it.icon}</span>
               <span className="sb-item-lab">{it.label}</span>
-              {it.badge ? <span className="sb-badge" style={it.badgeBlue ? { background: "var(--blue)", color: "#fff" } : undefined}>{it.badge}</span> : null}
+              {it.badge ? <span className="sb-badge" style={it.badgeBlue ? { background: "var(--blue)", color: "#fff", boxShadow: "inset 0 0 0 1px var(--blue-line)" } : undefined}>{it.badge}</span> : null}
             </button>
           ))}
+          {/* с22: універсальний пошук — окрема сторінка (не вкладка порталу);
+              область — лише власні направлення в авторизованих центрах. */}
+          <a href="/search" className="sb-item"><span className="ic">⌕</span><span className="sb-item-lab">Пошук</span></a>
         </div>
       </nav>
 
@@ -141,7 +144,7 @@ export default function ReferrerSidebar({ centers, roomsByClinic, roomNoteOf, do
       </div>
 
       <div className="sb-user">
-        <div className="avatar" style={{ background: "linear-gradient(135deg,#0a84ff,#7b5cff)" }}>{initials(doctorName)}</div>
+        <div className="avatar" style={{ background: "linear-gradient(135deg,var(--blue),#6344e0)" }}>{initials(doctorName)}</div>
         <div className="meta">
           <div className="nm">{doctorName || "Направник"}</div>
           <div className="rl">{isPreview ? "Адміністратор" : "Лікар-направник"}</div>
