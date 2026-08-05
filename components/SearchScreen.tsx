@@ -16,6 +16,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { modalityLabel } from "@/lib/studies";
 import { wallDayKey } from "@/lib/incidents";
+// Стилі прототипу — як у всіх дошок (QueueBoard/WaitlistBoard/CeoDashboard).
+// Без цих імпортів сторінка рендериться голим HTML (спіймано живою перевіркою с22).
+import "@/styles/prototype/radflow.css";
+import "@/styles/prototype/radflow-screens.css";
 import type { SearchRequest, SearchResponse, SearchResultItem } from "@/lib/searchContract";
 
 export type SearchClinicOpt = { id: string; name: string };
