@@ -12,6 +12,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { useQueueSounds } from "@/lib/useQueueSounds";
+import type { OverrunSource } from "@/lib/soundEvents";
 import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock } from "@/lib/queueStatus";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
@@ -745,8 +746,15 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
      всю клініку). «Пацієнт готовий» — лише сьогодні; критичні — needs_reschedule
      та інцидент, що фактично став активним. Snapshot-логіка поверх лоадерів,
      помилкові snapshot'и baseline не чіпають. */
+  // Контракт джерела перевищень — див. QueueBoard (ревʼю M4).
+  const overrunSource: OverrunSource[] = entries;
+  void overrunSource;
   useQueueSounds({
-    scopeKey: "rad|" + clinicId + "|" + dayKey,
+    /* roomIds У КЛЮЧІ обов'язкові (ревʼю H1): коли радіологу видають новий
+       кабінет посеред зміни, запит підтягує його записи — і давно перевищене
+       дослідження там прозвучало б як щойно перетнуте. Зміна набору кабінетів
+       → тихий re-baseline, як в інцидентів. */
+    scopeKey: "rad|" + clinicId + "|" + dayKey + "|" + roomIds.join(","),
     /* Без призначених кабінетів запит записів іде по всій клініці (roomIds
        порожній → без .in-фільтра) — такому радіологу звуки глушимо, щоб не
        озвучувати чужі кабінети. */
@@ -756,6 +764,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     incidents: !incidentsLoaded || incidentsErr ? null : incidents,
     incidentRoomIds: roomIds,
     incidentScopeKey: clinicId + "|" + roomIds.join(","), // поза денним scope; новий кабінет → тихий re-baseline
+    overrunEnabled: isToday,    // «дослідження довше плану» — лише сьогоднішня дошка
   });
 
   const selectedOverride = overrides[dayKey] || null;

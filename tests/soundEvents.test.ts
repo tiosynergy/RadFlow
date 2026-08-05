@@ -6,6 +6,8 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  isStudyOverrun,
+  diffOverruns,
   DEFAULT_CRITICAL_STATUSES,
   REFERRER_CRITICAL_STATUSES,
   dedupeHash,
@@ -265,5 +267,111 @@ describe("dedupeHash + TabSoundDedupe — міжвкладкова коорди�
     } finally {
       if (orig !== undefined) G.BroadcastChannel = orig;
     }
+  });
+});
+
+/* ===== Перевищення планового часу дослідження (третій профіль) =====
+   Поріг — ДЗЕРКАЛО components/StudyTimer: in_progress_at + (duration + buffer).
+   Саме тоді кільце стає червоним і показує «+MM:SS», тож звук збігається з тим,
+   що видно на екрані. Рішення власника: окремий звук, не критичний. */
+describe("diffOverruns — дослідження довше плану", () => {
+  const T = Date.UTC(2026, 6, 30, 12, 0, 0);
+  const at = (msAgo: number) => new Date(T - msAgo).toISOString();
+  const run = (o: Partial<Parameters<typeof isStudyOverrun>[0]> & { id: string }) => ({
+    status: "in_progress", in_progress_at: at(0), duration_min: 30, buffer_time_min: 5, ...o,
+  });
+
+  it("поріг = тривалість + буфер (мить, коли таймер червоніє)", () => {
+    // 30 + 5 = 35 хв. На 34:59 ще ні, на 35:01 — вже так.
+    expect(isStudyOverrun(run({ id: "a", in_progress_at: at(34 * 60000 + 59000) }), T)).toBe(false);
+    expect(isStudyOverrun(run({ id: "a", in_progress_at: at(35 * 60000 + 1000) }), T)).toBe(true);
+  });
+
+  it("дефолти дзеркальні дошкам: duration || 30, buffer ?? 5", () => {
+    const e = { id: "d", status: "in_progress", in_progress_at: at(36 * 60000), duration_min: null, buffer_time_min: null };
+    expect(isStudyOverrun(e, T)).toBe(true);           // 30+5=35 < 36
+    const e2 = { ...e, in_progress_at: at(34 * 60000) };
+    expect(isStudyOverrun(e2, T)).toBe(false);
+  });
+
+  it("лише in_progress і лише з in_progress_at", () => {
+    expect(isStudyOverrun(run({ id: "s", status: "waiting", in_progress_at: at(99 * 60000) }), T)).toBe(false);
+    expect(isStudyOverrun(run({ id: "s", status: "done", in_progress_at: at(99 * 60000) }), T)).toBe(false);
+    expect(isStudyOverrun(run({ id: "s", in_progress_at: null }), T)).toBe(false);
+    expect(isStudyOverrun(run({ id: "s", in_progress_at: "не дата" }), T)).toBe(false);
+  });
+
+  it("перший прогін тихий: вже перевищене дослідження на відкритті НЕ сигналить", () => {
+    const list = [run({ id: "a", in_progress_at: at(99 * 60000) })];
+    const s1 = diffOverruns(null, list, T);
+    expect(s1.events).toEqual([]);
+    expect(s1.next.get("a")).toBe(true);
+  });
+
+  it("перетин порогу дає рівно одну подію, далі тиша", () => {
+    const e = run({ id: "a", in_progress_at: at(10 * 60000) });   // 10 хв — у межах
+    const s1 = diffOverruns(null, [e], T);
+    expect(s1.events).toEqual([]);
+    const s2 = diffOverruns(s1.next, [e], T + 26 * 60000);        // 36 хв — вийшли за план
+    expect(s2.events).toEqual([{ kind: "overrun", key: "qe-over:a" }]);
+    const s3 = diffOverruns(s2.next, [e], T + 40 * 60000);        // далі мовчимо
+    expect(s3.events).toEqual([]);
+  });
+
+  it("завершення дослідження після перевищення не дає нового звуку", () => {
+    const e = run({ id: "a", in_progress_at: at(40 * 60000) });
+    const s1 = diffOverruns(null, [e], T);                        // baseline: вже over
+    const s2 = diffOverruns(s1.next, [{ ...e, status: "done" }], T + 60000);
+    expect(s2.events).toEqual([]);
+    expect(s2.next.get("a")).toBe(false);
+  });
+
+  it("кілька кабінетів перевищили одночасно → агрегація в один звук", () => {
+    const a = run({ id: "a", in_progress_at: at(10 * 60000) });
+    const b = run({ id: "b", in_progress_at: at(10 * 60000) });
+    const s1 = diffOverruns(null, [a, b], T);
+    const s2 = diffOverruns(s1.next, [a, b], T + 30 * 60000);
+    expect(s2.events.length).toBe(2);
+    expect(resolveBurst(s2.events)).toBe("overrun");
+  });
+});
+
+describe("resolveBurst — пріоритет трьох профілів", () => {
+  const ev = (kind: "ready" | "critical" | "overrun", k: string) => ({ kind, key: k });
+  it("critical б'є overrun, overrun б'є ready", () => {
+    expect(resolveBurst([ev("ready", "1"), ev("overrun", "2")])).toBe("overrun");
+    expect(resolveBurst([ev("overrun", "1"), ev("critical", "2")])).toBe("critical");
+    expect(resolveBurst([ev("ready", "1"), ev("overrun", "2"), ev("critical", "3")])).toBe("critical");
+  });
+});
+
+/* Ревʼю H1/M2: запис, якого НЕ БУЛО в попередньому знімку, не може «щойно
+   перетнути поріг» — поріг настає щонайменше через 35 хв після старту. */
+describe("diffOverruns — новий id у непорожньому baseline мовчить", () => {
+  const T = Date.UTC(2026, 6, 30, 12, 0, 0);
+  const old = (min: number) => new Date(T - min * 60000).toISOString();
+  const e = (id: string, startedMinAgo: number) => ({
+    id, status: "in_progress", in_progress_at: old(startedMinAgo),
+    duration_min: 30, buffer_time_min: 5,
+  });
+
+  it("повернення на сьогоднішню дату: давно перевищене дослідження НЕ звучить", () => {
+    // baseline зібрано на іншому дні — у ньому id "x" відсутній.
+    const s1 = diffOverruns(null, [e("other", 1)], T);
+    const s2 = diffOverruns(s1.next, [e("x", 90)], T);   // 90 хв при плані 35
+    expect(s2.events).toEqual([]);
+    expect(s2.next.get("x")).toBe(true);                 // стан зафіксовано тихо
+  });
+
+  it("радіологу видали новий кабінет: його перевищений запис НЕ звучить", () => {
+    const s1 = diffOverruns(null, [e("mine", 5)], T);
+    const s2 = diffOverruns(s1.next, [e("mine", 5), e("newRoom", 120)], T);
+    expect(s2.events).toEqual([]);
+  });
+
+  it("…але запис, який БУВ у baseline, перетнувши поріг, звучить", () => {
+    const s1 = diffOverruns(null, [e("a", 5)], T);
+    const s2 = diffOverruns(s1.next, [e("a", 5)], T + 31 * 60000);
+    expect(s2.events).toEqual([{ kind: "overrun", key: "qe-over:a" }]);
   });
 });
