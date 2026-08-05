@@ -15,6 +15,7 @@ import { useQueueSounds } from "@/lib/useQueueSounds";
 import type { OverrunSource } from "@/lib/soundEvents";
 import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock } from "@/lib/queueStatus";
+import { visibleStuckByRoom, stuckUnknownOf, stuckDateLabel, stuckDeepLink, stuckBlockReason, canCallIntoRoom, STUCK_UNKNOWN_REASON, type StuckStudy } from "@/lib/stuckStudy";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
@@ -140,6 +141,11 @@ function StatsBar({ counts, filter, setFilter }: { counts: Record<string, number
 interface RoomStatusCardProps {
   room: RoomOpt;
   patient?: RadEntry | null;
+  /** с24 — незавершене дослідження цього кабінету з іншої дати (див. lib/stuckStudy.ts). */
+  stuck?: StuckStudy | null;
+  /** Про «хвости» ще нічого не відомо — не стверджуємо «вільний» (fail-closed). */
+  stuckUnknown?: boolean;
+  onFinishStuck?: (s: StuckStudy) => void;
   enteredAt?: string | null;
   nextWaiting?: RadEntry | null;
   blocked?: IncidentRow | null;
@@ -149,7 +155,7 @@ interface RoomStatusCardProps {
   onCall: (p: RadEntry) => void;
 }
 
-function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedClosed, callBlockReason, onComplete, onCall }: RoomStatusCardProps) {
+function RoomStatusCard({ room, patient, stuck, stuckUnknown, onFinishStuck, enteredAt, nextWaiting, blocked, schedClosed, callBlockReason, onComplete, onCall }: RoomStatusCardProps) {
   const kind = modalityShort(room.modality);
   if (!blocked && schedClosed) {
     return (
@@ -188,7 +194,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
     );
   }
   return (
-    <div className={"room-card " + (patient ? "busy" : "free")}>
+    <div className={"room-card " + (patient ? "busy" : stuck ? "stuck" : "free")}>
       <div className="rc-head">
         <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
         <div className="rc-h-meta">
@@ -210,6 +216,33 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
             <span className="rc-proc" title={procLabel(patient)}>{procLabel(patient)} · {patient.duration_min} хв · {patient.scheduled_time}</span>
             <button className="btn btn-green btn-sm" onClick={() => onComplete(patient)}>✓ Завершити</button>
           </div>
+        </div>
+      ) : stuck ? (
+        /* Кабінет фізично зайнятий незавершеним дослідженням іншого дня: індекс
+           0018 не дасть другий in_progress. Закрити можна ПРЯМО ТУТ — перехід на
+           архівну дату радіологу не допоможе, бо там уся дошка readOnly
+           (ревʼю с24, H2): саме та роль, яка найчастіше й забуває натиснути
+           «Завершити», інакше не могла б звільнити власний кабінет. */
+        <div className="rc-body rc-body-stuck">
+          <div className="rc-stuck-reason"><span aria-hidden="true">⏳</span> Незавершене дослідження від {stuckDateLabel(stuck.scheduled_date)}</div>
+          <div className="rc-brow">
+            <span className="rc-proc" title={stuck.patient_name}>{stuck.patient_name}</span>
+            {onFinishStuck && <button className="btn btn-green btn-sm" onClick={() => onFinishStuck(stuck)}>✓ Завершити</button>}
+          </div>
+          <div className="rc-brow">
+            {/* На архівній даті дошка радіолога readOnly — тому «переглянути», а не
+                «відкрити»: закривають хвіст кнопкою вище, тут лише подивитись деталі. */}
+            <a className="btn btn-secondary btn-sm" href={stuckDeepLink(stuck, "radiologist")}
+               title="Перегляд запису на дошці того дня (дії там недоступні)"
+               aria-label={"Переглянути " + stuckDateLabel(stuck.scheduled_date) + " — кабінет " + room.name}>
+              Переглянути {stuckDateLabel(stuck.scheduled_date)}
+            </a>
+          </div>
+        </div>
+      ) : stuckUnknown ? (
+        <div className="rc-body empty">
+          <div className="rc-free-row"><span aria-hidden="true">⚠</span><span className="rc-free">Стан кабінету не оновився</span></div>
+          <div className="rc-free-sub">Дані про незавершені дослідження не завантажились — оновіть сторінку</div>
         </div>
       ) : (
         <div className="rc-body empty">
@@ -600,6 +633,19 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
      прапорці помилок окремо, старі дані НЕ затираємо, а виклик у кабінет
      блокуємо, поки дані про простої/графік ненадійні. */
   const [entriesErr, setEntriesErr] = useState(false);
+  /* с24: незавершені дослідження ПРИЗНАЧЕНИХ кабінетів з інших дат. Окремо від
+     `entries` — інакше вчорашній запис давав би вічний звук перевищення і
+     ламав лічильники дня. RLS у радіолога ширша за його кабінети, тому область
+     звужує сам запит (`.in("room_id", roomIds)`), як і основний лоадер. */
+  const [stuck, setStuck] = useState<StuckStudy[]>([]);
+  /* Стартове `[]` не відрізнити від «хвостів немає» (ревʼю с24, H1) — тому
+     fail-CLOSED: поки не завантажили або запит упав, виклик блокуємо. */
+  const [stuckLoaded, setStuckLoaded] = useState(false);
+  const [stuckErr, setStuckErr] = useState(false);
+  const [stuckFinish, setStuckFinish] = useState<StuckStudy | null>(null);
+  const [stuckFinishBusy, setStuckFinishBusy] = useState(false);
+  /* Два запити в одному reload — відсікаємо приземлення застарілих (M2). */
+  const reqGen = useRef(0);
   const [incidentsErr, setIncidentsErr] = useState(false);
   const [overridesErr, setOverridesErr] = useState(false);
   const safetyErr = incidentsErr || overridesErr;
@@ -694,6 +740,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   const reload = useCallback(async () => {
     // Транзієнтний «Failed to fetch» (рефреш токена / зміна сесії / мережевий збій)
     // НЕ повинен валитись у Next error overlay — конвенція проєкту.
+    const gen = ++reqGen.current;
     try {
       const supabase = createClient();
       // Авто-«Уточнити» (clarify_at) ставить pg_cron (джоб sink-overdue, кожні 5 хв,
@@ -708,13 +755,37 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
       if (roomIds.length) q = q.in("room_id", roomIds);
       const { data, error } = await q.order("scheduled_time", { ascending: true });
       // PostgREST не кидає — помилку треба читати самому, інакше «збій» = «записів немає».
-      if (error) { setEntriesErr(true); return; }
+      if (gen !== reqGen.current) return;              // відповідь застарілого запиту
+      if (error) { setEntriesErr(true); setStuckErr(true); return; }   // до хвостів не дійшли — отже не знаємо
       setEntries(data || []);
       setEntriesErr(false);
+
+      /* «Хвости» in_progress з інших дат. Без призначених кабінетів не питаємо
+         взагалі: інакше запит пішов би по всій клініці, а радіолог не має
+         бачити чужі кабінети. Помилку НЕ ковтаємо — вона блокує виклик. */
+      if (roomIds.length) {
+        const { data: st, error: stErr } = await supabase
+          .from("queue_entries")
+          .select("id, room_id, patient_name, scheduled_date")
+          .eq("clinic_id", clinicId)
+          .eq("status", "in_progress")
+          .neq("scheduled_date", dayKey)
+          .in("room_id", roomIds);
+        if (gen !== reqGen.current) return;
+        if (stErr) { setStuckErr(true); return; }       // список НЕ чистимо
+        setStuck((st || []) as unknown as StuckStudy[]);
+        setStuckErr(false);
+        setStuckLoaded(true);
+      } else {
+        /* Кабінетів не призначено — викликати нікуди, блокувати нічого. */
+        setStuck([]); setStuckErr(false); setStuckLoaded(true);
+      }
     } catch {
+      if (gen !== reqGen.current) return;
       setEntriesErr(true);   // старі рядки лишаються на екрані + банер «черга не оновилась»
+      setStuckErr(true);
     } finally {
-      setLoading(false);
+      if (gen === reqGen.current) setLoading(false);
     }
   }, [clinicId, dayKey, roomIds]);
 
@@ -749,6 +820,12 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   useEffect(() => { setLoading(true); }, [clinicId]);
 
   // Перезапрос записей при смене дня/кабинетов: realtime-хук слушает только clinicId.
+  /* M-1 ревʼю раунду 2: `stuckLoaded` мусить згасати РАЗОМ із датою й клінікою.
+     Інакше після «← Сьогодні» список хвостів ще належить попередньому дню, але
+     прапорець каже «дані свіжі» — і в кадрі до відповіді другого запиту картка
+     знову писала б «Кабінет вільний» із живою кнопкою виклику. Тобто вихідний
+     дефект відтворювався б у вікні 100–300 мс. */
+  useEffect(() => { setStuckLoaded(false); }, [clinicId, dayKey]);
   useEffect(() => { reload(); }, [reload]);
 
   // TD-3: единый realtime-паттерн.
@@ -811,6 +888,37 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     if (wallNow() >= s && wallNow() < incidentEffectiveEnd(i)) blockingByRoom[i.room_id] = i;
   });
 
+  /* Закриття «хвоста» прямо з картки кабінету (ревʼю с24, H2). Для радіолога це
+     ЄДИНИЙ шлях: перехід веде на архівну дату, а там уся дошка readOnly.
+     ⚠️ НЕ через локальний setStatus(): той бере expectedFrom із `entries`, а
+     хвоста там немає за визначенням (він з іншої дати) — CAS би просто зник.
+     Тут expectedFrom задаємо явно: якщо запис уже закрив колега, сервер поверне
+     stale, і ми скажемо про це замість тихого перезапису чужої дії. */
+  async function confirmStuckFinish() {
+    if (!stuckFinish) return;
+    const s = stuckFinish;
+    setStuckFinishBusy(true);
+    try {
+      const res = await setQueueEntryStatus(s.id, "done" as QueueStatus, "in_progress" as QueueStatus);
+      if (!res.ok) {
+        notify(res.code === "stale" ? "Запис уже змінив інший користувач — дошку оновлено" : "Помилка: " + res.error, "error");
+        return;
+      }
+      /* Гасимо картку одразу, не чекаючи відповіді reload: інакше «✓ Завершити»
+         ще секунду виглядає доступною і провокує другий клік (ревʼю р2, L1). */
+      setStuck((list) => list.filter((x) => x.id !== s.id));
+      notify("Дослідження від " + stuckDateLabel(s.scheduled_date) + " завершено — кабінет вільний", "success");
+    } catch {
+      /* Обрив мережі: Server Action реджектиться. Без catch діалог замерзав із
+         вимкненою кнопкою — і для радіолога це єдиний шлях закрити хвіст. */
+      notify("Не вдалося завершити — перевірте зв'язок і спробуйте ще раз", "error");
+    } finally {
+      setStuckFinishBusy(false);
+      setStuckFinish(null);
+      reload();
+    }
+  }
+
   async function setStatus(id: string, status: string) {
     const cur = entries.find((e) => e.id === id);
     if (status === "done" && cur && cur.status !== "in_progress") { notify("«Виконано» можна лише для пацієнта в кабінеті", "error"); return; }
@@ -841,6 +949,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)) : null;
     return computeCallBlock(p, entries, {
       notToday: !sameDay(selectedDate, today0()),
+      roomStuck: p.room_id ? stuckRooms[p.room_id] ?? null : null,
+      stuckUnknown,
       roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
       schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
       schedEnd: sched && !sched.closed ? sched.end : null,
@@ -860,6 +970,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
     if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
     if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    if (r.code === "room_stuck") return stuckBlockReason(r);
+    if (r.code === "stuck_unknown") return STUCK_UNKNOWN_REASON;
     if (r.code === "clash") return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис. Реєстратура має перенести один із записів`;
     return null;
   }
@@ -898,6 +1010,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   scoped.forEach((e) => { if (counts[e.status] != null) counts[e.status]++; });
   const citoList = scoped.filter((e) => e.cito && (e.status === "scheduled" || e.status === "waiting" || e.status === "in_progress"));
 
+  const stuckRooms = useMemo(() => visibleStuckByRoom(stuck, dayKey), [stuck, dayKey]);
+  const stuckUnknown = stuckUnknownOf(stuckLoaded, stuckErr);
   const currentByRoom: Record<string, RadEntry> = {}, nextWaitingByRoom: Record<string, RadEntry> = {};
   entries.forEach((e) => { if (e.status === "in_progress" && e.room_id) currentByRoom[e.room_id] = e; });
   // «Наступний у черзі» — як і сортування: спершу ЧАС, пріоритет — тай-брейк.
@@ -990,6 +1104,16 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
             )}
 
             {/* Збій завантаження ≠ «все добре»: кажемо прямо, що дані ненадійні. */}
+            {stuckErr && !safetyErr && !entriesErr && (
+              <div className="inc-banner fade-in" style={{ borderColor: "var(--orange)" }} role="alert">
+                <span className="inc-banner-ic" aria-hidden="true">⚠</span>
+                <div className="inc-banner-txt">
+                  <div className="inc-banner-title">Не завантажились дані про незавершені дослідження</div>
+                  <div className="inc-banner-sub">Кабінет із забутим дослідженням виглядав би вільним, тому виклики заблоковано до оновлення.</div>
+                </div>
+                <button className="btn btn-secondary btn-sm" onClick={() => reload()}>↻ Оновити</button>
+              </div>
+            )}
             {(safetyErr || entriesErr) && (
               <div className="inc-banner fade-in" style={{ borderColor: "var(--red)" }} role="alert">
                 <span className="inc-banner-ic">⚠</span>
@@ -1025,6 +1149,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                 {cardRooms.map((r) => (
                   <RoomStatusCard key={r.id} room={r}
                     patient={currentByRoom[r.id]} enteredAt={enteredAtOf(currentByRoom[r.id])}
+                    stuck={stuckRooms[r.id]} stuckUnknown={stuckUnknown} onFinishStuck={setStuckFinish}
                     nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
                     schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? (selDayStatus.label || "Не працює за графіком") : null}
                     callBlockReason={nextWaitingByRoom[r.id] ? inProgressBlockReason(nextWaitingByRoom[r.id]) : null}
@@ -1057,7 +1182,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                     <RadQueueRow key={p.id} p={p} dayDate={selectedDate}
                       roomName={r?.name || "—"} roomModel={r?.apparatus_model || ""} roomKind={modalityLabel(r?.modality || "")}
                       expanded={expandedRow === p.id} onToggle={(id) => setExpandedRow((x) => (x === id ? null : id))}
-                      readOnly={readOnly} canCall={!(p.room_id && currentByRoom[p.room_id])}
+                      readOnly={readOnly} canCall={!stuckUnknown && canCallIntoRoom(p.room_id ? currentByRoom[p.room_id] : null, p.room_id ? stuckRooms[p.room_id] : null)}
                       startBlockReason={p.status === "waiting" ? inProgressBlockReason(p) : null}
                       onArrive={arrive} onCall={callPatient} onComplete={completeProc}
                       onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onSetStatus={setStatusGuarded}
@@ -1075,6 +1200,22 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
       </div>
 
       {/* 0077 — виклик у кабінет після кінця робочого дня: свідома дія, не заборона. */}
+      {stuckFinish && (
+        <ConfirmDialog
+          title="Завершити дослідження з минулого дня?"
+          text={<>
+            <b>{stuckFinish.patient_name}</b> — запис від <b>{stuckDateLabel(stuckFinish.scheduled_date)}</b>, який лишився «у кабінеті».
+            Поки він відкритий, кабінет <b>{(rooms || []).find((r) => r.id === stuckFinish.room_id)?.name || "—"}</b> зайнятий і викликати наступного пацієнта не можна.
+            {" "}Позначити як <b>виконане</b>? Якщо дослідження не відбулося, це має оформити реєстратура на дошці того дня.
+          </>}
+          confirmLabel="✓ Завершити"
+          cancelLabel="Не чіпати"
+          busy={stuckFinishBusy}
+          onConfirm={confirmStuckFinish}
+          onClose={() => setStuckFinish(null)}
+        />
+      )}
+
       {offCallAsk && (
         <ConfirmDialog
           title="Викликати поза графіком?"

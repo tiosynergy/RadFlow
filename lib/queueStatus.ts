@@ -101,6 +101,20 @@ export type CallBlockOpts = {
   // можливий лише для записів сьогоднішнього дня — не можна «завести» пацієнта
   // з майбутнього/минулого слота у кабінет зараз.
   notToday?: boolean;
+  /* с24: незавершене дослідження в ЦЬОМУ ж кабінеті, але з ІНШОЇ дати.
+     Індекс `queue_one_in_progress_per_room` (0018) не має дати, тож такий запис
+     блокує кабінет назавжди — але в `entries` дошки його немає (вони за один
+     день), і перевірка room_busy нижче його не бачить. Без цього поля кнопка
+     виглядала активною, а сервер відповідав 23505 «у кабінеті вже є пацієнт»
+     про пацієнта, якого на дошці нема. */
+  roomStuck?: { id?: string; scheduled_date: string; patient_name?: string | null } | null;
+  /* с24, ревʼю H1: дані про «хвости» ще не завантажились або запит упав.
+     Стартове `[]` не відрізнити від «хвостів немає», тож без цього прапорця
+     будь-який збій тихо повертав вихідний дефект: картка писала «вільний»,
+     кнопка була активна, а сервер відповідав 23505. Інваріант проєкту
+     «помилка завантаження ≠ пусто» — і саме там, де від цього залежить
+     заведення пацієнта в апарат. Тому fail-CLOSED: не знаємо — не пускаємо. */
+  stuckUnknown?: boolean;
   nowMs?: number;
 };
 /* 0077: sched_overrun — це вже НЕ блок, а ПОПЕРЕДЖЕННЯ (confirmable: true).
@@ -115,6 +129,8 @@ export type CallBlock =
   | { code: "room_blocked"; confirmable?: false }
   | { code: "room_closed"; confirmable?: false }
   | { code: "room_busy"; confirmable?: false }
+  | { code: "room_stuck"; date: string; name?: string | null; confirmable?: false }
+  | { code: "stuck_unknown"; confirmable?: false }
   | { code: "sched_overrun"; durationMin: number; end: string; confirmable: true }
   | { code: "clash"; durationMin: number; time: string; name?: string | null; confirmable?: false };
 
@@ -129,6 +145,15 @@ export function computeCallBlock(
   if (opts.roomBlocked) return { code: "room_blocked" };
   if (opts.schedClosed) return { code: "room_closed" };
   if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return { code: "room_busy" };
+  /* Після room_busy: якщо пацієнт у кабінеті Є сьогодні, оператору важливіша
+     саме ця причина. room_stuck — про «хвіст» з іншого дня, і він теж жорсткий:
+     унікальний індекс 0018 однаково не дасть другий in_progress. */
+  if (opts.roomStuck && opts.roomStuck.id !== p.id) {
+    return { code: "room_stuck", date: opts.roomStuck.scheduled_date, name: opts.roomStuck.patient_name ?? null };
+  }
+  /* Тільки для записів З кабінетом: без room_id хвіст блокувати нічого не може,
+     а показувати «дані не оновились» на такому записі — брехня (ревʼю с24, L3). */
+  if (opts.stuckUnknown && p.room_id) return { code: "stuck_unknown" };
   const durationMin = p.duration_min || 30;
   /* Накладення на НАСТУПНИЙ запис перевіряємо ДО виходу за графік (0077).
      Порядок важливий: обидва можуть спрацювати одночасно (кінець дня + хтось

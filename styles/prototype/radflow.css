@@ -1032,6 +1032,16 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .rc-model { font-size: 0.71875rem; color: var(--text-muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rc-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 0.71875rem; font-weight: 600; color: var(--blue-text); }
 .rc-body-busy { display: flex; flex-direction: column; gap: 5px; }
+
+/* ── с24: кабінет зайнятий незавершеним дослідженням з ІНШОЇ дати ──────────
+   Стан між «зайнятий» і «вільний»: пацієнта сьогодні немає, але викликати
+   наступного не можна (індекс 0018). Помаранчевий, як усі «потребує уваги
+   людини» стани, і НЕ червоний — це не поломка, а забуте натискання.
+   Стан передається текстом І кольором рамки, не лише кольором (WCAG 1.4.1). */
+.room-card.stuck { border-color: var(--orange); background: linear-gradient(180deg, rgba(255,159,10,0.06), var(--card) 55%); }
+.rc-body-stuck { display: flex; flex-direction: column; gap: 5px; }
+.rc-body-stuck .btn-sm { padding: 5px 11px; flex-shrink: 0; }
+.rc-stuck-reason { font-size: 0.8125rem; font-weight: 600; color: var(--orange); }
 .rc-body-busy .btn-sm { padding: 5px 11px; flex-shrink: 0; }
 .rc-brow { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .rc-pat { display: flex; align-items: center; gap: 7px; font-size: 0.875rem; font-weight: 700; letter-spacing: -0.01em; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

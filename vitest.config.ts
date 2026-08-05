@@ -16,5 +16,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    /* Зона НЕ UTC свідомо (ревʼю с24): половина часових багів проєкту —
+       про зсув доби, а в UTC вони не відтворюються. Київ = UTC+2/+3, тож
+       «YYYY-MM-DD» через new Date() тут з'їжджає на добу і тести це ловлять. */
+    env: { TZ: "Europe/Kyiv" },
   },
 });

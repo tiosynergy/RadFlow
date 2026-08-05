@@ -52,6 +52,7 @@ import RoomDayOverviewModal from "@/components/RoomDayOverviewModal";
 import { roomScheduleFor, dayStatus, offScheduleKind, effectiveRoomBreaks, type DayOverride } from "@/lib/schedule";
 import { slotToMin, slotFmt } from "@/lib/slots";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, collisionFor, type CollisionInfo } from "@/lib/queueStatus";
+import { visibleStuckByRoom, stuckUnknownOf, stuckDateLabel, stuckDeepLink, stuckBlockReason, canCallIntoRoom, STUCK_UNKNOWN_REASON, type StuckStudy } from "@/lib/stuckStudy";
 import CollisionPanel from "@/components/CollisionPanel";
 import QuickRescheduleButton from "@/components/QuickRescheduleButton";
 import StudyTimer from "@/components/StudyTimer";
@@ -198,6 +199,13 @@ function useCardBusy() {
 interface RoomStatusCardProps {
   room: RoomOpt;
   patient?: QEntry | null;
+  /* с24: незавершене дослідження з іншої дати. Кабінет фізично зайнятий ним
+     (індекс 0018 не дасть другий in_progress), але на дошці цього дня його
+     немає — тому картка мусить сказати про це сама. */
+  stuck?: StuckStudy | null;
+  /** Про «хвости» ще нічого не відомо (не завантажились / запит упав) — fail-closed. */
+  stuckUnknown?: boolean;
+  onFinishStuck?: (s: StuckStudy) => void;
   enteredAt?: string | null;
   nextWaiting?: QEntry | null;
   blocked?: IncidentRow | null;
@@ -206,7 +214,7 @@ interface RoomStatusCardProps {
   onCall: (p: QEntry) => void;
   onUnblock: (inc: IncidentRow) => void;
 }
-function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedClosed, onComplete, onCall, onUnblock }: RoomStatusCardProps) {
+function RoomStatusCard({ room, patient, stuck, stuckUnknown, onFinishStuck, enteredAt, nextWaiting, blocked, schedClosed, onComplete, onCall, onUnblock }: RoomStatusCardProps) {
   const kind = modalityShort(room.modality);
   const { busy, run } = useCardBusy();
   if (!blocked && schedClosed) {
@@ -249,7 +257,7 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
     );
   }
   return (
-    <div className={"room-card " + (patient ? "busy" : "free")}>
+    <div className={"room-card " + (patient ? "busy" : stuck ? "stuck" : "free")}>
       <div className="rc-head">
         <span className={"equip-tile " + modalityKind(room.modality)}>{kind}</span>
         <div className="rc-h-meta">
@@ -272,6 +280,32 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
             <button className="btn btn-green btn-sm" onClick={() => onComplete(patient)}>✓ Завершити</button>
           </div>
         </div>
+      ) : stuck ? (
+        /* Кабінет НЕ вільний: у ньому висить незавершене дослідження іншого дня.
+           Показуємо ПІБ і дату, даємо закрити прямо звідси, а перехід лишаємо
+           для випадків, де потрібні причина/нотатка («не відбулося»). Раніше тут
+           писало «Кабінет вільний», кнопка виклику була активною, а сервер
+           відповідав «у кабінеті вже є пацієнт» про пацієнта, якого не видно. */
+        <div className="rc-body rc-body-stuck">
+          <div className="rc-stuck-reason"><span aria-hidden="true">⏳</span> Незавершене дослідження від {stuckDateLabel(stuck.scheduled_date)}</div>
+          <div className="rc-brow">
+            <span className="rc-proc" title={stuck.patient_name}>{stuck.patient_name}</span>
+            {onFinishStuck && <button className="btn btn-green btn-sm" onClick={() => onFinishStuck(stuck)}>✓ Завершити</button>}
+          </div>
+          <div className="rc-brow">
+            <a className="btn btn-secondary btn-sm" href={stuckDeepLink(stuck)}
+               aria-label={"Відкрити " + stuckDateLabel(stuck.scheduled_date) + " — кабінет " + room.name}>
+              Відкрити {stuckDateLabel(stuck.scheduled_date)}
+            </a>
+          </div>
+        </div>
+      ) : stuckUnknown ? (
+        /* Не знаємо, чи є хвіст → не стверджуємо «вільний» і не показуємо кнопку
+           виклику (ревʼю с24, H1: «помилка завантаження ≠ пусто»). */
+        <div className="rc-body empty">
+          <div className="rc-free-row"><span aria-hidden="true">⚠</span><span className="rc-free">Стан кабінету не оновився</span></div>
+          <div className="rc-free-sub">Дані про незавершені дослідження не завантажились — оновіть сторінку</div>
+        </div>
       ) : (
         <div className="rc-body empty">
           <div className="rc-free-row"><span className="rc-free-dot" /><span className="rc-free">Кабінет вільний</span></div>
@@ -291,6 +325,10 @@ function RoomStatusCard({ room, patient, enteredAt, nextWaiting, blocked, schedC
 /* ── Одиночний вид кабінету ── */
 interface CurrentCardProps {
   patient?: QEntry | null;
+  /** с24 — незавершене дослідження цього кабінету з іншої дати (див. RoomStatusCard). */
+  stuck?: StuckStudy | null;
+  stuckUnknown?: boolean;
+  onFinishStuck?: (s: StuckStudy) => void;
   roomName: string;
   roomModel?: string | null;
   enteredAt?: string | null;
@@ -299,8 +337,43 @@ interface CurrentCardProps {
   onComplete: (p: QEntry) => void;
   onReschedule?: (p: QEntry) => void;
 }
-function CurrentCard({ patient, roomName, roomModel, enteredAt, nextWaiting, onCall, onComplete, onReschedule }: CurrentCardProps) {
+function CurrentCard({ patient, stuck, stuckUnknown, onFinishStuck, roomName, roomModel, enteredAt, nextWaiting, onCall, onComplete, onReschedule }: CurrentCardProps) {
   const { busy, run } = useCardBusy();
+  if (!patient && stuck) {
+    return (
+      <div className="current" style={{ background: "var(--border)", boxShadow: "none" }}>
+        <div className="current-inner" style={{ background: "var(--card)", padding: "22px 24px", gap: 18 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: "0.9375rem", fontWeight: 600, color: "var(--orange)" }}>
+              <span aria-hidden="true">⏳</span> {roomName}: незавершене дослідження від {stuckDateLabel(stuck.scheduled_date)}
+            </div>
+            <div style={{ fontSize: "0.8125rem", marginTop: 4, color: "var(--text-muted)" }}>
+              {stuck.patient_name} — поки запис не завершено, викликати наступного не можна
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+            {onFinishStuck && <button className="btn btn-green" onClick={() => onFinishStuck(stuck)}>✓ Завершити</button>}
+            <a className="btn btn-secondary" href={stuckDeepLink(stuck)}
+               aria-label={"Відкрити " + stuckDateLabel(stuck.scheduled_date) + " — кабінет " + roomName}>
+              Відкрити {stuckDateLabel(stuck.scheduled_date)}
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (!patient && stuckUnknown) {
+    return (
+      <div className="current" style={{ background: "var(--border)", boxShadow: "none" }}>
+        <div className="current-inner" style={{ background: "var(--card)", padding: "22px 24px", gap: 18 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: "0.9375rem", fontWeight: 600, color: "var(--orange)" }}><span aria-hidden="true">⚠</span> Стан кабінету {roomName} не оновився</div>
+            <div style={{ fontSize: "0.8125rem", marginTop: 4, color: "var(--text-muted)" }}>Дані про незавершені дослідження не завантажились — оновіть сторінку</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (!patient) {
     return (
       <div className="current" style={{ background: "var(--border)", boxShadow: "none" }}>
@@ -501,6 +574,15 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
   const isTodayRow = dayDate ? sameDay(dayDate, today0()) : true;
   const isFutureRow = dayDate ? (!isTodayRow && dayDate > today0()) : false;
   const canSetStatus = !isFutureRow;
+  /* с24. «Дія доступна в день запису» правильна для ПОЧАТКУ дослідження — завести
+     пацієнта в кабінет заднім числом не можна. Але для ЗАВЕРШЕННЯ вона створювала
+     глухий кут: адміністратор забув натиснути «Завершити», наступного дня кабінет
+     заблоковано індексом 0018, а кнопка на вчорашній дошці вимкнена.
+     Інтерфейс при цьому сам собі суперечив — кружок «Виконано» в степері
+     працював (canSetStatus = !isFutureRow), а велика кнопка того ж переходу ні.
+     Сервер дату не перевіряє взагалі (queue_set_status_rpc), тож блок був суто
+     клієнтським. Завершити «хвіст» дозволяємо, почати новий — ні. */
+  const canFinishPastDay = p.status === "in_progress" && !isFutureRow;
   const [moreOpen, setMoreOpen] = useState(false);
   // B-1 (аудит v2): pending-стан async-дії рядка — блокує повторний клік і показує спінер.
   const [busy, setBusy] = useState<string | null>(null);
@@ -685,12 +767,12 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
               const stepIdx = STEP_ORDER.indexOf(p.status);
               const pb = STEP_PRIMARY[p.status] || STEP_PRIMARY.done;
               const advanceFn = p.status === "scheduled" ? onArrive : p.status === "waiting" ? onCall : p.status === "in_progress" ? onComplete : null;
-              const advanceDisabled = !advanceFn || (p.status === "waiting" && (!canCall || !!startBlockReason)) || !isTodayRow || late;
+              const advanceDisabled = !advanceFn || (p.status === "waiting" && (!canCall || !!startBlockReason)) || (!isTodayRow && !canFinishPastDay) || late;
               const terminal = p.status === "done" || p.status === "no_show" || p.status === "not_held";
               // P2.4 — причина блокування дії показується інлайн (не лише в tooltip), поки актуальна.
               // startBlockReason (з батька) — вичерпна причина, чому «Викликати в кабінет» неможливий
               // (кабінет зайнятий/зачинено/на ремонті, або дослідження не вміститься до закриття/наступного запису).
-              const blockReason = !advanceFn ? "" : late ? "Запізнення понад буферний час — оберіть дію нижче (повернути, перенести, до листа очікування або зняти)" : !isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && startBlockReason ? startBlockReason : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""));
+              const blockReason = !advanceFn ? "" : late ? "Запізнення понад буферний час — оберіть дію нижче (повернути, перенести, до листа очікування або зняти)" : (!isTodayRow && !canFinishPastDay) ? "Дія доступна в день запису" : (p.status === "waiting" && startBlockReason ? startBlockReason : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""));
               return (
                 <div className="qd-step">
                   {/* Степпер звужено (аудит-фікс): останній крок «Виконано» завершується
@@ -749,7 +831,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                             щоб поруч помістилися видимі «Редагувати дослідження» та «Перенести». */}
                         <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn, "advance")} disabled={advanceDisabled || !!busy}
                           aria-busy={busy === "advance"}
-                          title={!isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "")}
+                          title={(!isTodayRow && !canFinishPastDay) ? "Дія доступна в день запису" : (canFinishPastDay && !isTodayRow ? "Незавершене дослідження з минулого дня — завершіть, щоб звільнити кабінет" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""))}
                           style={{ flex: "0 1 auto", minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 16px", borderRadius: 10, fontSize: "0.84375rem", fontWeight: 600, border: pb.border, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
                           {busy === "advance" ? <><span className="rf-spin" aria-hidden="true" /> Опрацьовується…</> : <>{pb.icon} {pb.label}</>}
@@ -1120,8 +1202,29 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      немає». Без цього прапорця перший справжній список став би ДРУГИМ snapshot'ом,
      і давно активний простій «зазвучав» би прямо на маунті дошки. */
   const [incidentsLoaded, setIncidentsLoaded] = useState(false);
+  /* с24: незавершені дослідження цієї клініки з ІНШИХ дат. Тримаємо ОКРЕМО від
+     `entries` навмисно: на entries зав'язані звук перевищення (useQueueSounds),
+     таймери кабінетів і лічильники дня — учорашній запис давав би вічне
+     «перевищено час» і псував статистику. Тут вони потрібні рівно для двох
+     речей: заблокувати виклик і показати, куди йти закривати. */
+  const [stuck, setStuck] = useState<StuckStudy[]>([]);
+  /* Стартове `[]` не відрізнити від «хвостів немає» — а від цього залежить, чи
+     пускати пацієнта в апарат. Тому окремі прапорці, як у incidents (ревʼю с24,
+     H1): поки НЕ завантажено або запит упав — виклик блокуємо (fail-CLOSED) і
+     не пишемо «Кабінет вільний». Хибно заблокувати = хвилина затримки й «↻»;
+     хибно дозволити = оператор веде пацієнта в зайнятий кабінет і ловить 23505
+     про пацієнта, якого на дошці немає. */
+  const [stuckFinish, setStuckFinish] = useState<StuckStudy | null>(null);
+  const [stuckFinishBusy, setStuckFinishBusy] = useState(false);
+  const [stuckLoaded, setStuckLoaded] = useState(false);
+  const [stuckErr, setStuckErr] = useState(false);
+  /* Два запити в одному reload → відповіді можуть приземлитись урозбій (швидке
+     перемикання дат: entries від reload#2 + stuck від reload#1). Лічильник
+     поколінь відсікає застарілі (ревʼю с24, M2). */
+  const reqGen = useRef(0);
 
   const reload = useCallback(async () => {
+    const gen = ++reqGen.current;
     try {
       const supabase = createClient();
       /* Авто-«Уточнити» (clarify_at) ставить pg_cron: джоб sink-overdue кожні 5 хв
@@ -1135,13 +1238,33 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         .eq("clinic_id", clinicId)
         .eq("scheduled_date", dayKey)
         .order("scheduled_time", { ascending: true });
-      if (error) { setEntriesErr(true); return; }
+      if (gen !== reqGen.current) return;              // приїхала відповідь застарілого запиту
+      if (error) { setEntriesErr(true); setStuckErr(true); return; }   // до хвостів не дійшли — отже не знаємо
       setEntries((data || []) as unknown as QEntry[]);
       setEntriesErr(false);
+
+      /* Окремий запит — «хвости» in_progress з інших дат. Рядків тут не більше,
+         ніж кабінетів (унікальний індекс 0018), тож він дешевий.
+         ⚠️ Помилку НЕ ескалюємо в entriesErr — черга від неї не бреше. Але й не
+         ковтаємо: піднімаємо stuckErr, який блокує виклик і показує банер. */
+      const { data: st, error: stErr } = await supabase
+        .from("queue_entries")
+        .select("id, room_id, patient_name, scheduled_date")
+        .eq("clinic_id", clinicId)
+        .eq("status", "in_progress")
+        .neq("scheduled_date", dayKey)
+        .not("room_id", "is", null);
+      if (gen !== reqGen.current) return;
+      if (stErr) { setStuckErr(true); return; }         // список НЕ чистимо: старі дані краще за порожні
+      setStuck((st || []) as unknown as StuckStudy[]);
+      setStuckErr(false);
+      setStuckLoaded(true);
     } catch {
+      if (gen !== reqGen.current) return;
       setEntriesErr(true); // транзієнтний «Failed to fetch» — не рушимо дошку
+      setStuckErr(true);   // ...але про хвости ми теж більше нічого не знаємо
     } finally {
-      setLoading(false);
+      if (gen === reqGen.current) setLoading(false);
     }
   }, [clinicId, dayKey]);
 
@@ -1185,6 +1308,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   }, [clinicId]);
 
   useEffect(() => { setLoading(true); }, [clinicId]);
+  /* M-1 ревʼю раунду 2: `stuckLoaded` мусить згасати РАЗОМ із датою й клінікою.
+     Інакше після «← Сьогодні» список хвостів ще належить попередньому дню, але
+     прапорець каже «дані свіжі» — і в кадрі до відповіді другого запиту картка
+     знову писала б «Кабінет вільний» із живою кнопкою виклику. Тобто вихідний
+     дефект відтворювався б у вікні 100–300 мс. */
+  useEffect(() => { setStuckLoaded(false); }, [clinicId, dayKey]);
   useEffect(() => { reload(); }, [reload]);
 
   // P2.1 — гарячі клавіші реєстратури. Через e.code (незалежно від розкладки UA/RU/EN);
@@ -1194,7 +1323,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     // під відкритою модалкою. Раніше бракувало 6 станів — зокрема деструктивних
     // ConfirmDialog (cancelAsk/emergencyConfirm) та DelayPlan/Emergency/Waitlist:
     // під ними «N» відкривав бронювання, «R» перезавантажував дошку тощо.
-    const anyModalOpen = modalOpen || helpOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen || !!wlSuggest || !!delayPreview || emergencyOpen || !!offCallAsk || !!cancelAsk || !!emergencyConfirm;
+    const anyModalOpen = modalOpen || helpOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen || !!wlSuggest || !!delayPreview || emergencyOpen || !!offCallAsk || !!cancelAsk || !!emergencyConfirm || !!stuckFinish;
     function onKey(e: KeyboardEvent) {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
@@ -1225,7 +1354,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, reload, visRooms]);
+  }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, stuckFinish, reload, visRooms]);
 
   useRealtimeRefetch({
     channelName: clinicId ? "queue-" + clinicId : null,
@@ -1409,6 +1538,38 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     notify("Знято", "success");
     loadIncidents();
     reload();
+  }
+
+  /* Закриття «хвоста» прямо з картки кабінету (ревʼю с24, H2).
+     ⚠️ НЕ через локальний setStatus(): той бере expectedFrom із `entries`, а
+     хвоста там немає за визначенням (він з іншої дати) — CAS би просто зник.
+     Тут expectedFrom задаємо явно: якщо запис уже закрив колега, сервер поверне
+     stale, і ми скажемо про це замість тихого перезапису чужої дії.
+     Тільки «виконано»: якщо дослідження НЕ відбулося, потрібні причина й
+     нотатка — для цього лишається перехід на ту дату з повним набором дій. */
+  async function confirmStuckFinish() {
+    if (!stuckFinish) return;
+    const s = stuckFinish;
+    setStuckFinishBusy(true);
+    try {
+      const res = await setQueueEntryStatus(s.id, "done" as QueueStatus, "in_progress" as QueueStatus);
+      if (!res.ok) {
+        notify(res.code === "stale" ? "Запис уже змінив інший користувач — дошку оновлено" : "Помилка: " + res.error, "error");
+        return;
+      }
+      /* Гасимо картку одразу, не чекаючи відповіді reload: інакше «✓ Завершити»
+         ще секунду виглядає доступною і провокує другий клік (ревʼю р2, L1). */
+      setStuck((list) => list.filter((x) => x.id !== s.id));
+      notify("Дослідження від " + stuckDateLabel(s.scheduled_date) + " завершено — кабінет вільний", "success");
+    } catch {
+      /* Обрив мережі: Server Action реджектиться. Без catch діалог замерзав із
+         вимкненою кнопкою — і для радіолога це єдиний шлях закрити хвіст. */
+      notify("Не вдалося завершити — перевірте зв'язок і спробуйте ще раз", "error");
+    } finally {
+      setStuckFinishBusy(false);
+      setStuckFinish(null);
+      reload();
+    }
   }
 
   async function setStatus(id: string, status: string): Promise<boolean> {
@@ -1744,6 +1905,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)) : null;
     return computeCallBlock(p, entries, {
       notToday: !isToday,
+      roomStuck: p.room_id ? stuckRooms[p.room_id] ?? null : null,
+      stuckUnknown,
       roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
       schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
       schedEnd: sched && !sched.closed ? sched.end : null,
@@ -1759,6 +1922,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат";
     if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
     if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
+    if (r.code === "room_stuck") return stuckBlockReason(r);
+    if (r.code === "stuck_unknown") return STUCK_UNKNOWN_REASON;
     // clash БІЛЬШЕ не жорсткий блок для адміністратора (принцип «override з попередженням»):
     // реєстратура володіє розкладом і вирішує сама — виклик через підтвердження
     // «Викликати все одно» (callPatient нижче), а не глуха стіна. Кнопку не вимикаємо.
@@ -1864,6 +2029,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scoped, selectedDate, nowTick]);
 
+  const stuckRooms = useMemo(() => visibleStuckByRoom(stuck, dayKey), [stuck, dayKey]);
+  const stuckUnknown = stuckUnknownOf(stuckLoaded, stuckErr);
   const currentByRoom: Record<string, QEntry> = {}, nextWaitingByRoom: Record<string, QEntry> = {};
   entries.forEach((e) => { if (e.status === "in_progress" && e.room_id) currentByRoom[e.room_id] = e; });
   // «Наступний у черзі» — той самий канон, що й сортування дошки: спершу ЧАС,
@@ -1956,6 +2123,19 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                 <button className="btn btn-secondary btn-sm" onClick={() => { loadIncidents(); loadOverrides(); }}>↻ Оновити</button>
               </div>
             )}
+            {/* Хвости не оновились → виклики заблоковано fail-closed. Без банера
+                оператор бачив би лише «Стан кабінету не оновився» на картках
+                (а вони є тільки на «сьогодні») і не мав би кнопки повтору. */}
+            {stuckErr && (
+              <div className="inc-banner fade-in" style={{ borderColor: "var(--orange)" }} role="alert">
+                <span className="inc-banner-ic" aria-hidden="true">⚠</span>
+                <div className="inc-banner-txt">
+                  <div className="inc-banner-title">Не завантажились дані про незавершені дослідження</div>
+                  <div className="inc-banner-sub">Кабінет із забутим дослідженням виглядав би вільним, тому виклики заблоковано до оновлення.</div>
+                </div>
+                <button className="btn btn-secondary btn-sm" onClick={() => reload()}>↻ Оновити</button>
+              </div>
+            )}
             {/* Черга не оновилась, але старі рядки на екрані — інакше користувач
                 дивиться на застарілі дані й не знає про це. */}
             {entriesErr && entries.length > 0 && (
@@ -2034,6 +2214,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                 {visRooms.map((r) => (
                   <RoomStatusCard key={r.id} room={r}
                     patient={currentByRoom[r.id]} enteredAt={enteredAtOf(currentByRoom[r.id])}
+                    stuck={stuckRooms[r.id]} stuckUnknown={stuckUnknown} onFinishStuck={setStuckFinish}
                     nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
                     schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? (selDayStatus.label || "Не працює за графіком") : null}
                     onComplete={openComplete} onCall={callPatient} onUnblock={resolveIncident} />
@@ -2061,6 +2242,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                 </div>
                 <CurrentCard
                   patient={currentByRoom[roomView]}
+                  stuck={stuckRooms[roomView]} stuckUnknown={stuckUnknown} onFinishStuck={setStuckFinish}
                   roomName={roomViewRoom?.name || "—"}
                   roomModel={roomViewRoom?.apparatus_model}
                   enteredAt={enteredAtOf(currentByRoom[roomView])}
@@ -2139,7 +2321,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                     roomName={room?.name || "—"} roomModel={room?.apparatus_model || ""} roomKind={modalityLabel(room?.modality || "")}
                     expanded={expandedRow === p.id} onToggle={toggleRow}
                     readOnly={false}
-                    canCall={!(p.room_id && currentByRoom[p.room_id])} rescheduling={affectedIds.has(p.id)}
+                    canCall={!stuckUnknown && canCallIntoRoom(p.room_id ? currentByRoom[p.room_id] : null, p.room_id ? stuckRooms[p.room_id] : null)} rescheduling={affectedIds.has(p.id)}
                     onArrive={arrive} onCall={callPatient} onComplete={openComplete}
                     onNoShow={noShow} onNotHeld={notHeld} onUndo={undo} onCancel={cancelUndo} onSetStatus={setStatusGuarded} onSetCall={setCallGuarded}
                     onReschedule={openReschedule} onEditStudies={openEditStudies} onEditPatient={(pt) => setEditPatientFor(pt)}
@@ -2256,6 +2438,22 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       )}
       {editPatientFor && (
         <PatientEditModal entryId={editPatientFor.id} canEditPriority={canEditPriority} onClose={() => setEditPatientFor(null)} onSaved={reload} />
+      )}
+
+      {stuckFinish && (
+        <ConfirmDialog
+          title="Завершити дослідження з минулого дня?"
+          text={<>
+            <b>{stuckFinish.patient_name}</b> — запис від <b>{stuckDateLabel(stuckFinish.scheduled_date)}</b>, який лишився «у кабінеті».
+            Поки він відкритий, кабінет <b>{(rooms || []).find((r) => r.id === stuckFinish.room_id)?.name || "—"}</b> зайнятий і викликати наступного пацієнта не можна.
+            {" "}Позначити як <b>виконане</b>? Якщо дослідження насправді не відбулося, відкрийте {stuckDateLabel(stuckFinish.scheduled_date)} і виберіть «Не відбулося» — там можна вказати причину.
+          </>}
+          confirmLabel="✓ Завершити"
+          cancelLabel="Не чіпати"
+          busy={stuckFinishBusy}
+          onConfirm={confirmStuckFinish}
+          onClose={() => setStuckFinish(null)}
+        />
       )}
 
       {breakdownOpen && (
