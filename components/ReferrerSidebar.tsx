@@ -125,6 +125,9 @@ export default function ReferrerSidebar({ centers, roomsByClinic, roomNoteOf, do
               {it.badge ? <span className="sb-badge" style={it.badgeBlue ? { background: "var(--blue)", color: "#fff" } : undefined}>{it.badge}</span> : null}
             </button>
           ))}
+          {/* с22: універсальний пошук — окрема сторінка (не вкладка порталу);
+              область — лише власні направлення в авторизованих центрах. */}
+          <a href="/search" className="sb-item"><span className="ic">⌕</span><span className="sb-item-lab">Пошук</span></a>
         </div>
       </nav>
 

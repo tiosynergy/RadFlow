@@ -18,7 +18,20 @@ function Notice({ title, text }: { title: string; text: string }) {
   );
 }
 
-export default async function RadiologistPage() {
+// с22: deep-link зі сторінки «Пошук» — ?date=YYYY-MM-DD&entry=<uuid> (PII в URL немає).
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function firstParam(v: string | string[] | undefined): string | null {
+  return typeof v === "string" ? v : Array.isArray(v) ? v[0] ?? null : null;
+}
+
+export default async function RadiologistPage({ searchParams }: { searchParams?: Promise<Record<string, string | string[] | undefined>> }) {
+  const sp = searchParams ? await searchParams : {};
+  const rawDate = firstParam(sp.date);
+  const rawEntry = firstParam(sp.entry);
+  const initialDate = rawDate && DATE_RE.test(rawDate) ? rawDate : null;
+  const initialEntry = rawEntry && UUID_RE.test(rawEntry) ? rawEntry : null;
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -89,6 +102,8 @@ export default async function RadiologistPage() {
       residualRoomIds={residual.ids}
       residualRoomCounts={residual.counts}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
+      initialDate={initialDate}
+      initialEntry={initialEntry}
     />
   );
 }

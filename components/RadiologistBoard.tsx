@@ -19,7 +19,7 @@ import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
-import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
+import { quickSearchMatch } from "@/lib/quickSearch";
 import { setQueueEntryStatus, setRadiologistNote, previewDelayPlan, type DelayPreview } from "@/app/queue/actions";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -532,6 +532,8 @@ function RadSidebar({ rooms, roomNoteOf, roomFilter, setRoomFilter, counts, admi
         <div className="sb-section">
           <div className="sb-label">Перейти</div>
           <a href="/radiologist" className="sb-item active"><span className="ic">⌂</span><span className="sb-item-lab">Моя черга</span></a>
+          {/* с22: універсальний пошук (область — лише призначені кабінети). */}
+          <a href="/search" className="sb-item"><span className="ic">⌕</span><span className="sb-item-lab">Пошук</span></a>
         </div>
       </nav>
       <div className="sb-settings">
@@ -562,9 +564,13 @@ interface RadiologistBoardProps {
   /** Скільки саме лишилось у кожному такому кабінеті — для підпису. */
   residualRoomCounts?: Record<string, number>;
   adminName?: string;
+  /** с22 (deep-link зі сторінки «Пошук»): відкрити дошку на цій даті (YYYY-MM-DD). */
+  initialDate?: string | null;
+  /** с22: id запису, який треба розгорнути після завантаження дня. */
+  initialEntry?: string | null;
 }
 
-export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, adminName }: RadiologistBoardProps) {
+export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, adminName, initialDate = null, initialEntry = null }: RadiologistBoardProps) {
   // Синхронно, до ініціалізаторів useState (selectedDate) — інакше день дошки
   // фіксується по браузеру ще до того, як прилетить tz. Тільки на клієнті.
   if (typeof window !== "undefined") setClinicTz(clinicTz);
@@ -609,7 +615,14 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState(() => wallToday0(clinicTz));
+  // с22: deep-link «Пошук» → дошка відкривається на даті знайденого запису.
+  const [selectedDate, setSelectedDate] = useState(() => {
+    if (initialDate && /^\d{4}-\d{2}-\d{2}$/.test(initialDate)) {
+      const d = new Date(initialDate + "T00:00:00");
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+    return wallToday0(clinicTz);
+  });
   // 0078–0081 — план при затримці: радіолог лише ІНІЦІЮЄ перерахунок (canApply=false).
   const [delayPreview, setDelayPreview] = useState<DelayPreview | null>(null);
   const [delayOpening, setDelayOpening] = useState(false);
@@ -619,6 +632,16 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   // Лёгкий тикер для авто-появи статусу «⚠ Уточнити» та перерахунку простоїв.
   const [, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
+
+  // с22: deep-link «Пошук» → одноразово розгорнути знайдений запис і проскролити.
+  const deepLinkDone = useRef(false);
+  useEffect(() => {
+    if (deepLinkDone.current || !initialEntry || loading) return;
+    if (!entries.some((e) => e.id === initialEntry)) { deepLinkDone.current = true; return; }
+    deepLinkDone.current = true;
+    setExpandedRow(initialEntry);
+    setTimeout(() => { document.querySelector(`[data-qrow="${initialEntry}"]`)?.scrollIntoView({ block: "center" }); }, 60);
+  }, [entries, loading, initialEntry]);
 
   const today = wallToday0(clinicTz);
   const isToday = sameDay(selectedDate, today);
@@ -885,10 +908,9 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
 
   const filtered = scoped.filter((p) => {
     if (filter !== "all" && p.status !== filter) return false;
-    if (query.trim()) {
-      const q = query.trim().toLowerCase();
-      if (!((p.patient_name || "").toLowerCase().includes(q) || procLabel(p).toLowerCase().includes(q) || (p.patient_phone || "").includes(formatPhoneSearch(query.trim())))) return false;
-    }
+    // с22: швидкий пошук — спільний предикат (прізвище з будь-якого місця, телефон
+    // ЗА ЦИФРАМИ, процедура як і раніше). Порядок рядків не змінюється.
+    if (!quickSearchMatch(query, p, procLabel(p))) return false;
     return true;
   }).sort((a, b) => {
     const d = (FLOW[a.status] ?? 9) - (FLOW[b.status] ?? 9);
@@ -1010,7 +1032,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
             <div className="qctrl">
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
-                <input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
+                {/* с22 (ревью HIGH-1): ввід не канонізуємо — цифровий матчинг quickSearchMatch. */}
+                <input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} />
               </div>
             </div>
 

@@ -17,7 +17,7 @@ import { PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { isLate, LATE_META } from "@/lib/queueStatus";
 import { wallNow, wallToday0 } from "@/lib/incidents";
 import { diffStudies, studyText, studiesChanged, modalityLabel } from "@/lib/studies";
-import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
+import { quickSearchMatch } from "@/lib/quickSearch";
 import type { Json } from "@/supabase/types";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
@@ -106,15 +106,20 @@ interface Props {
   onOrganizeCase?: (r: BoardReferral) => void;
   /** Швидкий фільтр із сайдбару (клік по центру/кабінету). nonce → повторне застосування. */
   focus?: { clinicId: string; roomId: string; nonce: number } | null;
+  /** с22 (deep-link зі сторінки «Пошук»): стартовий фільтр дати (YYYY-MM-DD). */
+  initialDate?: string | null;
+  /** с22: id направлення, яке розгорнути одразу. */
+  initialEntry?: string | null;
 }
 
-export default function ReferrerBoard({ referrals, activeCenters, centersById, roomsByClinic, visRoomsByClinic, doctorId, onReschedule, onEditStudies, onCancel, onEditPatient, onOpenCase, onOrganizeCase, focus }: Props) {
+export default function ReferrerBoard({ referrals, activeCenters, centersById, roomsByClinic, visRoomsByClinic, doctorId, onReschedule, onEditStudies, onCancel, onEditPatient, onOpenCase, onOrganizeCase, focus, initialDate = null, initialEntry = null }: Props) {
   const [centerId, setCenterId] = useState<string>("all"); // "all" = Всі центри
   const [roomId, setRoomId] = useState<string>("all");
-  const [dateFilter, setDateFilter] = useState<string>(""); // "" = всі дати
+  // с22: deep-link «Пошук» → дошка відкривається з фільтром на даті знайденого запису.
+  const [dateFilter, setDateFilter] = useState<string>(() => (initialDate && /^\d{4}-\d{2}-\d{2}$/.test(initialDate) ? initialDate : "")); // "" = всі дати
   const [filter, setFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(initialEntry || null);
 
   // Швидкий фільтр із сайдбару: застосовуємо центр+кабінет (nonce → навіть повторний клік).
   useEffect(() => {
@@ -155,7 +160,9 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
     if (centerId !== "all" && r.clinic_id !== centerId) return false;
     if (roomId !== "all" && r.room_id !== roomId) return false;
     if (dateFilter && r.scheduled_date !== dateFilter) return false;
-    if (query.trim()) { const q = query.trim().toLowerCase(); if (!((r.patient_name || "").toLowerCase().includes(q) || procLabel(r).toLowerCase().includes(q) || (r.patient_phone || "").includes(formatPhoneSearch(query.trim())))) return false; }
+    // с22: швидкий пошук — спільний предикат (прізвище з будь-якого місця, телефон
+    // ЗА ЦИФРАМИ, процедура як і раніше). Порядок рядків не змінюється.
+    if (!quickSearchMatch(query, r, procLabel(r))) return false;
     return true;
   }), [referrals, centerId, roomId, dateFilter, query]);
 
@@ -214,7 +221,8 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
           </select>
         )}
         <div className="spacer" />
-        <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} /></div>
+        {/* с22 (ревью HIGH-1): ввід не канонізуємо — цифровий матчинг quickSearchMatch. */}
+        <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       </div>
 
       {filtered.length === 0 ? (

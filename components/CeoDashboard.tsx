@@ -9,6 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { wallToday0 } from "@/lib/incidents";
 import { modalityLabel, modalityCode } from "@/lib/studies";
+import { quickSearchMatch } from "@/lib/quickSearch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
@@ -183,6 +184,10 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const [drill, setDrill] = useState<{ statuses: string[] | null; label: string } | null>(null);
   const [drillRows, setDrillRows] = useState<DrillRow[] | null>(null);
   const [drillLoading, setDrillLoading] = useState(false);
+  // с22: швидкий пошук у read-only drill-списку (еквівалент дневної черги CEO) —
+  // фільтрує ЛИШЕ вже завантажені рядки, порядок не змінює, нікуди не пишеться.
+  const [drillQuery, setDrillQuery] = useState("");
+  useEffect(() => { setDrillQuery(""); }, [drill]);
 
   /* Зона, за якою рахується «сьогодні»/«цей тиждень»: обраного центру, а при
      «Всі центри» — ПЕРШОГО доступного. Спільної доби в кількох зонах не існує,
@@ -580,12 +585,22 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
               ) : (() => {
                 const tdS: CSSProperties = { padding: "6px 8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
                 const thS: CSSProperties = { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid var(--border)", color: "var(--text-muted)", fontSize: "0.6875rem", textTransform: "uppercase", position: "sticky", top: 0, background: "var(--card)" };
+                // с22: швидкий пошук — той самий спільний предикат, що на дошках
+                // (прізвище з будь-якого місця; телефону в drill немає — лише ПІБ/процедура).
+                const visRows = drillQuery.trim()
+                  ? drillRows.filter((r) => quickSearchMatch(drillQuery, { patient_name: r.name, patient_phone: null }, r.proc))
+                  : drillRows;
                 return (
                   <>
+                    <div className="search" style={{ marginBottom: 8 }}>
+                      <span className="si" aria-hidden="true">⌕</span>
+                      <input aria-label="Пошук за прізвищем" placeholder="Пошук за прізвищем…" value={drillQuery} onChange={(e) => setDrillQuery(e.target.value)} />
+                    </div>
+                    {visRows.length === 0 ? <div className="ctx-hint">Нічого не знайдено — змініть запит.</div> : (
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8125rem" }}>
                       <thead><tr>{["Дата", "Пацієнт", "Процедура", "Кабінет", "Статус", "Дохід"].map((h) => <th key={h} style={thS}>{h}</th>)}</tr></thead>
                       <tbody>
-                        {drillRows.map((r, i) => (
+                        {visRows.map((r, i) => (
                           <tr key={i}>
                             <td style={{ ...tdS, whiteSpace: "nowrap" }} className="tabular">{r.date}</td>
                             <td style={tdS}>{r.name}</td>
@@ -597,6 +612,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                         ))}
                       </tbody>
                     </table>
+                    )}
                     {drillRows.length >= 1000 && <div className="ctx-hint" style={{ marginTop: 8 }}>Показано перші 1000 записів — звузьте період або скористайтесь «Експортувати CSV» для повного списку.</div>}
                   </>
                 );

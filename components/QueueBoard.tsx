@@ -61,7 +61,7 @@ import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type Pat
 import Toast, { type ToastData } from "@/components/Toast";
 import ShortcutsOverlay from "@/components/ShortcutsOverlay";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
-import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
+import { quickSearchMatch } from "@/lib/quickSearch";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -992,9 +992,13 @@ interface QueueBoardProps {
   adminName?: string;
   adminRole?: string;
   roleKey?: string;
+  /** с22 (deep-link зі сторінки «Пошук»): відкрити дошку на цій даті (YYYY-MM-DD). */
+  initialDate?: string | null;
+  /** с22: id запису, який треба розгорнути після завантаження дня. */
+  initialEntry?: string | null;
 }
 
-export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: QueueBoardProps) {
+export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin", initialDate = null, initialEntry = null }: QueueBoardProps) {
   /* Зона центру виставляється СИНХРОННО, до першого рендера й до ініціалізаторів
      useState — інакше selectedDate = today0() зафіксував би день БРАУЗЕРА назавжди
      (раніше tz прилітала з клієнтського fetch уже ПІСЛЯ монтування).
@@ -1032,7 +1036,14 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   const [roomView, setRoomView] = useState("all");
   const searchRef = useRef<HTMLInputElement>(null);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState(() => wallToday0(clinicTz));
+  // с22: deep-link «Пошук» → дошка відкривається на даті знайденого запису.
+  const [selectedDate, setSelectedDate] = useState(() => {
+    if (initialDate && /^\d{4}-\d{2}-\d{2}$/.test(initialDate)) {
+      const d = new Date(initialDate + "T00:00:00");
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+    return wallToday0(clinicTz);
+  });
   const [toast, setToast] = useState<ToastData | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Слот звільнився (скасування/відмова) → підходящі кандидати з листа очікування.
@@ -1047,6 +1058,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
 
   const [nowTick, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
+
+  // с22: deep-link «Пошук» → після першого завантаження дня розгортаємо знайдений
+  // запис і скролимо до нього. Одноразово: далі оператор керує дошкою сам.
+  const deepLinkDone = useRef(false);
+  useEffect(() => {
+    if (deepLinkDone.current || !initialEntry || loading) return;
+    if (!entries.some((e) => e.id === initialEntry)) { deepLinkDone.current = true; return; }
+    deepLinkDone.current = true;
+    setExpandedRow(initialEntry);
+    setTimeout(() => { document.querySelector(`[data-qrow="${initialEntry}"]`)?.scrollIntoView({ block: "center" }); }, 60);
+  }, [entries, loading, initialEntry]);
 
   const today = wallToday0(clinicTz);
   const isToday = sameDay(selectedDate, today);
@@ -1877,7 +1899,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     if (filter === "late") {
       if (!isLate(e.status, selectedDate, e.scheduled_time, e.buffer_time_min)) return false;
     } else if (filter !== "all" && e.status !== filter) return false;
-    if (query.trim()) { const q = query.trim().toLowerCase(); return (e.patient_name || "").toLowerCase().includes(q) || (e.patient_phone || "").includes(formatPhoneSearch(query.trim())); }
+    // с22: швидкий пошук — спільний предикат (прізвище з будь-якого місця,
+    // телефон ЗА ЦИФРАМИ: код оператора / середина / останні цифри). Порядок
+    // рядків не змінюється — фільтр застосовується ПІСЛЯ штатного сортування.
+    if (!quickSearchMatch(query, e)) return false;
     return true;
   });
 
@@ -2046,7 +2071,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
             <div className="spacer" />
             <div className="search">
               <span className="si">⌕</span>
-              <input ref={searchRef} placeholder="Пошук пацієнта… ( / )" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
+              {/* с22 (ревью HIGH-1): ввід НЕ канонізуємо — formatPhoneSearch зрізав
+                  ведучі цифри і вбивав пошук за серединою/останніми цифрами номера.
+                  Матчинг тепер цифровий (quickSearchMatch), формат вводу не важливий. */}
+              <input ref={searchRef} placeholder="Пошук пацієнта… ( / )" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
             {/* P3 discoverability: видима точка входу в довідку хоткеїв (клавіша «?»). */}
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => setHelpOpen(true)} title="Гарячі клавіші (?)" aria-label="Гарячі клавіші" style={{ flexShrink: 0 }}>⌨ ?</button>

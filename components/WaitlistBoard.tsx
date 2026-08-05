@@ -108,9 +108,13 @@ interface WaitlistBoardProps {
   adminName?: string;
   adminRole?: string;
   roleKey?: string;
+  /** с22 (deep-link зі сторінки «Пошук»): стартова вкладка листа. */
+  initialTab?: "waiting" | "scheduled" | "removed" | null;
+  /** с22: id рядка листа, який розгорнути після завантаження. */
+  initialEntry?: string | null;
 }
 
-export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: WaitlistBoardProps) {
+export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin", initialTab = null, initialEntry = null }: WaitlistBoardProps) {
   /* Зона центру — синхронно, до першого рендера. Раніше вона прилітала клієнтським
      fetch уже після монтування, і wallNow() у BookingModal, відкритій із листа
      очікування, встигав порахувати «зараз» за браузером (минулі слоти — вибірні). */
@@ -123,10 +127,11 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
   // H-6: збій завантаження ≠ «лист порожній» / «простоїв немає».
   const [entriesErr, setEntriesErr] = useState(false);
   const [incidentsErr, setIncidentsErr] = useState(false);
-  const [filter, setFilter] = useState<"waiting" | "scheduled" | "removed">("waiting");
+  // с22: deep-link «Пошук» → відкриваємо вкладку статусу знайденого рядка і розгортаємо його.
+  const [filter, setFilter] = useState<"waiting" | "scheduled" | "removed">(initialTab || "waiting");
   const [roomView, setRoomView] = useState("all"); // фільтр сайдбара: кабінет → модальність
   const [query, setQuery] = useState("");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(initialEntry || null);
   const [addOpen, setAddOpen] = useState(false);
   const [editFor, setEditFor] = useState<WaitlistEntry | null>(null);
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);

@@ -163,6 +163,8 @@ export default function Sidebar({
             <span className="ic">＋</span>
             <span className="sb-item-lab">Новий запис</span>
           </button>}
+          {/* с22: універсальний пошук — історія і майбутні записи всіх ролей. */}
+          <a href="/search" className={"sb-item" + (activeNav === "search" ? " active" : "")}><span className="ic">⌕</span><span className="sb-item-lab">Пошук</span></a>
           <a href="/call-list" className={"sb-item" + (activeNav === "calls" ? " active" : "")}><span className="ic">☎</span><span className="sb-item-lab">Колл-лист</span></a>
           <a href="/waitlist" className={"sb-item" + (activeNav === "waitlist" ? " active" : "")}>
             <span className="ic">⏳</span>

@@ -25,7 +25,7 @@ import { modalityKind, isContrastName} from "@/lib/studies";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import type { CallStatus, Json } from "@/supabase/types";
 import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
-import { formatPhoneSearch, nextPhoneSearchValue } from "@/lib/phone";
+import { quickSearchMatch } from "@/lib/quickSearch";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -568,10 +568,9 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
 
   const filtered = entries.filter((p) => {
     if (filter !== "all" && (p.call_status || "not_called") !== filter) return false;
-    if (query.trim()) {
-      const q = query.trim().toLowerCase();
-      if (!((p.patient_name || "").toLowerCase().includes(q) || (p.patient_phone || "").includes(formatPhoneSearch(query.trim())) || procLabel(p).toLowerCase().includes(q))) return false;
-    }
+    // с22: швидкий пошук — спільний предикат (прізвище з будь-якого місця, телефон
+    // ЗА ЦИФРАМИ, процедура як і раніше). Порядок рядків не змінюється.
+    if (!quickSearchMatch(query, p, procLabel(p))) return false;
     return true;
   }).sort((a, b) => {
     const pa = CALL_ORDER[a.call_status || "not_called"] ?? 9, pb = CALL_ORDER[b.call_status || "not_called"] ?? 9;
@@ -682,7 +681,8 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
               </div>
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
-                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
+                {/* с22 (ревью HIGH-1): ввід не канонізуємо — цифровий матчинг quickSearchMatch. */}
+                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(e.target.value)} />
               </div>
             </div>
 
