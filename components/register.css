@@ -2,8 +2,14 @@
 .reg-root {
   --bg: #1c1c1e; --bg-elevated: #242426; --card: #2c2c2e; --card-hover: #323234; --card-2: #3a3a3c;
   --border: #38383a; --border-strong: #48484a;
-  --text: #f5f5f7; --text-secondary: #aeaeb2; --text-muted: #8e8e93; --text-faint: #636366;
-  --blue: #0a84ff; --blue-bg: rgba(10,132,255,.15); --blue-bg-soft: rgba(10,132,255,.08);
+  /* ⚠️ Ці змінні ПЕРЕКРИВАЮТЬ :root дизайн-системи для сторінки реєстрації —
+     отже мають повторювати її значення, а не жити своїм життям. У с23 тут
+     знайшлися дві прострочені пари: --text-muted/--text-faint лишалися на
+     догорішніх #8e8e93 (4.3:1) і #636366 (2.3:1), піднятих у дизайн-системі
+     ще в с14. Звіряй із :root у styles/prototype/radflow.css. */
+  --text: #f5f5f7; --text-secondary: #aeaeb2; --text-muted: #a3a3a8; --text-faint: #949499;
+  --blue: #0d6ecf; --blue-hover: #0b5cae; --blue-text: #6db4ff; --blue-line: #0a84ff;
+  --blue-bg: rgba(13,110,207,.15); --blue-bg-soft: rgba(13,110,207,.08);
   --green: #30d158; --green-bg: rgba(48,209,88,.15); --red: #ff453a; --red-bg: rgba(255,69,58,.15);
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", system-ui, sans-serif;
 
@@ -18,8 +24,8 @@
   background: radial-gradient(60% 45% at 50% -5%, rgba(10,132,255,.10), transparent 70%);
 }
 .reg-root .topbar { display: flex; align-items: center; gap: 12px; margin-bottom: 13px; z-index: 1; }
-.reg-root .logo { display: flex; align-items: center; gap: 8px; font-size: 1.3125rem; font-weight: 700; letter-spacing: -.02em; color: var(--blue); }
-.reg-root .logo .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 10px var(--blue); }
+.reg-root .logo { display: flex; align-items: center; gap: 8px; font-size: 1.3125rem; font-weight: 700; letter-spacing: -.02em; color: var(--blue-text); }
+.reg-root .logo .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--blue-line); box-shadow: 0 0 10px var(--blue-line); }
 .reg-root .badge { display: flex; align-items: center; gap: 7px; background: var(--green-bg); color: var(--green); font-size: 0.78125rem; font-weight: 500; padding: 6px 12px; border-radius: 20px; }
 .reg-root .badge .pdot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
 .reg-root .card { width: 100%; max-width: 440px; background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; box-shadow: 0 12px 48px rgba(0,0,0,.5); z-index: 1; }
@@ -41,25 +47,25 @@
 .reg-root .field label { display: block; font-size: 0.78125rem; font-weight: 600; margin-bottom: 4px; color: var(--text-secondary); }
 .reg-root .field input { width: 100%; min-height: 2.5rem; padding: 8px 13px; font-size: 0.875rem; color: var(--text); background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 10px; outline: none; transition: border-color .12s, box-shadow .12s; }
 .reg-root .field input::placeholder { color: var(--text-faint); }
-.reg-root .field input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-bg); }
+.reg-root .field input:focus { border-color: var(--blue-line); box-shadow: 0 0 0 3px var(--blue-bg); }
 .reg-root .field input.invalid { border-color: var(--red); }
 .reg-root .field input.invalid:focus { box-shadow: 0 0 0 3px var(--red-bg); }
 .reg-root .hint { font-size: 0.71875rem; color: var(--text-faint); margin-top: 4px; }
 .reg-root .err { font-size: 0.75rem; color: var(--red); margin-top: 4px; }
 .reg-root .check { display: flex; align-items: flex-start; gap: 9px; margin: 2px 0 12px; }
-.reg-root .check input { width: 17px; height: 17px; margin-top: 2px; accent-color: var(--blue); flex-shrink: 0; cursor: pointer; }
+.reg-root .check input { width: 17px; height: 17px; margin-top: 2px; accent-color: var(--blue-line); flex-shrink: 0; cursor: pointer; }
 .reg-root .check label { font-size: 0.8125rem; color: var(--text-secondary); line-height: 1.45; cursor: pointer; }
-.reg-root .check a { color: #4da3ff; text-decoration: none; }
+.reg-root .check a { color: var(--blue-text); text-decoration: none; }
 .reg-root .check a:hover { text-decoration: underline; }
 
-.reg-root .btn { width: 100%; min-height: 2.75rem; padding: 8px 12px; border: none; border-radius: 10px; background: var(--blue); color: #fff; font-size: 0.9375rem; font-weight: 600; font-family: inherit; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: background .12s, transform .06s; }
-.reg-root .btn:hover:not(:disabled) { background: #2a96ff; }
+.reg-root .btn { width: 100%; min-height: 2.75rem; padding: 8px 12px; border: 1px solid var(--blue-line); border-radius: 10px; background: var(--blue); color: #fff; font-size: 0.9375rem; font-weight: 600; font-family: inherit; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: background .12s, transform .06s; }
+.reg-root .btn:hover:not(:disabled) { background: var(--blue-hover); }
 .reg-root .btn:active:not(:disabled) { transform: scale(.99); }
 .reg-root .btn:disabled { opacity: .45; cursor: not-allowed; }
 .reg-root .spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: reg-spin .7s linear infinite; }
 @keyframes reg-spin { to { transform: rotate(360deg); } }
 .reg-root .alt { text-align: center; font-size: 0.84375rem; color: var(--text-muted); margin-top: 12px; }
-.reg-root .alt a { color: #4da3ff; font-weight: 500; text-decoration: none; }
+.reg-root .alt a { color: var(--blue-text); font-weight: 500; text-decoration: none; }
 .reg-root .alt a:hover { text-decoration: underline; }
 .reg-root .fineprint { font-size: 0.71875rem; color: var(--text-faint); margin-top: 13px; text-align: center; max-width: 380px; line-height: 1.45; z-index: 1; }
 

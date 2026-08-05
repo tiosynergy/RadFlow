@@ -357,7 +357,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const roomUtil = visRooms.map((r) => {
     const mins = minsByRoom[r.id] || 0;
     const cap = 480 * workdays;
-    return { name: r.name, kind: modalityLabel(r.modality), pct: cap ? Math.min(100, Math.round((mins / cap) * 100)) : 0, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)" };
+    return { name: r.name, kind: modalityLabel(r.modality), pct: cap ? Math.min(100, Math.round((mins / cap) * 100)) : 0, color: r.modality === "MRI" ? "var(--blue-text)" : "var(--orange)" };
   });
 
   const [exporting, setExporting] = useState(false);
@@ -492,7 +492,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                     <Drillable label="Виконано" onOpen={() => openDrill(["done"], "Виконано")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--green)" }} className="tabular">{done}</b> <span style={{ color: "var(--text-muted)" }}>виконано</span></Drillable>
                     <Drillable label="Неявка" onOpen={() => openDrill(["no_show"], "Неявка")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--red)" }} className="tabular">{noShow}</b> <span style={{ color: "var(--text-muted)" }}>неявка</span></Drillable>
                     <Drillable label="Не відбулося" onOpen={() => openDrill(["not_held"], "Не відбулося")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--orange)" }} className="tabular">{notHeld}</b> <span style={{ color: "var(--text-muted)" }}>не відбулося</span></Drillable>
-                    <Drillable label="В процесі" onOpen={() => openDrill(["scheduled", "waiting", "in_progress"], "В процесі")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--blue)" }} className="tabular">{active}</b> <span style={{ color: "var(--text-muted)" }}>в процесі</span></Drillable>
+                    <Drillable label="В процесі" onOpen={() => openDrill(["scheduled", "waiting", "in_progress"], "В процесі")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--blue-text)" }} className="tabular">{active}</b> <span style={{ color: "var(--text-muted)" }}>в процесі</span></Drillable>
                   </div>
                 </div>
 
@@ -529,7 +529,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                         <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", fontWeight: 600 }} className="tabular">{x.total}</div>
                         <div style={{ width: "100%", display: "flex", alignItems: "flex-end", justifyContent: "center", height: 130, position: "relative" }}>
                           {(() => { const barH = x.total ? Math.max(4, Math.round((x.total / maxBar) * 130)) : 0; return (<>
-                          <div style={{ width: 26, height: barH + "px", background: "var(--blue)", borderRadius: "6px 6px 0 0" }} />
+                          <div style={{ width: 26, height: barH + "px", background: "var(--blue-line)", borderRadius: "6px 6px 0 0" }} />
                           {x.noShow > 0 && <div title={x.noShow + " не відбулось"} style={{ position: "absolute", bottom: barH + 2, width: 10, height: 10, borderRadius: "50%", background: "var(--red)" }} />}
                         </>); })()}
                         </div>
@@ -545,7 +545,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                     {topProcs.length === 0 ? <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>Немає даних</div> : topProcs.map(([n, c], i) => (
                       <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", borderTop: i ? "1px solid var(--border)" : "none", fontSize: "0.8125rem" }}>
                         <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{n}</span>
-                        <b className="tabular" style={{ color: "var(--blue)" }}>{c}</b>
+                        <b className="tabular" style={{ color: "var(--blue-text)" }}>{c}</b>
                       </div>
                     ))}
                   </div>

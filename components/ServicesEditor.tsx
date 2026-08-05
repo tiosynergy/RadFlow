@@ -423,7 +423,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
   const statusChip = (hidden: boolean, changed: boolean) => {
     const base: CSSProperties = { display: "inline-block", fontSize: "0.75rem", fontWeight: 600, padding: "2px 9px", borderRadius: 999, border: "1px solid" };
     if (hidden) return <span style={{ ...base, color: "var(--text-muted)", borderColor: "var(--border-strong)" }}>Прихована</span>;
-    if (changed) return <span style={{ ...base, color: "var(--blue)", borderColor: "var(--blue)", background: "color-mix(in srgb, var(--blue) 12%, transparent)" }}>Змінено</span>;
+    if (changed) return <span style={{ ...base, color: "var(--blue-text)", borderColor: "var(--blue-line)", background: "color-mix(in srgb, var(--blue-line) 12%, transparent)" }}>Змінено</span>;
     return <span style={{ ...base, color: "var(--text-faint)", borderColor: "var(--border)" }}>Базове</span>;
   };
 
@@ -433,7 +433,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
   const renderCatalogRow = (s: ServiceRow, roomOwned: boolean) => {
     const editing = editId === s.id;
     return (
-      <div className="clrow-wrap" key={s.id} style={roomOwned ? { borderLeft: "3px solid var(--blue)" } : undefined}>
+      <div className="clrow-wrap" key={s.id} style={roomOwned ? { borderLeft: "3px solid var(--blue-line)" } : undefined}>
         {/* Вимкнена послуга приглушується КОЛЬОРОМ, а не opacity (ревʼю с18b, Low-5).
             `opacity` створює групу композитингу: діти не можуть її скасувати, тож
             підпис «вимкнена» (--text-faint) падав до 2.4:1 при вимозі WCAG 1.4.3 AA
@@ -453,7 +453,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
             <>
               {rowCheckbox(s.id, s.name)}
               <div data-lab="Послуга" style={{ fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }} title={s.name}>{s.name}
-                {roomOwned && <span className="badge" style={{ marginLeft: 8, color: "var(--blue)" }} title="Власна послуга кабінета — видима і бронюється лише в ньому">Кабінетна</span>}
+                {roomOwned && <span className="badge" style={{ marginLeft: 8, color: "var(--blue-text)" }} title="Власна послуга кабінета — видима і бронюється лише в ньому">Кабінетна</span>}
                 {s.source === "import" && <span className="badge" style={{ marginLeft: 8 }} title="Завантажено імпортом">імпорт</span>}</div>
               <div className="tabular svc-num" data-lab="Тривалість">{s.duration_min != null ? s.duration_min + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано — введіть у редакторі або вручну при записі">—</span>}</div>
               <div className="tabular svc-num" data-lab="Ціна">{s.price ? fmtUah(s.price) : <span style={{ color: "var(--orange)" }} title="Ціну ще не задано">—</span>}</div>
@@ -566,7 +566,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
 
       {/* Панель масових дій — зʼявляється, коли щось вибрано */}
       {selIds.length > 0 && (
-        <div className="cl-detail" style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", borderLeft: "3px solid var(--blue)" }}>
+        <div className="cl-detail" style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", borderLeft: "3px solid var(--blue-line)" }}>
           <b style={{ fontSize: "0.84375rem" }}>Вибрано: {selIds.length}</b>
           {scope === "base" ? (
             <>
@@ -613,7 +613,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
       ) : (
         <>
           {/* ---------- Група 1: ВЛАСНІ послуги кабінета (room-owned, 0121) ---------- */}
-          <div style={{ fontWeight: 650, fontSize: "0.84375rem", margin: "10px 0 4px", color: "var(--blue)" }}>
+          <div style={{ fontWeight: 650, fontSize: "0.84375rem", margin: "10px 0 4px", color: "var(--blue-text)" }}>
             Послуги кабінета ({roomRows.length})
             <span style={{ fontWeight: 400, fontSize: "0.75rem", color: "var(--text-muted)", marginLeft: 8 }}>
               власний прайс — видимі й бронюються лише в цьому кабінеті
@@ -672,7 +672,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
             if (editing) {
               // Форма — окрема картка (не всередині grid-рядка), тому поля не обрізаються.
               return (
-                <div className="cl-detail" key={s.id} style={{ marginBottom: 8, borderLeft: "3px solid var(--blue)" }}>
+                <div className="cl-detail" key={s.id} style={{ marginBottom: 8, borderLeft: "3px solid var(--blue-line)" }}>
                   <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 12 }}>
                     <span style={{ fontWeight: 650, fontSize: "0.90625rem" }}>{s.name}</span>
                     {room && <span className="badge" style={{ color: "var(--text-muted)" }}>кабінет «{room.name}»</span>}
@@ -707,17 +707,17 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
 
             return (
               <div className="clrow-wrap" key={s.id}
-                style={{ borderLeft: "3px solid " + (hidden ? "var(--border-strong)" : changed ? "var(--blue)" : "transparent") }}>
+                style={{ borderLeft: "3px solid " + (hidden ? "var(--border-strong)" : changed ? "var(--blue-line)" : "transparent") }}>
                 <div className="wlrow svc-row" style={{ "--svc-cols": GRID_ROOM, opacity: hidden ? 0.62 : 1 } as CSSProperties}>
                   {rowCheckbox(s.id, s.name)}
                   <div data-lab="Послуга" style={{ fontWeight: 600, minWidth: 0, overflowWrap: "anywhere", wordBreak: "break-word" }} title={s.name}>{s.name}</div>
                   <div className="tabular svc-num" data-lab="Тривалість">
-                    <span style={durChanged ? { color: "var(--blue)", fontWeight: 600 } : undefined}>{effDur != null ? effDur + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано">—</span>}</span>
+                    <span style={durChanged ? { color: "var(--blue-text)", fontWeight: 600 } : undefined}>{effDur != null ? effDur + " хв" : <span style={{ color: "var(--orange)" }} title="Час не задано">—</span>}</span>
                     {durChanged && <div style={{ fontSize: "0.6875rem", color: "var(--text-faint)" }}>база {s.duration_min ?? "—"}</div>}
                   </div>
                   <div className="tabular svc-num" data-lab="Ціна">
                     {effPrice
-                      ? <span style={priceChanged ? { color: "var(--blue)", fontWeight: 600 } : undefined}>{fmtUah(effPrice)}</span>
+                      ? <span style={priceChanged ? { color: "var(--blue-text)", fontWeight: 600 } : undefined}>{fmtUah(effPrice)}</span>
                       : <span style={{ color: "var(--orange)" }} title="Ціну не задано ні в кабінеті, ні в базі">—</span>}
                     {priceChanged && <div style={{ fontSize: "0.6875rem", color: "var(--text-faint)" }}>база {fmtUah(s.price)}</div>}
                   </div>

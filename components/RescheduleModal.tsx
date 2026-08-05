@@ -442,7 +442,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
     <div className="overlay">
       <div className="dialog fade-in" style={{ maxWidth: 520 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Перенесення запису" onChangeCapture={() => setDirty(true)}>
         <div className="dlg-head">
-          <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue)" }}>🗓</span>Перенести на новий слот</div>
+          <div className="dlg-title"><span className="tic" style={{ background: "var(--blue-bg)", color: "var(--blue-text)" }}>🗓</span>Перенести на новий слот</div>
           <button className="icon-btn" onClick={requestClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body">

@@ -61,7 +61,7 @@ const CALL_META: Record<string, { label: string; icon: string }> = {
   declined: { label: "Відмова", icon: "✕" },
   not_called: { label: "Не дзвонили", icon: "○" },
 };
-const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "#4da3ff", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
+const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
 
 /* Фільтри статусів (як окремі stat-картки). «active» = waiting+in_progress. */
 const STATUS_FILTERS = [
@@ -275,7 +275,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                       <div className="du">{km}</div>
                     </div>
                     <div className="q-room">
-                      {km && <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: km === "КТ" ? "var(--orange-bg)" : "var(--blue-bg)", color: km === "КТ" ? "var(--orange)" : "#4da3ff" }}>{km}</span>}
+                      {km && <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: km === "КТ" ? "var(--orange-bg)" : "var(--blue-bg)", color: km === "КТ" ? "var(--orange)" : "var(--blue-text)" }}>{km}</span>}
                       <b>{room ? room.name : (centersById[r.clinic_id]?.name || "—")}</b>
                       {room?.apparatus_model ? <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{room.apparatus_model}</span> : null}
                     </div>

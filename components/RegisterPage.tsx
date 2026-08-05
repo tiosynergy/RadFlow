@@ -263,7 +263,7 @@ export default function RegisterPage() {
       <p className="fineprint">Реєстрація безкоштовна. Картка не потрібна для 14-денного пробного періоду.</p>
 
       <div className={"toast" + (toast.show ? " show" : "")} role="alert"
-        style={{ borderLeftColor: toast.type === "info" ? "var(--blue)" : "var(--red)" }}>
+        style={{ borderLeftColor: toast.type === "info" ? "var(--blue-line)" : "var(--red)" }}>
         <div className="tt">{toast.title}</div>
         <div className="td">{toast.msg}</div>
       </div>

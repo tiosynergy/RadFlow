@@ -10,6 +10,10 @@
   --card: #2c2c2e;
   --card-hover: #323234;
   --card-2: #3a3a3c;
+  /* Ховер для елементів, що вже лежать на --card-2 (.mini-icon). Світліше за
+     базу (як і решта ховерів), але не аж --border-strong #48484a, на якому
+     кольорові гліфи падали нижче 4.5: тут --orange 5.03, --blue-text 4.74. */
+  --card-2-hover: #404042;
   --border: #38383a;
   --border-strong: #48484a;
 
@@ -22,14 +26,43 @@
   --text-faint: #949499;
 
   /* Accents */
-  --blue: #0a84ff;
-  /* Той самий синій, але для ТЕКСТУ. --blue розрахований на заливку: білим по
-     ньому виходить 3.65:1, а сам він як колір тексту на --card дає 3.82:1 —
-     обидва нижче 4.5:1 (WCAG 1.4.3 AA). Освітлений відтінок тримає 5.3:1 і вже
-     використовувався поштучно (.rq-tile.mrt). Заливки лишаються на --blue. */
-  --blue-text: #4da3ff;
-  --blue-bg: rgba(10, 132, 255, 0.15);
-  --blue-bg-soft: rgba(10, 132, 255, 0.08);
+
+  /* ── Синій акцент розкладено на ТРИ РОЛІ (сесія 23) ───────────────────────
+     Один відтінок не може задовольнити 1.4.3 і 1.4.11 одночасно — заміряно
+     (`node scripts/contrast-audit.mjs`, він же вартовий цих чисел):
+
+       #0a84ff (було):  білий текст по ньому 3.65 ❌ | як межа на --card 3.82 ✅
+       #0d6ecf (стало): білий текст по ньому 5.06 ✅ | як межа на --card 2.75 ❌
+
+     Потемніння заливки ЛАМАЄ межі, освітлення меж ламає заливку. Тому роль
+     обирає ВЛАСТИВІСТЬ, а не смак:
+
+       background під білим текстом → --blue
+       color (текст, гліф, відсоток) → --blue-text
+       межа / кільце фокусу / крапка / смуга / стовпчик → --blue-line
+
+     ⚠️ `border-color: var(--blue)` і `background: var(--blue-text)` — обидва
+     повертають провал. Змінюєш числа — прожени scripts/contrast-audit.mjs. */
+
+  /* ЗАЛИВКА під білим текстом: .btn-primary, .pill.active, .slot.sel,
+     .day-toggle.on, .reg-num, .wstep-num, .rf-box. #fff по ній = 5.06:1. */
+  --blue: #0d6ecf;
+  /* Hover тієї ж заливки. Було #2a96ff — СВІТЛІШЕ за базу, білий текст падав до
+     3.04:1: наведення робило кнопку менш читабельною, ніж у спокої. */
+  --blue-hover: #0b5cae;
+  /* ТЕКСТ і гліфи на темних поверхнях. Найтісніше місце — найсвітліша поверхня
+     --card-2 #3a3a3c (.mini-icon, .undo-btn, .rqh-count): 5.20:1.
+     Було #4da3ff — на --card-2 лише 4.32 ❌, а на --blue-bg над --card 4.50 ❌
+     (це .sb-item.active, головний пункт навігації сайдбара). */
+  --blue-text: #6db4ff;
+  /* МЕЖІ, кільця фокусу, крапки-індикатори, смуги прогресу, стовпчики графіків.
+     Поріг 1.4.11 = 3:1, і саме тут колишній #0a84ff лишається найкращим:
+     3.11–4.66 на всіх поверхнях застосунку. */
+  --blue-line: #0a84ff;
+  /* Тоновані підкладки — від --blue (темнішого за попередній): підкладка стає
+     темнішою, і --blue-text по ній тримає 4.71:1 навіть над --card-2. */
+  --blue-bg: rgba(13, 110, 207, 0.15);
+  --blue-bg-soft: rgba(13, 110, 207, 0.08);
   --green: #30d158;
   --green-bg: rgba(48, 209, 88, 0.15);
   --red: #ff453a;
@@ -96,14 +129,14 @@ input, textarea, select { font-family: inherit; color: inherit; }
    Єдине глобальне правило для всіх інтерактивних елементів. Саме :focus-visible,
    щоб не псувати мишиний UX. Окремі компоненти можуть лишати власні правила фокуса. */
 :where(button, a, [role="button"], [role="tab"], [tabindex]):focus-visible {
-  outline: 2px solid var(--blue);
+  outline: 2px solid var(--blue-line);
   outline-offset: 2px;
   border-radius: var(--r-sm);
 }
 /* Поля вводу: видиме кільце фокуса поверх зміни кольору бордера. */
 :where(input, textarea, select):focus-visible {
   outline: none;
-  border-color: var(--blue);
+  border-color: var(--blue-line);
   box-shadow: 0 0 0 3px var(--blue-bg);
 }
 
@@ -172,17 +205,17 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .density-ctrl { display: flex; flex-direction: column; gap: 12px; }
 .density-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .density-title { font-size: 0.8125rem; font-weight: 600; color: var(--text-secondary); }
-.density-now { font-size: 0.8125rem; font-weight: 700; color: #4da3ff; }
+.density-now { font-size: 0.8125rem; font-weight: 700; color: var(--blue-text); }
 .density-slider { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 999px; background: var(--card-2); outline: none; cursor: pointer; }
-.density-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; border-radius: 50%; background: var(--blue); border: 3px solid var(--card); box-shadow: 0 1px 4px rgba(0,0,0,.4); cursor: pointer; }
-.density-slider::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: var(--blue); border: 3px solid var(--card); cursor: pointer; }
+.density-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; border-radius: 50%; background: var(--blue-line); border: 3px solid var(--card); box-shadow: 0 1px 4px rgba(0,0,0,.4); cursor: pointer; }
+.density-slider::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: var(--blue-line); border: 3px solid var(--card); cursor: pointer; }
 .density-slider:focus-visible { box-shadow: 0 0 0 3px var(--blue-bg); }
 .density-ticks { display: flex; justify-content: space-between; gap: 8px; }
 .density-tick { flex: 1; font-size: 0.75rem; font-weight: 600; color: var(--text-muted); background: none; border: none; padding: 2px 0; cursor: pointer; transition: color .12s; text-align: center; }
 .density-tick:first-child { text-align: left; }
 .density-tick:last-child { text-align: right; }
 .density-tick:hover { color: var(--text); }
-.density-tick.on { color: #4da3ff; }
+.density-tick.on { color: var(--blue-text); }
 /* Розміщення регулятора в лівому сайдбарі (під налаштуваннями) */
 .sb-density-box { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
 .sb-density-box .density-ctrl { gap: 9px; }
@@ -216,8 +249,8 @@ html[data-density="spacious"] .fld { gap: 9px; }
   overflow: hidden;
 }
 .sb-head { padding: 18px 18px 14px; }
-.sb-logo { font-size: 1.3125rem; font-weight: 700; letter-spacing: -0.02em; color: var(--blue); display: flex; align-items: center; gap: 8px; text-decoration: none; }
-.sb-logo .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 10px var(--blue); }
+.sb-logo { font-size: 1.3125rem; font-weight: 700; letter-spacing: -0.02em; color: var(--blue-text); display: flex; align-items: center; gap: 8px; text-decoration: none; }
+.sb-logo .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--blue-line); box-shadow: 0 0 10px var(--blue-line); }
 .sb-sub { font-size: 0.71875rem; color: var(--text-muted); margin-top: 5px; }
 
 .sb-nav { flex: 1; overflow-y: auto; padding: 6px 12px; }
@@ -231,7 +264,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
   width: 100%; text-align: left; transition: background .12s, color .12s;
 }
 .sb-item:hover { background: var(--card-hover); color: var(--text); }
-.sb-item.active { background: var(--blue-bg); color: #4da3ff; font-weight: 500; }
+.sb-item.active { background: var(--blue-bg); color: var(--blue-text); font-weight: 500; }
 .sb-item .ic { width: 17px; text-align: center; font-size: 0.875rem; flex-shrink: 0; opacity: .9; }
 .sb-item.active .ic { opacity: 1; }
 .sb-badge {
@@ -251,13 +284,13 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .sb-cab:hover { background: var(--card-hover); }
 .sb-cab.active { background: var(--blue-bg); }
 .sb-cab-btn { width: 100%; text-align: left; border: none; background: none; cursor: pointer; }
-.sb-cab-btn.active { box-shadow: inset 2px 0 0 var(--blue); }
+.sb-cab-btn.active { box-shadow: inset 2px 0 0 var(--blue-line); }
 .sb-cab-tile {
   width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.02em;
 }
-.sb-cab-tile.mrt { background: var(--blue-bg); color: #4da3ff; }
+.sb-cab-tile.mrt { background: var(--blue-bg); color: var(--blue-text); }
 .sb-cab-tile.ct { background: var(--orange-bg); color: var(--orange); }
 .sb-cab-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .sb-cab-name { font-size: 0.8125rem; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -271,13 +304,17 @@ html[data-density="spacious"] .fld { gap: 9px; }
   background: var(--card-2); color: var(--text-secondary);
   font-size: 0.6875rem; font-weight: 700; display: flex; align-items: center; justify-content: center;
 }
-.sb-cab-all.active .sb-cab-count { background: rgba(10,132,255,0.25); color: #4da3ff; }
+/* Лічильник лежить УСЕРЕДИНІ .sb-cab.active, тобто його підкладка — це другий
+   шар синього поверх --blue-bg поверх --card. Було rgba(10,132,255,0.25) під
+   #4da3ff = 3.37:1 (пункт «залишок WCAG» хендовера). Тепер тон від --blue і
+   слабший, текст — --blue-text: 4.75:1. */
+.sb-cab-all.active .sb-cab-count { background: rgba(13, 110, 207, 0.22); color: var(--blue-text); }
 
 /* single-cabinet view header */
 .room-view-head { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 .rvh-title { display: flex; align-items: center; gap: 10px; font-size: 0.875rem; font-weight: 600; color: var(--text-secondary); }
 .rvh-tile { width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 0.6875rem; font-weight: 700; }
-.rvh-tile.mrt { background: var(--blue-bg); color: #4da3ff; }
+.rvh-tile.mrt { background: var(--blue-bg); color: var(--blue-text); }
 .rvh-tile.ct { background: var(--orange-bg); color: var(--orange); }
 
 /* Settings pinned at bottom-left */
@@ -311,7 +348,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
   padding: 0 22px; background: rgba(28,28,30,0.8); backdrop-filter: blur(20px);
 }
 .tb-title { display: flex; align-items: center; gap: 11px; }
-.tb-title .tic { width: 30px; height: 30px; border-radius: 8px; background: var(--blue-bg); color: #4da3ff; display: flex; align-items: center; justify-content: center; font-size: 0.875rem; }
+.tb-title .tic { width: 30px; height: 30px; border-radius: 8px; background: var(--blue-bg); color: var(--blue-text); display: flex; align-items: center; justify-content: center; font-size: 0.875rem; }
 .tb-title h1 { font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.01em; }
 .tb-title .date { font-size: 0.75rem; color: var(--text-muted); margin-top: 1px; display: inline-flex; align-items: center; }
 .date-alert {
@@ -330,8 +367,12 @@ html[data-density="spacious"] .fld { gap: 9px; }
   border: 1px solid transparent; white-space: nowrap;
 }
 .btn:active { transform: scale(0.97); }
-.btn-primary { background: var(--blue); color: #fff; }
-.btn-primary:hover { background: #2a96ff; }
+/* Межа обовʼязкова: заливка --blue (#0d6ecf) дає лише 2.75:1 проти --card,
+   тобто сама кнопка не відділяється від картки (WCAG 1.4.11, поріг 3:1).
+   --blue-line тримає 3.82:1. У .btn уже є `border: 1px solid transparent` —
+   зсуву розмітки немає. Те саме стосується :hover, який ще темніший. */
+.btn-primary { background: var(--blue); border-color: var(--blue-line); color: #fff; }
+.btn-primary:hover { background: var(--blue-hover); }
 .btn-secondary { background: var(--card); border-color: var(--border-strong); color: var(--text); }
 .btn-secondary:hover { background: var(--card-hover); }
 .btn-green { background: var(--green); color: #06320f; font-weight: 600; }
@@ -374,15 +415,15 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .stat:hover { border-color: var(--border-strong); }
 .stat.clickable { cursor: pointer; }
 .stat.clickable:hover { border-color: var(--border-strong); background: var(--card-hover); }
-.stat.clickable:focus-visible { outline: none; border-color: var(--blue); box-shadow: 0 0 0 2px rgba(10,132,255,.35); }
-.stat.active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); background: var(--card-hover); }
+.stat.clickable:focus-visible { outline: none; border-color: var(--blue-line); box-shadow: 0 0 0 2px rgba(10,132,255,.35); }
+.stat.active { border-color: var(--blue-line); box-shadow: 0 0 0 1px var(--blue-line); background: var(--card-hover); }
 .stat .lab { font-size: 0.6875rem; font-weight: 600; letter-spacing: 0; text-transform: uppercase; color: var(--text-muted); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stat .val { font-size: 0.9375rem; font-weight: 700; letter-spacing: -0.02em; margin-top: 0; line-height: 1; }
 .stat .sub { font-size: 0.6875rem; color: var(--text-muted); margin-top: 1px; line-height: 1.1; }
 .stat .val.white { color: var(--text); }
 .stat .val.gray { color: var(--text-secondary); }
 .stat .val.yellow { color: var(--yellow); }
-.stat .val.blue { color: #4da3ff; }
+.stat .val.blue { color: var(--blue-text); }
 .stat .val.green { color: var(--green); }
 .stat .val.red { color: var(--red); }
 
@@ -398,21 +439,21 @@ html[data-density="spacious"] .fld { gap: 9px; }
   display: flex; align-items: center; gap: 16px;
 }
 .cur-main { flex: 1; min-width: 0; }
-.cur-tag { display: inline-flex; align-items: center; gap: 7px; font-size: 0.71875rem; font-weight: 600; color: #4da3ff; }
+.cur-tag { display: inline-flex; align-items: center; gap: 7px; font-size: 0.71875rem; font-weight: 600; color: var(--blue-text); }
 .cur-name { font-size: 1.0625rem; font-weight: 700; letter-spacing: -0.02em; margin-top: 4px; }
 .cur-proc { font-size: 0.78125rem; color: var(--text-secondary); margin-top: 2px; }
 .cur-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 7px; }
 .cur-meta .mi { font-size: 0.71875rem; color: var(--text-muted); }
 .cur-meta .mi b { color: var(--text-secondary); font-weight: 600; }
 .cur-timer { text-align: center; flex-shrink: 0; padding: 0 8px; }
-.cur-timer .t { font-size: 1.875rem; font-weight: 700; color: #4da3ff; letter-spacing: -0.02em; line-height: 1; }
+.cur-timer .t { font-size: 1.875rem; font-weight: 700; color: var(--blue-text); letter-spacing: -0.02em; line-height: 1; }
 .cur-timer .tl { font-size: 0.6875rem; color: var(--text-muted); margin-top: 3px; }
 .cur-actions { display: flex; flex-direction: column; gap: 7px; flex-shrink: 0; min-width: 170px; }
 .cur-actions .btn { padding: 7px 14px; }
 .cur-actions .btn-sm { padding: 5px 12px; }
 
-.pulse-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--blue); position: relative; }
-.pulse-dot::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; background: var(--blue); opacity: .4; animation: pulse 1.8s ease-out infinite; }
+.pulse-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--blue-line); position: relative; }
+.pulse-dot::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; background: var(--blue-line); opacity: .4; animation: pulse 1.8s ease-out infinite; }
 .pulse-dot.g { background: var(--green); } .pulse-dot.g::after { background: var(--green); }
 @keyframes pulse { 0% { transform: scale(0.7); opacity: .5; } 100% { transform: scale(2.4); opacity: 0; } }
 
@@ -425,7 +466,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
   white-space: nowrap;
 }
 .pill:hover { background: var(--card-hover); color: var(--text); }
-.pill.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+.pill.active { background: var(--blue); border-color: var(--blue-line); color: #fff; }
 /* Лічильник у пілюлі — приглушений КОЛЬОРОМ, не `opacity` (та сама причина, що
    в `.qrow-item.done`). При .65 він давав 3.6:1 на --card при вимозі 4.5:1, а це
    цифра, заради якої на пілюлю й дивляться. --text-faint = 4.6:1 і при цьому
@@ -436,7 +477,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .pill.active .ct { color: inherit; }
 .qctrl .spacer { flex: 1; }
 .search { display: flex; align-items: center; gap: 8px; background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 0 11px; min-height: 2.25rem; width: min(13.75rem, 100%); transition: border-color .12s; }
-.search:focus-within { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-bg); }
+.search:focus-within { border-color: var(--blue-line); box-shadow: 0 0 0 3px var(--blue-bg); }
 .search input:focus-visible { box-shadow: none; }
 .search .si { color: var(--text-muted); font-size: 0.8125rem; }
 .search input { background: none; border: none; outline: none; font-size: 0.8125rem; width: 100%; }
@@ -455,7 +496,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
   border-left: 3px solid transparent; border-radius: var(--r-md);
   overflow: hidden; transition: background .14s, border-color .14s, opacity .2s, box-shadow .14s;
 }
-.qrow-item.in-cabinet, .qrow-item.cabinet { border-left-color: var(--blue); background: rgba(10,132,255,0.07); }
+.qrow-item.in-cabinet, .qrow-item.cabinet { border-left-color: var(--blue-line); background: rgba(10,132,255,0.07); }
 /* ⚠️ ПРИГЛУШЕННЯ ВІДПРАЦЬОВАНИХ РЯДКІВ — КОЛЬОРОМ, А НЕ `opacity` (с18b).
    Правило проєкту, однакове для черги, колл-листа, робочого місця радіолога,
    інцидентів і майстра: стан «завершено / неявка / вимкнено» ніколи не несе
@@ -477,7 +518,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 /* Лівий акцент = колір статусу запису */
 .qrow-item.scheduled { border-left-color: var(--text-faint); }
 .qrow-item.waiting { border-left-color: var(--yellow); }
-.qrow-item.in_progress { border-left-color: var(--blue); background: rgba(10,132,255,0.07); }
+.qrow-item.in_progress { border-left-color: var(--blue-line); background: rgba(10,132,255,0.07); }
 .qrow-item.done { border-left-color: var(--green); }
 .qrow-item.no_show { border-left-color: var(--red); color: var(--text-muted); }
 .qrow-item.no_show.open, .qrow-item.no_show:hover { color: var(--text); }
@@ -489,7 +530,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
   transition: background .12s; -webkit-tap-highlight-color: transparent;
 }
 .qrow:hover { background: var(--card-hover); }
-.qrow:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.qrow:focus-visible { outline: 2px solid var(--blue-line); outline-offset: -2px; }
 .qrow > * { min-width: 0; }
 .q-chev { font-size: 1.125rem; color: var(--text-faint); justify-self: center; transition: transform .22s ease, color .14s; line-height: 1; }
 .q-chev.open { transform: rotate(90deg); color: var(--text-secondary); }
@@ -509,16 +550,16 @@ html[data-density="spacious"] .fld { gap: 9px; }
   white-space: nowrap; line-height: 1.4; }
 .qd-chip b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
 .qd-chip-sub { color: var(--text-faint); font-size: 0.71875rem; font-variant-numeric: tabular-nums; }
-.qd-chip.case { color: #4da3ff; }
-.qd-chip.case b { color: #4da3ff; }
+.qd-chip.case { color: var(--blue-text); }
+.qd-chip.case b { color: var(--blue-text); }
 .qd-chip.case { cursor: pointer; transition: border-color .15s ease, background .15s ease; }
-.qd-chip.case:hover { border-color: #4da3ff; background: var(--blue-bg); }
-.qd-chip.case:focus-visible { outline: 2px solid #4da3ff; outline-offset: 1px; }
+.qd-chip.case:hover { border-color: var(--blue-line); background: var(--blue-bg); }
+.qd-chip.case:focus-visible { outline: 2px solid var(--blue-line); outline-offset: 1px; }
 .qd-info { display: grid; grid-template-columns: repeat(3, 1fr); gap: 11px 22px; padding-top: 13px; }
 .qd-row { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .qd-k { font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); }
 .qd-v { font-size: 0.8125rem; color: var(--text); }
-.qd-phone { color: #4da3ff; text-decoration: none; font-variant-numeric: tabular-nums; width: fit-content; }
+.qd-phone { color: var(--blue-text); text-decoration: none; font-variant-numeric: tabular-nums; width: fit-content; }
 .qd-phone:hover { text-decoration: underline; }
 .qd-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .qd-act-red { color: var(--red); }
@@ -532,11 +573,11 @@ html[data-density="spacious"] .fld { gap: 9px; }
   font-size: 0.78125rem; font-weight: 600; background: var(--card); border: 1.5px solid var(--border-strong); color: var(--text-secondary); }
 .qd-seg-btn:hover { background: var(--card-hover); color: var(--text); }
 .qd-seg-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.qd-seg-dot.gray { background: var(--text-muted); } .qd-seg-dot.blue { background: var(--blue); }
+.qd-seg-dot.gray { background: var(--text-muted); } .qd-seg-dot.blue { background: var(--blue-line); }
 .qd-seg-dot.green { background: var(--green); } .qd-seg-dot.red { background: var(--red); }
 .qd-seg-dot.yellow { background: var(--yellow); }
 .qd-seg-btn.active.gray { border-color: var(--text-muted); background: var(--gray-badge-bg); color: var(--text); }
-.qd-seg-btn.active.blue { border-color: var(--blue); background: var(--blue-bg); color: #4da3ff; }
+.qd-seg-btn.active.blue { border-color: var(--blue-line); background: var(--blue-bg); color: var(--blue-text); }
 .qd-seg-btn.active.green { border-color: var(--green); background: var(--green-bg); color: var(--green); }
 .qd-seg-btn.active.red { border-color: var(--red); background: var(--red-bg); color: var(--red); }
 .qd-seg-btn.active.yellow { border-color: var(--yellow); background: var(--yellow-bg); color: var(--yellow); }
@@ -547,7 +588,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .qd-call { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
 .qd-call.green  { background: var(--green-bg);  color: var(--green); }
 .qd-call.orange { background: var(--orange-bg); color: var(--orange); }
-.qd-call.blue   { background: var(--blue-bg);   color: #4da3ff; }
+.qd-call.blue   { background: var(--blue-bg);   color: var(--blue-text); }
 .qd-call.red    { background: var(--red-bg);    color: var(--red); }
 .qd-call.gray   { background: var(--gray-badge-bg); color: var(--text-secondary); }
 @media (prefers-reduced-motion: reduce) {
@@ -586,7 +627,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
   padding: 4px 10px; border-radius: 14px; font-size: 0.75rem; font-weight: 600; white-space: nowrap;
 }
 .badge.gray { background: var(--gray-badge-bg); color: var(--text-secondary); }
-.badge.blue { background: var(--blue-bg); color: #4da3ff; }
+.badge.blue { background: var(--blue-bg); color: var(--blue-text); }
 .badge.green { background: var(--green-bg); color: var(--green); }
 .badge.red { background: var(--red-bg); color: var(--red); }
 .badge.orange { background: var(--orange-bg); color: var(--orange); }
@@ -603,7 +644,14 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .q-noshow-lab { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78125rem; color: #ff8c84; font-weight: 500; }
 
 .mini-icon { width: 32px; height: 32px; border-radius: 8px; background: var(--card-2); color: var(--text-secondary); display: flex; align-items: center; justify-content: center; font-size: 0.8125rem; transition: background .12s, color .12s; position: relative; }
-.mini-icon:hover { background: var(--border-strong); color: var(--text); }
+/* Було `background: var(--border-strong)` (#48484a) — найсвітліша поверхня
+   застосунку. Для успадкованого --text це нормально (8.38:1), але кольорові
+   .mini-icon задають color інлайном, і він переживає ховер: --orange падав до
+   4.44:1, --blue-text до 4.18:1. --card-hover виправив би контраст, але зробив
+   би плитку ТЕМНІШОЮ за спокій і рівною фону наведеного рядка (.clrow:hover —
+   той самий --card-hover), тобто кнопка зникала б саме під курсором.
+   --card-2-hover світліший за спокій і тримає обидва кольори ≥4.7. */
+.mini-icon:hover { background: var(--card-2-hover); color: var(--text); }
 /* Сенсорна ціль ≥40px без зміни візуального боксу/сітки (WCAG 2.5.8). */
 .mini-icon::before { content: ""; position: absolute; inset: -4px; }
 .mini-icon:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(0.4); }
@@ -628,7 +676,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .helptip { position: relative; display: inline-flex; vertical-align: middle; margin-left: 6px; }
 .helptip-btn { width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--card-2);
   color: var(--text-secondary); font-size: 0.6875rem; font-weight: 700; line-height: 1; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: background .12s, color .12s; flex-shrink: 0; }
-.helptip-btn:hover { background: var(--blue-bg); color: #4da3ff; border-color: var(--blue); }
+.helptip-btn:hover { background: var(--blue-bg); color: var(--blue-text); border-color: var(--blue-line); }
 .helptip-pop { position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%); z-index: 80;
   width: max-content; max-width: 280px; padding: 9px 12px; border-radius: 9px;
   background: var(--card); border: 1px solid var(--border-strong); box-shadow: var(--shadow-pop);
@@ -658,11 +706,15 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .cal-day:hover:not(.empty-day) { background: var(--card-hover); }
 .cal-day.empty-day { cursor: default; }
 .cal-day.muted { color: var(--text-faint); }
-.cal-day.today { background: var(--blue); color: #fff; font-weight: 700; }
-.cal-day.selected { box-shadow: inset 0 0 0 2px var(--blue); color: var(--text); font-weight: 700; }
-.cal-day .cdot { width: 4px; height: 4px; border-radius: 50%; background: var(--blue); position: absolute; bottom: 4px; }
+/* Заливка «сьогодні» — ЄДИНА мітка дня, тому їй потрібен контур ≥3:1 проти
+   --card діалогу (сама заливка дає 2.75:1). */
+.cal-day.today { background: var(--blue); box-shadow: inset 0 0 0 1px var(--blue-line); color: #fff; font-weight: 700; }
+.cal-day.selected { box-shadow: inset 0 0 0 2px var(--blue-line); color: var(--text); font-weight: 700; }
+.cal-day .cdot { width: 4px; height: 4px; border-radius: 50%; background: var(--blue-line); position: absolute; bottom: 4px; }
 .cal-day.today .cdot { background: #fff; }
 .cal-change { position: absolute; top: 3px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 2px var(--card); }
+/* Це не індикатор, а виріз: кільце повторює фон .cal-day.today, тобто саме
+   --blue. З --blue-line навколо червоної крапки зʼявлявся чужий ободок. */
 .cal-day.today .cal-change { box-shadow: 0 0 0 2px var(--blue); }
 
 /* режим роботи за датою — мітки на днях + смужка налаштування */
@@ -673,6 +725,11 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .cal-sched.closed { background: var(--red); border-radius: 50%; }
 .cal-sched.custom { background: var(--orange); border-radius: 1px; }
 .cal-day.today .cal-sched { box-shadow: 0 0 0 2px var(--blue); }
+/* .cal-day:hover:not(.empty-day) специфічніший за .cal-day.today і підміняє фон
+   на --card-hover — виріз мусить іти за ним, інакше під курсором навколо крапки
+   спалахує синій ободок. */
+.cal-day.today:hover:not(.empty-day) .cal-change,
+.cal-day.today:hover:not(.empty-day) .cal-sched { box-shadow: 0 0 0 2px var(--card-hover); }
 
 .cal-sched-strip { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
 .css-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -702,8 +759,8 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .sch-allclosed input { width: 17px; height: 17px; accent-color: var(--red); cursor: pointer; flex-shrink: 0; }
 .sch-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .sch-chip { padding: 5px 10px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--bg-elevated); font-size: 0.75rem; color: var(--text-secondary); transition: all .12s; }
-.sch-chip:hover { border-color: var(--blue); color: var(--text); }
-.sch-chip.on { border-color: var(--blue); background: var(--blue-bg); color: #4da3ff; }
+.sch-chip:hover { border-color: var(--blue-line); color: var(--text); }
+.sch-chip.on { border-color: var(--blue-line); background: var(--blue-bg); color: var(--blue-text); }
 
 .sch-rooms { display: flex; flex-direction: column; gap: 8px; }
 .sch-rooms-lab { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); }
@@ -766,7 +823,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 /* К-06: швидке «подзвонити → підтвердити» біля статусу дзвінка в рядку черги */
 .qd-v-call { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .qd-call-quick { display: inline-flex; align-items: center; gap: 6px; }
-.qd-call-tel { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px; border-radius: 7px; background: var(--blue-bg); color: #4da3ff; text-decoration: none; font-size: 0.8125rem; }
+.qd-call-tel { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 22px; border-radius: 7px; background: var(--blue-bg); color: var(--blue-text); text-decoration: none; font-size: 0.8125rem; }
 .qd-call-tel:hover { filter: brightness(1.08); }
 .btn-xs { padding: 3px 9px; font-size: 0.71875rem; border-radius: 7px; }
 
@@ -783,8 +840,8 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .rf-check input { position: absolute; opacity: 0; pointer-events: none; }
 .rf-check .rf-box { width: 17px; height: 17px; border-radius: 5px; border: 1.5px solid var(--border-strong); display: inline-flex; align-items: center; justify-content: center; font-size: 0.6875rem; font-weight: 700; color: #fff; flex-shrink: 0; transition: all .12s; }
 .rf-check.on, .rf-check.warn { /* стан «відмічено» керується класом від React */ }
-.rf-check.on { border-color: var(--blue); background: var(--blue-bg); }
-.rf-check.on .rf-box { background: var(--blue); border-color: var(--blue); }
+.rf-check.on { border-color: var(--blue-line); background: var(--blue-bg); }
+.rf-check.on .rf-box { background: var(--blue); border-color: var(--blue-line); }
 .rf-check.warn { border-color: var(--orange); background: var(--orange-bg); }
 .rf-check.warn .rf-box { background: var(--orange); border-color: var(--orange); }
 .rf-check.warn span:last-child { color: var(--orange); }
@@ -893,7 +950,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
   font-size: 0.78125rem; font-weight: 600; cursor: pointer; line-height: 1.2; }
 /* Розгорнутий список — темна тема RadFlow (нативний option); колір тексту опції задає статус інлайн. */
 .qd-call-select option { background: var(--bg-elevated); }
-.qd-call-select:focus-visible { outline: 2px solid #4da3ff; outline-offset: 1px; }
+.qd-call-select:focus-visible { outline: 2px solid var(--blue-line); outline-offset: 1px; }
 .qd-call-caret { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); pointer-events: none;
   font-size: 0.75rem; font-weight: 700; opacity: .85; }
 
@@ -917,7 +974,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .toast .tmsg { font-size: 0.8125rem; font-weight: 500; }
 .toast.success .ti { color: var(--green); }
 .toast.error .ti { color: var(--red); }
-.toast.info .ti { color: #4da3ff; }
+.toast.info .ti { color: var(--blue-text); }
 .toast.warning .ti { color: var(--orange); }
 
 /* live flash on row update */
@@ -932,28 +989,28 @@ html[data-density="spacious"] .fld { gap: 9px; }
   padding: 10px 12px; text-align: left; min-width: 0; position: relative;
 }
 .room-tab:hover { background: var(--card-hover); }
-.room-tab.active { border-color: var(--blue); background: var(--blue-bg-soft); }
+.room-tab.active { border-color: var(--blue-line); background: var(--blue-bg-soft); }
 .rt-ic {
   width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   font-size: 0.75rem; font-weight: 700; letter-spacing: 0.02em;
   background: var(--card-2); color: var(--text-secondary);
 }
-.rt-ic.mrt { background: var(--blue-bg); color: #4da3ff; }
+.rt-ic.mrt { background: var(--blue-bg); color: var(--blue-text); }
 .rt-ic.ct { background: var(--orange-bg); color: var(--orange); }
 .equip-tile {
   width: 40px; height: 40px; border-radius: 11px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   font-size: 0.8125rem; font-weight: 700; letter-spacing: 0.02em;
 }
-.equip-tile.mrt { background: var(--blue-bg); color: #4da3ff; }
+.equip-tile.mrt { background: var(--blue-bg); color: var(--blue-text); }
 .equip-tile.ct { background: var(--orange-bg); color: var(--orange); }
-.room-tab.active .rt-ic:not(.mrt):not(.ct) { background: var(--blue); color: #fff; }
+.room-tab.active .rt-ic:not(.mrt):not(.ct) { background: var(--blue); box-shadow: inset 0 0 0 1px var(--blue-line); color: #fff; }
 .rt-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .rt-name { font-size: 0.875rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rt-sub { font-size: 0.71875rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
 .rt-state { font-size: 0.6875rem; font-weight: 700; padding: 3px 7px; border-radius: 9px; flex-shrink: 0; white-space: nowrap; }
-.rt-state.busy { background: var(--blue-bg); color: #4da3ff; }
+.rt-state.busy { background: var(--blue-bg); color: var(--blue-text); }
 .rt-state.free { background: var(--green-bg); color: var(--green); }
 
 /* align-items: stretch (дефолт) — картки ОДНОГО РЯДКА однакової висоти.
@@ -973,7 +1030,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .rc-h-meta { flex: 1; min-width: 0; }
 .rc-name { font-size: 0.875rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rc-model { font-size: 0.71875rem; color: var(--text-muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rc-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 0.71875rem; font-weight: 600; color: #4da3ff; }
+.rc-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 0.71875rem; font-weight: 600; color: var(--blue-text); }
 .rc-body-busy { display: flex; flex-direction: column; gap: 5px; }
 .rc-body-busy .btn-sm { padding: 5px 11px; flex-shrink: 0; }
 .rc-brow { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -982,7 +1039,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .rc-proc { font-size: 0.71875rem; color: var(--text-secondary); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .rc-foot { display: flex; align-items: flex-end; justify-content: space-between; margin-top: 7px; }
 .rc-timer-wrap { display: flex; flex-direction: column; }
-.rc-timer { font-size: 1.125rem; font-weight: 700; color: #4da3ff; line-height: 1; flex-shrink: 0; }
+.rc-timer { font-size: 1.125rem; font-weight: 700; color: var(--blue-text); line-height: 1; flex-shrink: 0; }
 .rc-timer.over { color: var(--orange); }
 .rc-timer-lab { font-size: 0.6875rem; color: var(--text-muted); margin-top: 2px; }
 
@@ -991,7 +1048,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .study-timer { position: relative; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; line-height: 1; }
 .study-timer .st-svg { display: block; }
 .study-timer .st-track { stroke: var(--border); }
-.study-timer .st-arc { stroke: #4da3ff; transition: stroke-dasharray .9s linear, stroke .3s ease; }
+.study-timer .st-arc { stroke: var(--blue-text); transition: stroke-dasharray .9s linear, stroke .3s ease; }
 .study-timer.crit .st-arc, .study-timer.over .st-arc { stroke: var(--red); }
 .study-timer .st-face { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; pointer-events: none; }
 .study-timer .st-finish { display: inline-flex; align-items: center; gap: 5px; font-size: 0.84375rem; color: var(--text-secondary); }
@@ -1054,8 +1111,8 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .clp-time { font-size: 0.8125rem; font-weight: 700; flex-shrink: 0; }
 .clp-meta { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .clp-name { font-size: 0.78125rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.clp-phone-txt { font-size: 0.71875rem; color: #4da3ff; font-variant-numeric: tabular-nums; }
-.clp-phone { font-size: 0.71875rem; color: #4da3ff; text-decoration: none; font-variant-numeric: tabular-nums; }
+.clp-phone-txt { font-size: 0.71875rem; color: var(--blue-text); font-variant-numeric: tabular-nums; }
+.clp-phone { font-size: 0.71875rem; color: var(--blue-text); text-decoration: none; font-variant-numeric: tabular-nums; }
 .clp-phone:hover { text-decoration: underline; }
 .clp-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 
@@ -1070,11 +1127,11 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .clp-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; margin-top: 8px; }
 .clp-actions .btn { justify-content: center; padding: 7px 8px; font-size: 0.75rem; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .clp-act-orange { color: var(--orange); }
-.clp-act-blue { color: #4da3ff; }
+.clp-act-blue { color: var(--blue-text); }
 .clp-act-red { color: var(--red); }
 .clp-dot.gray { background: var(--text-faint); }
 .clp-dot.orange { background: var(--orange); }
-.clp-dot.blue { background: var(--blue); }
+.clp-dot.blue { background: var(--blue-line); }
 .clp-dot.green { background: var(--green); }
 .clp-dot.red { background: var(--red); }
 .clp-all { width: 100%; justify-content: center; margin-top: 13px; }
@@ -1094,7 +1151,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .reg-steps { display: flex; gap: 6px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
 .reg-step { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .reg-num { width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; border: 2px solid var(--border-strong); color: var(--text-muted); }
-.reg-step.active .reg-num { background: var(--blue); border-color: var(--blue); color: #fff; }
+.reg-step.active .reg-num { background: var(--blue); border-color: var(--blue-line); color: #fff; }
 .reg-step.done .reg-num { background: var(--green); border-color: var(--green); color: #06320f; }
 .reg-lab { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .reg-step.active .reg-lab { color: var(--text); font-weight: 600; }
@@ -1114,7 +1171,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 }
 .dlg-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--border); }
 .dlg-title { display: flex; align-items: center; gap: 10px; font-size: 1rem; font-weight: 600; }
-.dlg-title .tic { width: 28px; height: 28px; border-radius: 8px; background: var(--blue-bg); color: #4da3ff; display: flex; align-items: center; justify-content: center; font-size: 0.875rem; }
+.dlg-title .tic { width: 28px; height: 28px; border-radius: 8px; background: var(--blue-bg); color: var(--blue-text); display: flex; align-items: center; justify-content: center; font-size: 0.875rem; }
 .dlg-body { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
 .dlg-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); }
 
@@ -1140,7 +1197,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 }
 
 .hint-blue { background: var(--blue-bg-soft); border: 1px solid rgba(10,132,255,0.25); border-radius: var(--r-md); padding: 10px 13px; font-size: 0.78125rem; color: var(--text-secondary); line-height: 1.5; }
-.hint-blue b { color: #4da3ff; }
+.hint-blue b { color: var(--blue-text); }
 
 .fld { display: flex; flex-direction: column; gap: 6px; }
 .fld-row { display: flex; gap: 12px; }
@@ -1154,7 +1211,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
   border-radius: 9px; padding: 9px 12px; font-size: 0.84375rem; outline: none;
   transition: border-color .12s; width: 100%;
 }
-.inp:focus { border-color: var(--blue); }
+.inp:focus { border-color: var(--blue-line); }
 select.inp { cursor: pointer; }
 
 /* ---- CitySelect (combobox населеного пункту) ---- */
@@ -1178,8 +1235,11 @@ select.inp { cursor: pointer; }
    ~22–24px — надто дрібно для пальця. min-height каскадує на всі .slot (вони його
    не перевизначають); flex-центрування тримає текст по центру попри малий padding. */
 .slot { background: var(--card-2); border: 1px solid var(--border-strong); border-radius: 9px; padding: 9px 0; font-size: 0.8125rem; font-weight: 600; text-align: center; transition: all .12s; min-height: 32px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; }
-.slot:hover:not(.taken) { border-color: var(--blue); color: #4da3ff; }
-.slot.sel { background: var(--blue); border-color: var(--blue); color: #fff; }
+.slot:hover:not(.taken) { border-color: var(--blue-line); color: var(--blue-text); }
+.slot.sel { background: var(--blue); border-color: var(--blue-line); color: #fff; }
+/* .slot:hover:not(.taken) специфічніший за .slot.sel і перебивав колір: на
+   заливці лишався --blue-text = 2.32:1. Повертаємо білий явно. */
+.slot.sel:hover { color: #fff; }
 .slot.taken { opacity: 0.32; text-decoration: line-through; cursor: not-allowed; }
 
 /* ===== Completion modal (ADMIN-PROC-01) ===== */
@@ -1215,13 +1275,13 @@ select.inp { cursor: pointer; }
 .ctx-hint.red { background: var(--red-bg); color: #ff8c84; }
 .ctx-hint.red a { color: var(--red); }
 .ctx-hint.blue { background: var(--blue-bg-soft); color: var(--text-secondary); border: 1px solid rgba(10,132,255,0.2); }
-.ctx-hint.blue a { color: #4da3ff; }
+.ctx-hint.blue a { color: var(--blue-text); }
 /* Попередження (не помилка): наслідки дії, яку користувач щойно обрав свідомо —
    напр. вимкнення кабінету (0123). Червоний тут читався б як «щось зламалось». */
 .ctx-hint.orange { background: var(--orange-bg); color: var(--orange); border: 1px solid rgba(255,159,10,0.28); }
 /* Вихід із порталу направлень назад у робоче місце адміна: єдиний шлях назовні
    в чужому чромі, тож підсвічуємо його, а не ховаємо серед пунктів. */
-.sb-item.sb-back { color: var(--blue); font-weight: 600; }
+.sb-item.sb-back { color: var(--blue-text); font-weight: 600; }
 .sb-item.sb-back:hover { background: var(--blue-bg-soft); }
 .ctx-hint.orange b { color: var(--orange); }
 
@@ -1251,10 +1311,10 @@ select.inp { cursor: pointer; }
 .rcl-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .rcl-name { font-size: 0.84375rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rcl-sub { font-size: 0.71875rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rcl-tel { color: #4da3ff; text-decoration: none; }
+.rcl-tel { color: var(--blue-text); text-decoration: none; }
 .rcl-st { font-size: 0.6875rem; font-weight: 600; flex-shrink: 0; white-space: nowrap; }
 .rcl-st.orange { color: var(--orange); }
-.rcl-st.blue { color: #4da3ff; }
+.rcl-st.blue { color: var(--blue-text); }
 .rcl-st.green { color: var(--green); }
 .rcl-st.red { color: var(--red); }
 .rcl-st.gray { color: var(--text-muted); }
@@ -1288,7 +1348,7 @@ select.inp { cursor: pointer; }
   color: var(--text-muted); transition: all .14s;
 }
 .bk-gender-btn:hover:not(.active) { background: var(--card-hover); color: var(--text-secondary); }
-.bk-gender-btn.active { border-color: var(--blue); background: var(--blue-bg); color: #4da3ff; }
+.bk-gender-btn.active { border-color: var(--blue-line); background: var(--blue-bg); color: var(--blue-text); }
 
 /* Segmented control (МРТ / КТ) */
 .bk-seg {
@@ -1301,7 +1361,7 @@ select.inp { cursor: pointer; }
 }
 .bk-seg-btn:hover:not(.active) { background: var(--card-hover); color: var(--text-secondary); }
 .bk-seg-btn.active { background: var(--card-2); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
-.bk-seg-btn.active.mrt { color: #4da3ff; background: var(--blue-bg); }
+.bk-seg-btn.active.mrt { color: var(--blue-text); background: var(--blue-bg); }
 .bk-seg-btn.active.ct  { color: var(--orange); background: var(--orange-bg); }
 .bk-seg-btn.active.us    { color: #5ac8fa; background: rgba(50,173,230,0.15); }
 .bk-seg-btn.active.xray  { color: #d9a6f5; background: rgba(191,90,242,0.15); }
@@ -1357,12 +1417,12 @@ select.inp { cursor: pointer; }
 .bk-sched-head { display: flex; align-items: center; gap: 8px; }
 .bk-sched-spark {
   width: 22px; height: 22px; border-radius: 6px; flex-shrink: 0;
-  background: var(--blue-bg); color: #4da3ff;
+  background: var(--blue-bg); color: var(--blue-text);
   display: flex; align-items: center; justify-content: center; font-size: 0.75rem;
 }
 .bk-sched-title { font-size: 0.84375rem; font-weight: 700; color: var(--text); letter-spacing: -.2px; }
 .bk-sched-mod { font-size: 0.6875rem; font-weight: 700; padding: 2px 8px; border-radius: 6px; letter-spacing: .02em; }
-.bk-sched-mod.mrt { background: var(--blue-bg); color: #4da3ff; }
+.bk-sched-mod.mrt { background: var(--blue-bg); color: var(--blue-text); }
 .bk-sched-mod.ct { background: var(--orange-bg); color: var(--orange); }
 .bk-sched-sync {
   margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
@@ -1383,7 +1443,7 @@ select.inp { cursor: pointer; }
 .bk-room-chip:hover:not(.active) { background: var(--card-hover); color: var(--text); }
 .bk-room-chip.mrt { border-bottom-color: rgba(10,132,255,0.4); }
 .bk-room-chip.ct  { border-bottom-color: rgba(255,159,10,0.4); }
-.bk-room-chip.active.mrt { border-color: var(--blue); border-bottom-color: var(--blue); background: var(--blue-bg); color: #4da3ff; }
+.bk-room-chip.active.mrt { border-color: var(--blue-line); border-bottom-color: var(--blue-line); background: var(--blue-bg); color: var(--blue-text); }
 .bk-room-chip.active.ct  { border-color: var(--orange); border-bottom-color: var(--orange); background: var(--orange-bg); color: var(--orange); }
 /* Нові модальності: без цих правил АКТИВНИЙ чип УЗД/РГ/ММГ був безстильним —
    вибраний кабінет не відрізнявся від невибраного (баг-репорт власника 2026-07-20).
@@ -1394,7 +1454,7 @@ select.inp { cursor: pointer; }
 .bk-room-chip.active.us    { border-color: #5ac8fa; border-bottom-color: #5ac8fa; background: rgba(50,173,230,0.15); color: #5ac8fa; }
 .bk-room-chip.active.xray  { border-color: #d9a6f5; border-bottom-color: #d9a6f5; background: rgba(191,90,242,0.15); color: #d9a6f5; }
 .bk-room-chip.active.mammo { border-color: #ff7a92; border-bottom-color: #ff7a92; background: rgba(255,55,95,0.15); color: #ff7a92; }
-.bk-room-chip.active.other { border-color: var(--blue); border-bottom-color: var(--blue); background: var(--blue-bg); color: #4da3ff; }
+.bk-room-chip.active.other { border-color: var(--blue-line); border-bottom-color: var(--blue-line); background: var(--blue-bg); color: var(--blue-text); }
 /* Явний маркер вибору для БУДЬ-ЯКОЇ модальності: галочка в куті (зліва зверху —
    правий верхній кут зайнятий крапкою .bk-room-closed-dot). */
 .bk-room-chip { position: relative; }
@@ -1449,7 +1509,7 @@ select.inp { cursor: pointer; }
 .slot-hint-txt { flex: 1; min-width: 0; white-space: pre-line; }
 .slot-hint-x { flex: none; background: none; border: none; color: var(--text-muted); font-size: 0.8125rem; cursor: pointer; padding: 0 2px; line-height: 1; }
 .slot-hint-x:hover { color: var(--text); }
-.slot.hinted { outline: 2px solid var(--blue); outline-offset: 1px; opacity: 0.6; }
+.slot.hinted { outline: 2px solid var(--blue-line); outline-offset: 1px; opacity: 0.6; }
 .slot-blk { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .slot-blk-lab { font-size: 0.65625rem; font-weight: 700; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .slot-blk-cells { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; }
@@ -1475,8 +1535,8 @@ select.inp { cursor: pointer; }
 .sch-break-row { display: flex; align-items: center; gap: 6px; }
 .sch-break-row .inp { max-width: 96px; }
 .sch-break-del { color: var(--red); width: 26px; height: 26px; }
-.sch-break-add { align-self: flex-start; font-size: 0.75rem; font-weight: 600; color: var(--blue); background: transparent; border: 1px dashed var(--border-strong); border-radius: 7px; padding: 4px 10px; cursor: pointer; }
-.sch-break-add:hover { border-color: var(--blue); }
+.sch-break-add { align-self: flex-start; font-size: 0.75rem; font-weight: 600; color: var(--blue-text); background: transparent; border: 1px dashed var(--border-strong); border-radius: 7px; padding: 4px 10px; cursor: pointer; }
+.sch-break-add:hover { border-color: var(--blue-line); }
 
 /* Footer summary */
 .bk-summary {
@@ -1566,17 +1626,25 @@ select.inp { cursor: pointer; }
   display: flex; align-items: center; justify-content: center;
   font-size: 0.6875rem; font-weight: 700; color: #fff;
 }
-.bd-room-kind.mrt { background: var(--blue); }
-.bd-room-kind.ct { background: var(--orange); }
+/* ⚠️ У базовому .bd-room-kind стоїть color: #fff — отже кожен модифікатор нижче
+   це ЗАЛИВКА ПІД БІЛИМ ТЕКСТОМ (1.4.3, поріг 4.5), а не просто мітка кольором.
+   Ревʼю с23 показало, що білим по світлих заливках тут не проходило НІЧОГО:
+   --orange 2.06, #32ade6 2.54, #8e8e93 3.26, #bf5af2 і #ff375f по 3.52.
+   Тому світлі заливки дістають ТЕМНИЙ текст (4.83–8.28), а темна синя лишає
+   білий (5.06) і бере контур: --blue проти --card — лише 2.75 (1.4.11),
+   тоді як решта модальностей ≥3.96 самі.
+   Одного відтінку, що тримає і білий текст, і власну межу, не існує. */
+.bd-room-kind.mrt { background: var(--blue); box-shadow: inset 0 0 0 1px var(--blue-line); }
+.bd-room-kind.ct { background: var(--orange); color: var(--bg); }
 
 /* ── Нові модальності (0087): УЗД=бірюза, Рентген=фіолет, Мамографія=рожевий,
    Інше=сірий. Додано поруч із наявними mrt(синій)/ct(помаранч) для всіх видів
    тегів кабінету. Дублюється у radiologist.css / radflow-screens.css, бо ті теги
    визначені й там (сторінки вантажать різні CSS). ── */
-.bd-room-kind.us { background: #32ade6; }
-.bd-room-kind.xray { background: #bf5af2; }
-.bd-room-kind.mammo { background: #ff375f; }
-.bd-room-kind.other { background: #8e8e93; }
+.bd-room-kind.us { background: #32ade6; color: var(--bg); }
+.bd-room-kind.xray { background: #bf5af2; color: var(--bg); }
+.bd-room-kind.mammo { background: #ff375f; color: var(--bg); }
+.bd-room-kind.other { background: #8e8e93; color: var(--bg); }
 .equip-tile.us, .sb-cab-tile.us, .rvh-tile.us, .cld-type.us, .wl-mod.us, .bk-sched-mod.us { background: rgba(50,173,230,0.15); color: #5ac8fa; }
 .equip-tile.xray, .sb-cab-tile.xray, .rvh-tile.xray, .cld-type.xray, .wl-mod.xray, .bk-sched-mod.xray { background: rgba(191,90,242,0.15); color: #d9a6f5; }
 .equip-tile.mammo, .sb-cab-tile.mammo, .rvh-tile.mammo, .cld-type.mammo, .wl-mod.mammo, .bk-sched-mod.mammo { background: rgba(255,55,95,0.15); color: #ff7a92; }
@@ -1615,7 +1683,7 @@ select.inp { cursor: pointer; }
 .bd-aff-proc { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bd-aff-tag { font-size: 0.6875rem; font-weight: 700; color: var(--orange); white-space: nowrap; }
 .bd-aff-empty { font-size: 0.78125rem; color: var(--green); background: var(--green-bg); border-radius: 8px; padding: 10px 12px; }
-.bd-aff-day { display: inline-block; font-size: 0.6875rem; font-weight: 700; color: var(--blue); background: var(--blue-bg); border-radius: 5px; padding: 1px 5px; margin-right: 5px; vertical-align: middle; }
+.bd-aff-day { display: inline-block; font-size: 0.6875rem; font-weight: 700; color: var(--blue-text); background: var(--blue-bg); border-radius: 5px; padding: 1px 5px; margin-right: 5px; vertical-align: middle; }
 
 /* Модалка успіху */
 .bd-done-box { display: flex; flex-direction: column; gap: 0; width: 100%; background: var(--card-2); border-radius: 10px; padding: 4px 14px; }
@@ -1756,7 +1824,7 @@ select.inp { cursor: pointer; }
     background: var(--card); color: var(--text);
     font-size: 1.125rem; line-height: 1; cursor: pointer;
   }
-  .rf-navtoggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .rf-navtoggle:focus-visible { outline: 2px solid var(--blue-line); outline-offset: 2px; }
 
   .rf-nav-scrim {
     display: block; position: fixed; inset: 0; z-index: 65;
@@ -1794,7 +1862,7 @@ select.inp { cursor: pointer; }
     background: none; border: none; color: var(--text-muted);
     font-size: 1rem; line-height: 1; cursor: pointer;
   }
-  .rf-navclose:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+  .rf-navclose:focus-visible { outline: 2px solid var(--blue-line); outline-offset: -2px; }
   /* Шапка сайдбара резервує місце під обидві кнопки: «☰» (fixed, поверх
      шухляди — вона лишається перемикачем і у відкритому стані) і «✕». */
   .sidebar .sb-head { padding-left: 3.5rem; padding-right: 3.25rem; }

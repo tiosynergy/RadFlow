@@ -861,8 +861,8 @@ function CenterDetails({ data, loading }: { data?: CenterCardData | null; loadin
               <div key={i} style={{ fontSize: "0.8125rem" }}>
                 <div style={{ fontWeight: 600 }}>{a.full_name || "Адміністратор"}</div>
                 <div style={{ color: "var(--text-secondary)", display: "flex", gap: 16, flexWrap: "wrap", marginTop: 3 }}>
-                  {phone ? <a href={"tel:" + phone} style={{ color: "var(--blue)", textDecoration: "none" }}>📞 {phone}</a> : null}
-                  {email ? <a href={"mailto:" + email} style={{ color: "var(--blue)", textDecoration: "none" }}>✉ {email}</a> : null}
+                  {phone ? <a href={"tel:" + phone} style={{ color: "var(--blue-text)", textDecoration: "none" }}>📞 {phone}</a> : null}
+                  {email ? <a href={"mailto:" + email} style={{ color: "var(--blue-text)", textDecoration: "none" }}>✉ {email}</a> : null}
                   {!phone && !email ? <span style={{ color: "var(--text-muted)" }}>контакти не вказані</span> : null}
                 </div>
               </div>
@@ -1197,7 +1197,7 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
           return (
             <div key={p.id}
               ref={p.id === highlightId ? (el) => { if (el && !didScrollHighlight.current) { didScrollHighlight.current = true; el.scrollIntoView({ block: "center" }); } } : undefined}
-              style={{ display: "flex", alignItems: "center", gap: 12, background: "var(--card)", border: "1px solid " + (p.id === highlightId ? "var(--blue)" : "var(--border)"), borderRadius: "var(--r-md)", padding: "10px 14px", opacity: p.status === "waiting" ? 1 : 0.72 }}>
+              style={{ display: "flex", alignItems: "center", gap: 12, background: "var(--card)", border: "1px solid " + (p.id === highlightId ? "var(--blue-line)" : "var(--border)"), borderRadius: "var(--r-md)", padding: "10px 14px", opacity: p.status === "waiting" ? 1 : 0.72 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: "0.84375rem", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   {p.status !== "waiting" && <span className="badge">{st.label}</span>}

@@ -19,8 +19,8 @@
   background: var(--card); border: 1px solid var(--border); border-left: 3px solid transparent;
   border-radius: var(--r-md); padding: 11px 13px; transition: background .12s, border-color .12s; }
 .rq-item:hover { background: var(--card-hover); }
-.rq-item.active { border-color: var(--blue); background: var(--blue-bg-soft); }
-.rq-item.st-cabinet { border-left-color: var(--blue); }
+.rq-item.active { border-color: var(--blue-line); background: var(--blue-bg-soft); }
+.rq-item.st-cabinet { border-left-color: var(--blue-line); }
 /* Приглушення відпрацьованих — кольором, не `opacity`: пояснення й заміри у
    radflow.css біля `.qrow-item.done`. Стан несе лівий акцент і бейдж. */
 .rq-item.st-done { color: var(--text-muted); }
@@ -29,7 +29,7 @@
 .rq-item.st-noshow.active { color: var(--text); }
 .rq-time { font-size: 0.8125rem; font-weight: 700; flex-shrink: 0; width: 38px; }
 .rq-tile { width: 32px; height: 32px; border-radius: 8px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 0.6875rem; font-weight: 700; }
-.rq-tile.mrt { background: var(--blue-bg); color: #4da3ff; }
+.rq-tile.mrt { background: var(--blue-bg); color: var(--blue-text); }
 .rq-tile.ct { background: var(--orange-bg); color: var(--orange); }
 .rq-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .rq-name { font-size: 0.84375rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -75,12 +75,12 @@
 .pd-info-val { font-size: 0.84375rem; color: var(--text); margin-top: 5px; display: block; line-height: 1.45; }
 .pd-info.indication .pd-info-val { color: var(--text-secondary); }
 .pd-info .cld-type { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 20px; padding: 0 7px; border-radius: 5px; font-size: 0.6875rem; font-weight: 700; margin-right: 4px; }
-.cld-type.mrt { background: var(--blue-bg); color: #4da3ff; }
+.cld-type.mrt { background: var(--blue-bg); color: var(--blue-text); }
 .cld-type.ct { background: var(--orange-bg); color: var(--orange); }
 
 /* status controls */
 .pd-actions { display: flex; align-items: center; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
-.pd-timer { font-size: 1.625rem; font-weight: 700; color: #4da3ff; font-variant-numeric: tabular-nums; }
+.pd-timer { font-size: 1.625rem; font-weight: 700; color: var(--blue-text); font-variant-numeric: tabular-nums; }
 .pd-timer.over { color: var(--orange); }
 .pd-timer-lab { font-size: 0.75rem; font-weight: 500; color: var(--text-muted); margin-left: 4px; }
 .pd-done-row { display: flex; align-items: center; gap: 14px; }
@@ -92,10 +92,10 @@
 .ss-btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 10px; font-size: 0.84375rem; font-weight: 600; background: var(--card); border: 1.5px solid var(--border-strong); color: var(--text-secondary); }
 .ss-btn:hover { background: var(--card-hover); color: var(--text); }
 .ss-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-.ss-dot.gray { background: var(--text-muted); } .ss-dot.blue { background: var(--blue); }
+.ss-dot.gray { background: var(--text-muted); } .ss-dot.blue { background: var(--blue-line); }
 .ss-dot.green { background: var(--green); } .ss-dot.red { background: var(--red); }
 .ss-btn.active.gray { border-color: var(--text-muted); background: var(--gray-badge-bg); color: var(--text); }
-.ss-btn.active.blue { border-color: var(--blue); background: var(--blue-bg); color: #4da3ff; }
+.ss-btn.active.blue { border-color: var(--blue-line); background: var(--blue-bg); color: var(--blue-text); }
 .ss-btn.active.green { border-color: var(--green); background: var(--green-bg); color: var(--green); }
 .ss-btn.active.red { border-color: var(--red); background: var(--red-bg); color: var(--red); }
 
@@ -103,14 +103,14 @@
 
 /* referring doctor with phone */
 .pd-doc { display: flex; flex-direction: column; gap: 4px; }
-.pd-doc-phone { font-size: 0.8125rem; color: #4da3ff; text-decoration: none; font-variant-numeric: tabular-nums; width: fit-content; }
+.pd-doc-phone { font-size: 0.8125rem; color: var(--blue-text); text-decoration: none; font-variant-numeric: tabular-nums; width: fit-content; }
 .pd-doc-phone:hover { text-decoration: underline; }
 
 /* fields (notes) */
 .pd-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .pd-field-lab { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); }
 .pd-textarea { background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 9px; padding: 11px 13px; font-size: 0.84375rem; color: var(--text); outline: none; resize: vertical; line-height: 1.55; transition: border-color .12s; width: 100%; }
-.pd-textarea:focus { border-color: var(--blue); }
+.pd-textarea:focus { border-color: var(--blue-line); }
 
 /* notes */
 .pd-notes { margin-top: 18px; display: flex; flex-direction: column; gap: 7px; }
@@ -144,7 +144,7 @@
 .equip-lab { font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
 .equip-chip { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .equip-tile { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; font-size: 0.75rem; font-weight: 700; flex-shrink: 0; }
-.equip-tile.mrt { background: var(--blue-bg); color: #4da3ff; }
+.equip-tile.mrt { background: var(--blue-bg); color: var(--blue-text); }
 .equip-tile.ct { background: var(--orange-bg); color: var(--orange); }
 /* Нові модальності (0087) — див. radflow.css */
 .equip-tile.us, .cld-type.us { background: rgba(50,173,230,0.15); color: #5ac8fa; }
@@ -162,7 +162,7 @@
 .equip-tab:hover { background: var(--card-hover); color: var(--text); }
 .equip-tab.active { border-color: var(--border-strong); background: var(--bg); color: var(--text); }
 .equip-tab-tile { width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; font-size: 0.6875rem; font-weight: 700; }
-.equip-tab-tile.mrt { background: var(--blue-bg); color: #4da3ff; }
+.equip-tab-tile.mrt { background: var(--blue-bg); color: var(--blue-text); }
 .equip-tab-tile.ct { background: var(--orange-bg); color: var(--orange); }
 
 .rad-dialog { max-width: 660px; width: 100%; }
@@ -184,10 +184,10 @@
 
 .kanban { flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; overflow: hidden; padding-bottom: 18px; min-height: 0; }
 .kc { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--r-lg); display: flex; flex-direction: column; min-height: 0; transition: border-color .12s, background .12s; }
-.kc.drop { border-color: var(--blue); background: rgba(10,132,255,0.06); }
+.kc.drop { border-color: var(--blue-line); background: rgba(10,132,255,0.06); }
 .kc-head { display: flex; align-items: center; gap: 9px; padding: 13px 15px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .kc-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-.kc-dot.gray { background: var(--text-muted); } .kc-dot.blue { background: var(--blue); }
+.kc-dot.gray { background: var(--text-muted); } .kc-dot.blue { background: var(--blue-line); }
 .kc-dot.purple { background: #bf5af2; } .kc-dot.green { background: var(--green); }
 .kc-title { font-size: 0.84375rem; font-weight: 700; }
 .kc-count { margin-left: auto; font-size: 0.75rem; font-weight: 700; color: var(--text-secondary); background: var(--card-2); border-radius: 10px; padding: 2px 9px; }
@@ -203,7 +203,7 @@
 .sc.prio-planned { border-left-color: var(--border-strong); }
 .sc-top { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; }
 .sc-tile { width: 30px; height: 30px; border-radius: 7px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 0.6875rem; font-weight: 700; }
-.sc-tile.mrt { background: var(--blue-bg); color: #4da3ff; } .sc-tile.ct { background: var(--orange-bg); color: var(--orange); }
+.sc-tile.mrt { background: var(--blue-bg); color: var(--blue-text); } .sc-tile.ct { background: var(--orange-bg); color: var(--orange); }
 .sc-id { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .sc-acc { font-size: 0.6875rem; color: var(--text-muted); font-weight: 600; }
 .sc-time { font-size: 0.6875rem; color: var(--text-faint); }

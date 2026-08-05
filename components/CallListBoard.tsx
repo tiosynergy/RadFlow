@@ -63,7 +63,7 @@ const CL_META: Record<string, { label: string; cls: string; icon: string }> = {
   declined: { label: "Відмова", cls: "red", icon: "✕" },
 };
 const CALL_ORDER: Record<string, number> = { not_called: 0, to_recall: 1, no_answer: 2, confirmed: 3, declined: 4 };
-const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "#4da3ff", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
+const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
 
 function StatusBadge({ status }: { status: string | null | undefined }) {
   const key = status || "not_called";
@@ -111,7 +111,7 @@ function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet,
             <>
               <button className="btn btn-green btn-sm" title="Підтвердити" onClick={() => onSet(p.id, "confirmed")}>✓</button>
               <button className="mini-icon" title="Не відповідає" style={{ color: "var(--orange)" }} onClick={() => onSet(p.id, "no_answer")}>☏</button>
-              <button className="mini-icon" title="Передзвонити" style={{ color: "#4da3ff" }} onClick={() => onSet(p.id, "to_recall")}>↩</button>
+              <button className="mini-icon" title="Передзвонити" style={{ color: "var(--blue-text)" }} onClick={() => onSet(p.id, "to_recall")}>↩</button>
             </>
           )}
         </div>
@@ -132,7 +132,7 @@ function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet,
             <button className="btn btn-secondary btn-sm" onClick={() => onEditStudies(p)}>🩻 Дослідження</button>
             <button className="btn btn-primary btn-sm" onClick={() => onReschedule(p)}>🗓 Перенести на слот</button>
             <button className="btn btn-secondary btn-sm" style={{ color: "var(--orange)" }} onClick={() => onSet(p.id, "no_answer")}>☏ Не відповідає</button>
-            <button className="btn btn-secondary btn-sm" style={{ color: "#4da3ff" }} onClick={() => onSet(p.id, "to_recall")}>↩ Передзвонити</button>
+            <button className="btn btn-secondary btn-sm" style={{ color: "var(--blue-text)" }} onClick={() => onSet(p.id, "to_recall")}>↩ Передзвонити</button>
             <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onSet(p.id, "declined")}>✕ Відмова</button>
           </div>
         </div>
@@ -181,7 +181,7 @@ function IncidentCallSection({ incident, roomName, affected, onReschedule, onRec
                     {p.patient_phone && <a className="btn btn-primary btn-sm" href={"tel:" + p.patient_phone.replace(/\s/g, "")}>☎ Подзвонити {p.patient_phone}</a>}
                     <div className="cld-actions" style={{ marginTop: 8 }}>
                       <button className="btn btn-primary btn-sm" onClick={() => onReschedule(p)}>🗓 Перенести на слот</button>
-                      <button className="btn btn-secondary btn-sm" style={{ color: "#4da3ff" }} onClick={() => onRecall(p)}>↩ Передзвонити</button>
+                      <button className="btn btn-secondary btn-sm" style={{ color: "var(--blue-text)" }} onClick={() => onRecall(p)}>↩ Передзвонити</button>
                       <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onRefuse(p)}>✕ Відмова</button>
                     </div>
                   </div>
@@ -231,7 +231,7 @@ function LateCallSection({ late, roomsById, onReschedule, onRecall, onToWaitlist
                   <div className="cld-actions" style={{ marginTop: 8 }}>
                     <button className="btn btn-primary btn-sm" onClick={() => onReschedule(p)}>🗓 Перенести на слот</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => onToWaitlist(p)} title="Пацієнт чекатиме на вільне вікно">⏳ В лист очікування</button>
-                    <button className="btn btn-secondary btn-sm" style={{ color: "#4da3ff" }} onClick={() => onRecall(p)}>↩ Передзвонити</button>
+                    <button className="btn btn-secondary btn-sm" style={{ color: "var(--blue-text)" }} onClick={() => onRecall(p)}>↩ Передзвонити</button>
                     <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onRefuse(p)}>✕ Відмова</button>
                   </div>
                 </div>
@@ -555,9 +555,9 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
     { lab: "Всього записів", val: counts.total, pct: 100, color: "var(--text-faint)", cls: "" },
     { lab: "Підтверджено", val: counts.confirmed, pct: pct(counts.confirmed), color: "var(--green)", cls: "green" },
     { lab: "Не відповідає", val: counts.no_answer, pct: pct(counts.no_answer), color: "var(--orange)", cls: "orange" },
-    { lab: "Передзвонити", val: counts.to_recall, pct: pct(counts.to_recall), color: "#4da3ff", cls: "blue" },
+    { lab: "Передзвонити", val: counts.to_recall, pct: pct(counts.to_recall), color: "var(--blue-text)", cls: "blue" },
   ];
-  const statColor: Record<string, string> = { "": "var(--text)", green: "var(--green)", orange: "var(--orange)", blue: "#4da3ff" };
+  const statColor: Record<string, string> = { "": "var(--text)", green: "var(--green)", orange: "var(--orange)", blue: "var(--blue-text)" };
   const tabs = [
     { key: "all", label: "Всі", ct: counts.total },
     { key: "not_called", label: "Ще не дзвонили", ct: counts.not_called },

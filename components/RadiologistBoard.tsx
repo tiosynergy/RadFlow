@@ -94,14 +94,18 @@ const STEP_ORDER = ["scheduled", "waiting", "in_progress", "done"];
 const STEP_META: Record<string, { label: string; color: string }> = {
   scheduled:   { label: "В черзі",    color: "#aeaeb2" },
   waiting:     { label: "Очікує",     color: "#ffd60a" },
-  in_progress: { label: "В кабінеті", color: "#4da3ff" },
+  in_progress: { label: "В кабінеті", color: "var(--blue-text)" },
   done:        { label: "Виконано",   color: "#30d158" },
 };
-const STEP_PRIMARY: Record<string, { icon: string; label: string; bg: string; color: string }> = {
-  scheduled:   { icon: "✓", label: "Пацієнт прийшов",      bg: "var(--blue)",  color: "#fff" },
-  waiting:     { icon: "▶", label: "Викликати в кабінет",  bg: "var(--blue)",  color: "#fff" },
-  in_progress: { icon: "✓", label: "Завершити дослідження", bg: "var(--green)", color: "#04210d" },
-  done:        { icon: "✓", label: "Дослідження виконано", bg: "var(--card)",  color: "var(--text-faint)" },
+/* border — не косметика: заливка --blue (#0d6ecf) дає лише 2.75:1 проти --card
+   рядка, тобто найнатискуваніша кнопка дошки не відділяється від фону
+   (WCAG 1.4.11, поріг 3:1). --blue-line тримає 3.82. Зелена заливка
+   відділяється сама (6.89), сірій «виконано» межа теж не завадить. */
+const STEP_PRIMARY: Record<string, { icon: string; label: string; bg: string; color: string; border: string }> = {
+  scheduled:   { icon: "✓", label: "Пацієнт прийшов",      bg: "var(--blue)",  color: "#fff", border: "1px solid var(--blue-line)" },
+  waiting:     { icon: "▶", label: "Викликати в кабінет",  bg: "var(--blue)",  color: "#fff", border: "1px solid var(--blue-line)" },
+  in_progress: { icon: "✓", label: "Завершити дослідження", bg: "var(--green)", color: "#04210d", border: "none" },
+  done:        { icon: "✓", label: "Дослідження виконано", bg: "var(--card)",  color: "var(--text-faint)", border: "1px solid var(--border-strong)" },
 };
 
 // Годинник — за часом ЦЕНТРУ (як і решта дошки), а не браузера радіолога.
@@ -287,7 +291,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
             const km = (arr[0] && arr[0].type) || ((roomKind === "МРТ" || roomKind === "КТ") ? roomKind : "");
             if (!km) return null;
             const isCt = km === "КТ";
-            return <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "#4da3ff" }}>{km}</span>;
+            return <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "var(--blue-text)" }}>{km}</span>;
           })()}
           <b>{roomName}</b>
           {roomModel ? <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}</span> : null}
@@ -406,7 +410,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                       <>
                         <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn)} disabled={advanceDisabled}
                           title={late ? "Запізнення понад буферний час — рішення ухвалює реєстратура (повернути/перенести/зняти)" : isFutureRow ? "Майбутній запис — дія доступна в день запису" : (p.status === "waiting" && startBlockReason ? startBlockReason : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : ""))}
-                          style={{ flex: 8, minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: "0.84375rem", fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                          style={{ flex: 8, minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 8px", borderRadius: 10, fontSize: "0.84375rem", fontWeight: 600, border: pb.border, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
                           {pb.icon} {pb.label}
                         </button>
@@ -541,7 +545,7 @@ function RadSidebar({ rooms, roomNoteOf, roomFilter, setRoomFilter, counts, admi
         <SoundToggle />
       </div>
       <div className="sb-user">
-        <div className="avatar" style={{ background: "linear-gradient(135deg,#30d158,#1a7a36)" }}>{initials}</div>
+        <div className="avatar" style={{ background: "linear-gradient(135deg,#1a7a36,#0f5d27)" }}>{initials}</div>
         <div className="meta"><div className="nm">{adminName || "Радіолог"}</div><div className="rl">Радіолог</div></div>
         <button onClick={signOut} title="Вийти з акаунта" aria-label="Вийти"
           style={{ marginLeft: "auto", background: "transparent", border: "1px solid var(--border-strong)", color: "var(--text-secondary)", borderRadius: 8, padding: "6px 10px", fontSize: "0.78125rem", cursor: "pointer" }}>
@@ -976,7 +980,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
               );
             })}
             {selectedOverride && selDayStatus.kind !== "none" && (
-              <div className="inc-banner fade-in" style={{ borderColor: selDayStatus.kind === "closed" ? "var(--red)" : "var(--blue)" }}>
+              <div className="inc-banner fade-in" style={{ borderColor: selDayStatus.kind === "closed" ? "var(--red)" : "var(--blue-line)" }}>
                 <span className="inc-banner-ic">{selDayStatus.kind === "closed" ? "🚫" : "🕐"}</span>
                 <div className="inc-banner-txt">
                   <div className="inc-banner-title">{selDayStatus.kind === "closed" ? "Неробочий день" : "Особливий графік"} · {fmtShort(selectedDate)}</div>

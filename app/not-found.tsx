@@ -18,7 +18,7 @@ export default function NotFound() {
         color: "var(--text, #f2f2f7)",
       }}
     >
-      <div style={{ fontSize: "4rem", fontWeight: 800, lineHeight: 1, color: "var(--blue, #0a84ff)" }}>404</div>
+      <div style={{ fontSize: "4rem", fontWeight: 800, lineHeight: 1, color: "var(--blue-text, #6db4ff)" }}>404</div>
       <div style={{ fontSize: "1.125rem", fontWeight: 600 }}>Сторінку не знайдено</div>
       <div style={{ maxWidth: 440, color: "var(--text-muted, #8e8e93)" }}>
         Такої сторінки немає або її переміщено. Поверніться до дошки черги.
@@ -32,7 +32,7 @@ export default function NotFound() {
           fontWeight: 600,
           textDecoration: "none",
           color: "#fff",
-          background: "var(--blue, #0a84ff)",
+          background: "var(--blue, #0d6ecf)",
         }}
       >
         ← До дошки черги

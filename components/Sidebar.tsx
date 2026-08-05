@@ -201,7 +201,7 @@ export default function Sidebar({
       </div>
 
       <div className="sb-user">
-        <div className="avatar" style={{ background: "linear-gradient(135deg,#0a84ff,#7b5cff)" }}>{initials(adminName)}</div>
+        <div className="avatar" style={{ background: "linear-gradient(135deg,var(--blue),#6344e0)" }}>{initials(adminName)}</div>
         <div className="meta">
           <div className="nm">{adminName || "Користувач"}</div>
           <div className="rl">{adminRole || "Адміністратор"}</div>

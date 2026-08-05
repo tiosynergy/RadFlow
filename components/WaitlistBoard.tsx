@@ -407,7 +407,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
     { lab: "В очікуванні", val: counts.waiting, color: "var(--green)" },
     { lab: "CITO", val: counts.cito, color: "var(--red)" },
     { lab: "Терміново", val: counts.urgent, color: "var(--orange)" },
-    { lab: "Записано", val: counts.scheduled, color: "#4da3ff" },
+    { lab: "Записано", val: counts.scheduled, color: "var(--blue-text)" },
   ];
 
   const bookPrefill: BookingPrefill | null = bookFor ? {

@@ -377,7 +377,7 @@ function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: 
     // Інакше завантаженість показувала б хвилини, яких у кабінеті вже немає.
     const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "cancelled" && e.status !== "not_held" && e.status !== "needs_reschedule").reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
     const pct = cap > 0 ? Math.min(100, Math.round((mins / cap) * 100)) : 0;
-    return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue)" : "var(--orange)", off: !isRoomBookable(r) };
+    return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue-text)" : "var(--orange)", off: !isRoomBookable(r) };
   });
 }
 function RoomLoad({ rooms, onSelectRoom }: { rooms: RoomLoadItem[]; onSelectRoom?: (id: string) => void }) {
@@ -421,7 +421,7 @@ const CALL_META: Record<string, { label: string; cls: string; icon: string }> = 
   declined:   { label: "Відмова", cls: "red", icon: "✕" },
   not_called: { label: "Не дзвонили", cls: "gray", icon: "○" },
 };
-const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "#4da3ff", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
+const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
 // Довідка «звідки перенесено» → короткий рядок для розгорнутої картки.
 function fmtOrigin(o: RescheduleOrigin | null | undefined, roomsById: Record<string, { name?: string | null }>): string | null {
   if (!o || (!o.from_date && !o.from_time)) return null;
@@ -437,14 +437,18 @@ const STEP_ORDER = ["scheduled", "waiting", "in_progress", "done"];
 const STEP_META: Record<string, { label: string; color: string }> = {
   scheduled:   { label: "В черзі",    color: "#aeaeb2" },
   waiting:     { label: "Очікує",     color: "#ffd60a" },
-  in_progress: { label: "В кабінеті", color: "#4da3ff" },
+  in_progress: { label: "В кабінеті", color: "var(--blue-text)" },
   done:        { label: "Виконано",   color: "#30d158" },
 };
-const STEP_PRIMARY: Record<string, { icon: string; label: string; bg: string; color: string }> = {
-  scheduled:   { icon: "✓", label: "Пацієнт прийшов",      bg: "var(--blue)",  color: "#fff" },
-  waiting:     { icon: "▶", label: "Викликати в кабінет",  bg: "var(--blue)",  color: "#fff" },
-  in_progress: { icon: "✓", label: "Завершити процедуру",  bg: "var(--green)", color: "#04210d" },
-  done:        { icon: "✓", label: "Дослідження виконано", bg: "var(--card)",  color: "var(--text-faint)" },
+/* border — не косметика: заливка --blue (#0d6ecf) дає лише 2.75:1 проти --card
+   рядка, тобто найнатискуваніша кнопка дошки не відділяється від фону
+   (WCAG 1.4.11, поріг 3:1). --blue-line тримає 3.82. Зелена заливка
+   відділяється сама (6.89), сірій «виконано» межа теж не завадить. */
+const STEP_PRIMARY: Record<string, { icon: string; label: string; bg: string; color: string; border: string }> = {
+  scheduled:   { icon: "✓", label: "Пацієнт прийшов",      bg: "var(--blue)",  color: "#fff", border: "1px solid var(--blue-line)" },
+  waiting:     { icon: "▶", label: "Викликати в кабінет",  bg: "var(--blue)",  color: "#fff", border: "1px solid var(--blue-line)" },
+  in_progress: { icon: "✓", label: "Завершити процедуру",  bg: "var(--green)", color: "#04210d", border: "none" },
+  done:        { icon: "✓", label: "Дослідження виконано", bg: "var(--card)",  color: "var(--text-faint)", border: "1px solid var(--border-strong)" },
 };
 const CALL_SEG_ORDER: CallStatus[] = ["not_called", "confirmed", "to_recall", "no_answer", "declined"];
 const CALL_SEG_STYLE: Record<string, { color: string; bg: string }> = {
@@ -590,7 +594,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
             const km = (arr[0] && arr[0].type) || ((roomKind === "МРТ" || roomKind === "КТ") ? roomKind : "");
             if (!km) return null;
             const isCt = km === "КТ";
-            return <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "#4da3ff" }}>{km}</span>;
+            return <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "var(--blue-text)" }}>{km}</span>;
           })()}
           <b>{roomName}</b>
           {roomModel ? <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}</span> : null}
@@ -746,7 +750,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                         <button onClick={advanceDisabled || !advanceFn ? undefined : act(advanceFn, "advance")} disabled={advanceDisabled || !!busy}
                           aria-busy={busy === "advance"}
                           title={!isTodayRow ? "Дія доступна в день запису" : (p.status === "waiting" && !canCall ? "Кабінет зайнятий — спершу завершіть поточного пацієнта" : "")}
-                          style={{ flex: "0 1 auto", minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 16px", borderRadius: 10, fontSize: "0.84375rem", fontWeight: 600, border: "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                          style={{ flex: "0 1 auto", minWidth: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "9px 16px", borderRadius: 10, fontSize: "0.84375rem", fontWeight: 600, border: pb.border, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
                           {busy === "advance" ? <><span className="rf-spin" aria-hidden="true" /> Опрацьовується…</> : <>{pb.icon} {pb.label}</>}
                         </button>
@@ -858,7 +862,7 @@ function CallListPanel({ entries, onSetCall, dateLabel }: { entries: QEntry[]; o
                 <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", flexShrink: 0 }}>{e.scheduled_time}</span>
               </div>
               <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", margin: "2px 0 4px" }}>{procLabel(e)}</div>
-              {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "#4da3ff", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
+              {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "var(--blue-text)", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                 <span className={"qd-call " + cm.cls} style={{ fontSize: "0.6875rem" }}>{cm.icon} {cm.label}</span>
                 <button className="btn btn-green btn-xs" onClick={() => onSetCall(e, "confirmed")} title="Підтверджено">✓</button>
@@ -890,7 +894,7 @@ function AffectedPanel({ affected, roomsById, onReschedule }: { affected: QEntry
               <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", flexShrink: 0 }}>{e.scheduled_time}</span>
             </div>
             <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", margin: "2px 0 4px" }}>{procLabel(e)} · {(e.room_id ? roomsById[e.room_id] : undefined)?.name}</div>
-            {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "#4da3ff", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
+            {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "var(--blue-text)", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <button className="btn btn-primary btn-xs" onClick={() => onReschedule(e)}>🗓 Перенести</button>
             </div>
@@ -923,7 +927,7 @@ function NeedsReschedulePanel({ entries, roomsById, onReschedule, onToWaitlist, 
               <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", flexShrink: 0 }}>було {e.scheduled_time}</span>
             </div>
             <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", margin: "2px 0 4px" }}>{procLabel(e)} · {(e.room_id ? roomsById[e.room_id] : undefined)?.name}</div>
-            {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "#4da3ff", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
+            {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "var(--blue-text)", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               <button className="btn btn-primary btn-xs" onClick={() => onReschedule(e)}>🗓 Перенести</button>
               <button className="btn btn-secondary btn-xs" title="Пацієнт чекатиме на вільне вікно" onClick={() => onToWaitlist(e)}>⏳ В лист очікування</button>
@@ -2003,7 +2007,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
               );
             })}
             {selectedOverride && selDayStatus.kind !== "none" && (
-              <div className="inc-banner fade-in" style={{ borderColor: selDayStatus.kind === "closed" ? "var(--red)" : "var(--blue)" }}>
+              <div className="inc-banner fade-in" style={{ borderColor: selDayStatus.kind === "closed" ? "var(--red)" : "var(--blue-line)" }}>
                 <span className="inc-banner-ic">{selDayStatus.kind === "closed" ? "🚫" : "🕐"}</span>
                 <div className="inc-banner-txt">
                   <div className="inc-banner-title">{selDayStatus.kind === "closed" ? "Неробочий день" : "Особливий графік"} · {fmtShort(selectedDate)}</div>

@@ -657,7 +657,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
       {active === "sec-price" && (<>
       <h1 className="wiz-h">Послуги та прайс</h1>
       <div className="info-banner" style={{ marginTop: 12 }}>
-        <span className="ib-ic" style={{ color: "var(--blue)" }}>₴</span>
+        <span className="ib-ic" style={{ color: "var(--blue-text)" }}>₴</span>
         <span className="ib-txt">
           <b>Базовий каталог центру</b> — перелік досліджень, тривалості та ціни на модальність.
           Для <b>кожного кабінета</b> ціну/тривалість/склад можна переозначити окремо — оберіть

@@ -4,8 +4,8 @@
 /* Wizard sidebar */
 .wiz-side { background: var(--card); border-right: 1px solid var(--border); display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 .wiz-head { padding: 22px 24px 18px; }
-.wiz-logo { font-size: 1.3125rem; font-weight: 700; color: var(--blue); display: flex; align-items: center; gap: 8px; text-decoration: none; }
-.wiz-logo .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 10px var(--blue); }
+.wiz-logo { font-size: 1.3125rem; font-weight: 700; color: var(--blue-text); display: flex; align-items: center; gap: 8px; text-decoration: none; }
+.wiz-logo .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--blue-line); box-shadow: 0 0 10px var(--blue-line); }
 .wiz-sub { font-size: 0.75rem; color: var(--text-muted); margin-top: 5px; }
 
 .wiz-steps { flex: 1; overflow-y: auto; padding: 8px 18px; }
@@ -19,7 +19,7 @@
   border: 2px solid var(--border-strong); color: var(--text-muted); background: var(--card);
 }
 .wstep.done .wstep-num { background: var(--green); border-color: var(--green); color: #06320f; }
-.wstep.active .wstep-num { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: 0 0 0 4px var(--blue-bg); }
+.wstep.active .wstep-num { background: var(--blue); border-color: var(--blue-line); color: #fff; box-shadow: 0 0 0 4px var(--blue-bg); }
 .wstep-txt { padding-top: 4px; }
 .wstep-title { display: block; font-size: 0.875rem; font-weight: 600; color: var(--text); }
 .wstep.locked .wstep-title { color: var(--text-muted); }
@@ -27,9 +27,9 @@
 
 .wiz-foot { border-top: 1px solid var(--border); padding: 16px 24px; }
 .wiz-prog-bar { height: 6px; border-radius: 3px; background: var(--card-2); overflow: hidden; margin-bottom: 10px; }
-.wiz-prog-fill { height: 100%; background: var(--blue); border-radius: 3px; transition: width .4s ease; }
+.wiz-prog-fill { height: 100%; background: var(--blue-line); border-radius: 3px; transition: width .4s ease; }
 .wiz-prog-lab { font-size: 0.75rem; color: var(--text-muted); display: flex; justify-content: space-between; }
-.wiz-prog-lab a { color: #4da3ff; text-decoration: none; }
+.wiz-prog-lab a { color: var(--blue-text); text-decoration: none; }
 
 /* Wizard main */
 .wiz-main { overflow-y: auto; height: 100%; display: flex; flex-direction: column; }
@@ -42,7 +42,8 @@
 /* Segmented tabs */
 .seg { display: inline-flex; gap: 4px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 4px; margin: 24px 0 18px; }
 .seg-tab { padding: 8px 18px; border-radius: 7px; font-size: 0.84375rem; font-weight: 500; color: var(--text-secondary); }
-.seg-tab.active { background: var(--blue); color: #fff; }
+/* Контур: заливка --blue проти --card контейнера .seg — 2.75:1 (<3:1). */
+.seg-tab.active { background: var(--blue); box-shadow: inset 0 0 0 1px var(--blue-line); color: #fff; }
 .seg-tab:not(.active):hover { color: var(--text); }
 
 /* Upload zone */
@@ -50,7 +51,7 @@
   border: 1.5px dashed var(--border-strong); border-radius: var(--r-lg); background: var(--card);
   padding: 48px 24px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s;
 }
-.upload-zone:hover { border-color: var(--blue); background: var(--blue-bg-soft); }
+.upload-zone:hover { border-color: var(--blue-line); background: var(--blue-bg-soft); }
 .upload-ic { font-size: 2.375rem; color: var(--text-muted); }
 .upload-title { font-size: 1rem; font-weight: 600; margin-top: 14px; }
 .upload-sub { font-size: 0.8125rem; color: var(--text-muted); margin-top: 6px; }
@@ -59,7 +60,7 @@
 
 /* Processing */
 .proc-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 44px 24px; text-align: center; }
-.spinner { width: 40px; height: 40px; border-radius: 50%; border: 3px solid var(--card-2); border-top-color: var(--blue); margin: 0 auto 18px; animation: spin .8s linear infinite; }
+.spinner { width: 40px; height: 40px; border-radius: 50%; border: 3px solid var(--card-2); border-top-color: var(--blue-line); margin: 0 auto 18px; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .proc-title { font-size: 1rem; font-weight: 600; }
 .proc-status { font-size: 0.8125rem; color: var(--text-muted); margin-top: 8px; min-height: 18px; }
@@ -76,14 +77,14 @@
 .rtable tr.warn td { background: rgba(255,159,10,0.06); border-color: rgba(255,159,10,0.25); }
 .rcell { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px 7px; font-size: 0.8125rem; color: var(--text); width: 100%; outline: none; transition: border-color .12s; }
 .rcell:hover { border-color: var(--border-strong); }
-.rcell:focus { border-color: var(--blue); background: var(--bg-elevated); }
+.rcell:focus { border-color: var(--blue-line); background: var(--bg-elevated); }
 .conf { display: inline-flex; align-items: center; gap: 5px; font-size: 0.75rem; font-weight: 600; }
 .conf.ok { color: var(--green); } .conf.warn { color: var(--orange); }
 
 /* Day toggles + schedule */
 .day-toggles { display: flex; gap: 8px; margin: 8px 0 20px; }
 .day-toggle { width: 46px; height: 40px; border-radius: 9px; background: var(--card); border: 1px solid var(--border); font-size: 0.8125rem; font-weight: 600; color: var(--text-muted); }
-.day-toggle.on { background: var(--blue); border-color: var(--blue); color: #fff; }
+.day-toggle.on { background: var(--blue); border-color: var(--blue-line); color: #fff; }
 .day-toggle:not(.on):hover { border-color: var(--border-strong); color: var(--text); }
 
 .sched-grid { display: grid; grid-template-columns: 54px repeat(7, 1fr); gap: 3px; margin-top: 14px; }
@@ -175,13 +176,13 @@
 .eq-days { display: flex; gap: 3px; }
 .eq-day { width: 28px; height: 28px; border-radius: 6px; background: var(--card); border: 1px solid var(--border);
   font-size: 0.6875rem; font-weight: 600; color: var(--text-muted); flex-shrink: 0; }
-.eq-day.on { background: var(--blue); border-color: var(--blue); color: #fff; }
+.eq-day.on { background: var(--blue); border-color: var(--blue-line); color: #fff; }
 .eq-day:not(.on):hover { border-color: var(--border-strong); color: var(--text); }
 .eq-hours { display: flex; align-items: center; gap: 7px; }
 .eq-time { flex: 1; min-width: 0; }
 .eq-dash { color: var(--text-muted); }
 .eq-break-lab { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-secondary); cursor: pointer; margin-top: 2px; }
-.eq-break-lab input { accent-color: var(--blue); width: 14px; height: 14px; cursor: pointer; }
+.eq-break-lab input { accent-color: var(--blue-line); width: 14px; height: 14px; cursor: pointer; }
 
 /* Кілька перерв у роботі кабінету (обід тощо) */
 .eq-breaks { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
@@ -194,7 +195,7 @@
 
 /* Перемикач «свій час для кожного дня» */
 .eq-perday-lab { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); cursor: pointer; margin-top: 2px; }
-.eq-perday-lab input { accent-color: var(--blue); width: 14px; height: 14px; cursor: pointer; }
+.eq-perday-lab input { accent-color: var(--blue-line); width: 14px; height: 14px; cursor: pointer; }
 
 /* Список рядків розкладу по днях */
 .eq-perday-list { display: flex; flex-direction: column; gap: 8px; }
@@ -231,7 +232,7 @@
   transition: border-color .12s ease, background .12s ease;
 }
 .qp-opt:hover { border-color: var(--border-strong); }
-.qp-opt.sel { border-color: var(--blue); background: var(--blue-bg); }
+.qp-opt.sel { border-color: var(--blue-line); background: var(--blue-bg); }
 .qp-opt-title { font-size: 0.84375rem; font-weight: 600; }
 .qp-opt-desc { font-size: 0.75rem; color: var(--text-muted); line-height: 1.45; }
 .wiz-cta-wrap { display: inline-block; }
@@ -255,7 +256,7 @@
 .undo-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px;
   background: var(--card-2); border: 1px solid var(--border-strong); border-radius: var(--r-md);
   padding: 10px 14px; font-size: 0.8125rem; color: var(--text-secondary); margin: 12px 0; }
-.undo-btn { font-size: 0.8125rem; font-weight: 600; color: var(--blue); padding: 4px 10px; border-radius: 6px; }
+.undo-btn { font-size: 0.8125rem; font-weight: 600; color: var(--blue-text); padding: 4px 10px; border-radius: 6px; }
 .undo-btn:hover { background: var(--blue-bg); }
 
 /* F8 — parse error state + demo trigger */

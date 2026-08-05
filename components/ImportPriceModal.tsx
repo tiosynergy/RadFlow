@@ -389,7 +389,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
           )}
 
           {roomModality && (
-            <div style={{ fontSize: "0.78125rem", color: "var(--text-secondary)", border: "1px solid var(--blue)", borderRadius: 10, padding: "8px 12px", background: "var(--blue-bg)" }}>
+            <div style={{ fontSize: "0.78125rem", color: "var(--text-secondary)", border: "1px solid var(--blue-line)", borderRadius: 10, padding: "8px 12px", background: "var(--blue-bg)" }}>
               🏥 Імпорт у кабінет — застосуються <b>лише позиції {modalityLabel(roomModality)}</b>:
               вони стануть <b>послугами саме цього кабінета</b> (його власний прайс).
               Базовий каталог центру не змінюється; інші модальності з прайса ігноруються.
