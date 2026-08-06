@@ -159,3 +159,26 @@ describe("cursor — стабільність і привʼязка", () => {
     expect(decodeSearchCursor(evil, "queue", "date_desc")).toBeNull();
   });
 });
+
+/* ---------------------- termKind "id" (с25) ---------------------- */
+
+describe("normalizeSearchRequest — ID-запит", () => {
+  it("hex-префікс із журналу → termKind 'id'", () => {
+    const r = normalizeSearchRequest({ term: "04a33cd7" }, staffScope, TODAY);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.filters.termKind).toBe("id");
+  });
+  it("повний uuid → termKind 'id'", () => {
+    const r = normalizeSearchRequest({ term: "04a33cd7-9f1e-4b2a-8c3d-123456789abc" }, staffScope, TODAY);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.filters.termKind).toBe("id");
+  });
+  it("телефон лишається телефоном", () => {
+    const r = normalizeSearchRequest({ term: "0671234" }, staffScope, TODAY);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.filters.termKind).toBe("phone");
+  });
+});

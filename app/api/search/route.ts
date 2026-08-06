@@ -5,7 +5,7 @@ import { parseBody } from "@/lib/validationHttp";
 import { safeDbError } from "@/lib/validation";
 import { wallDayKey } from "@/lib/incidents";
 import { modalityCode } from "@/lib/studies";
-import { entryMatchesTerm, normSearchText, phoneMatches, studiesArr, studiesText } from "@/lib/searchText";
+import { entryMatchesTerm, idMatches, normSearchText, phoneMatches, studiesArr, studiesText } from "@/lib/searchText";
 import {
   decodeSearchCursor,
   encodeSearchCursor,
@@ -104,10 +104,13 @@ async function resolveSearchScope(supabase: DB, me: Caller): Promise<RoleScope |
 
 /* ---------- Общие пост-фильтры (term / studyQuery / модальность / контраст) ---------- */
 
-type StudyRow = { patient_name: string | null; patient_phone: string | null; studies: unknown };
+type StudyRow = { id: string; patient_name: string | null; patient_phone: string | null; studies: unknown };
 
 function passesStudyFilters(row: StudyRow, f: NormalizedSearchFilters, waitlistModality?: string | null): boolean {
-  if (f.termKind === "phone") {
+  if (f.termKind === "id") {
+    // с25: пошук за ID запису (короткий ID з «Журналу дій» = префікс uuid).
+    if (!idMatches(row.id, f.term)) return false;
+  } else if (f.termKind === "phone") {
     if (!phoneMatches(row.patient_phone, f.term)) return false;
   } else if (f.termKind === "text") {
     if (!entryMatchesTerm(row, f.term)) return false;

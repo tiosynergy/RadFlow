@@ -194,6 +194,8 @@ export default function Sidebar({
 
       <div className="sb-settings">
         {showCeoLink && <a href="/ceo" className={"sb-item" + (activeNav === "ceo" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Дашборд CEO</span></a>}
+        {/* с25: журнал важливих подій — лише адміністратор (ТЗ §11 / §9). */}
+        {isAdmin && <a href="/journal" className={"sb-item" + (activeNav === "journal" ? " active" : "")}><span className="ic">🗒</span><span className="sb-item-lab">Журнал дій</span></a>}
         {isAdmin && <a href="/setup" className="sb-item"><span className="ic">⚙</span><span className="sb-item-lab">Майстер налаштування</span></a>}
         {/* Звукові сповіщення отримують admin/registrar; CEO — ні (і перемикач не бачить). */}
         {!isCeo && <SoundToggle />}
