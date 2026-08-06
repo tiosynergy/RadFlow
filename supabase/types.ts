@@ -1099,6 +1099,28 @@ export type Database = {
         };
         Relationships: [];
       };
+      important_events: {
+        // 0128 — журнал важливих подій БЕЗ PII. Клієнт: лише SELECT
+        // (RLS: admin своєї клініки + CEO дозволених). Запис — тільки
+        // RPC emit_important_event під service_role.
+        Row: {
+          id: string;
+          occurred_at: string;
+          clinic_id: string;
+          actor_id: string | null;
+          actor_role: string;
+          event_type: string;
+          entity_type: string;
+          entity_id: string;
+          subject_referrer_id: string | null;
+          changed_fields: string[] | null;
+          details: Json | null;
+          request_id: string | null;
+        };
+        Insert: never; // клієнтського INSERT не існує (0128)
+        Update: never;
+        Relationships: [];
+      };
       event_outbox: {
         // next_attempt_at / dead — міграція 0064 (backoff + DLQ).
         Row: {
@@ -1142,6 +1164,23 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      emit_important_event: {
+        // 0128; EXECUTE лише в service_role. Роль людини виводиться з
+        // profiles усередині функції; p_actor_role має сенс лише для 'system'.
+        Args: {
+          p_clinic_id: string;
+          p_actor_id: string | null;
+          p_actor_role: string | null;
+          p_event_type: string;
+          p_entity_type: string;
+          p_entity_id: string;
+          p_subject_referrer_id?: string | null;
+          p_changed_fields?: string[] | null;
+          p_details?: Json | null;
+          p_request_id?: string | null;
+        };
+        Returns: string;
+      };
       cancel_case_rpc: {
         Args: { p_case_id: string };
         Returns: number;

@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
 import { parseJson } from "@/lib/validationHttp";
 import { safeDbError, zUuid, zRoomIdsGrant } from "@/lib/validation";
+import { emitImportantEvent } from "@/lib/importantEvents.server";
 import type { TablesUpdate } from "@/supabase/types";
 
 /* room_ids — канон 0061 (zRoomIdsGrant): null/відсутній = УСІ кабінети,
@@ -30,7 +31,7 @@ const sDecide = z.object({
 export async function POST(req: Request) {
   // allowed=null: достатньо авторизованого користувача з профілем; конкретне
   // право (адмін центру / сам направник) перевіряється нижче per-row.
-  const gate = await requireRole(null);
+  const gate = await requireRole(null, { path: new URL(req.url).pathname });
   if (!gate.ok) return gate.res;
   const { user, me } = gate;
 
@@ -46,10 +47,18 @@ export async function POST(req: Request) {
   const admin = createAdminClient();
   const { data: row } = await admin
     .from("referral_access")
-    .select("id, referrer_id, clinic_id, status")
+    .select("id, referrer_id, clinic_id, status, room_ids")   // room_ids — для журналу (roomScope, 0128)
     .eq("id", accessId)
     .maybeSingle();
   if (!row) return NextResponse.json({ error: "Зв'язок не знайдено" }, { status: 404 });
+
+  /* 0128: спільна форма details подій referral.access_* — БЕЗ PII:
+     лише цільовий центр і обсяг доступу (усі кабінети / скільки перелічено). */
+  const accessDetails = (rooms: string[] | null): Record<string, unknown> => ({
+    targetClinicId: row.clinic_id,
+    roomScope: rooms && rooms.length ? "rooms" : "all",
+    ...(rooms && rooms.length ? { roomsCount: rooms.length } : {}),
+  });
 
   const isClinicAdmin = me.role === "admin" && me.clinic_id === row.clinic_id;
   const isThisReferrer = me.role === "referrer" && user.id === row.referrer_id;
@@ -75,6 +84,17 @@ export async function POST(req: Request) {
     if (!isClinicAdmin && !isThisReferrer) return NextResponse.json({ error: "Немає прав на відкликання" }, { status: 403 });
     const { error } = await admin.from("referral_access").update({ status: "revoked", decided_at: new Date().toISOString() }).eq("id", row.id);
     if (error) return NextResponse.json({ error: safeDbError("api/referral/access/decide", error) }, { status: 400 });
+    // 0128: подія — ПІСЛЯ успішного update. Грант лишається рядком зі
+    // status='revoked', тож журнал переживає відкликання.
+    await emitImportantEvent({
+      clinicId: row.clinic_id,
+      actorId: user.id,
+      eventType: "referral.access_revoked",
+      entityType: "referral_access",
+      entityId: row.id,
+      subjectReferrerId: row.referrer_id,
+      details: accessDetails(row.room_ids as string[] | null),
+    });
     return NextResponse.json({ ok: true, status: "revoked" });
   }
 
@@ -91,6 +111,8 @@ export async function POST(req: Request) {
     if (Object.keys(patch).length === 0) return NextResponse.json({ error: "Немає змін" }, { status: 400 });
     const { error } = await admin.from("referral_access").update(patch as TablesUpdate<"referral_access">).eq("id", row.id);
     if (error) return NextResponse.json({ error: safeDbError("api/referral/access/decide", error) }, { status: 400 });
+    // 0128: зміну ОБЛАСТІ активного гранта (policy/room_ids) НЕ журналюємо —
+    // окремого типу в ТЗ немає; кандидат на новий тип (напр. referral.access_scope_changed).
     return NextResponse.json({ ok: true, status: "active" });
   }
 
@@ -114,6 +136,22 @@ export async function POST(req: Request) {
 
   const { error } = await admin.from("referral_access").update(patch as TablesUpdate<"referral_access">).eq("id", row.id);
   if (error) return NextResponse.json({ error: safeDbError("api/referral/access/decide", error) }, { status: 400 });
+
+  /* 0128: підтвердження → referral.access_granted (ПІСЛЯ успішного update).
+     decline НЕ журналюємо — типу для відхилення заявки в ТЗ немає. Ефективні
+     кабінети: щойно задані в patch або ті, що вже були в заявці. */
+  if (nextStatus === "active") {
+    const effRooms = (patch.room_ids as string[] | undefined) ?? (row.room_ids as string[] | null);
+    await emitImportantEvent({
+      clinicId: row.clinic_id,
+      actorId: user.id,
+      eventType: "referral.access_granted",
+      entityType: "referral_access",
+      entityId: row.id,
+      subjectReferrerId: row.referrer_id,
+      details: accessDetails(effRooms),
+    });
+  }
 
   return NextResponse.json({ ok: true, status: nextStatus });
 }

@@ -5,6 +5,7 @@ import { requireRole } from "@/lib/apiAuth";
 import { parseBody, parseJson } from "@/lib/validationHttp";
 import { safeDbError, zUuid, zName, zEmail, zLogin, zOptText } from "@/lib/validation";
 import { randomRadiologistEmail, isTechnicalEmail } from "@/lib/login";
+import { emitImportantEvent } from "@/lib/importantEvents.server";
 
 // M-12: тіло запиту — схемою, а не String(body.x || ""). Кабінети — тільки UUID
 // (масив після dedupe); решта валідації (кабінет належить центру) — нижче, з БД.
@@ -67,6 +68,7 @@ export async function PATCH(req: Request) {
     needClinic: true,
     forbidden: "Лише адміністратор",
     rateLimit: { key: "acct:edit", max: 120, windowSeconds: 3600 },
+    path: new URL(req.url).pathname,   // для журналу access.denied (0128)
   });
   if (!gate.ok) return gate.res;
   const { me } = gate;
@@ -124,6 +126,8 @@ export async function PATCH(req: Request) {
   const { error: uErr } = await admin.from("profiles").update(patch).eq("id", userId);
   if (uErr) return NextResponse.json({ error: safeDbError("api/staff.patch", uErr) }, { status: 400 });
 
+  // 0128: PATCH НЕ журналюємо — тут лише контактні дані картки (ПІБ/телефон/
+  // примітка/контактна пошта), роль і доступи не змінюються.
   return NextResponse.json({ ok: true });
 }
 
@@ -137,9 +141,10 @@ export async function POST(req: Request) {
     needClinic: true,
     forbidden: "Лише адміністратор",
     rateLimit: { key: "acct:create", max: 30, windowSeconds: 3600 },
+    path: new URL(req.url).pathname,   // для журналу access.denied (0128)
   });
   if (!gate.ok) return gate.res;
-  const { me } = gate;
+  const { user, me } = gate;
 
   /* Персонал ЦЕНТРУ: радіолог або реєстратор (обидва мають clinic_id).
      Лікарі-направники мають ГЛОБАЛЬНИЙ акаунт (clinic_id = NULL) і створюються
@@ -236,6 +241,21 @@ export async function POST(req: Request) {
       roomsWarning = "Акаунт створено, але кабінети не призначились. Призначте їх у картці радіолога.";
     }
   }
+
+  /* 0128: подія доступу — ПІСЛЯ повного успіху створення акаунта. details БЕЗ
+     PII: роль (не персональні дані) і ФАКТИЧНО призначене число кабінетів
+     (при roomsWarning кабінети не призначились → 0). */
+  await emitImportantEvent({
+    clinicId: me.clinic_id,
+    actorId: user.id,
+    eventType: "staff.access_changed",
+    entityType: "staff",
+    entityId: uid,
+    details: {
+      role,
+      ...(role === "radiologist" ? { roomsCount: roomsWarning ? 0 : roomIds.length } : {}),
+    },
+  });
 
   return NextResponse.json({ ok: true, id: uid, invite_token: inviteToken, warning: roomsWarning });
 }
