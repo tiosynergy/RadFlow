@@ -11,7 +11,7 @@
 
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { BUFFER_DEFAULT, normBuffer, isContrastName} from "@/lib/studies";
@@ -114,13 +114,25 @@ export function useRoomBusy(opts: {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
+  /* Аудит 2026-08-06 H-3A: лічильник поколінь (правило проєкту з с24 — «два
+     запити в одному reload — це гонка», тут воно нарешті застосоване і до
+     цього хука). Без нього при швидкій зміні кабінету/дати ВІДПОВІДЬ СТАРОГО
+     запиту могла завершитись пізніше нового і перезаписати rows/error/loading —
+     сітка показувала зайнятість ЧУЖОГО кабінету або чужої дати, а перехід
+     loading true→false помічав уже НОВИЙ roomDateKey як «свіжий» (BookingModal
+     звіряє свіжість саме за цим переходом). Кожна зміна scope і кожен виклик
+     load() підвищують покоління; відповідь чужого покоління ігнорується цілком. */
+  const genRef = useRef(0);
+
   const load = useCallback(async () => {
+    const gen = ++genRef.current;
     if (!enabled || !roomId || !dateStr) { setRows([]); setError(false); setLoading(false); return; }
     try {
       const supabase = createClient();
       const { data, error: rpcErr } = await supabase.rpc("room_busy_slots", {
         p_room: roomId, p_date: dateStr, ...(excludeId ? { p_exclude: excludeId } : {}),
       });
+      if (gen !== genRef.current) return; // відповідь чужого scope/покоління
       /* PostgREST не кидає виняток — повертає {data:null, error}. Мовчки взяти
          data||[] означало б показати ЗАЙНЯТИЙ день як «усе вільно» — і дати
          записати пацієнта поверх іншого (від бронювання нас урятував би лише
@@ -129,27 +141,46 @@ export function useRoomBusy(opts: {
       setRows((data || []) as BusyRow[]);
       setError(false);
     } catch {
+      if (gen !== genRef.current) return;
       // Транзієнтний збій (рефреш токена / мережа) — модалку не рушимо (конвенція
       // проєкту), але й «усе вільно» не малюємо: піднімаємо error, сітка ховається.
       setError(true);
     } finally {
-      setLoading(false);
+      if (gen === genRef.current) setLoading(false);
     }
   }, [roomId, dateStr, excludeId, enabled]);
 
   // Первинне завантаження робить сам useRealtimeRefetch (callAll при підписці) —
-  // тут лише скидаємо стан при зміні кабінету/дати й гасимо вимкнений режим.
+  // тут скидаємо стан при зміні scope: старі spans чужого кабінету/дати не
+  // показуються ані кадру, а відповіді старого покоління вже інвалідовані.
   useEffect(() => {
+    genRef.current++;
     if (!enabled || !roomId || !dateStr) { setRows([]); setError(false); setLoading(false); return; }
+    setRows([]);
+    setError(false);
     setLoading(true);
-  }, [enabled, roomId, dateStr]);
+  }, [enabled, roomId, dateStr, excludeId]);
 
   useRealtimeRefetch({
-    channelName: enabled && roomId && dateStr ? "slots-busy-" + roomId + "-" + dateStr : null,
+    /* excludeId — частина scope (ревʼю с26 L-3): його зміна бампає покоління й
+       чистить стан, тож БЕЗ переподписки (callAll → load) ніхто не завантажив би
+       нові дані до повільного тика. Сьогодні всі споживачі тримають excludeId
+       константним на маунт — це страховка від майбутнього in-place свопа. */
+    channelName: enabled && roomId && dateStr
+      ? "slots-busy-" + roomId + "-" + dateStr + (excludeId ? "-x" + excludeId : "")
+      : null,
     subscriptions: [
-      { table: "queue_entries", onChange: load },
-      { table: "incidents", onChange: load },
+      /* Спільний debounceKey (ревʼю с26 L-4): обидві таблиці ведуть в ОДИН load —
+         без ключа callAll кликав би його двічі на кожен тик/маунт/фокус. */
+      { table: "queue_entries", onChange: load, debounceKey: "busy" },
+      { table: "incidents", onChange: load, debounceKey: "busy" },
     ],
+    /* Аудит H-3B: realtime під RLS не доставляє направнику зміни ЧУЖИХ записів —
+       при здоровому сокеті його відкрита сітка застарівала б безстроково. Рідкий
+       тикер оновлює зайнятість і при SUBSCRIBED; вмикаємо для ВСІХ ролей: модалка
+       з сіткою відкрита недовго, один RPC на пів хвилини — дешевша страховка,
+       ніж клієнтське визначення ролі. */
+    pollWhenSubscribedMs: 30_000,
   });
 
   return { rows, spans: busySpans(rows), loading, error, reload: load };

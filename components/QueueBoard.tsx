@@ -1577,8 +1577,16 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     // обновления) — как expectedFrom для CAS на сервере.
     const expectedFrom = entries.find((e) => e.id === id)?.status as QueueStatus | undefined;
     const nowIso = new Date().toISOString();
-    const patch = status === "in_progress" ? { status, in_progress_at: nowIso } : { status };
-    setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
+    /* 0129 (ревʼю с26 р2 L-2): БД більше НЕ скидає in_progress_at на повторному
+       in_progress → оптимістичний патч теж не має обнуляти таймер «у кабінеті»,
+       якщо запис уже in_progress — інакше до reload() екран бреше. */
+    setEntries((es) => es.map((e) => {
+      if (e.id !== id) return e;
+      const patch = status === "in_progress"
+        ? { status, in_progress_at: e.status === "in_progress" ? e.in_progress_at : nowIso }
+        : { status };
+      return { ...e, ...patch, updated_at: nowIso };
+    }));
     const res = await setQueueEntryStatus(id, status as QueueStatus, expectedFrom);
     if (!res.ok) {
       let msg;

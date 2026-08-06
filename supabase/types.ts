@@ -1134,6 +1134,9 @@ export type Database = {
           last_error: string | null;
           next_attempt_at: string;
           dead: boolean;
+          // 0130: lease claim-воркера (H-4). Опційні до накату 0130.
+          locked_until?: string | null;
+          locked_by?: string | null;
         };
         Insert: {
           created_at?: string;
@@ -1156,6 +1159,8 @@ export type Database = {
           last_error?: string | null;
           next_attempt_at?: string;
           dead?: boolean;
+          locked_until?: string | null;
+          locked_by?: string | null;
         };
         Relationships: [];
       };
@@ -1390,7 +1395,24 @@ export type Database = {
           p_note?: string | null;
           p_set_note?: boolean;   // true → note перезаписується (у т.ч. null = стерти)
         };
-        Returns: { updated: boolean; current_status: QueueStatus }[];
+        /* 0129: previous_status/clinic_id/referrer_id — знімок З-ПІД лока рядка
+           для журналу 0128 (раніше клієнт читав їх окремим запитом ДО RPC і міг
+           зафіксувати чужий previousStatus). Поля ОПЦІЙНІ: у вікні «новий
+           клієнт / стара БД» (до накату 0129) їх у відповіді немає — клієнт
+           зобовʼязаний гардитись по clinic_id (ревʼю с26 L-R2). */
+        Returns: {
+          updated: boolean;
+          current_status: QueueStatus;
+          previous_status?: QueueStatus;
+          clinic_id?: string;
+          referrer_id?: string | null;
+        }[];
+      };
+      /* 0129: CAS-зняття простою — active|planned → resolved рівно один раз;
+         повтор повертає updated=false (без другої події incident.resolved). */
+      incident_resolve_rpc: {
+        Args: { p_id: string };
+        Returns: { updated: boolean; current_status: string; clinic_id: string }[];
       };
       queue_set_call_rpc: {
         Args: { p_id: string; p_call: CallStatus; p_allowed?: QueueStatus[] };
@@ -1477,8 +1499,16 @@ export type Database = {
         }[];
       };
       outbox_mark_failed: {
-        Args: { p_id: number; p_error: string };
+        // 0130: p_worker — fail зараховується лише власнику lease; без нього
+        // (легасі-виклик у вікні викатки) — безумовно, як 0064.
+        Args: { p_id: number; p_error: string; p_worker?: string };
         Returns: undefined;
+      };
+      /* 0130: атомарний claim із lease (FOR UPDATE SKIP LOCKED) — рядок outbox
+         отримує рівно один воркер; EXECUTE лише service_role. */
+      outbox_claim: {
+        Args: { p_limit: number; p_worker: string; p_lease_seconds?: number };
+        Returns: Database["public"]["Tables"]["event_outbox"]["Row"][];
       };
       sink_overdue_scheduled: {
         Args: Record<PropertyKey, never>;

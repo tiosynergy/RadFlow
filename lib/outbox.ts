@@ -24,6 +24,7 @@ const FETCH_TIMEOUT_MS = 3000;
 
 type OutboxRow = {
   id: number;
+  created_at: string;
   event_type: string;
   idempotency_key: string;
   payload: Record<string, unknown>;
@@ -67,20 +68,53 @@ export async function deliverPendingOutbox(limit = 20): Promise<DeliverResult> {
   }
 
   const admin = createAdminClient();
+  /* 0130 (аудит H-4): атомарний claim із lease замість звичайного SELECT.
+     Best-effort виклик після emergency stop, щохвилинний cron і ручний роут
+     більше не беруть ОДНІ Й ТІ Ж рядки: FOR UPDATE SKIP LOCKED віддає рядок
+     рівно одному воркеру, lease знімає його сам, якщо воркер помер.
+     Lease масштабується від batch-розміру (ревʼю с26 M-2): ~4с/рядок
+     (3с fetch-timeout + БД) + запас, стеля 5 хв. */
+  const workerId = crypto.randomUUID();
+  /* Стеля lease привʼязана до РЕАЛЬНОГО бюджету виконання (ревʼю с26 р2 M-R2):
+     роут живе maxDuration=60с — lease 230с означав би, що строки вбитої
+     лямбди чекають добору до 4 хвилин. 75с = бюджет + запас. */
+  const leaseSeconds = Math.min(30 + limit * 4, 75);
   const { data: rows, error } = await admin
-    .from("event_outbox")
-    .select("id, event_type, idempotency_key, payload, attempts")
-    .is("delivered_at", null)
-    .eq("dead", false)                                   // 0064: DLQ — не довбимо безнадійні
-    .lte("next_attempt_at", new Date().toISOString())    // 0064: експоненційний backoff
-    .order("created_at", { ascending: true })
-    .limit(limit);
-  if (error || !rows?.length) return { delivered: 0, failed: 0 };
+    .rpc("outbox_claim", { p_limit: limit, p_worker: workerId, p_lease_seconds: leaseSeconds });
+  if (error) {
+    /* Гучно і НЕ «ok»: збій claim = повна зупинка доставки (ревʼю с26 M-1) —
+       роут віддає 5xx, щоб моніторинг це бачив, а не рахував тихий успіх. */
+    console.error("[outbox] claim не вдався:", error.message);
+    return { delivered: 0, failed: 0, skipped: "claim_failed" };
+  }
+  if (!rows?.length) return { delivered: 0, failed: 0 };
+
+  /* FIFO: UPDATE…RETURNING порядок не гарантує (ревʼю с26 L-1). Порівняння
+     кодпойнтами, НЕ localeCompare: ICU-колація не гарантує порядок пунктуації
+     ('+' vs '.') у ISO-таймстампах із/без дробових секунд (р2 L-R2). */
+  rows.sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+
+  /* Дедлайн батча (ревʼю с26 M-2): не переживати ані власний lease, ані
+     maxDuration=60с роуту (р2 M-R2) — інакше «відталий» після Vercel-freeze
+     воркер слав би рядки, які вже перехопив наступний cron, а вбита по
+     maxDuration лямбда лишала б хвіст батча під lease. */
+  const deadlineMs = Date.now() + Math.min((leaseSeconds - 10) * 1000, 50_000);
 
   let delivered = 0;
   let failed = 0;
 
   for (const row of rows as OutboxRow[]) {
+    if (Date.now() > deadlineMs) {
+      // Гучний лог — сигнал «batch не вліз у бюджет». Свій lease із НЕторкнутих
+      // рядків знімаємо одразу (р2 M-R2) — наступний cron забере їх без
+      // очікування кінця lease. Умовно по locked_by: чужі lease не чіпаємо.
+      console.error(`[outbox] дедлайн батча: відправлено ${delivered}, лишилось ${rows.length - delivered - failed} — знімаю lease, добере наступний cron`);
+      await admin.from("event_outbox")
+        .update({ locked_by: null, locked_until: null })
+        .eq("locked_by", workerId)
+        .is("delivered_at", null);
+      break;
+    }
     const body = JSON.stringify({
       event: row.event_type,
       idempotencyKey: row.idempotency_key,
@@ -102,19 +136,39 @@ export async function deliverPendingOutbox(limit = 20): Promise<DeliverResult> {
         signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       });
       if (resp.ok) {
-        await admin
+        /* 0130 (аудит H-4): ack УМОВНИЙ (лише свій lease) і ПЕРЕВІРЯЄТЬСЯ.
+           Раніше помилка UPDATE мовчки губилась: лічильник рахував delivered,
+           а cron слав подію повторно. Невдалий ack — не "delivered": подія
+           піде повторно після закінчення lease, дублікат зріже дедуплікація
+           n8n за Idempotency-Key (обовʼязкова частина контракту). */
+        const { data: acked, error: ackErr } = await admin
           .from("event_outbox")
-          .update({ delivered_at: new Date().toISOString() })
-          .eq("id", row.id);
-        delivered++;
+          .update({ delivered_at: new Date().toISOString(), locked_by: null, locked_until: null })
+          .eq("id", row.id)
+          .eq("locked_by", workerId)
+          .is("delivered_at", null)
+          .select("id")
+          .maybeSingle();
+        if (ackErr || !acked) {
+          console.error(`[outbox] ack не вдався для id=${row.id}: ${ackErr?.message ?? "рядок не наш або вже ack-нутий"} — подія піде повторно (dedupe в n8n)`);
+          failed++;
+        } else {
+          delivered++;
+        }
       } else {
         // Атомарний attempts+1 через RPC (без lost-update при гонці воркерів).
-        await admin.rpc("outbox_mark_failed", { p_id: row.id, p_error: `HTTP ${resp.status}` });
+        // p_worker (0130): fail зараховується лише власнику lease — «відталий»
+        // stale-воркер не зриває чужий чинний lease і не палить attempts двічі.
+        const { error: mfErr } = await admin.rpc("outbox_mark_failed",
+          { p_id: row.id, p_error: `HTTP ${resp.status}`, p_worker: workerId });
+        if (mfErr) console.error(`[outbox] mark_failed не вдався для id=${row.id}: ${mfErr.message}`);
         failed++;
       }
     } catch (e) {
       const msg = (e instanceof Error ? e.message : String(e)).slice(0, 500);
-      await admin.rpc("outbox_mark_failed", { p_id: row.id, p_error: msg });
+      const { error: mfErr } = await admin.rpc("outbox_mark_failed",
+        { p_id: row.id, p_error: msg, p_worker: workerId });
+      if (mfErr) console.error(`[outbox] mark_failed не вдався для id=${row.id}: ${mfErr.message}`);
       failed++;
     }
   }

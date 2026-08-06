@@ -552,6 +552,23 @@ function classifyError(err: { code?: string; message?: string }, status?: QueueS
   // сирий текст Postgres користувачу показувати не можна.
   if (/^BREAK|перетинає перерву/i.test(message)) return BREAK_ERR;
   { const se = schedTriggerError(message); if (se) return se; }   // 0084 — тригер графіка
+  // ACTUAL_OVERLAP_* — 0129 (аудит H-1): фактичне вікно виклику «зараз».
+  // Перевіряти ДО загального 23P01: SQLSTATE той самий, а формулювання має
+  // підказати оператору дію (те саме каже панель колізій). BUSY-варіант іде
+  // ПЕРШИМ (префікс збігається з коротким) і зберігає звичне повідомлення
+  // «у кабінеті вже є пацієнт» (ревʼю с26 L-R4).
+  if (/ACTUAL_OVERLAP_BUSY/i.test(message)) {
+    safeDbError("queue.status.actualBusy", err);
+    return { ok: false, error: "У кабінеті вже є пацієнт", code: "room_busy" };
+  }
+  if (/ACTUAL_OVERLAP/i.test(message)) {
+    safeDbError("queue.status.actualOverlap", err);
+    return {
+      ok: false,
+      error: "Виклик зараз перекриє наступний запис кабінету — спершу перенесіть один із записів",
+      code: "slot_unavailable",
+    };
+  }
   if (code === "23P01" || /overlap|exclusion|incident/i.test(message)) {
     // M-14: сирий текст Postgres (id кабінету, імена констрейнтів) — у лог, не клієнту.
     safeDbError("queue.status", err);
@@ -644,14 +661,10 @@ async function setStatusViaRpc(
     sameAsOk?: QueueStatus;
   } = {}
 ): Promise<QueueActionResult> {
-  /* 0128: знімок ДО RPC — previousStatus для журналу береться з БД (не з клієнта),
-     referrer_id/clinic_id потрібні для вибору сімʼї події та clinic-контексту.
-     Це read-only і жодного гейта не міняє; якщо RLS рядок не показує — подія
-     просто не запишеться (fail-open журналу, бізнес-результат незмінний). */
-  const { data: pre } = await supabase.from("queue_entries")
-    .select("referrer_id, clinic_id, status")
-    .eq("id", id).maybeSingle();
-
+  /* 0129 (аудит M-1): previousStatus/clinic_id/referrer_id для журналу повертає
+     САМ RPC зі знімка З-ПІД лока рядка. Окремий read ДО RPC (0128) прибрано:
+     між знімком і `select … for update` рядок міг змінитись, і подія фіксувала
+     не той попередній статус. */
   const { data, error } = await supabase.rpc("queue_set_status_rpc", {
     p_id: id,
     p_status: status,
@@ -674,24 +687,29 @@ async function setStatusViaRpc(
     /* 0128: подія — лише при РЕАЛЬНІЙ зміні (updated=true), одна на дію.
        'cancelled' — окремий тип (queue.cancelled / referral.cancelled), решта
        переходів — завжди queue.status_changed (у referral-сімʼї свого немає).
-       У details — лише статуси; p_note НЕ потрапляє в журнал (PII-правило). */
-    if (pre?.clinic_id) {
-      const referral = Boolean(pre.referrer_id);
+       У details — лише статуси; p_note НЕ потрапляє в журнал (PII-правило).
+       0129: усі поля — зі знімка з-під лока, який повернув сам RPC.
+       Ревʼю с26 р2 M-1: no-op повтор (previous === новий, напр. повторний
+       in_progress з застарілої вкладки) БЕЗ події — журнал важливих подій не
+       смітимо переходами «сам у себе». */
+    if (res.clinic_id && res.previous_status !== status) {
+      const referral = Boolean(res.referrer_id);
       await emitImportantEvent({
-        clinicId: pre.clinic_id,
+        clinicId: res.clinic_id,
         actorId,
         eventType: status === "cancelled"
           ? queueEventTypeFor("cancelled", referral)
           : queueEventTypeFor("status_changed", referral),
         entityType: "queue_entry",
         entityId: id,
-        subjectReferrerId: pre.referrer_id ?? null,
-        details: { previousStatus: pre.status, newStatus: status },
+        subjectReferrerId: res.referrer_id ?? null,
+        details: { previousStatus: res.previous_status, newStatus: status },
       });
-    } else {
-      // §12.11 (ревʼю с25 L1): пропуск події не мовчить.
+    } else if (!res.clinic_id) {
+      // §12.11 (ревʼю с25 L1): пропуск події не мовчить. Сюди можна потрапити
+      // лише зі старою (до-0129) сигнатурою RPC — гучний сигнал про порядок викатки.
       logError({ event: "important_event.skipped", actorId,
-        entityId: id, errorCode: "pre_snapshot_unreadable",
+        entityId: id, errorCode: "rpc_snapshot_missing",
         message: `type=queue.status_changed->${status}` });
     }
     return { ok: true };
@@ -793,31 +811,45 @@ export async function resolveIncident(id: string): Promise<QueueActionResult> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  // 0128: clinic_id інциденту потрібен журналу — читаємо ДО мутації тим самим RLS-клієнтом.
-  const { data: pre } = await supabase.from("incidents").select("clinic_id").eq("id", id).maybeSingle();
+  /* 0129 (аудит M-1): раніше тут був безумовний UPDATE — повторний клік або
+     гонка двох операторів «знімали» вже resolved-інцидент і писали ДРУГУ подію
+     incident.resolved. Тепер CAS-RPC: active|planned → resolved рівно один раз,
+     повтор чесно повертає updated=false (ідемпотентно ok, БЕЗ події);
+     clinic_id для журналу — з рядка під локом, а не з окремого читання. */
+  const { data, error } = await supabase.rpc("incident_resolve_rpc", { p_id: id });
 
-  const { data, error } = await supabase
-    .from("incidents")
-    .update({ status: "resolved", resolved_at: new Date().toISOString() })
-    .eq("id", id)
-    .select("id");
-
-  if (error) return { ok: false, error: safeDbError("resolveIncident", error), code: "generic" };
-  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або інцидент не знайдено", code: "forbidden" };
-  if (pre?.clinic_id) {
-    await emitImportantEvent({
-      clinicId: pre.clinic_id,
-      actorId: user.id,
-      eventType: "incident.resolved",
-      entityType: "incident",
-      entityId: id,
-      details: null,
-    });
-  } else {
-    // §12.11 (ревʼю с25 L1): пропуск події не мовчить.
-    logError({ event: "important_event.skipped", actorId: user.id,
-      entityId: id, errorCode: "pre_snapshot_unreadable", message: "type=incident.resolved" });
+  if (error) {
+    if (error.code === "42501" || /FORBIDDEN/i.test(error.message)) {
+      return { ok: false, error: "Немає доступу або інцидент не знайдено", code: "forbidden" };
+    }
+    // RPC тримає рядок for update → транзієнтні блокування тепер можливі й тут
+    // (ревʼю с26 L-R1): чесне «спробуйте ще раз» замість «щось зламалось».
+    if (isRetryableLockError(error.code ?? "", error.message ?? "")) {
+      safeDbError("resolveIncident.lock", error);
+      return { ok: false, error: "Інцидент саме зараз змінює інший оператор — спробуйте ще раз", code: "stale" };
+    }
+    return { ok: false, error: safeDbError("resolveIncident", error), code: "generic" };
   }
+  const res = Array.isArray(data) ? data[0] : data;
+  if (!res) return { ok: false, error: "Немає доступу або інцидент не знайдено", code: "forbidden" };
+
+  if (res.updated) {
+    if (res.clinic_id) {
+      await emitImportantEvent({
+        clinicId: res.clinic_id,
+        actorId: user.id,
+        eventType: "incident.resolved",
+        entityType: "incident",
+        entityId: id,
+        details: null,
+      });
+    } else {
+      // §12.11 (ревʼю с25 L1): пропуск події не мовчить.
+      logError({ event: "important_event.skipped", actorId: user.id,
+        entityId: id, errorCode: "rpc_snapshot_missing", message: "type=incident.resolved" });
+    }
+  }
+  // Повтор (updated=false) = інцидент уже resolved — для оператора це успіх.
   return { ok: true };
 }
 
@@ -1135,6 +1167,17 @@ function mapBookingError(message: string, code = ""): QueueActionResult {
   { const se = schedTriggerError(message); if (se) return se; }   // 0084 — тригер графіка
   /* M-14: коди лишаються ті самі (UI на них зав'язаний), але НАЗОВНІ йде наш текст,
      а сирий Postgres (id кабінету, імена констрейнтів/таблиць) — у лог сервера. */
+  // ACTUAL_OVERLAP_* — 0129. Сьогодні сюди не доходять (єдине джерело йде через
+  // classifyError), але майбутній переиспользователь mapBookingError не повинен
+  // деградувати їх у загальне «Слот зайнятий» (ревʼю с26 р2 L-3). BUSY — першим.
+  if (/ACTUAL_OVERLAP_BUSY/i.test(message)) {
+    safeDbError("booking.actualBusy", { message });
+    return { ok: false, error: "У кабінеті вже є пацієнт", code: "room_busy" };
+  }
+  if (/ACTUAL_OVERLAP/i.test(message)) {
+    safeDbError("booking.actualOverlap", { message });
+    return { ok: false, error: "Виклик зараз перекриє наступний запис кабінету — спершу перенесіть один із записів", code: "slot_unavailable" };
+  }
   if (/incident/i.test(message)) {
     safeDbError("booking.incident", { message });
     return { ok: false, error: "Кабінет у простої — оберіть інший слот або кабінет", code: "incident" };

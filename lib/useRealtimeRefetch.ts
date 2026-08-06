@@ -25,6 +25,14 @@ type Options = {
   subscriptions: RealtimeSub[];
   /** Дебаунс всплеска событий по одной таблице, мс. */
   debounceMs?: number;
+  /* Аудит 2026-08-06 H-3B: РЕДКИЙ поллинг ПРИ ЖИВОМ сокете. Realtime-события
+     ходят под RLS: направник НЕ получает изменения чужих записей, то есть при
+     здоровом `SUBSCRIBED` его открытая сетка занятости не обновится никогда
+     (это не fallback-сценарий, сокет исправен). Задайте интервал — и callAll
+     будет дёргаться и при живой подписке; события realtime при этом работают
+     как раньше (мгновенно для тех, кому RLS их доставляет). Не задан — прежнее
+     поведение: при SUBSCRIBED запросов нет. */
+  pollWhenSubscribedMs?: number;
 };
 
 /**
@@ -48,6 +56,7 @@ export function useRealtimeRefetch({
   channelName,
   subscriptions,
   debounceMs = 250,
+  pollWhenSubscribedMs,
 }: Options): void {
   // Подписки берём через ref, чтобы смена идентичности лоадеров (useCallback)
   // не вызывала переподписку — она зависит только от channelName.
@@ -128,6 +137,27 @@ export function useRealtimeRefetch({
       pollTimer = setTimeout(tick, jittered(pollDelay));
     };
 
+    /* Медленный тикер при живом сокете (H-3B) — отдельный от аварийного
+       поллинга: тот стартует при обрыве и умирает на SUBSCRIBED, этот наоборот
+       живёт ТОЛЬКО при SUBSCRIBED (иначе работали бы оба сразу). Джиттер тот
+       же — не синхронизировать клиентов. */
+    let slowTimer: ReturnType<typeof setTimeout> | undefined;
+    const stopSlowPolling = () => {
+      if (slowTimer) {
+        clearTimeout(slowTimer);
+        slowTimer = undefined;
+      }
+    };
+    const startSlowPolling = () => {
+      if (!pollWhenSubscribedMs || slowTimer) return;
+      const tick = () => {
+        if (cancelled) return;
+        callAll();
+        slowTimer = setTimeout(tick, jittered(pollWhenSubscribedMs));
+      };
+      slowTimer = setTimeout(tick, jittered(pollWhenSubscribedMs));
+    };
+
     (async () => {
       try {
         const {
@@ -166,8 +196,13 @@ export function useRealtimeRefetch({
            (закрытие модалки слотов, смена даты/канала, смена subscriptionKey)
            заводила бы осиротевший поллинг-цикл, который никто не остановит. */
         if (cancelled) return;
-        if (status === "SUBSCRIBED") stopPolling();
-        else startPolling(); // CHANNEL_ERROR / TIMED_OUT / CLOSED
+        if (status === "SUBSCRIBED") {
+          stopPolling();
+          startSlowPolling();   // H-3B: редкая подстраховка при живом сокете
+        } else {
+          stopSlowPolling();
+          startPolling();       // CHANNEL_ERROR / TIMED_OUT / CLOSED
+        }
       });
     })();
 
@@ -182,10 +217,11 @@ export function useRealtimeRefetch({
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
       stopPolling();
+      stopSlowPolling();
       debouncers.forEach((t) => clearTimeout(t));
       if (channel) supabase.removeChannel(channel);
     };
     /* subscriptions (identity) намеренно вне зависимостей — через subsRef;
        subscriptionKey держит СТРУКТУРУ: смена table/filter/состава → переподписка. */
-  }, [channelName, debounceMs, subscriptionKey]);
+  }, [channelName, debounceMs, subscriptionKey, pollWhenSubscribedMs]);
 }
