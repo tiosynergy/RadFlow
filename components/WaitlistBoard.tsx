@@ -7,6 +7,9 @@
    створений запис. Realtime — таблиця waitlist_entries (0047). */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import UnreadDot from "@/components/UnreadDot";
+import { useUnreadChanges } from "@/lib/useUnreadChanges";
+import { unreadForEntity } from "@/lib/unreadChanges";
 import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -132,6 +135,14 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
   const [roomView, setRoomView] = useState("all"); // фільтр сайдбара: кабінет → модальність
   const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(initialEntry || null);
+  /* Контекстні позначки листа очікування (ревʼю р2, H-3new): точка на
+     рядку, ack — лише для РОЗГОРНУТОГО рядка з успішними даними. */
+  const { index: unreadIx, ack: unreadAck, status: unreadStatus } = useUnreadChanges();
+  useEffect(() => {
+    if (!expandedId || unreadStatus !== "ready") return;
+    if (unreadForEntity(unreadIx, "waitlist_entry", expandedId).length === 0) return;
+    void unreadAck({ kind: "entity", entityType: "waitlist_entry", entityId: expandedId });
+  }, [expandedId, unreadIx, unreadAck, unreadStatus]);
   const [addOpen, setAddOpen] = useState(false);
   const [editFor, setEditFor] = useState<WaitlistEntry | null>(null);
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);
@@ -509,7 +520,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
                       <div className="wlrow wl-queue">
                         <button className="cl-exp-btn" onClick={() => setExpandedId((x) => (x === p.id ? null : p.id))}
                           title={expanded ? "Згорнути" : "Розгорнути"} aria-label={expanded ? "Згорнути деталі" : "Розгорнути деталі"} aria-expanded={expanded}>
-                          <span className={"cl-chev" + (expanded ? " open" : "")} aria-hidden="true">›</span>
+                          <UnreadDot markers={unreadForEntity(unreadIx, "waitlist_entry", p.id)} /><span className={"cl-chev" + (expanded ? " open" : "")} aria-hidden="true">›</span>
                         </button>
                         <div className="wl-pat">
                           <button className="cl-name cl-name-btn wl-name" onClick={() => setExpandedId((x) => (x === p.id ? null : p.id))}>

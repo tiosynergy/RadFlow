@@ -9,6 +9,7 @@
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import ServicesEditor from "@/components/ServicesEditor";
+import { useAckWhenVisible } from "@/lib/useUnreadChanges";
 import { setClinicTz, wallToday0 } from "@/lib/incidents";
 import { visibleRooms, residualSet, roomOffLabel } from "@/lib/rooms";
 import type { Tables } from "@/supabase/types";
@@ -41,6 +42,12 @@ interface Props {
 
 export default function ServicesManager({ clinicId, clinicTz, initialServices, roomOverrides, rooms, residualRoomIds, residualRoomCounts, clinicName, adminName }: Props) {
   if (typeof window !== "undefined") setClinicTz(clinicTz);
+
+  /* Каталог приходить SSR-пропами і рендериться ЦІЛИМ — тож відкриття
+     сторінки і є показ актуального каталогу: підтверджуємо поверхню
+     services (агрегатні позначки по кабінетах, ревʼю р2 H-3new). Це НЕ
+     порушує правило про пагіновані списки: тут пагінації немає. */
+  useAckWhenVisible({ kind: "surface", surface: "services" }, true);
 
   /* Списки кабінетів на цьому екрані — активні + вимкнені із залишками. Сюди ж
      іде вибір «Кабінети (власний прайс)» у ServicesEditor: заводити окремий прайс

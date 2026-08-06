@@ -11,6 +11,9 @@ import StudyTimer from "@/components/StudyTimer";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
+import UnreadDot from "@/components/UnreadDot";
+import { UnreadChangesMount, useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
+import { unreadForEntity, unreadForDate, calendarDayKey } from "@/lib/unreadChanges";
 import { useQueueSounds } from "@/lib/useQueueSounds";
 import type { OverrunSource } from "@/lib/soundEvents";
 import { signOutAndRedirect } from "@/lib/auth";
@@ -284,6 +287,12 @@ interface RadQueueRowProps {
 }
 
 function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, startBlockReason, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onSetStatus, noteValue, onSaveNote, onDelayPlan, delayLoading }: RadQueueRowProps) {
+  /* Контекстні позначки: крапка на рядку = агрегат непрочитаного цього
+     запису; гаситься лише при РОЗГОРНУТОМУ рядку з успішно завантаженими
+     даними (усередині хука: status === "ready" + лише знімок). */
+  const { index: unreadIx } = useUnreadChanges();
+  const rowUnread = unreadForEntity(unreadIx, "queue_entry", p.id);
+  useAckWhenVisible(expanded ? { kind: "entity", entityType: "queue_entry", entityId: p.id } : null, expanded);
   // «Запізнення» (derived) видно й радіологу; прямий виклик такого пацієнта
   // блокується (рішення ухвалює реєстратура: повернути/перенести/зняти).
   const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
@@ -336,7 +345,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
             <span className="badge offsched" title="Запис поза графіком кабінету (після закриття або в перерву) — підтверджено персоналом">⏰ Поза графіком</span>
           )}
         </div>
-        <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
+        <UnreadDot markers={rowUnread} /><span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
       </div>
 
       <div className="qrow-detail-wrap">
@@ -491,6 +500,10 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
 }
 
 function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSchedules }: { selectedDate: Date; onSelectDate: (d: Date) => void; overridesByDate?: Record<string, DayOverride>; tz?: string; roomSchedules?: unknown[] }) {
+  /* Локальна копія сітки (історично окрема від @/components/MiniCalendar).
+     Крапки потрібні й тут: радіолог — штатна аудиторія фан-ауту по СВОЇХ
+     кабінетах, і його дошка так само вантажить ОДИН день (ревʼю 0133). */
+  const { index: unreadIx } = useUnreadChanges();
   // tz передаємо явно: під час SSR модульний singleton не виставлений (він лише
   // клієнтський), і «сьогодні» в сітці розійшлося б із рештою дошки.
   const today = wallToday0(tz);
@@ -529,6 +542,7 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSch
               title={st.label || undefined} onClick={() => onSelectDate(startOfDay(cd))}>
               {d}
               {(markClosed || markCustom) && <span className={"cal-sched " + (markClosed ? "closed" : "custom")} />}
+            {unreadForDate(unreadIx, calendarDayKey(cd)).length > 0 && <span className="cal-change" aria-hidden="true" />}
             </button>
           );
         })}
@@ -543,7 +557,11 @@ function RadSidebar({ rooms, roomNoteOf, roomFilter, setRoomFilter, counts, admi
   const initials = (() => { const p = String(adminName || "").trim().split(/\s+/); return ((p[0] || "Р")[0] + (p[1] ? p[1][0] : "")).toUpperCase(); })();
   async function signOut() { await signOutAndRedirect(router); }
   return (
+    /* Підписка на позначки: радіолог — адресат маршрутизації по своїх
+       кабінетах (0131), тож без маунта його позначки копичились би вічно
+       (ревʼю р2, H-2new). */
     <NavDrawer label="авторизовані кабінети">
+      <UnreadChangesMount />
       <div className="sb-head">
         <a href="/queue" className="sb-logo"><span className="dot" />RadFlow</a>
         <div className="sb-sub">Радіолог · робоче місце</div>

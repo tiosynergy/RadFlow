@@ -13,6 +13,9 @@ import DensityControl from "@/components/DensityToggle";
 import NavDrawer from "@/components/NavDrawer";
 import SoundToggle from "@/components/SoundToggle";
 import { modalityShort, modalityKind } from "@/lib/studies";
+import UnreadDot from "@/components/UnreadDot";
+import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
+import { unreadForNav } from "@/lib/unreadChanges";
 
 type SidebarRoom = {
   id: string;
@@ -111,12 +114,22 @@ export default function Sidebar({
   }, [isAdmin, isCeo]);
   const showCeoLink = isCeo || hasCeoGrant;
 
+  /* Контекстні позначки (0131/0132). Провайдера може не бути (екрани, які
+     його ще не змонтували) — тоді контекст порожній і крапок просто немає:
+     панель НЕ повинна падати через те, що батько її не обгорнув. */
+  const { index: unreadIx } = useUnreadChanges();
+  const navUnread = (key: string) => unreadForNav(unreadIx, key);
+
   async function signOut() {
     await signOutAndRedirect(router);
   }
 
   return (
+    /* Підписка на позначки монтується ТУТ, бо Sidebar є на кожному робочому
+       екрані — і саме тому на всіх них крапки живі. Компонент нічого не
+       малює: глобального індикатора ТЗ не допускає. */
     <NavDrawer label="кабінети та швидкі дії">
+      <UnreadChangesMount />
       <div className="sb-head">
         <a href="/queue" className="sb-logo"><span className="dot" />RadFlow</a>
         <div className="sb-sub">{adminRole || "Адміністратор"}{clinicName ? " • " + clinicName : ""}</div>
@@ -155,7 +168,7 @@ export default function Sidebar({
               дошка черги — на решті це був клік у нікуди. Тепер — як onSlotsOverview
               /onEmergency: немає хендлера → немає пункту (не показуємо dead actions). */}
           <div className="sb-label">Швидкі дії</div>
-          <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span></a>
+          <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span><UnreadDot markers={navUnread("queue")} withCount /></a>
           {isAdmin && onSlotsOverview && <button type="button" onClick={onSlotsOverview} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">◫</span><span className="sb-item-lab">Зайнятість кабінету</span>
           </button>}
@@ -169,12 +182,13 @@ export default function Sidebar({
           <a href="/waitlist" className={"sb-item" + (activeNav === "waitlist" ? " active" : "")}>
             <span className="ic">⏳</span>
             <span className="sb-item-lab">Лист очікування</span>
+            <UnreadDot markers={navUnread("waitlist")} withCount />
             {waitCount ? <span className="sb-badge">{waitCount}</span> : null}
           </a>
           {/* ?from= — щоб портал знав, куди повернути адміна. Значення звіряється
               зі списком маршрутів на сервері (lib/portalBack), тож підроблений
               параметр в адресному рядку просто дає /queue. */}
-          {isAdmin && <a href={"/referral?from=" + encodeURIComponent(pathname || "/queue")} className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span></a>}
+          {isAdmin && <a href={"/referral?from=" + encodeURIComponent(pathname || "/queue")} className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span><UnreadDot markers={navUnread("ref")} withCount /></a>}
           {onBreakdown && <button type="button" onClick={() => onBreakdown()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">⚠</span>
             <span className="sb-item-lab">Інциденти</span>

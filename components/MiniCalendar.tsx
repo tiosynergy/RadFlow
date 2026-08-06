@@ -8,6 +8,8 @@
 import { useState } from "react";
 import { dayStatus, type DayOverride } from "@/lib/schedule";
 import { wallToday0 } from "@/lib/incidents";
+import { useUnreadChanges } from "@/lib/useUnreadChanges";
+import { calendarDayKey, unreadForDate } from "@/lib/unreadChanges";
 
 const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MON_NOM = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
@@ -30,11 +32,21 @@ interface MiniCalendarProps {
   /** Базові графіки кабінетів (rooms.schedule) — щоб позначати «вихідний» за
       реальним графіком, а не лише за неділею. Не передані → фолбек на неділю. */
   roomSchedules?: unknown[];
+  /** Центр, чий календар показуємо. ОБОВʼЯЗКОВО для мультицентрових екранів
+      (портал направника): без нього крапка чужого центру світилась би тут і
+      не гасла. Персонал свого центру може не передавати. */
+  clinicId?: string | null;
 }
 
-export default function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, onEditSchedule, highlightSelected = true, tz, roomSchedules }: MiniCalendarProps) {
+export default function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, onEditSchedule, highlightSelected = true, tz, roomSchedules, clinicId }: MiniCalendarProps) {
   const today = wallToday0(tz);
   const ovMap = overridesByDate || {};
+  /* Контекстні позначки на календарі (0133). Дата приходить у самій позначці
+     (subject_date), а не виводиться з завантажених записів: календар показує
+     МІСЯЦЬ, а дошка вантажить ОДИН день — вивести було б нізвідки (урок с24).
+     Крапка тут ПОХІДНА: гасне, коли погашено всі позначки цього дня, тобто
+     після того, як користувач відкрив день і розгорнув відповідні картки. */
+  const { index: unreadIx } = useUnreadChanges();
   const [viewMonth, setViewMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
   const shift = (n: number) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
   const y = viewMonth.getFullYear(), mo = viewMonth.getMonth();
@@ -64,11 +76,26 @@ export default function MiniCalendar({ selectedDate, onSelectDate, overridesByDa
           const st = dayStatus(ov, cd, roomSchedules);
           const markClosed = st.kind === "closed";
           const markCustom = st.kind === "custom";
+          const dayUnread = unreadForDate(unreadIx, calendarDayKey(cd), clinicId);
+          /* ⚠️ Стан не лише кольором (WCAG 1.4.1): крапку дублює доступне імʼя.
+             aria-label будуємо ЗАВЖДИ, коли є що сказати, — і число дня в ньому
+             лишається першим, щоб видимий текст був неперервною підстрокою
+             доступного імені (2.5.3 Label in Name, правило проєкту). */
+          /* На календарі — ЗАВЖДИ групове формулювання, навіть для однієї
+             позначки: markerLabel описує блок поля («перелік послуг»), якого
+             на календарі немає, і в контексті дня це збивало б з пантелику. */
+          const unreadLabel = dayUnread.length ? `Є непрочитані зміни: ${dayUnread.length}` : null;
+          const labelParts = [String(d), st.label || null, unreadLabel].filter(Boolean);
           return (
             <button key={d} className={"cal-day" + (isToday ? " today" : "") + (isSel && !isToday ? " selected" : "") + (markClosed ? " holiday" : "") + (markCustom ? " custom" : "")}
-              title={st.label || undefined} aria-label={st.label ? `${d} — ${st.label}` : undefined} onClick={() => onSelectDate(startOfDay(cd))}>
+              title={[st.label || null, unreadLabel].filter(Boolean).join(" · ") || undefined}
+              aria-label={labelParts.length > 1 ? labelParts.join(" — ") : undefined}
+              onClick={() => onSelectDate(startOfDay(cd))}>
               {d}
               {(markClosed || markCustom) && <span className={"cal-sched " + (markClosed ? "closed" : "custom")} />}
+              {/* .cal-change — крапка з «вирізом» під фон дня; клас був у
+                  прототипі й досі не використовувався. */}
+              {dayUnread.length > 0 && <span className="cal-change" aria-hidden="true" />}
             </button>
           );
         })}

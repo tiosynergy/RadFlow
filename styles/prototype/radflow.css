@@ -713,9 +713,14 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .cal-day .cdot { width: 4px; height: 4px; border-radius: 50%; background: var(--blue-line); position: absolute; bottom: 4px; }
 .cal-day.today .cdot { background: #fff; }
 .cal-change { position: absolute; top: 3px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 2px var(--card); }
-/* Це не індикатор, а виріз: кільце повторює фон .cal-day.today, тобто саме
-   --blue. З --blue-line навколо червоної крапки зʼявлявся чужий ободок. */
-.cal-day.today .cal-change { box-shadow: 0 0 0 2px var(--blue); }
+/* ⚠️ На «сьогодні» кільце НЕ повторює фон (с27, знайшов audit:contrast).
+   Заливка дня там --blue, і червона крапка на ній дає 1.49:1 — індикатор
+   практично невидимий, а 1.4.11 вимагає ≥3:1. Тому тут кільце БІЛЕ: воно
+   відділяє крапку від синього (#fff на --blue = 5.06:1), а сама крапка
+   читається на білому кільці (--red на #fff = 3.41:1). Саме через цей замір
+   клас .cal-change лежав у прототипі невикористаним — «виріз під фон» на
+   синьому дні працювати не міг. */
+.cal-day.today .cal-change { box-shadow: 0 0 0 2px #fff; }
 
 /* режим роботи за датою — мітки на днях + смужка налаштування */
 .cal-day.holiday:not(.today):not(.selected) { color: var(--red); }
@@ -730,6 +735,12 @@ html[data-density="spacious"] .fld { gap: 9px; }
    спалахує синій ободок. */
 .cal-day.today:hover:not(.empty-day) .cal-change,
 .cal-day.today:hover:not(.empty-day) .cal-sched { box-shadow: 0 0 0 2px var(--card-hover); }
+/* Той самий виріз потрібен і НЕ-сьогоднішньому дню під курсором: ховер міняє
+   фон на --card-hover, а кільце лишалось кольору --card і давало помітний шов
+   (ревʼю 0133). Правило нижче за специфічністю ніж .today:hover, тож «сьогодні»
+   під курсором лишається зі своїм. */
+.cal-day:hover:not(.empty-day):not(.today) .cal-change,
+.cal-day:hover:not(.empty-day):not(.today) .cal-sched { box-shadow: 0 0 0 2px var(--card-hover); }
 
 .cal-sched-strip { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
 .css-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -1478,6 +1489,10 @@ select.inp { cursor: pointer; }
 .bk-cal { background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 8px; }
 .bk-cal .cal-grid { gap: 1px; }
 .bk-cal .cal-day { font-size: 0.6875rem; min-height: 24px; }
+/* Компактна сітка (24px, 11px шрифт): крапка 8px + кільце 2px наїжджала на
+   верх другої цифри двозначних дат (ревʼю 0133). Зменшуємо саме тут — на
+   великому календарі розмір лишається як був. */
+.bk-cal .cal-change { width: 6px; height: 6px; top: 2px; right: 2px; }
 .bk-cal .cal-head { margin-bottom: 4px; }
 .bk-cal .cal-day:disabled { cursor: not-allowed; }
 
@@ -1968,3 +1983,51 @@ select.inp { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   .sidebar, .sidebar.nav-open, .rf-nav-scrim { transition: none; }
 }
+
+/* ===== Контекстні позначки непрочитаних змін (0131/0132) =====
+   ТЗ: CLAUDE_CONTEXTUAL_UNREAD_CHANGES_PROMPT.md. Крапка стоїть ПОРУЧ з
+   інформацією, що змінилась. Глобального індикатора/дзвіночка немає свідомо.
+
+   ⚠️ Колір — не єдиний носій стану: у кожній крапці лежить приховане
+   текстове імʼя (.rf-vh), а сама поява/зникнення форми — неколірний сигнал.
+   ⚠️ opacity тут НЕ використовується як стан (правило проєкту, с18). */
+
+/* Приховано візуально, доступно скрінрідеру. Саме clip-path + 1px, а не
+   display:none і не visibility:hidden — ті прибирають вузол з дерева
+   доступності разом із текстом. */
+.rf-vh {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+.rf-dot {
+  display: inline-flex; align-items: center; justify-content: center;
+  vertical-align: middle; flex-shrink: 0;
+  min-width: 8px; height: 8px; margin-left: 6px;
+  border-radius: 999px; background: var(--red);
+  font-size: 0.625rem; font-weight: 700; line-height: 1; color: #fff;
+}
+/* Крапка без числа: сам символ ● не малюємо — його роль виконує форма
+   елемента, інакше глиф вилазить за межі 8px кола. */
+.rf-dot > span[aria-hidden="true"] { display: none; }
+
+.rf-dot-info { background: var(--text-secondary); }
+.rf-dot-important { background: var(--red); }
+/* Критична — та сама заливка плюс кільце: різниця не тільки в кольорі. */
+.rf-dot-critical { background: var(--red); box-shadow: 0 0 0 2px var(--red-bg); }
+
+/* З числом — це вже бейдж, тобто ТЕКСТ, і на нього діє 1.4.3 (4.5:1), а не
+   1.4.11 (3:1) для графіки. ⚠️ Ревʼю р1 (M-6): білий текст давав 3.41:1 на
+   --red і 2.21:1 на --text-secondary — рівно та пастка з AGENTS.md, коли
+   заливка живе в модифікаторі, а color: #fff — у базовому правилі. Тому
+   бейдж має ВЛАСНИЙ темний колір тексту (перебиває базовий), а пари внесені
+   в scripts/contrast-audit.mjs, щоб наступна зміна відтінку не пройшла тихо. */
+.rf-dot-num {
+  min-width: 17px; height: 17px; padding: 0 5px; margin-left: 8px;
+  color: #1c1c1e; font-weight: 800;
+}
+.rf-dot-num > span[aria-hidden="true"] { display: inline; }
+
+/* Крапка в пункті бокової навігації стоїть праворуч, як і лічильники. */
+.sb-item .rf-dot { margin-left: auto; }
+.sb-item .rf-dot + .sb-badge { margin-left: 6px; }

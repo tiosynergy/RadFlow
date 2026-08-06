@@ -57,6 +57,9 @@ import CollisionPanel from "@/components/CollisionPanel";
 import QuickRescheduleButton from "@/components/QuickRescheduleButton";
 import StudyTimer from "@/components/StudyTimer";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
+import UnreadDot from "@/components/UnreadDot";
+import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
+import { unreadForEntity, unreadForField } from "@/lib/unreadChanges";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import Toast, { type ToastData } from "@/components/Toast";
@@ -583,6 +586,17 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
      Сервер дату не перевіряє взагалі (queue_set_status_rpc), тож блок був суто
      клієнтським. Завершити «хвіст» дозволяємо, почати новий — ні. */
   const canFinishPastDay = p.status === "in_progress" && !isFutureRow;
+  /* Контекстні позначки (0131/0132). Крапка на картці — агрегат непрочитаних
+     змін цього запису; крапка біля блоку послуг — лише його field_scope. */
+  const { index: unreadIx } = useUnreadChanges();
+  const cardUnread = unreadForEntity(unreadIx, "queue_entry", p.id);
+  const studiesUnread = unreadForField(unreadIx, "queue_entry", p.id, "studies");
+  /* Підтверджуємо прочитання ЛИШЕ коли рядок РОЗГОРНУТО: згорнута картка не
+     показує ані складу послуг, ані даних пацієнта, тож гасити крапку немає
+     за що (вимога ТЗ про згорнуті картки). Всередині хука ще дві умови:
+     дані успішно завантажені (status === "ready") і підтверджуються лише id
+     з відрендереного знімка. */
+  useAckWhenVisible(expanded ? { kind: "entity", entityType: "queue_entry", entityId: p.id } : null, expanded);
   const [moreOpen, setMoreOpen] = useState(false);
   // B-1 (аудит v2): pending-стан async-дії рядка — блокує повторний клік і показує спінер.
   const [busy, setBusy] = useState<string | null>(null);
@@ -659,7 +673,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
-          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient?.(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span>{p.case_id && <span onClick={(e) => { e.stopPropagation(); if (p.case_id) onOpenCase?.(p.case_id); }} style={{ cursor: "pointer", marginLeft: 6, fontSize: "0.6875rem", fontWeight: 600, color: "var(--accent, #3b82f6)" }} title="Відкрити крос-модальний кейс">🔗 Кейс</span>}</div>
+          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient?.(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span><UnreadDot markers={cardUnread} />{p.case_id && <span onClick={(e) => { e.stopPropagation(); if (p.case_id) onOpenCase?.(p.case_id); }} style={{ cursor: "pointer", marginLeft: 6, fontSize: "0.6875rem", fontWeight: 600, color: "var(--accent, #3b82f6)" }} title="Відкрити крос-модальний кейс">🔗 Кейс</span>}</div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
             {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
@@ -667,7 +681,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
           </div>
         </div>
         <div className="q-proc">
-          <div className="pp">{proc}</div>
+          <div className="pp">{proc}<UnreadDot markers={studiesUnread} /></div>
           <div className="du">{roomKind}</div>
         </div>
         <div className="q-room">
@@ -1026,6 +1040,19 @@ function NeedsReschedulePanel({ entries, roomsById, onReschedule, onToWaitlist, 
 /* ── Скасовані + Неявка ── */
 function CancelledPanel({ entries, onUndo, onReschedule, onToWaitlist }: { entries: QEntry[]; onUndo: (p: QEntry) => void; onReschedule: (p: QEntry) => void; onToWaitlist: (p: QEntry) => void }) {
   const [open, setOpen] = useState(false);
+  /* ⚠️ Скасування — найчастіша критична подія, і його позначку (field_scope
+     'status') не можна погасити на дошці: скасований запис туди не потрапляє
+     взагалі, він живе ТУТ. Без ack тут крапка висіла б вічно — і на пункті
+     навігації, і (з 0133) на конкретному дні календаря. Панель — плоский
+     список без розгортання, тож умова показу = розкрита панель. */
+  const { index: unreadIx, ack: unreadAck, status: unreadStatus } = useUnreadChanges();
+  useEffect(() => {
+    if (!open || unreadStatus !== "ready") return;
+    for (const e of entries) {
+      if (unreadForEntity(unreadIx, "queue_entry", e.id).length === 0) continue;
+      void unreadAck({ kind: "entity", entityType: "queue_entry", entityId: e.id });
+    }
+  }, [open, entries, unreadIx, unreadAck, unreadStatus]);
   if (!entries.length) return null;
   return (
     <div className="rcard">
@@ -1041,7 +1068,7 @@ function CancelledPanel({ entries, onUndo, onReschedule, onToWaitlist }: { entri
             return (
               <div key={e.id} style={{ padding: "8px 0", borderTop: "1px solid var(--border)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-                  <span style={{ fontSize: "0.8125rem", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.patient_name}</span>
+                  <span style={{ fontSize: "0.8125rem", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.patient_name}</span><UnreadDot markers={unreadForEntity(unreadIx, "queue_entry", e.id)} />
                   <span className={"badge " + (isCancelled ? "gray" : "red")} style={{ fontSize: "0.65625rem", flexShrink: 0 }}>{isCancelled ? "Скасовано" : "Неявка"}</span>
                 </div>
                 <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", margin: "2px 0 6px" }}>{e.scheduled_time} · {procLabel(e)}</div>
@@ -1202,6 +1229,11 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      немає». Без цього прапорця перший справжній список став би ДРУГИМ snapshot'ом,
      і давно активний простій «зазвучав» би прямо на маунті дошки. */
   const [incidentsLoaded, setIncidentsLoaded] = useState(false);
+  /* Інциденти видно ПРЯМО на дошці (плашки кабінетів, панель) — успішне
+     завантаження і є їх показ, тож поверхню incidents підтверджуємо тут
+     (ревʼю р2, H-3new: інакше крапка інциденту на «Дошка черги» не гасла б
+     ніколи). Хук сам чекає status === "ready" і бере лише знімок. */
+  useAckWhenVisible({ kind: "surface", surface: "incidents" }, incidentsLoaded && !incidentsErr);
   /* с24: незавершені дослідження цієї клініки з ІНШИХ дат. Тримаємо ОКРЕМО від
      `entries` навмисно: на entries зав'язані звук перевищення (useQueueSounds),
      таймери кабінетів і лічильники дня — учорашній запис давав би вічне

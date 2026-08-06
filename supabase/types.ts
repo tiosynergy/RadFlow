@@ -1121,6 +1121,36 @@ export type Database = {
         Update: never;
         Relationships: [];
       };
+      user_change_markers: {
+        // 0131/0132 — контекстні позначки непрочитаних змін («червоні крапки»).
+        // Клієнт: лише SELECT ВЛАСНИХ рядків (RLS ucm_read_own). Пише тригери
+        // фан-ауту; seen_at ставить лише RPC mark_changes_seen.
+        Row: {
+          id: string;
+          source_event_id: string | null;
+          recipient_id: string;
+          clinic_id: string;
+          event_type: string;
+          surface_key: string;
+          entity_type: string;
+          entity_id: string;
+          field_scope: string;
+          actor_id: string | null;
+          actor_role: string;
+          subject_referrer_id: string | null;
+          room_id: string | null;
+          severity: string;
+          changed_fields: string[] | null;
+          details: Json | null;
+          created_at: string;
+          seen_at: string | null;
+          // 0133: календарний день сутності (лише для записів черги).
+          subject_date: string | null;
+        };
+        Insert: never; // клієнтського INSERT не існує (0131)
+        Update: never; // seen_at ставить лише mark_changes_seen
+        Relationships: [];
+      };
       event_outbox: {
         // next_attempt_at / dead — міграція 0064 (backoff + DLQ).
         Row: {
@@ -1185,6 +1215,13 @@ export type Database = {
           p_request_id?: string | null;
         };
         Returns: string;
+      };
+      mark_changes_seen: {
+        // 0131. Отримувач береться з auth.uid(), а не з аргументів; час ставить
+        // БД. Повертає id, які РЕАЛЬНО оновились (уже прочитані не чіпає).
+        // Вихідна колонка називається marker_id — див. коментар у міграції.
+        Args: { p_ids: string[] };
+        Returns: { marker_id: string }[];
       };
       cancel_case_rpc: {
         Args: { p_case_id: string };

@@ -12,6 +12,9 @@
    Захист на рівні БД: міграція 0048 (call_status read-only, status лише scheduled/cancelled). */
 
 import { useEffect, useMemo, useState } from "react";
+import UnreadDot from "@/components/UnreadDot";
+import { useUnreadChanges } from "@/lib/useUnreadChanges";
+import { unreadForEntity } from "@/lib/unreadChanges";
 import MiniCalendar from "@/components/MiniCalendar";
 import { PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { isLate, LATE_META } from "@/lib/queueStatus";
@@ -120,6 +123,14 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
   const [filter, setFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(initialEntry || null);
+  /* Контекстні позначки: індекс один на дошку (без хуків у map). Точка на
+     рядку гасне через ack у РОЗГОРНУТОМУ стані — його робить ефект нижче. */
+  const { index: unreadIx, ack: unreadAck, status: unreadStatus } = useUnreadChanges();
+  useEffect(() => {
+    if (!expandedId || unreadStatus !== "ready") return;
+    if (unreadForEntity(unreadIx, "queue_entry", expandedId).length === 0) return;
+    void unreadAck({ kind: "entity", entityType: "queue_entry", entityId: expandedId });
+  }, [expandedId, unreadIx, unreadAck, unreadStatus]);
 
   // Швидкий фільтр із сайдбару: застосовуємо центр+кабінет (nonce → навіть повторний клік).
   useEffect(() => {
@@ -256,6 +267,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                         {(owned && canCancel(r)) ? (
                           <span onClick={(e) => { e.stopPropagation(); onEditPatient(r); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{r.patient_name}</span>
                         ) : r.patient_name}
+                        <UnreadDot markers={unreadForEntity(unreadIx, "queue_entry", r.id)} />
                         {/* 0118: крок кейса — бейдж відкриває екран кейса (лише свої, RLS). */}
                         {r.case_id && onOpenCase && (
                           <button className="btn btn-ghost btn-xs" style={{ marginLeft: 6, padding: "1px 7px", fontSize: "0.65625rem" }}
@@ -341,7 +353,10 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
       )}
       </div>
       <aside style={{ position: "sticky", top: 8 }}>
-        <MiniCalendar selectedDate={calDate} onSelectDate={(d) => setDateFilter(dk(d))} highlightSelected={!!dateFilter} tz={calTz} />
+        <MiniCalendar selectedDate={calDate} onSelectDate={(d) => setDateFilter(dk(d))} highlightSelected={!!dateFilter} tz={calTz}
+              /* «Всі центри» → фільтра немає; обраний центр → лише його крапки,
+                 інакше крапка чужого центру світилась би тут і не гасла. */
+              clinicId={centerId === "all" ? null : centerId} />
         {dateFilter && (
           <button className="btn btn-secondary btn-sm" style={{ width: "100%", marginTop: 8, justifyContent: "center" }} onClick={() => setDateFilter("")}>Всі дати</button>
         )}

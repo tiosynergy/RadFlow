@@ -132,6 +132,56 @@ for (const [n, s] of Object.entries(SURFACES)) {
   check(`${n}: було ${f(before)} → стало`, after, Math.max(4.5, before));
 }
 
+/* ── Позначки непрочитаних змін (0131/0132, ревʼю р1 M-6) ────────────────
+   Крапка без числа — ГРАФІКА (1.4.11, ≥3:1 проти поверхні, на якій стоїть).
+   Бейдж із числом — ТЕКСТ (1.4.3, ≥4.5:1), і саме він провалювався: білий
+   на --red давав 3.41, на --text-secondary — 2.21. Пари внесені сюди, щоб
+   наступна зміна відтінку не пройшла тихо (урок .bd-room-kind.mrt із с23). */
+head("Позначки непрочитаних змін (.rf-dot)");
+{
+  const RED = "#ff453a";
+  const SECONDARY = "#aeaeb2";
+  const DOT_TEXT = "#1c1c1e";   // .rf-dot-num { color }
+  // Крапка як графіка: заливка проти поверхонь, на яких вона реально стоїть.
+  for (const [n, s2] of Object.entries({ "--bg": BG, "--card": CARD, "--card-2": CARD_2 })) {
+    check(`.rf-dot-important/-critical --red на ${n}`, ratio(RED, s2), 3);
+    check(`.rf-dot-info --text-secondary на ${n}`, ratio(SECONDARY, s2), 3);
+  }
+  // Крапка непрочитаного на міні-календарі (.cal-change, 0133). Це графіка
+  // (1.4.11, ≥3:1) проти фону САМОГО ДНЯ, а фон дня буває чотирьох видів:
+  // прозорий (панель --card), ховер, «сьогодні» (--blue) і «обрано» (без
+  // заливки). Кільце box-shadow повторює фон дня, тож меряємо крапку проти
+  // кожного з них.
+  for (const [n, s3] of Object.entries({ "--card (панель)": CARD, "--card-hover": CARD_HOVER })) {
+    check(`.cal-change --red на ${n}`, ratio(RED, s3), 3);
+  }
+  /* «Сьогодні» — окремий випадок: --red на --blue дає 1.49 (нижче за поріг),
+     тому там кільце БІЛЕ. Меряємо реальну конструкцію: кільце проти синього
+     фону і крапку проти кільця. Обидві пари ≥3 — індикатор помітний. */
+  check(".cal-change кільце #fff на --blue (сьогодні)", ratio(WHITE, NEW.blue), 3);
+  check(".cal-change --red проти білого кільця", ratio(RED, WHITE), 3);
+  {
+    const naive = ratio(RED, NEW.blue);
+    if (naive >= 3) {
+      check(".cal-change: --red раптом проходить на --blue — перевір палітру", naive, 3);
+    } else {
+      console.log(`  \u2139\ufe0f  довідка: --red на --blue = ${f(naive)} (<3) — тому на «сьогодні» кільце біле`);
+    }
+  }
+
+  // Бейдж із числом — текст на власній заливці.
+  check(`.rf-dot-num текст ${DOT_TEXT} на --red`, ratio(DOT_TEXT, RED), 4.5);
+  check(`.rf-dot-num текст ${DOT_TEXT} на --text-secondary`, ratio(DOT_TEXT, SECONDARY), 4.5);
+  // Сторож самого правила: білий тут НЕ проходить — якщо колись приберуть
+  // власний color у .rf-dot-num, перевірка вище впаде, а ця пояснить чому.
+  const whiteOnRed = ratio(WHITE, RED);
+  if (whiteOnRed >= 4.5) {
+    check(".rf-dot-num: #fff несподівано проходить — перевір палітру", whiteOnRed, 4.5);
+  } else {
+    console.log(`  \u2139\ufe0f  довідка: #fff на --red = ${f(whiteOnRed)} (<4.5) — тому бейдж має темний текст`);
+  }
+}
+
 /* ── Статичний лінт ролей по самій вёрстці ───────────────────────────────────
    Чисел мало: у с23 ревʼю знайшло провал (.bd-room-kind.mrt), якого числа НЕ
    бачили, бо пари для замірів написані руками. Тому нижче — перевірки, що
