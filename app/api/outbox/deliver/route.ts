@@ -35,6 +35,11 @@ async function handle(req: Request) {
   if (res.skipped === "missing_secret" || res.skipped === "insecure_transport" || res.skipped === "invalid_url") {
     return NextResponse.json({ error: "outbox_config", reason: res.skipped }, { status: 500 });
   }
+  /* 0130 (ревʼю с26 M-1): збій claim — теж повна зупинка доставки, а не «нічого
+     не було»: 5xx симетрично конфіг-гілці, щоб cron/моніторинг це бачив. */
+  if (res.skipped === "claim_failed") {
+    return NextResponse.json({ error: "outbox_claim", reason: res.skipped }, { status: 500 });
+  }
   return NextResponse.json({ ok: true, ...res });
 }
 
