@@ -7,6 +7,9 @@
 
 import DensityControl from "@/components/DensityToggle";
 import { modalityShort, modalityKind } from "@/lib/studies";
+import UnreadDot from "@/components/UnreadDot";
+import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
+import { unreadForNav } from "@/lib/unreadChanges";
 import NavDrawer from "@/components/NavDrawer";
 import SoundToggle from "@/components/SoundToggle";
 
@@ -45,6 +48,15 @@ interface Props {
 
 export default function ReferrerSidebar({ centers, roomsByClinic, roomNoteOf, doctorName, activeTab, onNav, onSelectRoom, activeClinic, activeRoom, counts, canManage, onSignOut, backHref = null, backLabel = null }: Props) {
   const isPreview = !!backHref;   // адмін дивиться портал, а не працює в ньому
+  /* Контекстні позначки направника: «Мої направлення» — черга його пацієнтів,
+     «Мої центри» — зміни доступу (їх він мусить побачити навіть після
+     відкликання доступу — див. 0131, гілка referrer у маршрутизації). */
+  const { index: unreadIx } = useUnreadChanges();
+  const navUnread = (key: string) =>
+    key === "mine" ? unreadForNav(unreadIx, "queue")
+    : key === "waitlist" ? unreadForNav(unreadIx, "waitlist")
+    : key === "centers" ? unreadForNav(unreadIx, "centers")
+    : [];
   const nav: Array<{ key: string; label: string; icon: string; badge?: number; badgeBlue?: boolean }> = [
     { key: "new", label: "Нове направлення", icon: "＋" },
     { key: "mine", label: "Мої направлення", icon: "▦", badge: counts.mine },
@@ -55,6 +67,7 @@ export default function ReferrerSidebar({ centers, roomsByClinic, roomNoteOf, do
 
   return (
     <NavDrawer label="мої центри та направлення">
+      <UnreadChangesMount />
       <div className="sb-head">
         {/* Клікабельний логотип — те, що адмін пробує першим: у власному
             сайдбарі (Sidebar.tsx) він теж веде на робоче місце. */}
@@ -122,6 +135,7 @@ export default function ReferrerSidebar({ centers, roomsByClinic, roomNoteOf, do
               style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
               <span className="ic">{it.icon}</span>
               <span className="sb-item-lab">{it.label}</span>
+              <UnreadDot markers={navUnread(it.key)} withCount />
               {it.badge ? <span className="sb-badge" style={it.badgeBlue ? { background: "var(--blue)", color: "#fff", boxShadow: "inset 0 0 0 1px var(--blue-line)" } : undefined}>{it.badge}</span> : null}
             </button>
           ))}

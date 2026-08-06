@@ -20,6 +20,9 @@ import PhoneInput from "@/components/PhoneInput";
 import CitySelect from "@/components/CitySelect";
 import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import ReferrerBoard from "@/components/ReferrerBoard";
+import UnreadDot from "@/components/UnreadDot";
+import { useUnreadChanges } from "@/lib/useUnreadChanges";
+import { unreadForEntity } from "@/lib/unreadChanges";
 import ReferrerSidebar from "@/components/ReferrerSidebar";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry, editQueueEntryStudies, createReferralCase, referralCaseFromEntry, type CaseStepInput } from "@/app/queue/actions";
 import CaseModal from "@/components/CaseModal";
@@ -910,6 +913,15 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
     setExpandedId((id) => (id === c.accessId ? null : c.accessId!));
   }
 
+  /* Контекстні позначки доступів (referral.access_*): entity = рядок
+     referral_access, тобто c.accessId. Ack — лише РОЗГОРНУТОЇ картки після
+     успішного завантаження її даних (details[expandedId] заповнено). */
+  const { index: unreadIx, ack: unreadAck, status: unreadStatus } = useUnreadChanges();
+  useEffect(() => {
+    if (!expandedId || unreadStatus !== "ready" || !details[expandedId]) return;
+    if (unreadForEntity(unreadIx, "referral_access", expandedId).length === 0) return;
+    void unreadAck({ kind: "entity", entityType: "referral_access", entityId: expandedId });
+  }, [expandedId, unreadIx, unreadAck, unreadStatus, details]);
   const expandedCenter = centers.find((c) => c.accessId === expandedId) || null;
   const expandedSig = expandedCenter ? JSON.stringify([expandedCenter.status, expandedCenter.policy, expandedCenter.room_ids]) : "";
   useEffect(() => {
@@ -981,7 +993,7 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
       <div onClick={onClick} title={expandable ? (expanded ? "Згорнути" : "Натисніть, щоб переглянути деталі центру") : undefined} style={{ padding: "12px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
         {expandable && <span style={{ color: "var(--text-muted)", fontSize: "0.8125rem", width: 12, flexShrink: 0, display: "inline-block", transition: "transform .15s", transform: expanded ? "rotate(90deg)" : "none" }}>▸</span>}
         <div style={{ flex: 1, minWidth: 180 }}>
-          <div style={{ fontWeight: 600, fontSize: "0.875rem" }}>{c.name}</div>
+          <div style={{ fontWeight: 600, fontSize: "0.875rem" }}>{c.name}{c.accessId ? <UnreadDot markers={unreadForEntity(unreadIx, "referral_access", c.accessId)} /> : null}</div>
           <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{c.city || "—"}{c.status === "active" ? " · режим: " + (c.policy === "confirm" ? "з підтвердженням" : "пряма черга") : ""}</div>
         </div>
         <span className={"badge " + m.cls}>{m.label}</span>

@@ -4,6 +4,61 @@
 для миграций, добавленных в ходе аудита 2026-06-25. Выполнять в **обратном** порядке
 (0037 → 0031) и только при необходимости. Все скрипты идемпотентны.
 
+## Откат 0132 (триггеры фан-аута позначок)
+
+> Это «стоп-кран» фичи красных точек. Быстрое выключение БЕЗ отката —
+> `update public.change_marker_settings set enabled = false;` (мгновенно,
+> триггеры остаются, но превращаются в no-op). Полный откат — ниже.
+
+```sql
+begin;
+drop trigger if exists trg_zz_change_markers on public.queue_entries;
+drop trigger if exists trg_zz_change_markers on public.waitlist_entries;
+drop trigger if exists trg_zz_change_markers on public.patient_cases;
+drop trigger if exists trg_zz_change_markers on public.services;
+drop trigger if exists trg_zz_change_markers on public.service_room_overrides;
+drop trigger if exists trg_zz_change_markers on public.referral_access;
+drop trigger if exists trg_zz_change_markers on public.incidents;
+drop function if exists public.tg_change_markers_queue();
+drop function if exists public.tg_change_markers_waitlist();
+drop function if exists public.tg_change_markers_cases();
+drop function if exists public.tg_change_markers_services();
+drop function if exists public.tg_change_markers_sro();
+drop function if exists public.tg_change_markers_access();
+drop function if exists public.tg_change_markers_incidents();
+do $$ begin
+  if exists (select 1 from pg_publication_tables
+              where pubname='supabase_realtime' and tablename='user_change_markers') then
+    alter publication supabase_realtime drop table public.user_change_markers;
+  end if;
+end $$;
+do $$ begin
+  if exists (select 1 from cron.job where jobname='prune-change-markers') then
+    perform cron.unschedule('prune-change-markers');
+  end if;
+end $$;
+commit;
+```
+
+## Откат 0131 (таблица позначок + RPC)
+
+> Откатывать ПОСЛЕ 0132. Уничтожает все накопленные непрочитанные позначки —
+> они нигде больше не хранятся.
+
+```sql
+begin;
+drop function if exists public.mark_changes_seen(uuid[]);
+drop function if exists public.emit_change_markers(
+  uuid, uuid, text, text, text, uuid, text, text, text, uuid, uuid, text[], jsonb, boolean, uuid);
+drop function if exists public.change_marker_recipients(uuid, uuid, text, uuid, uuid, text, boolean);
+drop function if exists public.merge_changed_fields(text[], text[]);
+drop function if exists public.greatest_severity(text, text);
+drop function if exists public.change_markers_enabled();
+drop table if exists public.user_change_markers;
+drop table if exists public.change_marker_settings;
+commit;
+```
+
 ## Откат 0126 (запрет удаления кабинета с историей)
 
 > Единственная миграция, которая **дропает** объект предыдущей: `guard_delete_active_room()`

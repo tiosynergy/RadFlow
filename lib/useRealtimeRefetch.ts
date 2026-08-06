@@ -82,6 +82,11 @@ export function useRealtimeRefetch({
     let cancelled = false;
     let channel: ReturnType<typeof supabase.channel> | undefined;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    let authUnsub: (() => void) | undefined;
+    /* Был ли обрыв с момента последнего SUBSCRIBED. Нужен, чтобы отличить
+       ПЕРВУЮ подписку (данные только что загрузили) от ВОЗВРАТА после потери
+       связи (данные устарели на длину обрыва). */
+    let hadDisconnect = false;
     let pollDelay = 8000;
     const POLL_MAX = 60000;
     /* Джиттер ±25% на КАЖДЫЙ интервал (техаудит Medium-1): без него все клиенты,
@@ -198,12 +203,39 @@ export function useRealtimeRefetch({
         if (cancelled) return;
         if (status === "SUBSCRIBED") {
           stopPolling();
+          /* ⚠️ ВОЗВРАТ ПОСЛЕ ОБРЫВА — это ещё и дыра в данных, а не только
+             восстановленный сокет. События, случившиеся ПОКА связи не было,
+             никто не досылает: Realtime не хранит историю. Раньше здесь
+             stopPolling() просто гасил аварийный поллинг, и первое после
+             реконнекта обновление приходило только со следующим медленным
+             тиком (или когда пользователь вернётся на вкладку) — до этого
+             экран уверенно показывал устаревшие данные.
+             Сверять надо СРАЗУ. На ПЕРВОМ SUBSCRIBED этого не делаем:
+             начальный callAll() уже отработал выше, второй был бы холостым
+             дублем на каждом маунте каждой доски. */
+          if (hadDisconnect) {
+            hadDisconnect = false;
+            callAll();
+          }
           startSlowPolling();   // H-3B: редкая подстраховка при живом сокете
         } else {
+          hadDisconnect = true;
           stopSlowPolling();
           startPolling();       // CHANNEL_ERROR / TIMED_OUT / CLOSED
         }
       });
+
+      /* Обновление токена. Realtime ходит под RLS: после ротации access-токена
+         сокет остаётся на СТАРОМ, и сервер постепенно перестаёт доставлять
+         события — молча, без CHANNEL_ERROR. Поэтому переустанавливаем токен и
+         сверяемся с БД (ТЗ «красных точек», раздел Realtime and reconciliation). */
+      const { data: authSub } = supabase.auth.onAuthStateChange((event, session) => {
+        if (cancelled) return;
+        if (event !== "TOKEN_REFRESHED" && event !== "SIGNED_IN") return;
+        if (session?.access_token) supabase.realtime.setAuth(session.access_token);
+        callAll();
+      });
+      authUnsub = () => authSub.subscription.unsubscribe();
     })();
 
     const onVisible = () => {
@@ -218,6 +250,7 @@ export function useRealtimeRefetch({
       window.removeEventListener("focus", onVisible);
       stopPolling();
       stopSlowPolling();
+      if (authUnsub) authUnsub();
       debouncers.forEach((t) => clearTimeout(t));
       if (channel) supabase.removeChannel(channel);
     };
