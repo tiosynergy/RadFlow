@@ -279,7 +279,7 @@ Enum `user_role`: `admin`, `radiologist`, `registrar`, `referrer`, `ceo`.
 - ✅ В доске направителя (`ReferrerBoard`) выпадающий список кабинетов фильтра ограничен подмножеством `room_ids` гранта (как сайдбар).
 - ✅ Убран неиспользуемый `eslint-disable` в `lib/useRealtimeRefetch.ts`; прототипные `docs/**` — в ignore.
 - **Vercel Hobby**: cron-джобы разрешены только суточные, поэтому поминутный `/api/queue/sink-overdue` убран из `vercel.json` (эндпойнт остаётся для ручного/n8n-вызова; доски и так опускают просроченные на каждом reload). Вернуть cron — при апгрейде до Pro.
-- ⚠️ **Ротация ключа**: `SUPABASE_SERVICE_ROLE_KEY` засветился в скриншоте — подлежит сбросу в Supabase + обновлению в Vercel.
+- ⏸️ **Ротация ключа отложена владельцем** (с26, 2026-08-06): `SUPABASE_SERVICE_ROLE_KEY` засветился в скриншоте, ротацию делаем к готовности продукта. План — `docs/setup/SERVICE_ROLE_KEY_ROTATION_2026-08-06.md`.
 
 ---
 

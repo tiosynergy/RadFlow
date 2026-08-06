@@ -158,8 +158,11 @@ management.
   `waitlist_status`, `priority_level`, `buffer_time_min`, `desired_*`, `room_id`, `isLate`,
   `clarify_at`, `waitlistMatchesSlot()`, `reschedule_origin`, `studies_changed_by`, `clinics.timezone`.
 - Referrer password recovery via email — deferred until a real domain + SMTP exist.
-- **Security:** rotate the `SUPABASE_SERVICE_ROLE_KEY` (was exposed in a screenshot) — reset in
-  Supabase, update the Vercel env var, redeploy.
+- **Security (deferred by the owner, с26 / 2026-08-06):** rotating `SUPABASE_SERVICE_ROLE_KEY`
+  (exposed in a screenshot) is postponed until the product is ready. The full plan —
+  zero-downtime replacement path and post-rotation checks — is written up in
+  `docs/setup/SERVICE_ROLE_KEY_ROTATION_2026-08-06.md`. Do not treat it as P0 or re-open it;
+  remind the owner once before going live with real clients.
 - Coverage gaps from the last QA pass: multi-role live testing (Radiologist/CEO/real Referrer logins)
   and mobile/tablet responsiveness — need test accounts + real-device verification.
 
