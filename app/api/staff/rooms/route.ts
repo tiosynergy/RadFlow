@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
 import { parseBody } from "@/lib/validationHttp";
 import { safeDbError, zUuid } from "@/lib/validation";
+import { emitImportantEvent } from "@/lib/importantEvents.server";
 
 const sStaffRooms = z.object({
   profileId: zUuid,
@@ -16,9 +17,13 @@ const sStaffRooms = z.object({
 // Виконується на сервері з service-role + перевіркою прав адміна, тож НЕ залежить
 // від того, чия сесія активна в браузері (уникаємо RLS-помилок при кількох входах).
 export async function POST(req: Request) {
-  const gate = await requireRole(["admin"], { needClinic: true, forbidden: "Лише адміністратор" });
+  const gate = await requireRole(["admin"], {
+    needClinic: true,
+    forbidden: "Лише адміністратор",
+    path: new URL(req.url).pathname,   // для журналу access.denied (0128)
+  });
   if (!gate.ok) return gate.res;
-  const { me } = gate;
+  const { user, me } = gate;
 
   const parsed = await parseBody("api/staff/rooms", req, sStaffRooms, "Не вказано радіолога або кабінет");
   if (!parsed.ok) return parsed.res;
@@ -44,6 +49,22 @@ export async function POST(req: Request) {
       .upsert({ clinic_id: me.clinic_id, profile_id: profileId, room_id: roomId }, { onConflict: "profile_id,room_id", ignoreDuplicates: true });
     if (error) return NextResponse.json({ error: safeDbError("api/staff/rooms.add", error) }, { status: 400 });
   }
+
+  /* 0128: подія — ПІСЛЯ успішної зміни. У details — НОВЕ число кабінетів
+     радіолога (лічильник, без PII). */
+  const { count } = await admin
+    .from("radiologist_rooms")
+    .select("room_id", { count: "exact", head: true })
+    .eq("profile_id", profileId);
+  await emitImportantEvent({
+    clinicId: me.clinic_id,
+    actorId: user.id,
+    eventType: "staff.access_changed",
+    entityType: "staff",
+    entityId: profileId,
+    // Ревʼю с25: count=null (збій count-запиту) ≠ «0 кабінетів» — тоді без details.
+    details: count != null ? { roomsCount: count } : null,
+  });
 
   return NextResponse.json({ ok: true });
 }

@@ -37,6 +37,12 @@ import {
   zDuration, zBuffer, zPriority, zQueueStatus, zCallStatus, zStudiesRequired, zIdList,
   zQueueDelayPolicy, zOverlapThreshold, zMaxCascade, zQueueStatusAny,
 } from "@/lib/validation";
+/* 0128 — журнал важливих подій: емісія СТРОГО ПІСЛЯ успіху бізнес-операції,
+   fail-OPEN (emitImportantEvent ніколи не кидає). details — БЕЗ PII: лише id,
+   дати/часи, статуси, лічильники; changedFields — лише НАЗВИ колонок. */
+import { queueEventTypeFor, caseEventTypeFor, changedFieldsOf } from "@/lib/importantEvents";
+import { emitImportantEvent } from "@/lib/importantEvents.server";
+import { logError } from "@/lib/serverLog";
 
 export type QueueActionResult =
   | { ok: true; id?: string } // id — створений запис (createBooking/createReferralBooking)
@@ -614,7 +620,7 @@ export async function setQueueEntryStatus(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  return setStatusViaRpc(supabase, v.data.id, v.data.status, { expected: v.data.expectedFrom });
+  return setStatusViaRpc(supabase, user.id, v.data.id, v.data.status, { expected: v.data.expectedFrom });
 }
 
 /* ===== Єдина точка входу для зміни статусу (міграція 0070) =====
@@ -625,6 +631,8 @@ export async function setQueueEntryStatus(
    оновити рядок напряму анон-ключем — тобто вся машина станів обходилась. */
 async function setStatusViaRpc(
   supabase: SupabaseClient<Database>,
+  /** 0128: актор для журналу — user.id з УЖЕ перевіреної сесії викликача. */
+  actorId: string,
   id: string,
   status: QueueStatus,
   opts: {
@@ -636,6 +644,14 @@ async function setStatusViaRpc(
     sameAsOk?: QueueStatus;
   } = {}
 ): Promise<QueueActionResult> {
+  /* 0128: знімок ДО RPC — previousStatus для журналу береться з БД (не з клієнта),
+     referrer_id/clinic_id потрібні для вибору сімʼї події та clinic-контексту.
+     Це read-only і жодного гейта не міняє; якщо RLS рядок не показує — подія
+     просто не запишеться (fail-open журналу, бізнес-результат незмінний). */
+  const { data: pre } = await supabase.from("queue_entries")
+    .select("referrer_id, clinic_id, status")
+    .eq("id", id).maybeSingle();
+
   const { data, error } = await supabase.rpc("queue_set_status_rpc", {
     p_id: id,
     p_status: status,
@@ -654,7 +670,32 @@ async function setStatusViaRpc(
 
   const res = Array.isArray(data) ? data[0] : data;
   if (!res) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
-  if (res.updated) return { ok: true };
+  if (res.updated) {
+    /* 0128: подія — лише при РЕАЛЬНІЙ зміні (updated=true), одна на дію.
+       'cancelled' — окремий тип (queue.cancelled / referral.cancelled), решта
+       переходів — завжди queue.status_changed (у referral-сімʼї свого немає).
+       У details — лише статуси; p_note НЕ потрапляє в журнал (PII-правило). */
+    if (pre?.clinic_id) {
+      const referral = Boolean(pre.referrer_id);
+      await emitImportantEvent({
+        clinicId: pre.clinic_id,
+        actorId,
+        eventType: status === "cancelled"
+          ? queueEventTypeFor("cancelled", referral)
+          : queueEventTypeFor("status_changed", referral),
+        entityType: "queue_entry",
+        entityId: id,
+        subjectReferrerId: pre.referrer_id ?? null,
+        details: { previousStatus: pre.status, newStatus: status },
+      });
+    } else {
+      // §12.11 (ревʼю с25 L1): пропуск події не мовчить.
+      logError({ event: "important_event.skipped", actorId,
+        entityId: id, errorCode: "pre_snapshot_unreadable",
+        message: `type=queue.status_changed->${status}` });
+    }
+    return { ok: true };
+  }
 
   const current = res.current_status as QueueStatus;
   // Той самий перехід уже застосовано (повторний клік / гонка) — ідемпотентно ok.
@@ -671,7 +712,7 @@ export async function cancelQueueEntry(id: string): Promise<QueueActionResult> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  return setStatusViaRpc(supabase, v.data, "cancelled", { allowed: LIVE_STATUSES, sameAsOk: "cancelled" });
+  return setStatusViaRpc(supabase, user.id, v.data, "cancelled", { allowed: LIVE_STATUSES, sameAsOk: "cancelled" });
 }
 
 /** Завершити процедуру: статус done/no_show/not_held + нотатка. Лише живий запис. */
@@ -692,7 +733,7 @@ export async function completeQueueEntry(
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
   // setNote: нотатка завершення пишеться ЗАВЖДИ (у т.ч. порожня — оператор міг її стерти).
-  return setStatusViaRpc(supabase, v.data.id, v.data.status, {
+  return setStatusViaRpc(supabase, user.id, v.data.id, v.data.status, {
     allowed: LIVE_STATUSES, setNote: true, note: v.data.note, sameAsOk: v.data.status,
   });
 }
@@ -752,6 +793,9 @@ export async function resolveIncident(id: string): Promise<QueueActionResult> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
+  // 0128: clinic_id інциденту потрібен журналу — читаємо ДО мутації тим самим RLS-клієнтом.
+  const { data: pre } = await supabase.from("incidents").select("clinic_id").eq("id", id).maybeSingle();
+
   const { data, error } = await supabase
     .from("incidents")
     .update({ status: "resolved", resolved_at: new Date().toISOString() })
@@ -760,6 +804,20 @@ export async function resolveIncident(id: string): Promise<QueueActionResult> {
 
   if (error) return { ok: false, error: safeDbError("resolveIncident", error), code: "generic" };
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або інцидент не знайдено", code: "forbidden" };
+  if (pre?.clinic_id) {
+    await emitImportantEvent({
+      clinicId: pre.clinic_id,
+      actorId: user.id,
+      eventType: "incident.resolved",
+      entityType: "incident",
+      entityId: id,
+      details: null,
+    });
+  } else {
+    // §12.11 (ревʼю с25 L1): пропуск події не мовчить.
+    logError({ event: "important_event.skipped", actorId: user.id,
+      entityId: id, errorCode: "pre_snapshot_unreadable", message: "type=incident.resolved" });
+  }
   return { ok: true };
 }
 
@@ -794,6 +852,8 @@ export async function submitIncident(input: IncidentInput): Promise<IncidentActi
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
+  // 0128: клініка викликача — для журналу (простій створює лише персонал свого центру).
+  const eventClinicId = await callerClinicId(supabase);
 
   const { data, error } = await supabase.rpc("submit_incident_rpc", {
     p_room_id: inc.roomId,
@@ -830,6 +890,18 @@ export async function submitIncident(input: IncidentInput): Promise<IncidentActi
 
   const res = Array.isArray(data) ? data[0] : data;
   const status = (res?.status === "planned" ? "planned" : "active") as "planned" | "active";
+  /* 0128: у details — лише id кабінету і allowlisted-код причини (enum схеми
+     sIncident, НЕ вільний текст reasonLabel/note). */
+  if (eventClinicId && res?.id) {
+    await emitImportantEvent({
+      clinicId: eventClinicId,
+      actorId: user.id,
+      eventType: "incident.started",
+      entityType: "incident",
+      entityId: res.id,
+      details: { roomId: inc.roomId, reason: inc.reason },
+    });
+  }
   return { ok: true, status };
 }
 
@@ -856,6 +928,9 @@ export async function emergencyStop(input: { roomIds: string[]; note?: string | 
   const { roomIds } = v.data;
 
   const supabase = await createClient();
+  // 0128: актор журналу — user.id з перевіреної сесії (callerClinicId його не повертає).
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
@@ -891,6 +966,28 @@ export async function emergencyStop(input: { roomIds: string[]; note?: string | 
   // Недоставлене добере cron-воркер /api/outbox/deliver з backoff (0064).
   void deliverPendingOutbox(3).catch(() => { /* backstop — cron */ });
 
+  /* 0128: emergency_stop_rpc не повертає id створених інцидентів — читаємо їх
+     одразу після успіху тим самим RLS-клієнтом (активні emergency-інциденти
+     реально зупинених кабінетів). Подія — на КОЖЕН створений інцидент (зупинка
+     N кабінетів = N інцидентів); у details — лише id кабінету. */
+  const stoppedRooms: string[] = res?.stopped_rooms ?? [];
+  if (stoppedRooms.length > 0) {
+    const { data: incs } = await supabase.from("incidents")
+      .select("id, room_id")
+      .eq("clinic_id", clinicId).eq("reason", "emergency").eq("status", "active")
+      .in("room_id", stoppedRooms);
+    /* Ревʼю с25 (M4): аварійний сценарій — N подій паралельно, не послідовно
+       (20 кабінетів × RTT ≈ секунди зверху; emitImportantEvent не кидає). */
+    await Promise.all((incs ?? []).map((inc) => emitImportantEvent({
+      clinicId,
+      actorId: user.id,
+      eventType: "incident.emergency_stop",
+      entityType: "incident",
+      entityId: inc.id,
+      details: { roomId: inc.room_id },
+    })));
+  }
+
   return { ok: true, stopped: res?.stopped ?? 0, affected: res?.affected ?? 0 };
 }
 
@@ -908,6 +1005,9 @@ export async function resolveEmergency(input: { roomIds: string[] }): Promise<Re
   const { roomIds } = v.data;
 
   const supabase = await createClient();
+  // 0128: актор журналу — user.id з перевіреної сесії (callerClinicId його не повертає).
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
@@ -925,6 +1025,16 @@ export async function resolveEmergency(input: { roomIds: string[] }): Promise<Re
     }
     return { ok: false, error: safeDbError("resolveEmergency", error), code: "generic" };
   }
+  // 0128: подія на кожен реально знятий аварійний інцидент (id — з результату UPDATE).
+  // Ревʼю с25 (M4): паралельно — emitImportantEvent не кидає.
+  await Promise.all((data ?? []).map((inc) => emitImportantEvent({
+    clinicId,
+    actorId: user.id,
+    eventType: "incident.resolved",
+    entityType: "incident",
+    entityId: inc.id,
+    details: { kind: "emergency" },
+  })));
   return { ok: true, resolved: data?.length ?? 0 };
 }
 
@@ -1129,7 +1239,8 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
   // кабінет одразу звільняється, а запис переноситься на новий слот (та сама
   // запис, не копія) з поміткою про перенос (from_status='in_progress').
   const { data: cur } = await supabase.from("queue_entries")
-    .select("status, scheduled_date, scheduled_time, room_id, clinic_id, studies")
+    // referrer_id — для журналу 0128 (вибір сімʼї події queue.*/referral.*).
+    .select("status, scheduled_date, scheduled_time, room_id, clinic_id, studies, referrer_id")
     .eq("id", input.id).maybeSingle();
   /* Рядок не видно під RLS (чужа клініка / не свій запис направника) або він без
      клініки — далі йти нема сенсу. Раніше при cur=null МОВЧКИ пропускались усі три
@@ -1225,6 +1336,31 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
   if (!res.updated) {
     return { ok: false, error: STALE_ERR, code: "stale", currentStatus: res.current_status as QueueStatus };
   }
+
+  /* 0128: журнал переносу. changed_fields — лише НАЗВИ колонок, що реально
+     змінились (час із БД може мати секунди — порівнюємо перші 5 символів);
+     у details — тільки дати/часи/id кабінетів, БЕЗ імен та складу досліджень. */
+  {
+    const referral = Boolean(cur.referrer_id);
+    const changedFields: string[] = [];
+    if ((cur.scheduled_date ?? "") !== input.scheduledDate) changedFields.push("scheduled_date");
+    if ((cur.scheduled_time ?? "").slice(0, 5) !== input.scheduledTime) changedFields.push("scheduled_time");
+    if (cur.room_id !== input.roomId) changedFields.push("room_id");
+    if (input.studies) changedFields.push("studies", "duration_min", "has_contrast");
+    await emitImportantEvent({
+      clinicId,
+      actorId: user.id,
+      eventType: queueEventTypeFor("rescheduled", referral),
+      entityType: "queue_entry",
+      entityId: input.id,
+      subjectReferrerId: cur.referrer_id ?? null,
+      changedFields: changedFields.sort(),
+      details: {
+        from: { date: cur.scheduled_date, time: cur.scheduled_time, roomId: cur.room_id },
+        to: { date: input.scheduledDate, time: input.scheduledTime, roomId: input.roomId },
+      },
+    });
+  }
   return { ok: true };
 }
 
@@ -1261,7 +1397,8 @@ export async function editQueueEntryStudies(
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
   const { data: cur } = await supabase.from("queue_entries")
-    .select("clinic_id, room_id, scheduled_date, scheduled_time, status, in_progress_at, duration_min, buffer_time_min, studies")
+    // referrer_id — для журналу 0128 (вибір сімʼї події queue.*/referral.*).
+    .select("clinic_id, room_id, scheduled_date, scheduled_time, status, in_progress_at, duration_min, buffer_time_min, studies, referrer_id")
     .eq("id", id).maybeSingle();
   if (!cur) return { ok: false, error: "Запис не знайдено", code: "forbidden" };
   if (cur.room_id && await studiesRoomMismatch(supabase, cur.room_id, studies)) return MODALITY_MISMATCH_ERR;
@@ -1338,6 +1475,24 @@ export async function editQueueEntryStudies(
   // check_no_overlap відхилить; класифікуємо, щоб UI показав локалізовану причину.
   if (error) return mapBookingError(error.message, error.code ?? "");
   if (!data || data.length === 0) return casMiss(supabase, id);
+
+  /* 0128: журнал зміни складу. changed_fields — імена колонок патча; у details —
+     ЛИШЕ кількості позицій до/після (сам склад studies — заборонений ключ PII). */
+  if (cur.clinic_id) {
+    const referral = Boolean(cur.referrer_id);
+    const previousCount = Array.isArray(cur.studies) ? cur.studies.length : null;
+    const newCount = Array.isArray(studies) ? studies.length : 0;
+    await emitImportantEvent({
+      clinicId: cur.clinic_id,
+      actorId: user.id,
+      eventType: queueEventTypeFor("studies_changed", referral),
+      entityType: "queue_entry",
+      entityId: id,
+      subjectReferrerId: cur.referrer_id ?? null,
+      changedFields: changedFieldsOf(patch as Record<string, unknown>),
+      details: previousCount != null ? { previousCount, newCount } : { newCount },
+    });
+  }
   return { ok: true };
 }
 
@@ -1429,6 +1584,21 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
   }).select("id").single();
 
   if (error) return mapBookingError(error.message, error.code ?? "");
+  /* 0128: журнал створення. Запис від імені направника (referrerId у формі
+     персоналу) — referral.created із subject_referrer_id; без направника —
+     queue.created. У details — лише кабінет і слот, жодних даних пацієнта. */
+  if (created?.id) {
+    const referral = Boolean(input.referrerId);
+    await emitImportantEvent({
+      clinicId,
+      actorId: user.id,
+      eventType: queueEventTypeFor("created", referral),
+      entityType: "queue_entry",
+      entityId: created.id,
+      subjectReferrerId: input.referrerId ?? null,
+      details: { roomId: input.roomId, scheduledDate: input.scheduledDate, scheduledTime: input.scheduledTime },
+    });
+  }
   return { ok: true, id: created?.id };
 }
 
@@ -1503,12 +1673,32 @@ export async function scheduleFromWaitlist(waitlistId: string, booking: BookingI
     scheduled_time: input.scheduledTime,
   };
 
+  // 0128: referrer_id кандидата — для subject_referrer_id журналу; читаємо ДО мутації.
+  const { data: wl } = await supabase.from("waitlist_entries")
+    .select("referrer_id").eq("id", idv.data).maybeSingle();
+
   const { data, error } = await supabase.rpc("schedule_from_waitlist_rpc", {
     p_waitlist_id: idv.data,
     p_booking: p_booking as unknown as Json,
   });
   if (error) return mapWaitlistError(error.message, error.code ?? "");
-  return { ok: true, id: (data as string) ?? undefined };
+  const createdId = (data as string) ?? undefined;
+  // 0128: журнал переносу з листа очікування — сутність = кандидат листа.
+  await emitImportantEvent({
+    clinicId,
+    actorId: user.id,
+    eventType: "waitlist.scheduled",
+    entityType: "waitlist_entry",
+    entityId: idv.data,
+    subjectReferrerId: wl?.referrer_id ?? null,
+    details: {
+      queueEntryId: createdId ?? null,
+      roomId: input.roomId,
+      scheduledDate: input.scheduledDate,
+      scheduledTime: input.scheduledTime,
+    },
+  });
+  return { ok: true, id: createdId };
 }
 
 /** Заметка радіолога (radiologist_note). */
@@ -1609,6 +1799,11 @@ export async function updatePatientDetails(id: string, patch: TablesUpdate<"queu
   }
   if (Object.keys(safePatch).length === 0) return { ok: true };
 
+  /* 0128: referrer_id/clinic_id — для журналу; знімок ДО мутації (патч може
+     міняти сам referrer_id — сімʼю події вибираємо за станом до правки). */
+  const { data: pre } = await supabase.from("queue_entries")
+    .select("referrer_id, clinic_id").eq("id", v.data.id).maybeSingle();
+
   /* CAS тут НЕ ставимо свідомо: ПІБ/телефон правлять і в завершеному записі
      (клік по імені відкриває редактор у будь-якому рядку дошки), а статус ці
      колонки не чіпають — воскресити запис ними неможливо (за це відповідає схема). */
@@ -1619,6 +1814,21 @@ export async function updatePatientDetails(id: string, patch: TablesUpdate<"queu
     .select("id");
   if (error) return { ok: false, error: safeDbError("updatePatientDetails", error), code: "generic" };
   if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+
+  /* 0128: журнал правки даних пацієнта — БЕЗ details узагалі (значення полів —
+     PII); changed_fields — лише ІМЕНА реально переданих колонок патча. */
+  if (pre?.clinic_id) {
+    const referral = Boolean(pre.referrer_id);
+    await emitImportantEvent({
+      clinicId: pre.clinic_id,
+      actorId: user.id,
+      eventType: queueEventTypeFor("patient_data_changed", referral),
+      entityType: "queue_entry",
+      entityId: v.data.id,
+      subjectReferrerId: pre.referrer_id ?? null,
+      changedFields: changedFieldsOf(safePatch),
+    });
+  }
   return { ok: true };
 }
 
@@ -1761,6 +1971,19 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
   }).select("id").single();
 
   if (error) return mapBookingError(error.message, error.code ?? "");
+  /* 0128: журнал направлення — завжди referral.created; направник діє над своїм
+     (subject = actor). Клініка — та, чий грант дія вже перевірила вище. */
+  if (created?.id) {
+    await emitImportantEvent({
+      clinicId: input.clinicId,
+      actorId: user.id,
+      eventType: queueEventTypeFor("created", true),
+      entityType: "queue_entry",
+      entityId: created.id,
+      subjectReferrerId: user.id,
+      details: { roomId: input.roomId, scheduledDate: input.scheduledDate, scheduledTime: input.scheduledTime },
+    });
+  }
   return { ok: true, id: created?.id };
 }
 
@@ -2121,6 +2344,20 @@ export async function applyDelayPlan(raw: {
     };
   }
 
+  /* 0128: журнал застосованого плану. entity — рядок queue_delay_events, id якого
+     RPC повертає як event_id; якщо його раптом немає (r.event_id = null) — подію
+     пропускаємо (без entityId писати нема чого), бізнес-результат незмінний. */
+  if (r.event_id) {
+    await emitImportantEvent({
+      clinicId: prof.clinic_id,
+      actorId: user.id,
+      eventType: "queue.delay_plan_applied",
+      entityType: "delay_plan",
+      entityId: r.event_id,
+      details: { shifted: r.moved, conflicts: r.flagged },
+    });
+  }
+
   return { ok: true, moved: r.moved, flagged: r.flagged, eventId: r.event_id };
 }
 
@@ -2211,6 +2448,9 @@ export async function createCase(raw: CaseInput): Promise<QueueActionResult> {
   const input = v.data;
 
   const supabase = await createClient();
+  // 0128: актор журналу — user.id з перевіреної сесії (callerClinicId його не повертає).
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
@@ -2239,7 +2479,22 @@ export async function createCase(raw: CaseInput): Promise<QueueActionResult> {
     p_steps: p_steps as unknown as Json,
   });
   if (error) return mapCaseError(error.message, error.code ?? "");
-  return { ok: true, id: (data as string) ?? undefined };
+  const caseId = (data as string) ?? undefined;
+  /* 0128: журнал створення кейса. Кейс із направником (referrerId у p_case) —
+     referral.case_created; у details — лише кількість кроків. */
+  if (caseId) {
+    const referral = Boolean(input.referrerId);
+    await emitImportantEvent({
+      clinicId,
+      actorId: user.id,
+      eventType: caseEventTypeFor("created", referral),
+      entityType: "patient_case",
+      entityId: caseId,
+      subjectReferrerId: input.referrerId ?? null,
+      details: { stepsCount: input.steps.length },
+    });
+  }
+  return { ok: true, id: caseId };
 }
 
 export type CaseStepInput = z.infer<typeof sCaseStep>;
@@ -2256,8 +2511,15 @@ export async function addCaseStep(caseId: string, raw: CaseStepInput): Promise<Q
   const s = v.data;
 
   const supabase = await createClient();
+  // 0128: актор журналу — user.id з перевіреної сесії (callerClinicId його не повертає).
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  // 0128: referrer_id/clinic_id кейса — для журналу; читаємо ДО мутації тим самим RLS-клієнтом.
+  const { data: pc } = await supabase.from("patient_cases")
+    .select("referrer_id, clinic_id").eq("id", idv.data).maybeSingle();
 
   const p_step = caseRpcStep(s);
   { const g = await closedRegionGate(supabase, clinicId, s.roomId, s.studies); if (g) return g; }
@@ -2266,7 +2528,30 @@ export async function addCaseStep(caseId: string, raw: CaseStepInput): Promise<Q
     p_step: p_step as unknown as Json,
   });
   if (error) return mapCaseError(error.message, error.code ?? "");
-  return { ok: true, id: (data as string) ?? undefined };
+  const stepEntryId = (data as string) ?? undefined;
+  // 0128: журнал кроку кейса — сутність = кейс; у details — id створеного запису-кроку та слот.
+  if (pc?.clinic_id) {
+    const referral = Boolean(pc.referrer_id);
+    await emitImportantEvent({
+      clinicId: pc.clinic_id,
+      actorId: user.id,
+      eventType: caseEventTypeFor("step_added", referral),
+      entityType: "patient_case",
+      entityId: idv.data,
+      subjectReferrerId: pc.referrer_id ?? null,
+      details: {
+        queueEntryId: stepEntryId ?? null,
+        roomId: s.roomId,
+        scheduledDate: s.scheduledDate,
+        scheduledTime: s.scheduledTime,
+      },
+    });
+  } else {
+    // §12.11 (ревʼю с25 L1): пропуск події не мовчить.
+    logError({ event: "important_event.skipped", actorId: user.id,
+      entityId: idv.data, errorCode: "pre_snapshot_unreadable", message: "type=case.step_added" });
+  }
+  return { ok: true, id: stepEntryId };
 }
 
 /** Організувати кейс із наявного запису черги: створити кейс (якщо його ще нема)
@@ -2281,8 +2566,16 @@ export async function caseFromEntry(entryId: string, raw: CaseStepInput): Promis
   const s = v.data;
 
   const supabase = await createClient();
+  // 0128: актор журналу — user.id з перевіреної сесії (callerClinicId його не повертає).
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  // 0128: referrer_id вихідного запису — успадковується кейсом (вибір сімʼї
+  // події referral.* проти case.*); читаємо ДО мутації тим самим RLS-клієнтом.
+  const { data: srcEntry } = await supabase.from("queue_entries")
+    .select("referrer_id, clinic_id").eq("id", idv.data).maybeSingle();
 
   const p_step = caseRpcStep(s);
   { const g = await closedRegionGate(supabase, clinicId, s.roomId, s.studies); if (g) return g; }
@@ -2291,7 +2584,21 @@ export async function caseFromEntry(entryId: string, raw: CaseStepInput): Promis
     p_step: p_step as unknown as Json,
   });
   if (error) return mapCaseError(error.message, error.code ?? "");
-  return { ok: true, id: (data as string) ?? undefined };
+  const caseId = (data as string) ?? undefined;
+  // 0128: журнал організації кейса з наявного запису — сутність = створений кейс.
+  if (caseId) {
+    const referral = Boolean(srcEntry?.referrer_id);
+    await emitImportantEvent({
+      clinicId: srcEntry?.clinic_id ?? clinicId,
+      actorId: user.id,
+      eventType: caseEventTypeFor("created", referral),
+      entityType: "patient_case",
+      entityId: caseId,
+      subjectReferrerId: srcEntry?.referrer_id ?? null,
+      details: { sourceEntryId: idv.data, stepsCount: 2 },
+    });
+  }
+  return { ok: true, id: caseId };
 }
 
 /** Групове скасування кейса (cancel_case_rpc, 0092): desk, лише активні
@@ -2304,8 +2611,29 @@ export async function cancelCase(caseId: string): Promise<QueueActionResult> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  const { error } = await supabase.rpc("cancel_case_rpc", { p_case_id: v.data.caseId });
+  // 0128: referrer_id/clinic_id кейса — для журналу; читаємо ДО мутації тим самим RLS-клієнтом.
+  const { data: pc } = await supabase.from("patient_cases")
+    .select("referrer_id, clinic_id").eq("id", v.data.caseId).maybeSingle();
+
+  const { data, error } = await supabase.rpc("cancel_case_rpc", { p_case_id: v.data.caseId });
   if (error) return mapCaseError(error.message, error.code ?? "");
+  // 0128: журнал скасування кейса; RPC повертає кількість скасованих кроків.
+  if (pc?.clinic_id) {
+    const referral = Boolean(pc.referrer_id);
+    await emitImportantEvent({
+      clinicId: pc.clinic_id,
+      actorId: user.id,
+      eventType: caseEventTypeFor("cancelled", referral),
+      entityType: "patient_case",
+      entityId: v.data.caseId,
+      subjectReferrerId: pc.referrer_id ?? null,
+      details: { affectedSteps: typeof data === "number" ? data : 0 },
+    });
+  } else {
+    // §12.11 (ревʼю с25 L1): пропуск події не мовчить.
+    logError({ event: "important_event.skipped", actorId: user.id,
+      entityId: v.data.caseId, errorCode: "pre_snapshot_unreadable", message: "type=case.cancelled" });
+  }
   return { ok: true };
 }
 
@@ -2380,7 +2708,20 @@ export async function createReferralCase(raw: ReferralCaseInput): Promise<QueueA
     p_steps: p_steps as unknown as Json,
   });
   if (error) return mapCaseError(error.message, error.code ?? "");
-  return { ok: true, id: (data as string) ?? undefined };
+  const caseId = (data as string) ?? undefined;
+  // 0128: журнал — завжди referral.case_created; направник діє над своїм (subject = actor).
+  if (caseId) {
+    await emitImportantEvent({
+      clinicId: input.clinicId,
+      actorId: user.id,
+      eventType: caseEventTypeFor("created", true),
+      entityType: "patient_case",
+      entityId: caseId,
+      subjectReferrerId: user.id,
+      details: { stepsCount: input.steps.length },
+    });
+  }
+  return { ok: true, id: caseId };
 }
 
 /** Додати крок до СВОГО кейса направником (add_case_step_rpc, гілка 0118).
@@ -2408,7 +2749,35 @@ export async function addReferralCaseStep(caseId: string, clinicId: string, raw:
     p_step: caseRpcStep(s) as unknown as Json,
   });
   if (error) return mapCaseError(error.message, error.code ?? "");
-  return { ok: true, id: (data as string) ?? undefined };
+  const stepEntryId = (data as string) ?? undefined;
+  /* 0128: журнал — завжди referral.case_step_added; направник діє над своїм
+     (subject = actor). clinic_id події — З КЕЙСА в БД, НЕ з клієнтського
+     параметра (ревʼю с25 M2: інакше можна покласти подію в журнал чужої
+     клініки). Кейс свій — RLS його показує. */
+  const { data: pcStep } = await supabase.from("patient_cases")
+    .select("clinic_id").eq("id", idv.data.caseId).maybeSingle();
+  if (pcStep?.clinic_id) {
+    await emitImportantEvent({
+      clinicId: pcStep.clinic_id,
+      actorId: user.id,
+      eventType: caseEventTypeFor("step_added", true),
+      entityType: "patient_case",
+      entityId: idv.data.caseId,
+      subjectReferrerId: user.id,
+      details: {
+        queueEntryId: stepEntryId ?? null,
+        roomId: s.roomId,
+        scheduledDate: s.scheduledDate,
+        scheduledTime: s.scheduledTime,
+      },
+    });
+  } else {
+    // §12.11: пропуск події не мовчить.
+    logError({ event: "important_event.skipped", actorId: user.id,
+      entityId: idv.data.caseId, errorCode: "case_clinic_unreadable",
+      message: "type=referral.case_step_added" });
+  }
+  return { ok: true, id: stepEntryId };
 }
 
 /** Організувати кейс зі СВОГО запису направником (case_from_entry_rpc, гілка 0118). */
@@ -2435,7 +2804,30 @@ export async function referralCaseFromEntry(entryId: string, clinicId: string, r
     p_step: caseRpcStep(s) as unknown as Json,
   });
   if (error) return mapCaseError(error.message, error.code ?? "");
-  return { ok: true, id: (data as string) ?? undefined };
+  const caseId = (data as string) ?? undefined;
+  /* 0128: журнал — завжди referral.case_created; направник діє над своїм
+     (subject = actor). clinic_id події — З СТВОРЕНОГО КЕЙСА в БД, НЕ з
+     клієнтського параметра (ревʼю с25 M2). */
+  if (caseId) {
+    const { data: pcNew } = await supabase.from("patient_cases")
+      .select("clinic_id").eq("id", caseId).maybeSingle();
+    if (pcNew?.clinic_id) {
+      await emitImportantEvent({
+        clinicId: pcNew.clinic_id,
+        actorId: user.id,
+        eventType: caseEventTypeFor("created", true),
+        entityType: "patient_case",
+        entityId: caseId,
+        subjectReferrerId: user.id,
+        details: { sourceEntryId: idv.data.entryId, stepsCount: 2 },
+      });
+    } else {
+      logError({ event: "important_event.skipped", actorId: user.id,
+        entityId: caseId, errorCode: "case_clinic_unreadable",
+        message: "type=referral.case_created" });
+    }
+  }
+  return { ok: true, id: caseId };
 }
 
 /** Скасувати СВІЙ нестартований кейс направником (cancel_case_rpc, гілка 0118).
@@ -2448,7 +2840,28 @@ export async function cancelReferralCase(caseId: string): Promise<QueueActionRes
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  const { error } = await supabase.rpc("cancel_case_rpc", { p_case_id: v.data.caseId });
+  /* 0128: clinic_id кейса — для журналу (у глобального направника в профілі
+     клініки немає); читаємо СВІЙ кейс ДО мутації тим самим RLS-клієнтом. */
+  const { data: pc } = await supabase.from("patient_cases")
+    .select("clinic_id").eq("id", v.data.caseId).maybeSingle();
+
+  const { data, error } = await supabase.rpc("cancel_case_rpc", { p_case_id: v.data.caseId });
   if (error) return mapCaseError(error.message, error.code ?? "");
+  // 0128: журнал — завжди referral.case_cancelled; направник діє над своїм (subject = actor).
+  if (pc?.clinic_id) {
+    await emitImportantEvent({
+      clinicId: pc.clinic_id,
+      actorId: user.id,
+      eventType: caseEventTypeFor("cancelled", true),
+      entityType: "patient_case",
+      entityId: v.data.caseId,
+      subjectReferrerId: user.id,
+      details: { affectedSteps: typeof data === "number" ? data : 0 },
+    });
+  } else {
+    // §12.11 (ревʼю с25 L1): пропуск події не мовчить.
+    logError({ event: "important_event.skipped", actorId: user.id,
+      entityId: v.data.caseId, errorCode: "pre_snapshot_unreadable", message: "type=referral.case_cancelled" });
+  }
   return { ok: true };
 }

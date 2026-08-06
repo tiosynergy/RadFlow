@@ -12,6 +12,8 @@ import {
   phoneMatches,
   phoneQueryVariants,
   studiesText,
+  isIdLikeQuery,
+  idMatches,
 } from "@/lib/searchText";
 
 const PHONE = "+380 67 123 45 67"; // канонічний вигляд зберігання в БД
@@ -110,5 +112,59 @@ describe("entryMatchesTerm — універсальне правило рядк�
   it("сміттєвий studies не ламає пошук", () => {
     expect(studiesText({ not: "array" })).toBe("");
     expect(entryMatchesTerm({ patient_name: "Іваненко", patient_phone: null, studies: null }, "Іван")).toBe(true);
+  });
+});
+
+/* ---------------------- пошук за ID запису (с25, із «Журналу дій») ---------------------- */
+
+describe("isIdLikeQuery / idMatches — ID-запит", () => {
+  const ID = "04a33cd7-9f1e-4b2a-8c3d-123456789abc";
+
+  it("короткий ID журналу (8 hex) розпізнається", () => {
+    expect(isIdLikeQuery("04a33cd7")).toBe(true);
+  });
+  it("повний uuid розпізнається (є дефіси)", () => {
+    expect(isIdLikeQuery(ID)).toBe(true);
+  });
+  it("телефонні запити НЕ відбираються (цифри без hex-букв і дефісів)", () => {
+    expect(isIdLikeQuery("0671234")).toBe(false);
+    expect(isIdLikeQuery("380671234567")).toBe(false);
+  });
+  it("імена і дослідження НЕ відбираються", () => {
+    expect(isIdLikeQuery("коваленко")).toBe(false);
+    expect(isIdLikeQuery("abcdef")).toBe(false);  // лише букви, без цифри — може бути латинське слово
+    expect(isIdLikeQuery("04a3")).toBe(false);    // закоротко
+  });
+  it("idMatches — префікс, без регістру", () => {
+    expect(idMatches(ID, "04a33cd7")).toBe(true);
+    expect(idMatches(ID, "04A33CD7")).toBe(true);
+    expect(idMatches(ID, ID)).toBe(true);
+    expect(idMatches(ID, "33cd7")).toBe(false);   // середина — не префікс
+    expect(idMatches(null, "04a33cd7")).toBe(false);
+  });
+});
+
+describe("entryMatchesTerm — ID-запит іде ТІЛЬКИ по id", () => {
+  const e = {
+    id: "04a33cd7-9f1e-4b2a-8c3d-123456789abc",
+    patient_name: "Заставська Марія",
+    patient_phone: "+380 67 123 45 67",
+    studies: [{ type: "МРТ", region: "Головний мозок" }],
+  };
+  it("короткий ID з журналу знаходить запис", () => {
+    expect(entryMatchesTerm(e, "04a33cd7")).toBe(true);
+  });
+  it("повний uuid знаходить запис", () => {
+    expect(entryMatchesTerm(e, e.id)).toBe(true);
+  });
+  it("чужий ID не матчиться (і не падає в текстовий пошук)", () => {
+    expect(entryMatchesTerm(e, "deadbeef")).toBe(false);
+  });
+  it("запис без id не матчиться ID-запитом", () => {
+    expect(entryMatchesTerm({ ...e, id: undefined }, "04a33cd7")).toBe(false);
+  });
+  it("телефон і імʼя працюють як раніше (пріоритет не зламано)", () => {
+    expect(entryMatchesTerm(e, "0671")).toBe(true);
+    expect(entryMatchesTerm(e, "заставська")).toBe(true);
   });
 });

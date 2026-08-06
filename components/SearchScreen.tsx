@@ -259,7 +259,7 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                     <input
                       autoFocus
                       aria-label="Пацієнт або дослідження"
-                      placeholder="Пацієнт або дослідження…"
+                      placeholder="Пацієнт, дослідження або ID запису…"
                       value={term}
                       onChange={(e) => setTerm(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter" && hasAnyInput) runSearch(false, null); }}
@@ -377,7 +377,7 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                     <div className="empty">
                       <div className="ei" aria-hidden="true">⌕</div>
                       <div className="et">Пошук по всій історії та майбутніх записах</div>
-                      <div className="es">Введіть прізвище (повністю або частину), номер телефону (код оператора, середину чи останні цифри) або назву дослідження — наприклад «МРТ мозок». Фільтри звужують період, кабінет, статус.</div>
+                      <div className="es">Введіть прізвище (повністю або частину), номер телефону (код оператора, середину чи останні цифри), назву дослідження — наприклад «МРТ мозок» — або ID запису з «Журналу дій». Фільтри звужують період, кабінет, статус.</div>
                     </div>
                   )}
                   {st.kind === "hint" && (

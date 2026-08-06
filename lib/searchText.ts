@@ -36,6 +36,31 @@ export function isPhoneLikeQuery(s: string): boolean {
 }
 
 /**
+ * Запрос «похож на ID записи» (с25): hex-символы и дефисы. Источник таких
+ * запросов — «Журнал дій», где запись подписана коротким ID (первые 8 знаков
+ * uuid) с полным uuid в тултипе.
+ *
+ * Чтобы НЕ отбирать запросы у телефона и имени:
+ *   - минимум 6 символов (короткий ID из журнала — 8);
+ *   - либо есть дефис (кусок полного uuid), либо есть И цифра, И hex-буква.
+ * ⚠️ Ограничение: чисто цифровой префикс id («12345678») останется телефонным
+ * запросом — для такой записи вставляйте полный uuid из тултипа.
+ */
+export function isIdLikeQuery(s: string): boolean {
+  const t = (s || "").trim().toLowerCase();
+  if (t.length < 6 || t.length > 36) return false;
+  if (!/^[0-9a-f-]+$/.test(t)) return false;
+  return t.includes("-") || (/\d/.test(t) && /[a-f]/.test(t));
+}
+
+/** ID записи начинается с введённого фрагмента? (короткий ID журнала = префикс uuid) */
+export function idMatches(id: string | null | undefined, rawQuery: string): boolean {
+  const q = (rawQuery || "").trim().toLowerCase();
+  if (!q) return false;
+  return (id || "").toLowerCase().startsWith(q);
+}
+
+/**
  * Варианты цифровой последовательности запроса. Оператор может ввести номер
  * «по-местному» («067…», «0 67 123…»), а в БД он лежит в intl-виде («+380 67…»,
  * цифры «38067…»). Ведущий «0» ↔ «380» взаимозаменяемы; сам ввод тоже ищем как есть
@@ -99,11 +124,15 @@ export function studiesText(studies: unknown): string {
  * текстовый → по имени ИЛИ по тексту исследований (type/region).
  */
 export function entryMatchesTerm(
-  e: { patient_name?: string | null; patient_phone?: string | null; studies?: unknown },
+  e: { id?: string | null; patient_name?: string | null; patient_phone?: string | null; studies?: unknown },
   rawQuery: string
 ): boolean {
   const q = (rawQuery || "").trim();
   if (!q) return true;
+  // ID-запрос (с25): проверяется ПЕРЕД телефоном — он содержит hex-буквы или
+  // дефис, телефонным быть не может; текстом его тоже не ищем (hex-строка в
+  // имени/дослідженнях дала б лише хибні збіги).
+  if (isIdLikeQuery(q)) return idMatches(e.id, q);
   if (isPhoneLikeQuery(q)) return phoneMatches(e.patient_phone, q);
   const st = normSearchText(studiesText(e.studies));
   const qn = normSearchText(q);

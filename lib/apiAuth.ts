@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { isAdminConfigured } from "@/lib/supabase/admin";
 import { rateLimitOk } from "@/lib/rateLimit";
+import { emitImportantEvent } from "@/lib/importantEvents.server";
+import { logError } from "@/lib/serverLog";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/supabase/types";
 
@@ -34,21 +36,22 @@ const err = (message: string, status: number): { ok: false; res: NextResponse } 
  * @param opts.needClinic  требовать непустой clinic_id (персонал центра).
  *                 При true возвращаемый me.clinic_id сужается до string.
  * @param opts.forbidden   сообщение при неподходящей роли (по умолчанию общее).
+ * @param opts.path        pathname роута (без query) — для журналу access.denied (0128).
  */
 /** Ліміт частоти per-caller (для роутів, що створюють акаунти). */
 type RateLimitOpt = { key: string; max: number; windowSeconds: number };
 
 export function requireRole(
   allowed: Role[] | null,
-  opts: { needClinic: true; forbidden?: string; rateLimit?: RateLimitOpt }
+  opts: { needClinic: true; forbidden?: string; rateLimit?: RateLimitOpt; path?: string }
 ): Promise<Gate<ClinicCaller>>;
 export function requireRole(
   allowed: Role[] | null,
-  opts?: { needClinic?: boolean; forbidden?: string; rateLimit?: RateLimitOpt }
+  opts?: { needClinic?: boolean; forbidden?: string; rateLimit?: RateLimitOpt; path?: string }
 ): Promise<Gate<Caller>>;
 export async function requireRole(
   allowed: Role[] | null,
-  opts?: { needClinic?: boolean; forbidden?: string; rateLimit?: RateLimitOpt }
+  opts?: { needClinic?: boolean; forbidden?: string; rateLimit?: RateLimitOpt; path?: string }
 ): Promise<Gate<Caller>> {
   if (!isAdminConfigured()) {
     return err("SUPABASE_SERVICE_ROLE_KEY не налаштовано на сервері (.env.local)", 500);
@@ -58,19 +61,52 @@ export async function requireRole(
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) return err("Не авторизовано", 401);
+  if (!user) {
+    // 0128: без сесії подія в журнал НЕ пишеться (немає ні актора, ні клініки) —
+    // лише structured log без PII.
+    logError({ event: "access.denied", errorCode: "unauthenticated", message: opts?.path ? `path=${opts.path}` : null });
+    return err("Не авторизовано", 401);
+  }
 
   const { data: me } = await supabase
     .from("profiles")
     .select("id, clinic_id, role")
     .eq("id", user.id)
     .single();
-  if (!me) return err("Профіль не знайдено", 403);
+  if (!me) {
+    logError({ event: "access.denied", actorId: user.id, errorCode: "profile_not_found", message: opts?.path ? `path=${opts.path}` : null });
+    return err("Профіль не знайдено", 403);
+  }
 
   if (allowed && !allowed.includes(me.role)) {
+    /* 0128: «роль не підходить» — важлива подія access.denied, але ЛИШЕ коли
+       профіль знайдено і clinic_id відомий (журнал tenant-скоуплений). Профілі
+       без центру (направник/CEO на чужому роуті) — тільки structured log. */
+    if (me.clinic_id) {
+      /* Ревʼю с25 (M3): троттлінг per-actor — цикл запитів до чужого роуту не
+         повинен нескінченно наповнювати журнал (180 днів ретенції). Понад
+         5 подій за 10 хв від одного актора — лише structured log.
+         rateLimitOk fail-open: якщо лімітер недоступний, подія пишеться. */
+      const evOk = await rateLimitOk(`evt:denied:${user.id}`, 5, 600);
+      if (evOk) {
+        await emitImportantEvent({
+          clinicId: me.clinic_id,
+          actorId: user.id,
+          eventType: "access.denied",
+          entityType: "staff",
+          entityId: me.id,
+          details: { path: opts?.path ?? null, reason: "forbidden" },
+        });
+      } else {
+        logError({ event: "access.denied", actorId: user.id, errorCode: "forbidden_throttled", message: opts?.path ? `path=${opts.path}` : null });
+      }
+    } else {
+      logError({ event: "access.denied", actorId: user.id, errorCode: "forbidden", message: opts?.path ? `path=${opts.path}` : null });
+    }
     return err(opts?.forbidden ?? "Недостатньо прав", 403);
   }
   if (opts?.needClinic && !me.clinic_id) {
+    logError({ event: "access.denied", actorId: user.id, errorCode: "no_clinic", message: opts?.path ? `path=${opts.path}` : null });
     return err("Адміністратор без центру", 403);
   }
 

@@ -5,6 +5,7 @@ import { requireRole } from "@/lib/apiAuth";
 import { parseBody } from "@/lib/validationHttp";
 import { safeDbError, zLogin, zOptEmail, zOptText } from "@/lib/validation";
 import { technicalEmail, CEO_EMAIL_DOMAIN } from "@/lib/login";
+import { emitImportantEvent } from "@/lib/importantEvents.server";
 
 // ПІБ і телефон обовʼязкові лише для НОВОГО CEO-акаунта (перевірка нижче).
 const sGrant = z.object({
@@ -26,6 +27,7 @@ export async function POST(req: Request) {
     needClinic: true,
     forbidden: "Лише адміністратор центру",
     rateLimit: { key: "acct:create", max: 30, windowSeconds: 3600 },
+    path: new URL(req.url).pathname,   // для журналу access.denied (0128)
   });
   if (!gate.ok) return gate.res;
   const { user, me } = gate;
@@ -131,6 +133,17 @@ export async function POST(req: Request) {
       .insert({ ceo_id: ceoId, clinic_id: me.clinic_id, status: "active", granted_by: user.id, note });
     if (iErr) return NextResponse.json({ error: safeDbError("api/ceo/grant.access", iErr) }, { status: 400 });
   }
+
+  // 0128: подія доступу — ПІСЛЯ успішного гранту/реактивації CEO-доступу.
+  // details БЕЗ PII: лише код дії та цільовий центр.
+  await emitImportantEvent({
+    clinicId: me.clinic_id,
+    actorId: user.id,
+    eventType: "staff.access_changed",
+    entityType: "staff",
+    entityId: ceoId,
+    details: { action: "ceo_granted", targetClinicId: me.clinic_id },
+  });
 
   return NextResponse.json({ ok: true, created_account: createdAccount, login, invite_token: inviteToken });
 }

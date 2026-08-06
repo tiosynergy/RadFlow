@@ -18,6 +18,8 @@
 import { entryMatchesTerm, isPhoneLikeQuery, normSearchText, phoneMatches } from "@/lib/searchText";
 
 export type QuickSearchable = {
+  /** с25: швидкий пошук теж розуміє ID (доски передають id запису, якщо він є). */
+  id?: string | null;
   patient_name?: string | null;
   patient_phone?: string | null;
   studies?: unknown;

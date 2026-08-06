@@ -12,7 +12,7 @@
 
 import { z } from "zod";
 import { zDateKey, zUuid } from "@/lib/validation";
-import { digitsOf, isPhoneLikeQuery, SEARCH_TERM_MAX } from "@/lib/searchText";
+import { digitsOf, isIdLikeQuery, isPhoneLikeQuery, SEARCH_TERM_MAX } from "@/lib/searchText";
 import type { Database } from "@/supabase/types";
 
 export type UserRole = Database["public"]["Enums"]["user_role"];
@@ -83,7 +83,7 @@ export type RoleScope = {
 export type NormalizedSearchFilters = {
   term: string;
   /** Телефоноподобный запрос (сравнение по цифрам) или текстовый. */
-  termKind: "phone" | "text" | "none";
+  termKind: "id" | "phone" | "text" | "none";
   source: SearchSource;
   clinicIds: string[];
   roomIds: string[] | null;
@@ -162,7 +162,10 @@ export function normalizeSearchRequest(input: unknown, scope: RoleScope, todayKe
   const term = (r.term || "").trim().replace(/\s+/g, " ");
   let termKind: NormalizedSearchFilters["termKind"] = "none";
   if (term) {
-    if (isPhoneLikeQuery(term)) {
+    if (isIdLikeQuery(term)) {
+      // с25: ID запису з «Журналу дій» (короткий 8-значний або повний uuid).
+      termKind = "id";
+    } else if (isPhoneLikeQuery(term)) {
       if (digitsOf(term).length < 3) return { ok: false, code: "term_too_short", error: "Введіть щонайменше 3 цифри номера" };
       termKind = "phone";
     } else {

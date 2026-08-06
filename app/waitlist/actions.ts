@@ -14,6 +14,9 @@ import { normPriority, type PatientPriority } from "@/lib/priority";
 import { modalityFromStudies } from "@/lib/waitlist";
 import { wallDayKey } from "@/lib/incidents";
 import { firstClosedService, studiesKeySet, CatalogUnavailableError } from "@/lib/serviceGate";
+import { isReferralAction, waitlistEventTypeFor } from "@/lib/importantEvents";
+import { emitImportantEvent } from "@/lib/importantEvents.server";
+import { logError } from "@/lib/serverLog";
 import {
   parseInput, safeDbError, zUuid, zDateKey, zTime, zName, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
@@ -269,6 +272,30 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
     .single();
 
   if (error) return mapWaitlistDbError("addWaitlistEntry", error);
+
+  /* 0128: журнал важливих подій — строго ПІСЛЯ успішної вставки. Загального
+     «waitlist.added» у ТЗ немає (§5), тож подія пишеться лише для направника
+     (referral.waitlist_added, §4.6). details — БЕЗ PII: кабінет і пріоритет. */
+  {
+    const eventType = waitlistEventTypeFor(
+      "added",
+      isReferralAction({ entryReferrerId: referrerId, actorRole: caller.role })
+    );
+    if (eventType) {
+      await emitImportantEvent({
+        clinicId,
+        actorId: caller.userId,
+        eventType,
+        entityType: "waitlist_entry",
+        entityId: data.id,
+        subjectReferrerId: referrerId,
+        details: {
+          ...(input.roomId ? { roomId: input.roomId } : {}),
+          ...(input.priorityLevel ? { priority: normPriority(input.priorityLevel) } : {}),
+        },
+      });
+    }
+  }
   return { ok: true, id: data.id };
 }
 
@@ -365,6 +392,28 @@ export async function addEntryToWaitlist(
       return { ok: false, error: "Пацієнт уже в листі очікування", code: "duplicate" };
     }
     return mapWaitlistDbError("addEntryToWaitlist", error);
+  }
+
+  /* 0128: як і в addWaitlistEntry — подія лише для направниковського запису
+     (referrer_id береться з ВИХІДНОГО запису черги), після успішної вставки. */
+  {
+    const eventType = waitlistEventTypeFor(
+      "added",
+      isReferralAction({ entryReferrerId: entry.referrer_id, actorRole: caller.role })
+    );
+    if (eventType) {
+      await emitImportantEvent({
+        clinicId: entry.clinic_id as string,
+        actorId: caller.userId,
+        eventType,
+        entityType: "waitlist_entry",
+        entityId: data.id,
+        subjectReferrerId: entry.referrer_id ?? null,
+        details: {
+          ...(entry.priority_level ? { priority: entry.priority_level } : {}),
+        },
+      });
+    }
   }
   return { ok: true, id: data.id };
 }
@@ -499,6 +548,19 @@ export async function setWaitlistStatus(id: string, status: WaitlistStatus): Pro
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
+  /* 0128: дані для журналу читаємо ДО RPC (під RLS: хто має право міняти статус,
+     той рядок бачить). Журналюється ЛИШЕ зняття з листа (→cancelled); повернення
+     в очікування (→waiting) подією не є. */
+  let logRow: { clinic_id: string | null; referrer_id: string | null; status: string | null } | null = null;
+  if (status === "cancelled") {
+    const { data: row } = await supabase
+      .from("waitlist_entries")
+      .select("clinic_id, referrer_id, status")
+      .eq("id", id)
+      .maybeSingle();
+    logRow = row ?? null;
+  }
+
   // Перехід статусу — ЛИШЕ через set_waitlist_status_rpc (0102). Службові колонки
   // status/scheduled_entry_id/claim_token закриті від прямого запису колоночними
   // грантами; RPC (SECURITY DEFINER) робить явну авторизацію (персонал свого центру
@@ -514,6 +576,34 @@ export async function setWaitlistStatus(id: string, status: WaitlistStatus): Pro
       return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
     }
     return { ok: false, error: safeDbError("setWaitlistStatus", error), code: "generic" };
+  }
+
+  /* 0128: подія — ПІСЛЯ успішного RPC. referral-сім'я — за referrer_id рядка.
+     Ревʼю с25 (L2): RPC ідемпотентний — повторне зняття вже cancelled-рядка
+     успішне, але подію НЕ дублюємо (§12.5); previousStatus — з рядка, не
+     константа. */
+  if (status === "cancelled") {
+    if (logRow?.clinic_id && logRow.status !== "cancelled") {
+      const eventType = waitlistEventTypeFor(
+        "removed",
+        isReferralAction({ entryReferrerId: logRow.referrer_id })
+      );
+      if (eventType) {
+        await emitImportantEvent({
+          clinicId: logRow.clinic_id,
+          actorId: user.id,
+          eventType,
+          entityType: "waitlist_entry",
+          entityId: id,
+          subjectReferrerId: logRow.referrer_id ?? null,
+          details: { previousStatus: logRow.status ?? "waiting", newStatus: "cancelled" },
+        });
+      }
+    } else if (!logRow?.clinic_id) {
+      // §12.11 (ревʼю с25 L1): пропуск події не мовчить.
+      logError({ event: "important_event.skipped", actorId: user.id,
+        entityId: id, errorCode: "pre_snapshot_unreadable", message: "type=waitlist.removed" });
+    }
   }
   return { ok: true };
 }
