@@ -1040,6 +1040,19 @@ function NeedsReschedulePanel({ entries, roomsById, onReschedule, onToWaitlist, 
 /* ── Скасовані + Неявка ── */
 function CancelledPanel({ entries, onUndo, onReschedule, onToWaitlist }: { entries: QEntry[]; onUndo: (p: QEntry) => void; onReschedule: (p: QEntry) => void; onToWaitlist: (p: QEntry) => void }) {
   const [open, setOpen] = useState(false);
+  /* ⚠️ Скасування — найчастіша критична подія, і його позначку (field_scope
+     'status') не можна погасити на дошці: скасований запис туди не потрапляє
+     взагалі, він живе ТУТ. Без ack тут крапка висіла б вічно — і на пункті
+     навігації, і (з 0133) на конкретному дні календаря. Панель — плоский
+     список без розгортання, тож умова показу = розкрита панель. */
+  const { index: unreadIx, ack: unreadAck, status: unreadStatus } = useUnreadChanges();
+  useEffect(() => {
+    if (!open || unreadStatus !== "ready") return;
+    for (const e of entries) {
+      if (unreadForEntity(unreadIx, "queue_entry", e.id).length === 0) continue;
+      void unreadAck({ kind: "entity", entityType: "queue_entry", entityId: e.id });
+    }
+  }, [open, entries, unreadIx, unreadAck, unreadStatus]);
   if (!entries.length) return null;
   return (
     <div className="rcard">
@@ -1055,7 +1068,7 @@ function CancelledPanel({ entries, onUndo, onReschedule, onToWaitlist }: { entri
             return (
               <div key={e.id} style={{ padding: "8px 0", borderTop: "1px solid var(--border)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-                  <span style={{ fontSize: "0.8125rem", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.patient_name}</span>
+                  <span style={{ fontSize: "0.8125rem", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.patient_name}</span><UnreadDot markers={unreadForEntity(unreadIx, "queue_entry", e.id)} />
                   <span className={"badge " + (isCancelled ? "gray" : "red")} style={{ fontSize: "0.65625rem", flexShrink: 0 }}>{isCancelled ? "Скасовано" : "Неявка"}</span>
                 </div>
                 <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", margin: "2px 0 6px" }}>{e.scheduled_time} · {procLabel(e)}</div>

@@ -4,6 +4,29 @@
 для миграций, добавленных в ходе аудита 2026-06-25. Выполнять в **обратном** порядке
 (0037 → 0031) и только при необходимости. Все скрипты идемпотентны.
 
+## Откат 0133 (subject_date в позначках)
+
+> ⚠️ ПОРЯДОК ВАЖЕН. Сначала вернуть функцию БЕЗ `subject_date`, и только потом
+> снимать колонку. Наоборот нельзя: триггеры fail-CLOSED, и `emit_change_markers`,
+> ссылающаяся на исчезнувшую колонку, уронит ЛЮБУЮ запись в queue_entries /
+> services / waitlist / incidents — клиника перестанет работать.
+> Если нужен откат только календаря — колонку не трогайте вовсе, достаточно
+> убрать точки из `MiniCalendar.tsx` (и локальной копии в `RadiologistBoard.tsx`).
+
+```sql
+begin;
+-- 1. вернуть 15-аргументную версию (тело 0131, без subject_date)
+drop function if exists public.emit_change_markers(
+  uuid, uuid, text, text, text, uuid, text, text, text, uuid, uuid, text[], jsonb, boolean, uuid, date);
+-- затем выполнить блок «4) Єдина точка запису» из 0131_user_change_markers.sql
+-- и следом блок «1) queue_entries» из 0132_change_marker_triggers.sql
+-- (тело tg_change_markers_queue без p_subject_date).
+
+-- 2. и только теперь колонка:
+alter table public.user_change_markers drop column if exists subject_date;
+commit;
+```
+
 ## Откат 0132 (триггеры фан-аута позначок)
 
 > Это «стоп-кран» фичи красных точек. Быстрое выключение БЕЗ отката —

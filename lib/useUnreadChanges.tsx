@@ -106,7 +106,7 @@ async function reloadMarkers(): Promise<void> {
       .select(
         "id, clinic_id, event_type, surface_key, entity_type, entity_id, field_scope," +
         " actor_id, actor_role, subject_referrer_id, room_id, severity, changed_fields," +
-        " details, created_at, seen_at"
+        " details, created_at, seen_at, subject_date"
       )
       .is("seen_at", null);
     /* Фільтр по отримувачу — defense-in-depth і підказка планувальнику на

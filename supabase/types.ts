@@ -1144,6 +1144,8 @@ export type Database = {
           details: Json | null;
           created_at: string;
           seen_at: string | null;
+          // 0133: календарний день сутності (лише для записів черги).
+          subject_date: string | null;
         };
         Insert: never; // клієнтського INSERT не існує (0131)
         Update: never; // seen_at ставить лише mark_changes_seen

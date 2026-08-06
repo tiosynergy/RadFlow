@@ -61,6 +61,9 @@ export type ChangeMarker = {
   details: Record<string, unknown> | null;
   created_at: string;
   seen_at: string | null;
+  /** 0133: календарний день сутності («YYYY-MM-DD»). Заповнений лише для
+      записів черги; лист очікування / каталог / доступи його не мають. */
+  subject_date: string | null;
 };
 
 /**
@@ -79,6 +82,10 @@ export type UnreadIndex = {
   bySurface: Map<string, ChangeMarker[]>;
   byEntity: Map<string, ChangeMarker[]>;
   byField: Map<string, ChangeMarker[]>;
+  /** 0133: «YYYY-MM-DD» → позначки цього дня (лише поверхня queue). Потрібен
+      міні-календарю: він показує МІСЯЦЬ, а дошка вантажить ОДИН день, тож
+      вивести день із завантажених даних неможливо (урок с24). */
+  byDate: Map<string, ChangeMarker[]>;
 };
 
 export const entityKey = (entityType: string, entityId: string): string =>
@@ -107,13 +114,19 @@ export function indexMarkers(markers: readonly ChangeMarker[]): UnreadIndex {
   const bySurface = new Map<string, ChangeMarker[]>();
   const byEntity = new Map<string, ChangeMarker[]>();
   const byField = new Map<string, ChangeMarker[]>();
+  const byDate = new Map<string, ChangeMarker[]>();
 
   for (const m of all) {
     push(bySurface, m.surface_key, m);
     push(byEntity, entityKey(m.entity_type, m.entity_id), m);
     push(byField, fieldKey(m.entity_type, m.entity_id, m.field_scope), m);
+    /* У календар пускаємо ЛИШЕ чергу: у листа очікування «бажане вікно», а не
+       день, у каталогу дати немає взагалі. Явна перевірка surface, а не просто
+       «є subject_date» — щоб майбутнє джерело з датою не засвітило календар
+       мовчки. */
+    if (m.subject_date && m.surface_key === "queue") push(byDate, m.subject_date, m);
   }
-  return { all, bySurface, byEntity, byField };
+  return { all, bySurface, byEntity, byField, byDate };
 }
 
 export const EMPTY_INDEX: UnreadIndex = {
@@ -121,6 +134,7 @@ export const EMPTY_INDEX: UnreadIndex = {
   bySurface: new Map(),
   byEntity: new Map(),
   byField: new Map(),
+  byDate: new Map(),
 };
 
 /* ─────────────────────────── Селектори ─────────────────────────────────
@@ -148,6 +162,33 @@ export const hasUnreadEntity = (ix: UnreadIndex, entityType: string, entityId: s
 export const hasUnreadField = (
   ix: UnreadIndex, entityType: string, entityId: string, scope: FieldScope
 ): boolean => (ix.byField.get(fieldKey(entityType, entityId, scope))?.length ?? 0) > 0;
+
+/* ── Календар (0133) ──────────────────────────────────────────────────────
+   dayKey — «YYYY-MM-DD» у ЛОКАЛЬНИХ полях дати, а не ISO-зріз UTC:
+   `scheduled_date` у БД — тип `date` без зони, і саме так його форматує
+   міні-календар. `toISOString().slice(0,10)` тут дав би зсув на добу для
+   зон на схід від UTC — рівно та помилка, від якої застерігає правило
+   «час — лише через wallNow/wallDayKey». */
+export const calendarDayKey = (d: Date): string =>
+  d.getFullYear() + "-" +
+  String(d.getMonth() + 1).padStart(2, "0") + "-" +
+  String(d.getDate()).padStart(2, "0");
+
+/** ⚠️ clinicId ОБОВʼЯЗКОВИЙ для мультицентрових екранів (ревʼю 0133, M-4).
+    Портал направника показує календар ОДНОГО обраного центру, а позначки в
+    нього приходять з усіх — без фільтра крапка від центру Б світилась би на
+    календарі центру А, і погасити її звідти неможливо. Персоналу центру
+    можна не передавати: у нього позначки лише своєї клініки. */
+export const unreadForDate = (
+  ix: UnreadIndex, dayKey: string, clinicId?: string | null
+): ChangeMarker[] => {
+  const day = ix.byDate.get(dayKey) ?? [];
+  return clinicId ? day.filter((m) => m.clinic_id === clinicId) : day;
+};
+
+export const hasUnreadDate = (
+  ix: UnreadIndex, dayKey: string, clinicId?: string | null
+): boolean => unreadForDate(ix, dayKey, clinicId).length > 0;
 
 const SEVERITY_RANK: Record<MarkerSeverity, number> = { info: 0, important: 1, critical: 2 };
 

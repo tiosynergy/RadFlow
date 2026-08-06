@@ -353,7 +353,10 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
       )}
       </div>
       <aside style={{ position: "sticky", top: 8 }}>
-        <MiniCalendar selectedDate={calDate} onSelectDate={(d) => setDateFilter(dk(d))} highlightSelected={!!dateFilter} tz={calTz} />
+        <MiniCalendar selectedDate={calDate} onSelectDate={(d) => setDateFilter(dk(d))} highlightSelected={!!dateFilter} tz={calTz}
+              /* «Всі центри» → фільтра немає; обраний центр → лише його крапки,
+                 інакше крапка чужого центру світилась би тут і не гасла. */
+              clinicId={centerId === "all" ? null : centerId} />
         {dateFilter && (
           <button className="btn btn-secondary btn-sm" style={{ width: "100%", marginTop: 8, justifyContent: "center" }} onClick={() => setDateFilter("")}>Всі дати</button>
         )}

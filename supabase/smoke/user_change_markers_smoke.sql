@@ -31,6 +31,8 @@
      L. Рубильник вимикає фан-аут.
      M. Масова правка каталогу згортається в агрегат по кабінетах (H-2).
      N. Згортання оновлює room_id останньою еміcією (M-5/M-4new).
+     O. 0133: subject_date = дата запису; згортання переносить дату;
+        сутності без дати лишаються з NULL.
    ============================================================================ */
 
 do $smoke$
@@ -400,6 +402,67 @@ begin
      where m.entity_id = v_e and m.recipient_id = v_reg_a;
     if v_rid is distinct from v_room_b then
       raise exception 'SMOKE_FAIL N1: room_id при згортанні не оновився (%, очікували %)', v_rid, v_room_b;
+    end if;
+  end;
+
+  -- ══ O. 0133: дата запису в позначці (крапка на календарі) ══════════════
+  declare
+    v_sd date; v_entry_date date; v_moved date; v_e uuid := gen_random_uuid();
+  begin
+    if not exists (select 1 from information_schema.columns
+                    where table_schema='public' and table_name='user_change_markers'
+                      and column_name='subject_date') then
+      raise exception 'SMOKE_FAIL O0: 0133 не накочена (немає subject_date)';
+    end if;
+
+    -- O1: позначка від тригера несе дату запису.
+    -- ⚠️ Явна вимога НЕ-NULL: інакше при scheduled_date is null порівняння
+    -- «null is distinct from null» = false, і перевірка була б зеленою навіть
+    -- при повністю вимкненому p_subject_date (вакуумний тест).
+    select q.scheduled_date into v_entry_date from public.queue_entries q where q.id = v_entry;
+    if v_entry_date is null then
+      raise exception 'SMOKE_FAIL O1a: запис-фікстура без дати — перевірити subject_date нічим';
+    end if;
+    select m.subject_date into v_sd from public.user_change_markers m
+     where m.entity_id = v_entry and m.recipient_id = v_reg_a and m.field_scope = 'patient_data';
+    if v_sd is distinct from v_entry_date then
+      raise exception 'SMOKE_FAIL O1b: subject_date = %, а запис на %', v_sd, v_entry_date;
+    end if;
+
+    -- O2: згортання ПЕРЕНОСИТЬ дату (аналог блоку N для room_id).
+    perform public.emit_change_markers(
+      p_clinic => v_clinic_a, p_actor => v_admin_a,
+      p_event_type => 'queue.rescheduled', p_surface => 'queue',
+      p_entity_type => 'queue_entry', p_entity_id => v_e,
+      p_field_scope => 'schedule', p_scope_kind => 'entry',
+      p_subject_date => v_entry_date);
+    perform public.emit_change_markers(
+      p_clinic => v_clinic_a, p_actor => v_admin_a,
+      p_event_type => 'queue.rescheduled', p_surface => 'queue',
+      p_entity_type => 'queue_entry', p_entity_id => v_e,
+      p_field_scope => 'schedule', p_scope_kind => 'entry',
+      p_subject_date => v_entry_date + 14);
+    select m.subject_date into v_moved from public.user_change_markers m
+     where m.entity_id = v_e and m.recipient_id = v_reg_a;
+    if v_moved is distinct from (v_entry_date + 14) then
+      raise exception 'SMOKE_FAIL O2: згортання не перенесло дату (%, очікували %)',
+        v_moved, v_entry_date + 14;
+    end if;
+
+    -- O3: сутність БЕЗ дати справді лишається без неї (позитивна перевірка на
+    -- КОНКРЕТНОМУ рядку, а не тавтологія «жодна не-черга не має дати»).
+    perform public.emit_change_markers(
+      p_clinic => v_clinic_a, p_actor => v_admin_a,
+      p_event_type => 'service.updated', p_surface => 'services',
+      p_entity_type => 'room', p_entity_id => v_e,
+      p_field_scope => 'catalog', p_scope_kind => 'catalog');
+    if not exists (select 1 from public.user_change_markers
+                    where entity_id = v_e and entity_type = 'room' and recipient_id = v_reg_a) then
+      raise exception 'SMOKE_FAIL O3a: каталожна позначка не створилась';
+    end if;
+    if exists (select 1 from public.user_change_markers
+                where entity_id = v_e and entity_type = 'room' and subject_date is not null) then
+      raise exception 'SMOKE_FAIL O3b: каталожна позначка отримала дату';
     end if;
   end;
 

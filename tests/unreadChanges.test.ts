@@ -7,6 +7,7 @@ import {
   hasUnreadSurface, hasUnreadEntity, hasUnreadField,
   unreadForSurface, unreadForEntity, unreadForField,
   topSeverity, ackIdsForScope, snapshotIdsOf,
+  unreadForDate, hasUnreadDate, calendarDayKey,
   markerLabel, unreadGroupLabel, hasUnreadNav, unreadForNav,
   type ChangeMarker,
 } from "@/lib/unreadChanges";
@@ -33,6 +34,7 @@ function marker(over: Partial<ChangeMarker> = {}): ChangeMarker {
     details: null,
     created_at: "2026-08-06T10:00:00.000Z",
     seen_at: null,
+    subject_date: null,
     ...over,
   };
 }
@@ -236,6 +238,53 @@ describe("ack підтверджує ЛИШЕ відрендерений зні�
       snapshotIdsOf([a, b, c])
     ).sort();
     expect(ids).toEqual(["schedule", "studies"]);
+  });
+});
+
+/* ══════════════ 5b. Календар: дата живе в самій позначці ════════════════
+   Урок с24 у мініатюрі: календар показує МІСЯЦЬ, дошка вантажить ОДИН день,
+   тож дату не можна виводити із завантажених записів. */
+
+describe("календар", () => {
+  it("групує позначки черги за subject_date", () => {
+    const ix = indexMarkers([
+      marker({ id: "a", subject_date: "2026-08-10" }),
+      marker({ id: "b", subject_date: "2026-08-10", entity_id: "e2" }),
+      marker({ id: "c", subject_date: "2026-08-12", entity_id: "e3" }),
+    ]);
+    expect(unreadForDate(ix, "2026-08-10").map((m) => m.id).sort()).toEqual(["a", "b"]);
+    expect(hasUnreadDate(ix, "2026-08-12")).toBe(true);
+    expect(hasUnreadDate(ix, "2026-08-11")).toBe(false);
+  });
+
+  it("позначки без дати на календар не сідають", () => {
+    const ix = indexMarkers([marker({ id: "x", subject_date: null })]);
+    expect(ix.byDate.size).toBe(0);
+  });
+
+  it("не-черга на календар не сідає, навіть якщо дата зʼявиться", () => {
+    // Каталог/лист очікування можуть колись отримати дату — календар усе одно
+    // показує лише чергу, і це має бути явним, а не випадковим.
+    const ix = indexMarkers([
+      marker({ id: "svc", surface_key: "services", entity_type: "room",
+               field_scope: "catalog", subject_date: "2026-08-10" }),
+    ]);
+    expect(hasUnreadDate(ix, "2026-08-10")).toBe(false);
+  });
+
+  it("прочитана позначка гасить день", () => {
+    const ix = indexMarkers([
+      marker({ id: "a", subject_date: "2026-08-10", seen_at: "2026-08-06T12:00:00.000Z" }),
+    ]);
+    expect(hasUnreadDate(ix, "2026-08-10")).toBe(false);
+  });
+
+  it("calendarDayKey бере ЛОКАЛЬНІ поля дати, а не UTC-зріз", () => {
+    // toISOString() для 00:00 у зоні на схід від UTC дав би попередню добу —
+    // саме та помилка, від якої застерігає правило «час через wallNow».
+    const d = new Date(2026, 7, 10, 0, 0, 0);
+    expect(calendarDayKey(d)).toBe("2026-08-10");
+    expect(calendarDayKey(new Date(2026, 0, 5))).toBe("2026-01-05");
   });
 });
 

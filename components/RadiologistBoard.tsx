@@ -13,7 +13,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
-import { unreadForEntity } from "@/lib/unreadChanges";
+import { unreadForEntity, unreadForDate, calendarDayKey } from "@/lib/unreadChanges";
 import { useQueueSounds } from "@/lib/useQueueSounds";
 import type { OverrunSource } from "@/lib/soundEvents";
 import { signOutAndRedirect } from "@/lib/auth";
@@ -500,6 +500,10 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
 }
 
 function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSchedules }: { selectedDate: Date; onSelectDate: (d: Date) => void; overridesByDate?: Record<string, DayOverride>; tz?: string; roomSchedules?: unknown[] }) {
+  /* Локальна копія сітки (історично окрема від @/components/MiniCalendar).
+     Крапки потрібні й тут: радіолог — штатна аудиторія фан-ауту по СВОЇХ
+     кабінетах, і його дошка так само вантажить ОДИН день (ревʼю 0133). */
+  const { index: unreadIx } = useUnreadChanges();
   // tz передаємо явно: під час SSR модульний singleton не виставлений (він лише
   // клієнтський), і «сьогодні» в сітці розійшлося б із рештою дошки.
   const today = wallToday0(tz);
@@ -538,6 +542,7 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSch
               title={st.label || undefined} onClick={() => onSelectDate(startOfDay(cd))}>
               {d}
               {(markClosed || markCustom) && <span className={"cal-sched " + (markClosed ? "closed" : "custom")} />}
+            {unreadForDate(unreadIx, calendarDayKey(cd)).length > 0 && <span className="cal-change" aria-hidden="true" />}
             </button>
           );
         })}

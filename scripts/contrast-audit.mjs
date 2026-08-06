@@ -147,6 +147,28 @@ head("Позначки непрочитаних змін (.rf-dot)");
     check(`.rf-dot-important/-critical --red на ${n}`, ratio(RED, s2), 3);
     check(`.rf-dot-info --text-secondary на ${n}`, ratio(SECONDARY, s2), 3);
   }
+  // Крапка непрочитаного на міні-календарі (.cal-change, 0133). Це графіка
+  // (1.4.11, ≥3:1) проти фону САМОГО ДНЯ, а фон дня буває чотирьох видів:
+  // прозорий (панель --card), ховер, «сьогодні» (--blue) і «обрано» (без
+  // заливки). Кільце box-shadow повторює фон дня, тож меряємо крапку проти
+  // кожного з них.
+  for (const [n, s3] of Object.entries({ "--card (панель)": CARD, "--card-hover": CARD_HOVER })) {
+    check(`.cal-change --red на ${n}`, ratio(RED, s3), 3);
+  }
+  /* «Сьогодні» — окремий випадок: --red на --blue дає 1.49 (нижче за поріг),
+     тому там кільце БІЛЕ. Меряємо реальну конструкцію: кільце проти синього
+     фону і крапку проти кільця. Обидві пари ≥3 — індикатор помітний. */
+  check(".cal-change кільце #fff на --blue (сьогодні)", ratio(WHITE, NEW.blue), 3);
+  check(".cal-change --red проти білого кільця", ratio(RED, WHITE), 3);
+  {
+    const naive = ratio(RED, NEW.blue);
+    if (naive >= 3) {
+      check(".cal-change: --red раптом проходить на --blue — перевір палітру", naive, 3);
+    } else {
+      console.log(`  \u2139\ufe0f  довідка: --red на --blue = ${f(naive)} (<3) — тому на «сьогодні» кільце біле`);
+    }
+  }
+
   // Бейдж із числом — текст на власній заливці.
   check(`.rf-dot-num текст ${DOT_TEXT} на --red`, ratio(DOT_TEXT, RED), 4.5);
   check(`.rf-dot-num текст ${DOT_TEXT} на --text-secondary`, ratio(DOT_TEXT, SECONDARY), 4.5);
