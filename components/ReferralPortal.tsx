@@ -21,7 +21,7 @@ import CitySelect from "@/components/CitySelect";
 import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import ReferrerBoard from "@/components/ReferrerBoard";
 import UnreadDot from "@/components/UnreadDot";
-import { useUnreadChanges } from "@/lib/useUnreadChanges";
+import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
 import { unreadForEntity } from "@/lib/unreadChanges";
 import ReferrerSidebar from "@/components/ReferrerSidebar";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry, editQueueEntryStudies, createReferralCase, referralCaseFromEntry, type CaseStepInput } from "@/app/queue/actions";
@@ -907,21 +907,44 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [details, setDetails] = useState<Record<string, CenterCardData>>({});
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  /* Підтвердження деструктивних дій — ConfirmDialog у стилі RadFlow, а не
+     window.confirm (с28, зауваження власника): нативний діалог випадає з
+     дизайну і блокує вкладку. Один стан на всі підтвердження секції. */
+  const [ask, setAsk] = useState<null | { title: string; text: ReactNode; confirmLabel: string; danger?: boolean; run: () => void }>(null);
+
+  /* freshId — доступ, чиї деталі успішно завантажені В ЦЬОМУ розкритті.
+     Гейт для ack (ревʼю с28-р1, L-2): без нього повторне розкриття картки
+     з кешованими details гасило б позначку ДО завершення свіжого запиту —
+     а при його збої користувач «підтвердив» те, чого не бачив. */
+  const [freshId, setFreshId] = useState<string | null>(null);
 
   function toggleExpand(c: Center) {
     if (!c.accessId) return;
-    setExpandedId((id) => (id === c.accessId ? null : c.accessId!));
+    const next = expandedId === c.accessId ? null : c.accessId;
+    setFreshId(null); // кеш details лишається для показу, але ack чекає свіжого завантаження
+    setExpandedId(next);
   }
 
   /* Контекстні позначки доступів (referral.access_*): entity = рядок
      referral_access, тобто c.accessId. Ack — лише РОЗГОРНУТОЇ картки після
-     успішного завантаження її даних (details[expandedId] заповнено). */
-  const { index: unreadIx, ack: unreadAck, status: unreadStatus } = useUnreadChanges();
+     успішного СВІЖОГО завантаження її даних, і по заморозці на момент
+     розкриття (с28): позначка, що прилетить при уже відкритій картці, чекає
+     наступного розкриття, а не гасить сама себе. */
+  const { index: unreadIx } = useUnreadChanges();
+  useAckWhenVisible(
+    expandedId ? { kind: "entity", entityType: "referral_access", entityId: expandedId } : null,
+    !!(expandedId && details[expandedId] && freshId === expandedId)
+  );
+  /* Рядок поїхав у нерозгортувану секцію («Очікують» після повторного
+     запиту) → розгорнутого блоку в DOM більше немає, стан не повинен на
+     нього вказувати (ревʼю с28-р2, L-2new; дзеркало reset-ефекту в
+     ReferrersManager). */
   useEffect(() => {
-    if (!expandedId || unreadStatus !== "ready" || !details[expandedId]) return;
-    if (unreadForEntity(unreadIx, "referral_access", expandedId).length === 0) return;
-    void unreadAck({ kind: "entity", entityType: "referral_access", entityId: expandedId });
-  }, [expandedId, unreadIx, unreadAck, unreadStatus, details]);
+    if (!expandedId) return;
+    const c = centers.find((x) => x.accessId === expandedId);
+    const expandable = !!c && (c.status === "active" || c.status === "pending_referrer" || c.status === "revoked" || c.status === "declined");
+    if (!expandable) { setExpandedId(null); setFreshId(null); }
+  }, [centers, expandedId]);
   const expandedCenter = centers.find((c) => c.accessId === expandedId) || null;
   const expandedSig = expandedCenter ? JSON.stringify([expandedCenter.status, expandedCenter.policy, expandedCenter.room_ids]) : "";
   useEffect(() => {
@@ -933,7 +956,10 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
       const { data, error } = await supabase.rpc("referral_center_card", { p_access_id: expandedId });
       if (cancelled) return;
       setLoadingId((id) => (id === expandedId ? null : id));
-      if (!error && data) setDetails((d) => ({ ...d, [expandedId]: data as unknown as CenterCardData }));
+      if (!error && data) {
+        setDetails((d) => ({ ...d, [expandedId]: data as unknown as CenterCardData }));
+        setFreshId(expandedId); // успішне СВІЖЕ завантаження → відкриваємо гейт ack
+      }
     })();
     return () => { cancelled = true; };
   }, [expandedId, expandedSig]);
@@ -1036,7 +1062,7 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
             <div key={c.accessId}>
               <Row c={c} expandable expanded={expandedId === c.accessId} onClick={() => toggleExpand(c)}>
                 <button className="btn btn-primary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); decide(c.accessId!, "approve"); }}>Прийняти</button>
-                <button className="btn btn-secondary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відхилити запрошення центру «" + c.name + "»?\n\nВи зможете надіслати запит на доступ пізніше вручну.")) decide(c.accessId!, "decline"); }}>Відхилити</button>
+                <button className="btn btn-secondary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); const id = c.accessId!; setAsk({ title: `Відхилити запрошення центру «${c.name}»?`, text: "Ви зможете надіслати запит на доступ пізніше вручну.", confirmLabel: "Відхилити", run: () => { void decide(id, "decline"); } }); }}>Відхилити</button>
               </Row>
               {expandedId === c.accessId && <CenterDetails data={details[c.accessId!]} loading={loadingId === c.accessId && !details[c.accessId!]} />}
             </div>
@@ -1050,7 +1076,7 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
           : active.map((c) => (
             <div key={c.accessId || c.clinicId}>
               <Row c={c} expandable={!!c.accessId} expanded={expandedId === c.accessId} onClick={c.accessId ? () => toggleExpand(c) : undefined}>
-                {canManage && c.accessId && <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відкликати доступ до «" + c.name + "»? Створені направлення лишаться у центрі, нові ви створювати не зможете.")) decide(c.accessId!, "revoke"); }}>Відкликати</button>}
+                {canManage && c.accessId && <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); const id = c.accessId!; setAsk({ title: `Відкликати доступ до «${c.name}»?`, text: "Створені направлення лишаться у центрі, нові ви створювати не зможете.", confirmLabel: "Відкликати", danger: true, run: () => { void decide(id, "revoke"); } }); }}>Відкликати</button>}
               </Row>
               {c.accessId && expandedId === c.accessId && <CenterDetails data={details[c.accessId]} loading={loadingId === c.accessId && !details[c.accessId]} />}
             </div>
@@ -1067,12 +1093,33 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
       {history.length > 0 && (
         <div style={card}>
           <div className="bk-section-label" style={{ marginTop: 0 }}>Історія</div>
+          {/* ⚠️ Рядки історії РОЗГОРТАЮТЬСЯ, як активні (с28). Раніше вони були
+              плоскі — і позначку про відкликання доступу (referral.access_revoked,
+              critical) не було чим погасити ВЗАГАЛІ: ack спрацьовує лише на
+              розгорнутій картці, а ретенція непрочитані не чистить. Вічна
+              крапка — дефект за визначенням (AGENTS.md). RPC referral_center_card
+              для відкликаного доступу дані віддає — перевірено на проді с28. */}
           {history.map((c) => (
-            <Row key={c.accessId} c={c}>
-              {canManage && <button className="btn btn-secondary btn-sm" disabled={busyId === c.clinicId} onClick={() => sendRequest(c.clinicId)}>{busyId === c.clinicId ? "…" : "Надіслати запит знову"}</button>}
-            </Row>
+            <div key={c.accessId}>
+              <Row c={c} expandable={!!c.accessId} expanded={expandedId === c.accessId} onClick={c.accessId ? () => toggleExpand(c) : undefined}>
+                {canManage && <button className="btn btn-secondary btn-sm" disabled={busyId === c.clinicId} onClick={(e) => { e.stopPropagation(); sendRequest(c.clinicId); }}>{busyId === c.clinicId ? "…" : "Надіслати запит знову"}</button>}
+              </Row>
+              {c.accessId && expandedId === c.accessId && <CenterDetails data={details[c.accessId]} loading={loadingId === c.accessId && !details[c.accessId]} />}
+            </div>
           ))}
         </div>
+      )}
+
+      {ask && (
+        <ConfirmDialog
+          title={ask.title}
+          text={ask.text}
+          confirmLabel={ask.confirmLabel}
+          cancelLabel="Скасувати"
+          danger={ask.danger}
+          onClose={() => setAsk(null)}
+          onConfirm={() => { const run = ask.run; setAsk(null); run(); }}
+        />
       )}
     </div>
   );

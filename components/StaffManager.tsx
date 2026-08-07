@@ -9,8 +9,9 @@
    а створити акаунт не було чим — уся реєстратура працювала під адміном, тобто з
    правами на кабінети, прайс і таймзону центру. */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
 import Toast from "@/components/Toast";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
@@ -68,6 +69,9 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
   const [formRooms, setFormRooms] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
+  /* Підтвердження деструктивних дій — ConfirmDialog у стилі RadFlow замість
+     window.confirm (с28, зауваження власника). */
+  const [ask, setAsk] = useState<null | { title: string; text: ReactNode; confirmLabel: string; danger?: boolean; run: () => void }>(null);
   const [origin, setOrigin] = useState("");
   const [pwModal, setPwModal] = useState<PwModal | null>(null);
   const [edit, setEdit] = useState<EditForm | null>(null);
@@ -251,8 +255,15 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
     }
   }
 
-  async function resetPassword(profileId: string, label: string | null) {
-    if (!window.confirm(`Скинути пароль для «${label}»?\n\nПоточний пароль перестане діяти. Користувач задасть новий на /set-password за своїм логіном.`)) return;
+  function askResetPassword(profileId: string, label: string | null) {
+    setAsk({
+      title: `Скинути пароль для «${label}»?`,
+      text: "Поточний пароль перестане діяти. Користувач задасть новий на /set-password за своїм логіном.",
+      confirmLabel: "Скинути пароль",
+      run: () => { void resetPassword(profileId); },
+    });
+  }
+  async function resetPassword(profileId: string) {
     const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: profileId, action: "reset" }) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { notify(data.error || "Помилка", "error"); return; }
@@ -270,8 +281,16 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
     notify("Пароль встановлено", "success");
     setPwModal(null);
   }
-  async function deleteRadiologist(profileId: string, label: string | null) {
-    if (!window.confirm(`Видалити акаунт радіолога «${label}» назавжди?\n\nБудуть видалені: обліковий запис, профіль і доступи до кабінетів. Записи пацієнтів залишаться. Дію не можна скасувати.`)) return;
+  function askDeleteRadiologist(profileId: string, label: string | null) {
+    setAsk({
+      title: `Видалити акаунт радіолога «${label}» назавжди?`,
+      text: "Будуть видалені: обліковий запис, профіль і доступи до кабінетів. Записи пацієнтів залишаться. Дію не можна скасувати.",
+      confirmLabel: "Видалити",
+      danger: true,
+      run: () => { void deleteRadiologist(profileId); },
+    });
+  }
+  async function deleteRadiologist(profileId: string) {
     const supabase = createClient();
     const { error } = await supabase.rpc("delete_clinic_member", { target: profileId });
     if (error) { notify("Помилка: " + error.message, "error"); return; }
@@ -426,9 +445,9 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                     onClick={() => (edit?.id === r.id ? setEdit(null) : startEdit(r))}>
                     {edit?.id === r.id ? "Згорнути" : "✏️ Редагувати"}
                   </button>
-                  <button className="btn btn-secondary btn-sm" title="Користувач задасть пароль наново" onClick={() => resetPassword(r.id, r.full_name || r.login)}>Скинути пароль</button>
+                  <button className="btn btn-secondary btn-sm" title="Користувач задасть пароль наново" onClick={() => askResetPassword(r.id, r.full_name || r.login)}>Скинути пароль</button>
                   <button className="btn btn-secondary btn-sm" title="Задати пароль вручну" onClick={() => setPassword(r.id)}>Задати пароль</button>
-                  <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити акаунт назавжди" onClick={() => deleteRadiologist(r.id, r.full_name || r.login)}>🗑</button>
+                  <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити акаунт назавжди" onClick={() => askDeleteRadiologist(r.id, r.full_name || r.login)}>🗑</button>
                 </div>
                 {/* Форма редагування — інлайн, а не модалка: поля прості, а
                     модалка тут вимагала б пастки фокуса й Esc (useModalA11y)
@@ -545,6 +564,17 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
             </div>
           </div>
         </div>
+      )}
+      {ask && (
+        <ConfirmDialog
+          title={ask.title}
+          text={ask.text}
+          confirmLabel={ask.confirmLabel}
+          cancelLabel="Скасувати"
+          danger={ask.danger}
+          onClose={() => setAsk(null)}
+          onConfirm={() => { const run = ask.run; setAsk(null); run(); }}
+        />
       )}
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>

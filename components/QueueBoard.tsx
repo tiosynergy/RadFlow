@@ -59,7 +59,7 @@ import StudyTimer from "@/components/StudyTimer";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
 import UnreadDot from "@/components/UnreadDot";
 import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
-import { unreadForEntity, unreadForField } from "@/lib/unreadChanges";
+import { unreadForEntity, unreadForField, unreadForSurface, type UnreadIndex } from "@/lib/unreadChanges";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import Toast, { type ToastData } from "@/components/Toast";
@@ -1038,48 +1038,78 @@ function NeedsReschedulePanel({ entries, roomsById, onReschedule, onToWaitlist, 
 
 
 /* ── Скасовані + Неявка ── */
-function CancelledPanel({ entries, onUndo, onReschedule, onToWaitlist }: { entries: QEntry[]; onUndo: (p: QEntry) => void; onReschedule: (p: QEntry) => void; onToWaitlist: (p: QEntry) => void }) {
-  const [open, setOpen] = useState(false);
+
+/* Рядок панелі — ОКРЕМИЙ компонент модульного рівня, і це не смак, а умова
+   роботи заморозки ack (с28): компонент, оголошений усередині рендера батька,
+   отримує нову ідентичність щокадру → React ремонтує його, і «знімок на
+   момент розкриття» замерзав би заново кожен ререндер (тобто не замерзав би
+   зовсім). Рядок монтується лише при розкритій панелі, тож маунт = показ. */
+function CancelledRow({ e, unreadIx, ackEnabled, onUndo, onReschedule, onToWaitlist }: {
+  e: QEntry;
+  unreadIx: UnreadIndex;
+  /** true лише для записів, які були в панелі В МОМЕНТ її розкриття. */
+  ackEnabled: boolean;
+  onUndo: (p: QEntry) => void; onReschedule: (p: QEntry) => void; onToWaitlist: (p: QEntry) => void;
+}) {
   /* ⚠️ Скасування — найчастіша критична подія, і його позначку (field_scope
      'status') не можна погасити на дошці: скасований запис туди не потрапляє
      взагалі, він живе ТУТ. Без ack тут крапка висіла б вічно — і на пункті
-     навігації, і (з 0133) на конкретному дні календаря. Панель — плоский
-     список без розгортання, тож умова показу = розкрита панель. */
-  const { index: unreadIx, ack: unreadAck, status: unreadStatus } = useUnreadChanges();
-  useEffect(() => {
-    if (!open || unreadStatus !== "ready") return;
-    for (const e of entries) {
-      if (unreadForEntity(unreadIx, "queue_entry", e.id).length === 0) continue;
-      void unreadAck({ kind: "entity", entityType: "queue_entry", entityId: e.id });
-    }
-  }, [open, entries, unreadIx, unreadAck, unreadStatus]);
+     навігації, і (з 0133) на конкретному дні календаря.
+     ⚠️ ackEnabled, а не безумовне true (ревʼю с28-р1, H-1): маунт рядка ≠
+     розкриття панелі. Запис, скасований при ВЖЕ відкритій панелі, монтує
+     новий рядок, і заморозка на маунт гасила б critical-позначку без жодної
+     дії користувача — недетерміновано, залежно від того, чий refetch
+     (entries чи markers) виграв гонку. Тому ack дозволений лише рядкам зі
+     знімка розкриття; свіже скасування чекає наступного розкриття панелі. */
+  useAckWhenVisible({ kind: "entity", entityType: "queue_entry", entityId: e.id }, ackEnabled);
+  const isCancelled = e.status === "cancelled";
+  return (
+    <div style={{ padding: "8px 0", borderTop: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+        <span style={{ fontSize: "0.8125rem", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.patient_name}</span><UnreadDot markers={unreadForEntity(unreadIx, "queue_entry", e.id)} />
+        <span className={"badge " + (isCancelled ? "gray" : "red")} style={{ fontSize: "0.65625rem", flexShrink: 0 }}>{isCancelled ? "Скасовано" : "Неявка"}</span>
+      </div>
+      <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", margin: "2px 0 6px" }}>{e.scheduled_time} · {procLabel(e)}</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <button className="btn btn-secondary btn-xs" onClick={() => onUndo(e)}>↩ В чергу</button>
+        <button className="btn btn-secondary btn-xs" onClick={() => onReschedule(e)}>🗓 Перезаписати</button>
+        <button className="btn btn-secondary btn-xs" title="Пацієнт чекатиме на вільне вікно" onClick={() => onToWaitlist(e)}>⏳ В лист очікування</button>
+      </div>
+    </div>
+  );
+}
+
+function CancelledPanel({ entries, onUndo, onReschedule, onToWaitlist }: { entries: QEntry[]; onUndo: (p: QEntry) => void; onReschedule: (p: QEntry) => void; onToWaitlist: (p: QEntry) => void }) {
+  const [open, setOpen] = useState(false);
+  /* Знімок id, які були в панелі В МОМЕНТ розкриття (ревʼю с28-р1, H-1):
+     тільки їм дозволено ack. Живе в ref — перерахунок від ререндеру зробив
+     би знімок беззмістовним. Побічний ефект — у тілі колбека, НЕ в updater-і
+     setState (StrictMode двоїть updater-и — правило с27). */
+  const openIdsRef = useRef<ReadonlySet<string> | null>(null);
+  const toggleOpen = () => {
+    const next = !open;
+    openIdsRef.current = next ? new Set(entries.map((e) => e.id)) : null;
+    setOpen(next);
+  };
+  const { index: unreadIx } = useUnreadChanges();
+  /* Крапка на ЗАГОЛОВКУ згорнутої панелі — ланка «секція» в ієрархії
+     поле→картка→секція→навігація. Жива перевірка с28: без неї крапка
+     скасування вела в порожнечу — запису на дошці вже немає, панель
+     згорнута й нічим не позначена, знайти джерело можна було лише навмання. */
+  const headerMarkers = entries.flatMap((e) => unreadForEntity(unreadIx, "queue_entry", e.id));
   if (!entries.length) return null;
   return (
     <div className="rcard">
-      <button className={"rcard-toggle" + (open ? " open" : "")} onClick={() => setOpen((o) => !o)} style={{ cursor: "pointer" }}>
-        <span className="rct-title">Скасовані + Неявка</span>
+      <button className={"rcard-toggle" + (open ? " open" : "")} onClick={toggleOpen} style={{ cursor: "pointer" }}>
+        <span className="rct-title">Скасовані + Неявка</span><UnreadDot markers={headerMarkers} withCount />
         <span className="rct-sum">{entries.length}</span>
         <span className="rct-chev">⌄</span>
       </button>
       {open && (
         <div className="load-body">
-          {entries.map((e) => {
-            const isCancelled = e.status === "cancelled";
-            return (
-              <div key={e.id} style={{ padding: "8px 0", borderTop: "1px solid var(--border)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-                  <span style={{ fontSize: "0.8125rem", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.patient_name}</span><UnreadDot markers={unreadForEntity(unreadIx, "queue_entry", e.id)} />
-                  <span className={"badge " + (isCancelled ? "gray" : "red")} style={{ fontSize: "0.65625rem", flexShrink: 0 }}>{isCancelled ? "Скасовано" : "Неявка"}</span>
-                </div>
-                <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", margin: "2px 0 6px" }}>{e.scheduled_time} · {procLabel(e)}</div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  <button className="btn btn-secondary btn-xs" onClick={() => onUndo(e)}>↩ В чергу</button>
-                  <button className="btn btn-secondary btn-xs" onClick={() => onReschedule(e)}>🗓 Перезаписати</button>
-                  <button className="btn btn-secondary btn-xs" title="Пацієнт чекатиме на вільне вікно" onClick={() => onToWaitlist(e)}>⏳ В лист очікування</button>
-                </div>
-              </div>
-            );
-          })}
+          {entries.map((e) => (
+            <CancelledRow key={e.id} e={e} unreadIx={unreadIx} ackEnabled={openIdsRef.current?.has(e.id) ?? false} onUndo={onUndo} onReschedule={onReschedule} onToWaitlist={onToWaitlist} />
+          ))}
         </div>
       )}
     </div>
@@ -1232,8 +1262,31 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   /* Інциденти видно ПРЯМО на дошці (плашки кабінетів, панель) — успішне
      завантаження і є їх показ, тож поверхню incidents підтверджуємо тут
      (ревʼю р2, H-3new: інакше крапка інциденту на «Дошка черги» не гасла б
-     ніколи). Хук сам чекає status === "ready" і бере лише знімок. */
-  useAckWhenVisible({ kind: "surface", surface: "incidents" }, incidentsLoaded && !incidentsErr);
+     ніколи). Хук сам чекає status === "ready" і бере лише знімок.
+     ⚠️ refreezeKey (с28): дошка «розгорнута» постійно, тож без перезаморозки
+     хук гасив би лише позначки, що застали маунт. Ключ — відбиток УСПІШНО
+     завантаженого списку простоїв (ВІДСОРТОВАНИЙ: SELECT без ORDER BY не
+     гарантує порядок рядків, і «той самий» список інакше давав би ложні
+     перезаморозки — ревʼю с28-р1, M-1) ПЛЮС id непрочитаних позначок, чиї
+     інциденти реально є в показаному списку. Другий доданок закриває гонку
+     «список приїхав раніше за позначку»: інцидент і позначка народжуються
+     однією транзакцією, але клієнт тягне їх двома незалежними refetch-ами,
+     і без цього позначка, що програла гонку, висіла б на видимому інциденті
+     до наступної події. Ack легальний за ТЗ: сам інцидент уже на екрані. */
+  const { index: boardUnreadIx } = useUnreadChanges();
+  const incidentsRefreezeKey = (() => {
+    const shown = new Set(incidents.map((i) => i.id));
+    const markerPart = unreadForSurface(boardUnreadIx, "incidents")
+      .filter((m) => m.entity_type === "incident" && shown.has(m.entity_id))
+      .map((m) => m.id).sort().join(",");
+    const listPart = incidents.map((i) => i.id + ":" + i.status).sort().join("|");
+    return listPart + "#" + markerPart;
+  })();
+  useAckWhenVisible(
+    { kind: "surface", surface: "incidents" },
+    incidentsLoaded && !incidentsErr,
+    incidentsRefreezeKey
+  );
   /* с24: незавершені дослідження цієї клініки з ІНШИХ дат. Тримаємо ОКРЕМО від
      `entries` навмисно: на entries зав'язані звук перевищення (useQueueSounds),
      таймери кабінетів і лічильники дня — учорашній запис давав би вічне
@@ -2403,7 +2456,13 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
             {!isPast && <NeedsReschedulePanel entries={needsResched} roomsById={roomsById} onReschedule={openReschedule} onToWaitlist={toWaitlist} onCancel={(pt) => setCancelAsk({ p: pt, mode: "cancel" })} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}
             {!isPast && <CallListPanel entries={entries} onSetCall={setCall} dateLabel={fmtShort(selectedDate)} />}
-            <CancelledPanel entries={panelEntries} onUndo={undo} onReschedule={openReschedule} onToWaitlist={toWaitlist} />
+            {/* key по дню+фільтру (ревʼю с28-р2, M-1new): панель, залишена
+                відкритою, інакше переживає перехід на інший день зі знімком
+                розкриття СТАРОГО дня — і крапка скасування, заради якої
+                користувач прийшов по календарю, не гасне, бо жоден запис
+                нового дня в знімку не значиться. Ремонт скидає open+знімок:
+                «розкрити» на новому дні знову означає розкрити. */}
+            <CancelledPanel key={dayKey + ":" + roomView} entries={panelEntries} onUndo={undo} onReschedule={openReschedule} onToWaitlist={toWaitlist} />
           </aside>
         </div>
       </div>

@@ -895,9 +895,14 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .st-field { display: flex; flex-direction: column; gap: 5px; }
 .st-flab { font-size: 0.6875rem; font-weight: 500; color: var(--text-muted); }
 .st-field-type { flex: 0 0 auto; }
-.st-field-region { flex: 1 1 220px; min-width: 180px; }
+/* Регіон стискається сильніше (с28): раніше min-width 180 + довгий підпис
+   чекбокса виштовхували «Тривалість» на другий рядок навіть на десктопній
+   ширині модалки. Разом зі скороченим підписом («з контрастом») усі чотири
+   поля тримаються в одному рядку; wrap лишається для вузьких екранів (320px,
+   WCAG 1.4.10) — там перенос легальний. */
+.st-field-region { flex: 1 1 180px; min-width: 150px; }
 .st-field-contrast { flex: 0 0 auto; }
-.st-field-contrast .rf-check { height: 34px; }
+.st-field-contrast .rf-check { height: 34px; white-space: nowrap; }
 .st-field-dur { flex: 0 0 auto; }
 .st-seg { flex: 0 0 auto; }
 /* Зафіксований тип (модальність задана кабінетом) — нередагований бейдж */

@@ -286,13 +286,26 @@ export function useUnreadChanges(): UnreadChangesApi {
  * після того, як дані успішно завантажились І блок відрендерився. Поки
  * картка згорнута, а блок прихований — позначка лишається непрочитаною.
  *
- * ⚠️ Ефект ПЕРЕВЗВОДИТЬСЯ на зміну складу непрочитаного (ревʼю р1, M-10) і
- * на невдалий ack (р2, L-10new): відбиток пулу (fp) + ackFailGen у
- * залежностях. Правило «підтверджуємо лише знімок» тримає ackIdsForScope.
- * Циклу немає: успішний ack прибирає позначки → fp стає порожнім → ранній
- * вихід; невдалий ack не міняє fp, але міняє ackFailGen рівно один раз.
+ * ⚠️ ЗНІМОК ЗАМОРОЖУЄТЬСЯ В МОМЕНТ РОЗКРИТТЯ (рішення власника, с28).
+ * Жива перевірка с28 показала: коли знімок перечитувався на кожному
+ * оновленні пулу, позначка, що НАРОДИЛАСЬ при вже розгорнутому блоці,
+ * гасилась сама через ~2 с — скасування запису (critical!) зникало, не
+ * показавшись нікому. Тепер гасяться ЛИШЕ id, які були в пулі, коли блок
+ * розкрили (сценарій 1 ТЗ). Зміна, що прилетіла при відкритому блоці,
+ * лишається непрочитаною до НАСТУПНОГО розкриття (або до зміни
+ * `refreezeKey` — див. нижче).
+ *
+ * `refreezeKey` — для поверхонь, які «розгорнуті» постійно (простої на
+ * дошці): передай відбиток УСПІШНО завантажених даних поверхні, і
+ * перезаморозка стається саме тоді, коли користувачу реально показали
+ * свіжий стан. Без цього постійно видима поверхня гасила б лише те, що
+ * було на маунті, — нові позначки висіли б до перезавантаження сторінки.
+ *
+ * ⚠️ Ефект перевзводиться на невдалий ack (р2, L-10new: ackFailGen) —
+ * ретрай іде по тих САМИХ заморожених id. Циклу немає: успішний ack
+ * прибирає id з пулу → фільтр «ще непрочитані» дає порожньо → ранній вихід.
  */
-export function useAckWhenVisible(scope: AckScope | null, visible: boolean): void {
+export function useAckWhenVisible(scope: AckScope | null, visible: boolean, refreezeKey?: string): void {
   const { status } = useUnreadChanges();
   const snap = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
@@ -304,7 +317,8 @@ export function useAckWhenVisible(scope: AckScope | null, visible: boolean): voi
         : `f:${scope.entityType}:${scope.entityId}:${scope.scope}`
     : "";
 
-  // Що саме зараз можна підтвердити. Порожньо → ефект не смикається.
+  // Відбиток живого пулу: потрібен, щоб ефект прокинувся, коли ack ЧАСТКОВО
+  // пройшов або коли заморожені id нарешті зникли з пулу (ранній вихід).
   const fp = scope && visible
     ? ackIdsForScope(snap.index, scope, snap.snapshotIds).sort().join(",")
     : "";
@@ -312,12 +326,43 @@ export function useAckWhenVisible(scope: AckScope | null, visible: boolean): voi
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
 
+  /* Заморожений знімок розкриття: { ключ scope, refreezeKey, userId, ids }.
+     Живе в ref — його НЕ можна класти в стан: перезаморозка від ререндеру
+     зробила б freeze беззмістовним. userId у записі — щоб релогін у тій
+     самій вкладці при живому маунті не лишав постійно видиму поверхню зі
+     заморозкою чужої сесії (ревʼю с28-р1, L-1). */
+  const frozenRef = useRef<{ key: string; refreeze: string; uid: string | null; ids: string[] } | null>(null);
+
   useEffect(() => {
+    // Згортання/зникнення scope → скинути заморозку: наступне розкриття
+    // зафіксує НОВИЙ знімок (і тим самим підтвердить те, що прилетіло).
+    if (!visible || !scopeRef.current) { frozenRef.current = null; return; }
     // 'ready' обовʼязкове: підтверджувати прочитання поверх помилки
-    // завантаження означало б погасити крапку, не показавши зміну.
-    if (!visible || !scopeRef.current || status !== "ready" || !fp) return;
-    void ackMarkerIds(ackIdsForScope(state.index, scopeRef.current, state.snapshotIds));
+    // завантаження означало б погасити крапку, не показавши зміну. Заморозку
+    // при цьому НЕ чіпаємо і не створюємо: розкриття під час loading
+    // зафіксує знімок першим успішним завантаженням.
+    if (status !== "ready") return;
+
+    const rk = refreezeKey ?? "";
+    let fr = frozenRef.current;
+    if (fr === null || fr.key !== key || fr.refreeze !== rk || fr.uid !== state.userId) {
+      fr = {
+        key,
+        refreeze: rk,
+        uid: state.userId,
+        ids: ackIdsForScope(state.index, scopeRef.current, state.snapshotIds),
+      };
+      frozenRef.current = fr;
+    }
+
+    // Гасимо ЛИШЕ заморожені id, і лише ті з них, що ще непрочитані —
+    // повторний виклик RPC з уже погашеними id не потрібен.
+    const stillUnread = new Set(state.index.all.map((m) => m.id));
+    const ids = fr.ids.filter((id) => stillUnread.has(id));
+    if (!ids.length) return;
+    void ackMarkerIds(ids);
     // scope навмисно через ref: це новий обʼєкт на кожен рендер. Реальні
-    // тригери — key, видимість, статус, відбиток пулу і лічильник невдач.
-  }, [key, visible, status, fp, snap.ackFailGen]);
+    // тригери — key, видимість, статус, відбиток пулу, refreezeKey і
+    // лічильник невдач ack.
+  }, [key, visible, status, fp, refreezeKey, snap.ackFailGen]);
 }
