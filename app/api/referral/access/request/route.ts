@@ -47,10 +47,14 @@ export async function POST(req: Request) {
     if (existing.status === "pending_referrer") {
       return NextResponse.json({ error: "Центр уже запросив вас — прийміть запрошення у «Мої центри»" }, { status: 409 });
     }
-    // revoked / declined → повторний запит дозволено: перевідкриваємо як pending_clinic.
+    /* revoked / declined → повторний запит дозволено: перевідкриваємо як pending_clinic.
+       0134: actor_hint — канал передачі актора в тригер позначок (роут пише
+       service-role клієнтом, auth.uid() у тригері порожній). Тут актор — сам
+       направник, тож без підказки він отримував би крапку про власний запит.
+       BEFORE-тригер обнуляє колонку одразу: у спокої вона завжди NULL. */
     const { error: uErr } = await admin
       .from("referral_access")
-      .update({ status: "pending_clinic", initiated_by: user.id, note, decided_at: null })
+      .update({ status: "pending_clinic", initiated_by: user.id, note, decided_at: null, actor_hint: user.id })
       .eq("id", existing.id);
     if (uErr) return NextResponse.json({ error: safeDbError("api/referral/access/request.update", uErr) }, { status: 400 });
     return NextResponse.json({ ok: true, id: existing.id, status: "pending_clinic" });
@@ -58,7 +62,7 @@ export async function POST(req: Request) {
 
   const { data: created, error: iErr } = await admin
     .from("referral_access")
-    .insert({ referrer_id: user.id, clinic_id: clinicId, status: "pending_clinic", policy: "direct", initiated_by: user.id, note })
+    .insert({ referrer_id: user.id, clinic_id: clinicId, status: "pending_clinic", policy: "direct", initiated_by: user.id, note, actor_hint: user.id })  // 0134
     .select("id")
     .single();
   if (iErr) return NextResponse.json({ error: safeDbError("api/referral/access/request.insert", iErr) }, { status: 400 });

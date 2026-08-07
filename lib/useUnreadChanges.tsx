@@ -41,6 +41,28 @@ const FETCH_LIMIT = 500;
 /** Рідка звірка при живому сокеті (с26, H-3B). Таблиця крихітна. */
 const RECONCILE_MS = 60_000;
 
+/* ⚠️ ПАУЗА МІЖ РЕТРАЯМИ ack (пакет №4, с29).
+   ackFailGen перевзводить УСІ видимі useAckWhenVisible одразу, і при СТІЙКІЙ
+   помилці (протухла сесія → 401, відкликаний грант, впала БД) виходив
+   безперервний цикл: невдача → перевзвід → N запитів → N невдач → перевзвід.
+   Швидкість обмежувала лише мережа, і на дошці з десятком розгорнутих рядків
+   це десятки запитів на секунду до кінця сесії.
+   Тепер невдача НЕ будить хуки одразу: вона заводить ОДИН таймер на весь
+   модуль, і лише його спрацювання інкрементує ackFailGen. Стійка помилка
+   впирається в стелю 60 с.
+   ⚠️ Чесно про різницю з р2/L-10new: там ретрай був МИТТЄВИЙ, тут перший крок
+   ~1 с (плюс джиттер). Для транзієнтної помилки це той самий сценарій із
+   затримкою в секунду. Сходинка згасає ЗА ЧАСОМ (див. scheduleAckRetry), а не
+   від успіху сусіднього хука чи від успішного select — інакше стеля була б
+   недосяжною.
+   ⚠️ Імпульс може пропасти: якщо на момент спрацювання таймера жоден хук не
+   може зробити ack (status ≠ 'ready', блок згорнули, компонент розмонтували),
+   новий таймер ніхто не заведе. Це прийнято свідомо — відновлення дає сама
+   зміна status/видимості (обидві в депсах ефекту), а планувати ретрай «у
+   порожнечу» означало б вічний тикер у фоні.
+   Порядок кроків — мілісекунди. */
+const ACK_RETRY_MS = [1_000, 2_000, 5_000, 15_000, 30_000, 60_000] as const;
+
 type StoreState = {
   markers: ChangeMarker[];
   index: UnreadIndex;
@@ -145,13 +167,68 @@ async function reloadMarkers(): Promise<void> {
  * оновились, і гасимо ми саме їх (сценарій 2 ТЗ: друга вкладка отримає
  * порожній список і нічого зайвого не прибере).
  */
+/* Стан backoff-у: лічильник послідовних невдач, час останньої невдачі і
+   ЄДИНИЙ таймер на модуль. Таймер один навмисно: невдача приходить від
+   кожного видимого хука окремо, а розбудити їх треба разом. */
+let ackFails = 0;
+let ackLastFailAt = 0;
+let ackRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+/* Джиттер — те саме правило, що в useRealtimeRefetch (техаудит Medium-1):
+   при масовому 401 (JWT протух за однаковим TTL, рестарт Supabase) усі
+   вкладки впали б одночасно і ретраїли б в унісон на кожній сходинці. */
+const jittered = (ms: number): number => Math.round(ms * (0.75 + Math.random() * 0.5));
+
+/**
+ * Невдалий ack: завести (або лишити) паузу перед спільним перевзводом.
+ *
+ * ⚠️ СХОДИНКА ЗГАСАЄ ЗА ЧАСОМ, А НЕ ВІД ЧУЖОГО УСПІХУ (ревʼю р2, B-1new).
+ * Лічильник один на модуль, а хуки падають НЕЗАЛЕЖНО: `ackFailGen` будить усіх
+ * одночасно, тож у кожному раунді успіхи й невдачі приходять разом. Перша
+ * редакція обнуляла лічильник на будь-якому успіху — і десять рядків, чий ack
+ * пройшов, щоразу повертали панель простоїв, чий ack стійко падає, на першу
+ * сходинку. Стеля 60 с ставала недосяжною, а частота — ~10 запитів/с на
+ * вкладку, тобто вихідний дефект. З тієї ж причини сходинку НЕ скидає
+ * успішний `reloadMarkers`: select і RPC — різні канали, і «select живий»
+ * нічого не каже про доступність `mark_changes_seen` (ревʼю р2, B-2new).
+ * Замість цього — просте згасання: якщо з моменту останньої невдачі минуло
+ * більше двох стель, серія вважається завершеною і відлік іде з нуля.
+ */
+function scheduleAckRetry(): void {
+  const now = Date.now();
+  if (ackFails > 0 && now - ackLastFailAt > ACK_RETRY_MS[ACK_RETRY_MS.length - 1] * 2) {
+    ackFails = 0;                                // попередня серія давно скінчилась
+  }
+  ackLastFailAt = now;
+  if (ackRetryTimer !== null) return;            // пауза вже йде — не подовжуємо
+  const delay = jittered(ACK_RETRY_MS[Math.min(ackFails, ACK_RETRY_MS.length - 1)]);
+  ackFails = Math.min(ackFails + 1, ACK_RETRY_MS.length);
+  ackRetryTimer = setTimeout(() => {
+    ackRetryTimer = null;
+    setState({ ackFailGen: state.ackFailGen + 1 });   // перевзвід ретраю — РІВНО раз
+  }, delay);
+}
+
+/** Контекст змінився цілком (інший користувач) — гасити вже нічого. */
+function clearAckBackoff(): void {
+  ackFails = 0;
+  ackLastFailAt = 0;
+  if (ackRetryTimer !== null) { clearTimeout(ackRetryTimer); ackRetryTimer = null; }
+}
+
 async function ackMarkerIds(ids: readonly string[]): Promise<void> {
   if (!ids.length) return;
+  /* Покоління знімаємо ДО запиту (ревʼю р2): відповідь може прийти вже після
+     resetForUser, і тоді ані чіпати backoff, ані писати markers чужої сесії
+     не можна — у другому випадку індекс нового користувача перезбирався б із
+     залишків попереднього. */
+  const my = gen;
   try {
     const supabase = createClient();
     const { data, error } = await supabase.rpc("mark_changes_seen", { p_ids: ids as string[] });
+    if (my !== gen) return;
     if (error) {
-      setState({ ackFailGen: state.ackFailGen + 1 });   // перевзвід ретраю
+      scheduleAckRetry();
       return;
     }
     const acked = new Set(((data ?? []) as Array<{ marker_id: string }>).map((r) => r.marker_id));
@@ -160,13 +237,18 @@ async function ackMarkerIds(ids: readonly string[]): Promise<void> {
     lastFingerprint = fingerprintOf(rest);
     setState({ markers: rest, index: indexMarkers(rest) });
   } catch {
-    setState({ ackFailGen: state.ackFailGen + 1 });
+    if (my !== gen) return;
+    scheduleAckRetry();
   }
 }
 
 function resetForUser(id: string | null): void {
   gen += 1;
   lastFingerprint = "";
+  /* Зміна користувача (релогін, вихід) — інша сесія й інші права: сходинки
+     попередньої НЕ успадковуємо, інакше перший ack нового користувача чекав
+     би хвилину через чужі невдачі. Заморожений таймер теж знімаємо. */
+  clearAckBackoff();
   setState({
     markers: [], index: EMPTY_INDEX, snapshotIds: EMPTY_SET,
     status: "loading", truncated: false, userId: id,
@@ -345,6 +427,10 @@ export function useUnreadChanges(): UnreadChangesApi {
  * ⚠️ Ефект перевзводиться на невдалий ack (р2, L-10new: ackFailGen) —
  * ретрай іде по тих САМИХ заморожених id. Циклу немає: успішний ack
  * прибирає id з пулу → фільтр «ще непрочитані» дає порожньо → ранній вихід.
+ * ⚠️ Але при СТІЙКІЙ помилці успіху не буде ніколи, тому перевзвід відкладений
+ * (ACK_RETRY_MS, пакет №4 с29): ackFailGen росте не в момент невдачі, а по
+ * таймеру — один на весь модуль, зі стелею 60 с. Без цього 401 давав
+ * безперервний потік запитів від КОЖНОГО видимого хука.
  */
 export function useAckWhenVisible(scope: AckScope | null, visible: boolean, refreezeKey?: string): void {
   const { status } = useUnreadChanges();
