@@ -395,7 +395,10 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                           ? "Показати лише послуги з контрастуванням"
                           : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
                         <input type="checkbox" checked={rowContrastChecked(r)} onChange={(e) => setContrast(i, e.target.checked)} />
-                        <span className="rf-box" /><span>{catalog.contrastIsFilter(r.type, roomId) ? "лише з контрастом" : `+${CONTRAST_DUR} хв`}</span>
+                        {/* «з контрастом», а не «Контраст» (рішення власника, с28): підпис поля
+                            над чекбоксом уже «Контраст», а прийменник — єдине, що каже про
+                            семантику ФІЛЬТРА списку (с20), не модифікатора з доплатою. */}
+                        <span className="rf-box" /><span>{catalog.contrastIsFilter(r.type, roomId) ? "з контрастом" : `+${CONTRAST_DUR} хв`}</span>
                       </label>
                     </div>
                     <label className="st-field st-field-dur">

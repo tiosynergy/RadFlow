@@ -6,8 +6,9 @@
    центрів. Пароль керівник задає сам на /set-password; адмін може скинути/задати
    пароль, відкликати доступ до свого центру або повністю видалити CEO-акаунт. */
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import Toast from "@/components/Toast";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import { createClient } from "@/lib/supabase/client";
 import { isTechnicalEmail } from "@/lib/login";
 import Sidebar from "@/components/Sidebar";
@@ -40,6 +41,9 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const [origin, setOrigin] = useState("");
   const [pwModal, setPwModal] = useState<PwModal | null>(null);
+  /* Підтвердження деструктивних дій — ConfirmDialog у стилі RadFlow замість
+     window.confirm (с28, зауваження власника). */
+  const [ask, setAsk] = useState<null | { title: string; text: ReactNode; confirmLabel: string; danger?: boolean; run: () => void }>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { setOrigin(window.location.origin); }, []);
@@ -95,8 +99,15 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
     setBusy(false);
   }
 
-  async function resetPassword(id: string, label: string | null) {
-    if (!window.confirm(`Скинути пароль для «${label}»?\n\nПоточний пароль перестане діяти. Керівник задасть новий на /set-password за своїм логіном.`)) return;
+  function askResetPassword(id: string, label: string | null) {
+    setAsk({
+      title: `Скинути пароль для «${label}»?`,
+      text: "Поточний пароль перестане діяти. Керівник задасть новий на /set-password за своїм логіном.",
+      confirmLabel: "Скинути пароль",
+      run: () => { void resetPassword(id); },
+    });
+  }
+  async function resetPassword(id: string) {
     const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: id, action: "reset" }) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { notify(data.error || "Помилка", "error"); return; }
@@ -114,16 +125,32 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
     notify("Пароль встановлено", "success");
     setPwModal(null);
   }
-  async function revoke(id: string, label: string | null) {
-    if (!window.confirm(`Відкликати CEO-доступ до вашого центру для «${label}»?\n\nАкаунт керівника не видаляється — він може лишатися керівником інших центрів.`)) return;
+  function askRevoke(id: string, label: string | null) {
+    setAsk({
+      title: `Відкликати CEO-доступ до вашого центру для «${label}»?`,
+      text: "Акаунт керівника не видаляється — він може лишатися керівником інших центрів.",
+      confirmLabel: "Відкликати",
+      danger: true,
+      run: () => { void revoke(id); },
+    });
+  }
+  async function revoke(id: string) {
     const res = await fetch("/api/ceo/revoke", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ceoId: id }) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { notify(data.error || "Помилка", "error"); return; }
     setCeos((rs) => rs.filter((r) => r.id !== id));
     notify("Доступ відкликано", "info");
   }
-  async function deleteCeo(id: string, label: string | null) {
-    if (!window.confirm(`Повністю видалити CEO-акаунт «${label}»?\n\nДоступно лише якщо це єдиний центр керівника. Дію не можна скасувати.`)) return;
+  function askDeleteCeo(id: string, label: string | null) {
+    setAsk({
+      title: `Повністю видалити CEO-акаунт «${label}»?`,
+      text: "Доступно лише якщо це єдиний центр керівника. Дію не можна скасувати.",
+      confirmLabel: "Видалити",
+      danger: true,
+      run: () => { void deleteCeo(id); },
+    });
+  }
+  async function deleteCeo(id: string) {
     const res = await fetch("/api/ceo/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ceoId: id }) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { notify(data.error || "Помилка видалення", "error"); return; }
@@ -188,11 +215,11 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
                     {r.note && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
                   </div>
                   <span className={"badge " + (r.password_set ? "green" : "yellow")}>{r.password_set ? "🔒 Пароль встановлено" : "Пароль не задано"}</span>
-                  <button className="btn btn-secondary btn-sm" title="Керівник задасть пароль наново" onClick={() => resetPassword(r.id, r.full_name || r.login)}>Скинути пароль</button>
+                  <button className="btn btn-secondary btn-sm" title="Керівник задасть пароль наново" onClick={() => askResetPassword(r.id, r.full_name || r.login)}>Скинути пароль</button>
                   <button className="btn btn-secondary btn-sm" title="Задати пароль вручну" onClick={() => setPassword(r.id)}>Задати пароль</button>
-                  <button className="btn btn-secondary btn-sm" title="Відкликати доступ до вашого центру" onClick={() => revoke(r.id, r.full_name || r.login)}>Відкликати</button>
+                  <button className="btn btn-secondary btn-sm" title="Відкликати доступ до вашого центру" onClick={() => askRevoke(r.id, r.full_name || r.login)}>Відкликати</button>
                   {r.role === "ceo" && (
-                    <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити CEO-акаунт назавжди (лише якщо це єдиний центр)" onClick={() => deleteCeo(r.id, r.full_name || r.login)}>🗑</button>
+                    <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити CEO-акаунт назавжди (лише якщо це єдиний центр)" onClick={() => askDeleteCeo(r.id, r.full_name || r.login)}>🗑</button>
                   )}
                 </div>
                 {!r.password_set && r.invite_token && (
@@ -225,6 +252,17 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
             </div>
           </div>
         </div>
+      )}
+      {ask && (
+        <ConfirmDialog
+          title={ask.title}
+          text={ask.text}
+          confirmLabel={ask.confirmLabel}
+          cancelLabel="Скасувати"
+          danger={ask.danger}
+          onClose={() => setAsk(null)}
+          onConfirm={() => { const run = ask.run; setAsk(null); run(); }}
+        />
       )}
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>

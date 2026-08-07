@@ -210,7 +210,10 @@ export default function Sidebar({
         {showCeoLink && <a href="/ceo" className={"sb-item" + (activeNav === "ceo" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Дашборд CEO</span></a>}
         {/* с25: журнал важливих подій — лише адміністратор (ТЗ §11 / §9). */}
         {isAdmin && <a href="/journal" className={"sb-item" + (activeNav === "journal" ? " active" : "")}><span className="ic">🗒</span><span className="sb-item-lab">Журнал дій</span></a>}
-        {isAdmin && <a href="/setup" className="sb-item"><span className="ic">⚙</span><span className="sb-item-lab">Майстер налаштування</span></a>}
+        {/* Крапка «centers» (доступи направників) — доріжка адміна до /referrers
+            веде через майстер, прямого пункту в панелі немає (с28): без крапки
+            тут позначка про зміну доступу була адміну просто невидимою. */}
+        {isAdmin && <a href="/setup" className="sb-item"><span className="ic">⚙</span><span className="sb-item-lab">Майстер налаштування</span><UnreadDot markers={navUnread("centers")} withCount /></a>}
         {/* Звукові сповіщення отримують admin/registrar; CEO — ні (і перемикач не бачить). */}
         {!isCeo && <SoundToggle />}
         <div className="sb-density-box"><DensityControl /></div>

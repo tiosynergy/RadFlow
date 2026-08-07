@@ -16,6 +16,10 @@ import PhoneInput from "@/components/PhoneInput";
 import HelpTip from "@/components/HelpTip";
 import { modalityShort, modalityKind } from "@/lib/studies";
 import { bookableRooms, isRoomBookable, visibleRooms, ROOM_OFF_LABEL } from "@/lib/rooms";
+import ConfirmDialog from "@/components/ConfirmDialog";
+import UnreadDot from "@/components/UnreadDot";
+import { UnreadChangesMount, useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
+import { unreadForEntity } from "@/lib/unreadChanges";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -106,6 +110,40 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const [sugOpen, setSugOpen] = useState(false);
   const [existingPicked, setExistingPicked] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* Підтвердження деструктивних дій — ConfirmDialog у стилі RadFlow замість
+     window.confirm (с28, зауваження власника). Один стан на всі діалоги екрана. */
+  const [ask, setAsk] = useState<null | { title: string; text: ReactNode; confirmLabel: string; danger?: boolean; run: () => void }>(null);
+
+  /* Розгорнутий рядок ІСТОРІЇ (read-only перегляд відкликаного/відхиленого
+     гранта). Окремий стан від editingId: історію не редагують, її читають. */
+  const [viewingId, setViewingId] = useState<string | null>(null);
+
+  /* Контекстні позначки доступів (referral.access_*) ДЛЯ АДМІНА (с28):
+     тригер 0132 шле їх і персоналу центру, але на цьому екрані не було ані
+     крапки, ані ack — позначка була невидимою І вічною (клас «негасима
+     позначка» з AGENTS.md). Крапка — на рядку направника (Row), ack — коли
+     адмін РОЗГОРТАЄ картку (налаштувань для активних, перегляду для
+     історії); список на той момент уже завантажено.
+     ⚠️ ДВА незалежні хуки, не `editingId ?? viewingId` (ревʼю с28-р1, M-2):
+     обидві панелі можуть бути відкриті одночасно, і зшитий scope гасив би
+     лише одну; гірше — після самовідкликання направника editingId лишався б
+     живим зі старою заморозкою і блокував ack того ж гранта в історії. */
+  const { index: unreadIx } = useUnreadChanges();
+  useAckWhenVisible(
+    editingId ? { kind: "entity", entityType: "referral_access", entityId: editingId } : null,
+    !!editingId && !loading
+  );
+  useAckWhenVisible(
+    viewingId ? { kind: "entity", entityType: "referral_access", entityId: viewingId } : null,
+    !!viewingId && !loading
+  );
+  /* Рядок поїхав з секції (направник сам відкликав доступ; грант повторно
+     запрошено) → його розгорнута картка зникає з DOM, а стан лишався б
+     висіти з живою заморозкою. Скидаємо явно (ревʼю с28-р1, M-2). */
+  useEffect(() => {
+    if (editingId && !rows.some((r) => r.access_id === editingId && r.status === "active")) setEditingId(null);
+    if (viewingId && !rows.some((r) => r.access_id === viewingId && (r.status === "revoked" || r.status === "declined"))) setViewingId(null);
+  }, [rows, editingId, viewingId]);
 
   useEffect(() => { setOrigin(window.location.origin); }, []);
 
@@ -176,11 +214,16 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
 
   const reload = useCallback(async () => {
     const supabase = createClient();
-    const { data: access } = await supabase
+    const { data: access, error } = await supabase
       .from("referral_access")
       .select("id, referrer_id, status, policy, room_ids, note, created_at")
       .eq("clinic_id", clinicId)
       .order("created_at", { ascending: false });
+    /* Помилка завантаження ≠ «направників немає» (ревʼю с28-р2, L-1new):
+       транзієнтний збій раніше писав rows=[] — а reset-ефект нижче на цьому
+       закривав би відкриту форму редагування разом із несохраненими правками.
+       Лишаємо попередній список як був. */
+    if (error) { setLoading(false); return; }
     const list = access || [];
     const ids = Array.from(new Set(list.map((a) => a.referrer_id)));
     const profById: Record<string, ReferrerProfile> = {};
@@ -221,9 +264,16 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     reload();
   }
 
-  async function resetPassword(r: AccessRow) {
+  function askResetPassword(r: AccessRow) {
     const name = r.referrer.full_name || r.referrer.login || "лікаря";
-    if (!window.confirm(`Скинути пароль для «${name}»?\n\nПоточний пароль перестане діяти. Лікар задасть новий за посиланням (зʼявиться у картці нижче — скопіюйте й передайте йому).`)) return;
+    setAsk({
+      title: `Скинути пароль для «${name}»?`,
+      text: "Поточний пароль перестане діяти. Лікар задасть новий за посиланням (зʼявиться у картці нижче — скопіюйте й передайте йому).",
+      confirmLabel: "Скинути пароль",
+      run: () => { void resetPassword(r); },
+    });
+  }
+  async function resetPassword(r: AccessRow) {
     setBusyId(r.access_id);
     const { ok, data } = await postJSON("/api/staff/password", { userId: r.referrer_id, action: "reset" });
     setBusyId(null);
@@ -305,7 +355,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
       <div onClick={onClick} title={expandable ? (expanded ? "Згорнути налаштування" : "Натисніть, щоб змінити налаштування") : undefined} style={{ padding: "14px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
         {expandable && <span style={{ color: "var(--text-muted)", fontSize: "0.8125rem", width: 12, flexShrink: 0, display: "inline-block", transition: "transform .15s", transform: expanded ? "rotate(90deg)" : "none" }}>▸</span>}
         <div style={{ flex: 1, minWidth: 180 }}>
-          <div style={{ fontWeight: 600, fontSize: "0.875rem" }}>{name}</div>
+          <div style={{ fontWeight: 600, fontSize: "0.875rem" }}>{name}<UnreadDot markers={unreadForEntity(unreadIx, "referral_access", r.access_id)} /></div>
           <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{r.referrer.login ? "@" + r.referrer.login : ""}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
           {r.referrer.note && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: 2 }} title="Примітка лікаря (редагує сам направник)">📝 {r.referrer.note}</div>}
           {r.note && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
@@ -341,6 +391,13 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           спрацьовує документований fail-closed із lib/rooms.ts: без residual
           видимими лишаються активні. На гранти це не впливає — вони вище. */}
       {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={visibleRooms(rooms)} activeNav="referrers" />}
+      {/* ⚠️ У embedded-режимі (майстер /setup) штатного Sidebar немає — а саме
+          він монтує підписку на позначки. Без цього маунта store лишався в
+          'loading' з нулем маркерів: ані крапок на рядках, ані ack при
+          розгортанні картки (жива перевірка с28 — власник відкрив направника
+          через майстер і крапки не побачив). Кілька одночасних маунтів
+          безпечні за побудовою (модульний store, канал іменований по userId). */}
+      {embedded && <UnreadChangesMount />}
       <div className={embedded ? "setup-embed-main" : "main"}>
         {!embedded && (
           <header className="topbar">
@@ -446,9 +503,9 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                 <div key={r.access_id}>
                   <Row r={r} expandable expanded={editingId === r.access_id} onClick={() => (editingId === r.access_id ? setEditingId(null) : startEdit(r))}>
                     {r.referrer.password_set && r.referrer.id && (
-                      <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); resetPassword(r); }} title="Скинути пароль — лікар задасть новий за посиланням">Скинути пароль</button>
+                      <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); askResetPassword(r); }} title="Скинути пароль — лікар задасть новий за посиланням">Скинути пароль</button>
                     )}
-                    <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); if (window.confirm("Відкликати доступ для «" + (r.referrer.full_name || r.referrer.login) + "»?\n\nСтворені ним направлення лишаться. Нові він створювати не зможе.")) decide(r.access_id, "revoke"); }}>Відкликати доступ</button>
+                    <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); setAsk({ title: `Відкликати доступ для «${r.referrer.full_name || r.referrer.login}»?`, text: "Створені ним направлення лишаться. Нові він створювати не зможе.", confirmLabel: "Відкликати", danger: true, run: () => { void decide(r.access_id, "revoke"); } }); }}>Відкликати доступ</button>
                   </Row>
                   {editingId === r.access_id && (
                     <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: 16, margin: "4px 0 8px" }}>
@@ -513,16 +570,40 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           {history.length > 0 && (
             <div style={card}>
               <div className="bk-section-label" style={{ marginTop: 0 }}>Історія</div>
+              {/* ⚠️ Рядки історії РОЗГОРТАЮТЬСЯ (read-only, с28): направник може
+                  сам відкликати свій доступ, і позначку про це адміну інакше не
+                  було б чим погасити — плоский рядок без ack робить її вічною
+                  (той самий клас, що «Історія» порталу направника). */}
               {history.map((r) => (
-                <Row key={r.access_id} r={r}>
-                  <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={() => reinvite(r)}>{busyId === r.access_id ? "…" : "Запросити знову"}</button>
-                </Row>
+                <div key={r.access_id}>
+                  <Row r={r} expandable expanded={viewingId === r.access_id} onClick={() => setViewingId((id) => (id === r.access_id ? null : r.access_id))}>
+                    <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); reinvite(r); }}>{busyId === r.access_id ? "…" : "Запросити знову"}</button>
+                  </Row>
+                  {viewingId === r.access_id && (
+                    <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: 14, margin: "4px 0 8px", fontSize: "0.8125rem", color: "var(--text-secondary)" }}>
+                      <div>Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"}</div>
+                      <div style={{ marginTop: 4 }}>Кабінети: {roomsLabel(r.room_ids)}</div>
+                      {r.note && <div style={{ marginTop: 4 }}>Примітка: {r.note}</div>}
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           )}
         </div>
       </div>
 
+      {ask && (
+        <ConfirmDialog
+          title={ask.title}
+          text={ask.text}
+          confirmLabel={ask.confirmLabel}
+          cancelLabel="Скасувати"
+          danger={ask.danger}
+          onClose={() => setAsk(null)}
+          onConfirm={() => { const run = ask.run; setAsk(null); run(); }}
+        />
+      )}
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );

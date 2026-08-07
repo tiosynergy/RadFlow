@@ -8,7 +8,7 @@ import {
   unreadForSurface, unreadForEntity, unreadForField,
   topSeverity, ackIdsForScope, snapshotIdsOf,
   unreadForDate, hasUnreadDate, calendarDayKey,
-  markerLabel, unreadGroupLabel, hasUnreadNav, unreadForNav,
+  markerLabel, unreadGroupLabel, scheduleScopeText, hasUnreadNav, unreadForNav,
   type ChangeMarker,
 } from "@/lib/unreadChanges";
 
@@ -313,6 +313,44 @@ describe("формулювання", () => {
       const label = markerLabel(marker({ field_scope: scope }));
       expect(label, `немає тексту для ${scope}`).not.toContain("інформація");
     }
+  });
+
+  /* с28: scope `schedule` покриває пʼять колонок, і жива перевірка показала,
+     що зміна САМОЇ тривалості підписувалась як «дата, час або кабінет» —
+     жодне з трьох не мінялось. Текст тепер виводиться з changed_fields. */
+  describe("текст scope schedule — із changed_fields", () => {
+    it("сама тривалість → «тривалість», без «дата, час або кабінет»", () => {
+      const label = markerLabel(marker({ field_scope: "schedule", changed_fields: ["duration_min"] }));
+      expect(label).toContain("тривалість");
+      expect(label).not.toContain("дата, час або кабінет");
+    });
+
+    it("комбінація полів — перелік у порядку тригера 0132", () => {
+      expect(scheduleScopeText(["duration_min", "scheduled_date"])).toBe("дата, тривалість");
+      expect(scheduleScopeText(["room_id", "scheduled_time", "scheduled_date"])).toBe("дата, час, кабінет");
+      expect(scheduleScopeText(["buffer_time_min"])).toBe("буфер");
+    });
+
+    it("порожній / null / невідомі поля → загальний фолбек (старі позначки)", () => {
+      expect(scheduleScopeText(null)).toBe("дата, час або кабінет");
+      expect(scheduleScopeText([])).toBe("дата, час або кабінет");
+      expect(scheduleScopeText(["поле-з-майбутнього"])).toBe("дата, час або кабінет");
+      const label = markerLabel(marker({ field_scope: "schedule", changed_fields: null }));
+      expect(label).toContain("дата, час або кабінет");
+    });
+
+    it("список полів — дзеркало гілки schedule тригера 0132", () => {
+      const trig = readFileSync(resolve(process.cwd(), "supabase/migrations/0132_change_marker_triggers.sql"), "utf8");
+      for (const f of ["scheduled_date", "scheduled_time", "room_id", "duration_min", "buffer_time_min"]) {
+        expect(trig, `тригер 0132 не знає поля ${f}`).toContain(`'${f}'`);
+        expect(scheduleScopeText([f]), `немає тексту для ${f}`).not.toBe("дата, час або кабінет");
+      }
+    });
+
+    it("інші scope changed_fields не читають", () => {
+      const label = markerLabel(marker({ field_scope: "studies", changed_fields: ["duration_min"] }));
+      expect(label).toContain("перелік послуг");
+    });
   });
 });
 

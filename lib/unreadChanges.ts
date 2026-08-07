@@ -268,10 +268,34 @@ const ACTOR_ROLE_TEXT: Record<string, string> = {
   system: "система",
 };
 
+/* Scope `schedule` покриває пʼять колонок (дзеркало списку в тригері 0132),
+   і назвати їх усі одним текстом чесно не виходить: жива перевірка с28
+   показала, що зміна САМОЇ тривалості (направник додав дослідження) давала
+   крапку «дата, час або кабінет» — жодне з трьох не мінялось. Тому текст
+   виводимо з `changed_fields`; згортання накопичує обʼєднання полів за всі
+   непобачені правки, тож перелік лишається чесним і для згорнутої крапки.
+   Порожній/невідомий список → загальний фолбек (старі позначки, майбутні
+   поля). Порядок — фіксований, як у тригері. */
+const SCHEDULE_FIELD_TEXT: ReadonlyArray<readonly [string, string]> = [
+  ["scheduled_date", "дата"],
+  ["scheduled_time", "час"],
+  ["room_id", "кабінет"],
+  ["duration_min", "тривалість"],
+  ["buffer_time_min", "буфер"],
+];
+
+export function scheduleScopeText(changed: readonly string[] | null | undefined): string {
+  if (!changed || !changed.length) return FIELD_SCOPE_TEXT.schedule;
+  const parts = SCHEDULE_FIELD_TEXT.filter(([f]) => changed.includes(f)).map(([, t]) => t);
+  return parts.length ? parts.join(", ") : FIELD_SCOPE_TEXT.schedule;
+}
+
 /** Доступне імʼя однієї крапки: ХТО і ЩО змінив, без PII. */
 export function markerLabel(m: ChangeMarker): string {
   const who = ACTOR_ROLE_TEXT[m.actor_role] ?? "інший користувач";
-  const what = FIELD_SCOPE_TEXT[m.field_scope] ?? "інформація";
+  const what = m.field_scope === "schedule"
+    ? scheduleScopeText(m.changed_fields)
+    : FIELD_SCOPE_TEXT[m.field_scope] ?? "інформація";
   return `Змінено іншим користувачем: ${what} (${who})`;
 }
 
