@@ -17,7 +17,7 @@ import CeoManager from "@/components/CeoManager";
 import QueuePolicySettings, { type QueuePolicyInitial } from "@/components/QueuePolicySettings";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import UnreadDot from "@/components/UnreadDot";
-import { UnreadChangesMount, useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
+import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
 import { unreadForSurface, type SurfaceKey } from "@/lib/unreadChanges";
 import { formatPhoneUA, isValidPhoneUA } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
@@ -215,14 +215,19 @@ function equipHoursValid(equip: EquipItem[]): boolean {
    Радіологи / Направники / Керівники — окремі сторінки керування (href). */
 /* surfaces — які поверхні контекстних позначок (0131) «живуть» у пункті:
    крапка на пункті каже адміну, ДЕ саме є непрочитані зміни (с28, запит
-   власника). Порожньо = у пункту немає джерел позначок (сьогодні). */
+   власника).
+   ⚠️ Тут ЛИШЕ ті поверхні, у яких (а) є джерело в тригерах 0132 і (б) є де
+   погасити. `rooms` / `schedule` / `staff` навмисно НЕ вписані: джерел у 0132
+   немає (schedule_overrides чекає CAS з M-2 аудиту, staff-таблиці відкладені),
+   а якби зʼявились — крапка тут загорілась би без жодного ack і стала вічною
+   (ревʼю с28-р3). Додаєш поверхню — додай і точку підтвердження. */
 const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string; surfaces?: SurfaceKey[] }[] = [
   { label: "Профіль клініки", desc: "Назва та контакти центру", anchor: "sec-clinic" },
   { label: "Адміністратор", desc: "Обліковий запис адміна", anchor: "sec-admin" },
-  { label: "Обладнання та кабінети", desc: "Апарати та розклад", anchor: "sec-equip", surfaces: ["rooms", "schedule"] },
+  { label: "Обладнання та кабінети", desc: "Апарати та розклад", anchor: "sec-equip" },
   { label: "Послуги та прайс", desc: "Каталог послуг і цін центру", anchor: "sec-price", surfaces: ["services"] },
   { label: "Управління чергою", desc: "Політика при затримці", anchor: "sec-queue" },
-  { label: "Персонал і доступи", desc: "Радіологи та реєстратори", anchor: "sec-staff", surfaces: ["staff"] },
+  { label: "Персонал і доступи", desc: "Радіологи та реєстратори", anchor: "sec-staff" },
   { label: "Лікарі-направники", desc: "Направники центру", anchor: "sec-referrers", surfaces: ["centers"] },
   { label: "Керівники (CEO)", desc: "Аналітичний доступ", anchor: "sec-ceo" },
 ];
@@ -765,11 +770,16 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
   /* Контекстні позначки в майстрі (с28): store монтується ТУТ, бо на /setup
      штатного Sidebar немає — без маунта крапки й ack мовчки не працювали
      (жива перевірка с28). Крапки на пунктах — за мапінгом surfaces у WIZ_NAV.
-     Ack каталогу — при відкритій секції «Послуги та прайс»: каталог приходить
-     SSR-пропсами і відрендерений цілком, як на /services (ServicesManager).
-     Доступи (centers) гасить embedded ReferrersManager по розгорнутій картці. */
+     ⚠️ Ack тут НЕМАЄ ЖОДНОГО, і це свідомо (ревʼю с28-р3). Каталог у майстрі
+     приходить SSR-пропом і оновлюється лише після ВЛАСНОЇ мутації
+     (router.refresh) — realtime-підписки на services тут немає. Підтверджувати
+     прочитання на такому екрані означало б погасити крапку, показавши знімок
+     на момент завантаження сторінки: зміна колеги (або імпорт прайса) зникла б
+     непоказаною — пряме порушення правила ТЗ «гасне лише те, що людина реально
+     побачила». Крапка в майстрі — ВКАЗІВНИК; гасять її там, де дані живі:
+     каталог — на /services (ServicesManager, surface-ack), доступи — у картці
+     направника нижче (embedded ReferrersManager, ack по розгортанню). */
   const { index: wizUnreadIx } = useUnreadChanges();
-  useAckWhenVisible({ kind: "surface", surface: "services" }, activeSection === "sec-price");
 
   /* Нижче 480px список кроків — горизонтальна стрічка (WCAG 1.4.10), і активний
      крок легко опиняється за її правим краєм: користувач відкриває майстер на

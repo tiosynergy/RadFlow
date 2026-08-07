@@ -560,7 +560,7 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSch
    розкриття, що в адмінській CancelledPanel. Рядок — компонент модульного
    рівня: оголошення всередині рендера ремонтувало б його щокадру і ламало
    заморозку. */
-function RadCancelledRow({ e, unreadIx, ackEnabled }: { e: RadEntry; unreadIx: UnreadIndex; ackEnabled: boolean }) {
+function RadCancelledRow({ e, roomName, unreadIx, ackEnabled }: { e: RadEntry; roomName: string; unreadIx: UnreadIndex; ackEnabled: boolean }) {
   useAckWhenVisible({ kind: "entity", entityType: "queue_entry", entityId: e.id }, ackEnabled);
   return (
     <div style={{ padding: "8px 0", borderTop: "1px solid var(--border)" }}>
@@ -568,12 +568,15 @@ function RadCancelledRow({ e, unreadIx, ackEnabled }: { e: RadEntry; unreadIx: U
         <span style={{ fontSize: "0.8125rem", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.patient_name}</span><UnreadDot markers={unreadForEntity(unreadIx, "queue_entry", e.id)} />
         <span className="badge gray" style={{ fontSize: "0.65625rem", flexShrink: 0 }}>Скасовано</span>
       </div>
-      <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", marginTop: 2 }}>{e.scheduled_time} · {procLabel(e)}</div>
+      {/* Кабінет у підписі — панель НЕ фільтрується по обраному кабінету
+          (див. коментар у RadCancelledPanel), тож рядок мусить сам казати,
+          звідки він. */}
+      <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", marginTop: 2 }}>{e.scheduled_time} · {roomName} · {procLabel(e)}</div>
     </div>
   );
 }
 
-function RadCancelledPanel({ entries, unreadIx }: { entries: RadEntry[]; unreadIx: UnreadIndex }) {
+function RadCancelledPanel({ entries, roomsById, unreadIx }: { entries: RadEntry[]; roomsById: Record<string, RoomOpt>; unreadIx: UnreadIndex }) {
   const [open, setOpen] = useState(false);
   /* Знімок id на момент розкриття — ack дозволений лише їм (той самий
      H-1-фікс с28, що в CancelledPanel адміна). Побічний ефект у тілі
@@ -588,7 +591,7 @@ function RadCancelledPanel({ entries, unreadIx }: { entries: RadEntry[]; unreadI
   if (!entries.length) return null;
   return (
     <div className="rcard" style={{ marginTop: 12 }}>
-      <button className={"rcard-toggle" + (open ? " open" : "")} onClick={toggleOpen} style={{ cursor: "pointer" }}>
+      <button className={"rcard-toggle" + (open ? " open" : "")} onClick={toggleOpen} aria-expanded={open} style={{ cursor: "pointer" }}>
         <span className="rct-title">Скасовані</span><UnreadDot markers={headerMarkers} withCount />
         <span className="rct-sum">{entries.length}</span>
         <span className="rct-chev">⌄</span>
@@ -596,7 +599,8 @@ function RadCancelledPanel({ entries, unreadIx }: { entries: RadEntry[]; unreadI
       {open && (
         <div className="load-body">
           {entries.map((e) => (
-            <RadCancelledRow key={e.id} e={e} unreadIx={unreadIx} ackEnabled={openIdsRef.current?.has(e.id) ?? false} />
+            <RadCancelledRow key={e.id} e={e} roomName={(e.room_id ? roomsById[e.room_id] : undefined)?.name || "—"}
+              unreadIx={unreadIx} ackEnabled={openIdsRef.current?.has(e.id) ?? false} />
           ))}
         </div>
       )}
@@ -1091,17 +1095,23 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   const completeProc = (p: RadEntry) => setCompleteFor(p);
   async function finishComplete(status: "done" | "not_held", extraNote: string) {
     const p = completeFor;
-    if (!p) return;
+    // Гард подвійного кліку: CompletionModal не має пропа busy, тож кнопка
+    // лишається активною весь час запиту (ревʼю с28-р3).
+    if (!p || completeBusy) return;
     const note = [p.note, extraNote].map((x) => (x || "").trim()).filter(Boolean).join(" · ") || null;
     setCompleteBusy(true);
     const res = await completeQueueEntry(p.id, status, note);
     setCompleteBusy(false);
     setCompleteFor(null);
     if (!res.ok) {
-      /* CAS-промах: реєстратура вже закрила/скасувала запис. Показуємо причину
-         і синхронізуємо дошку — інакше радіолог б'є в кнопку по застарілій картці. */
+      /* CAS-промах: реєстратура вже закрила/скасувала запис — або адмін
+         аварійно зупинив кабінет (0076: запис → not_held ПЛЮС новий простій).
+         Тому перечитуємо і простої теж: інакше до прильоту realtime картка
+         кабінету показує «вільний» із живою кнопкою виклику на заблокованому
+         апараті (ревʼю с28-р3, дзеркало handledStale у QueueBoard). */
       notify(res.error || "Стан змінився — оновіть дошку", "error");
       reload();
+      loadIncidents();
       return;
     }
     notify(status === "done" ? "Процедуру завершено" : "Позначено: не відбулося", "success");
@@ -1298,13 +1308,20 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                 })}
               </div>
             )}
+
+            {/* ⚠️ Панель живе в ОСНОВНІЙ колонці, а не в .rpanel (ревʼю с28-р3):
+                `@media (max-width: 1240px)` ховає всю праву колонку разом із
+                календарем — на ноутбуці радіолог не мав ЖОДНОГО місця, де
+                видно скасований запис, і його позначка ставала вічною.
+                Фільтра по обраному кабінету теж немає: це «хвости», а не
+                робочий зріз; кабінет підписаний у рядку. Інакше скасовані
+                кабінета-залишку (він зникає зі списку, бо в ньому лишились
+                самі скасовані) були б недосяжні. key по дню — знімок
+                розкриття не переживає зміну зрізу. */}
+            <RadCancelledPanel key={dayKey} entries={cancelledDay} roomsById={roomsById} unreadIx={boardUnreadIx} />
           </div>
           <aside className="rpanel">
             <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} tz={clinicTz} roomSchedules={roomSchedules} />
-            {/* key по дню+фільтру — знімок розкриття не переживає зміну зрізу
-                (той самий M-1new-фікс, що в адмінській панелі). */}
-            <RadCancelledPanel key={dayKey + ":" + roomFilter} unreadIx={boardUnreadIx}
-              entries={roomFilter === "all" ? cancelledDay : cancelledDay.filter((e) => e.room_id === roomFilter)} />
           </aside>
         </div>
       </div>

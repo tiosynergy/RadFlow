@@ -1100,7 +1100,7 @@ function CancelledPanel({ entries, onUndo, onReschedule, onToWaitlist }: { entri
   if (!entries.length) return null;
   return (
     <div className="rcard">
-      <button className={"rcard-toggle" + (open ? " open" : "")} onClick={toggleOpen} style={{ cursor: "pointer" }}>
+      <button className={"rcard-toggle" + (open ? " open" : "")} onClick={toggleOpen} aria-expanded={open} style={{ cursor: "pointer" }}>
         <span className="rct-title">Скасовані + Неявка</span><UnreadDot markers={headerMarkers} withCount />
         <span className="rct-sum">{entries.length}</span>
         <span className="rct-chev">⌄</span>

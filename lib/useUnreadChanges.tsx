@@ -185,6 +185,14 @@ function resetForUser(id: string | null): void {
    StrictMode (маунт → розмонтування → маунт) і для випадку, коли зникає саме
    власник, а пасивний лишається. */
 let mountOwner: symbol | null = null;
+/* Черга очікувачів. Без неї інваріант «підписка є у КОГОСЬ» тримався лише на
+   порядку коміту ефектів: якщо власником ставав вкладений маунт і саме він
+   зникав першим (умовний рендер секції), пасивні лишались з isOwner=false
+   НАЗАВЖДИ — дерево без підписки, без звірки і без первинного завантаження,
+   status застряє в 'loading', а useAckWhenVisible вимагає 'ready' → мовчки
+   вимикається вся фіча, візуально невідрізнянно від «усе прочитано»
+   (ревʼю с28-р3). Тепер звільнення власника промотує наступного. */
+const mountWaiters = new Map<symbol, (v: boolean) => void>();
 
 /**
  * Тримає підписку і завантаження. Рендериться в сайдбарах (Sidebar,
@@ -201,9 +209,15 @@ export function UnreadChangesMount(): null {
   const [isOwner, setIsOwner] = useState(false);
   useEffect(() => {
     const me = idRef.current!;
+    mountWaiters.set(me, setIsOwner);
     if (mountOwner === null) { mountOwner = me; setIsOwner(true); }
     return () => {
-      if (mountOwner === me) { mountOwner = null; setIsOwner(false); }
+      mountWaiters.delete(me);
+      if (mountOwner !== me) return;
+      mountOwner = null;
+      setIsOwner(false);
+      const next = mountWaiters.entries().next().value;   // будь-який живий маунт
+      if (next) { mountOwner = next[0]; next[1](true); }
     };
   }, []);
 
@@ -262,11 +276,12 @@ export function UnreadChangesMount(): null {
 
   /* Первинне завантаження робить сам useRealtimeRefetch (callAll на маунті),
      але лише коли є channelName. Дублюємо явно на випадок, якщо userId
-     зʼявився пізніше за маунт. */
+     зʼявився пізніше за маунт. Тільки у власника: пасивні читають той самий
+     модульний стан, а їхні запити були б точними дублями (ревʼю с28-р3). */
   useEffect(() => {
-    if (!userId) return;
+    if (!isOwner || !userId) return;
     void reloadMarkers();
-  }, [userId]);
+  }, [isOwner, userId]);
 
   return null;
 }
