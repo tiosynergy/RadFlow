@@ -1,9 +1,15 @@
 # Контекстні позначки непрочитаних змін («червоні крапки»)
 
-> Сесія 27 (2026-08-06). БД: міграції `0131` (таблиця + маршрутизація + ack) і
-> `0132` (тригери фан-ауту). Клієнт: `lib/unreadChanges.ts` (чиста логіка),
-> `lib/useUnreadChanges.tsx` (store + хуки), `components/UnreadDot.tsx`.
-> ТЗ-джерело: `CLAUDE_CONTEXTUAL_UNREAD_CHANGES_PROMPT.md` (у власника).
+> Сесія 27 (2026-08-06). **У ПРОДІ.** БД: `0131` (таблиця + маршрутизація +
+> ack), `0132` (тригери фан-ауту), `0133` (`subject_date` — крапки на
+> календарі). Клієнт: `lib/unreadChanges.ts` (чиста логіка),
+> `lib/useUnreadChanges.tsx` (модульний store + хуки),
+> `components/UnreadDot.tsx`. ТЗ: `CLAUDE_CONTEXTUAL_UNREAD_CHANGES_PROMPT.md`.
+> Смоук: `supabase/smoke/user_change_markers_smoke.sql` (блоки A–O).
+> Відкат: `supabase/migrations/ROLLBACK.md`.
+>
+> **Стоп-кран без міграції:**
+> `update public.change_marker_settings set enabled = false;`
 
 ## Що це і що це НЕ є
 
