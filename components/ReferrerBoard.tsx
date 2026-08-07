@@ -13,7 +13,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import UnreadDot from "@/components/UnreadDot";
-import { useUnreadChanges } from "@/lib/useUnreadChanges";
+import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
 import { unreadForEntity } from "@/lib/unreadChanges";
 import MiniCalendar from "@/components/MiniCalendar";
 import { PRIORITY_META, type PatientPriority } from "@/lib/priority";
@@ -125,12 +125,15 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
   const [expandedId, setExpandedId] = useState<string | null>(initialEntry || null);
   /* Контекстні позначки: індекс один на дошку (без хуків у map). Точка на
      рядку гасне через ack у РОЗГОРНУТОМУ стані — його робить ефект нижче. */
-  const { index: unreadIx, ack: unreadAck, status: unreadStatus } = useUnreadChanges();
-  useEffect(() => {
-    if (!expandedId || unreadStatus !== "ready") return;
-    if (unreadForEntity(unreadIx, "queue_entry", expandedId).length === 0) return;
-    void unreadAck({ kind: "entity", entityType: "queue_entry", entityId: expandedId });
-  }, [expandedId, unreadIx, unreadAck, unreadStatus]);
+  const { index: unreadIx } = useUnreadChanges();
+  /* ⚠️ Через useAckWhenVisible, а НЕ власним ефектом по unreadIx (ревʼю
+     пакета №4, р2) — той самий коментар, що у WaitlistBoard: власний ефект
+     гасив ЖИВИЙ індекс і відтворював High-дефект с28 (позначка, народжена
+     при розгорнутому рядку, гасне сама), а ще жив поза механікою ретрою. */
+  useAckWhenVisible(
+    expandedId ? { kind: "entity", entityType: "queue_entry", entityId: expandedId } : null,
+    !!expandedId,
+  );
 
   // Швидкий фільтр із сайдбару: застосовуємо центр+кабінет (nonce → навіть повторний клік).
   useEffect(() => {

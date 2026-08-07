@@ -8,7 +8,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import UnreadDot from "@/components/UnreadDot";
-import { useUnreadChanges } from "@/lib/useUnreadChanges";
+import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
 import { unreadForEntity } from "@/lib/unreadChanges";
 import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
@@ -137,12 +137,18 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
   const [expandedId, setExpandedId] = useState<string | null>(initialEntry || null);
   /* Контекстні позначки листа очікування (ревʼю р2, H-3new): точка на
      рядку, ack — лише для РОЗГОРНУТОГО рядка з успішними даними. */
-  const { index: unreadIx, ack: unreadAck, status: unreadStatus } = useUnreadChanges();
-  useEffect(() => {
-    if (!expandedId || unreadStatus !== "ready") return;
-    if (unreadForEntity(unreadIx, "waitlist_entry", expandedId).length === 0) return;
-    void unreadAck({ kind: "entity", entityType: "waitlist_entry", entityId: expandedId });
-  }, [expandedId, unreadIx, unreadAck, unreadStatus]);
+  const { index: unreadIx } = useUnreadChanges();
+  /* ⚠️ Через useAckWhenVisible, а НЕ власним ефектом по unreadIx (ревʼю
+     пакета №4, р2). Власний ефект перевзводився на КОЖНУ зміну пулу і гасив
+     ЖИВИЙ індекс — тобто відтворював рівно той High-дефект с28, заради якого
+     зʼявилась заморозка знімка: позначка, що прилетіла при вже розгорнутому
+     рядку, гасла сама за ~2 с, не показавшись. Плюс він жив поза механікою
+     ретрою (ackFailGen у депсах не було), тож невдалий ack лишав крапку до
+     ручного згортання. */
+  useAckWhenVisible(
+    expandedId ? { kind: "entity", entityType: "waitlist_entry", entityId: expandedId } : null,
+    !!expandedId,
+  );
   const [addOpen, setAddOpen] = useState(false);
   const [editFor, setEditFor] = useState<WaitlistEntry | null>(null);
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);

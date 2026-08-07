@@ -172,19 +172,24 @@ export async function POST(req: Request) {
        referral.access_granted могла б зафіксувати доступ, який фактично
        не активовано. */
     let uErr: { code?: string; message?: string } | null = null;
+    /* 0134: actor_hint — канал передачі актора в тригер позначок. Роут пише
+       service-role клієнтом (без JWT), тож auth.uid() у тригері порожній і
+       правило «отримувачі мінус актор» без цього не працює: адмін, який
+       запросив направника, отримував крапку про власну дію (жива перевірка
+       с28). BEFORE-тригер обнуляє колонку одразу — у спокої вона завжди NULL. */
     if (existing.status === "pending_referrer") {
-      ({ error: uErr } = await admin.from("referral_access").update({ policy, ...roomsPatch, note }).eq("id", existing.id));
+      ({ error: uErr } = await admin.from("referral_access").update({ policy, ...roomsPatch, note, actor_hint: user.id }).eq("id", existing.id));
     } else if (existing.status === "pending_clinic") {
-      ({ error: uErr } = await admin.from("referral_access").update({ status: "active", policy, ...roomsPatch, decided_at: new Date().toISOString() }).eq("id", existing.id));
+      ({ error: uErr } = await admin.from("referral_access").update({ status: "active", policy, ...roomsPatch, decided_at: new Date().toISOString(), actor_hint: user.id }).eq("id", existing.id));
       resultStatus = "active";
     } else {
-      ({ error: uErr } = await admin.from("referral_access").update({ status: "pending_referrer", policy, ...roomsPatch, initiated_by: user.id, note, decided_at: null }).eq("id", existing.id));
+      ({ error: uErr } = await admin.from("referral_access").update({ status: "pending_referrer", policy, ...roomsPatch, initiated_by: user.id, note, decided_at: null, actor_hint: user.id }).eq("id", existing.id));
     }
     if (uErr) return NextResponse.json({ error: safeDbError("api/referrers/invite.access_update", uErr) }, { status: 400 });
   } else {
     const { data: inserted, error: iErr } = await admin
       .from("referral_access")
-      .insert({ referrer_id: referrerId, clinic_id: me.clinic_id, status: "pending_referrer", policy, room_ids, initiated_by: user.id, note })
+      .insert({ referrer_id: referrerId, clinic_id: me.clinic_id, status: "pending_referrer", policy, room_ids, initiated_by: user.id, note, actor_hint: user.id })  // 0134
       .select("id")   // id гранта — для журналу (0128)
       .single();
     if (iErr || !inserted) return NextResponse.json({ error: safeDbError("api/referrers/invite.access", iErr) }, { status: 400 });

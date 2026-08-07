@@ -980,6 +980,10 @@ export type Database = {
           decided_at: string | null;
           modalities: Database["public"]["Enums"]["modality"][] | null;
           room_ids: string[] | null;
+          /* 0134: канал передачі актора для тригера позначок. У спокої ЗАВЖДИ
+             null — BEFORE-тригер обнуляє поле, переклавши значення в
+             транзакційне налаштування radflow.access_actor. Не читати. */
+          actor_hint: string | null;
         };
         Insert: {
           id?: string;
@@ -993,6 +997,7 @@ export type Database = {
           decided_at?: string | null;
           modalities?: Database["public"]["Enums"]["modality"][] | null;
           room_ids?: string[] | null;
+          actor_hint?: string | null;
         };
         Update: {
           id?: string;
@@ -1006,6 +1011,7 @@ export type Database = {
           decided_at?: string | null;
           modalities?: Database["public"]["Enums"]["modality"][] | null;
           room_ids?: string[] | null;
+          actor_hint?: string | null;
         };
         Relationships: [
           {

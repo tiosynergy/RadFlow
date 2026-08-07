@@ -82,7 +82,13 @@ export async function POST(req: Request) {
   if (decision === "revoke") {
     if (row.status !== "active") return NextResponse.json({ error: "Відкликати можна лише активний доступ" }, { status: 409 });
     if (!isClinicAdmin && !isThisReferrer) return NextResponse.json({ error: "Немає прав на відкликання" }, { status: 403 });
-    const { error } = await admin.from("referral_access").update({ status: "revoked", decided_at: new Date().toISOString() }).eq("id", row.id);
+    /* 0134: actor_hint — канал передачі актора в тригер позначок. Роут пише
+       service-role клієнтом (без JWT), тож auth.uid() у тригері порожній і
+       правило «отримувачі мінус актор» без цього не працює: той, хто клікнув,
+       отримував червону крапку про власну дію (жива перевірка с28).
+       BEFORE-тригер перекладає значення в транзакційне налаштування і одразу
+       обнуляє колонку — у спокої вона завжди NULL. */
+    const { error } = await admin.from("referral_access").update({ status: "revoked", decided_at: new Date().toISOString(), actor_hint: user.id }).eq("id", row.id);
     if (error) return NextResponse.json({ error: safeDbError("api/referral/access/decide", error) }, { status: 400 });
     // 0128: подія — ПІСЛЯ успішного update. Грант лишається рядком зі
     // status='revoked', тож журнал переживає відкликання.
@@ -109,6 +115,8 @@ export async function POST(req: Request) {
     if (hasRoomIdsKey) patch.room_ids = roomIds && roomIds.length ? roomIds : null;
     if (parsed.data.note != null) patch.note = parsed.data.note.trim() || null;
     if (Object.keys(patch).length === 0) return NextResponse.json({ error: "Немає змін" }, { status: 400 });
+    // 0134: актор — ПІСЛЯ перевірки «немає змін», інакше сама підказка рахувалась би зміною.
+    patch.actor_hint = user.id;
     const { error } = await admin.from("referral_access").update(patch as TablesUpdate<"referral_access">).eq("id", row.id);
     if (error) return NextResponse.json({ error: safeDbError("api/referral/access/decide", error) }, { status: 400 });
     // 0128: зміну ОБЛАСТІ активного гранта (policy/room_ids) НЕ журналюємо —
@@ -126,7 +134,7 @@ export async function POST(req: Request) {
   if (!allowed) return NextResponse.json({ error: "Зараз рішення приймає інша сторона" }, { status: 403 });
 
   const nextStatus = decision === "approve" ? "active" : "declined";
-  const patch: Record<string, unknown> = { status: nextStatus, decided_at: new Date().toISOString() };
+  const patch: Record<string, unknown> = { status: nextStatus, decided_at: new Date().toISOString(), actor_hint: user.id };  // 0134
   // Центр при підтвердженні може одразу задати policy (direct/confirm) і дозволені кабінети.
   if (nextStatus === "active" && isClinicAdmin) {
     if (await roomsForeign()) return foreignRoomsRes();
