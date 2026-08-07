@@ -26,7 +26,7 @@
  * дошка ререндерилась би на рівному місці.
  */
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSyncExternalStore } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
@@ -173,15 +173,39 @@ function resetForUser(id: string | null): void {
   });
 }
 
+/* ⚠️ ВЛАСНИК ПІДПИСКИ. Кілька <UnreadChangesMount /> у ОДНОМУ дереві —
+   реальний сценарій (майстер /setup монтує свій, а вкладений
+   ReferrersManager — свій), і без цього лічильника вони падали в рантаймі:
+   канал іменований по userId, тож обидва брали ОДИН канал Supabase, а другий
+   викликав .on("postgres_changes") уже ПІСЛЯ .subscribe() першого —
+   «cannot add postgres_changes callbacks ... after subscribe()» (жива
+   перевірка с28). Тепер підписку тримає ПЕРШИЙ змонтований екземпляр,
+   решта — пасивні (channelName = null) і живуть із того ж модульного стану.
+   Звільнення в cleanup дозволяє наступному стати власником — це важливо для
+   StrictMode (маунт → розмонтування → маунт) і для випадку, коли зникає саме
+   власник, а пасивний лишається. */
+let mountOwner: symbol | null = null;
+
 /**
  * Тримає підписку і завантаження. Рендериться в сайдбарах (Sidebar,
- * ReferrerSidebar, панель радіолога) — тобто на кожному робочому екрані.
- * Нічого не малює. Кілька одночасних маунтів безпечні: стан модульний,
- * а канал realtime іменований по userId.
+ * ReferrerSidebar, панель радіолога) і в майстрі налаштувань, де сайдбара
+ * немає. Нічого не малює. Кілька одночасних маунтів безпечні — див. коментар
+ * про mountOwner вище.
  */
 export function UnreadChangesMount(): null {
   const snap = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const userId = snap.userId;
+
+  const idRef = useRef<symbol | null>(null);
+  if (idRef.current === null) idRef.current = Symbol("unread-mount");
+  const [isOwner, setIsOwner] = useState(false);
+  useEffect(() => {
+    const me = idRef.current!;
+    if (mountOwner === null) { mountOwner = me; setIsOwner(true); }
+    return () => {
+      if (mountOwner === me) { mountOwner = null; setIsOwner(false); }
+    };
+  }, []);
 
   /* ⚠️ Не одноразовий getUser() (ревʼю р1, M-8). Транзієнтний «Failed to
      fetch» на маунті раніше назавжди вимикав фічу: userId лишався null,
@@ -229,8 +253,10 @@ export function UnreadChangesMount(): null {
   );
 
   useRealtimeRefetch({
-    channelName: userId ? `unread-markers:${userId}` : null,
-    subscriptions: subs,
+    // Підписку тримає лише власник (див. mountOwner): пасивні екземпляри
+    // передають null і жодного каналу не відкривають.
+    channelName: isOwner && userId ? `unread-markers:${userId}` : null,
+    subscriptions: isOwner ? subs : [],
     pollWhenSubscribedMs: RECONCILE_MS,
   });
 

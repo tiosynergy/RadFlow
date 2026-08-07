@@ -726,8 +726,14 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .cal-day.holiday:not(.today):not(.selected) { color: var(--red); }
 .cal-day.custom:not(.today):not(.selected) { color: var(--orange); }
 .cal-sched { position: absolute; top: 3px; left: 4px; width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 0 2px var(--card); }
-/* Форма теж розрізняє статус (не лише колір, WCAG 1.4.1): закрито — коло, особливий графік — квадрат. */
-.cal-sched.closed { background: var(--red); border-radius: 50%; }
+/* ⚠️ «Вихідний» НЕ має власного маркера (рішення власника, с28): червона
+   крапка режиму була нерозрізненна з крапкою непрочитаних змін (.cal-change),
+   і навіть контурне кільце власник зняв — досить червоного числа дня
+   (.holiday). Єдина крапка на календарі тепер означає РІВНО одне: «є
+   непрочитані зміни». Для скрінрідера стан вихідного лишається в title/aria
+   (st.label будується завжди). «Особливий графік» — як був: помаранчевий
+   квадратик (форма + колір). */
+.cal-sched.closed { display: none; }
 .cal-sched.custom { background: var(--orange); border-radius: 1px; }
 .cal-day.today .cal-sched { box-shadow: 0 0 0 2px var(--blue); }
 /* .cal-day:hover:not(.empty-day) специфічніший за .cal-day.today і підміняє фон

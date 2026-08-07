@@ -13,7 +13,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
-import { unreadForEntity, unreadForDate, calendarDayKey } from "@/lib/unreadChanges";
+import { unreadForEntity, unreadForDate, calendarDayKey, type UnreadIndex } from "@/lib/unreadChanges";
 import { useQueueSounds } from "@/lib/useQueueSounds";
 import type { OverrunSource } from "@/lib/soundEvents";
 import { signOutAndRedirect } from "@/lib/auth";
@@ -24,8 +24,9 @@ import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, m
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import { quickSearchMatch } from "@/lib/quickSearch";
-import { setQueueEntryStatus, setRadiologistNote, previewDelayPlan, type DelayPreview } from "@/app/queue/actions";
+import { setQueueEntryStatus, setRadiologistNote, previewDelayPlan, completeQueueEntry, type DelayPreview } from "@/app/queue/actions";
 import CeoDashboardLink from "@/components/CeoDashboardLink";
+import CompletionModal from "@/components/CompletionModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import DelayPlanModal from "@/components/DelayPlanModal";
 import type { QueueStatus, Json } from "@/supabase/types";
@@ -551,6 +552,58 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSch
   );
 }
 
+/* ── Скасовані записи дня (с28, знахідка №9 живої перевірки) ──────────────
+   Радіолог отримує позначки про скасування (у нього звільнилось вікно), але
+   дошка скасовані записи не вантажила ВЗАГАЛІ — позначку не було чим
+   погасити: вічна крапка на дні календаря. Панель read-only (рішення про
+   повернення/перенос ухвалює реєстратура), ack — за тією ж заморозкою на
+   розкриття, що в адмінській CancelledPanel. Рядок — компонент модульного
+   рівня: оголошення всередині рендера ремонтувало б його щокадру і ламало
+   заморозку. */
+function RadCancelledRow({ e, unreadIx, ackEnabled }: { e: RadEntry; unreadIx: UnreadIndex; ackEnabled: boolean }) {
+  useAckWhenVisible({ kind: "entity", entityType: "queue_entry", entityId: e.id }, ackEnabled);
+  return (
+    <div style={{ padding: "8px 0", borderTop: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+        <span style={{ fontSize: "0.8125rem", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.patient_name}</span><UnreadDot markers={unreadForEntity(unreadIx, "queue_entry", e.id)} />
+        <span className="badge gray" style={{ fontSize: "0.65625rem", flexShrink: 0 }}>Скасовано</span>
+      </div>
+      <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", marginTop: 2 }}>{e.scheduled_time} · {procLabel(e)}</div>
+    </div>
+  );
+}
+
+function RadCancelledPanel({ entries, unreadIx }: { entries: RadEntry[]; unreadIx: UnreadIndex }) {
+  const [open, setOpen] = useState(false);
+  /* Знімок id на момент розкриття — ack дозволений лише їм (той самий
+     H-1-фікс с28, що в CancelledPanel адміна). Побічний ефект у тілі
+     колбека, не в updater-і setState (StrictMode). */
+  const openIdsRef = useRef<ReadonlySet<string> | null>(null);
+  const toggleOpen = () => {
+    const next = !open;
+    openIdsRef.current = next ? new Set(entries.map((e) => e.id)) : null;
+    setOpen(next);
+  };
+  const headerMarkers = entries.flatMap((e) => unreadForEntity(unreadIx, "queue_entry", e.id));
+  if (!entries.length) return null;
+  return (
+    <div className="rcard" style={{ marginTop: 12 }}>
+      <button className={"rcard-toggle" + (open ? " open" : "")} onClick={toggleOpen} style={{ cursor: "pointer" }}>
+        <span className="rct-title">Скасовані</span><UnreadDot markers={headerMarkers} withCount />
+        <span className="rct-sum">{entries.length}</span>
+        <span className="rct-chev">⌄</span>
+      </button>
+      {open && (
+        <div className="load-body">
+          {entries.map((e) => (
+            <RadCancelledRow key={e.id} e={e} unreadIx={unreadIx} ackEnabled={openIdsRef.current?.has(e.id) ?? false} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RadSidebar({ rooms, roomNoteOf, roomFilter, setRoomFilter, counts, adminName }: { rooms?: RoomOpt[]; roomNoteOf?: (roomId: string) => string | null; roomFilter: string; setRoomFilter: (s: string) => void; counts: Record<string, number>; adminName?: string }) {
   const router = useRouter();
   const single = (rooms || []).length === 1;
@@ -642,6 +695,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   // яких один вимкнено, не отримав би авто-вибір і сидів би на порожньому «Усі».
   const single = visRooms.length === 1;
   const [entries, setEntries] = useState<RadEntry[]>([]);
+  /* Скасовані записи обраного дня — ОКРЕМО від entries (звук/таймери/лічильники). */
+  const [cancelledDay, setCancelledDay] = useState<RadEntry[]>([]);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [overrides, setOverrides] = useState<Record<string, DayOverride>>({});
   const [loading, setLoading] = useState(true);
@@ -671,6 +726,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
      QueueBoard): без прапорця давно активний простій звучав би на маунті. */
   const [incidentsLoaded, setIncidentsLoaded] = useState(false);
   const [roomFilter, setRoomFilter] = useState(single ? (visRooms[0]?.id || "all") : "all");
+  /* Індекс позначок на рівні дошки — для панелі «Скасовані» (с28). */
+  const { index: boardUnreadIx } = useUnreadChanges();
   /* Кабінет-залишок може зникнути зі списку просто під час зміни (закрили останній
      запис) — і фільтр лишився б на кабінеті, якого вже немає у сайдбарі: дошка
      порожня, а кнопки «Усі кабінети» при одному видимому кабінеті теж немає, тобто
@@ -764,18 +821,22 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
       // Авто-«Уточнити» (clarify_at) ставить pg_cron (джоб sink-overdue, кожні 5 хв,
       // supabase/cron_jobs.sql) — не смикаємо RPC з read-лоадера (запис у БД на кожен
       // рефетч давав WAL + audit_log + realtime-луну на всі дошки).
+      /* Скасовані теж вантажимо (с28): їх позначки інакше не було чим гасити.
+         У `entries` вони НЕ потрапляють — на entries завʼязані звук, таймери
+         й лічильники дня (правило «дані поза зрізом — окремо»). */
       let q = supabase
         .from("queue_entries")
         .select("id, patient_name, patient_phone, patient_age, patient_sex, patient_weight, scheduled_time, duration_min, buffer_time_min, status, call_status, studies, studies_original, studies_changed_by, has_contrast, contraindications, cito, priority_level, doctor, note, radiologist_note, indication, room_id, updated_at, in_progress_at, clarify_at, off_schedule")
         .eq("clinic_id", clinicId)
-        .eq("scheduled_date", dayKey)
-        .neq("status", "cancelled");
+        .eq("scheduled_date", dayKey);
       if (roomIds.length) q = q.in("room_id", roomIds);
       const { data, error } = await q.order("scheduled_time", { ascending: true });
       // PostgREST не кидає — помилку треба читати самому, інакше «збій» = «записів немає».
       if (gen !== reqGen.current) return;              // відповідь застарілого запиту
       if (error) { setEntriesErr(true); setStuckErr(true); return; }   // до хвостів не дійшли — отже не знаємо
-      setEntries(data || []);
+      const dayRows = data || [];
+      setEntries(dayRows.filter((e) => e.status !== "cancelled"));
+      setCancelledDay(dayRows.filter((e) => e.status === "cancelled"));
       setEntriesErr(false);
 
       /* «Хвости» in_progress з інших дат. Без призначених кабінетів не питаємо
@@ -995,6 +1056,9 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   }
   const [offCallAsk, setOffCallAsk] = useState<{ p: RadEntry; end: string; durationMin: number } | null>(null);
   const [offCallBusy, setOffCallBusy] = useState(false);
+  /* Модалка «Завершення процедури» — та сама, що в реєстратури (с28). */
+  const [completeFor, setCompleteFor] = useState<RadEntry | null>(null);
+  const [completeBusy, setCompleteBusy] = useState(false);
   function callPatient(p: RadEntry) {
     // safetyErr — жорсткий гейт: підтверджувати виклик на невідомих даних про простої не можна.
     if (safetyErr) { notify("Дані про простої/графік не оновились — виклик заблоковано, оновіть сторінку", "error"); return; }
@@ -1018,7 +1082,31 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     setStatus(p.id, status);
   }
   const arrive = (p: RadEntry) => setStatus(p.id, "waiting");
-  const completeProc = (p: RadEntry) => setStatus(p.id, "done");
+  /* «Завершити» відкриває ТУ САМУ модалку, що в реєстратури (с28, запит
+     власника): раніше радіолог ставив `done` одним кліком і не мав де
+     сказати «не відбулось» із причиною — а саме він бачить пацієнта в
+     кабінеті й знає причину (клаустрофобія, імплант, поломка апарата).
+     Мутація йде тим самим серверним екшеном completeQueueEntry (CAS + RPC
+     0070), тож інваріанти статусів і журнал ті самі, що на дошці черги. */
+  const completeProc = (p: RadEntry) => setCompleteFor(p);
+  async function finishComplete(status: "done" | "not_held", extraNote: string) {
+    const p = completeFor;
+    if (!p) return;
+    const note = [p.note, extraNote].map((x) => (x || "").trim()).filter(Boolean).join(" · ") || null;
+    setCompleteBusy(true);
+    const res = await completeQueueEntry(p.id, status, note);
+    setCompleteBusy(false);
+    setCompleteFor(null);
+    if (!res.ok) {
+      /* CAS-промах: реєстратура вже закрила/скасувала запис. Показуємо причину
+         і синхронізуємо дошку — інакше радіолог б'є в кнопку по застарілій картці. */
+      notify(res.error || "Стан змінився — оновіть дошку", "error");
+      reload();
+      return;
+    }
+    notify(status === "done" ? "Процедуру завершено" : "Позначено: не відбулося", "success");
+    reload();
+  }
   const noShow = (p: RadEntry) => setStatus(p.id, "no_show");
   const notHeld = (p: RadEntry) => setStatus(p.id, "not_held");
   const undo = (p: RadEntry) => setStatus(p.id, "scheduled");
@@ -1213,9 +1301,25 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
           </div>
           <aside className="rpanel">
             <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} tz={clinicTz} roomSchedules={roomSchedules} />
+            {/* key по дню+фільтру — знімок розкриття не переживає зміну зрізу
+                (той самий M-1new-фікс, що в адмінській панелі). */}
+            <RadCancelledPanel key={dayKey + ":" + roomFilter} unreadIx={boardUnreadIx}
+              entries={roomFilter === "all" ? cancelledDay : cancelledDay.filter((e) => e.room_id === roomFilter)} />
           </aside>
         </div>
       </div>
+
+      {completeFor && (
+        <CompletionModal
+          patient={completeFor}
+          proc={procLabel(completeFor)}
+          roomName={(completeFor.room_id ? roomsById[completeFor.room_id] : undefined)?.name || "—"}
+          enteredAt={completeFor.in_progress_at || completeFor.updated_at}
+          onClose={() => { if (!completeBusy) setCompleteFor(null); }}
+          onSuccess={(notes) => finishComplete("done", notes)}
+          onFail={(reason, notes) => finishComplete("not_held", [reason, notes].filter(Boolean).join(" — "))}
+        />
+      )}
 
       {/* 0077 — виклик у кабінет після кінця робочого дня: свідома дія, не заборона. */}
       {stuckFinish && (

@@ -18,7 +18,7 @@ import { modalityShort, modalityKind } from "@/lib/studies";
 import { bookableRooms, isRoomBookable, visibleRooms, ROOM_OFF_LABEL } from "@/lib/rooms";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import UnreadDot from "@/components/UnreadDot";
-import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
+import { UnreadChangesMount, useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
 import { unreadForEntity } from "@/lib/unreadChanges";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -391,6 +391,13 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           спрацьовує документований fail-closed із lib/rooms.ts: без residual
           видимими лишаються активні. На гранти це не впливає — вони вище. */}
       {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={visibleRooms(rooms)} activeNav="referrers" />}
+      {/* ⚠️ У embedded-режимі (майстер /setup) штатного Sidebar немає — а саме
+          він монтує підписку на позначки. Без цього маунта store лишався в
+          'loading' з нулем маркерів: ані крапок на рядках, ані ack при
+          розгортанні картки (жива перевірка с28 — власник відкрив направника
+          через майстер і крапки не побачив). Кілька одночасних маунтів
+          безпечні за побудовою (модульний store, канал іменований по userId). */}
+      {embedded && <UnreadChangesMount />}
       <div className={embedded ? "setup-embed-main" : "main"}>
         {!embedded && (
           <header className="topbar">
