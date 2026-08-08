@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 export type RealtimeSub = {
@@ -36,6 +36,39 @@ type Options = {
 };
 
 /**
+ * Стан realtime-каналу — рівно те, що дошка має право сказати користувачеві.
+ *
+ * Аудит 2026-08-07 (M-2): бейдж «⚡ Real-time» був ЗАХАРДКОДЖЕНИЙ зеленим і
+ * світився однаково при живому сокеті й при CHANNEL_ERROR. Хук усередині все
+ * знав (саме за цим статусом він вмикає аварійний полінг), але назовні нічого
+ * не віддавав, тож оператор, у якого сокет упав, бачив «миттєві оновлення» —
+ * а насправді дані приїжджали раз на 8–60 с. Найгірше це в дошці черги: людина
+ * дивиться на екран і вважає, що бачить кабінети «зараз».
+ *
+ * `everLive` відрізняє ПЕРШЕ підключення («Підключення…», даних ще не було) від
+ * ОБРИВУ («Звʼязок втрачено» — дані були і встигли застаріти). Без нього бейдж
+ * на кожному маунті блимав би тривогою.
+ */
+export type RealtimeHealth = {
+  /** Канал у статусі SUBSCRIBED прямо зараз. */
+  live: boolean;
+  /** У цьому каналі вже була хоч одна успішна підписка. */
+  everLive: boolean;
+  /**
+   * Була хоч одна НЕВДАЛА спроба (CHANNEL_ERROR / TIMED_OUT / CLOSED).
+   *
+   * Потрібен окремо від `everLive` (ревʼю пакета M-2, р.1): якщо сокет не піднявся
+   * ЖОДНОГО разу — Realtime лежить, ws різаний корпоративною мережею — то
+   * `everLive` так і лишиться false, і бейдж вічно писав би «Підключення…»,
+   * поки хук уже давно живе на аварійному полінгу 8→60 с. Тобто рівно той
+   * сценарій, заради якого M-2 і робився, лишився б незакритим.
+   */
+  failed: boolean;
+};
+
+const HEALTH_INITIAL: RealtimeHealth = { live: false, everLive: false, failed: false };
+
+/**
  * Единый realtime-паттерн для досок RadFlow.
  *
  * Зачем (TD-3): раньше каждая доска делала полный refetch на КАЖДОЕ событие
@@ -57,7 +90,10 @@ export function useRealtimeRefetch({
   subscriptions,
   debounceMs = 250,
   pollWhenSubscribedMs,
-}: Options): void {
+}: Options): RealtimeHealth {
+  /* Стан каналу для UI. Викликачі, яким бейдж не потрібен, просто ігнорують
+     повернене значення — сигнатура сумісна з попередньою (`void`). */
+  const [health, setHealth] = useState<RealtimeHealth>(HEALTH_INITIAL);
   // Подписки берём через ref, чтобы смена идентичности лоадеров (useCallback)
   // не вызывала переподписку — она зависит только от channelName.
   const subsRef = useRef(subscriptions);
@@ -76,6 +112,10 @@ export function useRealtimeRefetch({
     .join(";");
 
   useEffect(() => {
+    /* Новий канал (зміна clinicId/періоду) або вимкнений хук — попередній стан
+       уже не про нього. Функціональний апдейт із bail-out: без нього кожен маунт
+       давав би зайвий ререндер дошки. */
+    setHealth((h) => (h.live || h.everLive || h.failed ? HEALTH_INITIAL : h));
     if (!channelName) return;
 
     const supabase = createClient();
@@ -201,6 +241,13 @@ export function useRealtimeRefetch({
            (закрытие модалки слотов, смена даты/канала, смена subscriptionKey)
            заводила бы осиротевший поллинг-цикл, который никто не остановит. */
         if (cancelled) return;
+        /* Стан для бейджа знімаємо ТУТ і тільки тут: це єдине місце, де ми
+           справді знаємо статус сокета (аудит 2026-08-07, M-2). */
+        setHealth((h) =>
+          status === "SUBSCRIBED"
+            ? (h.live && h.everLive ? h : { live: true, everLive: true, failed: false })
+            : (!h.live && h.failed ? h : { live: false, everLive: h.everLive, failed: true })
+        );
         if (status === "SUBSCRIBED") {
           stopPolling();
           /* ⚠️ ВОЗВРАТ ПОСЛЕ ОБРЫВА — это ещё и дыра в данных, а не только
@@ -257,4 +304,6 @@ export function useRealtimeRefetch({
     /* subscriptions (identity) намеренно вне зависимостей — через subsRef;
        subscriptionKey держит СТРУКТУРУ: смена table/filter/состава → переподписка. */
   }, [channelName, debounceMs, subscriptionKey, pollWhenSubscribedMs]);
+
+  return health;
 }

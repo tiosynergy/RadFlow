@@ -27,6 +27,7 @@ import {
   type DayOverride, type OffScheduleInfo, type Break, type EffectiveRoomSchedule,
 } from "@/lib/schedule";
 import { slotToMin, type BusySpan } from "@/lib/slots";
+import { SLOT_FREE_STATUSES, slotClashIn } from "@/lib/slotOccupancy";
 import {
   actualFreeAtMin, delayTriggers, buildCascadePlan, buildConflictPlan,
   type DelayEntry, type DelayPlan,
@@ -933,6 +934,22 @@ export async function submitIncident(input: IncidentInput): Promise<IncidentActi
       entityId: res.id,
       details: { roomId: inc.roomId, reason: inc.reason },
     });
+  } else {
+    /* ⚠️ Єдиний ТИХИЙ шлях пропуску події (знайдено при розборі аудиту
+       2026-08-07). Журнал fail-OPEN за рішенням власника (с25), але правило
+       там же: «пропустив подію — НАПИШИ в лог, а не проковтни». Сам
+       emitImportantEvent гучний на всіх трьох шляхах відмови, а ось ця
+       гілка мовчала: профіль без clinic_id (або RPC не повернула id) —
+       і події немає ніде. */
+    logError({
+      event: "important_event.skipped",
+      actorId: user.id,
+      // clinicId у гілці no_incident_id відомий — без нього рядок логу ні з чим
+      // скорелювати (ревʼю пакета, р.1).
+      clinicId: eventClinicId ?? undefined,
+      errorCode: !eventClinicId ? "no_clinic_id" : "no_incident_id",
+      message: "submitIncident: incident.started не записано",
+    });
   }
   return { ok: true, status };
 }
@@ -1089,7 +1106,31 @@ function shiftDayKey(dateStr: string, days: number): string {
      • тригер (порівнює абсолютні tstzrange) бронь відхиляв → «слот зелений, але
        незаписуваний».
    Тепер критерій той самий, що в БД: перетин АБСОЛЮТНИХ настінних інтервалів,
-   вибірка — сусідні доби (±1; довший хвіст неможливий: duration_min ≤ 480). */
+   вибірка — сусідні доби (±1; довший хвіст неможливий: duration_min ≤ 480).
+
+   ⚠️ SKIP-LIST ДЗЕРКАЛИТЬ БД І МУСИТЬ ЗБІГАТИСЬ ДОСЛІВНО (зовнішній аудит
+   2026-08-07, H-2). `needs_reschedule` тут бракувало, тоді як 0079 звільняє
+   слот у ОБОХ авторитетних місцях — `check_no_overlap` і `room_busy_slots`.
+   Наслідок був не косметичний: сітка вибору слота йде через `room_busy_slots`
+   і малювала слот ВІЛЬНИМ, а бронювання відмовляло «Слот зайнятий» — рівно та
+   інверсія «зелений, але незаписуваний», яку шапка цієї функції й забороняє.
+   Бив по головному сценарію каскаду: план затримки перевів записи в
+   `needs_reschedule` → реєстратура садить у звільнений слот іншого пацієнта →
+   відмова. Міняєш цей список — міняй і 0079, і навпаки.
+
+   ⚠️ FAIL-CLOSED НА ПОМИЛЦІ ВИБІРКИ (той самий аудит, H-2b). Раніше `error`
+   навіть не діставався з відповіді, і відмова БД ставала «колізій немає».
+   Тепер повертаємо третій стан: викликач мусить показати помилку, а не
+   мовчки пропустити бронь до тригера.
+
+   ⚠️ ЩО ЦЯ ПЕРЕВІРКА НЕ Є. Вона МʼЯКА і role-dependent: читає queue_entries
+   під RLS, тож направник бачить не всі чужі рядки і може отримати «вільно»
+   там, де насправді зайнято. Авторитетний рубіж — тригер `check_no_overlap`.
+   Робити її авторитетною без окремої знеособленої RPC не можна. */
+type ClashCheck =
+  | { ok: true; clash: boolean }
+  | { ok: false; error: string };
+
 async function hasSlotClash(
   supabase: SupabaseClient<Database>,
   roomId: string,
@@ -1098,14 +1139,14 @@ async function hasSlotClash(
   startMs: number,   // настінні мс (wallInstant) початку нового вікна
   endMs: number,     // …і кінця (дослідження + буфер)
   excludeId?: string
-): Promise<boolean> {
+): Promise<ClashCheck> {
   const tz = await clinicTz(supabase, clinicId);
   /* Сусідні доби (±1) — лише для ПЛАНОВИХ рядків: довший хвіст неможливий
      (duration_min ≤ 480, буфер ≤ 15). in_progress за датою НЕ фільтруємо: його
      вікно прив'язане до in_progress_at, а не до scheduled_date (прострочений запис
      можна завести в кабінет через кілька днів). Тригер 0068 теж не фільтрує за
      датою — розбіжність повернула б «зелений, але незаписуваний слот». */
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("queue_entries")
     .select("id, status, scheduled_date, scheduled_time, duration_min, buffer_time_min, in_progress_at")
     .eq("room_id", roomId)
@@ -1113,20 +1154,16 @@ async function hasSlotClash(
       `and(scheduled_date.gte.${shiftDayKey(scheduledDate, -1)},scheduled_date.lte.${shiftDayKey(scheduledDate, 1)}),` +
       `and(status.eq.in_progress,in_progress_at.not.is.null)`
     )
-    .neq("status", "cancelled")
-    .neq("status", "no_show")
-    .neq("status", "not_held");
+    /* Скіп-лист береться зі SLOT_FREE_STATUSES, а не пишеться літералами:
+       рівно так H-2a і виникла — список у БД оновили, а тут забули. */
+    .not("status", "in", `(${SLOT_FREE_STATUSES.join(",")})`);
 
-  return (data || []).some((q) => {
-    if (excludeId && q.id === excludeId) return false;
-    if (q.duration_min == null) return false;
-    const qStart = q.status === "in_progress" && q.in_progress_at
-      ? wallInstantOf(q.in_progress_at, tz)                        // фактичний старт
-      : wallInstant(q.scheduled_date ?? "", q.scheduled_time ?? ""); // плановий слот
-    if (qStart == null || !isFinite(qStart)) return false;
-    const qEnd = qStart + (q.duration_min + normBuffer(q.buffer_time_min ?? BUFFER_DEFAULT)) * 60000;
-    return qStart < endMs && startMs < qEnd;
-  });
+  if (error) {
+    return { ok: false, error: safeDbError("booking.slot_clash", error) };
+  }
+
+  // Рішення «зайнято / вільно» — у lib/slotOccupancy (один критерій на весь код).
+  return { ok: true, clash: slotClashIn(data ?? [], startMs, endMs, { excludeId, tz }) };
 }
 
 // L-3: здесь текст ОСТАВЛЕН намеренно — «простой» (INCIDENT, триггер 0020) и
@@ -1340,7 +1377,9 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
   // Абсолютні настінні мс (не хвилини доби): вікно може перетнути опівніч.
   const startMs = wallInstant(input.scheduledDate, input.scheduledTime);
   const endMs = startMs + (input.durationMin + bufferMin) * 60000;
-  if (await hasSlotClash(supabase, input.roomId, clinicId, input.scheduledDate, startMs, endMs, input.id)) {
+  const clash = await hasSlotClash(supabase, input.roomId, clinicId, input.scheduledDate, startMs, endMs, input.id);
+  if (!clash.ok) return { ok: false, error: clash.error, code: "generic" };
+  if (clash.clash) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 
@@ -1480,7 +1519,9 @@ export async function editQueueEntryStudies(
     const startMs = cur.status === "in_progress" && cur.in_progress_at
       ? wallInstantOf(cur.in_progress_at, await clinicTz(supabase, cur.clinic_id)) ?? wallInstant(cur.scheduled_date, cur.scheduled_time)
       : wallInstant(cur.scheduled_date, cur.scheduled_time);
-    if (await hasSlotClash(supabase, cur.room_id, cur.clinic_id, cur.scheduled_date, startMs, startMs + (dur + newBuf) * 60000, id)) {
+    const fit = await hasSlotClash(supabase, cur.room_id, cur.clinic_id, cur.scheduled_date, startMs, startMs + (dur + newBuf) * 60000, id);
+    if (!fit.ok) return { ok: false, error: fit.error, code: "generic" };
+    if (fit.clash) {
       return { ok: false, error: "Дослідження не вміщується — далі стоїть інший запис", code: "slot_unavailable" };
     }
   }
@@ -1590,7 +1631,9 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
   // Абсолютні настінні мс (не хвилини доби): вікно може перетнути опівніч.
   const startMs = wallInstant(input.scheduledDate, input.scheduledTime);
   const endMs = startMs + (input.durationMin + bufferMin) * 60000;
-  if (await hasSlotClash(supabase, input.roomId, clinicId, input.scheduledDate, startMs, endMs)) {
+  const clash = await hasSlotClash(supabase, input.roomId, clinicId, input.scheduledDate, startMs, endMs);
+  if (!clash.ok) return { ok: false, error: clash.error, code: "generic" };
+  if (clash.clash) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 
@@ -1689,7 +1732,9 @@ export async function scheduleFromWaitlist(waitlistId: string, booking: BookingI
   const bufferMin = normBuffer(input.bufferTimeMin ?? BUFFER_DEFAULT);
   const startMs = wallInstant(input.scheduledDate, input.scheduledTime);
   const endMs = startMs + (input.durationMin + bufferMin) * 60000;
-  if (await hasSlotClash(supabase, input.roomId, clinicId, input.scheduledDate, startMs, endMs)) {
+  const clash = await hasSlotClash(supabase, input.roomId, clinicId, input.scheduledDate, startMs, endMs);
+  if (!clash.ok) return { ok: false, error: clash.error, code: "generic" };
+  if (clash.clash) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 
@@ -1955,6 +2000,19 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
     .eq("status", "active")
     .maybeSingle();
   if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
+  /* Канон room_ids: NULL = усі кабінети центру; порожній масив — ТЕЖ усі.
+     ⚠️ Друге виглядає як баг, але це дзеркало БД, і його перевірено на живій
+     базі 2026-08-07: `auth_referrer_can_book_room` (RLS-хелпер запису) містить
+     `ra.room_ids is null or array_length(ra.room_ids, 1) is null or r.id = any(...)`,
+     те саме — в `referral_center_card`, яка малює направнику список кабінетів.
+     Тригер `validate_referral_rooms` (0061) забороняє СТВОРЮВАТИ порожній масив,
+     але вже наявні рядки не чіпав, тож розбіжність тут = «кабінет видно в
+     картці центру, а бронювання відмовляє» — рівно та інверсія, від якої
+     страждав слот-гейт (H-2a).
+     Аудит 2026-08-07 (M-7) пропонував зробити код суворішим за БД. Мета вірна,
+     але порядок зворотний: спершу міграція (прибрати гілку `array_length` в
+     обох функціях + нормалізувати легасі `{}` → NULL), потім прикладний код.
+     Легасі-рядків на проді 0 із 5 (перевірено), тож пакет 0135 нічого не пече. */
   const roomAllowed = !access.room_ids || access.room_ids.length === 0 || access.room_ids.includes(input.roomId);
   if (!roomAllowed) return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
 
@@ -1977,7 +2035,9 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
   // Абсолютні настінні мс (не хвилини доби): вікно може перетнути опівніч.
   const startMs = wallInstant(input.scheduledDate, input.scheduledTime);
   const endMs = startMs + (input.durationMin + bufferMin) * 60000;
-  if (await hasSlotClash(supabase, input.roomId, input.clinicId, input.scheduledDate, startMs, endMs)) {
+  const clash = await hasSlotClash(supabase, input.roomId, input.clinicId, input.scheduledDate, startMs, endMs);
+  if (!clash.ok) return { ok: false, error: clash.error, code: "generic" };
+  if (clash.clash) {
     return { ok: false, error: "Слот зайнятий", code: "slot_taken" };
   }
 
@@ -2700,7 +2760,8 @@ async function referralAccessFor(supabase: SupabaseClient<Database>, userId: str
   return data ?? null;
 }
 
-/** Канон room_ids (0061): NULL/[] = усі кабінети центру. */
+/** Канон room_ids: NULL/[] = усі кабінети центру — дзеркало БД, див. розгорнутий
+    коментар у createReferralBooking (і план вирівнювання канону в пакеті 0135). */
 function refRoomAllowed(roomIds: string[] | null, roomId: string): boolean {
   return !roomIds || roomIds.length === 0 || roomIds.includes(roomId);
 }
