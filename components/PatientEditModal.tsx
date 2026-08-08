@@ -31,6 +31,19 @@ type PatientForm = {
   priority_level?: PatientPriority;
 };
 type DoctorOption = { key: string; name: string; sub: string };
+/* «Залишити як є» для `doctor`, якого немає ні серед направників, ні в довіднику
+   (напр. лікаря прибрали з довідника). Окремий ключ, а НЕ порожній рядок:
+   інакше «не чіпати» і «очистити» зливаються, і довільний текст стає незмивним
+   (ревʼю р.1). */
+const KEEP_KEY = "keep";
+/* ⚠️ ОДНА нормалізація на весь файл. У ревʼю р.2: `nameCount`/`refNames`
+   рахувались по СИРОМУ `trim()`, а зіставлення довідника — по нормалізованому.
+   На тих самих даних, що дали початковий баг («Заставська··Марія» проти
+   «Заставська·Марія»), колізія не виявлялась, мітки `@login` не було, а
+   браузер згортає пробіли в `<option>` — два РІЗНІ пункти виглядали однаково.
+   Оператор обирав навмання, і вибір направника відправляв картку пацієнта в
+   чужий портал. Порівнюємо ТІЛЬКИ через `norm`. */
+const norm = (s: string) => s.trim().replace(/\s+/g, " ");
 
 interface PatientEditModalProps {
   entryId: string;
@@ -56,6 +69,21 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
   const [origPriority, setOrigPriority] = useState<PatientPriority | null>(null);
   const [docs, setDocs] = useState<DoctorOption[]>([]); // активні направники + довідник
   const [lockDoctor, setLockDoctor] = useState(false); // запис внесено направником → не редагувати
+  /* ⚠️ ВИБІР НАПРАВНИКА ЖИВЕ КЛЮЧЕМ (`r-<id>` / `d-<id>` / ""), А НЕ ІМЕНЕМ.
+     Раніше `referrer_id` перезбирався на КОЖНОМУ збереженні пошуком по рядку
+     (`docs.find(d => d.name === form.doctor)`), і будь-яке розходження тихо
+     клало null. Зловлено живцем: у профілі «Заставська  Марія» (17 символів,
+     подвійний пробіл), у записі «Заставська Марія» (16) — адмін правив ПІБ
+     ПАЦІЄНТА, поля направника не чіпав, а звʼязок рвався. Запис зникав із
+     порталу направника (той фільтрує по `referrer_id`), крапка не зʼявлялась,
+     а `doctor` лишався текстом — тобто адмін навіть не бачив поломки.
+     Імʼя як ключ ламається ще й на тезках (дедуп по імені викидає другого)
+     і на переіменуванні направника. */
+  const [docKey, setDocKey] = useState<string>("");
+  const [origDocKey, setOrigDocKey] = useState<string>("");
+  /* Направник у записі є, але його картка недоступна цій ролі (RLS) → поле
+     тільки для читання: керувати тим, чого не бачимо, не можна. */
+  const [refUnresolved, setRefUnresolved] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -65,7 +93,8 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
       const supabase = createClient();
       const { data } = await supabase
         .from("queue_entries")
-        .select("id, clinic_id, created_by, patient_name, patient_phone, patient_dob, patient_age, patient_sex, patient_weight, contraindications, doctor, note, priority_level")
+        // `referrer_id` читаємо ОБОВʼЯЗКОВО: саме він, а не імʼя, визначає звʼязок.
+        .select("id, clinic_id, created_by, patient_name, patient_phone, patient_dob, patient_age, patient_sex, patient_weight, contraindications, doctor, referrer_id, note, priority_level")
         .eq("id", entryId)
         .maybeSingle();
       if (!live) return;
@@ -83,17 +112,60 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
         if (data.created_by && allRefIds.has(data.created_by)) { if (live) setLockDoctor(true); }
         // Список для вибору — лише АКТИВНІ направники + довідник.
         const activeRefIds = Array.from(new Set(access.filter((a) => a.status === "active").map((a) => a.referrer_id)));
-        let refProfiles: { id: string; full_name: string | null }[] = [];
-        if (activeRefIds.length) {
-          const { data: profs } = await supabase.from("profiles").select("id, full_name").in("id", activeRefIds);
+        /* ⚠️ ПОТОЧНИЙ направник запису — В СПИСКУ ЗАВЖДИ, навіть якщо його доступ
+           уже НЕ active: інакше в селекті немає опції з його ключем, і перше ж
+           збереження мовчки перевело б запис у «без направника». */
+        const curRefId = data.referrer_id ?? null;
+        const idsToLoad = Array.from(new Set([...activeRefIds, ...(curRefId ? [curRefId] : [])]));
+        let refProfiles: { id: string; full_name: string | null; login: string | null }[] = [];
+        if (idsToLoad.length) {
+          const { data: profs } = await supabase.from("profiles").select("id, full_name, login").in("id", idsToLoad);
           refProfiles = profs || [];
         }
-        const seen = new Set<string>();
+        const activeSet = new Set(activeRefIds);
+        /* ⚠️ ДЕДУП ПО КЛЮЧУ, А НЕ ПО ІМЕНІ (ревʼю р.1). Дедуп по імені викидав
+           ТЕЗКУ — і якщо викинутим виявлявся поточний направник, у селекті
+           лишався ІНШИЙ лікар із тим самим ПІБ. Оператор обирав його не
+           помітивши, і запис їхав у портал ЧУЖОГО направника: це вже не
+           загублений звʼязок, а показ даних пацієнта сторонній людині.
+           Тезок тепер розрізняємо логіном, а не ховаємо. */
+        const nameCount = new Map<string, number>();
+        refProfiles.forEach((p) => { const n = norm(p.full_name || ""); if (n) nameCount.set(n, (nameCount.get(n) ?? 0) + 1); });
         const opts: DoctorOption[] = [];
-        refProfiles.forEach((p) => { const n = (p.full_name || "").trim(); if (n && !seen.has(n)) { seen.add(n); opts.push({ key: "r-" + p.id, name: n, sub: "направник" }); } });
-        (docRes.data || []).forEach((d) => { const n = (d.name || "").trim(); if (n && !seen.has(n)) { seen.add(n); opts.push({ key: "d-" + d.id, name: n, sub: d.spec || "" }); } });
+        refProfiles.forEach((p) => {
+          const n = (p.full_name || "").trim();
+          if (!n) return;
+          const marks = ["направник"];
+          if ((nameCount.get(norm(n)) ?? 0) > 1 && p.login) marks.push("@" + p.login);   // тезки — за НОРМАЛІЗОВАНИМ імʼям
+          if (!activeSet.has(p.id)) marks.push("доступ неактивний");                     // поточний із відкликаним доступом
+          opts.push({ key: "r-" + p.id, name: n, sub: marks.join(" · ") });
+        });
+        const refNames = new Set(opts.map((o) => norm(o.name)));
+        (docRes.data || []).forEach((d) => { const n = (d.name || "").trim(); if (n && !refNames.has(norm(n))) opts.push({ key: "d-" + d.id, name: n, sub: d.spec || "" }); });
         opts.sort((a, b) => a.name.localeCompare(b.name, "uk"));
-        if (live) setDocs(opts);
+        /* Початковий ключ: направник — ЗА id (єдине надійне джерело). Далі —
+           лікар довідника за нормалізованим іменем (для нього FK не існує
+           взагалі, це лише підсвітка). Якщо `doctor` не впізнано — KEEP_KEY:
+           окремий пункт «залишити як є», НЕ той самий, що «— не вказано —».
+           Без цього розділення (ревʼю р.1) не можна було ані стерти довільний
+           текст, ані відрізнити «не чіпати» від «очистити». */
+        let k = "";
+        const curResolved = !!curRefId && opts.some((o) => o.key === "r-" + curRefId);
+        if (curResolved) k = "r-" + curRefId;
+        else if ((data.doctor || "").trim()) {
+          k = opts.find((o) => o.key.startsWith("d-") && norm(o.name) === norm(data.doctor as string))?.key ?? KEEP_KEY;
+        }
+        /* ⚠️ FAIL-CLOSED, коли направник Є, але його картку прочитати не вдалось
+           (ревʼю р.2). RLS на `referral_access`/`profiles` вимагає адміна, тож у
+           реєстратора й радіолога список направників порожній ЗАВЖДИ. Без цього
+           гарду селект показував би «— не вказано —» при заповненому
+           `referrer_id`, і одне випадкове торкання поля тихо відчепило б
+           направлення — причому саме той користувач відновити звʼязок не може.
+           Блокуємо поле замість того, щоб дати його зіпсувати. */
+        if (live) {
+          setDocs(opts); setDocKey(k); setOrigDocKey(k);
+          if (curRefId && !curResolved) setRefUnresolved(true);
+        }
       }
     })();
     return () => { live = false; };
@@ -119,10 +191,12 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
       contraindications: !!form.contraindications,
       note: (form.note || "").trim() || null,
     };
-    // Направника змінюємо ЛИШЕ якщо запис не внесений самим направником.
-    if (!lockDoctor) {
-      patch.doctor = (form.doctor || "").trim() || null;
-      const selOpt = docs.find((d) => d.name === form.doctor);
+    /* Направника змінюємо ЛИШЕ якщо запис не внесений самим направником І
+       користувач СПРАВДІ рухав це поле. Без другої умови правка ПІБ пацієнта
+       перезаписувала б `referrer_id` наосліп — саме так звʼязок і губився. */
+    if (!lockDoctor && !refUnresolved && docKey !== origDocKey && docKey !== KEEP_KEY) {
+      const selOpt = docs.find((d) => d.key === docKey);   // ключ, не імʼя
+      patch.doctor = selOpt ? selOpt.name : null;          // docKey === "" → очистити
       patch.referrer_id = selOpt && selOpt.key.startsWith("r-") ? selOpt.key.slice(2) : null;
     }
     const res = await updatePatientDetails(entryId, patch);
@@ -138,7 +212,11 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
   }
 
   const curDoctor = form?.doctor || "";
-  const knownDoctor = docs.some((d) => d.name === curDoctor);
+  /* Пункт «залишити як є» показуємо, лише поки він доречний: запис прийшов із
+     нерозпізнаним `doctor`. Мітка НЕ залежить від поточного вибору — інакше
+     «— не вказано —» перемальовувалось би на старе імʼя, і оператор думав би,
+     що очищення не спрацювало, тоді як патч уже ніс null (ревʼю р.1). */
+  const showKeepOption = origDocKey === KEEP_KEY && !!curDoctor;
 
   return (
     <div className="overlay" onClick={() => { if (!busy) onClose(); }}>
@@ -183,11 +261,16 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
                     <input className="inp" value={curDoctor || "— не вказано —"} disabled readOnly title="Запис внесено лікарем-направником" />
                     <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 4 }}>🔒 Запис внесено лікарем-направником — зміна недоступна.</span>
                   </>
+                ) : refUnresolved ? (
+                  <>
+                    <input className="inp" value={curDoctor || "— не вказано —"} disabled readOnly title="Картка направника недоступна для вашої ролі" />
+                    <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 4 }}>🔒 Направника призначено, але його картка недоступна для вашої ролі. Щоб не відчепити направлення, поле заблоковано — зверніться до адміністратора центру.</span>
+                  </>
                 ) : (
-                  <select className="inp" value={curDoctor} onChange={(e) => setF("doctor", e.target.value)}>
+                  <select className="inp" value={docKey} onChange={(e) => setDocKey(e.target.value)}>
                     <option value="">— не вказано —</option>
-                    {curDoctor && !knownDoctor && <option value={curDoctor}>{curDoctor}</option>}
-                    {docs.map((d) => <option key={d.key} value={d.name}>{d.name}{d.sub ? " · " + d.sub : ""}</option>)}
+                    {showKeepOption && <option value={KEEP_KEY}>{curDoctor} (не у списку — залишити)</option>}
+                    {docs.map((d) => <option key={d.key} value={d.key}>{d.name}{d.sub ? " · " + d.sub : ""}</option>)}
                   </select>
                 )}
               </label>

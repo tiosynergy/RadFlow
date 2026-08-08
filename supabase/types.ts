@@ -1205,6 +1205,20 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      save_schedule_override: {
+        // 0135, H-5. CAS по updated_at: p_expected_updated_at — РЯДКОМ (0119,
+        // мікросекунди), NULL = «рядка не було», НЕ «без перевірки». Повертає
+        // новий updated_at рядком; null = override знято (це УСПІХ, не збій).
+        // Конфлікт = P0001 'SCHED_CAS_CONFLICT…' (НЕ 40001 — той ретраїться).
+        Args: {
+          p_override_date: string;
+          p_all_closed: boolean;
+          p_label: string | null;
+          p_rooms: Json;
+          p_expected_updated_at: string | null;
+        };
+        Returns: string | null;
+      };
       emit_important_event: {
         // 0128; EXECUTE лише в service_role. Роль людини виводиться з
         // profiles усередині функції; p_actor_role має сенс лише для 'system'.

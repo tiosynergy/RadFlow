@@ -14,6 +14,14 @@ import {
   type DayOverride,
 } from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallToday0, type IncidentLike } from "@/lib/incidents";
+
+/* ⚠️ Імена порівнюємо ТІЛЬКИ нормалізовано (trim + пробіли до одного): у БД
+   живуть легасі-рядки з подвійними пробілами, а нові значення нормалізує
+   сервер (zName/zOptName, с31). Пряме `===` на сирих рядках — механіка
+   інциденту с31 (тиха втрата лікаря/направника). Бекфіл легасі навмисно НЕ
+   робився: guard_referrer_doctor кидає виняток на чужих записах направників,
+   а tg_change_markers_queue розіслав би крапки на рівному місці. */
+const normName = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ");
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, studyLabel, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
 import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
@@ -347,11 +355,15 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
           supabase.from("referral_access").select("referrer_id").eq("clinic_id", clinicId).eq("status", "active"),
         ]);
         const list: DocOpt[] = docRes.data || [];
-        const seen = new Set(list.map((d) => (d.name || "").trim()));
         const refIds = Array.from(new Set((accRes.data || []).map((a) => a.referrer_id)));
         if (refIds.length) {
           const { data: profs } = await supabase.from("profiles").select("id, full_name").in("id", refIds);
-          (profs || []).forEach((pr) => { const n = (pr.full_name || "").trim(); if (n && !seen.has(n)) { seen.add(n); list.push({ id: "ref:" + pr.id, name: n, spec: "направник" }); } });
+          /* ⚠️ Направників НЕ дедупимо проти довідника (ревʼю р.2): на опцію
+             `ref:<id>` посилаються ЗАПИСИ (s.referrerId), і викинутий через
+             збіг імені направник означав би, що редагування такого запису
+             мовчки обнуляє referrer_id — та сама механіка с31. Однойменний
+             лікар довідника поруч не страшний: підпис «направник» їх різнить. */
+          (profs || []).forEach((pr) => { const n = (pr.full_name || "").trim(); if (n) list.push({ id: "ref:" + pr.id, name: n, spec: "направник" }); });
         }
         list.sort((a, b) => (a.name || "").localeCompare(b.name || "", "uk"));
         if (!cancel) setDocs(list);
@@ -824,7 +836,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     setNotes(s.notes || "");
     // Лікар-направник (best-effort): направник має пріоритет, інакше — за іменем.
     if (s.referrerId) setDoctorId("ref:" + s.referrerId);
-    else if (s.doctor) { const d = docs.find((x) => (x.name || "").trim() === s.doctor); setDoctorId(d ? String(d.id) : ""); }
+    else if (s.doctor) { const d = docs.find((x) => normName(x.name) === normName(s.doctor)); setDoctorId(d ? String(d.id) : ""); }
     else setDoctorId("");
     setEditIndex(i);
     setSaveErr(null);
@@ -1271,7 +1283,11 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     {addDoc && (
       <AddDoctorModal existing={docs} onClose={() => setAddDoc(false)} onSave={async (d) => {
         const supabase = createClient();
-        const { data, error } = await supabase.from("doctors").insert({ clinic_id: clinicId as string, name: d.name, spec: d.spec || null, clinic_name: d.clinic || null, phone: d.phone || null }).select("id, name, spec, clinic_name, phone").single();
+        /* Імʼя лікаря — trim + схлопування пробілів (с31): це прямий insert повз
+           серверні zod-схеми, і брудне імʼя тут отруїло б зіставлення в
+           PatientEditModal так само, як подвійний пробіл у profiles.full_name. */
+        const cleanName = d.name.trim().replace(/\s+/g, " ");
+        const { data, error } = await supabase.from("doctors").insert({ clinic_id: clinicId as string, name: cleanName, spec: d.spec || null, clinic_name: d.clinic || null, phone: d.phone || null }).select("id, name, spec, clinic_name, phone").single();
         if (!error && data) { setDocs((arr) => [...arr, data]); setDoctorId(String(data.id)); }
         setAddDoc(false);
       }} />

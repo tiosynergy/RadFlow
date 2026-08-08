@@ -1450,7 +1450,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       const supabase = createClient();
       const { data, error } = await supabase
         .from("schedule_overrides")
-        .select("override_date, all_closed, label, rooms")
+        // 0135: updated_at — знімок для CAS (замерзає при відкритті модалки графіка)
+        .select("override_date, all_closed, label, rooms, updated_at")
         .eq("clinic_id", clinicId);
       if (error) { setOverridesErr(true); return; }
       const m: Record<string, DayOverride> = {};
@@ -1592,17 +1593,36 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   const roomSchedules = bookableRooms(rooms).map((r) => r.schedule);
   const selDayStatus = dayStatus(selectedOverride, selectedDate, roomSchedules);
 
+  /* 0135, CAS: знімок `updated_at` ЗАМЕРЗАЄ при ВІДКРИТТІ модалки, а не читається
+     з живої мапи overrides у момент збереження — realtime довозить чужу правку
+     ДО кліку «Зберегти», і CAS зі свіжою міткою «підтвердив» би затирання.
+     `null` = «override не існував». Мітку не проганяти через Date (0119). */
+  const schedSnapRef = useRef<string | null>(null);
+  function openSchedEdit() {
+    schedSnapRef.current = (overrides[dayKey] || null)?.updated_at ?? null;
+    setSchedEditOpen(true);
+  }
   async function saveOverride(ov: { all_closed: boolean; label?: string; rooms: Record<string, { closed?: boolean; start?: string; end?: string; breaks?: { start: string; end: string }[] }> }) {
-    const res = await saveScheduleOverride({ overrideDate: dayKey, allClosed: !!ov.all_closed, label: ov.label || null, rooms: ov.rooms || {} });
+    const res = await saveScheduleOverride({ overrideDate: dayKey, allClosed: !!ov.all_closed, label: ov.label || null, rooms: ov.rooms || {}, expectedUpdatedAt: schedSnapRef.current });
+    /* Модалку закриваємо ЛИШЕ при успіху: закриття до перевірки знищувало б
+       незбережену роботу користувача рівно в момент конфлікту (ревʼю 0135). */
+    if (!res.ok) {
+      notify("Помилка: " + res.error, "error");
+      if (res.code === "sched_conflict") loadOverrides();
+      return;
+    }
     setSchedEditOpen(false);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Графік оновлено", "success");
     loadOverrides();
   }
   async function resetOverride() {
-    const res = await resetScheduleOverride(dayKey);
+    const res = await resetScheduleOverride(dayKey, schedSnapRef.current);
+    if (!res.ok) {
+      notify("Помилка: " + res.error, "error");
+      if (res.code === "sched_conflict") loadOverrides();
+      return;
+    }
     setSchedEditOpen(false);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     notify("Повернуто типовий графік", "success");
     loadOverrides();
   }
@@ -2392,7 +2412,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                   <div className="inc-banner-title">{selDayStatus.kind === "closed" ? "Неробочий день" : "Особливий графік"} · {fmtShort(selectedDate)}</div>
                   <div className="inc-banner-sub">{selDayStatus.label}</div>
                 </div>
-                <button className="btn btn-secondary btn-sm" onClick={() => setSchedEditOpen(true)}>✎ Редагувати</button>
+                <button className="btn btn-secondary btn-sm" onClick={openSchedEdit}>✎ Редагувати</button>
               </div>
             )}
             <div className="board-main-top">
@@ -2405,7 +2425,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                   <div className="db-title">{fmtFull(selectedDate)}</div>
                   <div className="db-sub">{selDayStatus.kind !== "none" ? selDayStatus.label + " · " : ""}{entriesErr && !scopeReady ? "Дані не завантажились" : !scopeReady ? "Завантаження…" : counts.total ? (isPast ? "Архів — день завершено" : "Заплановані записи") + " · " + counts.total + " записів" : "Записів немає"}</div>
                 </div>
-                {!isPast && <button className="btn btn-secondary btn-sm" onClick={() => setSchedEditOpen(true)}>✎ Графік</button>}
+                {!isPast && <button className="btn btn-secondary btn-sm" onClick={openSchedEdit}>✎ Графік</button>}
                 <button className="btn btn-secondary btn-sm" onClick={() => setSelectedDate(today0())}>← Сьогодні</button>
               </div>
             ) : roomView === "all" ? (
@@ -2576,7 +2596,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         </div>
 
           <aside className="rpanel">
-            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} onEditSchedule={() => setSchedEditOpen(true)} tz={clinicTz} roomSchedules={roomSchedules} />
+            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} onEditSchedule={openSchedEdit} tz={clinicTz} roomSchedules={roomSchedules} />
             {isToday && visRooms.length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} ready={scopeReady} />}
             {!isPast && <NeedsReschedulePanel entries={needsResched} roomsById={roomsById} onReschedule={openReschedule} onToWaitlist={toWaitlist} onCancel={(pt) => setCancelAsk({ p: pt, mode: "cancel" })} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}

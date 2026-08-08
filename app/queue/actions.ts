@@ -33,7 +33,7 @@ import {
   type DelayEntry, type DelayPlan,
 } from "@/lib/delayPlan";
 import {
-  parseInput, safeDbError, zUuid, zDateKey, zTime, zSlotTime, zIsoInstant, zName, zOptText, zOptEmail,
+  parseInput, safeDbError, zUuid, zDateKey, zTime, zSlotTime, zIsoInstant, zName, zOptName, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
   zDuration, zBuffer, zPriority, zQueueStatus, zCallStatus, zStudiesRequired, zIdList,
   zQueueDelayPolicy, zOverlapThreshold, zMaxCascade, zQueueStatusAny,
@@ -50,7 +50,7 @@ export type QueueActionResult =
   | {
       ok: false;
       error: string;
-      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "stale" | "past" | "off_schedule" | "modality_mismatch" | "generic";
+      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "stale" | "past" | "off_schedule" | "modality_mismatch" | "sched_conflict" | "generic";
       // Для code='stale' (H-2): реальный статус на сервере, чтобы доска ресинкнулась.
       currentStatus?: QueueStatus;
     };
@@ -114,7 +114,7 @@ const sPatientFields = {
 const sBooking = z.object({
   roomId: zUuid,
   referrerId: zUuid.nullish(),
-  doctor: zOptText(200),
+  doctor: zOptName,   // імʼя: trim + схлопування пробілів (с31)
   notes: zOptText(2000),
   // 0077: оператор підтвердив роботу поза графіком (після закриття / у перерву).
   // Сам по собі прапорець нічого не відкриває — див. scheduleBlock().
@@ -125,7 +125,7 @@ const sBooking = z.object({
 const sReferralBooking = z.object({
   clinicId: zUuid,
   roomId: zUuid,
-  doctorName: zOptText(200),
+  doctorName: zOptName,   // імʼя: trim + схлопування пробілів (с31)
   note: zOptText(2000),
   ...sPatientFields,
 });
@@ -182,6 +182,9 @@ const sScheduleOverride = z.object({
   allClosed: z.boolean(),
   label: zOptText(200),
   rooms: z.record(zUuid, sRoomOverride).nullish(),
+  /* 0135: НЕ .nullish() — undefined мусить падати у валідації, а не тихо
+     вимикати CAS (дефект с30). null = «рядка не було», легальне значення. */
+  expectedUpdatedAt: z.string().min(1).nullable(),
 });
 
 async function clinicTz(supabase: SupabaseClient<Database>, clinicId: string): Promise<string> {
@@ -1219,6 +1222,12 @@ function mapBookingError(message: string, code = ""): QueueActionResult {
     safeDbError("booking.incident", { message });
     return { ok: false, error: "Кабінет у простої — оберіть інший слот або кабінет", code: "incident" };
   }
+  // 0135 — queue_active_requires_room_chk: активний запис зобов'язаний мати кабінет.
+  // З UI недосяжно (кабінет завжди передається), але сирий 23514 назовні не віддаємо.
+  if (/queue_active_requires_room_chk/i.test(message)) {
+    safeDbError("booking.roomRequired", { message });
+    return { ok: false, error: "Активний запис мусить мати кабінет — оберіть кабінет", code: "generic" };
+  }
   if (/overlap|exclusion/i.test(message)) {
     safeDbError("booking.overlap", { message });
     return { ok: false, error: "Слот зайнятий — оберіть інший час", code: "slot_unavailable" };
@@ -1231,60 +1240,62 @@ export type ScheduleOverrideInput = {
   allClosed: boolean;
   label?: string | null;
   rooms?: Record<string, unknown> | null;
+  /* 0135, CAS: `updated_at` зі ЗНІМКА, замороженого при ВІДКРИТТІ модалки
+     (не з живої мапи overrides — realtime довозить чужу правку до кліку).
+     `null` = «override на цей день не існував». Поле ОБОВʼЯЗКОВЕ і в zod теж:
+     `undefined` тут — повторення дефекту с30 (CAS, що тихо вимкнувся). */
+  expectedUpdatedAt: string | null;
 };
 
-/** Сохранить особый график на день (upsert) или удалить, если пусто. */
+/* 0135: розбір помилок CAS-RPC графіка дня ДО safeDbError — той глушить message
+   у «спробуйте ще раз», а для CAS повтор із тим самим знімком не пройде ніколи.
+   Правильна реакція — перечитати день і перекласти правку. */
+function schedOverrideError(ctx: string, error: { message?: string }): QueueActionResult {
+  const message = error?.message || "";
+  if (/SCHED_CAS_CONFLICT/.test(message)) {
+    return { ok: false, error: "Графік цього дня щойно змінив інший користувач — день оновлено, перевірте й повторіть", code: "sched_conflict" };
+  }
+  if (/SCHED_NOT_DESK|SCHED_NO_CLINIC/.test(message)) {
+    return { ok: false, error: "Редагувати графік може лише адміністратор або реєстратор", code: "forbidden" };
+  }
+  return { ok: false, error: safeDbError(ctx, error), code: "generic" };
+}
+
+/** Особый график на день через CAS-RPC (0135): upsert, или удаление, если пусто.
+ *  `data === null` от rpc — УСПЕХ ветки удаления (override снят), не сбой. */
 export async function saveScheduleOverride(input: ScheduleOverrideInput): Promise<QueueActionResult> {
   const v = parseInput("saveScheduleOverride", sScheduleOverride, input);
   if (!v.ok) return v;
 
   const supabase = await createClient();
-  const clinicId = await callerClinicId(supabase);
-  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
-
-  const rooms = v.data.rooms || {};
-  const empty = !v.data.allClosed && Object.keys(rooms).length === 0;
-
-  if (empty) {
-    const { error } = await supabase
-      .from("schedule_overrides")
-      .delete()
-      .eq("clinic_id", clinicId)
-      .eq("override_date", v.data.overrideDate);
-    if (error) return { ok: false, error: safeDbError("saveScheduleOverride.delete", error), code: "generic" };
-    return { ok: true };
-  }
-
-  const { error } = await supabase.from("schedule_overrides").upsert(
-    {
-      clinic_id: clinicId,
-      override_date: v.data.overrideDate,
-      all_closed: v.data.allClosed,
-      label: v.data.label,
-      rooms: rooms as unknown as Json,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "clinic_id,override_date" }
-  );
-  if (error) return { ok: false, error: safeDbError("saveScheduleOverride.upsert", error), code: "generic" };
+  const { error } = await supabase.rpc("save_schedule_override", {
+    p_override_date: v.data.overrideDate,
+    p_all_closed: v.data.allClosed,
+    p_label: v.data.label ?? null,
+    p_rooms: (v.data.rooms || {}) as unknown as Json,
+    p_expected_updated_at: v.data.expectedUpdatedAt,
+  });
+  if (error) return schedOverrideError("saveScheduleOverride", error);
   return { ok: true };
 }
 
-/** Вернуть типовой график на день (удалить override). */
-export async function resetScheduleOverride(overrideDate: string): Promise<QueueActionResult> {
+/** Вернуть типовой график на день = снять override. Та же CAS-RPC с пустым
+ *  payload: «сброс» без снимка затирал бы чужую правку так же, как upsert. */
+export async function resetScheduleOverride(overrideDate: string, expectedUpdatedAt: string | null): Promise<QueueActionResult> {
   const v = parseInput("resetScheduleOverride", zDateKey, overrideDate);
   if (!v.ok) return v;
+  const vExp = parseInput("resetScheduleOverride.expected", z.string().min(1).nullable(), expectedUpdatedAt);
+  if (!vExp.ok) return vExp;
 
   const supabase = await createClient();
-  const clinicId = await callerClinicId(supabase);
-  if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
-
-  const { error } = await supabase
-    .from("schedule_overrides")
-    .delete()
-    .eq("clinic_id", clinicId)
-    .eq("override_date", v.data);
-  if (error) return { ok: false, error: safeDbError("resetScheduleOverride", error), code: "generic" };
+  const { error } = await supabase.rpc("save_schedule_override", {
+    p_override_date: v.data,
+    p_all_closed: false,
+    p_label: null,
+    p_rooms: {} as Json,
+    p_expected_updated_at: vExp.data,
+  });
+  if (error) return schedOverrideError("resetScheduleOverride", error);
   return { ok: true };
 }
 
@@ -1865,7 +1876,9 @@ const sPatientPatch = z.object({
   patient_weight: z.union([z.number().finite().min(0).max(PATIENT_WEIGHT_MAX), z.null()]).optional(),
   contraindications: z.boolean().optional(),
   note: z.union([z.string().trim().max(2000), z.null()]).optional(),
-  doctor: z.union([z.string().trim().max(200), z.null()]).optional(),
+  /* Імʼя: схлопування всередині union — НЕ zOptName, бо тут «відсутній ключ =
+     не чіпати», а zOptName перетворив би undefined на null і затер колонку. */
+  doctor: z.union([z.string().trim().max(200).transform((s) => s.replace(/\s+/g, " ")), z.null()]).optional(),
   referrer_id: z.union([zUuid, z.null()]).optional(),
 });
 
@@ -2478,7 +2491,7 @@ const sCaseStep = z.object({
   scheduledDate: zDateKey,
   scheduledTime: zSlotTime,   // сітка 5 хв (техаудит High-1)
   contraindications: z.boolean().optional(),
-  doctor: zOptText(200),
+  doctor: zOptName,   // імʼя: trim + схлопування пробілів (с31)
   note: zOptText(2000),
 });
 

@@ -13,7 +13,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
-import { unreadForEntity, unreadForDate, calendarDayKey, type UnreadIndex } from "@/lib/unreadChanges";
+import { unreadForEntity, unreadForField, unreadForDate, calendarDayKey, type UnreadIndex } from "@/lib/unreadChanges";
 import { useQueueSounds } from "@/lib/useQueueSounds";
 import type { OverrunSource } from "@/lib/soundEvents";
 import { signOutAndRedirect } from "@/lib/auth";
@@ -297,7 +297,18 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
      запису; гаситься лише при РОЗГОРНУТОМУ рядку з успішно завантаженими
      даними (усередині хука: status === "ready" + лише знімок). */
   const { index: unreadIx } = useUnreadChanges();
-  const rowUnread = unreadForEntity(unreadIx, "queue_entry", p.id);
+  /* ⚠️ РОЗМІЩЕННЯ КРАПОК ОДНАКОВЕ ДЛЯ ВСІХ РОЛЕЙ — дзеркалимо дошку адміна
+     (QueueBoard): агрегат запису стоїть біля ІМЕНІ пацієнта, а `studies` —
+     біля блоку послуг. Раніше в радіолога була одна крапка на РЯДОК (праворуч,
+     біля шеврона): той самий стан читався інакше, ніж в адміна, і не казав,
+     ЩО саме змінилось. ТЗ вимагає, щоб крапка жила поруч із КОНКРЕТНОЮ
+     інформацією, а не поруч із рядком.
+     Ack не чіпаємо: точка підтвердження — той самий `useAckWhenVisible` на
+     розгорнутому рядку (правило проєкту: ack — це виклик хука, а не свій
+     `useEffect`). Згорнутий рядок не показує ні складу послуг, ні даних
+     пацієнта, тож гасити немає за що. */
+  const cardUnread = unreadForEntity(unreadIx, "queue_entry", p.id);
+  const studiesUnread = unreadForField(unreadIx, "queue_entry", p.id, "studies");
   useAckWhenVisible(expanded ? { kind: "entity", entityType: "queue_entry", entityId: p.id } : null, expanded);
   // «Запізнення» (derived) видно й радіологу; прямий виклик такого пацієнта
   // блокується (рішення ухвалює реєстратура: повернути/перенести/зняти).
@@ -322,7 +333,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
-          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}{p.patient_name}</div>
+          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}{p.patient_name}<UnreadDot markers={cardUnread} /></div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
             {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
@@ -330,7 +341,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
           </div>
         </div>
         <div className="q-proc">
-          <div className="pp">{proc}</div>
+          <div className="pp">{proc}<UnreadDot markers={studiesUnread} /></div>
           <div className="du">{roomKind}{regionOf(p) ? " · " + regionOf(p) : ""}</div>
         </div>
         <div className="q-room">
@@ -351,7 +362,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
             <span className="badge offsched" title="Запис поза графіком кабінету (після закриття або в перерву) — підтверджено персоналом">⏰ Поза графіком</span>
           )}
         </div>
-        <UnreadDot markers={rowUnread} /><span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
+        <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
       </div>
 
       <div className="qrow-detail-wrap">
