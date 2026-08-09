@@ -3,7 +3,7 @@ import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
 import { parseJson } from "@/lib/validationHttp";
-import { safeDbError, zLogin, zOptText, zRoomIdsGrant } from "@/lib/validation";
+import { safeDbError, zLogin, zOptName, zOptText, zRoomIdsGrant } from "@/lib/validation";
 import { technicalEmail, REFERRER_EMAIL_DOMAIN } from "@/lib/login";
 import { emitImportantEvent } from "@/lib/importantEvents.server";
 
@@ -19,7 +19,7 @@ import { emitImportantEvent } from "@/lib/importantEvents.server";
    room_ids — канон 0061 (zRoomIdsGrant): null = усі кабінети, [] = 400, а НЕ «усі». */
 const sInvite = z.object({
   login: zLogin,
-  full_name: zOptText(200),
+  full_name: zOptName,   // імʼя: trim + схлопування пробілів (с31)
   phone: zOptText(32),
   note: zOptText(2000),
   policy: z.enum(["direct", "confirm"]).catch("direct"),

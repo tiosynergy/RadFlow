@@ -44,6 +44,7 @@ import CaseModal from "@/components/CaseModal";
 import BreakdownModal from "@/components/BreakdownModal";
 import EmergencyModal from "@/components/EmergencyModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import RealtimeBadge from "@/components/RealtimeBadge";
 import DelayPlanModal, { type DelayApplyPayload } from "@/components/DelayPlanModal";
 import MiniCalendar from "@/components/MiniCalendar";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
@@ -66,6 +67,7 @@ import Toast, { type ToastData } from "@/components/Toast";
 import ShortcutsOverlay from "@/components/ShortcutsOverlay";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import { quickSearchMatch } from "@/lib/quickSearch";
+import { occupiesSlot } from "@/lib/slotOccupancy";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -83,6 +85,13 @@ type QEntry = {
   off_schedule?: boolean | null;   // 0077 — запис зроблено поза графіком (за підтвердженням)
   case_id?: string | null; case_step?: number | null;   // крос-модальний кейс (0091)
 };
+/* Порожній зріз — СТАБІЛЬНА константа модуля. Новий `[]` на кожному рендері
+   інвалідував би всі useMemo, що залежать від `entries`, поки день вантажиться
+   (аудит 2026-08-07, H-3). */
+const EMPTY_ENTRIES: QEntry[] = [];
+/* Ключ робочого зрізу дошки: клініка + день. Одна функція на обидві сторони —
+   і на читання (scopeReady), і на запис (setEntriesSnap), щоб формат не розʼїхався. */
+const scopeKeyOf = (clinicId: string, dayKey: string) => `${clinicId}|${dayKey}`;
 type RescheduleOrigin = { from_date?: string | null; from_time?: string | null; from_room?: string | null; from_status?: string | null; reason?: string | null };
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
 type IncidentPayload = { id?: string; roomId: string; reason: string; reasonLabel: string; note: string; startedAt: string; blockedUntil: string | null; autoUnblock: boolean };
@@ -161,7 +170,11 @@ function LiveTimer({ enteredAt, children }: { enteredAt?: string | null; childre
 }
 
 /* ── StatsBar ── */
-function StatsBar({ counts, filter, setFilter }: { counts: Record<string, number>; filter: string; setFilter: (f: string) => void }) {
+/* `ready=false` — знімок дня ще не належить поточному зрізу (H-3). Показуємо
+   «—», а не пораховані нулі: інакше в одному кадрі список чесно пише
+   «Завантаження…», а шапка поруч стверджує «0 записів» — і оператор читає
+   саме шапку (ревʼю пакета H-3, р.1). */
+function StatsBar({ counts, filter, setFilter, ready = true }: { counts: Record<string, number>; filter: string; setFilter: (f: string) => void; ready?: boolean }) {
   return (
     <div className="stats">
       {STAT_ITEMS.map((s) => (
@@ -171,7 +184,7 @@ function StatsBar({ counts, filter, setFilter }: { counts: Record<string, number
           onClick={() => setFilter(s.key)}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setFilter(s.key); } }}>
           <div className="lab">{s.lab}</div>
-          <div className={"val tabular " + s.cls}>{s.key === "all" ? counts.total : counts[s.key]}</div>
+          <div className={"val tabular " + s.cls}>{ready ? (s.key === "all" ? counts.total : counts[s.key]) : "—"}</div>
           <div className="sub">{s.sub}</div>
         </div>
       ))}
@@ -448,22 +461,28 @@ function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: 
       (incidents || []).filter((i) => i.room_id === r.id).forEach((i) => { cap -= incidentWorkMinutes(i, date, startMin, endMin); });
       cap = Math.max(0, cap);
     }
-    // needs_reschedule (0079) виключено свідомо: слот ЗВІЛЬНЕНО, кабінет його не займає —
-    // так само, як у skip-листах check_no_overlap / room_busy_slots / ceo_kpi_rooms.
-    // Інакше завантаженість показувала б хвилини, яких у кабінеті вже немає.
-    const mins = entries.filter((e) => e.room_id === r.id && e.status !== "no_show" && e.status !== "cancelled" && e.status !== "not_held" && e.status !== "needs_reschedule").reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
+    /* Критерій «займає час кабінету» — з lib/slotOccupancy, а НЕ літералами
+       (ревʼю р.2): це була четверта копія того самого списку, і саме такі копії
+       розʼїжджаються після наступної міграції — рівно як розʼїхався hasSlotClash
+       (H-2a). needs_reschedule тут виключений так само, як у skip-листах
+       check_no_overlap / room_busy_slots: слот звільнено, хвилин у кабінеті вже
+       немає. */
+    const mins = entries.filter((e) => e.room_id === r.id && occupiesSlot(e.status)).reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
     const pct = cap > 0 ? Math.min(100, Math.round((mins / cap) * 100)) : 0;
     return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue-text)" : "var(--orange)", off: !isRoomBookable(r) };
   });
 }
-function RoomLoad({ rooms, onSelectRoom }: { rooms: RoomLoadItem[]; onSelectRoom?: (id: string) => void }) {
+/* `ready=false` — знімок дня ще не належить поточному зрізу (H-3): відсотки
+   порахувались би по ПОРОЖНЬОМУ дню, тобто «0 %» на кожному апараті й «середня
+   0 %» у шапці. Це та сама брехня нулями, що й у StatsBar (ревʼю р.2). */
+function RoomLoad({ rooms, onSelectRoom, ready = true }: { rooms: RoomLoadItem[]; onSelectRoom?: (id: string) => void; ready?: boolean }) {
   const [open, setOpen] = useState(true);
   const avg = rooms.length ? Math.round(rooms.reduce((s, r) => s + r.pct, 0) / rooms.length) : 0;
   return (
     <div className="rcard">
       <button className={"rcard-toggle" + (open ? " open" : "")} onClick={() => setOpen((o) => !o)}>
         <span className="rct-title">Завантаженість кабінетів</span>
-        <span className="rct-sum">{rooms.length} · сер. {avg}%</span>
+        <span className="rct-sum">{rooms.length}{ready ? " · сер. " + avg + "%" : " · —"}</span>
         <span className="rct-chev">⌄</span>
       </button>
       {open && (
@@ -478,9 +497,9 @@ function RoomLoad({ rooms, onSelectRoom }: { rooms: RoomLoadItem[]; onSelectRoom
                 <span className="load-name">{r.name} {r.kind}
                   {r.off && <span className="badge gray" style={{ marginLeft: 6 }} title="Кабінет вимкнено: нові записи в нього не приймаються">{ROOM_OFF_LABEL}</span>}
                   {" "}<span className="load-go" aria-hidden>→</span></span>
-                <span className="load-pct" style={{ color: r.color }}>{r.pct}%</span>
+                <span className="load-pct" style={{ color: r.color }}>{ready ? r.pct + "%" : "—"}</span>
               </div>
-              <div className="load-bar"><div className="load-fill" style={{ width: r.pct + "%", background: r.color }} /></div>
+              <div className="load-bar"><div className="load-fill" style={{ width: (ready ? r.pct : 0) + "%", background: r.color }} /></div>
             </button>
           ))}
         </div>
@@ -1149,7 +1168,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   if (typeof window !== "undefined") setClinicTz(clinicTz);
 
   const router = useRouter();   // 0086: зміни кабінетів (rooms — SSR-проп) підхоплюємо через router.refresh
-  const [entries, setEntries] = useState<QEntry[]>([]);
+  /* ⚠️ ЗНІМОК ЖИВЕ РАЗОМ ІЗ КЛЮЧЕМ ЗРІЗУ (зовнішній аудит 2026-08-07, H-3).
+     Раніше `entries` лежали окремо, а `setLoading(true)` залежав ЛИШЕ від
+     clinicId. Тому при зміні дати React малював НОВУ дату зі СТАРИМИ рядками:
+     лічильник поколінь відсікає застарілу ВІДПОВІДЬ, але не вже відрендерений
+     кадр. Дії при цьому лишались активними — оператор міг змінити запис не того
+     дня; а `dayDate` у пропах рядка вже був новим, тобто «Запізнення» і мітка
+     дати рахувались учорашньому запису по сьогоднішньому дню.
+     Ефектом це не лікується: `useEffect` виконується ПІСЛЯ paint. Тому зріз
+     звіряється ПІД ЧАС рендеру — див. `scopeReady` нижче. Те саме правило вже
+     діяло для `stuckLoaded`, тут воно застосоване до самих даних. */
+  const [entriesSnap, setEntriesSnap] = useState<{ scope: string; rows: QEntry[] }>({ scope: "", rows: [] });
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false); // оверлей гарячих клавіш (P3, клавіша «?»)
@@ -1202,21 +1231,41 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   const [nowTick, setNowTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setNowTick((n) => n + 1), 20000); return () => clearInterval(t); }, []);
 
-  // с22: deep-link «Пошук» → після першого завантаження дня розгортаємо знайдений
-  // запис і скролимо до нього. Одноразово: далі оператор керує дошкою сам.
   const deepLinkDone = useRef(false);
-  useEffect(() => {
-    if (deepLinkDone.current || !initialEntry || loading) return;
-    if (!entries.some((e) => e.id === initialEntry)) { deepLinkDone.current = true; return; }
-    deepLinkDone.current = true;
-    setExpandedRow(initialEntry);
-    setTimeout(() => { document.querySelector(`[data-qrow="${initialEntry}"]`)?.scrollIntoView({ block: "center" }); }, 60);
-  }, [entries, loading, initialEntry]);
 
   const today = wallToday0(clinicTz);
   const isToday = sameDay(selectedDate, today);
   const isPast = selectedDate < today;
   const dayKey = dateKey(selectedDate);
+
+  /* Ключ робочого зрізу і похідні від нього (аудит 2026-08-07, H-3).
+     `entries` віддаємо ПОРОЖНІМИ, доки знімок не належить поточному зрізу, —
+     інакше перший же кадр після зміни дати показав би чужий день. Порожній
+     масив — стабільна константа, щоб не будити useMemo-споживачів даремно. */
+  const scope = scopeKeyOf(clinicId, dayKey);
+  const scopeReady = entriesSnap.scope === scope;
+  const entries = scopeReady ? entriesSnap.rows : EMPTY_ENTRIES;
+  /* Оптимістичні патчі рядків: зріз НЕ чіпають — вони застосовуються до того
+     самого знімка, який зараз на екрані. */
+  const setEntries = useCallback((upd: QEntry[] | ((es: QEntry[]) => QEntry[])) => {
+    setEntriesSnap((s) => ({ scope: s.scope, rows: typeof upd === "function" ? upd(s.rows) : upd }));
+  }, []);
+  /* Ключ ПОТОЧНОГО зрізу для протухлих замикань (reload, тости з дією). */
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+
+
+  // с22: deep-link «Пошук» → після першого завантаження дня розгортаємо знайдений
+  // запис і скролимо до нього. Одноразово: далі оператор керує дошкою сам.
+  // `scopeReady` тут обовʼязковий: без нього ефект спрацював би на знімку чужого
+  // дня, не знайшов би id і назавжди зняв би прапорець (аудит 2026-08-07, H-3).
+  useEffect(() => {
+    if (deepLinkDone.current || !initialEntry || loading || !scopeReady) return;
+    if (!entries.some((e) => e.id === initialEntry)) { deepLinkDone.current = true; return; }
+    deepLinkDone.current = true;
+    setExpandedRow(initialEntry);
+    setTimeout(() => { document.querySelector(`[data-qrow="${initialEntry}"]`)?.scrollIntoView({ block: "center" }); }, 60);
+  }, [entries, loading, scopeReady, initialEntry]);
 
   /* roomsById — ПОВНИЙ список, включно з вимкненими: за ним резолвиться назва
      кабінету в рядку запису. Ховаємо кабінет зі СПИСКІВ, а не з записів. */
@@ -1235,7 +1284,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   };
 
   function notify(msg: string, type = "success", action?: ToastData["action"]) {
-    setToast({ msg, type, action });
+    /* Тост із дією прибиваємо до ЗРІЗУ, у якому його породили (ревʼю р.2).
+       Ефекта на зміну `scope` мало: `notify` викликається ПІСЛЯ await server
+       action, тож послідовність «натиснув «Неявка» на дні A → перемкнув дату →
+       промис резолвиться» народжує тост уже на дні B, і ефект його не бачив.
+       Клік по «↩ Відмінити» тоді пішов би по запису чужого дня, ще й із
+       порожнім expectedFrom. Тут дія просто стає no-op поза своїм зрізом. */
+    const born = scopeRef.current;
+    const guarded: ToastData["action"] = action
+      ? { label: action.label, onAction: () => { if (scopeRef.current !== born) return; action.onAction(); } }
+      : undefined;
+    setToast({ msg, type, action: guarded });
     if (toastTimer.current) clearTimeout(toastTimer.current);
     // A-1/аудит v2: помилки живуть довше (5–7 с) — оператор встигає прочитати.
     // Тости з дією (soft-undo) теж 6 с — щоб устигнути натиснути «↩ Відмінити».
@@ -1307,8 +1366,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      перемикання дат: entries від reload#2 + stuck від reload#1). Лічильник
      поколінь відсікає застарілі (ревʼю с24, M2). */
   const reqGen = useRef(0);
-
+  /* Ключ ПОТОЧНОГО зрізу, доступний із протухлих замикань (ревʼю пакета H-3, р.1).
+     `reqGen` рахує ПОРЯДОК ВИДАЧІ, а не актуальність: якщо reload дня A виданий
+     ПІЗНІШЕ, ніж reload дня B (дебаунс realtime тримає колбек 250 мс; server action
+     тримає замикання на час await), то A має більший gen і відкидає відповідь B.
+     Далі знімок лягає зі scope=A, а на екрані вже B → scopeReady=false назавжди,
+     `loading` уже знято, і перезапитати нікому: useEffect завʼязаний на identity
+     `reload`, яка не змінювалась. Дошка залипала б у скелеті до наступної
+     realtime-події або focus. Тому протухле замикання виходить ДО ++reqGen —
+     і відповідь актуального запиту спокійно доїжджає. */
   const reload = useCallback(async () => {
+    if (scopeKeyOf(clinicId, dayKey) !== scopeRef.current) return;   // протухле замикання
     const gen = ++reqGen.current;
     try {
       const supabase = createClient();
@@ -1325,7 +1393,9 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         .order("scheduled_time", { ascending: true });
       if (gen !== reqGen.current) return;              // приїхала відповідь застарілого запиту
       if (error) { setEntriesErr(true); setStuckErr(true); return; }   // до хвостів не дійшли — отже не знаємо
-      setEntries((data || []) as unknown as QEntry[]);
+      /* Знімок кладемо РАЗОМ із ключем зрізу, для якого його запитали, — саме
+         це робить «чужий день» невидимим у рендері, а не лише в ефекті. */
+      setEntriesSnap({ scope: scopeKeyOf(clinicId, dayKey), rows: (data || []) as unknown as QEntry[] });
       setEntriesErr(false);
 
       /* Окремий запит — «хвости» in_progress з інших дат. Рядків тут не більше,
@@ -1375,30 +1445,59 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     }
   }, [clinicId]);
 
-  const loadOverrides = useCallback(async () => {
+  /* Повертає свіжу мапу (а не лише кладе в стан): обробник конфлікту CAS мусить
+     перезаморозити знімок із ЦІЄЇ вибірки, а стан у замиканні на той момент
+     ще старий. undefined = вибірка не вдалася. */
+  const loadOverrides = useCallback(async (): Promise<Record<string, DayOverride> | undefined> => {
     try {
       const supabase = createClient();
       const { data, error } = await supabase
         .from("schedule_overrides")
-        .select("override_date, all_closed, label, rooms")
+        // 0135: updated_at — знімок для CAS (замерзає при відкритті модалки графіка)
+        .select("override_date, all_closed, label, rooms, updated_at")
         .eq("clinic_id", clinicId);
-      if (error) { setOverridesErr(true); return; }
+      if (error) { setOverridesErr(true); return undefined; }
       const m: Record<string, DayOverride> = {};
       (data || []).forEach((o) => { m[o.override_date] = o as unknown as DayOverride; });
       setOverrides(m);
       setOverridesErr(false);
+      return m;
     } catch {
       setOverridesErr(true);
+      return undefined;
     }
   }, [clinicId]);
 
-  useEffect(() => { setLoading(true); }, [clinicId]);
+  /* `loading` гасне разом із КЛІНІКОЮ І ДНЕМ. Сам по собі цей ефект дефект
+     H-3 не лікує (виконується після paint) — його лікує `scopeReady` у рендері;
+     але без dayKey тут «Завантаження…» не показувалось би при зміні дати. */
+  /* ⚠️ ВСІ СКИДАННЯ ЗАВʼЯЗАНІ НА `scope`, А НЕ НА ПЕРЕЛІК ВИМІРІВ (ревʼю р.2).
+     Зріз — це clinicId + день (+ набір кабінетів у дошці радіолога). Поки виміри
+     перелічувались руками (`[clinicId, dayKey]`), додавання третього виміру
+     закривало ключ і лоадер, але лишало скидання на двох старих — і при зміні
+     набору кабінетів `stuckLoaded` казав «дані свіжі» про ПОПЕРЕДНІЙ набір.
+     У кадрі між приземленням запису дня і відповіддю запиту «хвостів» картка
+     нового кабінету писала б «Кабінет вільний» із живою кнопкою виклику —
+     повернення дефекту M-1 по іншій осі. Один рядковий ключ на всі скидання
+     робить таку розсинхронізацію структурно неможливою.
+     `entriesErr` теж гаситься тут: помилка ПОПЕРЕДНЬОГО зрізу до нового
+     стосунку не має, а через новий порядок гілок вона показала б жорстке
+     «Не вдалося завантажити чергу» над днем, запит якого ще в польоті. */
+  useEffect(() => { setLoading(true); setEntriesErr(false); }, [scope]);
   /* M-1 ревʼю раунду 2: `stuckLoaded` мусить згасати РАЗОМ із датою й клінікою.
      Інакше після «← Сьогодні» список хвостів ще належить попередньому дню, але
      прапорець каже «дані свіжі» — і в кадрі до відповіді другого запиту картка
      знову писала б «Кабінет вільний» із живою кнопкою виклику. Тобто вихідний
      дефект відтворювався б у вікні 100–300 мс. */
-  useEffect(() => { setStuckLoaded(false); }, [clinicId, dayKey]);
+  useEffect(() => { setStuckLoaded(false); setStuckErr(false); }, [scope]);
+  /* Тост із дією (soft-undo «↩ Відмінити» після «Неявка»/«Не відбулося») живе 6 с
+     і смену дня НЕ переживав: оператор міг натиснути «Відмінити» вже на іншому
+     дні — і мутація пішла б по запису, якого на екрані немає, а `expectedFrom`
+     шукався б у ЧУЖОМУ зрізі (тобто CAS вироджувався б у сліпий запис).
+     Той самий клас «дія по рядку поза поточним зрізом», що й H-3 (ревʼю р.1). */
+  useEffect(() => {
+    setToast((t) => (t && t.action ? null : t));
+  }, [scope]);
   useEffect(() => { reload(); }, [reload]);
 
   // P2.1 — гарячі клавіші реєстратури. Через e.code (незалежно від розкладки UA/RU/EN);
@@ -1441,7 +1540,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     return () => document.removeEventListener("keydown", onKey);
   }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, stuckFinish, reload, visRooms]);
 
-  useRealtimeRefetch({
+  const rtHealth = useRealtimeRefetch({
     channelName: clinicId ? "queue-" + clinicId : null,
     subscriptions: [
       /* `reload()` перечитує лише записи. Але поки в центрі є кабінет-залишок,
@@ -1485,7 +1584,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   useQueueSounds({
     scopeKey: "queue|" + clinicId + "|" + dayKey,
     active: roleKey === "admin" || roleKey === "registrar",
-    entries: loading || entriesErr ? null : entries,
+    entries: loading || !scopeReady || entriesErr ? null : entries,
     readyEnabled: isToday,
     incidents: !incidentsLoaded || incidentsErr ? null : incidents,
     incidentScopeKey: clinicId, // інциденти живуть поза денним scope
@@ -1499,19 +1598,73 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   const roomSchedules = bookableRooms(rooms).map((r) => r.schedule);
   const selDayStatus = dayStatus(selectedOverride, selectedDate, roomSchedules);
 
+  /* 0135, CAS: знімок `updated_at` ЗАМЕРЗАЄ при ВІДКРИТТІ модалки, а не читається
+     з живої мапи overrides у момент збереження — realtime довозить чужу правку
+     ДО кліку «Зберегти», і CAS зі свіжою міткою «підтвердив» би затирання.
+     `null` = «override не існував». Мітку не проганяти через Date (0119). */
+  const schedSnapRef = useRef<string | null>(null);
+  /* Лічильник ремоунтів модалки графіка (key). Конфлікт CAS без ремоунту — штопор:
+     roomState і знімок замерзли від старого стану, повторне «Зберегти» приречене
+     назавжди (ревʼю р.1 шагу 2). Ремоунт оновлює ОБИДВА разом — оновлювати лише
+     знімок не можна: свіжа мітка при старому roomState «узаконила» б затирання
+     чужої правки, тобто повернула б H-5. */
+  const [schedEditEpoch, setSchedEditEpoch] = useState(0);
+  function openSchedEdit() {
+    schedSnapRef.current = (overrides[dayKey] || null)?.updated_at ?? null;
+    setSchedEditOpen(true);
+  }
+  /* Конфлікт CAS: перечитати overrides, перезаморозити знімок зі СВІЖОЇ вибірки
+     (не зі стану — він у цьому замиканні старий) і ремоунтнути відкриту модалку.
+     Якщо вибірка не вдалась — знімок лишається старим: повторне збереження чесно
+     дасть конфлікт знову, а не затре чужу правку. */
+  async function schedConflictRecover() {
+    const fresh = await loadOverrides();
+    /* Ремоунт — ЛИШЕ зі свіжими даними: без них він стер би правки користувача,
+       нічого не давши взамін (стара пара «знімок + existing» і так консистентна,
+       повторне збереження чесно конфліктне, банер overridesErr уже видно). */
+    if (!fresh) return;
+    schedSnapRef.current = fresh[dayKey]?.updated_at ?? null;
+    setSchedEditEpoch((e) => e + 1);
+  }
+  /* Гард від подвійного кліку «Зберегти»/«Скинути» (інваріант с28): два польоти
+     з одним знімком інакше дають «Помилка: конфлікт» ПОВЕРХ успішного тосту —
+     оператор бачить вранє про фактично збережений графік. */
+  const schedBusyRef = useRef(false);
   async function saveOverride(ov: { all_closed: boolean; label?: string; rooms: Record<string, { closed?: boolean; start?: string; end?: string; breaks?: { start: string; end: string }[] }> }) {
-    const res = await saveScheduleOverride({ overrideDate: dayKey, allClosed: !!ov.all_closed, label: ov.label || null, rooms: ov.rooms || {} });
-    setSchedEditOpen(false);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-    notify("Графік оновлено", "success");
-    loadOverrides();
+    if (schedBusyRef.current) return;
+    schedBusyRef.current = true;
+    try {
+      const res = await saveScheduleOverride({ overrideDate: dayKey, allClosed: !!ov.all_closed, label: ov.label || null, rooms: ov.rooms || {}, expectedUpdatedAt: schedSnapRef.current });
+      /* Модалку закриваємо ЛИШЕ при успіху: закриття до перевірки знищувало б
+         незбережену роботу користувача рівно в момент конфлікту (ревʼю 0135). */
+      if (!res.ok) {
+        notify("Помилка: " + res.error, "error");
+        if (res.code === "sched_conflict") await schedConflictRecover();
+        return;
+      }
+      setSchedEditOpen(false);
+      notify("Графік оновлено", "success");
+      loadOverrides();
+    } finally {
+      schedBusyRef.current = false;
+    }
   }
   async function resetOverride() {
-    const res = await resetScheduleOverride(dayKey);
-    setSchedEditOpen(false);
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
-    notify("Повернуто типовий графік", "success");
-    loadOverrides();
+    if (schedBusyRef.current) return;
+    schedBusyRef.current = true;
+    try {
+      const res = await resetScheduleOverride(dayKey, schedSnapRef.current);
+      if (!res.ok) {
+        notify("Помилка: " + res.error, "error");
+        if (res.code === "sched_conflict") await schedConflictRecover();
+        return;
+      }
+      setSchedEditOpen(false);
+      notify("Повернуто типовий графік", "success");
+      loadOverrides();
+    } finally {
+      schedBusyRef.current = false;
+    }
   }
   const schedOf = (roomId: string) => (rooms || []).find((r) => r.id === roomId)?.schedule;
   function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride, schedOf(roomId)).closed; }
@@ -1660,7 +1813,13 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   async function setStatus(id: string, status: string): Promise<boolean> {
     // H-2: фиксируем статус, который сейчас видит оператор (до оптимистичного
     // обновления) — как expectedFrom для CAS на сервере.
-    const expectedFrom = entries.find((e) => e.id === id)?.status as QueueStatus | undefined;
+    /* Джерело — САМ ЗНІМОК, а не відфільтрований по зрізу `entries` (ревʼю р.2).
+       При `!scopeReady` `entries` = порожня константа, тож `find` повертав би
+       undefined — а сервер трактує відсутній `expectedFrom` як «CAS не потрібен»
+       і робить звичайний last-write-wins. Тобто рівно в кадрі неузгодженого
+       зрізу захист від «статус змінив інший користувач» тихо вимикався б.
+       Знімок містить рядок навіть тоді, коли він не показаний. */
+    const expectedFrom = entriesSnap.rows.find((e) => e.id === id)?.status as QueueStatus | undefined;
     const nowIso = new Date().toISOString();
     /* 0129 (ревʼю с26 р2 L-2): БД більше НЕ скидає in_progress_at на повторному
        in_progress → оптимістичний патч теж не має обнуляти таймер «у кабінеті»,
@@ -1694,13 +1853,15 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      (guard_status_transition 0069 дозволяє будь-який перехід, крім →done не з кабінету;
      якщо сервер відхилить відкат — покажемо помилку й синхронізуємо дошку). */
   const noShow = async (p: QEntry) => {
-    const prev = (entries.find((e) => e.id === p.id)?.status ?? p.status) as string;
+    // Знімок, а не `entries`: при неузгодженому зрізі останній порожній (ревʼю р.2).
+    const prev = (entriesSnap.rows.find((e) => e.id === p.id)?.status ?? p.status) as string;
     if (await setStatus(p.id, "no_show")) {
       notify("Позначено: неявка", "info", { label: "↩ Відмінити", onAction: () => setStatus(p.id, prev) });
     }
   };
   const notHeld = async (p: QEntry) => {
-    const prev = (entries.find((e) => e.id === p.id)?.status ?? p.status) as string;
+    // Знімок, а не `entries`: при неузгодженому зрізі останній порожній (ревʼю р.2).
+    const prev = (entriesSnap.rows.find((e) => e.id === p.id)?.status ?? p.status) as string;
     if (await setStatus(p.id, "not_held")) {
       notify("Позначено: не відбулося", "info", { label: "↩ Відмінити", onAction: () => setStatus(p.id, prev) });
     }
@@ -1789,7 +1950,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      Явна кнопка «✕ Скасувати запис» діє одразу; на «Відмову» в дзвінку лишається
      ConfirmDialog (там скасування — побічний ефект неочевидної дії). */
   async function cancelUndo(p: QEntry) {
-    const prev = (entries.find((e) => e.id === p.id)?.status ?? p.status) as string;
+    // Знімок, а не `entries`: при неузгодженому зрізі останній порожній (ревʼю р.2).
+    const prev = (entriesSnap.rows.find((e) => e.id === p.id)?.status ?? p.status) as string;
     const res = await cancelQueueEntry(p.id);
     if (!res.ok) { if (handledStale(res)) return; notify("Помилка: " + res.error, "error"); return; }
     reload();
@@ -2123,7 +2285,11 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   }, [scoped, selectedDate, nowTick]);
 
   const stuckRooms = useMemo(() => visibleStuckByRoom(stuck, dayKey), [stuck, dayKey]);
-  const stuckUnknown = stuckUnknownOf(stuckLoaded, stuckErr);
+  /* !scopeReady входить у «не знаємо» (аудит 2026-08-07, H-3): у кадрі між
+     зміною дати й відповіддю `stuckLoaded` ще належить ПОПЕРЕДНЬОМУ дню
+     (гасить його ефект, а він — після paint). Без цього плитка кабінету
+     писала б «Кабінет вільний» на порожньому зрізі. Fail-CLOSED. */
+  const stuckUnknown = stuckUnknownOf(stuckLoaded && scopeReady, stuckErr);
   const currentByRoom: Record<string, QEntry> = {}, nextWaitingByRoom: Record<string, QEntry> = {};
   entries.forEach((e) => { if (e.status === "in_progress" && e.room_id) currentByRoom[e.room_id] = e; });
   // «Наступний у черзі» — той самий канон, що й сортування дошки: спершу ЧАС,
@@ -2195,7 +2361,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
             </div>
           </div>
           <div className="tb-right">
-            <span className="rt-pill"><span className="pulse-dot" style={{ background: "var(--green)", width: 7, height: 7 }} />Real-time</span>
+            <RealtimeBadge health={rtHealth} />
             <button className="btn btn-breakdown" onClick={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }} title="Зафіксувати поломку або ТО апарата">🔧 Поломка / ТО</button>
             {/* Дані про простої/графіки не завантажились — бронювати НЕ можна:
                 зламаний кабінет виглядав би вільним. */}
@@ -2286,20 +2452,20 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                   <div className="inc-banner-title">{selDayStatus.kind === "closed" ? "Неробочий день" : "Особливий графік"} · {fmtShort(selectedDate)}</div>
                   <div className="inc-banner-sub">{selDayStatus.label}</div>
                 </div>
-                <button className="btn btn-secondary btn-sm" onClick={() => setSchedEditOpen(true)}>✎ Редагувати</button>
+                <button className="btn btn-secondary btn-sm" onClick={openSchedEdit}>✎ Редагувати</button>
               </div>
             )}
             <div className="board-main-top">
-            <StatsBar counts={counts} filter={filter} setFilter={setFilter} />
+            <StatsBar counts={counts} filter={filter} setFilter={setFilter} ready={scopeReady} />
 
             {!isToday ? (
               <div className="day-banner">
                 <span className="db-ic">{isPast ? "🗂" : "📅"}</span>
                 <div className="db-meta">
                   <div className="db-title">{fmtFull(selectedDate)}</div>
-                  <div className="db-sub">{selDayStatus.kind !== "none" ? selDayStatus.label + " · " : ""}{counts.total ? (isPast ? "Архів — день завершено" : "Заплановані записи") + " · " + counts.total + " записів" : "Записів немає"}</div>
+                  <div className="db-sub">{selDayStatus.kind !== "none" ? selDayStatus.label + " · " : ""}{entriesErr && !scopeReady ? "Дані не завантажились" : !scopeReady ? "Завантаження…" : counts.total ? (isPast ? "Архів — день завершено" : "Заплановані записи") + " · " + counts.total + " записів" : "Записів немає"}</div>
                 </div>
-                {!isPast && <button className="btn btn-secondary btn-sm" onClick={() => setSchedEditOpen(true)}>✎ Графік</button>}
+                {!isPast && <button className="btn btn-secondary btn-sm" onClick={openSchedEdit}>✎ Графік</button>}
                 <button className="btn btn-secondary btn-sm" onClick={() => setSelectedDate(today0())}>← Сьогодні</button>
               </div>
             ) : roomView === "all" ? (
@@ -2363,7 +2529,26 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
             <div>Час</div><div>Пацієнт</div><div>Процедура</div><div>Кабінет</div><div>Статус</div><div />
           </div>
 
-          {loading ? (
+          {/* Порядок гілок важливий (ревʼю пакета H-3, раунд 1).
+              ПОМИЛКА ЙДЕ ПЕРШОЮ. При збої лоадер робить `setEntriesErr(true); return;`
+              і знімок НЕ кладе — отже `scopeReady` лишається false НАЗАВЖДИ, тоді як
+              `loading` гасне у finally. Якби скелет стояв першим, він перехопив би
+              керування і ветка помилки стала б недосяжною: замість «Не вдалося
+              завантажити чергу · ↻» користувач бачив би вічне «Завантаження…».
+              Тобто інваріант «помилка ≠ пусто» перетворився б на «помилка = вічне
+              завантаження» — гірше за вихідний дефект.
+              Далі: !scopeReady — знімок належить іншому дню/клініці, показуємо
+              скелет, а не чужі рядки з активними діями (аудит 2026-08-07, H-3). */}
+          {entriesErr && !scopeReady ? (
+            <div className="empty">
+              <div className="ei">⚠</div>
+              <div className="et">Не вдалося завантажити чергу</div>
+              <div className="es" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                Перевірте зʼєднання — дані можуть бути неповними.
+                <button className="btn btn-secondary btn-sm" onClick={() => { setLoading(true); reload(); }}>↻ Спробувати ще раз</button>
+              </div>
+            </div>
+          ) : loading || !scopeReady ? (
             <div className="qrows" aria-busy="true" aria-label="Завантаження черги">
               {Array.from({ length: 5 }).map((_, i) => (
                 <div className="qrow-item skel" key={"sk" + i} aria-hidden="true">
@@ -2451,8 +2636,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         </div>
 
           <aside className="rpanel">
-            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} onEditSchedule={() => setSchedEditOpen(true)} tz={clinicTz} roomSchedules={roomSchedules} />
-            {isToday && visRooms.length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} />}
+            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} onEditSchedule={openSchedEdit} tz={clinicTz} roomSchedules={roomSchedules} />
+            {isToday && visRooms.length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} ready={scopeReady} />}
             {!isPast && <NeedsReschedulePanel entries={needsResched} roomsById={roomsById} onReschedule={openReschedule} onToWaitlist={toWaitlist} onCancel={(pt) => setCancelAsk({ p: pt, mode: "cancel" })} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}
             {!isPast && <CallListPanel entries={entries} onSetCall={setCall} dateLabel={fmtShort(selectedDate)} />}
@@ -2637,7 +2822,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       )}
 
       {schedEditOpen && (
-        <ScheduleEditModal date={selectedDate} rooms={visRooms} existing={selectedOverride} entries={entries}
+        <ScheduleEditModal key={schedEditEpoch} date={selectedDate} rooms={visRooms} existing={selectedOverride} entries={entries}
           onClose={() => setSchedEditOpen(false)} onSave={saveOverride} onReset={resetOverride} />
       )}
 

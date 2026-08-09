@@ -81,6 +81,17 @@ async function resolveSearchScope(supabase: DB, me: Caller): Promise<RoleScope |
     if (error) return { error: safeDbError("api/search.scope.ref", error), status: 400 };
     const roomIdsByClinic: Record<string, string[] | null> = {};
     (data || []).forEach((a) => {
+      /* ⚠️ `[]` = УСІ кабінети — і це НЕ описка. Перевірено на живій БД
+         2026-08-07: `auth_referrer_can_book_room` і `referral_center_card`
+         містять `array_length(ra.room_ids, 1) is null or …`, тобто порожній
+         масив у них означає «усі кабінети центру». Нові порожні масиви БД уже
+         не приймає (тригер `validate_referral_rooms`, 0061), але СТАРІ рядки
+         функції трактують саме так — і прикладний код мусить їх дзеркалити,
+         інакше отримаємо «доступ видно, забронювати не можна».
+         Аудит M-7 просив зробити тут fail-CLOSED; це правильна мета, але
+         міняти треба СПОЧАТКУ SQL (прибрати гілку array_length + нормалізувати
+         легасі `{}` → NULL), і лише потім клієнт. На проді таких рядків 0 з 5,
+         тож зволікання нічим не загрожує. Заплановано в пакет 0135. */
       const list = Array.isArray(a.room_ids) && a.room_ids.length ? (a.room_ids as string[]) : null;
       roomIdsByClinic[a.clinic_id] = list;
     });

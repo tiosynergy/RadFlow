@@ -3,14 +3,14 @@ import { z } from "zod";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
 import { parseBody } from "@/lib/validationHttp";
-import { safeDbError, zLogin, zOptEmail, zOptText } from "@/lib/validation";
+import { safeDbError, zLogin, zOptEmail, zOptName, zOptText } from "@/lib/validation";
 import { technicalEmail, CEO_EMAIL_DOMAIN } from "@/lib/login";
 import { emitImportantEvent } from "@/lib/importantEvents.server";
 
 // ПІБ і телефон обовʼязкові лише для НОВОГО CEO-акаунта (перевірка нижче).
 const sGrant = z.object({
   login: zLogin,
-  full_name: zOptText(200),
+  full_name: zOptName,   // імʼя: trim + схлопування пробілів (с31)
   phone: zOptText(32),
   email: zOptEmail,
   note: zOptText(2000),

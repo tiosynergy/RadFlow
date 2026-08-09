@@ -13,7 +13,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
-import { unreadForEntity, unreadForDate, calendarDayKey, type UnreadIndex } from "@/lib/unreadChanges";
+import { unreadForEntity, unreadForField, unreadForDate, calendarDayKey, type UnreadIndex } from "@/lib/unreadChanges";
 import { useQueueSounds } from "@/lib/useQueueSounds";
 import type { OverrunSource } from "@/lib/soundEvents";
 import { signOutAndRedirect } from "@/lib/auth";
@@ -28,6 +28,7 @@ import { setQueueEntryStatus, setRadiologistNote, previewDelayPlan, completeQueu
 import CeoDashboardLink from "@/components/CeoDashboardLink";
 import CompletionModal from "@/components/CompletionModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import RealtimeBadge from "@/components/RealtimeBadge";
 import DelayPlanModal from "@/components/DelayPlanModal";
 import type { QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
@@ -126,7 +127,11 @@ function LiveClock({ tz }: { tz?: string }) {
   return <span className="rad-clock tabular" suppressHydrationWarning>🕐 {txt}</span>;
 }
 
-function StatsBar({ counts, filter, setFilter }: { counts: Record<string, number>; filter: string; setFilter: (f: string) => void }) {
+/* `ready=false` — знімок дня ще не належить поточному зрізу (H-3). Показуємо
+   «—», а не пораховані нулі: інакше в одному кадрі список чесно пише
+   «Завантаження…», а шапка поруч стверджує «0 записів» — і оператор читає
+   саме шапку (ревʼю пакета H-3, р.1). */
+function StatsBar({ counts, filter, setFilter, ready = true }: { counts: Record<string, number>; filter: string; setFilter: (f: string) => void; ready?: boolean }) {
   return (
     <div className="stats">
       {STAT_ITEMS.map((s) => (
@@ -134,7 +139,7 @@ function StatsBar({ counts, filter, setFilter }: { counts: Record<string, number
           onClick={() => setFilter(s.key)}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setFilter(s.key); } }}>
           <div className="lab">{s.lab}</div>
-          <div className={"val tabular " + s.cls}>{s.key === "all" ? counts.total : counts[s.key]}</div>
+          <div className={"val tabular " + s.cls}>{ready ? (s.key === "all" ? counts.total : counts[s.key]) : "—"}</div>
           <div className="sub">{s.sub}</div>
         </div>
       ))}
@@ -292,7 +297,18 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
      запису; гаситься лише при РОЗГОРНУТОМУ рядку з успішно завантаженими
      даними (усередині хука: status === "ready" + лише знімок). */
   const { index: unreadIx } = useUnreadChanges();
-  const rowUnread = unreadForEntity(unreadIx, "queue_entry", p.id);
+  /* ⚠️ РОЗМІЩЕННЯ КРАПОК ОДНАКОВЕ ДЛЯ ВСІХ РОЛЕЙ — дзеркалимо дошку адміна
+     (QueueBoard): агрегат запису стоїть біля ІМЕНІ пацієнта, а `studies` —
+     біля блоку послуг. Раніше в радіолога була одна крапка на РЯДОК (праворуч,
+     біля шеврона): той самий стан читався інакше, ніж в адміна, і не казав,
+     ЩО саме змінилось. ТЗ вимагає, щоб крапка жила поруч із КОНКРЕТНОЮ
+     інформацією, а не поруч із рядком.
+     Ack не чіпаємо: точка підтвердження — той самий `useAckWhenVisible` на
+     розгорнутому рядку (правило проєкту: ack — це виклик хука, а не свій
+     `useEffect`). Згорнутий рядок не показує ні складу послуг, ні даних
+     пацієнта, тож гасити немає за що. */
+  const cardUnread = unreadForEntity(unreadIx, "queue_entry", p.id);
+  const studiesUnread = unreadForField(unreadIx, "queue_entry", p.id, "studies");
   useAckWhenVisible(expanded ? { kind: "entity", entityType: "queue_entry", entityId: p.id } : null, expanded);
   // «Запізнення» (derived) видно й радіологу; прямий виклик такого пацієнта
   // блокується (рішення ухвалює реєстратура: повернути/перенести/зняти).
@@ -317,7 +333,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
-          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}{p.patient_name}</div>
+          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}{p.patient_name}<UnreadDot markers={cardUnread} /></div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
             {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
@@ -325,7 +341,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
           </div>
         </div>
         <div className="q-proc">
-          <div className="pp">{proc}</div>
+          <div className="pp">{proc}<UnreadDot markers={studiesUnread} /></div>
           <div className="du">{roomKind}{regionOf(p) ? " · " + regionOf(p) : ""}</div>
         </div>
         <div className="q-room">
@@ -346,7 +362,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
             <span className="badge offsched" title="Запис поза графіком кабінету (після закриття або в перерву) — підтверджено персоналом">⏰ Поза графіком</span>
           )}
         </div>
-        <UnreadDot markers={rowUnread} /><span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
+        <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
       </div>
 
       <div className="qrow-detail-wrap">
@@ -576,6 +592,14 @@ function RadCancelledRow({ e, roomName, unreadIx, ackEnabled }: { e: RadEntry; r
   );
 }
 
+/* Порожній зріз — СТАБІЛЬНА константа модуля: новий `[]` на кожному рендері
+   інвалідував би useMemo-споживачів, поки день вантажиться (аудит 2026-08-07, H-3). */
+const EMPTY_RAD_ENTRIES: RadEntry[] = [];
+/* Ключ робочого зрізу дошки радіолога. Кабінети входять у ключ, бо сам запит
+   звужується по `roomIds` — знімок для іншого набору кабінетів чужий так само,
+   як і знімок іншого дня. Той самий формат, що й scopeKey звуку. */
+const radScopeKeyOf = (clinicId: string, dayKey: string, roomIds: string[]) => clinicId + "|" + dayKey + "|" + roomIds.join(",");
+
 function RadCancelledPanel({ entries, roomsById, unreadIx }: { entries: RadEntry[]; roomsById: Record<string, RoomOpt>; unreadIx: UnreadIndex }) {
   const [open, setOpen] = useState(false);
   /* Знімок id на момент розкриття — ack дозволений лише їм (той самий
@@ -608,7 +632,7 @@ function RadCancelledPanel({ entries, roomsById, unreadIx }: { entries: RadEntry
   );
 }
 
-function RadSidebar({ rooms, roomNoteOf, roomFilter, setRoomFilter, counts, adminName }: { rooms?: RoomOpt[]; roomNoteOf?: (roomId: string) => string | null; roomFilter: string; setRoomFilter: (s: string) => void; counts: Record<string, number>; adminName?: string }) {
+function RadSidebar({ rooms, roomNoteOf, roomFilter, setRoomFilter, counts, countsReady = true, adminName }: { rooms?: RoomOpt[]; roomNoteOf?: (roomId: string) => string | null; roomFilter: string; setRoomFilter: (s: string) => void; counts: Record<string, number>; countsReady?: boolean; adminName?: string }) {
   const router = useRouter();
   const single = (rooms || []).length === 1;
   const initials = (() => { const p = String(adminName || "").trim().split(/\s+/); return ((p[0] || "Р")[0] + (p[1] ? p[1][0] : "")).toUpperCase(); })();
@@ -629,7 +653,7 @@ function RadSidebar({ rooms, roomNoteOf, roomFilter, setRoomFilter, counts, admi
           {!single && (
             <button className={"sb-cab sb-cab-btn" + (roomFilter === "all" ? " active" : "")} style={{ width: "100%", textAlign: "left", border: "none", cursor: "pointer" }} onClick={() => setRoomFilter("all")}>
               <span className="sb-cab-tile" style={{ background: "var(--card-hover)", color: "var(--text-secondary)" }}>▦</span>
-              <span className="sb-cab-meta"><span className="sb-cab-name">Усі кабінети</span><span className="sb-cab-model">{(rooms || []).length} апаратів · {counts.total} у черзі</span></span>
+              <span className="sb-cab-meta"><span className="sb-cab-name">Усі кабінети</span><span className="sb-cab-model">{(rooms || []).length} апаратів{countsReady ? " · " + counts.total + " у черзі" : ""}</span></span>
             </button>
           )}
           {(rooms || []).map((r) => (
@@ -698,9 +722,17 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   // «Єдиний кабінет» рахуємо по ВИДИМИХ: інакше радіолог із двома кабінетами, з
   // яких один вимкнено, не отримав би авто-вибір і сидів би на порожньому «Усі».
   const single = visRooms.length === 1;
-  const [entries, setEntries] = useState<RadEntry[]>([]);
-  /* Скасовані записи обраного дня — ОКРЕМО від entries (звук/таймери/лічильники). */
-  const [cancelledDay, setCancelledDay] = useState<RadEntry[]>([]);
+  /* ⚠️ ЗНІМОК ДНЯ ЖИВЕ РАЗОМ ІЗ КЛЮЧЕМ ЗРІЗУ (аудит 2026-08-07, H-3) — те саме
+     правило, що й у QueueBoard. Раніше `entries` лежали окремо, а `setLoading(true)`
+     залежав ЛИШЕ від clinicId: у кадрі між зміною дати й відповіддю запиту дошка
+     малювала НОВУ дату СТАРИМИ рядками з живими кнопками («Викликати», «Почати»),
+     а `dayDate` у пропах рядка був уже новий — тобто «Запізнення» рахувалось
+     учорашньому запису по сьогоднішньому дню. Лічильник поколінь відсікає
+     застарілу ВІДПОВІДЬ, але не вже відрендерений кадр; ефектом теж не лікується
+     (useEffect — після paint). Тому зріз звіряється ПІД ЧАС рендеру (scopeReady).
+     Скасовані лежать у тому ж знімку: вони з того самого запиту й того ж дня, але
+     ОКРЕМИМ полем — на `entries` завʼязані звук, таймери й лічильники дня. */
+  const [daySnap, setDaySnap] = useState<{ scope: string; rows: RadEntry[]; cancelled: RadEntry[] }>({ scope: "", rows: [], cancelled: [] });
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
   const [overrides, setOverrides] = useState<Record<string, DayOverride>>({});
   const [loading, setLoading] = useState(true);
@@ -764,13 +796,6 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
 
   // с22: deep-link «Пошук» → одноразово розгорнути знайдений запис і проскролити.
   const deepLinkDone = useRef(false);
-  useEffect(() => {
-    if (deepLinkDone.current || !initialEntry || loading) return;
-    if (!entries.some((e) => e.id === initialEntry)) { deepLinkDone.current = true; return; }
-    deepLinkDone.current = true;
-    setExpandedRow(initialEntry);
-    setTimeout(() => { document.querySelector(`[data-qrow="${initialEntry}"]`)?.scrollIntoView({ block: "center" }); }, 60);
-  }, [entries, loading, initialEntry]);
 
   const today = wallToday0(clinicTz);
   const isToday = sameDay(selectedDate, today);
@@ -786,6 +811,33 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
      кабінету в рядку черги. Ховаємо кабінет зі СПИСКІВ, а не з записів. */
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
   const roomIds = useMemo(() => (rooms || []).map((r) => r.id), [rooms]);
+
+  /* Ключ робочого зрізу і похідні від нього (аудит 2026-08-07, H-3).
+     Доки знімок не належить поточному зрізу — віддаємо ПОРОЖНЬО: краще кадр
+     «Завантаження…», ніж кадр із чужим днем і живими кнопками дій. */
+  const scope = radScopeKeyOf(clinicId, dayKey, roomIds);
+  const scopeReady = daySnap.scope === scope;
+  const entries = scopeReady ? daySnap.rows : EMPTY_RAD_ENTRIES;
+  const cancelledDay = scopeReady ? daySnap.cancelled : EMPTY_RAD_ENTRIES;
+  /* Оптимістичні патчі рядків зріз НЕ чіпають — вони лягають на той самий
+     знімок, який зараз на екрані. */
+  const setEntries = useCallback((upd: RadEntry[] | ((es: RadEntry[]) => RadEntry[])) => {
+    setDaySnap((s) => ({ ...s, rows: typeof upd === "function" ? upd(s.rows) : upd }));
+  }, []);
+  /* Ключ ПОТОЧНОГО зрізу для протухлих замикань reload — див. коментар у reload. */
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+
+  // с22: deep-link «Пошук». `scopeReady` обовʼязковий: інакше ефект відпрацював би
+  // на знімку чужого дня, не знайшов би id і назавжди зняв би прапорець.
+  useEffect(() => {
+    if (deepLinkDone.current || !initialEntry || loading || !scopeReady) return;
+    if (!entries.some((e) => e.id === initialEntry)) { deepLinkDone.current = true; return; }
+    deepLinkDone.current = true;
+    setExpandedRow(initialEntry);
+    setTimeout(() => { document.querySelector(`[data-qrow="${initialEntry}"]`)?.scrollIntoView({ block: "center" }); }, 60);
+  }, [entries, loading, scopeReady, initialEntry]);
+
   const visRoomIds = useMemo(() => visRooms.map((r) => r.id), [visRooms]);
   const offNote = (roomId: string): string | null => {
     const r = roomsById[roomId];
@@ -817,6 +869,12 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   }
 
   const reload = useCallback(async () => {
+    /* Протухле замикання виходить ДО ++reqGen (ревʼю пакета H-3, р.1): `reqGen`
+       рахує порядок ВИДАЧІ, а не актуальність зрізу. reload дня A, виданий пізніше
+       за reload дня B (дебаунс realtime 250 мс або await server action), відкинув би
+       відповідь B і поклав знімок зі scope=A — а на екрані вже B, тобто scopeReady
+       лишився б false, `loading` уже знято, і перезапитати нікому. */
+    if (radScopeKeyOf(clinicId, dayKey, roomIds) !== scopeRef.current) return;
     // Транзієнтний «Failed to fetch» (рефреш токена / зміна сесії / мережевий збій)
     // НЕ повинен валитись у Next error overlay — конвенція проєкту.
     const gen = ++reqGen.current;
@@ -839,8 +897,12 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
       if (gen !== reqGen.current) return;              // відповідь застарілого запиту
       if (error) { setEntriesErr(true); setStuckErr(true); return; }   // до хвостів не дійшли — отже не знаємо
       const dayRows = data || [];
-      setEntries(dayRows.filter((e) => e.status !== "cancelled"));
-      setCancelledDay(dayRows.filter((e) => e.status === "cancelled"));
+      /* Знімок кладемо РАЗОМ із ключем зрізу, для якого його запитали. */
+      setDaySnap({
+        scope: radScopeKeyOf(clinicId, dayKey, roomIds),
+        rows: dayRows.filter((e) => e.status !== "cancelled"),
+        cancelled: dayRows.filter((e) => e.status === "cancelled"),
+      });
       setEntriesErr(false);
 
       /* «Хвости» in_progress з інших дат. Без призначених кабінетів не питаємо
@@ -899,8 +961,23 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     } catch { setOverridesErr(true); }
   }, [clinicId]);
 
-  // Спинер при первой загрузке/смене клиники; лоадеры снимут его по завершении.
-  useEffect(() => { setLoading(true); }, [clinicId]);
+  /* Спінер при першому завантаженні / зміні клініки або ДНЯ; лоадери знімуть його
+     по завершенні. Сам по собі цей ефект дефект H-3 не лікує (виконується після
+     paint) — його лікує `scopeReady` у рендері; але без dayKey «Завантаження…»
+     не показувалось би при зміні дати взагалі. */
+  /* ⚠️ ВСІ СКИДАННЯ ЗАВʼЯЗАНІ НА `scope`, А НЕ НА ПЕРЕЛІК ВИМІРІВ (ревʼю р.2).
+     Зріз — це clinicId + день (+ набір кабінетів у дошці радіолога). Поки виміри
+     перелічувались руками (`[clinicId, dayKey]`), додавання третього виміру
+     закривало ключ і лоадер, але лишало скидання на двох старих — і при зміні
+     набору кабінетів `stuckLoaded` казав «дані свіжі» про ПОПЕРЕДНІЙ набір.
+     У кадрі між приземленням запису дня і відповіддю запиту «хвостів» картка
+     нового кабінету писала б «Кабінет вільний» із живою кнопкою виклику —
+     повернення дефекту M-1 по іншій осі. Один рядковий ключ на всі скидання
+     робить таку розсинхронізацію структурно неможливою.
+     `entriesErr` теж гаситься тут: помилка ПОПЕРЕДНЬОГО зрізу до нового
+     стосунку не має, а через новий порядок гілок вона показала б жорстке
+     «Не вдалося завантажити чергу» над днем, запит якого ще в польоті. */
+  useEffect(() => { setLoading(true); setEntriesErr(false); }, [scope]);
 
   // Перезапрос записей при смене дня/кабинетов: realtime-хук слушает только clinicId.
   /* M-1 ревʼю раунду 2: `stuckLoaded` мусить згасати РАЗОМ із датою й клінікою.
@@ -908,11 +985,11 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
      прапорець каже «дані свіжі» — і в кадрі до відповіді другого запиту картка
      знову писала б «Кабінет вільний» із живою кнопкою виклику. Тобто вихідний
      дефект відтворювався б у вікні 100–300 мс. */
-  useEffect(() => { setStuckLoaded(false); }, [clinicId, dayKey]);
+  useEffect(() => { setStuckLoaded(false); setStuckErr(false); }, [scope]);
   useEffect(() => { reload(); }, [reload]);
 
   // TD-3: единый realtime-паттерн.
-  useRealtimeRefetch({
+  const rtHealth = useRealtimeRefetch({
     channelName: clinicId ? "rad-" + clinicId : null,
     subscriptions: [
       /* Поки є кабінет-залишок, зміна запису може прибрати його зі списку —
@@ -946,7 +1023,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
        порожній → без .in-фільтра) — такому радіологу звуки глушимо, щоб не
        озвучувати чужі кабінети. */
     active: roomIds.length > 0,
-    entries: loading || entriesErr ? null : entries,
+    entries: loading || !scopeReady || entriesErr ? null : entries,
     readyEnabled: isToday,
     incidents: !incidentsLoaded || incidentsErr ? null : incidents,
     incidentRoomIds: roomIds,
@@ -1003,7 +1080,13 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   }
 
   async function setStatus(id: string, status: string) {
-    const cur = entries.find((e) => e.id === id);
+    /* Джерело — САМ ЗНІМОК, а не відфільтрований по зрізу `entries` (ревʼю р.2).
+       При `!scopeReady` `entries` = порожня константа, тож `find` повертав би
+       undefined — а сервер трактує відсутній `expectedFrom` як «CAS не потрібен»
+       і робить звичайний last-write-wins. Тобто рівно в кадрі неузгодженого
+       зрізу захист від «статус змінив інший користувач» тихо вимикався б.
+       Знімок містить рядок навіть тоді, коли він не показаний. */
+    const cur = daySnap.rows.find((e) => e.id === id);
     if (status === "done" && cur && cur.status !== "in_progress") { notify("«Виконано» можна лише для пацієнта в кабінеті", "error"); return; }
     // Server Action (серверная сессия + единая обработка ошибок); оптимистично локально.
     const nowIso = new Date().toISOString();
@@ -1127,7 +1210,11 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   const citoList = scoped.filter((e) => e.cito && (e.status === "scheduled" || e.status === "waiting" || e.status === "in_progress"));
 
   const stuckRooms = useMemo(() => visibleStuckByRoom(stuck, dayKey), [stuck, dayKey]);
-  const stuckUnknown = stuckUnknownOf(stuckLoaded, stuckErr);
+  /* !scopeReady входить у «не знаємо» (аудит 2026-08-07, H-3): у кадрі між
+     зміною дати й відповіддю `stuckLoaded` ще належить ПОПЕРЕДНЬОМУ дню
+     (гасить його ефект, а він — після paint). Без цього плитка кабінету
+     писала б «Кабінет вільний» на порожньому зрізі. Fail-CLOSED. */
+  const stuckUnknown = stuckUnknownOf(stuckLoaded && scopeReady, stuckErr);
   const currentByRoom: Record<string, RadEntry> = {}, nextWaitingByRoom: Record<string, RadEntry> = {};
   entries.forEach((e) => { if (e.status === "in_progress" && e.room_id) currentByRoom[e.room_id] = e; });
   // «Наступний у черзі» — як і сортування: спершу ЧАС, пріоритет — тай-брейк.
@@ -1164,7 +1251,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
 
   return (
     <div className="app">
-      <RadSidebar rooms={visRooms} roomNoteOf={offNote} roomFilter={roomFilter} setRoomFilter={setRoomFilter} counts={counts} adminName={adminName} />
+      <RadSidebar rooms={visRooms} roomNoteOf={offNote} roomFilter={roomFilter} setRoomFilter={setRoomFilter} counts={counts} countsReady={scopeReady} adminName={adminName} />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">
@@ -1175,8 +1262,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
             <CeoDashboardLink />
             <span className="rad-date">{fmtFull(selectedDate)}</span>
             <LiveClock tz={clinicTz} />
-            <span className="rt-pill"><span className="pulse-dot" style={{ background: "var(--green)", width: 7, height: 7 }} />Real-time</span>
-            <span className="rad-counter">Опрацьовано: <b>{counts.done}</b> / {counts.total}</span>
+            <RealtimeBadge health={rtHealth} />
+            <span className="rad-counter">Опрацьовано: {scopeReady ? <><b>{counts.done}</b> / {counts.total}</> : "—"}</span>
           </div>
         </header>
         <div className="content-wrap">
@@ -1237,10 +1324,16 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                   <div className="inc-banner-title">
                     {safetyErr ? "Дані про простої / графік не оновились" : "Черга не оновилась"}
                   </div>
+                  {/* «попередні дані» — тільки якщо вони справді на екрані: при
+                      неузгодженому зрізі список порожній, і обіцянка була б брехнею
+                      (ревʼю р.2; у QueueBoard той самий банер гейтиться
+                      `entries.length > 0`). */}
                   <div className="inc-banner-sub">
                     {safetyErr
                       ? "Виклик у кабінет заблоковано — кабінет може бути на ремонті. Оновіть сторінку."
-                      : "На екрані — попередні дані. Оновіть сторінку."}
+                      : scopeReady && entries.length > 0
+                        ? "На екрані — попередні дані. Оновіть сторінку."
+                        : "Дані черги не завантажились. Оновіть сторінку."}
                   </div>
                 </div>
                 <button className="btn btn-secondary btn-sm" onClick={() => { reload(); loadIncidents(); loadOverrides(); }}>↻ Оновити</button>
@@ -1252,13 +1345,13 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                 <span className="db-ic">{isPast ? "🗂" : "📅"}</span>
                 <div className="db-meta">
                   <div className="db-title">{fmtFull(selectedDate)}</div>
-                  <div className="db-sub">{counts.total === 0 ? "Записів немає" : (isPast ? "Архів — день завершено · лише перегляд" : "Заплановані дослідження") + " · " + counts.total + " записів"}</div>
+                  <div className="db-sub">{entriesErr && !scopeReady ? "Дані не завантажились" : !scopeReady ? "Завантаження…" : counts.total === 0 ? "Записів немає" : (isPast ? "Архів — день завершено · лише перегляд" : "Заплановані дослідження") + " · " + counts.total + " записів"}</div>
                 </div>
                 <button className="btn btn-secondary btn-sm" onClick={() => setSelectedDate(today0())}>← Сьогодні</button>
               </div>
             )}
 
-            <StatsBar counts={counts} filter={filter} setFilter={setFilter} />
+            <StatsBar counts={counts} filter={filter} setFilter={setFilter} ready={scopeReady} />
 
             {isToday && cardRooms.length > 0 && (
               <div className="room-cards">
@@ -1286,8 +1379,36 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
               <div>Час</div><div>Пацієнт</div><div>Дослідження</div><div>Кабінет</div><div>Статус</div><div />
             </div>
 
-            {loading ? (
+            {/* Порядок гілок важливий (ревʼю пакета H-3, раунд 1): ПОМИЛКА ЙДЕ
+                ПЕРШОЮ. При збої лоадер робить `setEntriesErr(true); return;` і знімок
+                НЕ кладе — `scopeReady` лишається false назавжди, а `loading` гасне у
+                finally. Зі скелетом попереду список писав би вічне «Завантаження…»
+                замість «дані не завантажились» (червоний банер вище лишається, але
+                сам список не має брехати про стан).
+                Далі: !scopeReady — знімок належить іншому дню/набору кабінетів. */}
+            {entriesErr && !scopeReady ? (
+              <div className="empty">
+                <div className="ei">⚠</div>
+                <div className="et">Не вдалося завантажити чергу</div>
+                <div className="es" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                  Перевірте зʼєднання — дані можуть бути неповними.
+                  <button className="btn btn-secondary btn-sm" onClick={() => { setLoading(true); reload(); }}>↻ Спробувати ще раз</button>
+                </div>
+              </div>
+            ) : loading || !scopeReady ? (
               <div className="empty"><div className="et">Завантаження…</div></div>
+            ) : entriesErr && entries.length === 0 ? (
+              /* Зріз готовий, але день порожній І оновлення впало — це НЕ «записів
+                 немає». У QueueBoard така гілка була, у дошці радіолога — ні
+                 (ревʼю р.2). */
+              <div className="empty">
+                <div className="ei">⚠</div>
+                <div className="et">Не вдалося завантажити чергу</div>
+                <div className="es" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                  Перевірте зʼєднання — дані можуть бути неповними.
+                  <button className="btn btn-secondary btn-sm" onClick={() => { setLoading(true); reload(); }}>↻ Спробувати ще раз</button>
+                </div>
+              </div>
             ) : filtered.length === 0 ? (
               <div className="empty"><div className="ei">⌕</div><div className="et">{entries.length === 0 ? "Записів на цей день немає" : "Нічого не знайдено"}</div><div className="es">Змініть фільтр, кабінет або пошук</div></div>
             ) : (
@@ -1318,7 +1439,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                 кабінета-залишку (він зникає зі списку, бо в ньому лишились
                 самі скасовані) були б недосяжні. key по дню — знімок
                 розкриття не переживає зміну зрізу. */}
-            <RadCancelledPanel key={dayKey} entries={cancelledDay} roomsById={roomsById} unreadIx={boardUnreadIx} />
+            <RadCancelledPanel key={scope} entries={cancelledDay} roomsById={roomsById} unreadIx={boardUnreadIx} />
           </div>
           <aside className="rpanel">
             <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} tz={clinicTz} roomSchedules={roomSchedules} />

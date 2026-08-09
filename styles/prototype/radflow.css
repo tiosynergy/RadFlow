@@ -359,6 +359,11 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .tb-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 .rt-pill { display: flex; align-items: center; gap: 7px; font-size: 0.78125rem; color: var(--text-secondary); padding: 6px 11px; border-radius: 20px; background: var(--green-bg); }
 .rt-pill .pdot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+/* Аудит 2026-08-07 (M-2): піґулка більше не «завжди зелена». Обрив —
+   помаранчевий (дошка живе на аварійному полінгу й дані відстають),
+   підключення — нейтральний. Колір крапки ставить сам RealtimeBadge. */
+.rt-pill-lost { background: var(--orange-bg); color: var(--orange); }
+.rt-pill-wait { background: transparent; border: 1px solid var(--border); color: var(--text-muted); }
 
 .btn {
   display: inline-flex; align-items: center; gap: 7px;
@@ -2017,6 +2022,15 @@ select.inp { cursor: pointer; }
   min-width: 8px; height: 8px; margin-left: 6px;
   border-radius: 999px; background: var(--red);
   font-size: 0.625rem; font-weight: 700; line-height: 1; color: #fff;
+  /* ⚠️ ФОРМА КРАПКИ ОДНАКОВА ДЛЯ ВСІХ РОЛЕЙ. `justify-self` тут не косметика:
+     у дошці радіолога крапка — ПРЯМИЙ нащадок ґрид-рядка `.qrow`, а ґрид
+     блокифікує `inline-flex` у `flex` і розтягує елемент на всю комірку
+     (виміряно живцем: 20×8 замість 8×8 — замість кола виходила смужка,
+     і той самий стан читався по-різному в адміна й радіолога).
+     `min-width` від цього не рятує — він обмежує знизу, а не зверху.
+     Поза ґридом властивість ІГНОРУЄТЬСЯ (не діє ні на inline, ні на flex-item),
+     тож правило безпечне для решти місць і страхує наступну дошку. */
+  justify-self: start;
 }
 /* Крапка без числа: сам символ ● не малюємо — його роль виконує форма
    елемента, інакше глиф вилазить за межі 8px кола. */

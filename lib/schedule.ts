@@ -18,6 +18,9 @@ export interface DayOverride {
   all_closed?: boolean;
   label?: string | null;
   rooms?: Record<string, RoomOverride> | null;
+  /* 0135, CAS: мітка версії — РЯДКОМ і тільки рядком. Прогін через new Date()
+     зрізає мікросекунди, і CAS дає вічний конфлікт (пастка 0119). */
+  updated_at?: string | null;
 }
 
 export interface EffectiveRoomSchedule {
