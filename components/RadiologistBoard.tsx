@@ -13,7 +13,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
-import { unreadForEntity, unreadForField, unreadForDate, calendarDayKey, type UnreadIndex } from "@/lib/unreadChanges";
+import { unreadForEntity, unreadForField, unreadForDate, unreadForSurface, calendarDayKey, type UnreadIndex } from "@/lib/unreadChanges";
 import { useQueueSounds } from "@/lib/useQueueSounds";
 import type { OverrunSource } from "@/lib/soundEvents";
 import { signOutAndRedirect } from "@/lib/auth";
@@ -765,6 +765,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   const [roomFilter, setRoomFilter] = useState(single ? (visRooms[0]?.id || "all") : "all");
   /* Індекс позначок на рівні дошки — для панелі «Скасовані» (с28). */
   const { index: boardUnreadIx } = useUnreadChanges();
+
   /* Кабінет-залишок може зникнути зі списку просто під час зміни (закрили останній
      запис) — і фільтр лишився б на кабінеті, якого вже немає у сайдбарі: дошка
      порожня, а кнопки «Усі кабінети» при одному видимому кабінеті теж немає, тобто
@@ -807,6 +808,37 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   // ряди без дій-кнопок, нотатки лише для читання. Сьогодні/майбутнє — без змін
   // (майбутні ряди й далі disabled через isFutureRow з підказкою).
   const readOnly = isPast;
+
+  /* 0138 (F-3): ack поверхні «простої». Радіолог кабінету — штатний отримувач
+     позначок про простій (матриця 0131/0132: `p_room_relevant` тут ЧЕСНО true —
+     зупинка ЙОГО кабінету це саме те, що він мусить знати), але погасити її йому
+     було нічим: єдиний `useAckWhenVisible({surface:'incidents'})` жив у
+     QueueBoard, а на /queue радіолога не пускає редирект. Крапка, що ніколи не
+     гасне, за правилом проєкту — дефект (так само з CEO розібралась 0134).
+     Ack легальний: сам простій у нього на екрані — картка кабінету показує
+     «🛑 Кабінет зупинено» і причину.
+     `refreezeKey` — дзеркало QueueBoard: другий доданок закриває гонку «список
+     приїхав раніше за позначку» (інцидент і позначка народжуються однією
+     транзакцією, а клієнт тягне їх двома незалежними refetch-ами).
+     ⚠️ `!isPast` у гарді (ревʼю р.3): банер простою рендериться лише для
+     сьогодні/майбутнього (`{!isPast && liveIncidents…}`), а `incidentsLoaded`
+     при зміні дати не скидається. Без цієї умови радіолог, який дивиться
+     архівний день, погасив би крапку про ЩОЙНО зупинений кабінет, не побачивши
+     її — а іншої поверхні з ack у нього немає. Тому блок і стоїть тут, ПІСЛЯ
+     обчислення дати, а не поруч із рештою індексів позначок. */
+  const incidentsRefreezeKey = (() => {
+    const shown = new Set(incidents.map((i) => i.id));
+    const markerPart = unreadForSurface(boardUnreadIx, "incidents")
+      .filter((m) => m.entity_type === "incident" && shown.has(m.entity_id))
+      .map((m) => m.id).sort().join(",");
+    const listPart = incidents.map((i) => i.id + ":" + i.status).sort().join("|");
+    return listPart + "#" + markerPart;
+  })();
+  useAckWhenVisible(
+    { kind: "surface", surface: "incidents" },
+    incidentsLoaded && !incidentsErr && !isPast,
+    incidentsRefreezeKey
+  );
   const dayKey = dateKey(selectedDate);
   /* roomsById — ПОВНИЙ список призначених кабінетів: за ним резолвиться назва
      кабінету в рядку черги. Ховаємо кабінет зі СПИСКІВ, а не з записів. */

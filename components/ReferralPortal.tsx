@@ -1221,7 +1221,7 @@ function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m
 }
 
 /* ── Лист очікування направника: власні пацієнти в усіх авторизованих центрах ── */
-function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onRestore, onPriority, highlightId = null }: {
+function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onRestore, onPriority, highlightId = null, loaded, loadErr }: {
   entries: WaitlistEntry[];
   centersById: Record<string, Center>;
   onOpenAdd: () => void;
@@ -1231,10 +1231,31 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
   onPriority: (e: WaitlistEntry, v: PatientPriority) => void;
   /** с22 (deep-link «Пошук»): підсвітити знайдений рядок і проскролити до нього. */
   highlightId?: string | null;
+  /** 0138: гард ack — гасити крапки можна лише коли список реально приїхав. */
+  loaded: boolean;
+  loadErr: boolean;
 }) {
   const waiting = entries.filter((e) => e.status === "waiting").sort(compareWaitlist);
   const rest = entries.filter((e) => e.status !== "waiting").sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
   const list = [...waiting, ...rest];
+
+  /* 0138 (F-3): крапки листа очікування + їх ack. Направник — штатний отримувач
+     позначок про СВІЙ рядок листа (реєстратор записав його пацієнта з листа —
+     він мусить це побачити), і `ReferrerSidebar` крапку на пункті «Лист
+     очікування» вже малював. А погасити її було нічим: жодного `UnreadDot` і
+     жодного ack на цьому екрані не було — рівно той дефект «крапка не гасла
+     НІКОЛИ», через який ack і винесли в `useAckWhenVisible`.
+     Ack поверхневий (не по рядку): вкладка монтується лише коли її відкрили, і
+     список рендериться ПОВНІСТЮ без пагінації — тобто «побачив» тут дорівнює
+     «відкрив вкладку», як у ServicesManager.
+     ⚠️ `loaded` ОБОВʼЯЗКОВИЙ (ревʼю р.3): БД адресує позначку по `referrer_id`,
+     а вибірка листа — по `created_by OR referrer_id` (див. `reloadWaitlist`).
+     Поверхневий ack гасить УСЮ поверхню, тож без гарда «список приїхав і без
+     помилки» збій завантаження гасив би крапки про рядки, які користувач не
+     побачив (ТЗ: «If loading fails, unread state must remain unchanged»), а
+     deep-link прямо на цю вкладку встигав би загасити їх до першого рендера. */
+  const { index: unreadIx } = useUnreadChanges();
+  useAckWhenVisible({ kind: "surface", surface: "waitlist" }, loaded && !loadErr);
   /* Скрол до підсвіченого рядка — ОДНОРАЗОВО (ревью с22 р2 MEDIUM-A): inline
      ref-колбек викликається на кожен ре-рендер (realtime-оновлення листа), і без
      прапорця сторінку постійно повертало б до підсвіченого рядка. */
@@ -1267,6 +1288,7 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
                   ) : (
                     <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.patient_name}</span>
                   )}
+                  <UnreadDot markers={unreadForEntity(unreadIx, "waitlist_entry", p.id)} />
                 </div>
                 <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", marginTop: 2 }}>
                   {centerLabel(center)} · {procLabel(p)} · {desiredWindowText(p)}
@@ -1408,18 +1430,26 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
     } catch { setListErr(true); }
   }, [doctorId]);
 
-  // Лист очікування: RLS показує направнику лише власні рядки (created_by).
+  /* Лист очікування направника: власні рядки АБО ті, де центр вказав його
+     направником (0138 — дзеркало `queue_select`, де гілка `referrer_id` є з
+     0057). Це не косметика: позначку про рядок листа БД адресує саме по
+     `referrer_id`, тож без цієї гілки прилітала б крапка про рядок, якого на
+     екрані немає — і будь-який ack її або тихо гасив, або вона висіла б вічно. */
+  const [wlLoaded, setWlLoaded] = useState(false);
+  const [wlErr, setWlErr] = useState(false);
   const reloadWaitlist = useCallback(async () => {
     try {
       const supabase = createClient();
       const { data, error } = await supabase
         .from("waitlist_entries")
         .select("*")
-        .eq("created_by", doctorId)
+        .or("created_by.eq." + doctorId + ",referrer_id.eq." + doctorId)
         .order("created_at", { ascending: true });
-      if (error) { setListErr(true); return; }
+      if (error) { setListErr(true); setWlErr(true); setWlLoaded(true); return; }
       setWlEntries(data || []);
-    } catch { setListErr(true); }
+      setWlErr(false);
+      setWlLoaded(true);
+    } catch { setListErr(true); setWlErr(true); setWlLoaded(true); }
   }, [doctorId]);
   useEffect(() => { reloadWaitlist(); }, [reloadWaitlist]);
 
@@ -1670,7 +1700,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
           </>
         )}
         {tab === "waitlist" && (
-          <MyWaitlist entries={wlEntries} centersById={centersById} highlightId={initialEntry} onOpenAdd={() => setWlAddOpen(true)}
+          <MyWaitlist entries={wlEntries} centersById={centersById} highlightId={initialEntry} loaded={wlLoaded} loadErr={wlErr} onOpenAdd={() => setWlAddOpen(true)}
             onEdit={(e) => setWlEditFor(e)} onCancel={(e) => setWlConfirmRemove(e)} onRestore={wlRestore} onPriority={wlPrio} />
         )}
         {tab === "centers" && (

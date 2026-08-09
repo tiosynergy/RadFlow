@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   SURFACE_KEYS, FIELD_SCOPES, MARKER_ENTITY_TYPES, MARKER_SEVERITIES,
@@ -370,5 +370,75 @@ describe("PII", () => {
     const label = markerLabel(m);
     expect(label).toContain("дані пацієнта");
     expect(label).not.toMatch(/\+?\d{5,}/);
+  });
+});
+
+/* ═══════════ 8. Аудиторія: крапка без поверхні для ack — дефект ═══════════
+
+   Правило проєкту: позначка, яку отримувач не може погасити НІЧИМ, вічна —
+   ретенція чистить лише прочитані. Через це 0134 прибрала з матриці CEO, а 0138
+   звузила `catalog` до адміна і забрала радіолога з каталогу й вейтліста
+   (`p_room_relevant => false` у трьох тригерах).
+
+   ⚠️ Тіла цих тригерів тепер живуть у ДВОХ файлах (0132 — вихідні, 0138 —
+   звужені), а зеркало вище читає 0132. Без цього пину сужение могло б молча
+   регресувати: хтось перевипустить тригер із 0132 і аудиторія повернеться. */
+
+describe("аудиторія позначок (0138)", () => {
+  const mig0138 = readFileSync(
+    resolve(process.cwd(), "supabase/migrations/0138_schedule_override_lockdown_and_marker_audience.sql"),
+    "utf8",
+  );
+
+  it("catalog і waitlist не роблять радіолога отримувачем — у КОЖНОМУ виклику", () => {
+    for (const fn of ["tg_change_markers_services", "tg_change_markers_sro", "tg_change_markers_waitlist"]) {
+      const at = mig0138.indexOf("function public." + fn);
+      expect(at, `у 0138 немає ${fn}`).toBeGreaterThan(-1);
+      const end = mig0138.indexOf("$function$;", at);
+      expect(end, `${fn}: не знайшли кінець тіла`).toBeGreaterThan(at);
+      const body = mig0138.slice(at, end);
+      /* Рахуємо, а не `toContain`: у цих тригерах по 2–3 виклики
+         `emit_change_markers`, і знятий флаг в ОДНІЙ гілці (напр. у DELETE
+         послуги або в UPDATE вейтліста) `toContain` не помітив би. */
+      const emits = (body.match(/emit_change_markers\(/g) || []).length;
+      const flags = (body.match(/p_room_relevant => false/g) || []).length;
+      expect(emits, `${fn}: жодного emit_change_markers`).toBeGreaterThan(0);
+      expect(flags, `${fn}: флагів ${flags} на ${emits} викликів`).toBe(emits);
+    }
+  });
+
+  it("catalog — лише адмінам (реєстратор без екрана /services)", () => {
+    expect(mig0138).toContain("p_scope_kind not in ('access', 'catalog')");
+  });
+
+  it("черга радіолога не зачеплена: у ЖИВОМУ тригері queue room_relevant не false", () => {
+    /* Дзеркало зонда (e3) смоука: 0138 звузила саме каталог і вейтліст, а
+       позначки ЧЕРГИ по призначеному кабінету радіолог отримувати мусить —
+       їх він гасить розгорнутим рядком своєї дошки.
+
+       ⚠️ Читаємо ОСТАННЄ визначення функції по всіх міграціях, а не конкретний
+       файл (ревʼю р.3): `tg_change_markers_queue` створює 0132, але 0133
+       перевипускає її (додає `p_subject_date`) — тобто 0132 більше ніколи не
+       накатується, і пін по ньому захищав би мертвий текст. Заодно межу тіла
+       шукаємо і по `$$;`, і по `$function$;`: у 0132/0133 тіла закриті
+       по-різному, а наївний пошук одного варіанта дає -1 → зріз «до кінця
+       файла», де флаг є в СУСІДНІХ тригерах (cases, access). */
+    const dir = resolve(process.cwd(), "supabase/migrations");
+    const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
+    let live: string | null = null;
+    let liveFile = "";
+    for (const f of files) {
+      const txt = readFileSync(resolve(dir, f), "utf8");
+      const at = txt.indexOf("function public.tg_change_markers_queue");
+      if (at < 0) continue;
+      const ends = ["\n$$;", "\n$function$;"].map((e) => txt.indexOf(e, at)).filter((i) => i > at);
+      expect(ends.length, `${f}: не знайшли кінець тіла тригера queue`).toBeGreaterThan(0);
+      live = txt.slice(at, Math.min(...ends));
+      liveFile = f;
+    }
+    expect(live, "жодна міграція не визначає tg_change_markers_queue").not.toBeNull();
+    expect(live as string).toContain("emit_change_markers");
+    expect(live as string, `останнє визначення (${liveFile}) звузило чергу радіолога`)
+      .not.toContain("p_room_relevant => false");
   });
 });
