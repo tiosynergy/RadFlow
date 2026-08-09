@@ -46,7 +46,9 @@ begin
   if v_own = 0 then raise exception 'SMOKE_FAIL: staff не бачить ВЛАСНУ чергу — RLS зламано в інший бік'; end if;
   reset role;
 
-  -- ---- 2. Радіолог: RLS дає всю клініку (задокументовано) — але НЕ чужу ----
+  -- ---- 2. Радіолог: НЕ бачить чужу клініку. (З 0136 і у ВЛАСНІЙ клініці
+  --         RLS звужено до призначених кабінетів — це покриває окремий
+  --         radiologist_room_scope_smoke.sql; тут лишаємо кросс-тенант.) ----
   if v_rad is not null then
     perform set_config('request.jwt.claims',
       json_build_object('sub', v_rad, 'role', 'authenticated')::text, true);
