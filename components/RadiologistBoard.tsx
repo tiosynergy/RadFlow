@@ -744,8 +744,9 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   const [entriesErr, setEntriesErr] = useState(false);
   /* с24: незавершені дослідження ПРИЗНАЧЕНИХ кабінетів з інших дат. Окремо від
      `entries` — інакше вчорашній запис давав би вічний звук перевищення і
-     ламав лічильники дня. RLS у радіолога ширша за його кабінети, тому область
-     звужує сам запит (`.in("room_id", roomIds)`), як і основний лоадер. */
+     ламав лічильники дня. Область звужує сам запит (`.in("room_id", roomIds)`),
+     як і основний лоадер: з 0136 те саме тримає й RLS, але покладатись на неї
+     одну не варто — явний фільтр лишається першим рубежем і документує намір. */
   const [stuck, setStuck] = useState<StuckStudy[]>([]);
   /* Стартове `[]` не відрізнити від «хвостів немає» (ревʼю с24, H1) — тому
      fail-CLOSED: поки не завантажили або запит упав, виклик блокуємо. */
@@ -997,6 +998,13 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
          лишався б старим. Умова обов'язкова: без залишків це зайвий refresh. */
       { table: "queue_entries", filter: "clinic_id=eq." + clinicId,
         onChange: () => { reload(); if ((residualRoomIds?.length ?? 0) > 0) router.refresh(); } },
+      /* Залишок може триматись САМЕ вейтліст-броню (residualOffRooms рахує оби-
+         дві таблиці) — дзеркало підписки QueueBoard. Нічого, крім refresh, вона
+         не робить. ⚠️ Коректно це стало лише з 0137: RLS радіолога віддає йому
+         події вейтліста РІВНО по його кабінетах, тож підписка не робить його
+         отримувачем чужих змін (екрана вейтліста в нього немає). */
+      { table: "waitlist_entries", filter: "clinic_id=eq." + clinicId,
+        onChange: () => { if ((residualRoomIds?.length ?? 0) > 0) router.refresh(); } },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
       { table: "schedule_overrides", filter: "clinic_id=eq." + clinicId, onChange: loadOverrides },
       // 0086: rooms — SSR-проп (у радіолога ще й ВІДФІЛЬТРОВАНИЙ призначеними

@@ -22,6 +22,7 @@ import { wallNow, wallToday0 } from "@/lib/incidents";
 import { diffStudies, studyText, studiesChanged, modalityLabel } from "@/lib/studies";
 import { quickSearchMatch } from "@/lib/quickSearch";
 import type { Json } from "@/supabase/types";
+import { roomsInGrant } from "@/lib/rooms";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null; timezone?: string | null };
@@ -144,14 +145,13 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
   }, [focus?.nonce]);
 
   const multiCenter = activeCenters.length > 1;
-  // Лише ДОЗВОЛЕНІ кабінети напрямника (referral_access.room_ids). null/порожньо = усі — як у сайдбарі.
+  // Лише ДОЗВОЛЕНІ кабінети напрямника (referral_access.room_ids): null = усі,
+  // [] = жодного (0137, lib/rooms.ts) — як у сайдбарі.
   // Це ВИПАДАЙКА фільтра, тож беремо видимі кабінети (без вимкнених-порожніх).
   const rooms = useMemo(() => {
     if (centerId === "all") return [];
     const all = (visRoomsByClinic || roomsByClinic)[centerId] || [];
-    const allowed = centersById[centerId]?.room_ids;
-    const list = Array.isArray(allowed) && allowed.length ? allowed : null;
-    return list ? all.filter((r) => list.includes(r.id)) : all;
+    return roomsInGrant(all, centersById[centerId]?.room_ids);
   }, [centerId, visRoomsByClinic, roomsByClinic, centersById]);
   /* Кабінет-залишок може зникнути з випадайки просто під час сесії (закрили
      останній запис). Сам `<select>` рендериться лише при rooms.length > 0, тож

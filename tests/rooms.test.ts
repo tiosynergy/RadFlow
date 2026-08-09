@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   isRoomBookable, bookableRooms, ROOM_OFF_LABEL,
   isRoomVisible, visibleRooms, residualSet, pluralZapys, roomOffLabel,
-  roomDeleteBlockReason,
+  roomDeleteBlockReason, grantRoomIds, grantAllowsRoom, roomsInGrant,
 } from "../lib/rooms";
 import { offRoomIdsOf } from "../lib/roomsResidual";
 
@@ -200,5 +200,43 @@ describe("підпис кабінету-залишку", () => {
     expect(roomOffLabel(1)).toBe("вимкнено · 1 запис");
     expect(roomOffLabel(3)).toBe("вимкнено · 3 записи");
     expect(roomOffLabel(7)).toBe("вимкнено · 7 записів");
+  });
+});
+
+/* 0137: семантика `referral_access.room_ids`. Головне, що тут захищено, — що
+   ПОРОЖНІЙ масив означає «жодного кабінету», а не «усі». До 0137 БД і сім копій
+   формули в коді читали `'{}'` як «усі», тобто спроба ЗАБРАТИ в направника всі
+   кабінети відкривала центр повністю. Гілку прибрано в
+   `auth_referrer_can_book_room` і `referral_center_card`; ці тести — гард від
+   повернення старої семантики в код (M-7 уже одного разу відкочували). */
+describe("кабінети гранта направника (0137)", () => {
+  const rooms = [{ id: "r1" }, { id: "r2" }, { id: "r3" }];
+
+  it("null = усі кабінети центру", () => {
+    expect(grantRoomIds(null)).toBeNull();
+    expect(grantRoomIds(undefined)).toBeNull();
+    expect(grantAllowsRoom(null, "r1")).toBe(true);
+    expect(grantAllowsRoom(undefined, "r9")).toBe(true);
+    expect(roomsInGrant(rooms, null)).toHaveLength(3);
+  });
+
+  it("масив = рівно ці кабінети", () => {
+    expect(grantRoomIds(["r1", "r2"])).toEqual(["r1", "r2"]);
+    expect(grantAllowsRoom(["r1", "r2"], "r1")).toBe(true);
+    expect(grantAllowsRoom(["r1", "r2"], "r3")).toBe(false);
+    expect(roomsInGrant(rooms, ["r2"]).map((r) => r.id)).toEqual(["r2"]);
+  });
+
+  it("ПОРОЖНІЙ масив = жодного (fail-closed, а не «усі»)", () => {
+    expect(grantRoomIds([])).toEqual([]);
+    expect(grantAllowsRoom([], "r1")).toBe(false);
+    expect(grantAllowsRoom([], "будь-що")).toBe(false);
+    expect(roomsInGrant(rooms, [])).toEqual([]);
+  });
+
+  it("порожній список кабінетів центру не ламає жодну гілку", () => {
+    expect(roomsInGrant([], null)).toEqual([]);
+    expect(roomsInGrant(null, ["r1"])).toEqual([]);
+    expect(roomsInGrant(undefined, [])).toEqual([]);
   });
 });

@@ -411,7 +411,26 @@
   со статусом). Пользователь может иметь роль И дополнительные гранты (например радиолог,
   который ещё и CEO через `ceo_access` — роль при этом не меняется).
 - SECURITY DEFINER-хелперы: `auth_clinic_id()`, `auth_is_admin()`, `auth_referrer_clinics()`,
-  `auth_can_refer(c)`, `auth_ceo_clinics()`, `auth_is_ceo_of(c)`.
+  `auth_can_refer(c)`, `auth_ceo_clinics()`, `auth_is_ceo_of(c)`,
+  `auth_radiologist_room_ok(room)` / `auth_radiologist_case_ok(case)` (0136/0137).
+- **Радиолог ограничен назначенными кабинетами (`radiologist_rooms`) НА УРОВНЕ БД,
+  а не только в UI** (0136/0137, RF-01 внешнего аудита): `queue_entries` и
+  `waitlist_entries` он читает только по своим кабинетам, `patient_cases` — только
+  если у кейса есть шаг в его кабинете; запись в вейтлист и кейсы запрещена
+  полностью. Держат это RLS + BEFORE-триггеры `a00_*`, которые ловят и табличный
+  DML, и любой SECURITY DEFINER RPC (внутри DEFINER `auth.uid()` — по-прежнему
+  пользовательский). Кабинетов нет / `room_id IS NULL` → не видно ничего
+  (fail-closed). Серверные фильтры в коде при этом НЕ лишние: они держат правило
+  экрана (ТЗ §5) и не дают области поехать вслед за правкой политик.
+  ⚠️ Исключение по дизайну: радиолог с активным `ceo_access` на свой центр читает
+  очередь и вейтлист clinic-wide через PERMISSIVE-политики CEO (`queue_ceo_read`,
+  `waitlist_ceo_read`) — они OR-ятся с кабинетным скоупом. На проде таких нет;
+  если появятся — это отдельное продуктовое решение, а не баг политик 0136/0137.
+- **Канон `referral_access.room_ids`** (0029 + 0137): `NULL` = все кабинеты центра,
+  массив = ровно эти, **пустой массив = ни одного** (fail-closed). Формула живёт в
+  одном месте — `grantRoomIds`/`grantAllowsRoom`/`roomsInGrant` (`lib/rooms.ts`);
+  в БД — `auth_referrer_can_book_room` и `referral_center_card`. Не размножай копии:
+  именно семь копий этой формулы однажды заставили откатить правку M-7.
 - Два типа клиентов: RLS-связанный (`lib/supabase/server.ts` / `client.ts`) и service-role
   admin-клиент (`lib/supabase/admin.ts`), который **обходит RLS** — каждый роут, использующий
   его, ОБЯЗАН сам проверить auth/роль вызывающего.

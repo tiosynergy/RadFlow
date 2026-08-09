@@ -66,7 +66,8 @@ export type RoleScope = {
   clinicIds: string[];
   /** Радиолог: назначенные кабинеты (пусто = доступа нет). null = кабинеты не ограничены ролью. */
   roomIds: string[] | null;
-  /** Направник: ограничение кабинетов по клинике из referral_access.room_ids (null/[] = все). */
+  /** Направник: ограничение кабинетов по клинике из referral_access.room_ids
+   *  (0137: null = все кабинеты центра, массив = ровно эти, [] = ни одного). */
   roomIdsByClinic: Record<string, string[] | null> | null;
   /** Направник: искать только собственные направления (referrer_id = userId). */
   ownReferrerOnly: boolean;

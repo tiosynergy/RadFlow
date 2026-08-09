@@ -18,6 +18,7 @@ import {
   type SearchResultItem,
 } from "@/lib/searchContract";
 import type { Database } from "@/supabase/types";
+import { grantRoomIds } from "@/lib/rooms";
 
 /* ===== POST /api/search — универсальный поиск пациентов и исследований (с22) =====
 
@@ -30,8 +31,11 @@ import type { Database } from "@/supabase/types";
 
    Почему НЕ service-role: запросы идут RLS-клиентом сессии (gate.supabase) —
    RLS остаётся последним рубежом под нашими явными фильтрами области. Сервер при
-   этом сам сужает область (радиолог: только назначенные кабинеты — RLS у него
-   шире бизнес-правила экрана; направник: только собственные направления).
+   этом сам сужает область (радиолог: только назначенные кабинеты; направник:
+   только собственные направления). ⚠️ С 0136/0137 RLS радиолога сужена до тех
+   же назначенных кабинетов — но серверный фильтр здесь НЕ лишний: он держит
+   правило экрана (ТЗ §5: листа ожидания радиологу не показываем) и не даёт
+   области «поехать» вслед за будущей правкой политик.
 
    Term-матчинг (имя/телефон-по-цифрам/type+region из studies[]) выполняется
    app-side поверх батчей, потому что: телефон в БД хранится форматированным
@@ -68,8 +72,8 @@ async function resolveSearchScope(supabase: DB, me: Caller): Promise<RoleScope |
     if (!me.clinic_id) return { error: "Обліковий запис без центру", status: 403 };
     const { data, error } = await supabase.from("radiologist_rooms").select("room_id").eq("profile_id", me.id);
     if (error) return { error: safeDbError("api/search.scope.rad", error), status: 400 };
-    // Радиолог видит ТОЛЬКО назначенные кабинеты (RLS у него шире — сужаем сами).
-    // Лист ожидания радиологу не показываем (ТЗ §5).
+    // Радиолог видит ТОЛЬКО назначенные кабинеты (с 0136 это же держит RLS —
+    // здесь явный фильтр области). Лист ожидания ему не показываем (ТЗ §5).
     return { ...base, clinicIds: [me.clinic_id], roomIds: (data || []).map((r) => r.room_id), sources: ["queue"] };
   }
   if (me.role === "referrer") {
@@ -81,19 +85,13 @@ async function resolveSearchScope(supabase: DB, me: Caller): Promise<RoleScope |
     if (error) return { error: safeDbError("api/search.scope.ref", error), status: 400 };
     const roomIdsByClinic: Record<string, string[] | null> = {};
     (data || []).forEach((a) => {
-      /* ⚠️ `[]` = УСІ кабінети — і це НЕ описка. Перевірено на живій БД
-         2026-08-07: `auth_referrer_can_book_room` і `referral_center_card`
-         містять `array_length(ra.room_ids, 1) is null or …`, тобто порожній
-         масив у них означає «усі кабінети центру». Нові порожні масиви БД уже
-         не приймає (тригер `validate_referral_rooms`, 0061), але СТАРІ рядки
-         функції трактують саме так — і прикладний код мусить їх дзеркалити,
-         інакше отримаємо «доступ видно, забронювати не можна».
-         Аудит M-7 просив зробити тут fail-CLOSED; це правильна мета, але
-         міняти треба СПОЧАТКУ SQL (прибрати гілку array_length + нормалізувати
-         легасі `{}` → NULL), і лише потім клієнт. На проді таких рядків 0 з 5,
-         тож зволікання нічим не загрожує. Заплановано в пакет 0135. */
-      const list = Array.isArray(a.room_ids) && a.room_ids.length ? (a.room_ids as string[]) : null;
-      roomIdsByClinic[a.clinic_id] = list;
+      /* Семантика масиву — в `grantRoomIds` (lib/rooms.ts), дзеркало БД: null =
+         усі кабінети центру, масив = рівно ці, порожній = жодного (0137).
+         ⚠️ Поле поки НЕ звужує вибірку: область направника тримає
+         `ownReferrerOnly` (лише власні направлення), і цього достатньо. Тримаємо
+         його заповненим і чесним, щоб той, хто колись почне ним фільтрувати, не
+         успадкував стару fail-open семантику. */
+      roomIdsByClinic[a.clinic_id] = grantRoomIds(a.room_ids as string[] | null);
     });
     // Направник ищет только СОБСТВЕННЫЕ направления/строки листа (доступ не расширяем).
     return {

@@ -12,6 +12,7 @@ import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
 import { unreadForNav } from "@/lib/unreadChanges";
 import NavDrawer from "@/components/NavDrawer";
 import SoundToggle from "@/components/SoundToggle";
+import { roomsInGrant } from "@/lib/rooms";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null };
@@ -86,11 +87,10 @@ export default function ReferrerSidebar({ centers, roomsByClinic, roomNoteOf, do
             <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", padding: "4px 10px" }}>Немає активних центрів</div>
           ) : centers.map((c) => {
             const all = roomsByClinic[c.clinicId] || [];
-            // Показуємо лише ДОЗВОЛЕНІ кабінети (room_ids). null/порожньо = усі
-            // кабінети центру — так само, як фільтрує форма запису й БД-гейт
-            // auth_referrer_can_book_room. Раніше показувались усі → рассинхрон.
-            const allowed = Array.isArray(c.room_ids) && c.room_ids.length ? c.room_ids : null;
-            const rooms = allowed ? all.filter((r) => allowed.includes(r.id)) : all;
+            // Показуємо лише ДОЗВОЛЕНІ кабінети (room_ids): null = усі кабінети
+            // центру, [] = жодного (0137, lib/rooms.ts) — так само, як фільтрує
+            // форма запису й БД-гейт auth_referrer_can_book_room.
+            const rooms = roomsInGrant(all, c.room_ids);
             const centerActive = activeClinic === c.clinicId && activeRoom === "all";
             return (
               <div key={c.clinicId} style={{ marginBottom: 8 }}>

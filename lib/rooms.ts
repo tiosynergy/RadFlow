@@ -49,6 +49,41 @@ export function bookableRooms<T extends RoomActivity>(rooms: T[] | null | undefi
   return (rooms || []).filter(isRoomBookable);
 }
 
+/* ===== Кабінети гранта направника (`referral_access.room_ids`) =====
+
+   ЄДИНЕ місце, де живе семантика цього масиву. Канон (0029 + 0137):
+     `null`   → УСІ кабінети центру;
+     `[a, b]` → рівно ці;
+     `[]`     → ЖОДНОГО (fail-closed).
+
+   ⚠️ До 0137 БД трактувала `'{}'` як «усі» (гілка `array_length(...) is null`
+   в `auth_referrer_can_book_room` і `referral_center_card`), і сім копій цієї
+   формули в коді дзеркалили саме це — «зняти всі кабінети» ВІДКРИВАЛО центр
+   повністю. 0137 гілку прибрала; копії зведено сюди, щоб наступна зміна канону
+   правилась в одному місці, а не в семи (M-7 уже одного разу відкочували саме
+   через розсинхрон коду й БД). */
+
+/** Нормалізований список кабінетів гранта: `null` = усі, масив = рівно ці. */
+export function grantRoomIds(roomIds: string[] | null | undefined): string[] | null {
+  return Array.isArray(roomIds) ? roomIds : null;
+}
+
+/** Чи дозволяє грант цей кабінет. `null` = усі; `[]` = жоден. */
+export function grantAllowsRoom(roomIds: string[] | null | undefined, roomId: string): boolean {
+  const list = grantRoomIds(roomIds);
+  return !list || list.includes(roomId);
+}
+
+/** Звузити список кабінетів до гранта (порожній грант → порожній список). */
+export function roomsInGrant<T extends { id: string }>(
+  rooms: T[] | null | undefined,
+  roomIds: string[] | null | undefined,
+): T[] {
+  const all = rooms || [];
+  const list = grantRoomIds(roomIds);
+  return list ? all.filter((r) => list.includes(r.id)) : all;
+}
+
 /** Мітка вимкненого кабінету. */
 export const ROOM_OFF_LABEL = "вимкнено";
 

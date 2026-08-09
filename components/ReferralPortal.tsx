@@ -6,7 +6,7 @@
    Зайнятість слотів — через знеособлений RPC room_busy_slots (без PII). */
 
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
-import { bookableRooms, visibleRooms, residualSet, roomOffLabel } from "@/lib/rooms";
+import { bookableRooms, visibleRooms, residualSet, roomOffLabel, roomsInGrant } from "@/lib/rooms";
 import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -158,11 +158,11 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const primaryKind = studyType;
   const selCenter = activeCenters.find((c) => c.clinicId === centerId) || null;
   const allRooms = roomsByClinic[centerId] || [];
-  const allowedRoomIds = selCenter && Array.isArray(selCenter.room_ids) && selCenter.room_ids.length ? selCenter.room_ids : null;
   /* 0123: вимкнені кабінети направнику не показуємо взагалі — на його дошці
      немає «ведення» записів, лише запис і перегляд своїх; кабінет, у якому вже
-     є його запис, лишається видимим у самому рядку запису (там назва з БД). */
-  const rooms = bookableRooms(allowedRoomIds ? allRooms.filter((r) => allowedRoomIds.includes(r.id)) : allRooms);
+     є його запис, лишається видимим у самому рядку запису (там назва з БД).
+     Грант: null = усі кабінети центру, [] = жодного (0137, lib/rooms.ts). */
+  const rooms = bookableRooms(selCenter ? roomsInGrant(allRooms, selCenter.room_ids) : allRooms);
   // Модальності, доступні направнику в цьому центрі (є кабінет і можна записати).
   const availableModalities = BOOKABLE_MODALITIES.filter((code) => rooms.some((r) => r.modality === code));
   const modAllowed = (code: string) => rooms.some((r) => r.modality === code);
@@ -1367,9 +1367,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
   // кабінети центру вимкнено, направник пропонувати не повинен.
   const centerModalities = (c: Center): string[] => {
     const rs = bookableRooms(roomsByClinic[c.clinicId] || []);
-    const ids = Array.isArray(c.room_ids) && c.room_ids.length ? c.room_ids : null;
-    const allowed = ids ? rs.filter((r) => ids.includes(r.id)) : rs;
-    return Array.from(new Set(allowed.map((r) => r.modality)));
+    return Array.from(new Set(roomsInGrant(rs, c.room_ids).map((r) => r.modality)));
   };
   const pendingInvites = centers.filter((c) => c.status === "pending_referrer").length;
 
@@ -1561,16 +1559,14 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
   }
 
   /* ===== 0118 — кейси направника: екран кейса + «Організувати кейс» ===== */
-  /* Кабінети центру, звужені грантом (referral_access.room_ids; null/[] = усі).
+  /* Кабінети центру, звужені грантом (referral_access.room_ids; null = усі,
+     [] = жодного — 0137, семантика в lib/rooms.ts).
      ПОВНИЙ перелік, вимкнені НЕ ріжемо: звідси кабінети йдуть у CaseModal (назви
      кроків уже створеного кейса — це запис, а не список) і в BookingModal, яка
      сама фільтрує через bookableRooms. Вирізати вимкнені тут означало б показати
      крок кейса без назви кабінету. */
   const grantedRooms = useCallback((clinicId: string): RoomOpt[] => {
-    const all = roomsByClinic[clinicId] || [];
-    const ids = centersById[clinicId]?.room_ids;
-    const list = Array.isArray(ids) && ids.length ? ids : null;
-    return list ? all.filter((r) => list.includes(r.id)) : all;
+    return roomsInGrant(roomsByClinic[clinicId] || [], centersById[clinicId]?.room_ids);
   }, [roomsByClinic, centersById]);
 
   const [openCase, setOpenCase] = useState<{ caseId: string; clinicId: string; incidents: IncidentLike[] } | null>(null);

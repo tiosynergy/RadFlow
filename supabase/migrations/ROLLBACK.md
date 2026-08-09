@@ -4,6 +4,121 @@
 для миграций, добавленных в ходе аудита 2026-06-25. Выполнять в **обратном** порядке
 (0037 → 0031) и только при необходимости. Все скрипты идемпотентны.
 
+## Откат 0137 (хвост RF-01 + fail-closed room_ids + бэкфилл doctor)
+
+> **Бэкфилл `doctor` откату НЕ подлежит и не требует его**: нормализация пробелов
+> не меняет смысл строки, а сравнения имён в коде и так нормализуются на чтении.
+> Если исходные значения всё же понадобятся — они есть в `audit_log` (триггер
+> `fn_audit` при бэкфилле оставался ВКЛЮЧЁННЫМ именно ради этого).
+>
+> Части независимы. Откат ролевой части возвращает радиологу clinic-wide чтение
+> вейтлиста и кейсов (PII чужих кабинетов) — делать только вместе с откатом 0136.
+> Откат F-2 возвращает fail-open: пустой `room_ids` снова = «все кабинеты», и
+> тогда ОБЯЗАТЕЛЬНО откатывать и клиентский шаг (`lib/rooms.ts`), иначе код
+> станет строже БД — та самая инверсия, из-за которой M-7 однажды откатили.
+
+```sql
+-- Часть А: радиолог (вейтлист + кейсы)
+drop trigger if exists a00_radiologist_no_write on public.waitlist_entries;
+drop trigger if exists a00_radiologist_no_write on public.patient_cases;
+drop function if exists public.guard_radiologist_no_write();
+
+drop policy if exists waitlist_select on public.waitlist_entries;
+create policy waitlist_select on public.waitlist_entries
+  for select using (clinic_id = public.auth_clinic_id() or created_by = auth.uid());
+drop policy if exists waitlist_write_staff on public.waitlist_entries;
+create policy waitlist_write_staff on public.waitlist_entries
+  for all using (clinic_id = public.auth_clinic_id() and not public.auth_is_referrer())
+  with check (clinic_id = public.auth_clinic_id() and not public.auth_is_referrer());
+
+drop policy if exists cases_select_staff on public.patient_cases;
+create policy cases_select_staff on public.patient_cases
+  for select to authenticated using (clinic_id = (select public.auth_clinic_id()));
+drop policy if exists cases_insert_staff on public.patient_cases;
+create policy cases_insert_staff on public.patient_cases
+  for insert to authenticated
+  with check (clinic_id = (select public.auth_clinic_id()) and not (select public.auth_is_referrer()));
+drop policy if exists cases_update_staff on public.patient_cases;
+create policy cases_update_staff on public.patient_cases
+  for update to authenticated
+  using (clinic_id = (select public.auth_clinic_id()) and not (select public.auth_is_referrer()))
+  with check (clinic_id = (select public.auth_clinic_id()) and not (select public.auth_is_referrer()));
+
+drop function if exists public.auth_radiologist_case_ok(uuid);
+
+-- Часть Б: F-2 (вернуть «пустой массив = все кабинеты»)
+-- ⚠️ Только вместе с откатом клиента (lib/rooms.ts → старая формула с .length).
+create or replace function public.auth_referrer_can_book_room(p_room uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists(
+    select 1 from public.rooms r
+      join public.referral_access ra on ra.clinic_id = r.clinic_id
+     where r.id = p_room and ra.referrer_id = auth.uid() and ra.status = 'active'
+       and (ra.room_ids is null or array_length(ra.room_ids, 1) is null or r.id = any(ra.room_ids)))
+$$;
+-- referral_center_card — полное тело (иначе получим инверсию: бронь проходит,
+-- а кабинета в карточке центра нет).
+create or replace function public.referral_center_card(p_access_id uuid)
+returns jsonb language sql stable security definer set search_path = public as $$
+  select jsonb_build_object(
+    'clinic_id', c.id, 'name', c.name, 'city', c.city,
+    'status', ra.status, 'policy', ra.policy, 'note', ra.note,
+    'admins', coalesce((
+      select jsonb_agg(jsonb_build_object('full_name', p.full_name, 'phone', p.phone, 'email', p.email)
+             order by p.created_at)
+        from public.profiles p where p.clinic_id = c.id and p.role = 'admin'), '[]'::jsonb),
+    'rooms', coalesce((
+      select jsonb_agg(jsonb_build_object('id', r.id, 'name', r.name,
+               'modality', r.modality, 'apparatus_model', r.apparatus_model) order by r.name)
+        from public.rooms r
+       where r.clinic_id = c.id
+         and (ra.room_ids is null or array_length(ra.room_ids, 1) is null or r.id = any(ra.room_ids))
+    ), '[]'::jsonb))
+  from public.referral_access ra
+  join public.clinics c on c.id = ra.clinic_id
+  where ra.id = p_access_id and ra.referrer_id = auth.uid();
+$$;
+```
+
+> **Порядок выката пакета (важно для обоих откатов):** сначала миграция 0137,
+> потом клиентский бандл. Обратный порядок воспроизводит ровно ту инверсию,
+> ради которой M-7 однажды откатывали: код строже БД → «кабинет видно в
+> карточке, а бронирование отказывает».
+
+## Откат 0136 (кабинетный скоуп радиолога, RF-01)
+
+> Откат ВОЗВРАЩАЕТ дефект: радиолог снова читает и правит записи неназначенных
+> кабинетов прямым PostgREST (утечка PII пациентов). Делать только как аварийную
+> меру, если политика ломает работу центра.
+>
+> Тела `queue_set_status_rpc` / `queue_reschedule_rpc` откатывать НЕ обязательно:
+> добавленный в них room-гард для не-радиологов прозрачен (хелпер вернёт true).
+> Если откатывать — брать тела из 0129 и 0122 соответственно.
+>
+> ⚠️ **Поэтому хелпер `auth_radiologist_room_ok` НЕ ДРОПАТЬ.** PL/pgSQL резолвит
+> вызовы в рантайме: если оставить тела RPC (как разрешено выше) и дропнуть
+> хелпер, ЛЮБОЙ переход статуса и ЛЮБОЙ перенос записи любой ролью упадёт с
+> `42883 function does not exist` — аварийный откат положил бы основной поток
+> продукта целиком. Хелпер безвреден сам по себе (для не-радиолога всегда
+> `true`), пусть остаётся. Дропать его можно ТОЛЬКО вместе с откатом обоих тел
+> RPC и после отката 0137 (она его тоже использует).
+
+```sql
+drop trigger if exists a00_radiologist_scope on public.queue_entries;
+drop function if exists public.guard_radiologist_scope();
+
+drop policy if exists queue_select on public.queue_entries;
+create policy queue_select on public.queue_entries
+  for select using (clinic_id = auth_clinic_id() or created_by = auth.uid() or referrer_id = auth.uid());
+drop policy if exists queue_write_staff on public.queue_entries;
+create policy queue_write_staff on public.queue_entries
+  for all using (clinic_id = auth_clinic_id() and not auth_is_referrer())
+  with check (clinic_id = auth_clinic_id() and not auth_is_referrer());
+
+-- ⚠️ auth_radiologist_room_ok(uuid) НЕ дропаем — см. предупреждение выше
+-- (её зовут тела queue_set_status_rpc / queue_reschedule_rpc в рантайме).
+```
+
 ## Откат 0135 (CAS-RPC графіка дня + queue_active_requires_room_chk)
 
 > ### ⚠️ ШАГ 0 — ПОРЯДОК ЗАВИСИТ ОТ ТОГО, ВЫКАЧЕН ЛИ КЛИЕНТСКИЙ ШАГ 2
