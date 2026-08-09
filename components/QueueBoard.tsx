@@ -1445,7 +1445,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     }
   }, [clinicId]);
 
-  const loadOverrides = useCallback(async () => {
+  /* Повертає свіжу мапу (а не лише кладе в стан): обробник конфлікту CAS мусить
+     перезаморозити знімок із ЦІЄЇ вибірки, а стан у замиканні на той момент
+     ще старий. undefined = вибірка не вдалася. */
+  const loadOverrides = useCallback(async (): Promise<Record<string, DayOverride> | undefined> => {
     try {
       const supabase = createClient();
       const { data, error } = await supabase
@@ -1453,13 +1456,15 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         // 0135: updated_at — знімок для CAS (замерзає при відкритті модалки графіка)
         .select("override_date, all_closed, label, rooms, updated_at")
         .eq("clinic_id", clinicId);
-      if (error) { setOverridesErr(true); return; }
+      if (error) { setOverridesErr(true); return undefined; }
       const m: Record<string, DayOverride> = {};
       (data || []).forEach((o) => { m[o.override_date] = o as unknown as DayOverride; });
       setOverrides(m);
       setOverridesErr(false);
+      return m;
     } catch {
       setOverridesErr(true);
+      return undefined;
     }
   }, [clinicId]);
 
@@ -1598,33 +1603,68 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      ДО кліку «Зберегти», і CAS зі свіжою міткою «підтвердив» би затирання.
      `null` = «override не існував». Мітку не проганяти через Date (0119). */
   const schedSnapRef = useRef<string | null>(null);
+  /* Лічильник ремоунтів модалки графіка (key). Конфлікт CAS без ремоунту — штопор:
+     roomState і знімок замерзли від старого стану, повторне «Зберегти» приречене
+     назавжди (ревʼю р.1 шагу 2). Ремоунт оновлює ОБИДВА разом — оновлювати лише
+     знімок не можна: свіжа мітка при старому roomState «узаконила» б затирання
+     чужої правки, тобто повернула б H-5. */
+  const [schedEditEpoch, setSchedEditEpoch] = useState(0);
   function openSchedEdit() {
     schedSnapRef.current = (overrides[dayKey] || null)?.updated_at ?? null;
     setSchedEditOpen(true);
   }
+  /* Конфлікт CAS: перечитати overrides, перезаморозити знімок зі СВІЖОЇ вибірки
+     (не зі стану — він у цьому замиканні старий) і ремоунтнути відкриту модалку.
+     Якщо вибірка не вдалась — знімок лишається старим: повторне збереження чесно
+     дасть конфлікт знову, а не затре чужу правку. */
+  async function schedConflictRecover() {
+    const fresh = await loadOverrides();
+    /* Ремоунт — ЛИШЕ зі свіжими даними: без них він стер би правки користувача,
+       нічого не давши взамін (стара пара «знімок + existing» і так консистентна,
+       повторне збереження чесно конфліктне, банер overridesErr уже видно). */
+    if (!fresh) return;
+    schedSnapRef.current = fresh[dayKey]?.updated_at ?? null;
+    setSchedEditEpoch((e) => e + 1);
+  }
+  /* Гард від подвійного кліку «Зберегти»/«Скинути» (інваріант с28): два польоти
+     з одним знімком інакше дають «Помилка: конфлікт» ПОВЕРХ успішного тосту —
+     оператор бачить вранє про фактично збережений графік. */
+  const schedBusyRef = useRef(false);
   async function saveOverride(ov: { all_closed: boolean; label?: string; rooms: Record<string, { closed?: boolean; start?: string; end?: string; breaks?: { start: string; end: string }[] }> }) {
-    const res = await saveScheduleOverride({ overrideDate: dayKey, allClosed: !!ov.all_closed, label: ov.label || null, rooms: ov.rooms || {}, expectedUpdatedAt: schedSnapRef.current });
-    /* Модалку закриваємо ЛИШЕ при успіху: закриття до перевірки знищувало б
-       незбережену роботу користувача рівно в момент конфлікту (ревʼю 0135). */
-    if (!res.ok) {
-      notify("Помилка: " + res.error, "error");
-      if (res.code === "sched_conflict") loadOverrides();
-      return;
+    if (schedBusyRef.current) return;
+    schedBusyRef.current = true;
+    try {
+      const res = await saveScheduleOverride({ overrideDate: dayKey, allClosed: !!ov.all_closed, label: ov.label || null, rooms: ov.rooms || {}, expectedUpdatedAt: schedSnapRef.current });
+      /* Модалку закриваємо ЛИШЕ при успіху: закриття до перевірки знищувало б
+         незбережену роботу користувача рівно в момент конфлікту (ревʼю 0135). */
+      if (!res.ok) {
+        notify("Помилка: " + res.error, "error");
+        if (res.code === "sched_conflict") await schedConflictRecover();
+        return;
+      }
+      setSchedEditOpen(false);
+      notify("Графік оновлено", "success");
+      loadOverrides();
+    } finally {
+      schedBusyRef.current = false;
     }
-    setSchedEditOpen(false);
-    notify("Графік оновлено", "success");
-    loadOverrides();
   }
   async function resetOverride() {
-    const res = await resetScheduleOverride(dayKey, schedSnapRef.current);
-    if (!res.ok) {
-      notify("Помилка: " + res.error, "error");
-      if (res.code === "sched_conflict") loadOverrides();
-      return;
+    if (schedBusyRef.current) return;
+    schedBusyRef.current = true;
+    try {
+      const res = await resetScheduleOverride(dayKey, schedSnapRef.current);
+      if (!res.ok) {
+        notify("Помилка: " + res.error, "error");
+        if (res.code === "sched_conflict") await schedConflictRecover();
+        return;
+      }
+      setSchedEditOpen(false);
+      notify("Повернуто типовий графік", "success");
+      loadOverrides();
+    } finally {
+      schedBusyRef.current = false;
     }
-    setSchedEditOpen(false);
-    notify("Повернуто типовий графік", "success");
-    loadOverrides();
   }
   const schedOf = (roomId: string) => (rooms || []).find((r) => r.id === roomId)?.schedule;
   function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride, schedOf(roomId)).closed; }
@@ -2782,7 +2822,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       )}
 
       {schedEditOpen && (
-        <ScheduleEditModal date={selectedDate} rooms={visRooms} existing={selectedOverride} entries={entries}
+        <ScheduleEditModal key={schedEditEpoch} date={selectedDate} rooms={visRooms} existing={selectedOverride} entries={entries}
           onClose={() => setSchedEditOpen(false)} onSave={saveOverride} onReset={resetOverride} />
       )}
 
