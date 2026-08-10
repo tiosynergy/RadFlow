@@ -4,6 +4,76 @@
 для миграций, добавленных в ходе аудита 2026-06-25. Выполнять в **обратном** порядке
 (0037 → 0031) и только при необходимости. Все скрипты идемпотентны.
 
+## Откат 0140 (search_path 7 функций + allowlist 18 триггерных и 5 RPC + sro на каноне 0139)
+
+> Три части независимы — откатывать можно любую отдельно.
+>
+> ⚠️ **Часть 3: восстанавливать РОВНО в снятой форме.** У 18 триггерных revoke
+> снял ТРИ элемента ACL (грант на PUBLIC `=X/postgres`, явные `anon=X` и
+> `authenticated=X`), у 5 RPC — ДВА (authenticated не отзывался).
+> `grant … to anon` вернул бы только один:
+> ACL разошёлся бы с исходным, и следующий `revoke … from anon` (без public)
+> уже НЕ закрыл бы доступ — ровно ловушка, которую dry-run 0140 поймал на
+> первой же функции. Явный грант service_role revoke не трогал.
+>
+> ⚠️ **Исключение — `fn_audit()`:** PUBLIC-грант у неё снят ещё 0053-й (строка
+> 70); 0140 добил только anon/authenticated. Вернуть ей public = откатить 0053.
+>
+> ⚠️ **Часть 2:** `reset search_path`, а НЕ `set search_path = ''` — пустой
+> путь это не «как было», а более строгий режим.
+>
+> ⚠️ **Часть 1:** возврат к редакции 0111 СУЖАЕТ видимость направителя (грант
+> вместо «грант ∪ кабинеты своих строк») и снова рассинхронит sro с
+> services/rooms/incidents из 0139. Делать только вместе с откатом 0139.
+
+```sql
+-- Часть 1: sro_referrer_read → редакция 0111. Роль сохранить: to authenticated.
+drop policy if exists sro_referrer_read on public.service_room_overrides;
+create policy sro_referrer_read on public.service_room_overrides
+  for select to authenticated using (
+    public.auth_can_refer(clinic_id)
+    and public.auth_referrer_can_book_room(room_id)
+  );
+
+-- Часть 2: снять прибитый search_path (вернуть наследование от сессии).
+alter function public.greatest_severity(text, text)        reset search_path;
+alter function public.merge_changed_fields(text[], text[]) reset search_path;
+alter function public.touch_updated_at()                   reset search_path;
+alter function public.set_scheduled_at()                   reset search_path;
+alter function public.sync_cito_from_priority()            reset search_path;
+alter function public.clear_clarify_flag()                 reset search_path;
+alter function public.study_type_modality(text)            reset search_path;
+
+-- Часть 3a: 17 триггерных — вернуть PUBLIC + явные anon, authenticated.
+grant execute on function public.check_case_clinic_match()      to public, anon, authenticated;
+grant execute on function public.check_case_distinct_room()     to public, anon, authenticated;
+grant execute on function public.check_case_no_time_overlap()   to public, anon, authenticated;
+grant execute on function public.check_no_overlap()             to public, anon, authenticated;
+grant execute on function public.check_not_during_incident()    to public, anon, authenticated;
+grant execute on function public.check_service_room()           to public, anon, authenticated;
+grant execute on function public.check_service_room_override()  to public, anon, authenticated;
+grant execute on function public.check_studies_active_catalog() to public, anon, authenticated;
+grant execute on function public.check_studies_match_room()     to public, anon, authenticated;
+grant execute on function public.check_waitlist_consistency()   to public, anon, authenticated;
+grant execute on function public.guard_call_status_change()     to public, anon, authenticated;
+grant execute on function public.guard_priority_change()        to public, anon, authenticated;
+grant execute on function public.guard_referrer_doctor()        to public, anon, authenticated;
+grant execute on function public.guard_status_change_referrer() to public, anon, authenticated;
+grant execute on function public.guard_waitlist_room()          to public, anon, authenticated;
+grant execute on function public.handle_new_user()              to public, anon, authenticated;
+grant execute on function public.trg_case_status_recompute()    to public, anon, authenticated;
+
+-- Часть 3b: fn_audit — БЕЗ public (см. врезку: public снят 0053-й).
+grant execute on function public.fn_audit() to anon, authenticated;
+
+-- Часть 3c: 5 RPC (authenticated у них 0140 не отзывал — вернуть public+anon).
+grant execute on function public.referral_center_card(uuid)       to public, anon;
+grant execute on function public.search_referrers(text)           to public, anon;
+grant execute on function public.services_import_rpc(jsonb, uuid) to public, anon;
+grant execute on function public.sink_overdue_scheduled()         to public, anon;
+grant execute on function public.save_schedule_override(date, boolean, text, jsonb, text) to public, anon;
+```
+
 ## Откат 0139 (room-скоуп направителя: rooms / services / incidents)
 
 > Откат возвращает направителю чтение **всего** операционного каталога центра —
