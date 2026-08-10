@@ -8,7 +8,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode, type
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { wallToday0 } from "@/lib/incidents";
-import { modalityLabel, modalityCode } from "@/lib/studies";
+import { modalityLabel, modalityCode, fmtUah } from "@/lib/studies";
 import { quickSearchMatch } from "@/lib/quickSearch";
 import { useModalA11y } from "@/lib/useModalA11y";
 import Sidebar from "@/components/Sidebar";
@@ -41,7 +41,6 @@ function today0(tz?: string) { return wallToday0(tz); }
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
-function fmtUah(n: number) { return String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴"; }
 
 /* Каталог scoped-центрів для CSV: clinic_id → «modalityCode|region» → ціна/контраст.
    Дзеркалить catalog_est_sum з RPC 0114/0121 (чистий каталог): дохід рахуємо на

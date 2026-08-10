@@ -23,8 +23,10 @@ import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallToday0, type IncidentL
    а tg_change_markers_queue розіслав би крапки на рівному місці. */
 const normName = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ");
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
-import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, studyLabel, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
-import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
+import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, studyLabel, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, DUR_MAX } from "@/lib/studies";
+import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
+import StudySearchBox from "@/components/StudySearchBox";
+import type { StudySearchHit } from "@/lib/studySearch";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { countFit } from "@/lib/slots";
@@ -422,10 +424,8 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const procLabel = region ? `${primaryKind} · ${region}${contrastSuffix}` : primaryKind;
   const regionObj = regions.find((r) => r.label === region);
   const durBump = contrast && !contrastFilters ? CONTRAST_DUR : 0;
-  const priceBump = contrast && !contrastFilters ? (regionObj?.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
   const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + durBump) : (allRegions[0]?.dur ?? 20);
-  const price = regionObj ? regionObj.price + priceBump : null;
-  const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
+
 
   const [durEdit, setDurEdit] = useState("");
   // Передзаповнена тривалість (може бути кастомною) — застосовується один раз при відкритті.
@@ -485,10 +485,32 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? (o.dur ?? 0) : 0; };
   const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
   const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
-  const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(5, parseInt(v, 10) || 0) });
+  // Нормалізація тривалості — на BLUR, не на keystroke: Math.max(5, …) зʼїдав
+  // першу цифру («4» ставало 5 — набрати «45» неможливо; та сама хвороба, що
+  // в StudyEditModal, баг власника с33).
+  const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(0, Math.min(DUR_MAX, parseInt(v, 10) || 0)) });
+  const exBlurDur = (i: number) => { const n = Number(extraStudies[i]?.dur) || 0; exPatch(i, { dur: n > 0 ? normDur(n) : 0 }); };
   const exAdd = () => setExtraStudies((a) => [...a, { type: primaryKind, region: "", dur: exDur(primaryKind, "") }]);
   const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
+
+  /* Пошук дослідження за назвою (пакет «пошук/ціна у формах»): вибір підставляє
+     тип + область + кабінет-власник (room-owned без кабінета не зрезолвиться —
+     шапка lib/studySearch). Доступність: базова послуга потребує хоч одного
+     кабінета своєї модальності, кабінетна — щоб кабінет був у списку bookable
+     (вимкнені кабінети в bookable не входять, 0123). */
+  const studySearchAllow = (h: StudySearchHit) =>
+    h.roomId ? bookable.some((r) => r.id === h.roomId) : roomsOfType(h.type).length > 0;
+  function pickStudy(h: StudySearchHit) {
+    changeType(h.type);            // скидає область/контраст/час, підганяє додаткові
+    setRegion(h.label);
+    setTime("");
+    /* Базова послуга НЕ повинна губити вже обраний кабінет: changeType щойно
+       скинув roomId (single → авто, інакше ""), але якщо старий кабінет пасує
+       новій модальності — повертаємо його (ревʼю пакета, m-1). */
+    const list = roomsOfType(h.type);
+    setRoomId(h.roomId ?? (list.some((r) => r.id === roomId) ? roomId : (list.length === 1 ? list[0].id : "")));
+  }
 
   /* studies[].contrast (сервер рахує з нього has_contrast для дошки радіолога):
      у режимі фільтра це ВЛАСТИВІСТЬ обраної позиції прайсу, а не стан чекбокса —
@@ -983,14 +1005,29 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                 : priority ? PRIORITY_META[priority as PatientPriority].desc : "оберіть пріоритет — впливає на порядок у черзі"}</span>
             </div>
 
+            <div className="fld" style={{ marginBottom: 2 }}>
+              <StudySearchBox
+                sources={[{ clinicId: clinicId || "", services }]}
+                roomNameOf={(id) => (rooms || []).find((r) => r.id === id)?.name}
+                /* Обрана модальність обмежує видачу (рішення власника: КТ-форма
+                   не має пропонувати МРТ-послуги). Перемкнули тип — видача
+                   перебудувалась. */
+                modalities={[studyType]}
+                allow={studySearchAllow}
+                onPick={pickStudy}
+              />
+            </div>
             <div className="fld-row" style={{ alignItems: "flex-start" }}>
               <label className="fld" style={{ flex: "1 1 auto" }}>
                 <span className={"fld-lab" + (miss.region ? " bk-miss-lab" : "")}>Область дослідження <span className="req">*</span></span>
                 <select className="inp" value={region} onChange={(e) => setRegion(e.target.value)}>
                   <option value="">— Оберіть область —</option>
-                  {regions.map((r) => (
-                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + durBump + " хв"}</option>
-                  ))}
+                  {regions.map((r) => {
+                    const pBump = contrast && !contrastFilters ? (r.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
+                    return (
+                      <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + durBump + " хв"}{r.price > 0 ? " · " + fmtUah(r.price + pBump) : ""}</option>
+                    );
+                  })}
                 </select>
               </label>
               <label className="fld" style={{ flex: "0 0 88px" }}>
@@ -1013,9 +1050,20 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
               </label>
             </div>
 
-            {price != null && (
-              <div className="ctx-hint blue" style={{ marginBottom: 6 }}>Орієнтовна вартість: {fmtPrice(price)}</div>
-            )}
+            {(() => {
+              /* Сума по ВСІХ дослідженнях (основне + додаткові), не лише по
+                 першому — ціни беруться зі снапшотів allStudies, тобто рівно ті,
+                 що поїдуть у studies jsonb. Позиції без ціни не замовчуються. */
+              const pb = catalogPriceBreakdown(catalog, allStudies, roomId || undefined);
+              if (allStudies.length === 0 || pb.priced === 0) return null;
+              return (
+                <div className="ctx-hint blue" style={{ marginBottom: 6 }}>
+                  Орієнтовна вартість: {fmtUah(pb.total)}
+                  {allStudies.length > 1 ? ` · ${allStudies.length} досл.` : ""}
+                  {pb.unpriced > 0 ? ` (ще ${pb.unpriced} без ціни)` : ""}
+                </div>
+              );
+            })()}
 
             {/* Додаткові дослідження */}
             <div className="fld">
@@ -1031,9 +1079,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                         </div>
                         <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
-                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}</option>)}
+                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}{x.price > 0 ? " · " + fmtUah(x.price) : ""}</option>)}
                         </select>
-                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
                         <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
                       </div>
                     );

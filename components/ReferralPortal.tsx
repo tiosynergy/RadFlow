@@ -37,8 +37,10 @@ import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOver
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { slotBlockedByIncidents, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
-import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
-import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
+import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, normDur, DUR_MAX } from "@/lib/studies";
+import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
+import StudySearchBox from "@/components/StudySearchBox";
+import type { StudySearchHit } from "@/lib/studySearch";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { DobField, BookingCalendar, fmtShort } from "@/components/BookingModal";
 import RoomSelect, { ROOM_LIST_MAX_CHIPS } from "@/components/RoomSelect";
@@ -197,10 +199,8 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
      у каталозі контрастність уже в назві, а ціна позиції вже контрастна. */
   const contrastSuffix = contrast && !contrastFilters ? " з контрастом" : "";
   const durBump = contrast && !contrastFilters ? CONTRAST_DUR : 0;
-  const priceBump = contrast && !contrastFilters ? (regionObj?.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
   const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + durBump) : (allRegions[0]?.dur ?? 20);
-  const price = regionObj ? regionObj.price + priceBump : null;
-  const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
+
 
   const [durEdit, setDurEdit] = useState("");
   // 0117: каталожне «—» → порожнє поле (ручний ввід).
@@ -248,10 +248,48 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
 
   const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
   const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
-  const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(5, parseInt(v, 10) || 0) });
+  // Нормалізація тривалості — на BLUR, не на keystroke: Math.max(5, …) зʼїдав
+  // першу цифру («4» ставало 5 — набрати «45» неможливо; та сама хвороба, що
+  // в StudyEditModal, баг власника с33).
+  const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(0, Math.min(DUR_MAX, parseInt(v, 10) || 0)) });
+  const exBlurDur = (i: number) => { const n = Number(extraStudies[i]?.dur) || 0; exPatch(i, { dur: n > 0 ? normDur(n) : 0 }); };
   const exAdd = () => setExtraStudies((a) => [...a, { type: primaryKind, region: "", dur: exDur(primaryKind, "") }]);
   const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
+
+  /* Пошук дослідження за назвою ПО ВСІХ доступних центрах (пакет «пошук/ціна у
+     формах»). Дані вже в памʼяті (SSR тягне services усіх активних центрів), а
+     RLS 0139 гарантує, що кабінетних послуг поза грантом тут просто немає.
+     Додатковий allow — про UI-правила: кабінет має бути придатним до запису
+     (bookableRooms: вимкнені відпадають), базова послуга потребує кабінета
+     своєї модальності в гранті цього центру. */
+  const grantRoomsOf = (cid: string) => {
+    const c = activeCenters.find((x) => x.clinicId === cid);
+    return c ? bookableRooms(roomsInGrant(roomsByClinic[cid] || [], c.room_ids)) : [];
+  };
+  const studySearchAllow = (h: StudySearchHit) => {
+    /* ⚠️ Замок кейса: поки накопичені кроки, центр змінювати НЕ МОЖНА (кейс живе
+       в одному центрі, 0095; селект центру в цей час disabled). Пошук — другий
+       шлях до setCenterId, і без цього гарда він обходив замок: крок із
+       кабінетом центру А + крок центру Б → guard_room_in_clinic відхиляє кейс
+       незрозумілою помилкою (ревʼю пакета, M-4). Тому в режимі кейса видача
+       звужується до поточного центру. */
+    if (caseSteps.length > 0 && h.clinicId !== centerId) return false;
+    const rs = grantRoomsOf(h.clinicId);
+    return h.roomId ? rs.some((r) => r.id === h.roomId) : rs.some((r) => r.modality === h.type);
+  };
+  /* Вибір результату підставляє ВСЕ: центр → тип → область → кабінет-власник
+     (без кабінета room-owned послуга не зрезолвиться — шапка lib/studySearch).
+     Зміну центру підхоплюють наявні ефекти (дата за зоною центру, каталог). */
+  function pickStudy(h: StudySearchHit) {
+    const label = modalityLabel(h.type);
+    if (h.clinicId !== centerId) setCenterId(h.clinicId);
+    setStudyType(label); setContrast(false); setTime("");
+    setExtraStudies((a) => a.map((x) => (x.type === label ? x : { ...x, type: label, region: "", dur: 0 })));
+    setRegion(h.label);
+    const rs = grantRoomsOf(h.clinicId).filter((r) => r.modality === h.type);
+    setRoomId(h.roomId ?? (rs.length === 1 ? rs[0].id : (rs.some((r) => r.id === roomId) ? roomId : null)));
+  }
 
   /* studies[].contrast у режимі фільтра — властивість обраної позиції прайсу,
      а не стан чекбокса (з нього сервер рахує has_contrast). */
@@ -605,14 +643,29 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
               <span className="bk-time-state none">{priority ? PRIORITY_META[priority as PatientPriority].desc : "оберіть пріоритет — впливає на порядок у черзі"}</span>
             </div>
 
+            <div className="fld" style={{ marginBottom: 2 }}>
+              <StudySearchBox
+                sources={activeCenters.map((c) => ({ clinicId: c.clinicId, services: servicesByClinic[c.clinicId] }))}
+                clinicNameOf={(cid) => activeCenters.find((c) => c.clinicId === cid)?.name}
+                roomNameOf={(id) => { for (const rs of Object.values(roomsByClinic)) { const r = (rs || []).find((x) => x.id === id); if (r) return r.name; } return undefined; }}
+                /* Обрана модальність обмежує видачу (рішення власника). Пошук
+                   лишається кросцентровим — але в межах обраного типу. */
+                modalities={[modality]}
+                allow={studySearchAllow}
+                onPick={pickStudy}
+              />
+            </div>
             <div className="fld-row" style={{ alignItems: "flex-start" }}>
               <label className="fld" style={{ flex: "1 1 auto" }}>
                 <span className={"fld-lab" + (miss.region ? " bk-miss-lab" : "")}>Область дослідження <span className="req">*</span></span>
                 <select className="inp" value={region} onChange={(e) => { setRegion(e.target.value); setTime(""); }}>
                   <option value="">— Оберіть область —</option>
-                  {regions.map((r) => (
-                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + durBump + " хв"}</option>
-                  ))}
+                  {regions.map((r) => {
+                    const pBump = contrast && !contrastFilters ? (r.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
+                    return (
+                      <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + durBump + " хв"}{r.price > 0 ? " · " + fmtUah(r.price + pBump) : ""}</option>
+                    );
+                  })}
                 </select>
               </label>
               <label className="fld" style={{ flex: "0 0 108px" }}>
@@ -635,9 +688,19 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
               </label>
             </div>
 
-            {price != null && (
-              <div className="ctx-hint blue" style={{ marginBottom: 6 }}>Орієнтовна вартість: {fmtPrice(price)}</div>
-            )}
+            {(() => {
+              /* Сума по ВСІХ дослідженнях (основне + додаткові) — ціни зі
+                 снапшотів allStudies, тобто рівно ті, що поїдуть у studies. */
+              const pb = catalogPriceBreakdown(catalog, allStudies, roomId || undefined);
+              if (allStudies.length === 0 || pb.priced === 0) return null;
+              return (
+                <div className="ctx-hint blue" style={{ marginBottom: 6 }}>
+                  Орієнтовна вартість: {fmtUah(pb.total)}
+                  {allStudies.length > 1 ? ` · ${allStudies.length} досл.` : ""}
+                  {pb.unpriced > 0 ? ` (ще ${pb.unpriced} без ціни)` : ""}
+                </div>
+              );
+            })()}
 
             <div className="fld">
               {extraStudies.length > 0 && (
@@ -652,9 +715,9 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                         </div>
                         <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
-                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}</option>)}
+                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}{x.price > 0 ? " · " + fmtUah(x.price) : ""}</option>)}
                         </select>
-                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
                         <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
                       </div>
                     );
