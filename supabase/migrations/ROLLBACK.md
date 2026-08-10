@@ -4,6 +4,44 @@
 для миграций, добавленных в ходе аудита 2026-06-25. Выполнять в **обратном** порядке
 (0037 → 0031) и только при необходимости. Все скрипты идемпотентны.
 
+## Откат 0139 (room-скоуп направителя: rooms / services / incidents)
+
+> Откат возвращает направителю чтение **всего** операционного каталога центра —
+> то есть ровно ту утечку, которую нашёл внешний аудит (RF-03). Делать только
+> вместе с откатом клиента.
+>
+> ⚠️ **Порядок обязателен: сперва политики, потом функция.** PL/pgSQL и RLS
+> резолвят вызовы в рантайме — если сначала уронить
+> `auth_referrer_visible_rooms()`, все три политики начнут падать с
+> `42883 function does not exist`, и направитель получит ошибку вместо данных.
+>
+> ⚠️ Индекс `waitlist_referrer_idx` откатывать **не нужно**: он полезен сам по
+> себе (`waitlist_select` из 0138 фильтрует по `referrer_id`).
+>
+> ⚠️ Клиентские правки (`ReferrerSidebar` — три причины пустого списка,
+> `ReferralPortal.reschedRooms` — явный фильтр грантом) откатывать не следует:
+> они корректны и на старой политике.
+
+```sql
+-- Шаг 1: вернуть политики к состоянию до 0139 (0024 для rooms/incidents,
+-- 0107 для services). Роли сохранить: {public} у rooms/incidents,
+-- to authenticated у services.
+drop policy if exists rooms_referrer_read on public.rooms;
+create policy rooms_referrer_read on public.rooms
+  for select using (clinic_id in (select public.auth_referrer_clinics()));
+
+drop policy if exists services_referrer_read on public.services;
+create policy services_referrer_read on public.services
+  for select to authenticated using (public.auth_can_refer(clinic_id));
+
+drop policy if exists incidents_referrer_read on public.incidents;
+create policy incidents_referrer_read on public.incidents
+  for select using (clinic_id in (select public.auth_referrer_clinics()));
+
+-- Шаг 2: только теперь убрать функцию.
+drop function if exists public.auth_referrer_visible_rooms();
+```
+
 ## Откат 0138 (lockdown schedule_overrides + аудитория пометок)
 
 > Две части независимы.

@@ -1637,7 +1637,24 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
 
   function onCentersChanged() { router.refresh(); }
 
-  const reschedRooms = reschedFor ? (roomsByClinic[reschedFor.clinic_id] || []) : [];
+  // Випадайка кабінетів у переносі. Фільтруємо ГРАНТОМ явно: бронювати поза
+  // грантом усе одно не дасть `auth_referrer_can_book_room` (0057), і до 0139
+  // направник бачив у списку весь центр, обирав чужий кабінет і отримував
+  // відмову вже від RPC. Після 0139 RLS звужує список і сама — але покладатись
+  // на форму політики замість явного правила ми не можемо (канон lib/rooms.ts:
+  // грант фільтрує СПИСКИ кабінетів).
+  // ⚠️ Поточний кабінет запису лишається в списку навіть поза грантом — і це НЕ
+  // «щоб можна було зсунути час у тому самому кабінеті»: `queue_reschedule_rpc`
+  // (0136) відбиває будь-який кабінет поза грантом, включно з поточним. Причина
+  // технічна: без нього `RescheduleModal` не знайде `curRoom`, модальність
+  // впаде в дефолт і сітка слотів збереться не тієї модальності.
+  const reschedRooms = (() => {
+    if (!reschedFor) return [];
+    const all = roomsByClinic[reschedFor.clinic_id] || [];
+    const granted = roomsInGrant(all, centersById[reschedFor.clinic_id]?.room_ids);
+    const cur = all.find((r) => r.id === reschedFor.room_id);
+    return cur && !granted.some((r) => r.id === cur.id) ? [...granted, cur] : granted;
+  })();
   const TAB_META: Record<string, { t: string; i: string }> = {
     new: { t: "Нове направлення", i: "＋" }, mine: { t: "Мої направлення", i: "▦" },
     waitlist: { t: "Лист очікування", i: "⏳" }, centers: { t: "Мої центри", i: "🏥" }, profile: { t: "Мій профіль", i: "👤" },
@@ -1646,7 +1663,9 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
 
   return (
     <div className="app">
-      <ReferrerSidebar centers={activeCenters} roomsByClinic={visRoomsByClinic} roomNoteOf={offNote} doctorName={doctorName}
+      <ReferrerSidebar centers={activeCenters} roomsByClinic={visRoomsByClinic}
+        rawRoomCountOf={(cid) => (roomsByClinic[cid] || []).length}
+        roomNoteOf={offNote} doctorName={doctorName}
         backHref={backHref} backLabel={backLabel}
         activeTab={tab}
         onNav={(key) => { if (key === "mine") setBoardFocus({ clinicId: "all", roomId: "all", nonce: Date.now() }); setTab(key); }}
