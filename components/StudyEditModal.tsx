@@ -8,8 +8,10 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, CONTRAST_DUR, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind } from "@/lib/studies";
-import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
+import { CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, DUR_MAX, CONTRAST_DUR, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah } from "@/lib/studies";
+import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
+import StudySearchBox from "@/components/StudySearchBox";
+import type { StudySearchHit } from "@/lib/studySearch";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, offScheduleKind, OFF_SCHED_GRACE_MIN, type DayOverride } from "@/lib/schedule";
 import { wallNow, wallMinOfDay, wallDayKey, wallToday0 } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
@@ -230,7 +232,13 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   }
   // H-1: кратно 5, 5..480 — те саме обмеження, що CHECK у БД (0066).
   // 0117: порожнє поле → 0 (БЕЗ normDur-фолбеку 30) — збереження блокує valid.
-  function setDur(i: number, v: string) { const n = parseInt(v, 10) || 0; patch(i, { dur: n > 0 ? normDur(n) : 0 }); }
+  // ⚠️ Нормалізуємо на BLUR, а не на кожне натискання: normDur на keystroke
+  // зʼїдав першу цифру («4» → 5, «8» → 10 — набрати «45» було неможливо;
+  // баг власника, с33). Під час набору приймаємо сире число (лише стеля
+  // DUR_MAX), а кратність 5 і мінімум 5 наводимо, коли поле покидають, і ще
+  // раз у studiesOut — клік по «Зберегти» самим blur-ом уже нормалізує.
+  function setDur(i: number, v: string) { const n = parseInt(v, 10) || 0; patch(i, { dur: Math.max(0, Math.min(DUR_MAX, n)) }); }
+  function blurDur(i: number) { const n = Number(rows[i]?.dur) || 0; patch(i, { dur: n > 0 ? normDur(n) : 0 }); }
   function addRow() { setRows((rs) => [...rs, { type: defaultType, region: "", contrast: false, dur: recalc(defaultType, "", false) }]); }
   function removeRow(i: number) { setRows((rs) => (rs.length > 1 ? rs.filter((_, idx) => idx !== i) : rs)); }
 
@@ -281,30 +289,55 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
     return "";
   }
 
-  function save() {
-    /* Пишемо повний склад (як BookingModal): контраст + ціна. Раніше вони губилися
-       при редагуванні — has_contrast на сервері рахується саме зі studies.
+  /* Повний склад із цінами — ЄДИНА точка і для save(), і для «Орієнтовної
+     вартості» внизу (пакет «пошук/ціна у формах»): показувати одну суму, а
+     зберігати іншу — прямий шлях до тихого розходження.
 
-       ГРАНФАЗЕРИНГ (ревʼю, M3): у рядка, який оператор НЕ чіпав (той самий
-       type|region, що й у знімку запису), лишаємо ЗБЕРЕЖЕНУ ціну. Інакше запис,
-       створений за старим правилом (2400 + 900 доплати), після будь-якої правки
-       буфера мовчки дешевшав би до 2400 — історія доходу переписувалась би
-       заднім числом. Нову/змінену позицію рахуємо за поточним каталогом. */
-    const arr: StudyOut[] = rows.filter((r) => r.region).map((r) => {
-      /* Ключ включає контраст: у модифікаторному режимі перемикання галочки
-         змінює ціну (±доплата), і без цього снапшот повертав би стару (ревʼю, M-B). */
-      const snap = origStudies.get(r.type + "|" + r.region + "|" + (r.contrast ? "c" : ""));
-      const price = snap && typeof snap.price === "number"
-        ? snap.price
-        : studyPrice(r.type, r.region, r.contrast, roomId);
-      return {
-        type: r.type,
-        region: r.region,
-        contrast: r.contrast,
-        dur: Number(r.dur) || 0,
-        price,
-      };
+     ГРАНФАЗЕРИНГ (ревʼю, M3): у рядка, який оператор НЕ чіпав (той самий
+     type|region, що й у знімку запису), лишаємо ЗБЕРЕЖЕНУ ціну. Інакше запис,
+     створений за старим правилом (2400 + 900 доплати), після будь-якої правки
+     буфера мовчки дешевшав би до 2400 — історія доходу переписувалась би
+     заднім числом. Нову/змінену позицію рахуємо за поточним каталогом.
+     Ключ включає контраст: у модифікаторному режимі перемикання галочки
+     змінює ціну (±доплата), і без цього снапшот повертав би стару (ревʼю, M-B). */
+  const studiesOut: StudyOut[] = rows.filter((r) => r.region).map((r) => {
+    const snap = origStudies.get(r.type + "|" + r.region + "|" + (r.contrast ? "c" : ""));
+    const price = snap && typeof snap.price === "number"
+      ? snap.price
+      : studyPrice(r.type, r.region, r.contrast, roomId);
+    const rawDur = Number(r.dur) || 0;
+    return {
+      type: r.type,
+      region: r.region,
+      contrast: r.contrast,
+      // Страховка інваріанта «кратно 5»: він раніше тримався на setDur, який
+      // тепер нормалізує лише на blur.
+      dur: rawDur > 0 ? normDur(rawDur) : 0,
+      price,
+    };
+  });
+
+  /* Пошук дослідження за назвою: кабінет і центр запису фіксовані, тож видача —
+     лише база центру + власні послуги ЦЬОГО кабінета, і лише модальність
+     кабінета (lockType). Вибір заповнює перший порожній рядок або додає новий. */
+  const searchMods = lockType ? [modalityCode(roomKind)] : undefined;
+  const studySearchAllow = (h: StudySearchHit) => h.roomId == null || h.roomId === (patient.room_id || null);
+  function pickStudy(h: StudySearchHit) {
+    const t = modalityLabel(h.type);
+    const contrastVal = catalog.contrastIsFilter(t, roomId)
+      ? (catalog.regionInfo(t, h.label, roomId)?.isContrast === true)
+      : false;
+    const row: StudyRow = { type: t, region: h.label, contrast: contrastVal, dur: recalc(t, h.label, contrastVal) };
+    setRows((rs) => {
+      const idx = rs.findIndex((r) => !r.region);
+      return idx >= 0 ? rs.map((r, i) => (i === idx ? row : r)) : [...rs, row];
     });
+  }
+
+  function save() {
+    /* Пишемо повний склад (як BookingModal): контраст + ціна — has_contrast на
+       сервері рахується саме зі studies. Склад і ціни — див. studiesOut вище. */
+    const arr: StudyOut[] = studiesOut;
     /* offSchedule: або запис і був поза графіком (успадкований прапорець), або
        оператор щойно підтвердив нове перетинання межі. Сервер однаково перерахує
        факт сам (scheduleBlock) — сюди їде саме ЗГОДА, а не «стан слота». */
@@ -355,6 +388,16 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
               </label>
             </div>
           )}
+          <div className="fld" style={{ marginBottom: 8 }}>
+            <StudySearchBox
+              sources={[{ clinicId: clinicId || "", services }]}
+              roomNameOf={(id) => (rooms || []).find((r) => r.id === id)?.name}
+              modalities={searchMods}
+              allow={studySearchAllow}
+              onPick={pickStudy}
+              placeholder="Пошук дослідження за назвою — заповнить рядок…"
+            />
+          </div>
           <div className="st-rows">
             {rows.map((r, i) => {
               const regions = catalog.regionsWithContrast(r.type, roomId, rowContrastChecked(r));
@@ -385,7 +428,18 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                       <select className="inp" value={hasRegion ? r.region : ""} onChange={(e) => setRegion(i, e.target.value)}>
                         <option value="">— Оберіть область —</option>
                         {!hasRegion && r.region && <option value={r.region}>{r.region} (поточне)</option>}
-                        {regions.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}</option>)}
+                        {regions.map((x) => {
+                          /* У модифікаторному режимі (легасі-статика) ціна й ЧАС
+                             з увімкненим контрастом = позиція + доплата/+хв — як
+                             у формах створення (ревʼю пакета, m-3; час — р.2 m-3:
+                             ціну з доплатою показували, а час без — вибір ставив
+                             30 хв там, де option обіцяв 15). У каталозі обидва
+                             бампи = 0: контрастна позиція вже все містить. */
+                          const mod = rowContrastChecked(r) && !catalog.contrastIsFilter(r.type, roomId);
+                          const pBump = mod ? (x.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
+                          const dBump = mod ? CONTRAST_DUR : 0;
+                          return <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : (x.dur + dBump) + " хв"}{x.price > 0 ? " · " + fmtUah(x.price + pBump) : ""}</option>;
+                        })}
                       </select>
                     </label>
                     <div className="st-field st-field-contrast">
@@ -403,7 +457,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                     </div>
                     <label className="st-field st-field-dur">
                       <span className="st-flab">Тривалість</span>
-                      <div className="st-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => setDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                      <div className="st-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => setDur(i, e.target.value)} onBlur={() => blurDur(i)} /><span className="st-dur-u">хв</span></div>
                     </label>
                   </div>
                 </div>
@@ -461,7 +515,10 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
               {BUFFER_OPTIONS.map((b) => <option key={b} value={b}>{b} хв</option>)}
             </select>
           </label>
-          <span className="st-total">Разом: <b>{totalDur} хв</b>{buffer > 0 ? <> + {buffer} буфер</> : null} · {rows.length} {rows.length === 1 ? "дослідження" : "досл."}</span>
+          <span className="st-total">Разом: <b>{totalDur} хв</b>{buffer > 0 ? <> + {buffer} буфер</> : null} · {rows.length} {rows.length === 1 ? "дослідження" : "досл."}{(() => {
+            const pb = catalogPriceBreakdown(catalog, studiesOut, roomId);
+            return pb.priced > 0 ? <> · <b>{fmtUah(pb.total)}</b>{pb.unpriced > 0 ? ` (ще ${pb.unpriced} без ціни)` : ""}</> : null;
+          })()}</span>
           <button className="btn btn-ghost" onClick={onClose}>Скасувати</button>
           <button className="btn btn-primary" disabled={!valid} onClick={save}>✓ Зберегти дослідження</button>
         </div>

@@ -44,6 +44,7 @@ import {
 import { queueEventTypeFor, caseEventTypeFor, changedFieldsOf } from "@/lib/importantEvents";
 import { emitImportantEvent } from "@/lib/importantEvents.server";
 import { logError } from "@/lib/serverLog";
+import { grantAllowsRoom } from "@/lib/rooms";
 
 export type QueueActionResult =
   | { ok: true; id?: string } // id — створений запис (createBooking/createReferralBooking)
@@ -2013,21 +2014,15 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
     .eq("status", "active")
     .maybeSingle();
   if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
-  /* Канон room_ids: NULL = усі кабінети центру; порожній масив — ТЕЖ усі.
-     ⚠️ Друге виглядає як баг, але це дзеркало БД, і його перевірено на живій
-     базі 2026-08-07: `auth_referrer_can_book_room` (RLS-хелпер запису) містить
-     `ra.room_ids is null or array_length(ra.room_ids, 1) is null or r.id = any(...)`,
-     те саме — в `referral_center_card`, яка малює направнику список кабінетів.
-     Тригер `validate_referral_rooms` (0061) забороняє СТВОРЮВАТИ порожній масив,
-     але вже наявні рядки не чіпав, тож розбіжність тут = «кабінет видно в
-     картці центру, а бронювання відмовляє» — рівно та інверсія, від якої
-     страждав слот-гейт (H-2a).
-     Аудит 2026-08-07 (M-7) пропонував зробити код суворішим за БД. Мета вірна,
-     але порядок зворотний: спершу міграція (прибрати гілку `array_length` в
-     обох функціях + нормалізувати легасі `{}` → NULL), потім прикладний код.
-     Легасі-рядків на проді 0 із 5 (перевірено), тож пакет 0135 нічого не пече. */
-  const roomAllowed = !access.room_ids || access.room_ids.length === 0 || access.room_ids.includes(input.roomId);
-  if (!roomAllowed) return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
+  /* Канон room_ids (0029 + 0137): NULL = усі кабінети центру, масив = рівно ці,
+     ПОРОЖНІЙ масив = жодного. Семантика живе в `grantAllowsRoom` (lib/rooms.ts)
+     і дзеркалить `auth_referrer_can_book_room` — гейт БД для цього ж запису.
+     ⚠️ До 0137 порожній масив означав «усі» З ОБОХ боків; M-7 просив зробити
+     код суворішим за БД, і саме через зворотний порядок правку колись
+     відкотили. Тепер порядок дотримано: спершу міграція, потім код. */
+  if (!grantAllowsRoom(access.room_ids, input.roomId)) {
+    return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
+  }
 
   if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
   { const g = await closedRegionGate(supabase, input.clinicId, input.roomId, input.studies); if (g) return g; }
@@ -2773,12 +2768,6 @@ async function referralAccessFor(supabase: SupabaseClient<Database>, userId: str
   return data ?? null;
 }
 
-/** Канон room_ids: NULL/[] = усі кабінети центру — дзеркало БД, див. розгорнутий
-    коментар у createReferralBooking (і план вирівнювання канону в пакеті 0135). */
-function refRoomAllowed(roomIds: string[] | null, roomId: string): boolean {
-  return !roomIds || roomIds.length === 0 || roomIds.includes(roomId);
-}
-
 export type ReferralCaseInput = CaseInput & { clinicId: string };
 const sReferralCase = sCase.extend({ clinicId: zUuid });
 
@@ -2796,7 +2785,7 @@ export async function createReferralCase(raw: ReferralCaseInput): Promise<QueueA
   const access = await referralAccessFor(supabase, user.id, input.clinicId);
   if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
   for (const st of input.steps) {
-    if (!refRoomAllowed(access.room_ids, st.roomId)) {
+    if (!grantAllowsRoom(access.room_ids, st.roomId)) {
       return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
     }
   }
@@ -2856,7 +2845,7 @@ export async function addReferralCaseStep(caseId: string, clinicId: string, raw:
 
   const access = await referralAccessFor(supabase, user.id, idv.data.clinicId);
   if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
-  if (!refRoomAllowed(access.room_ids, s.roomId)) {
+  if (!grantAllowsRoom(access.room_ids, s.roomId)) {
     return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
   }
 
@@ -2911,7 +2900,7 @@ export async function referralCaseFromEntry(entryId: string, clinicId: string, r
 
   const access = await referralAccessFor(supabase, user.id, idv.data.clinicId);
   if (!access) return { ok: false, error: "Немає активного доступу до центру", code: "forbidden" };
-  if (!refRoomAllowed(access.room_ids, s.roomId)) {
+  if (!grantAllowsRoom(access.room_ids, s.roomId)) {
     return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
   }
 

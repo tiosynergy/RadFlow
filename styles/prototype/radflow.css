@@ -2056,3 +2056,26 @@ select.inp { cursor: pointer; }
 /* Крапка в пункті бокової навігації стоїть праворуч, як і лічильники. */
 .sb-item .rf-dot { margin-left: auto; }
 .sb-item .rf-dot + .sb-badge { margin-left: 6px; }
+
+/* ── Пошук дослідження за назвою (StudySearchBox, спільний для форм запису) ──
+   Кольори — з наявних токенів: --card/--card-2 як у діалогів, --blue-bg для
+   активного пункту (той самий, що в .bk-seg-btn.active). Текст мета-рядка —
+   --text-faint, як підписи .bk-time-state. */
+.ssb { position: relative; }
+.ssb-drop {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 40;
+  margin-top: 4px; max-height: 280px; overflow-y: auto;
+  background: var(--card); border: 1px solid var(--card-2); border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+.ssb-item {
+  display: flex; flex-direction: column; gap: 1px; width: 100%;
+  padding: 7px 10px; text-align: left; background: none; border: 0;
+  color: var(--text); cursor: pointer;
+}
+.ssb-item + .ssb-item { border-top: 1px solid var(--card-2); }
+.ssb-item.on { background: var(--blue-bg); }
+.ssb-name { font-size: 0.8125rem; font-weight: 600; }
+.ssb-meta { font-size: 0.71875rem; color: var(--text-faint); }
+.ssb-item.on .ssb-meta { color: var(--text-secondary); }
+.ssb-empty { padding: 8px 10px; font-size: 0.75rem; color: var(--text-faint); }

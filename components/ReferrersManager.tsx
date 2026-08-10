@@ -15,7 +15,7 @@ import LiveClock from "@/components/LiveClock";
 import PhoneInput from "@/components/PhoneInput";
 import HelpTip from "@/components/HelpTip";
 import { modalityShort, modalityKind } from "@/lib/studies";
-import { bookableRooms, isRoomBookable, visibleRooms, ROOM_OFF_LABEL } from "@/lib/rooms";
+import { bookableRooms, isRoomBookable, visibleRooms, ROOM_OFF_LABEL, grantRoomIds } from "@/lib/rooms";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
@@ -201,7 +201,10 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   }
 
   function roomsLabel(room_ids: string[] | null) {
-    if (!room_ids || room_ids.length === 0) return "усі кабінети";
+    if (!room_ids) return "усі кабінети";
+    // 0137: порожній масив — це «жодного», а не «усі». Створити такий грант UI
+    // не дає (і тригер 0061 не пустить), але легасі-рядок показати треба чесно.
+    if (room_ids.length === 0) return "жодного кабінету";
     const known = sanitizeRooms(room_ids);
     const lost = room_ids.length - known.length; // id кабінетів, яких уже немає в центрі
     const names = known.map((id) => {
@@ -296,8 +299,11 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
        сервер тепер відповість 400. Санітизуємо; якщо не лишилось жодного живого
        кабінету — просимо адміна обрати кабінети явно (мовчки перетворювати на
        null = «усі кабінети» не можна). */
-    const clean = r.room_ids && r.room_ids.length ? sanitizeRooms(r.room_ids) : null;
-    if (r.room_ids && r.room_ids.length && (!clean || clean.length === 0)) {
+    // 0137: `[]` — це «жодного кабінету», а не «усі». Тому обробляємо його як
+    // явний (порожній) список, а не як null: інакше повторне запрошення тихо
+    // перетворило б «жодного» на «усі кабінети».
+    const clean = grantRoomIds(r.room_ids) ? sanitizeRooms(r.room_ids) : null;
+    if (grantRoomIds(r.room_ids) && (!clean || clean.length === 0)) {
       notify("У цього гранта не лишилось жодного кабінету — оберіть кабінети", "error");
       startEdit(r);
       return;
@@ -321,8 +327,11 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   function startEdit(r: AccessRow) {
     setEditingId(r.access_id);
     // Протухлі id відсікаємо ще на відкритті — інакше просте «Зберегти» повертало б їх у БД.
+    // 0137: галочки «усі кабінети» ставимо ЛИШЕ для null-гранта. Порожній масив
+    // означає «жодного», і підставляти йому весь список означало б мовчки
+    // розширити доступ рівно там, де його щойно забрали.
     const clean = sanitizeRooms(r.room_ids);
-    const initialRooms = (r.room_ids && r.room_ids.length ? clean : allRoomIds);
+    const initialRooms = grantRoomIds(r.room_ids) ? clean : allRoomIds;
     setEditForm({ policy: r.policy || "direct", room_ids: initialRooms, note: r.note || "" });
     // Заморожуємо вимкнені кабінети гранта — див. accessRoomsFor.
     setEditOffIds(initialRooms.filter((id) => roomById[id] && !isRoomBookable(roomById[id])));
@@ -362,7 +371,10 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           {r.status === "active" && (() => {
             // Грант без жодного живого кабінету: направник фактично не може ані
             // записувати, ані редагувати свої записи в центрі — це треба бачити.
-            const dead = !!(r.room_ids && r.room_ids.length && sanitizeRooms(r.room_ids).length === 0);
+            // 0137: сюди ж і ПОРОЖНІЙ масив — під новим каноном це «жодного
+            // кабінету», тобто найнеробочіший грант із можливих.
+            const list = grantRoomIds(r.room_ids);
+            const dead = !!list && (list.length === 0 || sanitizeRooms(r.room_ids).length === 0);
             return (
               <div style={{ fontSize: "0.75rem", color: dead ? "var(--red)" : "var(--text-secondary)", marginTop: 2 }}>
                 Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Кабінети: {roomsLabel(r.room_ids)}

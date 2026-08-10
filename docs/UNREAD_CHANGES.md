@@ -1,8 +1,11 @@
 # Контекстні позначки непрочитаних змін («червоні крапки»)
 
-> Сесія 27 (2026-08-06). **У ПРОДІ.** БД: `0131` (таблиця + маршрутизація +
-> ack), `0132` (тригери фан-ауту), `0133` (`subject_date` — крапки на
-> календарі). Клієнт: `lib/unreadChanges.ts` (чиста логіка),
+> Сесія 27 (2026-08-06), уточнено с33 (2026-08-09). **У ПРОДІ.** БД: `0131`
+> (таблиця + маршрутизація + ack), `0132` (тригери фан-ауту), `0133`
+> (`subject_date` — крапки на календарі), `0134` (актор доступів; CEO прибрано
+> з матриці), **`0138`** (аудиторія: `catalog` — лише адмін; радіолог поза
+> каталогом і вейтлістом; + точки ack для радіолога на «простоях» і для
+> направника в листі очікування). Клієнт: `lib/unreadChanges.ts` (чиста логіка),
 > `lib/useUnreadChanges.tsx` (модульний store + хуки),
 > `components/UnreadDot.tsx`. ТЗ: `CLAUDE_CONTEXTUAL_UNREAD_CHANGES_PROMPT.md`.
 > Смоук: `supabase/smoke/user_change_markers_smoke.sql` (блоки A–O).
@@ -66,19 +69,34 @@ UPDATE queue_entries (та сама транзакція!)
 | queue UPDATE patient_* / contra / doctor / indication | queue/referral.patient_data_changed | ті самі | queue | queue_entry | patient_data | розгорнутий рядок |
 | queue UPDATE priority_level | queue.priority_changed | ті самі (cito → critical) | queue | queue_entry | priority | розгорнутий рядок |
 | queue UPDATE status → cancelled / needs_reschedule / no_show / not_held | queue/referral.cancelled, queue.status_changed | ті самі (critical для cancelled/needs_reschedule) | queue | queue_entry | status | розгорнутий рядок |
-| waitlist INSERT/UPDATE | waitlist.added/scheduled/removed/updated, referral.waitlist_* | admin+registrar; направник рядка | waitlist | waitlist_entry | record | розгорнутий рядок листа |
+| waitlist INSERT/UPDATE | waitlist.added/scheduled/removed/updated, referral.waitlist_* | admin+registrar; направник рядка; **радіологи — НІ** (0138: `p_room_relevant => false`; листа очікування в нього немає, ТЗ §5) | waitlist | waitlist_entry | record | персонал — розгорнутий рядок листа; **направник — відкриття вкладки «Лист очікування» в порталі** (surface-ack, 0138) |
 | patient_cases INSERT | case.created / referral.case_created | admin+registrar; направник | cases | patient_case | record | (іт.2 — екран кейса) |
 | patient_cases → cancelled (recompute) | case.cancelled / referral.case_cancelled | admin+registrar; направник | cases | patient_case | case_step | (іт.2) |
-| services / sro будь-яка змістовна зміна | service.* | admin+registrar; радіологи кабінету | services | **room** (агрегат!) | catalog / room_override | відкриття /services |
+| services / sro будь-яка змістовна зміна | service.* | **лише admin** (0138: екран `/services` відкривається тільки адміну, тож реєстратор і радіолог отримували крапку, яку не могли погасити) | services | **room** (агрегат!) | catalog / room_override | відкриття /services |
 | referral_access INSERT/UPDATE/DELETE | referral.access_* | admin; **направник гранта** (навіть відкликаний) | centers | referral_access | access | розгорнута картка центру |
-| incidents INSERT / → active | incident.started | admin+registrar; радіологи кабінету; CEO (critical) | incidents | incident | incident | дошка черги (простої видно одразу) |
+| incidents INSERT / → active | incident.started | admin+registrar; радіологи кабінету (**CEO — НІ**, прибрано 0134) | incidents | incident | incident | desk — дошка черги; **радіолог — власна дошка** (surface-ack, 0138: раніше він отримував крапку, а погасити її міг лише QueueBoard, куди його не пускає редирект) |
 
 **Свідомо БЕЗ крапки:** рутинні переходи scheduled→waiting→in_progress→**done**
 (рішення власника: done без крапки; видно на дошках realtime); перехід кейса в
 `completed`/`open` (похідне дзеркало done-кроків — перевірено пробою №3 на
 проді: cancelled дає позначку, completed — ні); автозняття інциденту cron-ом;
-`clarify_at` (cron sink-overdue); нотатки; `schedule_overrides` (чекає CAS з
-M-2 аудиту); каскадні DELETE послуг при видаленні кабінету.
+`clarify_at` (cron sink-overdue); нотатки; каскадні DELETE послуг при видаленні
+кабінету; `schedule_overrides` — **причина оновлена (0138)**: CAS для нього є з
+0135, а прямий DML відкликано в 0138 (пишеться лише через
+`save_schedule_override`), тобто старе «чекає CAS» більше не діє. Позначок для
+графіка дня немає з іншої причини: джерела в тригерах 0132 не існує, а поверхні
+з ack для нього не існує теж. Заводити — тільки разом із точкою ack (інакше
+отримаємо вічну крапку, від якої 0138 і чистила).
+
+**Інваріант, який тримає цю таблицю (правило з 0134/0138):** отримувач без
+поверхні з `useAckWhenVisible` у своєму дереві — це вічна непрочитана крапка,
+бо ретенція чистить ЛИШЕ прочитані. Тому на кожен рядок матриці має існувати
+відповідь у колонці «Гасить» ДЛЯ КОЖНОГО отримувача окремо; якщо відповіді
+немає — або звужуй аудиторію (як `catalog` у 0138), або додавай ack (як
+«простої» радіолога і лист очікування направника в 0138). Метрика зламаного
+ack — вік і кількість непрочитаних:
+`select p.role, m.surface_key, count(*) from user_change_markers m
+   join profiles p on p.id = m.recipient_id where m.seen_at is null group by 1,2;`
 
 ## Календар (0133)
 

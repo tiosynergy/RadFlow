@@ -6,7 +6,7 @@
    Зайнятість слотів — через знеособлений RPC room_busy_slots (без PII). */
 
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
-import { bookableRooms, visibleRooms, residualSet, roomOffLabel } from "@/lib/rooms";
+import { bookableRooms, visibleRooms, residualSet, roomOffLabel, roomsInGrant } from "@/lib/rooms";
 import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -37,8 +37,10 @@ import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOver
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { slotBlockedByIncidents, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
-import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode } from "@/lib/studies";
-import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
+import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, normDur, DUR_MAX } from "@/lib/studies";
+import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
+import StudySearchBox from "@/components/StudySearchBox";
+import type { StudySearchHit } from "@/lib/studySearch";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { DobField, BookingCalendar, fmtShort } from "@/components/BookingModal";
 import RoomSelect, { ROOM_LIST_MAX_CHIPS } from "@/components/RoomSelect";
@@ -158,11 +160,11 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const primaryKind = studyType;
   const selCenter = activeCenters.find((c) => c.clinicId === centerId) || null;
   const allRooms = roomsByClinic[centerId] || [];
-  const allowedRoomIds = selCenter && Array.isArray(selCenter.room_ids) && selCenter.room_ids.length ? selCenter.room_ids : null;
   /* 0123: вимкнені кабінети направнику не показуємо взагалі — на його дошці
      немає «ведення» записів, лише запис і перегляд своїх; кабінет, у якому вже
-     є його запис, лишається видимим у самому рядку запису (там назва з БД). */
-  const rooms = bookableRooms(allowedRoomIds ? allRooms.filter((r) => allowedRoomIds.includes(r.id)) : allRooms);
+     є його запис, лишається видимим у самому рядку запису (там назва з БД).
+     Грант: null = усі кабінети центру, [] = жодного (0137, lib/rooms.ts). */
+  const rooms = bookableRooms(selCenter ? roomsInGrant(allRooms, selCenter.room_ids) : allRooms);
   // Модальності, доступні направнику в цьому центрі (є кабінет і можна записати).
   const availableModalities = BOOKABLE_MODALITIES.filter((code) => rooms.some((r) => r.modality === code));
   const modAllowed = (code: string) => rooms.some((r) => r.modality === code);
@@ -197,10 +199,8 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
      у каталозі контрастність уже в назві, а ціна позиції вже контрастна. */
   const contrastSuffix = contrast && !contrastFilters ? " з контрастом" : "";
   const durBump = contrast && !contrastFilters ? CONTRAST_DUR : 0;
-  const priceBump = contrast && !contrastFilters ? (regionObj?.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
   const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + durBump) : (allRegions[0]?.dur ?? 20);
-  const price = regionObj ? regionObj.price + priceBump : null;
-  const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
+
 
   const [durEdit, setDurEdit] = useState("");
   // 0117: каталожне «—» → порожнє поле (ручний ввід).
@@ -248,10 +248,48 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
 
   const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
   const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
-  const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(5, parseInt(v, 10) || 0) });
+  // Нормалізація тривалості — на BLUR, не на keystroke: Math.max(5, …) зʼїдав
+  // першу цифру («4» ставало 5 — набрати «45» неможливо; та сама хвороба, що
+  // в StudyEditModal, баг власника с33).
+  const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(0, Math.min(DUR_MAX, parseInt(v, 10) || 0)) });
+  const exBlurDur = (i: number) => { const n = Number(extraStudies[i]?.dur) || 0; exPatch(i, { dur: n > 0 ? normDur(n) : 0 }); };
   const exAdd = () => setExtraStudies((a) => [...a, { type: primaryKind, region: "", dur: exDur(primaryKind, "") }]);
   const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
+
+  /* Пошук дослідження за назвою ПО ВСІХ доступних центрах (пакет «пошук/ціна у
+     формах»). Дані вже в памʼяті (SSR тягне services усіх активних центрів), а
+     RLS 0139 гарантує, що кабінетних послуг поза грантом тут просто немає.
+     Додатковий allow — про UI-правила: кабінет має бути придатним до запису
+     (bookableRooms: вимкнені відпадають), базова послуга потребує кабінета
+     своєї модальності в гранті цього центру. */
+  const grantRoomsOf = (cid: string) => {
+    const c = activeCenters.find((x) => x.clinicId === cid);
+    return c ? bookableRooms(roomsInGrant(roomsByClinic[cid] || [], c.room_ids)) : [];
+  };
+  const studySearchAllow = (h: StudySearchHit) => {
+    /* ⚠️ Замок кейса: поки накопичені кроки, центр змінювати НЕ МОЖНА (кейс живе
+       в одному центрі, 0095; селект центру в цей час disabled). Пошук — другий
+       шлях до setCenterId, і без цього гарда він обходив замок: крок із
+       кабінетом центру А + крок центру Б → guard_room_in_clinic відхиляє кейс
+       незрозумілою помилкою (ревʼю пакета, M-4). Тому в режимі кейса видача
+       звужується до поточного центру. */
+    if (caseSteps.length > 0 && h.clinicId !== centerId) return false;
+    const rs = grantRoomsOf(h.clinicId);
+    return h.roomId ? rs.some((r) => r.id === h.roomId) : rs.some((r) => r.modality === h.type);
+  };
+  /* Вибір результату підставляє ВСЕ: центр → тип → область → кабінет-власник
+     (без кабінета room-owned послуга не зрезолвиться — шапка lib/studySearch).
+     Зміну центру підхоплюють наявні ефекти (дата за зоною центру, каталог). */
+  function pickStudy(h: StudySearchHit) {
+    const label = modalityLabel(h.type);
+    if (h.clinicId !== centerId) setCenterId(h.clinicId);
+    setStudyType(label); setContrast(false); setTime("");
+    setExtraStudies((a) => a.map((x) => (x.type === label ? x : { ...x, type: label, region: "", dur: 0 })));
+    setRegion(h.label);
+    const rs = grantRoomsOf(h.clinicId).filter((r) => r.modality === h.type);
+    setRoomId(h.roomId ?? (rs.length === 1 ? rs[0].id : (rs.some((r) => r.id === roomId) ? roomId : null)));
+  }
 
   /* studies[].contrast у режимі фільтра — властивість обраної позиції прайсу,
      а не стан чекбокса (з нього сервер рахує has_contrast). */
@@ -605,14 +643,29 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
               <span className="bk-time-state none">{priority ? PRIORITY_META[priority as PatientPriority].desc : "оберіть пріоритет — впливає на порядок у черзі"}</span>
             </div>
 
+            <div className="fld" style={{ marginBottom: 2 }}>
+              <StudySearchBox
+                sources={activeCenters.map((c) => ({ clinicId: c.clinicId, services: servicesByClinic[c.clinicId] }))}
+                clinicNameOf={(cid) => activeCenters.find((c) => c.clinicId === cid)?.name}
+                roomNameOf={(id) => { for (const rs of Object.values(roomsByClinic)) { const r = (rs || []).find((x) => x.id === id); if (r) return r.name; } return undefined; }}
+                /* Обрана модальність обмежує видачу (рішення власника). Пошук
+                   лишається кросцентровим — але в межах обраного типу. */
+                modalities={[modality]}
+                allow={studySearchAllow}
+                onPick={pickStudy}
+              />
+            </div>
             <div className="fld-row" style={{ alignItems: "flex-start" }}>
               <label className="fld" style={{ flex: "1 1 auto" }}>
                 <span className={"fld-lab" + (miss.region ? " bk-miss-lab" : "")}>Область дослідження <span className="req">*</span></span>
                 <select className="inp" value={region} onChange={(e) => { setRegion(e.target.value); setTime(""); }}>
                   <option value="">— Оберіть область —</option>
-                  {regions.map((r) => (
-                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + durBump + " хв"}</option>
-                  ))}
+                  {regions.map((r) => {
+                    const pBump = contrast && !contrastFilters ? (r.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
+                    return (
+                      <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + durBump + " хв"}{r.price > 0 ? " · " + fmtUah(r.price + pBump) : ""}</option>
+                    );
+                  })}
                 </select>
               </label>
               <label className="fld" style={{ flex: "0 0 108px" }}>
@@ -635,9 +688,19 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
               </label>
             </div>
 
-            {price != null && (
-              <div className="ctx-hint blue" style={{ marginBottom: 6 }}>Орієнтовна вартість: {fmtPrice(price)}</div>
-            )}
+            {(() => {
+              /* Сума по ВСІХ дослідженнях (основне + додаткові) — ціни зі
+                 снапшотів allStudies, тобто рівно ті, що поїдуть у studies. */
+              const pb = catalogPriceBreakdown(catalog, allStudies, roomId || undefined);
+              if (allStudies.length === 0 || pb.priced === 0) return null;
+              return (
+                <div className="ctx-hint blue" style={{ marginBottom: 6 }}>
+                  Орієнтовна вартість: {fmtUah(pb.total)}
+                  {allStudies.length > 1 ? ` · ${allStudies.length} досл.` : ""}
+                  {pb.unpriced > 0 ? ` (ще ${pb.unpriced} без ціни)` : ""}
+                </div>
+              );
+            })()}
 
             <div className="fld">
               {extraStudies.length > 0 && (
@@ -652,9 +715,9 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                         </div>
                         <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
-                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}</option>)}
+                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}{x.price > 0 ? " · " + fmtUah(x.price) : ""}</option>)}
                         </select>
-                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
                         <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
                       </div>
                     );
@@ -1221,7 +1284,7 @@ function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m
 }
 
 /* ── Лист очікування направника: власні пацієнти в усіх авторизованих центрах ── */
-function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onRestore, onPriority, highlightId = null }: {
+function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onRestore, onPriority, highlightId = null, loaded, loadErr }: {
   entries: WaitlistEntry[];
   centersById: Record<string, Center>;
   onOpenAdd: () => void;
@@ -1231,10 +1294,31 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
   onPriority: (e: WaitlistEntry, v: PatientPriority) => void;
   /** с22 (deep-link «Пошук»): підсвітити знайдений рядок і проскролити до нього. */
   highlightId?: string | null;
+  /** 0138: гард ack — гасити крапки можна лише коли список реально приїхав. */
+  loaded: boolean;
+  loadErr: boolean;
 }) {
   const waiting = entries.filter((e) => e.status === "waiting").sort(compareWaitlist);
   const rest = entries.filter((e) => e.status !== "waiting").sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
   const list = [...waiting, ...rest];
+
+  /* 0138 (F-3): крапки листа очікування + їх ack. Направник — штатний отримувач
+     позначок про СВІЙ рядок листа (реєстратор записав його пацієнта з листа —
+     він мусить це побачити), і `ReferrerSidebar` крапку на пункті «Лист
+     очікування» вже малював. А погасити її було нічим: жодного `UnreadDot` і
+     жодного ack на цьому екрані не було — рівно той дефект «крапка не гасла
+     НІКОЛИ», через який ack і винесли в `useAckWhenVisible`.
+     Ack поверхневий (не по рядку): вкладка монтується лише коли її відкрили, і
+     список рендериться ПОВНІСТЮ без пагінації — тобто «побачив» тут дорівнює
+     «відкрив вкладку», як у ServicesManager.
+     ⚠️ `loaded` ОБОВʼЯЗКОВИЙ (ревʼю р.3): БД адресує позначку по `referrer_id`,
+     а вибірка листа — по `created_by OR referrer_id` (див. `reloadWaitlist`).
+     Поверхневий ack гасить УСЮ поверхню, тож без гарда «список приїхав і без
+     помилки» збій завантаження гасив би крапки про рядки, які користувач не
+     побачив (ТЗ: «If loading fails, unread state must remain unchanged»), а
+     deep-link прямо на цю вкладку встигав би загасити їх до першого рендера. */
+  const { index: unreadIx } = useUnreadChanges();
+  useAckWhenVisible({ kind: "surface", surface: "waitlist" }, loaded && !loadErr);
   /* Скрол до підсвіченого рядка — ОДНОРАЗОВО (ревью с22 р2 MEDIUM-A): inline
      ref-колбек викликається на кожен ре-рендер (realtime-оновлення листа), і без
      прапорця сторінку постійно повертало б до підсвіченого рядка. */
@@ -1267,6 +1351,7 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
                   ) : (
                     <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.patient_name}</span>
                   )}
+                  <UnreadDot markers={unreadForEntity(unreadIx, "waitlist_entry", p.id)} />
                 </div>
                 <div style={{ fontSize: "0.71875rem", color: "var(--text-muted)", marginTop: 2 }}>
                   {centerLabel(center)} · {procLabel(p)} · {desiredWindowText(p)}
@@ -1367,9 +1452,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
   // кабінети центру вимкнено, направник пропонувати не повинен.
   const centerModalities = (c: Center): string[] => {
     const rs = bookableRooms(roomsByClinic[c.clinicId] || []);
-    const ids = Array.isArray(c.room_ids) && c.room_ids.length ? c.room_ids : null;
-    const allowed = ids ? rs.filter((r) => ids.includes(r.id)) : rs;
-    return Array.from(new Set(allowed.map((r) => r.modality)));
+    return Array.from(new Set(roomsInGrant(rs, c.room_ids).map((r) => r.modality)));
   };
   const pendingInvites = centers.filter((c) => c.status === "pending_referrer").length;
 
@@ -1410,18 +1493,26 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
     } catch { setListErr(true); }
   }, [doctorId]);
 
-  // Лист очікування: RLS показує направнику лише власні рядки (created_by).
+  /* Лист очікування направника: власні рядки АБО ті, де центр вказав його
+     направником (0138 — дзеркало `queue_select`, де гілка `referrer_id` є з
+     0057). Це не косметика: позначку про рядок листа БД адресує саме по
+     `referrer_id`, тож без цієї гілки прилітала б крапка про рядок, якого на
+     екрані немає — і будь-який ack її або тихо гасив, або вона висіла б вічно. */
+  const [wlLoaded, setWlLoaded] = useState(false);
+  const [wlErr, setWlErr] = useState(false);
   const reloadWaitlist = useCallback(async () => {
     try {
       const supabase = createClient();
       const { data, error } = await supabase
         .from("waitlist_entries")
         .select("*")
-        .eq("created_by", doctorId)
+        .or("created_by.eq." + doctorId + ",referrer_id.eq." + doctorId)
         .order("created_at", { ascending: true });
-      if (error) { setListErr(true); return; }
+      if (error) { setListErr(true); setWlErr(true); setWlLoaded(true); return; }
       setWlEntries(data || []);
-    } catch { setListErr(true); }
+      setWlErr(false);
+      setWlLoaded(true);
+    } catch { setListErr(true); setWlErr(true); setWlLoaded(true); }
   }, [doctorId]);
   useEffect(() => { reloadWaitlist(); }, [reloadWaitlist]);
 
@@ -1561,16 +1652,14 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
   }
 
   /* ===== 0118 — кейси направника: екран кейса + «Організувати кейс» ===== */
-  /* Кабінети центру, звужені грантом (referral_access.room_ids; null/[] = усі).
+  /* Кабінети центру, звужені грантом (referral_access.room_ids; null = усі,
+     [] = жодного — 0137, семантика в lib/rooms.ts).
      ПОВНИЙ перелік, вимкнені НЕ ріжемо: звідси кабінети йдуть у CaseModal (назви
      кроків уже створеного кейса — це запис, а не список) і в BookingModal, яка
      сама фільтрує через bookableRooms. Вирізати вимкнені тут означало б показати
      крок кейса без назви кабінету. */
   const grantedRooms = useCallback((clinicId: string): RoomOpt[] => {
-    const all = roomsByClinic[clinicId] || [];
-    const ids = centersById[clinicId]?.room_ids;
-    const list = Array.isArray(ids) && ids.length ? ids : null;
-    return list ? all.filter((r) => list.includes(r.id)) : all;
+    return roomsInGrant(roomsByClinic[clinicId] || [], centersById[clinicId]?.room_ids);
   }, [roomsByClinic, centersById]);
 
   const [openCase, setOpenCase] = useState<{ caseId: string; clinicId: string; incidents: IncidentLike[] } | null>(null);
@@ -1611,7 +1700,24 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
 
   function onCentersChanged() { router.refresh(); }
 
-  const reschedRooms = reschedFor ? (roomsByClinic[reschedFor.clinic_id] || []) : [];
+  // Випадайка кабінетів у переносі. Фільтруємо ГРАНТОМ явно: бронювати поза
+  // грантом усе одно не дасть `auth_referrer_can_book_room` (0057), і до 0139
+  // направник бачив у списку весь центр, обирав чужий кабінет і отримував
+  // відмову вже від RPC. Після 0139 RLS звужує список і сама — але покладатись
+  // на форму політики замість явного правила ми не можемо (канон lib/rooms.ts:
+  // грант фільтрує СПИСКИ кабінетів).
+  // ⚠️ Поточний кабінет запису лишається в списку навіть поза грантом — і це НЕ
+  // «щоб можна було зсунути час у тому самому кабінеті»: `queue_reschedule_rpc`
+  // (0136) відбиває будь-який кабінет поза грантом, включно з поточним. Причина
+  // технічна: без нього `RescheduleModal` не знайде `curRoom`, модальність
+  // впаде в дефолт і сітка слотів збереться не тієї модальності.
+  const reschedRooms = (() => {
+    if (!reschedFor) return [];
+    const all = roomsByClinic[reschedFor.clinic_id] || [];
+    const granted = roomsInGrant(all, centersById[reschedFor.clinic_id]?.room_ids);
+    const cur = all.find((r) => r.id === reschedFor.room_id);
+    return cur && !granted.some((r) => r.id === cur.id) ? [...granted, cur] : granted;
+  })();
   const TAB_META: Record<string, { t: string; i: string }> = {
     new: { t: "Нове направлення", i: "＋" }, mine: { t: "Мої направлення", i: "▦" },
     waitlist: { t: "Лист очікування", i: "⏳" }, centers: { t: "Мої центри", i: "🏥" }, profile: { t: "Мій профіль", i: "👤" },
@@ -1620,7 +1726,9 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
 
   return (
     <div className="app">
-      <ReferrerSidebar centers={activeCenters} roomsByClinic={visRoomsByClinic} roomNoteOf={offNote} doctorName={doctorName}
+      <ReferrerSidebar centers={activeCenters} roomsByClinic={visRoomsByClinic}
+        rawRoomCountOf={(cid) => (roomsByClinic[cid] || []).length}
+        roomNoteOf={offNote} doctorName={doctorName}
         backHref={backHref} backLabel={backLabel}
         activeTab={tab}
         onNav={(key) => { if (key === "mine") setBoardFocus({ clinicId: "all", roomId: "all", nonce: Date.now() }); setTab(key); }}
@@ -1674,7 +1782,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
           </>
         )}
         {tab === "waitlist" && (
-          <MyWaitlist entries={wlEntries} centersById={centersById} highlightId={initialEntry} onOpenAdd={() => setWlAddOpen(true)}
+          <MyWaitlist entries={wlEntries} centersById={centersById} highlightId={initialEntry} loaded={wlLoaded} loadErr={wlErr} onOpenAdd={() => setWlAddOpen(true)}
             onEdit={(e) => setWlEditFor(e)} onCancel={(e) => setWlConfirmRemove(e)} onRestore={wlRestore} onPriority={wlPrio} />
         )}
         {tab === "centers" && (

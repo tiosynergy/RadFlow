@@ -12,8 +12,10 @@ import { useState, useEffect, useMemo } from "react";
 import { bookableRooms, isRoomBookable, ROOM_OFF_LABEL } from "@/lib/rooms";
 import PhoneInput from "@/components/PhoneInput";
 import { DobField } from "@/components/BookingModal";
-import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, type Study } from "@/lib/studies";
-import { buildCatalog, overridesToMap, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
+import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, type Study, DUR_MAX } from "@/lib/studies";
+import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
+import StudySearchBox from "@/components/StudySearchBox";
+import type { StudySearchHit } from "@/lib/studySearch";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { TIME_PRESETS, timePresetKey } from "@/lib/waitlist";
 import { wallDayKey } from "@/lib/incidents";
@@ -143,11 +145,20 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   // Каталог послуг (фаза 2a): персонал — свій центр (services); направник —
   // каталог ОБРАНОГО центру (add) або центру рядка (edit). Порожній → статика.
   const effClinicId = isEdit ? (initial?.clinic_id ?? null) : (needCenter ? centerId : null);
+  /* Ефективний каталог центру — ВИНЕСЕНО з мемо: ним годуються і buildCatalog,
+     і sources пошуку. Перша редакція пакета пошуку давала sources лише `services`,
+     а в edit-режимі порталу направника services не передаються (лише
+     servicesByCenter) — бокс завжди показував «нічого не знайдено» при живому
+     селекті поруч (ревʼю, M-3). */
+  const effServices = useMemo(
+    () => ((effClinicId && servicesByCenter?.[effClinicId]) ? servicesByCenter[effClinicId] : (services ?? [])),
+    [effClinicId, servicesByCenter, services]
+  );
   const catalog = useMemo(() => {
-    const eff = (effClinicId && servicesByCenter?.[effClinicId]) ? servicesByCenter[effClinicId] : (services ?? []);
+    const eff = effServices;
     const effOv = (effClinicId && roomOverridesByCenter?.[effClinicId]) ? roomOverridesByCenter[effClinicId] : (roomOverrides ?? []);
     return buildCatalog(eff, overridesToMap(effOv));
-  }, [effClinicId, servicesByCenter, services, roomOverridesByCenter, roomOverrides]);
+  }, [effClinicId, effServices, roomOverridesByCenter, roomOverrides]);
   const regionsFor = catalog.regionsFor;
   const studyPrice = catalog.studyPrice;
   // Лист не завжди привʼязаний до кабінету: rid=undefined → база центру; при
@@ -182,7 +193,6 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   const contrastSuffix = contrast && !contrastFilters ? " з контрастом" : "";
   const regionObj = regions.find((r) => r.label === region);
   const durBump = contrast && !contrastFilters ? CONTRAST_DUR : 0;
-  const priceBump = contrast && !contrastFilters ? (regionObj?.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
   const computedDur = regionObj ? (regionObj.dur == null ? 0 : regionObj.dur + durBump) : (allRegions[0]?.dur ?? 20);
   // 0117 (ревью M1): час основного дослідження можна ввести вручну — область із
   // каталожним «—» інакше була б ГЛУХИМ КУТОМ (zDuration на сервері відхиляє 0,
@@ -190,8 +200,7 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   const [durEdit, setDurEdit] = useState("");
   useEffect(() => { if (region) setDurEdit(computedDur > 0 ? String(computedDur) : ""); }, [region, contrast, studyType, rid]); // eslint-disable-line react-hooks/exhaustive-deps -- дефолт часу з каталогу
   const primaryDur = (() => { const n = parseInt(durEdit, 10) || 0; if (n > 0) return normDur(n); return computedDur > 0 ? computedDur : 0; })();
-  const price = regionObj ? regionObj.price + priceBump : null;
-  const fmtPrice = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
+
 
   // Область не обрана → 0 (порожнє дослідження не додає час, поки область не вибрана).
   const exDur = (t: string, reg: string) => { const o = regionsFor(t, rid).find((r) => r.label === reg); return o ? (o.dur ?? 0) : 0; };
@@ -206,10 +215,41 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   );
   const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
   const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
-  const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(5, parseInt(v, 10) || 0) });
+  // Нормалізація тривалості — на BLUR, не на keystroke: Math.max(5, …) зʼїдав
+  // першу цифру («4» ставало 5 — набрати «45» неможливо; та сама хвороба, що
+  // в StudyEditModal, баг власника с33).
+  const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(0, Math.min(DUR_MAX, parseInt(v, 10) || 0)) });
+  const exBlurDur = (i: number) => { const n = Number(extraStudies[i]?.dur) || 0; exPatch(i, { dur: n > 0 ? normDur(n) : 0 }); };
   const exAdd = () => setExtraStudies((a) => [...a, { type: primaryKind, region: "", dur: exDur(primaryKind, "") }]);
   const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
+
+  /* Пошук дослідження за назвою (пакет «пошук/ціна у формах»).
+     ⚠️ Room-owned послуга (0121) без привʼязки листа до кабінета не зрезолвиться
+     (rid=undefined → лише база), а привʼязка можлива лише там, де передані rooms
+     (адмін-флоу). Тому в порталі направника (rooms немає) кабінетні позиції з
+     видачі прибираємо — інакше вибір дав би область, яку тригер відхилить. */
+  const studySearchAllow = (h: StudySearchHit) => {
+    if (needCenter) {
+      const mods = centers!.find((c) => c.clinicId === h.clinicId)?.modalities;
+      if (mods && !mods.includes(h.type)) return false;
+    }
+    if (h.roomId) {
+      const r = (rooms || []).find((x) => x.id === h.roomId);
+      return !!r && isRoomBookable(r);
+    }
+    return true;
+  };
+  function pickStudy(h: StudySearchHit) {
+    if (needCenter && h.clinicId !== centerId) setCenterId(h.clinicId);
+    changeType(h.type);            // скидає область/контраст/привʼязку до кабінета
+    setRegion(h.label);
+    /* Базова послуга НЕ повинна губити вже обрану привʼязку: changeType щойно
+       скинув roomId у "", але якщо старий кабінет пасує новій модальності —
+       повертаємо його (дзеркало NewReferral; ревʼю пакета, m-1). */
+    const keep = (rooms || []).some((r) => r.id === roomId && r.modality === h.type && (isRoomBookable(r) || r.id === pinnedId));
+    setRoomId(h.roomId ?? (keep ? roomId : ""));
+  }
 
   function changeType(code: string) {
     setStudyType(code); setRegion(""); setContrast(false); setRoomId(""); // прив'язка до кабінету скидається зі зміною модальності
@@ -362,14 +402,32 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
               </select>
             </label>
           </div>
+          <div className="fld" style={{ marginBottom: 2 }}>
+            <StudySearchBox
+              sources={needCenter
+                ? centers!.map((c) => ({ clinicId: c.clinicId, services: servicesByCenter?.[c.clinicId] }))
+                : [{ clinicId: effClinicId || "", services: effServices }]}
+              clinicNameOf={needCenter ? (cid) => centers!.find((c) => c.clinicId === cid)?.name : undefined}
+              roomNameOf={(id) => (rooms || []).find((r) => r.id === id)?.name}
+              /* Обрана модальність обмежує видачу (рішення власника) — і в
+                 порталі направника, і на дошці. availableModalities ширше не
+                 потрібні: тип у формі завжди обраний. */
+              modalities={[studyType]}
+              allow={studySearchAllow}
+              onPick={pickStudy}
+            />
+          </div>
           <div style={{ display: "flex", gap: 10 }}>
             <label className="fld" style={{ flex: "1 1 auto", minWidth: 0 }}>
               <span className={"fld-lab" + (miss.region ? " bk-miss-lab" : "")}>Область дослідження <span className="req">*</span></span>
               <select className="inp" value={region} onChange={(e) => setRegion(e.target.value)}>
                 <option value="">— Оберіть область —</option>
-                {regions.map((r) => (
-                  <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + durBump + " хв"}</option>
-                ))}
+                {regions.map((r) => {
+                  const pBump = contrast && !contrastFilters ? (r.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
+                  return (
+                    <option key={r.label} value={r.label}>{r.label}{contrastSuffix} · {r.dur == null ? "—" : r.dur + durBump + " хв"}{r.price > 0 ? " · " + fmtUah(r.price + pBump) : ""}</option>
+                  );
+                })}
               </select>
             </label>
             {/* 0117: ручний час — обовʼязковий, коли в каталозі «—» */}
@@ -396,9 +454,9 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
                       </div>
                       <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                         <option value="">— Оберіть область —</option>
-                        {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}</option>)}
+                        {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}{x.price > 0 ? " · " + fmtUah(x.price) : ""}</option>)}
                       </select>
-                      <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} /><span className="st-dur-u">хв</span></div>
+                      <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
                       <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
                     </div>
                   );
@@ -408,7 +466,18 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
             <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: extraStudies.length > 0 ? 8 : 0 }} onClick={exAdd}>＋ Додати дослідження</button>
           </div>
 
-          {price != null && <div className="ctx-hint blue">Орієнтовна вартість: {fmtPrice(price)} · блок {totalDur || primaryDur} хв</div>}
+          {(() => {
+            const pb = catalogPriceBreakdown(catalog, allStudies, rid);
+            if (allStudies.length === 0 || pb.priced === 0) return null;
+            return (
+              <div className="ctx-hint blue">
+                Орієнтовна вартість: {fmtUah(pb.total)}
+                {allStudies.length > 1 ? ` · ${allStudies.length} досл.` : ""}
+                {pb.unpriced > 0 ? ` (ще ${pb.unpriced} без ціни)` : ""}
+                {" · блок "}{totalDur || primaryDur} хв
+              </div>
+            );
+          })()}
 
           {!isEdit && (
             <div className="fld">

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import SearchScreen, { type SearchClinicOpt, type SearchRoomOpt } from "@/components/SearchScreen";
+import { grantRoomIds } from "@/lib/rooms";
 
 /* ===== /search — универсальный поиск пациентов и исследований (с22) =====
 
@@ -76,7 +77,11 @@ export default async function SearchPage() {
         .in("clinic_id", clinics.map((c) => c.id))
         .order("name");
       // Ограничение кабинетов гранта (referral_access.room_ids) — сузим выпадайку.
-      const limits = new Map(active.map((a) => [a.clinic_id, Array.isArray(a.room_ids) && a.room_ids.length ? new Set(a.room_ids as string[]) : null]));
+      // Семантика массива — в grantRoomIds (lib/rooms.ts), зеркало БД (0137).
+      const limits = new Map(active.map((a) => {
+        const l = grantRoomIds(a.room_ids as string[] | null);
+        return [a.clinic_id, l ? new Set(l) : null] as const;
+      }));
       rooms = (r ?? []).filter((x) => {
         const lim = limits.get(x.clinic_id);
         return !lim || lim.has(x.id);

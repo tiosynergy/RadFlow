@@ -267,7 +267,24 @@ export function studyDur(type?: string, region?: string, contrast?: boolean): nu
 export function studyPrice(type?: string, region?: string, contrast?: boolean): number | null {
   const o = regionInfo(type, region);
   if (!o || o.price == null) return null;
+  /* База 0 = «ціну не задано» (канон 0107: NOT NULL DEFAULT 0; так само рахує
+     дохід CeoDashboard і малює ServicesEditor). Доплату за контраст до
+     НЕЗАДАНОЇ ціни не додаємо: «0 + 900» показувало б пацієнту вигадані 900 ₴
+     і писало б їх у снапшот/дохід (ревʼю пакета пошуку, р.2 M-1). */
+  if (o.price <= 0) return 0;
   return o.price + (contrast ? CONTRAST_SURCHARGE : 0);
+}
+
+/* Формат ціни для UI: 12345 → «12 345 ₴». Канонічна точка для форм запису й
+   дашборда CEO (їхні локальні копії знято цим пакетом). ⚠️ Ще ДВІ копії живуть
+   у ServicesEditor/ImportPriceModal на toLocaleString("uk-UA") — там РОЗДІЛЬНИК
+   ІНШИЙ (нерозривний пробіл); уніфікація — окремим пакетом, бо міняє байти
+   у снапшот-тестах імпорту прайсу. */
+export function fmtUah(n: number): string {
+  // Округлення до цілого: снапшоти studies[].price теоретично можуть нести
+  // дробову частину (zStudy її не забороняє), а регекс тисячних розрядів на
+  // дробовій частині дає «1 234.5 678 ₴».
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴";
 }
 
 /* Суммарная цена набора исследований: берёт сохранённую s.price, иначе считает из справочника.

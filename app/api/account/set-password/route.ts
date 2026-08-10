@@ -61,19 +61,48 @@ export async function POST(req: Request) {
   }
 
   const admin = createAdminClient();
-  const { data: profile } = await admin
+
+  /* RF-02 (аудит с32): токен гаситься АТОМАРНО — одним умовним UPDATE, ДО зміни
+     пароля. Стара схема «select → updateUserById → окремий update» давала гонку:
+     два паралельні POST з одним токеном проходили pre-check обидва (переможе
+     останній пароль), а збій між GoTrue і profiles лишав токен ЖИВИМ при вже
+     зміненому паролі. Тепер: WHERE invite_token = … AND password_set = false —
+     рівно один запит забирає токен (row lock у Postgres), решта отримує 0 рядків
+     і INVALID. Це той самий прийом claim-first, що в atomic claim вейтліста. */
+  const { data: claimed, error: cErr } = await admin
     .from("profiles")
-    .select("id, password_set, invite_token")
+    .update({ password_set: true, invite_token: null })
     .eq("invite_token", token)
+    .eq("password_set", false)
+    .select("id")
     .maybeSingle();
+  if (cErr) return NextResponse.json({ error: safeDbError("api/account/set-password", cErr) }, { status: 400 });
+  if (!claimed) return NextResponse.json({ error: INVALID }, { status: 400 });
 
-  if (!profile || profile.password_set) {
-    return NextResponse.json({ error: INVALID }, { status: 400 });
+  const { error: uErr } = await admin.auth.admin.updateUserById(claimed.id as string, { password });
+  if (uErr) {
+    /* GoTrue не прийняв пароль — повертаємо токен, щоб людина могла повторити
+       за тим самим посиланням. Відкат СУВОРО умовний (ревʼю р.1 MINOR-9):
+       .is("invite_token", null).eq("password_set", true) — рівно той стан,
+       який лишив НАШ клейм. Інакше інтерливінг «клейм → таймаут GoTrue →
+       адмін перевидав посилання» затирав би СВІЖИЙ токен адміна старим
+       (можливо скомпрометованим — заради чого й перевидавали). Якщо відкат
+       не вдався — стан fail-closed (токен мертвий, пароль не змінено),
+       адміністратор перевидасть посилання. Залишковий кут (не діра): якщо
+       uErr — це таймаут ПІСЛЯ фактично застосованого пароля, токен
+       воскресає при вже зміненому паролі — але токен і так підтверджує
+       володіння ЦИМ акаунтом, тож повторний прохід лише перезапише пароль
+       тим самим власником; password_set=false при робочому паролі —
+       видимий стан, що самовиправляється повторним сабмітом. */
+    const { error: rErr } = await admin
+      .from("profiles")
+      .update({ password_set: false, invite_token: token })
+      .eq("id", claimed.id)
+      .is("invite_token", null)
+      .eq("password_set", true);
+    if (rErr) safeDbError("api/account/set-password.rollback", rErr);
+    return NextResponse.json({ error: safeDbError("api/account/set-password", uErr) }, { status: 400 });
   }
-
-  const { error: uErr } = await admin.auth.admin.updateUserById(profile.id as string, { password });
-  if (uErr) return NextResponse.json({ error: safeDbError("api/account/set-password", uErr) }, { status: 400 });
-  await admin.from("profiles").update({ password_set: true, invite_token: null }).eq("id", profile.id);
 
   return NextResponse.json({ ok: true });
 }

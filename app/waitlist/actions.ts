@@ -17,6 +17,7 @@ import { firstClosedService, studiesKeySet, CatalogUnavailableError } from "@/li
 import { isReferralAction, waitlistEventTypeFor } from "@/lib/importantEvents";
 import { emitImportantEvent } from "@/lib/importantEvents.server";
 import { logError } from "@/lib/serverLog";
+import { grantAllowsRoom, grantRoomIds } from "@/lib/rooms";
 import {
   parseInput, safeDbError, zUuid, zDateKey, zTime, zName, zOptText, zOptEmail,
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
@@ -171,8 +172,12 @@ async function referrerModalityAllowed(
 ): Promise<boolean | null> {
   // 0123: вимкнений кабінет не робить модальність доступною — інакше направник
   // клав би в лист очікування напрям, якого центр більше не виконує.
+  // Грант без жодного кабінету (порожній масив, 0137) — доступних модальностей
+  // теж немає. Раніше `[]` читався як «усі кабінети» і відкривав увесь центр.
+  const grant = grantRoomIds(roomIds);
+  if (grant && grant.length === 0) return false;
   let q = supabase.from("rooms").select("modality").eq("clinic_id", clinicId).eq("active", true);
-  if (roomIds && roomIds.length) q = q.in("id", roomIds);
+  if (grant) q = q.in("id", grant);
   const { data, error } = await q;
   /* Помилку НЕ ковтаємо (ревʼю 0123, High-2): раніше будь-який транзієнтний збій
      тихо перетворювався на «цей напрям у центрі недоступний» — заборону, якої
@@ -223,8 +228,8 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
       return { ok: false, error: "Ця модальність недоступна за вашим доступом до центру", code: "forbidden" };
     }
     // Якщо направник жорстко привʼязав кабінет — він теж має бути в його гранті
-    // (null/[] = усі). Захист від крафтового запиту повз UI (портал кабінети не показує).
-    if (input.roomId && grantRooms && grantRooms.length > 0 && !grantRooms.includes(input.roomId)) {
+    // (null = усі, [] = жодного; 0137). Захист від крафтового запиту повз UI.
+    if (input.roomId && !grantAllowsRoom(grantRooms, input.roomId)) {
       return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
     }
     clinicId = input.clinicId;
@@ -463,8 +468,8 @@ export async function updateWaitlistEntry(
         return { ok: false, error: "Ця модальність недоступна за вашим доступом до центру", code: "forbidden" };
       }
     }
-    // Кабінет у патчі (не null) має бути в гранті (null/[] = усі кабінети центру).
-    if (safePatch.room_id != null && grantRooms && grantRooms.length > 0 && !grantRooms.includes(safePatch.room_id as string)) {
+    // Кабінет у патчі (не null) має бути в гранті (null = усі, [] = жодного; 0137).
+    if (safePatch.room_id != null && !grantAllowsRoom(grantRooms, safePatch.room_id as string)) {
       return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
     }
   }

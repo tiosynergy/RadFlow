@@ -12,6 +12,7 @@ import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
 import { unreadForNav } from "@/lib/unreadChanges";
 import NavDrawer from "@/components/NavDrawer";
 import SoundToggle from "@/components/SoundToggle";
+import { roomsInGrant } from "@/lib/rooms";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null };
@@ -27,6 +28,11 @@ interface Props {
   /** Уже відфільтровані для показу кабінети (див. lib/rooms.ts): вимкнені сюди
    *  потрапляють лише як «залишки» — поки в них є живі записи направника. */
   roomsByClinic: Record<string, RoomOpt[]>;
+  /** Скільки кабінетів центру видно ДО фільтра `visibleRooms` (сирий SSR-список).
+   *  Потрібен рівно для порожнього стану: `roomsByClinic` сюди приходить уже
+   *  відфільтрованим, тож із нього неможливо відрізнити «центр не заповнив
+   *  обладнання» від «усі кабінети вимкнено» — обидва дають нуль. */
+  rawRoomCountOf?: (clinicId: string) => number;
   /** Підпис замість моделі апарата для такого залишку: «вимкнено · 3 записи». */
   roomNoteOf?: (clinicId: string, roomId: string) => string | null;
   doctorName: string;
@@ -46,7 +52,7 @@ interface Props {
   backLabel?: string | null;
 }
 
-export default function ReferrerSidebar({ centers, roomsByClinic, roomNoteOf, doctorName, activeTab, onNav, onSelectRoom, activeClinic, activeRoom, counts, canManage, onSignOut, backHref = null, backLabel = null }: Props) {
+export default function ReferrerSidebar({ centers, roomsByClinic, rawRoomCountOf, roomNoteOf, doctorName, activeTab, onNav, onSelectRoom, activeClinic, activeRoom, counts, canManage, onSignOut, backHref = null, backLabel = null }: Props) {
   const isPreview = !!backHref;   // адмін дивиться портал, а не працює в ньому
   /* Контекстні позначки направника: «Мої направлення» — черга його пацієнтів,
      «Мої центри» — зміни доступу (їх він мусить побачити навіть після
@@ -86,11 +92,10 @@ export default function ReferrerSidebar({ centers, roomsByClinic, roomNoteOf, do
             <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", padding: "4px 10px" }}>Немає активних центрів</div>
           ) : centers.map((c) => {
             const all = roomsByClinic[c.clinicId] || [];
-            // Показуємо лише ДОЗВОЛЕНІ кабінети (room_ids). null/порожньо = усі
-            // кабінети центру — так само, як фільтрує форма запису й БД-гейт
-            // auth_referrer_can_book_room. Раніше показувались усі → рассинхрон.
-            const allowed = Array.isArray(c.room_ids) && c.room_ids.length ? c.room_ids : null;
-            const rooms = allowed ? all.filter((r) => allowed.includes(r.id)) : all;
+            // Показуємо лише ДОЗВОЛЕНІ кабінети (room_ids): null = усі кабінети
+            // центру, [] = жодного (0137, lib/rooms.ts) — так само, як фільтрує
+            // форма запису й БД-гейт auth_referrer_can_book_room.
+            const rooms = roomsInGrant(all, c.room_ids);
             const centerActive = activeClinic === c.clinicId && activeRoom === "all";
             return (
               <div key={c.clinicId} style={{ marginBottom: 8 }}>
@@ -98,12 +103,30 @@ export default function ReferrerSidebar({ centers, roomsByClinic, roomNoteOf, do
                   className={"sb-cab-all" + (centerActive ? " active" : "")}
                   style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: onSelectRoom ? "pointer" : "default", fontSize: "0.75rem", fontWeight: 600, color: "var(--text-secondary)", padding: "4px 10px 2px" }}
                   title={c.city ? c.name + " · " + c.city : c.name}>{c.name}</button>
-                {/* «Обладнання не вказано» і «всі кабінети вимкнено» — різні речі:
-                    у другій направник має розуміти, чому центр порожній, а не
-                    думати, що центр не заповнив профіль. */}
+                {/* Порожній список має РІЗНІ причини, і направнику треба саме
+                    своя: «доступ не надано» — питання до того, хто видає грант,
+                    «вимкнено»/«не вказано» — до центру.
+                    ⚠️ Розмір `all` тут НЕ дискримінатор: `roomsInGrant` при
+                    `room_ids = null` повертає ТОЙ САМИЙ масив, тож у гілку ми
+                    заходимо лише з `all.length === 0`, і перевірка `all.length
+                    > 0` була б недосяжною (спіймано раундом по фіксах 0139).
+                    Плюс сам `all` приходить уже пропущеним крізь `visibleRooms`.
+                    Тому «чи є в центрі кабінети взагалі» беремо з СИРОГО
+                    лічильника (`rawRoomCountOf`), а не з відфільтрованого
+                    списку. */}
                 {rooms.length === 0 ? (
                   <div style={{ fontSize: "0.71875rem", color: "var(--text-faint)", padding: "0 10px 2px" }}>
-                    {all.length > 0 ? "усі кабінети вимкнено" : "обладнання не вказано"}
+                    {Array.isArray(c.room_ids)
+                      ? (c.room_ids.length === 0
+                          ? "доступ до кабінетів не надано"
+                          /* Непорожній грант і нуль кабінетів — це або всі
+                             вимкнені, або «висячий» id у гранті (0137 такі
+                             ігнорує). Розрізнити звідси не можна, тому
+                             формулювання нейтральне. */
+                          : "немає доступних кабінетів")
+                      : (rawRoomCountOf?.(c.clinicId) ?? all.length) > 0
+                        ? "усі кабінети вимкнено"
+                        : "обладнання не вказано"}
                   </div>
                 ) : rooms.map((r) => {
                   // Вимкнений кабінет-залишок: замість моделі апарата — причина,

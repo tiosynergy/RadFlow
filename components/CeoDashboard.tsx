@@ -8,8 +8,9 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode, type
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { wallToday0 } from "@/lib/incidents";
-import { modalityLabel, modalityCode } from "@/lib/studies";
+import { modalityLabel, modalityCode, fmtUah } from "@/lib/studies";
 import { quickSearchMatch } from "@/lib/quickSearch";
+import { useModalA11y } from "@/lib/useModalA11y";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
@@ -40,7 +41,6 @@ function today0(tz?: string) { return wallToday0(tz); }
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
-function fmtUah(n: number) { return String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " ₴"; }
 
 /* Каталог scoped-центрів для CSV: clinic_id → «modalityCode|region» → ціна/контраст.
    Дзеркалить catalog_est_sum з RPC 0114/0121 (чистий каталог): дохід рахуємо на
@@ -139,6 +139,25 @@ function Drillable({ onOpen, label, style, children }: { onOpen: () => void; lab
       onClick={onOpen} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(); } }}>
       {children}
     </span>
+  );
+}
+
+/* Обгортка drill-down-діалогу під загальний modal-контракт (RF-06 аудиту
+   с32: діалог мав role="dialog", але без useModalA11y — Tab тікав під
+   overlay, Esc не закривав, фокус не повертався на KPI). Окремий компонент,
+   а не хук у CeoDashboard: useModalA11y фіксує елемент-тригер під час
+   ПЕРШОГО рендера — тож монтуватись він мусить разом із відкриттям вікна,
+   коли активний елемент — це ще натиснутий KPI (Drillable). */
+function DrillOverlay({ onClose, label, style, children }: {
+  onClose: () => void; label: string; style?: CSSProperties; children: ReactNode;
+}) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
+  return (
+    <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div ref={dialogRef} className="dialog fade-in" style={style} role="dialog" aria-modal="true" aria-label={"Записи: " + label}>
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -571,8 +590,8 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       </div>
 
       {drill && (
-        <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) setDrill(null); }}>
-          <div className="dialog fade-in" style={{ maxWidth: 860, width: "92vw", maxHeight: "86vh", display: "flex", flexDirection: "column" }} role="dialog" aria-modal="true" aria-label={"Записи: " + drill.label}>
+        <DrillOverlay onClose={() => setDrill(null)} label={drill.label}
+          style={{ maxWidth: 860, width: "92vw", maxHeight: "86vh", display: "flex", flexDirection: "column" }}>
             <div className="dlg-head">
               <div className="dlg-title">{drill.label} · {periodLabel}{drillRows ? ` · ${drillRows.length}` : ""}</div>
               <button className="icon-btn" aria-label="Закрити" onClick={() => setDrill(null)}>✕</button>
@@ -619,8 +638,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
               })()}
             </div>
             <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end" }}><button className="btn btn-primary" onClick={() => setDrill(null)}>Готово</button></div>
-          </div>
-        </div>
+        </DrillOverlay>
       )}
       <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>

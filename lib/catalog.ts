@@ -313,6 +313,12 @@ export function buildCatalog(
        контрастних позицій — модифікатор зі старою доплатою (ревʼю H5). */
     if (o) {
       if (o.price == null) return null;
+      /* База 0 = «ціну не задано» (канон 0107/CEO/ServicesEditor) — доплату за
+         контраст до незаданої ціни не додаємо, інакше «0 + 900» друкувалось би
+         в «Орієнтовній вартості» і їхало в снапшот і дохід (ревʼю р.2, M-1).
+         Найчастіший випадок — центр залив базовий довідник без цін (сід ставить
+         price=0 всім УЗД/РГ/Мамо, а contrastIsFilter там false). */
+      if (o.price <= 0) return 0;
       const surcharge = contrast && !contrastIsFilter(type, roomId)
         ? (o.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
       return o.price + surcharge;
@@ -387,9 +393,34 @@ export function catalogTotalPrice(
   arr: Array<{ type?: string; region?: string; contrast?: boolean; price?: number | null }> | null | undefined,
   roomId?: string
 ): number {
-  if (!Array.isArray(arr)) return 0;
-  return arr.reduce((sum, s) => {
+  return catalogPriceBreakdown(cat, arr, roomId).total;
+}
+
+/** Розбивка суми для «Орієнтовна вартість» у формах: total — сума ВІДОМИХ цін
+    (пріоритет — снапшот s.price, як у catalogTotalPrice), priced/unpriced —
+    скільки позицій з ціною і без. Правило показу у формах: якщо Є хоч одна
+    відома ціна — сума + «(ще N без ціни)», бо «1 800 ₴» на записі з трьох
+    досліджень читається як повна вартість; якщо ЖОДНОЇ (легасі-центр без
+    прайсу) — плашки немає взагалі, як і до пакета (нуль інформації — не шум).
+
+    ⚠️ `price = 0` — це «ціну ще не задано», НЕ нуль гривень: services.price має
+    NOT NULL DEFAULT 0 (0107), і сід із базового каталогу заливає нулі всім
+    УЗД/Рентген/Мамо. Канон уже двічі записаний у продукті: CeoDashboard рахує
+    дохід лише по price > 0, ServicesEditor малює «—» замість 0 ₴. Рахувати нуль
+    «відомою ціною» означало б показувати «Орієнтовна вартість: 0 ₴» на весь
+    УЗД-центр (спіймано ревʼю пакета пошуку, M-1). Це стосується і снапшота:
+    історичний price: 0 — теж «не задано». */
+export function catalogPriceBreakdown(
+  cat: Catalog,
+  arr: Array<{ type?: string; region?: string; contrast?: boolean; price?: number | null }> | null | undefined,
+  roomId?: string
+): { total: number; priced: number; unpriced: number } {
+  if (!Array.isArray(arr)) return { total: 0, priced: 0, unpriced: 0 };
+  let total = 0, priced = 0, unpriced = 0;
+  for (const s of arr) {
+    if (!s) continue;
     const p = typeof s.price === "number" ? s.price : cat.studyPrice(s.type, s.region, s.contrast, roomId);
-    return sum + (p || 0);
-  }, 0);
+    if (typeof p === "number" && Number.isFinite(p) && p > 0) { total += p; priced++; } else { unpriced++; }
+  }
+  return { total, priced, unpriced };
 }
