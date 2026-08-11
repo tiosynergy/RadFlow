@@ -56,6 +56,10 @@ const DETAIL_KEYS: readonly string[] = [
   "action", "role", "roomsCount", "roomId", "queueEntryId", "sourceEntryId",
   "scheduledDate", "scheduledTime", "targetClinicId", "roomScope", "reason",
   "priority",
+  // 0146 (події від RIS): назва ключа інтеграції, тип події та час за версією
+  // зовнішньої системи. Без них картка журналу лишалась би без джерела —
+  // проєкція викидає все, чого немає в цьому списку.
+  "integration", "event", "at",
 ];
 
 /** Вкладені обʼєкти теж проекціюємо (ревʼю с25 раунд 2 #3): інакше гарантія

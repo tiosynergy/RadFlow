@@ -70,6 +70,15 @@ describe("eventTitle: формат за прикладами ТЗ §11", () => {
     expect(t).toBe("Адміністратор змінив статус запису: Заплановано → Триває");
   });
 
+  it("подія від RIS (0146) названа джерелом, а не безіменною «Системою»", () => {
+    const t = eventTitle({
+      eventType: "integration.status_applied",
+      actorRole: "system",
+      details: { event: "finished", from: "in_progress", to: "done", integration: "RIS Мед-Експерт" },
+    });
+    expect(t).toBe("Система: оновлено статус із зовнішньої системи: Триває → Виконано (RIS Мед-Експерт)");
+  });
+
   it("кожен оголошений тип події має власне формулювання (без сирого типу)", () => {
     for (const t of ALL_EVENT_TYPES) {
       const s = eventTitle({ eventType: t, actorRole: "admin", details: null });

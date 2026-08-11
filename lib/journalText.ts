@@ -216,6 +216,19 @@ export function eventTitle(item: {
       return say("застосував план затримки", "застосовано план затримки", parts.length ? `: ${parts.join(", ")}` : "");
     }
 
+    /* ---- інтеграції (0146) ---- */
+    case "integration.status_applied": {
+      // Джерело називаємо іменем ключа інтеграції: «хто саме рухав запис» —
+      // головне питання адміністратора до цієї події.
+      const a = str(d, "from");
+      const b = str(d, "to");
+      const src = str(d, "integration");
+      const tail =
+        (a && b ? `: ${statusLabel(a)} → ${statusLabel(b)}` : "") +
+        (src ? ` (${src})` : "");
+      return say("оновив статус із зовнішньої системи", "оновлено статус із зовнішньої системи", tail);
+    }
+
     /* ---- лист очікування ---- */
     case "waitlist.scheduled":
       return say("записав кандидата з листа очікування", "записано кандидата з листа очікування");
@@ -335,6 +348,9 @@ export const EVENT_TYPE_GROUPS: { label: string; match: (t: ImportantEventType) 
   { label: "Лист очікування", match: (t) => t.startsWith("waitlist.") },
   { label: "Кейси", match: (t) => t.startsWith("case.") },
   { label: "Інциденти", match: (t) => t.startsWith("incident.") },
+  // Без цієї групи тип 0146 існував би в контракті, але зник би з випадайки
+  // фільтра (groupedTypes бере ЛИШЕ те, що потрапило в якусь групу).
+  { label: "Інтеграції", match: (t) => t.startsWith("integration.") },
   {
     label: "Доступи та інше",
     match: (t) => t.startsWith("staff.") || t.startsWith("access.") || t.startsWith("schedule.") || t.startsWith("patient_data."),
