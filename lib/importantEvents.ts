@@ -50,6 +50,11 @@ export const GENERAL_EVENT_TYPES = [
   "patient_data.exported",
   "staff.role_changed",
   "staff.access_changed",
+  /* Статус змінила ЗОВНІШНЯ система (RIS/PACS) через API інтеграцій, 0146.
+     Окремий тип, а не queue.status_changed (рішення власника 2026-08-11):
+     адміністратор має бачити, що запис рухав не реєстратор, а міст — інакше
+     розбір «хто це зробив» упирався б у безіменну «Систему». */
+  "integration.status_applied",
 ] as const;
 
 export type ReferralEventType = (typeof REFERRAL_EVENT_TYPES)[number];

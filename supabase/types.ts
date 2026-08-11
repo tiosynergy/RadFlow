@@ -1338,6 +1338,27 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      // 0146: приймання статусів RIS. Викликає ЛИШЕ серверний інтеграційний
+      // шар під service_role; повертає рівно один рядок.
+      integration_apply_status: {
+        Args: {
+          p_key_id: string;
+          p_clinic: string;
+          p_entry: string;
+          p_event: string;
+          p_source_event_id: string;
+          p_at?: string | null;
+          p_payload_hash?: string | null;
+        };
+        // Імена колонок — з префіксом out_: у returns table(...) вони є
+        // OUT-параметрами, а «result»/«current» затінювали б однойменні
+        // ідентифікатори всередині функції.
+        Returns: {
+          out_result: string;
+          out_current: Database["public"]["Enums"]["queue_status"] | null;
+          out_previous: Database["public"]["Enums"]["queue_status"] | null;
+        }[];
+      };
       save_schedule_override: {
         // 0135, H-5. CAS по updated_at: p_expected_updated_at — РЯДКОМ (0119,
         // мікросекунди), NULL = «рядка не було», НЕ «без перевірки». Повертає
