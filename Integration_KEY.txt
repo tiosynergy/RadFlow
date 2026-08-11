@@ -1,0 +1,11 @@
+Ключ створено: id=246f5d94-ab3a-44ac-b11f-1ea9622016bf
+  clinic:  c0aaaf36-a13f-4fa1-8882-b4b133d4ffcd
+  scopes:  appointments:read, slots:read, events:write   режим: A
+  ТОКЕН (показується ОДИН раз, передайте інтегратору захищеним каналом):
+  rfk_a877d992b2306bca28e457ca1f447f3f751cc4902b0c8de3
+
+Ключ створено: id=42810193-87d9-45a2-9e92-52a1dc1b5f95
+  clinic:  c0aaaf36-a13f-4fa1-8882-b4b133d4ffcd
+  scopes:  appointments:read, slots:read, events:write   режим: A
+  ТОКЕН (показується ОДИН раз, передайте інтегратору захищеним каналом):
+  rfk_1af990c2f7d9dfa6db58f7fdc18fe73f8c82c23f5bb29365
