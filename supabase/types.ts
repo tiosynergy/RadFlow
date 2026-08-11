@@ -262,6 +262,7 @@ export type Database = {
           sort_order: number;              // 0107
           room_id: string | null;          // 0121: null = базова, = X = послуга кабінету X
           source: string;                  // 0107: 'manual' | 'seed' | 'import'
+          code: string | null;             // 0144: стабільний код для інтеграцій (тригер присвоює)
           updated_at: string;              // 0107
           created_at: string;
         };
@@ -278,6 +279,7 @@ export type Database = {
           sort_order?: number;
           room_id?: string | null;         // 0121
           source?: string;
+          code?: string | null;            // 0144
           updated_at?: string;
           created_at?: string;
         };
@@ -1197,6 +1199,137 @@ export type Database = {
           dead?: boolean;
           locked_until?: string | null;
           locked_by?: string | null;
+        };
+        Relationships: [];
+      };
+      // 0144: фаза 0 інтеграцій. Deny-all RLS — таблиці бачить лише
+      // серверний шар (service_role); клієнтський код їх НЕ читає.
+      integration_keys: {
+        Row: {
+          id: string;
+          clinic_id: string;
+          name: string;
+          key_prefix: string;
+          key_hash: string;
+          scopes: string[];
+          export_mode: string;
+          active: boolean;
+          created_at: string;
+          revoked_at: string | null;
+          last_used_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          clinic_id: string;
+          name: string;
+          key_prefix: string;
+          key_hash: string;
+          scopes?: string[];
+          export_mode?: string;
+          active?: boolean;
+          created_at?: string;
+          revoked_at?: string | null;
+          last_used_at?: string | null;
+        };
+        Update: {
+          name?: string;
+          scopes?: string[];
+          export_mode?: string;
+          active?: boolean;
+          revoked_at?: string | null;
+          last_used_at?: string | null;
+        };
+        Relationships: [];
+      };
+      external_refs: {
+        Row: {
+          id: string;
+          clinic_id: string;
+          entity_type: string;
+          entity_id: string;
+          id_system: string;
+          id_value: string;
+          created_at: string;
+          created_by_key: string | null;
+        };
+        Insert: {
+          id?: string;
+          clinic_id: string;
+          entity_type: string;
+          entity_id: string;
+          id_system: string;
+          id_value: string;
+          created_at?: string;
+          created_by_key?: string | null;
+        };
+        Update: {
+          entity_type?: string;
+          entity_id?: string;
+          id_value?: string;
+          created_by_key?: string | null;
+        };
+        Relationships: [];
+      };
+      inbound_events: {
+        Row: {
+          id: number;
+          integration_key_id: string;
+          clinic_id: string;
+          source_event_id: string;
+          event_type: string;
+          entity_type: string | null;
+          entity_id: string | null;
+          payload_hash: string | null;
+          received_at: string;
+          processed_at: string | null;
+          result: string | null;
+        };
+        Insert: {
+          integration_key_id: string;
+          clinic_id: string;
+          source_event_id: string;
+          event_type: string;
+          entity_type?: string | null;
+          entity_id?: string | null;
+          payload_hash?: string | null;
+          received_at?: string;
+          processed_at?: string | null;
+          result?: string | null;
+        };
+        Update: {
+          processed_at?: string | null;
+          result?: string | null;
+        };
+        Relationships: [];
+      };
+      // 0145: вебхук-ендпоінт клініки (фаза 1). Опційний до накату 0145.
+      integration_webhooks: {
+        Row: {
+          id: string;
+          clinic_id: string;
+          url: string;
+          secret: string;
+          enabled: boolean;
+          description: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          clinic_id: string;
+          url: string;
+          secret: string;
+          enabled?: boolean;
+          description?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          url?: string;
+          secret?: string;
+          enabled?: boolean;
+          description?: string | null;
+          updated_at?: string;
         };
         Relationships: [];
       };

@@ -1,8 +1,288 @@
-# RadFlow — откат миграций 0031–0037 (MIN-15)
+# RadFlow — ручные скрипты отката миграций
 
-Миграции применяются вперёд (Supabase → SQL Editor). Ниже — ручные скрипты отката
-для миграций, добавленных в ходе аудита 2026-06-25. Выполнять в **обратном** порядке
-(0037 → 0031) и только при необходимости. Все скрипты идемпотентны.
+Миграции применяются вперёд (Supabase → SQL Editor). Ниже — ручные скрипты
+отката (начат в аудит 2026-06-25 для 0031–0037, с тех пор пополняется).
+Секции лежат новые сверху; зависимые миграции откатывать в **обратном**
+порядке наката и только при необходимости. Все скрипты идемпотентны.
+
+## Откат 0145 (вебхуки интеграций + эмиссия событий)
+
+> Откат снимает эмиссию (триггер на queue_entries) и дропает
+> integration_webhooks ВМЕСТЕ С СЕКРЕТАМИ ПОДПИСИ — после повторного
+> наката секреты придётся перевыпустить (webhook:set) и передать RIS
+> заново. ⚠️ Недоставленные события integration.* ОБЯЗАТЕЛЬНО ack-нуть
+> ДО дропа таблицы (UPDATE ниже): воркер деливери при каждом батче
+> читает integration_webhooks, и после дропа этот запрос падал бы,
+> останавливая доставку ВСЕГО outbox (включая emergency_stop) — строки
+> integration.* без attempts вечно стояли бы в голове FIFO.
+> REST-роуты /api/integrations/v1/* от 0145 НЕ зависят (ключи — 0144) и
+> продолжают работать. Клиентский код отката не требует (воркер при
+> пустом наборе integration.*-строк таблицу не читает).
+> Строка леджера: файл остаётся в чекауте → строку НЕ удалять (гейт);
+> файл убирается → удалить обязательно.
+
+```sql
+begin;
+
+set local lock_timeout = '3s';
+set local search_path = public, pg_temp;
+
+-- СНАЧАЛА: закрыть недоставленные integration.*-события (иначе воркер
+-- после дропа таблицы стопорит весь outbox — см. врезку)
+update public.event_outbox
+   set delivered_at = now(),
+       last_error   = '0145 rollback: канал знято'
+ where event_type like 'integration.%'
+   and delivered_at is null;
+
+drop trigger if exists trg_zzz_integration_outbox on public.queue_entries;
+drop trigger if exists integration_webhooks_touch_updated on public.integration_webhooks;
+drop function if exists public.integration_outbox_enqueue();
+drop function if exists public.integration_project_entry(public.queue_entries);
+drop table if exists public.integration_webhooks;
+
+-- только если файл 0145 тоже убирается из чекаута:
+-- delete from public.migration_ledger
+--   where name = '0145_integration_webhooks.sql';
+
+commit;
+```
+
+## Откат 0144 (фундамент интеграций: 3 таблицы + services.code)
+
+> Откат дропает интеграционные таблицы ВМЕСТЕ С ДАННЫМИ: выданные ключи
+> (integration_keys), накопленные внешние идентификаторы (external_refs,
+> включая accession numbers от RIS) и журнал идемпотентности
+> (inbound_events) НЕ восстановимы — интеграции, если они уже живые,
+> после отката потребуют перевыпуска ключей и повторной привязки id.
+> Дроп services.code теряет стабильные коды услуг: после повторного
+> наката 0144 бэкфилл сгенерирует ТЕ ЖЕ коды (детерминированы от uuid
+> строки), но коды, заданные вручную, пропадут.
+> Строка леджера: если файл 0144 остаётся в чекауте — строку НЕ удалять
+> (гейт: файл без записи = fail сборки); леджер до повторного наката
+> будет расходиться с БД. Если файл убирается — удалить строку
+> обязательно.
+> ⚠️ Перед откатом проверить зависимости: если 0145+ навесил на
+> services.code view/функцию/индекс, `drop column` упадёт — сначала
+> откатить те пакеты.
+
+```sql
+begin;
+
+set local lock_timeout = '3s';
+set local search_path = public, pg_temp;
+
+drop trigger if exists services_assign_code_trg on public.services;
+drop function if exists public.services_assign_code();
+drop index if exists public.services_clinic_code_key;
+alter table public.services drop constraint if exists services_code_format_chk;
+alter table public.services drop column if exists code;
+
+drop table if exists public.inbound_events;   -- FK на integration_keys
+drop trigger if exists external_refs_check_entity_trg on public.external_refs;
+drop function if exists public.external_refs_check_entity();
+drop table if exists public.external_refs;    -- FK на integration_keys
+drop table if exists public.integration_keys; -- последней
+
+-- только если файл 0144 тоже убирается из чекаута (см. примечание выше):
+-- delete from public.migration_ledger
+--   where name = '0144_integration_foundation.sql';
+
+commit;
+```
+
+## Откат 0143 (RF-07: initplan в 11 политиках + 4 FK-индекса)
+
+> Откат возвращает ГОЛЫЙ `auth.uid()` в 11 политик (семантика та же,
+> вернутся только per-row вызовы и WARN'ы advisor'а auth_rls_initplan) и
+> дропает 4 покрывных FK-индекса (вернутся INFO unindexed_foreign_keys и
+> seq scan при каскадах удаления профилей — поток 0141 живой, дропать
+> индексы без причины не стоит). Политики НЕ пересоздаются (alter policy
+> сохраняет имя/роль/команду), гранты не затрагиваются.
+> Строку из migration_ledger удалить ОБЯЗАТЕЛЬНО, иначе гейт упадёт на
+> «запись без файла», если файл миграции тоже убирается из чекаута;
+> если файл остаётся в репо — строку НЕ удалять (гейт: файл без записи =
+> не накатано = fail сборки). ⚠️ Во втором случае леджер временно
+> утверждает «0143 накатано», хотя политики уже bare — леджер расходится
+> с БД до повторного наката 0143 (guard принимает bare-форму, накат
+> закрывает разрыв).
+
+```sql
+begin;
+
+set local lock_timeout = '3s';
+set local search_path = public, pg_temp;
+
+alter policy ceo_access_self_select on public.ceo_access
+  using (ceo_id = auth.uid());
+
+alter policy clinics_referrer_read on public.clinics
+  using (id in ( select referral_access.clinic_id
+                 from referral_access
+                 where (referral_access.referrer_id = auth.uid()) ));
+
+alter policy profiles_select_self on public.profiles
+  using (id = auth.uid());
+
+alter policy profiles_update_self on public.profiles
+  using (id = auth.uid())
+  with check (id = auth.uid());
+
+alter policy queue_select on public.queue_entries
+  using ( ((clinic_id = auth_clinic_id())
+           and (((select auth_role()) is distinct from 'radiologist'::user_role)
+                or auth_radiologist_room_ok(room_id)))
+          or (created_by = auth.uid())
+          or (referrer_id = auth.uid()) );
+
+alter policy queue_write_referrer on public.queue_entries
+  using ( ((created_by = auth.uid()) or (referrer_id = auth.uid()))
+          and auth_referrer_can_book_room(room_id) )
+  with check ( ((created_by = auth.uid()) or (referrer_id = auth.uid()))
+               and auth_referrer_can_book_room(room_id) );
+
+alter policy ra_referrer_select on public.referral_access
+  using (referrer_id = auth.uid());
+
+alter policy rp_owner_insert on public.referrer_private
+  with check (referrer_id = auth.uid());
+
+alter policy rp_owner_select on public.referrer_private
+  using (referrer_id = auth.uid());
+
+alter policy rp_owner_update on public.referrer_private
+  using (referrer_id = auth.uid())
+  with check (referrer_id = auth.uid());
+
+alter policy waitlist_write_referrer on public.waitlist_entries
+  using ( auth_can_refer(clinic_id) and (created_by = auth.uid()) )
+  with check ( auth_can_refer(clinic_id) and (created_by = auth.uid())
+               and ((room_id is null) or auth_referrer_can_book_room(room_id)) );
+
+drop index if exists public.ceo_access_granted_by_idx;
+drop index if exists public.patient_cases_created_by_idx;
+drop index if exists public.radiologist_rooms_room_id_idx;
+drop index if exists public.referral_access_initiated_by_idx;
+
+-- только если файл 0143 тоже убирается из чекаута (см. примечание выше):
+-- delete from public.migration_ledger
+--   where name = '0143_rls_initplan_and_fk_indexes.sql';
+
+commit;
+```
+
+## Откат 0142 (migration ledger + деплой-гейт)
+
+> Откат БД тривиален (дроп таблицы — данные леджера воспроизводимы бекфілом),
+> но вместе с ним нужно снять и клиентскую обвязку, иначе `npm run build`
+> станет падать на «не зміг прочитати migration_ledger»:
+> в `package.json` вернуть `"build": "next build"` (и при желании убрать
+> `db:gate`/`db:gate:check`), либо задать `RADFLOW_SKIP_MIGRATION_GATE=1`.
+> Канон самореєстрації (self-insert последним statement-ом миграции) при
+> откате перестаёт действовать — соответствующий пункт в AGENTS.md
+> («Самореєстрація в леджері») нужно убрать/пометить, иначе следующая сессия
+> продолжит писать футеры в никуда.
+>
+> ⚠️ Уже НАПИСАННЫЕ, но ещё не накатанные миграции 0143+ содержат футер
+> `insert into public.migration_ledger …` — после дропа таблицы их накат
+> упадёт на последнем statement-е и откатит ВЕСЬ DDL миграции. Перед их
+> накатом либо вырежьте футер, либо не дропайте таблицу (откатите только
+> обвязку в package.json).
+
+```sql
+begin;
+drop table if exists public.migration_ledger;
+commit;
+```
+
+## Откат 0141 (триггер чистки клиник-сирот)
+
+> Откат снимает ЗАПОБІЖНИК, но НЕ восстанавливает уже удалённые клиники —
+> удаление каскадно и необратимо (восстановление только из бэкапа). Триггер
+> удаляет ТОЛЬКО полностью пустые клиники без единого профиля, так что терять
+> при его работе нечего — откатывать есть смысл лишь если он мешает какому-то
+> новому легитимному потоку «клиника без профилей» (на 2026-08-10 таких
+> потоков нет: клиники создаёт только handle_new_user в паре с профилем).
+>
+> Строки audit_log с `table_name='clinics'` — журнал; при откате их не трогать
+> (их приберёт cron-мітла prune-audit-log за 180 дней).
+
+```sql
+begin;
+drop trigger if exists trg_cleanup_orphan_clinic on public.profiles;
+drop function if exists public.cleanup_orphan_clinic();
+commit;
+```
+
+## Откат 0140 (search_path 7 функций + allowlist 18 триггерных и 5 RPC + sro на каноне 0139)
+
+> Три части независимы — откатывать можно любую отдельно.
+>
+> ⚠️ **Часть 3: восстанавливать РОВНО в снятой форме.** У 18 триггерных revoke
+> снял ТРИ элемента ACL (грант на PUBLIC `=X/postgres`, явные `anon=X` и
+> `authenticated=X`), у 5 RPC — ДВА (authenticated не отзывался).
+> `grant … to anon` вернул бы только один:
+> ACL разошёлся бы с исходным, и следующий `revoke … from anon` (без public)
+> уже НЕ закрыл бы доступ — ровно ловушка, которую dry-run 0140 поймал на
+> первой же функции. Явный грант service_role revoke не трогал.
+>
+> ⚠️ **Исключение — `fn_audit()`:** PUBLIC-грант у неё снят ещё 0053-й (строка
+> 70); 0140 добил только anon/authenticated. Вернуть ей public = откатить 0053.
+>
+> ⚠️ **Часть 2:** `reset search_path`, а НЕ `set search_path = ''` — пустой
+> путь это не «как было», а более строгий режим.
+>
+> ⚠️ **Часть 1:** возврат к редакции 0111 СУЖАЕТ видимость направителя (грант
+> вместо «грант ∪ кабинеты своих строк») и снова рассинхронит sro с
+> services/rooms/incidents из 0139. Делать только вместе с откатом 0139.
+
+```sql
+-- Часть 1: sro_referrer_read → редакция 0111. Роль сохранить: to authenticated.
+drop policy if exists sro_referrer_read on public.service_room_overrides;
+create policy sro_referrer_read on public.service_room_overrides
+  for select to authenticated using (
+    public.auth_can_refer(clinic_id)
+    and public.auth_referrer_can_book_room(room_id)
+  );
+
+-- Часть 2: снять прибитый search_path (вернуть наследование от сессии).
+alter function public.greatest_severity(text, text)        reset search_path;
+alter function public.merge_changed_fields(text[], text[]) reset search_path;
+alter function public.touch_updated_at()                   reset search_path;
+alter function public.set_scheduled_at()                   reset search_path;
+alter function public.sync_cito_from_priority()            reset search_path;
+alter function public.clear_clarify_flag()                 reset search_path;
+alter function public.study_type_modality(text)            reset search_path;
+
+-- Часть 3a: 17 триггерных — вернуть PUBLIC + явные anon, authenticated.
+grant execute on function public.check_case_clinic_match()      to public, anon, authenticated;
+grant execute on function public.check_case_distinct_room()     to public, anon, authenticated;
+grant execute on function public.check_case_no_time_overlap()   to public, anon, authenticated;
+grant execute on function public.check_no_overlap()             to public, anon, authenticated;
+grant execute on function public.check_not_during_incident()    to public, anon, authenticated;
+grant execute on function public.check_service_room()           to public, anon, authenticated;
+grant execute on function public.check_service_room_override()  to public, anon, authenticated;
+grant execute on function public.check_studies_active_catalog() to public, anon, authenticated;
+grant execute on function public.check_studies_match_room()     to public, anon, authenticated;
+grant execute on function public.check_waitlist_consistency()   to public, anon, authenticated;
+grant execute on function public.guard_call_status_change()     to public, anon, authenticated;
+grant execute on function public.guard_priority_change()        to public, anon, authenticated;
+grant execute on function public.guard_referrer_doctor()        to public, anon, authenticated;
+grant execute on function public.guard_status_change_referrer() to public, anon, authenticated;
+grant execute on function public.guard_waitlist_room()          to public, anon, authenticated;
+grant execute on function public.handle_new_user()              to public, anon, authenticated;
+grant execute on function public.trg_case_status_recompute()    to public, anon, authenticated;
+
+-- Часть 3b: fn_audit — БЕЗ public (см. врезку: public снят 0053-й).
+grant execute on function public.fn_audit() to anon, authenticated;
+
+-- Часть 3c: 5 RPC (authenticated у них 0140 не отзывал — вернуть public+anon).
+grant execute on function public.referral_center_card(uuid)       to public, anon;
+grant execute on function public.search_referrers(text)           to public, anon;
+grant execute on function public.services_import_rpc(jsonb, uuid) to public, anon;
+grant execute on function public.sink_overdue_scheduled()         to public, anon;
+grant execute on function public.save_schedule_override(date, boolean, text, jsonb, text) to public, anon;
+```
 
 ## Откат 0139 (room-скоуп направителя: rooms / services / incidents)
 

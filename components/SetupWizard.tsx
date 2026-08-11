@@ -4,7 +4,7 @@
    Портовано з прототипу wizard-app.jsx + wizard-steps.jsx.
    Дані префілляться з Supabase і зберігаються при «Запустити кабінет». */
 
-import { useState, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
+import { useState, useEffect, useRef, type Dispatch, type SetStateAction, type MutableRefObject } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { normalizeLogin, isValidLogin, LOGIN_HINT } from "@/lib/login";
@@ -235,7 +235,7 @@ const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string; su
 const FORM_SECTIONS = ["sec-clinic", "sec-admin", "sec-equip", "sec-price"];
 
 /* ---------- Крок 1: Профіль клініки ---------- */
-function StepRegister({ report, onData, initial, active, clinicId, services, rooms, roomOverrides, notify }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial; active: string; clinicId: string; services: ServiceRow[]; rooms: SetupRoom[]; roomOverrides: SroRow[]; notify: (msg: string, type?: string) => void }) {
+function StepRegister({ report, onData, initial, active, clinicId, services, rooms, roomOverrides, notify, assignRoomIds }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial; active: string; clinicId: string; services: ServiceRow[]; rooms: SetupRoom[]; roomOverrides: SroRow[]; notify: (msg: string, type?: string) => void; assignRoomIds: MutableRefObject<((a: Array<{ localId: number | string; roomId: string }>) => void) | null> }) {
   const [clinic, setClinic] = useState(initial.clinic || "");
   const [city, setCity] = useState(initial.city || "");
   const [address, setAddress] = useState(initial.address || "");
@@ -268,6 +268,22 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
       ? initial.equip
       : [{ id: 1, type: "МРТ", desc: "", room: "Кабінет №1", ...mkSched() }]
   );
+
+  /* ⚠️ КРИТИЧНО (баг с33, «Спершу вимкніть… Кабінет №1» на другому «Зберегти»):
+     save() живе в БАТЬКІВСЬКОМУ компоненті й після insert нових кабінетів
+     отримує їхні db-id, але форма про них не знала — useState(initial.equip)
+     читає initial лише на першому рендері, а router.refresh() state не
+     перезасіває. Після першого збереження ряд лишався «новим» (без roomId), і
+     наступне «Зберегти» бачило кабінет із БД як «прибраний з форми»: блокер
+     «спершу вимкніть», а для вимкненого — ВИДАЛЕННЯ і дубль із новим id.
+     Тому батько після інсертів віддає видані id назад через цей ref. */
+  useEffect(() => {
+    assignRoomIds.current = (assigned) => setEquip((a) => a.map((e) => {
+      const hit = assigned.find((x) => String(x.localId) === String(e.id));
+      return hit && !e.roomId ? { ...e, roomId: hit.roomId } : e;
+    }));
+    return () => { assignRoomIds.current = null; };
+  }, [assignRoomIds]);
 
   useEffect(() => {
     const adminPhoneOk = aPhones.some((p) => p.trim() !== "");
@@ -800,6 +816,9 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
   const [schedWarnAsk, setSchedWarnAsk] = useState<number | null>(null); // N майбутніх записів поза новим графіком
   const [toasts, push] = useToasts();
   const dataRef = useRef<WizardData | null>(null);
+  /* Канал «батько → форма кабінетів»: після insert повертаємо в state форми
+     видані db-id (див. коментар біля useState(equip) у StepRegister). */
+  const assignRoomIdsRef = useRef<((a: Array<{ localId: number | string; roomId: string }>) => void) | null>(null);
   const savedRef = useRef<string | null>(null); // знімок збережених даних форми
 
   function report(k: number, ok: boolean) { setValid((v) => (v[k] === ok ? v : { ...v, [k]: ok })); }
@@ -966,6 +985,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
       if (pe) throw pe;
 
       const keepIds: string[] = [];
+      const assigned: Array<{ localId: number | string; roomId: string }> = [];
       for (const e of d.equip) {
         if (e.roomId) {
           const { error: ue } = await supabase.from("rooms").update(roomFields(e)).eq("id", e.roomId);
@@ -974,9 +994,12 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
         } else {
           const { data: ins, error: ie } = await supabase.from("rooms").insert(roomFields(e)).select("id").single();
           if (ie) throw ie;
-          if (ins) keepIds.push(ins.id);
+          if (ins) { keepIds.push(ins.id); assigned.push({ localId: e.id, roomId: ins.id }); }
         }
       }
+      /* Видані id — назад у форму, інакше друге «Зберегти» без перезавантаження
+         сприйме щойно збережені кабінети як «прибрані» (баг с33). */
+      if (assigned.length) assignRoomIdsRef.current?.(assigned);
       /* Прибрані в майстрі кабінети (історії в них уже точно немає — перевірили
          вище). 0123 + 0126: DELETE тут завжди по ВЖЕ вимкненому й ПОРОЖНЬОМУ
          кабінету — кнопка «✕» доступна лише для збереженого active=false без
@@ -1055,7 +1078,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
             <>
               {/* Кожне вікно налаштувань — окремо; перемикається кружками зліва */}
               <div style={{ display: FORM_SECTIONS.includes(activeSection) ? "block" : "none" }}>
-                <StepRegister report={report} onData={onData} initial={initial} active={activeSection}
+                <StepRegister report={report} onData={onData} initial={initial} active={activeSection} assignRoomIds={assignRoomIdsRef}
                   clinicId={clinicId} services={services} rooms={rooms} roomOverrides={roomOverrides} notify={push} />
               </div>
 
