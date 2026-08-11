@@ -49,6 +49,18 @@ function adminClient() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
+/** Нагадування ПІСЛЯ друку секрету. Не косметика: 11.08.2026 вивід цієї
+    команди зберегли у файл поруч із проєктом, і файл поїхав у ПУБЛІЧНИЙ
+    репозиторій із двома живими ключами. Приватність історії після push не
+    відновлюється — лише перевипуск. Тому попередження стоїть саме тут, поки
+    секрет ще на екрані, а не в README, який читають один раз. */
+function warnSecretHandling(what) {
+  console.log("");
+  console.log(`  ⚠️  Не зберігайте ${what} у файл всередині репозиторію.`);
+  console.log("     Менеджер паролів або захищений канал інтегратору — і все.");
+  console.log("     Втратили → key:revoke + key:create (перевипуск дешевий).");
+}
+
 function needUuid(opts, name) {
   const v = opts[name];
   if (!isUuid(v)) {
@@ -98,6 +110,7 @@ async function main() {
     console.log(`  scopes:  ${scopes.join(", ")}   режим: ${mode}`);
     console.log(`  ТОКЕН (показується ОДИН раз, передайте інтегратору захищеним каналом):`);
     console.log(`  ${token}`);
+    warnSecretHandling("ключ");
     return;
   }
 
@@ -135,6 +148,7 @@ async function main() {
     if (!provided) {
       console.log(`  СЕКРЕТ ПІДПИСУ (показується ОДИН раз; RIS звіряє X-RadFlow-Signature):`);
       console.log(`  ${secret}`);
+      warnSecretHandling("секрет вебхука");
     }
     return;
   }

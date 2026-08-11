@@ -18,6 +18,19 @@ next-env.d.ts
 .env.development.local
 .env.production.local
 
+# Выводы integration-admin.mjs: токен ключа (rfk_…) и секрет вебхука
+# печатаются ОДИН раз, и их естественно сохранить в файл рядом с проектом.
+# 11.08.2026 такой файл уехал в публичный репозиторий с двумя живыми
+# ключами (оба отозваны). Ловим по имени заранее — восстановить приватность
+# истории после push нельзя, можно только перевыпускать ключи.
+*KEY*.txt
+*key*.txt
+*SECRET*.txt
+*secret*.txt
+*token*.txt
+integration-key*
+webhook-secret*
+
 # ===== Vercel =====
 .vercel
 
