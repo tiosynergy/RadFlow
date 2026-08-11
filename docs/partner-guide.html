@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<title>RadFlow Integration API v1 — посібник інтегратора</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 16mm 16mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "DejaVu Sans", sans-serif;
+    font-size: 9.6pt; line-height: 1.5; color: #1c2430; margin: 0;
+  }
+  h1 { font-size: 19pt; margin: 0 0 2mm; color: #0f2540; letter-spacing: -.2pt; }
+  .sub { color: #5b6b7f; font-size: 9.5pt; margin-bottom: 6mm; }
+  h2 { break-after: avoid; break-inside: avoid;
+    font-size: 12pt; color: #0f2540; margin: 8mm 0 2.5mm;
+    padding-bottom: 1.2mm; border-bottom: 1.6px solid #0f2540;
+  }
+  h3 { break-after: avoid; font-size: 10pt; margin: 5mm 0 1.5mm; color: #17334f; }
+  p { margin: 0 0 2.5mm; }
+  ul, ol { margin: 0 0 3mm; padding-left: 5mm; }
+  li { margin-bottom: 1.2mm; }
+  code, pre { font-family: "DejaVu Sans Mono", monospace; }
+  code { font-size: 8.4pt; background: #eef2f7; padding: .3mm 1mm; border-radius: 2px; }
+  pre {
+    font-size: 8.2pt; background: #f6f8fb; border: 1px solid #dfe6ef;
+    border-left: 3px solid #2f6fb0; border-radius: 3px;
+    padding: 2.5mm 3mm; margin: 0 0 3mm; white-space: pre-wrap; line-height: 1.45;
+  }
+  table { break-inside: auto; width: 100%; border-collapse: collapse; margin: 0 0 3.5mm; font-size: 8.6pt; }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; }
+  th, td { border: 1px solid #d7e0ea; padding: 1.5mm 2mm; text-align: left; vertical-align: top; }
+  th { background: #eef3f9; font-weight: bold; color: #17334f; }
+  td code { background: transparent; padding: 0; }
+  .box {
+    border: 1px solid #c9dcf0; background: #f2f8ff; border-radius: 3px;
+    padding: 3mm 3.5mm; margin: 0 0 4mm;
+  }
+  .box.warn { border-color: #e8cfa8; background: #fff8ec; }
+  .box.hard { border-color: #dcc0c0; background: #fdf3f3; }
+  .box p:last-child, .box ul:last-child { margin-bottom: 0; }
+  .lead { font-size: 10pt; }
+  .muted { color: #5b6b7f; }
+  .tag {
+    display: inline-block; font-size: 7.6pt; font-weight: bold; letter-spacing: .3pt;
+    padding: .4mm 1.6mm; border-radius: 2px; background: #0f2540; color: #fff;
+    vertical-align: 1px;
+  }
+  .tag.get { background: #2f6fb0; }
+  .tag.post { background: #1f7a4d; }
+  .foot {
+    margin-top: 8mm; padding-top: 2.5mm; border-top: 1px solid #d7e0ea;
+    font-size: 8pt; color: #6a7a8c;
+  }
+  .avoid { break-inside: avoid; }
+  .newpage { break-before: page; }
+</style>
+</head>
+<body>
+
+<h1>RadFlow Integration API v1</h1>
+<div class="sub">Посібник інтегратора RIS/PACS · версія 1 · серпень 2026</div>
+
+<p class="lead">RadFlow керує потоком пацієнтів у кабінетах МРТ/КТ: розклад, черга,
+фактичний стан кабінету. Цей API дає партнерській системі два робочі напрямки:
+<b>читати</b> розклад і записи та <b>повідомляти факти</b> руху пацієнта, щоб черга
+рухалась без участі реєстратора.</p>
+
+<div class="box">
+<p><b>Межа продукту — головне, що варто знати одразу.</b> RadFlow не є медичним
+продуктом: він не зберігає й не обробляє медичні дані. Канал не передає назовні
+й не приймає всередину персональні та клінічні відомості — ПІБ, телефон, дату
+народження, показання, протипоказання, висновки, зображення. Тіло вхідної події
+закрите переліком із чотирьох дозволених полів: усе інше відхиляється
+з <code>400</code>. Пацієнта ваша система зіставляє на своєму боці за
+<code>entry_id</code> або accession.</p>
+</div>
+
+<h2>Доступ</h2>
+
+<p>Ключ видає власник RadFlow. Ви отримуєте три речі: <b>токен</b> (секрет),
+<b>базовий URL</b> і цей документ.</p>
+
+<pre>Authorization: Bearer rfk_&lt;48 hex&gt;</pre>
+
+<ul>
+  <li>Ключ прив'язаний до <b>однієї клініки</b> — доступ до чужих даних неможливий
+      технічно, фільтр стоїть на сервері, а не в параметрах запиту.</li>
+  <li>Скоупи: <code>appointments:read</code>, <code>slots:read</code>,
+      <code>events:write</code>. Бракує скоупа — <code>403</code>.</li>
+  <li>Ліміт: <b>240 запитів за хвилину</b> на ключ, далі <code>429</code>.</li>
+  <li>Відкликання ключа миттєве: наступний запит отримає <code>401</code>.</li>
+  <li>Усі відповіді — <code>application/json; charset=utf-8</code>, без кешування.</li>
+</ul>
+
+<p>Перевірка доступу однією командою:</p>
+<pre>curl -H "Authorization: Bearer $RADFLOW_TOKEN" \
+     https://rad-flow-tau.vercel.app/api/integrations/v1/rooms</pre>
+
+<h2>Довідники</h2>
+
+<h3><span class="tag get">GET</span> /api/integrations/v1/rooms</h3>
+<p>Кабінети клініки та її часова зона. Звідси беруться <code>room_id</code> для
+решти запитів. Вимкнені кабінети не віддаються (у них не можна записувати);
+<code>?include_inactive=1</code> покаже їх із <code>active:false</code>.</p>
+<pre>{
+  "timezone": "Europe/Kiev",
+  "paging": { "limit": 200, "returned": 2, "has_more": false },
+  "rooms": [{ "room_id": "741157ae-…", "name": "Кабінет МРТ", "modality": "MRI",
+              "apparatus_model": "Siemens Magnetom", "active": true }]
+}</pre>
+<p class="muted">Часова зона повертається саме тут, бо всі часи у <code>/slots</code> —
+«стінні» (<code>HH:MM</code> за годинником клініки). Без зони їх не можна
+перетворити в абсолютний момент часу.</p>
+
+<h3><span class="tag get">GET</span> /api/integrations/v1/services</h3>
+<p>Каталог послуг зі <b>стабільним кодом</b> <code>code</code> — саме він
+призначений для HL7 <code>AIS</code> / FHIR <code>serviceType</code> і переживає
+перейменування послуги.</p>
+
+<table><thead>
+  <tr><th style="width:26%">Параметр</th><th style="width:24%">Формат</th><th>Опис</th></tr>
+</thead><tbody>
+  <tr><td><code>room_id</code></td><td>uuid або <code>base</code></td>
+      <td>Що реально доступне в кабінеті: власні послуги кабінету + базові послуги
+          тієї самої модальності. <code>base</code> — лише базові послуги клініки</td></tr>
+  <tr><td><code>include_inactive</code></td><td><code>1</code></td><td>Показати неактивні</td></tr>
+  <tr><td><code>limit</code></td><td>1..500 (дефолт 200)</td><td>Разом із <code>paging.has_more</code></td></tr>
+</tbody></table>
+
+<div class="box warn">
+<p><b>Порожній список — не помилка.</b> Каталог і черга в RadFlow не зчеплені:
+реєстратор заводить запис із довільним переліком досліджень, навіть коли послуги
+в довіднику не заведені. Тому не блокуйте запис через порожній довідник —
+використовуйте <code>code</code> там, де він є. <code>duration_min</code> може
+бути <code>null</code>. Ціни не віддаються навмисно.</p>
+</div>
+
+<h2>Розклад і вільні вікна</h2>
+
+<h3><span class="tag get">GET</span> /api/integrations/v1/slots</h3>
+<p>Параметри: <code>room_id</code> (обов'язковий), <code>date_from</code>,
+<code>date_to</code> (<code>YYYY-MM-DD</code>, діапазон до 31 дня; дефолт —
+сьогодні + 13 днів). Відповідь по днях: робоче вікно, перерви, зайнятість і
+<b>вільні інтервали</b> (вікно мінус перерви мінус зайнятість).</p>
+
+<pre>{
+  "room_id": "741157ae-…", "modality": "MRI", "timezone": "Europe/Kiev",
+  "days": [{
+    "date": "2026-08-12", "open": true,
+    "window": { "start": "08:00", "end": "18:00" },
+    "breaks": [{ "start": "13:00", "end": "14:00" }],
+    "busy":   [{ "start": "10:30", "end": "11:05" }],
+    "free":   [{ "start": "08:00", "end": "10:30" },
+               { "start": "11:05", "end": "13:00" },
+               { "start": "14:00", "end": "18:00" }]
+  }]
+}</pre>
+
+<p><code>open:false</code> — кабінет цього дня не працює. Причини недоступності
+(інцидент, простій, ремонт) не розкриваються: назовні йде лише факт зайнятості.</p>
+
+<h2>Синхронізація записів</h2>
+
+<h3><span class="tag get">GET</span> /api/integrations/v1/appointments</h3>
+
+<table><thead>
+  <tr><th style="width:32%">Параметр</th><th>Опис</th></tr>
+</thead><tbody>
+  <tr><td><code>updated_since</code> + <code>after_id</code></td>
+      <td>Keyset-курсор інкрементального синку. Перший запит — лише
+          <code>updated_since</code>; далі передавайте <code>paging.next</code>
+          <b>як є</b>. Offset-пейджингу немає навмисно: рухливий
+          <code>updated_at</code> губив би рядки між сторінками</td></tr>
+  <tr><td><code>date_from</code>, <code>date_to</code></td><td>За датою запису</td></tr>
+  <tr><td><code>status</code></td><td>CSV: scheduled, waiting, in_progress, done,
+      no_show, cancelled, not_held, needs_reschedule</td></tr>
+  <tr><td><code>room_id</code></td><td>Один кабінет</td></tr>
+  <tr><td><code>limit</code></td><td>1..500 (дефолт 100), порядок
+      <code>updated_at ASC, id ASC</code></td></tr>
+</tbody></table>
+
+<pre>{
+  "appointments": [{
+    "entry_id": "b1fbf2dc-…", "clinic_id": "c0aaaf36-…", "room_id": "741157ae-…",
+    "status": "scheduled", "call_status": "confirmed",
+    "scheduled_at": "2026-08-12T07:30:00+00:00",
+    "scheduled_date": "2026-08-12", "scheduled_time": "10:30",
+    "duration_min": 30, "buffer_time_min": 5,
+    "priority_level": "planned", "cito": false, "has_contrast": true,
+    "off_schedule": false, "case_id": null, "case_step": null,
+    "created_at": "…", "updated_at": "…",
+    "studies": [{ "type": "МРТ", "region": "Колінний суглоб", "contrast": true }]
+  }],
+  "paging": { "limit": 100, "returned": 42, "has_more": false, "next": null }
+}</pre>
+
+<p><b>Рекомендований цикл синку:</b> запит із збереженим курсором → обробка
+сторінки → якщо <code>has_more</code>, повторити з <code>paging.next</code> →
+зберегти курсор останнього рядка. Сторінка завжди віддає <b>повний поточний
+стан</b> запису, тому обробка ідемпотентна: застосовуйте рядок, лише якщо його
+<code>updated_at</code> новіший за збережений для цього <code>entry_id</code>.</p>
+
+<h2>Події виконання (ваша система → RadFlow)</h2>
+
+<h3><span class="tag post">POST</span> /api/integrations/v1/appointments/{entry_id}/events</h3>
+
+<pre>{
+  "event": "arrived",
+  "source_event_id": "RIS-2026-08-12-000431",
+  "at": "2026-08-12T10:31:00+03:00",
+  "accession": "ACC-123"
+}</pre>
+
+<table><thead>
+  <tr><th style="width:22%">Поле</th><th style="width:14%">Обов'язкове</th><th>Правила</th></tr>
+</thead><tbody>
+  <tr><td><code>event</code></td><td>так</td>
+      <td><code>arrived</code> → «Очікує», <code>started</code> → «Триває»,
+          <code>finished</code> → «Виконано»</td></tr>
+  <tr><td><code>source_event_id</code></td><td>так</td>
+      <td>Ключ ідемпотентності, унікальний у межах клініки. Друковані ASCII, до 200
+          символів; керуючі символи відхиляються</td></tr>
+  <tr><td><code>at</code></td><td>ні</td>
+      <td>ISO-8601 <b>з часовою зоною</b> (без зони — <code>400</code>). Фактичний
+          час події; для <code>started</code> лягає у відлік роботи кабінету</td></tr>
+  <tr><td><code>accession</code></td><td>ні</td>
+      <td>Accession number вашої системи; прив'язується до запису</td></tr>
+</tbody></table>
+
+<p>Відповідь містить <code>result</code>, поточний і попередній статус,
+а також <code>accession_bound</code>, якщо передавали accession.</p>
+
+<table><thead>
+  <tr><th style="width:22%">result</th><th style="width:12%">HTTP</th><th>Що сталося</th></tr>
+</thead><tbody>
+  <tr><td><code>applied</code></td><td>200</td><td>Статус змінено</td></tr>
+  <tr><td><code>duplicate</code></td><td>200</td><td>Цей <code>source_event_id</code> уже приймали — повтор безпечний</td></tr>
+  <tr><td><code>noop</code></td><td>200</td><td>Запис уже в цьому або пізнішому стані (застаріла подія)</td></tr>
+  <tr><td><code>conflict</code></td><td>409</td><td>Запис у стані поза ланцюжком (скасовано, неявка, не відбулося) — подія його не воскрешає</td></tr>
+  <tr><td><code>busy</code>, <code>rejected_busy</code></td><td>409</td><td>У кабінеті вже інший пацієнт</td></tr>
+  <tr><td><code>reused</code></td><td>409</td><td>Той самий <code>source_event_id</code> під іншу подію або інший запис — подія <b>не</b> застосована</td></tr>
+  <tr><td><code>rejected</code></td><td>422</td><td>Доменний гард (графік, перетин, заборонений перехід)</td></tr>
+  <tr><td><code>not_found</code></td><td>404</td><td>Запису немає або він іншої клініки</td></tr>
+</tbody></table>
+
+<div class="box avoid">
+<p><b>Втрачена подія не блокує наступну.</b> Якщо ви надішлете
+<code>finished</code>, коли запис ще «Заплановано», RadFlow сам проведе його через
+«Очікує» і «Триває». Рух назад (подія нижча за поточний стан) — це
+<code>noop</code>, а не помилка.</p>
+<p><b>Повтор із тим самим <code>source_event_id</code> безпечний.</b> Дедуплікація
+на боці RadFlow: подія не застосується двічі. Але той самий ключ під <i>іншу</i>
+подію дасть <code>reused</code> — не використовуйте наскрізний лічильник, який
+може збігтися з чужим.</p>
+<p><b><code>not_found</code> не «з'їдає» ключ.</b> Якщо ваша подія випередила появу
+запису в RadFlow, надішліть її пізніше з тим самим
+<code>source_event_id</code> — вона застосується.</p>
+</div>
+
+<h3>Політика повторів</h3>
+<ul>
+  <li><b>Повторювати</b> (з backoff): <code>409</code>, <code>429</code>, <code>5xx</code>
+      — стан заважає зараз або збій тимчасовий.</li>
+  <li><b>Не повторювати</b>: <code>400</code>, <code>404</code>, <code>413</code>,
+      <code>422</code> — це контракт або стан, який повтор не змінить.
+      <code>404</code> варто повторити один раз пізніше, якщо запис ще міг не
+      з'явитися.</li>
+</ul>
+
+<h2>Зворотний канал: вебхуки (RadFlow → ваша система)</h2>
+
+<p>Налаштовується на вимогу: один <code>https</code>-ендпоінт на клініку. Кожна
+зміна запису породжує <code>POST</code> із повним поточним станом (state-based,
+не diff).</p>
+
+<table><thead>
+  <tr><th style="width:46%">Подія</th><th>Коли</th></tr>
+</thead><tbody>
+  <tr><td><code>integration.appointment.created</code></td><td>запис створено</td></tr>
+  <tr><td><code>integration.appointment.rescheduled</code></td><td>змінено час або кабінет</td></tr>
+  <tr><td><code>integration.appointment.cancelled</code></td><td>скасовано / не відбулося</td></tr>
+  <tr><td><code>integration.appointment.noshow</code></td><td>неявка</td></tr>
+  <tr><td><code>integration.appointment.updated</code></td><td>інші зміни експортованих полів</td></tr>
+  <tr><td><code>integration.appointment.deleted</code></td><td>запис видалено</td></tr>
+</tbody></table>
+
+<p><b>Вимоги до приймача — частина контракту:</b></p>
+<ol>
+  <li><b>Дедуплікація за <code>Idempotency-Key</code></b> (заголовок і поле):
+      доставка at-least-once, повтори законні.</li>
+  <li><b>Порядок не гарантований.</b> Застосовуйте подію, лише якщо її
+      <code>(updated_at, seq)</code> новіша за збережену для цього
+      <code>entry_id</code>. Поле <code>seq</code> існує саме тому, що дві зміни в
+      одній транзакції мають однаковий <code>updated_at</code>.</li>
+  <li><b>Перевірка підпису</b> <code>X-RadFlow-Signature: sha256=&lt;hex&gt;</code> —
+      HMAC-SHA256 від сирого тіла секретом вебхука, порівняння в константний час.
+      Запити без валідного підпису відкидати.</li>
+  <li>Відповідь <code>2xx</code> протягом 3 секунд = прийнято; інакше повтор із
+      backoff (30 с → … → 1 год, до 10 спроб, далі dead-letter).</li>
+</ol>
+
+<h2>Помилки</h2>
+<table><thead>
+  <tr><th style="width:14%">Код</th><th>Значення</th></tr>
+</thead><tbody>
+  <tr><td>400</td><td>Невалідний параметр або тіло (текст у полі <code>error</code>)</td></tr>
+  <tr><td>401</td><td>Ключ відсутній, невалідний або відкликаний</td></tr>
+  <tr><td>403</td><td>Бракує потрібного скоупа</td></tr>
+  <tr><td>404</td><td>Чужий або неіснуючий кабінет чи запис</td></tr>
+  <tr><td>409</td><td>Стан заважає <b>зараз</b> — повтор пізніше має сенс</td></tr>
+  <tr><td>413</td><td>Тіло понад 8 КБ</td></tr>
+  <tr><td>422</td><td>Доменний гард — повтор не допоможе</td></tr>
+  <tr><td>429</td><td>Перевищено ліміт запитів</td></tr>
+  <tr><td>5xx</td><td>Тимчасово, повторіть із backoff</td></tr>
+</tbody></table>
+
+<p>Тексти помилок бази назовні не виходять: у відповіді — стабільний машинний
+<code>reason</code> (<code>room_busy</code>, <code>stale</code>,
+<code>bad_request</code>, <code>domain_guard</code>,
+<code>illegal_transition</code>, <code>server_error</code>) і прапорець
+<code>retryable</code>. Орієнтуйтесь на них, а не на текст.</p>
+
+<h2>Порядок підключення</h2>
+<ol>
+  <li>Отримати токен захищеним каналом і перевірити доступ запитом до
+      <code>/rooms</code> (очікується <code>200</code> і список кабінетів).</li>
+  <li>Забрати довідники: <code>/rooms</code>, <code>/services</code>. Зберегти
+      <code>room_id</code> і <code>code</code> у себе.</li>
+  <li>Налаштувати інкрементальний синк <code>/appointments</code> за keyset-курсором.</li>
+  <li>Увімкнути надсилання подій. Почати з одного тестового запису й переконатись у
+      послідовності <code>applied</code> → <code>duplicate</code> →
+      <code>noop</code>.</li>
+  <li>За потреби — узгодити з клінікою зворотні вебхуки й отримати секрет підпису.</li>
+</ol>
+
+<div class="box hard">
+<p><b>Чого канал не робить.</b> Через API не можна створити запис, перенести його,
+змінити пацієнта, послугу чи кабінет — планування лишається за реєстратором
+RadFlow. Ззовні рухається лише <b>статус виконання</b> вже наявного запису.
+Кожна така зміна видима адміністратору клініки в журналі дій із зазначенням
+назви вашої інтеграції як джерела.</p>
+</div>
+
+<div class="foot">
+RadFlow Integration API v1 · Питання та зміни контракту — через власника RadFlow.
+Токен доступу є секретом: не зберігайте його у сховищі коду, не пересилайте разом
+із цим документом. Втрачений або скомпрометований ключ відкликається миттєво, а
+новий видається без наслідків для вже переданих даних.
+</div>
+
+</body>
+</html>
