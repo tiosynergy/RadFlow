@@ -2,6 +2,8 @@
    локально (потрібні NEXT_PUBLIC_SUPABASE_URL і SUPABASE_SERVICE_ROLE_KEY у
    .env.local або env). Це єдиний канал видачі ключів у фазі 1 — адмін-UI нема.
 
+     node scripts/integration-admin.mjs partner:onboard --clinic <uuid> --name "RIS Х" \
+          [--url https://…] [--base https://rad-flow-tau.vercel.app] [--scopes …]
      node scripts/integration-admin.mjs key:create --clinic <uuid> --name "RIS Х" \
           [--scopes slots:read,appointments:read,events:write] [--mode A|B]
      node scripts/integration-admin.mjs key:revoke --id <uuid>
@@ -19,9 +21,11 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { readFileSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import {
   generateToken, hashToken, tokenPrefix, generateWebhookSecret,
   parseScopes, validateWebhookUrl, isUuid, parseArgs, ALLOWED_SCOPES,
+  PARTNER_SCOPES, isRedirected, partnerBrief, clipboardCommand, maskSecret,
 } from "./integration-admin-lib.mjs";
 
 /** .env.local — того ж формату, що читає Next; беремо лише потрібні ключі.
@@ -47,6 +51,39 @@ function adminClient() {
     process.exit(2);
   }
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+}
+
+/** Друк секрету ТІЛЬКИ в живий термінал. `node … > Integration_KEY.txt` —
+    саме те, що сталося 11.08.2026, — тепер обривається ДО того, як секрет
+    з'явиться у файлі. Ключ на цей момент уже створений у БД: якщо натрапили
+    на цю відсічку, просто відкличте його й повторіть у терміналі. */
+function guardSecretOutput(opts, createdId) {
+  if (!isRedirected(process.stdout) || opts["allow-redirect"] === true) return;
+  console.error("");
+  console.error("  ⛔ Вивід перенаправлено (файл або пайп) — секрет НЕ надрукований.");
+  console.error("     Так дамп ключів і потрапив у публічний репозиторій 11.08.2026.");
+  if (createdId) {
+    console.error(`     Ключ ${createdId} УЖЕ створено в БД. Відкличте його:`);
+    console.error(`       node scripts/integration-admin.mjs key:revoke --id ${createdId}`);
+    console.error("     і повторіть команду у звичайному терміналі.");
+  }
+  console.error("     Свідома автоматизація: додайте --allow-redirect.");
+  process.exit(3);
+}
+
+/** Віддати секрет у буфер обміну замість екрана. Повертає true, якщо вийшло.
+    Це найдієвіший запобіжник із трьох: попередження читають, перенаправлення
+    обходять, а ось переслати те, чого на екрані немає, неможливо. */
+function copyToClipboard(text) {
+  const c = clipboardCommand(process.platform);
+  if (!c) return false;
+  const r = spawnSync(c.cmd, c.args, { input: text, encoding: "utf8" });
+  if (r.error || r.status !== 0) {
+    // Linux без xclip — типовий випадок; кажемо чесно, не вдаємо успіх
+    console.error(`  (буфер обміну недоступний: ${r.error?.message ?? `${c.cmd} → код ${r.status}`})`);
+    return false;
+  }
+  return true;
 }
 
 /** Нагадування ПІСЛЯ друку секрету. Не косметика: 11.08.2026 вивід цієї
@@ -75,7 +112,7 @@ async function main() {
   const { cmd, opts } = parseArgs(process.argv.slice(2));
 
   if (cmd === "help" || cmd === "--help") {
-    console.log("Команди: key:create | key:revoke | webhook:set | webhook:disable | list (див. шапку файла)");
+    console.log("Команди: partner:onboard | key:create | key:revoke | webhook:set | webhook:disable | list (див. шапку файла)");
     return;
   }
 
@@ -105,6 +142,7 @@ async function main() {
       export_mode: mode,
     }).select("id").single();
     if (error) { console.error("Не вдалось створити ключ:", error.message); process.exit(1); }
+    guardSecretOutput(opts, data.id);
     console.log(`Ключ створено: id=${data.id}`);
     console.log(`  clinic:  ${clinic}`);
     console.log(`  scopes:  ${scopes.join(", ")}   режим: ${mode}`);
@@ -124,6 +162,92 @@ async function main() {
       .maybeSingle();
     if (error) { console.error("Не вдалось відкликати:", error.message); process.exit(1); }
     console.log(data ? `Ключ ${id} відкликано.` : `Ключ ${id} не знайдено або вже відкликаний.`);
+    return;
+  }
+
+  /* Видача доступу партнеру однією командою: ключ + (за бажанням) зворотний
+     вебхук + пам'ятка, яку можна переслати як є. Три окремі команди люди
+     зводили в один текстовий файл — і саме той файл поїхав у репозиторій.
+     Тут секрети й пам'ятка розділені ЯВНО: пересилати треба нижній блок. */
+  if (cmd === "partner:onboard") {
+    const clinic = needUuid(opts, "clinic");
+    const name = String(opts.name || "").trim();
+    if (!name) { console.error("--name: як називати інтеграцію в журналі, напр. \"RIS Мед-Експерт\""); process.exit(2); }
+    const baseUrl = String(opts.base || "https://rad-flow-tau.vercel.app").replace(/\/+$/, "");
+    if (!/^https:\/\//.test(baseUrl)) { console.error("--base: https-URL застосунку"); process.exit(2); }
+    const scopes = parseScopes(opts.scopes ?? PARTNER_SCOPES.join(","));
+    const hookUrl = opts.url && opts.url !== true ? validateWebhookUrl(opts.url) : null;
+
+    const { data: clinicRow, error: clinicErr } = await db
+      .from("clinics").select("name").eq("id", clinic).maybeSingle();
+    if (clinicErr) { console.error("Не вдалось прочитати клініку:", clinicErr.message); process.exit(1); }
+    if (!clinicRow) { console.error(`Клініки ${clinic} не існує — перевірте --clinic`); process.exit(2); }
+
+    const token = generateToken();
+    const { data, error } = await db.from("integration_keys").insert({
+      clinic_id: clinic,
+      name,
+      key_prefix: tokenPrefix(token),
+      key_hash: hashToken(token),
+      scopes,
+      export_mode: "A",
+    }).select("id").single();
+    if (error) { console.error("Не вдалось створити ключ:", error.message); process.exit(1); }
+
+    let hookSecret = null;
+    if (hookUrl) {
+      hookSecret = generateWebhookSecret();
+      const { error: hookErr } = await db.from("integration_webhooks").upsert(
+        { clinic_id: clinic, url: hookUrl, secret: hookSecret, enabled: true,
+          updated_at: new Date().toISOString() },
+        { onConflict: "clinic_id" }
+      );
+      if (hookErr) {
+        // Ключ уже в БД: мовчазний вихід лишив би «половину доступу» без сліду.
+        console.error("Ключ створено, але вебхук зберегти не вдалось:", hookErr.message);
+        console.error(`  ключ ${data.id} — відкличте (key:revoke) або долаштуйте вебхук окремо (webhook:set).`);
+        process.exit(1);
+      }
+    }
+
+    guardSecretOutput(opts, data.id);
+
+    console.log(`\n=== СЕКРЕТИ ===`);
+    console.log(`Клініка: «${clinicRow.name}»   інтеграція: «${name}»   ключ: ${data.id}`);
+
+    /* За замовчуванням токен іде В БУФЕР, а не на екран: секрет, надрукований
+       поруч із корисним текстом, копіюють разом із ним — саме так 11.08.2026
+       ключі й пішли в сторонні канали. --show повертає старий друк. */
+    const wantScreen = opts.show === true;
+    const copied = wantScreen ? false : copyToClipboard(token);
+    if (copied) {
+      console.log(`ТОКЕН → скопійовано в буфер обміну (${maskSecret(token)}).`);
+      console.log(`  Вставте його одразу в менеджер паролів — буфер перезапишеться.`);
+      console.log(`  Потрібен на екрані? Повторіть із --show.`);
+    } else {
+      console.log(`ТОКЕН (показується ОДИН раз):`);
+      console.log(`  ${token}`);
+    }
+    if (hookSecret) {
+      // Другий секрет у буфер класти не можна — він затер би перший
+      console.log(`СЕКРЕТ ПІДПИСУ ВЕБХУКА (X-RadFlow-Signature), показується ОДИН раз:`);
+      console.log(`  ${hookSecret}`);
+    }
+    warnSecretHandling("ці секрети");
+    console.log("     Не вставляйте вивід цієї команди в чати, задачі й тікети.");
+    console.log(`\n  Відкликати доступ:`);
+    console.log(`    node scripts/integration-admin.mjs key:revoke --id ${data.id}`);
+    if (hookUrl) {
+      console.log(`    node scripts/integration-admin.mjs webhook:disable --clinic ${clinic}`);
+    }
+
+    console.log(`\n=== ПАМ'ЯТКА ПАРТНЕРУ (без секретів — можна переслати як є) ===\n`);
+    console.log(partnerBrief({
+      baseUrl, clinicName: clinicRow.name, keyId: data.id, scopes, webhookUrl: hookUrl,
+    }));
+    console.log(`\n  Токен передайте ОКРЕМИМ захищеним каналом, не разом із цією пам'яткою.`);
+    console.log(`  Далі перевірте канал живцем:`);
+    console.log(`    node scripts/integration-live-check.mjs --base ${baseUrl} --token <ТОКЕН>`);
     return;
   }
 
@@ -191,7 +315,7 @@ async function main() {
     return;
   }
 
-  console.error(`Невідома команда «${cmd}». Доступні: key:create, key:revoke, webhook:set, webhook:disable, list`);
+  console.error(`Невідома команда «${cmd}». Доступні: partner:onboard, key:create, key:revoke, webhook:set, webhook:disable, list`);
   process.exit(2);
 }
 

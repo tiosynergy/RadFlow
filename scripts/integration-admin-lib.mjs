@@ -58,6 +58,86 @@ export function validateWebhookUrl(url) {
   return u.toString();
 }
 
+/** Скоупи «звичайного» партнера: читає розклад і записи, шле статуси.
+    Явний список, а не ALLOWED_SCOPES: коли з'явиться четвертий скоуп, він не
+    має тихо потрапити всім партнерам. */
+export const PARTNER_SCOPES = ["appointments:read", "slots:read", "events:write"];
+
+/** Вивід перенаправлено (у файл, у пайп), а не в термінал?
+    11.08.2026 саме так секрети й поїхали в публічний репозиторій: вивід
+    key:create зберегли у файл поруч із проєктом. Тому секрети друкуємо ЛИШЕ
+    в живий термінал; для автоматизації є явний прапорець.
+    @param {{isTTY?: boolean}|undefined} stream */
+export function isRedirected(stream) {
+  return !stream?.isTTY;
+}
+
+/** Команда буфера обміну для платформи. Навіщо: 11.08.2026 токен тричі
+    пройшов через сторонній канал, бо надрукований на екрані секрет
+    копіюється РАЗОМ із корисним виводом. Те, чого немає на екрані,
+    переслати неможливо.
+    @returns {{cmd: string, args: string[]}|null} null — платформа невідома */
+export function clipboardCommand(platform) {
+  if (platform === "win32") return { cmd: "clip", args: [] };
+  if (platform === "darwin") return { cmd: "pbcopy", args: [] };
+  if (platform === "linux") return { cmd: "xclip", args: ["-selection", "clipboard"] };
+  return null;
+}
+
+/** Маска секрету для екрана: досить, щоб звірити «той самий рядок?», і
+    недосить, щоб ним скористались зі скріншота. */
+export function maskSecret(s) {
+  const v = String(s ?? "");
+  return v.length <= 12 ? "…" : `${v.slice(0, 12)}…${v.length} символів`;
+}
+
+/** Пам'ятка партнеру — БЕЗ секретів, її можна переслати як є.
+    Секрет і пам'ятка друкуються окремими блоками свідомо: коли токен
+    вклеєний у корисний текст, зберігають увесь текст разом із токеном. */
+export function partnerBrief({ baseUrl, clinicName, keyId, scopes, webhookUrl }) {
+  const b = String(baseUrl || "").replace(/\/+$/, "");
+  const lines = [
+    `RadFlow Integration API v1 — доступ для «${clinicName}»`,
+    ``,
+    `Базовий URL: ${b}`,
+    `Автентифікація: заголовок  Authorization: Bearer <ТОКЕН>`,
+    `Скоупи ключа: ${scopes.join(", ")}`,
+    `Ідентифікатор ключа (не секрет, для листування): ${keyId}`,
+    ``,
+    `Ендпоінти:`,
+    `  GET  ${b}/api/integrations/v1/rooms`,
+    `  GET  ${b}/api/integrations/v1/services?room_id=<uuid|base>`,
+    `  GET  ${b}/api/integrations/v1/slots?room_id=<uuid>&date_from=&date_to=`,
+    `  GET  ${b}/api/integrations/v1/appointments?updated_since=&after_id=`,
+    `  POST ${b}/api/integrations/v1/appointments/{id}/events`,
+    ``,
+    `Перевірка доступу однією командою:`,
+    `  curl -H "Authorization: Bearer <ТОКЕН>" ${b}/api/integrations/v1/rooms`,
+    ``,
+    `Подія виконання (лише факти руху пацієнта):`,
+    `  {"event":"arrived|started|finished","source_event_id":"<унікальний id>",`,
+    `   "at":"2026-08-12T10:31:00+03:00","accession":"ACC-123"}`,
+    `  200 applied|duplicate|noop — прийнято; 409 — стан заважає зараз,`,
+    `  повторіть пізніше; 422 — гард, ретрай не допоможе; 404 — запису немає.`,
+    `  Повтор із тим самим source_event_id безпечний (дедуп на нашому боці).`,
+    ``,
+    `Межа продукту: канал приймає РІВНО чотири поля вище. Персональні та`,
+    `клінічні дані (ПІБ, телефон, дата народження, висновки, зображення) не`,
+    `передаються і не приймаються — такі запити відхиляються з 400.`,
+  ];
+  if (webhookUrl) {
+    lines.push(
+      ``,
+      `Зворотний канал: RadFlow шле POST на ${webhookUrl} при кожній зміні`,
+      `запису. Перевіряйте підпис X-RadFlow-Signature (HMAC-SHA256 від сирого`,
+      `тіла секретом вебхука), дедуплікуйте за Idempotency-Key, застосовуйте`,
+      `подію лише якщо її (updated_at, seq) новіші за збережені.`
+    );
+  }
+  lines.push(``, `Повний контракт: docs/integration-api-v1.md`);
+  return lines.join("\n");
+}
+
 export function isUuid(s) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ""));
 }
