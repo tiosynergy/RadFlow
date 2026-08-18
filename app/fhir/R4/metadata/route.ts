@@ -109,6 +109,28 @@ export async function GET(req: Request) {
               { name: "status", type: "token", documentation: "free | busy | busy-unavailable" },
             ],
           },
+          {
+            type: "Appointment",
+            interaction: [{ code: "read" }, { code: "search-type" }],
+            documentation:
+              "Записи черги. Скоуп appointments:read (НЕ slots:read). " +
+              "Режим A: пацієнт — логічне посилання на ЗАПИС через " +
+              `identifier у ${base}/fhir/NamingSystem/entry, демографії немає. ` +
+              "R4 не має кодів для «дослідження триває» і «не відбулося», " +
+              "тож in_progress → checked-in, а not_held і cancelled обидва → " +
+              "cancelled; сирий статус завжди їде в розширенні " +
+              "radflow-queue-status. Буфер НЕ входить в end — він у " +
+              "розширенні radflow-buffer-min. Пагінація keyset: передавайте " +
+              "_lastUpdated і _after_id із link.next як є.",
+            searchParam: [
+              { name: "date", type: "date", documentation: "YYYY-MM-DD або geYYYY-MM-DD" },
+              { name: "date_to", type: "date", documentation: "YYYY-MM-DD або leYYYY-MM-DD" },
+              { name: "status", type: "token", documentation: "CSV кодів Appointment.status" },
+              { name: "actor", type: "reference", documentation: "Location/{room_id}" },
+              { name: "_lastUpdated", type: "date", documentation: "курсор keyset" },
+              { name: "_count", type: "number" },
+            ],
+          },
         ],
       },
     ],
