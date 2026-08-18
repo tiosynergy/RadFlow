@@ -10,7 +10,11 @@ import {
   locationFromClinic,
   locationFromRoom,
   operationOutcome,
+  parseSlotId,
+  scheduleFromRoom,
   searchsetBundle,
+  slotId,
+  slotResource,
   toDicomModality,
   type RoomRow,
   type ServiceRow,
@@ -212,5 +216,100 @@ describe("режим експорту", () => {
 describe("версія", () => {
   it("заявлена R4", () => {
     expect(FHIR_VERSION).toBe("4.0.1");
+  });
+});
+
+describe("Schedule", () => {
+  it("id збігається з кабінетом, actor веде на кабінет і клініку", () => {
+    const sch = scheduleFromRoom(room(), CLINIC);
+    expect(sch.resourceType).toBe("Schedule");
+    expect(sch.id).toBe(ROOM);
+    expect(sch.active).toBe(true);
+    expect(sch.actor).toEqual([
+      { reference: `Location/${ROOM}` },
+      { reference: `Location/${CLINIC}` },
+    ]);
+    const st = sch.serviceType as Array<{ coding: Array<{ code: string }> }>;
+    expect(st[0].coding[0].code).toBe("MR");
+  });
+
+  it("вимкнений кабінет → active=false", () => {
+    expect(scheduleFromRoom(room({ active: false }), CLINIC).active).toBe(false);
+  });
+});
+
+describe("id слота — детермінований і оборотний", () => {
+  it("склеювання і розбір дають те саме", () => {
+    const id = slotId(ROOM, "2026-08-18", 480, 510);
+    expect(id).toBe(`${ROOM}.2026-08-18.480-510`);
+    expect(parseSlotId(id)).toEqual({
+      roomId: ROOM,
+      dateKey: "2026-08-18",
+      startMin: 480,
+      endMin: 510,
+    });
+  });
+
+  it("вкладається в стелю FHIR id (64 символи)", () => {
+    // Найдовший можливий варіант: обидві межі чотиризначні.
+    expect(slotId(ROOM, "2026-12-31", 1380, 1440).length).toBeLessThanOrEqual(64);
+  });
+
+  it("той самий слот дає той самий id при перерахунку", () => {
+    // Слотів у БД немає — вони рахуються щоразу заново. Якби id залежав від
+    // порядку чи лічильника, посилання партнера протухало б за хвилини.
+    expect(slotId(ROOM, "2026-08-18", 480, 510)).toBe(slotId(ROOM, "2026-08-18", 480, 510));
+  });
+});
+
+describe("розбір id слота відкидає сміття", () => {
+  it("порожнє, чуже, обрізане → null", () => {
+    for (const bad of [
+      null,
+      "",
+      "не-uuid.2026-08-18.480-510",
+      `${ROOM}.18-08-2026.480-510`, // дата не ISO
+      `${ROOM}.2026-08-18.480`, // немає кінця
+      `${ROOM}.2026-08-18.480-510.extra`,
+    ]) {
+      expect(parseSlotId(bad)).toBeNull();
+    }
+  });
+
+  it("неможливі межі доби → null", () => {
+    expect(parseSlotId(`${ROOM}.2026-08-18.480-480`)).toBeNull(); // порожній
+    expect(parseSlotId(`${ROOM}.2026-08-18.510-480`)).toBeNull(); // перевернутий
+    expect(parseSlotId(`${ROOM}.2026-08-18.0-1441`)).toBeNull(); // за добу
+  });
+
+  it("1440 як кінець доби — валідний (канон v1)", () => {
+    expect(parseSlotId(`${ROOM}.2026-08-18.1380-1440`)?.endMin).toBe(1440);
+  });
+});
+
+describe("Slot", () => {
+  it("посилається на розклад кабінету і несе instant-межі", () => {
+    const s = slotResource(
+      ROOM,
+      "2026-08-18",
+      480,
+      510,
+      "free",
+      "2026-08-18T05:00:00Z",
+      "2026-08-18T05:30:00Z"
+    );
+    expect(s.resourceType).toBe("Slot");
+    expect(s.id).toBe(`${ROOM}.2026-08-18.480-510`);
+    expect(s.schedule).toEqual({ reference: `Schedule/${ROOM}` });
+    expect(s.status).toBe("free");
+    expect(s.start).toBe("2026-08-18T05:00:00Z");
+  });
+
+  it("причина недоступності назовні не йде", () => {
+    // Перерва, інцидент і вимкнений кабінет — усе це busy-unavailable.
+    const s = slotResource(ROOM, "2026-08-18", 720, 780, "busy-unavailable", "a", "b");
+    for (const forbidden of ["reason", "comment", "label", "incident"]) {
+      expect(s).not.toHaveProperty(forbidden);
+    }
   });
 });

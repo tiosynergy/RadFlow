@@ -81,6 +81,34 @@ export async function GET(req: Request) {
               { name: "_count", type: "number" },
             ],
           },
+          {
+            type: "Schedule",
+            interaction: [{ code: "read" }, { code: "search-type" }],
+            documentation:
+              "Один розклад на кабінет; id розкладу = id кабінету. " +
+              "Вимкнений кабінет — active=false.",
+            searchParam: [
+              { name: "actor", type: "reference", documentation: "Location/{room_id}" },
+              { name: "_count", type: "number" },
+            ],
+          },
+          {
+            type: "Slot",
+            interaction: [{ code: "read" }, { code: "search-type" }],
+            documentation:
+              "Слоти рахуються на льоту (розклад − перерви − зайнятість) і в БД " +
+              "не зберігаються; id детермінований: {room_id}.{дата}.{хв}-{хв}. " +
+              "Межі — instant у UTC. Параметр schedule обовʼязковий, діапазон " +
+              "дат ≤ 31 доби (дефолт — 14 від сьогодні за зоною клініки). " +
+              "Причина недоступності назовні не йде: перерва, інцидент і " +
+              "вимкнений кабінет однаково дають busy-unavailable.",
+            searchParam: [
+              { name: "schedule", type: "reference", documentation: "Schedule/{room_id} (обовʼязковий)" },
+              { name: "date", type: "date", documentation: "YYYY-MM-DD або geYYYY-MM-DD" },
+              { name: "date_to", type: "date", documentation: "YYYY-MM-DD або leYYYY-MM-DD" },
+              { name: "status", type: "token", documentation: "free | busy | busy-unavailable" },
+            ],
+          },
         ],
       },
     ],

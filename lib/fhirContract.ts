@@ -285,3 +285,97 @@ export function fhirExportModeWarning(exportMode: string): string | null {
     ? "export_mode=B не підтримується FHIR-фасадом; віддано проєкцію режиму A"
     : null;
 }
+
+/* ===== Schedule + Slot (пакет 2) ===== */
+
+/** rooms → Schedule. Один розклад на кабінет, id збігається з id кабінету:
+    зайвий рівень непрямування («розклад №7 кабінету X») не дає нічого, а
+    Slot.schedule тоді читається як посилання на сам кабінет. */
+export function scheduleFromRoom(room: RoomRow, clinicId: string): Record<string, unknown> {
+  const dicom = toDicomModality(room.modality);
+  const out: Record<string, unknown> = {
+    resourceType: "Schedule",
+    id: room.id,
+    active: room.active !== false,
+    actor: [{ reference: `Location/${room.id}` }, { reference: `Location/${clinicId}` }],
+  };
+  if (dicom) {
+    out.serviceType = [
+      { coding: [{ system: "http://dicom.nema.org/resources/ontology/DCM", code: dicom }] },
+    ];
+  }
+  if (room.name) out.comment = room.name;
+  return out;
+}
+
+/** Статуси слота (підмножина R4, якою користується фасад). */
+export type SlotStatus = "free" | "busy" | "busy-unavailable";
+
+/** Детермінований id слота: `{roomId}.{YYYY-MM-DD}.{startMin}-{endMin}`.
+
+    Слотів у БД НЕМАЄ — вони рахуються на льоту з розкладу мінус перерви
+    мінус зайнятість. Але FHIR-клієнт мусить мати змогу зробити `read` по
+    посиланню, яке отримав годину тому, тож id зобовʼязаний ПЕРЕЖИВАТИ
+    перерахунок. Звідси композиція з тих величин, що визначають слот
+    однозначно, і жодного лічильника чи хешу: хеш не читається очима і
+    ламається при будь-якій зміні формули.
+
+    Роздільники підібрані так, щоб розбір був однозначним: uuid і дата
+    містять дефіси, тому поля розділяє КРАПКА, а дефіс лишається всередині
+    діапазону хвилин. Довжина — 57 символів при стелі FHIR id у 64. */
+export function slotId(roomId: string, dateKey: string, startMin: number, endMin: number): string {
+  return `${roomId}.${dateKey}.${startMin}-${endMin}`;
+}
+
+export interface ParsedSlotId {
+  roomId: string;
+  dateKey: string;
+  startMin: number;
+  endMin: number;
+}
+
+const SLOT_ID_RE =
+  /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(\d{4}-\d{2}-\d{2})\.(\d{1,4})-(\d{1,4})$/i;
+
+/** Розбір id слота. Повертає null на будь-якій невідповідності формі —
+    роут з цього робить 404, а не 500: чужий або застарілий id це «немає
+    такого слота», а не поломка сервера. */
+export function parseSlotId(id: string | null | undefined): ParsedSlotId | null {
+  if (!id) return null;
+  const m = SLOT_ID_RE.exec(id);
+  if (!m) return null;
+  const startMin = Number(m[3]);
+  const endMin = Number(m[4]);
+  // Межі доби: 0..1440 (1440 = кінець доби, канон v1). Порожній і
+  // перевернутий інтервал відкидаємо — таких слотів не існує.
+  if (startMin > 1440 || endMin > 1440 || startMin >= endMin) return null;
+  return { roomId: m[1], dateKey: m[2], startMin, endMin };
+}
+
+/** Інтервал стінних хвилин + статус → ресурс Slot.
+
+    `start`/`end` приходять уже сконвертованими в instant (lib/fhirTime.ts) —
+    конверсія зон свідомо не тут: цей модуль лишається чистим від часових
+    зон, а вся робота з DST зосереджена в одному місці.
+
+    Причина недоступності назовні НЕ йде: перерва, інцидент і вимкнений
+    кабінет — усе це `busy-unavailable`. Партнеру достатньо факту «зайняти
+    не можна» (межа класу 1, §3 плану), а деталі простою внутрішні. */
+export function slotResource(
+  roomId: string,
+  dateKey: string,
+  startMin: number,
+  endMin: number,
+  status: SlotStatus,
+  start: string,
+  end: string
+): Record<string, unknown> {
+  return {
+    resourceType: "Slot",
+    id: slotId(roomId, dateKey, startMin, endMin),
+    schedule: { reference: `Schedule/${roomId}` },
+    status,
+    start,
+    end,
+  };
+}
