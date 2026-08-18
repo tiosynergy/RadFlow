@@ -97,12 +97,17 @@ export function maskSecret(s) {
 export function partnerBrief({ baseUrl, clinicName, keyId, scopes, webhookUrl }) {
   const b = String(baseUrl || "").replace(/\/+$/, "");
   const lines = [
-    `RadFlow Integration API v1 — доступ для «${clinicName}»`,
+    `RadFlow — інтеграційний доступ для «${clinicName}»`,
     ``,
     `Базовий URL: ${b}`,
     `Автентифікація: заголовок  Authorization: Bearer <ТОКЕН>`,
     `Скоупи ключа: ${scopes.join(", ")}`,
     `Ідентифікатор ключа (не секрет, для листування): ${keyId}`,
+    ``,
+    `Доступні ДВА канали читання — одні й ті самі дані, оберіть зручніший.`,
+    `Той самий ключ і ті самі скоупи працюють в обох.`,
+    ``,
+    `── Канал 1: REST v1 ──`,
     ``,
     `Ендпоінти:`,
     `  GET  ${b}/api/integrations/v1/rooms`,
@@ -113,6 +118,27 @@ export function partnerBrief({ baseUrl, clinicName, keyId, scopes, webhookUrl })
     ``,
     `Перевірка доступу однією командою:`,
     `  curl -H "Authorization: Bearer <ТОКЕН>" ${b}/api/integrations/v1/rooms`,
+    ``,
+    `── Канал 2: FHIR R4 (read-only) ──`,
+    ``,
+    `Має сенс, якщо ваш RIS уже говорить R4. Базовий шлях: ${b}/fhir/R4`,
+    `Ресурси: Location, HealthcareService, Schedule, Slot, Appointment.`,
+    ``,
+    `  GET  ${b}/fhir/R4/metadata            (CapabilityStatement, без токена)`,
+    `  GET  ${b}/fhir/R4/Location`,
+    `  GET  ${b}/fhir/R4/HealthcareService?location=Location/<room_id>`,
+    `  GET  ${b}/fhir/R4/Slot?schedule=Schedule/<room_id>&date=ge<YYYY-MM-DD>`,
+    `  GET  ${b}/fhir/R4/Appointment?_lastUpdated=ge<ISO>`,
+    ``,
+    `Три речі, на яких ламаються реалізації:`,
+    `  • Bundle.total НЕ віддається (keyset-пагінація) — орієнтуйтесь на link.next;`,
+    `  • вимкнений кабінет видно як suspended, а не приховано;`,
+    `  • start/end — instant у UTC. Доба переходу на літній/зимовий час НЕ`,
+    `    дорівнює 24 годинам, тож не рахуйте кінець як «початок + тривалість».`,
+    ``,
+    `Запис через FHIR неможливий: статус виконання рухається лише подією v1.`,
+    ``,
+    `── Спільне ──`,
     ``,
     `Подія виконання (лише факти руху пацієнта):`,
     `  {"event":"arrived|started|finished","source_event_id":"<унікальний id>",`,
@@ -134,7 +160,11 @@ export function partnerBrief({ baseUrl, clinicName, keyId, scopes, webhookUrl })
       `подію лише якщо її (updated_at, seq) новіші за збережені.`
     );
   }
-  lines.push(``, `Повний контракт: docs/integration-api-v1.md`);
+  lines.push(
+    ``,
+    `Повний контракт: docs/integration-api-v1.md (REST v1)`,
+    `                 docs/integration-fhir-r4.md (FHIR R4)`
+  );
   return lines.join("\n");
 }
 

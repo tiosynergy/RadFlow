@@ -122,3 +122,33 @@ describe("інтервал: кожна межа конвертується ок�
     expect(ms / 3600000).toBe(7);
   });
 });
+
+describe("Europe/Kiev — історичний алias тієї самої зони", () => {
+  /* На проді у clinics.timezone записано «Europe/Kiev» (старе написання), а
+     не «Europe/Kyiv». Це один і той самий запис IANA, але покладатись на це
+     мовчки не можна: якби Node на якомусь стенді знав лише одне з написань,
+     невідоме він тлумачив би як UTC — і весь розклад поїхав би на 2–3
+     години, БЕЗ жодної помилки в логах. Тест фіксує, що обидва написання
+     дають той самий інстант, включно з краями DST. */
+  const cases: Array<[string, number, string]> = [
+    ["2026-01-15", 600, "зима"],
+    ["2026-07-15", 600, "літо"],
+    ["2026-03-29", 3 * 60 + 30, "провал"],
+    ["2026-10-25", 3 * 60 + 30, "неоднозначність"],
+    ["2026-03-29", 1440, "кінець доби переходу"],
+  ];
+
+  it.each(cases)("%s %d (%s) — Kyiv і Kiev збігаються", (day, min) => {
+    const kyiv = wallToInstant(day, min, "Europe/Kyiv");
+    const kiev = wallToInstant(day, min, "Europe/Kiev");
+    expect(kiev.ms).toBe(kyiv.ms);
+    expect(kiev.resolution).toBe(kyiv.resolution);
+  });
+
+  it("зона взагалі розпізнається (не мовчазний UTC)", () => {
+    // Якби «Europe/Kiev» була невідома, Intl кинув би або дав UTC, і 10:00
+    // стало б 10:00Z замість 08:00Z. Ловимо саме це.
+    const r = wallToInstant("2026-01-15", 600, "Europe/Kiev");
+    expect(toFhirInstant(r.ms)).toBe("2026-01-15T08:00:00Z");
+  });
+});
