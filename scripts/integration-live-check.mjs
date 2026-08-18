@@ -245,6 +245,112 @@ async function main() {
       `result ${back.body?.result}, статус ${back.body?.status}`);
   }
 
+  /* ── FHIR R4 фасад (фаза 3) ────────────────────────────────────────────
+     Лише читання: фасад write не приймає взагалі. Перевіряємо те, що
+     юніти перевірити не можуть — деплой роутів, ті самі скоупи, реальний
+     content-type і форму OperationOutcome від живого гейта. */
+  const fhirBase = "/fhir/R4";
+
+  const meta = await fetch(`${base}${fhirBase}/metadata`).then(async (r) => ({
+    status: r.status,
+    ctype: r.headers.get("content-type") || "",
+    body: await r.json().catch(() => null),
+  }));
+  check("GET /fhir/R4/metadata БЕЗ токена → 200", meta.status === 200, `статус ${meta.status}`);
+  check("metadata має content-type application/fhir+json",
+    meta.ctype.includes("application/fhir+json"), meta.ctype);
+  check("metadata — CapabilityStatement R4",
+    meta.body?.resourceType === "CapabilityStatement" && meta.body?.fhirVersion === "4.0.1",
+    `${meta.body?.resourceType} ${meta.body?.fhirVersion}`);
+  const declared = (meta.body?.rest?.[0]?.resource ?? []).map((r) => r.type).sort();
+  check("заявлені всі п'ять ресурсів",
+    ["Appointment", "HealthcareService", "Location", "Schedule", "Slot"]
+      .every((t) => declared.includes(t)),
+    declared.join(","));
+
+  const fhirNoAuth = await fetch(`${base}${fhirBase}/Location`).then(async (r) => ({
+    status: r.status, body: await r.json().catch(() => null),
+  }));
+  check("Location без токена → 401 OperationOutcome",
+    fhirNoAuth.status === 401 && fhirNoAuth.body?.resourceType === "OperationOutcome"
+      && fhirNoAuth.body?.issue?.[0]?.code === "security",
+    `статус ${fhirNoAuth.status}, ${fhirNoAuth.body?.resourceType}/${fhirNoAuth.body?.issue?.[0]?.code}`);
+
+  const loc = await call(base, token, `${fhirBase}/Location`);
+  check("GET /fhir/R4/Location → 200 Bundle",
+    loc.status === 200 && loc.body?.resourceType === "Bundle" && loc.body?.type === "searchset",
+    `статус ${loc.status}, ${loc.body?.resourceType}`);
+  check("Bundle БЕЗ total (keyset-пагінація)",
+    loc.body != null && !("total" in loc.body),
+    "total" in (loc.body ?? {}) ? `є total=${loc.body.total}` : "немає, як і має бути");
+
+  const fhirRooms = (loc.body?.entry ?? [])
+    .map((e) => e.resource)
+    .filter((r) => r?.physicalType?.coding?.[0]?.code === "ro");
+  check("кабінети з /rooms присутні у Location",
+    roomList.length === 0 || fhirRooms.length >= roomList.length,
+    `v1 ${roomList.length}, fhir ${fhirRooms.length} (fhir показує і вимкнені)`);
+
+  const alien = await call(base, token, `${fhirBase}/Location/${UUID_ZERO}`);
+  check("чужий Location → 404 OperationOutcome",
+    alien.status === 404 && alien.body?.resourceType === "OperationOutcome",
+    `статус ${alien.status}`);
+
+  const badSlot = await call(base, token, `${fhirBase}/Slot?schedule=не-uuid`);
+  check("Slot із кривим schedule → 400 invalid",
+    badSlot.status === 400 && badSlot.body?.issue?.[0]?.code === "invalid",
+    `статус ${badSlot.status}, code ${badSlot.body?.issue?.[0]?.code}`);
+
+  check("Slot без schedule → 400 (декартів добуток заборонено)",
+    (await call(base, token, `${fhirBase}/Slot`)).status === 400);
+
+  if (fhirRooms[0]?.id) {
+    const rid = fhirRooms[0].id;
+    const fhirSlots = await call(base, token, `${fhirBase}/Slot?schedule=Schedule/${rid}`);
+    check("GET /fhir/R4/Slot → 200 Bundle", fhirSlots.status === 200
+      && fhirSlots.body?.resourceType === "Bundle", `статус ${fhirSlots.status}`);
+    const fhirSample = (fhirSlots.body?.entry ?? [])[0]?.resource;
+    if (fhirSample) {
+      check("Slot.start — instant у UTC (суфікс Z)",
+        typeof fhirSample.start === "string" && /Z$/.test(fhirSample.start), String(fhirSample.start));
+      check("Slot.id детермінований і читається назад",
+        typeof fhirSample.id === "string" && fhirSample.id.startsWith(`${rid}.`), String(fhirSample.id));
+      const reread = await call(base, token, `${fhirBase}/Slot/${fhirSample.id}`);
+      /* 404 тут законний: слот міг зайнятись між двома запитами. Ловимо
+         саме 5xx і 400 — тобто «id не розбирається». */
+      check("read слота за його id не ламається",
+        reread.status === 200 || reread.status === 404, `статус ${reread.status}`);
+    }
+    check("GET /fhir/R4/Schedule/{room} → 200",
+      (await call(base, token, `${fhirBase}/Schedule/${rid}`)).status === 200);
+  }
+
+  const fhirAppts = await call(base, token, `${fhirBase}/Appointment?_count=5`);
+  check("GET /fhir/R4/Appointment → 200 Bundle",
+    fhirAppts.status === 200 && fhirAppts.body?.resourceType === "Bundle", `статус ${fhirAppts.status}`);
+  const appt = (fhirAppts.body?.entry ?? [])[0]?.resource;
+  if (appt) {
+    const patient = (appt.participant ?? []).find((p) => p?.actor?.type === "Patient");
+    check("режим A: пацієнт має identifier і НЕ має reference",
+      patient?.actor?.identifier?.value != null && patient?.actor?.reference == null,
+      patient?.actor?.reference ? `є reference=${patient.actor.reference}` : "лише identifier");
+    check("сирий статус черги їде розширенням",
+      (appt.extension ?? []).some((e) => String(e.url).endsWith("radflow-queue-status")),
+      "radflow-queue-status");
+    /* Головна перевірка приватності на живому стенді: жодного поля з
+       чорного списку в СЕРІАЛІЗОВАНІЙ відповіді. */
+    const raw = JSON.stringify(appt);
+    const leaked = ["patient_name", "patient_phone", "patient_dob", "patient_sex",
+      "indication", "contraindications", "radiologist_note", "call_note"]
+      .filter((f) => raw.includes(`"${f}"`));
+    check("демографія і клінічний контекст НЕ протікають", leaked.length === 0,
+      leaked.length ? `протекло: ${leaked.join(",")}` : "чисто");
+  }
+
+  const patientProbe = await call(base, token, `${fhirBase}/Patient/${UUID_ZERO}`);
+  check("ресурсу Patient не існує (404, не 200)", patientProbe.status === 404,
+    `статус ${patientProbe.status}`);
+
   /* ── Підсумок ──────────────────────────────────────────────────────────── */
   console.log(`\n${failed === 0 ? "LIVE_OK" : "LIVE_FAIL"}: перевірок ${results.length}, ` +
     `провалено ${failed}`);
