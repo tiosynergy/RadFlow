@@ -29,7 +29,11 @@ export default async function QueuePage({ searchParams }: { searchParams?: Promi
     .select("clinic_id, full_name, role, clinics(name, configured_at, timezone)")
     .eq("id", user.id)
     .single();
-  if (!profile) redirect("/login");
+  /* Сесія є, профілю немає (видалили, поки людина була залогінена).
+     redirect("/login") тут дає нескінченну петлю: middleware жене
+     залогіненого з /login назад на /queue. Розриває цикл лише розлогін —
+     Route Handler, бо Server Component не може писати cookie. */
+  if (!profile) redirect("/api/auth/reset");
   if (profile.role === "radiologist") redirect("/radiologist");
   if (profile.role === "referrer") redirect("/referral");
   if (profile.role === "ceo") redirect("/ceo"); // керівник — на свій дашборд

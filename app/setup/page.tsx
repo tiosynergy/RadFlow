@@ -19,7 +19,8 @@ export default async function SetupPage() {
     .eq("id", user.id)
     .single();
 
-  if (!profile) redirect("/login");
+  // Сесія без профілю → розлогін, інакше петля редіректів (див. /api/auth/reset).
+  if (!profile) redirect("/api/auth/reset");
   if (profile.role === "radiologist") redirect("/radiologist");
   if (profile.role === "referrer") redirect("/referral");
 

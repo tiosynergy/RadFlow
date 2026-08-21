@@ -16,6 +16,7 @@ import ReferrersManager from "@/components/ReferrersManager";
 import CeoManager from "@/components/CeoManager";
 import QueuePolicySettings, { type QueuePolicyInitial } from "@/components/QueuePolicySettings";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import DangerZone from "@/components/DangerZone";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
 import { unreadForSurface, type SurfaceKey } from "@/lib/unreadChanges";
@@ -1144,6 +1145,11 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
           onConfirm={() => { setSchedWarnAsk(null); save(true); }}
         />
       )}
+      {/* Небезпечна зона — в кінці майстра свідомо: видалення центру не має
+          сусідити з полями, які редагують щодня. clinicName — прóпс сторінки;
+          порожній буває лише в мить першого налаштування, тоді видаляти ще
+          нічого і секцію не показуємо. */}
+      {clinicName ? <DangerZone clinicName={clinicName} /> : null}
       <Toasts toasts={toasts} />
     </div>
   );

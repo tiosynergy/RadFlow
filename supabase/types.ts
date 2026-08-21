@@ -52,6 +52,49 @@ export type Database = {
         };
         Relationships: [];
       };
+      // 0148 — запити на повне видалення клініки (service_role only, deny-all RLS).
+      clinic_deletion_requests: {
+        Row: {
+          id: string;
+          clinic_id: string | null;
+          clinic_name: string;
+          admin_id: string;
+          admin_email: string;
+          token_hash: string;
+          counts: Json;
+          created_at: string;
+          expires_at: string;
+          executed_at: string | null;
+          cancelled_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          clinic_id?: string | null;
+          clinic_name: string;
+          admin_id: string;
+          admin_email: string;
+          token_hash: string;
+          counts: Json;
+          created_at?: string;
+          expires_at: string;
+          executed_at?: string | null;
+          cancelled_at?: string | null;
+        };
+        Update: {
+          id?: string;
+          clinic_id?: string | null;
+          clinic_name?: string;
+          admin_id?: string;
+          admin_email?: string;
+          token_hash?: string;
+          counts?: Json;
+          created_at?: string;
+          expires_at?: string;
+          executed_at?: string | null;
+          cancelled_at?: string | null;
+        };
+        Relationships: [];
+      };
       clinics: {
         Row: {
           id: string;
@@ -1338,6 +1381,12 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      // 0148 — незворотне видалення клініки за підтвердженим запитом
+      // (service_role only). Повертає clinic_name, staff_user_ids, counts.
+      clinic_deletion_execute: {
+        Args: { p_request: string; p_token: string };
+        Returns: Json;
+      };
       // 0146: приймання статусів RIS. Викликає ЛИШЕ серверний інтеграційний
       // шар під service_role; повертає рівно один рядок.
       integration_apply_status: {
