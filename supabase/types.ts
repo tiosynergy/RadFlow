@@ -1381,6 +1381,13 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      // 0149 — ретенція audit_log (service_role only): знеособлення PII
+      // старше p_pii_days, видалення знеособлених метаданих старше
+      // p_meta_days. Повертає { anonymized, deleted }.
+      audit_log_retention: {
+        Args: { p_pii_days?: number; p_meta_days?: number; p_limit?: number };
+        Returns: Json;
+      };
       // 0148 — незворотне видалення клініки за підтвердженим запитом
       // (service_role only). Повертає clinic_name, staff_user_ids, counts.
       clinic_deletion_execute: {
