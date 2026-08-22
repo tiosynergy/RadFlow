@@ -17,6 +17,37 @@ export default function LoginPage() {
   // Лише внутрішні шляхи (захист від open-redirect): один "/", без "//" чи "/\".
   const redirectTo = /^\/(?![/\\])/.test(rawRedirect) ? rawRedirect : "/queue";
 
+  /* Службові банери за параметрами URL. Значення параметрів у розмітку НЕ
+     підставляються — лише зіставляються з відомими кодами, тексти фіксовані. */
+  const banner = (() => {
+    if (searchParams.get("reason") === "profile_missing") {
+      return {
+        tone: "warn" as const,
+        text:
+          "Ваш профіль у системі більше не існує (доступ відкликано або центр " +
+          "видалено), тому сесію завершено. Якщо це помилка — зверніться до " +
+          "адміністратора вашого центру.",
+      };
+    }
+    const del = searchParams.get("deletion");
+    if (del === "done") {
+      return {
+        tone: "info" as const,
+        text: "Медичний центр видалено. Дані та облікові записи працівників видалені безповоротно.",
+      };
+    }
+    if (del === "failed" || del === "bad_link") {
+      return {
+        tone: "warn" as const,
+        text:
+          "Не вдалося підтвердити видалення центру: посилання невірне, прострочене " +
+          "або запит уже виконано чи скасовано. Якщо видалення досі потрібне — " +
+          "створіть новий запит у майстрі налаштувань.",
+      };
+    }
+    return null;
+  })();
+
   const [values, setValues] = useState<Record<string, string>>({ email: "", password: "" });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
@@ -104,6 +135,22 @@ export default function LoginPage() {
           <h1>Вхід у RadFlow</h1>
           <p>Введіть логін (або email) і пароль вашого акаунта</p>
         </div>
+
+        {banner && (
+          <div
+            role="status"
+            style={{
+              margin: "0 0 14px",
+              padding: "10px 12px",
+              borderRadius: 8,
+              lineHeight: 1.45,
+              border: "1px solid " + (banner.tone === "warn" ? "var(--danger, #c0392b)" : "var(--border, #ccc)"),
+              color: banner.tone === "warn" ? "var(--danger, #c0392b)" : "var(--text, inherit)",
+            }}
+          >
+            {banner.text}
+          </div>
+        )}
 
         <form onSubmit={onSubmit} noValidate>
           <div className="field">
