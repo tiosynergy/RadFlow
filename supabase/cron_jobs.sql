@@ -33,36 +33,34 @@ select cron.schedule(
 );
 
 -- ============================================================================
--- 2) outbox-deliver — доставка подій у n8n (УВІМКНУТИ РАЗОМ З n8n)
---    Зараз роут no-op (N8N_WEBHOOK_URL порожній) → джоб крутився б вхолосту.
---    Коли зʼявиться n8n:
---      a) у Vercel задати N8N_WEBHOOK_URL, N8N_WEBHOOK_SECRET, CRON_SECRET;
---      b) один раз покласти секрет у БД (щоб не світити його в тілі джоба):
---           alter database postgres set app.cron_secret = '<CRON_SECRET>';
---         (нова сесія підхопить; перевірити: select current_setting('app.cron_secret', true);)
---      c) підставити домен і розкоментувати блок нижче;
---      d) у самому n8n увімкнути дедуп за заголовком Idempotency-Key
---         і перевірку підпису X-RadFlow-Signature (HMAC-SHA256 тіла, ключ = N8N_WEBHOOK_SECRET).
+-- 2) outbox-deliver — доставка подій у n8n. УВІМКНЕНО на проді з 2026-07-28
+--    (див. supabase/maintenance/2026-07-28_enable_outbox_cron.sql).
+--    ⚠️ Блок був закоментований до с37, хоча джоб давно живий — файл відставав
+--    від прода. Секрет НЕ в тілі джоба: береться з Vault (`cron_secret`), тож
+--    `select ... from cron.job` його не світить. Не переводити назад на
+--    `app.cron_secret`: у проді саме Vault.
 --
---    Backoff/DLQ живуть у БД (0064): роут бере лише події з next_attempt_at <= now()
---    і dead = false, тож щохвилинний джоб не «палить» attempts.
+--    Backoff/DLQ живуть у БД (0064): роут бере лише події з next_attempt_at <=
+--    now() і dead = false, тож щохвилинний джоб не «палить» attempts.
 -- ============================================================================
--- select cron.unschedule('outbox-deliver') where exists (
---   select 1 from cron.job where jobname = 'outbox-deliver');
---
--- select cron.schedule(
---   'outbox-deliver',
---   '* * * * *',
---   $$
---   select net.http_post(
---     url     := 'https://<app>.vercel.app/api/outbox/deliver',
---     headers := jsonb_build_object(
---       'Content-Type',  'application/json',
---       'Authorization', 'Bearer ' || coalesce(current_setting('app.cron_secret', true), '')),
---     body    := '{}'::jsonb,
---     timeout_milliseconds := 10000);
---   $$
--- );
+select cron.unschedule('outbox-deliver') where exists (
+  select 1 from cron.job where jobname = 'outbox-deliver');
+
+select cron.schedule(
+  'outbox-deliver',
+  '* * * * *',
+  $$
+  select net.http_post(
+    url     := 'https://rad-flow-tau.vercel.app/api/outbox/deliver',
+    headers := jsonb_build_object(
+      'Content-Type',  'application/json',
+      'Authorization', 'Bearer ' || coalesce(
+        (select decrypted_secret from vault.decrypted_secrets
+          where name = 'cron_secret' limit 1), '')),
+    body    := '{}'::jsonb,
+    timeout_milliseconds := 10000);
+  $$
+);
 
 -- ============================================================================
 -- 2b) resolve-expired-incidents — знімати простої з auto_unblock після закінчення
@@ -95,17 +93,41 @@ select cron.schedule(
 );
 
 -- ============================================================================
--- 3) Ретенція audit_log — найшвидше зростаюча таблиця (0053: повний to_jsonb
---    рядка на КОЖЕН update queue_entries, разом із touch-апдейтами clarify_at).
---    Тримаємо 180 днів. Щодня о 03:15.
+-- 3) Ретенція audit_log — ПОЛІТИКА 0149, а не сліпий delete.
+--    RPC audit_log_retention: PII у before/after старше 90 днів ЗНЕОСОБЛЮЄТЬСЯ
+--    ('{}'), знеособлені метадані старше 365 днів видаляються — ланцюг аудиту
+--    лишається без дір. Виклик іде через роут (service_role живе у Vercel, а не
+--    в БД), тим самим патерном, що outbox: Bearer із Vault. Щодня о 03:40.
+--
+--    ⚠️ Історія (с37): тут стояв джоб `prune-audit-log` — delete усього старше
+--    180 днів. Він МОВЧКИ скорочував горизонт 0149 з 365 днів до 180: метадані
+--    не дожили б до року, попри те, що політика й документація обіцяють рік.
+--    Помітно це стало б лише у 2027-му, коли першим рядкам стукне пів року.
+--    Двох політик ретенції на одну таблицю бути не може.
+--
+--    Старий джоб знімається нижче ЯВНО, а не просто зникає з файлу: видалення
+--    блоку прибрало б його лише з репозиторію, а на проді він крутився б далі.
 -- ============================================================================
 select cron.unschedule('prune-audit-log') where exists (
   select 1 from cron.job where jobname = 'prune-audit-log');
 
+select cron.unschedule('audit-retention') where exists (
+  select 1 from cron.job where jobname = 'audit-retention');
+
 select cron.schedule(
-  'prune-audit-log',
-  '15 3 * * *',
-  $$delete from public.audit_log where at < now() - interval '180 days';$$
+  'audit-retention',
+  '40 3 * * *',
+  $$
+  select net.http_post(
+    url     := 'https://rad-flow-tau.vercel.app/api/maintenance/retention',
+    headers := jsonb_build_object(
+      'Content-Type',  'application/json',
+      'Authorization', 'Bearer ' || coalesce(
+        (select decrypted_secret from vault.decrypted_secrets
+          where name = 'cron_secret' limit 1), '')),
+    body    := '{}'::jsonb,
+    timeout_milliseconds := 60000);
+  $$
 );
 
 -- ============================================================================
