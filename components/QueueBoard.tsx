@@ -1810,7 +1810,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     }
   }
 
-  async function setStatus(id: string, status: string): Promise<boolean> {
+  /* expectedOverride — ЯВНИЙ CAS-очікуваний статус для ВІДКЛАДЕНИХ викликів
+     (soft-undo в тості). Без нього відкат читав би `entriesSnap` із ЗАМИКАННЯ
+     того рендера, в якому створювався коллбек тоста, — а там ще стоїть статус
+     ДО дії. Сервер порівнював би `scheduled` з фактичним `no_show`, RPC давав
+     updated=false, і користувач бачив «Статус змінив інший користувач», хоча
+     міняв сам секунду тому (живий прогон с37: відтворено тричі, у т.ч. з
+     паузою 4.5 с — тобто це не гонка, а протухле замикання).
+     Передаємо САМЕ той статус, який щойно поставили: відкат застосується, лише
+     якщо відтоді ніхто нічого не змінив. Якщо змінив — CAS відмовить, і те
+     саме повідомлення стане ПРАВДОЮ. */
+  async function setStatus(id: string, status: string, expectedOverride?: QueueStatus): Promise<boolean> {
     // H-2: фиксируем статус, который сейчас видит оператор (до оптимистичного
     // обновления) — как expectedFrom для CAS на сервере.
     /* Джерело — САМ ЗНІМОК, а не відфільтрований по зрізу `entries` (ревʼю р.2).
@@ -1819,7 +1829,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
        і робить звичайний last-write-wins. Тобто рівно в кадрі неузгодженого
        зрізу захист від «статус змінив інший користувач» тихо вимикався б.
        Знімок містить рядок навіть тоді, коли він не показаний. */
-    const expectedFrom = entriesSnap.rows.find((e) => e.id === id)?.status as QueueStatus | undefined;
+    const expectedFrom = expectedOverride
+      ?? (entriesSnap.rows.find((e) => e.id === id)?.status as QueueStatus | undefined);
     const nowIso = new Date().toISOString();
     /* 0129 (ревʼю с26 р2 L-2): БД більше НЕ скидає in_progress_at на повторному
        in_progress → оптимістичний патч теж не має обнуляти таймер «у кабінеті»,
@@ -1856,14 +1867,14 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     // Знімок, а не `entries`: при неузгодженому зрізі останній порожній (ревʼю р.2).
     const prev = (entriesSnap.rows.find((e) => e.id === p.id)?.status ?? p.status) as string;
     if (await setStatus(p.id, "no_show")) {
-      notify("Позначено: неявка", "info", { label: "↩ Відмінити", onAction: () => setStatus(p.id, prev) });
+      notify("Позначено: неявка", "info", { label: "↩ Відмінити", onAction: () => setStatus(p.id, prev, "no_show") });
     }
   };
   const notHeld = async (p: QEntry) => {
     // Знімок, а не `entries`: при неузгодженому зрізі останній порожній (ревʼю р.2).
     const prev = (entriesSnap.rows.find((e) => e.id === p.id)?.status ?? p.status) as string;
     if (await setStatus(p.id, "not_held")) {
-      notify("Позначено: не відбулося", "info", { label: "↩ Відмінити", onAction: () => setStatus(p.id, prev) });
+      notify("Позначено: не відбулося", "info", { label: "↩ Відмінити", onAction: () => setStatus(p.id, prev, "not_held") });
     }
   };
   const openComplete = (p: QEntry) => setCompleteFor(p);
@@ -1956,7 +1967,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     if (!res.ok) { if (handledStale(res)) return; notify("Помилка: " + res.error, "error"); return; }
     reload();
     suggestWaitlistFor(p);
-    notify("Запис скасовано", "info", { label: "↩ Відмінити", onAction: () => setStatus(p.id, prev) });
+    notify("Запис скасовано", "info", { label: "↩ Відмінити", onAction: () => setStatus(p.id, prev, "cancelled") });
   }
 
   async function setCall(p: QEntry, call_status: string) {
