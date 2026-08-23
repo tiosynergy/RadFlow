@@ -187,6 +187,19 @@ describe("HealthcareService", () => {
     expect(type[0].coding[0].code).toBe("MR");
   });
 
+  it("ознака переозначень (0108) — extension лише коли вона є", () => {
+    // Відсутність розширення = «переозначень немає» (канон FHIR), тож шуму в
+    // кожному ресурсі не створюємо. Дзеркало поля has_room_overrides у v1.
+    const without = healthcareServiceFromService(service(), CLINIC, BASE);
+    const extNone = (without.extension ?? []) as Array<{ url: string }>;
+    expect(extNone.some((e) => e.url.endsWith("radflow-has-room-overrides"))).toBe(false);
+
+    const withOv = healthcareServiceFromService(service(), CLINIC, BASE, true);
+    const ext = (withOv.extension ?? []) as Array<{ url: string; valueBoolean?: boolean }>;
+    const flag = ext.find((e) => e.url.endsWith("radflow-has-room-overrides"));
+    expect(flag?.valueBoolean).toBe(true);
+  });
+
   it("duration_min=null (0117) → extension відсутній, а не 0", () => {
     // Нуль означав би «миттєве дослідження» — RIS спланував би слот у 0 хвилин.
     const hs = healthcareServiceFromService(service({ duration_min: null }), CLINIC, BASE);

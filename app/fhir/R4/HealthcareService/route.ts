@@ -1,6 +1,11 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { healthcareServiceFromService, searchsetBundle } from "@/lib/fhirContract";
 import { baseUrlFrom, fhirError, fhirJson, requireFhirKey, selfUrlFrom } from "@/lib/fhirHttp";
+import {
+  projectCatalogForRoom,
+  servicesWithChannelOverride,
+  type OverrideRow,
+} from "@/lib/catalogProjection";
 import { logError } from "@/lib/serverLog";
 
 /* ===== RadFlow — FHIR R4: HealthcareService (пошук) =====
@@ -15,15 +20,21 @@ import { logError } from "@/lib/serverLog";
    базові послуги ТІЄЇ САМОЇ модальності. Дзеркалить REST v1 /services —
    розбіжність між каналами була б гіршою за будь-яку з двох поведінок.
 
-   ⚠️ service_room_overrides (0108) тут, як і у v1, НЕ застосовуються: на
-   проді таблиця порожня, але при першому ж оверрайді обидва канали
-   віддадуть сирий каталог. Спільний борг, закривати одним пакетом. */
+   service_room_overrides (0108) ЗАСТОСОВУЮТЬСЯ у зрізі кабінету (с37):
+   базова послуга, прихована оверрайдом у цьому кабінеті, зникає ПОВНІСТЮ —
+   ні за ?active=true, ні за ?active=false її не видно (у кабінеті її немає);
+   duration-extension віддається ефективний. Зріз БЕЗ ?location лишає базові
+   значення і позначає такі позиції extension-ом radflow-has-room-overrides.
+   Логіка спільна з REST v1 — lib/catalogProjection.ts. */
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_COUNT = 500;
+/* Стеля вибірки зрізу кабінету — дзеркало REST v1: ефективний склад відомий
+   лише ПІСЛЯ проєкції, тож _count+1 у SQL укоротив би Bundle. */
+const ROOM_FETCH_CAP = 2000;
 
 export async function GET(req: Request) {
   const gate = await requireFhirKey(req, "slots:read");
@@ -71,6 +82,19 @@ export async function GET(req: Request) {
     roomModality = room.modality;
   }
 
+  /* Оверрайди каталогу центру (0108) — дзеркало REST v1, включно з fail-CLOSED
+     на помилці читання: мовчазний сирий каталог = розбіжність із UI. */
+  const { data: ovData, error: ovErr } = await admin
+    .from("service_room_overrides")
+    .select("room_id, service_id, duration_min, active")
+    .eq("clinic_id", clinicId);
+  if (ovErr) {
+    logError({ event: "fhir.service", errorCode: "overrides_failed", message: ovErr.message });
+    return fhirError(500, "Тимчасова помилка");
+  }
+  const overrides = (ovData ?? []) as OverrideRow[];
+  const withOverride = servicesWithChannelOverride(overrides);
+
   let query = admin
     .from("services")
     .select("id, code, name, modality, duration_min, contrast_allowed, room_id, active")
@@ -79,7 +103,7 @@ export async function GET(req: Request) {
     .order("sort_order", { ascending: true })
     .order("name", { ascending: true })
     .order("id", { ascending: true })
-    .limit(count + 1);
+    .limit(roomId ? ROOM_FETCH_CAP + 1 : count + 1);
 
   if (activeRaw != null) query = query.eq("active", activeRaw === "true");
   if (roomId) {
@@ -92,12 +116,17 @@ export async function GET(req: Request) {
     return fhirError(500, "Тимчасова помилка");
   }
 
-  const all = data ?? [];
-  const hasMore = all.length > count;
-  const page = hasMore ? all.slice(0, count) : all;
+  const raw = data ?? [];
+  const fetchOverflow = raw.length > (roomId ? ROOM_FETCH_CAP : count);
+  // Проєкція оверрайдів (0108) — лише у зрізі кабінету.
+  const rows = projectCatalogForRoom(raw.slice(0, roomId ? ROOM_FETCH_CAP : raw.length), overrides, roomId);
+  const hasMore = rows.length > count || fetchOverflow;
+  const page = rows.slice(0, count);
 
   const base = baseUrlFrom(req);
-  const resources = page.map((s) => healthcareServiceFromService(s, clinicId, base));
+  const resources = page.map((s) =>
+    healthcareServiceFromService(s, clinicId, base, withOverride.has(s.id))
+  );
 
   /* link.next немає СВІДОМО. Сортування каталогу — (modality, sort_order,
      name, id); чесний keyset по ньому вимагав би СКЛАДЕНОГО курсора, а

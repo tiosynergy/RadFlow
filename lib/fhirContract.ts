@@ -230,11 +230,20 @@ export interface ServiceRow {
 
     Ціни НЕ віддаються (комерційна інформація клініки, канон v1).
     duration_min може бути null (0117 «час не задано») — тоді extension
-    просто відсутній, а не 0: нуль означав би «миттєве дослідження». */
+    просто відсутній, а не 0: нуль означав би «миттєве дослідження».
+
+    hasRoomOverrides (0108, с37) — «у цієї послуги є переозначення по кабінетах
+    центру»: у зрізі БЕЗ ?location значення базові, точні дає зріз кабінету.
+    Extension віддається ЛИШЕ коли true (канон FHIR: відсутність розширення =
+    «ні», а не «невідомо»; дзеркало duration/contrast вище). Дзеркало поля
+    has_room_overrides у REST v1 — семантика одна, форма своя для кожного
+    каналу. `svc` уже спроєктований (lib/catalogProjection.ts): у зрізі
+    кабінету duration_min тут ефективна, приховані рядки сюди не доходять. */
 export function healthcareServiceFromService(
   svc: ServiceRow,
   clinicId: string,
-  baseUrl: string
+  baseUrl: string,
+  hasRoomOverrides = false
 ): Record<string, unknown> {
   const dicom = toDicomModality(svc.modality);
   const coding: Array<Record<string, unknown>> = [];
@@ -268,6 +277,12 @@ export function healthcareServiceFromService(
     ext.push({
       url: `${baseUrl}/fhir/StructureDefinition/radflow-contrast-allowed`,
       valueBoolean: svc.contrast_allowed,
+    });
+  }
+  if (hasRoomOverrides) {
+    ext.push({
+      url: `${baseUrl}/fhir/StructureDefinition/radflow-has-room-overrides`,
+      valueBoolean: true,
     });
   }
   if (ext.length) out.extension = ext;
