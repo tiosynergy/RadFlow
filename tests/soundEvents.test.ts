@@ -18,7 +18,7 @@ import {
   type SoundEvent,
   type SoundIncident,
 } from "../lib/soundEvents";
-import { TabSoundDedupe } from "../lib/soundTabDedupe";
+import { TabSoundDedupe, type LockManagerLike } from "../lib/soundTabDedupe";
 
 const e = (id: string, status: string) => ({ id, status });
 
@@ -267,6 +267,101 @@ describe("dedupeHash + TabSoundDedupe — міжвкладкова коорди�
     } finally {
       if (orig !== undefined) G.BroadcastChannel = orig;
     }
+  });
+});
+
+/* ===== Арбітраж права зіграти через Web Locks (с39) =====
+   Запасна схема вище («оголосив у канал — і граю») дубль НЕ прибирає: доставка
+   каналу асинхронна, і дві вкладки, що флашать в одну мить, обидві бачать
+   порожній seen. Тут перевіряється основний шлях: імʼя локу і Є хеш події,
+   переможця обирає браузер. Фейковий менеджер моделює рівно те, що робить
+   ifAvailable: імʼя зайняте → колбек отримує null; лок тримається, поки не
+   зарезолвиться проміс колбека. */
+function fakeLockManager() {
+  const held = new Set<string>();
+  const lm: LockManagerLike = {
+    request(name, _options, cb) {
+      if (held.has(name)) return Promise.resolve(cb(null));
+      held.add(name);
+      return Promise.resolve(cb({ name })).then((out) => {
+        held.delete(name);
+        return out;
+      });
+    },
+  };
+  return { lm, held };
+}
+const tick = () => new Promise((r) => setTimeout(r, 0));
+
+describe("TabSoundDedupe.claimAsync — арбітраж через Web Locks", () => {
+  it("одну й ту саму подію дістає РІВНО одна вкладка", async () => {
+    const { lm } = fakeLockManager();
+    const a = new TabSoundDedupe("t-a", { locks: lm, holdMs: 10_000 });
+    const b = new TabSoundDedupe("t-b", { locks: lm, holdMs: 10_000 });
+    const [mineA, mineB] = await Promise.all([a.claimAsync(["h1"]), b.claimAsync(["h1"])]);
+    expect(mineA).toEqual(["h1"]); // перша встигла — вона й грає
+    expect(mineB).toEqual([]);     // друга мовчить, а не грає дубль
+    a.close();
+    b.close();
+  });
+
+  it("різні події не заважають одна одній — обидві вкладки звучать", async () => {
+    const { lm } = fakeLockManager();
+    const a = new TabSoundDedupe("t-a", { locks: lm, holdMs: 10_000 });
+    const b = new TabSoundDedupe("t-b", { locks: lm, holdMs: 10_000 });
+    // Дошки на РІЗНИХ датах/ролях бачать різні події — «грає лише лідер» тут
+    // втратило б сигнал, тому дедуп саме по ключу, а не по вкладці.
+    expect(await a.claimAsync(["h1"])).toEqual(["h1"]);
+    expect(await b.claimAsync(["h2"])).toEqual(["h2"]);
+    a.close();
+    b.close();
+  });
+
+  it("close() віддає ключ одразу, не чекаючи TTL (перемонтування дошки)", async () => {
+    const { lm, held } = fakeLockManager();
+    const a = new TabSoundDedupe("t-a", { locks: lm, holdMs: 10_000 });
+    expect(await a.claimAsync(["h1"])).toEqual(["h1"]);
+    a.close();
+    await tick(); // відпускання локу асинхронне і в браузері теж
+    expect(held.size).toBe(0);
+    const b = new TabSoundDedupe("t-b", { locks: lm, holdMs: 10_000 });
+    expect(await b.claimAsync(["h1"])).toEqual(["h1"]);
+    b.close();
+  });
+
+  it("лок звільняється сам після holdMs", async () => {
+    const { lm } = fakeLockManager();
+    const a = new TabSoundDedupe("t-a", { locks: lm, holdMs: 5 });
+    expect(await a.claimAsync(["h1"])).toEqual(["h1"]);
+    await new Promise((r) => setTimeout(r, 25));
+    const b = new TabSoundDedupe("t-b", { locks: lm, holdMs: 5 });
+    expect(await b.claimAsync(["h1"])).toEqual(["h1"]);
+    a.close();
+    b.close();
+  });
+
+  it("без Web Locks падаємо на запасну схему, а не мовчимо", async () => {
+    const d = new TabSoundDedupe("t-fallback", { locks: null });
+    expect(await d.claimAsync(["h1"])).toEqual(["h1"]);
+    d.close();
+  });
+
+  it("відмова САМОГО арбітра лишає звук: краще дубль, ніж тиша", async () => {
+    // Помилка тут однакова в УСІХ вкладках (небезпечний контекст, AbortError):
+    // якби ми мовчали, звук зник би цілком — це гірше за дубль.
+    const boom: LockManagerLike = {
+      request() {
+        throw new Error("SecurityError");
+      },
+    };
+    const d1 = new TabSoundDedupe("t-boom", { locks: boom });
+    expect(await d1.claimAsync(["h1", "h2"])).toEqual(["h1", "h2"]);
+    d1.close();
+
+    const rejecting: LockManagerLike = { request: () => Promise.reject(new Error("AbortError")) };
+    const d2 = new TabSoundDedupe("t-reject", { locks: rejecting });
+    expect(await d2.claimAsync(["h1"])).toEqual(["h1"]);
+    d2.close();
   });
 });
 
