@@ -16,6 +16,7 @@ import {
   generateWebhookSecret,
   hashToken as mjsHash,
   parseArgs,
+  parseEnvFile,
   parseScopes,
   tokenPrefix as mjsPrefix,
   validateWebhookUrl,
@@ -96,6 +97,32 @@ describe("parseArgs", () => {
     });
     expect(parseArgs([]).cmd).toBe("help");
     expect(() => parseArgs(["x", "стрей"])).toThrow();
+  });
+});
+
+/* .env.local. Квірк із inline-коментарем раніше не був покритий узагалі —
+   а розплата за нього конкретна: хвіст « # prod» їхав у
+   SUPABASE_SERVICE_ROLE_KEY і давав «незрозумілий 401». З с38 читання env
+   спільне для integration-admin.mjs і race-check.mjs, тому мовчазний дрейф
+   зламав би одразу два інструменти. */
+describe("parseEnvFile", () => {
+  it("зрізає inline-коментар у значенні БЕЗ лапок", () => {
+    expect(parseEnvFile("SUPABASE_SERVICE_ROLE_KEY=abc123 # prod")).toEqual({
+      SUPABASE_SERVICE_ROLE_KEY: "abc123",
+    });
+  });
+
+  it("значення В ЛАПКАХ зберігає решітку (це частина секрету, не коментар)", () => {
+    expect(parseEnvFile('K="a#b"').K).toBe("a#b");
+    expect(parseEnvFile("K='a#b'").K).toBe("a#b");
+  });
+
+  it("ігнорує порожні рядки, коментарі й рядки без «=»", () => {
+    expect(parseEnvFile("# коментар\n\nсміття\nA=1")).toEqual({ A: "1" });
+  });
+
+  it("тримає CRLF (файл із Windows-машини власника)", () => {
+    expect(parseEnvFile("A=1\r\nB=2\r\n")).toEqual({ A: "1", B: "2" });
   });
 });
 

@@ -20,28 +20,17 @@
    (жодних guard-ів по argv[1] — молчаливий no-op на симлінках/Windows). */
 
 import { createClient } from "@supabase/supabase-js";
-import { readFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import {
   generateToken, hashToken, tokenPrefix, generateWebhookSecret,
   parseScopes, validateWebhookUrl, isUuid, parseArgs, ALLOWED_SCOPES,
   PARTNER_SCOPES, isRedirected, partnerBrief, clipboardCommand, maskSecret,
+  loadEnvLocal,
 } from "./integration-admin-lib.mjs";
 
-/** .env.local — того ж формату, що читає Next; беремо лише потрібні ключі.
-    Inline-коментар після значення без лапок зрізаємо (інакше хвіст « # prod»
-    поїхав би в SUPABASE_SERVICE_ROLE_KEY і дав незрозумілий 401). */
-function loadEnvLocal() {
-  if (!existsSync(".env.local")) return;
-  for (const line of readFileSync(".env.local", "utf8").split(/\r?\n/)) {
-    const m = /^([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line.trim());
-    if (!m || process.env[m[1]] !== undefined) continue;
-    let v = m[2];
-    if (/^["']/.test(v)) v = v.replace(/^["']|["']$/g, "");
-    else v = v.replace(/\s+#.*$/, "").trim();
-    process.env[m[1]] = v;
-  }
-}
+/* .env.local читає СПІЛЬНИЙ loadEnvLocal з integration-admin-lib.mjs
+   (з с38 його ділить і scripts/race-check.mjs). Квірк із inline-коментарем
+   тепер під vitest, а не «перевіряється» падінням 401. */
 
 function adminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;

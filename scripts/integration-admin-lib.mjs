@@ -7,6 +7,7 @@
    тест звіряє обидві реалізації на спільних векторах. */
 
 import crypto from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 
 export const TOKEN_RE = /^rfk_[0-9a-f]{48}$/;
 export const TOKEN_PREFIX_LEN = 12;
@@ -189,4 +190,35 @@ export function parseArgs(argv) {
     }
   }
   return { cmd: cmd || "help", opts };
+}
+
+/** Розбір `.env.local` у пари ключ→значення. ЧИСТА функція — щоб квірк із
+    inline-коментарем був під vitest, а не «перевірявся» падінням 401.
+    Inline-коментар після значення без лапок зрізаємо (інакше хвіст « # prod»
+    поїхав би в SUPABASE_SERVICE_ROLE_KEY і дав незрозумілий 401).
+    @param {string} text
+    @returns {Record<string, string>} */
+export function parseEnvFile(text) {
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const line of String(text).split(/\r?\n/)) {
+    const m = /^([A-Z0-9_]+)\s*=\s*(.*)$/.exec(line.trim());
+    if (!m) continue;
+    let v = m[2];
+    if (/^["']/.test(v)) v = v.replace(/^["']|["']$/g, "");
+    else v = v.replace(/\s+#.*$/, "").trim();
+    out[m[1]] = v;
+  }
+  return out;
+}
+
+/** `.env.local` → `process.env`, того ж формату, що читає Next.
+    Уже наявна змінна оточення СИЛЬНІША за файл (не перетираємо).
+    Живе тут, а не в кожному CLI: дві копії читання env неминуче
+    розійдуться, а розбіжність проявиться як «незрозумілий 401». */
+export function loadEnvLocal(path = ".env.local") {
+  if (!existsSync(path)) return;
+  for (const [k, v] of Object.entries(parseEnvFile(readFileSync(path, "utf8")))) {
+    if (process.env[k] === undefined) process.env[k] = v;
+  }
 }
