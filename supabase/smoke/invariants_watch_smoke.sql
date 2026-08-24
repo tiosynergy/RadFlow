@@ -42,10 +42,12 @@ begin
   end if;
   v_done := v_done || ' c';
 
-  -- d: перевірок рівно 8 — якщо додали/прибрали, смоук має про це сказати,
-  -- а не тихо пропустити (кількість перевірок сама є інваріантом)
-  if (v_res ->> 'checked')::int is distinct from 8 then
-    raise exception 'SMOKE_FAIL d: checked=% (очікував 8)', v_res ->> 'checked';
+  -- d: перевірок рівно 9 — якщо додали/прибрали, смоук має про це сказати,
+  -- а не тихо пропустити (кількість перевірок сама є інваріантом).
+  -- ⚠️ 0155 підняв 8 → 9: перевірку cron_daily_ran_48h розділено на
+  -- cron_daily_stalled і cron_daily_never_ran.
+  if (v_res ->> 'checked')::int is distinct from 9 then
+    raise exception 'SMOKE_FAIL d: checked=% (очікував 9)', v_res ->> 'checked';
   end if;
   v_done := v_done || ' d';
 
