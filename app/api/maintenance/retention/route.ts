@@ -33,11 +33,10 @@ async function handle(req: Request) {
   }
 
   const admin = createAdminClient();
-  const { data, error } = await admin.rpc("audit_log_retention", {
-    p_pii_days: 90,
-    p_meta_days: 365,
-    p_limit: 5000,
-  });
+  /* 0152: параметри (90/365/5000) переїхали в обгортку audit_log_retention_daily
+     — раніше вони жили ЛИШЕ тут, і нічна задача мусила їх дублювати. Обгортка
+     ще й пише слід у maintenance_runs, тож ручний прогін теж лишає запис. */
+  const { data, error } = await admin.rpc("audit_log_retention_daily");
   if (error) {
     logError({ event: "maintenance.retention", errorCode: "rpc_failed", message: error.message });
     return NextResponse.json({ error: "retention_failed" }, { status: 500 });

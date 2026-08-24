@@ -892,43 +892,6 @@ export type Database = {
           }
         ];
       };
-      clinic_invites: {
-        Row: {
-          id: string;
-          clinic_id: string;
-          email: string;
-          role: Database["public"]["Enums"]["user_role"];
-          room_ids: string[];
-          created_at: string;
-          accepted_at: string | null;
-        };
-        Insert: {
-          id?: string;
-          clinic_id: string;
-          email: string;
-          role?: Database["public"]["Enums"]["user_role"];
-          room_ids?: string[];
-          created_at?: string;
-          accepted_at?: string | null;
-        };
-        Update: {
-          id?: string;
-          clinic_id?: string;
-          email?: string;
-          role?: Database["public"]["Enums"]["user_role"];
-          room_ids?: string[];
-          created_at?: string;
-          accepted_at?: string | null;
-        };
-        Relationships: [
-          {
-            foreignKeyName: "clinic_invites_clinic_id_fkey";
-            columns: ["clinic_id"];
-            referencedRelation: "clinics";
-            referencedColumns: ["id"];
-          }
-        ];
-      };
       radiologist_rooms: {
         Row: {
           id: string;
@@ -1386,6 +1349,12 @@ export type Database = {
       // p_meta_days. Повертає { anonymized, deleted }.
       audit_log_retention: {
         Args: { p_pii_days?: number; p_meta_days?: number; p_limit?: number };
+        Returns: Json;
+      };
+      // 0152 — обгортка з канонічними параметрами (90/365/5000) + слід у
+      // maintenance_runs. Її кличуть і нічна задача, і роут ретенції.
+      audit_log_retention_daily: {
+        Args: Record<string, never>;
         Returns: Json;
       };
       // 0148 — незворотне видалення клініки за підтвердженим запитом

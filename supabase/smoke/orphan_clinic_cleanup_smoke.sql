@@ -12,9 +12,10 @@
 --  профіль обраному носію між select і insert — прогін упаде сирим
 --  unique_violation: просто перезапустіть.
 --
---  Зонд h (інвентар FK = 16) іде ПЕРШИМ: від нього залежить сама функція
---  (fail-closed запобіжник дрейфу) — при дрейфі схеми точний діагноз має
---  зʼявитись раніше, ніж a/c упадуть із оманливим текстом.
+--  ⚠️ Оновлено під 0151: мітла більше не звіряє кількість FK з числом, а
+--  бере таблиці з каталогу. Зонд h тепер стереже ВІДСУТНІСТЬ хардкоду, а
+--  clinic_invites прибрано з базлайну разом із самою таблицею. Поведінковий
+--  зонд на НОВІ FK-таблиці — в orphan_clinic_fk_drift_smoke.sql.
 -- ---------------------------------------------------------------------------
 
 begin;
@@ -48,18 +49,23 @@ begin
      and not exists (select 1 from public.queue_delay_events     t where t.clinic_id = c.id)
      and not exists (select 1 from public.radiologist_rooms      t where t.clinic_id = c.id)
      and not exists (select 1 from public.referral_access        t where t.clinic_id = c.id)
-     and not exists (select 1 from public.clinic_invites         t where t.clinic_id = c.id)
      and not exists (select 1 from public.ceo_access             t where t.clinic_id = c.id);
   select count(*) into v_anomalies from public.clinics c
    where not exists (select 1 from public.profiles p where p.clinic_id = c.id);
 
-  -- h: інвентар FK на clinics = 16 — ПЕРШИМ (див. шапку): при дрейфі схеми
-  -- запобіжник у функції заморожує чистку, і зонди a/c впали б із оманливим
-  -- текстом раніше, ніж цей точний діагноз.
-  select count(*) into v_n from pg_constraint
-   where confrelid = 'public.clinics'::regclass and contype = 'f';
-  if v_n <> 16 then
-    raise exception 'SMOKE_FAIL h: FK на clinics % (очікував 16) — оновіть список у cleanup_orphan_clinic', v_n;
+  -- h (оновлено 0151): інвентар FK більше НЕ звіряють із числом — мітла бере
+  -- таблиці з каталогу. Число 16 протухло на пʼять FK (інтеграції + 0148) і
+  -- мовчки вимикало чистку, доки цей смоук ніхто не перезапускав.
+  -- Перевіряємо ВІДСУТНІСТЬ хардкоду в КОДІ: коментар у 0151 цитує старий
+  -- запобіжник, тож наївний like на сирому prosrc спрацьовує хибно.
+  if exists (
+    select 1 from pg_proc
+     where proname = 'cleanup_orphan_clinic'
+       and pronamespace = 'public'::regnamespace
+       and regexp_replace(
+             regexp_replace(prosrc, '/\*.*?\*/', ' ', 'gs'),
+             '--[^' || chr(10) || ']*', ' ', 'g') like '%<> 16%') then
+    raise exception 'SMOKE_FAIL h: у КОДІ мітли знову хардкод «<> 16» (див. 0151)';
   end if;
   v_done := v_done || ' h';
 

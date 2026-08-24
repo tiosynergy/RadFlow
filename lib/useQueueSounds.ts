@@ -211,15 +211,27 @@ export function useQueueSounds({
         const kind = resolveBurst(batch);
         if (!kind) return;
         const keys = batch.map((e) => dedupeHash(e.key));
-        const mine = dedupeRef.current ? dedupeRef.current.claim(keys) : [...keys];
-        if (!mine.length) return; // усе вже зіграла інша вкладка
-        try {
-          if (kind === "critical") playCriticalAttention();
-          else if (kind === "overrun") playStudyOverrun();
-          else playPatientReady();
-        } catch {
-          /* звук не має права зламати дошку */
-        }
+        const dedupe = dedupeRef.current;
+        /* Арбітраж права зіграти — асинхронний (Web Locks). Чекаємо лише МИТЬ
+           видачі локу, тож затримка — мілісекунди; AudioContext уже розблоковано
+           жестом, і пауза йому не шкодить. */
+        void (async () => {
+          const mine = dedupe ? await dedupe.claimAsync(keys) : [...keys];
+          if (!mine.length) return; // ключі дісталися іншій вкладці — вона й грає
+          /* Поки тривав арбітраж, стан міг змінитись: вкладку сховали, звук
+             вимкнули, дошку розмонтували. Перевіряємо ЗНОВУ — інакше сюди
+             повертається той самий клас дефекту, що й «протухле замикання». */
+          if (!enabledRef.current) return;
+          if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+          if (dedupeRef.current !== dedupe) return;
+          try {
+            if (kind === "critical") playCriticalAttention();
+            else if (kind === "overrun") playStudyOverrun();
+            else playPatientReady();
+          } catch {
+            /* звук не має права зламати дошку */
+          }
+        })();
       }, BURST_MS + Math.floor(Math.random() * BURST_JITTER_MS));
     },
     [active]
