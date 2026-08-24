@@ -23,6 +23,7 @@ import { diffStudies, studyText, studiesChanged, modalityLabel } from "@/lib/stu
 import { quickSearchMatch } from "@/lib/quickSearch";
 import type { Json } from "@/supabase/types";
 import { roomsInGrant } from "@/lib/rooms";
+import { fmtDayKey, fmtTime } from "@/lib/journalText";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null; timezone?: string | null };
@@ -37,7 +38,8 @@ type RescheduleOrigin = { from_date?: string | null; from_time?: string | null; 
 function fmtOrigin(o: RescheduleOrigin | null, roomById: Record<string, RoomOpt>): string | null {
   if (!o || (!o.from_date && !o.from_time)) return null;
   const room = o.from_room ? roomById[o.from_room] : null;
-  const parts = [ [o.from_date, o.from_time].filter(Boolean).join(" "), room?.name ].filter(Boolean);
+  // Формат дати — той самий, що в журналі й на дошці адміна (fmtDayKey).
+  const parts = [ [fmtDayKey(o.from_date), fmtTime(o.from_time)].filter(Boolean).join(" "), room?.name ].filter(Boolean);
   let s = "🔁 Перенесено з " + parts.join(" · ");
   if (o.reason) s += " · причина: " + o.reason;
   return s;
