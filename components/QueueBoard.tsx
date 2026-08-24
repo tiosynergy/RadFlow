@@ -67,6 +67,7 @@ import Toast, { type ToastData } from "@/components/Toast";
 import ShortcutsOverlay from "@/components/ShortcutsOverlay";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import { quickSearchMatch } from "@/lib/quickSearch";
+import { fmtDayKey, fmtTime } from "@/lib/journalText";
 import { occupiesSlot } from "@/lib/slotOccupancy";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
@@ -518,10 +519,13 @@ const CALL_META: Record<string, { label: string; cls: string; icon: string }> = 
 };
 const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
 // Довідка «звідки перенесено» → короткий рядок для розгорнутої картки.
+// Дата й час — через канонічні fmtDayKey/fmtTime (журнал показує їх так само).
+// Сира '2026-08-25' у картці читалась як чужий формат; різання рядка, а не
+// `new Date()` — інваріант проєкту (о 00:00 воно зсунуло б добу).
 function fmtOrigin(o: RescheduleOrigin | null | undefined, roomsById: Record<string, { name?: string | null }>): string | null {
   if (!o || (!o.from_date && !o.from_time)) return null;
   const room = o.from_room ? roomsById[o.from_room] : null;
-  const parts = [ [o.from_date, o.from_time].filter(Boolean).join(" "), room?.name ].filter(Boolean);
+  const parts = [ [fmtDayKey(o.from_date), fmtTime(o.from_time)].filter(Boolean).join(" "), room?.name ].filter(Boolean);
   let s = "🔁 Перенесено з " + parts.join(" · ");
   if (o.from_status === "in_progress") s += " · перервано дослідження";
   if (o.reason) s += " · причина: " + o.reason;
