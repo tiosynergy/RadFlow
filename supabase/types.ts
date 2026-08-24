@@ -1351,6 +1351,12 @@ export type Database = {
         Args: { p_pii_days?: number; p_meta_days?: number; p_limit?: number };
         Returns: Json;
       };
+      // 0152 — обгортка з канонічними параметрами (90/365/5000) + слід у
+      // maintenance_runs. Її кличуть і нічна задача, і роут ретенції.
+      audit_log_retention_daily: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
       // 0148 — незворотне видалення клініки за підтвердженим запитом
       // (service_role only). Повертає clinic_name, staff_user_ids, counts.
       clinic_deletion_execute: {
