@@ -892,43 +892,6 @@ export type Database = {
           }
         ];
       };
-      clinic_invites: {
-        Row: {
-          id: string;
-          clinic_id: string;
-          email: string;
-          role: Database["public"]["Enums"]["user_role"];
-          room_ids: string[];
-          created_at: string;
-          accepted_at: string | null;
-        };
-        Insert: {
-          id?: string;
-          clinic_id: string;
-          email: string;
-          role?: Database["public"]["Enums"]["user_role"];
-          room_ids?: string[];
-          created_at?: string;
-          accepted_at?: string | null;
-        };
-        Update: {
-          id?: string;
-          clinic_id?: string;
-          email?: string;
-          role?: Database["public"]["Enums"]["user_role"];
-          room_ids?: string[];
-          created_at?: string;
-          accepted_at?: string | null;
-        };
-        Relationships: [
-          {
-            foreignKeyName: "clinic_invites_clinic_id_fkey";
-            columns: ["clinic_id"];
-            referencedRelation: "clinics";
-            referencedColumns: ["id"];
-          }
-        ];
-      };
       radiologist_rooms: {
         Row: {
           id: string;
