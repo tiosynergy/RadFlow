@@ -1,20 +1,17 @@
 # RadFlow — состояние проекта (хендофф между сессиями)
 
-**Обновлено: 2026-08-25 ~00:30 Kiev, конец сессии 41.**
+**Обновлено: 2026-08-25 ~12:00 Kiev, сессия 42 (продолжение с41).**
 
-Прод-БД на `0155`, ledger 155. **Миграция `0156` ПОДГОТОВЛЕНА, НЕ НАКАТАНА**
-(лежит на диске, dry-run на проде SMOKE_OK, откат проверен). Следующая после
-неё — `0157`.
+Прод-БД на `0156`, ledger 156, все md5. **Миграция `0157` ПОДГОТОВЛЕНА, НЕ
+НАКАТАНА** (на диске, dry-run на проде SMOKE_OK, откат проверен). Следующая
+после неё — `0158`.
 
-`main` = `e8b0ac4` (PR #45), `dev` = `f15883f` (docs с40). **На диске
-НЕЗАКОММИЧЕННЫЙ пакет с41** (7 файлов, см. «Сессия 41»): миграция 0156 +
-смоук, бампы двух смоуков сторожа, `docs/ops-cron.md`, `components/
-ReferralPortal.tsx`, `app/queue/actions.ts`, `docs/audit/
-AUDIT_2026-08-23_RESPONSE_PLAN.md`. Порядок: накат 0156 → `db:gate` → build →
-коммит → PR.
+`main` = `9a3f315` (PR #46 — пакет с41: 0156 + ReferralPortal + stale/
+transition), `dev` = `9c005af`. **На диске НЕЗАКОММИЧЕННЫЙ пакет с42** (P2
+outbox, 9 файлов — см. «Сессия 42»).
 
-Тулчейн в контейнере на этом пакете: tsc 0, eslint 0, **vitest 1100/1100
-(43 файла)** (+2 законно: `sqlComments` подхватил 0156 и его смоук).
+Тулчейн в контейнере на пакете с42: tsc 0, eslint 0, **vitest 1110/1110
+(44 файла)** (+1 файл `outboxPolicy.test.ts`, +2 SQL в `sqlComments`).
 
 Cron: 9 задач. `invariants` — jobid 13, `50 3 * * *`. **Ночь 24→25 прошла
 чисто (проверено 04:13 UTC 25.08):** `audit-retention` 03:40
@@ -77,6 +74,64 @@ select job, ran_at, result from public.maintenance_runs
 задача не отработала. Кандидатов на удаление не будет до ~середины октября
 (старейший `audit_log` — 15.07, горизонт PII 90 дней), так что до тех пор
 `{"anonymized":0,"deleted":0}` — нормальный ответ.
+
+## Сессия 42 — P2 outbox (аудит 23.08 H-1/M-3) — на диске, НЕ в git
+
+Пакет с41 владелец накатил и смержил (PR #46) утром 25.08; после наката
+`invariants_check()` → `ok:true checked:10`, обе живые пробы развернулись
+(C-1 → 0 строк, C-2 → 4 строки без ПИБ).
+
+**Код (`lib/outbox.ts` + новый `lib/outboxPolicy.ts` + `tests/outboxPolicy.test.ts`):**
+
+- `integration.emit_failed` (0145, fail-open) больше НЕ форвардится партнёру:
+  воркер маршрутизировал её как `integration.*` и слал в вебхук клиники с
+  текстом SQL-ошибки в payload, хотя в контракте v1 такого события нет. Теперь
+  ack с пометкой `internal: …` (счётчик `internal` в `DeliverResult`), строка
+  исключена из lookup вебхуков. Проверка стоит ДО `hooksBroken`/`clinic_id`.
+- Выключенный вебхук (`enabled=false`) не сжигает retry-бюджет: пока событию
+  < 72 ч — `next_attempt_at += 30 мин` без `attempts++` (приём
+  `deferredN8nIds`), `last_error = "webhook_disabled (deferred)"`; старше —
+  `mark_failed` → DLQ, как раньше. Стеля нужна: тригер 0145 НЕ эмитит под
+  выключенный вебхук, но уже лежавшие строки без стели перезанимали бы
+  каждый батч вечно. Шаг 30 мин (не 15): 50 × 30 = 1500 строк одной
+  клиники до голодания FIFO (класс с34). Счётчик `deferred` — по
+  ФАКТИЧЕСКИ обновлённым строкам (`select("id")`).
+- Чистая логика вынесена в `lib/outboxPolicy.ts` (`isInternalIntegrationEvent`,
+  `disabledWebhookAction(createdAt, nowMs)`, константы), 10 тестов: префикс
+  `integration.*` у каждого служебного типа, формат PostgREST с микросекундами,
+  границы 72 ч, шаг ≥ тика cron.
+
+**Миграция `0157_invariants_emit_failed.sql` + `supabase/smoke/invariants_emit_failed_smoke.sql`:**
+
+- `invariants_check()` — проверка 11 `outbox_emit_failed_26h`: строки
+  `integration.emit_failed` за 26 ч (26, не 24 — без слепой минуты на стыке
+  суточного прогона) → offenders `префикс_clinic@YYYY-MM-DD HH24:MI` (без
+  `payload.err` — там sqlerrm). checked 10 → 11; зонды 0154 (d), 0155 (b),
+  0156 (j) подняты на 11; `docs/ops-cron.md`.
+- Перепечатка сверена приёмом с40: `md5 = 92c297fa2818af122bb171bf368909e3`,
+  5730 символов, equal=true (одна вставка в тело 0156).
+- Смоук a…f: две фикстуры emit_failed (с clinic_id и без → ветка `?`),
+  сторож называет обе в формате «префикс@время» без текста ошибки, старше
+  27 ч — молчит, после удаления `failed` = базовый. Dry-run реальными байтами
+  → `SMOKE_OK ( a b c d e f)`, откат подтверждён (ledger 156, старое тело,
+  emit_failed_rows = 0).
+- Независимое ревью (субагент): ship; учтены все 4 Low (шаг 30 мин,
+  `last_error` при отложке, фактический счётчик, тесты формата/префикса).
+
+**Порядок:** накат 0157 → `invariants_check()` = `ok:true checked:11` →
+смоук → `db:gate` (157/157) → build → коммит 9 файлов → PR. Код и миграция
+независимы и безопасны поодиночке — порядок деплоя не критичен.
+
+Файлы пакета с42: `lib/outbox.ts`, `lib/outboxPolicy.ts`,
+`tests/outboxPolicy.test.ts`, `supabase/migrations/0157_invariants_emit_failed.sql`,
+`supabase/smoke/invariants_emit_failed_smoke.sql`, бампы
+`invariants_watch_smoke.sql` / `invariants_cron_split_smoke.sql` /
+`room_busy_slots_scope_smoke.sql`, `docs/ops-cron.md`, плюс этот хендофф и
+`NEXT_SESSION_PROMPT.md`.
+
+**Замечено, не сделано:** dead-строки outbox никогда не чистятся
+(`prune-outbox` удаляет только доставленные) — кандидат на
+`delete where dead and created_at < now() - 90 days` в `cron_jobs.sql`.
 
 ## Сессия 41 — что сделано (ответ на внешний аудит 2026-08-23)
 
@@ -718,7 +773,7 @@ Auth-пользователь админа оставался сиротой →
   `audit_log_retention_daily()`, не HTTP-роут. `invariants` — jobid 13,
   `50 3 * * *`. Расписания pg_cron — В UTC, не в TZ клиники.
 
-## Беклог (приоритет по убыванию, на конец с41)
+## Беклог (приоритет по убыванию, на конец с42)
 
 ⚠️ Формулировки хвостов с32 ИСПРАВЛЕНЫ по итогам живых прогонов с37/с38:
 ack и «Неявка» значились «продуктовыми дефектами», а работали (дефект
@@ -760,16 +815,11 @@ ack и «Неявка» значились «продуктовыми дефек
    пуст, и поведение RPC в этом режиме надо сперва выяснить.
 9. **Зонд `f` смоука 0155** оживить, если появятся права на INSERT в
    `cron.job_run_details` (сейчас закрыт даже под `postgres`).
-10. **P2 аудита 23.08 (план в `docs/audit/AUDIT_2026-08-23_RESPONSE_PLAN.md`):**
-    (а) `lib/outbox.ts` — `integration.emit_failed` НЕ форвардить партнёру
-    (сейчас уходит в вебхук клиники как `integration.*` с текстом SQL-ошибки;
-    в контракте v1 такого события нет) — ack с пометкой; (б) выключенный
-    вебхук: отложка `next_attempt_at` без `attempts++` (приём
-    `deferredN8nIds`), но только пока событию < 72 ч; (в) миграция 0157 —
-    проверка 11 сторожа `integration.emit_failed` за 26 ч = 0; (г) M-1 —
-    валидатор `schedule_overrides.rooms` в `save_schedule_override` (зеркало
-    Zod). P3: `lateCallClash` через абсолютное время; `engines.node` после
-    сверки с Vercel; leaked-password protection в Dashboard.
+10. ✅ **P2 outbox (а)(б)(в)** — СДЕЛАН в с42 (на диске, не в git; 0157 не
+    накатана). Остались: (г) M-1 — валидатор `schedule_overrides.rooms` в
+    `save_schedule_override` (зеркало Zod); P3: `lateCallClash` через
+    абсолютное время; `engines.node` после сверки с Vercel; leaked-password
+    protection в Dashboard; prune dead-строк outbox (см. с42).
 11. **Live-check с сверкой данных**: `integration-live-check.mjs` сверяет
     форму, не факт — добавить сравнение `busy` из `/slots` с прямым select
     (урок C-2). Гонять после наката 0156 с машины владельца.

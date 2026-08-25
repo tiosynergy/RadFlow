@@ -2,7 +2,7 @@
 -- room_busy_slots_scope_smoke.sql — смоук міграції 0156
 -- «room_busy_slots: радіолог бачить лише призначені кабінети, направник — канон
 --  0139, service_role — зайнятість без деталей; тригерні функції без EXECUTE;
---  сторож рахує 10 перевірок».
+--  сторож рахує 11 перевірок (0157)».
 --
 -- ДВА РЕЖИМИ ЗАПУСКУ:
 --   • DRY-RUN (до накату): текст 0156 БЕЗ його begin;/commit; + цей файл одним
@@ -32,7 +32,7 @@
 --   (g) anon                                 → 42501 (EXECUTE не видано);
 --   (h) персонал ЧУЖОЇ клініки               → 0 рядків;
 --   (i) 14 тригерних функцій — без EXECUTE у public/anon/authenticated;
---   (j) invariants_check(false): checked = 10, room_busy_service_role мовчить;
+--   (j) invariants_check(false): checked = 11 (0157), room_busy_service_role мовчить;
 --   (k) структура рядків admin: 0 ≤ start_min < end_min ≤ 1440,
 --       scheduled_time узгоджений зі start_min (арифметика 0074 не зачеплена).
 -- ============================================================================
@@ -288,10 +288,11 @@ begin
   end if;
   v_done := v_done || ' i';
 
-  -- (j) сторож: 10 перевірок, room_busy_service_role мовчить.
+  -- (j) сторож: 11 перевірок (0157), room_busy_service_role мовчить.
   v_res := public.invariants_check(false);
-  if (v_res ->> 'checked')::int is distinct from 10 then
-    raise exception 'SMOKE_FAIL j: checked=% (очікував 10)', v_res ->> 'checked';
+  -- ⚠️ 0157 підняв 10 → 11 (outbox_emit_failed_26h).
+  if (v_res ->> 'checked')::int is distinct from 11 then
+    raise exception 'SMOKE_FAIL j: checked=% (очікував 11)', v_res ->> 'checked';
   end if;
   select f ->> 'offenders' into v_names
     from jsonb_array_elements(v_res -> 'failed') f
