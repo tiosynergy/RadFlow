@@ -4,7 +4,7 @@
    Портовано з прототипу wizard-app.jsx + wizard-steps.jsx.
    Дані префілляться з Supabase і зберігаються при «Запустити кабінет». */
 
-import { useState, useEffect, useRef, type Dispatch, type SetStateAction, type MutableRefObject } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, type Dispatch, type SetStateAction, type MutableRefObject } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { normalizeLogin, isValidLogin, LOGIN_HINT } from "@/lib/login";
@@ -15,6 +15,7 @@ import StaffManager from "@/components/StaffManager";
 import ReferrersManager from "@/components/ReferrersManager";
 import CeoManager from "@/components/CeoManager";
 import QueuePolicySettings, { type QueuePolicyInitial } from "@/components/QueuePolicySettings";
+import GoogleCalendarBackupSettings from "@/components/GoogleCalendarBackupSettings";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import DangerZone from "@/components/DangerZone";
 import UnreadDot from "@/components/UnreadDot";
@@ -228,6 +229,7 @@ const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string; su
   { label: "Обладнання та кабінети", desc: "Апарати та розклад", anchor: "sec-equip" },
   { label: "Послуги та прайс", desc: "Каталог послуг і цін центру", anchor: "sec-price", surfaces: ["services"] },
   { label: "Управління чергою", desc: "Політика при затримці", anchor: "sec-queue" },
+  { label: "Резервне копіювання", desc: "Google Calendar (аварійна копія)", anchor: "sec-gcal" },
   { label: "Персонал і доступи", desc: "Радіологи та реєстратори", anchor: "sec-staff" },
   { label: "Лікарі-направники", desc: "Направники центру", anchor: "sec-referrers", surfaces: ["centers"] },
   { label: "Керівники (CEO)", desc: "Аналітичний доступ", anchor: "sec-ceo" },
@@ -784,6 +786,20 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
   const router = useRouter();
   const [activeSection, setActiveSection] = useState("sec-clinic");
 
+  /* 0160: повернення з Google OAuth редіректить на /setup?gcal=<код> —
+     людина має опинитись САМЕ в секції резервного копіювання, а не на
+     профілі клініки. САМЕ useLayoutEffect (ревʼю с42): passive-ефекти React
+     стріляють знизу вгору, і дочірній GoogleCalendarBackupSettings у СВОЄМУ
+     useEffect вирізає ?gcal= із URL (щоб F5 не повторював повідомлення) —
+     звичайний useEffect батька читав би вже почищений URL і секція не
+     перемикалась. Layout-ефекти всього дерева гарантовано йдуть РАНІШЕ
+     будь-яких passive-ефектів — батько встигає прочитати параметр. */
+  useLayoutEffect(() => {
+    if (new URLSearchParams(window.location.search).has("gcal")) {
+      setActiveSection("sec-gcal");
+    }
+  }, []);
+
   /* Контекстні позначки в майстрі (с28): store монтується ТУТ, бо на /setup
      штатного Sidebar немає — без маунта крапки й ack мовчки не працювали
      (жива перевірка с28). Крапки на пунктах — за мапінгом surfaces у WIZ_NAV.
@@ -1088,6 +1104,14 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
                 <h1 className="wiz-h">Управління чергою</h1>
                 <p className="wiz-hsub">Що робити, коли дослідження затягнулося і наїжджає на наступні записи.</p>
                 <QueuePolicySettings initial={queuePolicy} />
+              </div>
+
+              {/* 0160 — аварійне дзеркало черги в Google Calendar (лише адмін).
+                  Самостійний блок: зберігається сам, у dirty майстра не входить. */}
+              <div className="fade-in" style={{ display: activeSection === "sec-gcal" ? "block" : "none" }}>
+                <h1 className="wiz-h">Резервне копіювання в Google Calendar</h1>
+                <p className="wiz-hsub">Аварійна копія черги на випадок недоступності RadFlow.</p>
+                <GoogleCalendarBackupSettings />
               </div>
 
               <div className="fade-in" style={{ display: activeSection === "sec-staff" ? "block" : "none" }}>

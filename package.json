@@ -2,6 +2,9 @@
   "name": "radflow",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22 <25"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "node scripts/migration-gate.mjs --build && next build",
@@ -23,6 +26,7 @@
   "dependencies": {
     "@supabase/ssr": "^0.12.0",
     "@supabase/supabase-js": "^2.49.0",
+    "google-auth-library": "^11.0.2",
     "jszip": "^3.10.1",
     "next": "^15.1.0",
     "react": "^19.0.0",

@@ -1208,6 +1208,92 @@ export type Database = {
         };
         Relationships: [];
       };
+      // 0160: резервне дзеркало черги в Google Calendar. Deny-all RLS —
+      // токени у Vault, метадані читає лише серверний шар (service_role).
+      google_calendar_connections: {
+        Row: {
+          clinic_id: string;
+          status: string;
+          enabled: boolean;
+          calendar_id: string | null;
+          calendar_summary: string | null;
+          calendar_timezone: string | null;
+          access_role: string | null;
+          refresh_secret_id: string | null;
+          sync_token_hash: string | null;
+          connected_by: string | null;
+          connected_at: string | null;
+          last_verified_at: string | null;
+          last_sync_at: string | null;
+          last_error_code: string | null;
+          sync_locked_until: string | null;
+          version: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          clinic_id: string;
+          status?: string;
+          enabled?: boolean;
+          calendar_id?: string | null;
+          calendar_summary?: string | null;
+          calendar_timezone?: string | null;
+          access_role?: string | null;
+          refresh_secret_id?: string | null;
+          sync_token_hash?: string | null;
+          connected_by?: string | null;
+          connected_at?: string | null;
+          last_verified_at?: string | null;
+          last_sync_at?: string | null;
+          last_error_code?: string | null;
+          sync_locked_until?: string | null;
+          version?: number;
+        };
+        Update: {
+          status?: string;
+          enabled?: boolean;
+          calendar_id?: string | null;
+          calendar_summary?: string | null;
+          calendar_timezone?: string | null;
+          access_role?: string | null;
+          refresh_secret_id?: string | null;
+          sync_token_hash?: string | null;
+          connected_by?: string | null;
+          connected_at?: string | null;
+          last_verified_at?: string | null;
+          last_sync_at?: string | null;
+          last_error_code?: string | null;
+          sync_locked_until?: string | null;
+          version?: number;
+        };
+        Relationships: [];
+      };
+      // 0160: одноразові OAuth-state (sha256 + PKCE, TTL 10 хв).
+      google_oauth_states: {
+        Row: {
+          state_hash: string;
+          user_id: string;
+          clinic_id: string;
+          pkce_verifier: string;
+          created_at: string;
+          expires_at: string;
+          used_at: string | null;
+        };
+        Insert: {
+          state_hash: string;
+          user_id: string;
+          clinic_id: string;
+          pkce_verifier: string;
+          created_at?: string;
+          expires_at: string;
+          used_at?: string | null;
+        };
+        Update: {
+          used_at?: string | null;
+          expires_at?: string;
+        };
+        Relationships: [];
+      };
       // 0144: фаза 0 інтеграцій. Deny-all RLS — таблиці бачить лише
       // серверний шар (service_role); клієнтський код їх НЕ читає.
       integration_keys: {
@@ -1344,6 +1430,24 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      // 0160 — Vault-хелпери резервного дзеркала GCal (service_role only,
+      // скоуп 'gcal:'): секрети OAuth ніколи не лежать у public-таблицях.
+      gcal_secret_store: {
+        Args: { p_secret: string; p_description?: string | null };
+        Returns: string;
+      };
+      gcal_secret_update: {
+        Args: { p_id: string; p_secret: string };
+        Returns: undefined;
+      };
+      gcal_secret_get: {
+        Args: { p_id: string };
+        Returns: string;
+      };
+      gcal_secret_delete: {
+        Args: { p_id: string };
+        Returns: undefined;
+      };
       // 0149 — ретенція audit_log (service_role only): знеособлення PII
       // старше p_pii_days, видалення знеособлених метаданих старше
       // p_meta_days. Повертає { anonymized, deleted }.

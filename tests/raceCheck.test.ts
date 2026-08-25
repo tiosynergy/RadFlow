@@ -7,8 +7,9 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  verdictSlotRace, verdictControl, clinicDay, startSpreadMs, windowsOverlap,
-  buildFixture, OVERLAP_SQLSTATE, FIXTURE_NAME,
+  verdictSlotRace, verdictControl, verdictInProgressRace, verdictCas,
+  clinicDay, startSpreadMs, windowsOverlap,
+  buildFixture, OVERLAP_SQLSTATE, IN_PROGRESS_SQLSTATE, FIXTURE_NAME, CAS_TO,
 } from "../scripts/race-check-lib.mjs";
 
 /** Учасник гонки: за замовчуванням старти щільні (одночасність доведена). */
@@ -92,6 +93,91 @@ describe("verdictControl — сторож придатності фікстур�
     const b = outcome(true, "", 1050, 100);
     expect(windowsOverlap([a, b])).toBe(true);
     expect(windowsOverlap([b, a])).toBe(true);
+  });
+});
+
+/* Сценарій «кабінет» (с42): гарант ІНШИЙ — не тригер 0064, а унікальний
+   частковий індекс 0018. Переплутати SQLSTATE тут дорого: 23505 від індексу
+   й 23P01 від тригера означають різні інваріанти, і зелений вердикт на
+   чужому коді довів би не те, що написано в назві сценарію. */
+describe("verdictInProgressRace — двоє в один кабінет", () => {
+  it("один зайшов, другий отримав 23505 → PASS", () => {
+    const r = verdictInProgressRace([outcome(true, "", 1000), outcome(false, IN_PROGRESS_SQLSTATE, 1004)]);
+    expect(r.verdict).toBe("PASS");
+    expect(r.reason).toMatch(/індексу 0018/);
+  });
+
+  it("ДВОЄ зайшли в кабінет → FAIL", () => {
+    const r = verdictInProgressRace([outcome(true, "", 1000), outcome(true, "", 1003)]);
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/ДВОЄ В ОДНОМУ КАБІНЕТІ/);
+  });
+
+  it("невдаха впав на 23P01 (гарант слота, не кабінету) → FAIL, а не PASS", () => {
+    // Найпідступніше: «одна удача з двох» виглядає правильно, але спрацював
+    // ІНШИЙ гард — отже сценарій перевіряв не те, що обіцяв.
+    const r = verdictInProgressRace([outcome(true, "", 1000), outcome(false, OVERLAP_SQLSTATE, 1002)]);
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/НЕ через гонку/);
+  });
+
+  it("не зайшов ніхто → FAIL", () => {
+    const r = verdictInProgressRace([outcome(false, IN_PROGRESS_SQLSTATE, 1000), outcome(false, IN_PROGRESS_SQLSTATE, 1002)]);
+    expect(r.verdict).toBe("FAIL");
+  });
+
+  it("послідовний прогін (розкид 3 с) → INCONCLUSIVE, а не PASS", () => {
+    const r = verdictInProgressRace([outcome(true, "", 1000), outcome(false, IN_PROGRESS_SQLSTATE, 4000)]);
+    expect(r.verdict).toBe("INCONCLUSIVE");
+  });
+});
+
+/* Сценарій CAS (с42): тут «невдача» — НЕ виняток, а updated=false. Головне
+   твердження — невдаха бачить статус ПЕРЕМОЖЦЯ: це і є доказ, що після
+   `for update` рядок перечитано, а не взято зі старого знімка. */
+describe("verdictCas — паралельний CAS на одному записі", () => {
+  const cas = (
+    updated: boolean | null, currentStatus: string | null,
+    startedAt = 1000, ok = true, sqlstate = ""
+  ) => ({
+    id: "e1", ok, updated, currentStatus, sqlstate,
+    message: sqlstate ? `помилка ${sqlstate}` : "",
+    startedAt, finishedAt: startedAt + 30,
+  });
+
+  it("один оновив, другий бачить статус переможця → PASS", () => {
+    const r = verdictCas([cas(true, CAS_TO, 1000), cas(false, CAS_TO, 1005)], { target: CAS_TO });
+    expect(r.verdict).toBe("PASS");
+  });
+
+  it("ДВОЄ оновили → FAIL: for update не серіалізував", () => {
+    const r = verdictCas([cas(true, CAS_TO, 1000), cas(true, CAS_TO, 1003)], { target: CAS_TO });
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/ПОДВІЙНИЙ CAS/);
+  });
+
+  it("невдаха бачить СТАРИЙ статус → FAIL, хоча оновлення рівно одне", () => {
+    // Саме той дефект, заради якого сценарій існує: CAS «спрацював», але
+    // читання пішло повз лок — у проді це давало б хибне «вас випередили».
+    const r = verdictCas([cas(true, CAS_TO, 1000), cas(false, "scheduled", 1004)], { target: CAS_TO });
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/СТАРИЙ стан/);
+  });
+
+  it("виняток замість updated=false → FAIL", () => {
+    const r = verdictCas([cas(true, CAS_TO, 1000), cas(null, null, 1002, false, "42501")], { target: CAS_TO });
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/виняток/);
+  });
+
+  it("не оновив ніхто → FAIL", () => {
+    const r = verdictCas([cas(false, "scheduled", 1000), cas(false, "scheduled", 1002)], { target: CAS_TO });
+    expect(r.verdict).toBe("FAIL");
+  });
+
+  it("розкид стартів більший за межу → INCONCLUSIVE", () => {
+    const r = verdictCas([cas(true, CAS_TO, 1000), cas(false, CAS_TO, 5000)], { target: CAS_TO });
+    expect(r.verdict).toBe("INCONCLUSIVE");
   });
 });
 

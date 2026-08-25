@@ -31,11 +31,11 @@ UTC-ніч, і зі зміною літнього/зимового часу во
 | `outbox-deliver` | `* * * * *` | `POST /api/outbox/deliver`, Bearer із Vault | `cron_jobs.sql` §2 |
 | `resolve-expired-incidents` | `*/5 * * * *` | знімає простої з `auto_unblock` після закінчення вікна | `cron_jobs.sql` §2b |
 | `audit-retention` | `40 3 * * *` | `select public.audit_log_retention_daily()` — прямий виклик RPC, слід у `maintenance_runs` (90 днів знеособлення / 365 видалення) | міграція `0152` |
-| `prune-outbox` | `30 3 * * *` | видаляє доставлені події старше 30 днів | `cron_jobs.sql` §4 |
+| `prune-outbox` | `30 3 * * *` | `select public.outbox_retention_daily()` — політика 30/30/90 (доставлені / PII мертвих / мертві), слід у `maintenance_runs` | міграція `0159` |
 | `prune-rate-limits` | `7 * * * *` | чистить `rate_limits` старші за добу | `cron_jobs.sql` §5 |
 | `prune-important-events` | `20 3 * * *` | видаляє журнал подій старший за 180 днів | міграція `0128` |
 | `prune-change-markers` | `25 3 * * *` | видаляє ПРОЧИТАНІ мітки старші за 180 днів | міграція `0132` |
-| `invariants` | `50 3 * * *` | `select public.invariants_check()` — сторож інваріантів (11 перевірок з `0157`), слід у `maintenance_runs` | міграція `0154`–`0157` |
+| `invariants` | `50 3 * * *` | `select public.invariants_check()` — сторож інваріантів (12 перевірок з `0159`), слід у `maintenance_runs` | міграція `0154`–`0159` |
 
 **Знято в с37:** `prune-audit-log` (`15 3 * * *`, delete старше 180 днів) —
 замінено на `audit-retention`. Причина в §3 `cron_jobs.sql`.
@@ -53,8 +53,12 @@ UTC-ніч, і зі зміною літнього/зимового часу во
 - `important_events`, `user_change_markers` — 180 днів, задачі з міграцій.
   Журнали переживають видалення клініки, ретенція — ні: це різні механізми,
   не плутати.
-- `event_outbox` — 30 днів ПІСЛЯ доставки; недоставлені й `dead` не чіпаються,
-  вони потрібні для розбору.
+- `event_outbox` — **тільки** `prune-outbox` (політика 0159, обгортка
+  `outbox_retention_daily` = `event_outbox_retention(30, 30, 90, 5000)`):
+  доставлені видаляються на 30 днях; мертві (`dead`) на 30 днях втрачають PII
+  (лишаються ключ клініки і `last_error`) і видаляються на 90. Живі
+  недоставлені не чіпаються НІКОЛИ — це черга доставки, а не сміття; застряглу
+  в ній на місяць подію називає сторож (перевірка 12 `outbox_rows_overdue`).
 
 Змінюєш горизонт — перевір, що іншої задачі на цю ж таблицю немає.
 
@@ -75,8 +79,9 @@ select jobid, status, return_message, start_time
  order by start_time desc limit 50;
 ```
 
-Що саме зробили нічні задачі (`audit-retention` з 0152 і `invariants` з 0154
-лишають слід; `cron.job_run_details` покаже лише «SQL виконався»):
+Що саме зробили нічні задачі (`audit-retention` з 0152, `invariants` з 0154 і
+`outbox-retention` з 0159 лишають слід; `cron.job_run_details` покаже лише
+«SQL виконався»):
 
 ```sql
 select job, ran_at, result from public.maintenance_runs
@@ -85,6 +90,14 @@ select job, ran_at, result from public.maintenance_runs
 
 ⚠️ ПОРОЖНЬО за добу — найгірший стан: механізм не крутиться, а тиша схожа на
 норму. Саме так помер запобіжник 0141.
+
+**`outbox_rows_overdue` (перевірка 12) закричав після сплеску подій** — це
+очікувано, а не поломка: партія RPC — 5000 рядків за прогін, тож борг з N
+подій тане приблизно за `ceil(N/5000)` ночей, а запас перевірки — 2 доби.
+Прискорити можна руками: `select public.outbox_retention_daily();` повторно,
+поки лічильники не стануть нулями. Дефект — лише якщо лічильники з ночі в ніч
+НЕ зменшуються. Гілка `undelivered_30d` — не про ретенцію взагалі: подія
+місяць лежить у черзі доставки, дивитись треба на `outbox-deliver` і вебхуки.
 
 Що ВІДПОВІВ роут (для задач через `net.http_post` — `cron.job_run_details`
 покаже лише «запит поставлено в чергу», а не результат HTTP):

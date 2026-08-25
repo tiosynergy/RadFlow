@@ -1215,6 +1215,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   const [cancelAsk, setCancelAsk] = useState<{ p: QEntry; mode: "cancel" | "declined" } | null>(null);
   const [offCallAsk, setOffCallAsk] = useState<
     | { p: QEntry; kind: "overrun"; end: string; durationMin: number }
+    | { p: QEntry; kind: "next_day"; end: string; durationMin: number }
     | { p: QEntry; kind: "clash"; time: string; name: string | null; durationMin: number }
     | null
   >(null);
@@ -2199,6 +2200,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     // пропустить — кабінет не зайнятий (інакше раніше спрацював би room_busy).
     if (r && r.code === "clash") { setOffCallAsk({ p, kind: "clash", time: r.time, name: r.name ?? null, durationMin: r.durationMin }); return; }
     if (r && !r.confirmable) { notify(inProgressBlockReason(p) || "Викликати зараз неможливо", "error"); return; }
+    /* M-2: вікно виклику переходить за північ. Дошка тримає рівно одну добу,
+       тож накладення на ранковий запис завтра вона не побачить — кажемо про це
+       вголос, а не даємо серверу відповісти помилкою. */
+    if (r && r.code === "next_day") { setOffCallAsk({ p, kind: "next_day", end: r.end, durationMin: r.durationMin }); return; }
     if (r && r.code === "sched_overrun") { setOffCallAsk({ p, kind: "overrun", end: r.end, durationMin: r.durationMin }); return; }
     return setStatus(p.id, "in_progress").then(() => {});
   }
@@ -2761,11 +2766,16 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
           (не галочка, як у модалках): виклик робиться одним кліком просто з дошки. */}
       {offCallAsk && (
         <ConfirmDialog
-          title={offCallAsk.kind === "clash" ? "Викликати попри наступний запис?" : "Викликати поза графіком?"}
+          title={offCallAsk.kind === "clash" ? "Викликати попри наступний запис?"
+            : offCallAsk.kind === "next_day" ? "Викликати попри перехід за північ?"
+            : "Викликати поза графіком?"}
           text={offCallAsk.kind === "clash"
             ? <><b>{offCallAsk.p.patient_name}</b> · {offCallAsk.durationMin} хв. Наступний запис о <b>{offCallAsk.time}</b>{offCallAsk.name ? " (" + offCallAsk.name.split(" ").slice(0, 2).join(" ") + ")" : ""} — виклик зараз накладеться на нього. Далі перенесіть наступного пацієнта, інакше він зачекає.</>
+            : offCallAsk.kind === "next_day"
+            ? <><b>{offCallAsk.p.patient_name}</b> · запис о {offCallAsk.p.scheduled_time} · {offCallAsk.durationMin} хв. Кабінет буде зайнятий до <b>{offCallAsk.end}</b> завтра. Дошка бачить лише один день — записів завтра до <b>{offCallAsk.end}</b> вона не показує, перевірте їх перед викликом.</>
             : <><b>{offCallAsk.p.patient_name}</b> · запис о {offCallAsk.p.scheduled_time} · {offCallAsk.durationMin} хв.{" "}Кабінет працює до <b>{offCallAsk.end}</b> — робота триватиме понаднормово.</>}
-          confirmLabel={offCallAsk.kind === "clash" ? "⚠ Викликати все одно" : "⏰ Викликати"}
+          confirmLabel={offCallAsk.kind === "clash" ? "⚠ Викликати все одно"
+            : offCallAsk.kind === "next_day" ? "🌙 Викликати" : "⏰ Викликати"}
           cancelLabel="Ні"
           danger={offCallAsk.kind === "clash"}
           busy={offCallBusy}
@@ -2773,6 +2783,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
           onConfirm={async () => {
             const a = offCallAsk;
             if (!a) return;
+            /* Доба могла змінитись, поки діалог відкритий: next_day за
+               побудовою висить в останні (тривалість + буфер) хвилин доби, і
+               саме він просить оператора піти перевірити завтрашні записи.
+               Підтвердження після 00:00 завело б у кабінет ВЧОРАШНІЙ запис в
+               обхід wrong_day — і кабінет отримав би «хвіст» 0018. «Зараз»
+               рахуємо в момент кліку, а не з рендера. */
+            if (!sameDay(selectedDate, wallToday0())) {
+              notify("Доба змінилась — запис уже не на сьогодні, оновіть дошку", "error");
+              setOffCallAsk(null);
+              return;
+            }
             setOffCallBusy(true);
             await setStatus(a.p.id, "in_progress");
             setOffCallBusy(false);

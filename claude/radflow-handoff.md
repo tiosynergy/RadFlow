@@ -1,17 +1,153 @@
 # RadFlow — состояние проекта (хендофф между сессиями)
 
-**Обновлено: 2026-08-25 ~17:00 Kiev, сессия 42 (продолжение с41).**
+**Обновлено: 2026-08-25 ~21:20 UTC (00:20 Kiev 26.08), сессия 42 (финал).**
 
-Прод-БД на `0158`, ledger 158, все md5, `invariants_check()` → `ok:true
-checked:11`. Следующая миграция — `0159`.
+**Прод-БД на `0160`**, ledger 160, все md5 (db:gate прогнан),
+`invariants_check()` → `ok:true checked:12` (0160 проверок сторожа не
+добавляет — её инварианты живут CHECK-ами таблиц). **Смоук 0160 прогнан
+НА ПРОДЕ: `SMOKE_OK … 19 зон`** (25.08 ~17:55 UTC). Live-сверка
+периметра: обе таблицы RLS deny-all, 0 политик, у anon/authenticated ни
+одного гранта; 4 Vault-хелпера — EXECUTE только service_role. Следующая
+миграция — **0161**.
 
-`main` = `f5fb7e6` (P2 outbox), `dev` = `f011e80` (M-1 + live-check
-закоммичены; PR dev→main открыт/проверить). **На диске НЕЗАКОММИЧЕННЫЙ
-пакет «бэклог-код»** (5 файлов + хендофф/промпт — см. «Сессия 42 —
-бэклог-код»).
+`dev` = **`d219c49`** («feat(gcal): 0160 …», 29 файлов — вся фича + lock
+после `npm audit fix` + хвост race-check.mjs из первой половины с42),
+`main` = `aeb4df8` — **PR dev→main ещё НЕ создан**. md5 миграции и смоука
+в git = проверенные dry-run-ом версии (сверено). Фича платформно
+ВЫКЛЮЧЕНА (`GOOGLE_CALENDAR_BACKUP_AVAILABLE` не задан) — мерж в main
+безопасен и до Google Cloud-настройки.
 
-Тулчейн в контейнере на пакете: tsc 0, eslint 0, **vitest 1130/1130
-(46 файлов)** (+`tests/rescheduleOrigin.test.ts`).
+Осталось до пилота (порядок — runbook `docs/GOOGLE_CALENDAR_BACKUP.md`):
+Google Cloud OAuth-клиент §1 → env в Vercel §2 → PR dev→main →
+live-acceptance (§12 промпта фичи, тестовый аккаунт) → подключение
+клиники §3–4 → токен в n8n → активация workflow §5.
+
+## Сессия 42, финал — фича «Резервная копия в Google Calendar» (0160)
+
+Полный runbook (архитектура, чек-листы включения, аварийная процедура,
+troubleshooting, откат) — **`docs/GOOGLE_CALENDAR_BACKUP.md`**. Дизайн +
+промпт фичи — в uploads-доках владельца (22.08). Здесь — что где лежит и
+что осталось.
+
+**Суть:** один закрытый secondary-календарь Google на клинику с последней
+успешной копией очереди (окно вчера…+7, ретеншн 14 дней, heartbeat «копия
+актуальна на HH:MM»). Данные текут ТОЛЬКО RadFlow → Google. Планировщик —
+n8n (решение владельца, pg_cron не трогали).
+
+**Сделано (всё на диске, НЕ в git):**
+
+1. **0160** `google_calendar_connections` (PK clinic_id, fail-closed
+   CHECK-инварианты, CAS `version`, lease `sync_locked_until`, sync-токен
+   ТОЛЬКО sha256) + `google_oauth_states` (single-use, sha256+PKCE, TTL 10
+   мин) + 4 Vault-хелпера со скоупом `gcal:` + триггер-страховка чистки
+   секрета + PII-guard журнала расширен токен-ключами. Смоук 19 зон,
+   dry-run на проде прошёл (SMOKE_OK).
+2. **Код:** `lib/googleCalendarBackup.ts` (чистая логика, 27 юнитов),
+   `googleCalendarClient.ts` (google-auth-library@11.0.2 + Calendar REST),
+   `googleCalendarStore.ts`, `googleCalendarService.ts` (fail-closed
+   переходы), `googleCalendarSync.ts`; 9 роутов
+   `app/api/integrations/google-calendar/*`; UI-секция «Резервне
+   копіювання» в `/setup` (`components/GoogleCalendarBackupSettings.tsx`);
+   7 типов журнала `integration.gcal_*`; `.env.example` + types.ts.
+3. **n8n workflow `radflow-gcal-backup-sync`** id `xUpFh5eBbeYY7dhJ` —
+   собран, валиден, **НЕ активен**; Data Table `radflow_gcal_alerts`.
+   Каждые 2 мин POST /sync c Bearer `rfg_…`; 409 → алерт, 429/5xx →
+   ретрай 25 c. У n8n НЕТ ни Supabase-ключей, ни Google-токенов, ни PII.
+4. **Два раунда ревью** пройдены (5 ВАЖНО по 0160: Vault-сирота, скоуп
+   оракула, NULL-ловушка CHECK; В-1/В-2 по коду: version-guard против
+   гонки sync×disconnect, сирота-секрет в callback; К-1 UI: deep-link
+   `?gcal=` и гонка passive-эффектов → useLayoutEffect). Тулчейн:
+   tsc 0, eslint 0, **vitest 1180/1180 (47 файлов)**, build OK (9 роутов).
+   ⚠️ В отчёте с42 мелькала цифра «1207/1207» — ошибка подсчёта,
+   правильная 1180.
+5. **npm audit после `npm install` показал 11 уязвимостей — ВСЕ из
+   старого дерева** (проверено прогоном audit на lock из HEAD: те же
+   11), фича не добавила ни одной. Сделан `npm audit fix` БЕЗ --force
+   (package.json не тронут, только lock): next 15.5.21→15.5.24 (патч,
+   подтянул починенный sharp 0.35.3 — libvips CVE), postcss 8.5.26,
+   brace-expansion/js-yaml/nanoid → **аудит 11 → 7**. Тулчейн на новом
+   lock перегнан целиком — зелёный. Остаток 7 чинится ТОЛЬКО мажорами
+   (беклог №12): цепочка vitest (критикал GHSA-5xrq-8626-4rwp — чтение
+   файлов, ТОЛЬКО когда слушает `vitest --ui`, у нас не используется;
+   фикс vitest ≥3.2.6, полная зачистка — vitest 4) и next 16.3.3
+   (вшитая копия postcss 8.4.31; build-time). esbuild-адвизори — про
+   его dev-server, у нас esbuild только как API в sync-board.mjs.
+
+**Ключевые решения** (отклонения от дизайн-дока, озвучены):
+wall-as-UTC → в Google идёт LOCAL dateTime без офсета + `timeZone` клиники
+(ноль конверсий, DST решает Google); google-auth-library вместо
+googleapis-монолита; миграция по канону репо, не Supabase CLI; sync-токен
+колонкой в connections, не отдельной таблицей.
+
+**✅ Закрыто вечером 25.08:** 0160 накатана и проштампована, смоук на
+проде SMOKE_OK 19 зон, live-сверка RLS/привилегий чистая, `npm install`
+прогнан, коммит `d219c49` в dev (md5 миграции/смоука в git = проверенные
+версии). **Осталось:** Google Cloud OAuth-клиент по чек-листу runbook §1
+→ env в Vercel §2 → PR dev→main → live-acceptance (§12 промпта фичи,
+тестовый аккаунт) → подключение клиники в /setup §3–4 → токен в n8n
+Credentials → ручной Execute → активация workflow §5.
+
+**Известное ограничение:** удаление клиники чистит Vault (триггер), но НЕ
+отзывает токен на стороне Google — перед удалением клиники с активным
+подключением сначала «Відключити» в /setup.
+
+## Сессия 42, вторая половина — что сделано
+
+1. **L-3 `engines.node`** = `">=22 <25"` (Vercel Project Settings 24.x,
+   локально 24.15, контейнер 22 — все три внутри).
+2. **0159 — ретенция `event_outbox` целиком** (беклог №1): политика 30/30/90
+   в `event_outbox_retention` + обёртка `outbox_retention_daily` со следом в
+   `maintenance_runs`; задача `prune-outbox` (jobid 3) переведена на RPC;
+   `cron_jobs.sql` §4 переписан, §3 подтянут к 0152 (файл больше не
+   откатывал бы прод при повторном прогоне). Сторож: проверка **12**
+   `outbox_rows_overdue` — четыре ветки (доставленные >32 д, PII мёртвых
+   >32 д, мёртвые >92 д, ЖИВЫЕ недоставленные >30 д). Первый прогон в проде:
+   все счётчики 0 (мёртвых нет, старшей доставке 28 дней).
+   ⚠️ Знеособлення читает ОБЕ формы ключа клиники: `clinic_id`
+   (`integration.*`) и `clinicId` (`emergency_stop`) — PII живёт во второй.
+3. **M-2 `next_day`** — доска грузит ровно одни сутки, окно вызова считается
+   от «сейчас»; если оно переходит за полночь, `computeCallBlock` отдаёт
+   ПОДТВЕРЖДАЕМЫЙ код `next_day`. Соседний день не грузим сознательно
+   (записано в `AGENTS.md` и в плане ответа на аудит). В обеих досках
+   добавлена проверка смены суток в момент подтверждения диалога.
+4. **Харнес гонок**: сценарии `room` (двое в один кабинет → уникальный индекс
+   0018, 23505) и `cas` (параллельный CAS через RPC). Живой прогон `room`
+   25.08: **PASS**, разброс стартов 1 мс, прибрано 6 id, остатков 0.
+   **Живой прогон `cas` 25.08 16:18 — PASS**: из двух одновременных вызовов
+   `scheduled → waiting` на ОДНОМ записи один получил `updated=true`, второй
+   `updated=false` и увидел **«waiting»** — то есть после `for update` строка
+   перечитана, а не взята из старого снимка. Разброс стартов 0 мс, обе
+   длительности 184 мс (проигравший ждал на локе, а не отказал сразу).
+   Прибрано 5 id, остатков 0, сирот-маркеров 0.
+   ⚠️ Токен для прогона: сессия в **cookie** (`@supabase/ssr`), НЕ в
+   localStorage. Готовый сниппет (кука может быть порезана на `.0`/`.1` и
+   с префиксом `base64-`) — в шапке `scripts/race-check.mjs`. Токен
+   сохранялся файлом и удалён сразу после прогона; в переписку не попадал.
+   ⚠️ **`queue_set_status_rpc` служебную роль НЕ пускает** (`auth_clinic_id()`
+   = NULL → 42501) — проверено зондом. Поэтому `cas` требует живого токена
+   персонала в `RADFLOW_USER_JWT`, иначе честный SKIP. Это ответ на открытый
+   вопрос с38 «как RPC ведёт себя под service_role».
+   Харнес теперь отказывается стрелять, если у клиники включён вебхук
+   интеграции (фикстуры уехали бы партнёру) или если кабинет занят.
+5. **Протокол симметричного прогона ack** — `docs/qa-unread-ack-symmetry.md`:
+   8 шагов на два аккаунта + SQL-проверка. Второй живой пользователь всё ещё
+   нужен, но прогон стал 15-минутным и повторяемым.
+6. **Leaked-password protection** — владелец отложил до продакшена.
+
+**Живой прогон live-check 25.08 10:02 UTC — `LIVE_OK: перевірок 41,
+провалено 0`**, включая два новых зонда: `room_busy_slots під service_role
+віддає зайнятість (2026-08-25) — рядків 4` и `busy у /slots = обʼєднання
+room_busy_slots — 3 інтервали: 09:30-10:35, 12:00-12:30, 13:35-15:10`.
+C-2 закрыт и в проде, и доказательно. Прогон шёл с машины владельца через
+Desktop Commander по скрипту `C:\Windows\Temp\rf_live.ps1`: временный ключ
+`0c98c498…` («E2E live-check c42 (tmp)», Medicom) создан с
+`--allow-redirect`, токен в переписку НЕ попал (regex внутри PowerShell →
+`$env:RADFLOW_TOKEN`), после прогона отозван; активных ключей — 0.
+
+Тулчейн: tsc 0, eslint 0, **vitest 1151/1151 (46 файлов)**, build OK,
+deploy-гейт 159/159. ⚠️ `npm run build` падает с `Cannot find module for
+page`, если параллельно крутится `npm run dev` — они делят `.next`. Это не
+дефект кода: останови dev или удали `.next`.
 
 Cron: 9 задач. `invariants` — jobid 13, `50 3 * * *`. **Ночь 24→25 прошла
 чисто (проверено 04:13 UTC 25.08):** `audit-retention` 03:40
@@ -75,7 +211,7 @@ select job, ran_at, result from public.maintenance_runs
 (старейший `audit_log` — 15.07, горизонт PII 90 дней), так что до тех пор
 `{"anonymized":0,"deleted":0}` — нормальный ответ.
 
-## Сессия 42 — бэклог-код (fmtOrigin → lib, мёртвые navKey) — на диске, НЕ в git
+## Сессия 42 — бэклог-код (fmtOrigin → lib, мёртвые navKey) — влито (`dev 25f744f`)
 
 Владелец накатил 0158, закоммитил M-1 + live-check (`dev = f011e80`),
 открыл PR. Пока PR ждёт — два дешёвых пункта бэклога с40 (№6 и №3).
@@ -96,7 +232,7 @@ select job, ran_at, result from public.maintenance_runs
   ACTUAL_OVERLAP) отбивает с понятным текстом, проявляется только при вызове
   ≈ за длительность до полуночи — остаётся в P3.
 
-## Сессия 42 — live-check со сверкой содержания (бэклог №11) — на диске, НЕ в git
+## Сессия 42 — live-check со сверкой содержания (бэклог №11) — влито (`f011e80`)
 
 Урок C-2: `39/39 LIVE_OK` в с36 не заметил, что `/slots` отдаёт занятое как
 свободное — зонды проверяли форму, не содержание.
@@ -118,12 +254,14 @@ select job, ran_at, result from public.maintenance_runs
   топ-3 дня закрыты — `skip` с причиной. Итого 41 проверка (было 39).
 - `docs/integration-keys-runbook.md` §3 — абзац про сверку и про то, что
   прогон только с машины владельца.
-- ⚠️ Из контейнера прогнать нельзя (домен не в allowlist) — **первый живой
-  прогон делает владелец** после деплоя: `$env:RADFLOW_TOKEN=…; node
-  scripts/integration-live-check.mjs --base https://rad-flow-tau.vercel.app`.
-  Активных ключей 0 — сначала `key:create` тестового.
+- ✅ Живой прогон 25.08 — `LIVE_OK 41/41`, оба новых зонда `ok` (см. шапку).
+  Приём для будущих прогонов без владельца у клавиатуры: PowerShell-скрипт
+  в латинском пути делает `key:create --allow-redirect` → regex токена →
+  `$env:RADFLOW_TOKEN` → live-check → `key:revoke`; в лог и в переписку идёт
+  только маска. Из контейнера по-прежнему нельзя (домен не в allowlist), а
+  через Desktop Commander — можно.
 
-## Сессия 42 — M-1: валидатор `schedule_overrides.rooms` в БД (0158) — на диске, НЕ в git
+## Сессия 42 — M-1: валидатор `schedule_overrides.rooms` в БД (0158) — влито (`f011e80`), накатано
 
 Владелец накатил 0157 и закоммитил P2 (`dev = 5824439`). Следующий пакет по
 плану — M-1 аудита.
@@ -179,7 +317,7 @@ select job, ran_at, result from public.maintenance_runs
 `invariants_check()` (`checked:11`, ledger_md5 до gate) → `db:gate`
 (158/158) → build → коммит (3 файла + хендофф/промпт) → PR.
 
-## Сессия 42 — P2 outbox (аудит 23.08 H-1/M-3) — на диске, НЕ в git
+## Сессия 42 — P2 outbox (аудит 23.08 H-1/M-3) — влито (`5824439`), 0157 накатана
 
 Пакет с41 владелец накатил и смержил (PR #46) утром 25.08; после наката
 `invariants_check()` → `ok:true checked:10`, обе живые пробы развернулись
@@ -879,6 +1017,11 @@ Auth-пользователь админа оставался сиротой →
 
 ## Беклог (приоритет по убыванию, на конец с42)
 
+0. **GCal Backup — довести до пилота**: накат 0160 + npm install + коммит
+   (владелец); Google Cloud чек-лист → Vercel env → live-acceptance по §12
+   промпта фичи → подключение пилотной клиники → активация n8n. Всё
+   пошагово — `docs/GOOGLE_CALENDAR_BACKUP.md`.
+
 ⚠️ Формулировки хвостов с32 ИСПРАВЛЕНЫ по итогам живых прогонов с37/с38:
 ack и «Неявка» значились «продуктовыми дефектами», а работали (дефект
 нашёлся внутри «Неявки», и его в беклоге не было вовсе); «гонка на слот»
@@ -892,6 +1035,9 @@ ack и «Неявка» значились «продуктовыми дефек
 2. **Хвост ack «заморозка/разморозка обеими сторонами»** — нужен второй
    ЖИВОЙ пользователь (SQL его не заменяет). В с39 проверен только ack
    регистратора; полный цикл заморозки со стороны Б не гоняли.
+   ✅ с42: протокол прогона готов — `docs/qa-unread-ack-symmetry.md`
+   (8 шагов, два аккаунта разных ролей, два браузерных профиля, SQL-проверка
+   по `user_change_markers`). Осталось выполнить.
 3. **Дропы мёртвых объектов**: clinic_invites (0 строк, ⚠️ FK-счётчик 0141
    →15 + бэкфилл перед дропом), doctors (0 строк), мёртвые ключи
    SURFACE_BY_NAV (✅ `calls/services/staff/cases` убраны в с42). ⚠️ **`sink_overdue_scheduled` НЕ
@@ -917,13 +1063,23 @@ ack и «Неявка» значились «продуктовыми дефек
    пуст, и поведение RPC в этом режиме надо сперва выяснить.
 9. **Зонд `f` смоука 0155** оживить, если появятся права на INSERT в
    `cron.job_run_details` (сейчас закрыт даже под `postgres`).
-10. ✅ **P2 outbox** — в git (`dev = 5824439`), 0157 накатана. ✅ **M-1**
-    (0158) — на диске, не в git. Остались P3: `lateCallClash` через
-    абсолютное время; `engines.node` после сверки с Vercel; leaked-password
-    protection в Dashboard; prune dead-строк outbox; live-check со сверкой
-    `busy` (п. 11).
-11. ✅ **Live-check с сверкой данных** — сделан в с42 (на диске); живой прогон
-    — за владельцем (нужен тестовый ключ: активных 0).
+10. ✅ **P2 outbox** (0157) и ✅ **M-1** (0158) — влиты и накатаны. Остались P3: `lateCallClash` через
+    абсолютное время; prune dead-строк outbox. **Leaked-password protection —
+    владелец отложил до продакшена** (с42): тумблер в Supabase Dashboard →
+    Authentication → Sign In / Providers → Email; там же Minimum password
+    length = 6 против наших 8 в `/api/account/set-password` — поднять заодно.
+    Не поднимать эту тему до выхода в прод. ✅ `engines.node` (L-3) — `">=22 <25"` в `package.json` (с42):
+    Vercel Project Settings = 24.x, локально у владельца 24.15, контейнер
+    Claude — 22; диапазон покрывает все три, Node 25 — отрежет. `@types/node`
+    остался `^20` — поднимать отдельно, только с прогоном `tsc`.
+11. ✅ **Live-check с сверкой данных** — сделан и прогнан в с42: `LIVE_OK 41/41`.
+12. **Плановые мажоры зависимостей** (остаток npm audit, 7 шт., все
+    невыездные без breaking): vitest ≥3.2.6 (лучше 4.x — закрывает и
+    vite/esbuild-цепочку; критикал GHSA-5xrq-8626-4rwp касается только
+    `vitest --ui`, который не используется) и next 16.3.3 (вшитый
+    postcss). Только отдельной задачей: полный прогон 1180 тестов +
+    build + ручная проверка досок. ⚠️ `npm audit fix --force` ЗАПРЕЩЁН —
+    он втащил бы next@16 вслепую. `@types/node` ^20 поднять заодно.
 
 ## Карта интеграционного шара (что где лежит)
 
@@ -956,6 +1112,15 @@ scripts/build-partner-pdf.mjs → npm run docs:pdf;
 
 **Документы:** docs/integration-api-v1.md, docs/integration-fhir-r4.md,
 docs/integration-keys-runbook.md, docs/partner-guide.html.
+
+**GCal Backup (с42, не в git):** БД 0160; lib/googleCalendarBackup.ts,
+googleCalendarClient.ts, googleCalendarStore.ts, googleCalendarService.ts,
+googleCalendarSync.ts; app/api/integrations/google-calendar/{start,callback,
+status,calendars,select,enable,disconnect,sync-token,sync}; components/
+GoogleCalendarBackupSettings.tsx (+ секция в SetupWizard); tests/
+googleCalendarBackup.test.ts; docs/GOOGLE_CALENDAR_BACKUP.md (runbook);
+n8n `radflow-gcal-backup-sync` xUpFh5eBbeYY7dhJ (неактивен) + Data Table
+`radflow_gcal_alerts`. Зависимость: google-auth-library@11.0.2.
 
 ## Правила (полный список — AGENTS.md)
 
