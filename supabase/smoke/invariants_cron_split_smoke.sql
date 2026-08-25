@@ -27,9 +27,10 @@ begin
   end if;
   v_done := v_done || ' a';
 
-  -- b: перевірок рівно 9 (було 8). Кількість перевірок сама є інваріантом.
-  if (v_base ->> 'checked')::int is distinct from 9 then
-    raise exception 'SMOKE_FAIL b: checked=% (очікував 9)', v_base ->> 'checked';
+  -- b: перевірок рівно 10 (0155: 9, 0156: +room_busy_service_role).
+  -- Кількість перевірок сама є інваріантом.
+  if (v_base ->> 'checked')::int is distinct from 10 then
+    raise exception 'SMOKE_FAIL b: checked=% (очікував 10)', v_base ->> 'checked';
   end if;
   v_done := v_done || ' b';
 

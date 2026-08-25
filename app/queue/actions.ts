@@ -43,6 +43,7 @@ import {
    дати/часи, статуси, лічильники; changedFields — лише НАЗВИ колонок. */
 import { queueEventTypeFor, caseEventTypeFor, changedFieldsOf } from "@/lib/importantEvents";
 import { emitImportantEvent } from "@/lib/importantEvents.server";
+import { statusLabel } from "@/lib/journalText";
 import { logError } from "@/lib/serverLog";
 import { grantAllowsRoom } from "@/lib/rooms";
 
@@ -51,8 +52,10 @@ export type QueueActionResult =
   | {
       ok: false;
       error: string;
-      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "stale" | "past" | "off_schedule" | "modality_mismatch" | "sched_conflict" | "generic";
-      // Для code='stale' (H-2): реальный статус на сервере, чтобы доска ресинкнулась.
+      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "stale" | "transition" | "past" | "off_schedule" | "modality_mismatch" | "sched_conflict" | "generic";
+      // Для code='stale' (H-2) и 'transition' (M-6): реальный статус на сервере, чтобы доска ресинкнулась.
+      // 'transition' — переход из ТЕКУЩЕГО состояния запрещён правилом (p_allowed /
+      // ветка направника), никто не опережал: текст про «другого пользователя» тут — ложь.
       currentStatus?: QueueStatus;
     };
 
@@ -723,6 +726,22 @@ async function setStatusViaRpc(
   const current = res.current_status as QueueStatus;
   // Той самий перехід уже застосовано (повторний клік / гонка) — ідемпотентно ok.
   if (current === status || (opts.sameAsOk && current === opts.sameAsOk)) return { ok: true };
+  /* Аудит 23.08 M-6 (= беклог с40 №1): updated=false у RPC має ДВІ причини —
+     «хтось випередив» (CAS по p_expected) і «перехід із поточного стану
+     заборонений» (p_allowed або гілка направника). Якщо очікуваний статус
+     ЗБІГСЯ з поточним, ніхто не випереджав — це відмова правила. Раніше обидві
+     причини йшли як 'stale', і оператор читав «статус змінив інший користувач»
+     без жодного іншого користувача; наступна правка матриці переходів дала б
+     хибне повідомлення масово. Дошки на будь-який не-stale код показують
+     res.error і перезавантажуються — окремої гілки в UI не потрібно. */
+  if (opts.expected && current === opts.expected) {
+    return {
+      ok: false,
+      error: `Перехід «${statusLabel(current)}» → «${statusLabel(status)}» зараз неможливий — оновіть дошку`,
+      code: "transition",
+      currentStatus: current,
+    };
+  }
   return { ok: false, error: STALE_ERR, code: "stale", currentStatus: current };
 }
 
