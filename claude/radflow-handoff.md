@@ -1,17 +1,17 @@
 # RadFlow — состояние проекта (хендофф между сессиями)
 
-**Обновлено: 2026-08-25 ~12:00 Kiev, сессия 42 (продолжение с41).**
+**Обновлено: 2026-08-25 ~16:00 Kiev, сессия 42 (продолжение с41), пакеты M-1 + live-check.**
 
-Прод-БД на `0156`, ledger 156, все md5. **Миграция `0157` ПОДГОТОВЛЕНА, НЕ
+Прод-БД на `0157`, ledger 157, все md5. **Миграция `0158` ПОДГОТОВЛЕНА, НЕ
 НАКАТАНА** (на диске, dry-run на проде SMOKE_OK, откат проверен). Следующая
-после неё — `0158`.
+после неё — `0159`.
 
-`main` = `9a3f315` (PR #46 — пакет с41: 0156 + ReferralPortal + stale/
-transition), `dev` = `9c005af`. **На диске НЕЗАКОММИЧЕННЫЙ пакет с42** (P2
-outbox, 9 файлов — см. «Сессия 42»).
+`main` = `f5fb7e6` (P2 outbox влит), `dev` = `5824439`. **На диске
+НЕЗАКОММИЧЕННЫЕ пакеты M-1 (0158) и live-check** — см. секции «Сессия 42 —
+M-1» и «Сессия 42 — live-check»; можно одним коммитом/PR.
 
-Тулчейн в контейнере на пакете с42: tsc 0, eslint 0, **vitest 1110/1110
-(44 файла)** (+1 файл `outboxPolicy.test.ts`, +2 SQL в `sqlComments`).
+Тулчейн в контейнере на пакетах M-1 + live-check: tsc 0, eslint 0,
+**vitest 1123/1123 (45 файлов)** (+`tests/liveCheck.test.ts`).
 
 Cron: 9 задач. `invariants` — jobid 13, `50 3 * * *`. **Ночь 24→25 прошла
 чисто (проверено 04:13 UTC 25.08):** `audit-retention` 03:40
@@ -74,6 +74,89 @@ select job, ran_at, result from public.maintenance_runs
 задача не отработала. Кандидатов на удаление не будет до ~середины октября
 (старейший `audit_log` — 15.07, горизонт PII 90 дней), так что до тех пор
 `{"anonymized":0,"deleted":0}` — нормальный ответ.
+
+## Сессия 42 — live-check со сверкой содержания (бэклог №11) — на диске, НЕ в git
+
+Урок C-2: `39/39 LIVE_OK` в с36 не заметил, что `/slots` отдаёт занятое как
+свободное — зонды проверяли форму, не содержание.
+
+- `scripts/integration-live-check-lib.mjs` (новый, чистая логика):
+  `mergeIntervals`, `busyRowsToIntervals`, `minToHHMM`, `fmtIntervals` —
+  зеркало `lib/integrationContract.ts` на JS (.mjs не импортирует TS);
+  `compareBusy(api, expected)`, `busiestDays(rows)`.
+  `tests/liveCheck.test.ts` (8 тестов) держит зеркало и TS-оригинал в одном
+  ряду: `busyRowsToIntervals(ROWS)` ≡ TS-версии на общем наборе (пересечение,
+  касание, хвост после полуночи, старый контракт, полусломанная строка).
+- `scripts/integration-live-check.mjs`: `skip()` (вслух, не `ok`) и
+  `dbBusyCheck(base, token, roomId, name)` после блока `/slots`: читает
+  `.env.local` (`loadEnvLocal`), под service_role берёт дни кабинета с
+  записями (scheduled/waiting/done, как проверка 10 сторожа), из топ-3
+  первый **рабочий** по роуту день, и два зонда: (1) RPC под service_role
+  даёт ≥1 строку — ровно C-2; (2) `busy` роута == объединение RPC
+  (`compareBusy`, в note обе стороны). Без ключа / без занятых дней / все
+  топ-3 дня закрыты — `skip` с причиной. Итого 41 проверка (было 39).
+- `docs/integration-keys-runbook.md` §3 — абзац про сверку и про то, что
+  прогон только с машины владельца.
+- ⚠️ Из контейнера прогнать нельзя (домен не в allowlist) — **первый живой
+  прогон делает владелец** после деплоя: `$env:RADFLOW_TOKEN=…; node
+  scripts/integration-live-check.mjs --base https://rad-flow-tau.vercel.app`.
+  Активных ключей 0 — сначала `key:create` тестового.
+
+## Сессия 42 — M-1: валидатор `schedule_overrides.rooms` в БД (0158) — на диске, НЕ в git
+
+Владелец накатил 0157 и закоммитил P2 (`dev = 5824439`). Следующий пакет по
+плану — M-1 аудита.
+
+**`supabase/migrations/0158_schedule_override_rooms_validation.sql` +
+`supabase/smoke/schedule_override_rooms_smoke.sql`:**
+
+- Новая `schedule_override_rooms_check(p_rooms jsonb, p_clinic uuid)` —
+  INVOKER, `stable`, EXECUTE отозван у public/anon/authenticated (зовётся
+  только из DEFINER-RPC). Поднимает `SCHED_BAD_ROOMS` (22023) с человеческим
+  текстом. Правила = Zod `sScheduleOverride`: ключ — uuid кабинета ЭТОЙ
+  клиники в канонической форме `rooms.id::text` (единственное место строже
+  Zod: некононический ключ читатель `lib/schedule.ts` не найдёт — тихая
+  потеря графика); значение — объект только из `closed/start/end/breaks`;
+  `closed` boolean; `start/end` HH:MM (без 5-мин сетки — канон
+  `lib/validation.ts`), `start < end` если оба; `breaks` ≤ 10 объектов
+  `{start,end}`; лимит 200 кабинетов. **Сознательно НЕ проверяем** пересечение
+  перерывов и вхождение в окно (аудит предлагал): Zod этого не делает,
+  модалка не гарантирует — БД строже экшена ломала бы UI.
+- `save_schedule_override` — передрук целиком (0138) + одна вставка `perform
+  …_check(v_rooms, v_clinic)` после проверки «rooms — объект». md5 приёмом с40:
+  `4aac473b8b59d6f078dd6b98154b7f9a`, 2367 символов, equal=true.
+- Смоук a…m (17 зон, все через `pg_temp.expect_bad(tag, rooms, clinic,
+  p_like)` — с проверкой, что сработало ИМЕННО то правило), через RPC под
+  admin (i/j: отказ → строки нет; хороший payload → сохранён как есть), (k)
+  EXECUTE, (m) контроль наявных строк: **все 6 override-строк прода проходят
+  валидатор, кроме 3 с ключами удалённых кабинетов (19/20/24.07 — ровно L-1)**.
+  Dry-run реальными байтами → `SMOKE_OK ( 0 1 a b c d e f g h i j k
+  m(stale-keys=3: …))`, откат подтверждён.
+- Ревью субагента: ship; учтены все Low (дискриминирующие зоны f1/f2 без
+  `end`, каноническая форма ключа, `invalid_text_representation` вместо
+  `others`, `collate "C"` для сравнения HH:MM, фильтр (m) по клинике+дате).
+
+**`app/queue/actions.ts`** — `schedOverrideError`: `SCHED_BAD_ROOMS: …` →
+`{ error: "Графік дня відхилено: <текст>", code: "generic" }` + `logError`
+(`schedule_override.rejected`): эта ветка = расхождение Zod ↔ БД или вызов
+мимо экшена — именно то, что хочется видеть в логах. Раньше ушло бы в
+`safeDbError` → «спробуйте ще раз».
+
+**Уроки:**
+- `if not (typeof(x->'k') = 'string' and …)` при отсутствующем ключе — NULL,
+  и `if NULL` молча пропускает: перерыв без `end` прошёл. Лечится
+  `coalesce(jsonb_typeof(…), '')`. Поймал смоук (g3), не глаз.
+- Переменная `r record` в DO-блоке затеняет алиас `r` в запросах внутри →
+  55000 «record r is not assigned yet». Называть `v_row`.
+- Вложенные `procedure` в DO-блоке plpgsql не умеет — помощник смоука живёт в
+  `pg_temp` и исчезает с rollback.
+- Зонд «плохой payload отвергнут» без проверки, КАКОЕ правило сработало, не
+  отличает сломанное правило от соседнего («25:70» с `end` ловил порядок, а
+  не формат). `p_like` в помощнике обязателен.
+
+**Порядок:** накат 0158 → смоук `schedule_override_rooms_smoke.sql` →
+`invariants_check()` (`checked:11`, ledger_md5 до gate) → `db:gate`
+(158/158) → build → коммит (3 файла + хендофф/промпт) → PR.
 
 ## Сессия 42 — P2 outbox (аудит 23.08 H-1/M-3) — на диске, НЕ в git
 
@@ -815,14 +898,13 @@ ack и «Неявка» значились «продуктовыми дефек
    пуст, и поведение RPC в этом режиме надо сперва выяснить.
 9. **Зонд `f` смоука 0155** оживить, если появятся права на INSERT в
    `cron.job_run_details` (сейчас закрыт даже под `postgres`).
-10. ✅ **P2 outbox (а)(б)(в)** — СДЕЛАН в с42 (на диске, не в git; 0157 не
-    накатана). Остались: (г) M-1 — валидатор `schedule_overrides.rooms` в
-    `save_schedule_override` (зеркало Zod); P3: `lateCallClash` через
+10. ✅ **P2 outbox** — в git (`dev = 5824439`), 0157 накатана. ✅ **M-1**
+    (0158) — на диске, не в git. Остались P3: `lateCallClash` через
     абсолютное время; `engines.node` после сверки с Vercel; leaked-password
-    protection в Dashboard; prune dead-строк outbox (см. с42).
-11. **Live-check с сверкой данных**: `integration-live-check.mjs` сверяет
-    форму, не факт — добавить сравнение `busy` из `/slots` с прямым select
-    (урок C-2). Гонять после наката 0156 с машины владельца.
+    protection в Dashboard; prune dead-строк outbox; live-check со сверкой
+    `busy` (п. 11).
+11. ✅ **Live-check с сверкой данных** — сделан в с42 (на диске); живой прогон
+    — за владельцем (нужен тестовый ключ: активных 0).
 
 ## Карта интеграционного шара (что где лежит)
 
