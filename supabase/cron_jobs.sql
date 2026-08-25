@@ -114,10 +114,17 @@ select cron.unschedule('prune-audit-log') where exists (
 select cron.unschedule('audit-retention') where exists (
   select 1 from cron.job where jobname = 'audit-retention');
 
+-- ⚠️ З 0152 задача кличе RPC НАПРЯМУ; блок нижче лишався з http_post і при
+--    повторному прогоні файлу мовчки повернув би петлю «БД → інтернет →
+--    Vercel → БД» разом з її сліпотою (у job_run_details було б `succeeded`
+--    навіть на HTTP 401). Виправлено в с42 разом з §4.
 select cron.schedule(
   'audit-retention',
   '40 3 * * *',
-  $$
+  $$select public.audit_log_retention_daily();$$
+);
+
+/*  ІСТОРИЧНА ФОРМА до 0152 — лишена для читача, НЕ виконується:
   select net.http_post(
     url     := 'https://rad-flow-tau.vercel.app/api/maintenance/retention',
     headers := jsonb_build_object(
@@ -129,11 +136,21 @@ select cron.schedule(
     timeout_milliseconds := 60000);
   $$
 );
+*/
 
 -- ============================================================================
--- 4) Ретенція event_outbox — доставлені події (payload містить ПІБ+телефон
---    пацієнтів) не мають лежати вічно. Тримаємо 30 днів ПІСЛЯ доставки.
---    Недоставлені й dead НЕ чіпаємо — вони потрібні для розбору.
+-- 4) Ретенція event_outbox — ПОЛІТИКА 0159, а не інлайн-delete.
+--    payload містить ПІБ+телефон пацієнтів, тож горизонти такі:
+--      • доставлені        — 30 днів після доставки → видалення;
+--      • мертві (dead)      — 30 днів → PII затирається (лишаються ключ
+--        клініки і last_error), 90 днів → видалення;
+--      • живі недоставлені — не чіпаємо НІКОЛИ (черга доставки, не сміття);
+--        застряглу на місяць називає сторож (перевірка 12).
+--
+--    ⚠️ Інлайн-delete сюди НЕ повертати. Він знав лише про доставлених, і
+--    разом з RPC це були б ДВІ політики ретенції на одну таблицю — рівно той
+--    інцидент, що описаний у §3. Файл ідемпотентний і його запускають руками:
+--    старий текст тут мовчки скасував би 0159 при наступному прогоні.
 -- ============================================================================
 select cron.unschedule('prune-outbox') where exists (
   select 1 from cron.job where jobname = 'prune-outbox');
@@ -141,8 +158,7 @@ select cron.unschedule('prune-outbox') where exists (
 select cron.schedule(
   'prune-outbox',
   '30 3 * * *',
-  $$delete from public.event_outbox
-     where delivered_at is not null and delivered_at < now() - interval '30 days';$$
+  $$select public.outbox_retention_daily();$$
 );
 
 -- ============================================================================

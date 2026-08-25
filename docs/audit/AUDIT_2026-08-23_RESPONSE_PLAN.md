@@ -25,7 +25,7 @@
 | M-7 | advisor-долг | **частично**: 11 anon-хелперов — осознанный allowlist 0140 (стоят в RLS-политиках `{public}`); 14 trigger-функций с EXECUTE у authenticated — шум (PostgREST их не публикует), но гигиену стоит закрыть; leaked-password protection — выключена | revoke у 14 trigger-функций (в 0156 или следующей); leaked-password — включить руками в Dashboard | P2 / P3 |
 | L-1 | 4 stale-ключа удалённых кабинетов в `schedule_overrides.rooms` | подтверждено: все на **прошлых** датах (19/20/24.07), кабинетов нет | не трогать: данные исторические, UUID не переиспользуются | — |
 | L-2 | retention cron без успешного прогона | устарело: 0152 перевела на прямой вызов, ручной прогон 24.08 16:24 `{"anonymized":0,"deleted":0}`; первый плановый — 25.08 03:40 UTC | проверить утром 25.08 (задача №0) | — |
-| L-3 | `engines.node` не закреплён | подтверждено | добавить `engines` под фактический runtime Vercel | P3 |
+| L-3 | `engines.node` не закреплён | подтверждено | ✅ с42: `">=22 <25"` (Vercel Project Settings = 24.x, локально 24.15) | P3 |
 | L-4 | эксплуатационный шум | согласны | без действий | — |
 
 Итого: из 15 находок **2 Critical подтверждены полностью и требуют миграции до
@@ -174,11 +174,18 @@ foreign clinic (= 0). Плюс cross-midnight хвост (0074 — не регр
   ограничить `q.scheduled_date between new.scheduled_date-1 and +1` (нужно
   доказать, что `in_progress` с чужой датой не теряется — 0129 держит его
   отдельно).
-- L-3: `engines.node` — после сверки с Vercel Project Settings (Node
-  version); диапазон `>=22 <25` заставит Vercel взять 24.x, если сейчас 22 —
-  это смена runtime, не «закрепление».
-- Leaked-password protection — переключатель в Dashboard → Auth; кода нет,
-  UX-проверка регистрации после включения.
+- ✅ L-3: `engines.node` = `">=22 <25"` (с42). Сверено: Vercel Project
+  Settings уже 24.x, локально у владельца 24.15.0, контейнер Claude — 22 —
+  все три в диапазоне, runtime не меняется; Node 25 отрежется. `@types/node`
+  оставлен `^20` (поднимать отдельно, с `tsc`).
+- Leaked-password protection — **отложено владельцем до продакшена** (с42).
+  Место: Dashboard → Authentication → Sign In / Providers → Email → «Prevent
+  use of leaked passwords» (+ там же Minimum password length = 6, а наш
+  `/api/account/set-password` требует 8 — поднять до 8 заодно). Кода нет;
+  после включения — UX-проверка invite-ссылки паролем `password123`, и, если
+  захочется украинский текст ошибки вместо `Password is known to be weak…`,
+  маппинг в `app/api/account/set-password/route.ts`. Временные пароли
+  приглашений (`"Rf!" + uuid`) любые политики проходят.
 - Bulk `clinic_available_slots` для интеграций — когда появится потребитель.
 
 ## Не делаем (и почему)

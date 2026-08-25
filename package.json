@@ -2,6 +2,9 @@
   "name": "radflow",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22 <25"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "node scripts/migration-gate.mjs --build && next build",
