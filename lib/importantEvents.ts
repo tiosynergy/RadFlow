@@ -55,6 +55,16 @@ export const GENERAL_EVENT_TYPES = [
      адміністратор має бачити, що запис рухав не реєстратор, а міст — інакше
      розбір «хто це зробив» упирався б у безіменну «Систему». */
   "integration.status_applied",
+  /* 0160: адмін-дії над резервним дзеркалом Google Calendar (entity_id =
+     clinic_id, entity_type = 'integration'). Дві останні — системні
+     (actor null): sync вимкнув фічу fail-closed, адмін мусить це ПОБАЧИТИ. */
+  "integration.gcal_connected",
+  "integration.gcal_calendar_selected",
+  "integration.gcal_enabled",
+  "integration.gcal_disabled",
+  "integration.gcal_disconnected",
+  "integration.gcal_reauth_required",
+  "integration.gcal_access_lost",
 ] as const;
 
 export type ReferralEventType = (typeof REFERRAL_EVENT_TYPES)[number];
@@ -70,7 +80,10 @@ export type ImportantEventEntityType =
   | "staff"
   /** Свідоме розширення §3: queue.delay_plan_applied посилається на рядок
       queue_delay_events — серед шести канонічних сутностей його немає. */
-  | "delay_plan";
+  | "delay_plan"
+  /** 0160: clinic-level інтеграція (Google Calendar Backup); entity_id =
+      clinic_id — окремої таблиці-сутності в журналі їй не треба. */
+  | "integration";
 
 /** Роль актора в журналі: 5 людських (енум user_role) + 'system' (лише журнал). */
 export type ImportantEventActorRole =
@@ -95,13 +108,24 @@ export const FORBIDDEN_DETAIL_KEYS: ReadonlySet<string> = new Set([
   "name", "phone", "email", "dob",
   "contraindications", "note", "notes",
   "studies", "weight",
+  /* 0160: OAuth приніс НОВИЙ клас витоку — секрети/ідентифікатори Google.
+     Журнал читають admin/CEO з браузера: токен у details = токен у клієнта. */
+  "refresh_token", "refreshtoken",
+  "access_token", "accesstoken",
+  "id_token", "idtoken", "token",
+  "code", "client_secret", "clientsecret",
+  "calendar_id", "calendarid",
+  "google_email", "googleemail", "account_email", "accountemail",
 ]);
 
-/** Ключі, заборонені CHECK-ом БД (верхній рівень) — дзеркало міграції 0128. */
+/** Ключі, заборонені CHECK-ом БД (верхній рівень) — дзеркало міграцій
+    0128 + 0160. */
 export const DB_FORBIDDEN_TOP_KEYS = [
   "patient_name", "patient_phone", "patient_email", "patient_dob",
   "name", "phone", "email", "dob",
   "contraindications", "note", "studies", "weight",
+  "refresh_token", "access_token", "id_token", "token", "code",
+  "client_secret", "calendar_id", "google_email", "account_email",
 ] as const;
 
 /**

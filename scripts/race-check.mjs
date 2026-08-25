@@ -31,6 +31,27 @@
    змінній оточення `RADFLOW_USER_JWT` — без неї він чесно йде в SKIP, а не
    вдає перевірку. Токен харнес НЕ друкує і НЕ пише в лог.
 
+   ЯК ДІСТАТИ ТОКЕН. Застосунок на `@supabase/ssr` (lib/supabase/client.ts),
+   тож сесія лежить у COOKIE, а не в localStorage — шукати там марно.
+   Кука зветься `sb-<ref>-auth-token`, може бути порізана на `.0`, `.1`, а
+   значення часто з префіксом `base64-`. Одним рухом — у консолі вкладки
+   застосунку (DevTools → Console; за потреби спершу набрати `allow pasting`):
+
+     (() => {
+       const raw = document.cookie.split('; ')
+         .filter(c => /^sb-.*-auth-token(\.\d+)?=/.test(c))
+         .sort((a, b) => a.localeCompare(b))
+         .map(c => decodeURIComponent(c.slice(c.indexOf('=') + 1)))
+         .join('');
+       const s = JSON.parse(raw.startsWith('base64-') ? atob(raw.slice(7)) : raw);
+       copy(s.access_token);
+       console.log('довжина', s.access_token.length,
+                   '· діє до', new Date((s.expires_at ?? 0) * 1000).toLocaleTimeString());
+     })()
+
+   `copy()` — хелпер DevTools: токен опиниться в буфері обміну, у консоль
+   він НЕ друкується (лише довжина і час протухання).
+
    Канон Node-скриптів проєкту: split lib+CLI, main() виконується безумовно. */
 
 import { createClient } from "@supabase/supabase-js";
@@ -393,8 +414,8 @@ async function main() {
     console.log("  run  — двоє в ОДИН слот (тригер 0064)");
     console.log("  room — двох в ОДИН кабінет (унікальний індекс 0018)");
     console.log("  cas  — двоє міняють статус ОДНОГО запису (for update у 0075).");
-    console.log("         Потрібен RADFLOW_USER_JWT — токен живого персоналу:");
-    console.log("         DevTools → Application → Local Storage → sb-<ref>-auth-token → access_token.");
+    console.log("         Потрібен RADFLOW_USER_JWT — токен живого персоналу.");
+    console.log("         Сесія у COOKIE (@supabase/ssr), не в localStorage — сніпет у шапці файлу.");
     console.log("         Живе ~годину. Не друкувати, не класти в лог, не слати в переписку.");
     return;
   }
@@ -440,7 +461,8 @@ async function main() {
       console.log("\nSKIP: немає RADFLOW_USER_JWT — сценарій CAS не запускався.");
       console.log("  `queue_set_status_rpc` службову роль НЕ пускає (auth_clinic_id() = NULL → 42501),");
       console.log("  тож без токена живого персоналу перевіряти нічого.");
-      console.log("  Токен: DevTools → Application → Local Storage → sb-<ref>-auth-token → access_token");
+      console.log("  Токен: сесія у COOKIE `sb-<ref>-auth-token` (@supabase/ssr), НЕ в localStorage.");
+      console.log("         Готовий сніпет для консолі браузера — у шапці scripts/race-check.mjs.");
       console.log("  Запуск: $env:RADFLOW_USER_JWT=\"...\"; node scripts/race-check.mjs cas --run");
       console.log("  Токен живе ~годину; у переписку й лог він не потрапляє.");
       return;

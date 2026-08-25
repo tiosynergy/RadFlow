@@ -1,15 +1,87 @@
 # RadFlow — состояние проекта (хендофф между сессиями)
 
-**Обновлено: 2026-08-25 ~16:00 UTC (19:00 Kiev), сессия 42 (вторая половина).**
+**Обновлено: 2026-08-25 ~20:30 UTC (23:30 Kiev), сессия 42 (финал).**
 
 Прод-БД на `0159`, ledger 159, все md5, `invariants_check()` → `ok:true
-checked:12`. Следующая миграция — `0160`.
+checked:12`. **`0160` (GCal Backup) ПОДГОТОВЛЕНА, лежит на диске, НЕ
+накатана** — накатывает владелец.
 
-`dev` = `826ee8b` (0159 + engines.node + докы). В рабочем дереве —
-несмёрженный пакет с42: `next_day` (M-2), сценарии харнеса гонок, протокол
-ack. Всё, что делалось в с41–с42 (0156, 0157, 0158, 0159, P1 ReferralPortal,
-stale/transition, P2 outbox, live-check со сверкой, fmtOrigin → lib,
-мёртвые navKey), влито или лежит готовым.
+`dev` = `a45c648`, `main` = `aeb4df8` (PR #49) — весь пакет с41–с42 до
+GCal влит владельцем (0159, next_day M-2, харнесы `room`+`cas`, протокол
+ack, live-check 41/41 и пр.). **В рабочем дереве — НЕзакоммиченная фича
+«Резервная копия в Google Calendar»: 26 файлов** (миграция 0160 + смоук,
+23 файла кода/конфига, runbook `docs/GOOGLE_CALENDAR_BACKUP.md`).
+Владелец: накатить 0160 → `npm install` → гейт → коммит (текст в отчёте
+с42). Фича платформно ВЫКЛЮЧЕНА (`GOOGLE_CALENDAR_BACKUP_AVAILABLE` не
+задан) — мерж безопасен и до Google Cloud-настройки.
+
+## Сессия 42, финал — фича «Резервная копия в Google Calendar» (0160)
+
+Полный runbook (архитектура, чек-листы включения, аварийная процедура,
+troubleshooting, откат) — **`docs/GOOGLE_CALENDAR_BACKUP.md`**. Дизайн +
+промпт фичи — в uploads-доках владельца (22.08). Здесь — что где лежит и
+что осталось.
+
+**Суть:** один закрытый secondary-календарь Google на клинику с последней
+успешной копией очереди (окно вчера…+7, ретеншн 14 дней, heartbeat «копия
+актуальна на HH:MM»). Данные текут ТОЛЬКО RadFlow → Google. Планировщик —
+n8n (решение владельца, pg_cron не трогали).
+
+**Сделано (всё на диске, НЕ в git):**
+
+1. **0160** `google_calendar_connections` (PK clinic_id, fail-closed
+   CHECK-инварианты, CAS `version`, lease `sync_locked_until`, sync-токен
+   ТОЛЬКО sha256) + `google_oauth_states` (single-use, sha256+PKCE, TTL 10
+   мин) + 4 Vault-хелпера со скоупом `gcal:` + триггер-страховка чистки
+   секрета + PII-guard журнала расширен токен-ключами. Смоук 19 зон,
+   dry-run на проде прошёл (SMOKE_OK).
+2. **Код:** `lib/googleCalendarBackup.ts` (чистая логика, 27 юнитов),
+   `googleCalendarClient.ts` (google-auth-library@11.0.2 + Calendar REST),
+   `googleCalendarStore.ts`, `googleCalendarService.ts` (fail-closed
+   переходы), `googleCalendarSync.ts`; 9 роутов
+   `app/api/integrations/google-calendar/*`; UI-секция «Резервне
+   копіювання» в `/setup` (`components/GoogleCalendarBackupSettings.tsx`);
+   7 типов журнала `integration.gcal_*`; `.env.example` + types.ts.
+3. **n8n workflow `radflow-gcal-backup-sync`** id `xUpFh5eBbeYY7dhJ` —
+   собран, валиден, **НЕ активен**; Data Table `radflow_gcal_alerts`.
+   Каждые 2 мин POST /sync c Bearer `rfg_…`; 409 → алерт, 429/5xx →
+   ретрай 25 c. У n8n НЕТ ни Supabase-ключей, ни Google-токенов, ни PII.
+4. **Два раунда ревью** пройдены (5 ВАЖНО по 0160: Vault-сирота, скоуп
+   оракула, NULL-ловушка CHECK; В-1/В-2 по коду: version-guard против
+   гонки sync×disconnect, сирота-секрет в callback; К-1 UI: deep-link
+   `?gcal=` и гонка passive-эффектов → useLayoutEffect). Тулчейн:
+   tsc 0, eslint 0, **vitest 1180/1180 (47 файлов)**, build OK (9 роутов).
+   ⚠️ В отчёте с42 мелькала цифра «1207/1207» — ошибка подсчёта,
+   правильная 1180.
+5. **npm audit после `npm install` показал 11 уязвимостей — ВСЕ из
+   старого дерева** (проверено прогоном audit на lock из HEAD: те же
+   11), фича не добавила ни одной. Сделан `npm audit fix` БЕЗ --force
+   (package.json не тронут, только lock): next 15.5.21→15.5.24 (патч,
+   подтянул починенный sharp 0.35.3 — libvips CVE), postcss 8.5.26,
+   brace-expansion/js-yaml/nanoid → **аудит 11 → 7**. Тулчейн на новом
+   lock перегнан целиком — зелёный. Остаток 7 чинится ТОЛЬКО мажорами
+   (беклог №12): цепочка vitest (критикал GHSA-5xrq-8626-4rwp — чтение
+   файлов, ТОЛЬКО когда слушает `vitest --ui`, у нас не используется;
+   фикс vitest ≥3.2.6, полная зачистка — vitest 4) и next 16.3.3
+   (вшитая копия postcss 8.4.31; build-time). esbuild-адвизори — про
+   его dev-server, у нас esbuild только как API в sync-board.mjs.
+
+**Ключевые решения** (отклонения от дизайн-дока, озвучены):
+wall-as-UTC → в Google идёт LOCAL dateTime без офсета + `timeZone` клиники
+(ноль конверсий, DST решает Google); google-auth-library вместо
+googleapis-монолита; миграция по канону репо, не Supabase CLI; sync-токен
+колонкой в connections, не отдельной таблицей.
+
+**Осталось (по порядку):** владелец накатывает 0160 (миграция →
+`invariants_check` → `npm run db:gate` → смоук) → `npm install` → коммит →
+Google Cloud OAuth-клиент по чек-листу runbook §1 → env в Vercel §2 →
+подключение клиники в /setup §3–4 → токен в n8n Credentials → ручной
+Execute → активация workflow §5. Live-acceptance (§12 промпта фичи) — на
+тестовом аккаунте ПЕРЕД пилотом.
+
+**Известное ограничение:** удаление клиники чистит Vault (триггер), но НЕ
+отзывает токен на стороне Google — перед удалением клиники с активным
+подключением сначала «Відключити» в /setup.
 
 ## Сессия 42, вторая половина — что сделано
 
@@ -33,6 +105,16 @@ stale/transition, P2 outbox, live-check со сверкой, fmtOrigin → lib,
 4. **Харнес гонок**: сценарии `room` (двое в один кабинет → уникальный индекс
    0018, 23505) и `cas` (параллельный CAS через RPC). Живой прогон `room`
    25.08: **PASS**, разброс стартов 1 мс, прибрано 6 id, остатков 0.
+   **Живой прогон `cas` 25.08 16:18 — PASS**: из двух одновременных вызовов
+   `scheduled → waiting` на ОДНОМ записи один получил `updated=true`, второй
+   `updated=false` и увидел **«waiting»** — то есть после `for update` строка
+   перечитана, а не взята из старого снимка. Разброс стартов 0 мс, обе
+   длительности 184 мс (проигравший ждал на локе, а не отказал сразу).
+   Прибрано 5 id, остатков 0, сирот-маркеров 0.
+   ⚠️ Токен для прогона: сессия в **cookie** (`@supabase/ssr`), НЕ в
+   localStorage. Готовый сниппет (кука может быть порезана на `.0`/`.1` и
+   с префиксом `base64-`) — в шапке `scripts/race-check.mjs`. Токен
+   сохранялся файлом и удалён сразу после прогона; в переписку не попадал.
    ⚠️ **`queue_set_status_rpc` служебную роль НЕ пускает** (`auth_clinic_id()`
    = NULL → 42501) — проверено зондом. Поэтому `cas` требует живого токена
    персонала в `RADFLOW_USER_JWT`, иначе честный SKIP. Это ответ на открытый
@@ -927,6 +1009,11 @@ Auth-пользователь админа оставался сиротой →
 
 ## Беклог (приоритет по убыванию, на конец с42)
 
+0. **GCal Backup — довести до пилота**: накат 0160 + npm install + коммит
+   (владелец); Google Cloud чек-лист → Vercel env → live-acceptance по §12
+   промпта фичи → подключение пилотной клиники → активация n8n. Всё
+   пошагово — `docs/GOOGLE_CALENDAR_BACKUP.md`.
+
 ⚠️ Формулировки хвостов с32 ИСПРАВЛЕНЫ по итогам живых прогонов с37/с38:
 ack и «Неявка» значились «продуктовыми дефектами», а работали (дефект
 нашёлся внутри «Неявки», и его в беклоге не было вовсе); «гонка на слот»
@@ -978,6 +1065,13 @@ ack и «Неявка» значились «продуктовыми дефек
     Claude — 22; диапазон покрывает все три, Node 25 — отрежет. `@types/node`
     остался `^20` — поднимать отдельно, только с прогоном `tsc`.
 11. ✅ **Live-check с сверкой данных** — сделан и прогнан в с42: `LIVE_OK 41/41`.
+12. **Плановые мажоры зависимостей** (остаток npm audit, 7 шт., все
+    невыездные без breaking): vitest ≥3.2.6 (лучше 4.x — закрывает и
+    vite/esbuild-цепочку; критикал GHSA-5xrq-8626-4rwp касается только
+    `vitest --ui`, который не используется) и next 16.3.3 (вшитый
+    postcss). Только отдельной задачей: полный прогон 1180 тестов +
+    build + ручная проверка досок. ⚠️ `npm audit fix --force` ЗАПРЕЩЁН —
+    он втащил бы next@16 вслепую. `@types/node` ^20 поднять заодно.
 
 ## Карта интеграционного шара (что где лежит)
 
@@ -1010,6 +1104,15 @@ scripts/build-partner-pdf.mjs → npm run docs:pdf;
 
 **Документы:** docs/integration-api-v1.md, docs/integration-fhir-r4.md,
 docs/integration-keys-runbook.md, docs/partner-guide.html.
+
+**GCal Backup (с42, не в git):** БД 0160; lib/googleCalendarBackup.ts,
+googleCalendarClient.ts, googleCalendarStore.ts, googleCalendarService.ts,
+googleCalendarSync.ts; app/api/integrations/google-calendar/{start,callback,
+status,calendars,select,enable,disconnect,sync-token,sync}; components/
+GoogleCalendarBackupSettings.tsx (+ секция в SetupWizard); tests/
+googleCalendarBackup.test.ts; docs/GOOGLE_CALENDAR_BACKUP.md (runbook);
+n8n `radflow-gcal-backup-sync` xUpFh5eBbeYY7dhJ (неактивен) + Data Table
+`radflow_gcal_alerts`. Зависимость: google-auth-library@11.0.2.
 
 ## Правила (полный список — AGENTS.md)
 

@@ -229,6 +229,26 @@ export function eventTitle(item: {
       return say("оновив статус із зовнішньої системи", "оновлено статус із зовнішньої системи", tail);
     }
 
+    /* ---- резервне дзеркало Google Calendar (0160) ----
+       Без назв календарів/акаунтів у тексті: їх немає і в details
+       (PII-guard 0160), тож журнал каже ЩО сталося, а деталі — на /setup. */
+    case "integration.gcal_connected":
+      return say("підключив Google Calendar", "підключено Google Calendar");
+    case "integration.gcal_calendar_selected":
+      return say("обрав календар для резервної копії", "обрано календар для резервної копії");
+    case "integration.gcal_enabled":
+      return say("увімкнув резервну копію в Google Calendar", "увімкнено резервну копію в Google Calendar");
+    case "integration.gcal_disabled":
+      return say("вимкнув резервну копію в Google Calendar", "вимкнено резервну копію в Google Calendar");
+    case "integration.gcal_disconnected":
+      return say("відключив Google Calendar", "відключено Google Calendar");
+    case "integration.gcal_reauth_required":
+      return say("вимкнув резервну копію: Google вимагає повторного підключення",
+                 "вимкнено резервну копію: Google вимагає повторного підключення");
+    case "integration.gcal_access_lost":
+      return say("вимкнув резервну копію: втрачено доступ до календаря",
+                 "вимкнено резервну копію: втрачено доступ до календаря");
+
     /* ---- лист очікування ---- */
     case "waitlist.scheduled":
       return say("записав кандидата з листа очікування", "записано кандидата з листа очікування");
@@ -293,6 +313,7 @@ const ENTITY_LABEL: Record<ImportantEventEntityType, string> = {
   referral_access: "доступ",
   staff: "співробітник",
   delay_plan: "план затримки",
+  integration: "інтеграція",
 };
 
 export function entityLabel(t: ImportantEventEntityType): string {
