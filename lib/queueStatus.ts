@@ -60,6 +60,21 @@ export function isLate(
    кабінету (scheduled/waiting) — виклик блокується: спершу перенесіть один із
    записів. Захищає сценарії «пацієнт запізнився → все ж прийшов → виклик»
    та будь-який виклик із затримкою. */
+/* Кінець вікна виклику в ХВИЛИНАХ ДОБИ від 00:00 ПОТОЧНОЇ доби — значення
+   МОЖЕ перевищувати 1440, і це не помилка, а факт: виклик о 23:40 на 30 хв
+   з буфером 5 займає кабінет до 00:15 наступної доби. Одна формула на два
+   місця (lateCallClash і перевірка `next_day` нижче), щоб вони не розійшлись
+   при першій же правці буфера. */
+// Свідомо БЕЗ normBuffer: це вікно — дзеркало серверного
+// `coalesce(q.buffer_time_min, 5)` з гарда 0129. normBuffer (collisionFor,
+// delayPlan) живе в план-просторі; тут розбіжність із БД дорожча за акуратність.
+export function callWindowEndMin(
+  p: { duration_min: number | null; buffer_time_min: number | null },
+  nowMs: number = wallNow()
+): number {
+  return wallMinOfDay(nowMs) + (p.duration_min || 30) + Math.max(0, p.buffer_time_min ?? BUFFER_DEFAULT);
+}
+
 export function lateCallClash(
   p: { id: string; room_id: string | null; duration_min: number | null; buffer_time_min: number | null },
   entries: Array<{ id: string; room_id: string | null; status: string; scheduled_time: string | null; patient_name?: string | null }>,
@@ -68,13 +83,40 @@ export function lateCallClash(
   if (!p.room_id) return null;
   const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return (h || 0) * 60 + (m || 0); };
   const nowMin = wallMinOfDay(nowMs);
-  const endMin = nowMin + (p.duration_min || 30) + Math.max(0, p.buffer_time_min ?? 5);
+  const endMin = callWindowEndMin(p, nowMs);
   const next = entries
     .filter((e) => e.room_id === p.room_id && e.id !== p.id && (e.status === "scheduled" || e.status === "waiting") && e.scheduled_time)
     .map((e) => ({ s: toMin(String(e.scheduled_time)), time: String(e.scheduled_time), name: e.patient_name }))
     .filter((x) => x.s >= nowMin && x.s < endMin)
     .sort((a, b) => a.s - b.s)[0];
   return next || null;
+}
+
+/* ===== Вікно виклику виходить за добу (M-2 аудиту 2026-08-23) =====
+   `entries` — записи РІВНО однієї доби (дошка вантажить `.eq(scheduled_date,
+   dayKey)`), а вікно виклику рахується від «зараз». О 23:40 дослідження на
+   30 хв з буфером закінчиться о 00:15 — і запис наступної доби о 00:10
+   lateCallClash не побачить НІКОЛИ: його немає в масиві. БД (0129, гілка «б»
+   → `ACTUAL_OVERLAP`) відхилить — але ЛИШЕ якщо такий запис справді є, а ми
+   про це не знаємо. Даних це не псує, проте оператор бачив дозволену дію,
+   яка падає помилкою сервера.
+   ⚠️ `ACTUAL_OVERLAP_BUSY` — ІНША гілка того ж гарда (сидить in_progress),
+   її клієнт уже ловить кодом `room_busy`. Не сплутати: за цією константою
+   легко вирішити, що перевірка дублює room_busy, і зняти її.
+   Ціна рішення: попереджаємо і тоді, коли завтра вранці нікого немає —
+   зайвий діалог дешевший за тиху дію, яку відхилить сервер.
+
+   Сусідню добу свідомо НЕ вантажимо: чужі записи в `entries` зламали б
+   лічильники дня, звук перевищення й таймери кабінетів (та сама причина, що
+   в lib/stuckStudy.ts — хвости живуть окремим станом). Натомість чесно
+   кажемо, ЧОГО не знаємо: вікно за північчю → підтвердження замість тихого
+   «можна». Дірка з невидимої стає названою. */
+export function callCrossesMidnight(
+  p: { room_id: string | null; duration_min: number | null; buffer_time_min: number | null },
+  nowMs: number = wallNow()
+): boolean {
+  if (!p.room_id) return false;         // без кабінету займати нічого
+  return callWindowEndMin(p, nowMs) > 24 * 60;
 }
 
 /* ===== Причина, чому «Викликати в кабінет» ЗАРАЗ неможливо =====
@@ -132,6 +174,11 @@ export type CallBlock =
   | { code: "room_stuck"; date: string; name?: string | null; confirmable?: false }
   | { code: "stuck_unknown"; confirmable?: false }
   | { code: "sched_overrun"; durationMin: number; end: string; confirmable: true }
+  /* M-2: вікно виклику перетинає північ, а записів наступної доби дошка не
+     бачить. Теж підтвердження, а не блок: заборонити виклик через те, що ми
+     чогось не завантажили, — гірше за чесне попередження (БД лишається
+     остаточним гардом). `end` — кінець вікна вже НАСТУПНОЇ доби, "HH:MM". */
+  | { code: "next_day"; durationMin: number; end: string; confirmable: true }
   | { code: "clash"; durationMin: number; time: string; name?: string | null; confirmable?: false };
 
 export function computeCallBlock(
@@ -163,6 +210,16 @@ export function computeCallBlock(
      підтвердженням. */
   const clash = lateCallClash(p, entries, nowMs);
   if (clash) return { code: "clash", durationMin, time: clash.time, name: clash.name };
+
+  /* Північ — ПЕРЕД sched_overrun, хоча обидва лише підтверджуються. Те, що
+     робочий день скінчився, оператор о 23:40 і так знає з годинника; а от що
+     дошка НЕ бачить записів наступної доби — ні звідки більше не видно.
+     Показуємо рідше зустрічне й важливіше.
+     Ціна: попередження «поза графіком» при цьому НЕ показується — повертати
+     два коди ми не вміємо, а один момент рішення важливіший за повноту. */
+  if (callCrossesMidnight(p, nowMs)) {
+    return { code: "next_day", durationMin, end: slotFmt(callWindowEndMin(p, nowMs) - 24 * 60), confirmable: true };
+  }
 
   // Виклик ЗАРАЗ має вміститись до кінця робочого графіка кабінету (саме
   // дослідження; буфер прибирання може вийти за межі — як у редакторі слотів).

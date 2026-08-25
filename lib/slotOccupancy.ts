@@ -7,7 +7,9 @@
      • `check_case_no_time_overlap` (0099) — «пацієнт у двох кабінетах одночасно»:
        allow-лист scheduled|waiting|in_progress|needs_reschedule і БЕЗ буфера;
      • `ACTUAL_OVERLAP` (0129) ↔ `lateCallClash` (lib/queueStatus.ts) — «виклик
-       ЗАРАЗ наїде на наступного»: allow-лист scheduled|waiting;
+       ЗАРАЗ наїде на наступного»: allow-лист scheduled|waiting, вікно =
+       зараз + тривалість + буфер (єдина формула — `callWindowEndMin`;
+       `callCrossesMidnight` називає вихід за добу, якого клієнт не бачить);
      • `DEAD_QUEUE` (lib/roomsResidual.ts) — «чи лишилось щось у вимкненому
        кабінеті»: п'ять статусів, включно з `done`;
      • KPI (`ceo_kpi_*`, 0079) — свої списки під звітність.

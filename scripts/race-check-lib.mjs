@@ -42,8 +42,19 @@ export const FIXTURE_PHONE = "+380000000038";
     переможця, а не «відмовили одразу». */
 export const START_SPREAD_LIMIT_MS = 250;
 
-/** SQLSTATE, яким тригер 0064 відмовляє тому, хто програв гонку. */
+/** SQLSTATE, яким тригер 0064 відмовляє тому, хто програв гонку за слот. */
 export const OVERLAP_SQLSTATE = "23P01";
+
+/** SQLSTATE, яким унікальний частковий індекс `queue_one_in_progress_per_room`
+    (0018) відмовляє другому пацієнту в тому самому кабінеті. Це саме
+    unique_violation, а не check: інваріант тримає індекс, а не тригер. */
+export const IN_PROGRESS_SQLSTATE = "23505";
+
+/** Статуси сценарію CAS: з чого і в що переводимо фікстуру. Перехід
+    scheduled → waiting свідомо найбезпечніший — він нічого не займає в
+    кабінеті й дозволений усім ролям персоналу (на відміну від in_progress). */
+export const CAS_FROM = "scheduled";
+export const CAS_TO = "waiting";
 
 /** Тривалість і буфер фікстури: 20+5 = 25 хв зайнятості.
     Кандидати слотів рознесені на годину (див. TIMES у CLI), тож вікна
@@ -118,16 +129,21 @@ export function windowsOverlap(outcomes) {
   return sorted.some((o, i) => i > 0 && o.startedAt < sorted[i - 1].finishedAt);
 }
 
-/** Вердикт гонки за слот.
+/** Спільне ядро вердикту «взаємне виключення»: рівно один переможець, решта
+    відмовлені САМЕ тим гардом, який ми стережемо.
 
     Три різні присуди, і плутати їх не можна:
-    - PASS         — рівно одна удача, решта відмовлені САМЕ тригером 0064;
-    - FAIL         — доведений дефект (двоє записались / не записався ніхто /
+    - PASS         — рівно одна удача, решта відмовлені саме цим гардом;
+    - FAIL         — доведений дефект (двоє пройшли / не пройшов ніхто /
                      невдаха впав не через гонку);
     - INCONCLUSIVE — прогін нічого не довів (запити пішли не одночасно).
       Це НЕ «майже PASS»: послідовний прогін теж дає «рівно одну удачу»,
-      тому без доведеної одночасності PASS був би самообманом. */
-export function verdictSlotRace(outcomes, { spreadLimitMs = START_SPREAD_LIMIT_MS } = {}) {
+      тому без доведеної одночасності PASS був би самообманом.
+
+    Ядро винесене в с42, коли додався другий сценарій (гонка за кабінет).
+    Дві копії цієї драбинки розійшлись би при першій же правці — а саме вона
+    відрізняє доказ від збігу. */
+function verdictExclusive(outcomes, { sqlstate, guard, doubleWin, noWin, spreadLimitMs }) {
   const wins = outcomes.filter((o) => o.ok);
   const losses = outcomes.filter((o) => !o.ok);
   const spread = startSpreadMs(outcomes);
@@ -138,18 +154,18 @@ export function verdictSlotRace(outcomes, { spreadLimitMs = START_SPREAD_LIMIT_M
   if (wins.length > 1) {
     return {
       verdict: "FAIL", spread,
-      reason: `ПОДВІЙНЕ БРОНЮВАННЯ: удач ${wins.length} — тригер 0064 гонку не втримав`,
+      reason: `${doubleWin}: удач ${wins.length} — ${guard} гонку не втримав`,
       ids: wins.map((o) => o.id),
     };
   }
   if (wins.length === 0) {
     return {
       verdict: "FAIL", spread,
-      reason: `не записався НІХТО (${losses.map((o) => o.sqlstate).join(", ")}) — слот або фікстура непридатні`,
+      reason: `${noWin} (${losses.map((o) => o.sqlstate).join(", ")})`,
     };
   }
 
-  const wrong = losses.filter((o) => o.sqlstate !== OVERLAP_SQLSTATE);
+  const wrong = losses.filter((o) => o.sqlstate !== sqlstate);
   if (wrong.length) {
     return {
       verdict: "FAIL", spread,
@@ -166,7 +182,93 @@ export function verdictSlotRace(outcomes, { spreadLimitMs = START_SPREAD_LIMIT_M
   }
   return {
     verdict: "PASS", spread,
-    reason: `1 удача з ${outcomes.length}, решта — ${OVERLAP_SQLSTATE} від тригера 0064`,
+    reason: `1 удача з ${outcomes.length}, решта — ${sqlstate} від ${guard}`,
+    ids: wins.map((o) => o.id),
+  };
+}
+
+/** Вердикт гонки за СЛОТ (двоє пишуться в один час одного кабінету). */
+export function verdictSlotRace(outcomes, { spreadLimitMs = START_SPREAD_LIMIT_MS } = {}) {
+  return verdictExclusive(outcomes, {
+    sqlstate: OVERLAP_SQLSTATE,
+    guard: "тригера 0064",
+    doubleWin: "ПОДВІЙНЕ БРОНЮВАННЯ",
+    noWin: "не записався НІХТО — слот або фікстура непридатні",
+    spreadLimitMs,
+  });
+}
+
+/** Вердикт гонки за КАБІНЕТ: двох пацієнтів одночасно заводять у той самий
+    кабінет (`status → in_progress`). Фізичний інваріант «в кабінеті один
+    пацієнт» тримає УНІКАЛЬНИЙ ЧАСТКОВИЙ ІНДЕКС `queue_one_in_progress_per_room`
+    (0018), а не тригер: другий чекає на індексі, поки перший комітить, і
+    падає 23505. Саме тому сценарій має сенс на рівні таблиці — тут гарант
+    той самий, що в проді. */
+export function verdictInProgressRace(outcomes, { spreadLimitMs = START_SPREAD_LIMIT_MS } = {}) {
+  return verdictExclusive(outcomes, {
+    sqlstate: IN_PROGRESS_SQLSTATE,
+    guard: "унікального індексу 0018",
+    doubleWin: "ДВОЄ В ОДНОМУ КАБІНЕТІ",
+    noWin: "у кабінет не зайшов НІХТО — фікстура непридатна",
+    spreadLimitMs,
+  });
+}
+
+/** Вердикт паралельного CAS на ОДНОМУ записі (`queue_set_status_rpc` з
+    `p_expected`).
+
+    ⚠️ Тут «невдача» — НЕ виняток: RPC чесно повертає `updated=false` і
+    ПОТОЧНИЙ статус. Тому дефект виглядає інакше, ніж у двох сценаріях вище:
+      • двоє з `updated=true` — `for update` (0075) не серіалізував;
+      • невдаха бачить СТАРИЙ статус — читання пішло повз лок (снапшот до
+        коміту переможця). Саме це і є суть CAS: після лока рядок
+        перечитується, і невдаха мусить побачити РЕЗУЛЬТАТ переможця.
+    Помилка RPC (виняток) теж FAIL: CAS не має кидати, він має відмовляти.
+
+    @param {Array<{id: string, ok: boolean, updated: boolean|null,
+                   currentStatus: string|null, sqlstate: string, message: string,
+                   startedAt: number, finishedAt: number}>} outcomes
+    @param {{target?: string, spreadLimitMs?: number}} [opts] */
+export function verdictCas(outcomes, { target, spreadLimitMs = START_SPREAD_LIMIT_MS } = {}) {
+  const spread = startSpreadMs(outcomes);
+  if (outcomes.length < 2) {
+    return { verdict: "FAIL", reason: `учасників ${outcomes.length}, гонки не було`, spread };
+  }
+  const errors = outcomes.filter((o) => !o.ok);
+  if (errors.length) {
+    return {
+      verdict: "FAIL", spread,
+      reason: `RPC кинув виняток замість updated=false: ${errors.map((o) => `${o.sqlstate}(${o.message.slice(0, 60)})`).join("; ")}`,
+    };
+  }
+  const wins = outcomes.filter((o) => o.updated === true);
+  const losses = outcomes.filter((o) => o.updated !== true);
+  if (wins.length > 1) {
+    return {
+      verdict: "FAIL", spread,
+      reason: `ПОДВІЙНИЙ CAS: updated=true у ${wins.length} — for update (0075) не серіалізував`,
+      ids: wins.map((o) => o.id),
+    };
+  }
+  if (wins.length === 0) {
+    return { verdict: "FAIL", spread, reason: "жоден не оновив запис — фікстура або очікуваний статус непридатні" };
+  }
+  const stale = losses.filter((o) => o.currentStatus !== target);
+  if (stale.length) {
+    return {
+      verdict: "FAIL", spread,
+      reason: `невдаха побачив СТАРИЙ стан (${stale.map((o) => o.currentStatus || "?").join(", ")}) замість «${target}» — читання пішло повз лок`,
+    };
+  }
+  if (spread > spreadLimitMs) {
+    return {
+      verdict: "INCONCLUSIVE", spread,
+      reason: `розкид стартів ${spread} мс > ${spreadLimitMs} мс — одночасність не доведена`,
+    };
+  }
+  return {
+    verdict: "PASS", spread,
+    reason: `1 updated=true з ${outcomes.length}, решта побачили «${target}» — лок і перечитування працюють`,
     ids: wins.map((o) => o.id),
   };
 }

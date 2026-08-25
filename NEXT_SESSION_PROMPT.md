@@ -90,19 +90,29 @@ select job, ran_at, result from public.maintenance_runs
 Аудит 23.08 відпрацьовано повністю (P0–P2 + частина P3); хвостів у git
 немає. Беклог нижче — на вибір власника. Спершу `select now()`, `ls-remote`,
 `git status`, `maintenance_runs` за ніч 25→26 (очікуємо `invariants`
-`ok:true checked:11` о 03:50 UTC).
+`ok:true checked:12` о 03:50 UTC і `outbox-retention` о 03:30 — з 0159
+задача кличе RPC напряму, тож `failed` у `job_run_details` тепер означає
+справжню поломку).
 
 ## Беклог за пріоритетом (узгодити з власником на старті)
 
 Повний план з вердиктами по 15 пунктах аудиту 23.08 —
 `docs/audit/AUDIT_2026-08-23_RESPONSE_PLAN.md`. Що лишилось:
 
-1. **Prune dead-рядків outbox** — `prune-outbox` чистить лише доставлені;
-   кандидат `delete where dead and created_at < now() - 90 days` у
-   `cron_jobs.sql` (окремий cron або міграція + реєстр `docs/ops-cron.md`).
-2. **Симетричний прогін ack зі сторони Б** — потрібен другий живий користувач.
-3. **Харнеси на базі `race-check.mjs`**: гонка `in_progress`, паралельний CAS.
-4. P3: `lateCallClash` через абсолютний час і сусідню добу; ✅ `engines.node`
+1. ✅ **Prune dead-рядків outbox** — зроблено в с42 міграцією **0159**
+   (політика 30/30/90 в `event_outbox_retention`, задача `prune-outbox`
+   переведена на `outbox_retention_daily()`, сторож — перевірка 12).
+2. **Симетричний прогін ack зі сторони Б** — потрібен другий живий
+   користувач. Протокол готовий: `docs/qa-unread-ack-symmetry.md` (8 кроків,
+   два акаунти різних ролей, два профілі браузера, звірка по
+   `user_change_markers`). Лишилось виконати.
+3. **Харнеси гонок** — ✅ `room` (двоє в один кабінет) зроблено і прогнано
+   в с42: PASS, розкид 1 мс. Лишився `cas`: потрібен ЖИВИЙ токен персоналу
+   в `RADFLOW_USER_JWT` — `queue_set_status_rpc` службову роль не пускає
+   (`auth_clinic_id()` = NULL → 42501, звірено зондом). Без токена сценарій
+   чесно йде в SKIP.
+4. P3: ✅ `lateCallClash` — с42, код `next_day` (сусідню добу свідомо НЕ
+   вантажимо, див. AGENTS.md); ✅ `engines.node`
    `>=22 <25` (с42; Vercel 24.x, локально 24.15, контейнер 22 — усі в
    діапазоні); leaked-password protection — **власник відклав до продакшену**
    (с42), не пропонувати; ✅ мертві `navKey`

@@ -1181,7 +1181,11 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     if (r.code === "clash") return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис. Реєстратура має перенести один із записів`;
     return null;
   }
-  const [offCallAsk, setOffCallAsk] = useState<{ p: RadEntry; end: string; durationMin: number } | null>(null);
+  /* kind: "overrun" — робочий день кабінету скінчився (0077); "next_day" —
+     вікно виклику переходить за північ, а дошка тримає лише одну добу (M-2). */
+  const [offCallAsk, setOffCallAsk] = useState<
+    { p: RadEntry; kind: "overrun" | "next_day"; end: string; durationMin: number } | null
+  >(null);
   const [offCallBusy, setOffCallBusy] = useState(false);
   /* Модалка «Завершення процедури» — та сама, що в реєстратури (с28). */
   const [completeFor, setCompleteFor] = useState<RadEntry | null>(null);
@@ -1191,7 +1195,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     if (safetyErr) { notify("Дані про простої/графік не оновились — виклик заблоковано, оновіть сторінку", "error"); return; }
     const r = callBlockOf(p);
     if (r && !r.confirmable) { notify(inProgressBlockReason(p) || "Викликати зараз неможливо", "error"); return; }
-    if (r && r.code === "sched_overrun") { setOffCallAsk({ p, end: r.end, durationMin: r.durationMin }); return; }
+    if (r && r.code === "next_day") { setOffCallAsk({ p, kind: "next_day", end: r.end, durationMin: r.durationMin }); return; }
+    if (r && r.code === "sched_overrun") { setOffCallAsk({ p, kind: "overrun", end: r.end, durationMin: r.durationMin }); return; }
     setStatus(p.id, "in_progress");
   }
   function setStatusGuarded(p: RadEntry, status: string) {
@@ -1518,16 +1523,27 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
 
       {offCallAsk && (
         <ConfirmDialog
-          title="Викликати поза графіком?"
-          text={<><b>{offCallAsk.p.patient_name}</b> · запис о {offCallAsk.p.scheduled_time} · {offCallAsk.durationMin} хв.
+          title={offCallAsk.kind === "next_day" ? "Викликати попри перехід за північ?" : "Викликати поза графіком?"}
+          text={offCallAsk.kind === "next_day"
+            ? <><b>{offCallAsk.p.patient_name}</b> · запис о {offCallAsk.p.scheduled_time} · {offCallAsk.durationMin} хв. Кабінет буде зайнятий до <b>{offCallAsk.end}</b> завтра. Дошка бачить лише один день — записів завтра до <b>{offCallAsk.end}</b> вона не показує, перевірте їх перед викликом.</>
+            : <><b>{offCallAsk.p.patient_name}</b> · запис о {offCallAsk.p.scheduled_time} · {offCallAsk.durationMin} хв.
             {" "}Кабінет працює до <b>{offCallAsk.end}</b> — робота триватиме понаднормово.</>}
-          confirmLabel="⏰ Викликати"
+          confirmLabel={offCallAsk.kind === "next_day" ? "🌙 Викликати" : "⏰ Викликати"}
           cancelLabel="Ні"
           busy={offCallBusy}
           onClose={() => setOffCallAsk(null)}
           onConfirm={async () => {
             const a = offCallAsk;
             if (!a) return;
+            /* Доба могла змінитись, поки діалог відкритий (next_day висить в
+               останні хвилини доби і сам просить перевірити завтрашній день).
+               Підтвердження після 00:00 завело б у кабінет ВЧОРАШНІЙ запис в
+               обхід wrong_day. «Зараз» — у момент кліку, не з рендера. */
+            if (!sameDay(selectedDate, wallToday0())) {
+              notify("Доба змінилась — запис уже не на сьогодні, оновіть дошку", "error");
+              setOffCallAsk(null);
+              return;
+            }
             setOffCallBusy(true);
             await setStatus(a.p.id, "in_progress");
             setOffCallBusy(false);

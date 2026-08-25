@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { isLate, needsClarification, computeCallBlock, collisionFor, lateCallClash, type CollisionEntry } from "@/lib/queueStatus";
+import { isLate, needsClarification, computeCallBlock, collisionFor, lateCallClash, callWindowEndMin, type CollisionEntry } from "@/lib/queueStatus";
 import { setClinicTz, wallInstant } from "@/lib/incidents";
 
 /* Час у RadFlow — «настінний» (wall-as-UTC, міграції 0035/0059). Фіксуємо зону
@@ -83,6 +83,72 @@ describe("computeCallBlock — чому не можна викликати в к
   it("lateCallClash не бачить конфлікту, якщо наступний далеко", () => {
     const entries = [{ id: "c", room_id: "r1", status: "scheduled", scheduled_time: "14:00" }];
     expect(lateCallClash(P, entries, NOW)).toBeNull();
+  });
+});
+
+/* M-2 аудиту 2026-08-23: дошка тримає рівно одну добу, а вікно виклику
+   рахується від «зараз». Запис наступної доби lateCallClash не побачить
+   НІКОЛИ (його немає в масиві) — тож про сам факт «вікно за північчю» треба
+   сказати вголос, інакше оператор бачить дозволену дію, яку відхилить БД. */
+describe("computeCallBlock — вікно виклику за північ (M-2)", () => {
+  const P = { id: "b", room_id: "r1", duration_min: 30, buffer_time_min: 5 };
+  const at = (t: string) => wallInstant("2026-07-13", t);
+
+  it("23:40 + 30 хв + 5 буфер → next_day до 00:15, підтверджуване", () => {
+    const r = computeCallBlock(P, [], { schedEnd: "23:59", nowMs: at("23:40") });
+    expect(r).toMatchObject({ code: "next_day", durationMin: 30, end: "00:15", confirmable: true });
+  });
+
+  it("рівно 24:00 — ще НЕ наступна доба", () => {
+    // 23:25 + 30 + 5 = 24:00 рівно: кабінет звільняється на межі, за добу не виходимо.
+    expect(computeCallBlock(P, [], { schedEnd: "23:59", nowMs: at("23:25") })).toBeNull();
+  });
+
+  it("за північ виводить САМ буфер — випадок, який графік не ловить", () => {
+    // 23:26 + 30 = 23:56 (у графіку до 23:59, sched_overrun мовчить), а з
+    // буфером 15 кабінет зайнятий до 00:11 — саме та сліпа зона.
+    // Буфер узято з дозволених CHECK-ом значень (0045: 0/5/10/15), інакше тест
+    // упав би на чесній правці формули під normBuffer.
+    const r = computeCallBlock({ ...P, buffer_time_min: 15 }, [], { schedEnd: "23:59", nowMs: at("23:26") });
+    expect(r).toMatchObject({ code: "next_day", end: "00:11" });
+  });
+
+  it("тривалість не задана → дефолт 30 хв, той самий і у вікні, і в тексті", () => {
+    // Дефолт живе у двох місцях (computeCallBlock і callWindowEndMin); розійдуться
+    // — діалог покаже одну тривалість, а кабінет займе інша.
+    const r = computeCallBlock({ ...P, duration_min: null }, [], { nowMs: at("23:40") });
+    expect(r).toMatchObject({ code: "next_day", durationMin: 30, end: "00:15" });
+  });
+
+  it("callWindowEndMin: хвилини від 00:00 ПОТОЧНОЇ доби, значення > 1440 — норма", () => {
+    expect(callWindowEndMin({ duration_min: 30, buffer_time_min: 5 }, at("23:40"))).toBe(24 * 60 + 15);
+    expect(callWindowEndMin({ duration_min: 30, buffer_time_min: 5 }, NOW)).toBe(10 * 60 + 30 + 35);
+    // буфер 0 — саме нуль, а не дефолт 5 (?? проти ||)
+    expect(callWindowEndMin({ duration_min: 30, buffer_time_min: 0 }, NOW)).toBe(10 * 60 + 60);
+  });
+
+  it("накладення на СЬОГОДНІШНІЙ запис важливіше за північ (жорсткий блок)", () => {
+    const entries = [{ id: "c", room_id: "r1", status: "scheduled", scheduled_time: "23:50", patient_name: "Іваненко І." }];
+    const r = computeCallBlock(P, entries, { schedEnd: "23:59", nowMs: at("23:40") });
+    expect(r).toMatchObject({ code: "clash", time: "23:50" });
+    expect(r?.confirmable).toBeFalsy();
+  });
+
+  it("простій кабінету північчю не підмінюється", () => {
+    expect(computeCallBlock(P, [], { roomBlocked: true, nowMs: at("23:40") })).toMatchObject({ code: "room_blocked" });
+  });
+
+  it("північ ПЕРЕВАЖАЄ кінець графіка: обидва підтверджувані, але про північ ніде більше не сказано", () => {
+    const r = computeCallBlock(P, [], { schedEnd: "20:00", nowMs: at("23:40") });
+    expect(r).toMatchObject({ code: "next_day" });
+  });
+
+  it("запис без кабінету за північ нічого не займає", () => {
+    expect(computeCallBlock({ ...P, room_id: null }, [], { nowMs: at("23:40") })).toBeNull();
+  });
+
+  it("вдень північ не турбує", () => {
+    expect(computeCallBlock(P, [], { schedEnd: "18:00", nowMs: NOW })).toBeNull();
   });
 });
 
