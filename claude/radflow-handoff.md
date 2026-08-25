@@ -1,22 +1,26 @@
 # RadFlow — состояние проекта (хендофф между сессиями)
 
-**Обновлено: 2026-08-24, конец сессии 40.**
+**Обновлено: 2026-08-25 ~00:30 Kiev, конец сессии 41.**
 
-Прод-БД на `0155`, ledger 155 записей. Следующая миграция — `0156`.
-Все записи ledger заштампованы md5, build-гейт даёт `155/155`.
+Прод-БД на `0155`, ledger 155. **Миграция `0156` ПОДГОТОВЛЕНА, НЕ НАКАТАНА**
+(лежит на диске, dry-run на проде SMOKE_OK, откат проверен). Следующая после
+неё — `0157`.
 
-`main` = `e8b0ac4` (PR #45), `dev` = `0d5be3e` — совпадают по содержимому,
-дерево чистое, хвостов нет.
+`main` = `e8b0ac4` (PR #45), `dev` = `f15883f` (docs с40). **На диске
+НЕЗАКОММИЧЕННЫЙ пакет с41** (7 файлов, см. «Сессия 41»): миграция 0156 +
+смоук, бампы двух смоуков сторожа, `docs/ops-cron.md`, `components/
+ReferralPortal.tsx`, `app/queue/actions.ts`, `docs/audit/
+AUDIT_2026-08-23_RESPONSE_PLAN.md`. Порядок: накат 0156 → `db:gate` → build →
+коммит → PR.
 
-Тулчейн: **vitest 1098/1098 (43 файла)**, build OK (39 страниц), типы
-прошли. Счётчик вырос с 1088 законно: `tests/sqlComments.test.ts` перечисляет
-`.sql` динамически и подхватил четыре новых файла (0154 и 0155 + смоуки).
-FHIR-фасад: 11 роутов, живой прогон 39/39 LIVE_OK (с36).
+Тулчейн в контейнере на этом пакете: tsc 0, eslint 0, **vitest 1100/1100
+(43 файла)** (+2 законно: `sqlComments` подхватил 0156 и его смоук).
 
-Cron: **9 задач**. `invariants` — jobid 13, `50 3 * * *`.
-`maintenance_runs` на конец с40: 4 записи, все ручные. Последняя —
-`invariants` 20:24:41 UTC, `ok:true checked:9 failed:[]` — первый чистый
-прогон сторожа.
+Cron: 9 задач. `invariants` — jobid 13, `50 3 * * *`. **Ночь 24→25 прошла
+чисто (проверено 04:13 UTC 25.08):** `audit-retention` 03:40
+`{"anonymized":0,"deleted":0}`, `invariants` 03:50 `ok:true checked:9` —
+первые прогоны ПЛАНИРОВЩИКОМ, `job_run_details` `succeeded` по обоим.
+Задача №0 закрыта.
 
 Клиник 2, `queue_entries` 89, активных интеграционных ключей 0.
 
@@ -73,6 +77,115 @@ select job, ran_at, result from public.maintenance_runs
 задача не отработала. Кандидатов на удаление не будет до ~середины октября
 (старейший `audit_log` — 15.07, горизонт PII 90 дней), так что до тех пор
 `{"anonymized":0,"deleted":0}` — нормальный ответ.
+
+## Сессия 41 — что сделано (ответ на внешний аудит 2026-08-23)
+
+Задача сессии: проверить каждую из 15 находок аудита
+`docs/audit/RADFLOW_TECHNICAL_AUDIT_2026-08-23.md` (смотрел `dev@1bb4fc9`,
+прод на 0150) по ТЕКУЩЕМУ коду и проду, составить план и начать с P0.
+Вердикты и план — `docs/audit/AUDIT_2026-08-23_RESPONSE_PLAN.md` (копия в
+Claude Projects: `claude/audit-2026-08-23-response-plan.md`).
+
+**Подтверждено живыми пробами (read-only, `set_config('request.jwt.claims')`
+без смены роли):**
+
+- **C-1**: радиолог `792c6596` → кабинет `32447b56` (НЕ назначен, active):
+  `auth_radiologist_room_ok = false`, а `room_busy_slots` отдал 3 строки С
+  ПИБ. 0136 закрыла RLS и DEFINER-RPC записей, а этот оракул остался на
+  ACL 0079 (`clinic = auth_clinic_id() or auth_can_refer`).
+- **C-2**: без JWT (`auth.uid()` null) RPC даёт 0 строк там, где прямой
+  select даёт 4 (`960e7882` @ 2026-07-16). REST `/slots` и FHIR `Slot` зовут
+  RPC admin-клиентом → занятое публиковалось как свободное. Live-check 39/39
+  с36 этого не ловил: он проверял форму ответа, не сверял с БД.
+- **H-2**: `ReferralPortal.loadDay` без generation-guard и без
+  `pollWhenSubscribedMs`; `roomRes.error` не проверялся. Те же H-3A/H-3B
+  аудита 06.08 в `useRoomBusy` починили, портал пропустили.
+- **M-6** = бэклог с40 №1 (stale покрывает две ситуации) — подтверждено по
+  телу `queue_set_status_rpc`: `updated=false` и при промахе `p_expected`, и
+  при отказе `p_allowed`/ветки направника.
+
+**Осознанные решения, которые аудит счёл дефектами (НЕ трогаем):** H-1
+fail-open outbox (шапка 0145; у партнёра есть `GET /appointments?
+updated_since=` keyset для реконсиляции); 11 anon-хелперов (allowlist 0140,
+стоят в `{public}`-политиках); full refetch realtime (TD-3). L-1 stale-ключи
+в `schedule_overrides.rooms` — 4 штуки, все на прошлых датах (19/20/24.07),
+не трогаем. L-2 закрыт 0152. M-5 (индекс под `check_no_overlap`) — предикат
+только по `room_id`, индекс `queue_room_date_idx` есть, 89 строк — до роста.
+
+### Пакет 0156 (на диске, НЕ накатан)
+
+`supabase/migrations/0156_room_busy_slots_scope.sql` +
+`supabase/smoke/room_busy_slots_scope_smoke.sql`:
+
+- `room_busy_slots` — передрук целиком, изменён только CTE `acl`:
+  `can_read = service_role or (clinic = auth_clinic_id() and
+  auth_radiologist_room_ok) or (auth_can_refer(clinic) and p_room ∈
+  auth_referrer_visible_rooms())`; `ok = not service_role and
+  auth_can_see_slot_details and auth_radiologist_room_ok`. **Решение
+  владельца 24.08: радиолог для неназначенного кабинета получает 0 строк**
+  (зеркало RLS 0136), не «интервалы без деталей». service_role — интервалы,
+  детали всегда NULL (режим A). Отдельный internal-RPC из аудита НЕ заводили.
+- revoke EXECUTE `from public, anon, authenticated` у 14 trigger-функций
+  (advisor; PostgREST returns-trigger не публикует — гигиена).
+- `invariants_check()` — проверка 10 `room_busy_service_role`: до трёх
+  последних кабинето-дней (status in scheduled/waiting/done, `room_id`/
+  `scheduled_date` not null!) под контекстом service_role дают ≥1 строку.
+  checked 9 → 10. Зонды `invariants_watch_smoke` (d) и
+  `invariants_cron_split_smoke` (b) подняты на 10. `docs/ops-cron.md`
+  обновлён.
+- Смоук: матрица ролей a…k. **Фикстура (b) — DELETE из `radiologist_rooms`
+  внутри транзакции** (триггеров на таблице нет, rollback возвращает): один
+  кабинето-день даёт A/B «назначен → строки с деталями / снят → 0» без
+  вставок в `queue_entries` (15 BEFORE-триггеров). Роли через
+  `set_config(claims) + set local role authenticated|service_role|anon`
+  (`postgres` — член всех трёх, подтверждено прогоном).
+- Сквозной dry-run реальными байтами: `SMOKE_OK ( 0 1(expect=4) a b c k d
+  e-in(rows=4/2) e-out(hidden=0) f g h i j)`; откат подтверждён отдельным
+  запросом (ledger без 0156, старые тела, ACL, `radiologist_rooms` = 4).
+- Перепечатка `invariants_check` сверена приёмом с40 (две вставки через
+  `replace()` в SQL, нормализация без комментариев):
+  `md5 = 779b57d766602bb41f6f18012d63176f`, 5218 символов, `equal = true`.
+  Хвост `room_busy_slots` от `src as (` = 0079 после ровно двух правок
+  (2009 vs 2061 символов).
+- Независимое ревью (субагент) дало 2 правки ДО доставки: (1) NULL-группы в
+  проверке 10 — `array_agg(NULL) = {NULL} IS NOT NULL` → ложная тревога;
+  (2) ветка направника без `auth_can_refer(clinic)` открывала бы кабинет
+  центра с отозванным доступом по историческим строкам.
+
+### Код с41 (на диске, НЕ закоммичен)
+
+- `components/ReferralPortal.tsx` — `loadDay`: `loadGen` (как `genRef` в
+  `useRoomBusy`), четыре запроса через `Promise.all`, `roomRes.error` →
+  throw (fail-closed), `setSlotsLoading(false)` снимает последний доживший
+  (иначе гейт зависал, когда громкий запрос обгоняли тихим), бамп поколения
+  на смену scope, подписки `schedule_overrides` и `rooms` (обе в
+  `supabase_realtime`) с общим `debounceKey: "day"`, `pollWhenSubscribedMs:
+  30_000`.
+- `app/queue/actions.ts` — `setStatusViaRpc`: если `updated=false` и
+  `current_status === expected` → никто не опережал → `code: "transition"`,
+  текст «Перехід «X» → «Y» зараз неможливий — оновіть дошку»
+  (`statusLabel` из `lib/journalText`). Дошки на любой не-stale код
+  показывают `res.error` и делают reload — UI не трогали. Закрывает бэклог
+  с40 №1 без миграции.
+
+### Уроки с41
+
+- **Аудит смотрит на снимок; пять миграций спустя половина Low/Medium уже
+  закрыта или устарела.** Верификация каждого пункта по текущему коду и
+  проду заняла меньше, чем заняло бы слепое исполнение плана аудита.
+- **Живой e2e «39/39 OK» ничего не говорит о ПРАВИЛЬНОСТИ данных**, если он
+  не сверяет ответ с БД. C-2 жил под зелёным прогоном с36. При следующем
+  live-check добавить сверку `busy` из `/slots` с прямым select.
+- **`set_config('request.jwt.claims', …)` без `set local role`** — дешёвая
+  read-only проба ACL-логики DEFINER-хелперов под postgres: RLS не мешает,
+  auth.* читают только claims. Так проверены все ветки нового ACL ДО
+  написания функции.
+- **`array_agg` по выборке с NULL даёт `{NULL}`, а не NULL** — сторож с
+  `if v_tmp is not null` завопил бы. Любой `array_agg(x.txt)` в сторожe
+  требует `not null`-гардов на компонентах txt.
+- **Хелпер 0139 `auth_referrer_visible_rooms()` НЕ содержит клинического
+  гейта** — это работа вызывающего (шапка 0139). Копировать его в новое
+  место — только парой с `auth_can_refer(clinic)`.
 
 ## Сессия 40 — что сделано
 
@@ -605,7 +718,7 @@ Auth-пользователь админа оставался сиротой →
   `audit_log_retention_daily()`, не HTTP-роут. `invariants` — jobid 13,
   `50 3 * * *`. Расписания pg_cron — В UTC, не в TZ клиники.
 
-## Беклог (приоритет по убыванию, на конец с40)
+## Беклог (приоритет по убыванию, на конец с41)
 
 ⚠️ Формулировки хвостов с32 ИСПРАВЛЕНЫ по итогам живых прогонов с37/с38:
 ack и «Неявка» значились «продуктовыми дефектами», а работали (дефект
@@ -630,10 +743,8 @@ ack и «Неявка» значились «продуктовыми дефек
    трогать** (большинство по 16 КБ, крупнейшие — триграммные индексы поиска).
 4. **Пустой MRI-каталог Medicom-Odessa** (если пересоздадут): 2 MRI-кабинета,
    0 MRI-услуг → `HealthcareService?location=` вернёт пусто. Не дефект.
-5. **Код `stale` на клиенте покрывает ДВЕ ситуации** — «кто-то опередил» и
-   «переход запрещён `p_allowed`»; пользователь в обоих видит текст про
-   другого пользователя. Сейчас не проявляется, но следующая правка матрицы
-   переходов даст ложное сообщение (замечено при фиксе soft-undo в с37).
+5. ✅ **Код `stale` покрывал ДВЕ ситуации** — ЗАКРЫТ в с41 (`code:
+   "transition"` в `setStatusViaRpc`, без миграции; на диске, не в git).
 6. **`fmtOrigin` дублируется** в `QueueBoard` и `ReferrerBoard` почти
    дословно (в QueueBoard есть ветка «перервано дослідження», в
    ReferrerBoard нет). В с39 правили обе копии руками — вынести в `lib`,
@@ -649,6 +760,19 @@ ack и «Неявка» значились «продуктовыми дефек
    пуст, и поведение RPC в этом режиме надо сперва выяснить.
 9. **Зонд `f` смоука 0155** оживить, если появятся права на INSERT в
    `cron.job_run_details` (сейчас закрыт даже под `postgres`).
+10. **P2 аудита 23.08 (план в `docs/audit/AUDIT_2026-08-23_RESPONSE_PLAN.md`):**
+    (а) `lib/outbox.ts` — `integration.emit_failed` НЕ форвардить партнёру
+    (сейчас уходит в вебхук клиники как `integration.*` с текстом SQL-ошибки;
+    в контракте v1 такого события нет) — ack с пометкой; (б) выключенный
+    вебхук: отложка `next_attempt_at` без `attempts++` (приём
+    `deferredN8nIds`), но только пока событию < 72 ч; (в) миграция 0157 —
+    проверка 11 сторожа `integration.emit_failed` за 26 ч = 0; (г) M-1 —
+    валидатор `schedule_overrides.rooms` в `save_schedule_override` (зеркало
+    Zod). P3: `lateCallClash` через абсолютное время; `engines.node` после
+    сверки с Vercel; leaked-password protection в Dashboard.
+11. **Live-check с сверкой данных**: `integration-live-check.mjs` сверяет
+    форму, не факт — добавить сравнение `busy` из `/slots` с прямым select
+    (урок C-2). Гонять после наката 0156 с машины владельца.
 
 ## Карта интеграционного шара (что где лежит)
 

@@ -46,8 +46,9 @@ begin
   -- а не тихо пропустити (кількість перевірок сама є інваріантом).
   -- ⚠️ 0155 підняв 8 → 9: перевірку cron_daily_ran_48h розділено на
   -- cron_daily_stalled і cron_daily_never_ran.
-  if (v_res ->> 'checked')::int is distinct from 9 then
-    raise exception 'SMOKE_FAIL d: checked=% (очікував 9)', v_res ->> 'checked';
+  -- ⚠️ 0156 підняв 9 → 10: додано room_busy_service_role (C-2 аудиту 23.08).
+  if (v_res ->> 'checked')::int is distinct from 10 then
+    raise exception 'SMOKE_FAIL d: checked=% (очікував 10)', v_res ->> 'checked';
   end if;
   v_done := v_done || ' d';
 

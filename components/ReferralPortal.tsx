@@ -329,8 +329,20 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
 
   /* Помилка завантаження ≠ «вільно» (аудит 2026-07-11). Раніше і зайнятість, і
      простої бралися як `data || []`: при збої RPC весь день виглядав вільним, а
-     зламаний кабінет — робочим. Тепер піднімаємо slotsErr, сітку не показуємо. */
+     зламаний кабінет — робочим. Тепер піднімаємо slotsErr, сітку не показуємо.
+
+     Аудит 2026-08-23 H-2 (той самий клас, що H-3A/H-3B аудиту 06.08, закритий
+     у lib/slotBusy.ts, але не тут):
+       • лічильник поколінь — відповідь СТАРОГО запиту (повільна мережа, швидка
+         зміна дати/кабінету) більше не перезаписує стан нового scope;
+       • rooms.schedule: помилка читання — це помилка, а не «типовий графік»
+         (інакше зачинений день малювався б робочим);
+       • чотири запити йдуть паралельно (було 4 послідовні round-trip);
+       • рідкий поллінг при живому сокеті + підписки на schedule_overrides і
+         rooms — див. useRealtimeRefetch нижче. */
+  const loadGen = useRef(0);
   const loadDay = useCallback(async (silent = false) => {
+    const gen = ++loadGen.current;
     // Гейт «Завантаження…» показуємо ЛИШЕ при первинному завантаженні / зміні
     // кабінету-дати (silent=false). Фонові перезапити (realtime, focus/visibility)
     // — silent: сітка не мигає в «завантаження» на кожен тик, стара лишається до
@@ -338,32 +350,46 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
     if (!silent) setSlotsLoading(true);
     try {
       const supabase = createClient();
-      if (centerId) {
-        const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", centerId).eq("override_date", date).maybeSingle();
-        if (ov.error) throw ov.error;
-        setOverride((ov.data as unknown as DayOverride) || null);
-        const inc = await supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", centerId).in("status", ["active", "planned"]);
-        if (inc.error) throw inc.error;
-        setIncidents(inc.data || []);
-      }
-      if (!roomId) { setDayEntries([]); setRoomSchedule(null); setSlotsErr(false); return; }
-      const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+      const [ov, inc, roomRes, busy] = await Promise.all([
+        centerId
+          ? supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", centerId).eq("override_date", date).maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+        centerId
+          ? supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", centerId).in("status", ["active", "planned"])
+          : Promise.resolve({ data: [], error: null }),
+        roomId
+          ? supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
+        // Знеособлена зайнятість: для направника RPC віддає рядки БЕЗ ПІБ/статусу/
+        // досліджень (гейт у 0062/0156) — він бачить лише, що час зайнятий.
+        roomId
+          ? supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date })
+          : Promise.resolve({ data: [], error: null }),
+      ]);
+      if (gen !== loadGen.current) return; // відповідь чужого scope/покоління
+      // PostgREST не кидає сам — інакше «зайнятий день» став би «вільним»
+      const err = ov.error ?? inc.error ?? roomRes.error ?? busy.error;
+      if (err) throw err;
+      setOverride((ov.data as unknown as DayOverride) || null);
+      setIncidents((inc.data as IncidentLike[] | null) || []);
       setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
-      // Знеособлена зайнятість: для направника RPC віддає рядки БЕЗ ПІБ/статусу/
-      // досліджень (гейт у 0062) — він бачить лише, що час зайнятий.
-      const { data, error } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: date });
-      if (error) throw error; // PostgREST не кидає сам — інакше «зайнятий день» став би «вільним»
-      setDayEntries(data || []);
+      setDayEntries((busy.data as BusySlot[] | null) || []);
       setSlotsErr(false);
     } catch {
+      if (gen !== loadGen.current) return;
       // Транзієнтний збій (рефреш токена / мережа) — портал не рушимо, але й
       // «усе вільно» не малюємо: показуємо помилку й ховаємо сітку.
       setSlotsErr(true);
     } finally {
-      if (!silent) setSlotsLoading(false);
+      // Не лише для !silent: якщо гучний запит обігнали тихим (той самий scope),
+      // «Завантаження…» знімає останній, хто дожив, — інакше гейт завис би.
+      if (gen === loadGen.current) setSlotsLoading(false);
     }
   }, [centerId, roomId, date]);
 
+  // Зміна scope інвалідує відповіді старого покоління ще ДО того, як новий
+  // loadDay стартує (ефект нижче): стара сітка не «блимне» чужими даними.
+  useEffect(() => { loadGen.current++; }, [centerId, roomId, date]);
   useEffect(() => { (async () => { await loadDay(); })(); }, [loadDay]);
   useEffect(() => {
     const onVis = () => { if (document.visibilityState === "visible") loadDay(true); };
@@ -372,13 +398,19 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   }, [loadDay]);
   /* Realtime: сітка оновлюється, поки направник заповнює форму. Увага: події
      ходять під RLS, тож про ЧУЖІ записи направник події не отримає — його рятує
-     refetch по focus/visibility вище + повторна перевірка слота на сервері. */
+     рідкий поллінг (pollWhenSubscribedMs, як у useRoomBusy) + refetch по
+     focus/visibility вище + повторна перевірка слота на сервері.
+     schedule_overrides і rooms — у публікації supabase_realtime: особливий
+     графік дня чи правка перерв кабінету перемальовують сітку без F5. */
   useRealtimeRefetch({
     channelName: centerId ? "ref-slots-" + centerId + "-" + (roomId || "none") + "-" + date : null,
     subscriptions: [
-      { table: "queue_entries", onChange: () => loadDay(true) },
-      { table: "incidents", onChange: () => loadDay(true) },
+      { table: "queue_entries", onChange: () => loadDay(true), debounceKey: "day" },
+      { table: "incidents", onChange: () => loadDay(true), debounceKey: "day" },
+      { table: "schedule_overrides", onChange: () => loadDay(true), debounceKey: "day" },
+      { table: "rooms", onChange: () => loadDay(true), debounceKey: "day" },
     ],
+    pollWhenSubscribedMs: 30_000,
   });
 
   const dateObj = new Date(date + "T00:00:00");
