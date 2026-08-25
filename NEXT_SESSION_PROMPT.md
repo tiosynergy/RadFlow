@@ -54,21 +54,19 @@ UTC 24.08 — ніч ще не наступила, тому задача №0 п
 тулчейн — у клоні `/tmp/rf` (репозиторій публічний, `git clone --branch dev`).
 Якщо DC є — працюй ним; якщо ні — цей шлях робочий.
 
-## Стан на старті (кінець с42, ~15:00 Kiev 25.08)
+## Стан на старті (кінець с42, ~17:00 Kiev 25.08)
 
-- **Прод-БД на `0157`**, ledger 157, усі md5. **`0158` ПІДГОТОВЛЕНА, НЕ
-  НАКАТАНА** — dry-run на проді `SMOKE_OK`, відкат перевірено. Після неї —
-  `0159`.
-- **`main` = `f5fb7e6`** (P2 outbox влито), **`dev` = `5824439`**.
-  ⚠️ **На диску НЕЗАКОМІЧЕНІ пакети M-1 і live-check**:
-  `supabase/migrations/0158_*.sql`, `supabase/smoke/schedule_override_rooms_smoke.sql`,
-  `app/queue/actions.ts`, `scripts/integration-live-check.mjs`,
-  `scripts/integration-live-check-lib.mjs` (новий), `tests/liveCheck.test.ts`
-  (новий), `docs/integration-keys-runbook.md` + хендофф і цей промпт.
-  Перевір `git status`.
-- Тулчейн на пакетах (контейнер): tsc 0, eslint 0, **vitest 1123/1123
-  (45 файлів)**.
-- Cron: 9 задач; сторож — 11 перевірок (0157). Нічні прогони 25.08 пройшли.
+- **Прод-БД на `0158`**, ledger 158, усі md5, сторож `ok:true checked:11`.
+  Наступна міграція — `0159`.
+- **`main` = `f5fb7e6`**, **`dev` = `f011e80`** (M-1 + live-check
+  закомічено; PR dev→main — перевір `ls-remote`, чи влито). ⚠️ **На диску
+  НЕЗАКОМІЧЕНИЙ пакет «беклог-код»**: `lib/rescheduleOrigin.ts` (новий),
+  `tests/rescheduleOrigin.test.ts` (новий), `components/QueueBoard.tsx`,
+  `components/ReferrerBoard.tsx`, `lib/unreadChanges.ts` + хендофф і цей
+  промпт. Перевір `git status`.
+- Тулчейн на пакеті (контейнер): tsc 0, eslint 0, **vitest 1130/1130
+  (46 файлів)**.
+- Cron: 9 задач; сторож — 11 перевірок. Нічні прогони 25.08 пройшли.
 - Клінік 2, `queue_entries` 89, активних інтеграційних ключів 0.
 
 ## ✅ ЗАДАЧА №0 — нічні прогони 25.08: ЗАКРИТО (перевірено 04:13 UTC 25.08)
@@ -89,22 +87,16 @@ select job, ran_at, result from public.maintenance_runs
 0156). Порожньо після 04:00 UTC = задача не відпрацювала → дивитись
 `cron.job_run_details` по jobid 12/13.
 
-## ⚠️ ЗАДАЧА №1 — довести пакет M-1 (0158) до PR
+## ⚠️ ЗАДАЧА №1 — пакет «беклог-код» і живий прогін
 
-1. Накат 0158 (SQL Editor, «Run without RLS») → смоук
-   `schedule_override_rooms_smoke.sql` → `SMOKE_OK ( 0 1 a b c d e f g h i j
-   k m(stale-keys=3: …))` → `select public.invariants_check();` →
-   `checked:11` (ledger_md5 по 0158 до gate — законно) → `npm run db:gate`
-   (158/158) → `npm run build`.
-2. Коміт (3 файли + хендофф/промпт; текст — у хендоффі «Сесія 42 — M-1») →
-   PR dev→main. Якщо PR по P2 (0157) ще не влитий — можна одним PR.
-3. Після деплою: живий прогін `integration-live-check.mjs` з машини власника
-   (тепер 41 перевірка, зі звіркою `busy` проти `room_busy_slots` під
-   service_role; потрібен тестовий ключ — активних 0). Очікуємо `LIVE_OK`
-   і два нові зонди `ok`, а не `skip`.
-4. Живі перевірки (Claude-in-Chrome, `find`/`ref`): портал направника —
-   швидка зміна дат/кабінетів; модалка графіка дня — збереження проходить,
-   а payload з чужим кабінетом (прямий RPC) — «Графік дня відхилено: …».
+1. Пакет «беклог-код» — без міграції: `npm run build` → коміт (текст — у
+   хендоффі «Сесія 42 — беклог-код») → PR.
+2. Після деплою: живий прогін `integration-live-check.mjs` з машини власника
+   (41 перевірка, зі звіркою `busy`; потрібен тестовий ключ — активних 0).
+   Очікуємо `LIVE_OK` і два зонди busy `ok`, а не `skip`.
+3. Живі перевірки (Claude-in-Chrome, `find`/`ref`): портал направника —
+   швидка зміна дат/кабінетів; модалка графіка дня — збереження проходить;
+   картка з переносом показує «🔁 Перенесено з …» і на дошці, і в порталі.
 
 ## Беклог за пріоритетом (узгодити з власником на старті)
 
@@ -115,13 +107,13 @@ select job, ran_at, result from public.maintenance_runs
    outbox (`prune-outbox` чистить лише доставлені) — кандидат у
    `cron_jobs.sql`.
 2. ✅ **M-1** — зроблено (0158 на диску). Лишилось із аудиту лише P3.
-3. **Винести `fmtOrigin` у `lib`** — дубль у `QueueBoard` і `ReferrerBoard`.
+3. ✅ **`fmtOrigin` у `lib`** — зроблено в с42 (на диску).
 4. **Симетричний прогін ack зі сторони Б** — потрібен другий живий користувач.
 5. **Харнеси на базі `race-check.mjs`**: гонка `in_progress`, паралельний CAS.
 6. P3: `lateCallClash` через абсолютний час і сусідню добу; `engines.node`
    (після сверки з Vercel Project Settings — `>=22 <25` змусить Vercel взяти
-   24.x); leaked-password protection у Dashboard → Auth; мертві `navKey`;
-   зонд `f` смоуку 0155; unused_index не чіпати; дропи мертвих обʼєктів —
+   24.x); leaked-password protection у Dashboard → Auth; ✅ мертві `navKey`
+   (с42); зонд `f` смоуку 0155; unused_index не чіпати; дропи мертвих обʼєктів —
    лише після грепу.
 
 ## Правила, які не можна порушувати

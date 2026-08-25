@@ -67,7 +67,7 @@ import Toast, { type ToastData } from "@/components/Toast";
 import ShortcutsOverlay from "@/components/ShortcutsOverlay";
 import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
 import { quickSearchMatch } from "@/lib/quickSearch";
-import { fmtDayKey, fmtTime } from "@/lib/journalText";
+import { fmtOrigin } from "@/lib/rescheduleOrigin";
 import { occupiesSlot } from "@/lib/slotOccupancy";
 import type { CallStatus, QueueStatus, Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
@@ -93,7 +93,6 @@ const EMPTY_ENTRIES: QEntry[] = [];
 /* Ключ робочого зрізу дошки: клініка + день. Одна функція на обидві сторони —
    і на читання (scopeReady), і на запис (setEntriesSnap), щоб формат не розʼїхався. */
 const scopeKeyOf = (clinicId: string, dayKey: string) => `${clinicId}|${dayKey}`;
-type RescheduleOrigin = { from_date?: string | null; from_time?: string | null; from_room?: string | null; from_status?: string | null; reason?: string | null };
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
 type IncidentPayload = { id?: string; roomId: string; reason: string; reasonLabel: string; note: string; startedAt: string; blockedUntil: string | null; autoUnblock: boolean };
 type RoomLoadItem = { roomKey: string; name: string; kind: string; pct: number; closed: boolean; color: string; off?: boolean };
@@ -518,19 +517,7 @@ const CALL_META: Record<string, { label: string; cls: string; icon: string }> = 
   not_called: { label: "Не дзвонили", cls: "gray", icon: "○" },
 };
 const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
-// Довідка «звідки перенесено» → короткий рядок для розгорнутої картки.
-// Дата й час — через канонічні fmtDayKey/fmtTime (журнал показує їх так само).
-// Сира '2026-08-25' у картці читалась як чужий формат; різання рядка, а не
-// `new Date()` — інваріант проєкту (о 00:00 воно зсунуло б добу).
-function fmtOrigin(o: RescheduleOrigin | null | undefined, roomsById: Record<string, { name?: string | null }>): string | null {
-  if (!o || (!o.from_date && !o.from_time)) return null;
-  const room = o.from_room ? roomsById[o.from_room] : null;
-  const parts = [ [fmtDayKey(o.from_date), fmtTime(o.from_time)].filter(Boolean).join(" "), room?.name ].filter(Boolean);
-  let s = "🔁 Перенесено з " + parts.join(" · ");
-  if (o.from_status === "in_progress") s += " · перервано дослідження";
-  if (o.reason) s += " · причина: " + o.reason;
-  return s;
-}
+// «Перенесено з …» — lib/rescheduleOrigin.ts (одна копія на всі дошки, с42).
 
 const STEP_ORDER = ["scheduled", "waiting", "in_progress", "done"];
 const STEP_META: Record<string, { label: string; color: string }> = {
@@ -2620,7 +2607,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                     onReschedule={openReschedule} onEditStudies={openEditStudies} onEditPatient={(pt) => setEditPatientFor(pt)}
                     onToWaitlist={lateToWaitlist}
                     canSetPriority={canEditPriority} onSetPriority={doSetPriority}
-                    originHint={fmtOrigin(p.reschedule_origin as unknown as RescheduleOrigin | null, roomsById)}
+                    originHint={fmtOrigin(p.reschedule_origin, roomsById, { interrupted: true })}
                     startBlockReason={p.status === "waiting" ? inProgressBlockReason(p) : null}
                     collision={collision}
                     schedDrift={schedDriftFor(p)}

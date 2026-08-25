@@ -23,7 +23,7 @@ import { diffStudies, studyText, studiesChanged, modalityLabel } from "@/lib/stu
 import { quickSearchMatch } from "@/lib/quickSearch";
 import type { Json } from "@/supabase/types";
 import { roomsInGrant } from "@/lib/rooms";
-import { fmtDayKey, fmtTime } from "@/lib/journalText";
+import { fmtOrigin } from "@/lib/rescheduleOrigin";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null; timezone?: string | null };
@@ -34,16 +34,7 @@ export type BoardReferral = {
   doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
   case_id: string | null; case_step: number | null;   // 0118: кейси направника
 };
-type RescheduleOrigin = { from_date?: string | null; from_time?: string | null; from_room?: string | null; from_status?: string | null; reason?: string | null };
-function fmtOrigin(o: RescheduleOrigin | null, roomById: Record<string, RoomOpt>): string | null {
-  if (!o || (!o.from_date && !o.from_time)) return null;
-  const room = o.from_room ? roomById[o.from_room] : null;
-  // Формат дати — той самий, що в журналі й на дошці адміна (fmtDayKey).
-  const parts = [ [fmtDayKey(o.from_date), fmtTime(o.from_time)].filter(Boolean).join(" "), room?.name ].filter(Boolean);
-  let s = "🔁 Перенесено з " + parts.join(" · ");
-  if (o.reason) s += " · причина: " + o.reason;
-  return s;
-}
+// «Перенесено з …» — lib/rescheduleOrigin.ts; портал БЕЗ «перервано дослідження» (як і було).
 
 /* Статус дослідження — той самий словник, що на дошці адміна (read-only). */
 const STATUS_META: Record<string, { label: string; cls: string }> = {
@@ -330,7 +321,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                             </div>
                           );
                         })()}
-                        {(() => { const h = fmtOrigin(r.reschedule_origin as unknown as RescheduleOrigin | null, roomById); return h ? <div className="ctx-hint" style={{ fontSize: "0.75rem" }}>{h}</div> : null; })()}
+                        {(() => { const h = fmtOrigin(r.reschedule_origin, roomById); return h ? <div className="ctx-hint" style={{ fontSize: "0.75rem" }}>{h}</div> : null; })()}
                         {owned && r.status !== "done" && r.status !== "cancelled" && r.status !== "no_show" && r.status !== "not_held" && (
                           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                             <button className="btn btn-primary btn-sm" disabled={r.status === "in_progress"} title={r.status === "in_progress" ? "Дослідження триває — недоступно" : "Перезаписати"} onClick={() => onReschedule(r)}>🗓 Перезаписати</button>
