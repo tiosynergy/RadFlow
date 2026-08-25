@@ -319,12 +319,12 @@ export function unreadGroupLabel(markers: readonly ChangeMarker[]): string {
 export const SURFACE_BY_NAV: Record<string, SurfaceKey[]> = {
   queue: ["queue", "incidents"],
   waitlist: ["waitlist"],
-  calls: ["queue"],
-  services: ["services", "rooms", "schedule"],
   ref: ["referrals"],
-  staff: ["staff"],
   centers: ["centers"],
-  cases: ["cases"],
+  /* с42: прибрано мертві ключі calls/services/staff/cases — жоден Sidebar їх не
+     питав (перевірено грепом unreadForNav/hasUnreadNav), а «крапка на пункті
+     без крапки» вводила в оману при читанні карти. Невідомий ключ і далі дає
+     false/[] — новий пункт навігації додається сюди, а не рядком у компоненті. */
 };
 
 export function hasUnreadNav(ix: UnreadIndex, navKey: string): boolean {
