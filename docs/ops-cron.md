@@ -35,7 +35,7 @@ UTC-ніч, і зі зміною літнього/зимового часу во
 | `prune-rate-limits` | `7 * * * *` | чистить `rate_limits` старші за добу | `cron_jobs.sql` §5 |
 | `prune-important-events` | `20 3 * * *` | видаляє журнал подій старший за 180 днів | міграція `0128` |
 | `prune-change-markers` | `25 3 * * *` | видаляє ПРОЧИТАНІ мітки старші за 180 днів | міграція `0132` |
-| `invariants` | `50 3 * * *` | `select public.invariants_check()` — сторож інваріантів (10 перевірок з `0156`), слід у `maintenance_runs` | міграція `0154`, `0155`, `0156` |
+| `invariants` | `50 3 * * *` | `select public.invariants_check()` — сторож інваріантів (11 перевірок з `0157`), слід у `maintenance_runs` | міграція `0154`–`0157` |
 
 **Знято в с37:** `prune-audit-log` (`15 3 * * *`, delete старше 180 днів) —
 замінено на `audit-retention`. Причина в §3 `cron_jobs.sql`.

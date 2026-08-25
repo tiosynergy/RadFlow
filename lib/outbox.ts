@@ -2,6 +2,11 @@ import crypto from "crypto";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { hostResolvesPublic } from "@/lib/ssrfGuard";
 import { INTEGRATION_EVENT_PREFIX } from "@/lib/integrationContract";
+import {
+  DISABLED_DEFER_STEP_MS,
+  disabledWebhookAction,
+  isInternalIntegrationEvent,
+} from "@/lib/outboxPolicy";
 
 // Доставка подій із transactional outbox (event_outbox, міграція 0055).
 //
@@ -47,6 +52,12 @@ export type DeliverResult = {
   /** integration.*-події без увімкненого вебхука — ack-нуті як доставлені
       (вікно «вимкнули після емісії»); телеметрія, не помилка. */
   orphaned?: number;
+  /** Службові integration.*-події (emit_failed), ack-нуті БЕЗ відправки
+      партнеру — їх читає сторож, не RIS (аудит 23.08 H-1). Телеметрія. */
+  internal?: number;
+  /** Рядки вимкненого вебхука, ФАКТИЧНО відкладені без спалення attempts
+      (у межах 72 год — аудит 23.08 M-3). Телеметрія. */
+  deferred?: number;
 };
 
 /* Транспорт довіряємо ЛИШЕ якщо він захищений. n8n-payload аварійної події
@@ -143,7 +154,7 @@ export async function deliverPendingOutbox(limit = 20): Promise<DeliverResult> {
   const clinicIds = Array.from(
     new Set(
       (rows as OutboxRow[])
-        .filter((r) => r.event_type.startsWith(INTEGRATION_EVENT_PREFIX))
+        .filter((r) => r.event_type.startsWith(INTEGRATION_EVENT_PREFIX) && !isInternalIntegrationEvent(r.event_type))
         .map((r) => String(r.payload?.clinic_id ?? ""))
         .filter(Boolean)
     )
@@ -186,9 +197,11 @@ export async function deliverPendingOutbox(limit = 20): Promise<DeliverResult> {
   let delivered = 0;
   let failed = 0;
   let orphaned = 0;
+  let internal = 0;
   let deadline = false;
   let sawN8n = false;
   const deferredN8nIds: number[] = [];
+  const deferredDisabledIds: number[] = [];
 
   const markFailed = async (row: OutboxRow, msg: string) => {
     const { error: mfErr } = await admin.rpc("outbox_mark_failed",
@@ -228,6 +241,19 @@ export async function deliverPendingOutbox(limit = 20): Promise<DeliverResult> {
     }
 
     if (row.event_type.startsWith(INTEGRATION_EVENT_PREFIX)) {
+      if (isInternalIntegrationEvent(row.event_type)) {
+        /* Службова подія (emit_failed з 0145): сигнал моніторингу, не частина
+           контракту v1 — партнеру її слати не можна (у payload текст
+           SQL-помилки). Ack із поміткою; факт лишається в outbox для сторожа
+           (0157, перевірка 11) і зникає з prune-outbox через 30 днів.
+           Перевірка стоїть ДО hooksBroken/clinic_id: службовій події вебхук
+           не потрібен узагалі. */
+        if (await ack(row, "internal: службова подія, партнеру не надсилається")) {
+          delivered++;
+          internal++;
+        }
+        continue;
+      }
       if (hooksBroken) continue; // лізинг знімемо наприкінці, attempts не палимо
       const clinicId = String(row.payload?.clinic_id ?? "");
       if (!clinicId) {
@@ -247,10 +273,17 @@ export async function deliverPendingOutbox(limit = 20): Promise<DeliverResult> {
         continue;
       }
       if (!hook.enabled) {
-        /* Вимкнений (вікно обслуговування RIS) — НЕ ack: подія переживе
-           вікно через backoff (30s→…→1h, 10 спроб) і доставиться після
-           re-enable; довше вікно → DLQ, видно в моніторингу. */
-        await markFailed(row, "webhook_disabled");
+        /* Вимкнений (вікно обслуговування RIS) — НЕ ack. Було: mark_failed →
+           attempts++ → після 10 спроб (≈4 год backoff) подія йшла в DLQ, хоча
+           ендпоінт не був несправний (аудит 23.08 M-3). Тепер: поки події
+           менше 72 год — відкладаємо next_attempt_at БЕЗ attempts++ (прийом
+           deferredN8nIds); старше — як раніше в DLQ (пояснення стелі —
+           lib/outboxPolicy.ts). */
+        if (disabledWebhookAction(row.created_at, Date.now()) === "defer") {
+          deferredDisabledIds.push(row.id);
+        } else {
+          await markFailed(row, "webhook_disabled");
+        }
         continue;
       }
       /* CHECK-и БД тримають https і довжину секрета; тут — другий рубіж +
@@ -282,14 +315,26 @@ export async function deliverPendingOutbox(limit = 20): Promise<DeliverResult> {
     else if (await ack(row)) delivered++;
   }
 
-  if (deferredN8nIds.length) {
-    const { error: defErr } = await admin.from("event_outbox")
-      .update({ next_attempt_at: new Date(Date.now() + 10 * 60_000).toISOString() })
-      .in("id", deferredN8nIds)
+  /* Відкладання без спалення attempts: лише свої лізинги, лише недоставлені.
+     Якщо UPDATE не вдався — рядок просто повернеться в наступний батч після
+     зняття лізингу нижче; втрати немає, лише зайвий оберт. */
+  const deferRows = async (ids: number[], delayMs: number, note: string): Promise<number> => {
+    if (!ids.length) return 0;
+    /* last_error — позначка причини (ревʼю 0157): рядок з attempts=0, що
+       лежить до 72 год, інакше не відрізнити від щойно емітованого в
+       моніторингу backlog-ів. Рахуємо ФАКТИЧНО відкладені (select), а не
+       довжину списку — невдалий UPDATE просто поверне рядки в наступний батч. */
+    const { data: done, error: defErr } = await admin.from("event_outbox")
+      .update({ next_attempt_at: new Date(Date.now() + delayMs).toISOString(), last_error: note })
+      .in("id", ids)
       .eq("locked_by", workerId)
-      .is("delivered_at", null);
-    if (defErr) console.error("[outbox] відкладання n8n-рядків не вдалось:", defErr.message);
-  }
+      .is("delivered_at", null)
+      .select("id");
+    if (defErr) console.error(`[outbox] відкладання (${note}) не вдалось:`, defErr.message);
+    return done?.length ?? 0;
+  };
+  await deferRows(deferredN8nIds, 10 * 60_000, "n8n_deferred");
+  const deferred = await deferRows(deferredDisabledIds, DISABLED_DEFER_STEP_MS, "webhook_disabled (deferred)");
 
   /* Зняти СВІЙ лізинг з усіх недоставлених рядків (дедлайн, n8n-скіпи):
      наступний cron забере їх одразу, а не після закінчення lease. Умовно по
@@ -307,5 +352,12 @@ export async function deliverPendingOutbox(limit = 20): Promise<DeliverResult> {
       ? n8nProblem
       : undefined;
 
-  return { delivered, failed, ...(orphaned ? { orphaned } : {}), ...(skipped ? { skipped } : {}) };
+  return {
+    delivered,
+    failed,
+    ...(orphaned ? { orphaned } : {}),
+    ...(internal ? { internal } : {}),
+    ...(deferred ? { deferred } : {}),
+    ...(skipped ? { skipped } : {}),
+  };
 }
