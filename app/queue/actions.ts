@@ -1278,6 +1278,16 @@ function schedOverrideError(ctx: string, error: { message?: string }): QueueActi
   if (/SCHED_NOT_DESK|SCHED_NO_CLINIC/.test(message)) {
     return { ok: false, error: "Редагувати графік може лише адміністратор або реєстратор", code: "forbidden" };
   }
+  /* 0158 (M-1 аудиту 23.08): валідатор rooms у БД віддає SCHED_BAD_ROOMS із
+     людським текстом (без PII — лише uuid кабінету й назва поля). Через Zod
+     такий payload не проходить, тож сюди потрапляє лише розходження Zod ↔ БД
+     або прямий виклик повз екшен — показуємо причину, а не «спробуйте ще раз». */
+  const bad = /SCHED_BAD_ROOMS:\s*([^\n]+)/.exec(message);
+  if (bad) {
+    // саме цю гілку й хочеться бачити в логах: вона означає розходження Zod ↔ БД
+    logError({ event: "schedule_override.rejected", errorCode: "SCHED_BAD_ROOMS", message: `${ctx}: ${bad[1].trim()}` });
+    return { ok: false, error: "Графік дня відхилено: " + bad[1].trim(), code: "generic" };
+  }
   return { ok: false, error: safeDbError(ctx, error), code: "generic" };
 }
 

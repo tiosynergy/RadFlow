@@ -54,17 +54,21 @@ UTC 24.08 — ніч ще не наступила, тому задача №0 п
 тулчейн — у клоні `/tmp/rf` (репозиторій публічний, `git clone --branch dev`).
 Якщо DC є — працюй ним; якщо ні — цей шлях робочий.
 
-## Стан на старті (кінець с42, ~12:00 Kiev 25.08)
+## Стан на старті (кінець с42, ~15:00 Kiev 25.08)
 
-- **Прод-БД на `0156`**, ledger 156, усі md5. **`0157` ПІДГОТОВЛЕНА, НЕ
+- **Прод-БД на `0157`**, ledger 157, усі md5. **`0158` ПІДГОТОВЛЕНА, НЕ
   НАКАТАНА** — dry-run на проді `SMOKE_OK`, відкат перевірено. Після неї —
-  `0158`.
-- **`main` = `9a3f315`** (PR #46, пакет с41 влито), **`dev` = `9c005af`**.
-  ⚠️ **На диску НЕЗАКОМІЧЕНИЙ пакет с42** (P2 outbox, 9 файлів + хендофф +
-  цей промпт — список у хендоффі, секція «Сесія 42»). Перевір `git status`.
-- Тулчейн на пакеті (контейнер): tsc 0, eslint 0, **vitest 1110/1110
-  (44 файли)**.
-- Cron: 9 задач. Нічні прогони 25.08 пройшли планувальником (див. нижче).
+  `0159`.
+- **`main` = `f5fb7e6`** (P2 outbox влито), **`dev` = `5824439`**.
+  ⚠️ **На диску НЕЗАКОМІЧЕНІ пакети M-1 і live-check**:
+  `supabase/migrations/0158_*.sql`, `supabase/smoke/schedule_override_rooms_smoke.sql`,
+  `app/queue/actions.ts`, `scripts/integration-live-check.mjs`,
+  `scripts/integration-live-check-lib.mjs` (новий), `tests/liveCheck.test.ts`
+  (новий), `docs/integration-keys-runbook.md` + хендофф і цей промпт.
+  Перевір `git status`.
+- Тулчейн на пакетах (контейнер): tsc 0, eslint 0, **vitest 1123/1123
+  (45 файлів)**.
+- Cron: 9 задач; сторож — 11 перевірок (0157). Нічні прогони 25.08 пройшли.
 - Клінік 2, `queue_entries` 89, активних інтеграційних ключів 0.
 
 ## ✅ ЗАДАЧА №0 — нічні прогони 25.08: ЗАКРИТО (перевірено 04:13 UTC 25.08)
@@ -85,19 +89,22 @@ select job, ran_at, result from public.maintenance_runs
 0156). Порожньо після 04:00 UTC = задача не відпрацювала → дивитись
 `cron.job_run_details` по jobid 12/13.
 
-## ⚠️ ЗАДАЧА №1 — довести пакет с42 до PR
+## ⚠️ ЗАДАЧА №1 — довести пакет M-1 (0158) до PR
 
-1. Якщо 0157 ще не накатана — власник накатує (SQL Editor, «Run without
-   RLS»), потім `select public.invariants_check();` → `ok:true checked:11`
-   (до `db:gate` законно `ledger_md5` по 0157), смоук
-   `invariants_emit_failed_smoke.sql` → `SMOKE_OK`, `npm run db:gate`
-   (157/157), `npm run build`.
-2. Коміт одним пакетом (текст — у хендоффі) → PR dev→main.
+1. Накат 0158 (SQL Editor, «Run without RLS») → смоук
+   `schedule_override_rooms_smoke.sql` → `SMOKE_OK ( 0 1 a b c d e f g h i j
+   k m(stale-keys=3: …))` → `select public.invariants_check();` →
+   `checked:11` (ledger_md5 по 0158 до gate — законно) → `npm run db:gate`
+   (158/158) → `npm run build`.
+2. Коміт (3 файли + хендофф/промпт; текст — у хендоффі «Сесія 42 — M-1») →
+   PR dev→main. Якщо PR по P2 (0157) ще не влитий — можна одним PR.
 3. Після деплою: живий прогін `integration-live-check.mjs` з машини власника
-   і **додати в чек звірку `busy` із `/slots` з прямим select** (урок C-2).
-4. Живі перевірки в браузері (Claude-in-Chrome, через `find`/`ref`): портал
-   направника — швидка зміна дат/кабінетів без «блимання»; помилка читання
-   `rooms` → `slotsErr`.
+   (тепер 41 перевірка, зі звіркою `busy` проти `room_busy_slots` під
+   service_role; потрібен тестовий ключ — активних 0). Очікуємо `LIVE_OK`
+   і два нові зонди `ok`, а не `skip`.
+4. Живі перевірки (Claude-in-Chrome, `find`/`ref`): портал направника —
+   швидка зміна дат/кабінетів; модалка графіка дня — збереження проходить,
+   а payload з чужим кабінетом (прямий RPC) — «Графік дня відхилено: …».
 
 ## Беклог за пріоритетом (узгодити з власником на старті)
 
@@ -107,9 +114,7 @@ select job, ran_at, result from public.maintenance_runs
 1. ✅ **P2 outbox** — зроблено в с42 (на диску). Лишилось: prune dead-рядків
    outbox (`prune-outbox` чистить лише доставлені) — кандидат у
    `cron_jobs.sql`.
-2. **M-1**: валідатор `schedule_overrides.rooms` у `save_schedule_override`
-   (ключі — uuid кабінетів клініки, поля closed/start/end/breaks, HH:MM
-   кратно 5, start<end, breaks ≤10 у вікні) — окрема міграція.
+2. ✅ **M-1** — зроблено (0158 на диску). Лишилось із аудиту лише P3.
 3. **Винести `fmtOrigin` у `lib`** — дубль у `QueueBoard` і `ReferrerBoard`.
 4. **Симетричний прогін ack зі сторони Б** — потрібен другий живий користувач.
 5. **Харнеси на базі `race-check.mjs`**: гонка `in_progress`, паралельний CAS.

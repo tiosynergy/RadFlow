@@ -17,10 +17,17 @@
    його після прогону. Без --entry (або з --read-only) виконуються лише
    читання й перевірки меж контракту — вони нічого не змінюють.
 
+   Звірка ЗМІСТУ (с42, урок C-2 аудиту 23.08): busy у /slots порівнюється
+   з рядками room_busy_slots під service_role — для цього потрібен
+   SUPABASE_SERVICE_ROLE_KEY у .env.local (є лише на машині власника). Без
+   нього зонд пише skip, решта прогону йде як раніше.
+
    Канон Node-скриптів проєкту: main() виконується безумовно (жодних
    guard-ів по argv[1]), типи — через JSDoc. */
 
-import { parseArgs, isUuid } from "./integration-admin-lib.mjs";
+import { createClient } from "@supabase/supabase-js";
+import { parseArgs, isUuid, loadEnvLocal } from "./integration-admin-lib.mjs";
+import { busiestDays, busyRowsToIntervals, compareBusy, fmtIntervals } from "./integration-live-check-lib.mjs";
 
 const UUID_ZERO = "00000000-0000-0000-0000-000000000000";
 
@@ -34,6 +41,72 @@ function check(name, ok, note = "") {
   results.push({ name, ok: Boolean(ok), note });
   if (!ok) failed++;
   console.log(`${ok ? "  ok  " : " FAIL "} ${name}${note ? ` — ${note}` : ""}`);
+}
+
+/** Зонд, який НЕМОЖЛИВО виконати (немає ключа/даних): кажемо це вголос, а не
+    рахуємо як ok — тиша схожа на норму (урок с38/с40). */
+function skip(name, note) {
+  console.log(`  skip  ${name} — ${note}`);
+}
+
+/** ── Звірка ЗМІСТУ /slots з БД (урок C-2 аудиту 23.08) ──────────────────
+    У с36 прогін давав 39/39 LIVE_OK, а /slots публікував зайняте як вільне:
+    room_busy_slots під service_role віддавав 0 рядків. Зонди вище перевіряють
+    форму (200, є days[]) — цей перевіряє зміст: busy за найзайнятіший день
+    кабінету мусить дорівнювати обʼєднанню рядків RPC, отриманих ТИМ САМИМ
+    контекстом, що й роут (service_role). Потрібні NEXT_PUBLIC_SUPABASE_URL і
+    SUPABASE_SERVICE_ROLE_KEY (.env.local); без них — skip уголос. */
+async function dbBusyCheck(base, token, roomId, roomName) {
+  loadEnvLocal();
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    skip("busy у /slots = room_busy_slots під service_role",
+      "немає SUPABASE_SERVICE_ROLE_KEY у .env.local — ганяйте з машини власника");
+    return;
+  }
+  const db = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+
+  // Дні кабінету з фактичною зайнятістю — ті самі критерії, що й у сторожа
+  // (перевірка 10, 0156): без in_progress, бо його вікно від фактичного старту.
+  const { data: entries, error: qErr } = await db
+    .from("queue_entries")
+    .select("scheduled_date")
+    .eq("room_id", roomId)
+    .in("status", ["scheduled", "waiting", "done"])
+    .not("scheduled_at", "is", null)
+    .not("scheduled_date", "is", null);
+  if (qErr) { check("читання queue_entries під service_role", false, qErr.message); return; }
+  const days = busiestDays(entries ?? []);
+  if (!days.length) {
+    skip("busy у /slots = room_busy_slots під service_role",
+      `у кабінеті «${roomName}» немає зайнятих днів — звіряти нічого`);
+    return;
+  }
+
+  // Перший з топ-3 днів, який роут вважає РОБОЧИМ (зачинений день віддає
+  // busy: [] незалежно від записів — там звіряти нічого).
+  for (const day of days.slice(0, 3)) {
+    const api = await call(base, token,
+      `/api/integrations/v1/slots?room_id=${roomId}&date_from=${day}&date_to=${day}`);
+    const d = api.body?.days?.[0];
+    if (api.status !== 200 || !d) {
+      check(`GET /slots за ${day} → 200 з днем`, false, `статус ${api.status}`);
+      return;
+    }
+    if (!d.open) continue;
+
+    const { data: rows, error: rErr } = await db.rpc("room_busy_slots", { p_room: roomId, p_date: day });
+    if (rErr) { check("room_busy_slots під service_role", false, rErr.message); return; }
+    /* Саме C-2: у queue_entries записи є, а RPC під service_role мовчить. */
+    check(`room_busy_slots під service_role віддає зайнятість (${day})`,
+      (rows ?? []).length > 0, `рядків ${(rows ?? []).length}`);
+    const cmp = compareBusy(d.busy ?? [], fmtIntervals(busyRowsToIntervals(rows ?? [])));
+    check(`busy у /slots = обʼєднання room_busy_slots (${day})`, cmp.ok, cmp.note);
+    return;
+  }
+  skip("busy у /slots = room_busy_slots під service_role",
+    `топ-3 зайняті дні кабінету «${roomName}» зачинені за графіком (${days.slice(0, 3).join(", ")})`);
 }
 
 /** @returns {Promise<{status: number, body: any, text: string}>} */
@@ -155,6 +228,10 @@ async function main() {
     check("GET /slots → 200", slots.status === 200, `статус ${slots.status}`);
     check("/slots віддає дні з вільними вікнами", Array.isArray(slots.body?.days),
       `днів ${slots.body?.days?.length ?? 0}`);
+
+    /* Зміст, а не форма: див. dbBusyCheck. Кабінет — той самий, що й вище;
+       якщо в ньому немає зайнятих днів, зонд скаже skip, і це ПОМІТНО. */
+    await dbBusyCheck(base, token, roomId, roomList[0]?.name);
   }
 
   /* ── Синк записів ──────────────────────────────────────────────────────── */
