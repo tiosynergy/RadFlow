@@ -22,13 +22,19 @@ type Status = {
   canEnable: boolean;
   reason: string | null;
   calendarSummary: string | null;
+  calendarIsPersonal: boolean;
   accessRole: "writer" | "owner" | null;
   lastVerifiedAt: string | null;
   lastSyncAt: string | null;
   version: number;
 };
 
-type CalItem = { id: string; summary: string; timeZone: string | null; accessRole: string; primary?: boolean };
+/* `selectable` рахує СЕРВЕР (/calendars) тим самим правилом, що й /select:
+   другої копії правила «що таке особистий календар» у клієнті НЕМАЄ (с43). */
+type CalItem = {
+  id: string; summary: string; timeZone: string | null;
+  accessRole: string; primary?: boolean; selectable?: boolean;
+};
 
 /* Повідомлення після OAuth-redirect (?gcal=<код> від callback-роуту). */
 const GCAL_URL_MSG: Record<string, { text: string; kind: "ok" | "err" }> = {
@@ -234,6 +240,11 @@ export default function GoogleCalendarBackupSettings() {
 
   const view = STATUS_VIEW[st.status];
   const connected = st.status !== "not_connected";
+  /* с43: особисті календарі показуємо в списку — але недоступними і з
+     причиною. Мовчазне зникнення очевидного варіанта читається як баг, тому
+     список рендериться ЗАВЖДИ, навіть коли придатних у ньому нема.
+     Порожній список ПРИДАТНИХ ≠ порожній список взагалі: тексти різні. */
+  const selectableCals = cals ? cals.filter((c) => c.selectable !== false) : [];
   const checkboxDisabled = toggleBusy || (!st.enabled && !st.canEnable);
 
   return (
@@ -256,10 +267,29 @@ export default function GoogleCalendarBackupSettings() {
         <span aria-hidden="true" style={{ color: view.color, fontSize: "1rem", lineHeight: 1.4 }}>{view.glyph}</span>
         <div>
           <div id="gcal-status-text" style={{ lineHeight: 1.5 }}>{view.text}</div>
-          {st.calendarSummary && (st.status === "ready" || st.enabled) && (
+          {(st.calendarSummary || st.calendarIsPersonal) && (st.status === "ready" || st.enabled) && (
             <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: 2 }}>
-              Календар: <b>{st.calendarSummary}</b>
+              {/* назви особистого календаря в контракті НЕМАЄ: його summary у
+                  Google — це адреса акаунта (ревʼю с43) */}
+              Календар: <b>{st.calendarSummary ?? "особистий календар акаунта"}</b>
               {st.lastSyncAt && <> · остання синхронізація {fmtWhen(st.lastSyncAt)}</>}
+            </div>
+          )}
+          {/* с43 — підключення, зроблені до заборони особистих календарів.
+              Попередження, а не помилка: дзеркало працює. Показуємо в БУДЬ-
+              ЯКОМУ стані, у т.ч. reauth_required — інакше людина побачила б
+              проблему аж коли повторний вибір відхилять. Кнопку не називаємо:
+              її підпис залежить від стану підключення. */}
+          {st.calendarIsPersonal && (
+            <div className="ctx-hint orange" role="note"
+                 style={{ fontSize: "0.78125rem", marginTop: 8 }}>
+              Копія лежить в <b>особистому</b> календарі акаунта. У ній — імена
+              й телефони пацієнтів: щоб персонал міг читати її в аварії, доступ
+              довелося б відкрити разом з усіма приватними подіями власника.
+              Створіть у Google окремий календар і оберіть його тут — повторний
+              вибір особистого RadFlow уже відхиляє. Події, які вже потрапили в
+              особистий календар, приберіть вручну: RadFlow видаляє свої події
+              лише в поточному календарі.
             </div>
           )}
         </div>
@@ -294,32 +324,47 @@ export default function GoogleCalendarBackupSettings() {
       {cals !== null && (
         <div className="fld" style={{ marginBottom: 14 }}>
           <span className="fld-lab">Оберіть календар для резервної копії</span>
-          {cals.length === 0 ? (
-            <div className="ctx-hint red">
-              Обраний Google-акаунт не має права запису до доступних календарів.
-              Створіть у Google окремий календар (наприклад «RadFlow Backup») і оновіть список.
+          {selectableCals.length === 0 && (
+            <div className="ctx-hint red" role="status" style={{ marginBottom: cals.length ? 8 : 0 }}>
+              {cals.length === 0
+                ? "Обраний Google-акаунт не має права запису до жодного календаря."
+                : "Придатних календарів немає: доступні лише особисті календарі, а тримати копію в них не можна — у ній імена й телефони пацієнтів."}
+              {" "}Створіть у Google окремий календар (Settings → Add calendar →
+              Create new) з назвою «RadFlow Backup — ваша клініка» і натисніть
+              кнопку вище ще раз, щоб оновити список.
             </div>
-          ) : (
+          )}
+          {cals.length > 0 && (
             /* Звичайні action-кнопки, НЕ listbox: справжня listbox-роль
                вимагає roving tabindex і стрілки (APG), а вигадана роль без
                реалізації гірша за відсутню (ревʼю с42). Патерн qp-opt як у
-               QueuePolicySettings. */
-            <div role="group" aria-label="Календарі з правом запису"
+               QueuePolicySettings.
+               Заборонені календарі — `aria-disabled`, а НЕ нативний `disabled`:
+               нативний викидає кнопку з tab-порядку, і причина відмови стає
+               недосяжною з клавіатури й для скрінрідера (ревʼю с43). */
+            <div role="group" aria-label="Календарі акаунта"
                  style={{ display: "grid", gap: 6 }}>
-              {cals.map((c) => (
-                <button key={c.id} type="button" className="qp-opt"
-                        onClick={() => selectCalendar(c.id)} disabled={selBusy} aria-busy={selBusy}>
-                  <span className="qp-opt-title">{c.summary}{c.primary ? " (основний)" : ""}</span>
-                  <span className="qp-opt-desc">
-                    {c.timeZone ?? "зона невідома"} · роль: {c.accessRole === "owner" ? "власник" : "запис"}
-                  </span>
-                </button>
-              ))}
+              {cals.map((c) => {
+                const forbidden = c.selectable === false;
+                return (
+                  <button key={c.id} type="button" className="qp-opt"
+                          aria-disabled={forbidden}
+                          disabled={selBusy} aria-busy={selBusy}
+                          onClick={() => { if (!forbidden) void selectCalendar(c.id); }}>
+                    <span className="qp-opt-title">{c.summary}{forbidden ? " — особистий" : ""}</span>
+                    <span className="qp-opt-desc">
+                      {forbidden
+                        ? "Не можна обрати: у копії — імена й телефони пацієнтів, а доступ для персоналу відкрив би разом з нею й усі приватні події акаунта."
+                        : <>{c.timeZone ?? "зона невідома"} · роль: {c.accessRole === "owner" ? "власник" : "запис"}</>}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
           <span className="fld-hint">
-            Радимо ОКРЕМИЙ закритий календар (не основний): у ньому житимуть
-            імена й телефони пацієнтів — доступ лише персоналу клініки.
+            Потрібен ОКРЕМИЙ закритий календар: у ньому житимуть імена й
+            телефони пацієнтів — доступ лише персоналу клініки.
           </span>
         </div>
       )}
@@ -372,6 +417,7 @@ function apiErrText(code: unknown): string {
     case "google_not_connected": return "Спочатку підключіть Google-акаунт і надайте доступ до календаря.";
     case "calendar_not_selected": return "Спочатку оберіть календар для резервної копії.";
     case "calendar_not_writable": return "Обраний Google-акаунт не має права запису до цього календаря.";
+    case "calendar_is_primary": return "Особистий календар не підходить: у резервній копії — імена й телефони пацієнтів. Створіть у Google окремий календар і оберіть його.";
     case "reauth_required": return "Доступ до календаря втрачено. Підключіть Google Calendar повторно.";
     case "calendar_access_lost": return "Доступ до календаря втрачено. Відновіть права або оберіть інший календар.";
     case "conflict": return "Налаштування щойно змінив інший адміністратор — оновіть сторінку.";

@@ -214,6 +214,9 @@ export async function getCalendarListEntry(
       summary: String(o.summaryOverride ?? o.summary ?? ""),
       timeZone: typeof o.timeZone === "string" ? o.timeZone : null,
       accessRole: String(o.accessRole ?? ""),
+      // с43: /select відхиляє основний календар акаунта — прапорець потрібен
+      // тут, бо це ЄДИНИЙ авторитетний сигнал (id-евристика — лише для UI)
+      primary: o.primary === true,
     },
   };
 }

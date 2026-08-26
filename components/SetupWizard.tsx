@@ -1132,6 +1132,16 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
           )}
         </div>
 
+        {/* Панель «Зберегти» належить ЛИШЕ формі майстра (FORM_SECTIONS).
+            На самостійних секціях (черга, GCal, персонал, направники, CEO)
+            вона висіла вічно вимкненою і читалась як «моя зміна не
+            застосувалась» — с43. Поза формою показуємо її лише коли є що
+            зберігати І воно ЗБЕРЕЖЕТЬСЯ (dirty && valid): так правки,
+            зроблені перед переходом у секцію, не губляться, а вимкнена
+            кнопка з підказкою про поля профілю клініки не зʼявляється над
+            чужим екраном (ревʼю с43). Незбережене все одно ловить діалог
+            «Незбережені зміни» на виході. */}
+        {(FORM_SECTIONS.includes(activeSection) || (dirty && valid[1])) && (
         <div className="wiz-bar">
           <div className="wiz-bar-inner">
             <div className="wiz-bar-right" style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
@@ -1143,6 +1153,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
             </div>
           </div>
         </div>
+        )}
       </div>
 
       {exitAsk && (
