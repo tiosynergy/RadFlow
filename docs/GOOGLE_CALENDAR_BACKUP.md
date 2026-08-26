@@ -1,8 +1,8 @@
 # Резервне дзеркало черги в Google Calendar (0160)
 
-> с42 (2026-08-25). Статус: код готовий, фіча ВИМКНЕНА платформно
-> (`GOOGLE_CALENDAR_BACKUP_AVAILABLE` не задано). Дизайн:
-> `RADFLOW_GOOGLE_CALENDAR_BACKUP_DESIGN_20260807.md` (оновл. 22.08).
+> с42 (2026-08-26, 0161). Статус: 0160 накатана, планувальник — pg_cron
+> (клієнтських токенів НЕМАЄ: rfg_-шар 0160 прибрано міграцією 0161).
+> Дизайн: `RADFLOW_GOOGLE_CALENDAR_BACKUP_DESIGN_20260807.md` (оновл. 22.08).
 
 ## Що це
 
@@ -25,14 +25,16 @@ heartbeat-подія «копія актуальна на HH:MM» зверху �
   `googleCalendarClient.ts` (OAuth через google-auth-library + Calendar REST),
   `googleCalendarStore.ts` (БД/Vault), `googleCalendarService.ts`
   (fail-closed переходи), `googleCalendarSync.ts` (серце синхронізації);
-  роути `app/api/integrations/google-calendar/*` (9 штук).
+  роути `app/api/integrations/google-calendar/*` (8 штук; 0161).
 - **UI**: `/setup` → секція «Резервне копіювання»
   (`components/GoogleCalendarBackupSettings.tsx`), лише admin.
-- **Планувальник**: n8n workflow `radflow-gcal-backup-sync`
-  (https://tio-synergy.app.n8n.cloud/workflow/xUpFh5eBbeYY7dhJ, НЕактивний)
-  → кожні 2 хв POST `/api/integrations/google-calendar/sync` з Bearer
-  `rfg_…` (256 біт; у БД лише sha256). Алерти — Data Table
-  `radflow_gcal_alerts` (без PII).
+- **Планувальник (0161)**: pg_cron джоб `gcal-backup-sync` (канон
+  outbox-deliver) → кожні 2 хв `net.http_post` на
+  `/api/integrations/google-calendar/sync-all` із Bearer `CRON_SECRET`
+  (секрет у Vault `cron_secret`, у тілі джоба його немає). Роут обходить
+  УСІ увімкнені клініки, кожну під своїм lease. Тривога про застій —
+  сторож `invariants_check` №13 `gcal_sync_overdue` (нічний прогін) +
+  «остання синхронізація» в /setup.
 
 ### Час (важливо)
 
@@ -52,8 +54,10 @@ heartbeat-подія «копія актуальна на HH:MM» зверху �
 - invalid_grant / втрата ACL → enabled=false + аварійний статус + системна
   подія журналу. 429/5xx фічу НЕ вимикають і подій НЕ видаляють.
 - stale-чистка і ретеншн — ЛИШЕ при повному снапшоті і нулі помилок Google.
-- n8n не має ні Supabase-ключів, ні Google-токенів, ні PII — тільки
-  scoped-токен свого роуту і лічильники у відповідь.
+- Планувальник не має ні Supabase-ключів, ні Google-токенів, ні PII:
+  pg_cron шле лише Bearer `CRON_SECRET` (як outbox-deliver), відповідь —
+  короткі clinic-id і лічильники. Жодних клієнтських токенів не існує
+  (0161); адмін клініки взагалі нічого не вставляє і не зберігає.
 - Журнал важливих подій: connect/select/enable/disable/disconnect +
   системні gcal_reauth_required/gcal_access_lost (entity_type
   'integration'); PII-guard розширено токен-ключами (0160).
@@ -105,28 +109,36 @@ Redeploy. До цього моменту фіча спить: секція в /s
    дозволити доступ.
 2. «Оберіть календар для резервної копії» → обрати «RadFlow Backup — …».
 3. Чекбокс «Резервна копія черги в Google Calendar» стане доступним →
-   увімкнути.
-4. «Згенерувати токен» (Токен планувальника) → СКОПІЮВАТИ (показується один
-   раз, зникає з екрана за 5 хв).
+   увімкнути. Все: перший снапшот у календарі зʼявиться протягом ~2 хв
+   (тик планувальника), жодних токенів вставляти нікуди не треба.
 
-### 5. n8n (власник, ~3 хв)
+### 5. Планувальник (нічого налаштовувати не треба)
 
-1. Відкрити https://tio-synergy.app.n8n.cloud/workflow/xUpFh5eBbeYY7dhJ
-2. У вузлах «Sync RadFlow → GCal» і «Повторний sync» → Credentials →
-   створити «RadFlow GCal Sync (Medicom)» (templated custom auth:
-   header `Authorization: Bearer {{api_key}}`) → вставити токен із кроку 4.4.
-   ОДИН credential на обидва вузли.
-3. Execute workflow (разово, руками) → очікувано `ok` з лічильниками
-   (перший прогін створить усі події вікна).
-4. Перевірити календар: події + heartbeat «✅ RadFlow: копія актуальна на …».
-5. Активувати workflow (перемикач Active).
+Джоб `gcal-backup-sync` створює міграція 0161 — він уже тикає кожні 2 хв
+для ВСІХ клінік одразу (вимкнені відповідають no-op-ом). Перевірити:
+
+```
+select jobid, jobname, schedule, active from cron.job
+ where jobname = 'gcal-backup-sync';
+select last_sync_at, last_error_code
+  from google_calendar_connections where enabled;
+```
+
+Ручний прогін поза розкладом (власник, за потреби):
+`curl -X POST -H "Authorization: Bearer $CRON_SECRET"`
+`https://rad-flow-tau.vercel.app/api/integrations/google-calendar/sync-all`
+— відповідь: `{ok, ran, deferred, outcomes:[{clinic, status, …}]}` без PII.
+Історичний n8n workflow `radflow-gcal-backup-sync` заархівовано і в схемі
+більше не бере участі.
 
 ### 6. Контроль після увімкнення
 
 - /setup → «остання синхронізація» оновлюється кожні ~2 хв;
 - журнал дій: «увімкнено резервну копію в Google Calendar»;
-- n8n executions: `ok`, лічильники без PII;
-- Data Table `radflow_gcal_alerts` — порожня.
+- `select public.invariants_check();` → у failed НЕМАЄ `gcal_sync_overdue`
+  (сторож №13; нічний прогін теж його ганяє — застій > 30 хв стане видно
+  в maintenance_runs без жодних дій);
+- heartbeat у календарі свіжий (≤ ~5 хв).
 
 ## Аварійна процедура адміністратора (коли RadFlow недоступний)
 
@@ -149,10 +161,10 @@ Redeploy. До цього моменту фіча спить: секція в /s
 |---|---|---|
 | Чекбокс disabled, «Підключіть повторно» | refresh-токен відкликано (reauth_required) | /setup → «Підключити повторно»; фіча вже вимкнена fail-closed |
 | «Доступ до календаря втрачено» | календар видалено / ACL знято (access_lost) | відновити доступ або обрати інший календар, увімкнути знову |
-| n8n: 409 в executions + рядок в alerts | те саме, помічено планувальником | як вище; ретраїти безглуздо |
-| n8n: 503 retryable_error | Google/БД тимчасово; фіча НЕ вимкнена | нічого: наступний тик догонить; події не видаляються |
-| n8n: 401 invalid_token | токен ротовано в /setup, у Credentials старий | вставити свіжий токен у Credentials |
-| «остання синхронізація» стоїть, workflow активний | див. executions n8n і `last_error_code` у БД | `select status, enabled, last_error_code, last_sync_at from google_calendar_connections;` |
+| сторож: `gcal_sync_overdue` у failed | синк стоїть > 30 хв: код не задеплоєно, джоб знято, секрет протух, роут 5xx | `select * from cron.job where jobname='gcal-backup-sync';` → ручний curl sync-all (див. §5) і дивитись відповідь |
+| sync-all: 401 forbidden при ручному curl | Bearer не збігається з `CRON_SECRET` env | взяти секрет із Vercel env (він же у Vault `cron_secret`) |
+| outcome клініки `retryable_error` | Google/БД тимчасово; фіча НЕ вимкнена | нічого: наступний тик догонить; події не видаляються |
+| «остання синхронізація» стоїть | див. `last_error_code` у БД і відповіді sync-all | `select status, enabled, last_error_code, last_sync_at from google_calendar_connections;` |
 | Події зникли з календаря | ретеншн 14 днів (старі) або запис пішов з вікна/видалений | норма; активне вікно — вчора…+7 |
 
 ## Відомі обмеження (свідомі)
@@ -174,17 +186,25 @@ Redeploy. До цього моменту фіча спить: секція в /s
 
 - Вимкнути фічу: чекбокс у /setup (працює завжди) або
   `GOOGLE_CALENDAR_BACKUP_AVAILABLE=false` + redeploy (глушить платформно).
-- Вимкнути планувальник: деактивувати workflow у n8n.
+  ⚠️ Платформний стоп НЕ вимикає enabled у клінік: сторож №13 чесно
+  воюватиме щоночі, поки дзеркала стоять, — при тривалому стопі вимкніть
+  і чекбокси клінік.
+- Вимкнути планувальник: `select cron.unschedule('gcal-backup-sync');`
+  (повернути — перепрогнати секцію 2 міграції 0161).
 - Повне відключення клініки: «Відключити» в /setup (revoke + чистка Vault).
-- Відкат міграції: секція ВІДКАТ у `supabase/migrations/0160_…sql`.
+- Відкат міграцій: СПОЧАТКУ секція ВІДКАТ у `0161_…sql`, потім у
+  `0160_…sql` — одиночний відкат 0160 на 0161-проді лишив би живий джоб
+  і зламав би сторож (перевірка 13 читає дропнуту таблицю).
 - Події в календарі при будь-якому відкаті НЕ видаляються — приберіть
   календар руками, якщо треба.
 
 ## Тести
 
-- `tests/googleCalendarBackup.test.ts` — 27 юнітів чистої логіки (статуси,
-  класифікатор, вікно, відбиток, тіло події, PII-мінімізація, токени).
+- `tests/googleCalendarBackup.test.ts` — 25 юнітів чистої логіки (статуси,
+  класифікатор, вікно, відбиток, тіло події, PII-мінімізація).
 - Смоук 0160 — 19 зон (CHECK-и, Vault-роундтрип і скоуп, RLS/привілеї,
-  журнал, тригер-страховка). Прогнано dry-run-ом на проді.
+  журнал, тригер-страховка). Прогнано dry-run-ом і на проді.
+- Смоук 0161 — 8 зон (джоб, дроп токен-шару, відтворений CHECK, сторож 13
+  ловить/відпускає, md5 передруку). Прогнано dry-run-ом на проді.
 - Live-acceptance (потрібні креденшли Google) — чек-лист у §12 промпту
   фічі; проганяється на тестовому акаунті ПЕРЕД пілотом.

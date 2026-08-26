@@ -91,15 +91,26 @@ export type AccessTokenResult =
   | { ok: true; accessToken: string }
   | { ok: false; class: GoogleErrorClass };
 
-/** refresh token → свіжий access token (живе лише в памʼяті запиту). */
+/** refresh token → свіжий access token (живе лише в памʼяті запиту).
+    Таймаут 15с (як calFetch): google-auth-library свого дедлайну не має, а
+    з 0161 одна клініка, що зависла на refresh, зʼїдала б бюджет усього
+    батча sync-all, не лише свій (ревʼю с42 пакета 6, М-3). Race не скасовує
+    сам запит — але звільняє цикл; клас network = retryable. */
 export async function refreshAccessToken(refreshToken: string): Promise<AccessTokenResult> {
   const c = oauthClient();
   c.setCredentials({ refresh_token: refreshToken });
   try {
-    const { token } = await c.getAccessToken();
+    const timeout = new Promise<never>((_, reject) => {
+      const t = setTimeout(() => reject(new Error("gcal: refresh timeout")), 15_000);
+      (t as unknown as { unref?: () => void }).unref?.();
+    });
+    const { token } = await Promise.race([c.getAccessToken(), timeout]);
     if (!token) return { ok: false, class: "google_unavailable" };
     return { ok: true, accessToken: token };
   } catch (e) {
+    if (e instanceof Error && e.message === "gcal: refresh timeout") {
+      return { ok: false, class: "network" };
+    }
     return { ok: false, class: classifyAuthError(e) };
   }
 }

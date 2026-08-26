@@ -27,7 +27,7 @@ export async function GET() {
     platformConfigured: isPlatformConfigured(),
   });
   return NextResponse.json(
-    { ...status, version: conn?.version ?? 0, hasSyncToken: Boolean(conn?.sync_token_hash) },
+    { ...status, version: conn?.version ?? 0 },
     { headers: { "Cache-Control": "no-store" } }
   );
 }

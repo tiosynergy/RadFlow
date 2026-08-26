@@ -26,7 +26,6 @@ type Status = {
   lastVerifiedAt: string | null;
   lastSyncAt: string | null;
   version: number;
-  hasSyncToken: boolean;
 };
 
 type CalItem = { id: string; summary: string; timeZone: string | null; accessRole: string; primary?: boolean };
@@ -65,15 +64,6 @@ export default function GoogleCalendarBackupSettings() {
   const [toggleBusy, setToggleBusy] = useState(false);
   const [discAsk, setDiscAsk] = useState(false);
   const [discBusy, setDiscBusy] = useState(false);
-  const [tokenBusy, setTokenBusy] = useState(false);
-  const [issued, setIssued] = useState<string | null>(null);
-  // токен зникає з екрана сам: незакрита вкладка адміна не має тримати
-  // секрет видимим годинами (ревʼю с42)
-  useEffect(() => {
-    if (!issued) return;
-    const t = setTimeout(() => setIssued(null), 5 * 60_000);
-    return () => clearTimeout(t);
-  }, [issued]);
   const [msg, setMsg] = useState<{ text: string; kind: "ok" | "err" } | null>(null);
   const mounted = useRef(true);
   useEffect(() => () => { mounted.current = false; }, []);
@@ -164,7 +154,7 @@ export default function GoogleCalendarBackupSettings() {
         setMsg({ kind: "err", text: apiErrText(data?.error) });
       } else {
         setMsg(next
-          ? { kind: "ok", text: "Резервне копіювання увімкнено. Перша синхронізація — до 2 хвилин після запуску планувальника." }
+          ? { kind: "ok", text: "Резервне копіювання увімкнено. Перша синхронізація зʼявиться в календарі протягом ~2 хвилин." }
           : { kind: "ok", text: "Резервне копіювання вимкнено. Події в календарі не видаляються." });
       }
       await reload();
@@ -193,7 +183,6 @@ export default function GoogleCalendarBackupSettings() {
           ? { kind: "ok", text: "Google Calendar відключено, доступ у Google відкликано." }
           : { kind: "ok", text: "Відключено. Доступ у Google відкликати не вдалося — приберіть RadFlow у налаштуваннях Google-акаунта (Безпека → Сторонній доступ)." });
         setCals(null);
-        setIssued(null);
       }
       await reload();
     } catch {
@@ -204,28 +193,8 @@ export default function GoogleCalendarBackupSettings() {
     }
   }
 
-  async function issueToken() {
-    if (!st || tokenBusy) return;
-    setTokenBusy(true);
-    setMsg(null);
-    try {
-      const res = await fetch("/api/integrations/google-calendar/sync-token", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ version: st.version }),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) {
-        setMsg({ kind: "err", text: apiErrText(data?.error) });
-      } else {
-        setIssued(String(data?.token ?? ""));
-      }
-      await reload();
-    } catch {
-      setMsg({ kind: "err", text: "Мережева помилка — спробуйте ще раз." });
-    } finally {
-      setTokenBusy(false);
-    }
-  }
+  /* Токен планувальника тут БУВ (0160) і прибраний у 0161: синк смикає
+     pg_cron під CRON_SECRET, адмінові клініки ніякі токени не потрібні. */
 
   /* ── рендер ── */
 
@@ -377,43 +346,6 @@ export default function GoogleCalendarBackupSettings() {
           </span>
         </span>
       </label>
-
-      {/* Токен планувальника (n8n) */}
-      {st.status === "ready" && (
-        <div className="fld" style={{ marginTop: 14 }}>
-          <span className="fld-lab">Токен планувальника (n8n)</span>
-          <span className="fld-hint" style={{ display: "block", marginBottom: 6 }}>
-            Синхронізацію кожні 2 хвилини смикає планувальник із цим токеном.
-            Токен показується ОДИН раз{st.hasSyncToken ? "; повторна генерація миттєво відкликає попередній" : ""}.
-          </span>
-          {issued ? (
-            <div>
-              <code style={{ userSelect: "all", overflowWrap: "anywhere", display: "block",
-                             padding: 8, border: "1px solid var(--border)", borderRadius: 8 }}>
-                {issued}
-              </code>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
-                <button className="btn btn-secondary" type="button"
-                        onClick={() => {
-                          const cb = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
-                          (cb ? cb.writeText(issued) : Promise.reject()).then(
-                            () => setMsg({ kind: "ok", text: "Токен скопійовано в буфер обміну." }),
-                            () => setMsg({ kind: "err", text: "Не вдалося скопіювати — виділіть і скопіюйте вручну." }));
-                        }}>
-                  Скопіювати
-                </button>
-                <span className="fld-hint">
-                  Вставте в n8n Credentials зараз — після оновлення сторінки токен не відновити (зникне з екрана за 5 хв).
-                </span>
-              </div>
-            </div>
-          ) : (
-            <button className="btn btn-secondary" onClick={issueToken} disabled={tokenBusy} aria-busy={tokenBusy}>
-              {tokenBusy ? "Генеруємо…" : st.hasSyncToken ? "Перевипустити токен" : "Згенерувати токен"}
-            </button>
-          )}
-        </div>
-      )}
 
       {/* Підтвердження відключення — штатна модалка (фокус-пастка/Esc/
           повернення фокуса через useModalA11y), не саморобний alertdialog */}

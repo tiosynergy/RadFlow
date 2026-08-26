@@ -1,6 +1,6 @@
 /**
- * Резервне дзеркало GCal (0160) — чиста логіка: похідний статус, вікно,
- * відбиток, тіло події, класифікатор помилок Google, формат sync-токена.
+ * Резервне дзеркало GCal (0160/0161) — чиста логіка: похідний статус, вікно,
+ * відбиток, тіло події, класифікатор помилок Google.
  * Мережа/БД сюди не заходять — усе, що тут зелене, не залежить від Google.
  */
 import { describe, expect, it } from "vitest";
@@ -9,7 +9,7 @@ import {
   clinicToday, addDays, snapshotWindow,
   eventIdOf, wallLocalOf, wallLocalEndOf, shortNameOf, studiesLabelOf,
   statusPrefixOf, transparencyOf, fingerprintOf, buildEventBody,
-  buildHeartbeatBody, isSyncToken, hashSyncToken, httpStatusForReason,
+  buildHeartbeatBody, httpStatusForReason,
   HEARTBEAT_EVENT_ID,
   type SnapshotEntry, type GcalConnectionRow,
 } from "@/lib/googleCalendarBackup";
@@ -215,16 +215,5 @@ describe("подія Google — wall-час без конверсій зон", (
   });
 });
 
-describe("scoped-токен планувальника", () => {
-  it("формат rfg_ + 64 hex (256 біт), інші — ні", () => {
-    expect(isSyncToken("rfg_" + "a".repeat(64))).toBe(true);
-    expect(isSyncToken("rfg_" + "a".repeat(48))).toBe(false);
-    expect(isSyncToken("rfk_" + "a".repeat(64))).toBe(false);
-    expect(isSyncToken("")).toBe(false);
-  });
-  it("hash — sha256 hex повного рядка (канон 0144)", () => {
-    const h = hashSyncToken("rfg_" + "a".repeat(64));
-    expect(h).toMatch(/^[0-9a-f]{64}$/);
-    expect(hashSyncToken("rfg_" + "b".repeat(64))).not.toBe(h);
-  });
-});
+/* Тести scoped-токенів rfg_ прибрані разом із самим токен-шаром (0161):
+   синк тепер смикає pg_cron через /sync-all під CRON_SECRET. */
