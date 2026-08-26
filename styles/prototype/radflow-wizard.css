@@ -232,6 +232,16 @@
   transition: border-color .12s ease, background .12s ease;
 }
 .qp-opt:hover { border-color: var(--border-strong); }
+/* с43 — недоступний варіант (напр. особистий календар у виборі GCal-копії).
+   Через aria-disabled, а не :disabled: кнопка лишається в tab-порядку, щоб
+   причина відмови була досяжна з клавіатури й для скрінрідера. Без цих
+   правил вона виглядала б і поводилась як звичайна, а клік мовчав. */
+.qp-opt[aria-disabled="true"] { cursor: not-allowed; }
+.qp-opt[aria-disabled="true"]:hover { border-color: var(--border); }
+.qp-opt[aria-disabled="true"] .qp-opt-title { color: var(--text-muted); }
+/* --orange на --card-2 = 5.52:1 (AA). Загальний opacity брати НЕ можна:
+   --text-muted на --card-2 має 4.52:1 і від затемнення провалився б. */
+.qp-opt[aria-disabled="true"] .qp-opt-desc { color: var(--orange); }
 .qp-opt.sel { border-color: var(--blue-line); background: var(--blue-bg); }
 .qp-opt-title { font-size: 0.84375rem; font-weight: 600; }
 .qp-opt-desc { font-size: 0.75rem; color: var(--text-muted); line-height: 1.45; }

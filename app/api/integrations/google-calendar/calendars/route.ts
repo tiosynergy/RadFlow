@@ -4,9 +4,10 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { isPlatformConfigured, listWritableCalendars } from "@/lib/googleCalendarClient";
 import { getConnection } from "@/lib/googleCalendarStore";
 import { freshAccessToken } from "@/lib/googleCalendarService";
+import { isPersonalCalendarId } from "@/lib/googleCalendarBackup";
 
 /* ===== GCal Backup: календарі, куди МОЖНА писати =====
-   GET → { calendars: [{id, summary, timeZone, accessRole, primary}] }.
+   GET → { calendars: [{id, summary, timeZone, accessRole, primary, selectable}] }.
    id тут ПОТРІБЕН — це значення вибору для /select (у status-контракт id
    не потрапляє). Список уже відфільтрований minAccessRole=writer на боці
    Google + повторно в клієнті. Порожній список = стан no_writable_calendar
@@ -45,8 +46,17 @@ export async function GET() {
       ? NextResponse.json({ error: "reauth_required" }, { status: 409 })
       : NextResponse.json({ error: "google_unavailable" }, { status: 503 });
   }
+  /* `selectable` рахує СЕРВЕР тим самим правилом, що й /select (с43):
+     інакше UI мав би другу копію логіки і вони розійшлися б — форма
+     пропустила б те, що роут відхиляє. Особисті календарі зі списку НЕ
+     викидаємо: мовчазне зникнення очевидного варіанта читається як баг,
+     тому показуємо їх із причиною. */
+  const calendars = list.items.map((c) => ({
+    ...c,
+    selectable: !(c.primary === true || isPersonalCalendarId(c.id)),
+  }));
   return NextResponse.json(
-    { calendars: list.items },
+    { calendars },
     { headers: { "Cache-Control": "no-store" } }
   );
 }
