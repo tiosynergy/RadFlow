@@ -5,7 +5,6 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { isPlatformConfigured, getCalendarListEntry } from "@/lib/googleCalendarClient";
 import { getConnection, updateConnectionCas } from "@/lib/googleCalendarStore";
 import { freshAccessToken } from "@/lib/googleCalendarService";
-import { isPersonalCalendarId } from "@/lib/googleCalendarBackup";
 import { emitImportantEvent } from "@/lib/importantEvents.server";
 
 /* ===== GCal Backup: вибір календаря =====
@@ -65,17 +64,14 @@ export async function POST(req: Request) {
   if (entry.entry.accessRole !== "writer" && entry.entry.accessRole !== "owner") {
     return NextResponse.json({ error: "calendar_not_writable" }, { status: 409 });
   }
-  /* с43 — ОСОБИСТИЙ календар як ціль копії заборонений. У дзеркалі живуть
-     ПІБ і телефони пацієнтів, а аварійне читання (runbook §3) вимагає дати
-     доступ персоналу: особистий календар віддав би разом із чергою все
-     приватне життя його власника. Перевірка тут, на СЕРВЕРІ, бо calendarId
-     із форми — недовірений рядок; UI лише дублює пояснення.
-     ДВА щити, і другий ширший: `primary` ловить основний календар САМЕ
-     цього акаунта, а isPersonalCalendarId — ще й ЧУЖИЙ особистий, розшарений
-     нам з правом запису (він приходить без `primary` — ревʼю с43). */
-  if (entry.entry.primary === true || isPersonalCalendarId(entry.entry.id)) {
-    return NextResponse.json({ error: "calendar_is_primary" }, { status: 409 });
-  }
+  /* ⚠️ Особистий календар як ціль копії НЕ забороняється — рішення власника
+     (с43): доступний будь-який календар, куди акаунт має право писати.
+     Ризик знімається інформуванням, а не відмовою: /calendars позначає такі
+     календарі прапорцем `personal`, у списку вибору стоїть попередження, і
+     /setup тримає його на видноті, поки копія лежить в особистому календарі.
+     Якщо колись знадобиться відмова — місце для неї тут, після перевірки
+     accessRole, а правило — isPersonalCalendarId (воно ширше за `primary`:
+     ловить і ЧУЖИЙ особистий, розшарений нам із правом запису). */
 
   // Google не обмежує довжину summary; CHECK-и 0160 — 512/64. Обрізаємо
   // ТУТ, а не ловимо 23514 як 500 (М-2 ревʼю с42).
