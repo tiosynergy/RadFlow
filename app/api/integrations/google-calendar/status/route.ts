@@ -9,7 +9,10 @@ import { deriveBackupStatus, type GcalConnectionRow } from "@/lib/googleCalendar
    GET → GoogleCalendarBackupStatus + version (для CAS-мутацій із UI).
    Google тут НЕ викликається: статус рендериться на кожне відкриття
    /setup, а live-перевірки роблять select/enable у момент дії.
-   calendar_id/email/токени назовні не йдуть — лише safe-поля контракту. */
+   calendar_id і токени назовні не йдуть — лише safe-поля контракту.
+   ⚠️ `calendarSummary` — це назва календаря, яку показує Google; для
+   основного календаря акаунта вона дорівнює адресі цього акаунта. Роут
+   admin-only і в межах своєї клініки, тож віддаємо як є (с43). */
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

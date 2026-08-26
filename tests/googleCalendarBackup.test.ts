@@ -9,7 +9,7 @@ import {
   clinicToday, addDays, snapshotWindow,
   eventIdOf, wallLocalOf, wallLocalEndOf, shortNameOf, studiesLabelOf,
   statusPrefixOf, transparencyOf, fingerprintOf, buildEventBody,
-  buildHeartbeatBody, httpStatusForReason, isPersonalCalendarId,
+  buildHeartbeatBody, httpStatusForReason,
   HEARTBEAT_EVENT_ID,
   type SnapshotEntry, type GcalConnectionRow,
 } from "@/lib/googleCalendarBackup";
@@ -75,58 +75,6 @@ describe("deriveBackupStatus — сервер вирішує canEnable, не UI"
     const s = deriveBackupStatus(ROW, { platformConfigured: true });
     expect(JSON.stringify(s)).not.toContain("abc@group.calendar.google.com");
     expect(JSON.stringify(s)).not.toContain("sec-1");
-  });
-});
-
-describe("isPersonalCalendarId — основний календар як ціль копії заборонений", () => {
-  it("вторинний і ресурсний календарі Google — НЕ особисті", () => {
-    expect(isPersonalCalendarId("abc@group.calendar.google.com")).toBe(false);
-    expect(isPersonalCalendarId("room7@resource.calendar.google.com")).toBe(false);
-  });
-
-  it("id основного календаря = адреса акаунта → особистий", () => {
-    expect(isPersonalCalendarId("tiosynergy@gmail.com")).toBe(true);
-    expect(isPersonalCalendarId("backup@clinic.com.ua")).toBe(true);
-  });
-
-  it("аліас 'primary' → особистий", () => {
-    expect(isPersonalCalendarId("primary")).toBe(true);
-  });
-
-  it("порожнє/відсутнє → false (нема що попереджати)", () => {
-    expect(isPersonalCalendarId(null)).toBe(false);
-    expect(isPersonalCalendarId(undefined)).toBe(false);
-    expect(isPersonalCalendarId("")).toBe(false);
-  });
-
-  it("регістр і крайові пробіли не обманюють", () => {
-    expect(isPersonalCalendarId("  ABC@Group.Calendar.Google.COM  ")).toBe(false);
-  });
-
-  it("домен лише як ХВІСТ: підробка в середині id не проходить за вторинний", () => {
-    expect(isPersonalCalendarId("x@group.calendar.google.com.evil.com")).toBe(true);
-  });
-
-  it("holiday / contacts / import — теж згенеровані Google, не особисті", () => {
-    expect(isPersonalCalendarId("uk.ukrainian#holiday@group.v.calendar.google.com")).toBe(false);
-    expect(isPersonalCalendarId("#contacts@group.v.calendar.google.com")).toBe(false);
-    expect(isPersonalCalendarId("deadbeef@import.calendar.google.com")).toBe(false);
-  });
-
-  it("похідний статус: прапорець у контракті, НАЗВА особистого — ні", () => {
-    const ok = deriveBackupStatus(ROW, { platformConfigured: true });
-    expect(ok.calendarIsPersonal).toBe(false);
-    expect(ok.calendarSummary).toBe("RadFlow Backup — Medicom");
-
-    // summary основного календаря Google = адреса акаунта → в контракт не йде
-    const personal = deriveBackupStatus(
-      { ...ROW, calendar_id: "tiosynergy@gmail.com", calendar_summary: "tiosynergy@gmail.com" },
-      { platformConfigured: true });
-    expect(personal.calendarIsPersonal).toBe(true);
-    expect(personal.calendarSummary).toBeNull();
-    expect(JSON.stringify(personal)).not.toContain("tiosynergy@gmail.com");
-
-    expect(deriveBackupStatus(null, { platformConfigured: true }).calendarIsPersonal).toBe(false);
   });
 });
 
