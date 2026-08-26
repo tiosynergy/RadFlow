@@ -43,30 +43,6 @@ export type GcalConnectionRow = {
   last_sync_at: string | null;
 };
 
-/* ── Особистий (основний) vs окремий календар — с43 ──
-
-   У дзеркалі живуть ПІБ і телефони пацієнтів, а щоб дати персоналу аварійне
-   читання, календар доводиться шарити. Розшарений ОСНОВНИЙ календар віддав
-   би персоналу все особисте життя власника акаунта — тому основний як ціль
-   копії заборонений.
-
-   Прапорець `primary` з CalendarList — НЕ повний оракул: він означає
-   «основний календар САМЕ ЦЬОГО акаунта». Чужий особистий календар,
-   розшарений нам з правом запису, приходить БЕЗ `primary` — і проліз би
-   повз перевірку (ревʼю с43). Тому правило одне на всі точки: заборонено
-   все, що не є згенерованим Google вторинним/ресурсним календарем. Їхні id
-   Google видає у власних доменах (@group.calendar.google.com,
-   @group.v.calendar.google.com, @resource.…, @import.…), а id особистого —
-   це адреса акаунта. Помилки в інший бік бути не може: адрес у доменах
-   *.calendar.google.com Google під акаунти не роздає. */
-const GOOGLE_GENERATED_CALENDAR_RE =
-  /@(group|resource)\.(v\.)?calendar\.google\.com$|@import\.calendar\.google\.com$/i;
-
-export function isPersonalCalendarId(calendarId: string | null | undefined): boolean {
-  if (!calendarId) return false;
-  return !GOOGLE_GENERATED_CALENDAR_RE.test(calendarId.trim());
-}
-
 export type GoogleCalendarBackupStatus = {
   platformConfigured: boolean;
   status:
@@ -79,14 +55,7 @@ export type GoogleCalendarBackupStatus = {
     | "google_not_configured" | "google_not_connected"
     | "calendar_not_selected" | "calendar_not_writable"
     | "reauth_required" | "calendar_access_lost";
-  /** Назва календаря для UI. Для ОСОБИСТОГО календаря — завжди null:
-      Google віддає summary основного календаря = адреса акаунта, і вона
-      поїхала б у контракт (правило: ні calendar_id, ні e-mail назовні).
-      UI в цьому випадку друкує «Основний календар акаунта». */
   calendarSummary: string | null;
-  /** Збережений календар — особистий (евристика по id). Привід попередити
-      адміна в /setup; нові такі вибори /select відхиляє тим самим правилом. */
-  calendarIsPersonal: boolean;
   accessRole: "writer" | "owner" | null;
   lastVerifiedAt: string | null;
   lastSyncAt: string | null;
@@ -102,13 +71,10 @@ export function deriveBackupStatus(
   row: GcalConnectionRow | null,
   opts: { platformConfigured: boolean; noWritable?: boolean }
 ): GoogleCalendarBackupStatus {
-  // summary особистого календаря = адреса акаунта → в контракт НЕ пускаємо
-  const personal = isPersonalCalendarId(row?.calendar_id ?? null);
   const base = {
     platformConfigured: opts.platformConfigured,
     enabled: row?.enabled ?? false,
-    calendarSummary: personal ? null : (row?.calendar_summary ?? null),
-    calendarIsPersonal: personal,
+    calendarSummary: row?.calendar_summary ?? null,
     accessRole: row?.access_role ?? null,
     lastVerifiedAt: row?.last_verified_at ?? null,
     lastSyncAt: row?.last_sync_at ?? null,

@@ -4,10 +4,9 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { isPlatformConfigured, listWritableCalendars } from "@/lib/googleCalendarClient";
 import { getConnection } from "@/lib/googleCalendarStore";
 import { freshAccessToken } from "@/lib/googleCalendarService";
-import { isPersonalCalendarId } from "@/lib/googleCalendarBackup";
 
 /* ===== GCal Backup: календарі, куди МОЖНА писати =====
-   GET → { calendars: [{id, summary, timeZone, accessRole, primary, personal}] }.
+   GET → { calendars: [{id, summary, timeZone, accessRole, primary}] }.
    id тут ПОТРІБЕН — це значення вибору для /select (у status-контракт id
    не потрапляє). Список уже відфільтрований minAccessRole=writer на боці
    Google + повторно в клієнті. Порожній список = стан no_writable_calendar
@@ -46,20 +45,8 @@ export async function GET() {
       ? NextResponse.json({ error: "reauth_required" }, { status: 409 })
       : NextResponse.json({ error: "google_unavailable" }, { status: 503 });
   }
-  /* `personal` рахує СЕРВЕР (с43) — тим самим правилом, що й попередження в
-     /status: інакше UI мав би другу копію логіки «що таке особистий
-     календар» і вони розійшлися б. Це ПОЗНАЧКА, не заборона: обрати можна
-     будь-який писабельний календар (рішення власника), але поруч має стояти
-     попередження — у копії ПІБ і телефони пацієнтів, а щоб персонал читав її
-     в аварії, доступ доведеться відкрити разом з усім вмістом календаря.
-     `primary` ловить основний календар САМЕ цього акаунта, isPersonalCalendarId
-     — ще й ЧУЖИЙ особистий, розшарений нам із правом запису. */
-  const calendars = list.items.map((c) => ({
-    ...c,
-    personal: c.primary === true || isPersonalCalendarId(c.id),
-  }));
   return NextResponse.json(
-    { calendars },
+    { calendars: list.items },
     { headers: { "Cache-Control": "no-store" } }
   );
 }

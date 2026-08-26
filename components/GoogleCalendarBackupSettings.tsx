@@ -22,20 +22,13 @@ type Status = {
   canEnable: boolean;
   reason: string | null;
   calendarSummary: string | null;
-  calendarIsPersonal: boolean;
   accessRole: "writer" | "owner" | null;
   lastVerifiedAt: string | null;
   lastSyncAt: string | null;
   version: number;
 };
 
-/* `personal` рахує СЕРВЕР (/calendars) — другої копії правила «що таке
-   особистий календар» у клієнті НЕМАЄ (с43). Це позначка для попередження,
-   а НЕ заборона: обрати можна будь-який писабельний календар. */
-type CalItem = {
-  id: string; summary: string; timeZone: string | null;
-  accessRole: string; primary?: boolean; personal?: boolean;
-};
+type CalItem = { id: string; summary: string; timeZone: string | null; accessRole: string; primary?: boolean };
 
 /* Повідомлення після OAuth-redirect (?gcal=<код> від callback-роуту). */
 const GCAL_URL_MSG: Record<string, { text: string; kind: "ok" | "err" }> = {
@@ -263,28 +256,10 @@ export default function GoogleCalendarBackupSettings() {
         <span aria-hidden="true" style={{ color: view.color, fontSize: "1rem", lineHeight: 1.4 }}>{view.glyph}</span>
         <div>
           <div id="gcal-status-text" style={{ lineHeight: 1.5 }}>{view.text}</div>
-          {(st.calendarSummary || st.calendarIsPersonal) && (st.status === "ready" || st.enabled) && (
+          {st.calendarSummary && (st.status === "ready" || st.enabled) && (
             <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: 2 }}>
-              {/* назви особистого календаря в контракті НЕМАЄ: його summary у
-                  Google — це адреса акаунта (ревʼю с43) */}
-              Календар: <b>{st.calendarSummary ?? "особистий календар"}</b>
+              Календар: <b>{st.calendarSummary}</b>
               {st.lastSyncAt && <> · остання синхронізація {fmtWhen(st.lastSyncAt)}</>}
-            </div>
-          )}
-          {/* с43 — копія в особистому календарі дозволена (рішення власника),
-              але про наслідки нагадуємо, поки вона там лежить. Попередження,
-              а не помилка. Показуємо в БУДЬ-ЯКОМУ стані, у т.ч.
-              reauth_required, де рядка «Календар: …» немає взагалі. Кнопку не
-              називаємо: її підпис залежить від стану підключення. */}
-          {st.calendarIsPersonal && (
-            <div className="ctx-hint orange" role="note"
-                 style={{ fontSize: "0.78125rem", marginTop: 8 }}>
-              Копія лежить в <b>особистому</b> календарі. У ній — імена й
-              телефони пацієнтів: щоб персонал міг читати її в аварії, доступ
-              доведеться відкрити разом з рештою подій цього календаря. Якщо це
-              не те, чого ви хочете, створіть у Google окремий календар і
-              оберіть його. Події, які вже потрапили в особистий календар,
-              приберіть вручну: RadFlow видаляє свої події лише в поточному.
             </div>
           )}
         </div>
@@ -330,25 +305,16 @@ export default function GoogleCalendarBackupSettings() {
             /* Звичайні action-кнопки, НЕ listbox: справжня listbox-роль
                вимагає roving tabindex і стрілки (APG), а вигадана роль без
                реалізації гірша за відсутню (ревʼю с42). Патерн qp-opt як у
-               QueuePolicySettings.
-               Особистий календар обрати МОЖНА (рішення власника, с43) — поруч
-               стоїть попередження, а не заборона. */
+               QueuePolicySettings. */
             <div role="group" aria-label="Календарі з правом запису"
                  style={{ display: "grid", gap: 6 }}>
               {cals.map((c) => (
                 <button key={c.id} type="button" className="qp-opt"
                         onClick={() => selectCalendar(c.id)} disabled={selBusy} aria-busy={selBusy}>
-                  <span className="qp-opt-title">{c.summary}{c.personal ? " — особистий" : ""}</span>
+                  <span className="qp-opt-title">{c.summary}{c.primary ? " (основний)" : ""}</span>
                   <span className="qp-opt-desc">
                     {c.timeZone ?? "зона невідома"} · роль: {c.accessRole === "owner" ? "власник" : "запис"}
                   </span>
-                  {c.personal && (
-                    <span className="qp-opt-desc" style={{ color: "var(--orange)" }}>
-                      Особистий календар: у копію потраплять імена й телефони
-                      пацієнтів, а доступ для персоналу відкриє разом з нею й
-                      решту подій цього календаря.
-                    </span>
-                  )}
                 </button>
               ))}
             </div>
