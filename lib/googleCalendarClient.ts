@@ -214,8 +214,9 @@ export async function getCalendarListEntry(
       summary: String(o.summaryOverride ?? o.summary ?? ""),
       timeZone: typeof o.timeZone === "string" ? o.timeZone : null,
       accessRole: String(o.accessRole ?? ""),
-      // с43: /select відхиляє основний календар акаунта — прапорець потрібен
-      // тут, бо це ЄДИНИЙ авторитетний сигнал (id-евристика — лише для UI)
+      // с43: та сама форма, що й у listWritableCalendars — щоб обидва читачі
+      // CalendarList віддавали однаковий CalListEntry. Місце для майбутньої
+      // відмови по особистому календарю — /select, правило там же.
       primary: o.primary === true,
     },
   };

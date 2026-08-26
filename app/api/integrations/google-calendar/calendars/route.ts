@@ -7,7 +7,7 @@ import { freshAccessToken } from "@/lib/googleCalendarService";
 import { isPersonalCalendarId } from "@/lib/googleCalendarBackup";
 
 /* ===== GCal Backup: календарі, куди МОЖНА писати =====
-   GET → { calendars: [{id, summary, timeZone, accessRole, primary, selectable}] }.
+   GET → { calendars: [{id, summary, timeZone, accessRole, primary, personal}] }.
    id тут ПОТРІБЕН — це значення вибору для /select (у status-контракт id
    не потрапляє). Список уже відфільтрований minAccessRole=writer на боці
    Google + повторно в клієнті. Порожній список = стан no_writable_calendar
@@ -46,14 +46,17 @@ export async function GET() {
       ? NextResponse.json({ error: "reauth_required" }, { status: 409 })
       : NextResponse.json({ error: "google_unavailable" }, { status: 503 });
   }
-  /* `selectable` рахує СЕРВЕР тим самим правилом, що й /select (с43):
-     інакше UI мав би другу копію логіки і вони розійшлися б — форма
-     пропустила б те, що роут відхиляє. Особисті календарі зі списку НЕ
-     викидаємо: мовчазне зникнення очевидного варіанта читається як баг,
-     тому показуємо їх із причиною. */
+  /* `personal` рахує СЕРВЕР (с43) — тим самим правилом, що й попередження в
+     /status: інакше UI мав би другу копію логіки «що таке особистий
+     календар» і вони розійшлися б. Це ПОЗНАЧКА, не заборона: обрати можна
+     будь-який писабельний календар (рішення власника), але поруч має стояти
+     попередження — у копії ПІБ і телефони пацієнтів, а щоб персонал читав її
+     в аварії, доступ доведеться відкрити разом з усім вмістом календаря.
+     `primary` ловить основний календар САМЕ цього акаунта, isPersonalCalendarId
+     — ще й ЧУЖИЙ особистий, розшарений нам із правом запису. */
   const calendars = list.items.map((c) => ({
     ...c,
-    selectable: !(c.primary === true || isPersonalCalendarId(c.id)),
+    personal: c.primary === true || isPersonalCalendarId(c.id),
   }));
   return NextResponse.json(
     { calendars },
