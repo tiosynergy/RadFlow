@@ -11,6 +11,7 @@ import Toast from "@/components/Toast";
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
+import AddDoctorModal from "@/components/AddDoctorModal";
 import LiveClock from "@/components/LiveClock";
 import PhoneInput from "@/components/PhoneInput";
 import HelpTip from "@/components/HelpTip";
@@ -26,6 +27,8 @@ import "@/styles/prototype/radflow-screens.css";
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type ReferrerProfile = { id?: string; login?: string | null; full_name?: string | null; phone?: string | null; note?: string | null; password_set?: boolean; invite_token?: string | null };
 type AccessRow = { access_id: string; referrer_id: string; status: string; policy: string | null; room_ids: string[] | null; note: string | null; referrer: ReferrerProfile };
+/* Картка довідника лікарів (таблиця doctors) — с43. */
+type DocRow = { id: string; name: string; spec: string | null; clinic_name: string | null; phone: string | null };
 type InviteForm = { login: string; full_name: string; email: string; phone: string; note: string; policy: string; room_ids: string[] };
 type EditForm = { policy: string; room_ids: string[]; note: string };
 type LoginSug = { id: string; login: string | null; full_name: string | null };
@@ -117,6 +120,21 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   /* Розгорнутий рядок ІСТОРІЇ (read-only перегляд відкликаного/відхиленого
      гранта). Окремий стан від editingId: історію не редагують, її читають. */
   const [viewingId, setViewingId] = useState<string | null>(null);
+
+  /* ── Довідник направників (с43) ──
+     Лікарі з таблиці `doctors` — ті, кого вносять «＋ Додати» у формі запису.
+     Без акаунта і порталу; на них посилаються записи (queue_entries.doctor —
+     ТЕКСТОМ). До с43 їх не було видно ніде: створений у формі запису лікар
+     «зникав», і розділ направників виглядав розсинхроненим із БД. Тут —
+     список + правка (✎, AddDoctorModal) + видалення (admin-only за RLS;
+     /setup і так admin-only). Прямі supabase-виклики — як у BookingModal. */
+  const [docList, setDocList] = useState<DocRow[]>([]);
+  const [docsLoading, setDocsLoading] = useState(true);
+  const [docsErr, setDocsErr] = useState(false);
+  const [addDocOpen, setAddDocOpen] = useState(false);
+  const [editDocRow, setEditDocRow] = useState<DocRow | null>(null);
+  const [docModalErr, setDocModalErr] = useState<string | null>(null);
+  const [docBusyId, setDocBusyId] = useState<string | null>(null);
 
   /* Контекстні позначки доступів (referral.access_*) ДЛЯ АДМІНА (с28):
      тригер 0132 шле їх і персоналу центру, але на цьому екрані не було ані
@@ -245,6 +263,80 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
       { table: "referral_access", filter: "clinic_id=eq." + clinicId, onChange: reload },
     ],
   });
+
+  /* Довідник (с43). Помилка ≠ «порожньо» — той самий канон, що в reload вище.
+     `doctors` немає в supabase_realtime, тож живого каналу тут нема — є кнопка
+     «Оновити» в секції (лікаря могли щойно внести у формі запису поруч). */
+  const loadDocs = useCallback(async () => {
+    if (!clinicId) return;
+    const supabase = createClient();
+    const { data, error } = await supabase.from("doctors")
+      .select("id, name, spec, clinic_name, phone")
+      .eq("clinic_id", clinicId)
+      .order("name");
+    if (error) {
+      setDocsErr(true);   // помилка ≠ «порожньо»: empty-state брехав би (ревʼю с43)
+    } else {
+      setDocsErr(false);
+      setDocList((data || []) as DocRow[]);
+    }
+    setDocsLoading(false);
+  }, [clinicId]);
+  useEffect(() => { void loadDocs(); }, [loadDocs]);
+
+  async function saveDocAdd(d: { name: string; spec: string; clinic: string; phone: string }) {
+    const supabase = createClient();
+    const cleanName = d.name.trim().replace(/\s+/g, " ");   // канон с31
+    const { data, error } = await supabase.from("doctors")
+      .insert({ clinic_id: clinicId, name: cleanName, spec: d.spec || null, clinic_name: d.clinic || null, phone: d.phone || null })
+      .select("id, name, spec, clinic_name, phone")
+      .single();
+    if (error || !data) {
+      // Форму не закриваємо — закриття викидало б набране (ревʼю с43).
+      setDocModalErr("Не вдалося додати лікаря — недостатньо прав або помилка мережі.");
+      return;
+    }
+    setDocList((arr) => [...arr, data as DocRow].sort((a, b) => a.name.localeCompare(b.name, "uk")));
+    setDocModalErr(null); setAddDocOpen(false);
+    notify("Лікаря додано в довідник", "success");
+  }
+
+  async function saveDocEdit(target: DocRow, d: { name: string; spec: string; clinic: string; phone: string }) {
+    const supabase = createClient();
+    const cleanName = d.name.trim().replace(/\s+/g, " ");   // канон с31
+    /* .select().single(): RLS зʼїдає update мовчки (0 рядків, error=null) —
+       single() перетворює це на видиму помилку. .eq("clinic_id") —
+       defense-in-depth поверх RLS (ревʼю с43). */
+    const { data, error } = await supabase.from("doctors")
+      .update({ name: cleanName, spec: d.spec || null, clinic_name: d.clinic || null, phone: d.phone || null })
+      .eq("id", target.id)
+      .eq("clinic_id", clinicId)
+      .select("id, name, spec, clinic_name, phone")
+      .single();
+    if (error || !data) {
+      setDocModalErr("Не вдалося зберегти зміни лікаря — недостатньо прав або помилка мережі.");
+      return;
+    }
+    setDocList((arr) => arr
+      .map((x) => (x.id === target.id ? (data as DocRow) : x))
+      .sort((a, b) => a.name.localeCompare(b.name, "uk")));
+    setDocModalErr(null); setEditDocRow(null);
+    notify("Дані лікаря оновлено", "success");
+  }
+
+  async function deleteDoc(d: DocRow) {
+    setDocBusyId(d.id);
+    const supabase = createClient();
+    const { data, error } = await supabase.from("doctors")
+      .delete().eq("id", d.id).eq("clinic_id", clinicId).select("id");
+    setDocBusyId(null);
+    if (error || !data || data.length === 0) {
+      notify("Не вдалося видалити лікаря", "error");
+    } else {
+      setDocList((arr) => arr.filter((x) => x.id !== d.id));
+      notify("Лікаря видалено з довідника", "success");
+    }
+  }
 
   async function invite() {
     if (!form.login.trim()) { notify("Вкажіть логін направника", "error"); return; }
@@ -602,9 +694,81 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
               ))}
             </div>
           )}
+
+          {/* Довідник направників (с43): лікарі з форми запису — видимі й
+              редаговані ТУТ, а не лише в модалці бронювання. */}
+          <div style={card}>
+            <div className="bk-section-label" style={{ marginTop: 0, display: "flex", alignItems: "center", gap: 8 }}>
+              <span>Довідник направників ({docList.length})</span>
+              <button className="btn btn-secondary btn-sm" style={{ marginLeft: "auto" }}
+                onClick={() => { setDocModalErr(null); setAddDocOpen(true); }}>＋ Додати лікаря</button>
+              <button className="btn btn-ghost btn-sm"
+                onClick={() => { setDocsLoading(true); void loadDocs(); }}
+                title="Перечитати довідник — лікаря могли щойно додати у формі запису">
+                Оновити список
+              </button>
+            </div>
+            <div className="ctx-hint" style={{ fontSize: "0.75rem", marginBottom: 10 }}>
+              Лікарі, яких вносять кнопкою «＋ Додати» у формі запису. Це картки
+              для журналу та звітів за джерелами направлень — без акаунта й
+              доступу до порталу. Щоб лікар сам створював направлення, запросіть
+              його у формі вище.
+            </div>
+            {docsLoading ? <div style={{ color: "var(--text-muted)", padding: 8 }}>Завантаження…</div>
+              : docsErr && docList.length === 0 ? (
+                <div className="ctx-hint red" role="alert" style={{ fontSize: "0.78125rem" }}>
+                  Не вдалося завантажити довідник. Натисніть «Оновити список», щоб спробувати ще раз.
+                </div>
+              )
+              : docList.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: "0.8125rem" }}>Довідник порожній. Додайте лікаря кнопкою «＋ Додати лікаря» — або «＋ Додати» у формі запису.</div>
+              : (
+                <>
+                  {docsErr && (
+                    <div className="ctx-hint red" role="alert" style={{ fontSize: "0.78125rem", marginBottom: 8 }}>
+                      Не вдалося оновити довідник — список може бути застарілим.
+                    </div>
+                  )}
+                  {docList.map((d) => (
+                    <div className="doc-row" key={d.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span className="doc-av">{d.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}</span>
+                      <span className="doc-meta" style={{ flex: 1, minWidth: 0 }}>
+                        <span className="doc-name">{d.name}</span>
+                        <span className="doc-sub">{[d.spec, d.clinic_name, d.phone].filter(Boolean).join(" · ")}</span>
+                      </span>
+                      <button className="btn btn-secondary btn-sm" disabled={docBusyId === d.id}
+                        onClick={() => { setDocModalErr(null); setEditDocRow(d); }} title="Редагувати дані лікаря">✎ Редагувати</button>
+                      <button className="btn btn-secondary btn-sm qd-act-red" disabled={docBusyId === d.id}
+                        title="Видалити з довідника"
+                        aria-label={`Видалити «${d.name}» з довідника`}
+                        onClick={() => setAsk({
+                          title: `Видалити «${d.name}» з довідника?`,
+                          text: "Записи, де вказано цього лікаря, збережуть його імʼя. У нових записах обрати його буде неможливо.",
+                          confirmLabel: "Видалити",
+                          danger: true,
+                          run: () => { void deleteDoc(d); },
+                        })}>✕</button>
+                    </div>
+                  ))}
+                </>
+              )}
+          </div>
         </div>
       </div>
 
+      {addDocOpen && (
+        <AddDoctorModal errorText={docModalErr}
+          existing={docList}
+          onClose={() => { setAddDocOpen(false); setDocModalErr(null); }}
+          onSave={(d) => saveDocAdd(d)}
+        />
+      )}
+      {editDocRow && (
+        <AddDoctorModal errorText={docModalErr}
+          initial={{ name: editDocRow.name, spec: editDocRow.spec || "", clinic: editDocRow.clinic_name || "", phone: editDocRow.phone || "" }}
+          onClose={() => { setEditDocRow(null); setDocModalErr(null); }}
+          onSave={(d) => saveDocEdit(editDocRow, d)}
+        />
+      )}
       {ask && (
         <ConfirmDialog
           title={ask.title}

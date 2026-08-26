@@ -305,8 +305,23 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   // ref (завжди свіжий), тож requestClose бачить актуальний dirty.
   const [dirty, setDirty] = useState(false);
   const [askClose, setAskClose] = useState(false);
+  /* с43 — редагування картки довідника прямо з форми запису («дія в місці
+     ухвалення рішення»). Кнопку бачать лише desk-ролі (admin/registrar):
+     RLS update (0162) саме такий, а в направника довідник чужої клініки
+     взагалі порожній. Оголошені ДО useModalA11y: його `active` залежить від
+     них. docErr — текст помилки ВСЕРЕДИНІ відкритої форми лікаря: закривати
+     її при відмові означало б викинути введене (ревʼю с43). */
+  const [addDoc, setAddDoc] = useState(false);
+  const [editDoc, setEditDoc] = useState<DocOpt | null>(null);
+  const [canEditDoc, setCanEditDoc] = useState(false);
+  const [docErr, setDocErr] = useState<string | null>(null);
   const requestClose = () => { if (dirty) setAskClose(true); else onClose(); };
-  const dialogRef = useModalA11y<HTMLDivElement>(requestClose);
+  /* active=false, поки зверху висить дочірня модалка (лікар/підтвердження):
+     інакше обидва capture-слухачі на document живі — Esc у формі лікаря
+     закривав би і форму запису, а дві Tab-пастки перетягували фокус так, що
+     середні поля дочірньої форми ставали недосяжні (ревʼю с43, обидва раунди).
+     stopPropagation тут не рятує: слухачі висять на ОДНОМУ вузлі. */
+  const dialogRef = useModalA11y<HTMLDivElement>(requestClose, !addDoc && !editDoc && !askClose);
   // Каталог послуг центру (фаза 2a) + переозначення по кабінетах (фаза 2b): drop-in
   // шорткати з тими самими сигнатурами, що статичні lib/studies. Виклики нижче
   // передають roomId обраного кабінету → ціна/тривалість/склад per-room (0108).
@@ -342,7 +357,6 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   const [notes, setNotes] = useState(prefill?.notes || "");
   const [docs, setDocs] = useState<DocOpt[]>([]);
   const [doctorId, setDoctorId] = useState("");
-  const [addDoc, setAddDoc] = useState(false);
   const [override, setOverride] = useState<DayOverride | null>(null);
   const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule обраного кабінету (для перерв)
 
@@ -352,10 +366,18 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
       if (!clinicId) return;
       try {
         const supabase = createClient();
-        const [docRes, accRes] = await Promise.all([
+        const uid = (await supabase.auth.getUser()).data.user?.id ?? null;
+        const [docRes, accRes, meRes] = await Promise.all([
           supabase.from("doctors").select("id, name, spec, clinic_name, phone").eq("clinic_id", clinicId).order("name"),
           supabase.from("referral_access").select("referrer_id").eq("clinic_id", clinicId).eq("status", "active"),
+          uid
+            ? supabase.from("profiles").select("role").eq("id", uid).maybeSingle()
+            : Promise.resolve({ data: null } as { data: { role: string } | null }),
         ]);
+        if (!cancel) {
+          const r = meRes.data?.role;
+          setCanEditDoc(r === "admin" || r === "registrar");
+        }
         const list: DocOpt[] = docRes.data || [];
         const refIds = Array.from(new Set((accRes.data || []).map((a) => a.referrer_id)));
         if (refIds.length) {
@@ -1105,6 +1127,20 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                   {docs.map((d) => <option key={d.id} value={d.id}>{d.name}{d.spec ? " · " + d.spec : ""}</option>)}
                 </select>
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => setAddDoc(true)}>＋ Додати</button>
+                {/* с43: правка картки — тут же, де її обирають. Обгортка span:
+                    disabled-кнопка не ловить hover, title жив би лише на ній. */}
+                {canEditDoc && (
+                  <span title={!doctorId
+                      ? "Спершу оберіть лікаря зі списку"
+                      : doctorId.startsWith("ref:")
+                        ? "Направник із доступом до порталу редагує свої дані сам — у своєму профілі"
+                        : "Редагувати дані лікаря"}>
+                    <button type="button" className="btn btn-secondary btn-sm"
+                      aria-label="Редагувати дані лікаря"
+                      disabled={!doctorId || doctorId.startsWith("ref:")}
+                      onClick={() => { const d = docs.find((x) => String(x.id) === doctorId); if (d) setEditDoc(d); }}>✎</button>
+                  </span>
+                )}
               </div>
             </div>
             )}
@@ -1329,16 +1365,63 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
       </div>
     </div>
     {addDoc && (
-      <AddDoctorModal existing={docs} onClose={() => setAddDoc(false)} onSave={async (d) => {
-        const supabase = createClient();
-        /* Імʼя лікаря — trim + схлопування пробілів (с31): це прямий insert повз
-           серверні zod-схеми, і брудне імʼя тут отруїло б зіставлення в
-           PatientEditModal так само, як подвійний пробіл у profiles.full_name. */
-        const cleanName = d.name.trim().replace(/\s+/g, " ");
-        const { data, error } = await supabase.from("doctors").insert({ clinic_id: clinicId as string, name: cleanName, spec: d.spec || null, clinic_name: d.clinic || null, phone: d.phone || null }).select("id, name, spec, clinic_name, phone").single();
-        if (!error && data) { setDocs((arr) => [...arr, data]); setDoctorId(String(data.id)); }
-        setAddDoc(false);
-      }} />
+      <AddDoctorModal existing={docs} errorText={docErr}
+        onClose={() => { setAddDoc(false); setDocErr(null); }}
+        onSave={async (d) => {
+          const supabase = createClient();
+          /* Імʼя лікаря — trim + схлопування пробілів (с31): це прямий insert повз
+             серверні zod-схеми, і брудне імʼя тут отруїло б зіставлення в
+             PatientEditModal так само, як подвійний пробіл у profiles.full_name. */
+          const cleanName = d.name.trim().replace(/\s+/g, " ");
+          const { data, error } = await supabase.from("doctors").insert({ clinic_id: clinicId as string, name: cleanName, spec: d.spec || null, clinic_name: d.clinic || null, phone: d.phone || null }).select("id, name, spec, clinic_name, phone").single();
+          if (error || !data) {
+            /* Форму НЕ закриваємо: закриття при відмові викидало б набране
+               (ревʼю с43). До с43 провал insert був узагалі німим. */
+            setDocErr("Не вдалося додати лікаря — недостатньо прав або помилка мережі.");
+            return;
+          }
+          setDocs((arr) => [...arr, data]); setDoctorId(String(data.id));
+          setDocErr(null); setAddDoc(false);
+        }} />
+    )}
+    {editDoc && (
+      <AddDoctorModal errorText={docErr}
+        initial={{ name: editDoc.name, spec: editDoc.spec || "", clinic: editDoc.clinic_name || "", phone: editDoc.phone || "" }}
+        onClose={() => { setEditDoc(null); setDocErr(null); }}
+        onSave={async (d) => {
+          const supabase = createClient();
+          // Той самий канон імені, що й у insert вище (с31).
+          const cleanName = d.name.trim().replace(/\s+/g, " ");
+          const oldName = editDoc.name;
+          /* .select().single() ОБОВʼЯЗКОВИЙ: RLS зʼїдає update мовчки (0 рядків,
+             error=null) — до наката 0162 реєстратор отримав би «успіх» без
+             збереження. single() на порожньому результаті дає помилку.
+             .eq("clinic_id") — defense-in-depth поверх RLS (ревʼю с43). */
+          const { data, error } = await supabase.from("doctors")
+            .update({ name: cleanName, spec: d.spec || null, clinic_name: d.clinic || null, phone: d.phone || null })
+            .eq("id", editDoc.id)
+            .eq("clinic_id", clinicId as string)
+            .select("id, name, spec, clinic_name, phone")
+            .single();
+          if (error || !data) {
+            setDocErr("Не вдалося зберегти зміни лікаря — недостатньо прав або помилка мережі.");
+            return;
+          }
+          setDocs((arr) => arr
+            .map((x) => (String(x.id) === String(data.id) ? data : x))
+            .sort((a, b) => (a.name || "").localeCompare(b.name || "", "uk")));
+          /* Кроки кейса тримають лікаря ТЕКСТОМ (buildPayload). Без цієї
+             синхронізації: (1) «Створити кейс» поніс би в нові записи СТАРЕ
+             імʼя; (2) рематч у loadStepForEdit по імені не знайшов би лікаря
+             і мовчки скинув би його в null (ревʼю с43). */
+          if (normName(cleanName) !== normName(oldName)) {
+            setCaseSteps((arr) => arr.map((s) =>
+              s.doctor && !s.referrerId && normName(s.doctor) === normName(oldName)
+                ? { ...s, doctor: cleanName }
+                : s));
+          }
+          setDocErr(null); setEditDoc(null);
+        }} />
     )}
     {askClose && (
       <ConfirmDialog

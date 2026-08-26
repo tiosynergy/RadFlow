@@ -9,6 +9,7 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { updatePatientDetails, setQueuePriority } from "@/app/queue/actions";
 import PhoneInput from "@/components/PhoneInput";
+import AddDoctorModal from "@/components/AddDoctorModal";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import type { TablesUpdate } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
@@ -31,6 +32,9 @@ type PatientForm = {
   priority_level?: PatientPriority;
 };
 type DoctorOption = { key: string; name: string; sub: string };
+/* Повна картка довідника — для «＋ Додати» / «✎» (с43): в опції селекта живуть
+   лише key/name/sub, а форма редагування потребує телефона і закладу. */
+type DocRow = { id: string; name: string; spec: string | null; clinic_name: string | null; phone: string | null };
 /* «Залишити як є» для `doctor`, якого немає ні серед направників, ні в довіднику
    (напр. лікаря прибрали з довідника). Окремий ключ, а НЕ порожній рядок:
    інакше «не чіпати» і «очистити» зливаються, і довільний текст стає незмивним
@@ -64,7 +68,15 @@ function calcAge(dob: string | null | undefined): number | null {
 }
 
 export default function PatientEditModal({ entryId, canEditPriority, onClose, onSaved }: PatientEditModalProps) {
-  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
+  /* addDoc/editDoc — ДО useModalA11y: його `active` вимикає Esc/Tab-пастку
+     цього діалогу, поки зверху висить форма лікаря. Обидва слухачі живуть на
+     document (capture) — stopPropagation між ними не працює, і без active
+     Esc у формі лікаря закривав би й картку пацієнта, викидаючи незбережені
+     правки (ревʼю с43, обидва раунди). */
+  const [addDoc, setAddDoc] = useState(false);
+  const [editDoc, setEditDoc] = useState<DocRow | null>(null);
+  const [docErr, setDocErr] = useState<string | null>(null);
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose, !addDoc && !editDoc);
   const [form, setForm] = useState<PatientForm | null>(null);
   const [origPriority, setOrigPriority] = useState<PatientPriority | null>(null);
   const [docs, setDocs] = useState<DoctorOption[]>([]); // активні направники + довідник
@@ -81,6 +93,15 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
      і на переіменуванні направника. */
   const [docKey, setDocKey] = useState<string>("");
   const [origDocKey, setOrigDocKey] = useState<string>("");
+  /* с43 — «дія в місці ухвалення рішення»: створити/виправити картку
+     довідника прямо тут. rawDocs — повні картки (для форми редагування);
+     canEditDoc — desk-ролі (RLS insert/update 0162 саме такі); docDirty —
+     виправлено імʼя ПОТОЧНО ОБРАНОГО лікаря: без цього прапорця save()
+     пропустив би патч (docKey === origDocKey), і запис лишився б зі старим
+     імʼям, хоча оператор щойно його виправив. */
+  const [rawDocs, setRawDocs] = useState<Map<string, DocRow>>(new Map());
+  const [canEditDoc, setCanEditDoc] = useState(false);
+  const [docDirty, setDocDirty] = useState(false);
   /* Направник у записі є, але його картка недоступна цій ролі (RLS) → поле
      тільки для читання: керувати тим, чого не бачимо, не можна. */
   const [refUnresolved, setRefUnresolved] = useState(false);
@@ -102,10 +123,19 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
       setOrigPriority(data?.priority_level ?? null);
       if (data?.clinic_id) {
         const cid = data.clinic_id;
-        const [accRes, docRes] = await Promise.all([
+        const uid = (await supabase.auth.getUser()).data.user?.id ?? null;
+        const [accRes, docRes, meRes] = await Promise.all([
           supabase.from("referral_access").select("referrer_id, status").eq("clinic_id", cid),
-          supabase.from("doctors").select("id, name, spec").eq("clinic_id", cid).order("name"),
+          supabase.from("doctors").select("id, name, spec, clinic_name, phone").eq("clinic_id", cid).order("name"),
+          uid
+            ? supabase.from("profiles").select("role").eq("id", uid).maybeSingle()
+            : Promise.resolve({ data: null } as { data: { role: string } | null }),
         ]);
+        if (live) {
+          const r = meRes.data?.role;
+          setCanEditDoc(r === "admin" || r === "registrar");
+          setRawDocs(new Map((docRes.data || []).map((d) => [String(d.id), d as DocRow])));
+        }
         const access = accRes.data || [];
         // Чи запис створив направник центру (будь-який статус доступу) → блокуємо зміну.
         const allRefIds = new Set(access.map((a) => a.referrer_id));
@@ -194,7 +224,9 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
     /* Направника змінюємо ЛИШЕ якщо запис не внесений самим направником І
        користувач СПРАВДІ рухав це поле. Без другої умови правка ПІБ пацієнта
        перезаписувала б `referrer_id` наосліп — саме так звʼязок і губився. */
-    if (!lockDoctor && !refUnresolved && docKey !== origDocKey && docKey !== KEEP_KEY) {
+    /* `|| docDirty` (с43): щойно виправлене імʼя ПОТОЧНОГО лікаря має доїхати
+       в запис, хоча ключ не рухався. Для d-ключа referrer_id і так null. */
+    if (!lockDoctor && !refUnresolved && (docKey !== origDocKey || docDirty) && docKey !== KEEP_KEY) {
       const selOpt = docs.find((d) => d.key === docKey);   // ключ, не імʼя
       patch.doctor = selOpt ? selOpt.name : null;          // docKey === "" → очистити
       patch.referrer_id = selOpt && selOpt.key.startsWith("r-") ? selOpt.key.slice(2) : null;
@@ -219,6 +251,7 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
   const showKeepOption = origDocKey === KEEP_KEY && !!curDoctor;
 
   return (
+    <>
     <div className="overlay" onClick={() => { if (!busy) onClose(); }}>
       <div className="dialog fade-in" style={{ maxWidth: 460 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Редагування даних пацієнта" onClick={(e) => e.stopPropagation()}>
         <div className="dlg-head">
@@ -267,11 +300,38 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
                     <span style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: 4 }}>🔒 Направника призначено, але його картка недоступна для вашої ролі. Щоб не відчепити направлення, поле заблоковано — зверніться до адміністратора центру.</span>
                   </>
                 ) : (
-                  <select className="inp" value={docKey} onChange={(e) => setDocKey(e.target.value)}>
-                    <option value="">— не вказано —</option>
-                    {showKeepOption && <option value={KEEP_KEY}>{curDoctor} (не у списку — залишити)</option>}
-                    {docs.map((d) => <option key={d.key} value={d.key}>{d.name}{d.sub ? " · " + d.sub : ""}</option>)}
-                  </select>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {/* Рух селекта скидає docDirty: прапорець «доправ імʼя в
+                        запис» стосувався ПОПЕРЕДНЬОГО вибору; липкий, він
+                        змусив би зайвий патч навіть після повернення на
+                        направника (ревʼю с43). */}
+                    <select className="inp" style={{ flex: 1 }} value={docKey} onChange={(e) => { setDocKey(e.target.value); setDocDirty(false); }}>
+                      <option value="">— не вказано —</option>
+                      {showKeepOption && <option value={KEEP_KEY}>{curDoctor} (не у списку — залишити)</option>}
+                      {docs.map((d) => <option key={d.key} value={d.key}>{d.name}{d.sub ? " · " + d.sub : ""}</option>)}
+                    </select>
+                    {/* с43 — довідник правиться там, де ним користуються.
+                        «✎» лише для лікаря довідника (d-): ПІБ направника з
+                        порталом (r-) веде сам лікар у своєму профілі. Обгортка
+                        span: disabled-кнопка не ловить hover для title. */}
+                    {canEditDoc && (
+                      <>
+                        <button type="button" className="btn btn-secondary btn-sm"
+                          title="Додати лікаря в довідник" aria-label="Додати лікаря в довідник"
+                          onClick={() => setAddDoc(true)}>＋</button>
+                        <span title={docKey.startsWith("d-")
+                            ? "Редагувати дані лікаря"
+                            : docKey.startsWith("r-")
+                              ? "Направник із доступом до порталу редагує свої дані сам — у своєму профілі"
+                              : "Оберіть лікаря з довідника, щоб редагувати"}>
+                          <button type="button" className="btn btn-secondary btn-sm"
+                            aria-label="Редагувати дані лікаря"
+                            disabled={!docKey.startsWith("d-") || !rawDocs.has(docKey.slice(2))}
+                            onClick={() => { const d = rawDocs.get(docKey.slice(2)); if (d) setEditDoc(d); }}>✎</button>
+                        </span>
+                      </>
+                    )}
+                  </div>
                 )}
               </label>
               <label className={"rf-check" + (form.contraindications ? " on" : "")} style={{ marginBottom: 10 }}>
@@ -308,5 +368,71 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
         </div>
       </div>
     </div>
+    {/* Модалки довідника — СУСІДИ оверлея (не діти): клік у їхній формі не
+        мусить булькати в onClick оверлея пацієнта і закривати все разом. */}
+    {addDoc && (
+      <AddDoctorModal errorText={docErr}
+        existing={Array.from(rawDocs.values())}
+        onClose={() => { setAddDoc(false); setDocErr(null); }}
+        onSave={async (d) => {
+          const supabase = createClient();
+          const cleanName = norm(d.name);   // канон с31 — як у BookingModal
+          const { data, error } = await supabase.from("doctors")
+            .insert({ clinic_id: form?.clinic_id as string, name: cleanName, spec: d.spec || null, clinic_name: d.clinic || null, phone: d.phone || null })
+            .select("id, name, spec, clinic_name, phone")
+            .single();
+          if (error || !data) {
+            // Форму не закриваємо — закриття викидало б набране (ревʼю с43).
+            setDocErr("Не вдалося додати лікаря — недостатньо прав або помилка мережі.");
+            return;
+          }
+          const row = data as DocRow;
+          setRawDocs((m) => new Map(m).set(String(row.id), row));
+          setDocs((arr) => [...arr, { key: "d-" + row.id, name: row.name, sub: row.spec || "" }]
+            .sort((a, b) => a.name.localeCompare(b.name, "uk")));
+          /* Авто-вибір нового лікаря — ЛИШЕ коли запис не привʼязаний до
+             направника і не тримає нерозпізнане імʼя (ревʼю с43): інакше
+             «просто завів картку» адміна тихо переписав би referrer_id → null
+             при «Зберегти» — клас інциденту с31. Такому запису лікаря
+             призначають окремим свідомим рухом селекта. */
+          if (!origDocKey.startsWith("r-") && origDocKey !== KEEP_KEY) {
+            setDocKey("d-" + row.id);   // ключ рухнувся → патч понесе лікаря сам
+          }
+          setDocErr(null); setAddDoc(false);
+        }} />
+    )}
+    {editDoc && (
+      <AddDoctorModal errorText={docErr}
+        initial={{ name: editDoc.name, spec: editDoc.spec || "", clinic: editDoc.clinic_name || "", phone: editDoc.phone || "" }}
+        hint={docKey === "d-" + editDoc.id
+          ? "Зміни застосуються до довідника. Імʼя в цьому записі оновиться після «Зберегти»; інші створені раніше записи не зміняться."
+          : undefined}
+        onClose={() => { setEditDoc(null); setDocErr(null); }}
+        onSave={async (d) => {
+          const supabase = createClient();
+          const cleanName = norm(d.name);
+          /* .select().single() обовʼязковий: RLS зʼїдає update мовчки
+             (0 рядків, error=null) — single() робить це видимою помилкою.
+             .eq("clinic_id") — defense-in-depth поверх RLS (ревʼю с43). */
+          const { data, error } = await supabase.from("doctors")
+            .update({ name: cleanName, spec: d.spec || null, clinic_name: d.clinic || null, phone: d.phone || null })
+            .eq("id", editDoc.id)
+            .eq("clinic_id", form?.clinic_id as string)
+            .select("id, name, spec, clinic_name, phone")
+            .single();
+          if (error || !data) {
+            setDocErr("Не вдалося зберегти зміни лікаря — недостатньо прав або помилка мережі.");
+            return;
+          }
+          const row = data as DocRow;
+          setRawDocs((m) => new Map(m).set(String(row.id), row));
+          setDocs((arr) => arr
+            .map((o) => (o.key === "d-" + row.id ? { ...o, name: row.name, sub: row.spec || "" } : o))
+            .sort((a, b) => a.name.localeCompare(b.name, "uk")));
+          if (docKey === "d-" + row.id) setDocDirty(true);   // імʼя доїде в запис при «Зберегти»
+          setDocErr(null); setEditDoc(null);
+        }} />
+    )}
+    </>
   );
 }
