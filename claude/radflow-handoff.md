@@ -1,6 +1,6 @@
 # RadFlow — состояние проекта (хендофф между сессиями)
 
-**Обновлено: 2026-08-25 ~21:20 UTC (00:20 Kiev 26.08), сессия 42 (финал).**
+**Обновлено: 2026-08-26 ~10:40 UTC (13:40 Kiev), сессия 42 (пакет 6).**
 
 **Прод-БД на `0160`**, ledger 160, все md5 (db:gate прогнан),
 `invariants_check()` → `ok:true checked:12` (0160 проверок сторожа не
@@ -10,17 +10,29 @@
 одного гранта; 4 Vault-хелпера — EXECUTE только service_role. Следующая
 миграция — **0161**.
 
-`dev` = **`d219c49`** («feat(gcal): 0160 …», 29 файлов — вся фича + lock
-после `npm audit fix` + хвост race-check.mjs из первой половины с42),
-`main` = `aeb4df8` — **PR dev→main ещё НЕ создан**. md5 миграции и смоука
-в git = проверенные dry-run-ом версии (сверено). Фича платформно
-ВЫКЛЮЧЕНА (`GOOGLE_CALENDAR_BACKUP_AVAILABLE` не задан) — мерж в main
-безопасен и до Google Cloud-настройки.
+`dev` = `12d68f7` (фича 0160 + docs влиты, PR #50 dev→main СМЕРЖЕН —
+`main` = `23b8cfa`, прод задеплоен с фичей). Google Cloud OAuth-клиент
+СОЗДАН (секрет ротирован после утечки в переписку — урок), env в Vercel
+стоят, клиника Medicom подключена и включена в /setup.
 
-Осталось до пилота (порядок — runbook `docs/GOOGLE_CALENDAR_BACKUP.md`):
-Google Cloud OAuth-клиент §1 → env в Vercel §2 → PR dev→main →
-live-acceptance (§12 промпта фичи, тестовый аккаунт) → подключение
-клиники §3–4 → токен в n8n → активация workflow §5.
+**ПАКЕТ 6 (26.08, НЕ в git): планировщик = pg_cron, конец клиентских
+rfg_-токенов (решение владельца).** Миграция **0161** готова, dry-run +
+смоук 8 зон на проде прошли, НЕ накатана. Код: новый
+`/api/integrations/google-calendar/sync-all` (CRON_SECRET, обход всех
+включённых клиник под lease), роуты sync/sync-token и блок «Токен
+планувальника» УДАЛЕНЫ, колонка sync_token_hash дропается 0161-й,
+сторож получает проверку 13 `gcal_sync_overdue`. n8n workflow
+`radflow-gcal-backup-sync` АРХИВИРОВАН (в схеме больше не участвует).
+Два раунда ревью пройдены (В-1 TOCTOU: claim с `.eq(enabled)` +
+fresh-строка; М-3: таймаут 15с на refresh). Тулчейн: tsc 0, eslint 0,
+vitest **1182/1182 (47 файлов)**, build OK.
+
+Осталось: владелец накатывает 0161 → db:gate → смоук → удаление двух
+папок роутов → коммит (текст в отчёте) → пуш → PR → мерж (окно
+накат→деплой держать минутным: старый билд с дропнутой колонкой отдаёт
+500 на «Згенерувати токен»/«Відключити»). После деплоя: первый тик ≤2
+мин → «остання синхронізація» оживёт; live-acceptance §12 — на
+тестовом аккаунте.
 
 ## Сессия 42, финал — фича «Резервная копия в Google Calendar» (0160)
 
@@ -1017,10 +1029,11 @@ Auth-пользователь админа оставался сиротой →
 
 ## Беклог (приоритет по убыванию, на конец с42)
 
-0. **GCal Backup — довести до пилота**: накат 0160 + npm install + коммит
-   (владелец); Google Cloud чек-лист → Vercel env → live-acceptance по §12
-   промпта фичи → подключение пилотной клиники → активация n8n. Всё
-   пошагово — `docs/GOOGLE_CALENDAR_BACKUP.md`.
+0. **GCal Backup — довести до пилота**: накат 0161 + коммит пакета 6
+   (владелец) → мерж/деплой → live-acceptance по §12 промпта фичи →
+   контроль тиков (сторож 13, «остання синхронізація»). Планировщик —
+   pg_cron `gcal-backup-sync`, клиентских токенов нет. Всё пошагово —
+   `docs/GOOGLE_CALENDAR_BACKUP.md`.
 
 ⚠️ Формулировки хвостов с32 ИСПРАВЛЕНЫ по итогам живых прогонов с37/с38:
 ack и «Неявка» значились «продуктовыми дефектами», а работали (дефект
@@ -1113,14 +1126,17 @@ scripts/build-partner-pdf.mjs → npm run docs:pdf;
 **Документы:** docs/integration-api-v1.md, docs/integration-fhir-r4.md,
 docs/integration-keys-runbook.md, docs/partner-guide.html.
 
-**GCal Backup (с42, не в git):** БД 0160; lib/googleCalendarBackup.ts,
-googleCalendarClient.ts, googleCalendarStore.ts, googleCalendarService.ts,
-googleCalendarSync.ts; app/api/integrations/google-calendar/{start,callback,
-status,calendars,select,enable,disconnect,sync-token,sync}; components/
-GoogleCalendarBackupSettings.tsx (+ секция в SetupWizard); tests/
-googleCalendarBackup.test.ts; docs/GOOGLE_CALENDAR_BACKUP.md (runbook);
-n8n `radflow-gcal-backup-sync` xUpFh5eBbeYY7dhJ (неактивен) + Data Table
-`radflow_gcal_alerts`. Зависимость: google-auth-library@11.0.2.
+**GCal Backup (0160 в git/проде; пакет 0161 не в git):** БД 0160+0161;
+lib/googleCalendarBackup.ts, googleCalendarClient.ts, googleCalendarStore.ts,
+googleCalendarService.ts, googleCalendarSync.ts;
+app/api/integrations/google-calendar/{start,callback,status,calendars,
+select,enable,disconnect,sync-all} (8 роутов; sync/sync-token удалены в
+0161); components/GoogleCalendarBackupSettings.tsx (+ секция в SetupWizard);
+tests/googleCalendarBackup.test.ts (25); docs/GOOGLE_CALENDAR_BACKUP.md
+(runbook), docs/ops-cron.md (джоб `gcal-backup-sync` */2, источник —
+миграция 0161). Планировщик: pg_cron → net.http_post c Bearer CRON_SECRET
+из Vault. n8n-workflow xUpFh5eBbeYY7dhJ АРХИВИРОВАН, Data Table
+`radflow_gcal_alerts` не используется. Зависимость: google-auth-library.
 
 ## Правила (полный список — AGENTS.md)
 

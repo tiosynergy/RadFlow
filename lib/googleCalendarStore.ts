@@ -2,7 +2,7 @@
 
    Читання/мутації google_calendar_connections + Vault-RPC (0160). Всі
    виклики — service-role admin-клієнтом ПІСЛЯ перевірки прав викликача в
-   роуті (requireRole або scoped-токен): таблиці deny-all, клієнт напряму
+   роуті (requireRole; sync-all — CRON_SECRET): таблиці deny-all, клієнт напряму
    сюди не ходить.
 
    CAS: мутації конекшена йдуть через updateConnectionCas(expectedVersion) —
@@ -24,16 +24,6 @@ export async function getConnection(admin: Admin, clinicId: string): Promise<Con
     .eq("clinic_id", clinicId)
     .maybeSingle();
   if (error) throw new Error(`gcal: читання підключення: ${error.message}`);
-  return data;
-}
-
-export async function getConnectionByTokenHash(admin: Admin, hash: string): Promise<ConnectionRow | null> {
-  const { data, error } = await admin
-    .from("google_calendar_connections")
-    .select("*")
-    .eq("sync_token_hash", hash)
-    .maybeSingle();
-  if (error) throw new Error(`gcal: пошук за токеном: ${error.message}`);
   return data;
 }
 

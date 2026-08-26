@@ -2,7 +2,7 @@
 
    Все, що можна перевірити vitest-ом БЕЗ мережі й БД: похідний статус
    підключення для UI, вікно снапшота, відбиток запису, тіло події Google,
-   класифікація помилок Google API, формат scoped-токена планувальника.
+   класифікація помилок Google API, PII-мінімізація тіла події.
    Мережа/БД живуть окремо: lib/googleCalendarClient.ts (HTTP до Google) і
    роути app/api/integrations/google-calendar/* (оркестрація).
 
@@ -22,22 +22,9 @@
 
 import crypto from "crypto";
 
-/* ── Scoped-токен планувальника ── */
-
-/** Формат: rfg_ + 64 hex (32 байти = 256 біт; вимога дизайну — «не менше
-    256 біт»). Окремий префікс від rfk_ (інтеграційні ключі RIS, 0144):
-    інша поверхня, інші права, переплутати не можна. */
-export const SYNC_TOKEN_RE = /^rfg_[0-9a-f]{64}$/;
-
-export function isSyncToken(token: string): boolean {
-  return typeof token === "string" && SYNC_TOKEN_RE.test(token);
-}
-
-/** sha256 hex ПОВНОГО рядка токена — значення sync_token_hash у БД
-    (той самий канон, що hashIntegrationToken 0144). */
-export function hashSyncToken(token: string): string {
-  return crypto.createHash("sha256").update(token, "utf8").digest("hex");
-}
+/* Scoped-токени планувальника (rfg_) жили тут із 0160 і ПРИБРАНІ в 0161:
+   синк смикає pg_cron через внутрішній /sync-all під CRON_SECRET (патерн
+   outbox-deliver), токенів для клінік більше не існує. */
 
 /* ── Похідний статус для UI (єдине джерело істини) ── */
 

@@ -1220,7 +1220,6 @@ export type Database = {
           calendar_timezone: string | null;
           access_role: string | null;
           refresh_secret_id: string | null;
-          sync_token_hash: string | null;
           connected_by: string | null;
           connected_at: string | null;
           last_verified_at: string | null;
@@ -1240,7 +1239,6 @@ export type Database = {
           calendar_timezone?: string | null;
           access_role?: string | null;
           refresh_secret_id?: string | null;
-          sync_token_hash?: string | null;
           connected_by?: string | null;
           connected_at?: string | null;
           last_verified_at?: string | null;
@@ -1257,7 +1255,6 @@ export type Database = {
           calendar_timezone?: string | null;
           access_role?: string | null;
           refresh_secret_id?: string | null;
-          sync_token_hash?: string | null;
           connected_by?: string | null;
           connected_at?: string | null;
           last_verified_at?: string | null;

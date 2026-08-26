@@ -51,7 +51,6 @@ export async function POST(req: Request) {
     calendar_timezone: null,
     access_role: null,
     refresh_secret_id: null,
-    sync_token_hash: null,
     connected_by: null,
     connected_at: null,
     last_verified_at: null,
