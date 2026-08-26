@@ -79,6 +79,18 @@ export default function GoogleCalendarBackupSettings() {
     }
   }, []);
 
+  /* «Остання синхронізація» — живий індикатор, а /status читався лише на
+     маунт і після дій: час «застигав», і власник читав це як зупинку синку
+     (с43). Легкий пул раз на хвилину + перечитування при поверненні на
+     вкладку. /status дешевий (одна строка БД, у Google не ходить), тож
+     хвилинний тик нічого не коштує; у фоновій вкладці мовчимо. */
+  useEffect(() => {
+    const tick = () => { if (document.visibilityState === "visible") void reload(); };
+    const iv = setInterval(tick, 60_000);
+    document.addEventListener("visibilitychange", tick);
+    return () => { clearInterval(iv); document.removeEventListener("visibilitychange", tick); };
+  }, [reload]);
+
   useEffect(() => {
     // код із callback-redirect → повідомлення; параметр прибираємо з URL,
     // щоб F5 не показував його вдруге
