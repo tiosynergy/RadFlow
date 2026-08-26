@@ -1086,6 +1086,16 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
             <span>Майстер налаштувань</span>
             <a href="mailto:support@radflow.ua?subject=Допомога%20з%20налаштуванням" title="Написати в підтримку">Підтримка</a>
           </div>
+          {/* Видалення центру — у підвалі бічної панелі (с43). Раніше цей блок
+              висів ПІСЛЯ .wiz-main і був ТРЕТІМ елементом гріда `.wiz`: грід
+              віддавав йому окремий рядок, і майстер не діставав до низу
+              екрана. clinicName порожній лише в мить першого налаштування —
+              тоді видаляти ще нічого. */}
+          {clinicName ? (
+            <div style={{ marginTop: 12 }}>
+              <DangerZone clinicName={clinicName} />
+            </div>
+          ) : null}
         </div>
       </aside>
 
@@ -1180,11 +1190,6 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
           onConfirm={() => { setSchedWarnAsk(null); save(true); }}
         />
       )}
-      {/* Небезпечна зона — в кінці майстра свідомо: видалення центру не має
-          сусідити з полями, які редагують щодня. clinicName — прóпс сторінки;
-          порожній буває лише в мить першого налаштування, тоді видаляти ще
-          нічого і секцію не показуємо. */}
-      {clinicName ? <DangerZone clinicName={clinicName} /> : null}
       <Toasts toasts={toasts} />
     </div>
   );

@@ -55,26 +55,21 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
     }
   }
 
+  /* Рамка «Небезпечна зона» з заголовком і поясненням прибрана в с43: сама
+     по собі вона нічого не захищала (справжній запобіжник — набрати назву
+     центру в діалозі + лист підтвердження), а як ТРЕТІЙ елемент грід-
+     контейнера `.wiz` забирала окремий рядок і не давала майстру дістати до
+     низу екрана. Лишилась кнопка; усі пояснення — у діалозі. */
   return (
-    <section
-      style={{
-        marginTop: 32,
-        border: "1px solid var(--danger, #c0392b)",
-        borderRadius: 8,
-        padding: 16,
-      }}
-    >
-      <h2 style={{ color: "var(--danger, #c0392b)", fontSize: "1.05rem", marginBottom: 8 }}>
-        Небезпечна зона
-      </h2>
-      <p style={{ color: "var(--text-muted)", lineHeight: 1.5, marginBottom: 12 }}>
-        Повне видалення медичного центру: усі дані та облікові записи
-        працівників (разом з вашим) будуть видалені безповоротно.
-      </p>
+    <>
       {done ? (
-        <p style={{ color: "var(--text)", lineHeight: 1.5 }}>{done}</p>
+        <p style={{ color: "var(--text-muted)", fontSize: "0.75rem", lineHeight: 1.5 }}>{done}</p>
       ) : (
-        <button className="btn" style={{ borderColor: "var(--danger, #c0392b)", color: "var(--danger, #c0392b)" }} onClick={() => setOpen(true)}>
+        <button
+          className="btn btn-sm"
+          style={{ width: "100%", borderColor: "var(--danger, #c0392b)", color: "var(--danger, #c0392b)" }}
+          onClick={() => setOpen(true)}
+        >
           Видалити медичний центр…
         </button>
       )}
@@ -124,6 +119,6 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
           </div>
         </div>
       )}
-    </section>
+    </>
   );
 }
