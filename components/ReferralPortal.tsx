@@ -42,6 +42,7 @@ import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, 
 import StudySearchBox from "@/components/StudySearchBox";
 import type { StudySearchHit } from "@/lib/studySearch";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
+import { slotDataMissLabel, slotDataTrusted, slotDataFromSingleSource } from "@/lib/availabilityTrust";
 import { DobField, BookingCalendar, fmtShort } from "@/components/BookingModal";
 import RoomSelect, { ROOM_LIST_MAX_CHIPS } from "@/components/RoomSelect";
 import type { Json } from "@/supabase/types";
@@ -482,8 +483,16 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const fitCount = countFit(slots, (s) => slotState(s) === "free", slotDur + buffer);
   const busyList = busySlots.slice().sort((a, b) => a.s - b.s);
 
-  const miss: Record<string, boolean> = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time, dur: !!region && dur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5) };
-  const MISS_LABELS: Record<string, string> = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу", dur: "Тривалість (хв)", exdur: "Тривалість додаткових досліджень" };
+  /* U-5 (с46), симетрично BookingModal. Тут один прапорець `slotsErr` на весь
+     день (loadDay тягне зайнятість, простої і графік разом), тож він і є обома
+     причинами. Правило спільне — інакше два екрани бронювання розійшлись би так
+     само, як розійшлись дві дошки у U-6. */
+  const availState = slotDataFromSingleSource(slotsErr, slotsLoading);
+  const availMiss = slotDataMissLabel(availState);
+  const availTrusted = slotDataTrusted(availState);
+
+  const miss: Record<string, boolean> = { center: !centerId, name: !name.trim(), dob: !dob, gender: !gender, phone: !phone.trim(), priority: !priority, region: !region, room: !roomId, time: !time, dur: !!region && dur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5), avail: !!availMiss };
+  const MISS_LABELS: Record<string, string> = { center: "Центр", name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу", dur: "Тривалість (хв)", exdur: "Тривалість додаткових досліджень", avail: availMiss || "" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   const timeBad = time ? slotState(time) !== "free" : false;
   const valid = centerId && missingList.length === 0 && roomId && !timeBad && !roomSched.closed;
@@ -866,7 +875,11 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
                 {caseWindows.length > 0 && <span><span className="lg-dot casebusy" />інший крок кейса</span>}
               </div>
-              {time && (() => {
+              {/* U-5: «✓ Слот вільний» — лише на даних, яким віримо. Інакше цей
+                  блок стояв зеленим просто над червоним банером «показати вільний
+                  час не можемо». Мовчимо: банер або «⏳ Завантаження…» вище вже
+                  пояснили, чому сітки нема. */}
+              {time && availTrusted && (() => {
                 const s = toMin(time), e = s + slotDur, eBlock = s + slotDur + buffer;
                 const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(s / 60), s % 60);
                 const blocked = slotBlockedByIncidents(incidents, roomId || "", slotMs);

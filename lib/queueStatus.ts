@@ -157,6 +157,16 @@ export type CallBlockOpts = {
      «помилка завантаження ≠ пусто» — і саме там, де від цього залежить
      заведення пацієнта в апарат. Тому fail-CLOSED: не знаємо — не пускаємо. */
   stuckUnknown?: boolean;
+  /* Аудит с46, U-6. Дані про простої / особливі графіки не завантажились
+     (`incidentsErr || overridesErr` на дошці). Тоді roomBlocked і schedClosed
+     пораховані з ПОРОЖНЬОГО списку: «кабінет не заблоковано» тут означає «ми не
+     знаємо», і виклик пацієнта в апарат, який може стояти на ремонті, проходить
+     мовчки. Той самий інваріант, що й stuckUnknown, і та сама відповідь:
+     не знаємо — не пускаємо.
+     Дошка радіолога цей гейт уже мала — окремим `if` ДО computeCallBlock;
+     дошка черги (реєстратор/адмін), яка викликає пацієнтів найчастіше, — ні.
+     Правило переїхало сюди саме тому, що дві копії одного правила розійшлись. */
+  safetyUnknown?: boolean;
   nowMs?: number;
 };
 /* 0077: sched_overrun — це вже НЕ блок, а ПОПЕРЕДЖЕННЯ (confirmable: true).
@@ -168,6 +178,10 @@ export type CallBlockOpts = {
    кабінет і накладення на наступний запис підтвердженням не лікуються. */
 export type CallBlock =
   | { code: "wrong_day"; confirmable?: false }
+  /* с46: дані про простої/графіки ненадійні. Жорсткий блок — підтвердженням не
+     лікується: підтверджувати можна ризик, який ти БАЧИШ, а не той, про який
+     нічого не відомо. */
+  | { code: "safety_unknown"; confirmable?: false }
   | { code: "room_blocked"; confirmable?: false }
   | { code: "room_closed"; confirmable?: false }
   | { code: "room_busy"; confirmable?: false }
@@ -181,6 +195,12 @@ export type CallBlock =
   | { code: "next_day"; durationMin: number; end: string; confirmable: true }
   | { code: "clash"; durationMin: number; time: string; name?: string | null; confirmable?: false };
 
+/** Текст блокування для safety_unknown — ОДИН на обидві дошки (с46): доти
+    формулювання жило лише в дошці радіолога, і саме тому дошка черги не мала
+    ані тексту, ані самого блока. */
+export const SAFETY_UNKNOWN_REASON =
+  "Дані про простої/графік не оновились — виклик заблоковано, оновіть сторінку";
+
 export function computeCallBlock(
   p: CallBlockInfo,
   entries: Array<{ id: string; room_id: string | null; status: string; scheduled_time: string | null; patient_name?: string | null }>,
@@ -189,6 +209,18 @@ export function computeCallBlock(
   const nowMs = opts.nowMs ?? wallNow();
   // Найперше: запис не на сьогодні — виклик неможливий незалежно від стану кабінету.
   if (opts.notToday) return { code: "wrong_day" };
+  /* ПЕРЕД roomBlocked/schedClosed: обидва пораховані САМЕ з тих даних, яких у
+     нас немає, тож їх «false» нічого не означає. А «не на сьогодні» лишається
+     вище — ця причина від простоїв не залежить і для оператора точніша.
+     ⚠️ Свідомий компроміс (ревʼю с46, F-2): гейт стоїть і перед room_busy /
+     room_stuck / clash, які пораховані з ЗАВАНТАЖЕНИХ `entries` і чий вердикт
+     достовірний. Тобто при збої простоїв оператор побачить «оновіть сторінку»
+     замість «кабінет зайнятий». Точність програє, безпека — ні: усі ці коди
+     теж жорсткі блоки, вихід один і той самий. Перенести гейт нижче можна лише
+     разом зі зміною давньої precedence room_blocked > room_busy, а це вже інша
+     задача. `p.room_id` — як у stuckUnknown (ревʼю с24, L3): без кабінету
+     простій блокувати нічого не може, і казати «дані про простої» — брехня. */
+  if (opts.safetyUnknown && p.room_id) return { code: "safety_unknown" };
   if (opts.roomBlocked) return { code: "room_blocked" };
   if (opts.schedClosed) return { code: "room_closed" };
   if (entries.some((e) => e.room_id === p.room_id && e.status === "in_progress" && e.id !== p.id)) return { code: "room_busy" };

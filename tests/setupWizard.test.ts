@@ -26,16 +26,15 @@ import { resolve } from "path";
 import {
   applyAssignedRoomIds, savedSnapshot, dirtyAfterSave, type RoomIdAssignment,
 } from "../lib/setupWizard";
+import { codeOf } from "./helpers/codeOf";
 
 type Row = { id: number | string; type: string; room?: string; roomId?: string };
 const row = (id: number | string, type: string, roomId?: string): Row =>
   (roomId ? { id, type, roomId } : { id, type });
 
 /* Сторож мусить читати КОД, а не коментарі: слово `JSON.stringify(d)` живе в
-   SetupWizard.tsx саме в поясненні до того, чому його там більше немає. */
-const codeOf = (src: string) =>
-  src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
-
+   SetupWizard.tsx саме в поясненні до того, чому його там більше немає.
+   Реалізація — спільна (с46): межі поведінки описані в tests/codeOf.test.ts. */
 const wizardSrc = codeOf(readFileSync(resolve(process.cwd(), "components/SetupWizard.tsx"), "utf8"));
 
 describe("applyAssignedRoomIds", () => {

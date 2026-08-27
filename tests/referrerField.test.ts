@@ -23,6 +23,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { KEEP_KEY, shouldPatchReferrer, referrerPatchFor, type ReferrerFieldState } from "../lib/referrerField";
+import { codeOf } from "./helpers/codeOf";
 
 const base: ReferrerFieldState = {
   lockDoctor: false, refUnresolved: false, docKey: "", origDocKey: "", docDirty: false,
@@ -30,10 +31,8 @@ const base: ReferrerFieldState = {
 const st = (p: Partial<ReferrerFieldState>): ReferrerFieldState => ({ ...base, ...p });
 
 /* Сторож мусить читати КОД, а не коментарі: у компоненті лишились пояснення,
-   де дослівно згадані ті самі вирази, яких у коді бути не повинно. */
-const codeOf = (src: string) =>
-  src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
-
+   де дослівно згадані ті самі вирази, яких у коді бути не повинно.
+   Реалізація — спільна (с46): межі поведінки описані в tests/codeOf.test.ts. */
 const modalSrc = codeOf(readFileSync(resolve(process.cwd(), "components/PatientEditModal.tsx"), "utf8"));
 
 describe("shouldPatchReferrer", () => {

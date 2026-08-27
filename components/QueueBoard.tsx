@@ -52,7 +52,8 @@ import HelpTip from "@/components/HelpTip";
 import RoomDayOverviewModal from "@/components/RoomDayOverviewModal";
 import { roomScheduleFor, dayStatus, offScheduleKind, effectiveRoomBreaks, type DayOverride } from "@/lib/schedule";
 import { slotToMin, slotFmt } from "@/lib/slots";
-import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, collisionFor, type CollisionInfo } from "@/lib/queueStatus";
+import { SAFETY_BOOKING_BLOCKED } from "@/lib/availabilityTrust";
+import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, collisionFor, SAFETY_UNKNOWN_REASON, type CollisionInfo } from "@/lib/queueStatus";
 import { visibleStuckByRoom, stuckUnknownOf, stuckDateLabel, stuckDeepLink, stuckBlockReason, canCallIntoRoom, STUCK_UNKNOWN_REASON, type StuckStudy } from "@/lib/stuckStudy";
 import CollisionPanel from "@/components/CollisionPanel";
 import QuickRescheduleButton from "@/components/QuickRescheduleButton";
@@ -1508,7 +1509,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       const code = e.code;
       // «?» (Shift+/) — довідка гарячих клавіш. Перевіряємо ДО «/», бо Shift+/ теж має code="Slash".
       if (e.key === "?" || (code === "Slash" && e.shiftKey)) { e.preventDefault(); setHelpOpen(true); }
-      else if (code === "KeyN") { e.preventDefault(); setModalOpen(true); }
+      // Через openBooking, а не setModalOpen: гейт safetyErr — один на всі входи.
+      else if (code === "KeyN") { e.preventDefault(); openBooking(); }
       else if ((code === "Slash" || e.key === "/") && !e.shiftKey) { e.preventDefault(); searchRef.current?.focus(); }
       else if (code === "KeyR") { e.preventDefault(); reload(); }
       else if (code === "Backquote" || code === "Digit0") { setRoomView("all"); }
@@ -1530,7 +1532,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, stuckFinish, reload, visRooms]);
+  }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, stuckFinish, reload, visRooms, safetyErr]);
 
   const rtHealth = useRealtimeRefetch({
     channelName: clinicId ? "queue-" + clinicId : null,
@@ -1988,7 +1990,23 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     return res;
   }
 
-  const openReschedule = (p: QEntry) => setReschedFor(p);
+  /* ОДИН вхід у бронювання на всі точки: топбар, хоткей N і пункт сайдбара.
+     Три копії гейта — це рівно те, з чого почався U-6, і ревʼю р3 показало, що
+     копія в сайдбарі вже й відстала: банер стверджував «новий запис
+     заблоковано», а пункт меню відкривав модалку. Модалка отримує `incidents`
+     ПРОПОМ із дошки, тож при incidentsErr це [] — кабінет на ремонті малювався
+     б вільним, і відбив би лише тригер check_not_during_incident. */
+  function openBooking() {
+    if (safetyErr) { notify(SAFETY_BOOKING_BLOCKED, "error"); return; }
+    setModalOpen(true);
+  }
+  /* Перенос — той самий канал: `incidents` теж приходять пропом. Гейт стоїть у
+     самому openReschedule, щоб покрити всіх викликачів одразу (рядок, панель
+     наложення onManual, панель «потребує переносу»). */
+  const openReschedule = (p: QEntry) => {
+    if (safetyErr) { notify(SAFETY_BOOKING_BLOCKED, "error"); return; }
+    setReschedFor(p);
+  };
   /* Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
      Виняток — 'stale': переносити вже нічого (запис завершено/скасовано), модалку
      закриваємо і синхронізуємо дошку. */
@@ -2175,6 +2193,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       notToday: !isToday,
       roomStuck: p.room_id ? stuckRooms[p.room_id] ?? null : null,
       stuckUnknown,
+      /* с46, U-6: простої/графіки не завантажились → blockingByRoom і
+         roomSchedClosed нижче пораховані з порожнього списку, тобто «кабінет
+         вільний» тут означає «не знаємо». Дошка вже блокує через це НОВИЙ запис
+         (кнопка «＋ Новий запис» і банер) — виклик пацієнта в апарат, який може
+         стояти на ремонті, тим більше не можна лишати відкритим. */
+      safetyUnknown: safetyErr,
       roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
       schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
       schedEnd: sched && !sched.closed ? sched.end : null,
@@ -2187,6 +2211,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     const r = callBlockOf(p);
     if (!r || r.confirmable) return null;
     if (r.code === "wrong_day") return "Запис не на сьогодні — викликати в кабінет можна лише пацієнтів сьогоднішнього дня";
+    if (r.code === "safety_unknown") return SAFETY_UNKNOWN_REASON;
     if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — спершу розблокуйте апарат";
     if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
     if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
@@ -2361,7 +2386,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     <div className="app">
       <Sidebar
         clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey}
-        rooms={visRooms} roomNoteOf={offNote} activeRoom={roomView} onSelectRoom={setRoomView} onNew={() => setModalOpen(true)}
+        rooms={visRooms} roomNoteOf={offNote} activeRoom={roomView} onSelectRoom={setRoomView} onNew={openBooking}
         onSlotsOverview={roleKey === "admin" ? () => setSlotsOverviewOpen(true) : undefined}
         incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }}
         onEmergency={handleEmergencyClick}
@@ -2383,8 +2408,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
             {/* Дані про простої/графіки не завантажились — бронювати НЕ можна:
                 зламаний кабінет виглядав би вільним. */}
             <button className="btn btn-primary btn-lg" disabled={safetyErr}
-              title={safetyErr ? "Дані про простої та графіки не завантажились — оновіть сторінку" : undefined}
-              onClick={() => setModalOpen(true)}>＋ Новий запис</button>
+              title={safetyErr ? SAFETY_BOOKING_BLOCKED : undefined}
+              onClick={openBooking}>＋ Новий запис</button>
           </div>
         </header>
         <div className="content-wrap">
@@ -2394,7 +2419,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                 <span className="inc-banner-ic">⚠</span>
                 <div className="inc-banner-txt">
                   <div className="inc-banner-title">Не завантажились дані про {incidentsErr ? "простої" : ""}{incidentsErr && overridesErr ? " та " : ""}{overridesErr ? "особливі графіки" : ""}</div>
-                  <div className="inc-banner-sub">Кабінет на ремонті може виглядати вільним, а закритий день — робочим. Новий запис заблоковано до оновлення.</div>
+                  <div className="inc-banner-sub">Кабінет на ремонті може виглядати вільним, а закритий день — робочим. Новий запис, перенос і виклик пацієнта в кабінет заблоковано до оновлення.</div>
                 </div>
                 <button className="btn btn-secondary btn-sm" onClick={() => { loadIncidents(); loadOverrides(); }}>↻ Оновити</button>
               </div>
@@ -2801,6 +2826,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                рахуємо в момент кліку, а не з рендера. */
             if (!sameDay(selectedDate, wallToday0())) {
               notify("Доба змінилась — запис уже не на сьогодні, оновіть дошку", "error");
+              setOffCallAsk(null);
+              return;
+            }
+            /* Перечитуємо жорсткі блоки в момент КЛІКУ (ревʼю с46 р3, F5):
+               діалог міг провисіти хвилини, і за цей час міг упасти рефетч
+               простоїв (safety_unknown), кабінет — заблокувати, а інший пацієнт
+               — зайти в кабінет. Оператор підтверджував «поза графіком», а не
+               «в зламаний апарат». Підтвердження лікує лише те, що показали. */
+            const rNow = callBlockOf(a.p);
+            if (rNow && !rNow.confirmable) {
+              notify(inProgressBlockReason(a.p) || "Викликати зараз неможливо", "error");
               setOffCallAsk(null);
               return;
             }

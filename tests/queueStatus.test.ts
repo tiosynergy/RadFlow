@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { isLate, needsClarification, computeCallBlock, collisionFor, lateCallClash, callWindowEndMin, type CollisionEntry } from "@/lib/queueStatus";
+import { readFileSync } from "fs";
+import { resolve } from "path";
+import { isLate, needsClarification, computeCallBlock, collisionFor, lateCallClash, callWindowEndMin, SAFETY_UNKNOWN_REASON, type CollisionEntry } from "@/lib/queueStatus";
 import { setClinicTz, wallInstant } from "@/lib/incidents";
+import { codeOf } from "./helpers/codeOf";
 
 /* Час у RadFlow — «настінний» (wall-as-UTC, міграції 0035/0059). Фіксуємо зону
    клініки, щоб wallMinOfInstant не залежав від зони машини, де йдуть тести. */
@@ -203,5 +206,110 @@ describe("collisionFor — накладення (дослідження затя
     expect(c).toMatchObject({ zone: "clash" }); // а не null через від'ємний overlap
     expect(c?.freeAt).toBe("10:35");            // «зараз» (10:30) + буфер 5
     expect(c?.running.remainMin).toBe(0);       // планова тривалість уже вичерпана
+  });
+});
+
+/* ===== Аудит с46, U-6 — виклик пацієнта на невідомих даних про простої =====
+   Правило «не знаємо про простої/графіки → не заводимо пацієнта в кабінет»
+   існувало ЛИШЕ в дошці радіолога, окремим `if` до computeCallBlock. Дошка
+   черги (реєстратор/адмін), яка викликає пацієнтів найчастіше, того гейта не
+   мала взагалі: `incidentsErr || overridesErr` вимикав тільки «＋ Новий запис».
+   Тобто дві копії одного продуктового правила розійшлись. Тепер правило одне —
+   код safety_unknown усередині computeCallBlock, і обидві дошки читають його. */
+describe("computeCallBlock — safety_unknown (простої/графіки не завантажились)", () => {
+  const P = { id: "b", room_id: "r1", duration_min: 30, buffer_time_min: 5 };
+
+  it("дані про простої ненадійні → жорсткий блок", () => {
+    expect(computeCallBlock(P, [], { safetyUnknown: true, schedEnd: "18:00", nowMs: NOW }))
+      .toEqual({ code: "safety_unknown" });
+  });
+
+  /* Порядок — суть правки, і перевіряти його треба з УВІМКНЕНИМИ конкурентами.
+     Перша версія цього тесту передавала `roomBlocked: false, schedClosed: false`
+     — обидві гілки інертні, тож перенос гейта нижче лишав тест зеленим, тобто
+     сам порядок не сторожився взагалі (ревʼю с46 р2, F3; той самий клас, що
+     «фікстура з самих цифр» у с45). */
+  it("випереджає room_blocked і room_closed (вони пораховані з порожнього списку)", () => {
+    expect(computeCallBlock(P, [], { safetyUnknown: true, roomBlocked: true, schedClosed: true, nowMs: NOW }))
+      .toEqual({ code: "safety_unknown" });
+  });
+
+  it("НЕ зʼїдає чужу причину, коли даним віримо", () => {
+    expect(computeCallBlock(P, [], { safetyUnknown: false, roomBlocked: true, nowMs: NOW }))
+      .toEqual({ code: "room_blocked" });
+  });
+
+  /* Як і stuckUnknown (ревʼю с24, L3): без кабінету простій блокувати нічого не
+     може, а текст «дані про простої» був би брехнею. */
+  it("на записі БЕЗ кабінету мовчить", () => {
+    const noRoom = { id: "b", room_id: null, duration_min: 30, buffer_time_min: 5 };
+    expect(computeCallBlock(noRoom, [], { safetyUnknown: true, schedEnd: "18:00", nowMs: NOW })).toBeNull();
+  });
+
+  /* А от «не на сьогодні» від простоїв не залежить — ця причина точніша, і
+     вона лишається вище. Дошка радіолога до с46 казала тут «дані не оновились»;
+     після переїзду гейта в спільну функцію повідомлення стало чеснішим. */
+  it("НЕ перебиває wrong_day — та причина від простоїв не залежить", () => {
+    expect(computeCallBlock(P, [], { safetyUnknown: true, notToday: true, nowMs: NOW }))
+      .toEqual({ code: "wrong_day" });
+  });
+
+  it("дані надійні → гейт мовчить (не блокує здоровий виклик)", () => {
+    expect(computeCallBlock(P, [], { safetyUnknown: false, schedEnd: "18:00", nowMs: NOW })).toBeNull();
+  });
+});
+
+/* Сторожі підключення U-6: сама по собі гілка safety_unknown нічого не блокує,
+   поки дошка не ПЕРЕДАЄ прапорець. Саме на цьому кроці правило й розійшлося:
+   safetyErr у дошці черги існував, але до computeCallBlock не доїжджав.
+   JSX компонентними тестами не покрити (environment: "node"), тож тут —
+   статичні сторожі по коду без коментарів. */
+const BOARDS: Array<[string, string]> = [
+  ["QueueBoard", codeOf(readFileSync(resolve(process.cwd(), "components/QueueBoard.tsx"), "utf8"))],
+  ["RadiologistBoard", codeOf(readFileSync(resolve(process.cwd(), "components/RadiologistBoard.tsx"), "utf8"))],
+];
+
+describe.each(BOARDS)("%s — гейт safety_unknown підключений", (_name, src) => {
+  // Терпимо до форматування (перенос рядка prettier'ом не має червонити).
+  it("передає safetyErr у computeCallBlock", () => {
+    expect(src).toMatch(/safetyUnknown:\s*safetyErr\b/);
+  });
+
+  /* Прибрати гейт помітно, ослабити — ні. Обидва способи, знайдені ревʼю р3
+     (F4), лишали всі 1373 тести зеленими:
+       • `safetyUnknown: safetyErr && false` — прапорець мертвий;
+       • `const safetyErr = incidentsErr && overridesErr` — гейт спрацьовує лише
+         коли впали ОБИДВА завантажувачі, тобто U-6 повертається для одиночного
+         збою, який і є найчастішим. Пінуємо саму деривацію. */
+  it("гейт не ослаблено на місці", () => {
+    expect(src).toMatch(/const safetyErr = incidentsErr \|\| overridesErr\b/);
+    expect(src).not.toMatch(/safetyUnknown:\s*safetyErr\s*&&/);
+  });
+
+  /* `toContain("SAFETY_UNKNOWN_REASON")` задовольнявся САМИМ ІМПОРТОМ — можна
+     було видалити гілку в inProgressBlockReason, і сторож лишався зеленим
+     (ревʼю с46 р2, F4). Сторожимо саму гілку. */
+  it("показує причину блокування, а не мовчазний null", () => {
+    expect(src).toContain('r.code === "safety_unknown"');
+    expect(src.split("SAFETY_UNKNOWN_REASON").length - 1).toBeGreaterThanOrEqual(2); // імпорт + вживання
+    // Текст живе в lib/: копія в компоненті означала б, що правило знову роздвоїлось.
+    expect(src).not.toContain(SAFETY_UNKNOWN_REASON);
+  });
+
+  /* Діалог підтвердження («поза графіком», «за північ») міг провисіти хвилини.
+     За цей час міг упасти рефетч простоїв, кабінет — заблокувати, інший пацієнт
+     — зайти. Оператор підтверджував ТЕ, ЩО ЙОМУ ПОКАЗАЛИ, тож жорсткі блоки
+     перечитуються в момент кліку (ревʼю с46 р3, F5). */
+  it("підтвердження виклику перечитує жорсткі блоки в момент кліку", () => {
+    expect(src).toMatch(/const rNow = callBlockOf\(a\.p\);[\s\S]{0,300}rNow && !rNow\.confirmable/);
+  });
+
+  /* Вирізаємо БЛОК аргументів кожного виклику і перевіряємо всередині. Підрахунок
+     «викликів стільки ж, скільки прапорців» цього не гарантував: другий виклик
+     міг отримати `safetyUnknown: false`, і 2 === 2 лишалось зеленим (F5). */
+  it("КОЖЕН виклик computeCallBlock отримує живий прапорець", () => {
+    const blocks = [...src.matchAll(/computeCallBlock\([\s\S]*?\n\s*\}\);/g)].map((m) => m[0]);
+    expect(blocks.length).toBeGreaterThan(0);
+    for (const b of blocks) expect(b).toMatch(/safetyUnknown:\s*safetyErr\b/);
   });
 });

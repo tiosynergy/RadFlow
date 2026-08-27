@@ -23,6 +23,7 @@ import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallToday0, type IncidentL
    а tg_change_markers_queue розіслав би крапки на рівному місці. */
 const normName = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ");
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
+import { slotDataMissLabel, slotDataTrusted, type SlotDataState } from "@/lib/availabilityTrust";
 import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, studyLabel, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, DUR_MAX } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import StudySearchBox from "@/components/StudySearchBox";
@@ -749,8 +750,16 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
      переносимо ми час і кабінет, а не пацієнта. Правки полів у режимі переносу
      зберігаються окремим патчем — див. RescheduleModal.handleMoveSave. */
   const softPatient = addMode || moveMode;
-  const miss: Record<string, boolean> = { name: !softPatient && !name.trim(), dob: !softPatient && !dob, gender: !softPatient && !gender, phone: !softPatient && !phone.trim(), priority: !moveMode && !priority, region: !region, room: !roomId, time: !time, dur: !!region && dur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5) };
-  const MISS_LABELS: Record<string, string> = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу", dur: "Тривалість (хв)", exdur: "Тривалість додаткових досліджень" };
+  /* U-5 (с46). Дані про зайнятість/графік — теж «поле», якого може бракувати:
+     через miss/MISS_LABELS воно потрапляє і в `valid` (кнопка гасне), і у футер
+     (видно ПРИЧИНУ, а не «кнопка чомусь не працює») — одним рядком, без окремої
+     гілки. Сітку при збої ми ховали й раніше, але блок «✓ Слот вільний» стояв
+     поза тією умовою, а `valid` про збій не знав узагалі. */
+  const availState: SlotDataState = { busyFailed: busyError, schedFailed: schedErr, loading: slotsLoading };
+  const availMiss = slotDataMissLabel(availState);
+  const availTrusted = slotDataTrusted(availState);
+  const miss: Record<string, boolean> = { name: !softPatient && !name.trim(), dob: !softPatient && !dob, gender: !softPatient && !gender, phone: !softPatient && !phone.trim(), priority: !moveMode && !priority, region: !region, room: !roomId, time: !time, dur: !!region && dur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5), avail: !!availMiss };
+  const MISS_LABELS: Record<string, string> = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу", dur: "Тривалість (хв)", exdur: "Тривалість додаткових досліджень", avail: availMiss || "" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
   // 0077: «поза графіком» — теж легальний вибір, тому НЕ timeBad. Але зберегти
   // його можна лише з галочкою підтвердження (offOk) — див. valid нижче.
@@ -1280,7 +1289,12 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                   </label>
                 </div>
               )}
-              {time && (() => {
+              {/* U-5: підтверджувати «слот вільний» можна ЛИШЕ на даних, яким
+                  віримо. Інакше цей блок малював зелене «✓ Слот вільний» просто
+                  над червоним банером «показати вільний час не можемо», а через
+                  prefill — ще й на порожніх spans, тобто на нулях. Мовчимо: банер
+                  вище (збій) або «⏳ Завантаження…» (політ) уже все пояснили. */}
+              {time && availTrusted && (() => {
                 const s = toMin(time), e = s + slotDur, eBlock = s + slotDur + buffer;
                 const blocked = slotBlockedByIncident(s);
                 const conflict = roomBusy.find((b) => s < b.e && b.s < eBlock);
