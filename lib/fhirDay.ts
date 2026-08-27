@@ -15,10 +15,11 @@ import {
   busyRowsToIntervals,
   dateFromKey,
   hhmmToMin,
-  subtractIntervals,
   type Interval,
 } from "@/lib/integrationContract";
 import { roomScheduleFor, effectiveRoomBreaks, type DayOverride } from "@/lib/schedule";
+import { incidentMinutesForRoom, type IncidentLike } from "@/lib/incidents";
+import { partitionDay } from "@/lib/availabilityDay";
 
 /** Стінний інтервал доби зі статусом FHIR. */
 export interface DaySpan {
@@ -63,7 +64,14 @@ export async function computeDay(
   roomSchedule: unknown,
   roomInactive: boolean,
   dateKey: string,
-  override: DayOverride | null
+  override: DayOverride | null,
+  /* ⚠️ ОБОВʼЯЗКОВИЙ, і саме тому без значення за замовчуванням (аудит с45).
+     `[]` за замовчуванням означало б, що кожен новий виклик мовчки успадковує
+     стару дірку: простій кабінету не потрапляв у публіковану доступність, і
+     кабінет у ремонті віддавався партнеру як ВІЛЬНИЙ. Нехай краще не
+     компілюється, ніж тихо бреше. Викликач зобовʼязаний прочитати
+     `incidents` (status in active|planned) і впасти гучно, якщо не зміг. */
+  incidents: IncidentLike[]
 ): Promise<DayPlan> {
   const date = dateFromKey(dateKey);
   if (!date) throw new DayComputeError("bad_date", dateKey);
@@ -99,30 +107,23 @@ export async function computeDay(
     throw new DayComputeError("busy_failed", error.message);
   }
   const busy = busyRowsToIntervals((busyRows ?? []) as BusyRpcRow[]);
-  const free = subtractIntervals(window, [...breaks, ...busy]);
+  /* Причину назовні не віддаємо: простій, як і перерва, — busy-unavailable
+     (межа класу 1, дослівно як у CapabilityStatement). Розбиття рахує спільне
+     ядро — те саме, що й у /api/integrations/v1/slots: розбіжність каналів
+     була б дефектом, а не «іншим форматом». */
+  const { unavailable, booked, free } = partitionDay(
+    window,
+    breaks,
+    busy,
+    incidentMinutesForRoom(incidents, roomId, dateKey)
+  );
 
-  /* Перерви обрізаємо по вікну: перерва, задана ширше за робочий день,
-     інакше породила б слот поза розкладом. Зайнятість RPC уже віддає
-     обрізаною по добі (0074), але перетин із вікном дешевий і робить
-     інваріант «усі спани всередині вікна» безумовним. */
-  const clip = (s: number, e: number): Interval | null => {
-    const cs = Math.max(s, window.s);
-    const ce = Math.min(e, window.e);
-    return ce > cs ? { s: cs, e: ce } : null;
-  };
-
+  /* Інваріант: unavailable ⊎ booked ⊎ free = window, попарно без перетинів
+     (тест availabilityDay.test.ts тримає це як розбиття). */
   const spans: DaySpan[] = [];
-  for (const b of breaks) {
-    const c = clip(b.s, b.e);
-    if (c) spans.push({ startMin: c.s, endMin: c.e, status: "busy-unavailable" });
-  }
-  for (const b of busy) {
-    const c = clip(b.s, b.e);
-    if (c) spans.push({ startMin: c.s, endMin: c.e, status: "busy" });
-  }
-  for (const f of free) {
-    spans.push({ startMin: f.s, endMin: f.e, status: "free" });
-  }
+  for (const u of unavailable) spans.push({ startMin: u.s, endMin: u.e, status: "busy-unavailable" });
+  for (const b of booked) spans.push({ startMin: b.s, endMin: b.e, status: "busy" });
+  for (const f of free) spans.push({ startMin: f.s, endMin: f.e, status: "free" });
   spans.sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
   return { dateKey, open: true, spans };
 }

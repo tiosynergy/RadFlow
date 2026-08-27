@@ -5,11 +5,17 @@ import { wallIntervalToInstants } from "@/lib/fhirTime";
 import { baseUrlFrom, fhirError, fhirJson, requireFhirKey, selfUrlFrom } from "@/lib/fhirHttp";
 import { addDaysKey, daysBetweenKeys, parseDateKey } from "@/lib/integrationContract";
 import type { DayOverride } from "@/lib/schedule";
+import { incidentRangeIso, type IncidentLike } from "@/lib/incidents";
 import { logError } from "@/lib/serverLog";
 
 /* ===== RadFlow — FHIR R4: Slot (пошук) =====
    GET /fhir/R4/Slot?schedule=Schedule/{room_id}
-       [&date=YYYY-MM-DD][&date=le…][&status=free|busy|busy-unavailable]
+       [&date=geYYYY-MM-DD][&date_to=leYYYY-MM-DD][&status=free|busy|busy-unavailable]
+
+   Верхня межа — окремий параметр `date_to` (як і в CapabilityStatement), а НЕ
+   повторний `date=le…`: URLSearchParams.get() віддав би лише перше значення,
+   і друге мовчки зникло б. Раніше цей коментар обіцяв `date=le…` — обіцянка
+   не відповідала ні коду, ні метаданим (аудит с45).
 
    Скоуп slots:read. `schedule` ОБОВʼЯЗКОВИЙ: слоти рахуються на льоту з
    розкладу й зайнятості кабінету, і запит «усі слоти клініки» означав би
@@ -53,10 +59,15 @@ export async function GET(req: Request) {
 
   const schedRaw = q.get("schedule");
   if (!schedRaw) return fhirError(400, "schedule: обовʼязковий (Schedule/{uuid})");
-  const roomId = schedRaw.startsWith("Schedule/")
+  const roomRaw = schedRaw.startsWith("Schedule/")
     ? schedRaw.slice("Schedule/".length)
     : schedRaw;
-  if (!UUID_RE.test(roomId)) return fhirError(400, "schedule: Schedule/{uuid}");
+  if (!UUID_RE.test(roomRaw)) return fhirError(400, "schedule: Schedule/{uuid}");
+  /* Канонічний нижній регістр: uuid у Postgres регістронезалежний, але тут id
+     порівнюється ще й як РЯДОК (ключ schedule_overrides.rooms, фільтр простоїв,
+     префікс Slot.id). GUID у верхньому регістрі інакше мовчки втрачає простої
+     кабінету — ревʼю с45, round 1. */
+  const roomId = roomRaw.toLowerCase();
 
   const statusFilter = q.get("status");
   if (statusFilter != null && !STATUSES.has(statusFilter)) {
@@ -81,11 +92,28 @@ export async function GET(req: Request) {
   if (!room || room.clinic_id !== clinicId) return fhirError(404, "Schedule не знайдено");
 
   const tz = clinic?.timezone || "UTC";
-  const dateFrom = dateParam(q.get("date"), "ge") ?? todayKeyInTz(tz);
-  const dateTo = dateParam(q.get("date_to"), "le") ?? addDaysKey(dateFrom, 13)!;
-  if (q.get("date") != null && dateParam(q.get("date"), "ge") == null) {
+  /* Порожнє значення (`?date_to=`) — це «параметр не передали», а не помилка:
+     типовий результат шаблонізації query-рядка на боці партнера. */
+  const rawFrom = q.get("date") || null;
+  const rawTo = q.get("date_to") || null;
+  /* Повторний `date` (спековий `date=ge…&date=le…`) НЕ приймаємо мовчки:
+     URLSearchParams.get() віддав би лише перше значення, верхня межа зникла б,
+     і партнер отримав би 200 з чужим діапазоном — той самий мовчазний обман,
+     що й криве date_to (ревʼю с45, round 2). */
+  if (q.getAll("date").length > 1) {
+    return fhirError(400, "date: лише одне значення; верхня межа — окремий date_to");
+  }
+  if (rawFrom != null && dateParam(rawFrom, "ge") == null) {
     return fhirError(400, "date: YYYY-MM-DD або geYYYY-MM-DD");
   }
+  /* Симетрично до `date` (аудит с45, I-3): криве `date_to` раніше МОВЧКИ
+     підмінялось на dateFrom+13, і партнер отримував 200 з іншим діапазоном —
+     читав це як «далі слотів немає». */
+  if (rawTo != null && dateParam(rawTo, "le") == null) {
+    return fhirError(400, "date_to: YYYY-MM-DD або leYYYY-MM-DD");
+  }
+  const dateFrom = dateParam(rawFrom, "ge") ?? todayKeyInTz(tz);
+  const dateTo = dateParam(rawTo, "le") ?? addDaysKey(dateFrom, 13)!;
   const span = daysBetweenKeys(dateFrom, dateTo);
   if (span == null || span < 1) return fhirError(400, "date_to раніше за date");
   if (span > MAX_SPAN_DAYS) return fhirError(400, `діапазон понад ${MAX_SPAN_DAYS} днів`);
@@ -109,12 +137,38 @@ export async function GET(req: Request) {
     });
   }
 
+  const roomInactive = room.active === false;
+
+  /* Простої кабінету (аудит с45). Одним запитом на весь діапазон — не по добі:
+     інакше 31 день дав би 31 зайвий раунд-тріп. Межі — зі спільного
+     incidentRangeIso (канон «стінний час як UTC», 0035/0059).
+     Помилка читання = 500, а не порожній список: «не знаємо про простої»
+     тут нерозрізненне від «простоїв немає», і другий варіант публікує
+     зламаний кабінет як вільний. Вимкнений кабінет уже весь недоступний —
+     запит зайвий. */
+  let incidents: IncidentLike[] = [];
+  if (!roomInactive) {
+    const bounds = incidentRangeIso(dateFrom, dateTo);
+    if (!bounds) return fhirError(400, "date: некоректний діапазон"); // недосяжно: дати перевірені
+    const { data: incRows, error: incErr } = await admin
+      .from("incidents")
+      .select("room_id, started_at, blocked_until")
+      .eq("room_id", roomId)
+      .in("status", ["active", "planned"])
+      .lt("started_at", bounds.toIso)
+      .or(`blocked_until.is.null,blocked_until.gt.${bounds.fromIso}`);
+    if (incErr) {
+      logError({ event: "fhir.slot", errorCode: "incidents_failed", message: incErr.message });
+      return fhirError(500, "Тимчасова помилка");
+    }
+    incidents = (incRows ?? []) as IncidentLike[];
+  }
+
   const keys: string[] = [];
   for (let k: string | null = dateFrom; k != null && k <= dateTo; k = addDaysKey(k, 1)) {
     keys.push(k);
   }
 
-  const roomInactive = room.active === false;
   const resources: Array<Record<string, unknown>> = [];
 
   for (let i = 0; i < keys.length; i += DAY_CHUNK) {
@@ -123,7 +177,7 @@ export async function GET(req: Request) {
     try {
       plans = await Promise.all(
         chunk.map((k) =>
-          computeDay(admin, roomId, room.schedule, roomInactive, k, ovByDate.get(k) ?? null)
+          computeDay(admin, roomId, room.schedule, roomInactive, k, ovByDate.get(k) ?? null, incidents)
         )
       );
     } catch (e) {

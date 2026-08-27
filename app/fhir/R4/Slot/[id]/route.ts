@@ -4,6 +4,7 @@ import { computeDay, DayComputeError } from "@/lib/fhirDay";
 import { wallIntervalToInstants } from "@/lib/fhirTime";
 import { fhirError, fhirJson, requireFhirKey } from "@/lib/fhirHttp";
 import type { DayOverride } from "@/lib/schedule";
+import { incidentRangeIso, type IncidentLike } from "@/lib/incidents";
 import { logError } from "@/lib/serverLog";
 
 /* ===== RadFlow — FHIR R4: Slot (read) =====
@@ -64,9 +65,31 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       }
     : null;
 
+  /* Простої кабінету за цю добу (аудит с45) — див. коментар у Slot/route.ts.
+     Помилка читання = 500: «не знаємо про простої» не можна віддавати як
+     «простоїв немає». Вимкнений кабінет уже весь недоступний — запит зайвий. */
+  const roomInactive = room.active === false;
+  let incidents: IncidentLike[] = [];
+  if (!roomInactive) {
+    const bounds = incidentRangeIso(dateKey, dateKey);
+    if (!bounds) return notFound(); // недосяжно: parseSlotId перевіряє дату календарно
+    const { data: incRows, error: incErr } = await admin
+      .from("incidents")
+      .select("room_id, started_at, blocked_until")
+      .eq("room_id", roomId)
+      .in("status", ["active", "planned"])
+      .lt("started_at", bounds.toIso)
+      .or(`blocked_until.is.null,blocked_until.gt.${bounds.fromIso}`);
+    if (incErr) {
+      logError({ event: "fhir.slot", errorCode: "incidents_failed", message: incErr.message });
+      return fhirError(500, "Тимчасова помилка");
+    }
+    incidents = (incRows ?? []) as IncidentLike[];
+  }
+
   let plan;
   try {
-    plan = await computeDay(admin, roomId, room.schedule, room.active === false, dateKey, override);
+    plan = await computeDay(admin, roomId, room.schedule, roomInactive, dateKey, override, incidents);
   } catch (e) {
     const err = e instanceof DayComputeError ? e : null;
     logError({
