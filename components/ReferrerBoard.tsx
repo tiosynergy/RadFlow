@@ -45,9 +45,16 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
   no_show: { label: "Неявка", cls: "red" },
   not_held: { label: "Не відбулося", cls: "gray" },
   cancelled: { label: "Скасовано", cls: "gray" },
-  // 0079/0080 — слот пацієнта втрачено через затримку в кабінеті; новий час підбирає центр.
-  // Направник має це БАЧИТИ (інакше запис виглядав би як звичайне «Очікує»), але не діє:
-  // статусів він не змінює (гард guard_status_change_referrer, 0048).
+  /* 0079/0080 — слот пацієнта втрачено через затримку в кабінеті; новий час
+     підбирає центр. Направник має це БАЧИТИ (інакше запис виглядав би як
+     звичайне «Очікує»).
+     ⚠️ Було написано «але не діє: статусів він не змінює». Це неправда з
+     самої 0079: `guard_status_change_referrer` дозволяє напряму
+     `needs_reschedule → scheduled | cancelled`. Обмеження було лише в UI, і
+     до с45 кнопки «Скасувати» тут не було — а прямий DELETE, яким це
+     обходили, забрала 0163. Тепер скасувати можна (див. canCancel нижче);
+     ПЕРЕНЕСТИ такий запис направник по-старому не може — новий час підбирає
+     центр. */
   needs_reschedule: { label: "Потребує переносу", cls: "orange" },
 };
 /* Статус обдзвону — read-only бейдж (направник бачить, але не змінює). */
@@ -182,7 +189,15 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
   const activeFilter = STATUS_FILTERS.find((f) => f.key === filter) || STATUS_FILTERS[0];
   const filtered = scoped.filter((r) => activeFilter.match(r.status));
 
-  const canCancel = (r: BoardReferral) => ["scheduled", "waiting"].includes(r.status);
+  /* `needs_reschedule` теж скасовується (аудит с45). Запис без слота — саме
+     той випадок, де «Скасувати» потрібне найбільше: слот у нього забрав план
+     затримки, і чекати нема чого. БД цей перехід дозволяє з 0079
+     (`guard_status_transition`, `guard_status_change_referrer`), а кнопки не
+     було — тож у направника лишався єдиний важіль, прямий DELETE, який
+     міграція 0163 забрала. Список тримаємо в синхроні з CANCELLABLE_STATUSES
+     у `app/queue/actions.ts` (тут без `in_progress`: пацієнта в кабінеті
+     направник не чіпає). */
+  const canCancel = (r: BoardReferral) => ["scheduled", "waiting", "needs_reschedule"].includes(r.status);
 
   function selectCenter(id: string) { setCenterId(id); setRoomId("all"); }
 

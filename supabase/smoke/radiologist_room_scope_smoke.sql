@@ -128,9 +128,28 @@ begin
       when insufficient_privilege then null;  -- очікуваний 42501
     end;
 
-    -- (g) DELETE по чужому кабінету → 0 rows (політика for all + тригер).
-    delete from queue_entries where id = v_foreign;
-    get diagnostics v_cnt = row_count;
+    /* (g) DELETE по чужому кабінету не чіпає нічого — це RLS + гард a00.
+       ⚠️ З 0163 клієнтська роль позбавлена САМОГО привілею DELETE. Якби ми
+       просто ловили 42501, зонд зеленів би на будь-якому рядку і при будь-яких
+       політиках — тобто перестав би бути перевіркою взагалі. Тому повертаємо
+       грант РІВНО на час зонда (уся транзакція однаково відкотиться): тоді
+       «0 рядків» знову доводить RLS, а 42501 із текстом гарда — тригер a00. */
+    execute 'reset role';
+    execute 'grant delete on queue_entries to authenticated';
+    execute 'set local role authenticated';
+    begin
+      delete from queue_entries where id = v_foreign;
+      get diagnostics v_cnt = row_count;
+    exception
+      when insufficient_privilege then
+        v_cnt := 0;
+        if sqlerrm not like '%не знайдено%' then
+          raise exception 'SMOKE_FAIL(g): 42501 прийшов не від гарда a00, а від: %', sqlerrm;
+        end if;
+    end;
+    execute 'reset role';
+    execute 'revoke delete on queue_entries from authenticated';
+    execute 'set local role authenticated';
     if v_cnt > 0 then
       raise exception 'SMOKE_FAIL(g): DELETE чужого кабінету зачепив % рядків', v_cnt;
     end if;

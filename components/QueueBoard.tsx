@@ -1959,6 +1959,16 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     if (!res.ok) { if (handledStale(res)) return; notify("Помилка: " + res.error, "error"); return; }
     reload();
     suggestWaitlistFor(p);
+    /* ⚠️ soft-undo пропонуємо, ЛИШЕ якщо попередній стан справді відновлюваний.
+       `needs_reschedule` таким не є за побудовою: його ставить лише план
+       затримки (`queue_set_status_rpc` кидає 42501 на будь-яку спробу виставити
+       його вручну, а `zQueueStatus` його навіть не приймає — «Некоректні дані
+       запиту»). До с45 ця гілка була мертвою: скасування запису без слота
+       поверталось як stale і тост не зʼявлявся взагалі. Відкривши скасування
+       (CANCELLABLE_STATUSES), ми відкрили б і зламане «Відмінити» — тому тут
+       звичайний тост без дії. Повернути такий запис у чергу можна «Перенести»
+       з панелі скасованих. */
+    if (prev === "needs_reschedule") { notify("Запис скасовано", "success"); return; }
     notify("Запис скасовано", "info", { label: "↩ Відмінити", onAction: () => setStatus(p.id, prev, "cancelled") });
   }
 
