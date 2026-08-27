@@ -30,6 +30,7 @@ import { slotToMin } from "@/lib/slots";
 import { MODALITIES, modalityCode } from "@/lib/studies";
 import { wallDayKey } from "@/lib/incidents";
 import { roomDeleteBlockReason } from "@/lib/rooms";
+import { applyAssignedRoomIds, savedSnapshot, dirtyAfterSave } from "@/lib/setupWizard";
 
 /* Статуси «живого» запису: пацієнт іще чекає на кабінет. needs_reschedule — теж
    живий (запис без слота, реєстратура має передзвонити).
@@ -281,10 +282,10 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
      «спершу вимкніть», а для вимкненого — ВИДАЛЕННЯ і дубль із новим id.
      Тому батько після інсертів віддає видані id назад через цей ref. */
   useEffect(() => {
-    assignRoomIds.current = (assigned) => setEquip((a) => a.map((e) => {
-      const hit = assigned.find((x) => String(x.localId) === String(e.id));
-      return hit && !e.roomId ? { ...e, roomId: hit.roomId } : e;
-    }));
+    /* Ту саму функцію кличе батько, будуючи знімок «збереженого» — інакше
+       знімок розходиться зі станом форми і dirty спалахує сам (див.
+       `lib/setupWizard.ts`). */
+    assignRoomIds.current = (assigned) => setEquip((a) => applyAssignedRoomIds(a, assigned));
     return () => { assignRoomIds.current = null; };
   }, [assignRoomIds]);
 
@@ -1016,7 +1017,13 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
       }
       /* Видані id — назад у форму, інакше друге «Зберегти» без перезавантаження
          сприйме щойно збережені кабінети як «прибрані» (баг с33). */
-      if (assigned.length) assignRoomIdsRef.current?.(assigned);
+      const handOver = assigned.length ? assignRoomIdsRef.current : null;
+      handOver?.(assigned);
+      /* Знімок нижче мусить нести РІВНО те, що форма справді отримала. Якщо
+         канал обірвано (форма розмонтована — сьогодні недосяжно, але `?.` це
+         глушить мовчки), id нікуди не поїхали: тоді їх немає й у знімку,
+         інакше dirty залипне в true назавжди. */
+      const handed = handOver ? assigned : [];
       /* Прибрані в майстрі кабінети (історії в них уже точно немає — перевірили
          вище). 0123 + 0126: DELETE тут завжди по ВЖЕ вимкненому й ПОРОЖНЬОМУ
          кабінету — кнопка «✕» доступна лише для збереженого active=false без
@@ -1027,9 +1034,18 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
         if (de) throw de;
       }
 
-      savedRef.current = JSON.stringify(d);
-      setDirty(false);
-      push("Зміни збережено", "success");
+      /* Знімок несе ЗБЕРЕЖЕНЕ (`d`) плюс id, які реально поїхали у форму, а
+         dirty ПЕРЕРАХОВУЄТЬСЯ проти живих даних, а не гаситься. Обидва «чому»
+         — у шапці `lib/setupWizard.ts`: коротко, setEquip вище застосується
+         пізніше цього рядка, а поля форми під час збереження не блокуються. */
+      savedRef.current = savedSnapshot(d, handed);
+      const stillDirty = dirtyAfterSave(dataRef.current, savedRef.current, handed);
+      setDirty(stillDirty);
+      /* І кажемо про це вголос. Зелене «Зміни збережено» при активній кнопці
+         читається як «зберіг, а кнопка залипла» — тобто саме те хибне
+         відчуття, проти якого весь перерахунок (ревʼю с44, р.2). */
+      if (stillDirty) push("Зміни збережено. Правки, зроблені під час збереження, ще не збережені — натисніть «Зберегти» ще раз", "warning");
+      else push("Зміни збережено", "success");
       router.refresh(); // підтягнути свіжі rooms/services у крок «Послуги» без ручного перезавантаження
       setSaving(false);
       return true;

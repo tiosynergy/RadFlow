@@ -11,6 +11,7 @@ import { updatePatientDetails, setQueuePriority } from "@/app/queue/actions";
 import PhoneInput from "@/components/PhoneInput";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
+import { KEEP_KEY, shouldPatchReferrer, referrerPatchFor } from "@/lib/referrerField";
 import type { TablesUpdate } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -35,11 +36,10 @@ type DoctorOption = { key: string; name: string; sub: string };
 /* Повна картка довідника — для «＋ Додати» / «✎» (с43): в опції селекта живуть
    лише key/name/sub, а форма редагування потребує телефона і закладу. */
 type DocRow = { id: string; name: string; spec: string | null; clinic_name: string | null; phone: string | null };
-/* «Залишити як є» для `doctor`, якого немає ні серед направників, ні в довіднику
-   (напр. лікаря прибрали з довідника). Окремий ключ, а НЕ порожній рядок:
-   інакше «не чіпати» і «очистити» зливаються, і довільний текст стає незмивним
-   (ревʼю р.1). */
-const KEEP_KEY = "keep";
+/* KEEP_KEY, `shouldPatchReferrer` і `referrerPatchFor` живуть у
+   `lib/referrerField.ts`: правило «коли СМІЄМО переписати направника запису»
+   коштує загубленого направлення (с31) або незбереженого імені (с43), а
+   всередині JSX його не покриє жоден тест — vitest тут тільки для `lib/*`. */
 /* ⚠️ ОДНА нормалізація на весь файл. У ревʼю р.2: `nameCount`/`refNames`
    рахувались по СИРОМУ `trim()`, а зіставлення довідника — по нормалізованому.
    На тих самих даних, що дали початковий баг («Заставська··Марія» проти
@@ -221,15 +221,14 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
       contraindications: !!form.contraindications,
       note: (form.note || "").trim() || null,
     };
-    /* Направника змінюємо ЛИШЕ якщо запис не внесений самим направником І
-       користувач СПРАВДІ рухав це поле. Без другої умови правка ПІБ пацієнта
-       перезаписувала б `referrer_id` наосліп — саме так звʼязок і губився. */
-    /* `|| docDirty` (с43): щойно виправлене імʼя ПОТОЧНОГО лікаря має доїхати
-       в запис, хоча ключ не рухався. Для d-ключа referrer_id і так null. */
-    if (!lockDoctor && !refUnresolved && (docKey !== origDocKey || docDirty) && docKey !== KEEP_KEY) {
-      const selOpt = docs.find((d) => d.key === docKey);   // ключ, не імʼя
-      patch.doctor = selOpt ? selOpt.name : null;          // docKey === "" → очистити
-      patch.referrer_id = selOpt && selOpt.key.startsWith("r-") ? selOpt.key.slice(2) : null;
+    /* Направника чіпаємо лише тоді, коли оператор СПРАВДІ рухав це поле (або
+       виправив імʼя обраного лікаря довідника). Умова з усіма «чому» —
+       `shouldPatchReferrer` у `lib/referrerField.ts`; тут її не дублюємо, щоб
+       правило не роз'їхалось між двома місцями. */
+    if (shouldPatchReferrer({ lockDoctor, refUnresolved, docKey, origDocKey, docDirty })) {
+      const rp = referrerPatchFor(docKey, docs);   // ключ, не імʼя; docKey === "" → очистити
+      patch.doctor = rp.doctor;
+      patch.referrer_id = rp.referrer_id;
     }
     const res = await updatePatientDetails(entryId, patch);
     // Пріоритет — окремим викликом з перевіркою ролі (лише admin/направник-власник).
