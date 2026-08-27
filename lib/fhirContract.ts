@@ -10,6 +10,8 @@
    Джерело правди мапінгів — claude/pacs-fhir-integration-plan.md §4.
    Зміна тут = свідома зміна контракту партнера (і docs/integration-fhir-r4.md). */
 
+import { parseDateKey } from "@/lib/integrationContract";
+
 /** Версія FHIR, під яку заявлений фасад. R4 — базова; мапінги сумісні з
     R4B/R5, але CapabilityStatement заявляє рівно те, що реалізовано. */
 export const FHIR_VERSION = "4.0.1";
@@ -354,11 +356,26 @@ const SLOT_ID_RE =
 
 /** Розбір id слота. Повертає null на будь-якій невідповідності формі —
     роут з цього робить 404, а не 500: чужий або застарілий id це «немає
-    такого слота», а не поломка сервера. */
+    такого слота», а не поломка сервера.
+
+    Дата перевіряється КАЛЕНДАРНО (parseDateKey), а не лише за формою: раніше
+    `…2026-02-30.480-510` проходив regex, роут витрачав запити і падав у
+    DayComputeError("bad_date") → 500 замість обіцяних тут 404 (аудит с45).
+
+    uuid приймається ЛИШЕ в канонічному нижньому регістрі — саме такі id ми й
+    видаємо (slotId будується з нормалізованого roomId). Верхній регістр це
+    свідомо не наш id, і правильна відповідь на нього — 404, а не 200:
+      • у read `Resource.id` мусить збігатися з {id} із URL (R4), тож тихо
+        підмінити його канонічним не можна;
+      • далі id порівнюється як РЯДОК (ключ JSONB schedule_overrides.rooms,
+        фільтр простоїв), і верхній регістр мовчки губив і override кабінету,
+        і його простої — «зламаний томограф вільний» (ревʼю с45). */
 export function parseSlotId(id: string | null | undefined): ParsedSlotId | null {
   if (!id) return null;
   const m = SLOT_ID_RE.exec(id);
   if (!m) return null;
+  if (m[1] !== m[1].toLowerCase()) return null;
+  if (!parseDateKey(m[2])) return null;
   const startMin = Number(m[3]);
   const endMin = Number(m[4]);
   // Межі доби: 0..1440 (1440 = кінець доби, канон v1). Порожній і

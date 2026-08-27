@@ -7,12 +7,14 @@ import {
   daysBetweenKeys,
   addDaysKey,
   hhmmToMin,
+  mergeIntervals,
   minToHHMM,
   parseDateKey,
-  subtractIntervals,
   type Interval,
 } from "@/lib/integrationContract";
 import { roomScheduleFor, effectiveRoomBreaks, type DayOverride } from "@/lib/schedule";
+import { incidentMinutesForRoom, incidentRangeIso, type IncidentLike } from "@/lib/incidents";
+import { clipIntervals, partitionDay } from "@/lib/availabilityDay";
 import { logError } from "@/lib/serverLog";
 
 /* ===== RadFlow — інтеграційний API v1: вікна кабінету (read-only) =====
@@ -26,7 +28,14 @@ import { logError } from "@/lib/serverLog";
    з clinics: конверсію в абсолютний час робить консюмер.
 
    Причини недоступності НЕ віддаються (інциденти/override-мітки — внутрішнє;
-   назовні лише факт «зайнято/зачинено») — межа класу 1. */
+   назовні лише факт «зайнято/зачинено») — межа класу 1.
+
+   АЛЕ САМ ФАКТ простою віддається обовʼязково: вікна інцидентів (поломка/ТО)
+   вливаються у busy нарівні із записами. room_busy_slots про інциденти НЕ знає
+   (0074 читає лише queue_entries) — дошки UI довантажують їх окремо, а цей
+   канал раніше не довантажував, тож RIS бачив зламаний томограф вільним
+   (аудит 2026-08-27, I-1). busy і free рахуються з одного набору блокерів:
+   консюмер, який сам робить вікно − перерви − busy, отримає той самий free. */
 
 export const dynamic = "force-dynamic";
 // до 31 дня × RPC зайнятості: бюджет понад дефолтний ліміт лямбди
@@ -62,10 +71,16 @@ export async function GET(req: Request) {
   const { clinicId } = gate.caller;
 
   const q = new URL(req.url).searchParams;
-  const roomId = q.get("room_id");
-  if (!roomId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomId)) {
+  const roomRaw = q.get("room_id");
+  if (!roomRaw || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomRaw)) {
     return bad("room_id: обов'язковий uuid");
   }
+  /* КАНОНІЧНИЙ нижній регістр. uuid у Postgres регістронезалежний і повертається
+     завжди в нижньому, а тут id ще й порівнюється як РЯДОК: ключ у JSONB
+     schedule_overrides.rooms і фільтр простоїв. GUID у верхньому регістрі (RIS
+     на SQL Server/Delphi) інакше мовчки втратив би і override кабінету, і всі
+     його простої — «зламаний томограф вільний» (ревʼю с45, round 1). */
+  const roomId = roomRaw.toLowerCase();
 
   const admin = createAdminClient();
 
@@ -113,6 +128,30 @@ export async function GET(req: Request) {
     });
   }
 
+  /* Простої кабінету на діапазон. Межі — зі спільного incidentRangeIso (канон
+     0035/0059: настінний момент клініки, закодований як UTC). Фільтр статусів
+     той самий, що й у БД-гарді check_not_during_incident і в UI: resolved не
+     блокує, навіть якщо blocked_until ще попереду.
+     Вимкнений кабінет уже повністю недоступний — запит не потрібен. */
+  let incidents: IncidentLike[] = [];
+  if (!roomInactive) {
+    const bounds = incidentRangeIso(dateFrom, dateTo);
+    if (!bounds) return bad("некоректний діапазон дат"); // недосяжно: дати вже перевірені
+    const { data: incRows, error: incErr } = await admin
+      .from("incidents")
+      .select("room_id, started_at, blocked_until")
+      .eq("room_id", roomId)
+      .in("status", ["active", "planned"])
+      .lt("started_at", bounds.toIso)
+      .or(`blocked_until.is.null,blocked_until.gt.${bounds.fromIso}`);
+    if (incErr) {
+      /* Fail-closed, як і busy_failed: «не знаю про простої» ≠ «простоїв немає». */
+      logError({ event: "integration.slots", errorCode: "incidents_failed", message: incErr.message });
+      return NextResponse.json({ error: "Тимчасова помилка" }, { status: 500 });
+    }
+    incidents = (incRows ?? []) as IncidentLike[];
+  }
+
   const keys: string[] = [];
   for (let k: string | null = dateFrom; k != null && k <= dateTo; k = addDaysKey(k, 1)) keys.push(k);
 
@@ -153,17 +192,40 @@ export async function GET(req: Request) {
     // "00:00" як кінець = межа доби (24:00), інакше вікно схлопнулось би в нуль
     const endMin = sched.end === "00:00" ? 1440 : hhmmToMin(sched.end);
     const window: Interval = { s: hhmmToMin(sched.start), e: endMin };
+    /* Перевернуте/порожнє вікно (кінець ≤ початку) — «зачинено», як і у фасаді
+       (lib/fhirDay.ts). Раніше цей канал віддавав open:true з порожнім free:
+       партнер бачив «кабінет працює, але нічого не вільно» замість «не працює»,
+       і канали розходились (ревʼю с45, round 2). */
+    if (endMin <= window.s) {
+      days.push({ date: k, open: false, window: null, breaks: [], busy: [], free: [] });
+      continue;
+    }
     const breaks = effectiveRoomBreaks(date, roomId, room.schedule, override).map((b) => ({
       s: hhmmToMin(b.start),
       e: hhmmToMin(b.end),
     }));
-    const busy = busyRowsToIntervals(busyByDate.get(k) ?? []);
-    const free = subtractIntervals(window, [...breaks, ...busy]);
+    /* Простій = така сама «зайнятість» назовні (причина не віддається).
+       ОБРІЗАЄМО по вікну: простій «до відновлення» дає хвилини до кінця доби, і
+       без обрізки busy віддавав би "00:00"–"24:00" — час поза оголошеним window,
+       якого не приймають суворі парсери партнера (ревʼю с45, round 1).
+       Злиття обовʼязкове: інцидент поверх запису інакше дав би два перетинні
+       інтервали, і вікно − breaks − busy перестало б збігатися з free. */
+    const rawBusy = busyRowsToIntervals(busyByDate.get(k) ?? []);
+    const downtime = incidentMinutesForRoom(incidents, roomId, k);
+    const busy = mergeIntervals([...rawBusy, ...clipIntervals(window, downtime)]);
+    /* free — зі спільного ядра, того самого, що й у FHIR-фасаді: два канали
+       МУСЯТЬ давати однакову доступність, інакше партнер бачить розбіжність. */
+    const { free } = partitionDay(window, breaks, rawBusy, downtime);
 
     days.push({
       date: k,
       open: true,
-      window: { start: sched.start, end: sched.end },
+      /* Кінець вікна — з ОБЧИСЛЕНОГО endMin, а не з рядка розкладу: кабінет до
+         півночі має sched.end="00:00", і сире значення дало б window
+         08:00→00:00 (перевернуте) поруч із free до "24:00". Консюмер, який сам
+         рахує вікно − перерви − busy, отримав би нуль вільного часу
+         (ревʼю с45, round 2). */
+      window: { start: sched.start, end: minToHHMM(endMin) },
       breaks: fmt(breaks),
       busy: fmt(busy),
       free: fmt(free),

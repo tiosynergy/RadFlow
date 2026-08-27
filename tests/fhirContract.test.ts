@@ -298,6 +298,24 @@ describe("розбір id слота відкидає сміття", () => {
   it("1440 як кінець доби — валідний (канон v1)", () => {
     expect(parseSlotId(`${ROOM}.2026-08-18.1380-1440`)?.endMin).toBe(1440);
   });
+
+  /* Аудит с45. Обидві перевірки нижче — про те, що роут відповідає 404
+     («такого слота немає»), а не 500 і не 200 з підміненим Resource.id. */
+  it("календарно неможлива дата → null (інакше роут падав у 500)", () => {
+    expect(parseSlotId(`${ROOM}.2026-02-30.480-510`)).toBeNull();
+    expect(parseSlotId(`${ROOM}.2026-13-01.480-510`)).toBeNull();
+    expect(parseSlotId(`${ROOM}.2025-02-29.480-510`)).toBeNull(); // не високосний
+    expect(parseSlotId(`${ROOM}.2024-02-29.480-510`)?.dateKey).toBe("2024-02-29"); // високосний
+  });
+
+  it("uuid не в канонічному нижньому регістрі → null", () => {
+    /* ROOM вище — з самих цифр, тож toUpperCase() на ньому нічого не робить і
+       перевірка була б порожньою. Тут навмисно uuid З БУКВАМИ. */
+    const withLetters = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+    expect(withLetters.toUpperCase()).not.toBe(withLetters);
+    expect(parseSlotId(`${withLetters.toUpperCase()}.2026-08-18.480-510`)).toBeNull();
+    expect(parseSlotId(`${withLetters}.2026-08-18.480-510`)?.roomId).toBe(withLetters);
+  });
 });
 
 describe("Slot", () => {

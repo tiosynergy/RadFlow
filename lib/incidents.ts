@@ -20,9 +20,14 @@ export interface IncidentLike {
 }
 
 // Эффективный конец блокировки в мс. Жёсткая граница = blocked_until; без неё — Infinity («до восстановления»).
+// Нераспарсимый blocked_until — тоже Infinity: «не знаем, когда закончится» ≠ «уже закончилось».
+// Из БД (timestamptz) такое не приходит, но IncidentLike — публичный интерфейс, и NaN
+// здесь молча снимал бы блокировку (fail-open в модуле, который весь fail-closed).
 export function incidentEffectiveEnd(inc: IncidentLike | null | undefined): number {
   if (!inc) return -Infinity;
-  return inc.blocked_until ? new Date(inc.blocked_until).getTime() : Infinity;
+  if (!inc.blocked_until) return Infinity;
+  const end = new Date(inc.blocked_until).getTime();
+  return isNaN(end) ? Infinity : end;
 }
 
 // Канон времени: «настенный» момент — дата+время трактуются как UTC (без реальной
@@ -171,6 +176,98 @@ export function slotBlockedByIncidents(
   return (incidents || []).some(
     (i) => i.room_id === roomId && slotMs >= new Date(i.started_at).getTime() && slotMs < incidentEffectiveEnd(i)
   );
+}
+
+/* ===== Простой в «минутах суток» — для публикуемой доступности (аудит с45) =====
+
+   ЗАЧЕМ. `room_busy_slots` не знает про инциденты вообще: занятость там —
+   исключительно строки `queue_entries`. Досок это не касается (они грузят
+   `incidents` отдельно), а вот REST v1 `/slots` и FHIR `Slot` считали
+   свободное время как «окно − перерывы − room_busy_slots» и публиковали
+   кабинет в ремонте как СВОБОДНЫЙ. При этом CapabilityStatement на
+   `/fhir/R4/metadata` дословно обещает партнёру обратное: «перерва,
+   інцидент і вимкнений кабінет однаково дають busy-unavailable».
+   Запись в такое окно всё равно отбивает триггер `check_not_during_incident`
+   (23P01), то есть партнёр получает отказ на слот, который ему только что
+   отдали свободным.
+
+   ФРЕЙМ ВРЕМЕНИ. `incidents.started_at` / `blocked_until` хранятся в том же
+   каноне «настенное время как UTC», что и `scheduled_at` (0035/0059) —
+   проверено на проде: `started_at − created_at` = ровно смещение зоны
+   клиники. Поэтому здесь сравниваются wall-as-UTC мс, БЕЗ конвертации через
+   Intl (это дало бы двойной сдвиг — правило AGENTS.md).
+
+   ГРАНИЦЫ КОНСЕРВАТИВНЫЕ: начало вниз (floor), конец вверх (ceil). Лишняя
+   заблокированная минута — это отказ в записи; недостающая — пациент,
+   записанный в сломанный аппарат. */
+
+/** Пересечение окна простоя с сутками `dateKey`, в минутах от начала суток. */
+export function incidentMinutesOnDay(
+  inc: IncidentLike | null | undefined,
+  dateKey: string
+): { s: number; e: number } | null {
+  if (!inc) return null;
+  const dayStart = wallInstant(dateKey, "00:00");
+  if (isNaN(dayStart)) return null;
+  const dayEnd = dayStart + 1440 * 60000;
+
+  const start = new Date(inc.started_at).getTime();
+  if (isNaN(start)) return null;
+  const end = incidentEffectiveEnd(inc);          // может быть Infinity («до восстановления»)
+
+  const s = Math.max(start, dayStart);
+  const e = Math.min(end, dayEnd);
+  if (!(e > s)) return null;
+
+  return { s: Math.floor((s - dayStart) / 60000), e: Math.ceil((e - dayStart) / 60000) };
+}
+
+/** Границы выборки простоев на диапазон дат [dateFrom, dateTo] — ISO-строки.
+
+    Полуоткрытый интервал [00:00 dateFrom, 24:00 dateTo): предикат выборки —
+    `started_at < toIso and (blocked_until is null or blocked_until > fromIso)`.
+
+    Отдельная функция, а не три копии в роутах: потерянные «+ сутки» в верхней
+    границе — это молчаливый пропуск простоя в последний день диапазона, то есть
+    ровно тот дефект, ради которого всё это писалось (ревью с45, round 1).
+    Кадр времени — «настенный как UTC» (канон 0035/0059), поэтому wallInstant,
+    а не new Date(dateKey): иначе сдвиг на смещение зоны клиники.
+    null — на невалидном или перевёрнутом диапазоне (у new Date(NaN).toISOString()
+    нет безопасного значения: он бросает RangeError). */
+export function incidentRangeIso(
+  dateFrom: string,
+  dateTo: string
+): { fromIso: string; toIso: string } | null {
+  const from = wallInstant(dateFrom, "00:00");
+  const to = wallInstant(dateTo, "00:00");
+  if (isNaN(from) || isNaN(to) || to < from) return null;
+  return {
+    fromIso: new Date(from).toISOString(),
+    toIso: new Date(to + 1440 * 60000).toISOString(),
+  };
+}
+
+/** Минуты суток, отобранные у кабинета всеми его простоями. Порядок не гарантируется.
+
+    Сравнение id кабинета — БЕЗ УЧЁТА РЕГИСТРА. Внешние роуты принимают uuid по
+    regex с флагом /i, Postgres сравнивает uuid тоже без учёта регистра, но
+    ВОЗВРАЩАЕТ каноническую нижнюю форму. Партнёрский RIS с GUID в верхнем
+    регистре (SQL Server, Delphi) прошёл бы валидацию, получил бы строки из БД —
+    и здесь строгое `!==` выбросило бы ВСЕ простои: кабинет в ремонте снова
+    публикуется свободным (ревью с45, round 1). */
+export function incidentMinutesForRoom(
+  incidents: IncidentLike[] | null | undefined,
+  roomId: string,
+  dateKey: string
+): { s: number; e: number }[] {
+  const want = String(roomId || "").toLowerCase();
+  const out: { s: number; e: number }[] = [];
+  for (const i of incidents || []) {
+    if (String(i.room_id || "").toLowerCase() !== want) continue;
+    const m = incidentMinutesOnDay(i, dateKey);
+    if (m) out.push(m);
+  }
+  return out;
 }
 
 // Попадает ли запись (scheduled_date 'YYYY-MM-DD' + scheduled_time 'HH:MM') в окно простоя инцидента.
