@@ -20,6 +20,7 @@ import {
 } from "@/lib/schedule";
 import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
+import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { BUFFER_DEFAULT, normBuffer, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { buildSlots, countFit } from "@/lib/slots";
@@ -316,8 +317,16 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const room = (rooms || []).find((r) => r.id === roomId);
   const [offOk, setOffOk] = useState(false);
   useEffect(() => { setOffOk(false); }, [time, roomId, dateStr]);   // згода протухає при зміні слота
+  /* U-5 (с46), третій екран того ж класу — знайдено ревʼю пакета. Сітку при
+     збої ми ховали (банер нижче), але `valid` про це не знав: при вже обраному
+     слоті «Перенести» лишалась активною. Гірше за BookingModal: тут при
+     schedErr `roomSchedule` лишається null і графік відкочується на хардкод
+     «Пн–Сб 08–18», тобто SELECTABLE.includes(slotState(time)) рахується по
+     ЧУЖОМУ графіку. Правило те саме і спільне. */
+  const availState: SlotDataState = { busyFailed: busyError, schedFailed: schedErr, loading: slotsLoading };
+  const availTrusted = slotDataTrusted(availState);
   const valid = roomId && time && !roomSched.closed && SELECTABLE.includes(slotState(time))
-    && (!needsOffConfirm || offOk) && !moveBlocked;
+    && (!needsOffConfirm || offOk) && !moveBlocked && availTrusted;
 
   /* Realtime: слот, який ми вже обрали, щойно зайняли (або кабінет закрили) —
      знімаємо вибір і кажемо про це, щоб «Перенести» не впало помилкою в лоб. */
@@ -562,7 +571,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
         <div className="dlg-foot">
           {valid
             ? <span className="bk-summary">{room ? room.name : ""} · {dateStr} {time}–{fmt(toMin(time) + dur)}{buffer > 0 ? " (+" + buffer + " хв буфер → вільно з " + fmt(toMin(time) + dur + buffer) + ")" : ""}</span>
-            : <span style={{ fontSize: "0.75rem", color: "var(--text-faint)", marginRight: "auto", alignSelf: "center" }}>Оберіть кабінет, дату та слот</span>}
+            : <span style={{ fontSize: "0.75rem", color: "var(--text-faint)", marginRight: "auto", alignSelf: "center" }}>{slotDataFooterText(availState) ?? "Оберіть кабінет, дату та слот"}</span>}
           <button className="btn btn-ghost" onClick={requestClose} disabled={saving}>Скасувати</button>
           <button className="btn btn-primary" disabled={!valid || saving} onClick={handleConfirm}>
             {saving ? "Перенесення…" : "✓ Перенести на цей слот"}

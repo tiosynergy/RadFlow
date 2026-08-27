@@ -17,7 +17,7 @@ import { unreadForEntity, unreadForField, unreadForDate, unreadForSurface, calen
 import { useQueueSounds } from "@/lib/useQueueSounds";
 import type { OverrunSource } from "@/lib/soundEvents";
 import { signOutAndRedirect } from "@/lib/auth";
-import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock } from "@/lib/queueStatus";
+import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, SAFETY_UNKNOWN_REASON } from "@/lib/queueStatus";
 import { visibleStuckByRoom, stuckUnknownOf, stuckDateLabel, stuckDeepLink, stuckBlockReason, canCallIntoRoom, STUCK_UNKNOWN_REASON, type StuckStudy } from "@/lib/stuckStudy";
 import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
@@ -1157,6 +1157,10 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
       notToday: !sameDay(selectedDate, today0()),
       roomStuck: p.room_id ? stuckRooms[p.room_id] ?? null : null,
       stuckUnknown,
+      /* с46: гейт «не знаємо про простої — не пускаємо» переїхав СЮДИ з двох
+         окремих `if (safetyErr)` нижче. Дошка черги того гейта не мала взагалі,
+         бо копії правила розійшлись — тепер він один на обидві. */
+      safetyUnknown: safetyErr,
       roomBlocked: !!(p.room_id && blockingByRoom[p.room_id]),
       schedClosed: !!(p.room_id && roomSchedClosed(p.room_id)),
       schedEnd: sched && !sched.closed ? sched.end : null,
@@ -1166,13 +1170,15 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
      добити день, і саме радіолог заводить пацієнта в кабінет. Замість «реєстратура
      має перенести запис» — діалог підтвердження. Решта причин лишаються жорсткими. */
   function inProgressBlockReason(p: RadEntry): string | null {
-    /* Дані про простої/графік не завантажились — вважати кабінет вільним НЕ МОЖНА
-       (це виклик пацієнта в апарат, який може бути на ремонті). Гейт до всіх інших
-       перевірок; DB-гард 0020 однаково відхилив би, але оператор має бачити причину. */
-    if (safetyErr) return "Дані про простої/графік не оновились — виклик заблоковано, оновіть сторінку";
     const r = callBlockOf(p);
     if (!r || r.confirmable) return null;
     if (r.code === "wrong_day") return "Запис не на сьогодні — викликати в кабінет можна лише пацієнтів сьогоднішнього дня";
+    /* Дані про простої/графік не завантажились — вважати кабінет вільним НЕ МОЖНА
+       (це виклик пацієнта в апарат, який може бути на ремонті). Гейт стоїть перед
+       room_blocked/room_closed, бо саме вони пораховані з тих даних, яких нема;
+       DB-гард (trg_not_during_incident) однаково відхилив би, але оператор має
+       бачити причину ДО того, як поведе пацієнта до апарата. */
+    if (r.code === "safety_unknown") return SAFETY_UNKNOWN_REASON;
     if (r.code === "room_blocked") return "Кабінет заблоковано (поломка/ТО) — зніме адміністратор";
     if (r.code === "room_closed") return "Кабінет зачинено за графіком на цей день";
     if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
@@ -1191,8 +1197,9 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   const [completeFor, setCompleteFor] = useState<RadEntry | null>(null);
   const [completeBusy, setCompleteBusy] = useState(false);
   function callPatient(p: RadEntry) {
-    // safetyErr — жорсткий гейт: підтверджувати виклик на невідомих даних про простої не можна.
-    if (safetyErr) { notify("Дані про простої/графік не оновились — виклик заблоковано, оновіть сторінку", "error"); return; }
+    /* Гейт «не знаємо про простої» тепер приходить кодом safety_unknown із
+       computeCallBlock (с46) і ловиться загальною гілкою нижче: він
+       НЕ confirmable, тож підтвердити виклик на невідомих даних не вийде. */
     const r = callBlockOf(p);
     if (r && !r.confirmable) { notify(inProgressBlockReason(p) || "Викликати зараз неможливо", "error"); return; }
     if (r && r.code === "next_day") { setOffCallAsk({ p, kind: "next_day", end: r.end, durationMin: r.durationMin }); return; }
@@ -1541,6 +1548,15 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                обхід wrong_day. «Зараз» — у момент кліку, не з рендера. */
             if (!sameDay(selectedDate, wallToday0())) {
               notify("Доба змінилась — запис уже не на сьогодні, оновіть дошку", "error");
+              setOffCallAsk(null);
+              return;
+            }
+            /* Перечитуємо жорсткі блоки в момент КЛІКУ (ревʼю с46 р3, F5): поки
+               діалог висів, міг упасти рефетч простоїв (safety_unknown) або
+               кабінет заблокувати. Підтвердження лікує лише те, що показали. */
+            const rNow = callBlockOf(a.p);
+            if (rNow && !rNow.confirmable) {
+              notify(inProgressBlockReason(a.p) || "Викликати зараз неможливо", "error");
               setOffCallAsk(null);
               return;
             }
