@@ -596,6 +596,18 @@ function classifyError(err: { code?: string; message?: string }, status?: QueueS
    0 рядків → дивимось реальний стан: той самий цільовий → ідемпотентно ok,
    інший → code='stale' (дошки вже вміють його показувати і робити reload). */
 const LIVE_STATUSES: readonly QueueStatus[] = ["scheduled", "waiting", "in_progress"];
+/* СКАСУВАННЯ ширше за «живі» на один стан — `needs_reschedule` (аудит с45).
+   БД цей перехід дозволяє явно і давно: `guard_status_transition` (0079) —
+   «вихід із needs_reschedule: scheduled | cancelled | no_show», а
+   `guard_status_change_referrer` — «направник може лише перенести або
+   скасувати». Але клієнт передавав сюди LIVE_STATUSES, тож RPC повертав
+   updated=false, і кнопка мовчки віддавала «Стан змінився — оновіть дошку»
+   на рівному місці. Це рівно той дефект, який 0079 і лагодила, тільки з
+   іншого боку. Окрема константа, а не розширення LIVE_STATUSES: тим списком
+   користуються ЗАВЕРШЕННЯ і виклик, і туди `needs_reschedule` не можна —
+   запис без слота не можна ні завершити, ні викликати в кабінет. */
+const CANCELLABLE_STATUSES: readonly QueueStatus[] =
+  ["scheduled", "waiting", "in_progress", "needs_reschedule"];
 /* Перенести можна і «не відбулося»/«неявку»/«скасовано» — це штатний «Перезапис»
    з панелі скасованих (QueueBoard/CancelledPanel), і навіть in_progress (свідоме
    рішення: дослідження зупиняється, кабінет звільняється). НЕ можна — тільки
@@ -754,7 +766,7 @@ export async function cancelQueueEntry(id: string): Promise<QueueActionResult> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  return setStatusViaRpc(supabase, user.id, v.data, "cancelled", { allowed: LIVE_STATUSES, sameAsOk: "cancelled" });
+  return setStatusViaRpc(supabase, user.id, v.data, "cancelled", { allowed: CANCELLABLE_STATUSES, sameAsOk: "cancelled" });
 }
 
 /** Завершити процедуру: статус done/no_show/not_held + нотатка. Лише живий запис. */
