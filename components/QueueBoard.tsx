@@ -1532,6 +1532,14 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
+    /* Попередження react-hooks/exhaustive-deps про відсутній `openBooking` —
+       хибне, і додавати його в список НЕ треба: openBooking це звичайна функція,
+       нова на кожен рендер, тож у списку вона перепідписувала б слухач щоразу.
+       Значення, від якого він реально залежить (safetyErr), у списку Є — саме воно
+       переукладає замикання, тому хоткею N ніколи не дістається застаріле
+       «дані в порядку».
+       ⚠️ Блочний коментар НЕ може починатися зі слова eslint: така форма — це
+       директива конфігурації, і лінтер падає помилкою парсингу JSON. */
   }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, stuckFinish, reload, visRooms, safetyErr]);
 
   const rtHealth = useRealtimeRefetch({

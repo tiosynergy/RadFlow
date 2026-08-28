@@ -207,16 +207,27 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
         const supabase = createClient();
         if (clinicId) {
           const ovRes = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateStr).maybeSingle();
+          /* U-3 (с46): помилку цього читання ковтали, хоча сусіднє (rooms) її вже
+             перевіряло. PostgREST не кидає — {data:null, error}, і збій ставав
+             «особливого дня немає»: закритий святковий день малювався робочим, а
+             скорочений — повним. Те саме джерело недовіри, що й нижче. */
+          if (ovRes.error) throw ovRes.error;
           if (!cancel) setOverride((ovRes.data as unknown as DayOverride) || null);
         }
         if (!roomId) { if (!cancel) { setRoomSchedule(null); setSchedErr(false); } return; }
         const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
         if (roomRes.error) throw roomRes.error; // без графіка кабінету сітка тихо повернулась би до хардкоду 08–18
-        if (!cancel) { setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null); setSchedErr(false); }
+        /* Рядка немає — це НЕ «графіка немає»: maybeSingle() віддає {data:null,
+           error:null}, коли кабінет невидимий за RLS або вже видалений, і сітка
+           так само мовчки відкотилась би до хардкоду. */
+        if (!roomRes.data) throw new Error("room schedule row not readable");
+        if (!cancel) { setRoomSchedule((roomRes.data as { schedule?: unknown }).schedule ?? null); setSchedErr(false); }
       } catch {
-        // Транзієнтний збій (оновлення токена / мережа) — модаль не рушимо, але
-        // й сітку не малюємо: графік кабінету невідомий.
-        if (!cancel) setSchedErr(true);
+        /* Транзієнтний збій (оновлення токена / мережа) — модаль не рушимо, але й
+           сітку не малюємо: графік кабінету невідомий. Прочитане ОБНУЛЯЄМО: дата
+           й кабінет тут МІНЯЮТЬСЯ при відкритій модалці, і збій на новій даті
+           лишав би оверрайд СТАРОЇ — «🚫 не працює · Новий рік» на 2 січня. */
+        if (!cancel) { setOverride(null); setRoomSchedule(null); setSchedErr(true); }
       } finally {
         if (!cancel) setSchedLoading(false);
       }
@@ -511,8 +522,11 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
           </div>
           <div className="fld">
             {isPastDay && <div className="ctx-hint red" style={{ marginBottom: 10 }}>⏳ {dateStr} уже минуло — перенести можна лише на майбутній час.</div>}
-            {roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {dateStr}{override && override.label ? " · " + override.label : ""}. Оберіть інший день.</div>}
-            {!roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік: {roomSched.start}–{roomSched.end}.</div>}
+            {/* Обидва рядки — ТВЕРДЖЕННЯ про графік, тож лише коли він прочитаний.
+                Без цієї умови збій читання (schedErr) показував би графік, який
+                або вигаданий фолбэком, або лишився від попередньої дати. */}
+            {!schedErr && roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {dateStr}{override && override.label ? " · " + override.label : ""}. Оберіть інший день.</div>}
+            {!schedErr && !roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік: {roomSched.start}–{roomSched.end}.</div>}
             {roomIncident && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncident.blocked_until ? " до " + new Date(roomIncident.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : ""}. Оберіть слот після відновлення або інший день.</div>}
             {taken && <div className="ctx-hint red" style={{ marginBottom: 10 }}>⚡ Слот {taken} щойно зайняли — оберіть інший. <button className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={() => setTaken(null)}>Зрозуміло</button></div>}
             {/* Зайнятість не завантажилась — сітку НЕ показуємо (порожній день = «усе вільно»). */}

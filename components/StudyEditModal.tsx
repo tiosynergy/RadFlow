@@ -15,6 +15,7 @@ import type { StudySearchHit } from "@/lib/studySearch";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, offScheduleKind, OFF_SCHED_GRACE_MIN, type DayOverride } from "@/lib/schedule";
 import { wallNow, wallMinOfDay, wallDayKey, wallToday0 } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
+import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { buildSlots } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { useModalA11y } from "@/lib/useModalA11y";
@@ -72,23 +73,47 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
 
   const [override, setOverride] = useState<DayOverride | null>(null);
   const [roomSchedule, setRoomSchedule] = useState<unknown>(null); // rooms.schedule кабінету (для перерв/сітки)
+  const [schedLoading, setSchedLoading] = useState(true);
+  /* U-3/U-4 (с46). PostgREST не кидає — він повертає {data:null, error}. Тут ЖОДНА
+     з двох помилок не перевірялась, тож збій читання ставав «особливого дня немає»
+     + «графіка кабінету немає», і roomScheduleFor мовчки відкочувався на хардкод
+     08–18. Наслідок: дослідження можна було розтягнути ПОЗА реальний графік і
+     крізь перерву без жодної згоди, а сітка малювала чужий день. Колишній
+     коментар «сітку прикриє busyErr» був фактично хибним: busyErr — інше джерело
+     (RPC room_busy_slots), і при цьому збої воно лишається здоровим. */
+  const [schedErr, setSchedErr] = useState(false);
   // Графік/оверрайд кабінету на дату (для меж тривалості й сітки слотів). Зайнятість
   // кабінету — окремо через useRoomBusy (realtime), нижче.
   useEffect(() => {
     let cancel = false;
     (async () => {
-      if (!scheduledDate) return;
+      // Без кабінету або без дати графіка кабінету не існує — читати нічого (див. schedApplies).
+      if (!scheduledDate || !patient.room_id) { if (!cancel) { setSchedLoading(false); setSchedErr(false); } return; }
+      setSchedLoading(true);
       try {
         const supabase = createClient();
         if (clinicId) {
           const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
+          if (ov.error) throw ov.error;   // без оверрайда закритий/скорочений день виглядав би звичайним
           if (!cancel) setOverride((ov.data as unknown as DayOverride) || null);
         }
-        if (patient.room_id) {
-          const roomRes = await supabase.from("rooms").select("schedule").eq("id", patient.room_id).maybeSingle();
-          if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
-        }
-      } catch { /* транзієнт — межі лишаться дефолтними; сітку прикриє busyErr */ }
+        const roomRes = await supabase.from("rooms").select("schedule").eq("id", patient.room_id).maybeSingle();
+        if (roomRes.error) throw roomRes.error;   // без графіка кабінету межі тихо відкотились би до хардкоду 08–18
+        /* Рядка немає — це НЕ «графіка немає». maybeSingle() віддає {data:null,
+           error:null}, коли кабінет невидимий за RLS або вже видалений; мовчазний
+           відкат на той самий хардкод 08–18 — рівно той дефект, лише без помилки. */
+        if (!roomRes.data) throw new Error("room schedule row not readable");
+        if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown }).schedule ?? null);
+        if (!cancel) setSchedErr(false);
+      } catch {
+        /* Транзієнтний збій (оновлення токена / мережа) — вікно не рушимо, але й
+           меж не вигадуємо. Прочитане ОБНУЛЯЄМО: інакше при зміні кабінету/дати
+           на екрані лишився б графік ПОПЕРЕДНЬОГО дня і банери говорили б про
+           нього як про факт (ревʼю пакета, знахідка 1). */
+        if (!cancel) { setOverride(null); setRoomSchedule(null); setSchedErr(true); }
+      } finally {
+        if (!cancel) setSchedLoading(false);
+      }
     })();
     return () => { cancel = true; };
   }, [patient.room_id, scheduledDate, clinicId]);
@@ -101,6 +126,27 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   // H-6: поки зайнятість НЕ підтверджена (грузиться/впала), nextStart=null не можна
   // трактувати як «наступних записів немає» (fail-open завищив би доступний час).
   const busyReady = !busyLoading && !busyErr;
+  /* Графік кабінету взагалі ЗАСТОСОВНИЙ лише коли є і кабінет, і дата. Без них
+     «графіка кабінету» не існує, і брати за межу дефолт 08–18 (як робив цей екран
+     для записів без кабінету) — вигадка: запис на 16:00 із 3-годинним переліком
+     ставав «⚠ Не вміщується» через кабінет, якого в нього немає. */
+  const schedApplies = !!patient.room_id && !!scheduledDate;
+  /* Те саме правило, що busyReady (H-6), лише для графіка: поки він не
+     ПРОЧИТАНИЙ, брати межі з фолбэка 08–18 — той самий fail-open, іншим джерелом.
+     «Не читали» теж означає «не знаємо» — тому schedApplies входить сюди. */
+  const schedReady = schedApplies && !schedLoading && !schedErr;
+  /* Спільний стан довіри до даних кабінету — те саме правило й ті самі слова, що
+     на решті екранів запису (lib/availabilityTrust, пакет U-5/U-6). */
+  const availState: SlotDataState = { busyFailed: busyErr, schedFailed: schedErr, loading: busyLoading || schedLoading };
+  const availTrusted = slotDataTrusted(availState);
+  const availFailed = busyErr || schedErr;
+  /* Консервативна стеля на час невідомості — ПОТОЧНА тривалість запису: редагувати
+     й скорочувати можна, ЗБІЛЬШИТИ — ні. Одна на обидва джерела, щоб правило не
+     розповзлося по файлу двома копіями, які розійдуться.
+     Фолбэк саме DUR_MAX, а не Infinity: раніше при duration_min = 0/null стеля
+     ставала нескінченною і в UI друкувалося «Доступно у слоті: Infinity хв»
+     (у старому коді це маскував завжди скінченний capBySched). */
+  const committedDur = patient.duration_min && patient.duration_min > 0 ? patient.duration_min : DUR_MAX;
   // Найближчий СЛІДУЮЧИЙ запис у кабінеті (0074: start_min обрізаний по добі; «хвости»
   // з попередньої доби мають менший старт і сюди не потраплять) — стеля тривалості.
   const nextStart = useMemo(() => {
@@ -137,7 +183,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      не знаємо про наступний запис. Коли завантажилось — стеля стає справжньою. */
   const capByNext = busyReady
     ? (nextStart != null ? nextStart - startMin - buffer : Infinity)
-    : (patient.duration_min && patient.duration_min > 0 ? patient.duration_min : Infinity);
+    : committedDur;
   /* 0077 — ЗАПИС, ЩО ВЖЕ СТОЇТЬ ПОЗА ГРАФІКОМ, теж треба вміти редагувати.
      Без цього запис на 17:55 у кабінеті, що закривається о 18:00, давав
      availableDur = 5 хв → «⚠ Не вміщується» і кнопка «Зберегти» назавжди сіра:
@@ -145,20 +191,40 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      (+OFF_SCHED_GRACE_MIN), а перерва позначений запис уже не обмежує — він і так
      у ній стоїть (тригер 0067 пускає рядки з прапорцем).
      ⚠️ Це НЕ дозвіл тягнути далі: нове перетинання межі вимагає окремої згоди
-     (offOk нижче), а сервер усе одно перевірить scheduleBlock. */
-  const capBySched = (offSchedule ? schedEnd + OFF_SCHED_GRACE_MIN : schedEnd) - startMin;
+     (offOk нижче), а сервер усе одно перевірить scheduleBlock.
+     schedReady — та сама логіка, що busyReady, лише для графіка: поки він не
+     підтверджений, schedEnd — це хардкод 08–18, а не межа ЦЬОГО кабінету, і брати
+     її за стелю означало б дозволити тягнути дослідження за реальне закриття. */
+  const capBySched = !schedApplies
+    ? DUR_MAX                                    // немає кабінету/дати — графік не обмежує (але стеля продукту лишається)
+    : schedReady
+      ? (offSchedule ? schedEnd + OFF_SCHED_GRACE_MIN : schedEnd) - startMin
+      : committedDur;
   // Перерва кабінету після старту теж обмежує тривалість — дослідження не може її перетнути.
   const roomBreaks = effectiveRoomBreaks(dateObj, patient.room_id || "", roomSchedule, override);
   const nextBreakStart = roomBreaks.map((b) => toMin(b.start)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
-  const capByBreak = offSchedule ? Infinity : (nextBreakStart != null ? nextBreakStart - startMin : Infinity);
+  const capByBreakRaw = nextBreakStart != null ? nextBreakStart - startMin : Infinity;
+  /* Перерви — з ТОГО САМОГО (невідомого при schedErr) графіка: порожній список
+     перерв при збої означав би «перерв немає», а не «ми їх не знаємо». */
+  const capByBreak = (offSchedule || !schedApplies) ? Infinity : (schedReady ? capByBreakRaw : committedDur);
   const availableDur = Math.max(0, Math.min(capByNext, capBySched, capByBreak));
   // Межа, за якою потрібне НОВЕ підтвердження (кінець графіка / початок перерви).
-  const inSchedCap = Math.max(0, Math.min(capByNext, schedEnd - startMin, nextBreakStart != null ? nextBreakStart - startMin : Infinity));
-  const windowLabel = (capByBreak <= capByNext && capByBreak <= capBySched && nextBreakStart != null)
+  const capBySchedStrict = !schedApplies ? DUR_MAX : (schedReady ? schedEnd - startMin : committedDur);
+  const capByBreakStrict = !schedApplies ? Infinity : (schedReady ? capByBreakRaw : committedDur);
+  const inSchedCap = Math.max(0, Math.min(capByNext, capBySchedStrict, capByBreakStrict));
+  /* Підпис межі. Два споживачі — і межі в них РІЗНІ (availableDur та inSchedCap),
+     тож підпис теж окремий: інакше банер «поза графіком» показував би реальний
+     час 18:00 поруч зі словами «дані не підтверджені» (ревʼю пакета, знахідка 6).
+     Правило: називаємо межу лише тоді, коли її дало ПРОЧИТАНЕ джерело; якщо
+     тримає консервативна стеля невідомості — так і кажемо. */
+  const boundaryLabel = (capByBreak <= capByNext && capByBreak <= capBySched && nextBreakStart != null)
     ? ("до перерви о " + fmt(nextBreakStart))
     : (nextStart != null && (nextStart - buffer) <= schedEnd)
       ? ("до наступного запису о " + fmt(nextStart) + (buffer > 0 ? ` − ${buffer} буфер` : ""))
-      : ("до кінця графіка (" + fmt(schedEnd) + ")");
+      : (schedApplies ? ("до кінця графіка (" + fmt(schedEnd) + ")") : "кабінет або дату не призначено");
+  const untrustedLabel = "поточна тривалість запису — дані кабінету не підтверджені";
+  const labelFor = (cap: number) => (!availTrusted && cap === committedDur ? untrustedLabel : boundaryLabel);
+  const windowLabel = labelFor(availableDur);
 
   // Тривалість за довідником (у каталозі — час позиції як є; CONTRAST_DUR
   // додається лише в легасі-статиці — див. lib/catalog.studyDur).
@@ -359,13 +425,15 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
               ? <>⚠ Не вміщується: разом <b>{totalDur} хв</b>, доступно <b>{availableDur} хв</b> ({windowLabel}). Скоротіть на {totalDur - availableDur} хв.</>
               : <>Доступно у слоті: <b>{availableDur} хв</b> ({windowLabel}). Вільно ще <b>{remaining} хв</b>.</>}
           </div>
-          {/* Поки зайнятість кабінету не підтверджена — не даємо збільшувати тривалість
-              (fail-closed). При помилці читання це не транзієнт «пусто», а невідомий стан. */}
-          {!busyReady && (
-            <div className={"ctx-hint " + (busyErr ? "orange" : "blue")} style={{ fontSize: "0.75rem" }}>
-              {busyErr
-                ? <>⚠ Не вдалося перевірити зайнятість кабінету — збільшувати тривалість поки не можна. Закрийте й відкрийте вікно, щоб спробувати ще раз.</>
-                : <>Перевіряю зайнятість кабінету…</>}
+          {/* Поки дані кабінету не підтверджені — не даємо збільшувати тривалість
+              (fail-closed). При помилці читання це не транзієнт «пусто», а невідомий
+              стан. Джерел два (зайнятість і графік) і називає їх спільний хелпер —
+              інакше додане джерело знову залишиться без свого рядка в банері. */}
+          {!availTrusted && (
+            <div className={"ctx-hint " + (availFailed ? "orange" : "blue")} style={{ fontSize: "0.75rem" }}>
+              {availFailed
+                ? <>⚠ {slotDataFooterText(availState)} — збільшувати тривалість поки не можна. Закрийте й відкрийте вікно, щоб спробувати ще раз.</>
+                : <>{slotDataFooterText(availState)}</>}
             </div>
           )}
           {!overflow && realClash && (
@@ -380,7 +448,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
             <div className="info-banner offsched" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
               <span className="ib-txt">
                 <b>⏰ Поза графіком.</b> Разом <b>{totalDur} хв</b> — дослідження вийде за межу
-                (<b>{fmt(startMin + inSchedCap)}</b>: {windowLabel}). Кабінет працюватиме понаднормово.
+                (<b>{fmt(startMin + inSchedCap)}</b>: {labelFor(inSchedCap)}). Кабінет працюватиме понаднормово.
               </span>
               <label className="fld-lab" style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                 <input type="checkbox" checked={offOk} onChange={(e) => setOffOk(e.target.checked)} />
@@ -476,10 +544,12 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
           </div>
           {!showGrid
             ? <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>Слот запису не визначено — сітку показати нема для чого.</div>
-            : busyErr
-            ? <div className="ctx-hint red" style={{ fontSize: "0.78125rem" }}>⚠ Не вдалося завантажити зайнятість кабінету — оновіть вікно.</div>
-            : busyLoading
+            : availFailed
+            ? <div className="ctx-hint red" style={{ fontSize: "0.78125rem" }}>⚠ {slotDataFooterText(availState)} — оновіть вікно.</div>
+            : !availTrusted
             ? <div className="ctx-hint" style={{ fontSize: "0.8125rem", padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження зайнятості…</div>
+            /* «Кабінет не працює» — теж ТВЕРДЖЕННЯ про графік, тож стоїть ПІСЛЯ
+               перевірки довіри: при schedErr ми не знаємо ні що він працює, ні що ні. */
             : roomSched.closed
             ? <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>Кабінет у цей день не працює.</div>
             : (
