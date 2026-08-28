@@ -12,7 +12,7 @@
 
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { roomScheduleFor, effectiveRoomBreaks, type DayOverride, type Break } from "@/lib/schedule";
+import { roomScheduleFromFeed, roomBreaksFromFeed, overridesUnknown, type OverrideFeed, type Break } from "@/lib/schedule";
 import { incidentEffectiveEnd, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, wallInstant, type IncidentFeed } from "@/lib/incidents";
 import { firstFittingSlot, slotToMin, type BusySpan } from "@/lib/slots";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
@@ -23,11 +23,11 @@ type Entry = { id: string; room_id: string | null; duration_min: number | null; 
 const pad = (n: number) => String(n).padStart(2, "0");
 const dateVal = (d: Date) => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
 
-export default function QuickRescheduleButton({ entry, clinicTz, date, override, incidents, onPick }: {
+export default function QuickRescheduleButton({ entry, clinicTz, date, overrides, incidents, onPick }: {
   entry: Entry;
   clinicTz?: string | null;
   date: Date;
-  override?: DayOverride | null;
+  overrides: OverrideFeed;     // U-16: фід (мапа+failed), не гола строка дня
   incidents: IncidentFeed;     // U-11: фід (rows+failed), не голий масив
   onPick: (time: string) => void | Promise<void>;
 }) {
@@ -40,6 +40,7 @@ export default function QuickRescheduleButton({ entry, clinicTz, date, override,
   const dateStr = dateVal(date);
   // Примітив у депсах: сам фід — новий обʼєкт на кожен рендер батька.
   const incidentsFailed = incidentsUnknown(incidents);
+  const overridesFailed = overridesUnknown(overrides);
 
   useEffect(() => {
     let cancel = false;
@@ -50,6 +51,12 @@ export default function QuickRescheduleButton({ entry, clinicTz, date, override,
        і кнопка в один клік переносила пацієнта в кабінет на ремонті. Повний
        модал «Перенести» лишається — там видно, що дані не підтверджені. */
     if (incidentsFailed) { setLoading(false); setSlot(null); return; }
+    /* U-16: те саме для особливих графіків дня — і тут ціна вища, ніж деінде.
+       Це кнопка В ОДИН КЛІК: порожня мапа на місці збою означала б «звичайний
+       день», і кнопка запропонувала б час у кабінеті, закритому санітарним
+       днем. Окремою гілкою, а не в парі з простоями: два канали — два гейти,
+       щоб кожен був названий і кожен фальсифікувався окремо. */
+    if (overridesFailed) { setLoading(false); setSlot(null); return; }
     setLoading(true);
     (async () => {
       try {
@@ -57,9 +64,14 @@ export default function QuickRescheduleButton({ entry, clinicTz, date, override,
         const schedRes = await supabase.from("rooms").select("id, schedule").eq("id", roomId).maybeSingle();
         if (schedRes.error) throw schedRes.error;
         const schedule = (schedRes.data as { schedule?: unknown } | null)?.schedule ?? null;
-        const sched = roomScheduleFor(date, roomId, override, schedule);
+        /* Недосяжно, поки живий ранній гейт (той самий фід, те саме замикання) —
+           розтяжка на випадок, якщо його колись приберуть; так само, як із
+           простоями нижче. */
+        const sched = roomScheduleFromFeed(date, roomId, overrides, schedule);
+        if (sched === null) throw new Error("overrides-unknown");   // невідомо ≠ звичайний день
         if (sched.closed) { if (!cancel) { setSlot(null); setLoading(false); } return; }
-        const breaks: Break[] = effectiveRoomBreaks(date, roomId, schedule, override);
+        const breaks: Break[] | null = roomBreaksFromFeed(date, roomId, schedule, overrides);
+        if (breaks === null) throw new Error("overrides-unknown");   // порожні перерви ≠ «перерв немає»
 
         const { data, error } = await supabase.rpc("room_busy_slots", { p_room: roomId, p_date: dateStr, p_exclude: entry.id });
         if (error) throw error;
@@ -101,7 +113,7 @@ export default function QuickRescheduleButton({ entry, clinicTz, date, override,
       }
     })();
     return () => { cancel = true; };
-  }, [entry.id, entry.room_id, dateStr, clinicTz, dur, buffer, incidentsFailed]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [entry.id, entry.room_id, dateStr, clinicTz, dur, buffer, incidentsFailed, overridesFailed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return (

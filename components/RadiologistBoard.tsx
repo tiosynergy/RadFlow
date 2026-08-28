@@ -19,7 +19,7 @@ import type { OverrunSource } from "@/lib/soundEvents";
 import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, SAFETY_UNKNOWN_REASON } from "@/lib/queueStatus";
 import { visibleStuckByRoom, stuckUnknownOf, stuckDateLabel, stuckDeepLink, stuckBlockReason, canCallIntoRoom, STUCK_UNKNOWN_REASON, type StuckStudy } from "@/lib/stuckStudy";
-import { roomScheduleFor, dayStatus, type DayOverride } from "@/lib/schedule";
+import { overrideFeed, roomScheduleFromFeed, dayStatusFromFeed, type DayOverride, type OverrideFeed } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
@@ -516,15 +516,18 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
   );
 }
 
-function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSchedules }: { selectedDate: Date; onSelectDate: (d: Date) => void; overridesByDate?: Record<string, DayOverride>; tz?: string; roomSchedules?: unknown[] }) {
+function MiniCalendar({ selectedDate, onSelectDate, overrides, tz, roomSchedules }: { selectedDate: Date; onSelectDate: (d: Date) => void; overrides?: OverrideFeed; tz?: string; roomSchedules?: unknown[] }) {
   /* Локальна копія сітки (історично окрема від @/components/MiniCalendar).
      Крапки потрібні й тут: радіолог — штатна аудиторія фан-ауту по СВОЇХ
-     кабінетах, і його дошка так само вантажить ОДИН день (ревʼю 0133). */
+     кабінетах, і його дошка так само вантажить ОДИН день (ревʼю 0133).
+     ⚠️ U-16: саме ця копія й показала, чого варті копії — правку в спільному
+     календарі вона не отримала б ніколи, і в радіолога закритий день
+     лишався б звичайним. Поки копія жива, обидві сторожить один тест
+     (tests/overrideFeedGuard.test.ts, список CALENDARS). */
   const { index: unreadIx } = useUnreadChanges();
   // tz передаємо явно: під час SSR модульний singleton не виставлений (він лише
   // клієнтський), і «сьогодні» в сітці розійшлося б із рештою дошки.
   const today = wallToday0(tz);
-  const ovMap = overridesByDate || {};
   const [viewMonth, setViewMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
   const shift = (n: number) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
   const y = viewMonth.getFullYear(), mo = viewMonth.getMonth();
@@ -550,13 +553,13 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSch
           const cd = new Date(y, mo, d);
           const isToday = sameDay(cd, today);
           const isSel = sameDay(cd, selectedDate);
-          const ov = ovMap[dateKey(cd)] || null;
-          const st = dayStatus(ov, cd, roomSchedules);
-          const markClosed = st.kind === "closed";
-          const markCustom = st.kind === "custom";
+          // U-16: `null` = графіки не прочитались → нічого не стверджуємо.
+          const st = dayStatusFromFeed(overrides, cd, roomSchedules);
+          const markClosed = st?.kind === "closed";
+          const markCustom = st?.kind === "custom";
           return (
             <button key={d} className={"cal-day" + (isToday ? " today" : "") + (isSel && !isToday ? " selected" : "") + (markClosed ? " holiday" : "") + (markCustom ? " custom" : "")}
-              title={st.label || undefined} onClick={() => onSelectDate(startOfDay(cd))}>
+              title={st?.label || undefined} onClick={() => onSelectDate(startOfDay(cd))}>
               {d}
               {(markClosed || markCustom) && <span className={"cal-sched " + (markClosed ? "closed" : "custom")} />}
             {unreadForDate(unreadIx, calendarDayKey(cd)).length > 0 && <span className="cal-change" aria-hidden="true" />}
@@ -564,6 +567,13 @@ function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, tz, roomSch
           );
         })}
       </div>
+      {/* U-16: причину відсутності позначок називаємо явно — мовчазний
+          «звичайний місяць» і був твердженням на непрочитаних даних. */}
+      {overrides?.failed && (
+        <div className="ctx-hint red" style={{ fontSize: "0.75rem", marginTop: 8 }} role="status">
+          ⚠ Особливі графіки не завантажились — вихідні й особливі дні не позначено.
+        </div>
+      )}
     </div>
   );
 }
@@ -1071,14 +1081,24 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     overrunEnabled: isToday,    // «дослідження довше плану» — лише сьогоднішня дошка
   });
 
-  const selectedOverride = overrides[dayKey] || null;
+  /* U-16: ОДИН фід на дошку — дзеркало QueueBoard. Гола мапа не відрізняла
+     «особливих днів немає» від «не прочитали», і `roomScheduleFor` мовчки
+     відкочувався на базовий тиждень. */
+  const overridesFeed = overrideFeed(overrides, overridesErr);
+  const selectedOverride = overrides[dayKey] || null;   // сира строка — лише для банера дня
   /* Лише за графіками кабінетів, які реально працюють: вимкнений кабінет із
      робочою неділею інакше показував би неділю робочою для всього центру. */
   const roomSchedules = bookableRooms(rooms).map((r) => r.schedule);
-  const selDayStatus = dayStatus(selectedOverride, selectedDate, roomSchedules);
+  // `null` = графіки не прочитались → про день не стверджуємо нічого.
+  const selDayStatus = dayStatusFromFeed(overridesFeed, selectedDate, roomSchedules);
   // Графік конкретного кабінету — за ПОВНИМ списком (резолв за id).
   const schedOf = (roomId: string) => (rooms || []).find((r) => r.id === roomId)?.schedule;
-  function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride, schedOf(roomId)).closed; }
+  /* `null` = не прочитали → false, тобто НЕ стверджуємо «зачинено» (див.
+     довший коментар у QueueBoard). Виклик відбиває safety_unknown, який у
+     computeCallBlock стоїть ПЕРЕД room_closed. */
+  function roomSchedClosed(roomId: string) {
+    return roomScheduleFromFeed(selectedDate, roomId, overridesFeed, schedOf(roomId))?.closed ?? false;
+  }
 
   // Інциденти, що ВЖЕ діють (без авто-знятих наприкінці вікна).
   const liveIncidents = incidents.filter((i) => !incidentExpired(i));
@@ -1152,7 +1172,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   }
 
   function callBlockOf(p: RadEntry) {
-    const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)) : null;
+    const sched = p.room_id ? roomScheduleFromFeed(selectedDate, p.room_id, overridesFeed, schedOf(p.room_id)) : null;
     return computeCallBlock(p, entries, {
       notToday: !sameDay(selectedDate, today0()),
       roomStuck: p.room_id ? stuckRooms[p.room_id] ?? null : null,
@@ -1348,7 +1368,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                 </div>
               );
             })}
-            {selectedOverride && selDayStatus.kind !== "none" && (
+            {selectedOverride && selDayStatus && selDayStatus.kind !== "none" && (
               <div className="inc-banner fade-in" style={{ borderColor: selDayStatus.kind === "closed" ? "var(--red)" : "var(--blue-line)" }}>
                 <span className="inc-banner-ic">{selDayStatus.kind === "closed" ? "🚫" : "🕐"}</span>
                 <div className="inc-banner-txt">
@@ -1412,7 +1432,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                     patient={currentByRoom[r.id]} enteredAt={enteredAtOf(currentByRoom[r.id])}
                     stuck={stuckRooms[r.id]} stuckUnknown={stuckUnknown} onFinishStuck={setStuckFinish}
                     nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
-                    schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? (selDayStatus.label || "Не працює за графіком") : null}
+                    schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? (selDayStatus?.label || "Не працює за графіком") : null}
                     callBlockReason={nextWaitingByRoom[r.id] ? inProgressBlockReason(nextWaitingByRoom[r.id]) : null}
                     onComplete={completeProc} onCall={callPatient} />
                 ))}
@@ -1494,7 +1514,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
             <RadCancelledPanel key={scope} entries={cancelledDay} roomsById={roomsById} unreadIx={boardUnreadIx} />
           </div>
           <aside className="rpanel">
-            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} tz={clinicTz} roomSchedules={roomSchedules} />
+            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overrides={overridesFeed} tz={clinicTz} roomSchedules={roomSchedules} />
           </aside>
         </div>
       </div>

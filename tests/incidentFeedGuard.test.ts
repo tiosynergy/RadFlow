@@ -238,7 +238,10 @@ describe("U-11: завантаженість не рахується від по
 
   it("computeRoomLoad приймає фід і позначає невідому ємність", () => {
     expect(qb()).toMatch(/function computeRoomLoad\([^)]*incidents:\s*IncidentFeed/);
-    expect(qb()).toMatch(/const capKnown = roomInc !== null;/);
+    /* U-16 (с47) додав до ємності ДРУГЕ джерело — межі дня (особливі графіки).
+       Сторожимо, що обидва лишились конʼюнктами: прибрати будь-який означає
+       повернути тихе заниження відсотка, лише іншим каналом. */
+    expect(qb()).toMatch(/const capKnown = roomInc !== null && sched !== null;/);
   });
 
   /* Ревʼю р2 (F1): перша версія правки передала сюди `incidentsFeed`, який
@@ -322,13 +325,16 @@ describe("U-11: наслідки, які ревʼю знайшло після п
      єдиний знайдений fail-open, наслідок якого ЗАПИСУЄТЬСЯ, а не показується. */
   it("BreakdownModal не пише «до кінця дня» на непрочитаних графіках", () => {
     const code = src("components/BreakdownModal.tsx");
+    /* U-16 (с47): точкова пара «мапа + окремий boolean» стала ФІДОМ — проп
+       обовʼязковий уже по типу, а `overridesFailed` виводиться з нього.
+       Форму пропа, заборону дефолта і решту гілок каналу сторожить
+       tests/overrideFeedGuard.test.ts; тут лишається те, заради чого правка
+       писалась у с46: обидва рубежі «до кінця дня» на місці. */
     expect(code, "проп обовʼязковий — інакше tsc не перелічить місця виклику")
-      .toMatch(/overridesFailed: boolean;/);
-    expect(code, "немає дефолта, який знову зробив би невідомість «нормою»")
-      .not.toMatch(/[,{]\s*overridesFailed\s*=/);
+      .toMatch(/overrides: OverrideFeed;/);
     expect(code, "чип «До кінця дня» має вимикатись").toMatch(/d\.k === "eod" && overridesFailed/);
     expect(code, "і має бути другий рубіж у save\\(\\)").toMatch(/if \(durKey === "eod" && overridesFailed\) \{/);
-    expect(src("components/QueueBoard.tsx"), "дошка мусить віддавати ЖИВИЙ прапорець")
-      .toMatch(/<BreakdownModal[^>]*overridesFailed=\{overridesErr\}/);
+    expect(src("components/QueueBoard.tsx"), "дошка мусить віддавати ЖИВИЙ фід")
+      .toMatch(/<BreakdownModal[^>]*overrides=\{overridesFeed\}/);
   });
 });

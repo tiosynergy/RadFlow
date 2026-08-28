@@ -5,7 +5,7 @@ import SlotPicker from "@/components/SlotPicker";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { buildSlots, slotToMin } from "@/lib/slots";
-import { effectiveRoomBreaks, inBreak, roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { inBreak, overrideOn, roomBreaksFromFeed, roomScheduleFromFeed, type OverrideFeed } from "@/lib/schedule";
 import { incidentEffectiveEnd, roomIncidentsOf, wallNow, wallToday0, wallMinOfDay, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
 import { modalityShort, modalityKind } from "@/lib/studies";
 
@@ -22,7 +22,7 @@ type Props = {
   rooms: Room[];
   clinicTz: string;
   incidents: IncidentFeed<RoomIncident>;   // U-11: фід (rows+failed), не голий масив
-  overrides: Record<string, DayOverride>;
+  overrides: OverrideFeed;                 // U-16: фід (мапа+failed), не гола мапа
   onClose: () => void;
 };
 
@@ -45,13 +45,23 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
 
   const room = rooms.find((r) => r.id === roomId) || null;
   const date = useMemo(() => dateFromKey(day), [day]);
-  const override = overrides[day] || null;
-  const schedule = roomScheduleFor(date, roomId, override, room?.schedule ?? null);
-  const breaks = effectiveRoomBreaks(date, roomId, room?.schedule ?? null, override);
+  /* U-16: `null` = особливі графіки дня не прочитались. Порожня мапа на місці
+     збою означала б «особливих днів немає», і день, закритий ЛИШЕ через
+     override, малювався б повною сіткою вільних слотів — на екрані, який
+     МУСИТЬ збігатися з формою запису. Той самий клас, що U-11, інший канал. */
+  const schedule = roomScheduleFromFeed(date, roomId, overrides, room?.schedule ?? null);
+  const overridesFailed = schedule === null;
+  const breaks = roomBreaksFromFeed(date, roomId, room?.schedule ?? null, overrides) || [];
   const { spans, loading, error, reload } = useRoomBusy({ roomId, dateStr: day, enabled: !!roomId });
+  /* Примітиви в депсах: сам `schedule` — новий обʼєкт на кожен рендер.
+     Невідомий графік дає порожню сітку так само, як зачинений день: показувати
+     її нема з чого, а гілка-банер нижче все одно перехоплює цей стан. */
+  const dayClosed = !!schedule?.closed;
+  const dayStart = schedule?.start ?? "";
+  const dayEnd = schedule?.end ?? "";
   const slots = useMemo(
-    () => schedule.closed ? [] : buildSlots(slotToMin(schedule.start), slotToMin(schedule.end)),
-    [schedule.closed, schedule.start, schedule.end],
+    () => (overridesFailed || dayClosed ? [] : buildSlots(slotToMin(dayStart), slotToMin(dayEnd))),
+    [overridesFailed, dayClosed, dayStart, dayEnd],
   );
   // Настінний час клініки як хвилини доби. wallNow(tz) уже повертає wall-as-UTC,
   // тож БЕРЕМО wallMinOfDay (UTC-поля), а НЕ форматуємо ще раз у clinicTz —
@@ -73,6 +83,7 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
     const min = slotToMin(slot);
     // Страховка на випадок, якщо гілку-банер колись приберуть: невідомо ≠ вільно.
     if (incidentsFailed) return "blocked";
+    if (overridesFailed) return "blocked";
     if (incidentAt(min)) return "blocked";
     const busy = busyAt(spans, min);
     if (busy) return min >= busy.eStudy ? "buffer" : "busy";
@@ -133,13 +144,21 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
             </label>
             <div className="fld" style={{ paddingBottom: 8 }}>
               <span className="fld-lab">Режим дня</span>
-              <b>{schedule.closed ? "Кабінет не працює" : `${schedule.start}–${schedule.end}`}</b>
-              {schedule.custom && <span style={{ marginLeft: 6, color: "var(--blue-text)", fontSize: "0.75rem" }}>особливий графік</span>}
+              {/* U-16: не стверджуємо ані «працює», ані «не працює», поки не
+                  прочитали особливі графіки — обидва варіанти були б вигадкою. */}
+              <b>{!schedule ? "Не завантажено" : schedule.closed ? "Кабінет не працює" : `${schedule.start}–${schedule.end}`}</b>
+              {schedule?.custom && <span style={{ marginLeft: 6, color: "var(--blue-text)", fontSize: "0.75rem" }}>особливий графік</span>}
             </div>
           </div>
 
-          {schedule.closed ? (
-            <div className="ctx-hint red">🚫 {room?.name || "Кабінет"} не працює цього дня{override?.label ? ` · ${override.label}` : ""}.</div>
+          {/* U-16: гілка невідомості — ПЕРША. Раніше першим стояв `schedule.closed`,
+              а він порахований із мапи, якої могло не бути: при збої читання
+              екран спокійно казав «не працює» або малював повну сітку вільних
+              слотів. Порядок тут — частина правила, а не оформлення. */}
+          {overridesFailed ? (
+            <div className="ctx-hint red">⚠ Не вдалося завантажити особливі графіки дня — режим роботи кабінету невідомий. Вільний час не показано. Оновіть сторінку.</div>
+          ) : schedule.closed ? (
+            <div className="ctx-hint red">🚫 {room?.name || "Кабінет"} не працює цього дня{overrideOn(overrides, day)?.label ? ` · ${overrideOn(overrides, day)?.label}` : ""}.</div>
           ) : (error || incidentsFailed) ? (
             /* U-11: збій простоїв ховає сітку так само, як збій зайнятості —
                інакше карта показала б «вільно» там, де кабінет на ремонті. */
