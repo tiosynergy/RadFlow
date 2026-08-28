@@ -18,7 +18,7 @@
 import { useEffect, useState } from "react";
 import { isRoomBookable } from "@/lib/rooms";
 import { createClient } from "@/lib/supabase/client";
-import { roomScheduleFromFeed, roomBreaksFromFeed, overridesUnknown, type OverrideFeed, type Break } from "@/lib/schedule";
+import { roomScheduleFromFeed, roomBreaksFromFeed, overridesUnknown, overrideOn, type OverrideFeed, type Break } from "@/lib/schedule";
 import { incidentEffectiveEnd, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, wallInstant, type IncidentFeed } from "@/lib/incidents";
 import { firstFittingSlot, slotToMin, type BusySpan } from "@/lib/slots";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
@@ -70,6 +70,15 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
   const incidentsFailed = incidentsUnknown(incidents);
   const overridesFailed = overridesUnknown(overrides);
   const dateStr = dateVal(date);
+  /* Ревʼю р1 (F6): у депсах має бути не лише «чи впало читання», а й ЗМІСТ
+     особливого графіка цього дня. Інакше пакет закривав би самé «читання
+     впало», а сценарій «прочитали, потім адмін закрив день» лишався б: realtime
+     оновлює мапу, `overridesFailed` не змінюється, ефект не перезапускається —
+     і панель далі радить слот за старим графіком. Сервер таку пораду відіб'є
+     (`scheduleBlock`), але користувач отримає незрозумілу відмову на кнопці,
+     яка щойно цей слот пропонувала. Відбиток — РЯДОК, тож сам фід (новий
+     обʼєкт на кожен рендер батька) у масив залежностей не потрапляє. */
+  const overrideKey = overridesFailed ? "?" : JSON.stringify(overrideOn(overrides, dateStr) ?? null);
 
   useEffect(() => {
     let cancel = false;
@@ -183,7 +192,7 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
     })();
     return () => { cancel = true; };
     // info.freeAtMin — щоб пропозиція перерахувалась, коли дослідження затягується далі.
-  }, [entry.id, entry.room_id, dateStr, clinicId, clinicTz, dur, buffer, modality, info.freeAtMin, incidentsFailed, overridesFailed]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [entry.id, entry.room_id, dateStr, clinicId, clinicTz, dur, buffer, modality, info.freeAtMin, incidentsFailed, overridesFailed, overrideKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = (fn: () => void | Promise<void>) => async () => {
     if (pending) return;
@@ -204,8 +213,16 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
 
       {loading && <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>⏳ Шукаю найближчий вільний слот…</div>}
 
+      {/* Ревʼю р1 (F7): «перенесіть вручну» — порада в глухий кут, коли причина
+          збою саме в недовірених даних: `openReschedule` у дошці відбиває той
+          самий safetyErr. Тоді єдиний вихід — «↻ Оновити» в банері над дошкою,
+          і панель мусить назвати саме його. */}
       {busyErr && !loading && (
-        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Не вдалося порахувати вільний час кабінету — перенесіть вручну.</div>
+        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+          {incidentsFailed || overridesFailed
+            ? "Дані про простої або особливі графіки не завантажились — вільний час порахувати не можемо. Натисніть «↻ Оновити» у банері вгорі дошки."
+            : "Не вдалося порахувати вільний час кабінету — перенесіть вручну."}
+        </div>
       )}
 
       {noSlot && !busyErr && (

@@ -50,7 +50,7 @@ import MiniCalendar from "@/components/MiniCalendar";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
 import RoomDayOverviewModal from "@/components/RoomDayOverviewModal";
-import { overrideFeed, roomScheduleFromFeed, roomBreaksFromFeed, dayStatusFromFeed, offScheduleKind, type OverrideFeed, type DayOverride } from "@/lib/schedule";
+import { overrideFeed, roomScheduleFor, roomScheduleFromFeed, roomBreaksFromFeed, dayStatusFromFeed, offScheduleKind, type OverrideFeed, type DayOverride } from "@/lib/schedule";
 import { slotToMin, slotFmt } from "@/lib/slots";
 import { SAFETY_BOOKING_BLOCKED } from "@/lib/availabilityTrust";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, collisionFor, SAFETY_UNKNOWN_REASON, type CollisionInfo } from "@/lib/queueStatus";
@@ -517,7 +517,7 @@ function RoomLoad({ rooms, onSelectRoom, ready = true }: { rooms: RoomLoadItem[]
                 <span className="load-name">{r.name} {r.kind}
                   {r.off && <span className="badge gray" style={{ marginLeft: 6 }} title="Кабінет вимкнено: нові записи в нього не приймаються">{ROOM_OFF_LABEL}</span>}
                   {" "}<span className="load-go" aria-hidden>→</span></span>
-                <span className="load-pct" style={{ color: r.color }} title={ready && !r.capKnown ? "Простої кабінету не завантажились — відсоток порахувався б від повного дня" : undefined}>{ready && r.capKnown ? r.pct + "%" : "—"}</span>
+                <span className="load-pct" style={{ color: r.color }} title={ready && !r.capKnown ? "Простої або особливі графіки кабінету не завантажились — відсоток порахувався б від повного дня" : undefined}>{ready && r.capKnown ? r.pct + "%" : "—"}</span>
               </div>
               <div className="load-bar"><div className="load-fill" style={{ width: (ready && r.capKnown ? r.pct : 0) + "%", background: r.color }} /></div>
             </button>
@@ -1713,6 +1713,22 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   function roomSchedClosed(roomId: string) {
     return roomScheduleFromFeed(selectedDate, roomId, overridesFeed, schedOf(roomId))?.closed ?? false;
   }
+  /* ⚠️ А ось для СПИСКУ ОБДЗВОНУ («Постраждалі») напрямок ПРОТИЛЕЖНИЙ, і це
+     знайшло ревʼю р1 (F2) як регресію самої правки. `roomSchedClosed` при
+     невідомості віддає false — там це правильно (не стверджувати «Зачинено» на
+     картці). Але тут вердикт не підпис, а ПЕРЕЛІК ПАЦІЄНТІВ, яким треба
+     подзвонити: не подзвонити людині, що приїде в зачинений центр, дорожче,
+     ніж подзвонити зайвій. До правки список рахувався з базового тижневого
+     графіка (бо `selectedOverride` при збої й так був null) — правка мовчки
+     спорожнила панель, і вона зникала цілком (`if (!affected.length) return null`).
+     Тому при непрочитаних графіках падаємо на БАЗОВИЙ графік кабінету: він
+     приходить SSR-пропом і від `schedule_overrides` не залежить, тобто це
+     строго більше інформації, ніж порожній список. */
+  function roomClosedForCallList(roomId: string) {
+    const s = roomScheduleFromFeed(selectedDate, roomId, overridesFeed, schedOf(roomId));
+    if (s) return s.closed;
+    return roomScheduleFor(selectedDate, roomId, null, schedOf(roomId)).closed;
+  }
   /* Похідне попередження «Не за графіком»: час запису не вкладається в ПОТОЧНИЙ графік
      кабінета (закритий день / до відкриття / за кінець / у перерву). На відміну від
      `off_schedule` (осознанний запис за графіком, підтверджений персоналом), це
@@ -1767,7 +1783,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       if (e.status !== "scheduled" && e.status !== "waiting") return;
       const incs = e.room_id ? incidentsByRoom[e.room_id] : null;
       if (incs && incs.some((inc) => entryInIncidentWindow(dayKey, e.scheduled_time, inc))) { affectedIds.add(e.id); return; }
-      if (e.room_id && roomSchedClosed(e.room_id)) affectedIds.add(e.id);
+      if (e.room_id && roomClosedForCallList(e.room_id)) affectedIds.add(e.id);
     });
   }
   const affected = entries.filter((e) => affectedIds.has(e.id));
@@ -2073,15 +2089,16 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     if (safetyErr) { notify(SAFETY_BOOKING_BLOCKED, "error"); return; }
     setReschedFor(p);
   };
-  /* U-16: третій вхід того ж класу. Карта дня («▦ Зайнятість кабінету») —
-     read-only, але вона СТВЕРДЖУЄ вільний час і за задумом мусить збігатися з
-     формою запису. Поки запис і перенос блокувались, а вона ні, дошка казала
-     дві протилежні речі одночасно. Гейт — тут, а не в JSX: один вхід, як у
-     openBooking (три копії гейта — це те, з чого почався U-6). */
-  const openSlotsOverview = () => {
-    if (safetyErr) { notify(SAFETY_BOOKING_BLOCKED, "error"); return; }
-    setSlotsOverviewOpen(true);
-  };
+  /* U-16, ревʼю р1 (F1): карту дня («▦ Зайнятість кабінету») спершу закрили
+     гейтом safetyErr — і це була ПОМИЛКА, яку ревʼю й зловило. Гейт не додавав
+     жодної заборони: модалка сама ховає сітку і при непрочитаних простоях, і
+     при непрочитаних графіках. Зате він забирав єдиний екран, який чесно
+     ПОЯСНЮВАВ збій і давав кнопку «Спробувати ще раз» для зайнятості, — а
+     заразом робив нову гілку `overridesFailed` недосяжною з головного входу,
+     тобто дві правки одного пакета гасили одна одну.
+     Тому входу гейта НЕМАЄ свідомо: read-only екран, який відмовляється
+     стверджувати і називає причину, кращий за тост «оновіть сторінку».
+     Гейт лишається там, де є ДІЯ: openBooking і openReschedule. */
   /* Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
      Виняток — 'stale': переносити вже нічого (запис завершено/скасовано), модалку
      закриваємо і синхронізуємо дошку. */
@@ -2459,14 +2476,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
 
   return (
     <div className="app">
-      {/* U-16: «▦ Зайнятість кабінету» — теж твердження про вільний час, тож
-          гейт той самий, що на «＋ Новий запис» і «Перенести». Доти це був
-          ЄДИНИЙ вхід, який під safetyErr не гаснув: банер казав «заблоковано»,
-          а карта дня спокійно відкривалась і малювала сітку. */}
       <Sidebar
         clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey}
         rooms={visRooms} roomNoteOf={offNote} activeRoom={roomView} onSelectRoom={setRoomView} onNew={openBooking}
-        onSlotsOverview={roleKey === "admin" ? openSlotsOverview : undefined}
+        onSlotsOverview={roleKey === "admin" ? () => setSlotsOverviewOpen(true) : undefined}
         incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }}
         onEmergency={handleEmergencyClick}
         emergencyActive={roomView !== "all" ? emergencyRooms.includes(roomView) : emergencyActive}

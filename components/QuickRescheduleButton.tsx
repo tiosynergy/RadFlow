@@ -12,7 +12,7 @@
 
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { roomScheduleFromFeed, roomBreaksFromFeed, overridesUnknown, type OverrideFeed, type Break } from "@/lib/schedule";
+import { roomScheduleFromFeed, roomBreaksFromFeed, overridesUnknown, overrideOn, type OverrideFeed, type Break } from "@/lib/schedule";
 import { incidentEffectiveEnd, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, wallInstant, type IncidentFeed } from "@/lib/incidents";
 import { firstFittingSlot, slotToMin, type BusySpan } from "@/lib/slots";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
@@ -41,6 +41,11 @@ export default function QuickRescheduleButton({ entry, clinicTz, date, overrides
   // Примітив у депсах: сам фід — новий обʼєкт на кожен рендер батька.
   const incidentsFailed = incidentsUnknown(incidents);
   const overridesFailed = overridesUnknown(overrides);
+  /* Ревʼю р1 (F6): відбиток ЗМІСТУ графіка цього дня — інакше «прочитали,
+     потім адмін закрив день» не перераховувало б кнопку (realtime оновлює
+     мапу, прапорець збою при цьому не змінюється). Рядок, не обʼєкт: сам фід
+     у депси попадати не має. */
+  const overrideKey = overridesFailed ? "?" : JSON.stringify(overrideOn(overrides, dateStr) ?? null);
 
   useEffect(() => {
     let cancel = false;
@@ -113,7 +118,7 @@ export default function QuickRescheduleButton({ entry, clinicTz, date, overrides
       }
     })();
     return () => { cancel = true; };
-  }, [entry.id, entry.room_id, dateStr, clinicTz, dur, buffer, incidentsFailed, overridesFailed]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [entry.id, entry.room_id, dateStr, clinicTz, dur, buffer, incidentsFailed, overridesFailed, overrideKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return (

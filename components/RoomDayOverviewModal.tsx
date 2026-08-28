@@ -51,6 +51,12 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
      МУСИТЬ збігатися з формою запису. Той самий клас, що U-11, інший канал. */
   const schedule = roomScheduleFromFeed(date, roomId, overrides, room?.schedule ?? null);
   const overridesFailed = schedule === null;
+  /* ⚠️ `|| []` тут — ЄДИНЕ місце в пакеті, де невідомість стає порожнечею, і
+     безпечне воно лише композиційно: при `overridesFailed` гілка-банер нижче
+     перехоплює рендер, `slots` порожній, а `stateOf` має власну розтяжку
+     («невідомо → blocked»). Тобто ні `inBreak`, ні `breaks.map`, ні
+     `breaks.length` до цього масиву не доходять. Виносиш розрахунок сітки
+     з-під тієї гілки — спершу поверни сюди `null` (ревʼю р1 F4 / р2 F7). */
   const breaks = roomBreaksFromFeed(date, roomId, room?.schedule ?? null, overrides) || [];
   const { spans, loading, error, reload } = useRoomBusy({ roomId, dateStr: day, enabled: !!roomId });
   /* Примітиви в депсах: сам `schedule` — новий обʼєкт на кожен рендер.

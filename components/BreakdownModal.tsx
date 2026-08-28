@@ -90,7 +90,12 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
      будує дату через `Date.UTC`, і в браузері на захід від UTC її локальні
      частини — вже інша доба. Тому тут `overrideOn(feed, startDate)`, а не
      `roomScheduleFromFeed(d, …)`: фід дає невідомість, ключ лишається той самий,
-     що й був. `null` = графіки не прочитались. */
+     що й був. `null` = графіки не прочитались.
+     ⚠️ Ловушка `Date.UTC` закрита ЛИШЕ для ключа override'а. Сам `roomScheduleFor`
+     бере з тієї ж дати ДЕНЬ ТИЖНЯ (`date.getDay()`, теж локальне поле), тож
+     базовий тижневий графік у браузері на захід від UTC читається за попередній
+     день. Це поведінка ДО цього пакета, вона не змінилась і тут не лікується —
+     але не вважай, що ловушка знята цілком (ревʼю р1). */
   const ov = overrideOn(overrides, startDate);
   const schedEnd: string | null = ov === undefined
     ? null
@@ -100,8 +105,13 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
     if (durKey === "2h") return new Date(startedAt.getTime() + 2 * 3600e3);
     if (durKey === "4h") return new Date(startedAt.getTime() + 4 * 3600e3);
     /* Кінець дня невідомий → `null`, тобто «до відновлення» (Infinity): межа
-       ширша за реальну, кабінет лишається заблокованим довше. Недосяжно —
-       гейт у save() відмовляє раніше; лишено як розтяжку в безпечний бік. */
+       ШИРША за реальну, кабінет лишається заблокованим довше. Недосяжно —
+       гейт у save() відмовляє раніше; лишено як розтяжку в безпечний бік.
+       ⚠️ Перевірка саме truthy, а не `=== null`, і це навмисно (ревʼю р1 F5):
+       `roomScheduleFor` у гілці «зачинено за базовим графіком» віддає `end`
+       без фолбека, тож теоретично сюди може прийти порожній рядок. `dtFrom`
+       зробив би з нього Invalid Date, а `e.toISOString()` нижче — RangeError.
+       Truthy ловить обидва випадки в безпечний бік. */
     if (durKey === "eod") { return schedEnd ? dtFrom(startDate, schedEnd) : null; }
     if (durKey === "restore") return dtFrom(restoreDate, restoreTime);
     return null;
@@ -109,9 +119,9 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
   function save() {
     setErr("");
     if (!durKey) { setErr("Оберіть тривалість"); return; }
-    /* Ревʼю р2 (F2 другого рецензента): «До кінця дня» бере кінець із
-       roomScheduleFor(…, overrides[startDate] || null, …). При збої читання
-       особливих графіків мапа порожня, фолбэк дає базовий тиждень (або хардкод
+    /* Ревʼю р2 с46 (F2 другого рецензента): «До кінця дня» бере кінець із
+       ефективного графіка дня. При збої читання особливих графіків (до U-16 —
+       порожня мапа, тепер — фід зі `failed`) фолбек дає базовий тиждень (або хардкод
        08–18), і в `incidents.blocked_until` лягає ЧУЖИЙ кінець дня. Це не
        транзієнтна брехня в UI, а ЗАПИСАНЕ в БД значення: далі за ним однаково
        підуть дошки, модалки, FHIR-фасад і сам гард check_not_during_incident —
