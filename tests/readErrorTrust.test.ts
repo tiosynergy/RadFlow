@@ -299,9 +299,29 @@ describe("RescheduleModal — застарілий графік не видає�
 describe("CeoDashboard — нулі від збою не видаються за факт", () => {
   const code = src("components/CeoDashboard.tsx");
 
-  it("прапорець збою прив'язаний до реального провалу, без розмиття", () => {
-    expect(code).toMatch(/const utilKnown = !dataErr;/);
+  /* «Свіжі» = дані на екрані описують ОБРАНИЙ зріз. Прапорець один на всі похідні
+     числа: жива перевірка на проді показала, що коло чесно ставало «—», а поруч
+     лишались «Записи 0» і «Дохід 0 ₴» — той самий дефект у сусідніх картках. */
+  it("свіжість рахується по ключу зрізу, без розмиття", () => {
+    expect(code).toMatch(/const dataKey = useMemo\(\(\) => scope \+ "\|" \+ period \+ "\|" \+ clinicIds\.join\(","\), \[scope, period, clinicIds\]\);/);
+    expect(code).toMatch(/const dataFresh = loadedKey === dataKey;/);
+    expect(code).toMatch(/const utilKnown = dataFresh;/);
+    expect(code).not.toMatch(/const dataFresh\s*=\s*[^;\n]*\|\|/);
     expect(code).not.toMatch(/const utilKnown\s*=\s*[^;\n]*\|\|/);
+    // ключ будується ОДИН раз і використовується reload()-ом, а не дублюється
+    expect(code.split('scope + "|" + period + "|"').length - 1).toBe(1);
+    expect(code).toMatch(/const key = dataKey;/);
+  });
+
+  /* Кожне похідне число екрана під одним гейтом. Перелік навмисно повний: саме
+     «забули в сусідній картці» і було знайдено живою перевіркою. */
+  it("жодне похідне число не показується без свіжих даних", () => {
+    for (const n of ["total", "done", "noShow", "notHeld", "active"]) {
+      expect(code).toContain("{dataFresh ? " + n + " : \"—\"}");
+    }
+    expect(code).toContain('{dataFresh ? fmtUah(revenue) : "—"}');
+    expect(code).toMatch(/visibility: dataFresh \? "visible" : "hidden"/);   // тижневий графік
+    expect(code).toMatch(/\{dataFresh \? "Немає даних" : "Дані не завантажились[^"]*"\}/);
   });
 
   it("усі три шляхи провалу ведуть в один обробник", () => {
@@ -323,11 +343,15 @@ describe("CeoDashboard — нулі від збою не видаються за
     expect(code).toMatch(/const failed = \(\) => \{\s*\n\s*if \(stale\(\)\) return;/);
   });
 
-  /* Застарілі цифри можна лишати на екрані лише якщо вони про ТОЙ САМИЙ зріз. */
+  /* Застарілі цифри можна лишати на екрані лише якщо вони про ТОЙ САМИЙ зріз.
+     Ключ пишеться ЧЕРЕЗ markLoaded: ref потрібен логіці reload(), стан — рендеру,
+     і розійтися вони не мають права. */
   it("при збої на іншому scope/періоді старі дані стираються", () => {
-    expect(code).toMatch(/const key = scope \+ "\|" \+ period \+ "\|" \+ clinicIds\.join\(","\);/);
+    expect(code).toMatch(/const markLoaded = \(k: string \| null\) => \{ loadedKeyRef\.current = k; setLoadedKey\(k\); \};/);
     expect(code).toMatch(/if \(loadedKeyRef\.current !== key\) \{[\s\S]{0,300}?setRooms\(\[\]\);/);
-    expect(code).toMatch(/loadedKeyRef\.current = key;\s*\n\s*setDataErr\(false\);/);
+    expect(code).toMatch(/markLoaded\(key\);\s*\n\s*setDataErr\(false\);/);
+    // прямого запису в ref повз markLoaded бути не повинно — інакше рендер відстане
+    expect(code.split("loadedKeyRef.current =").length - 1).toBe(1);   // лише всередині markLoaded
   });
 
   it("прапорець знімається лише після всіх сеттерів успіху", () => {
@@ -350,7 +374,7 @@ describe("CeoDashboard — нулі від збою не видаються за
 
   /* Третя ситуація — «дані не прийшли» — раніше зливалася з «кабінетів немає». */
   it("нульовий стан по апаратах розрізняє збій і відсутність кабінетів", () => {
-    expect(code).toMatch(/dataErr \? "Дані не завантажились[^"]*" : rooms\.length > 0 \? "Усі кабінети вимкнено" : "Кабінетів немає"/);
+    expect(code).toMatch(/!dataFresh \? "Дані не завантажились[^"]*" : rooms\.length > 0 \? "Усі кабінети вимкнено" : "Кабінетів немає"/);
   });
 
   it("є постійний банер, а не лише зникомий тост", () => {
