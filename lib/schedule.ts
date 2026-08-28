@@ -276,3 +276,95 @@ export function normalizeRoomSchedule(raw: unknown): RoomScheduleShape {
   });
   return { days, start, end, breaks: normalizeBreaks(s), perDay: s.perDay === true, dayHours };
 }
+
+/* ===== U-16: особливі графіки дня їдуть у компоненти ФІДОМ =====
+
+   Дошки читають `schedule_overrides` самі й передають дітям ГОТОВУ МАПУ. При
+   збої читання прапорець (`overridesErr`) лишається В БАТЬКА, а дитина отримує
+   `{}` — і не може відрізнити «особливих днів немає» від «ми їх не прочитали».
+   Далі `roomScheduleFor(date, room, null, …)` мовчки відкочується на базовий
+   тижневий графік (а без нього — на хардкод 08:00–18:00), і день, закритий
+   ЛИШЕ через override, малюється повною сіткою вільних слотів. У
+   `CollisionPanel` і `QuickRescheduleButton` та сама невідомість стає ПОРАДОЮ
+   перенести пацієнта — а пораду приймають не перевіряючи, тож вона доїжджає
+   до запису в БД.
+
+   Той самий клас, що U-11, і те саме лікування: проп — не мапа, а ФІД
+   (мапа + чи вдалося її прочитати), ОБОВʼЯЗКОВИЙ і БЕЗ дефолта. Після зміни
+   типу жоден виклик із голою мапою і жоден пропущений проп не компілюються,
+   тож повноту правки перевіряє tsc, а не уважність автора.
+
+   ⚠️ Хелпери повертають `null` = «не знаємо», а НЕ `closed: true`. Спокуса
+   зробити «невідомо → зачинено» виглядає як fail-closed, але змушує екран
+   СТВЕРДЖУВАТИ «Кабінет не працює» — це брехня в інший бік (урок U-1/U-2:
+   не стверджувати на недовірених даних). У `null` немає поля `.closed`, тож
+   вирішувати доведеться явно — рівно як із `roomIncidentsOf` у lib/incidents. */
+export type OverrideFeed = { map: Record<string, DayOverride>; failed: boolean };
+
+/** Загорнути прочитане. `failed` — прапорець збою читання з батьківського лоадера. */
+export function overrideFeed(
+  map: Record<string, DayOverride> | null | undefined,
+  failed?: boolean | null,
+): OverrideFeed {
+  return { map: map || {}, failed: !!failed };
+}
+
+/** Особливі графіки НЕ прочитані — жодне твердження про графік робити не можна. */
+export function overridesUnknown(feed: OverrideFeed | null | undefined): boolean {
+  return !feed || feed.failed;
+}
+
+/** Особливий графік на дату. `undefined` = не прочитали (а НЕ «немає»);
+    `null` = прочитали, особливого графіка на цю дату немає.
+    Вибір по даті живе ТУТ, а не в батька: доти кожен споживач діставав
+    `overrides[dayKey]` сам, і разом із рядком губився прапорець збою. */
+export function overrideOn(
+  feed: OverrideFeed | null | undefined,
+  dateKey: string,
+): DayOverride | null | undefined {
+  if (overridesUnknown(feed)) return undefined;
+  return (feed as OverrideFeed).map[dateKey] || null;
+}
+
+/** Ефективний графік кабінету з фіда. `null` = особливі графіки невідомі. */
+export function roomScheduleFromFeed(
+  date: Date,
+  roomId: string,
+  feed: OverrideFeed | null | undefined,
+  roomSchedule?: unknown,
+): EffectiveRoomSchedule | null {
+  const ov = overrideOn(feed, dateKeyOf(date));
+  if (ov === undefined) return null;
+  return roomScheduleFor(date, roomId, ov, roomSchedule);
+}
+
+/** Перерви кабінету на дату з фіда. `null` = особливі графіки невідомі:
+    порожній масив тут означав би «перерв немає» — та сама підміна невідомості
+    порожнечею, лише іншим полем. */
+export function roomBreaksFromFeed(
+  date: Date,
+  roomId: string,
+  roomSchedule: unknown,
+  feed: OverrideFeed | null | undefined,
+): Break[] | null {
+  const ov = overrideOn(feed, dateKeyOf(date));
+  if (ov === undefined) return null;
+  return effectiveRoomBreaks(date, roomId, roomSchedule, ov);
+}
+
+/** Статус дня для календаря. `null` = не стверджуємо нічого.
+    ⚠️ Відсутній фід і фід зі `failed` — РІЗНІ відповіді, і плутати їх не можна:
+    відсутній означає, що екран особливих графіків не читає ВЗАГАЛІ (портал
+    направника — там календар лише фільтр дати), і тоді поведінка лишається
+    старою; `failed` означає, що читав і не зміг. Написати в першому випадку
+    `failed: false` було б брехнею типом — тим самим, через яку проп
+    `incidentsFailed` у SlotDataState свідомо лишили необовʼязковим (U-15). */
+export function dayStatusFromFeed(
+  feed: OverrideFeed | null | undefined,
+  date: Date,
+  roomSchedules?: unknown[] | null,
+): DayStatus | null {
+  if (!feed) return dayStatus(null, date, roomSchedules);
+  if (feed.failed) return null;
+  return dayStatus(feed.map[dateKeyOf(date)] || null, date, roomSchedules);
+}

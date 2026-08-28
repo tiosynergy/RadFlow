@@ -18,7 +18,7 @@
 import { useEffect, useState } from "react";
 import { isRoomBookable } from "@/lib/rooms";
 import { createClient } from "@/lib/supabase/client";
-import { roomScheduleFor, effectiveRoomBreaks, type DayOverride, type Break } from "@/lib/schedule";
+import { roomScheduleFromFeed, roomBreaksFromFeed, overridesUnknown, overrideOn, type OverrideFeed, type Break } from "@/lib/schedule";
 import { incidentEffectiveEnd, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, wallInstant, type IncidentFeed } from "@/lib/incidents";
 import { firstFittingSlot, slotToMin, type BusySpan } from "@/lib/slots";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
@@ -42,7 +42,7 @@ interface Props {
   clinicId?: string | null;
   clinicTz?: string | null;
   date: Date;                  // день дошки (колізія можлива лише сьогодні)
-  override?: DayOverride | null;
+  overrides: OverrideFeed;     // U-16: фід (мапа+failed), не гола строка дня
   incidents: IncidentFeed;     // U-11: фід (rows+failed), не голий масив
   onMove: (roomId: string, time: string) => void | Promise<void>;
   onRecall: () => void | Promise<void>;
@@ -55,7 +55,7 @@ const shortName = (n: string | null | undefined) => String(n || "").split(" ").s
 
 type Suggestion = { roomId: string; roomName: string; time: string; sameRoom: boolean };
 
-export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz, date, override, incidents, onMove, onRecall, onManual }: Props) {
+export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz, date, overrides, incidents, onMove, onRecall, onManual }: Props) {
   const [loading, setLoading] = useState(true);
   const [here, setHere] = useState<Suggestion | null>(null);   // той самий кабінет
   const [alt, setAlt] = useState<Suggestion | null>(null);     // паралельний кабінет — лише якщо РАНІШЕ
@@ -68,7 +68,17 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
   const modality = curRoom?.modality;
   // Примітив у депсах: сам фід — новий обʼєкт на кожен рендер батька.
   const incidentsFailed = incidentsUnknown(incidents);
+  const overridesFailed = overridesUnknown(overrides);
   const dateStr = dateVal(date);
+  /* Ревʼю р1 (F6): у депсах має бути не лише «чи впало читання», а й ЗМІСТ
+     особливого графіка цього дня. Інакше пакет закривав би самé «читання
+     впало», а сценарій «прочитали, потім адмін закрив день» лишався б: realtime
+     оновлює мапу, `overridesFailed` не змінюється, ефект не перезапускається —
+     і панель далі радить слот за старим графіком. Сервер таку пораду відіб'є
+     (`scheduleBlock`), але користувач отримає незрозумілу відмову на кнопці,
+     яка щойно цей слот пропонувала. Відбиток — РЯДОК, тож сам фід (новий
+     обʼєкт на кожен рендер батька) у масив залежностей не потрапляє. */
+  const overrideKey = overridesFailed ? "?" : JSON.stringify(overrideOn(overrides, dateStr) ?? null);
 
   useEffect(() => {
     let cancel = false;
@@ -90,6 +100,13 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
            перевіряючи. Виходимо в ту саму чесну гілку, що й збій зайнятості. */
         if (incidentsUnknown(incidents)) throw new Error("incidents-unknown");
 
+        /* U-16: те саме для особливих графіків дня. Порожня мапа на місці збою
+           означала б «сьогодні звичайний день», і панель порадила б слот у
+           кабінеті, який цього дня закритий (санітарний день) або працює за
+           скороченим графіком. Порада тут — не картинка: користувач тисне
+           «Перенести сюди», і вона доїжджає до запису в БД. */
+        if (overridesUnknown(overrides)) throw new Error("overrides-unknown");
+
         /* Перерви кабінетів живуть у rooms.schedule (JSONB) — одним запитом.
            H-6: помилку читання НЕ можна ковтати. Порожній schedById → roomScheduleFor
            відкочується на дефолт «Пн–Сб 08:00–18:00», і панель пропонує слот у час,
@@ -101,9 +118,14 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
 
         const nowMin = wallMinOfDay(wallNow(clinicTz || undefined));
         const found = await Promise.all(cands.map(async (r) => {
-          const sched = roomScheduleFor(date, r.id, override, schedById[r.id]);
+          /* Недосяжно, поки живий ранній гейт (той самий фід, те саме
+             замикання) — і саме тому лишається: це РОЗТЯЖКА, як і з простоями
+             нижче. Приберуть ранній гейт — і графік не стане мовчки «звичайним». */
+          const sched = roomScheduleFromFeed(date, r.id, overrides, schedById[r.id]);
+          if (sched === null) throw new Error("overrides-unknown");   // невідомо ≠ звичайний день
           if (sched.closed) return null;
-          const breaks: Break[] = effectiveRoomBreaks(date, r.id, schedById[r.id], override);
+          const breaks: Break[] | null = roomBreaksFromFeed(date, r.id, schedById[r.id], overrides);
+          if (breaks === null) throw new Error("overrides-unknown");   // порожні перерви ≠ «перерв немає»
           // H-6: `data || []` тут означало «кабінет вільний увесь день» → панель
           // пропонувала слот ПОВЕРХ чужого запису. PostgREST не кидає сам.
           const { data, error: busyError } = await supabase.rpc("room_busy_slots", { p_room: r.id, p_date: dateStr, p_exclude: entry.id });
@@ -160,8 +182,9 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
         setHere(mine);
         setAlt(better);
       } catch {
-        // Транзієнтний збій (рефреш токена / мережа) або непрочитані простої
-        // (U-11) — не рушимо дошку, але й слот не радимо.
+        // Транзієнтний збій (рефреш токена / мережа), непрочитані простої (U-11)
+        // або непрочитані особливі графіки (U-16) — не рушимо дошку, але й слот
+        // не радимо.
         if (!cancel) { setHere(null); setAlt(null); setBusyErr(true); }
       } finally {
         if (!cancel) setLoading(false);
@@ -169,7 +192,7 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
     })();
     return () => { cancel = true; };
     // info.freeAtMin — щоб пропозиція перерахувалась, коли дослідження затягується далі.
-  }, [entry.id, entry.room_id, dateStr, clinicId, clinicTz, dur, buffer, modality, info.freeAtMin, incidentsFailed]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [entry.id, entry.room_id, dateStr, clinicId, clinicTz, dur, buffer, modality, info.freeAtMin, incidentsFailed, overridesFailed, overrideKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = (fn: () => void | Promise<void>) => async () => {
     if (pending) return;
@@ -190,8 +213,16 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
 
       {loading && <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>⏳ Шукаю найближчий вільний слот…</div>}
 
+      {/* Ревʼю р1 (F7): «перенесіть вручну» — порада в глухий кут, коли причина
+          збою саме в недовірених даних: `openReschedule` у дошці відбиває той
+          самий safetyErr. Тоді єдиний вихід — «↻ Оновити» в банері над дошкою,
+          і панель мусить назвати саме його. */}
       {busyErr && !loading && (
-        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>Не вдалося порахувати вільний час кабінету — перенесіть вручну.</div>
+        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+          {incidentsFailed || overridesFailed
+            ? "Дані про простої або особливі графіки не завантажились — вільний час порахувати не можемо. Натисніть «↻ Оновити» у банері вгорі дошки."
+            : "Не вдалося порахувати вільний час кабінету — перенесіть вручну."}
+        </div>
       )}
 
       {noSlot && !busyErr && (

@@ -9,7 +9,7 @@
 
 import { useState } from "react";
 import { bookableRooms } from "@/lib/rooms";
-import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, overrideOn, overridesUnknown, type OverrideFeed } from "@/lib/schedule";
 import { roomIncidentsOf, wallNow, type IncidentFeed } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { modalityShort, modalityKind } from "@/lib/studies";
@@ -33,7 +33,7 @@ type IncidentSavePayload = {
   autoUnblock: boolean;
   note: string;
 };
-type Overrides = Record<string, DayOverride | null>;
+
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
 
@@ -67,14 +67,15 @@ interface BreakdownSectionProps {
   others?: IncidentRow[];
   onSave: (p: IncidentSavePayload) => void;
   onResolve: (id: string) => void;
-  overrides?: Overrides;
-  /* Особливі графіки дня НЕ прочитались. Обовʼязковий: `overrides` тут — мапа з
-     дефолтом `{}`, і «не прочитали» від «особливих днів немає» вона не
-     відрізняє. Той самий клас, що U-11, лише інший канал (буде U-16). */
-  overridesFailed: boolean;
+  /* U-16: ФІД, а не мапа. Доти сюди їхала пара «мапа з дефолтом `{}` + окремий
+     boolean» — форма, у якій прапорець можна забути, підмінити константою або
+     передати від іншої вибірки, і мапа про це не скаже. Тепер джерело одне,
+     проп обовʼязковий і без дефолта, а `overridesFailed` виводиться з нього. */
+  overrides: OverrideFeed;
 }
 
-function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, overrides = {}, overridesFailed }: BreakdownSectionProps) {
+function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, overrides }: BreakdownSectionProps) {
+  const overridesFailed = overridesUnknown(overrides);
   const [open, setOpen] = useState(!existing); // немає події → одразу форма; є → спершу зведення
   const [startDate, setStartDate] = useState(existing ? isoDate(existing.started_at) : dateVal(todayWall()));
   const [startTime, setStartTime] = useState(existing ? hhmmFromISO(existing.started_at) : nowHHMM());
@@ -85,24 +86,42 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
   const [err, setErr] = useState("");
 
   // Кінець дня — за ефективним графіком кабінету на дату початку (з урахуванням особливого графіка/overrides).
-  const schedEnd = (() => {
-    const d = dtFrom(startDate, "00:00");
-    return roomScheduleFor(d, roomId, overrides[startDate] || null, room?.schedule).end;
-  })();
+  /* Ключ дня беремо з ПОЛЯ ФОРМИ (`startDate`), а не з `dateKeyOf(d)`: `dtFrom`
+     будує дату через `Date.UTC`, і в браузері на захід від UTC її локальні
+     частини — вже інша доба. Тому тут `overrideOn(feed, startDate)`, а не
+     `roomScheduleFromFeed(d, …)`: фід дає невідомість, ключ лишається той самий,
+     що й був. `null` = графіки не прочитались.
+     ⚠️ Ловушка `Date.UTC` закрита ЛИШЕ для ключа override'а. Сам `roomScheduleFor`
+     бере з тієї ж дати ДЕНЬ ТИЖНЯ (`date.getDay()`, теж локальне поле), тож
+     базовий тижневий графік у браузері на захід від UTC читається за попередній
+     день. Це поведінка ДО цього пакета, вона не змінилась і тут не лікується —
+     але не вважай, що ловушка знята цілком (ревʼю р1). */
+  const ov = overrideOn(overrides, startDate);
+  const schedEnd: string | null = ov === undefined
+    ? null
+    : roomScheduleFor(dtFrom(startDate, "00:00"), roomId, ov, room?.schedule).end;
   function blockedUntil(startedAt: Date): Date | null {
     if (durKey === "1h") return new Date(startedAt.getTime() + 3600e3);
     if (durKey === "2h") return new Date(startedAt.getTime() + 2 * 3600e3);
     if (durKey === "4h") return new Date(startedAt.getTime() + 4 * 3600e3);
-    if (durKey === "eod") { return dtFrom(startDate, schedEnd); }
+    /* Кінець дня невідомий → `null`, тобто «до відновлення» (Infinity): межа
+       ШИРША за реальну, кабінет лишається заблокованим довше. Недосяжно —
+       гейт у save() відмовляє раніше; лишено як розтяжку в безпечний бік.
+       ⚠️ Перевірка саме truthy, а не `=== null`, і це навмисно (ревʼю р1 F5):
+       `roomScheduleFor` у гілці «зачинено за базовим графіком» віддає `end`
+       без фолбека, тож теоретично сюди може прийти порожній рядок. `dtFrom`
+       зробив би з нього Invalid Date, а `e.toISOString()` нижче — RangeError.
+       Truthy ловить обидва випадки в безпечний бік. */
+    if (durKey === "eod") { return schedEnd ? dtFrom(startDate, schedEnd) : null; }
     if (durKey === "restore") return dtFrom(restoreDate, restoreTime);
     return null;
   }
   function save() {
     setErr("");
     if (!durKey) { setErr("Оберіть тривалість"); return; }
-    /* Ревʼю р2 (F2 другого рецензента): «До кінця дня» бере кінець із
-       roomScheduleFor(…, overrides[startDate] || null, …). При збої читання
-       особливих графіків мапа порожня, фолбэк дає базовий тиждень (або хардкод
+    /* Ревʼю р2 с46 (F2 другого рецензента): «До кінця дня» бере кінець із
+       ефективного графіка дня. При збої читання особливих графіків (до U-16 —
+       порожня мапа, тепер — фід зі `failed`) фолбек дає базовий тиждень (або хардкод
        08–18), і в `incidents.blocked_until` лягає ЧУЖИЙ кінець дня. Це не
        транзієнтна брехня в UI, а ЗАПИСАНЕ в БД значення: далі за ним однаково
        підуть дошки, модалки, FHIR-фасад і сам гард check_not_during_incident —
@@ -247,15 +266,14 @@ function MaintenanceSection({ roomId, existing, others, onSave, onResolve }: Mai
 interface BreakdownModalProps {
   rooms?: RoomOpt[];
   incidents: IncidentFeed<IncidentRow>;   // U-11: фід (rows+failed), не голий масив
-  overrides?: Overrides;
-  overridesFailed: boolean;               // обовʼязковий — див. BreakdownSectionProps
+  overrides: OverrideFeed;                // U-16: фід (мапа+failed), не пара «мапа + boolean»
   initialRoomId?: string;
   onClose: () => void;
   onSubmit: (p: IncidentSavePayload) => void;
   onResolve: (id: string) => void;
 }
 
-export default function BreakdownModal({ rooms, incidents, overrides = {}, overridesFailed, initialRoomId, onClose, onSubmit, onResolve }: BreakdownModalProps) {
+export default function BreakdownModal({ rooms, incidents, overrides, initialRoomId, onClose, onSubmit, onResolve }: BreakdownModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [roomId, setRoomId] = useState(initialRoomId || (rooms || [])[0]?.id || "");
   const room = (rooms || []).find((r) => r.id === roomId);
@@ -308,7 +326,7 @@ export default function BreakdownModal({ rooms, incidents, overrides = {}, overr
 
           {!incidentsFailed && (
             <>
-              <BreakdownSection key={"b-" + roomId + "-" + (breakdownInc?.id || "new")} roomId={roomId} room={room} existing={breakdownInc} others={maintenanceInc ? [maintenanceInc] : []} onSave={onSubmit} onResolve={onResolve} overrides={overrides} overridesFailed={overridesFailed} />
+              <BreakdownSection key={"b-" + roomId + "-" + (breakdownInc?.id || "new")} roomId={roomId} room={room} existing={breakdownInc} others={maintenanceInc ? [maintenanceInc] : []} onSave={onSubmit} onResolve={onResolve} overrides={overrides} />
               <MaintenanceSection key={"m-" + roomId + "-" + (maintenanceInc?.id || "new")} roomId={roomId} existing={maintenanceInc} others={breakdownInc ? [breakdownInc] : []} onSave={onSubmit} onResolve={onResolve} />
 
               <div className="hint-blue" style={{ marginBottom: 0 }}>⚡ <b>Realtime:</b> зміни миттєво зʼявляться у всіх ролей. Поломка блокує апарат відразу; планове ТО — у вказаний час.</div>

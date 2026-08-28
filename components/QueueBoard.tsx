@@ -50,7 +50,7 @@ import MiniCalendar from "@/components/MiniCalendar";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
 import RoomDayOverviewModal from "@/components/RoomDayOverviewModal";
-import { roomScheduleFor, dayStatus, offScheduleKind, effectiveRoomBreaks, type DayOverride } from "@/lib/schedule";
+import { overrideFeed, roomScheduleFor, roomScheduleFromFeed, roomBreaksFromFeed, dayStatusFromFeed, offScheduleKind, type OverrideFeed, type DayOverride } from "@/lib/schedule";
 import { slotToMin, slotFmt } from "@/lib/slots";
 import { SAFETY_BOOKING_BLOCKED } from "@/lib/availabilityTrust";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, collisionFor, SAFETY_UNKNOWN_REASON, type CollisionInfo } from "@/lib/queueStatus";
@@ -456,16 +456,22 @@ function incidentWorkMinutes(inc: IncidentRow, date: Date, startMin: number, end
   const eMin = Math.min(endMin, Math.round((e - dayStart) / 60000));
   return Math.max(0, eMin - sMin);
 }
-function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: Date, override: DayOverride | null, incidents: IncidentFeed<IncidentRow>): RoomLoadItem[] {
+function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: Date, overrides: OverrideFeed, incidents: IncidentFeed<IncidentRow>): RoomLoadItem[] {
   return (rooms || []).map((r) => {
-    const sched = roomScheduleFor(date, r.id, override, r.schedule);
-    const startMin = toMinHHMM(sched.start), endMin = toMinHHMM(sched.end);
-    let cap = sched.closed ? 0 : Math.max(0, endMin - startMin);
+    /* U-16: `null` = особливі графіки не прочитались, тобто невідомі САМІ МЕЖІ
+       дня — а з них рахується вся ємність. Фолбек на базовий тиждень рахував
+       санітарний день як повний і занижував відсоток так само тихо, як це
+       робили непрочитані простої (U-11). Тому невідомість іде в `capKnown`, а
+       не в число. */
+    const sched = roomScheduleFromFeed(date, r.id, overrides, r.schedule);
+    const startMin = sched ? toMinHHMM(sched.start) : 0, endMin = sched ? toMinHHMM(sched.end) : 0;
+    let cap = !sched || sched.closed ? 0 : Math.max(0, endMin - startMin);
     /* U-11: простої ЗМЕНШУЮТЬ ємність. Порожній масив на місці збою читання
        лишав ємність повною і тихо занижував відсоток — той самий fail-open, що
        і в сітці слотів, лише без жодного видимого сліду. */
     const roomInc = roomIncidentsOf(incidents, r.id);
-    const capKnown = roomInc !== null;
+    // Ємність відома, лише коли відомі ОБИДВА джерела: межі дня і простої.
+    const capKnown = roomInc !== null && sched !== null;
     if (cap > 0 && roomInc) {
       roomInc.forEach((i) => { cap -= incidentWorkMinutes(i, date, startMin, endMin); });
       cap = Math.max(0, cap);
@@ -478,7 +484,7 @@ function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: 
        немає. */
     const mins = entries.filter((e) => e.room_id === r.id && occupiesSlot(e.status)).reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
     const pct = cap > 0 ? Math.min(100, Math.round((mins / cap) * 100)) : 0;
-    return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, capKnown, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue-text)" : "var(--orange)", off: !isRoomBookable(r) };
+    return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, capKnown, closed: !!sched?.closed, color: r.modality === "MRI" ? "var(--blue-text)" : "var(--orange)", off: !isRoomBookable(r) };
   });
 }
 /* `ready=false` — знімок дня ще не належить поточному зрізу (H-3): відсотки
@@ -511,7 +517,7 @@ function RoomLoad({ rooms, onSelectRoom, ready = true }: { rooms: RoomLoadItem[]
                 <span className="load-name">{r.name} {r.kind}
                   {r.off && <span className="badge gray" style={{ marginLeft: 6 }} title="Кабінет вимкнено: нові записи в нього не приймаються">{ROOM_OFF_LABEL}</span>}
                   {" "}<span className="load-go" aria-hidden>→</span></span>
-                <span className="load-pct" style={{ color: r.color }} title={ready && !r.capKnown ? "Простої кабінету не завантажились — відсоток порахувався б від повного дня" : undefined}>{ready && r.capKnown ? r.pct + "%" : "—"}</span>
+                <span className="load-pct" style={{ color: r.color }} title={ready && !r.capKnown ? "Простої або особливі графіки кабінету не завантажились — відсоток порахувався б від повного дня" : undefined}>{ready && r.capKnown ? r.pct + "%" : "—"}</span>
               </div>
               <div className="load-bar"><div className="load-fill" style={{ width: (ready && r.capKnown ? r.pct : 0) + "%", background: r.color }} /></div>
             </button>
@@ -1608,12 +1614,20 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     overrunEnabled: isToday,    // «дослідження довше плану» — лише сьогоднішня дошка
   });
 
+  /* U-16: ОДИН фід на всіх дітей і на всі похідні дошки. Доти вниз їхала гола
+     мапа, а прапорець збою лишався тут — і кожен споживач сам вирішував, що
+     означає порожній `{}`. Тепер джерело одне, і забути прапорець неможливо:
+     тип пропа без нього не збереться. */
+  const overridesFeed = overrideFeed(overrides, overridesErr);
+  /* Сира строка — ТІЛЬКИ для редактора графіка: він її не інтерпретує, а
+     редагує, і CAS по `updated_at` ловить розбіжність сам. */
   const selectedOverride = overrides[dayKey] || null;
   // Базові графіки кабінетів → «вихідний» у календарі за реальним графіком, не лише неділею.
   /* Лише за графіками кабінетів, які реально працюють: вимкнений кабінет із
      робочою неділею інакше показував би неділю робочою для всього центру. */
   const roomSchedules = bookableRooms(rooms).map((r) => r.schedule);
-  const selDayStatus = dayStatus(selectedOverride, selectedDate, roomSchedules);
+  // `null` = графіки не прочитались → про день не стверджуємо нічого.
+  const selDayStatus = dayStatusFromFeed(overridesFeed, selectedDate, roomSchedules);
 
   /* 0135, CAS: знімок `updated_at` ЗАМЕРЗАЄ при ВІДКРИТТІ модалки, а не читається
      з живої мапи overrides у момент збереження — realtime довозить чужу правку
@@ -1627,6 +1641,11 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      чужої правки, тобто повернула б H-5. */
   const [schedEditEpoch, setSchedEditEpoch] = useState(0);
   function openSchedEdit() {
+    /* U-16: редагувати те, чого не прочитали, не можна. Модалка відкрилась би
+       як «особливого графіка немає» — тобто показала б порожню форму на дні,
+       у якого override є. Затирання ловив би CAS (знімок null → sched_conflict),
+       але користувач до того встиг би заповнити форму наосліп. */
+    if (overridesErr) { notify("Особливі графіки не завантажились — оновіть сторінку", "error"); return; }
     schedSnapRef.current = (overrides[dayKey] || null)?.updated_at ?? null;
     setSchedEditOpen(true);
   }
@@ -1684,7 +1703,32 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     }
   }
   const schedOf = (roomId: string) => (rooms || []).find((r) => r.id === roomId)?.schedule;
-  function roomSchedClosed(roomId: string) { return roomScheduleFor(selectedDate, roomId, selectedOverride, schedOf(roomId)).closed; }
+  /* U-16: `null` = графіки не прочитались → повертаємо false, тобто НЕ
+     стверджуємо «зачинено». Протилежне рішення («невідомо → зачинено»)
+     виглядає безпечнішим, але змусило б усі картки кабінетів написати
+     «🚫 Зачинено» на кожному збої мережі — брехня в інший бік (U-1/U-2).
+     Небезпечний бік прикритий раніше й жорсткіше: виклик пацієнта відбиває
+     safety_unknown, який у computeCallBlock стоїть ПЕРЕД room_closed, а новий
+     запис і перенос — гейт safetyErr. */
+  function roomSchedClosed(roomId: string) {
+    return roomScheduleFromFeed(selectedDate, roomId, overridesFeed, schedOf(roomId))?.closed ?? false;
+  }
+  /* ⚠️ А ось для СПИСКУ ОБДЗВОНУ («Постраждалі») напрямок ПРОТИЛЕЖНИЙ, і це
+     знайшло ревʼю р1 (F2) як регресію самої правки. `roomSchedClosed` при
+     невідомості віддає false — там це правильно (не стверджувати «Зачинено» на
+     картці). Але тут вердикт не підпис, а ПЕРЕЛІК ПАЦІЄНТІВ, яким треба
+     подзвонити: не подзвонити людині, що приїде в зачинений центр, дорожче,
+     ніж подзвонити зайвій. До правки список рахувався з базового тижневого
+     графіка (бо `selectedOverride` при збої й так був null) — правка мовчки
+     спорожнила панель, і вона зникала цілком (`if (!affected.length) return null`).
+     Тому при непрочитаних графіках падаємо на БАЗОВИЙ графік кабінету: він
+     приходить SSR-пропом і від `schedule_overrides` не залежить, тобто це
+     строго більше інформації, ніж порожній список. */
+  function roomClosedForCallList(roomId: string) {
+    const s = roomScheduleFromFeed(selectedDate, roomId, overridesFeed, schedOf(roomId));
+    if (s) return s.closed;
+    return roomScheduleFor(selectedDate, roomId, null, schedOf(roomId)).closed;
+  }
   /* Похідне попередження «Не за графіком»: час запису не вкладається в ПОТОЧНИЙ графік
      кабінета (закритий день / до відкриття / за кінець / у перерву). На відміну від
      `off_schedule` (осознанний запис за графіком, підтверджений персоналом), це
@@ -1693,11 +1737,14 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   function schedDriftFor(p: QEntry): string | null {
     if (!p.room_id || !p.scheduled_time || p.off_schedule) return null;
     if (["done", "no_show", "not_held", "cancelled", "needs_reschedule"].includes(p.status)) return null;
-    const osk = offScheduleKind(
-      slotToMin(p.scheduled_time), p.duration_min || 30,
-      roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)),
-      effectiveRoomBreaks(selectedDate, p.room_id, schedOf(p.room_id), selectedOverride),
-    );
+    /* U-16: «Не за графіком» — ТВЕРДЖЕННЯ, і на непрочитаних графіках воно
+       помиляється в ОБИДВА боки: день, який override відкриває (чергування в
+       неділю), виглядав би порушенням, а день, який override закриває, не
+       позначався б зовсім. Мовчимо — причину видно в банері над дошкою. */
+    const drSched = roomScheduleFromFeed(selectedDate, p.room_id, overridesFeed, schedOf(p.room_id));
+    const drBreaks = roomBreaksFromFeed(selectedDate, p.room_id, schedOf(p.room_id), overridesFeed);
+    if (!drSched || !drBreaks) return null;
+    const osk = offScheduleKind(slotToMin(p.scheduled_time), p.duration_min || 30, drSched, drBreaks);
     if (!osk) return null;
     const why = osk.kind === "closed" ? "кабінет не працює цього дня"
       : osk.kind === "before_start" ? "запис раніше відкриття кабінета"
@@ -1736,7 +1783,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       if (e.status !== "scheduled" && e.status !== "waiting") return;
       const incs = e.room_id ? incidentsByRoom[e.room_id] : null;
       if (incs && incs.some((inc) => entryInIncidentWindow(dayKey, e.scheduled_time, inc))) { affectedIds.add(e.id); return; }
-      if (e.room_id && roomSchedClosed(e.room_id)) affectedIds.add(e.id);
+      if (e.room_id && roomClosedForCallList(e.room_id)) affectedIds.add(e.id);
     });
   }
   const affected = entries.filter((e) => affectedIds.has(e.id));
@@ -2042,6 +2089,16 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     if (safetyErr) { notify(SAFETY_BOOKING_BLOCKED, "error"); return; }
     setReschedFor(p);
   };
+  /* U-16, ревʼю р1 (F1): карту дня («▦ Зайнятість кабінету») спершу закрили
+     гейтом safetyErr — і це була ПОМИЛКА, яку ревʼю й зловило. Гейт не додавав
+     жодної заборони: модалка сама ховає сітку і при непрочитаних простоях, і
+     при непрочитаних графіках. Зате він забирав єдиний екран, який чесно
+     ПОЯСНЮВАВ збій і давав кнопку «Спробувати ще раз» для зайнятості, — а
+     заразом робив нову гілку `overridesFailed` недосяжною з головного входу,
+     тобто дві правки одного пакета гасили одна одну.
+     Тому входу гейта НЕМАЄ свідомо: read-only екран, який відмовляється
+     стверджувати і називає причину, кращий за тост «оновіть сторінку».
+     Гейт лишається там, де є ДІЯ: openBooking і openReschedule. */
   /* Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
      Виняток — 'stale': переносити вже нічого (запис завершено/скасовано), модалку
      закриваємо і синхронізуємо дошку. */
@@ -2223,7 +2280,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   }
 
   function callBlockOf(p: QEntry) {
-    const sched = p.room_id ? roomScheduleFor(selectedDate, p.room_id, selectedOverride, schedOf(p.room_id)) : null;
+    const sched = p.room_id ? roomScheduleFromFeed(selectedDate, p.room_id, overridesFeed, schedOf(p.room_id)) : null;
     return computeCallBlock(p, entries, {
       notToday: !isToday,
       roomStuck: p.room_id ? stuckRooms[p.room_id] ?? null : null,
@@ -2381,7 +2438,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     }
   });
 
-  const roomLoad = computeRoomLoad(visRooms, entries, selectedDate, selectedOverride, loadIncidentsFeed);
+  const roomLoad = computeRoomLoad(visRooms, entries, selectedDate, overridesFeed, loadIncidentsFeed);
 
   /* Порядок черги (рішення Ігоря 2026-07-11): у межах статусу — ЗА ЧАСОМ.
      Пріоритет (CITO/Терміново) лишається кольоровим бейджем, але НЕ виносить
@@ -2522,7 +2579,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                 </div>
               );
             })}
-            {selectedOverride && selDayStatus.kind !== "none" && (
+            {selectedOverride && selDayStatus && selDayStatus.kind !== "none" && (
               <div className="inc-banner fade-in" style={{ borderColor: selDayStatus.kind === "closed" ? "var(--red)" : "var(--blue-line)" }}>
                 <span className="inc-banner-ic">{selDayStatus.kind === "closed" ? "🚫" : "🕐"}</span>
                 <div className="inc-banner-txt">
@@ -2540,7 +2597,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                 <span className="db-ic">{isPast ? "🗂" : "📅"}</span>
                 <div className="db-meta">
                   <div className="db-title">{fmtFull(selectedDate)}</div>
-                  <div className="db-sub">{selDayStatus.kind !== "none" ? selDayStatus.label + " · " : ""}{entriesErr && !scopeReady ? "Дані не завантажились" : !scopeReady ? "Завантаження…" : counts.total ? (isPast ? "Архів — день завершено" : "Заплановані записи") + " · " + counts.total + " записів" : "Записів немає"}</div>
+                  <div className="db-sub">{selDayStatus && selDayStatus.kind !== "none" ? selDayStatus.label + " · " : ""}{entriesErr && !scopeReady ? "Дані не завантажились" : !scopeReady ? "Завантаження…" : counts.total ? (isPast ? "Архів — день завершено" : "Заплановані записи") + " · " + counts.total + " записів" : "Записів немає"}</div>
                 </div>
                 {!isPast && <button className="btn btn-secondary btn-sm" onClick={openSchedEdit}>✎ Графік</button>}
                 <button className="btn btn-secondary btn-sm" onClick={() => setSelectedDate(today0())}>← Сьогодні</button>
@@ -2552,7 +2609,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                     patient={currentByRoom[r.id]} enteredAt={enteredAtOf(currentByRoom[r.id])}
                     stuck={stuckRooms[r.id]} stuckUnknown={stuckUnknown} onFinishStuck={setStuckFinish}
                     nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
-                    schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? (selDayStatus.label || "Не працює за графіком") : null}
+                    schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? (selDayStatus?.label || "Не працює за графіком") : null}
                     onComplete={openComplete} onCall={callPatient} onUnblock={resolveIncident} />
                 ))}
                 {/* Дві різні ситуації, які легко злити в одну: кабінетів не
@@ -2694,7 +2751,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                     collisionPanel={collision?.zone === "clash" && expandedRow === p.id ? (
                       <CollisionPanel
                         entry={p} info={collision} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz}
-                        date={selectedDate} override={selectedOverride} incidents={incidentsFeed}
+                        date={selectedDate} overrides={overridesFeed} incidents={incidentsFeed}
                         onMove={(roomId, time) => doCollisionMove(p, roomId, time)}
                         onRecall={() => doCollisionRecall(p)}
                         onManual={() => openReschedule(p)}
@@ -2702,7 +2759,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                     ) : null}
                     quickReschedule={expandedRow === p.id && isToday && p.room_id && (p.status === "scheduled" || p.status === "waiting") ? (
                       <QuickRescheduleButton
-                        entry={p} clinicTz={clinicTz} date={selectedDate} override={selectedOverride}
+                        entry={p} clinicTz={clinicTz} date={selectedDate} overrides={overridesFeed}
                         incidents={incidentsFeed} onPick={(time) => quickRescheduleTo(p, time)}
                       />
                     ) : null} />
@@ -2713,7 +2770,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         </div>
 
           <aside className="rpanel">
-            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overridesByDate={overrides} onEditSchedule={openSchedEdit} tz={clinicTz} roomSchedules={roomSchedules} />
+            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overrides={overridesFeed} onEditSchedule={openSchedEdit} tz={clinicTz} roomSchedules={roomSchedules} />
             {isToday && visRooms.length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} ready={scopeReady} />}
             {!isPast && <NeedsReschedulePanel entries={needsResched} roomsById={roomsById} onReschedule={openReschedule} onToWaitlist={toWaitlist} onCancel={(pt) => setCancelAsk({ p: pt, mode: "cancel" })} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}
@@ -2755,7 +2812,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
           onClose={() => setCaseFromEntryFor(null)}
         />
       )}
-      {slotsOverviewOpen && <RoomDayOverviewModal rooms={visRooms} clinicTz={clinicTz} incidents={incidentsFeed} overrides={overrides} onClose={() => setSlotsOverviewOpen(false)} />}
+      {slotsOverviewOpen && <RoomDayOverviewModal rooms={visRooms} clinicTz={clinicTz} incidents={incidentsFeed} overrides={overridesFeed} onClose={() => setSlotsOverviewOpen(false)} />}
 
       {wlSuggest && (
         <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides}
@@ -2818,7 +2875,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       )}
 
       {breakdownOpen && (
-        <BreakdownModal rooms={rooms} incidents={incidentsFeed} overrides={overrides} overridesFailed={overridesErr} initialRoomId={breakdownRoomId || undefined} onClose={() => { setBreakdownOpen(false); setBreakdownRoomId(null); }} onSubmit={submitIncident} onResolve={resolveIncident} />
+        <BreakdownModal rooms={rooms} incidents={incidentsFeed} overrides={overridesFeed} initialRoomId={breakdownRoomId || undefined} onClose={() => { setBreakdownOpen(false); setBreakdownRoomId(null); }} onSubmit={submitIncident} onResolve={resolveIncident} />
       )}
       {emergencyOpen && (
         <EmergencyModal

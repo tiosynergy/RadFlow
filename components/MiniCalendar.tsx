@@ -6,7 +6,7 @@
    (ReferrerBoard — лише вибір дати). */
 
 import { useState } from "react";
-import { dayStatus, type DayOverride } from "@/lib/schedule";
+import { dayStatusFromFeed, type OverrideFeed } from "@/lib/schedule";
 import { wallToday0 } from "@/lib/incidents";
 import { useUnreadChanges } from "@/lib/useUnreadChanges";
 import { calendarDayKey, unreadForDate } from "@/lib/unreadChanges";
@@ -16,12 +16,21 @@ const MON_NOM = ["Січень", "Лютий", "Березень", "Квітен
 function startOfDay(d: Date) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
 function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 function dowMon(d: Date) { return (d.getDay() + 6) % 7; }
-function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+/* Ключ дати більше не будується тут: вибір override'а по даті переїхав у
+   lib/schedule (dayStatusFromFeed → dateKeyOf), щоб разом із рядком не
+   губився прапорець збою читання (U-16). */
 
 interface MiniCalendarProps {
   selectedDate: Date;
   onSelectDate: (d: Date) => void;
-  overridesByDate?: Record<string, DayOverride>;
+  /* U-16: ФІД, а не гола мапа. Позначки «вихідний» / «особливий графік» — це
+     ТВЕРДЖЕННЯ про день; при збої читання мапа порожня, і календар мовчки
+     називав закритий день звичайним.
+     ⚠️ Проп лишається необовʼязковим свідомо: `ReferrerBoard` особливих
+     графіків не читає ВЗАГАЛІ (там календар — лише фільтр дати), і написати
+     йому `failed: false` означало б збрехати типом. Відсутній фід і фід зі
+     збоєм — різні відповіді, їх розрізняє dayStatusFromFeed. */
+  overrides?: OverrideFeed;
   onEditSchedule?: () => void;
   /** false → не підсвічувати «обрану» дату (напр. коли фільтр дати вимкнено). */
   highlightSelected?: boolean;
@@ -38,9 +47,8 @@ interface MiniCalendarProps {
   clinicId?: string | null;
 }
 
-export default function MiniCalendar({ selectedDate, onSelectDate, overridesByDate, onEditSchedule, highlightSelected = true, tz, roomSchedules, clinicId }: MiniCalendarProps) {
+export default function MiniCalendar({ selectedDate, onSelectDate, overrides, onEditSchedule, highlightSelected = true, tz, roomSchedules, clinicId }: MiniCalendarProps) {
   const today = wallToday0(tz);
-  const ovMap = overridesByDate || {};
   /* Контекстні позначки на календарі (0133). Дата приходить у самій позначці
      (subject_date), а не виводиться з завантажених записів: календар показує
      МІСЯЦЬ, а дошка вантажить ОДИН день — вивести було б нізвідки (урок с24).
@@ -72,10 +80,13 @@ export default function MiniCalendar({ selectedDate, onSelectDate, overridesByDa
           const cd = new Date(y, mo, d);
           const isToday = sameDay(cd, today);
           const isSel = highlightSelected && sameDay(cd, selectedDate);
-          const ov = ovMap[dateKey(cd)] || null;
-          const st = dayStatus(ov, cd, roomSchedules);
-          const markClosed = st.kind === "closed";
-          const markCustom = st.kind === "custom";
+          /* U-16: `null` = особливі графіки не прочитались — тоді про день не
+             стверджуємо НІЧОГО (ні «вихідний», ні «особливий графік»), а причину
+             називаємо один раз під сіткою. Мовчазна відсутність позначки без
+             пояснення і була дефектом: закритий день виглядав звичайним. */
+          const st = dayStatusFromFeed(overrides, cd, roomSchedules);
+          const markClosed = st?.kind === "closed";
+          const markCustom = st?.kind === "custom";
           const dayUnread = unreadForDate(unreadIx, calendarDayKey(cd), clinicId);
           /* ⚠️ Стан не лише кольором (WCAG 1.4.1): крапку дублює доступне імʼя.
              aria-label будуємо ЗАВЖДИ, коли є що сказати, — і число дня в ньому
@@ -85,10 +96,10 @@ export default function MiniCalendar({ selectedDate, onSelectDate, overridesByDa
              позначки: markerLabel описує блок поля («перелік послуг»), якого
              на календарі немає, і в контексті дня це збивало б з пантелику. */
           const unreadLabel = dayUnread.length ? `Є непрочитані зміни: ${dayUnread.length}` : null;
-          const labelParts = [String(d), st.label || null, unreadLabel].filter(Boolean);
+          const labelParts = [String(d), st?.label || null, unreadLabel].filter(Boolean);
           return (
             <button key={d} className={"cal-day" + (isToday ? " today" : "") + (isSel && !isToday ? " selected" : "") + (markClosed ? " holiday" : "") + (markCustom ? " custom" : "")}
-              title={[st.label || null, unreadLabel].filter(Boolean).join(" · ") || undefined}
+              title={[st?.label || null, unreadLabel].filter(Boolean).join(" · ") || undefined}
               aria-label={labelParts.length > 1 ? labelParts.join(" — ") : undefined}
               onClick={() => onSelectDate(startOfDay(cd))}>
               {d}
@@ -100,6 +111,14 @@ export default function MiniCalendar({ selectedDate, onSelectDate, overridesByDa
           );
         })}
       </div>
+      {/* U-16: причину відсутності позначок називаємо ОДИН раз під сіткою.
+          Без цього рядка «нічого не стверджуємо» виглядає як «звичайний
+          місяць» — тобто те саме твердження, лише мовчазне. */}
+      {overrides?.failed && (
+        <div className="ctx-hint red" style={{ fontSize: "0.75rem", marginTop: 8 }} role="status">
+          ⚠ Особливі графіки не завантажились — вихідні й особливі дні не позначено.
+        </div>
+      )}
       {onEditSchedule && (
         <button className="btn btn-secondary btn-sm" style={{ width: "100%", marginTop: 10, justifyContent: "center" }} onClick={() => onEditSchedule()}>
           ✎ Графік на {selectedDate.getDate()} {MON_NOM[selectedDate.getMonth()].toLowerCase()}
