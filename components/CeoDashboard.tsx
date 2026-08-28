@@ -112,14 +112,16 @@ function workdaysBetween(a: Date, b: Date): number {
   return n;
 }
 
-function ProgressCircle({ pct, color }: { pct: number; color: string }) {
-  const r = 52, c = 2 * Math.PI * r, off = c * (1 - Math.min(100, pct) / 100);
+/* unknown — дані для відсотка НЕ прийшли. Малюємо «—» і порожнє коло: намальовані
+   0% (та ще й червоним) керівник читає як «апарати простоюють». */
+function ProgressCircle({ pct, color, unknown = false }: { pct: number; color: string; unknown?: boolean }) {
+  const r = 52, c = 2 * Math.PI * r, off = unknown ? c : c * (1 - Math.min(100, pct) / 100);
   return (
     <svg width="130" height="130" viewBox="0 0 130 130">
       <circle cx="65" cy="65" r={r} fill="none" stroke="var(--border)" strokeWidth="10" />
       <circle cx="65" cy="65" r={r} fill="none" stroke={color} strokeWidth="10" strokeLinecap="round"
         strokeDasharray={c} strokeDashoffset={off} transform="rotate(-90 65 65)" style={{ transition: "stroke-dashoffset .5s" }} />
-      <text x="65" y="64" textAnchor="middle" fontSize="30" fontWeight="700" fill="var(--text)" className="tabular">{pct}%</text>
+      <text x="65" y="64" textAnchor="middle" fontSize="30" fontWeight="700" fill={unknown ? "var(--text-muted)" : "var(--text)"} className="tabular">{unknown ? "—" : pct + "%"}</text>
       <text x="65" y="86" textAnchor="middle" fontSize="11" fill="var(--text-muted)">завантаж.</text>
     </svg>
   );
@@ -181,6 +183,21 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const [roomRows, setRoomRows] = useState<RoomsRow[]>([]);
   const [studyRows, setStudyRows] = useState<StudiesRow[]>([]);
   const [loading, setLoading] = useState(true);
+  /* U-7 (с46): останній прохід reload() НЕ завершився. Прапорець постійний (тост
+     зникає, цифри лишаються) і має рівно одне призначення — не давати ПОХІДНИМ
+     нулям виглядати як факт: «0% завантаж.», «Кабінетів немає» тощо. Знімається
+     тільки повним успішним проходом. */
+  const [dataErr, setDataErr] = useState(false);
+  /* Покоління завантаження (той самий приймач, що в lib/slotBusy — аудит H-3A).
+     reload() перестворюється при зміні періоду/scope і запускається негайно, тож
+     проходи ПЕРЕКРИВАЮТЬСЯ. Без покоління пізній успіх старого проходу знімав би
+     dataErr і малював чужий період без банера — тобто рівно те, від чого
+     прапорець і поставлено (ревʼю пакета, знахідка 3). */
+  const genRef = useRef(0);
+  /* Ключ даних, які ЗАРАЗ на екрані. При збої показувати старі цифри можна лише
+     якщо вони про той самий scope/період: інакше кабінети центру А стоятимуть
+     під назвою центру Б (ревʼю пакета, знахідка 2). */
+  const loadedKeyRef = useRef<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /* roomsById — ПОВНИЙ перелік, включно з вимкненими: за ним резолвиться назва
@@ -228,7 +245,24 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const [from, to] = periodRange(period, scopeTz);
 
   const reload = useCallback(async () => {
-    if (clinicIds.length === 0) { setRooms([]); setTotals([]); setWeekTotals([]); setRoomRows([]); setStudyRows([]); setLoading(false); return; }
+    const key = scope + "|" + period + "|" + clinicIds.join(",");
+    const gen = ++genRef.current;
+    const stale = () => gen !== genRef.current;   // нас обігнав новіший прохід
+    /* Збій: старі цифри лишаємо на екрані ЛИШЕ якщо вони про цей самий зріз —
+       інакше стираємо, бо «застарілі» й «від іншого центру» це різні речі. */
+    const failed = () => {
+      if (stale()) return;
+      if (loadedKeyRef.current !== key) {
+        loadedKeyRef.current = null;
+        setRooms([]); setTotals([]); setWeekTotals([]); setRoomRows([]); setStudyRows([]);
+      }
+      setDataErr(true);
+      notify("Не вдалося оновити показники — спробуйте оновити сторінку", "error");
+    };
+    if (clinicIds.length === 0) {
+      loadedKeyRef.current = key;
+      setRooms([]); setTotals([]); setWeekTotals([]); setRoomRows([]); setStudyRows([]); setDataErr(false); setLoading(false); return;
+    }
     // Транзиентний мережевий збій (напр. оновлення токена Supabase) не повинен
     // валити UI неперехопленим reject — realtime/focus-рефетч підхопить дані пізніше.
     try {
@@ -238,11 +272,19 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       // scope="all" → усі доступні центри (RPC однаково ріже по auth_ceo_clinics()).
       const p_clinics = scope === "all" ? null : [scope];
 
-      const { data: rdata } = await supabase
+      const rres = await supabase
         .from("rooms")
         .select("id, name, modality, apparatus_model, active")   // active — для поділу «оперативне / історичне», див. visRooms
         .in("clinic_id", clinicIds);
-      setRooms(rdata || []);
+      /* U-7 (с46): помилка цього читання РАНІШЕ НАВІТЬ НЕ ЗВ'ЯЗУВАЛАСЬ — брали
+         тільки data. При збої (RLS, мережа, оновлення токена) rdata=null →
+         setRooms([]) → visRooms=[] → capacityMin=0 → «0% завантаж.» ЧЕРВОНИМ і
+         «Кабінетів немає». Керівник читав збій читання як факт «апарати
+         простоюють». Це той самий клас, що RPC нижче, і тут він голосніший:
+         рішення про закупівлю/зміни приймають саме за цією цифрою. */
+      if (rres.error) { failed(); return; }
+      if (stale()) return;
+      setRooms(rres.data || []);
 
       // Агрегати рахує БД (0071): у браузер їдуть десятки рядків замість десятків тисяч.
       const weekSame = period === "week";   // період уже дорівнює тижню — не питаємо двічі
@@ -257,19 +299,21 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
 
       // Помилку RPC НЕ ковтаємо: інакше дашборд мовчки покаже нулі (напр. якщо
       // міграція не накатана або немає гранту) — і це виглядатиме як «немає роботи».
-      if (tot.error || rms.error || sts.error || (wtot && wtot.error)) {
-        notify("Не вдалося оновити показники — спробуйте оновити сторінку", "error");
-        return;
-      }
+      if (tot.error || rms.error || sts.error || (wtot && wtot.error)) { failed(); return; }
+      if (stale()) return;
 
       setTotals((tot.data || []) as TotalsRow[]);
       setWeekTotals(((weekSame ? tot.data : wtot?.data) || []) as TotalsRow[]);
       setRoomRows((rms.data || []) as RoomsRow[]);
       setStudyRows((sts.data || []) as StudiesRow[]);
+      loadedKeyRef.current = key;
+      setDataErr(false);   // повний успішний прохід — і лише він знімає прапорець
     } catch (e) {
+      // Неперехоплений транзієнт — той самий шлях, що й явні гілки помилок вище.
+      failed();
       console.warn("CEO dashboard reload failed (буде повтор):", e);
     } finally {
-      setLoading(false);
+      if (!stale()) setLoading(false);
     }
   }, [clinicIds, period, scope, scopeTz]);
 
@@ -330,6 +374,10 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const bookedMinAll = totals.reduce((s, r) => (["no_show", "not_held"].includes(r.status) ? s : s + (r.booked_min || 0)), 0);
   const unroomedMin = Math.max(0, bookedMinAll - bookedMin);
   const util = capacityMin ? Math.min(100, Math.round((bookedMin / capacityMin) * 100)) : 0;
+  /* U-7: похідне число можна показувати як ФАКТ лише тоді, коли дані, з яких воно
+     порахувалося, справді прийшли. Інакше «0%» червоним читається як «апарати
+     простоюють» — хоча це був збій читання. Один прапорець на всі похідні. */
+  const utilKnown = !dataErr;
   const utilColor = util > 70 ? "var(--green)" : util >= 50 ? "var(--orange)" : "var(--red)";
 
   /* Дохід — лише по 'done'. БД (RPC 0114) віддає суму ЗБЕРЕЖЕНИХ цін (снапшот) +
@@ -502,6 +550,13 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
             <div className="empty"><div className="et">Завантаження…</div></div>
           ) : (
             <>
+              {/* Постійний банер (U-7): тост живе 6 с, а цифри лишаються на екрані.
+                  Керівник має бачити, що показники не свіжі, у будь-який момент. */}
+              {dataErr && (
+                <div className="ctx-hint red" style={{ fontSize: "0.8125rem", marginBottom: 14 }}>
+                  ⚠ Показники не оновились — на екрані можуть бути неповні або застарілі дані. Оновіть сторінку.
+                </div>
+              )}
               {/* KPI row */}
               <div className="ceo-kpi-row">
                 <div style={card}>
@@ -516,17 +571,21 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                 </div>
 
                 <div style={{ ...card, display: "flex", alignItems: "center", gap: 18 }}>
-                  <ProgressCircle pct={util} color={utilColor} />
+                  <ProgressCircle pct={util} color={utilKnown ? utilColor : "var(--border)"} unknown={!utilKnown} />
                   <div>
                     <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)" }}>Завантаженість</div>
-                    <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: 8 }}>{visRooms.length} апаратів · {workdays} роб. дн.</div>
-                    {unroomedMin > 0 && (
+                    <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginTop: 8 }}>
+                      {utilKnown ? <>{visRooms.length} апаратів · {workdays} роб. дн.</> : <>Дані не завантажились</>}
+                    </div>
+                    {utilKnown && unroomedMin > 0 && (
                       <div style={{ fontSize: "0.75rem", color: "var(--text-faint)", marginTop: 4 }}
                         title="Записи без призначеного кабінету (і кабінетів, виведених з експлуатації) не займають апарат, тому в завантаженість не входять">
                         + {unroomedMin} хв поза кабінетами
                       </div>
                     )}
-                    <div style={{ fontSize: "0.78125rem", color: utilColor, marginTop: 6, fontWeight: 600 }}>{util > 70 ? "Висока" : util >= 50 ? "Помірна" : "Низька"}</div>
+                    <div style={{ fontSize: "0.78125rem", color: utilKnown ? utilColor : "var(--text-muted)", marginTop: 6, fontWeight: 600 }}>
+                      {utilKnown ? (util > 70 ? "Висока" : util >= 50 ? "Помірна" : "Низька") : "—"}
+                    </div>
                   </div>
                 </div>
 
@@ -570,9 +629,10 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                   </div>
                   <div style={card}>
                     <div style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: 12 }}>Завантаженість по апаратах</div>
-                    {/* «Кабінетів немає» і «всі вимкнено» — різні ситуації: у другій
-                        керівник має бачити причину, а не думати, що дані не прийшли. */}
-                    {roomUtil.length === 0 ? <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{rooms.length > 0 ? "Усі кабінети вимкнено" : "Кабінетів немає"}</div> : roomUtil.map((r, i) => (
+                    {/* «Кабінетів немає», «всі вимкнено» і «дані не прийшли» — ТРИ різні
+                        ситуації. Третя раніше зливалася з першою (U-7): при збої читання
+                        rooms=[] і керівник бачив «Кабінетів немає» як факт. */}
+                    {roomUtil.length === 0 ? <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{dataErr ? "Дані не завантажились — оновіть сторінку" : rooms.length > 0 ? "Усі кабінети вимкнено" : "Кабінетів немає"}</div> : roomUtil.map((r, i) => (
                       <div key={i} style={{ marginBottom: 10 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78125rem", marginBottom: 4 }}>
                           <span>{r.name} <span style={{ color: "var(--text-muted)" }}>{r.kind}</span></span>
