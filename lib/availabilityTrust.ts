@@ -26,6 +26,19 @@ export type SlotDataState = {
   busyFailed: boolean;
   /** Графік кабінету / особливий графік дня не завантажились. */
   schedFailed: boolean;
+  /* Простої кабінету (поломка/ТО) не завантажились — U-11, третє джерело.
+     Воно приходить у модалку ПРОПОМ із дошки, тому власні прапорці модалки про
+     цей збій нічого не знали: кабінет на ремонті малювався вільним, і відбивав
+     запис лише тригер check_not_during_incident — уже після «Зберегти».
+     Необовʼязкове поле, і це НЕ «таких екранів не лишилось»: `StudyEditModal`
+     простоїв не отримує взагалі (пропа немає в жодного з трьох її батьків), а
+     вона змінює ТРИВАЛІСТЬ — тобто може розтягнути дослідження у вікно простою.
+     Записано як U-15; поки поле необовʼязкове, tsc цю дірку не перелічує —
+     на відміну від самого пропа `incidents`, який зроблено обовʼязковим саме
+     заради цього. Робити поле обовʼязковим ДО правки U-15 не можна: це змусило
+     б писати `incidentsFailed: false` там, де простоїв не читали взагалі, —
+     тобто збрехати типом. */
+  incidentsFailed?: boolean;
   /** Запит ще в польоті: spans поки що [] — це «не знаємо», а не «вільно». */
   loading: boolean;
 };
@@ -33,12 +46,33 @@ export type SlotDataState = {
 /** Чого бракує, щоб стверджувати про вільний час, або null — даним можна вірити.
     Рядок іде у футер модалки поруч з іншими незаповненими полями: «Зберегти»
     гасне разом із ним, і причина видима, а не «кнопка чомусь не працює». */
+/* ЄДИНИЙ перелік збитих джерел. Обидві функції нижче питають його, і жодна не
+   перелічує прапорці сама.
+
+   Ревʼю р2 (F2): у першій версії U-11 третє джерело додали лише сюди, а
+   `slotDataFooterText` лишився з парою `busyFailed || schedFailed` — і при
+   збої САМИХ ЛИШЕ простоїв футер писав «⏳ Простої кабінету», тобто «ще
+   вантажимо» замість «не завантажилось». Оператор чекав би замість оновити.
+   Тому «додати джерело = дописати рядок у цей масив» тепер правда: інших місць,
+   де прапорці перелічуються, не лишилось. */
+function failedSources(s: SlotDataState): string[] {
+  return [
+    s.busyFailed ? "зайнятість" : null,
+    s.schedFailed ? "графік" : null,
+    s.incidentsFailed ? "простої" : null,
+  ].filter(Boolean) as string[];
+}
+
 export function slotDataMissLabel(s: SlotDataState): string | null {
   /* Збій — ПЕРЕД завантаженням: якщо попередній запит упав, а новий уже в
      польоті, оператору важливіша причина, а не спінер. */
-  if (s.busyFailed && s.schedFailed) return "Зайнятість і графік кабінету";
-  if (s.busyFailed) return "Зайнятість кабінету";
-  if (s.schedFailed) return "Графік кабінету";
+  const failed = failedSources(s);
+  if (failed.length) {
+    const joined = failed.length === 1
+      ? failed[0]
+      : failed.slice(0, -1).join(", ") + " і " + failed[failed.length - 1];
+    return joined.charAt(0).toUpperCase() + joined.slice(1) + " кабінету";
+  }
   if (s.loading) return "Перевіряємо зайнятість…";
   return null;
 }
@@ -53,7 +87,11 @@ export function slotDataTrusted(s: SlotDataState): boolean {
     ручного дублювання прапорця: переплутати місцями два `boolean` в літералі
     компілятор не заважає, а тут плутати нічого (ревʼю с46 р2, F11). */
 export function slotDataFromSingleSource(failed: boolean, loading: boolean): SlotDataState {
-  return { busyFailed: failed, schedFailed: failed, loading };
+  /* U-11: у порталі направника простої читаються ТИМ САМИМ Promise.all і гинуть
+     разом з рештою (`ov.error ?? inc.error ?? roomRes.error ?? busy.error`), тож
+     третє джерело теж належить цьому прапорцю. Лишити його `undefined` означало
+     б написати оператору «зайнятість і графік», приховавши третю причину. */
+  return { busyFailed: failed, schedFailed: failed, incidentsFailed: failed, loading };
 }
 
 /** Повний рядок для футера екрана, де немає чипів «чого бракує»
@@ -63,7 +101,7 @@ export function slotDataFromSingleSource(failed: boolean, loading: boolean): Slo
 export function slotDataFooterText(s: SlotDataState): string | null {
   const label = slotDataMissLabel(s);
   if (label === null) return null;
-  if (s.busyFailed || s.schedFailed) return "Не завантажилось: " + label.toLowerCase();
+  if (failedSources(s).length) return "Не завантажилось: " + label.toLowerCase();
   return "⏳ " + label;
 }
 

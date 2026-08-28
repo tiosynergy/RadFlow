@@ -6,7 +6,7 @@ import { useModalA11y } from "@/lib/useModalA11y";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { buildSlots, slotToMin } from "@/lib/slots";
 import { effectiveRoomBreaks, inBreak, roomScheduleFor, type DayOverride } from "@/lib/schedule";
-import { incidentEffectiveEnd, wallNow, wallToday0, wallMinOfDay, type IncidentLike } from "@/lib/incidents";
+import { incidentEffectiveEnd, roomIncidentsOf, wallNow, wallToday0, wallMinOfDay, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
 import { modalityShort, modalityKind } from "@/lib/studies";
 
 type Room = {
@@ -21,7 +21,7 @@ type RoomIncident = IncidentLike & { reason_label?: string | null };
 type Props = {
   rooms: Room[];
   clinicTz: string;
-  incidents: RoomIncident[];
+  incidents: IncidentFeed<RoomIncident>;   // U-11: фід (rows+failed), не голий масив
   overrides: Record<string, DayOverride>;
   onClose: () => void;
 };
@@ -59,14 +59,20 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
   // слоти до 16:40 хибно позначались «Цей час уже минув»).
   const nowMin = wallMinOfDay(wallNow(clinicTz));
   const isToday = day === dateKey(wallToday0(clinicTz));
-  const roomIncidents = incidents.filter((i) => i.room_id === roomId);
+  /* U-11: null = простої не прочитались. Ця карта — read-only відповідь на
+     питання «кабінет вільний?», і вона мусить збігатися з формою запису;
+     порожній масив на місці збою малював би ремонт вільним часом. */
+  const roomIncidents = roomIncidentsOf(incidents, roomId);
+  const incidentsFailed = roomIncidents === null;
 
   const incidentAt = (min: number) => {
     const instant = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), Math.floor(min / 60), min % 60);
-    return roomIncidents.find((i) => instant >= new Date(i.started_at).getTime() && instant < incidentEffectiveEnd(i));
+    return (roomIncidents || []).find((i) => instant >= new Date(i.started_at).getTime() && instant < incidentEffectiveEnd(i));
   };
   const stateOf = (slot: string) => {
     const min = slotToMin(slot);
+    // Страховка на випадок, якщо гілку-банер колись приберуть: невідомо ≠ вільно.
+    if (incidentsFailed) return "blocked";
     if (incidentAt(min)) return "blocked";
     const busy = busyAt(spans, min);
     if (busy) return min >= busy.eStudy ? "buffer" : "busy";
@@ -134,8 +140,13 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
 
           {schedule.closed ? (
             <div className="ctx-hint red">🚫 {room?.name || "Кабінет"} не працює цього дня{override?.label ? ` · ${override.label}` : ""}.</div>
-          ) : error ? (
-            <div className="ctx-hint red">⚠ Не вдалося завантажити зайнятість. Вільний час не показано. <button type="button" className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={reload}>Спробувати ще раз</button></div>
+          ) : (error || incidentsFailed) ? (
+            /* U-11: збій простоїв ховає сітку так само, як збій зайнятості —
+               інакше карта показала б «вільно» там, де кабінет на ремонті. */
+            <div className="ctx-hint red">⚠ Не вдалося завантажити {error && incidentsFailed ? "зайнятість і простої" : error ? "зайнятість" : "простої"} кабінету. Вільний час не показано.
+              {error && <button type="button" className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={reload}>Спробувати ще раз</button>}
+              {!error && incidentsFailed && <span style={{ marginLeft: 6 }}>Оновіть сторінку.</span>}
+            </div>
           ) : loading ? (
             <div className="ctx-hint" style={{ padding: "22px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження зайнятості…</div>
           ) : (
@@ -155,7 +166,7 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
                 <span><span className="lg-dot busy" />дослідження</span>
                 <span><span className="lg-dot busybuf" />буфер</span>
                 {breaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
-                {roomIncidents.length > 0 && <span><span className="lg-dot busy" />простій / ТО</span>}
+                {(roomIncidents || []).length > 0 && <span><span className="lg-dot busy" />простій / ТО</span>}
                 {isToday && <span><span className="lg-dot tight" />час минув</span>}
               </div>
               {selectedSlot && <div className="ctx-hint blue" style={{ marginTop: 10 }}>Обрано {selectedSlot} · {titleOf(selectedSlot, stateOf(selectedSlot))}</div>}

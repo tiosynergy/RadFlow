@@ -12,7 +12,7 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
-import { entryInIncidentWindow, incidentExpired, setClinicTz, wallDayKey, wallToday0 } from "@/lib/incidents";
+import { entryInIncidentWindow, incidentExpired, incidentFeed, setClinicTz, wallDayKey, wallToday0 } from "@/lib/incidents";
 import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
@@ -338,6 +338,9 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
   const todayKey = wallDayKey(clinicTz);
 
   const dayKey = dateKey(date);
+  /* U-11: у модалки їде ФІД (рядки + чи вдалося прочитати), а не голий масив:
+     при incidentsErr це було `[]`, і кабінет на ремонті виглядав вільним. */
+  const incidentsFeed = incidentFeed(incidents, incidentsErr);
   const scopeKey = clinicId + "|" + dayKey;
   scopeRef.current = scopeKey;   // пишемо в рендері — див. коментар біля scopeRef
   /* roomsById — ПОВНИЙ список, включно з вимкненими: за ним резолвиться назва
@@ -792,7 +795,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
 
       {/* clinicTz — ЯВНО (HANDOVER §6.1): singleton не гарантія. */}
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} allowOffSchedule />
+        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} onClose={() => setReschedFor(null)} onConfirm={doReschedule} allowOffSchedule />
       )}
       {editStudiesFor && (
         /* Дата — ІЗ ЗАПИСУ, а не з пікера: цей проп веде читання графіка,
@@ -840,7 +843,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
       )}
 
       {wlSuggest && (
-        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={incidents} services={services} roomOverrides={roomOverrides}
+        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides}
           slot={wlSuggest.slot} candidates={wlSuggest.candidates}
           onClose={() => setWlSuggest(null)}
           onBooked={(msg) => { notify(msg, "success"); reload(); }}

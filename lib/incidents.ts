@@ -19,6 +19,70 @@ export interface IncidentLike {
   room_id?: string | null;
 }
 
+/* ===== U-11: простої їдуть у компоненти ПРОПОМ, і масив про це бреше =====
+
+   Дошки читають `incidents` самі й передають ГОТОВИЙ МАСИВ дітям. При збої
+   читання прапорець (`incidentsErr`) лишається В БАТЬКА, а дитина отримує `[]` —
+   і не може відрізнити «простоїв немає» від «ми не змогли їх прочитати». П'ять
+   компонентів на цьому будували твердження «слот вільний», ще один — «кабінет
+   не на ремонті», а `ReferralPortal` не передавав проп ВЗАГАЛІ, тобто для
+   направника кабінет у простої завжди виглядав робочим.
+
+   Тому проп більше не масив, а ФІД: рядки + чи вдалося їх прочитати. Це не
+   стиль, а механізм — після зміни типу жоден виклик із голим масивом і жоден
+   пропущений проп не компілюються, тож повнота правки перевіряється tsc, а не
+   уважністю. Урок пакета U-8 («правило, застосоване руками, забудуть»),
+   застосований до типу.
+
+   Читати рядки можна ТІЛЬКИ через хелпери нижче: вони не дають прийняти
+   невідомість за порожнечу. */
+/* Дженерик — щоб фід не з'їдав поля рядка: `BreakdownModal` читає `id`/`reason`,
+   `RoomDayOverviewModal` — `reason_label`. Без параметра ці екрани довелося б
+   кастити назад, а каст — це рівно та дірка, яку фід і закриває. */
+export type IncidentFeed<T extends IncidentLike = IncidentLike> = { rows: T[]; failed: boolean };
+
+/** Загорнути прочитане. `failed` — прапорець збою читання з батьківського лоадера. */
+export function incidentFeed<T extends IncidentLike>(rows: T[] | null | undefined, failed?: boolean | null): IncidentFeed<T> {
+  return { rows: rows || [], failed: !!failed };
+}
+
+/** Простої НЕ прочитані — жодне твердження про доступність кабінету не можна робити. */
+export function incidentsUnknown(feed: IncidentFeed<IncidentLike> | null | undefined): boolean {
+  return !feed || feed.failed;
+}
+
+/** Простої КАБІНЕТУ. При невідомості — null (а НЕ порожній масив): виклику
+    доведеться вирішити явно, і `.length` на null не пройде типізацію. */
+export function roomIncidentsOf<T extends IncidentLike>(feed: IncidentFeed<T> | null | undefined, roomId: string | null | undefined): T[] | null {
+  if (incidentsUnknown(feed)) return null;
+  if (!roomId) return [];
+  return (feed as IncidentFeed<T>).rows.filter((i) => i.room_id === roomId);
+}
+
+/** Чи припадає момент (мс, настінний час) на простій кабінету.
+    ⚠️ Повертає `null`, коли простої невідомі. Саме `null`, а не `false`:
+    `if (!roomIncidents.length) return false` — і був той fail-open, який
+    дублювався у BookingModal і RescheduleModal. */
+export function incidentAtInstant<T extends IncidentLike>(feed: IncidentFeed<T> | null | undefined, roomId: string | null | undefined, instantMs: number): T | null | undefined {
+  const rows = roomIncidentsOf(feed, roomId);
+  if (rows === null) return undefined;   // невідомо
+  return rows.find((i) => instantMs >= new Date(i.started_at).getTime() && instantMs < incidentEffectiveEnd(i)) || null;
+}
+
+/** Чи заблокований момент простоєм КАБІНЕТУ — з рішенням про невідомість
+    ВСЕРЕДИНІ. НЕВІДОМО → true (fail-closed).
+
+    Це рішення тут, а не в компонентах, свідомо: тести цього проєкту ходять у
+    node-середовищі й компонентів не бачать, тож правило, залишене в JSX,
+    перевіряється лише сторожем-регуляркою. Тут воно перевіряється по суті —
+    і однаково для BookingModal і RescheduleModal, які колись розійшлися саме
+    на цій гілці (обидва мали `if (!roomIncidents.length) return false`). */
+export function slotBlockedByFeed<T extends IncidentLike>(feed: IncidentFeed<T> | null | undefined, roomId: string | null | undefined, instantMs: number): boolean {
+  const inc = incidentAtInstant(feed, roomId, instantMs);
+  if (inc === undefined) return true;   // простої не прочитані
+  return !!inc;
+}
+
 // Эффективный конец блокировки в мс. Жёсткая граница = blocked_until; без неё — Infinity («до восстановления»).
 // Нераспарсимый blocked_until — тоже Infinity: «не знаем, когда закончится» ≠ «уже закончилось».
 // Из БД (timestamptz) такое не приходит, но IncidentLike — публичный интерфейс, и NaN

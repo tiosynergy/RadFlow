@@ -18,7 +18,7 @@ import {
   roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, offScheduleKind, OFF_SCHED_GRACE_MIN,
   type DayOverride,
 } from "@/lib/schedule";
-import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
+import { incidentEffectiveEnd, roomIncidentsOf, slotBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentFeed } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { BUFFER_DEFAULT, normBuffer, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
@@ -47,7 +47,9 @@ interface RescheduleModalProps {
   rooms?: RoomOpt[];
   clinicId?: string | null;
   clinicTz?: string | null; // TZ центру запису (для «зараз» у мультиклінічному порталі)
-  incidents?: IncidentLike[];
+  /* U-11: ФІД, а не масив, і проп ОБОВʼЯЗКОВИЙ — портал направника взагалі його
+     не передавав, тож для направника кабінет у простої завжди був вільним. */
+  incidents: IncidentFeed;
   onClose: () => void;
   /* Повертає ТЕКСТ ПОМИЛКИ (або null, якщо перенесено) — див. коментар у BookingModal:
      тост із помилкою малювався ПІД оверлеєм, і відмова сервера виглядала як «нічого
@@ -96,7 +98,7 @@ function MoveFormLoading({ onClose }: { onClose: () => void }) {
   );
 }
 
-export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, incidents = [], onClose, onConfirm, allowOffSchedule = false, caseSiblings }: RescheduleModalProps) {
+export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, incidents, onClose, onConfirm, allowOffSchedule = false, caseSiblings }: RescheduleModalProps) {
   // Dirty-guard: не втрачати обраний слот/причину при випадковому закритті.
   const [dirty, setDirty] = useState(false);
   const [askClose, setAskClose] = useState(false);
@@ -255,15 +257,16 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const schedStart = toMin(roomSched.start), schedEnd = toMin(roomSched.end);
   const roomBreaks = effectiveRoomBreaks(dateObj, roomId, roomSchedule, override); // перерви кабінету на цю дату
   // Простій обраного кабінету (поломка + ТО): слоти у будь-якому вікні — недоступні (на дату після відновлення кабінет вільний).
-  const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
-  const roomIncident = roomIncidents[0];
+  /* U-11: `null` = простої не прочитані. Колишнє `if (!roomIncidents.length)
+     return false` робило кабінет на ремонті вільним при збої читання на дошці. */
+  const roomIncidents = roomIncidentsOf(incidents, roomId);
+  const incidentsFailed = roomIncidents === null;
+  const roomIncident = roomIncidents ? roomIncidents[0] : undefined;
   function slotBlockedByIncident(slotMin: number) {
-    if (!roomIncidents.length) return false;
+    // «Невідомо → заблоковано» — у lib/incidents (slotBlockedByFeed), спільне з
+    // BookingModal: саме на цій гілці дві модалки колись розійшлися.
     const dt = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(slotMin / 60), slotMin % 60);
-    return roomIncidents.some((inc) => {
-      const start = new Date(inc.started_at).getTime();
-      return dt >= start && dt < incidentEffectiveEnd(inc);
-    });
+    return slotBlockedByFeed(incidents, roomId, dt);
   }
   // 0077: персоналу сітка добудовується на 2 год за кінець графіка (є що клікати);
   // направнику — рівно як раніше, по графіку.
@@ -321,6 +324,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   function blockedLabel(s: string) {
     const a = toMin(s);
     const dt = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60);
+    if (roomIncidents === null) return "Дані про простої кабінету не завантажились";
     const inc = roomIncidents.find((i) => dt >= new Date(i.started_at).getTime() && dt < incidentEffectiveEnd(i));
     const until = inc?.blocked_until ? new Date(inc.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : null;
     return "Кабінет на ремонті/ТО" + (until ? "\nДо " + until : "\nДо відновлення");
@@ -337,7 +341,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
      schedErr `roomSchedule` лишається null і графік відкочується на хардкод
      «Пн–Сб 08–18», тобто SELECTABLE.includes(slotState(time)) рахується по
      ЧУЖОМУ графіку. Правило те саме і спільне. */
-  const availState: SlotDataState = { busyFailed: busyError, schedFailed: schedErr, loading: slotsLoading };
+  const availState: SlotDataState = { busyFailed: busyError, schedFailed: schedErr, incidentsFailed, loading: slotsLoading };
   const availTrusted = slotDataTrusted(availState);
   const valid = roomId && time && !roomSched.closed && SELECTABLE.includes(slotState(time))
     && (!needsOffConfirm || offOk) && !moveBlocked && availTrusted;
@@ -347,6 +351,10 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const stillFree = !time || slotsLoading || SELECTABLE.includes(slotState(time));
   useEffect(() => {
     if (!time || slotsLoading) return;
+    // U-11 / ревʼю р2 (F3): «зайняли» — твердження, і на незнанні (збій простоїв
+    // блокує всі слоти) його робити не можна. Гейт довіри той самий, що й у
+    // BookingModal: там prefill, тут уже обраний оператором час.
+    if (!availTrusted) return;
     if (!SELECTABLE.includes(slotState(time))) { setTaken(time); setTime(""); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [busy, slotsLoading, stillFree]);
@@ -530,8 +538,8 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
             {roomIncident && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncident.blocked_until ? " до " + new Date(roomIncident.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : ""}. Оберіть слот після відновлення або інший день.</div>}
             {taken && <div className="ctx-hint red" style={{ marginBottom: 10 }}>⚡ Слот {taken} щойно зайняли — оберіть інший. <button className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={() => setTaken(null)}>Зрозуміло</button></div>}
             {/* Зайнятість не завантажилась — сітку НЕ показуємо (порожній день = «усе вільно»). */}
-            {(busyError || schedErr) && !slotsLoading
-              ? <div className="ctx-hint red">⚠ Не вдалося завантажити {busyError ? "зайнятість" : "графік"} кабінету — оновіть сторінку. Показувати вільний час не можемо.</div>
+            {(busyError || schedErr || incidentsFailed) && !slotsLoading
+              ? <div className="ctx-hint red">⚠ {slotDataFooterText(availState)} — оновіть сторінку. Показувати вільний час не можемо.</div>
               : slotsLoading
               ? <div className="ctx-hint" style={{ fontSize: "0.8125rem", padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Завантаження вільних слотів…</div>
               : <SlotPicker
