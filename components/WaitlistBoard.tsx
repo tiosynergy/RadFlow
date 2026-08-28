@@ -127,6 +127,17 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
 
   const [entries, setEntries] = useState<WaitlistEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  /* U-2: покоління завантаження і зріз, до якого належать рядки на екрані.
+     Дати тут немає, але вкладка/модальність/пошук — це такий самий зріз, і
+     показувати під однією вкладкою рядки іншої так само неправда. */
+  const genRef = useRef(0);
+  const loadedKeyRef = useRef<string | null>(null);
+  /* Ключ ПОТОЧНОГО зрізу для протухлих замикань. genRef рахує порядок видачі, а
+     не актуальність: `reload` живе в замиканнях обробників (запис із листа,
+     зміна статусу/пріоритету), тож замикання старої вкладки може бути ВИДАНЕ
+     пізніше за свіжий reload — і тоді воно виграє гонку за власним лічильником.
+     Той самий висновок, що H-3 у QueueBoard. */
+  const scopeRef = useRef("");
   // H-6: збій завантаження ≠ «лист порожній» / «простоїв немає».
   const [entriesErr, setEntriesErr] = useState(false);
   const [incidentsErr, setIncidentsErr] = useState(false);
@@ -176,6 +187,8 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
      кабінеті-залишку, а нам треба лише його модальність для фільтра. */
   const viewRoom = roomView === "all" ? null : (rooms || []).find((r) => r.id === roomView) || null;
   const viewMod = viewRoom?.modality ?? null;
+  // Ключ поточного зрізу — пишемо в рендері, читаємо з протухлих замикань reload().
+  scopeRef.current = clinicId + "|" + filter + "|" + (viewMod || "") + "|" + qDebounced.trim();
 
   /* Списки кабінетів (сайдбар) — активні + вимкнені із залишками. */
   const residual = useMemo(() => residualSet(residualRoomIds), [residualRoomIds]);
@@ -218,6 +231,22 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
     f === "waiting" ? ["waiting"] : f === "scheduled" ? ["scheduled"] : ["cancelled", "expired"];
 
   const reload = useCallback(async () => {
+    /* U-2: guard покоління. Вкладку і пошук перемикають швидко, тож запити
+       ПЕРЕКРИВАЮТЬСЯ — і без покоління пізніша відповідь СТАРІШОГО запиту
+       перезаписувала б рядки: під вкладкою «Записані» цілком могли опинитись
+       ті, хто очікує. Дати в цьому екрані немає (тому половина початкового
+       формулювання U-2 хибна), але зріз є — вкладка + модальність + пошук. */
+    /* Ключ БЕЗ limit: «Показати ще» лише подовжує той самий список, і при збої
+       догрузки стирати вже показані рядки не можна. */
+    const key = clinicId + "|" + filter + "|" + (viewMod || "") + "|" + qDebounced.trim();
+    if (key !== scopeRef.current) return;   // протухле замикання — ДО ++genRef
+    const gen = ++genRef.current;
+    const stale = () => gen !== genRef.current;
+    const failed = () => {
+      if (stale()) return;
+      if (loadedKeyRef.current !== key) { loadedKeyRef.current = null; setEntries([]); setHasMore(false); }
+      setEntriesErr(true);
+    };
     try {
       const supabase = createClient();
       let q = supabase
@@ -241,12 +270,14 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
       const { data, error } = await q;
       // H-6: без перевірки error збій виглядав як «Лист порожній» — і кандидатів,
       // що чекають слота, ніхто не бачив.
-      if (error) { setEntriesErr(true); return; }
+      if (error) { failed(); return; }
+      if (stale()) return;
       setEntries(data || []);
       setHasMore((data?.length || 0) >= limit);
+      loadedKeyRef.current = key;
       setEntriesErr(false);
-    } catch { setEntriesErr(true); }
-    finally { setLoading(false); }
+    } catch { failed(); }
+    finally { if (!stale()) setLoading(false); }
   }, [clinicId, filter, viewMod, qDebounced, limit]);
 
   // Лічильники StatsBar/вкладок — один RPC waitlist_counts (0105) по всіх статусах
@@ -289,7 +320,14 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
     } catch { setIncidentsErr(true); }
   }, [clinicId]);
 
-  useEffect(() => { setLoading(true); }, [clinicId]);
+  /* Спінер — на зміну ЗРІЗУ, а не лише клініки (U-2). Guard покоління лагодить
+     ПОРЯДОК відповідей, але не детермінований проміжок «вкладку перемкнули —
+     відповідь ще не прийшла»: без цього рядки «Очікують» повний круговий раз
+     малювались під активною вкладкою «Записані», ще й із кнопкою «Додати в
+     чергу», якої в записаних не буває.
+     `qDebounced` свідомо НЕ в списку: пошук фільтрує той самий зріз, і гасити
+     список на кожен склад введеного слова — гірше за коротку неточність. */
+  useEffect(() => { setLoading(true); }, [clinicId, filter, viewMod]);
   useEffect(() => { reload(); loadIncidents(); }, [reload, loadIncidents]);
 
   // TD-3: єдиний realtime-патерн — лист миттєво синхронний в усіх ролях.
@@ -504,6 +542,19 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
             <div className="wlhead wl-queue">
               <div /><div>Пацієнт</div><div>Дослідження</div><div>Бажане вікно</div><div style={{ textAlign: "right" }}>Дії</div>
             </div>
+            {/* Збій ДОГРУЗКИ («Показати ще») лишав рядки на екрані — і не показував
+                нічого: єдиний банер про entriesErr стояв під `filtered.length === 0`,
+                тож кнопка просто виглядала зламаною. */}
+            {entriesErr && filtered.length > 0 && (
+              <div className="inc-banner fade-in" style={{ borderColor: "var(--red)" }} role="alert">
+                <span className="inc-banner-ic">⚠</span>
+                <div className="inc-banner-txt">
+                  <div className="inc-banner-title">Лист не оновився</div>
+                  <div className="inc-banner-sub">На екрані — попередні рядки цього ж зрізу, частина могла не завантажитись.</div>
+                </div>
+                <button className="btn btn-secondary btn-sm" onClick={() => { refresh(); loadIncidents(); }}>↻ Оновити</button>
+              </div>
+            )}
             {loading ? (
               <div className="empty"><div className="et">Завантаження…</div></div>
             ) : entriesErr && filtered.length === 0 ? (

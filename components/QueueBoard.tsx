@@ -1495,6 +1495,16 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
 
   // P2.1 — гарячі клавіші реєстратури. Через e.code (незалежно від розкладки UA/RU/EN);
   // не перехоплюємо у полях вводу та при відкритих модалках.
+  /* Хоткей кличе бронювання ЧЕРЕЗ ref на свіжу функцію (та сама ідіома, що
+     `scopeRef.current = scope` вище). Причина технічна, але важлива:
+     `openBooking` — звичайна функція, нова на кожен рендер. У списку залежностей
+     ефекту вона перепідписувала б слухач щоразу; без неї eslint справедливо
+     скаржився б на неповний список, а вимкнути правило на масиві з двадцяти
+     залежностей означає сховати МАЙБУТНІ пропуски саме там, де пропуск дає
+     хоткей зі старим станом. Ref оновлюється на кожен рендер, тож «дані в
+     порядку» ніколи не буває застарілим, а список лишається під лінтером. */
+  const openBookingRef = useRef(openBooking);
+  openBookingRef.current = openBooking;
   useEffect(() => {
     // Гард має покривати УСІ оверлеї, інакше хоткеї (N/«/»/R/цифри) стріляють
     // під відкритою модалкою. Раніше бракувало 6 станів — зокрема деструктивних
@@ -1510,7 +1520,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       // «?» (Shift+/) — довідка гарячих клавіш. Перевіряємо ДО «/», бо Shift+/ теж має code="Slash".
       if (e.key === "?" || (code === "Slash" && e.shiftKey)) { e.preventDefault(); setHelpOpen(true); }
       // Через openBooking, а не setModalOpen: гейт safetyErr — один на всі входи.
-      else if (code === "KeyN") { e.preventDefault(); openBooking(); }
+      else if (code === "KeyN") { e.preventDefault(); openBookingRef.current(); }
       else if ((code === "Slash" || e.key === "/") && !e.shiftKey) { e.preventDefault(); searchRef.current?.focus(); }
       else if (code === "KeyR") { e.preventDefault(); reload(); }
       else if (code === "Backquote" || code === "Digit0") { setRoomView("all"); }
@@ -1532,15 +1542,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-    /* Попередження react-hooks/exhaustive-deps про відсутній `openBooking` —
-       хибне, і додавати його в список НЕ треба: openBooking це звичайна функція,
-       нова на кожен рендер, тож у списку вона перепідписувала б слухач щоразу.
-       Значення, від якого він реально залежить (safetyErr), у списку Є — саме воно
-       переукладає замикання, тому хоткею N ніколи не дістається застаріле
-       «дані в порядку».
-       ⚠️ Блочний коментар НЕ може починатися зі слова eslint: така форма — це
-       директива конфігурації, і лінтер падає помилкою парсингу JSON. */
-  }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, stuckFinish, reload, visRooms, safetyErr]);
+  }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, stuckFinish, reload, visRooms]);
 
   const rtHealth = useRealtimeRefetch({
     channelName: clinicId ? "queue-" + clinicId : null,
