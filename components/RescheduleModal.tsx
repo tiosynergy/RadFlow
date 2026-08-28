@@ -194,7 +194,10 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   /* Поки видно форму переоформлення, ЦЕЙ діалог у DOM відсутній — його пастка
      фокуса й Esc мають замовкнути (див. useModalA11y): інакше Tab гасне в
      порожнечу, а Esc закриває все дерево замість верхнього вікна. */
-  const dialogRef = useModalA11y<HTMLDivElement>(requestClose, !showMove && !showMoveLoading);
+  /* askClose додано в с46: діалог «Незбережені зміни» — теж вкладене вікно
+     (сиблінг у фрагменті нижче), і BookingModal його враховує, а тут забули. */
+  const nestedOpen = showMove || showMoveLoading || askClose;
+  const dialogRef = useModalA11y<HTMLDivElement>(requestClose, !nestedOpen);
 
   useEffect(() => {
     let cancel = false;

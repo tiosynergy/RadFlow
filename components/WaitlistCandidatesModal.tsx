@@ -81,8 +81,15 @@ interface WaitlistCandidatesModalProps {
 }
 
 export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, incidents = [], services, roomOverrides, slot, candidates, onClose, onBooked }: WaitlistCandidatesModalProps) {
-  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);
+  /* Той самий патерн, що в RescheduleModal: при bookFor компонент віддає замість
+     СЕБЕ дочірню форму (див. return нижче), тобто власного діалога в DOM немає.
+     Без `active` ефект не переграється, і обробник назавжди тримає ВІДʼЄДНАНИЙ
+     вузол: після закриття BookingModal React монтує новий вузол, а `isConnected`
+     на старому вже false — Esc перестає закривати вікно взагалі (знайдено ревʼю
+     с46, обидва раунди). */
+  const nestedOpen = !!bookFor;
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose, !nestedOpen);
   const roomName = (rooms || []).find((r) => r.id === slot.roomId)?.name || "кабінет";
 
   function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }

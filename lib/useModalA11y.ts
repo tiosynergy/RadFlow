@@ -21,6 +21,7 @@
    вікна. Коли active знову true — ефект переграється й фокус стає в діалог. */
 
 import { useEffect, useRef } from "react";
+import { acquireTrap } from "@/lib/modalTrapStack";
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -48,9 +49,16 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(onClose: ()
     if (t && t.isConnected && typeof t.focus === "function") t.focus();
   }, []);
 
+  /* Чи вікно ВЖЕ деактивувалось хоч раз. Потрібно, щоб відрізнити перше
+     відкриття від повернення після закриття вкладеного вікна (ревʼю с46 р3). */
+  const wasDeactivatedRef = useRef(false);
+
   useEffect(() => {
-    if (!active) return;
+    if (!active) { wasDeactivatedRef.current = true; return; }
     const node = ref.current;
+    /* Пастка береться ТУТ — після раннього виходу по `active`, тож неактивне
+       вікно в стек не потрапляє взагалі (с46, U-8). */
+    const trap = acquireTrap();
 
     const focusables = (): HTMLElement[] => {
       if (!node) return [];
@@ -59,9 +67,26 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(onClose: ()
       );
     };
 
-    // Фокус на перший інтерактивний елемент (або на сам діалог).
+    /* Фокус на перший інтерактивний елемент (або на сам діалог) — але НЕ якщо
+       ми ПОВЕРТАЄМОСЬ після вкладеного вікна і фокус уже всередині діалога
+       (ревʼю с46 р1 і р3). Ефект тепер переграється не лише при відкритті: коли
+       вкладене вікно закривається, `active` вертається в true, і безумовний
+       `first.focus()` смикав би фокус у шапку («✕»), а `.dialog` з overflow-y
+       прокручувався б наверх — тобто кожне закриття вкладеної форми втрачало б
+       місце в кейсі. Дитина в цей момент уже сама повернула фокус на
+       кнопку-тригер своїм [] -ефектом.
+       ⚠️ `wasDeactivatedRef` тут обовʼязковий: без нього правка мовчки міняла б
+       і ПЕРШЕ відкриття. React застосовує `autoFocus` у фазі коміту, тобто ДО
+       пасивних ефектів, тож у BookingModal фокус уже стоїть у полі ПІБ — і
+       перевірка «фокус усередині» пропустила б початкове наведення на «✕» для
+       найчастішого діалога продукту. Це продуктова зміна, а не інженерна, і в
+       цей пакет вона не входить (ревʼю р3, F2). */
+    const returningFromNested = wasDeactivatedRef.current;
+    const focusedInside = !!node && node.contains(document.activeElement);
     const first = focusables()[0];
-    if (first) {
+    if (returningFromNested && focusedInside) {
+      // фокус уже де треба — не рухаємо
+    } else if (first) {
       first.focus();
     } else if (node) {
       node.setAttribute("tabindex", "-1");
@@ -72,6 +97,12 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(onClose: ()
       // Другий рубіж до active: між зняттям вузла з DOM і прибиранням слухача
       // (порядок ефектів React) діалог уже невидимий, а обробник ще живий.
       if (!node || !node.isConnected) return;
+      /* Третій рубіж (с46, U-8): обидва слухачі живуть на document у capture,
+         тож stopPropagation між ними не працює — розділяє їх лише стек. Якщо
+         поверх нас відкрилось вкладене вікно, мовчимо: інакше Esc закрив би
+         разом із ним і нас, викинувши незбережені правки, а Tab перехопився б
+         двічі й замкнув фокус на двох елементах. */
+      if (!trap.isTop()) return;
       if (e.key === "Escape") {
         e.stopPropagation();
         onCloseRef.current();
@@ -98,7 +129,10 @@ export function useModalA11y<T extends HTMLElement = HTMLDivElement>(onClose: ()
     };
 
     document.addEventListener("keydown", onKey, true);
-    return () => { document.removeEventListener("keydown", onKey, true); };
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      trap.release();
+    };
   }, [active]);
 
   return ref;
