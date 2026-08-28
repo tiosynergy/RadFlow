@@ -115,7 +115,12 @@ interface CaseModalProps {
 }
 
 export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicId, clinicTz, incidents = [], services, roomOverrides, referralMode = false }: CaseModalProps) {
-  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
+  /* Стани вкладених вікон — ДО useModalA11y (конвенція с43): вони потрібні
+     хуку параметром `active`. Кейс малює аж ЧОТИРИ вкладені вікна, і саме тут
+     `active` забули (аудит с46, U-8): обидва слухачі keydown живуть на document
+     у capture, stopPropagation їх не розділяє, тож Esc у формі переносу закривав
+     ВЕСЬ кейс разом із незбереженими правками, а Tab перехоплювався двічі й
+     замикав фокус на двох елементах — відказ WCAG 2.1.2 рівня A. */
   const [steps, setSteps] = useState<StepRow[] | null>(null);
   const [err, setErr] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -124,6 +129,8 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
   const [reschedStep, setReschedStep] = useState<StepRow | null>(null);
   const [editStudiesStep, setEditStudiesStep] = useState<StepRow | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const nestedOpen = askCancel || !!reschedStep || !!editStudiesStep || addOpen;
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose, !nestedOpen);
 
   const canEdit = !!clinicId && (rooms?.length ?? 0) > 0;
 

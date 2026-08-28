@@ -76,7 +76,8 @@ export default function PatientEditModal({ entryId, canEditPriority, onClose, on
   const [addDoc, setAddDoc] = useState(false);
   const [editDoc, setEditDoc] = useState<DocRow | null>(null);
   const [docErr, setDocErr] = useState<string | null>(null);
-  const dialogRef = useModalA11y<HTMLDivElement>(onClose, !addDoc && !editDoc);
+  const nestedOpen = !!addDoc || !!editDoc;
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose, !nestedOpen);
   const [form, setForm] = useState<PatientForm | null>(null);
   const [origPriority, setOrigPriority] = useState<PatientPriority | null>(null);
   const [docs, setDocs] = useState<DoctorOption[]>([]); // активні направники + довідник

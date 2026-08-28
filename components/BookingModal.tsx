@@ -322,7 +322,8 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
      закривав би і форму запису, а дві Tab-пастки перетягували фокус так, що
      середні поля дочірньої форми ставали недосяжні (ревʼю с43, обидва раунди).
      stopPropagation тут не рятує: слухачі висять на ОДНОМУ вузлі. */
-  const dialogRef = useModalA11y<HTMLDivElement>(requestClose, !addDoc && !editDoc && !askClose);
+  const nestedOpen = !!addDoc || !!editDoc || askClose;
+  const dialogRef = useModalA11y<HTMLDivElement>(requestClose, !nestedOpen);
   // Каталог послуг центру (фаза 2a) + переозначення по кабінетах (фаза 2b): drop-in
   // шорткати з тими самими сигнатурами, що статичні lib/studies. Виклики нижче
   // передають roomId обраного кабінету → ціна/тривалість/склад per-room (0108).
