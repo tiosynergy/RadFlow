@@ -196,8 +196,13 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const genRef = useRef(0);
   /* Ключ даних, які ЗАРАЗ на екрані. При збої показувати старі цифри можна лише
      якщо вони про той самий scope/період: інакше кабінети центру А стоятимуть
-     під назвою центру Б (ревʼю пакета, знахідка 2). */
+     під назвою центру Б (ревʼю пакета, знахідка 2).
+     Тримаємо і в ref, і в стані: ref потрібен логіці reload() (він не
+     перестворюється на зміну ключа й бачив би застигле значення), стан — рендеру,
+     бо від нього залежить, чи можна взагалі називати цифри. */
   const loadedKeyRef = useRef<string | null>(null);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const markLoaded = (k: string | null) => { loadedKeyRef.current = k; setLoadedKey(k); };
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /* roomsById — ПОВНИЙ перелік, включно з вимкненими: за ним резолвиться назва
@@ -240,12 +245,16 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
     [scope, clinics]
   );
 
+  /* Зріз, який зараз ОБРАНО. Один вираз і для reload(), і для рендера — інакше
+     дві копії ключа розійдуться, і «свіжість» почне брехати. */
+  const dataKey = useMemo(() => scope + "|" + period + "|" + clinicIds.join(","), [scope, period, clinicIds]);
+
   function notify(msg: string, type = "info") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), type === "error" ? 6000 : 3000); }
 
   const [from, to] = periodRange(period, scopeTz);
 
   const reload = useCallback(async () => {
-    const key = scope + "|" + period + "|" + clinicIds.join(",");
+    const key = dataKey;
     const gen = ++genRef.current;
     const stale = () => gen !== genRef.current;   // нас обігнав новіший прохід
     /* Збій: старі цифри лишаємо на екрані ЛИШЕ якщо вони про цей самий зріз —
@@ -253,14 +262,14 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
     const failed = () => {
       if (stale()) return;
       if (loadedKeyRef.current !== key) {
-        loadedKeyRef.current = null;
+        markLoaded(null);
         setRooms([]); setTotals([]); setWeekTotals([]); setRoomRows([]); setStudyRows([]);
       }
       setDataErr(true);
       notify("Не вдалося оновити показники — спробуйте оновити сторінку", "error");
     };
     if (clinicIds.length === 0) {
-      loadedKeyRef.current = key;
+      markLoaded(key);   // «центрів немає» — теж повноцінна відповідь про цей зріз
       setRooms([]); setTotals([]); setWeekTotals([]); setRoomRows([]); setStudyRows([]); setDataErr(false); setLoading(false); return;
     }
     // Транзиентний мережевий збій (напр. оновлення токена Supabase) не повинен
@@ -306,7 +315,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       setWeekTotals(((weekSame ? tot.data : wtot?.data) || []) as TotalsRow[]);
       setRoomRows((rms.data || []) as RoomsRow[]);
       setStudyRows((sts.data || []) as StudiesRow[]);
-      loadedKeyRef.current = key;
+      markLoaded(key);
       setDataErr(false);   // повний успішний прохід — і лише він знімає прапорець
     } catch (e) {
       // Неперехоплений транзієнт — той самий шлях, що й явні гілки помилок вище.
@@ -315,7 +324,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
     } finally {
       if (!stale()) setLoading(false);
     }
-  }, [clinicIds, period, scope, scopeTz]);
+  }, [clinicIds, period, scope, scopeTz, dataKey]);
 
   // Спинер при первой загрузке/смене набора центров.
   useEffect(() => { setLoading(true); }, [clinicIds]);
@@ -375,9 +384,16 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   const unroomedMin = Math.max(0, bookedMinAll - bookedMin);
   const util = capacityMin ? Math.min(100, Math.round((bookedMin / capacityMin) * 100)) : 0;
   /* U-7: похідне число можна показувати як ФАКТ лише тоді, коли дані, з яких воно
-     порахувалося, справді прийшли. Інакше «0%» червоним читається як «апарати
-     простоюють» — хоча це був збій читання. Один прапорець на всі похідні. */
-  const utilKnown = !dataErr;
+     порахувалося, справді прийшли І описують ОБРАНИЙ зріз. Інакше «0%» червоним
+     читається як «апарати простоюють», «Записи 0» — як «сьогодні порожньо», а
+     «0 ₴» — як «доходу немає»; хоча це був збій читання.
+     Жива перевірка на проді показала, чому одного `utilKnown` мало: коло чесно
+     стало «—», а поруч лишились «Записи 0» і «Дохід 0 ₴» — той самий дефект,
+     просто в сусідніх картках. Прапорець один на ВСІ похідні числа екрана.
+     Коли дані є і вони про цей самий зріз (не оновились, але свої) — цифри
+     лишаються: про несвіжість каже банер, а стирати робочі числа нема за що. */
+  const dataFresh = loadedKey === dataKey;
+  const utilKnown = dataFresh;
   const utilColor = util > 70 ? "var(--green)" : util >= 50 ? "var(--orange)" : "var(--red)";
 
   /* Дохід — лише по 'done'. БД (RPC 0114) віддає суму ЗБЕРЕЖЕНИХ цін (снапшот) +
@@ -561,12 +577,14 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
               <div className="ceo-kpi-row">
                 <div style={card}>
                   <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginBottom: 12 }}>Записи · {PERIODS.find((p) => p.k === period)?.l.toLowerCase()}</div>
-                  <div style={{ fontSize: "2.5rem", fontWeight: 700 }} className="tabular"><Drillable label="Усі записи" onOpen={() => openDrill(null, "Усі записи")}>{total}</Drillable></div>
+                  {/* Кожне з цих чисел — похідне від тих самих даних, що й коло.
+                      Без гейта «Записи 0» читається як «сьогодні порожньо». */}
+                  <div style={{ fontSize: "2.5rem", fontWeight: 700 }} className="tabular"><Drillable label="Усі записи" onOpen={() => openDrill(null, "Усі записи")}>{dataFresh ? total : "—"}</Drillable></div>
                   <div style={{ display: "flex", gap: 16, marginTop: 14, flexWrap: "wrap" }}>
-                    <Drillable label="Виконано" onOpen={() => openDrill(["done"], "Виконано")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--green)" }} className="tabular">{done}</b> <span style={{ color: "var(--text-muted)" }}>виконано</span></Drillable>
-                    <Drillable label="Неявка" onOpen={() => openDrill(["no_show"], "Неявка")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--red)" }} className="tabular">{noShow}</b> <span style={{ color: "var(--text-muted)" }}>неявка</span></Drillable>
-                    <Drillable label="Не відбулося" onOpen={() => openDrill(["not_held"], "Не відбулося")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--orange)" }} className="tabular">{notHeld}</b> <span style={{ color: "var(--text-muted)" }}>не відбулося</span></Drillable>
-                    <Drillable label="В процесі" onOpen={() => openDrill(["scheduled", "waiting", "in_progress"], "В процесі")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--blue-text)" }} className="tabular">{active}</b> <span style={{ color: "var(--text-muted)" }}>в процесі</span></Drillable>
+                    <Drillable label="Виконано" onOpen={() => openDrill(["done"], "Виконано")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--green)" }} className="tabular">{dataFresh ? done : "—"}</b> <span style={{ color: "var(--text-muted)" }}>виконано</span></Drillable>
+                    <Drillable label="Неявка" onOpen={() => openDrill(["no_show"], "Неявка")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--red)" }} className="tabular">{dataFresh ? noShow : "—"}</b> <span style={{ color: "var(--text-muted)" }}>неявка</span></Drillable>
+                    <Drillable label="Не відбулося" onOpen={() => openDrill(["not_held"], "Не відбулося")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--orange)" }} className="tabular">{dataFresh ? notHeld : "—"}</b> <span style={{ color: "var(--text-muted)" }}>не відбулося</span></Drillable>
+                    <Drillable label="В процесі" onOpen={() => openDrill(["scheduled", "waiting", "in_progress"], "В процесі")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--blue-text)" }} className="tabular">{dataFresh ? active : "—"}</b> <span style={{ color: "var(--text-muted)" }}>в процесі</span></Drillable>
                   </div>
                 </div>
 
@@ -591,8 +609,10 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
 
                 <div style={card}>
                   <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)", marginBottom: 12 }}>{revenueExact ? "Дохід · виконані" : "Дохід (частково оцінка) · виконані"}</div>
-                  <div style={{ fontSize: "2.125rem", fontWeight: 700, color: "var(--green)" }} className="tabular"><Drillable label="Дохід · виконані" onOpen={() => openDrill(["done"], "Дохід · виконані")}>{fmtUah(revenue)}</Drillable></div>
-                  <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)", marginTop: 12 }}>За цінами довідника досліджень · {done} виконаних</div>
+                  <div style={{ fontSize: "2.125rem", fontWeight: 700, color: dataFresh ? "var(--green)" : "var(--text-muted)" }} className="tabular"><Drillable label="Дохід · виконані" onOpen={() => openDrill(["done"], "Дохід · виконані")}>{dataFresh ? fmtUah(revenue) : "—"}</Drillable></div>
+                  <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)", marginTop: 12 }}>
+                    {dataFresh ? <>За цінами довідника досліджень · {done} виконаних</> : <>Дані не завантажились</>}
+                  </div>
                 </div>
               </div>
 
@@ -601,7 +621,9 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                 <div style={card}>
                   <div style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: 4 }}>Дослідження за тиждень</div>
                   <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: 16 }}>Стовпці — всього, червоні позначки — зрив (неявка + не відбулося)</div>
-                  <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 180, paddingTop: 10 }}>
+                  {/* Сім нулів на графіку — теж твердження («тиждень порожній»). */}
+                  {!dataFresh && <div className="ctx-hint" style={{ fontSize: "0.78125rem" }}>Дані не завантажились — оновіть сторінку.</div>}
+                  <div style={{ display: "flex", alignItems: "flex-end", gap: 10, height: 180, paddingTop: 10, visibility: dataFresh ? "visible" : "hidden" }}>
                     {weekData.map((x, i) => (
                       <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
                         <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", fontWeight: 600 }} className="tabular">{x.total}</div>
@@ -620,7 +642,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                 <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                   <div style={card}>
                     <div style={{ fontSize: "0.875rem", fontWeight: 600, marginBottom: 12 }}>Топ-5 процедур</div>
-                    {topProcs.length === 0 ? <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>Немає даних</div> : topProcs.map(([n, c], i) => (
+                    {topProcs.length === 0 ? <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{dataFresh ? "Немає даних" : "Дані не завантажились — оновіть сторінку"}</div> : topProcs.map(([n, c], i) => (
                       <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "6px 0", borderTop: i ? "1px solid var(--border)" : "none", fontSize: "0.8125rem" }}>
                         <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{n}</span>
                         <b className="tabular" style={{ color: "var(--blue-text)" }}>{c}</b>
@@ -632,7 +654,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                     {/* «Кабінетів немає», «всі вимкнено» і «дані не прийшли» — ТРИ різні
                         ситуації. Третя раніше зливалася з першою (U-7): при збої читання
                         rooms=[] і керівник бачив «Кабінетів немає» як факт. */}
-                    {roomUtil.length === 0 ? <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{dataErr ? "Дані не завантажились — оновіть сторінку" : rooms.length > 0 ? "Усі кабінети вимкнено" : "Кабінетів немає"}</div> : roomUtil.map((r, i) => (
+                    {roomUtil.length === 0 ? <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{!dataFresh ? "Дані не завантажились — оновіть сторінку" : rooms.length > 0 ? "Усі кабінети вимкнено" : "Кабінетів немає"}</div> : roomUtil.map((r, i) => (
                       <div key={i} style={{ marginBottom: 10 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78125rem", marginBottom: 4 }}>
                           <span>{r.name} <span style={{ color: "var(--text-muted)" }}>{r.kind}</span></span>
