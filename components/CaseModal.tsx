@@ -41,7 +41,7 @@ import {
   type CaseStepLite,
 } from "@/lib/case";
 import type { CaseStatus, Json } from "@/supabase/types";
-import type { IncidentLike } from "@/lib/incidents";
+import type { IncidentFeed } from "@/lib/incidents";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
@@ -102,7 +102,11 @@ interface CaseModalProps {
   rooms?: RoomOpt[];
   clinicId?: string | null;
   clinicTz?: string | null;
-  incidents?: IncidentLike[];
+  /* U-11: транзитний проп — сам CaseModal простої не читає, але передає їх
+     у BookingModal і RescheduleModal, які на них ухвалюють рішення. Тому фід
+     їде наскрізь незмінним: якщо тут лишити масив, «не знаємо» знову стане
+     «простоїв немає» саме там, де це вирішує долю запису. */
+  incidents: IncidentFeed;
   /** Каталог послуг центру (services, 0107) — для форм кроків. Порожній → статика. */
   services?: ServiceLike[];
   /** Переозначення каталогу по кабінетах (service_room_overrides, 0108) — проброс у форми кроків (2b). */
@@ -114,7 +118,7 @@ interface CaseModalProps {
   referralMode?: boolean;
 }
 
-export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicId, clinicTz, incidents = [], services, roomOverrides, referralMode = false }: CaseModalProps) {
+export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicId, clinicTz, incidents, services, roomOverrides, referralMode = false }: CaseModalProps) {
   /* Стани вкладених вікон — ДО useModalA11y (конвенція с43): вони потрібні
      хуку параметром `active`. Кейс малює аж ЧОТИРИ вкладені вікна, і саме тут
      `active` забули (аудит с46, U-8): обидва слухачі keydown живуть на document

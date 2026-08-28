@@ -10,7 +10,7 @@
 import { useState } from "react";
 import { bookableRooms } from "@/lib/rooms";
 import { roomScheduleFor, type DayOverride } from "@/lib/schedule";
-import { wallNow } from "@/lib/incidents";
+import { roomIncidentsOf, wallNow, type IncidentFeed } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { modalityShort, modalityKind } from "@/lib/studies";
 
@@ -68,9 +68,13 @@ interface BreakdownSectionProps {
   onSave: (p: IncidentSavePayload) => void;
   onResolve: (id: string) => void;
   overrides?: Overrides;
+  /* Особливі графіки дня НЕ прочитались. Обовʼязковий: `overrides` тут — мапа з
+     дефолтом `{}`, і «не прочитали» від «особливих днів немає» вона не
+     відрізняє. Той самий клас, що U-11, лише інший канал (буде U-16). */
+  overridesFailed: boolean;
 }
 
-function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, overrides = {} }: BreakdownSectionProps) {
+function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, overrides = {}, overridesFailed }: BreakdownSectionProps) {
   const [open, setOpen] = useState(!existing); // немає події → одразу форма; є → спершу зведення
   const [startDate, setStartDate] = useState(existing ? isoDate(existing.started_at) : dateVal(todayWall()));
   const [startTime, setStartTime] = useState(existing ? hhmmFromISO(existing.started_at) : nowHHMM());
@@ -96,6 +100,18 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
   function save() {
     setErr("");
     if (!durKey) { setErr("Оберіть тривалість"); return; }
+    /* Ревʼю р2 (F2 другого рецензента): «До кінця дня» бере кінець із
+       roomScheduleFor(…, overrides[startDate] || null, …). При збої читання
+       особливих графіків мапа порожня, фолбэк дає базовий тиждень (або хардкод
+       08–18), і в `incidents.blocked_until` лягає ЧУЖИЙ кінець дня. Це не
+       транзієнтна брехня в UI, а ЗАПИСАНЕ в БД значення: далі за ним однаково
+       підуть дошки, модалки, FHIR-фасад і сам гард check_not_during_incident —
+       і пацієнта запишуть у ще зламаний апарат. Тому відмовляємо явно.
+       Чип уже вимкнений; це другий рубіж на випадок клавіатури/стану. */
+    if (durKey === "eod" && overridesFailed) {
+      setErr("Особливі графіки дня не завантажились — кінець дня порахувати не можна. Оновіть сторінку або вкажіть час явно.");
+      return;
+    }
     const s = dtFrom(startDate, startTime), e = blockedUntil(s);
     if (e && e.getTime() <= s.getTime()) { setErr("Кінець має бути пізніше початку"); return; }
     const eMs = e ? e.getTime() : Infinity;
@@ -127,7 +143,17 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
             <label className="fld" style={{ maxWidth: 110 }}><span className="fld-lab">Час <span className="req">*</span></span><input className="inp tabular" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} /></label>
           </div>
           <div className="fld"><span className="fld-lab">Тривалість <span className="req">*</span></span>
-            <div className="bd-durs">{DURATIONS.map((d) => <button key={d.k} className={"bd-chip" + (durKey === d.k ? " active" : "")} onClick={() => setDurKey(d.k)}>{d.label}</button>)}</div>
+            {/* «До кінця дня» — ЄДИНА тривалість, значення якої береться з
+                особливих графіків; при їх збої вона писала б у БД чужий кінець
+                (див. schedEnd вище). Решта чотирьох від overrides не залежать. */}
+            <div className="bd-durs">{DURATIONS.map((d) => {
+              const off = d.k === "eod" && overridesFailed;
+              return (
+                <button key={d.k} className={"bd-chip" + (durKey === d.k ? " active" : "")} disabled={off}
+                  title={off ? "Особливі графіки дня не завантажились — кінець дня порахувався б неправильно. Вкажіть час явно («До відновлення»)." : undefined}
+                  onClick={() => setDurKey(d.k)}>{d.label}</button>
+              );
+            })}</div>
           </div>
           {durKey === "restore" && (
             <div className="fld-row">
@@ -220,22 +246,28 @@ function MaintenanceSection({ roomId, existing, others, onSave, onResolve }: Mai
 
 interface BreakdownModalProps {
   rooms?: RoomOpt[];
-  incidents?: IncidentRow[];
+  incidents: IncidentFeed<IncidentRow>;   // U-11: фід (rows+failed), не голий масив
   overrides?: Overrides;
+  overridesFailed: boolean;               // обовʼязковий — див. BreakdownSectionProps
   initialRoomId?: string;
   onClose: () => void;
   onSubmit: (p: IncidentSavePayload) => void;
   onResolve: (id: string) => void;
 }
 
-export default function BreakdownModal({ rooms, incidents = [], overrides = {}, initialRoomId, onClose, onSubmit, onResolve }: BreakdownModalProps) {
+export default function BreakdownModal({ rooms, incidents, overrides = {}, overridesFailed, initialRoomId, onClose, onSubmit, onResolve }: BreakdownModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [roomId, setRoomId] = useState(initialRoomId || (rooms || [])[0]?.id || "");
   const room = (rooms || []).find((r) => r.id === roomId);
-  const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
-  const breakdownInc = roomIncidents.find((i) => i.reason === "breakdown");
-  const maintenanceInc = roomIncidents.find((i) => i.reason === "maintenance");
-  const emergencyInc = roomIncidents.find((i) => i.reason === "emergency");
+  /* U-11: null = наявні простої НЕ прочитались. Голий `[]` тут був найгіршим із
+     усіх: форма відкривалась як «події немає», оператор заводив другу поломку
+     поверх невидимої першої, і єдине, що його зупиняло, — unique-індекс у БД.
+     Показати нічого не можемо — показуємо це прямо. */
+  const roomIncidents = roomIncidentsOf(incidents, roomId);
+  const incidentsFailed = roomIncidents === null;
+  const breakdownInc = (roomIncidents || []).find((i) => i.reason === "breakdown");
+  const maintenanceInc = (roomIncidents || []).find((i) => i.reason === "maintenance");
+  const emergencyInc = (roomIncidents || []).find((i) => i.reason === "emergency");
 
   return (
     <div className="overlay">
@@ -258,7 +290,14 @@ export default function BreakdownModal({ rooms, incidents = [], overrides = {}, 
             </div>
           </div>
 
-          {emergencyInc && (
+          {incidentsFailed && (
+            <div className="ctx-hint red" role="alert" style={{ marginBottom: 0 }}>
+              ⚠ Не вдалося прочитати наявні простої цього кабінету. Не видно, чи він уже заблокований,
+              тому форми приховані — оновіть сторінку й спробуйте ще раз.
+            </div>
+          )}
+
+          {!incidentsFailed && emergencyInc && (
             <div style={{ border: "1px solid var(--red)", borderRadius: 12, padding: 14, background: "var(--red-bg)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span style={{ fontSize: "1rem" }}>🛑</span>
               <b style={{ color: "var(--red)" }}>Аварійна зупинка</b>
@@ -267,10 +306,14 @@ export default function BreakdownModal({ rooms, incidents = [], overrides = {}, 
             </div>
           )}
 
-          <BreakdownSection key={"b-" + roomId + "-" + (breakdownInc?.id || "new")} roomId={roomId} room={room} existing={breakdownInc} others={maintenanceInc ? [maintenanceInc] : []} onSave={onSubmit} onResolve={onResolve} overrides={overrides} />
-          <MaintenanceSection key={"m-" + roomId + "-" + (maintenanceInc?.id || "new")} roomId={roomId} existing={maintenanceInc} others={breakdownInc ? [breakdownInc] : []} onSave={onSubmit} onResolve={onResolve} />
+          {!incidentsFailed && (
+            <>
+              <BreakdownSection key={"b-" + roomId + "-" + (breakdownInc?.id || "new")} roomId={roomId} room={room} existing={breakdownInc} others={maintenanceInc ? [maintenanceInc] : []} onSave={onSubmit} onResolve={onResolve} overrides={overrides} overridesFailed={overridesFailed} />
+              <MaintenanceSection key={"m-" + roomId + "-" + (maintenanceInc?.id || "new")} roomId={roomId} existing={maintenanceInc} others={breakdownInc ? [breakdownInc] : []} onSave={onSubmit} onResolve={onResolve} />
 
-          <div className="hint-blue" style={{ marginBottom: 0 }}>⚡ <b>Realtime:</b> зміни миттєво зʼявляться у всіх ролей. Поломка блокує апарат відразу; планове ТО — у вказаний час.</div>
+              <div className="hint-blue" style={{ marginBottom: 0 }}>⚡ <b>Realtime:</b> зміни миттєво зʼявляться у всіх ролей. Поломка блокує апарат відразу; планове ТО — у вказаний час.</div>
+            </>
+          )}
         </div>
         <div className="dlg-foot">
           <button className="btn btn-ghost" onClick={onClose} style={{ marginLeft: "auto" }}>Закрити</button>

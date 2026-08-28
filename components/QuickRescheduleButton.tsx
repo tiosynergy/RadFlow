@@ -13,7 +13,7 @@
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFor, effectiveRoomBreaks, type DayOverride, type Break } from "@/lib/schedule";
-import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallInstant, type IncidentLike } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, wallInstant, type IncidentFeed } from "@/lib/incidents";
 import { firstFittingSlot, slotToMin, type BusySpan } from "@/lib/slots";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import type { BusyRow } from "@/lib/slotBusy";
@@ -23,12 +23,12 @@ type Entry = { id: string; room_id: string | null; duration_min: number | null; 
 const pad = (n: number) => String(n).padStart(2, "0");
 const dateVal = (d: Date) => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
 
-export default function QuickRescheduleButton({ entry, clinicTz, date, override, incidents = [], onPick }: {
+export default function QuickRescheduleButton({ entry, clinicTz, date, override, incidents, onPick }: {
   entry: Entry;
   clinicTz?: string | null;
   date: Date;
   override?: DayOverride | null;
-  incidents?: IncidentLike[];
+  incidents: IncidentFeed;     // U-11: фід (rows+failed), не голий масив
   onPick: (time: string) => void | Promise<void>;
 }) {
   const [loading, setLoading] = useState(true);
@@ -38,11 +38,18 @@ export default function QuickRescheduleButton({ entry, clinicTz, date, override,
   const dur = entry.duration_min || 30;
   const buffer = normBuffer(entry.buffer_time_min ?? BUFFER_DEFAULT);
   const dateStr = dateVal(date);
+  // Примітив у депсах: сам фід — новий обʼєкт на кожен рендер батька.
+  const incidentsFailed = incidentsUnknown(incidents);
 
   useEffect(() => {
     let cancel = false;
     const roomId = entry.room_id;
     if (!roomId) { setLoading(false); setSlot(null); return; }
+    /* U-11: простої НЕ прочитались → «найближче вільне вікно» не рахуємо й
+       кнопку не показуємо. Голий `[]` на місці збою означав «простоїв немає»,
+       і кнопка в один клік переносила пацієнта в кабінет на ремонті. Повний
+       модал «Перенести» лишається — там видно, що дані не підтверджені. */
+    if (incidentsFailed) { setLoading(false); setSlot(null); return; }
     setLoading(true);
     (async () => {
       try {
@@ -67,7 +74,11 @@ export default function QuickRescheduleButton({ entry, clinicTz, date, override,
         // Простої кабінету (поломка/ТО) — теж зайнятість (кламп до меж доби, як у CollisionPanel).
         const dayStart = wallInstant(dateStr, "00:00");
         const DAY = 24 * 60;
-        (incidents || []).filter((i) => i.room_id === roomId).forEach((i) => {
+        // Недосяжно, поки живий ранній гейт (те саме замикання) — розтяжка на
+        // випадок, якщо його колись приберуть. Ревʼю р2 (F5): лишили свідомо.
+        const roomInc = roomIncidentsOf(incidents, roomId);
+        if (roomInc === null) throw new Error("incidents-unknown");   // невідомо ≠ вільно
+        roomInc.forEach((i) => {
           const st = new Date(i.started_at).getTime();
           const en = incidentEffectiveEnd(i);
           if (!isFinite(st) || en <= dayStart || st >= dayStart + DAY * 60000) return;
@@ -90,7 +101,7 @@ export default function QuickRescheduleButton({ entry, clinicTz, date, override,
       }
     })();
     return () => { cancel = true; };
-  }, [entry.id, entry.room_id, dateStr, clinicTz, dur, buffer]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [entry.id, entry.room_id, dateStr, clinicTz, dur, buffer, incidentsFailed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return (

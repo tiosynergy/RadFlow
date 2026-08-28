@@ -19,7 +19,7 @@ import { useEffect, useState } from "react";
 import { isRoomBookable } from "@/lib/rooms";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFor, effectiveRoomBreaks, type DayOverride, type Break } from "@/lib/schedule";
-import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallInstant, type IncidentLike } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, wallInstant, type IncidentFeed } from "@/lib/incidents";
 import { firstFittingSlot, slotToMin, type BusySpan } from "@/lib/slots";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import type { BusyRow } from "@/lib/slotBusy";   // 0074: рядок room_busy_slots — один тип на всіх
@@ -43,7 +43,7 @@ interface Props {
   clinicTz?: string | null;
   date: Date;                  // день дошки (колізія можлива лише сьогодні)
   override?: DayOverride | null;
-  incidents?: IncidentLike[];
+  incidents: IncidentFeed;     // U-11: фід (rows+failed), не голий масив
   onMove: (roomId: string, time: string) => void | Promise<void>;
   onRecall: () => void | Promise<void>;
   onManual: () => void;
@@ -55,7 +55,7 @@ const shortName = (n: string | null | undefined) => String(n || "").split(" ").s
 
 type Suggestion = { roomId: string; roomName: string; time: string; sameRoom: boolean };
 
-export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz, date, override, incidents = [], onMove, onRecall, onManual }: Props) {
+export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz, date, override, incidents, onMove, onRecall, onManual }: Props) {
   const [loading, setLoading] = useState(true);
   const [here, setHere] = useState<Suggestion | null>(null);   // той самий кабінет
   const [alt, setAlt] = useState<Suggestion | null>(null);     // паралельний кабінет — лише якщо РАНІШЕ
@@ -66,6 +66,8 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
   const buffer = normBuffer(entry.buffer_time_min ?? BUFFER_DEFAULT);
   const curRoom = (rooms || []).find((r) => r.id === entry.room_id);
   const modality = curRoom?.modality;
+  // Примітив у депсах: сам фід — новий обʼєкт на кожен рендер батька.
+  const incidentsFailed = incidentsUnknown(incidents);
   const dateStr = dateVal(date);
 
   useEffect(() => {
@@ -81,6 +83,12 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
         const cands = (rooms || []).filter((r) => r.id === entry.room_id
           || (modality && r.modality === modality && isRoomBookable(r)));
         if (!cands.length) { if (!cancel) { setHere(null); setAlt(null); setBusyErr(true); } return; } // немає даних про кабінети — не «не влазить»
+
+        /* U-11: простої НЕ прочитались → поради не даємо взагалі. Голий `[]` на
+           місці збою означав «простоїв немає», і панель спокійно пропонувала
+           слот у кабінеті на ремонті — саме та порада, яку приймають не
+           перевіряючи. Виходимо в ту саму чесну гілку, що й збій зайнятості. */
+        if (incidentsUnknown(incidents)) throw new Error("incidents-unknown");
 
         /* Перерви кабінетів живуть у rooms.schedule (JSONB) — одним запитом.
            H-6: помилку читання НЕ можна ковтати. Порожній schedById → roomScheduleFor
@@ -117,7 +125,13 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
              без клампа вони вирізали б чужі години (або, гірше, не вирізали свої). */
           const dayStart = wallInstant(dateStr, "00:00");
           const DAY = 24 * 60;
-          (incidents || []).filter((i) => i.room_id === r.id).forEach((i) => {
+          /* Недосяжно, поки живий гейт вище (той самий фід, те саме замикання) —
+             і саме тому лишається: це РОЗТЯЖКА. Приберуть ранній гейт заради
+             «зайвого запиту» — і тут читання простоїв не стане мовчки порожнім.
+             Ревʼю р2 (F5) позначило дублювання; лишили свідомо. */
+          const roomInc = roomIncidentsOf(incidents, r.id);
+          if (roomInc === null) throw new Error("incidents-unknown");   // невідомо ≠ вільно
+          roomInc.forEach((i) => {
             const st = new Date(i.started_at).getTime();
             const en = incidentEffectiveEnd(i);
             if (!isFinite(st) || en <= dayStart || st >= dayStart + DAY * 60000) return; // простій не цього дня
@@ -146,7 +160,8 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
         setHere(mine);
         setAlt(better);
       } catch {
-        // Транзієнтний збій (рефреш токена / мережа) — не рушимо дошку.
+        // Транзієнтний збій (рефреш токена / мережа) або непрочитані простої
+        // (U-11) — не рушимо дошку, але й слот не радимо.
         if (!cancel) { setHere(null); setAlt(null); setBusyErr(true); }
       } finally {
         if (!cancel) setLoading(false);
@@ -154,7 +169,7 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
     })();
     return () => { cancel = true; };
     // info.freeAtMin — щоб пропозиція перерахувалась, коли дослідження затягується далі.
-  }, [entry.id, entry.room_id, dateStr, clinicId, clinicTz, dur, buffer, modality, info.freeAtMin]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [entry.id, entry.room_id, dateStr, clinicId, clinicTz, dur, buffer, modality, info.freeAtMin, incidentsFailed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = (fn: () => void | Promise<void>) => async () => {
     if (pending) return;

@@ -70,9 +70,14 @@ describe("slotDataTrusted — коли можна стверджувати «с�
       .toBe("Зайнятість і графік кабінету");
   });
 
-  it("slotDataFromSingleSource ставить один прапорець в обидві причини", () => {
-    expect(slotDataFromSingleSource(true, false)).toEqual({ busyFailed: true, schedFailed: true, loading: false });
-    expect(slotDataMissLabel(slotDataFromSingleSource(true, false))).toBe("Зайнятість і графік кабінету");
+  /* U-11: джерел стало ТРИ, і в порталі направника всі три гинуть одним
+     Promise.all (`ov.error ?? inc.error ?? roomRes.error ?? busy.error`), тож
+     один прапорець належить усім трьом. Лишити `incidentsFailed` порожнім
+     означало б написати оператору «зайнятість і графік», приховавши третю
+     причину — і саме таке замовчування пакет U-11 і прибирає. */
+  it("slotDataFromSingleSource ставить один прапорець в УСІ три причини", () => {
+    expect(slotDataFromSingleSource(true, false)).toEqual({ busyFailed: true, schedFailed: true, incidentsFailed: true, loading: false });
+    expect(slotDataMissLabel(slotDataFromSingleSource(true, false))).toBe("Зайнятість, графік і простої кабінету");
     expect(slotDataTrusted(slotDataFromSingleSource(false, false))).toBe(true);
     expect(slotDataTrusted(slotDataFromSingleSource(false, true))).toBe(false);
   });
@@ -109,7 +114,8 @@ type Screen = {
 const SCREENS: Screen[] = [
   {
     name: "BookingModal", code: src("components/BookingModal.tsx"),
-    bindings: ["busyFailed: busyError", "schedFailed: schedErr", "loading: slotsLoading"],
+    // U-11: третє джерело — теж ПРИВʼЯЗКА до живого прапорця, а не імпорт.
+    bindings: ["busyFailed: busyError", "schedFailed: schedErr", "incidentsFailed,", "loading: slotsLoading"],
     calls: ["slotDataMissLabel(availState)", "slotDataTrusted(availState)"],
     validGuard: ["avail: !!availMiss", "avail: availMiss ||"], hasConfirm: true,
   },
@@ -121,7 +127,7 @@ const SCREENS: Screen[] = [
   },
   {
     name: "RescheduleModal", code: src("components/RescheduleModal.tsx"),
-    bindings: ["busyFailed: busyError", "schedFailed: schedErr", "loading: slotsLoading"],
+    bindings: ["busyFailed: busyError", "schedFailed: schedErr", "incidentsFailed,", "loading: slotsLoading"],
     calls: ["slotDataTrusted(availState)", "slotDataFooterText(availState)"],
     validGuard: ["&& availTrusted"], hasConfirm: false,
   },

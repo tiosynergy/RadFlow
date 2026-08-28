@@ -13,14 +13,16 @@ import BookingModal, { type BookingPayload, type BookingPrefill } from "@/compon
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { scheduleFromWaitlist } from "@/app/queue/actions";
 import { desiredWindowText, timeToMin } from "@/lib/waitlist";
-import { wallDayKey, wallMinOfDay, wallNow } from "@/lib/incidents";
+import { wallDayKey, wallMinOfDay, wallNow, type IncidentFeed } from "@/lib/incidents";
 import { PRIORITY_META } from "@/lib/priority";
 import type { WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
-type IncidentLite = { id: string; room_id: string; reason_label?: string | null; note?: string | null; started_at: string; blocked_until: string | null; status: string };
+/* U-11: власного типу простою тут більше немає. Модалка їх не читає, а передає
+   у BookingModal — і саме там порожній масив означав «простоїв немає». Транзит
+   іде спільним фідом, інакше «не знаємо» знову губиться на межі компонентів. */
 
 export type FreedSlotInfo = {
   date: string; // YYYY-MM-DD — дата звільненого слота
@@ -68,7 +70,7 @@ interface WaitlistCandidatesModalProps {
   clinicId: string;
   clinicTz?: string | null; // явна зона центру для BookingModal («зараз» не по браузеру)
   rooms?: RoomOpt[];
-  incidents?: IncidentLite[];
+  incidents: IncidentFeed;   // транзит у BookingModal — див. коментар до типу вище
   /** Каталог послуг центру (services, 0107) — пробрасываем у BookingModal. */
   services?: ServiceLike[];
   /** Переозначення каталогу по кабінетах (0108) — пробрасываем у BookingModal (2b). */
@@ -80,7 +82,7 @@ interface WaitlistCandidatesModalProps {
   onError?: (msg: string) => void;
 }
 
-export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, incidents = [], services, roomOverrides, slot, candidates, onClose, onBooked }: WaitlistCandidatesModalProps) {
+export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, incidents, services, roomOverrides, slot, candidates, onClose, onBooked }: WaitlistCandidatesModalProps) {
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);
   /* Той самий патерн, що в RescheduleModal: при bookFor компонент віддає замість
      СЕБЕ дочірню форму (див. return нижче), тобто власного діалога в DOM немає.

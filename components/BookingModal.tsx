@@ -13,7 +13,7 @@ import {
   roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, offScheduleKind, OFF_SCHED_GRACE_MIN,
   type DayOverride,
 } from "@/lib/schedule";
-import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallToday0, type IncidentLike } from "@/lib/incidents";
+import { incidentEffectiveEnd, roomIncidentsOf, slotBlockedByFeed, wallNow, wallMinOfDay, wallToday0, type IncidentFeed } from "@/lib/incidents";
 
 /* ⚠️ Імена порівнюємо ТІЛЬКИ нормалізовано (trim + пробіли до одного): у БД
    живуть легасі-рядки з подвійними пробілами, а нові значення нормалізує
@@ -23,7 +23,7 @@ import { incidentEffectiveEnd, wallNow, wallMinOfDay, wallToday0, type IncidentL
    а tg_change_markers_queue розіслав би крапки на рівному місці. */
 const normName = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ");
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
-import { slotDataMissLabel, slotDataTrusted, type SlotDataState } from "@/lib/availabilityTrust";
+import { slotDataMissLabel, slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, studyLabel, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, DUR_MAX } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import StudySearchBox from "@/components/StudySearchBox";
@@ -255,7 +255,9 @@ interface BookingModalProps {
   /** IANA-зона центру. Передавати ЯВНО: модальний _clinicTz виставляють не всі
       екрани (напр. /waitlist), і тоді «зараз» рахувалося б по браузеру. */
   clinicTz?: string | null;
-  incidents?: IncidentLike[];
+  /* U-11: ФІД, а не масив, і проп ОБОВʼЯЗКОВИЙ. Порожній масив не відрізнявся
+     від «не змогли прочитати», а пропущений проп мовчки давав те саме. */
+  incidents: IncidentFeed;
   /** Каталог послуг центру (services, 0107). Порожній/відсутній → статичний
       lib/studies (фолбэк). Області/тривалості/ціни беруться звідси (фаза 2a). */
   services?: ServiceLike[];
@@ -299,7 +301,7 @@ interface BookingModalProps {
   extraFields?: ReactNode;
 }
 
-export default function BookingModal({ rooms, clinicId, clinicTz, incidents = [], services, roomOverrides, prefill, onClose, onSave, onCreateCase, onAddCaseStep, caseSiblings, moveMode = false, allowOffSchedule = true, extraFields }: BookingModalProps) {
+export default function BookingModal({ rooms, clinicId, clinicTz, incidents, services, roomOverrides, prefill, onClose, onSave, onCreateCase, onAddCaseStep, caseSiblings, moveMode = false, allowOffSchedule = true, extraFields }: BookingModalProps) {
   // Dirty-guard: не втрачати заповнену форму при випадковому закритті (Esc/✕/Скасувати).
   // dirty вмикається будь-якою зміною поля (onChangeCapture на діалозі); requestClose
   // питає підтвердження лише коли є незбережені зміни. useModalA11y читає колбек через
@@ -620,15 +622,19 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   // Перерви кабінету на цю дату (обід тощо) — дослідження не може їх перетинати.
   const roomBreaks = effectiveRoomBreaks(bookDate, roomId, roomSchedule, override);
 
-  // Простій (поломка/ТО) обраного кабінету: слоти у вікні інциденту — недоступні.
-  const roomIncidents = (incidents || []).filter((i) => i.room_id === roomId);
+  /* Простій (поломка/ТО) обраного кабінету: слоти у вікні інциденту — недоступні.
+     U-11: рядки беремо через хелпер, і `null` означає «не прочитали». Раніше тут
+     стояло `if (!roomIncidents.length) return false` — і збій читання на дошці
+     (простої приходять ПРОПОМ) робив кабінет на ремонті вільним. */
+  const roomIncidents = roomIncidentsOf(incidents, roomId);
+  const incidentsFailed = roomIncidents === null;
   function slotBlockedByIncident(slotMin: number) {
-    if (!roomIncidents.length) return false;
+    /* Рішення «невідомо → заблоковано» живе в lib/incidents (slotBlockedByFeed),
+       а не тут: тести цього проєкту компонентів не бачать, і правило, залишене
+       в JSX, перевірялось би лише регуляркою. Сітка і так схована гейтом довіри
+       нижче — але жоден шлях не повинен мати змоги сказати «вільно» на незнанні. */
     const base = Date.UTC(bookDate.getFullYear(), bookDate.getMonth(), bookDate.getDate(), Math.floor(slotMin / 60), slotMin % 60);
-    return roomIncidents.some((inc) => {
-      const start = new Date(inc.started_at).getTime();
-      return base >= start && base < incidentEffectiveEnd(inc);
-    });
+    return slotBlockedByFeed(incidents, roomId, base);
   }
 
   /* 0077 — ПОРЯДОК ПЕРЕВІРОК ТУТ Є ЧАСТИНОЮ БЕЗПЕКИ.
@@ -708,6 +714,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
   function blockedLabel(slot: string) {
     const s = toMin(slot);
     const base = Date.UTC(bookDate.getFullYear(), bookDate.getMonth(), bookDate.getDate(), Math.floor(s / 60), s % 60);
+    if (roomIncidents === null) return "Дані про простої кабінету не завантажились";
     const inc = roomIncidents.find((i) => base >= new Date(i.started_at).getTime() && base < incidentEffectiveEnd(i));
     const until = inc?.blocked_until ? new Date(inc.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : null;
     return "Кабінет на ремонті/ТО" + (until ? "\nДо " + until : "\nДо відновлення");
@@ -756,7 +763,11 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
      (видно ПРИЧИНУ, а не «кнопка чомусь не працює») — одним рядком, без окремої
      гілки. Сітку при збої ми ховали й раніше, але блок «✓ Слот вільний» стояв
      поза тією умовою, а `valid` про збій не знав узагалі. */
-  const availState: SlotDataState = { busyFailed: busyError, schedFailed: schedErr, loading: slotsLoading };
+  /* U-11 (с46): третє джерело — простої. Вони приходять ПРОПОМ із дошки, тож
+     власні прапорці модалки про їхній збій не знали, і кабінет на ремонті
+     малювався вільним. Тепер збій простоїв гасить «Зберегти» і показує причину
+     тим самим механізмом, що зайнятість і графік. */
+  const availState: SlotDataState = { busyFailed: busyError, schedFailed: schedErr, incidentsFailed, loading: slotsLoading };
   const availMiss = slotDataMissLabel(availState);
   const availTrusted = slotDataTrusted(availState);
   const miss: Record<string, boolean> = { name: !softPatient && !name.trim(), dob: !softPatient && !dob, gender: !softPatient && !gender, phone: !softPatient && !phone.trim(), priority: !moveMode && !priority, region: !region, room: !roomId, time: !time, dur: !!region && dur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5), avail: !!availMiss };
@@ -785,6 +796,13 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
     // Зайнятість ще не підтверджена свіжою для ПОТОЧНОГО кабінету/дати — на кадрі
     // зі старими spans (зміна кабінету) свій же слот гасити не можна.
     if (busyFreshRef.current !== roomDateKey) return;
+    /* U-11 / ревʼю р2 (F3): «зайняли» можна казати лише тоді, коли даним ВІРИМО.
+       При збої простоїв slotBlockedByFeed чесно блокує ВСІ слоти — і без цієї
+       умови обраний (чи підставлений із prefill) час зникав би з повідомленням
+       «⚡ Слот щойно зайняли», хоча його ніхто не займав: ми просто не змогли
+       прочитати простої. Сітку й «Зберегти» гасить availMiss, тут же йдеться
+       рівно про ТВЕРДЖЕННЯ, а на незнанні його робити не можна. */
+    if (!availTrusted) return;
     if (!SELECTABLE.includes(slotState(time))) { setTaken(time); setTime(""); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomBusy, slotsLoading, timeBad]);
@@ -1219,12 +1237,14 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents = []
                   (неділя = вихідний) і показував хибне «Кабінет не працює». */}
               {roomId && roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
               {roomId && !roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
-              {roomId && !roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncidents[0]?.blocked_until ? " до " + new Date(Math.max(...roomIncidents.map((i) => i.blocked_until ? new Date(i.blocked_until).getTime() : 0))).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : ""}. Оберіть слот після відновлення або інший день/кабінет.</div>}
+              {/* Банер про ремонт — теж ТВЕРДЖЕННЯ, тож лише коли простої прочитані:
+                  при невідомості про них каже спільний банер довіри нижче. */}
+              {roomId && !roomSched.closed && roomIncidents !== null && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncidents[0]?.blocked_until ? " до " + new Date(Math.max(...roomIncidents.map((i) => i.blocked_until ? new Date(i.blocked_until).getTime() : 0))).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : ""}. Оберіть слот після відновлення або інший день/кабінет.</div>}
               {taken && <div className="ctx-hint red" style={{ marginBottom: 10 }}>⚡ Слот {taken} щойно зайняли — оберіть інший. <button className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={() => setTaken(null)}>Зрозуміло</button></div>}
               {/* Зайнятість/графік не завантажились — сітку НЕ показуємо: порожній день
                   виглядав би як «усе вільно», і можна було б записати пацієнта поверх іншого. */}
-              {(busyError || schedErr) && !slotsLoading
-                ? <div className="ctx-hint red" style={{ marginBottom: 10 }}>⚠ Не вдалося завантажити {busyError ? "зайнятість" : "графік"} кабінету — оновіть сторінку. Показувати вільний час не можемо.</div>
+              {(busyError || schedErr || incidentsFailed) && !slotsLoading
+                ? <div className="ctx-hint red" style={{ marginBottom: 10 }}>⚠ {slotDataFooterText(availState)} — оновіть сторінку. Показувати вільний час не можемо.</div>
                 : allStudies.length === 0
                 ? <div className="ctx-hint" style={{ fontSize: "0.8125rem", padding: "20px 0", textAlign: "center", color: "var(--text-muted)" }}>Оберіть область дослідження, щоб побачити вільний час</div>
                 : slotsLoading

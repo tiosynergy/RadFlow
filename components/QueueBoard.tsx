@@ -66,7 +66,7 @@ import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import Toast, { type ToastData } from "@/components/Toast";
 import ShortcutsOverlay from "@/components/ShortcutsOverlay";
-import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, incidentFeed, roomIncidentsOf, wallNow, wallToday0, setClinicTz, type IncidentFeed } from "@/lib/incidents";
 import { quickSearchMatch } from "@/lib/quickSearch";
 import { fmtOrigin } from "@/lib/rescheduleOrigin";
 import { occupiesSlot } from "@/lib/slotOccupancy";
@@ -96,7 +96,10 @@ const EMPTY_ENTRIES: QEntry[] = [];
 const scopeKeyOf = (clinicId: string, dayKey: string) => `${clinicId}|${dayKey}`;
 type IncidentRow = { id: string; room_id: string; reason: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
 type IncidentPayload = { id?: string; roomId: string; reason: string; reasonLabel: string; note: string; startedAt: string; blockedUntil: string | null; autoUnblock: boolean };
-type RoomLoadItem = { roomKey: string; name: string; kind: string; pct: number; closed: boolean; color: string; off?: boolean };
+/* `capKnown=false` — простої не прочитались, тож ЄМНІСТЬ кабінету невідома
+   (U-11). Відсоток тоді порахувався б від ПОВНОГО дня і занизив завантаження:
+   кабінет, що півдня стоїть на ремонті, виглядав би недовантаженим. */
+type RoomLoadItem = { roomKey: string; name: string; kind: string; pct: number; capKnown: boolean; closed: boolean; color: string; off?: boolean };
 
 /* ── Дати ── */
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
@@ -453,13 +456,18 @@ function incidentWorkMinutes(inc: IncidentRow, date: Date, startMin: number, end
   const eMin = Math.min(endMin, Math.round((e - dayStart) / 60000));
   return Math.max(0, eMin - sMin);
 }
-function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: Date, override: DayOverride | null, incidents: IncidentRow[]): RoomLoadItem[] {
+function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: Date, override: DayOverride | null, incidents: IncidentFeed<IncidentRow>): RoomLoadItem[] {
   return (rooms || []).map((r) => {
     const sched = roomScheduleFor(date, r.id, override, r.schedule);
     const startMin = toMinHHMM(sched.start), endMin = toMinHHMM(sched.end);
     let cap = sched.closed ? 0 : Math.max(0, endMin - startMin);
-    if (cap > 0) {
-      (incidents || []).filter((i) => i.room_id === r.id).forEach((i) => { cap -= incidentWorkMinutes(i, date, startMin, endMin); });
+    /* U-11: простої ЗМЕНШУЮТЬ ємність. Порожній масив на місці збою читання
+       лишав ємність повною і тихо занижував відсоток — той самий fail-open, що
+       і в сітці слотів, лише без жодного видимого сліду. */
+    const roomInc = roomIncidentsOf(incidents, r.id);
+    const capKnown = roomInc !== null;
+    if (cap > 0 && roomInc) {
+      roomInc.forEach((i) => { cap -= incidentWorkMinutes(i, date, startMin, endMin); });
       cap = Math.max(0, cap);
     }
     /* Критерій «займає час кабінету» — з lib/slotOccupancy, а НЕ літералами
@@ -470,7 +478,7 @@ function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: 
        немає. */
     const mins = entries.filter((e) => e.room_id === r.id && occupiesSlot(e.status)).reduce((s, e) => s + (e.duration_min || 0) + (e.buffer_time_min ?? BUFFER_DEFAULT), 0);
     const pct = cap > 0 ? Math.min(100, Math.round((mins / cap) * 100)) : 0;
-    return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue-text)" : "var(--orange)", off: !isRoomBookable(r) };
+    return { roomKey: r.id, name: r.name, kind: modalityLabel(r.modality), pct, capKnown, closed: sched.closed, color: r.modality === "MRI" ? "var(--blue-text)" : "var(--orange)", off: !isRoomBookable(r) };
   });
 }
 /* `ready=false` — знімок дня ще не належить поточному зрізу (H-3): відсотки
@@ -478,12 +486,17 @@ function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: 
    0 %» у шапці. Це та сама брехня нулями, що й у StatsBar (ревʼю р.2). */
 function RoomLoad({ rooms, onSelectRoom, ready = true }: { rooms: RoomLoadItem[]; onSelectRoom?: (id: string) => void; ready?: boolean }) {
   const [open, setOpen] = useState(true);
-  const avg = rooms.length ? Math.round(rooms.reduce((s, r) => s + r.pct, 0) / rooms.length) : 0;
+  /* Середня — лише по кабінетах із ВІДОМОЮ ємністю (U-11). Домішати сюди
+     кабінет, чиї простої не прочитались, означало б завищити середню тим
+     самим заниженим відсотком, який ми поруч ховаємо під «—». */
+  const known = rooms.filter((r) => r.capKnown);
+  const avg = known.length ? Math.round(known.reduce((s, r) => s + r.pct, 0) / known.length) : 0;
+  const avgText = ready && known.length ? " · сер. " + avg + "%" : " · —";
   return (
     <div className="rcard">
       <button className={"rcard-toggle" + (open ? " open" : "")} onClick={() => setOpen((o) => !o)}>
         <span className="rct-title">Завантаженість кабінетів</span>
-        <span className="rct-sum">{rooms.length}{ready ? " · сер. " + avg + "%" : " · —"}</span>
+        <span className="rct-sum">{rooms.length}{avgText}</span>
         <span className="rct-chev">⌄</span>
       </button>
       {open && (
@@ -498,9 +511,9 @@ function RoomLoad({ rooms, onSelectRoom, ready = true }: { rooms: RoomLoadItem[]
                 <span className="load-name">{r.name} {r.kind}
                   {r.off && <span className="badge gray" style={{ marginLeft: 6 }} title="Кабінет вимкнено: нові записи в нього не приймаються">{ROOM_OFF_LABEL}</span>}
                   {" "}<span className="load-go" aria-hidden>→</span></span>
-                <span className="load-pct" style={{ color: r.color }}>{ready ? r.pct + "%" : "—"}</span>
+                <span className="load-pct" style={{ color: r.color }} title={ready && !r.capKnown ? "Простої кабінету не завантажились — відсоток порахувався б від повного дня" : undefined}>{ready && r.capKnown ? r.pct + "%" : "—"}</span>
               </div>
-              <div className="load-bar"><div className="load-fill" style={{ width: (ready ? r.pct : 0) + "%", background: r.color }} /></div>
+              <div className="load-bar"><div className="load-fill" style={{ width: (ready && r.capKnown ? r.pct : 0) + "%", background: r.color }} /></div>
             </button>
           ))}
         </div>
@@ -1694,6 +1707,18 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   }
 
   const liveIncidents = incidents.filter((i) => !incidentExpired(i));
+  /* U-11: у дітей — ФІД (рядки + чи вдалося прочитати). Раніше вниз їхав голий
+     масив, і при incidentsErr це було `[]`: кабінет на ремонті малювався вільним
+     у CollisionPanel, QuickRescheduleButton, RoomDayOverviewModal, BreakdownModal
+     і в модалках запису. Один вираз на всі точки — щоб копії не розійшлись. */
+  const incidentsFeed = incidentFeed(liveIncidents, incidentsErr);
+  /* А ЗАВАНТАЖЕНОСТІ потрібні ВСІ простої дня, включно зі знятими: вона рахує
+     ЄМНІСТЬ ДНЯ, а `incidentExpired` — предикат «ЗАРАЗ» (auto_unblock і
+     blocked_until у минулому). Чотиригодинне ТО зранку зменшило ємність, навіть
+     якщо о 14:00 його вже знято; на минулих днях так відпали б узагалі всі
+     простої. Ревʼю р2 (F1): перший варіант правки передав сюди liveIncidents і
+     тихо занизив відсоток — рівно те викривлення, яке пакет і прибирає. */
+  const loadIncidentsFeed = incidentFeed(incidents, incidentsErr);
   // Аварійна зупинка: активні інциденти reason='emergency' → кабінети зупинено.
   const emergencyRooms = Array.from(new Set(liveIncidents.filter((i) => i.reason === "emergency").map((i) => i.room_id)));
   const emergencyActive = emergencyRooms.length > 0;
@@ -2356,7 +2381,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     }
   });
 
-  const roomLoad = computeRoomLoad(visRooms, entries, selectedDate, selectedOverride, incidents);
+  const roomLoad = computeRoomLoad(visRooms, entries, selectedDate, selectedOverride, loadIncidentsFeed);
 
   /* Порядок черги (рішення Ігоря 2026-07-11): у межах статусу — ЗА ЧАСОМ.
      Пріоритет (CITO/Терміново) лишається кольоровим бейджем, але НЕ виносить
@@ -2669,7 +2694,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                     collisionPanel={collision?.zone === "clash" && expandedRow === p.id ? (
                       <CollisionPanel
                         entry={p} info={collision} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz}
-                        date={selectedDate} override={selectedOverride} incidents={liveIncidents}
+                        date={selectedDate} override={selectedOverride} incidents={incidentsFeed}
                         onMove={(roomId, time) => doCollisionMove(p, roomId, time)}
                         onRecall={() => doCollisionRecall(p)}
                         onManual={() => openReschedule(p)}
@@ -2678,7 +2703,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                     quickReschedule={expandedRow === p.id && isToday && p.room_id && (p.status === "scheduled" || p.status === "waiting") ? (
                       <QuickRescheduleButton
                         entry={p} clinicTz={clinicTz} date={selectedDate} override={selectedOverride}
-                        incidents={liveIncidents} onPick={(time) => quickRescheduleTo(p, time)}
+                        incidents={incidentsFeed} onPick={(time) => quickRescheduleTo(p, time)}
                       />
                     ) : null} />
                 );
@@ -2708,11 +2733,11 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
           admin/radiologist центру — бачать, реєстратор і направник — ні. */}
       {/* clinicTz — ЯВНО в кожну модалку: покладатися на singleton не можна
           (HANDOVER §6.1), інакше «зараз» тихо з'їде на зону браузера. */}
-      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} services={services} roomOverrides={roomOverrides} onClose={() => setModalOpen(false)} onSave={saveBooking} onCreateCase={createCaseFromBooking} />}
-      {openCaseId && <CaseModal caseId={openCaseId} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} services={services} roomOverrides={roomOverrides} onClose={() => setOpenCaseId(null)} onCancelled={reload} />}
+      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides} onClose={() => setModalOpen(false)} onSave={saveBooking} onCreateCase={createCaseFromBooking} />}
+      {openCaseId && <CaseModal caseId={openCaseId} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides} onClose={() => setOpenCaseId(null)} onCancelled={reload} />}
       {caseFromEntryFor && (
         <BookingModal
-          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} services={services} roomOverrides={roomOverrides}
+          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides}
           prefill={{
             name: caseFromEntryFor.patient_name || "", phone: caseFromEntryFor.patient_phone || "",
             dob: caseFromEntryFor.patient_dob, gender: caseFromEntryFor.patient_sex,
@@ -2730,10 +2755,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
           onClose={() => setCaseFromEntryFor(null)}
         />
       )}
-      {slotsOverviewOpen && <RoomDayOverviewModal rooms={visRooms} clinicTz={clinicTz} incidents={liveIncidents} overrides={overrides} onClose={() => setSlotsOverviewOpen(false)} />}
+      {slotsOverviewOpen && <RoomDayOverviewModal rooms={visRooms} clinicTz={clinicTz} incidents={incidentsFeed} overrides={overrides} onClose={() => setSlotsOverviewOpen(false)} />}
 
       {wlSuggest && (
-        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={liveIncidents} services={services} roomOverrides={roomOverrides}
+        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides}
           slot={wlSuggest.slot} candidates={wlSuggest.candidates}
           onClose={() => setWlSuggest(null)}
           onBooked={(msg) => { notify(msg, "success"); reload(); }}
@@ -2753,7 +2778,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       )}
 
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={liveIncidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} allowOffSchedule />
+        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} onClose={() => setReschedFor(null)} onConfirm={doReschedule} allowOffSchedule />
       )}
 
       {/* 0078–0081 — план при затримці. Обидва плани прийшли з previewDelayPlan;
@@ -2793,7 +2818,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       )}
 
       {breakdownOpen && (
-        <BreakdownModal rooms={rooms} incidents={liveIncidents} overrides={overrides} initialRoomId={breakdownRoomId || undefined} onClose={() => { setBreakdownOpen(false); setBreakdownRoomId(null); }} onSubmit={submitIncident} onResolve={resolveIncident} />
+        <BreakdownModal rooms={rooms} incidents={incidentsFeed} overrides={overrides} overridesFailed={overridesErr} initialRoomId={breakdownRoomId || undefined} onClose={() => { setBreakdownOpen(false); setBreakdownRoomId(null); }} onSubmit={submitIncident} onResolve={resolveIncident} />
       )}
       {emergencyOpen && (
         <EmergencyModal

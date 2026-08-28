@@ -36,7 +36,7 @@ import type { WaitlistEntry } from "@/supabase/types";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
-import { slotBlockedByIncidents, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike } from "@/lib/incidents";
+import { slotBlockedByIncidents, incidentFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
 import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, normDur, DUR_MAX } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import StudySearchBox from "@/components/StudySearchBox";
@@ -1512,7 +1512,9 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
   const [referrals, setReferrals] = useState<Referral[]>([]);
   // H-6: збій читання списку ≠ «направлень немає» (сітку слотів уже прикриває slotsErr).
   const [listErr, setListErr] = useState(false);
-  const [reschedFor, setReschedFor] = useState<Referral | null>(null);
+  // U-11: направлення і простої його центру їдуть ОДНИМ станом — інакше між
+  // await і setState вони розʼїжджаються на різні центри.
+  const [reschedFor, setReschedFor] = useState<{ r: Referral; incidents: IncidentFeed } | null>(null);
   const [editStudiesFor, setEditStudiesFor] = useState<Referral | null>(null);
   const [wlEntries, setWlEntries] = useState<WaitlistEntry[]>([]);
   const [wlAddOpen, setWlAddOpen] = useState(false);
@@ -1650,7 +1652,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
 
   // Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
   async function doReschedule({ roomId, date, time, dur, buffer, reason, studies }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; studies?: RescheduleStudy[] }) {
-    const p = reschedFor; if (!p) return null;
+    const p = reschedFor?.r; if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
     const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason, studies });
@@ -1707,24 +1709,54 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
     return roomsInGrant(roomsByClinic[clinicId] || [], centersById[clinicId]?.room_ids);
   }, [roomsByClinic, centersById]);
 
-  const [openCase, setOpenCase] = useState<{ caseId: string; clinicId: string; incidents: IncidentLike[] } | null>(null);
-  const [organizeFor, setOrganizeFor] = useState<{ r: Referral; incidents: IncidentLike[] } | null>(null);
+  const [openCase, setOpenCase] = useState<{ caseId: string; clinicId: string; incidents: IncidentFeed } | null>(null);
+  const [organizeFor, setOrganizeFor] = useState<{ r: Referral; incidents: IncidentFeed } | null>(null);
 
-  // Простої центру для сітки кроку — інакше заблокований час малювався б вільним
-  // (збій читання → порожньо: сервер усе одно відхилить, це лише підказка).
-  async function centerIncidents(clinicId: string): Promise<IncidentLike[]> {
+  /* Простої центру для сітки кроку — інакше заблокований час малювався б вільним.
+     U-11: збій читання віддаємо ФІДОМ (failed), а не порожнім масивом. Стара
+     відмовка «сервер усе одно відхилить, це лише підказка» не рятує направника:
+     він не бачить простоїв у своєму інтерфейсі, обирає час, і відмова
+     прилітає вже після спроби — а між нею і пацієнтом стоїть телефонна розмова. */
+  async function centerIncidents(clinicId: string): Promise<IncidentFeed> {
     try {
-      const { data } = await createClient().from("incidents")
+      const { data, error } = await createClient().from("incidents")
         .select("room_id, started_at, blocked_until, status, auto_unblock")
         .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
-      return data || [];
-    } catch { return []; }
+      if (error) return incidentFeed([], true);
+      return incidentFeed((data as IncidentLike[] | null) || []);
+    } catch { return incidentFeed([], true); }
   }
+  /* Guard покоління на ВСІ три відкриття модалок через читання (ревʼю р2, F4).
+     Кнопки в рядках лишаються активними, поки летить запит, тож два кліки —
+     звичайна річ. Без лічильника пізніша відповідь ПЕРШОГО кліку підмінила б
+     дані у вже відкритій модалці: `patient`/`caseId` змінились би, а модалка
+     НЕ перемонтувалась (`key` у неї немає), тож її useState-ініціалізатори
+     (кабінет, тривалість, буфер) лишились би від іншого направлення.
+     Лічильник рахує ПОРЯДОК ВИДАЧІ, а не приходу — перемагає останній клік
+     користувача. Той самий висновок, що H-3 у QueueBoard.
+     Лічильник ОДИН на три дії свідомо: клік по іншій кнопці — це теж «користувач
+     передумав», і відповідь попередньої вже не потрібна. */
+  const openGen = useRef(0);
   async function openCaseScreen(caseId: string, clinicId: string) {
-    setOpenCase({ caseId, clinicId, incidents: await centerIncidents(clinicId) });
+    const gen = ++openGen.current;
+    const incidents = await centerIncidents(clinicId);
+    if (gen !== openGen.current) return;
+    setOpenCase({ caseId, clinicId, incidents });
   }
   async function startOrganize(r: Referral) {
-    setOrganizeFor({ r, incidents: await centerIncidents(r.clinic_id) });
+    const gen = ++openGen.current;
+    const incidents = await centerIncidents(r.clinic_id);
+    if (gen !== openGen.current) return;
+    setOrganizeFor({ r, incidents });
+  }
+  /* U-11: перенос у направника йшов у RescheduleModal БЕЗ простоїв узагалі
+     (пропа не було) — кабінет на ремонті завжди виглядав вільним. Тепер
+     вантажимо тим самим фідом і тримаємо ПОРУЧ із направленням, щоб не розʼїхалось. */
+  async function startReschedule(r: Referral) {
+    const gen = ++openGen.current;
+    const incidents = await centerIncidents(r.clinic_id);
+    if (gen !== openGen.current) return;
+    setReschedFor({ r, incidents });
   }
   /* Крок іншої модальності до СВОГО запису → referralCaseFromEntry (гілка 0118).
      Помилки гардів (той самий кабінет / перетин часу) повертаємо модалці. */
@@ -1758,9 +1790,10 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
   // впаде в дефолт і сітка слотів збереться не тієї модальності.
   const reschedRooms = (() => {
     if (!reschedFor) return [];
-    const all = roomsByClinic[reschedFor.clinic_id] || [];
-    const granted = roomsInGrant(all, centersById[reschedFor.clinic_id]?.room_ids);
-    const cur = all.find((r) => r.id === reschedFor.room_id);
+    const p = reschedFor.r;
+    const all = roomsByClinic[p.clinic_id] || [];
+    const granted = roomsInGrant(all, centersById[p.clinic_id]?.room_ids);
+    const cur = all.find((r) => r.id === p.room_id);
     return cur && !granted.some((r) => r.id === cur.id) ? [...granted, cur] : granted;
   })();
   const TAB_META: Record<string, { t: string; i: string }> = {
@@ -1822,7 +1855,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
                 visRoomsByClinic — лише для випадайки «Кабінет» у фільтрі. */}
             <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} visRoomsByClinic={visRoomsByClinic} doctorId={doctorId}
               focus={boardFocus} initialDate={initialDate} initialEntry={initialEntry}
-              onReschedule={(r) => setReschedFor(r)} onCancel={(r) => setCancelAsk(r)} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)}
+              onReschedule={startReschedule} onCancel={(r) => setCancelAsk(r)} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)}
               onOpenCase={openCaseScreen} onOrganizeCase={startOrganize} />
           </>
         )}
@@ -1840,7 +1873,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
       </div>
 
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={reschedRooms} clinicId={reschedFor.clinic_id} clinicTz={centersById[reschedFor.clinic_id]?.timezone} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+        <RescheduleModal patient={reschedFor.r} rooms={reschedRooms} clinicId={reschedFor.r.clinic_id} clinicTz={centersById[reschedFor.r.clinic_id]?.timezone} incidents={reschedFor.incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
       {editStudiesFor && (
         <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} services={servicesByClinic[editStudiesFor.clinic_id]} roomOverrides={roomOverridesByClinic[editStudiesFor.clinic_id]} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />

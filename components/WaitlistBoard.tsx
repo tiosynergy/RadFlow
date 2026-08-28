@@ -23,7 +23,7 @@ import { scheduleFromWaitlist } from "@/app/queue/actions";
 import { addWaitlistEntry, setWaitlistPriority, setWaitlistStatus, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, compareWaitlist, desiredWindowText } from "@/lib/waitlist";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
-import { setClinicTz, wallToday0 } from "@/lib/incidents";
+import { incidentFeed, setClinicTz, wallToday0 } from "@/lib/incidents";
 import type { WaitlistEntry } from "@/supabase/types";
 import type { Study } from "@/lib/studies";
 import { modalityLabel, modalityKind, isContrastName} from "@/lib/studies";
@@ -165,6 +165,10 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
   const [bookFor, setBookFor] = useState<WaitlistEntry | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<WaitlistEntry | null>(null);
   const [incidents, setIncidents] = useState<IncidentRow[]>([]);
+  /* U-11: у модалки простої їдуть ФІДОМ (rows + failed). Голий масив не
+     відрізняє «простоїв немає» від «не змогли прочитати», і кабінет на
+     ремонті малювався б вільним. */
+  const incidentsFeed = incidentFeed(incidents, incidentsErr);
   const [toast, setToast] = useState<{ msg: string; type: string; action?: { label: string; onAction: () => void } } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Рядок із запитом «у польоті»: кнопки цього рядка вимкнені (busy-стан).
@@ -687,7 +691,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
           onClose={() => setConfirmRemove(null)} />
       )}
       {bookFor && (
-        <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} services={services} roomOverrides={roomOverrides} prefill={bookPrefill}
+        <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides} prefill={bookPrefill}
           onClose={() => setBookFor(null)} onSave={saveBooking} />
       )}
 
