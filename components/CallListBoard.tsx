@@ -42,8 +42,20 @@ const WK = ["Неділя", "Понеділок", "Вівторок", "Сере�
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
 function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
 function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
-function pad(n: number) { return String(n).padStart(2, "0"); }
-function shortDate(d: Date) { return pad(d.getDate()) + "." + pad(d.getMonth() + 1); }
+/* U-1: підпис дати В РЯДКУ рахується з САМОГО рядка, а не з обраної дати.
+   Раніше в кожен рядок їхав `dateShort={shortDate(date)}` — мітка бралася зі
+   СТАНУ ПІКЕРА (сам форматер після правки лишився без споживачів і прибраний
+   разом зі своїм `pad`). Поки після зміни дня на екрані ще стоять рядки
+   минулого дня — а вони стоять, бо спінер вішався тільки на зміну клініки, —
+   кожен із них уже підписаний НОВОЮ датою, і оператор називає пацієнту чужий
+   день. Тепер це структурно неможливо: рядок не може стверджувати дату, якої
+   в ньому немає.
+   Рядок, а не Date: `scheduled_date` — це календарний день клініки, і проганяти
+   його через new Date() означало б повернути зсув зони, з яким боролась 0059. */
+function shortDateKey(k?: string | null): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(k || ""));
+  return m ? m[3] + "." + m[2] : "";
+}
 function studyKind(e: { studies?: unknown }) {
   const arr = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string }>) : [];
   const s = arr[0] ? arr[0].type : null;
@@ -75,7 +87,6 @@ interface CallRowProps {
   p: CallEntry;
   roomName: string;
   roomModel?: string;
-  dateShort: string;
   expanded: boolean;
   onToggle: (id: string) => void;
   onSet: (id: string, s: CallStatus) => void;
@@ -84,7 +95,7 @@ interface CallRowProps {
   onEditStudies: (p: CallEntry) => void;
 }
 
-function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet, onNote, onReschedule, onEditStudies }: CallRowProps) {
+function CallRow({ p, roomName, roomModel, expanded, onToggle, onSet, onNote, onReschedule, onEditStudies }: CallRowProps) {
   const type = studyKind(p);
   return (
     <div className={"clrow-wrap" + (expanded ? " open" : "")}>
@@ -92,7 +103,8 @@ function CallRow({ p, roomName, roomModel, dateShort, expanded, onToggle, onSet,
         <button className="cl-exp-btn" onClick={() => onToggle(p.id)} title={expanded ? "Згорнути" : "Розгорнути"}>
           <span className={"cl-chev" + (expanded ? " open" : "")}>›</span>
         </button>
-        <div className="cl-time tabular">{p.scheduled_time}<div className="cl-date">{dateShort}</div></div>
+        {/* Дата — з самого запису (див. shortDateKey): мітка не може розійтися зі змістом рядка. */}
+        <div className="cl-time tabular">{p.scheduled_time}<div className="cl-date">{shortDateKey(p.scheduled_date)}</div></div>
         <button className="cl-name cl-name-btn" onClick={() => onToggle(p.id)}>{p.priority_level && p.priority_level !== "planned" && isActiveStatus(p.status) && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone} style={{ marginRight: 6 }}>{PRIORITY_META[p.priority_level].short}</span>}{p.patient_name}</button>
         <div className="cl-tel-cell"><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>☎ {p.patient_phone}</a></div>
         <div className="cl-proc">{procLabel(p)}</div>
@@ -173,7 +185,12 @@ function IncidentCallSection({ incident, roomName, affected, onReschedule, onRec
               <div className={"cl-inc-item" + (isOpen ? " open" : "")} key={p.id}>
                 <button className="cl-inc-row" onClick={() => setOpenId((o) => (o === p.id ? null : p.id))}>
                   <span className={"cl-chev" + (isOpen ? " open" : "")}>›</span>
-                  <span className="cl-inc-time tabular">{p.scheduled_time}</span>
+                  {/* Дата обовʼязкова: запит по простою — `.gte(scheduled_date, today)`
+                      БЕЗ верхньої межі, а простій «до відновлення» триває нескінченно
+                      (incidentEffectiveEnd → Infinity). Тож сюди законно потрапляє
+                      пацієнт, записаний на три тижні вперед, і сам лише час «14:30»
+                      під заголовком «Записи на 29 серпня» читається як «сьогодні». */}
+                  <span className="cl-inc-time tabular">{p.scheduled_time}<span className="cl-date" style={{ marginLeft: 6 }}>{shortDateKey(p.scheduled_date)}</span></span>
                   <span className="cl-inc-name">{p.patient_name} · <span style={{ color: "var(--text-muted)" }}>{procLabel(p)}</span></span>
                 </button>
                 {isOpen && (
@@ -278,6 +295,25 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
   const [date, setDate] = useState(tomorrow);
   const [entries, setEntries] = useState<CallEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  /* U-1: зріз, до якого належать рядки НА ЕКРАНІ (клініка + день). Спінер раніше
+     вішався тільки на зміну клініки, тож при зміні ДНЯ список минулого дня
+     спокійно стояв далі — а при збої читання лишався взагалі назавжди («старий
+     список лишається на екрані + банер» — правильно для того самого дня і хибно
+     для іншого). Той самий приймач, що в CeoDashboard (с46). */
+  const loadedKeyRef = useRef<string | null>(null);
+  /* Покоління: два швидкі перемикання дня дають два запити, і без нього ПІЗНІША
+     відповідь старішого запиту перезаписала б новіші рядки. Зразок — lib/slotBusy. */
+  const genRef = useRef(0);
+  /* Ключ ПОТОЧНОГО зрізу, доступний із ПРОТУХЛИХ замикань — і це не те саме, що
+     genRef (ревʼю пакета; той самий висновок, що H-3 у QueueBoard). `genRef`
+     рахує ПОРЯДОК ВИДАЧІ, а не актуальність: `reload` живе в замиканнях шести
+     обробників (setCall, cancelEntry, doConfirmAll, doReschedule, doEditStudies,
+     onToWaitlist) і в дебаунсі realtime, тож замикання дня A цілком може бути
+     ВИДАНЕ пізніше за reload дня B — тоді A отримує більший gen, відкидає
+     відповідь B, кладе рядки дня A під заголовком дня B, а спінер B не знімає
+     ніхто: useEffect завʼязаний на identity `reload`, яка не мінялась.
+     Тому протухле замикання виходить ДО ++genRef. */
+  const scopeRef = useRef("");
   // H-6: збій завантаження ≠ «записів немає» / «простоїв немає».
   const [entriesErr, setEntriesErr] = useState(false);
   const [incidentsErr, setIncidentsErr] = useState(false);
@@ -302,6 +338,8 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
   const todayKey = wallDayKey(clinicTz);
 
   const dayKey = dateKey(date);
+  const scopeKey = clinicId + "|" + dayKey;
+  scopeRef.current = scopeKey;   // пишемо в рендері — див. коментар біля scopeRef
   /* roomsById — ПОВНИЙ список, включно з вимкненими: за ним резолвиться назва
      кабінету в рядку обдзвону й у CSV. Ховаємо кабінет зі СПИСКІВ, а не з записів. */
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
@@ -321,6 +359,18 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
   }
 
   const reload = useCallback(async () => {
+    const key = clinicId + "|" + dayKey;
+    if (key !== scopeRef.current) return;   // протухле замикання — ДО ++genRef
+    const gen = ++genRef.current;
+    const stale = () => gen !== genRef.current;   // нас обігнав новіший запит
+    /* Збій: старі рядки лишаємо на екрані ЛИШЕ якщо вони про ТОЙ САМИЙ день.
+       Інакше стираємо: «застарілі» і «з іншого дня» — різні речі, і друге
+       оператор прочитає як список сьогоднішнього обдзвону. */
+    const failed = () => {
+      if (stale()) return;
+      if (loadedKeyRef.current !== key) { loadedKeyRef.current = null; setEntries([]); }
+      setEntriesErr(true);
+    };
     try {
       const supabase = createClient();
       const { data, error } = await supabase
@@ -332,13 +382,15 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
         .order("scheduled_time", { ascending: true });
       // H-6: PostgREST не кидає сам — без цієї перевірки збій виглядав як «записів немає»,
       // і оператор просто нікому не дзвонив у цей день.
-      if (error) { setEntriesErr(true); return; }
+      if (error) { failed(); return; }
+      if (stale()) return;
       setEntries(data || []);
+      loadedKeyRef.current = key;
       setEntriesErr(false);
     } catch {
-      setEntriesErr(true);   // старий список лишається на екрані + банер
+      failed();
     } finally {
-      setLoading(false);
+      if (!stale()) setLoading(false);
     }
   }, [clinicId, dayKey]);
 
@@ -353,11 +405,18 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
     setIncidentsErr(false);
     setIncidents(incs || []);
     if (!incs || !incs.length) { setAffectedToday([]); return; }
-    const { data: ents } = await supabase
+    const entsRes = await supabase
       .from("queue_entries")
       .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, room_id, scheduled_date, off_schedule")
       .eq("clinic_id", clinicId).gte("scheduled_date", todayKey)
       .in("room_id", incs.map((i) => i.room_id)).in("status", ["scheduled", "waiting"]);
+    /* Помилку ЦЬОГО читання ковтали, хоча сусіднє (incidents) її перевіряло:
+       ents=null → aff=[] → секція каже «Усіх постраждалих опрацьовано ✓» і
+       «У вікні простою активних записів немає», причому БЕЗ банера, бо
+       incidentsErr лишався false. Кабінет зламаний, пацієнти на нього записані,
+       а оператор бачить, що дзвонити нема кому (той самий клас, що U-3/U-4). */
+    if (entsRes.error) { setIncidentsErr(true); return; }
+    const ents = entsRes.data;
     const byRoom: Record<string, IncidentRow> = {}; incs.forEach((i) => { byRoom[i.room_id] = i; });
     const aff = (ents || []).filter((e) => {
       const inc = e.room_id ? byRoom[e.room_id] : null;
@@ -373,20 +432,28 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
   const loadTodayScheduled = useCallback(async () => {
     try {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("queue_entries")
         .select("id, patient_name, patient_phone, patient_age, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, doctor, room_id, scheduled_date, off_schedule")
         .eq("clinic_id", clinicId)
         .eq("scheduled_date", todayKey)
         .eq("status", "scheduled")
         .order("scheduled_time", { ascending: true });
+      /* Коментар у catch обіцяв «лишаємо попередній список», але PostgREST не
+         кидає: при помилці сюди приходив {data:null} і `data || []` СТИРАВ
+         список — секція «Запізнення» просто зникала (LateCallSection віддає
+         null на порожньому), без банера й без лічильника. Тепер обіцянка
+         виконується буквально: не змогли прочитати — нічого не чіпаємо. */
+      if (error) return;
       setTodayScheduled(data || []);
     } catch { /* транзієнтний збій — лишаємо попередній список */ }
   }, [clinicId, todayKey]);
   useEffect(() => { loadTodayScheduled(); }, [loadTodayScheduled]);
 
-  // Спинер при первой загрузке/смене клиники; лоадеры снимут его.
-  useEffect(() => { setLoading(true); }, [clinicId]);
+  /* Спінер — на КОЖЕН зріз, а не лише на зміну клініки (U-1). Прив'язка до
+     [clinicId] означала: перемкнув день — рядки минулого дня стоять далі, і
+     єдине, що змінилось, це підпис дати. */
+  useEffect(() => { setLoading(true); }, [clinicId, dayKey]);
 
   // Перезапрос записей при смене дня: realtime-хук слушает только clinicId.
   useEffect(() => { reload(); }, [reload]);
@@ -538,8 +605,12 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
   }
 
   function exportCsv() {
-    const head = ["Час", "Пацієнт", "Телефон", "Процедура", "Кабінет", "Статус", "Нотатка"];
-    const rows = entries.map((e) => [e.scheduled_time, e.patient_name, e.patient_phone || "", procLabel(e), (e.room_id ? roomsById[e.room_id] : undefined)?.name || "", (CL_META[e.call_status || "not_called"]).label, (e.call_note || "").replace(/[\n;]/g, " ")]);
+    /* Ім'я файлу береться з ПІКЕРА, а рядки — зі стану. Поки триває завантаження
+       нового дня, це різні зрізи, і файл «call-list-30.08.csv» поїхав би з
+       пацієнтами 29-го. Кнопка гаситься при loading (як «Підтвердити всіх»), а
+       дата ще й стоїть КОЛОНКОЮ — щоб помилку було видно у самому файлі. */
+    const head = ["Дата", "Час", "Пацієнт", "Телефон", "Процедура", "Кабінет", "Статус", "Нотатка"];
+    const rows = entries.map((e) => [e.scheduled_date || "", e.scheduled_time, e.patient_name, e.patient_phone || "", procLabel(e), (e.room_id ? roomsById[e.room_id] : undefined)?.name || "", (CL_META[e.call_status || "not_called"]).label, (e.call_note || "").replace(/[\n;]/g, " ")]);
     const csv = [head, ...rows].map((r) => r.map((c) => '"' + String(c ?? "").replace(/"/g, '""') + '"').join(";")).join("\n");
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -596,7 +667,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
           </div>
           <div className="tb-right">
             <input className="inp tabular" type="date" value={dayKey} onChange={(e) => { const [y, m, d] = e.target.value.split("-").map(Number); setDate(new Date(y, m - 1, d)); }} style={{ width: 150 }} />
-            <button className="btn btn-secondary" onClick={exportCsv}>↧ Експорт</button>
+            <button className="btn btn-secondary" disabled={loading} onClick={exportCsv} title={loading ? "Зачекайте — список цього дня ще вантажиться" : "Вивантажити видимий день у CSV"}>↧ Експорт</button>
             <button className="btn btn-primary" disabled={loading || confirmTargets.length === 0} onClick={() => setConfirmAllAsk(true)}
               title={isNarrowed ? "Підтвердить лише тих, кого видно за поточним фільтром" : "Підтвердить усіх непідтверджених за цей день"}>
               ✓ Всіх підтверджено{confirmTargets.length ? ` (${confirmTargets.length})` : ""}
@@ -646,9 +717,14 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
                 <span className="inc-banner-ic">⚠</span>
                 <div className="inc-banner-txt">
                   <div className="inc-banner-title">{entriesErr ? "Список не оновився" : "Дані про простої не оновились"}</div>
+                  {/* Текст залежить від того, ЩО саме зараз на екрані: після правки
+                      рядки чужого дня стираються, і обіцяти «на екрані попередні
+                      дані» над порожнім списком означало б суперечити самому собі. */}
                   <div className="inc-banner-sub">
                     {entriesErr
-                      ? "На екрані — попередні дані, частина пацієнтів може бути не показана. Оновіть сторінку."
+                      ? (entries.length > 0
+                        ? "На екрані — попередні дані цього ж дня, частина пацієнтів може бути не показана. Оновіть сторінку."
+                        : "Список цього дня показати не можемо — це НЕ означає, що записів немає. Оновіть сторінку.")
                       : "Секція «Обдзвін через простій» може бути неповною. Оновіть сторінку."}
                   </div>
                 </div>
@@ -674,8 +750,12 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
             <div className="qctrl">
               <div className="pills">
                 {tabs.map((t) => (
+                  /* Лічильники — з `entries`, тобто з ПОПЕРЕДНЬОГО дня, поки новий
+                     вантажиться. Картки вище вже маскуються через loading; без цього
+                     ж рядки сховані за спінером, а числа поруч і далі описують
+                     учорашній обдзвін (ревʼю пакета). */
                   <button key={t.key} className={"pill" + (filter === t.key ? " active" : "")} onClick={() => setFilter(t.key)}>
-                    {t.label}<span className="ct">({t.ct})</span>
+                    {t.label}<span className="ct">({loading ? "—" : t.ct})</span>
                   </button>
                 ))}
               </div>
@@ -700,7 +780,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
             ) : (
               <div className="clrows">
                 {filtered.map((p) => (
-                  <CallRow key={p.id} p={p} roomName={(p.room_id ? roomsById[p.room_id] : undefined)?.name || "—"} roomModel={(p.room_id ? roomsById[p.room_id] : undefined)?.apparatus_model || ""} dateShort={shortDate(date)}
+                  <CallRow key={p.id} p={p} roomName={(p.room_id ? roomsById[p.room_id] : undefined)?.name || "—"} roomModel={(p.room_id ? roomsById[p.room_id] : undefined)?.apparatus_model || ""}
                     expanded={expandedId === p.id} onToggle={(id) => setExpandedId((x) => (x === id ? null : id))}
                     onSet={setCallGuarded} onNote={setNote} onReschedule={(pt) => setReschedFor(pt)} onEditStudies={(pt) => setEditStudiesFor(pt)} />
                 ))}
@@ -715,7 +795,11 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
         <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} allowOffSchedule />
       )}
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesFor.off_schedule} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        /* Дата — ІЗ ЗАПИСУ, а не з пікера: цей проп веде читання графіка,
+           оверрайда і зайнятості кабінету, тож при найменшому розходженні
+           тривалість перевірялась би по чужому дню. Той самий підхід, що з
+           підписом дати в рядку. */
+        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date || dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesFor.off_schedule} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
 
       {declineAsk && (

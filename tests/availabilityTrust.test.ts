@@ -205,7 +205,19 @@ describe("QueueBoard — бронювання і перенос за одним 
     expect(board.split("setModalOpen(true)").length - 1).toBe(1);
     expect(board).toContain("onNew={openBooking}");
     expect(board).toContain("onClick={openBooking}");
-    expect(board).toMatch(/code === "KeyN"[^\n]*openBooking\(\)/);
+    /* Хоткей кличе той самий вхід через ref — інакше `openBooking` довелося б
+       класти в масив залежностей ефекту (перепідписка слухача на кожен рендер)
+       або глушити exhaustive-deps на масиві з двадцяти залежностей, ховаючи
+       МАЙБУТНІ пропуски там, де пропуск дає хоткей зі старим станом. */
+    expect(board).toMatch(/code === "KeyN"[^\n]*openBookingRef\.current\(\)/);
+  });
+
+  /* Ref мусить оновлюватися на КОЖЕН рендер. Присвоєння лише при створенні
+     (`useRef(openBooking)` без рядка нижче) законсервувало б перше замикання —
+     і хоткей N назавжди лишився б із «дані в порядку» з першого рендера, тобто
+     повернув би U-6 саме там, звідки його прибрали. */
+  it("ref хоткея тримає СВІЖУ функцію, а не перше замикання", () => {
+    expect(board).toMatch(/const openBookingRef = useRef\(openBooking\);\s*\n\s*openBookingRef\.current = openBooking;/);
   });
 
   it("перенос гейтований у самому openReschedule (покриває всіх викликачів)", () => {
