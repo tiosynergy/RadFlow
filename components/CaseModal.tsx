@@ -375,7 +375,7 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
             patient_name: editStudiesStep.patient_name, studies: editStudiesStep.studies,
           }}
           scheduledDate={editStudiesStep.scheduled_date || dateKey(new Date())}
-          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesStep.off_schedule}
+          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} incidents={incidents} offSchedule={!!editStudiesStep.off_schedule}
           allowOffSchedule={!referralMode}
           onClose={() => setEditStudiesStep(null)}
           onConfirm={doEditStudies}

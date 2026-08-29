@@ -53,6 +53,11 @@ const CONSUMERS = [
   "components/QuickRescheduleButton.tsx",
   "components/RoomDayOverviewModal.tsx",
   "components/BreakdownModal.tsx",
+  /* U-15 (с48): дев'ятий споживач. Проп зʼявився лише тепер — до нього модалка,
+     яка міняє ТРИВАЛІСТЬ, про простої не знала нічого й показувала стелю, якої
+     не існує. Механізм той самий: обовʼязковий фід без дефолта, повноту
+     викликів перевіряє tsc. */
+  "components/StudyEditModal.tsx",
 ];
 
 describe("U-11: проп простоїв — фід, і він обовʼязковий", () => {
@@ -310,7 +315,14 @@ describe("U-11: наслідки, які ревʼю знайшло після п
   it("ReferralPortal має guard покоління на відкриття модалок", () => {
     const code = src("components/ReferralPortal.tsx");
     expect(code).toMatch(/const openGen = useRef\(0\);/);
-    for (const fn of ["openCaseScreen", "startOrganize", "startReschedule"]) {
+    /* ⚠️ Список — «уважність», і вона вже підвела: U-15 додав ЧЕТВЕРТЕ
+       асинхронне відкриття (`startEditStudies`), а список лишився на трьох —
+       гвард у ньому можна було прибрати, і весь набір лишався зеленим (знайдено
+       фальсифікацією ревʼю р2, D-1). Ціна пропуску тут вища за звичайну: без
+       гварда відповідь ПЕРШОГО кліку підміняє `patient` у вже відкритій модалці,
+       а `rows`/`buffer` лишаються від другої — оператор редагує склад НЕ ТОГО
+       пацієнта. Додаючи нове асинхронне відкриття, додай його сюди. */
+    for (const fn of ["openCaseScreen", "startOrganize", "startReschedule", "startEditStudies"]) {
       const m = new RegExp("async function " + fn + "\\([\\s\\S]*?\\n  \\}").exec(code);
       expect(m, `${fn} не знайдено`).not.toBeNull();
       const body = (m as RegExpExecArray)[0];

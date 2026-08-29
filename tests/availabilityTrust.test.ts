@@ -23,7 +23,10 @@ import { resolve } from "path";
 import { slotDataMissLabel, slotDataTrusted, slotDataFromSingleSource, type SlotDataState } from "@/lib/availabilityTrust";
 import { codeOf } from "./helpers/codeOf";
 
-const ok: SlotDataState = { busyFailed: false, schedFailed: false, loading: false };
+/* U-15: `incidentsFailed` став ОБОВʼЯЗКОВИМ у `SlotDataState` — і саме tsc
+   привів сюди. Поле було необовʼязковим рівно тому, що `StudyEditModal` не мала
+   пропа простоїв; проп зʼявився, причина зникла. */
+const ok: SlotDataState = { busyFailed: false, schedFailed: false, incidentsFailed: false, loading: false };
 const st = (p: Partial<SlotDataState>): SlotDataState => ({ ...ok, ...p });
 
 describe("slotDataTrusted — коли можна стверджувати «слот вільний»", () => {

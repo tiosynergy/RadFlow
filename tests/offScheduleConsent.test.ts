@@ -208,8 +208,13 @@ const GATES: Array<[string, RegExp]> = [
      Стара форма `crossesNow && !overflow` була тотожно false для запису в
      графіку (там availableDur === inSchedCap), нічого не знала про
      `confirmable` і не бачила перерви, що вже тривала на момент старту. */
+  /* U-15 (с48) додав `!incidentBlocked`. Це НЕ дубль `!overflow`: при простої
+     `availableDur = 0`, тож overflow ховає галочку рівно доти, доки склад
+     непорожній. При `totalDur = 0` (область ще не обрана) overflow гасне — і на
+     записі після закриття у зламаному кабінеті виринала б згода на збереження,
+     яке сервер відхилить ІНШИМ тригером. Пінимо ОБИДВА члени. */
   ["галочку овертайму видно лише тому, кому сервер її дозволить",
-    /const needsOffConfirm = allowOffSchedule && !!offNow && offNow\.confirmable && !overflow;/],
+    /const needsOffConfirm = allowOffSchedule && !!offNow && offNow\.confirmable && !overflow && !incidentBlocked;/],
   ["галочка не спирається на арифметику стель — інакше вона знову стане недосяжною",
     /const needsOffConfirm = (?!.*crossesNow)[^\n]*;/],
   ["непідтверджуваний вид — глухий кут для ВСІХ ролей, не лише для направника",
@@ -218,10 +223,14 @@ const GATES: Array<[string, RegExp]> = [
     /const offNow = schedReady && !!patient\.scheduled_time\s*\n?\s*\? offScheduleKind\(startMin, totalDur, roomSched, roomBreaks\) : null;/],
   ["роль справді блокує саме збереження",
     /const offForbiddenForRole = !allowOffSchedule && !!offNow;/],
+  /* `[^\n]*` між членами, а не жорсткий хвіст: U-15 дописав у `valid` четвертий
+     блок (`!incidentBlocked`), і жорсткий кінець рядка червонів би на КОЖНОМУ
+     новому блоці, а не на зникненні перевіреного. Пінимо присутність кожного
+     члена окремо — саме це й є те, що не має зникнути. */
   ["рольова заборона входить у valid — інакше «Зберегти» лишиться активним",
-    /const valid = [^\n]*&& !offForbiddenForRole && !offHardBlocked;/],
+    /const valid = [^\n]*&& !offForbiddenForRole &&[^\n]*;/],
   ["непідтверджуваний вид теж входить у valid — інакше персонал збереже те, що сервер відхилить",
-    /const valid = [^\n]*&& !offHardBlocked;/],
+    /const valid = [^\n]*&& !offHardBlocked[^\n]*;/],
   ["обидва глухі кути рахуються однією диз'юнкцією",
     /const offDeadEnd = offForbiddenForRole \|\| offHardBlocked;/],
   ["порада «скоротіть» перевіряється тією ж функцією, що й заборона",
@@ -255,8 +264,11 @@ const GATES: Array<[string, RegExp]> = [
     /\{overflow && !lengthIrrelevant\s*\n?\s*\? <>⚠ Не вміщується/],
   ["глухий кут іде одразу за overflow, а не після нормальної гілки",
     /\{overflow && !lengthIrrelevant[\s\S]{0,600}?: offDeadEnd && offNow/],
+  /* U-15 виніс простій ПЕРШИМ членом диз'юнкції: `offNow` для простою в
+     робочому кабінеті дорівнює null, тож четвертим членом у дужках він не
+     виражається. Пінимо і диз'юнкцію, і повний набір видів у дужках. */
   ["перерва, що накриває старт, теж не лікується довжиною",
-    /const lengthIrrelevant = !!offNow && \(offNow\.kind === "closed" \|\| offNow\.kind === "before_start" \|\| !!curBreak\);/],
+    /const lengthIrrelevant = incidentBlocked\s*\n?\s*\|\| \(!!offNow && \(offNow\.kind === "closed" \|\| offNow\.kind === "before_start" \|\| !!curBreak\)\);/],
   ["для too_late банер радить скоротити до жорсткої стелі, а не перезаписувати",
     /: \(overflow && !lengthIrrelevant\)\s*\n?\s*\? <>Скоротіть склад до <b>\{availableDur\} хв<\/b>/],
   /* U-20: те саме правило, але для НОРМАЛЬНОГО стану. Відколи grace відкрита і
@@ -294,10 +306,14 @@ const GATES: Array<[string, RegExp]> = [
     /<b>⏰ Поза графіком\.<\/b> Разом <b>\{totalDur\} хв<\/b> — \{offNow \? offReasonText\(offNow\) :/],
   /* Ревʼю р1: DUR_MAX у стелях. Без нього склад на 500 хв мовчки зберігався б із
      duration_min = 480 (normDur клампить на сервері) і розходився зі studies[]. */
+  /* U-15 додав `capByIncident` В ОБИДВА мінімуми (простій не лікується згодою
+     «поза графіком» — сервер відхиляє його окремим тригером). Порядок членів
+     закріплений навмисно: перестановка сама по собі безпечна, але зникнення
+     будь-якого — ні, а перелік у регулярці робить зникнення видимим одразу. */
   ["обидві стелі клампляться стелею продукту",
-    /const availableDur = Math\.max\(0, Math\.min\(capByNext, capBySched, capByBreak, DUR_MAX\)\);/],
+    /const availableDur = Math\.max\(0, Math\.min\(capByNext, capBySched, capByBreak, capByIncident, DUR_MAX\)\);/],
   ["строга стеля теж клампиться стелею продукту",
-    /const inSchedCap = Math\.max\(0, Math\.min\(capByNext, capBySchedStrict, capByBreakStrict, DUR_MAX\)\);/],
+    /const inSchedCap = Math\.max\(0, Math\.min\(capByNext, capBySchedStrict, capByBreakStrict, capByIncident, DUR_MAX\)\);/],
   /* U-22: перерва, що вже триває на момент старту, мусить давати нуль у СТРОГІЙ
      стелі — інакше екран пише «вільно ще N хв» запису, який весь стоїть в обіді. */
   ["перерва, що накриває старт, обнуляє строгу стелю",
@@ -309,8 +325,12 @@ const GATES: Array<[string, RegExp]> = [
      словами «до кінця графіка (18:00)». */
   ["підпис межі рахується зі строгих стель",
     /: \(capByBreakStrict <= capByNext && capByBreakStrict <= capBySchedStrict && nextBreakStart != null\)/],
+  /* U-15 поставив ПЕРЕД перервою гілку простою — і саме безумовно, без
+     порівняння стель: при записі після закриття `capBySchedStrict` відʼємний,
+     `0 <= -30` хибне, і підпис вертався б до графіка рівно там, де накладаються
+     два блоки. Пінимо і нову гілку, і те, що перерва лишилась одразу за нею. */
   ["перерва, що накриває старт, має власний підпис",
-    /const boundaryLabel = curBreak\s*\n?\s*\? \("кабінет у перерві до " \+ curBreak\.end\)/],
+    /const boundaryLabel = incidentLabel != null\s*\n?\s*\? incidentLabel\s*\n?\s*: curBreak\s*\n?\s*\? \("кабінет у перерві до " \+ curBreak\.end\)/],
   /* Ревʼю р1: згода під одну причину не має мовчки підписувати іншу. */
   ["згода скидається на зміні ВИДУ виходу за графік",
     /if \(offKind === null \|\| prevOffKind\.current === offKind\) return;\s*\n\s*prevOffKind\.current = offKind;\s*\n\s*setOffOk\(false\);/],

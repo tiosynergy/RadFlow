@@ -1444,10 +1444,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
       if (error) { setIncidentsErr(true); return; } // НЕ чистимо incidents: «немає простоїв» — небезпечна брехня
       /* Простої з auto_unblock знімає pg_cron (джоб resolve-expired-incidents,
-         supabase/cron_jobs.sql). Раніше це робив клієнт прямо в лоадері — запис у БД
-         на рефетчі + залежність від того, чи в когось відкрита дошка.
-         На відображення це не впливає: incidentExpired() і DB-гард
-         check_not_during_incident рахують ВІКНО [started_at, blocked_until), а не статус. */
+         supabase/cron_jobs.sql — кожні 5 хв, активний, перевірено в cron.job).
+         Раніше це робив клієнт прямо в лоадері — запис у БД на рефетчі +
+         залежність від того, чи в когось відкрита дошка.
+         ⚠️ ТУТ БУЛО НЕВІРНЕ ТВЕРДЖЕННЯ (ревʼю U-15 р2): «DB-гард
+         check_not_during_incident рахує ВІКНО [started_at, blocked_until), а не
+         статус». Функція прочитана з живої БД — вона рахує І ТЕ, І ТЕ:
+           `where i.room_id = new.room_id and i.status in ('active','planned')
+            and tstzrange(started_at, coalesce(blocked_until,'infinity')) && …`
+         Отже між `blocked_until` і найближчим прогоном крона (до 5 хв) рядок
+         для клієнта вже «згас» (`incidentExpired`), а для сервера ще діє. Різницю
+         видно нижче: фідів тепер ДВА, і вибір між ними — не стиль. */
       const list = data || [];
       setIncidents(list);
       setIncidentsErr(false);
@@ -1766,6 +1773,21 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      простої. Ревʼю р2 (F1): перший варіант правки передав сюди liveIncidents і
      тихо занизив відсоток — рівно те викривлення, яке пакет і прибирає. */
   const loadIncidentsFeed = incidentFeed(incidents, incidentsErr);
+  /* ФІД ДЛЯ ФОРМ, ЩО ПИШУТЬ `queue_entries` (U-15, ревʼю р2).
+     Дзеркалить предикат тригера `check_not_during_incident` РІВНО: він відбирає
+     рядки за `status in ('active','planned')` — тобто саме те, що приїхало із
+     запиту, — і про `blocked_until < now` не знає нічого. `incidentsFeed` вище
+     додатково викидає «згаслі» (`incidentExpired`), і це правильно для питання
+     «чи заблокований кабінет ЗАРАЗ» (виклики, картки, банери), але НЕ для
+     питання «чи прийме це сервер»: у вікні до 5 хв між `blocked_until` і
+     прогоном крона форма обіцяла збереження, яке тригер відхиляє. Рівно той
+     клас брехні, заради якого U-15 і робився.
+     Той самий висновок, що з `loadIncidentsFeed` у ревʼю U-11 (F1): один масив
+     на два різні питання — і одне з них отримує неправильну відповідь.
+     ⚠️ Решта форм запису (BookingModal, RescheduleModal, WaitlistCandidatesModal)
+     поки лишаються на `incidentsFeed` — те саме розходження живе й там, але це
+     інший пакет зі своєю живою перевіркою (заведено U-33). */
+  const writeIncidentsFeed = loadIncidentsFeed;
   // Аварійна зупинка: активні інциденти reason='emergency' → кабінети зупинено.
   const emergencyRooms = Array.from(new Set(liveIncidents.filter((i) => i.reason === "emergency").map((i) => i.room_id)));
   const emergencyActive = emergencyRooms.length > 0;
@@ -2795,7 +2817,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
           направника й керівника редиректом, тож clinic_id профілю = центр запису,
           і серверний `isStaff` тут завжди true). U-12: проп обовʼязковий саме щоб
           ця відповідь була написана, а не вгадана дефолтом. */}
-      {openCaseId && <CaseModal caseId={openCaseId} referralMode={false} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides} onClose={() => setOpenCaseId(null)} onCancelled={reload} />}
+      {/* U-15: `writeIncidentsFeed` — бо кейс віддає цей проп ФОРМАМ ЗАПИСУ
+          (StudyEditModal / RescheduleModal / BookingModal кроку), а їм потрібен
+          предикат СЕРВЕРА, а не «чи заблоковано зараз». Портал направника сюди
+          вже подає сирий фід центру, тож обидва входи в CaseModal тепер
+          однакові. */}
+      {openCaseId && <CaseModal caseId={openCaseId} referralMode={false} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={writeIncidentsFeed} services={services} roomOverrides={roomOverrides} onClose={() => setOpenCaseId(null)} onCancelled={reload} />}
       {caseFromEntryFor && (
         <BookingModal
           rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides}
@@ -2856,7 +2883,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       )}
 
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesFor.off_schedule} allowOffSchedule onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} incidents={writeIncidentsFeed} offSchedule={!!editStudiesFor.off_schedule} allowOffSchedule onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {editPatientFor && (
         <PatientEditModal entryId={editPatientFor.id} canEditPriority={canEditPriority} onClose={() => setEditPatientFor(null)} onSaved={reload} />

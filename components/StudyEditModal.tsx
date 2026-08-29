@@ -13,12 +13,23 @@ import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, 
 import StudySearchBox from "@/components/StudySearchBox";
 import type { StudySearchHit } from "@/lib/studySearch";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, offScheduleKind, offReasonText, OFF_SCHED_GRACE_MIN, type DayOverride } from "@/lib/schedule";
-import { wallNow, wallMinOfDay, wallDayKey, wallToday0 } from "@/lib/incidents";
+import { wallNow, wallMinOfDay, wallDayKey, wallToday0, wallInstant, incidentDurNotice, incidentsUnknown, slotBlockedByFeed, incidentAtInstant, incidentEndLabel, roomIncidentsOf, type IncidentFeed, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { buildSlots } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { useModalA11y } from "@/lib/useModalA11y";
+
+/* Як САМЕ перенести запис — одним місцем на всі три банери глухого кута.
+   ⚠️ БЕЗ назви кнопки (ревʼю U-15 р2). Три банери писали «"🗓 Перезаписати" на
+   дошці», і це правда рівно для ОДНОГО з чотирьох місць виклику: у
+   `ReferrerBoard` кнопка так і зветься, а в `QueueBoard`, `CallListBoard` і
+   `CaseModal` вона «🗓 Перенести» — та ще й у кейсі не «на дошці», а в самому
+   вікні. Порада, що називає неіснуючу кнопку, коштує стільки ж, скільки порада
+   для чужої ролі: людина шукає її й не знаходить.
+   Що ПРАВДА скрізь — кнопка переносу стоїть у тому самому рядку дій, звідки
+   відкрили це вікно (перевірено в усіх чотирьох). На неї й посилаємось. */
+const RESCHEDULE_HINT = "кнопка переносу стоїть поруч із тією, з якої відкрито це вікно";
 
 const MIN_STUDY = 15;
 /* Найкоротший склад, який форма ще ЗБЕРЕЖЕ (мінімум на рядок). Це НЕ MIN_STUDY:
@@ -82,6 +93,23 @@ interface StudyEditModalProps {
      чужі права, дефолт `false` так само тихо забрав би їх у персоналу. Рішення
      пише той, хто знає роль, а `tsc` перелічує місця виклику сам. */
   allowOffSchedule: boolean;
+  /* Простої кабінету (поломка/ТО) — ФІД, а не масив: рядки + чи вдалося їх
+     прочитати (U-11).
+
+     ⚠️ ОБОВʼЯЗКОВИЙ і БЕЗ дефолта (U-15, с48). Досі цього пропа не було ВЗАГАЛІ
+     — модалка, яка міняє ТРИВАЛІСТЬ, про простої не знала нічого. Стеля
+     доступного часу рахувалась по зайнятості, графіку й перервах, тож екран
+     чесно писав «Доступно у слоті: 180 хв» кабінету, який за 40 хвилин іде на
+     ТО. Цілісність тримала БД (`check_not_during_incident` рахує ВЕСЬ інтервал
+     і спрацьовує саме на `duration_min` — перевірено читанням тригера, а не
+     припущенням), але відмова прилітала ПІСЛЯ натискання, та ще й текстом
+     «оберіть інший слот або кабінет» — порадою, яку в цьому вікні виконати
+     нічим: слота тут не обирають.
+
+     Дефолт `{ rows: [], failed: false }` був би найгіршим із можливих: він
+     означає «простоїв немає» — тобто рівно те твердження на невідомості, від
+     якого захищає весь механізм фіда. */
+  incidents: IncidentFeed<IncidentLike>;
 }
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
@@ -92,7 +120,7 @@ function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
    з переносом і словами (U-20: саме тут уперше зʼявився напис зі стелею grace). */
 function fmtDay(m: number) { return m >= 1440 ? fmt(m - 1440) + " наступного дня" : fmt(m); }
 
-export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, services, roomOverrides, onClose, onConfirm, offSchedule, allowOffSchedule }: StudyEditModalProps) {
+export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, services, roomOverrides, onClose, onConfirm, offSchedule, allowOffSchedule, incidents }: StudyEditModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   // Каталог послуг центру (фаза 2a) + переозначення по кабінетах (фаза 2b): виклики
   // резолвера передають кабінет цього запису (roomId) → ціна/тривалість per-room (0108).
@@ -173,9 +201,16 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const schedReady = schedApplies && !schedLoading && !schedErr;
   /* Спільний стан довіри до даних кабінету — те саме правило й ті самі слова, що
      на решті екранів запису (lib/availabilityTrust, пакет U-5/U-6). */
-  const availState: SlotDataState = { busyFailed: busyErr, schedFailed: schedErr, loading: busyLoading || schedLoading };
+  /* U-15: третє джерело нарешті є і в цієї модалки. Прапорець беремо з фіда, а
+     не з власного стану: читає простої БАТЬКО, і саме там живе інформація про
+     збій — рівно та асиметрія, через яку модалка мовчала про них досі. */
+  const availState: SlotDataState = { busyFailed: busyErr, schedFailed: schedErr, incidentsFailed: incidentsUnknown(incidents), loading: busyLoading || schedLoading };
   const availTrusted = slotDataTrusted(availState);
-  const availFailed = busyErr || schedErr;
+  /* ⚠️ Простої — теж збій, а не «просто ще вантажимо». Без цього доданка банер
+     при збої САМИХ ЛИШЕ простоїв малювався синім «⏳», тобто просив зачекати
+     там, де треба оновити сторінку — рівно та помилка, яку ревʼю U-11 уже
+     ловило в `slotDataFooterText` (F2). */
+  const availFailed = busyErr || schedErr || incidentsUnknown(incidents);
   /* Консервативна стеля на час невідомості — ПОТОЧНА тривалість запису: редагувати
      й скорочувати можна, ЗБІЛЬШИТИ — ні. Одна на обидва джерела, щоб правило не
      розповзлося по файлу двома копіями, які розійдуться.
@@ -278,11 +313,36 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      `normDur`, який МОВЧКИ клампить до 480, тож склад на 500 хв зберігся б із
      `duration_min = 480` і розійшовся б із самим `studies[]`. Відколи стеля
      графіка виросла на grace, цей діапазон стало легко набрати (ревʼю р1). */
-  const availableDur = Math.max(0, Math.min(capByNext, capBySched, capByBreak, DUR_MAX));
+  /* ── U-15: стеля за ПРОСТОЯМИ кабінету ──────────────────────────────────
+     Дзеркало серверного `check_not_during_incident` (див. `incidentDurCapMin`).
+     `undefined` = простої не прочитані → та сама консервативна стеля, що для
+     зайнятості й графіка: скоротити можна, ЗБІЛЬШИТИ — ні.
+
+     ⚠️ Стоїть в ОБОХ мінімумах — і в мʼякому, і в строгому. Простій не
+     лікується згодою «поза графіком»: сервер відхиляє його окремим тригером,
+     який про `off_schedule` не знає взагалі. Пустити grace повз простій означало
+     б відкрити галочку, якої сервер не прийме — рівно провал U-21, тільки з
+     іншого джерела. */
+  /* Стеля, жорсткий блок і термін — ОДНИМ викликом (`incidentDurNotice`), а не
+     трьома. Три окремі виклики тут і розходяться: стеля каже «0 хв», прапорець
+     блоку мовчить, банер називає чужу причину. Рішення `blocked` виводиться
+     рівно зі стелі, тож розійтись їм нема на чому. Логіка живе в lib ще й тому,
+     що тести проєкту не бачать компонентів (node-середовище) — там вона
+     перевіряється поведінково, а не сторожем-регуляркою. */
+  const incNotice = incidentDurNotice(incidents, patient.room_id, scheduledDate, patient.scheduled_time);
+  /* Лише для ЛЕГЕНДИ сітки: рядок «простій / ТО» має зʼявлятись тоді, коли в
+     сітці справді є що ним пояснювати. `null` (простої не прочитані) → порожньо,
+     і це не втрата: при невідомості сітка взагалі не рендериться (availFailed). */
+  const roomIncidentRows = roomIncidentsOf(incidents, patient.room_id) || [];
+  const incCapRaw = incNotice.capMin;
+  const capByIncident = incCapRaw === undefined ? committedDur : incCapRaw;
+  const incidentBlocked = incNotice.blocked;
+  const incEndLabel = incNotice.endLabel;
+  const availableDur = Math.max(0, Math.min(capByNext, capBySched, capByBreak, capByIncident, DUR_MAX));
   // Межа, за якою потрібне НОВЕ підтвердження (кінець графіка / початок перерви).
   const capBySchedStrict = !schedApplies ? DUR_MAX : (schedReady ? schedEnd - startMin : committedDur);
   const capByBreakStrict = !schedApplies ? Infinity : (schedReady ? capByBreakStrictRaw : committedDur);
-  const inSchedCap = Math.max(0, Math.min(capByNext, capBySchedStrict, capByBreakStrict, DUR_MAX));
+  const inSchedCap = Math.max(0, Math.min(capByNext, capBySchedStrict, capByBreakStrict, capByIncident, DUR_MAX));
   /* ⚠️ Ревʼю р2 зарубало проміжний варіант `noConsentCap = offSchedule ?
      availableDur : inSchedCap`. Міркування було таке: для запису, що вже стоїть
      поза графіком, згода їде разом з успадкованим прапорцем (`save()`:
@@ -305,7 +365,36 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      тотожно false — гілка «до перерви» вмерла, і екран підписував межу 13:00
      словами «до кінця графіка (18:00)». Підпис описує СТРОГУ межу, тож і читати
      він мусить строгі стелі (ревʼю р1). */
-  const boundaryLabel = curBreak
+  /* U-15: простій — така сама межа, як перерва, і без власного рядка тут вона
+     говорила ЧУЖИМ голосом: `capByIncident` тихо вʼязав мінімум, а підпис поруч
+     називав «до кінця графіка (18:00)» — екран пояснював обмеження причиною,
+     яка не обмежує. Умова дзеркалить гілку перерви: називаємо межу лише коли
+     вона справді вʼяже (`<=` усіх інших СТРОГИХ стель) і лише коли стеля
+     ПРОЧИТАНА — інакше підпис видавав би консервативний `committedDur` за
+     реальний час простою.
+     `< Infinity` — щоб кабінет БЕЗ простоїв не потрапив у гілку там, де решта
+     стель теж нескінченні (немає розкладу й немає сусідніх записів).
+     ⚠️ `DUR_MAX` у переліку обовʼязковий (ревʼю р1, знахідка 3). Обидва мінімуми
+     його містять, а умова «чи вʼяже» спочатку — ні, і набори розійшлись: у
+     кабінеті 08:00–20:00 із ТО о 17:00 стеля простою 540 хв програє продуктовим
+     480, але підпис діставався їй — екран писав «доступно 480 хв (до простою о
+     17:00)», хоча 480 хв від 08:00 це 16:00, і причиною був `normDur`, а не ТО.
+     Читач ішов дзвонити в сервіс. Перевіряти вʼязання треба ТИМ САМИМ набором,
+     з якого рахується мінімум. */
+  const incCapBinds = !incidentBlocked && incCapRaw !== undefined && incCapRaw < Infinity
+    && incCapRaw <= capByNext && incCapRaw <= capBySchedStrict && incCapRaw <= capByBreakStrict
+    && incCapRaw <= DUR_MAX;
+  /* ⚠️ Гілка «старт уже в простої» — БЕЗУМОВНО перша, без порівняння стель.
+     Порівняння тут було б помилкою: при записі після закриття `capBySchedStrict`
+     стає відʼємним, `0 <= -30` хибне, і підпис вертався б до графіка — тобто
+     рівно там, де накладаються ДВА блоки, екран називав би мʼякший. Простій
+     жорсткіший за визначенням: графік лікується згодою персоналу, простій — ні. */
+  const incidentLabel = incidentBlocked
+    ? ("кабінет у простої" + (incEndLabel ? " до " + incEndLabel : ", термін не визначено"))
+    : (incCapBinds && incCapRaw !== undefined) ? ("до простою о " + fmtDay(startMin + incCapRaw)) : null;
+  const boundaryLabel = incidentLabel != null
+    ? incidentLabel
+    : curBreak
     ? ("кабінет у перерві до " + curBreak.end)
     : (capByBreakStrict <= capByNext && capByBreakStrict <= capBySchedStrict && nextBreakStart != null)
     ? ("до перерви о " + fmt(nextBreakStart))
@@ -326,9 +415,21 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      стеля; щойно в'яже інша (наприклад графік при впалій зайнятості), напис
      мовчки ставав точним часом — екран обіцяв «до 20:00» поруч із банером
      «збільшувати тривалість поки не можна» (ревʼю р1). Не знаємо — не називаємо. */
+  /* ⚠️ Понаднормова гілка мусить називати ПРИЧИНУ, коли нею є простій (ревʼю р2,
+     A-4). `incCapBinds` рахується зі СТРОГИХ стель — він відповідає на питання
+     про `inSchedCap`. А `labelFor` кличуть двічі, і другий раз — з `availableDur`,
+     у якого набір МʼЯКИЙ (grace, перерва = Infinity). Був досяжний випадок, де
+     мʼяку стелю вʼяже простій, а строгу — графік: екран писав «Понаднормово — до
+     480 хв (до 16:00) з підтвердженням», і читач розумів, що впирається в
+     овертайм, тоді як о 16:00 стоїть ТО, якого згода не знімає. Числа при цьому
+     правильні (сервер такий склад прийме), бреше саме пояснення. */
+  const incCapBindsSoft = !incidentBlocked && incCapRaw !== undefined && incCapRaw < Infinity
+    && incCapRaw <= capByNext && incCapRaw <= capBySched && incCapRaw <= capByBreak && incCapRaw <= DUR_MAX;
   const labelFor = (cap: number) => (!availTrusted && cap === committedDur
     ? untrustedLabel
-    : (availTrusted && cap > inSchedCap) ? ("до " + fmtDay(startMin + cap)) : boundaryLabel);
+    : (availTrusted && cap > inSchedCap)
+      ? ("до " + fmtDay(startMin + cap) + (incCapBindsSoft && cap === incCapRaw ? " — далі простій кабінету" : ""))
+      : boundaryLabel);
   const windowLabel = labelFor(availableDur);
 
   // Тривалість за довідником (у каталозі — час позиції як є; CONTRAST_DUR
@@ -468,7 +569,15 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      `!confirmable` → глухий кут для ВСІХ ролей. `!overflow` лишається: якщо
      склад не влазить і в grace, просити згоду нема сенсу — треба скорочувати. */
   const offHardBlocked = !!offNow && !offNow.confirmable;
-  const needsOffConfirm = allowOffSchedule && !!offNow && offNow.confirmable && !overflow;
+  /* ⚠️ `!incidentBlocked` — НЕ дубль `!overflow`. При простої `availableDur = 0`,
+     тож `overflow` істинний і галочку справді ховає — але рівно доти, доки
+     `totalDur > 0`. Порожній склад (область ще не обрана) дає `totalDur = 0`,
+     `overflow` гасне, і на записі після закриття в зламаному кабінеті
+     виринала б галочка «підтверджую роботу поза графіком» — згода на збереження,
+     яке сервер відхилить ІНШИМ тригером, що про `off_schedule` не знає. Це
+     дослівно дефект U-21, і ловиться він так само: рішення читаємо з джерела
+     (стеля простою), а не з арифметики, яка випадково збігається. */
+  const needsOffConfirm = allowOffSchedule && !!offNow && offNow.confirmable && !overflow && !incidentBlocked;
   const offForbiddenForRole = !allowOffSchedule && !!offNow;
   /* Згода дається під КОНКРЕТНУ причину: заїзд в обід — не те саме, що робота
      після закриття. Поки скидання не було, галочка, поставлена під перерву,
@@ -511,12 +620,27 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      графіка (`roomScheduleFor` для закритого дня повертає дефолтні 08:00–18:00).
      Екран казав «Разом 30 хв. У графік вміщується 330 хв» червоним і сірою
      кнопкою — читач робив висновок «усе влазить», а зберегти не міг (ревʼю р1). */
-  const lengthIrrelevant = !!offNow && (offNow.kind === "closed" || offNow.kind === "before_start" || !!curBreak);
+  /* U-15: простій — четвертий випадок, де довжина ні до чого, і НАЙжорсткіший:
+     він не залежить ні від графіка, ні від ролі. Без цього доданка порада
+     «Скоротіть на N хв» їхала б і сюди — оператор скорочував би склад до нуля й
+     однаково впирався в сіру кнопку (та сама двокрокова брехня, що ревʼю U-21
+     зловило на закритому дні, лише з іншого джерела).
+     Диз'юнкція, а не ще один член у дужках: `offNow` тут може бути `null` —
+     простій у РОБОЧОМУ кабінеті поза графіком не стоїть узагалі. */
+  const lengthIrrelevant = incidentBlocked
+    || (!!offNow && (offNow.kind === "closed" || offNow.kind === "before_start" || !!curBreak));
   const fitsIfShorter = offDeadEnd && schedReady && busyReady && inSchedCap >= MIN_ROW_DUR
     && !offScheduleKind(startMin, inSchedCap, roomSched, roomBreaks);
   // 0117 (ревью M2): рядок з областю, але без часу (каталожне «—») — не зберігаємо,
   // інакше в снімок їхав dur 0, а колери мовчки лишали стару тривалість.
-  const valid = rows.length > 0 && rows.every((r) => r.region && (Number(r.dur) || 0) >= MIN_ROW_DUR) && !overflow && (!needsOffConfirm || offOk) && !offForbiddenForRole && !offHardBlocked;
+  /* `!incidentBlocked` стоїть окремим членом, хоча при простої `availableDur = 0`
+     і `overflow` уже блокує будь-який непорожній склад. Покладатись на це не
+     можна двічі: по-перше, при `totalDur = 0` блокує вже перевірка рядків, і
+     обидві причини — випадкові збіги, а не правило; по-друге, будь-яка наступна
+     правка стель (як grace у U-20) мовчки зняла б блок, і форма почала б
+     надсилати склад, який сервер відхиляє тригером `check_not_during_incident`.
+     Це рівно урок U-20: рішення читається з ДЖЕРЕЛА, а не з арифметики. */
+  const valid = rows.length > 0 && rows.every((r) => r.region && (Number(r.dur) || 0) >= MIN_ROW_DUR) && !overflow && (!needsOffConfirm || offOk) && !offForbiddenForRole && !offHardBlocked && !incidentBlocked;
 
   // ── Сітка слотів (read-only візуалізація дня кабінету) ──────────────────────
   // Показуємо зайнятість кабінету і власне вікно запису (green межі + буфер) —
@@ -531,6 +655,19 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
     const s = toMin(slot), eBlock = s + totalDur + buffer;
     if (isPastDay) return "past";
     if (roomSched.closed) return "closed";
+    /* U-15 (ревʼю р1, знахідка 4). Сітка простоїв не знала — і до цього пакета
+       була чесно невігласною: про них не знала вся модалка. Тепер ліва колонка
+       пише «🔧 Кабінет у простої до 12:00», і сітка поруч, малюючи ті самі
+       слоти зеленими, прямо їй суперечить: один екран стверджує і «сюди не
+       можна», і «тут порожньо».
+       Рішення «невідомо → заблоковано» лежить у `slotBlockedByFeed`, а не тут —
+       рівно як у BookingModal/RescheduleModal: правило в JSX перевірялось би
+       тільки регуляркою. Стан і підпис теж називаємо так само, як там
+       («blocked»), інакше три сітки однієї дизайн-системи розійдуться.
+       ПЕРЕД перевіркою «минуле за сьогодні»: простій у минулій годині вже нічого
+       не означає, але й «past» там вірний — а от простій ПОПЕРЕДУ мусить бути
+       видно раніше за все інше, крім закритого дня. */
+    if (slotBlockedByFeed(incidents, patient.room_id, wallInstant(scheduledDate, slot))) return "blocked";
     if (scheduledDate === todayStr && s < nowMin) return "past";
     if (roomBusy.some((b) => s >= b.s && s < b.eStudy)) return "busy";
     if (roomBusy.some((b) => s >= b.eStudy && s < b.e)) return "buffer";
@@ -542,6 +679,15 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   function slotTitle(slot: string, st: string): string {
     if (st === "busy" || st === "buffer") { const b = busyAt(roomBusy, toMin(slot)); return b ? (toMin(slot) >= b.eStudy ? "Буфер після дослідження\n" : "") + busyTooltip(b) : "Зайнято"; }
     if (st === "break") { const br = inBreak(toMin(slot), roomBreaks); return br ? `Перерва · ${br.start}–${br.end}` : "Перерва"; }
+    /* Підпис розрізняє ЗНАННЯ і НЕЗНАННЯ: `slotBlockedByFeed` фарбує однаково
+       («невідомо → заблоковано»), але сказати «кабінет у простої» там, де ми
+       просто не прочитали простої, — це вигадана причина. */
+    if (st === "blocked") {
+      const inc = incidentAtInstant(incidents, patient.room_id, wallInstant(scheduledDate, slot));
+      if (inc === undefined) return "Простої кабінету не завантажились — час позначено недоступним, поки дані не оновляться";
+      const end = incidentEndLabel(inc, scheduledDate);
+      return "Кабінет у простої (поломка/ТО)" + (end ? " до " + end : " — термін не визначено");
+    }
     return "";
   }
 
@@ -626,9 +772,18 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
               число «скоротіть на 30 хв» і слала оператора перезаписувати
               пацієнта. Тож overflow виграє скрізь, КРІМ випадків, де довжина не
               є причиною. */}
-          <div className={"ctx-hint " + (overflow || offDeadEnd ? "red" : "blue")} style={{ fontSize: "0.78125rem" }}>
+          <div className={"ctx-hint " + (overflow || offDeadEnd || incidentBlocked ? "red" : "blue")} style={{ fontSize: "0.78125rem" }}>
             {overflow && !lengthIrrelevant
               ? <>⚠ Не вміщується: разом <b>{totalDur} хв</b>, доступно <b>{availableDur} хв</b>{overtimeRoom ? <> (з них понад графік — лише з підтвердженням, {windowLabel})</> : <> ({windowLabel})</>}. Скоротіть на {totalDur - availableDur} хв.</>
+              /* U-15: простій випереджає гілку «поза графіком» свідомо. Коли
+                 накладаються обидва (запис після закриття в зламаному кабінеті),
+                 екран мусить назвати той блок, який НЕ знімається згодою: інакше
+                 оператор читає «зверніться до центру», центр підтверджує роботу
+                 понаднормово — і сервер усе одно відхиляє запис іншим тригером.
+                 Другий банер нижче нікуди не дівається, тож про графік теж буде
+                 сказано; питання лише в тому, що людина прочитає ПЕРШИМ. */
+              : incidentBlocked
+              ? <>⚠ Кабінет у простої{incEndLabel ? <> до <b>{incEndLabel}</b></> : <> (термін не визначено)</>}. Разом <b>{totalDur} хв</b>, але зберегти не вийде — тривалість тут ні до чого.</>
               : offDeadEnd && offNow
               ? (lengthIrrelevant
                   ? <>Разом <b>{totalDur} хв</b> — {offReasonText(offNow)}. Тривалість тут ні до чого.</>
@@ -655,6 +810,41 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
               {availFailed
                 ? <>⚠ {slotDataFooterText(availState)} — збільшувати тривалість поки не можна. Закрийте й відкрийте вікно, щоб спробувати ще раз.</>
                 : <>{slotDataFooterText(availState)}</>}
+            </div>
+          )}
+          {/* U-15: ЖОРСТКИЙ БЛОК ПРОСТОЮ. Рядок доступності вище називає ФАКТ,
+              цей банер — ДІЮ; в одне речення воно не влазить, а без дії читач
+              лишається з сірою кнопкою і без виходу (рівно те, що U-12 виправляв
+              для рольової відмови).
+              До U-15 модалка про простої не знала НІЧОГО: стеля рахувалась із
+              графіка й зайнятості, кнопка лишалась активною, і відмова прилітала
+              з сервера ПІСЛЯ натискання — текстом «оберіть інший слот або
+              кабінет», порадою, яку в цьому вікні виконати нічим (слота тут не
+              обирають).
+              🔧 — той самий значок, яким дошка позначає активний простій
+              (`inc-banner-ic`): людина вже бачила його вгорі екрана, і банер
+              читається як продовження, а не як нова сутність.
+              БЕЗ role/aria-live — з тієї ж причини, що й у трьох банерів нижче:
+              вміст містить `totalDur`, який `setDur` пише на кожне натискання
+              (заведено окремо, U-26). */}
+          {incidentBlocked && (
+            <div className="info-banner offsched" style={{ flexDirection: "column", alignItems: "stretch", gap: 6 }}>
+              <span className="ib-txt">
+                <b>🔧 Кабінет у простої.</b> На <b>{patient.scheduled_time}</b> апарат заблоковано (поломка/ТО){incEndLabel ? <> до <b>{incEndLabel}</b></> : <>, термін не визначено</>}.
+                Сервер відхиляє будь-яку тривалість у вікні простою окремою перевіркою, і згода на роботу поза графіком тут не діє — ні ваша, ні центру.
+              </span>
+              {/* ⚠️ БЕЗ гілки по ролі (ревʼю р1, знахідка 2). Перша версія писала
+                  направнику «перенести може лише центр» — і це неправда: кнопка
+                  переносу стоїть у нього РІВНО ПОРУЧ із «🩻 Дослідження», з якої
+                  це вікно й відкрили. `allowOffSchedule` — це право ПІДТВЕРДИТИ
+                  роботу поза графіком, а не право переносити; сплутати їх
+                  означало відправити людину дзвонити в центр замість одного
+                  кліку. Той самий клас, що U-12, лише дзеркально: там роль не
+                  могла зробити обіцяне, тут — могла, а екран це приховав.
+                  Заразом ветка зʼїдала єдину згадку про термін ремонту. */}
+              <span className="ib-txt">
+                Склад можна зберегти лише після переносу запису — {RESCHEDULE_HINT}{incEndLabel ? <>, або на час після <b>{incEndLabel}</b></> : null}.
+              </span>
             </div>
           )}
           {!overflow && realClash && (
@@ -722,7 +912,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                   ? <>Щоб зберегти зараз — скоротіть склад до <b>{inSchedCap} хв</b>.</>
                   : (overflow && !lengthIrrelevant)
                   ? <>Скоротіть склад до <b>{availableDur} хв</b> — тоді вихід за графік стане підтверджуваним.</>
-                  : <>Запис треба перенести на робочий час кабінету — «🗓 Перезаписати» на дошці.</>}
+                  : <>Запис треба перенести на робочий час кабінету — {RESCHEDULE_HINT}.</>}
               </span>
             </div>
           )}
@@ -751,7 +941,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                   ? <>Щоб зберегти зараз — скоротіть склад до <b>{inSchedCap} хв</b>.{offNow.confirmable ? <> Якщо потрібно довше — зверніться до центру.</> : null}</>
                   : offNow.confirmable
                   ? <>Змінити склад цього запису може лише центр — зверніться до адміністратора.</>
-                  : <>Запис треба перенести на робочий час кабінету — «🗓 Перезаписати» на дошці або зверніться до центру.</>}
+                  : <>Запис треба перенести на робочий час кабінету — {RESCHEDULE_HINT} або зверніться до центру.</>}
               </span>
             </div>
           )}
@@ -876,6 +1066,12 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                   <span><span className="lg-dot busy" />зайнято</span>
                   <span><span className="lg-dot busybuf" />буфер</span>
                   {buffer > 0 && <span><span className="lg-dot planbuf" />буфер цього запису</span>}
+                  {/* U-15 (ревʼю р2): `SlotPicker` малює `blocked` тим самим
+                      червоним `.busy`, тож без окремого рядка легенда пояснювала
+                      простій словом «зайнято» — читач шукав би, кого посунути,
+                      замість «апарат на ТО». Значок той самий свідомо (колір
+                      справді один): відрізняє СЛОВО, як у RoomDayOverviewModal. */}
+                  {roomIncidentRows.length > 0 && <span><span className="lg-dot busy" />простій / ТО</span>}
                   {roomBreaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
                   {overflow && <span><span className="lg-dot tight" />не вміщується</span>}
                 </div>

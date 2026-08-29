@@ -1652,7 +1652,13 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
   // U-11: направлення і простої його центру їдуть ОДНИМ станом — інакше між
   // await і setState вони розʼїжджаються на різні центри.
   const [reschedFor, setReschedFor] = useState<{ r: Referral; incidents: IncidentFeed } | null>(null);
-  const [editStudiesFor, setEditStudiesFor] = useState<Referral | null>(null);
+  /* U-15: те саме, що для переносу вище, і з тієї ж причини. Редагування складу
+     відкривалось СИНХРОННО з рядка, без простоїв — і `StudyEditModal` рахувала
+     стелю тривалості так, ніби кабінет справний. Направник простоїв у своєму
+     інтерфейсі не бачить взагалі, тож відмова прилітала після збереження, а між
+     нею і пацієнтом — телефонна розмова. Фід їде ОДНИМ станом із направленням:
+     інакше між await і setState вони розʼїжджаються на різні центри. */
+  const [editStudiesFor, setEditStudiesFor] = useState<{ r: Referral; incidents: IncidentFeed } | null>(null);
   const [wlEntries, setWlEntries] = useState<WaitlistEntry[]>([]);
   const [wlAddOpen, setWlAddOpen] = useState(false);
   const [wlEditFor, setWlEditFor] = useState<WaitlistEntry | null>(null);
@@ -1824,7 +1830,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
   }
 
   async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer: number; offSchedule: boolean }) {
-    const p = editStudiesFor;
+    const p = editStudiesFor?.r;
     if (!p) return;
     /* 0077/U-12: згоду віддає МОДАЛКА (успадкований прапорець запису або нова
        галочка). Раніше цей виклик мав ЧОТИРИ аргументи — пʼятий губився мовчки,
@@ -1880,6 +1886,18 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
      Лічильник ОДИН на три дії свідомо: клік по іншій кнопці — це теж «користувач
      передумав», і відповідь попередньої вже не потрібна. */
   const openGen = useRef(0);
+  /* ⚠️ Лічильник мусять рухати і СИНХРОННІ відкриття (ревʼю р1, знахідка 5).
+     Коментар вище казав «клік по іншій кнопці — це теж «користувач передумав»»,
+     але на ділі це працювало лише між чотирма АСИНХРОННИМИ діями: «✎ Дані
+     пацієнта» і «✕ Скасувати» відкриваються миттєво й лічильника не чіпали.
+     Сценарій: направник тисне «🩻 Дослідження» (кнопка нічим не відповідає —
+     спінера немає), вирішує, що промазав, тисне сусіднє «✎ Дані пацієнта» —
+     і за півсекунди на вже відкриту модалку приземляється друга. Обидві
+     вішають `useModalA11y` на document у capture: Esc закриває не те вікно,
+     фокус замкнений у двох місцях одразу — рівно дефект U-8.
+     До U-15 діра теж була (той самий шлях через «🗓 Перезаписати»), але пакет
+     додав четвертий асинхронний вхід, тож закриваємо клас цілком. */
+  const bumpOpen = () => { openGen.current += 1; };
   async function openCaseScreen(caseId: string, clinicId: string) {
     const gen = ++openGen.current;
     const incidents = await centerIncidents(clinicId);
@@ -1900,6 +1918,16 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
     const incidents = await centerIncidents(r.clinic_id);
     if (gen !== openGen.current) return;
     setReschedFor({ r, incidents });
+  }
+  /* U-15: четверта модалка, що відкривається через читання, і той самий
+     `openGen` — тепер уже на чотири дії. Лічильник ОДИН свідомо: клік по іншій
+     кнопці означає «користувач передумав», і відповідь попередньої вже не
+     потрібна (та сама логіка, що в коментарі до `openGen`). */
+  async function startEditStudies(r: Referral) {
+    const gen = ++openGen.current;
+    const incidents = await centerIncidents(r.clinic_id);
+    if (gen !== openGen.current) return;
+    setEditStudiesFor({ r, incidents });
   }
   /* Крок іншої модальності до СВОГО запису → referralCaseFromEntry (гілка 0118).
      Помилки гардів (той самий кабінет / перетин часу) повертаємо модалці. */
@@ -1998,13 +2026,15 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
                 visRoomsByClinic — лише для випадайки «Кабінет» у фільтрі. */}
             <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} visRoomsByClinic={visRoomsByClinic} doctorId={doctorId}
               focus={boardFocus} initialDate={initialDate} initialEntry={initialEntry}
-              onReschedule={startReschedule} onCancel={(r) => setCancelAsk(r)} onEditPatient={(r) => setEditPatientFor(r)} onEditStudies={(r) => setEditStudiesFor(r)}
+              onReschedule={startReschedule} onCancel={(r) => { bumpOpen(); setCancelAsk(r); }} onEditPatient={(r) => { bumpOpen(); setEditPatientFor(r); }} onEditStudies={startEditStudies}
               onOpenCase={openCaseScreen} onOrganizeCase={startOrganize} />
           </>
         )}
+        {/* Лист очікування — інша вкладка, але модалки ті самі сиблінги в DOM:
+            запит, пущений на вкладці направлень, приземлиться і сюди. */}
         {tab === "waitlist" && (
-          <MyWaitlist entries={wlEntries} centersById={centersById} highlightId={initialEntry} loaded={wlLoaded} loadErr={wlErr} onOpenAdd={() => setWlAddOpen(true)}
-            onEdit={(e) => setWlEditFor(e)} onCancel={(e) => setWlConfirmRemove(e)} onRestore={wlRestore} onPriority={wlPrio} />
+          <MyWaitlist entries={wlEntries} centersById={centersById} highlightId={initialEntry} loaded={wlLoaded} loadErr={wlErr} onOpenAdd={() => { bumpOpen(); setWlAddOpen(true); }}
+            onEdit={(e) => { bumpOpen(); setWlEditFor(e); }} onCancel={(e) => { bumpOpen(); setWlConfirmRemove(e); }} onRestore={wlRestore} onPriority={wlPrio} />
         )}
         {tab === "centers" && (
           <MyCenters centers={centers} canManage={canManage} onChanged={onCentersChanged} notify={notify} />
@@ -2019,7 +2049,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
         <RescheduleModal patient={reschedFor.r} rooms={reschedRooms} clinicId={reschedFor.r.clinic_id} clinicTz={centersById[reschedFor.r.clinic_id]?.timezone} incidents={reschedFor.incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} services={servicesByClinic[editStudiesFor.clinic_id]} roomOverrides={roomOverridesByClinic[editStudiesFor.clinic_id]} offSchedule={!!editStudiesFor.off_schedule} allowOffSchedule={false} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor.r} scheduledDate={editStudiesFor.r.scheduled_date} rooms={roomsByClinic[editStudiesFor.r.clinic_id] || []} clinicId={editStudiesFor.r.clinic_id} clinicTz={centersById[editStudiesFor.r.clinic_id]?.timezone} services={servicesByClinic[editStudiesFor.r.clinic_id]} roomOverrides={roomOverridesByClinic[editStudiesFor.r.clinic_id]} incidents={editStudiesFor.incidents} offSchedule={!!editStudiesFor.r.off_schedule} allowOffSchedule={false} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {wlAddOpen && (
         <WaitlistModal centers={activeCenters.map((c) => ({ clinicId: c.clinicId, name: centerLabel(c), modalities: centerModalities(c) }))}

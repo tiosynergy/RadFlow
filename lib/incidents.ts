@@ -83,6 +83,155 @@ export function slotBlockedByFeed<T extends IncidentLike>(feed: IncidentFeed<T> 
   return !!inc;
 }
 
+/* ===== U-15 (с48): стеля ТРИВАЛОСТІ за простоями =====
+
+   `slotBlockedByFeed` відповідає на питання «чи вільний ЦЕЙ момент» — його
+   вистачає екранам, які обирають СЛОТ. `StudyEditModal` слот не обирає, він
+   міняє ТРИВАЛІСТЬ, тож йому треба інше питання: скільки хвилин від старту
+   можна зайняти, поки дослідження не перетнеться з простоєм.
+
+   ⚠️ Дзеркалимо серверний гард `check_not_during_incident` (0020) ПОБІТОВО.
+   Він рахує так:
+
+     tstzrange(i.started_at, coalesce(i.blocked_until, 'infinity'))
+       && tstzrange(new.scheduled_at, new.scheduled_at + duration_min)
+
+   Діапазони `[)`, отже перетин ⟺ `started_at < кінець_дослідження` І
+   `старт_запису < кінець_простою`. Звідси максимум без перетину — рівно
+   `started_at − старт_запису`, і рахувати його треба лише по простоях, чий
+   кінець ЩЕ ПОПЕРЕДУ старту. Якщо простій уже накрив сам старт — не
+   вміщується жодна тривалість, і це 0, а не «мало часу».
+
+   Повертає `undefined`, коли стверджувати не можна: простої не прочитані
+   (`roomIncidentsOf` → null); або простої в кабінеті Є, але старт невідомий чи
+   `started_at` не парситься. Порожній список простоїв — це НЕ невідомість:
+   там `Infinity` (див. коментар у тілі — порядок гілок має значення).
+   Рішення про невідомість лишається у виклику — рівно як у `incidentAtInstant`,
+   і НЕ підмінюється нулем чи нескінченністю тут. */
+export function incidentDurCapMin<T extends IncidentLike>(
+  feed: IncidentFeed<T> | null | undefined,
+  roomId: string | null | undefined,
+  startMs: number,
+): number | undefined {
+  const rows = roomIncidentsOf(feed, roomId);
+  if (rows === null) return undefined;              // простої не прочитані
+  /* Простоїв у кабінету НЕМАЄ — стелі немає, і це не «невідомо». Порядок із
+     перевіркою старту важливий: якби `startMs` питали першим, запис без дати
+     (`scheduledDate=""` — модалка це прямо допускає, див. `showGrid`) отримав би
+     консервативну стелю `committedDur` у здоровому кабінеті й перестав би
+     подовжуватись узагалі. Сервер у цьому місці теж пропускає: `not exists`
+     по порожній вибірці істинний незалежно від `scheduled_at`. */
+  if (rows.length === 0) return Infinity;
+  /* Простої Є, а старт невідомий → «не знаємо», тобто консервативна стеля у
+     виклику. НЕ 0: банер «кабінет у простої до 14:00» на запису без дати назвав
+     би причиною те, що причиною не є.
+
+     ⚠️ Перша версія цього коментаря стверджувала, що сервер тут ВІДХИЛИВ БИ —
+     мовляв, `tstzrange(null,null)` це `(,)` і перетинається з будь-яким вікном.
+     Діапазон справді такий (перевірено на проді), але висновок був НЕПРАВИЛЬНИЙ:
+     я прочитав лише `exists`-частину гарда й не дійшов до його першого рядка.
+     `check_not_during_incident` починається з
+       `if new.status in (…) or new.scheduled_at is null or new.duration_min is
+        null then return new;`
+     — тобто запис без `scheduled_at` сервер пропускає ВЗАГАЛІ (ревʼю р1).
+     Дзеркалити це один-в-один усе одно не можна: тут `startMs` — NaN і тоді,
+     коли `scheduled_at` у рядка Є, а модалці просто не передали `scheduledDate`
+     (проп nullable, див. `showGrid`). Розрізнити ці два випадки звідси нічим,
+     тож лишаємось консервативними — але вголос: у проді записів без дати нуль
+     (`scheduled_at is null` → 0), тож гілка є запобіжником, а не робочою. */
+  if (!Number.isFinite(startMs)) return undefined;
+  let cap = Infinity;
+  for (const i of rows) {
+    const s = new Date(i.started_at).getTime();
+    /* Нерозпарсиваний початок — саме `undefined`, а не «пропустити рядок»:
+       пропуск тихо перетворив би невідомий простій на «простою немає» —
+       той самий fail-open, який весь цей модуль і закриває. */
+    if (isNaN(s)) return undefined;
+    if (incidentEffectiveEnd(i) <= startMs) continue;  // простій закінчився до старту
+    if (s <= startMs) return 0;                        // старт УЖЕ всередині простою
+    /* ⚠️ `floor` до ЦІЛИХ хвилин, і саме вниз (ревʼю р1, знахідка 1).
+       `started_at` не вирівняний на хвилину: `emergency_stop_rpc` пише
+       `(now() at time zone tz) at time zone 'utc'` з мікросекундами — на проді
+       таких рядків 5 із 6. Без floor стеля виходила дробовою (23.7918…), і
+       далі її друкував `fmt`, який робить `m % 60`: екран показував «до простою
+       о 10:23.791866666666666» і радив «скоротіть на 6.2081 хв» — число, якого
+       сама ж форма не прийме (normDur кратний 5).
+       Вниз, а не round: 24 хв від 10:00 закінчуються о 10:24, а простій
+       починається о 10:23:47 — сервер такий запис відхилить. Округлення вгору
+       коштувало б рівно того відмовленого збереження. */
+    cap = Math.min(cap, Math.floor((s - startMs) / 60000));
+  }
+  return Math.max(0, cap);
+}
+
+/** Підпис КІНЦЯ простою у настінному часі — для банерів, які мусять сказати не
+    лише «кабінет у простої», а й «до коли». Без цього порада зводиться до
+    «перезапишіть пацієнта», хоча простій міг закінчуватись через 20 хвилин.
+
+    `null` = межі НЕМАЄ («до відновлення»): `blocked_until` порожній або
+    нерозпарсиваний — рівно те саме `Infinity`, що й у `incidentEffectiveEnd`.
+    Для виклику це не «не знаємо, промовчимо», а окремий текст: невідомий термін
+    треба назвати вголос, інакше банер виглядає як недописаний.
+
+    `dayKey` — доба, відносно якої підпис читають (`scheduled_date` запису).
+    Простій тягнеться через північ легко (нічна поломка з `blocked_until` на
+    ранок), і тоді «до 09:00» без дати — брехня рівно на добу: оператор чекав би
+    дев'ятої ГОДИНИ ЦЬОГО Ж дня. Інший день → у підпис їде «DD.MM HH:MM».
+    Без `dayKey` завжди друкуємо дату: зайва дата нікого не вводить в оману,
+    відсутня — вводить.
+
+    Кадр часу — «настінний як UTC» (канон 0035/0059, ті самі getUTC*, що в
+    `wallMinOfDay`): конвертація через Intl дала б подвійний зсув. */
+export function incidentEndLabel(inc: IncidentLike | null | undefined, dayKey?: string | null): string | null {
+  if (!inc) return null;
+  const end = incidentEffectiveEnd(inc);
+  if (!Number.isFinite(end)) return null;
+  const d = new Date(end);
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  const hhmm = p2(d.getUTCHours()) + ":" + p2(d.getUTCMinutes());
+  const key = d.getUTCFullYear() + "-" + p2(d.getUTCMonth() + 1) + "-" + p2(d.getUTCDate());
+  return key === dayKey ? hhmm : p2(d.getUTCDate()) + "." + p2(d.getUTCMonth() + 1) + " " + hhmm;
+}
+
+/** Усе, що екран редагування ТРИВАЛОСТІ має знати про простої, — одним викликом.
+
+    Три величини (стеля, жорсткий блок, термін) рахувались би в компоненті
+    трьома окремими викликами — і саме так вони з часом розходяться: стеля
+    каже «0 хв», прапорець блоку мовчить, банер називає чужу причину. Тут вони
+    виводяться ОДНА З ОДНОЇ: `blocked` — це рівно `capMin === 0`, а рядок
+    простою дістається лише щоб НАЗВАТИ термін, і на рішення не впливає.
+
+    Друга причина винести це в lib: тести проєкту ходять у node-середовищі й
+    компонентів не бачать (`vitest.config.ts`). Правило, залишене в JSX,
+    перевіряється лише сторожем-регуляркою — а той, як показало ревʼю U-30,
+    обходиться раннім `return`. Тут воно перевіряється поведінково. */
+export interface IncidentDurNotice {
+  /** Стеля тривалості від старту, хв. `undefined` — стверджувати не можна
+      (простої не прочитані), викликач мусить взяти консервативну стелю. */
+  capMin: number | undefined;
+  /** Старт УЖЕ всередині простою: не вміщується ЖОДНА тривалість. */
+  blocked: boolean;
+  /** Кінець простою, що блокує старт (`incidentEndLabel`). `null` — блоку немає
+      або термін не визначено; текст «до відновлення» лишається за викликачем. */
+  endLabel: string | null;
+}
+
+export function incidentDurNotice<T extends IncidentLike>(
+  feed: IncidentFeed<T> | null | undefined,
+  roomId: string | null | undefined,
+  dateKey: string | null | undefined,
+  timeStr: string | null | undefined,
+): IncidentDurNotice {
+  const startMs = wallInstant(dateKey, timeStr);
+  const capMin = incidentDurCapMin(feed, roomId, startMs);
+  /* ⚠️ Саме `=== 0`, а не `!capMin`: `undefined` (простої не прочитані) теж
+     фолсі, і банер «кабінет у простої» світився б на справному кабінеті
+     щоразу, коли впав запит інцидентів. */
+  const blocked = capMin === 0;
+  const inc = blocked ? incidentAtInstant(feed, roomId, startMs) : null;
+  return { capMin, blocked, endLabel: inc ? incidentEndLabel(inc, dateKey) : null };
+}
+
 // Эффективный конец блокировки в мс. Жёсткая граница = blocked_until; без неё — Infinity («до восстановления»).
 // Нераспарсимый blocked_until — тоже Infinity: «не знаем, когда закончится» ≠ «уже закончилось».
 // Из БД (timestamptz) такое не приходит, но IncidentLike — публичный интерфейс, и NaN

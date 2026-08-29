@@ -802,7 +802,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
            оверрайда і зайнятості кабінету, тож при найменшому розходженні
            тривалість перевірялась би по чужому дню. Той самий підхід, що з
            підписом дати в рядку. */
-        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date || dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesFor.off_schedule} allowOffSchedule onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date || dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} incidents={incidentsFeed} offSchedule={!!editStudiesFor.off_schedule} allowOffSchedule onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
 
       {declineAsk && (
