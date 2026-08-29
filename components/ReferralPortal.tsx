@@ -41,7 +41,7 @@ import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKA
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import StudySearchBox from "@/components/StudySearchBox";
 import type { StudySearchHit } from "@/lib/studySearch";
-import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
+import { PRIORITY_OPTIONS, PRIORITY_META, PRIORITY_DEFAULT, type PatientPriority } from "@/lib/priority";
 import { slotDataMissLabel, slotDataTrusted, slotDataFromSingleSource } from "@/lib/availabilityTrust";
 import { DobField, BookingCalendar, fmtShort } from "@/components/BookingModal";
 import RoomSelect, { ROOM_LIST_MAX_CHIPS } from "@/components/RoomSelect";
@@ -62,7 +62,12 @@ type Referral = {
   off_schedule: boolean | null;
 };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
-type ExtraStudy = { type: string; region: string; dur: number };
+/* Додаткове дослідження направлення. `contrast` — те, що поїде в
+   `studies[].contrast` (з нього сервер рахує `has_contrast`); `filterOn` — стан
+   ЧЕКБОКСА «Контраст» ЦЬОГО РЯДКА (с47). Прапорець живе в рядку, а не в мапі по
+   індексу: рядки додають і видаляють, індекси зсуваються. Дзеркало
+   BookingModal / StudyEditModal — форма запису одна на три ролі. */
+type ExtraStudy = { type: string; region: string; dur: number; contrast?: boolean; filterOn?: boolean };
 /* 0118: накопичений крок майбутнього кейса (пакетний режим «＋ У кейс»). */
 type CaseDraftStep = { roomId: string; roomName: string; modality: string; date: string; time: string; dur: number; buffer: number; studies: StudyOut[]; hasContra: boolean };
 /* 0074: RPC віддає вікно, ОБРІЗАНЕ по добі (start_min/end_study_min/end_min) — сюди
@@ -134,7 +139,10 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const [contrast, setContrast] = useState(false);
   const [buffer, setBuffer] = useState<number>(BUFFER_DEFAULT);
   const [hasContra, setHasContra] = useState(false);
-  const [priority, setPriority] = useState<PatientPriority | "">("");
+  /* Пріоритет за замовчуванням — «Планово» (рішення власника, с47): переважна
+     більшість направлень планові, і порожній стан коштував зайвого кліку в
+     кожній формі. Дзеркало BookingModal; `miss.priority` лишається страховкою. */
+  const [priority, setPriority] = useState<PatientPriority | "">(PRIORITY_DEFAULT);
   const [comment, setComment] = useState("");
   const [extraStudies, setExtraStudies] = useState<ExtraStudy[]>([]);
   /* «Завтра» — від доби ЦЕНТРУ (направник глобальний, центр може бути в іншій зоні).
@@ -231,7 +239,9 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? (o.dur ?? 0) : 0; };
   function changeType(t: string) {
     setStudyType(t); setRegion(""); setContrast(false); setTime("");
-    setExtraStudies((a) => a.map((s) => (s.type === t ? s : { ...s, type: t, region: "", dur: exDur(t, "") })));
+    // Інший тип → інший каталог: область, контраст і ГАЛОЧКА фільтра рядка
+    // скидаються разом (лишений filterOn показав би порожній список).
+    setExtraStudies((a) => a.map((s) => (s.type === t ? s : { ...s, type: t, region: "", dur: exDur(t, ""), contrast: false, filterOn: false })));
   }
   function toggleContrast(v: boolean) {
     setContrast(v);
@@ -248,18 +258,62 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
     // Область доступна, але контраст їй вимкнули в каталозі (realtime) → знімаємо флаг.
     // Область ще доступна, але вже не проходить фільтр «Контраст» → знімаємо галочку.
     else if (region && contrast && !catalog.regionsWithContrast(studyType, roomId || undefined, true).some((r) => r.label === region)) { setContrast(false); setTime(""); }
-    setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0 } : s)));
+    // Позиція зникла з каталогу → знімаємо і контрастність рядка: інакше в
+    // studies поїхав би `contrast: true` без області, з якої він походив.
+    setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0, contrast: false } : s)));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей / контрасту (кабінет АБО realtime-каталог)
   }, [availSig]);
 
   const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
-  const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
+  /* Зміна РЕЖИМУ контрасту (каталог ↔ легасі) перевертає сенс прапорця рядка —
+     скидаємо вибір. Розгорнутий коментар у BookingModal (ревʼю р1). */
+  const contrastMode = catalog.contrastIsFilter(studyType, roomId || undefined);
+  const prevContrastModeRef = useRef(contrastMode);
+  useEffect(() => {
+    if (prevContrastModeRef.current === contrastMode) return;
+    prevContrastModeRef.current = contrastMode;
+    setContrast(false);
+    setExtraStudies((a) => a.map((s) => (s.region || s.contrast || s.filterOn != null
+      ? { ...s, region: "", dur: 0, contrast: false, filterOn: undefined } : s)));
+  }, [contrastMode]);
+  /* Контраст ПО РЯДКАХ (с47) — дзеркало BookingModal, коментарі там. Видимий
+     стан чекбокса, список позицій рядка і перемикач. */
+  const exChecked = (r: ExtraStudy) =>
+    catalog.contrastIsFilter(r.type, roomId || undefined) ? (r.filterOn ?? !!r.contrast) : !!r.contrast;
+  const exList = (r: ExtraStudy) => catalog.regionsWithContrast(r.type, roomId || undefined, exChecked(r));
+  const exSetRegion = (i: number, reg: string) => {
+    const r = extraStudies[i];
+    const filters = catalog.contrastIsFilter(r.type, roomId || undefined);
+    // У каталозі контрастність — властивість позиції; у легасі — прапорець рядка.
+    const contrastRow = filters
+      ? (catalog.regionInfo(r.type, reg, roomId || undefined)?.isContrast === true)
+      : !!r.contrast;
+    // Час рахує САМ резолвер — див. коментар у BookingModal.exSetRegion (ревʼю р1).
+    exPatch(i, { region: reg, contrast: contrastRow, dur: reg ? catalog.studyDur(r.type, reg, contrastRow, roomId || undefined) : 0 });
+  };
+  const exSetContrast = (i: number, v: boolean) => {
+    const r = extraStudies[i];
+    if (exChecked(r) === v) return;
+    // `survives` — В ОБОХ режимах (ревʼю р1): у легасі фільтр теж звужує список.
+    const survives = !r.region
+      || catalog.regionsWithContrast(r.type, roomId || undefined, v).some((x) => x.label === r.region);
+    if (catalog.contrastIsFilter(r.type, roomId || undefined)) {
+      exPatch(i, survives ? { filterOn: v } : { filterOn: v, region: "", contrast: false, dur: 0 });
+      return;
+    }
+    if (!survives) { exPatch(i, { contrast: v, filterOn: v, region: "", dur: 0 }); return; }
+    const delta = v ? CONTRAST_DUR : -CONTRAST_DUR;
+    const cur = Number(r.dur) || 0;
+    exPatch(i, { contrast: v, filterOn: v, dur: r.region && cur > 0 ? Math.min(DUR_MAX, Math.max(5, cur + delta)) : 0 });
+  };
   // Нормалізація тривалості — на BLUR, не на keystroke: Math.max(5, …) зʼїдав
   // першу цифру («4» ставало 5 — набрати «45» неможливо; та сама хвороба, що
   // в StudyEditModal, баг власника с33).
   const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(0, Math.min(DUR_MAX, parseInt(v, 10) || 0)) });
   const exBlurDur = (i: number) => { const n = Number(extraStudies[i]?.dur) || 0; exPatch(i, { dur: n > 0 ? normDur(n) : 0 }); };
-  const exAdd = () => setExtraStudies((a) => [...a, { type: primaryKind, region: "", dur: exDur(primaryKind, "") }]);
+  /* `filterOn` НЕ ставимо: `exChecked` читає `filterOn ?? contrast`, тож галочка
+     загориться сама на контрастній позиції прайсу (ревʼю р1 — див. BookingModal). */
+  const exAdd = () => setExtraStudies((a) => [...a, { type: primaryKind, region: "", dur: exDur(primaryKind, ""), contrast: false }]);
   const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
 
@@ -291,7 +345,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
     const label = modalityLabel(h.type);
     if (h.clinicId !== centerId) setCenterId(h.clinicId);
     setStudyType(label); setContrast(false); setTime("");
-    setExtraStudies((a) => a.map((x) => (x.type === label ? x : { ...x, type: label, region: "", dur: 0 })));
+    setExtraStudies((a) => a.map((x) => (x.type === label ? x : { ...x, type: label, region: "", dur: 0, contrast: false, filterOn: false })));
     setRegion(h.label);
     const rs = grantRoomsOf(h.clinicId).filter((r) => r.modality === h.type);
     setRoomId(h.roomId ?? (rs.length === 1 ? rs[0].id : (rs.some((r) => r.id === roomId) ? roomId : null)));
@@ -301,13 +355,13 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
      а не стан чекбокса (з нього сервер рахує has_contrast). */
   const primaryContrast = contrastFilters ? (regionObj?.isContrast === true) : contrast === true;
   const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: primaryContrast, dur, price: studyPrice(primaryKind, region, contrast, roomId || undefined) } : null;
-/* Додаткові дослідження теж можуть бути контрастними позиціями прайсу (їх
-   список НЕ фільтрується — це свідомо), тож contrast беремо з САМОЇ позиції.
-   Інакше «основне без контрасту + додаткове з в/в контрастуванням» давало б
-   has_contrast=false на всю запис (ревʼю, High-4). */
-  const exContrast = (t: string, reg: string) =>
-    catalog.contrastIsFilter(t, roomId || undefined) ? (exRegions(t).find((r) => r.label === reg)?.isContrast === true) : false;
-  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, contrast: exContrast(s.type, s.region), dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, roomId || undefined) })));
+/* Додаткові дослідження теж можуть бути контрастними позиціями прайсу, тож
+   contrast поїде з САМОГО РЯДКА (с47). Інакше «основне без контрасту +
+   додаткове з в/в контрастуванням» давало б has_contrast=false на весь запис
+   (ревʼю, High-4). ⚠️ Ціна — з ТИМ САМИМ прапорцем: у легасі-статиці саме він
+   додає доплату, і жорсткий `false` розводив би показану ціну з тією, що
+   поїде в studies. */
+  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, contrast: s.contrast === true, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, s.contrast === true, roomId || undefined) })));
   const slotDur = dur + validExtra.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
   /* 0118: зайнятість пацієнта накопиченими кроками кейса на ЦЮ дату (casebusy у
@@ -533,7 +587,10 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
       onCreated(null, msg);
       return;
     }
-    setName(""); setDob(""); setGender(""); setWeight(""); setPhone(""); setEmail(""); setRegion(""); setContrast(false); setHasContra(false); setPriority(""); setComment(""); setExtraStudies([]); setTime("");
+    /* Скидання форми — до ТИХ САМИХ дефолтів, що на монтуванні (с47). Поки тут
+       стояв `setPriority("")`, дефолт «Планово» жив рівно до першого збереження,
+       а далі направник знову тицяв пріоритет у кожному направленні. */
+    setName(""); setDob(""); setGender(""); setWeight(""); setPhone(""); setEmail(""); setRegion(""); setContrast(false); setHasContra(false); setPriority(PRIORITY_DEFAULT); setComment(""); setExtraStudies([]); setTime("");
     onCreated(name.trim());
   }
 
@@ -585,7 +642,8 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
     }
     const nm = name.trim();
     setCaseSteps([]);
-    setName(""); setDob(""); setGender(""); setWeight(""); setPhone(""); setEmail(""); setRegion(""); setContrast(false); setHasContra(false); setPriority(""); setComment(""); setExtraStudies([]); setTime("");
+    // Той самий дефолт, що на монтуванні (див. коментар у submit вище).
+    setName(""); setDob(""); setGender(""); setWeight(""); setPhone(""); setEmail(""); setRegion(""); setContrast(false); setHasContra(false); setPriority(PRIORITY_DEFAULT); setComment(""); setExtraStudies([]); setTime("");
     if (res.id) onCaseCreated(res.id, centerId, nm);
   }
 
@@ -657,7 +715,10 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
 
             <div className="bk-section-label">Дослідження</div>
 
-            <div className="fld-row" style={{ alignItems: "flex-end" }}>
+            {/* Один рівень: тип · протипоказання · пріоритет (рішення власника,
+                с47). «Контраст» звідси пішов — він тепер у КОЖНОМУ дослідженні
+                окремо (поле поруч з областю і колонка в таблиці додаткових). */}
+            <div className="bk-head-row">
               <div className="fld" style={{ flex: "0 0 130px" }}>
                 <span className="fld-lab">Тип <span className="req">*</span></span>
                 <div className="bk-seg">
@@ -666,22 +727,17 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                   ))}
                 </div>
               </div>
-              <div className="fld">
+              <div className="fld" style={{ flex: "0 0 auto" }}>
                 <span className="fld-lab">Параметри</span>
                 <div className="bk-check-row">
-                  <label className={"rf-check" + (contrast ? " on" : "")}>
-                    <input type="checkbox" checked={contrast} onChange={(e) => toggleContrast(e.target.checked)} />
-                    <span className="rf-box" /><span>Контраст</span>
-                  </label>
                   <label className={"rf-check" + (hasContra ? " warn" : "")}>
                     <input type="checkbox" checked={hasContra} onChange={(e) => setHasContra(e.target.checked)} />
                     <span className="rf-box" /><span>Протипоказання</span>
                   </label>
                 </div>
               </div>
-            </div>
 
-            <div className="fld">
+            <div className="fld" style={{ flex: "1 1 auto", minWidth: 0 }}>
               <span className={"fld-lab" + (miss.priority ? " bk-miss-lab" : "")}>Пріоритет пацієнта <span className="req">*</span></span>
               <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
                 {PRIORITY_OPTIONS.map((pv) => {
@@ -696,6 +752,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 })}
               </div>
               <span className="bk-time-state none">{priority ? PRIORITY_META[priority as PatientPriority].desc : "оберіть пріоритет — впливає на порядок у черзі"}</span>
+            </div>
             </div>
 
             <div className="fld" style={{ marginBottom: 2 }}>
@@ -723,6 +780,18 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                   })}
                 </select>
               </label>
+              {/* Контраст ОСНОВНОГО дослідження — тут, а не в шапці: це
+                  властивість цієї позиції прайсу, а не всього направлення. */}
+              <div className="fld" style={{ flex: "0 0 auto" }}>
+                <span className="fld-lab">Контраст</span>
+                <label className={"rf-check" + (contrast ? " on" : "")}
+                  title={contrastFilters
+                    ? "Показати лише послуги з контрастуванням"
+                    : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
+                  <input type="checkbox" checked={contrast} onChange={(e) => toggleContrast(e.target.checked)} />
+                  <span className="rf-box" /><span>{contrastFilters ? "з контрастом" : `+${CONTRAST_DUR} хв`}</span>
+                </label>
+              </div>
               <label className="fld" style={{ flex: "0 0 108px" }}>
                 <span className="fld-lab">Тривалість <span className="req">*</span></span>
                 <div className="bk-dur-row">
@@ -760,18 +829,44 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
             <div className="fld">
               {extraStudies.length > 0 && (
                 <div className="bk-study-table">
-                  <div className="bk-study-head"><span>Тип</span><span>Область дослідження</span><span>Трив.</span><span /></div>
+                  <div className="bk-study-head"><span>Тип</span><span>Область дослідження</span><span>Контраст</span><span>Трив.</span><span /></div>
                   {extraStudies.map((r, i) => {
-                    const regs = exRegions(r.type);
+                    const rowChecked = exChecked(r);
+                    const rowFilters = catalog.contrastIsFilter(r.type, roomId || undefined);
+                    const regs = exList(r);
+                    // Обрана позиція не переживає фільтр рядка — лишаємо її окремим
+                    // option «(поточне)», інакше вмикання галочки виглядало б як
+                    // «область зникла».
+                    const hasRegion = !r.region || regs.some((x) => x.label === r.region);
                     return (
                       <div className="bk-study-row" key={i}>
                         <div className="bk-seg bk-seg-sm st-seg-locked" title="Тип = тип основного дослідження">
                           <button className={"bk-seg-btn active " + modalityKind(studyType)} disabled>{modalityShort(studyType)}</button>
                         </div>
+                        {/* value — сама область (ревʼю р1): при !hasRegion опція
+                            «(поточне)» відрисована, але з "" не була б обрана. */}
                         <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
-                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}{x.price > 0 ? " · " + fmtUah(x.price) : ""}</option>)}
+                          {!hasRegion && r.region && <option value={r.region}>{r.region} (поточне)</option>}
+                          {regs.map((x) => {
+                            // Модифікаторний режим: option показує час і ціну З ДОПЛАТОЮ —
+                            // рівно те, що поставить вибір (інакше обіцяв би 15 хв, ставив 30).
+                            const mod = rowChecked && !rowFilters;
+                            const pBump = mod ? (x.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
+                            const dBump = mod ? CONTRAST_DUR : 0;
+                            return <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : (x.dur + dBump) + " хв"}{x.price > 0 ? " · " + fmtUah(x.price + pBump) : ""}</option>;
+                          })}
                         </select>
+                        <label className={"rf-check bk-study-contrast" + (rowChecked ? " on" : "")}
+                          title={rowFilters
+                            ? "Показати лише послуги з контрастуванням"
+                            : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
+                          {/* aria-label із назвою рядка — інакше скрінрідер читає
+                              однаковий підпис для всіх рядків (ревʼю р2). */}
+                          <input type="checkbox" checked={rowChecked} onChange={(e) => exSetContrast(i, e.target.checked)}
+                            aria-label={(rowFilters ? "Показати лише послуги з контрастуванням" : `Контраст: +${CONTRAST_DUR} хв і доплата`) + ` — дослідження ${i + 2}${r.region ? ": " + r.region : ""}`} />
+                          <span className="rf-box" /><span>{rowFilters ? "з контрастом" : `+${CONTRAST_DUR} хв`}</span>
+                        </label>
                         <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
                         <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
                       </div>
