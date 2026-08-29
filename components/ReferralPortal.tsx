@@ -55,6 +55,11 @@ type Referral = {
   scheduled_date: string | null; scheduled_time: string | null; duration_min: number | null; buffer_time_min: number | null; status: string; call_status: string | null;
   priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean; doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
   case_id: string | null; case_step: number | null;   // 0118: кейси направника
+  /* 0077: запис легально стоїть ПОЗА графіком (створений/перенесений за явним
+     підтвердженням). U-12: поля тут не було ВЗАГАЛІ — тому портал не міг
+     передати згоду в `StudyEditModal`, і такий запис для направника ставав
+     незбережуваним назавжди. */
+  off_schedule: boolean | null;
 };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 type ExtraStudy = { type: string; region: string; dur: number };
@@ -381,6 +386,15 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
       // Транзієнтний збій (рефреш токена / мережа) — портал не рушимо, але й
       // «усе вільно» не малюємо: показуємо помилку й ховаємо сітку.
       setSlotsErr(true);
+      /* U-19 (с47): прочитане ОБНУЛЯЄМО — так само, як це давно роблять
+         `StudyEditModal` і `RescheduleModal` у своїх `catch`. Центр, кабінет і
+         дата тут МІНЯЮТЬСЯ при відкритій формі, тож збій на новій даті лишав
+         override СТАРОЇ — і портал стверджував «🚫 не працює · Новий рік» про
+         2 січня. Зайнятість і простої свідомо НЕ чіпаємо: вони прикриті тим
+         самим `slotsErr` через `slotDataFromSingleSource`, а обнуляти їх у `[]`
+         означало б підмінити невідомість порожнечею — клас U-11. */
+      setOverride(null);
+      setRoomSchedule(null);
     } finally {
       // Не лише для !silent: якщо гучний запит обігнали тихим (той самий scope),
       // «Завантаження…» знімає останній, хто дожив, — інакше гейт завис би.
@@ -817,15 +831,29 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
             <div className="fld">
               <div className="bk-slots-head">
                 <span className={"fld-lab" + (miss.time ? " bk-miss-lab" : "")} style={{ margin: 0 }}>Вільні слоти · {fmtShort(bookDate)} {miss.time ? "— оберіть час *" : ""}</span>
-                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {allStudies.length === 0 ? "оберіть область" : slotsLoading ? "завантаження…" : "вміщується ще " + fitCount}</span>
+                {/* U-19 (ревʼю р2): лічильник — таке саме ТВЕРДЖЕННЯ про день, як
+                    і три підказки нижче. При збої читання (`slotsErr`, вже НЕ
+                    `slotsLoading`) сітку ми ховаємо, а «вміщується ще N» лишалось —
+                    і рахувалось по хардкоду 08:00–18:00 з порожньою зайнятістю,
+                    тобто показувало найбільше число саме тоді, коли ми не знаємо
+                    нічого. Гейт той самий, що в підказках: `availTrusted`. */}
+                <span className="bk-free-count">блок {slotDur} хв{allStudies.length > 1 ? ` (${allStudies.length} досл.)` : ""} + {buffer} буфер · {allStudies.length === 0 ? "оберіть область" : !availTrusted ? (slotsLoading ? "завантаження…" : "дані кабінету не підтверджені") : "вміщується ще " + fitCount}</span>
               </div>
               {/* Вердикт про графік має сенс ЛИШЕ коли кабінет обрано: без roomId
                   roomScheduleFor() не знаходить кабінет в override.rooms і падає на
                   дефолт (неділя = вихідний) → показувало хибне «Кабінет не працює»
                   навіть у день, який override відкриває (чергування). */}
-              {roomId && roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
-              {roomId && !roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
-              {roomId && !roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО у частині дня. Оберіть вільний слот або інший день.</div>}
+              {/* U-19 (с47): усі три підказки — ТВЕРДЖЕННЯ про графік дня, і всі
+                  три стояли СИБЛІНГАМИ гілки `slotsErr`, тобто показувались і
+                  тоді, коли читання впало або ще йде. На непрочитаних даних
+                  `roomSched` — це хардкод 08:00–18:00 (або протухлий override
+                  іншого дня), тож портал міг сказати і хибне «не працює», і
+                  хибне «особливий графік». Гейт — той самий `availTrusted`, що
+                  вже гасить «✓ Слот вільний» (lib/availabilityTrust, U-5):
+                  не стверджуємо, поки даним не віримо. */}
+              {availTrusted && roomId && roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
+              {availTrusted && roomId && !roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
+              {availTrusted && roomId && !roomSched.closed && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО у частині дня. Оберіть вільний слот або інший день.</div>}
               {/* Зайнятість не завантажилась — сітку НЕ показуємо: порожній день
                   виглядав би як «усе вільно», і направник записав би пацієнта поверх чужого. */}
               {slotsErr && !slotsLoading
@@ -1529,7 +1557,8 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
       const supabase = createClient();
       const { data, error } = await supabase
         .from("queue_entries")
-        .select("id, clinic_id, created_by, referrer_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, studies_changed_by, contraindications, doctor, note, indication, room_id, reschedule_origin, case_id, case_step")
+        // off_schedule — 0077/U-12: без нього портал не знав, що запис легально поза графіком.
+        .select("id, clinic_id, created_by, referrer_id, patient_name, patient_phone, patient_age, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, call_status, priority_level, studies, studies_original, studies_changed_by, contraindications, doctor, note, indication, room_id, reschedule_origin, case_id, case_step, off_schedule")
         .eq("referrer_id", doctorId)
         .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
       // H-6: збій читання показувався як «Немає направлень» — лікар вважав, що
@@ -1685,10 +1714,15 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
     notify("Направлення скасовано", "success"); reload();
   }
 
-  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer: number }) {
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer: number; offSchedule: boolean }) {
     const p = editStudiesFor;
     if (!p) return;
-    const res = await editQueueEntryStudies(p.id, arr as unknown as Json, meta.dur || p.duration_min || 30, meta.buffer);
+    /* 0077/U-12: згоду віддає МОДАЛКА (успадкований прапорець запису або нова
+       галочка). Раніше цей виклик мав ЧОТИРИ аргументи — пʼятий губився мовчки,
+       і сервер відхиляв збереження по `scheduleBlock`. Брати тут просто
+       `p.off_schedule` не можна: давня згода дозволяла б тягнути дослідження
+       далі без нового підтвердження (те саме правило, що в QueueBoard). */
+    const res = await editQueueEntryStudies(p.id, arr as unknown as Json, meta.dur || p.duration_min || 30, meta.buffer, meta.offSchedule);
     setEditStudiesFor(null);
     if (!res.ok) {
       if (handledStale(res)) return;
@@ -1876,7 +1910,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
         <RescheduleModal patient={reschedFor.r} rooms={reschedRooms} clinicId={reschedFor.r.clinic_id} clinicTz={centersById[reschedFor.r.clinic_id]?.timezone} incidents={reschedFor.incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
       )}
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} services={servicesByClinic[editStudiesFor.clinic_id]} roomOverrides={roomOverridesByClinic[editStudiesFor.clinic_id]} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date} rooms={roomsByClinic[editStudiesFor.clinic_id] || []} clinicId={editStudiesFor.clinic_id} clinicTz={centersById[editStudiesFor.clinic_id]?.timezone} services={servicesByClinic[editStudiesFor.clinic_id]} roomOverrides={roomOverridesByClinic[editStudiesFor.clinic_id]} offSchedule={!!editStudiesFor.off_schedule} allowOffSchedule={false} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {wlAddOpen && (
         <WaitlistModal centers={activeCenters.map((c) => ({ clinicId: c.clinicId, name: centerLabel(c), modalities: centerModalities(c) }))}

@@ -592,11 +592,11 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
     reload();
     return null;
   }
-  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number; offSchedule?: boolean }) {
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number; offSchedule: boolean }) {
     const p = editStudiesFor;
     if (!p) return;
     // 0077: згоду віддає модалка (успадкований прапорець або нова галочка) — див. QueueBoard.doEditStudies.
-    const res = await editQueueEntryStudies(p.id, arr as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer, meta?.offSchedule);
+    const res = await editQueueEntryStudies(p.id, arr as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer, meta.offSchedule);
     setEditStudiesFor(null);
     if (!res.ok) {
       if (handledStale(res)) return;
@@ -802,7 +802,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
            оверрайда і зайнятості кабінету, тож при найменшому розходженні
            тривалість перевірялась би по чужому дню. Той самий підхід, що з
            підписом дати в рядку. */
-        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date || dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesFor.off_schedule} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={editStudiesFor.scheduled_date || dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesFor.off_schedule} allowOffSchedule onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
 
       {declineAsk && (

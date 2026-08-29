@@ -114,11 +114,20 @@ interface CaseModalProps {
   /** 0118: режим НАПРАВНИКА — дії кейса йдуть через referral-обгортки
       (addReferralCaseStep / cancelReferralCase; авторизація — гілка направника
       в RPC). rooms передавайте ВЖЕ відфільтровані грантом (room_ids). Скасування
-      можливе лише поки жоден крок не стартував (сервер — CASE_STARTED). */
-  referralMode?: boolean;
+      можливе лише поки жоден крок не стартував (сервер — CASE_STARTED).
+
+      ⚠️ ОБОВʼЯЗКОВИЙ і БЕЗ дефолта (U-12, с47). Відколи екран кейса роздає
+      `allowOffSchedule` у StudyEditModal, цей проп означає ще й РОЛЬ, а дефолт
+      `= false` мовчки казав би «це персонал центру». Екран кейса рендерять двоє —
+      QueueBoard (персонал) і ReferralPortal (направник), — і третій виклик, що
+      забув би проп, дав би направнику галочку «Підтверджую роботу поза графіком»,
+      яку сервер усе одно відхиляє (`scheduleBlock`: `if (!opts.isStaff)`).
+      Рівно та обіцянка, заради зняття якої писався U-12. Тепер `tsc` перелічує
+      місця виклику сам. */
+  referralMode: boolean;
 }
 
-export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicId, clinicTz, incidents, services, roomOverrides, referralMode = false }: CaseModalProps) {
+export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicId, clinicTz, incidents, services, roomOverrides, referralMode }: CaseModalProps) {
   /* Стани вкладених вікон — ДО useModalA11y (конвенція с43): вони потрібні
      хуку параметром `active`. Кейс малює аж ЧОТИРИ вкладені вікна, і саме тут
      `active` забули (аудит с46, U-8): обидва слухачі keydown живуть на document
@@ -213,12 +222,12 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
     return null;
   }
 
-  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number; offSchedule?: boolean }) {
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number; offSchedule: boolean }) {
     const st = editStudiesStep;
     if (!st) return;
     setEditStudiesStep(null);
     setOpErr(null);
-    const res = await editQueueEntryStudies(st.id, (arr || []) as unknown as Json, (meta && meta.dur) || st.duration_min || 30, meta?.buffer, meta?.offSchedule);
+    const res = await editQueueEntryStudies(st.id, (arr || []) as unknown as Json, (meta && meta.dur) || st.duration_min || 30, meta?.buffer, meta.offSchedule);
     if (!res.ok) { setOpErr(res.error); return; }
     load();
   }
@@ -354,6 +363,10 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
         />
       )}
 
+      {/* U-12: allowOffSchedule — З РЕЖИМУ ЕКРАНА, а не константа. Той самий CaseModal
+          відкривають і персонал (QueueBoard), і направник (ReferralPortal); `true`
+          тут дало б направнику галочку понаднормової роботи, яку сервер однаково
+          відхиляє (`scheduleBlock`: `if (!opts.isStaff)`). */}
       {editStudiesStep && (
         <StudyEditModal
           patient={{
@@ -363,6 +376,7 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
           }}
           scheduledDate={editStudiesStep.scheduled_date || dateKey(new Date())}
           rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesStep.off_schedule}
+          allowOffSchedule={!referralMode}
           onClose={() => setEditStudiesStep(null)}
           onConfirm={doEditStudies}
         />

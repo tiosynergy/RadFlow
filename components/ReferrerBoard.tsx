@@ -33,6 +33,11 @@ export type BoardReferral = {
   call_status: string | null; priority_level: PatientPriority | null; studies: Json; studies_original: Json | null; studies_changed_by: string | null; contraindications: boolean;
   doctor: string | null; note: string | null; indication: string | null; room_id: string | null; reschedule_origin: Json | null;
   case_id: string | null; case_step: number | null;   // 0118: кейси направника
+  /* 0077/U-12: запис легально стоїть ПОЗА графіком. Сама дошка це поле не
+     показує — але саме її рядок їде в `StudyEditModal` через `onEditStudies`,
+     тож без поля згода не мала звідки взятись. `tsc` знайшов цей тип сам, коли
+     проп модалки зробили обовʼязковим: у формулюванні находки його не було. */
+  off_schedule: boolean | null;
 };
 // «Перенесено з …» — lib/rescheduleOrigin.ts; портал БЕЗ «перервано дослідження» (як і було).
 

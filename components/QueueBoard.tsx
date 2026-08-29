@@ -2234,14 +2234,14 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   }
 
   const openEditStudies = (p: QEntry) => setEditStudiesFor(p);
-  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number; offSchedule?: boolean }) {
+  async function doEditStudies(arr: { type: string; region: string; dur: number }[], meta: { dur: number; buffer?: number; offSchedule: boolean }) {
     const p = editStudiesFor;
     if (!p) return;
     /* 0077: згоду віддає МОДАЛКА (meta.offSchedule) — це або успадкований прапорець
        запису, що вже стоїть поза графіком, або нова галочка, якщо тривалість щойно
        перетнула межу. Брати тут просто p.off_schedule не можна: тоді давня згода
        мовчки дозволяла б розтягувати дослідження далі без нового підтвердження. */
-    const res = await editQueueEntryStudies(p.id, (arr || []) as unknown as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer, meta?.offSchedule);
+    const res = await editQueueEntryStudies(p.id, (arr || []) as unknown as Json, (meta && meta.dur) || p.duration_min || 30, meta?.buffer, meta.offSchedule);
     setEditStudiesFor(null);
     if (!res.ok) {
       if (handledStale(res)) return;
@@ -2791,7 +2791,11 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       {/* clinicTz — ЯВНО в кожну модалку: покладатися на singleton не можна
           (HANDOVER §6.1), інакше «зараз» тихо з'їде на зону браузера. */}
       {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides} onClose={() => setModalOpen(false)} onSave={saveBooking} onCreateCase={createCaseFromBooking} />}
-      {openCaseId && <CaseModal caseId={openCaseId} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides} onClose={() => setOpenCaseId(null)} onCancelled={reload} />}
+      {/* referralMode={false} — дошка ПЕРСОНАЛУ центру (сторінка /queue віддає
+          направника й керівника редиректом, тож clinic_id профілю = центр запису,
+          і серверний `isStaff` тут завжди true). U-12: проп обовʼязковий саме щоб
+          ця відповідь була написана, а не вгадана дефолтом. */}
+      {openCaseId && <CaseModal caseId={openCaseId} referralMode={false} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides} onClose={() => setOpenCaseId(null)} onCancelled={reload} />}
       {caseFromEntryFor && (
         <BookingModal
           rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides}
@@ -2852,7 +2856,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       )}
 
       {editStudiesFor && (
-        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesFor.off_schedule} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
+        <StudyEditModal patient={editStudiesFor} scheduledDate={dayKey} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} services={services} roomOverrides={roomOverrides} offSchedule={!!editStudiesFor.off_schedule} allowOffSchedule onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />
       )}
       {editPatientFor && (
         <PatientEditModal entryId={editPatientFor.id} canEditPriority={canEditPriority} onClose={() => setEditPatientFor(null)} onSaved={reload} />
