@@ -28,7 +28,7 @@ import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, study
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import StudySearchBox from "@/components/StudySearchBox";
 import type { StudySearchHit } from "@/lib/studySearch";
-import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
+import { PRIORITY_OPTIONS, PRIORITY_META, PRIORITY_DEFAULT, type PatientPriority } from "@/lib/priority";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
@@ -38,7 +38,15 @@ import { bookableRooms } from "@/lib/rooms";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type DocOpt = { id: string; name: string; spec?: string | null; clinic_name?: string | null; phone?: string | null };
-type ExtraStudy = { type: string; region: string; dur: number };
+/* Додаткове дослідження запису.
+   `contrast` — те, що поїде в `studies[].contrast` (з нього сервер рахує
+   `has_contrast`: підготовка пацієнта, розхідники, алергія на гадоліній).
+   `filterOn` — стан ЧЕКБОКСА «Контраст» цього РЯДКА (с47). Живе В РЯДКУ, а не
+   в мапі по індексу: рядки додають і видаляють, індекси зсуваються, і окрема
+   мапа лишала б галочку від видаленого рядка новому (той самий урок, що в
+   StudyEditModal, ревʼю M-A). У режимі фільтра ці два поля НАВМИСНЕ
+   розходяться: знята галочка не робить контрастну позицію неконтрастною. */
+type ExtraStudy = { type: string; region: string; dur: number; contrast?: boolean; filterOn?: boolean };
 type StudyOut = { type: string; region: string; contrast?: boolean; dur: number; price: number | null };
 export type BookingPayload = {
   name: string; phone: string; email: string | null; age: number; dob: string;
@@ -357,7 +365,13 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
   const [contrast, setContrast] = useState(pfPrimary?.contrast === true);
   const [buffer, setBuffer] = useState<number>(prefill?.buffer ?? BUFFER_DEFAULT);
   const [hasContra, setHasContra] = useState(prefill?.hasContra === true);
-  const [priority, setPriority] = useState<PatientPriority | "">(prefill?.priority || ""); // обов'язковий вибір при новій записі
+  /* Пріоритет за замовчуванням — «Планово» (рішення власника, с47).
+     Переважна більшість записів планові, і порожній стан коштував зайвого кліку
+     в КОЖНІЙ формі. Тип лишається `| ""`, а `miss.priority` — на місці: це не
+     мертвий код, а страховка на випадок, коли значення прийде порожнім ззовні
+     (prefill із листа очікування, режим переносу). Дефолт саме PRIORITY_DEFAULT,
+     а не літерал: він же стоїть у normPriority на сервері й у priorityRank. */
+  const [priority, setPriority] = useState<PatientPriority | "">(prefill?.priority || PRIORITY_DEFAULT);
   const [notes, setNotes] = useState(prefill?.notes || "");
   const [docs, setDocs] = useState<DocOpt[]>([]);
   const [doctorId, setDoctorId] = useState("");
@@ -434,7 +448,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
     const list = roomsOfType(code);
     setRoomId(list.length === 1 ? list[0].id : "");
     const k = modalityLabel(code);
-    setExtraStudies((a) => a.map((s) => (s.type === k ? s : { ...s, type: k, region: "", dur: exDur(k, "") })));
+    // Тип змінився → у рядка інший каталог: область, контраст і ГАЛОЧКА фільтра
+    // скидаються разом. Лишити filterOn від старої модальності означало б
+    // показати порожній список і мовчазне «контрастних немає».
+    setExtraStudies((a) => a.map((s) => (s.type === k ? s : { ...s, type: k, region: "", dur: exDur(k, ""), contrast: false, filterOn: false })));
   }
   function toggleContrast(v: boolean) {
     setContrast(v);
@@ -487,7 +504,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
        перейменував послугу або зняв прапорець у статиці — realtime-каталог) →
        знімаємо галочку, інакше список і ціна розходяться з обраним. */
     else if (region && contrast && !catalog.regionsWithContrast(studyType, roomId, true).some((r) => r.label === region)) { setContrast(false); setTime(""); }
-    setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0 } : s)));
+    // Позиція зникла з каталогу → знімаємо і контрастність: інакше в studies
+    // поїхав би `contrast: true` без області, з якої він походив.
+    setExtraStudies((a) => a.map((s) => (s.region && !avail.some((r) => r.label === s.region) ? { ...s, region: "", dur: 0, contrast: false } : s)));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- перезапуск при зміні набору доступних областей / контрасту (кабінет АБО realtime-каталог)
   }, [availSig]);
   // H-1: кратно 5 і в межах 5..480 — інакше «47» їхало в БД (ламає сітку слотів),
@@ -503,20 +522,102 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
       type: modalityLabel(s.type),
       region: s.region as string,
       dur: Number(s.dur) || (regionsFor(s.type, roomId)[0]?.dur ?? 0),
+      /* Передзаповнення несе контрастність позиції (запис із листа очікування /
+         кандидата). Чекбокс рядка при цьому НЕ вмикаємо примусово: exChecked
+         покаже його увімкненим сам, поки оператор не чіпав фільтр. */
+      contrast: s.contrast === true,
     }))
   );
   const exRegions = (t: string) => regionsFor(t, roomId);
+  /* ⚠️ Зміна РЕЖИМУ контрасту (ревʼю р1). `contrastIsFilter` залежить від пари
+     (тип, кабінет), і перемикання кабінету може перевернути СЕНС прапорця
+     рядка на протилежний: у каталозі `contrast: true` означає «позиція сама
+     контрастна, ціна вже включає контраст», у легасі — «додай 900 ₴ і 15 хв».
+     Ефект нижче по набору областей цього не ловить: у двох кабінетах однієї
+     модальності назви позицій можуть збігатися, підпис не змінюється — і рядок
+     тихо переїжджає в іншу семантику з чужою ціною й часом.
+     Скидаємо ОБЛАСТЬ разом із прапорцями: лишити область із `contrast: false`
+     означало б мовчки зняти контраст із направлення на контрастне дослідження —
+     помилка в небезпечний бік (підготовка пацієнта). Хай оператор обере
+     заново — зі списку, що відповідає новому кабінету. */
+  const contrastMode = catalog.contrastIsFilter(studyType, roomId);
+  const prevContrastModeRef = useRef(contrastMode);
+  useEffect(() => {
+    if (prevContrastModeRef.current === contrastMode) return;
+    prevContrastModeRef.current = contrastMode;
+    setContrast(false);
+    setExtraStudies((a) => a.map((s) => (s.region || s.contrast || s.filterOn != null
+      ? { ...s, region: "", dur: 0, contrast: false, filterOn: undefined } : s)));
+  }, [contrastMode]);
+  /* Видимий стан чекбокса рядка: у режимі фільтра — власний прапорець рядка
+     (а поки його не чіпали — контрастність самої обраної позиції), у легасі —
+     сам прапорець дослідження. Дзеркало rowContrastChecked у StudyEditModal. */
+  const exChecked = (r: ExtraStudy) =>
+    catalog.contrastIsFilter(r.type, roomId) ? (r.filterOn ?? !!r.contrast) : !!r.contrast;
+  /* Список позицій РЯДКА — через ту саму `regionsWithContrast`, що й основне
+     дослідження: правило фільтра одне на весь продукт (інваріант с19/20). */
+  const exList = (r: ExtraStudy) => catalog.regionsWithContrast(r.type, roomId, exChecked(r));
   // Область не обрана → 0 (не «дефолт першої області»): порожнє дослідження НЕ
   // повинно додавати час у слот/сітку, поки область справді не вибрана.
   const exDur = (t: string, reg: string) => { const o = exRegions(t).find((r) => r.label === reg); return o ? (o.dur ?? 0) : 0; };
   const exPatch = (i: number, p: Partial<ExtraStudy>) => setExtraStudies((a) => a.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
-  const exSetRegion = (i: number, reg: string) => { const r = extraStudies[i]; exPatch(i, { region: reg, dur: exDur(r.type, reg) }); };
+  const exSetRegion = (i: number, reg: string) => {
+    const r = extraStudies[i];
+    /* У режимі фільтра контрастність — ВЛАСТИВІСТЬ обраної позиції прайсу, а не
+       стан чекбокса; у легасі — модифікатор, тобто прапорець рядка. */
+    const contrast = catalog.contrastIsFilter(r.type, roomId)
+      ? (catalog.regionInfo(r.type, reg, roomId)?.isContrast === true)
+      : !!r.contrast;
+    /* Час рахує САМ резолвер (ревʼю р1). Своя арифметика «база + CONTRAST_DUR»
+       була третьою копією правила режимів і вже розходилась із ним у двох
+       місцях: `studyDur` окремо обробляє `dur == null` («час не задано» → 0,
+       канон 0117) і окремо — область ПОЗА каталогом (перейменована/легасі-
+       снапшот), де вона гасить contrast у режимі фільтра. Це рівно той
+       інваріант із правила контрасту: durBump у формі мусить брати той самий
+       contrastIsFilter, що й catalog.studyDur. */
+    exPatch(i, { region: reg, contrast, dur: reg ? catalog.studyDur(r.type, reg, contrast, roomId) : 0 });
+  };
+  /* Контраст РЯДКА. Дзеркало StudyEditModal.setContrast: у каталозі чекбокс
+     керує лише СПИСКОМ (знята галочка не робить контрастну позицію
+     неконтрастною — інакше has_contrast=false на в/в контрастуванні), у легасі
+     лишається модифікатор ±CONTRAST_DUR. */
+  const exSetContrast = (i: number, v: boolean) => {
+    const r = extraStudies[i];
+    // Гард — по ВИДИМОМУ стану, а не по r.contrast: у режимі фільтра вони
+    // навмисне розходяться, і порівняння з r.contrast лишало галочку залиплою.
+    if (exChecked(r) === v) return;
+    /* Чи переживає обрана позиція НОВИЙ список. Перевірка потрібна В ОБОХ
+       режимах (ревʼю р1): у легасі фільтр звужує список до позицій із
+       прапорцем «контраст дозволено», і без цієї гілки обрана область
+       лишалась у стані та в payload, тоді як селект показував порожньо —
+       запис їхав із доплатою на дослідження, де контраст заборонено. */
+    const survives = !r.region
+      || catalog.regionsWithContrast(r.type, roomId, v).some((x) => x.label === r.region);
+    if (catalog.contrastIsFilter(r.type, roomId)) {
+      exPatch(i, survives ? { filterOn: v } : { filterOn: v, region: "", contrast: false, dur: 0 });
+      return;
+    }
+    if (!survives) { exPatch(i, { contrast: v, filterOn: v, region: "", dur: 0 }); return; }
+    /* Легасі: ±CONTRAST_DUR до ПОТОЧНОГО часу (ручну правку зберігаємо).
+       `dur > 0` — бо 0 означає «час не задано» (канон 0117), і Math.max(5,…)
+       вигадав би з нього 15 хв; стеля DUR_MAX — та сама, що в ручному полі,
+       інакше галочка виводила тривалість за межу CHECK у БД (ревʼю р1). */
+    const delta = v ? CONTRAST_DUR : -CONTRAST_DUR;
+    const cur = Number(r.dur) || 0;
+    exPatch(i, { contrast: v, filterOn: v, dur: r.region && cur > 0 ? Math.min(DUR_MAX, Math.max(5, cur + delta)) : 0 });
+  };
   // Нормалізація тривалості — на BLUR, не на keystroke: Math.max(5, …) зʼїдав
   // першу цифру («4» ставало 5 — набрати «45» неможливо; та сама хвороба, що
   // в StudyEditModal, баг власника с33).
   const exSetDur = (i: number, v: string) => exPatch(i, { dur: Math.max(0, Math.min(DUR_MAX, parseInt(v, 10) || 0)) });
   const exBlurDur = (i: number) => { const n = Number(extraStudies[i]?.dur) || 0; exPatch(i, { dur: n > 0 ? normDur(n) : 0 }); };
-  const exAdd = () => setExtraStudies((a) => [...a, { type: primaryKind, region: "", dur: exDur(primaryKind, "") }]);
+  /* ⚠️ `filterOn` НЕ ставимо — лишаємо undefined (ревʼю р1). `exChecked` читає
+     `filterOn ?? contrast`, тож у новому рядку галочка ЗАГОРИТЬСЯ САМА, щойно
+     оператор обере контрастну позицію прайсу. З явним `false` вона лишалась
+     згаслою на в/в контрастуванні — тобто екран казав «без контрасту» там, де
+     в studies їхав `contrast: true` (підготовка пацієнта, алергія на гадоліній).
+     Та сама конвенція, що в StudyEditModal: `seed()` прапорця не ставить. */
+  const exAdd = () => setExtraStudies((a) => [...a, { type: primaryKind, region: "", dur: exDur(primaryKind, ""), contrast: false }]);
   const exRemove = (i: number) => setExtraStudies((a) => a.filter((_, idx) => idx !== i));
   const validExtra = extraStudies.filter((s) => s.region);
 
@@ -544,13 +645,15 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
      на реально контрастному дослідженні. */
   const primaryContrast = contrastFilters ? (regionObj?.isContrast === true) : contrast === true;
   const primaryStudy: StudyOut | null = region ? { type: primaryKind, region, contrast: primaryContrast, dur, price: studyPrice(primaryKind, region, contrast, roomId) } : null;
-/* Додаткові дослідження теж можуть бути контрастними позиціями прайсу (їх
-   список НЕ фільтрується — це свідомо), тож contrast беремо з САМОЇ позиції.
-   Інакше «основне без контрасту + додаткове з в/в контрастуванням» давало б
-   has_contrast=false на всю запис (ревʼю, High-4). */
-  const exContrast = (t: string, reg: string) =>
-    catalog.contrastIsFilter(t, roomId) ? (exRegions(t).find((r) => r.label === reg)?.isContrast === true) : false;
-  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, contrast: exContrast(s.type, s.region), dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, false, roomId) })));
+/* Додаткові дослідження теж можуть бути контрастними позиціями прайсу, тож
+   contrast поїде з САМОГО РЯДКА. Інакше «основне без контрасту + додаткове з
+   в/в контрастуванням» давало б has_contrast=false на весь запис (ревʼю, High-4).
+   ⚠️ Ціна рахується з ТИМ САМИМ прапорцем: у каталозі аргумент ігнорується
+   (позиція вже контрастна), а в легасі-статиці саме він додає доплату. Поки тут
+   стояв жорсткий `false`, увімкнений контраст рядка показував би одну ціну в
+   списку, а в studies поїхала б інша — інваріант «durBump/priceBump беруть той
+   самий contrastIsFilter, що й studyDur/studyPrice» (правило контрасту, с19/20). */
+  const allStudies: StudyOut[] = (primaryStudy ? [primaryStudy] : []).concat(validExtra.map((s) => ({ type: s.type, region: s.region, contrast: s.contrast === true, dur: Number(s.dur) || 0, price: studyPrice(s.type, s.region, s.contrast === true, roomId) })));
   const combinedLabel = allStudies.length ? allStudies.map(studyLabel).join(" + ") : procLabel;
   const slotDur = dur + validExtra.reduce((s, x) => s + (Number(x.dur) || 0), 0);
 
@@ -1006,7 +1109,12 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
 
             <div className="bk-section-label">Дослідження</div>
 
-            <div className="fld-row" style={{ alignItems: "flex-end" }}>
+            {/* Один рівень: тип апарата · протипоказання · пріоритет (рішення
+                власника, с47). «Контраст» звідси ПІШОВ — він тепер належить
+                КОЖНОМУ дослідженню окремо (див. поле поруч з областю нижче й
+                колонку в таблиці додаткових): у записі з двох позицій одна може
+                бути контрастною, а друга ні, і спільна галочка це приховувала. */}
+            <div className="bk-head-row">
               <div className="fld" style={{ flex: "0 0 auto" }}>
                 <span className="fld-lab">Тип <span className="req">*</span></span>
                 <div className="bk-seg" style={{ flexWrap: "wrap" }}>
@@ -1015,26 +1123,20 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                   ))}
                 </div>
               </div>
-              <div className="fld">
+              <div className="fld" style={{ flex: "0 0 auto" }}>
                 <span className="fld-lab">Параметри</span>
                 <div className="bk-check-row">
-                  <label className={"rf-check" + (contrast ? " on" : "")}>
-                    <input type="checkbox" checked={contrast} onChange={(e) => toggleContrast(e.target.checked)} />
-                    <span className="rf-box" /><span>Контраст</span>
-                  </label>
                   <label className={"rf-check" + (hasContra ? " warn" : "")}>
                     <input type="checkbox" checked={hasContra} onChange={(e) => setHasContra(e.target.checked)} />
                     <span className="rf-box" /><span>Протипоказання</span>
                   </label>
                 </div>
               </div>
-            </div>
-
             {/* У режимі переносу пріоритет ЛИШЕ показуємо: змінює його окрема дія
                 з перевіркою ролі (адмін або направник-власник), тож реєстратор
                 отримав би 403 і перенос не відбувся б узагалі. Правиться в картці
                 пацієнта, де ця перевірка вже врахована в UI. */}
-            <div className="fld">
+            <div className="fld" style={{ flex: "1 1 auto", minWidth: 0 }}>
               <span className={"fld-lab" + (miss.priority ? " bk-miss-lab" : "")}>Пріоритет пацієнта {!moveMode && <span className="req">*</span>}</span>
               <div className="prio-seg" role={moveMode ? "group" : "radiogroup"} aria-label="Пріоритет пацієнта">
                 {PRIORITY_OPTIONS.map((pv) => {
@@ -1053,6 +1155,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
               <span className="bk-time-state none">{moveMode
                 ? "перенос пріоритет не змінює — правиться в картці пацієнта"
                 : priority ? PRIORITY_META[priority as PatientPriority].desc : "оберіть пріоритет — впливає на порядок у черзі"}</span>
+            </div>
             </div>
 
             <div className="fld" style={{ marginBottom: 2 }}>
@@ -1080,6 +1183,21 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                   })}
                 </select>
               </label>
+              {/* Контраст ОСНОВНОГО дослідження — тут, а не в шапці форми: це
+                  властивість цієї позиції прайсу, а не всього запису. Підпис
+                  чекбокса називає СЕМАНТИКУ режиму («з контрастом» = фільтр
+                  списку; «+N хв» = легасі-модифікатор із доплатою) — так само,
+                  як у редакторі складу (StudyEditModal). */}
+              <div className="fld" style={{ flex: "0 0 auto" }}>
+                <span className="fld-lab">Контраст</span>
+                <label className={"rf-check" + (contrast ? " on" : "")}
+                  title={contrastFilters
+                    ? "Показати лише послуги з контрастуванням"
+                    : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
+                  <input type="checkbox" checked={contrast} onChange={(e) => toggleContrast(e.target.checked)} />
+                  <span className="rf-box" /><span>{contrastFilters ? "з контрастом" : `+${CONTRAST_DUR} хв`}</span>
+                </label>
+              </div>
               <label className="fld" style={{ flex: "0 0 88px" }}>
                 <span className="fld-lab">Тривалість <span className="req">*</span></span>
                 <div className="bk-dur-row">
@@ -1119,18 +1237,49 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
             <div className="fld">
               {extraStudies.length > 0 && (
                 <div className="bk-study-table">
-                  <div className="bk-study-head"><span>Тип</span><span>Область дослідження</span><span>Трив.</span><span /></div>
+                  <div className="bk-study-head"><span>Тип</span><span>Область дослідження</span><span>Контраст</span><span>Трив.</span><span /></div>
                   {extraStudies.map((r, i) => {
-                    const regs = exRegions(r.type);
+                    const rowChecked = exChecked(r);
+                    const rowFilters = catalog.contrastIsFilter(r.type, roomId);
+                    const regs = exList(r);
+                    /* Обрана позиція не переживає ФІЛЬТР цього рядка — показуємо
+                       її окремим option «(поточне)», а не мовчки порожнім селектом:
+                       інакше вмикання галочки виглядало б як «область зникла». */
+                    const hasRegion = !r.region || regs.some((x) => x.label === r.region);
                     return (
                       <div className="bk-study-row" key={i}>
                         <div className="bk-seg bk-seg-sm st-seg-locked" title="Тип = тип основного дослідження">
                           <button className={"bk-seg-btn active " + modalityKind(studyType)} disabled>{modalityShort(studyType)}</button>
                         </div>
+                        {/* value — САМА область, а не порожній рядок при
+                            !hasRegion (ревʼю р1): опція «(поточне)» тоді
+                            відрисована, але не обрана, і селект показував
+                            «Оберіть область» на рядку, який уже їде в payload. */}
                         <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
-                          {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}{x.price > 0 ? " · " + fmtUah(x.price) : ""}</option>)}
+                          {!hasRegion && r.region && <option value={r.region}>{r.region} (поточне)</option>}
+                          {regs.map((x) => {
+                            /* Модифікаторний режим: option мусить показувати ЧАС І ЦІНУ
+                               з доплатою — рівно те, що поставить вибір. Розійдись
+                               вони, селект обіцяв би 15 хв, а рядок ставив 30. */
+                            const mod = rowChecked && !rowFilters;
+                            const pBump = mod ? (x.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
+                            const dBump = mod ? CONTRAST_DUR : 0;
+                            return <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : (x.dur + dBump) + " хв"}{x.price > 0 ? " · " + fmtUah(x.price + pBump) : ""}</option>;
+                          })}
                         </select>
+                        <label className={"rf-check bk-study-contrast" + (rowChecked ? " on" : "")}
+                          title={rowFilters
+                            ? "Показати лише послуги з контрастуванням"
+                            : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
+                          {/* aria-label — з НАЗВОЮ рядка (ревʼю р2): усі чекбокси
+                              колонки мають однаковий видимий підпис, і без цього
+                              скрінрідер читає «з контрастом» N разів поспіль, не
+                              кажучи, до якого дослідження це стосується. */}
+                          <input type="checkbox" checked={rowChecked} onChange={(e) => exSetContrast(i, e.target.checked)}
+                            aria-label={(rowFilters ? "Показати лише послуги з контрастуванням" : `Контраст: +${CONTRAST_DUR} хв і доплата`) + ` — дослідження ${i + 2}${r.region ? ": " + r.region : ""}`} />
+                          <span className="rf-box" /><span>{rowFilters ? "з контрастом" : `+${CONTRAST_DUR} хв`}</span>
+                        </label>
                         <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
                         <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
                       </div>

@@ -871,13 +871,57 @@ html[data-density="spacious"] .fld { gap: 9px; }
 
 /* Компактна таблиця додаткових досліджень */
 .bk-study-table { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
-.bk-study-head { display: grid; grid-template-columns: 92px 1fr 96px 24px; gap: 8px; padding: 0 2px; font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); }
-.bk-study-row { display: grid; grid-template-columns: 92px 1fr 96px 24px; gap: 8px; align-items: center; }
+/* П'ята колонка — «Контраст» ПО РЯДКАХ (с47): фільтр послуг належить кожному
+   дослідженню окремо, бо в одному записі одна позиція буває контрастною, а
+   друга ні. Ширина фіксована й спільна для шапки і рядків — інакше заголовки
+   роз'їдуться з комірками, щойно в назві позиції зміниться довжина. */
+.bk-study-head { display: grid; grid-template-columns: 78px minmax(0,1fr) auto 88px 24px; gap: 8px; padding: 0 2px; font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); }
+.bk-study-row { display: grid; grid-template-columns: 78px minmax(0,1fr) auto 88px 24px; gap: 8px; align-items: center; }
+/* Колонка назви послуги мусить уміти СТИСКАТИСЬ (ревʼю р2): без цього селект з
+   довгим «МРТ головного мозку до та після в/в контрастування» тримає свою
+   intrinsic-ширину, рядок розпирає ліву колонку, і замість обрізки зʼявляється
+   горизонтальний скрол усієї форми (у .bk-grid overflow-y:auto, тож
+   overflow-x стає auto теж). */
+.bk-study-row > *, .bk-study-head > * { min-width: 0; }
+.bk-study-row select, .bk-study-row .inp { max-width: 100%; }
 .bk-seg-sm { height: 32px; }
 .bk-seg-sm .bk-seg-btn { padding: 4px 6px; font-size: 0.6875rem; }
+/* Чекбокс у рядку — нижчий і компактніший за звичайний .rf-check (34px):
+   рядок таблиці мусить лишитись у висоту селекта, інакше таблиця з трьох
+   досліджень виростає на пів-екрана. */
+.bk-study-contrast { height: 32px; align-self: center; padding: 5px 8px; font-size: 0.75rem; gap: 6px; white-space: nowrap; }
+.bk-study-contrast .rf-box { width: 15px; height: 15px; }
+/* Обрізаємо ТЕКСТ (з трикрапкою), а не сам чекбокс: `overflow: hidden` на
+   контейнері зрізав би й кільце фокуса на .rf-box (ревʼю р2). */
+.bk-study-contrast > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Клавіатурний фокус на «фальшивих» чекбоксах: сам input схований
+   (opacity:0), тож глобальне правило :focus-visible його не показує —
+   підсвічуємо ВИДИМУ обгортку (WCAG 2.4.7). Стосується всіх .rf-check
+   продукту, не лише нового рядкового. */
+.rf-check:has(input:focus-visible) { outline: 2px solid var(--blue-line); outline-offset: 2px; }
 .bk-study-dur { display: inline-flex; align-items: center; gap: 4px; }
 .bk-study-dur .inp { width: 56px; text-align: center; padding-left: 6px; padding-right: 6px; }
 .bk-study-row .st-row-del { width: 24px; height: 24px; }
+
+/* Верхній рядок форми запису: тип апарата · протипоказання · пріоритет —
+   на ОДНОМУ рівні (рішення власника, с47). `align-items: flex-start`, а не
+   `flex-end`: у пріоритету під сегментами живе рядок-пояснення, і вирівнювання
+   по низу підняло б сегменти типу над написом. */
+.bk-head-row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+/* `flex: 0 1 auto` (а не `0 0 auto` з JSX): сегменти типу при пʼяти
+   модальностях — ~235px, і при забороні стискатись вони розпирали вузьку
+   колонку замість того, щоб ужатись (ревʼю р2). */
+.bk-head-row > .fld { min-width: 0; flex-shrink: 1; }
+/* Підписи полів рядка — в один рядок: перенос «Пріоритет пацієнта» на два
+   рядки опускав його сегменти нижче за сегменти типу, і «один рівень»
+   ставав сходинкою (ревʼю р2). */
+.bk-head-row > .fld > .fld-lab { white-space: nowrap; }
+@media (max-width: 560px) { .bk-head-row { gap: 8px; } }
+/* Ряд «Область · Контраст · Тривалість · Буфер»: у сусідів під контролом є
+   рядок-підказка (.bk-time-state), у «Контраст» — ні, тож низ ряду виходив
+   сходинкою. Резервуємо висоту підказки замість порожнього тексту. */
+.fld-row > .fld { min-width: 0; }
+.bk-time-state { min-height: 15px; }
 
 /* Вік (розраховано з дати народження) — read-only поле */
 .bk-age { display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-variant-numeric: tabular-nums; cursor: default; }
@@ -1447,6 +1491,20 @@ select.inp { cursor: pointer; }
 .bk-col { display: flex; flex-direction: column; gap: 7px; padding: 11px 15px; min-width: 0; }
 .bk-col-left { border-right: 1px solid var(--border); }
 .bk-col-right { background: var(--bg-elevated); gap: 8px; }
+/* ⚠️ Головне у вимозі «щоб уся інформація вміщалась без вертикального скролу»
+   (с47, ревʼю р2). Сам по собі нижчий календар нічого не дає: він віддає
+   ~110px сітці слотів, і ПОВНА висота правої колонки лишається тією самою —
+   пікселі просто переставлені. Скролить `.bk-grid`, а його висоту задає ЛІВА
+   колонка (пацієнт + дослідження + направник + примітки), яка завжди довша.
+   Тому праву колонку робимо липкою: розклад лишається перед очима, поки
+   оператор гортає ліву частину, і «Вільні слоти» більше не треба шукати
+   прокруткою. `align-self: start` обовʼязковий — інакше грід розтягує колонку
+   на всю висоту рядка і sticky нема від чого відліплюватись.
+   Лише на двоколонковій розкладці: нижче 720px колонки стають одна під одною,
+   і липка шапка там перекривала б форму. */
+@media (min-width: 721px) {
+  .bk-col-right { position: sticky; top: 0; align-self: start; max-height: 100%; }
+}
 .bk-dialog .dlg-head { padding: 12px 16px; }
 .bk-dialog .dlg-foot { padding: 10px 16px; }
 
@@ -1502,14 +1560,29 @@ select.inp { cursor: pointer; }
 .bk-room-model-line { font-size: 0.8125rem; font-weight: 500; color: var(--text-secondary); margin-top: 5px; }
 
 /* Booking calendar */
-.bk-cal { background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 8px; }
+.bk-cal { background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 6px 8px; }
 .bk-cal .cal-grid { gap: 1px; }
-.bk-cal .cal-day { font-size: 0.6875rem; min-height: 24px; }
+/* ⚠️ Ключовий важіль висоти правої колонки (с47). У базового `.cal-day` стоїть
+   `aspect-ratio: 1`, тобто висота дня = ЙОГО ШИРИНІ: у колонці 372px це ~46px
+   на рядок, ~290px на весь календар — і сітка слотів жила під скролом, хоча
+   місця під неї вистачало. `min-height: 24px` тут нічого не міняв: висоту
+   задавав aspect-ratio, а не він. Знімаємо співвідношення й задаємо висоту
+   ЯВНО — календар стає ~180px, різниця йде слотам (нижче max-height). */
+.bk-cal .cal-day { font-size: 0.6875rem; aspect-ratio: auto; height: 26px; min-height: 0; }
+.bk-cal .cal-dow { padding: 1px 0; }
 /* Компактна сітка (24px, 11px шрифт): крапка 8px + кільце 2px наїжджала на
    верх другої цифри двозначних дат (ревʼю 0133). Зменшуємо саме тут — на
    великому календарі розмір лишається як був. */
 .bk-cal .cal-change { width: 6px; height: 6px; top: 2px; right: 2px; }
+/* Мітка режиму дня — теж під компактну комірку (ревʼю р2): лишена 7px при
+   top/left 3/4 у комірці 26px висотою стояла несиметрично до правої мітки й
+   підходила впритул до цифри. */
+.bk-cal .cal-sched { width: 6px; height: 6px; top: 2px; left: 2px; }
 .bk-cal .cal-head { margin-bottom: 4px; }
+/* Тач: 26px — це формально WCAG 2.5.8 (24px), але на стійці реєстратури з
+   такою висотою промахуються по сусідньому дню. На дотикових екранах
+   повертаємо комфортні 38px — місця там більше, ніж на ноутбуці. */
+@media (pointer: coarse) { .bk-cal .cal-day { height: 38px; } }
 .bk-cal .cal-day:disabled { cursor: not-allowed; }
 
 /* Notes textarea */
@@ -1542,7 +1615,14 @@ select.inp { cursor: pointer; }
 
 /* Слоти 5 хв: у рядку 4 півгодинні слоти × 6 частин по 5 хв */
 .slot-picker { display: flex; flex-direction: column; gap: 8px; }
-.slot-grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px 7px; max-height: 340px; overflow-y: auto; padding-right: 2px; }
+/* Висота сітки слотів. Стеля була 340px — це ~6 рядків по 4 півгодинні блоки,
+   тобто кабінет 08:00–22:00 (28 блоків, 7 рядків) НІКОЛИ не вміщувався, і
+   оператор гортав сітку в кожному записі. Календар вище віддав ~110px (знятий
+   aspect-ratio), і вони йдуть сюди. `min(…, 46vh)` — щоб на низькому екрані
+   сітка не виштовхувала підвал із кнопкою «Зберегти» (шапка й підвал
+   зафіксовані, прокручується лише середина). Скрол лишається як запобіжник:
+   кабінет із цілодобовим графіком не вміститься за жодної стелі. */
+.slot-grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px 7px; max-height: max(340px, min(470px, 46vh)); overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
 /* Підказка зайнятого слота по тапу (тач: hover/title недоступні). Живе ПІД
    сіткою (поза скрол-контейнером), тож завжди видима. */
 .slot-hint { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 8px;
@@ -1972,7 +2052,7 @@ select.inp { cursor: pointer; }
 
   /* ---------- Модалка запису ---------- */
   /* .bk-grid уже розкладено в один стовпець на 720px — тут не дублюємо. */
-  .bk-study-head, .bk-study-row { grid-template-columns: 4.5rem 1fr 3.5rem 1.5rem; gap: 6px; }
+  .bk-study-head, .bk-study-row { grid-template-columns: 3.5rem minmax(0,1fr) auto 3.5rem 1.5rem; gap: 6px; }
   .slot-grid, .bk-slot-grid { grid-template-columns: repeat(2, 1fr); }
   .clp-actions { grid-template-columns: 1fr; }
   .bd-rooms { grid-template-columns: 1fr; }

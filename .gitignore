@@ -58,6 +58,19 @@ yarn-error.log*
 /vt.out
 /build.out
 /u11.diff
+# Маркери готовності «*.done» і чернетка тексту коміта: у с47 `tsc.done` і
+# `.commitmsg` доїхали до коміта разом із пакетом U-23 (`git add -A` бере все,
+# чого немає в ignore). Шкоди не було, але в історії лишився сміттєвий файл —
+# дешевше заборонити на місці, ніж помітити в наступному ревʼю.
+/tsc.done
+/lint.done
+/full.done
+/build.done
+/build.log
+/full.log
+/.full.json
+/.vt.json
+/.commitmsg
 
 # ===== Редактор / ОС =====
 .DS_Store
