@@ -613,11 +613,17 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                         title={catalog.contrastIsFilter(r.type, roomId)
                           ? "Показати лише послуги з контрастуванням"
                           : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
-                        <input type="checkbox" checked={rowContrastChecked(r)} onChange={(e) => setContrast(i, e.target.checked)} />
-                        {/* «з контрастом», а не «Контраст» (рішення власника, с28): підпис поля
-                            над чекбоксом уже «Контраст», а прийменник — єдине, що каже про
-                            семантику ФІЛЬТРА списку (с20), не модифікатора з доплатою. */}
-                        <span className="rf-box" /><span>{catalog.contrastIsFilter(r.type, roomId) ? "з контрастом" : `+${CONTRAST_DUR} хв`}</span>
+                        {/* ⚠️ Тексту всередині чекбокса НЕМАЄ (рішення власника, с47).
+                            Це СКАСОВУЄ рішення с28 («з контрастом», а не «Контраст»):
+                            підпис поля над чекбоксом уже «Контраст», і прийменник читався
+                            як друга назва того самого. Семантику режиму (фільтр списку vs
+                            модифікатор із доплатою) несуть `title` і самі опції списку,
+                            де в легасі показані і +15 хв, і доплата. */}
+                        <input type="checkbox" checked={rowContrastChecked(r)} onChange={(e) => setContrast(i, e.target.checked)}
+                          aria-label={(catalog.contrastIsFilter(r.type, roomId)
+                            ? "Контраст: показати лише послуги з контрастуванням"
+                            : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`) + ` — дослідження ${i + 1}${r.region ? ": " + r.region : ""}`} />
+                        <span className="rf-box" />
                       </label>
                     </div>
                     <label className="st-field st-field-dur">

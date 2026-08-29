@@ -1114,8 +1114,11 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                 КОЖНОМУ дослідженню окремо (див. поле поруч з областю нижче й
                 колонку в таблиці додаткових): у записі з двох позицій одна може
                 бути контрастною, а друга ні, і спільна галочка це приховувала. */}
+            {/* Ширини — у CSS (.bk-head-row: грід із трьох колонок), інлайнових
+                flex тут немає: на грід-елементах вони не діють і лише вводять в
+                оману наступного читача. */}
             <div className="bk-head-row">
-              <div className="fld" style={{ flex: "0 0 auto" }}>
+              <div className="fld">
                 <span className="fld-lab">Тип <span className="req">*</span></span>
                 <div className="bk-seg" style={{ flexWrap: "wrap" }}>
                   {availableModalities.map((code) => (
@@ -1123,7 +1126,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                   ))}
                 </div>
               </div>
-              <div className="fld" style={{ flex: "0 0 auto" }}>
+              <div className="fld">
                 <span className="fld-lab">Параметри</span>
                 <div className="bk-check-row">
                   <label className={"rf-check" + (hasContra ? " warn" : "")}>
@@ -1136,7 +1139,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                 з перевіркою ролі (адмін або направник-власник), тож реєстратор
                 отримав би 403 і перенос не відбувся б узагалі. Правиться в картці
                 пацієнта, де ця перевірка вже врахована в UI. */}
-            <div className="fld" style={{ flex: "1 1 auto", minWidth: 0 }}>
+            <div className="fld">
               <span className={"fld-lab" + (miss.priority ? " bk-miss-lab" : "")}>Пріоритет пацієнта {!moveMode && <span className="req">*</span>}</span>
               <div className="prio-seg" role={moveMode ? "group" : "radiogroup"} aria-label="Пріоритет пацієнта">
                 {PRIORITY_OPTIONS.map((pv) => {
@@ -1184,18 +1187,21 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                 </select>
               </label>
               {/* Контраст ОСНОВНОГО дослідження — тут, а не в шапці форми: це
-                  властивість цієї позиції прайсу, а не всього запису. Підпис
-                  чекбокса називає СЕМАНТИКУ режиму («з контрастом» = фільтр
-                  списку; «+N хв» = легасі-модифікатор із доплатою) — так само,
-                  як у редакторі складу (StudyEditModal). */}
-              <div className="fld" style={{ flex: "0 0 auto" }}>
+                  властивість цієї позиції прайсу, а не всього запису.
+                  Підпис поля вже каже «Контраст», тож усередині чекбокса тексту
+                  НЕМАЄ (рішення власника, с47 — скасовує рішення с28 про
+                  прийменник «з контрастом»). Семантику режиму несе `title`:
+                  у каталозі це фільтр списку, у легасі-статиці — модифікатор
+                  із доплатою й +15 хв (їх видно і в самих опціях списку). */}
+              <div className="fld bk-fld-contrast">
                 <span className="fld-lab">Контраст</span>
-                <label className={"rf-check" + (contrast ? " on" : "")}
+                <label className={"rf-check rf-check-bare" + (contrast ? " on" : "")}
                   title={contrastFilters
                     ? "Показати лише послуги з контрастуванням"
                     : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
-                  <input type="checkbox" checked={contrast} onChange={(e) => toggleContrast(e.target.checked)} />
-                  <span className="rf-box" /><span>{contrastFilters ? "з контрастом" : `+${CONTRAST_DUR} хв`}</span>
+                  <input type="checkbox" checked={contrast} onChange={(e) => toggleContrast(e.target.checked)}
+                    aria-label={contrastFilters ? "Контраст: показати лише послуги з контрастуванням" : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`} />
+                  <span className="rf-box" />
                 </label>
               </div>
               <label className="fld" style={{ flex: "0 0 88px" }}>
@@ -1272,13 +1278,16 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                           title={rowFilters
                             ? "Показати лише послуги з контрастуванням"
                             : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
-                          {/* aria-label — з НАЗВОЮ рядка (ревʼю р2): усі чекбокси
-                              колонки мають однаковий видимий підпис, і без цього
-                              скрінрідер читає «з контрастом» N разів поспіль, не
-                              кажучи, до якого дослідження це стосується. */}
+                          {/* aria-label — з НАЗВОЮ рядка (ревʼю р2): без нього
+                              скрінрідер читає однаковий підпис N разів поспіль, не
+                              кажучи, до якого дослідження це стосується.
+                              Колонку називає заголовок таблиці — усередині лише
+                              квадратик (с47). Побічний виграш: колонка «Контраст»
+                              звузилась із 118px до ~40px, і ці пікселі пішли назві
+                              послуги, якій їх бракувало (ревʼю р2). */}
                           <input type="checkbox" checked={rowChecked} onChange={(e) => exSetContrast(i, e.target.checked)}
                             aria-label={(rowFilters ? "Показати лише послуги з контрастуванням" : `Контраст: +${CONTRAST_DUR} хв і доплата`) + ` — дослідження ${i + 2}${r.region ? ": " + r.region : ""}`} />
-                          <span className="rf-box" /><span>{rowFilters ? "з контрастом" : `+${CONTRAST_DUR} хв`}</span>
+                          <span className="rf-box" />
                         </label>
                         <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
                         <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>

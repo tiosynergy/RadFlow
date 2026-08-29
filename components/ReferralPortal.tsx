@@ -718,8 +718,9 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
             {/* Один рівень: тип · протипоказання · пріоритет (рішення власника,
                 с47). «Контраст» звідси пішов — він тепер у КОЖНОМУ дослідженні
                 окремо (поле поруч з областю і колонка в таблиці додаткових). */}
+            {/* Ширини — у CSS (.bk-head-row: грід із трьох колонок). */}
             <div className="bk-head-row">
-              <div className="fld" style={{ flex: "0 0 130px" }}>
+              <div className="fld">
                 <span className="fld-lab">Тип <span className="req">*</span></span>
                 <div className="bk-seg">
                   {availableModalities.map((code) => (
@@ -727,7 +728,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                   ))}
                 </div>
               </div>
-              <div className="fld" style={{ flex: "0 0 auto" }}>
+              <div className="fld">
                 <span className="fld-lab">Параметри</span>
                 <div className="bk-check-row">
                   <label className={"rf-check" + (hasContra ? " warn" : "")}>
@@ -737,7 +738,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 </div>
               </div>
 
-            <div className="fld" style={{ flex: "1 1 auto", minWidth: 0 }}>
+            <div className="fld">
               <span className={"fld-lab" + (miss.priority ? " bk-miss-lab" : "")}>Пріоритет пацієнта <span className="req">*</span></span>
               <div className="prio-seg" role="radiogroup" aria-label="Пріоритет пацієнта">
                 {PRIORITY_OPTIONS.map((pv) => {
@@ -781,15 +782,18 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 </select>
               </label>
               {/* Контраст ОСНОВНОГО дослідження — тут, а не в шапці: це
-                  властивість цієї позиції прайсу, а не всього направлення. */}
-              <div className="fld" style={{ flex: "0 0 auto" }}>
+                  властивість цієї позиції прайсу, а не всього направлення.
+                  Усередині чекбокса тексту немає — підпис поля вже «Контраст»
+                  (с47, дзеркало BookingModal). */}
+              <div className="fld bk-fld-contrast">
                 <span className="fld-lab">Контраст</span>
-                <label className={"rf-check" + (contrast ? " on" : "")}
+                <label className={"rf-check rf-check-bare" + (contrast ? " on" : "")}
                   title={contrastFilters
                     ? "Показати лише послуги з контрастуванням"
                     : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
-                  <input type="checkbox" checked={contrast} onChange={(e) => toggleContrast(e.target.checked)} />
-                  <span className="rf-box" /><span>{contrastFilters ? "з контрастом" : `+${CONTRAST_DUR} хв`}</span>
+                  <input type="checkbox" checked={contrast} onChange={(e) => toggleContrast(e.target.checked)}
+                    aria-label={contrastFilters ? "Контраст: показати лише послуги з контрастуванням" : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`} />
+                  <span className="rf-box" />
                 </label>
               </div>
               <label className="fld" style={{ flex: "0 0 108px" }}>
@@ -863,9 +867,11 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                             : `Контраст: +${CONTRAST_DUR} хв до тривалості та доплата`}>
                           {/* aria-label із назвою рядка — інакше скрінрідер читає
                               однаковий підпис для всіх рядків (ревʼю р2). */}
+                          {/* Усередині — лише квадратик: колонку називає заголовок
+                              таблиці (с47, дзеркало BookingModal). */}
                           <input type="checkbox" checked={rowChecked} onChange={(e) => exSetContrast(i, e.target.checked)}
                             aria-label={(rowFilters ? "Показати лише послуги з контрастуванням" : `Контраст: +${CONTRAST_DUR} хв і доплата`) + ` — дослідження ${i + 2}${r.region ? ": " + r.region : ""}`} />
-                          <span className="rf-box" /><span>{rowFilters ? "з контрастом" : `+${CONTRAST_DUR} хв`}</span>
+                          <span className="rf-box" />
                         </label>
                         <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
                         <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>

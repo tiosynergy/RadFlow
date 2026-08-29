@@ -886,19 +886,23 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .bk-study-row select, .bk-study-row .inp { max-width: 100%; }
 .bk-seg-sm { height: 32px; }
 .bk-seg-sm .bk-seg-btn { padding: 4px 6px; font-size: 0.6875rem; }
-/* Чекбокс у рядку — нижчий і компактніший за звичайний .rf-check (34px):
-   рядок таблиці мусить лишитись у висоту селекта, інакше таблиця з трьох
-   досліджень виростає на пів-екрана. */
-.bk-study-contrast { height: 32px; align-self: center; padding: 5px 8px; font-size: 0.75rem; gap: 6px; white-space: nowrap; }
+/* Чекбокс у рядку таблиці — БЕЗ тексту (с47): колонку називає заголовок.
+   Побічний виграш — колонка звузилась зі 118px до ~32px, і ці пікселі пішли
+   назві послуги, якій їх бракувало на вузьких вікнах (ревʼю р2). */
+.bk-study-contrast { width: 32px; height: 32px; align-self: center; justify-self: center; padding: 0; justify-content: center; gap: 0; }
 .bk-study-contrast .rf-box { width: 15px; height: 15px; }
-/* Обрізаємо ТЕКСТ (з трикрапкою), а не сам чекбокс: `overflow: hidden` на
-   контейнері зрізав би й кільце фокуса на .rf-box (ревʼю р2). */
-.bk-study-contrast > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* Клавіатурний фокус на «фальшивих» чекбоксах: сам input схований
    (opacity:0), тож глобальне правило :focus-visible його не показує —
    підсвічуємо ВИДИМУ обгортку (WCAG 2.4.7). Стосується всіх .rf-check
    продукту, не лише нового рядкового. */
 .rf-check:has(input:focus-visible) { outline: 2px solid var(--blue-line); outline-offset: 2px; }
+/* Чекбокс БЕЗ тексту (с47): поле вже підписане «Контраст», а слова всередині
+   читались як друга назва того самого. Квадратик тримаємо на висоті сусідніх
+   контролів і робимо ширину рівною висоті — інакше порожній .rf-check
+   лишався б із padding'ом під текст, який прибрали. Доступне імʼя — в
+   aria-label самого input (video/screen reader його й читає). */
+.rf-check-bare { padding: 0; width: 34px; height: 34px; justify-content: center; gap: 0; }
+.bk-study-contrast.rf-check-bare, .rf-check-bare.bk-study-contrast { width: 32px; height: 32px; }
 .bk-study-dur { display: inline-flex; align-items: center; gap: 4px; }
 .bk-study-dur .inp { width: 56px; text-align: center; padding-left: 6px; padding-right: 6px; }
 .bk-study-row .st-row-del { width: 24px; height: 24px; }
@@ -907,16 +911,31 @@ html[data-density="spacious"] .fld { gap: 9px; }
    на ОДНОМУ рівні (рішення власника, с47). `align-items: flex-start`, а не
    `flex-end`: у пріоритету під сегментами живе рядок-пояснення, і вирівнювання
    по низу підняло б сегменти типу над написом. */
-.bk-head-row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
-/* `flex: 0 1 auto` (а не `0 0 auto` з JSX): сегменти типу при пʼяти
-   модальностях — ~235px, і при забороні стискатись вони розпирали вузьку
-   колонку замість того, щоб ужатись (ревʼю р2). */
-.bk-head-row > .fld { min-width: 0; flex-shrink: 1; }
+/* ⚠️ ГРІД, а не flex-wrap (с47, друга ітерація власника). З `flex-wrap` рядок
+   тримався в один рівень лише поки все вміщувалось: сегменти типу (~134px на
+   три модальності, ~235px на пʼять) + «Протипоказання» (~142px) + сегменти
+   пріоритету (~212px) + гепи = 512…613px проти ~540px лівої колонки — тобто
+   на вужчому вікні або при четвертій модальності пріоритет ЇХАВ НА ДРУГИЙ
+   РЯДОК і, маючи `flex: 1 1 auto`, розтягувався на всю ширину поруч із
+   напівпорожнім першим рядком. Саме це власник і прислав скріншотом.
+   Три колонки: тип і протипоказання — по вмісту, пріоритет забирає решту й
+   стискається. Перенос лишається тільки на телефонах (нижче). */
+.bk-head-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 12px; align-items: start; }
+.bk-head-row > .fld { min-width: 0; }
 /* Підписи полів рядка — в один рядок: перенос «Пріоритет пацієнта» на два
    рядки опускав його сегменти нижче за сегменти типу, і «один рівень»
    ставав сходинкою (ревʼю р2). */
 .bk-head-row > .fld > .fld-lab { white-space: nowrap; }
-@media (max-width: 560px) { .bk-head-row { gap: 8px; } }
+/* Сегменти в рядку мусять уміти стискатись, інакше грід не втримає три
+   колонки: сам `.prio-seg` — inline-flex із `flex: 0 0 auto` на кнопках. */
+.bk-head-row .prio-seg, .bk-head-row .bk-seg { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+.bk-head-row .prio-seg-btn { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Телефон: три колонки в 360px не мають сенсу — тип і протипоказання поруч,
+   пріоритет під ними на всю ширину. */
+@media (max-width: 560px) {
+  .bk-head-row { grid-template-columns: auto minmax(0, 1fr); gap: 8px; }
+  .bk-head-row > .fld:nth-child(3) { grid-column: 1 / -1; }
+}
 /* Ряд «Область · Контраст · Тривалість · Буфер»: у сусідів під контролом є
    рядок-підказка (.bk-time-state), у «Контраст» — ні, тож низ ряду виходив
    сходинкою. Резервуємо висоту підказки замість порожнього тексту. */
@@ -956,8 +975,11 @@ html[data-density="spacious"] .fld { gap: 9px; }
    поля тримаються в одному рядку; wrap лишається для вузьких екранів (320px,
    WCAG 1.4.10) — там перенос легальний. */
 .st-field-region { flex: 1 1 180px; min-width: 150px; }
+/* с47: у чекбоксі більше немає тексту (підпис поля вже «Контраст»), тож поле
+   звузилось до самого квадратика — і «Тривалість» гарантовано лишається в
+   тому ж рядку навіть на вузькій модалці. */
 .st-field-contrast { flex: 0 0 auto; }
-.st-field-contrast .rf-check { height: 34px; white-space: nowrap; }
+.st-field-contrast .rf-check { width: 34px; height: 34px; padding: 0; justify-content: center; gap: 0; }
 .st-field-dur { flex: 0 0 auto; }
 .st-seg { flex: 0 0 auto; }
 /* Зафіксований тип (модальність задана кабінетом) — нередагований бейдж */

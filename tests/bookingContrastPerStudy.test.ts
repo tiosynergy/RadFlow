@@ -194,11 +194,64 @@ describe("с47: тип · протипоказання · пріоритет —
     expect(prio, `${file}: пріоритет виїхав із рядка — він має бути ДО наступного блоку форми`).toBeLessThan(after);
   });
 
-  it("CSS: bk-head-row вирівнює по верху, а не по низу", () => {
-    /* flex-end підняв би сегменти типу над рядком-поясненням пріоритету —
-       «один рівень» перетворився б на сходинку. */
-    expect(raw(CSS), "bk-head-row зник або вирівнюється по низу")
-      .toMatch(/\.bk-head-row \{[^}]*align-items: flex-start/);
+  /* ⚠️ ГРІД, а не flex-wrap (друга ітерація власника, с47). З `flex-wrap` рядок
+     тримався в один рівень ЛИШЕ поки все вміщувалось: на вужчому вікні або при
+     четвертій модальності пріоритет їхав на другий рядок і розтягувався на всю
+     ширину поруч із напівпорожнім першим. Власник прислав це скріншотом. */
+  it("CSS: bk-head-row — грід із трьох колонок, а не wrap", () => {
+    const css = raw(CSS);
+    expect(css, "bk-head-row повернувся до flex-wrap — пріоритет знову поїде на другий рядок")
+      .toMatch(/\.bk-head-row \{[^}]*display: grid;[^}]*grid-template-columns: auto auto minmax\(0, 1fr\)/);
+    expect(css, "у .bk-head-row лишився flex-wrap").not.toMatch(/\.bk-head-row \{[^}]*flex-wrap/);
+    expect(css, "вирівнювання по верху зникло").toMatch(/\.bk-head-row \{[^}]*align-items: start/);
+    // Сегменти мусять уміти стискатись, інакше грід розпирає колонку.
+    expect(css, "сегменти в рядку знову не стискаються")
+      .toMatch(/\.bk-head-row \.prio-seg, \.bk-head-row \.bk-seg \{[^}]*min-width: 0/);
+  });
+
+  it.each(FORMS)("%s: ширини рядка живуть у CSS, а не в інлайнах", (file) => {
+    /* На ГРІД-елементах інлайновий `flex` не діє взагалі — залишений, він лише
+       вводить в оману наступного читача (ревʼю р2). */
+    const code = src(file);
+    const head = code.indexOf('<div className="bk-head-row">');
+    const seg = code.slice(head, code.indexOf("<StudySearchBox", head));
+    expect(seg, `${file}: у дітях bk-head-row лишився інлайновий flex`).not.toMatch(/style=\{\{ flex:/);
+  });
+});
+
+/* ── Друга ітерація власника: у чекбоксі контрасту немає тексту ───────────
+   Рішення с47 СКАСОВУЄ рішення с28 («з контрастом» замість «Контраст»):
+   підпис поля / заголовок колонки вже кажуть «Контраст», і прийменник читався
+   як друга назва того самого. Стосується ВСІХ ролей і всіх модалок із
+   фільтром контрасту. */
+describe("с47: чекбокс контрасту — без тексту, у всіх формах", () => {
+  const WITH_CONTRAST_CHECKBOX = [BOOKING, PORTAL, "components/StudyEditModal.tsx"];
+
+  it.each(WITH_CONTRAST_CHECKBOX)("%s: підпису «з контрастом» у чекбоксі немає", (file) => {
+    const code = src(file);
+    /* Шукаємо саме ВИДИМИЙ текст у <span> поруч із .rf-box, а не рядок узагалі:
+       «з контрастуванням» лишається в `title`/`aria-label` (там воно пояснює
+       семантику) і в назвах послуг прайсу. */
+    expect(code, `${file}: текст повернувся всередину чекбокса`)
+      .not.toMatch(/<span className="rf-box" \/><span>\{[^}]*контраст/i);
+    expect(code, `${file}: у чекбоксі зʼявився підпис «+N хв»`)
+      .not.toMatch(/<span className="rf-box" \/><span>\{[^}]*CONTRAST_DUR/);
+  });
+
+  it.each(WITH_CONTRAST_CHECKBOX)("%s: доступне імʼя лишилось на самому input", (file) => {
+    /* Прибрали видимий текст — доступне імʼя мусить бути в aria-label, інакше
+       скрінрідер читає «прапорець» без жодної назви (WCAG 4.1.2). */
+    // `[\s\S]` — вираз aria-label буває розбитий на кілька рядків.
+    expect(src(file), `${file}: чекбокс контрасту лишився без aria-label`)
+      .toMatch(/aria-label=\{[\s\S]{0,140}?[Кк]онтраст/);
+  });
+
+  it("CSS: порожній чекбокс — квадрат, а не поле з мертвим padding'ом", () => {
+    const css = raw(CSS);
+    expect(css, "правило .rf-check-bare зникло — порожній чекбокс лишиться з padding під текст")
+      .toMatch(/\.rf-check-bare \{[^}]*padding: 0;[^}]*width: \d+px/);
+    expect(css, "чекбокс у таблиці знову розтягнутий під текст")
+      .toMatch(/\.bk-study-contrast \{[^}]*width: 32px/);
   });
 });
 
