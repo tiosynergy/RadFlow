@@ -217,7 +217,11 @@ describe("StudyEditModal — межі тривалості не беруться
   it("усі стелі графіка прив'язані до schedApplies + schedReady", () => {
     expect(code).toMatch(/const capBySched = !schedApplies\s*\n?\s*\? DUR_MAX/);
     expect(code).toMatch(/const capBySched = !schedApplies[\s\S]{0,200}?schedReady\s*\n?\s*\?/);
-    expect(code).toMatch(/const capByBreak = \(offSchedule \|\| !schedApplies\) \? Infinity : \(schedReady \? capByBreakRaw : committedDur\);/);
+    /* U-20 (с48): умова grace — `offAllowed` (прапорець запису АБО право ролі),
+       а не самий лише прапорець. Довіру до читання це не послаблює: обидві гілки
+       нижче так само тримаються на schedReady/committedDur. */
+    expect(code).toMatch(/const offAllowed = offSchedule \|\| allowOffSchedule;/);
+    expect(code).toMatch(/const capByBreak = \(offAllowed \|\| !schedApplies\) \? Infinity : \(schedReady \? capByBreakRaw : committedDur\);/);
     expect(code).toMatch(/const capBySchedStrict = !schedApplies \? DUR_MAX : \(schedReady \? schedEnd - startMin : committedDur\);/);
     expect(code).toMatch(/const inSchedCap = [^;]*capBySchedStrict[^;]*;/);
   });
@@ -227,8 +231,24 @@ describe("StudyEditModal — межі тривалості не беруться
      плоский `!availTrusted ? …` ставив би поруч із реальним 18:00 слова «дані не
      підтверджені» (ревʼю пакета, знахідка 6). */
   it("підпис межі окремий для кожного споживача", () => {
-    expect(code).toMatch(/const labelFor = \(cap: number\) => \(!availTrusted && cap === committedDur \? untrustedLabel : boundaryLabel\);/);
+    /* U-20 (с48): у labelFor зʼявилась ТРЕТЯ гілка — стеля понад графік
+       називається конкретним часом, бо boundaryLabel описує СТРОГУ межу і на
+       розширеній стелі був би прямою брехнею («доступно 480 хв (до кінця
+       графіка (18:00))»). Порядок гілок пінимо разом: «не підтверджені» мусить
+       лишатись ПЕРШИМ, інакше невідомість підмінялась би точним часом. */
+    expect(code, "гілка невідомості більше не перша — точний час підмінить «не підтверджені»")
+      .toMatch(/const labelFor = \(cap: number\) => \(!availTrusted && cap === committedDur\s*\n?\s*\? untrustedLabel/);
+    /* ⚠️ `availTrusted &&` в цій гілці обовʼязковий. Умова невідомості вище
+       тримається на `cap === committedDur` і мовчить, щойно вʼяже інша стеля —
+       і напис ставав точним часом поруч із банером «збільшувати тривалість поки
+       не можна» (ревʼю р1, U-20). */
+    expect(code, "стеля понад графік знову описується боундарі-написом строгої межі")
+      .toMatch(/: \(availTrusted && cap > inSchedCap\) \? \("до " \+ fmtDay\(startMin \+ cap\)\) : boundaryLabel\);/);
+    // Час за добу друкується з переносом: «24:00» і «25:00» — часи, яких не буває.
+    expect(code, "стеля з grace знову друкується сирим fmt — на екрані зʼявиться «до 25:00»")
+      .toMatch(/function fmtDay\(m: number\) \{ return m >= 1440 \?/);
     expect(code).toMatch(/const windowLabel = labelFor\(availableDur\);/);
+    // Кожен споживач кличе labelFor зі СВОЄЮ стелею — спільного напису бути не має.
     expect(code).toContain("{labelFor(inSchedCap)}");
     // Назвати межу графіка можна лише коли графік узагалі застосовний.
     expect(code).toMatch(/schedApplies \? \("до кінця графіка \(" \+ fmt\(schedEnd\) \+ "\)"\)/);

@@ -6,7 +6,7 @@
    зайнятість кабінету беремо через знеособлений RPC room_busy_slots (без PII;
    для направника обходить RLS-сліпоту), p_exclude прибирає сам редагований запис. */
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, DUR_MAX, CONTRAST_DUR, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
@@ -87,6 +87,10 @@ interface StudyEditModalProps {
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
+/* Час, що може перевалити за добу: кабінет до 22:00 + 2 год grace = 24:00, а
+   `fmt` надрукував би «24:00» і навіть «25:00» — час, якого не буває. Друкуємо
+   з переносом і словами (U-20: саме тут уперше зʼявився напис зі стелею grace). */
+function fmtDay(m: number) { return m >= 1440 ? fmt(m - 1440) + " наступного дня" : fmt(m); }
 
 export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, services, roomOverrides, onClose, onConfirm, offSchedule, allowOffSchedule }: StudyEditModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
@@ -227,35 +231,104 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      schedReady — та сама логіка, що busyReady, лише для графіка: поки він не
      підтверджений, schedEnd — це хардкод 08–18, а не межа ЦЬОГО кабінету, і брати
      її за стелю означало б дозволити тягнути дослідження за реальне закриття. */
+  /* U-20 (с48): grace-смугу відкриває не «запис уже позначений», а «цій РОЛІ
+     сервер дозволить понаднормово». Поки умовою був самий лише `offSchedule`,
+     для запису В ГРАФІКУ обидві пари стель збігались (`capBySched ===
+     capBySchedStrict`, `capByBreak === capByBreakStrict`), тобто `availableDur`
+     тотожно дорівнював `inSchedCap` — і `crossesNow ⟺ overflow`. Наслідок:
+     `needsOffConfirm` НІКОЛИ не ставав true для звичайного запису, галочка
+     «Підтверджую роботу поза графіком» була недосяжна, а екран показував
+     «⚠ Не вміщується» і сіру кнопку там, де сервер (0077) подовження з
+     підтвердженням ДОЗВОЛЯЄ. Той самий клас провалу, що U-12, лише для персоналу.
+     Дизʼюнкція, а не заміна: успадкований прапорець мусить піднімати стелю й
+     тоді, коли роль овертайму не має (направник відкриває запис, що вже стоїть
+     поза графіком) — інакше повертається провал №1 з U-12. */
+  const offAllowed = offSchedule || allowOffSchedule;
   const capBySched = !schedApplies
     ? DUR_MAX                                    // немає кабінету/дати — графік не обмежує (але стеля продукту лишається)
     : schedReady
-      ? (offSchedule ? schedEnd + OFF_SCHED_GRACE_MIN : schedEnd) - startMin
+      ? (offAllowed ? schedEnd + OFF_SCHED_GRACE_MIN : schedEnd) - startMin
       : committedDur;
   // Перерва кабінету після старту теж обмежує тривалість — дослідження не може її перетнути.
   const roomBreaks = effectiveRoomBreaks(dateObj, patient.room_id || "", roomSchedule, override);
   const nextBreakStart = roomBreaks.map((b) => toMin(b.start)).filter((m) => m > startMin).sort((a, b) => a - b)[0];
   const capByBreakRaw = nextBreakStart != null ? nextBreakStart - startMin : Infinity;
+  /* U-22: перерва, що вже ТРИВАЄ на момент старту, у `nextBreakStart` не потрапляє
+     (фільтр `m > startMin`), тож СТРОГА стеля вважала, що місця в графіку скільки
+     завгодно: екран писав «вільно ще 65 хв» запису, який весь стоїть в обіді, і
+     тут же вимагав згоди. Якщо старт накритий перервою, місця в графіку немає
+     ЖОДНОГО — 0, і згоду треба питати з першої хвилини.
+     ⚠️ Нуль іде ЛИШЕ в строгу стелю: у м'яку він перетворив би відмову на
+     «⚠ Не вміщується, скоротіть», а скорочення тут не рятує (ревʼю р1). */
+  /* Найпізніша з перерв, що накривають старт: `rooms.schedule.breaks[]` не
+     сортується і може перетинатись, тож `.find` брав ПЕРШУ за порядком і
+     підписував «до 14:00» там, де кабінет у перерві до 15:00 (ревʼю р2). */
+  const curBreak = schedApplies
+    ? roomBreaks.filter((b) => toMin(b.start) <= startMin && startMin < toMin(b.end))
+        .sort((a, b) => toMin(b.end) - toMin(a.end))[0]
+    : undefined;
+  const capByBreakStrictRaw = curBreak ? 0 : capByBreakRaw;
   /* Перерви — з ТОГО САМОГО (невідомого при schedErr) графіка: порожній список
-     перерв при збої означав би «перерв немає», а не «ми їх не знаємо». */
-  const capByBreak = (offSchedule || !schedApplies) ? Infinity : (schedReady ? capByBreakRaw : committedDur);
-  const availableDur = Math.max(0, Math.min(capByNext, capBySched, capByBreak));
+     перерв при збої означав би «перерв немає», а не «ми їх не знаємо».
+     ⚠️ При `offAllowed` права гілка недосяжна — консервативну стелю невідомості
+     тримає `capBySched` (там `committedDur` лишився). Гілку не прибираємо: без
+     неї наступна правка `capBySched` мовчки зняла б fail-closed і для перерв. */
+  const capByBreak = (offAllowed || !schedApplies) ? Infinity : (schedReady ? capByBreakRaw : committedDur);
+  /* DUR_MAX у мінімумі — не косметика: сервер нормалізує тривалість через
+     `normDur`, який МОВЧКИ клампить до 480, тож склад на 500 хв зберігся б із
+     `duration_min = 480` і розійшовся б із самим `studies[]`. Відколи стеля
+     графіка виросла на grace, цей діапазон стало легко набрати (ревʼю р1). */
+  const availableDur = Math.max(0, Math.min(capByNext, capBySched, capByBreak, DUR_MAX));
   // Межа, за якою потрібне НОВЕ підтвердження (кінець графіка / початок перерви).
   const capBySchedStrict = !schedApplies ? DUR_MAX : (schedReady ? schedEnd - startMin : committedDur);
-  const capByBreakStrict = !schedApplies ? Infinity : (schedReady ? capByBreakRaw : committedDur);
-  const inSchedCap = Math.max(0, Math.min(capByNext, capBySchedStrict, capByBreakStrict));
-  /* Підпис межі. Два споживачі — і межі в них РІЗНІ (availableDur та inSchedCap),
+  const capByBreakStrict = !schedApplies ? Infinity : (schedReady ? capByBreakStrictRaw : committedDur);
+  const inSchedCap = Math.max(0, Math.min(capByNext, capBySchedStrict, capByBreakStrict, DUR_MAX));
+  /* ⚠️ Ревʼю р2 зарубало проміжний варіант `noConsentCap = offSchedule ?
+     availableDur : inSchedCap`. Міркування було таке: для запису, що вже стоїть
+     поза графіком, згода їде разом з успадкованим прапорцем (`save()`:
+     `offSchedule || …`), отже нової згоди не треба. Це НЕПРАВДА: `valid` усе
+     одно вимагає `(!needsOffConfirm || offOk)`, а `needsOffConfirm` для такого
+     запису істинний при БУДЬ-ЯКІЙ довжині. Наслідки були втричі гірші за
+     початковий дефект — банер писав «Без згоди вміщується 60 хв» рівно над
+     галочкою, яка обовʼязкова; `cap > noConsentCap` ставало тотожно false, тож
+     чесна гілка підпису вмирала; а `overtimeRoom` тотожно false ховало єдину
+     згадку про підтвердження. Межа без згоди — це рівно `inSchedCap`, і нуль у
+     ній не аномалія, а факт: у графіку не лишилось часу (окрема гілка нижче).
+     Підпис межі. Два споживачі — і межі в них РІЗНІ (availableDur та inSchedCap),
      тож підпис теж окремий: інакше банер «поза графіком» показував би реальний
      час 18:00 поруч зі словами «дані не підтверджені» (ревʼю пакета, знахідка 6).
      Правило: називаємо межу лише тоді, коли її дало ПРОЧИТАНЕ джерело; якщо
      тримає консервативна стеля невідомості — так і кажемо. */
-  const boundaryLabel = (capByBreak <= capByNext && capByBreak <= capBySched && nextBreakStart != null)
+  /* ⚠️ Рахується зі СТРОГИХ стель. До U-20 умова читала `capByBreak`, і це
+     працювало лише тому, що м'яка стеля перерви дорівнювала строгій. Відколи
+     grace робить `capByBreak = Infinity` для персоналу, `Infinity <= capBySched`
+     тотожно false — гілка «до перерви» вмерла, і екран підписував межу 13:00
+     словами «до кінця графіка (18:00)». Підпис описує СТРОГУ межу, тож і читати
+     він мусить строгі стелі (ревʼю р1). */
+  const boundaryLabel = curBreak
+    ? ("кабінет у перерві до " + curBreak.end)
+    : (capByBreakStrict <= capByNext && capByBreakStrict <= capBySchedStrict && nextBreakStart != null)
     ? ("до перерви о " + fmt(nextBreakStart))
     : (nextStart != null && (nextStart - buffer) <= schedEnd)
       ? ("до наступного запису о " + fmt(nextStart) + (buffer > 0 ? ` − ${buffer} буфер` : ""))
       : (schedApplies ? ("до кінця графіка (" + fmt(schedEnd) + ")") : "кабінет або дату не призначено");
   const untrustedLabel = "поточна тривалість запису — дані кабінету не підтверджені";
-  const labelFor = (cap: number) => (!availTrusted && cap === committedDur ? untrustedLabel : boundaryLabel);
+  /* U-20: відколи grace відкривається і для запису В ГРАФІКУ, `availableDur` може
+     бути БІЛЬШИМ за межу графіка — а `boundaryLabel` описує саме СТРОГУ межу
+     (перерва / наступний запис / кінець графіка). Один напис на дві різні стелі
+     давав би пряму брехню: «доступно 480 хв (до кінця графіка (18:00))», тоді як
+     480 хв тягнуться до 20:00, а 18:00 — це межа, ПІСЛЯ якої потрібна згода.
+     Понаднормову стелю називаємо конкретним часом: це факт із самих чисел, який
+     не може розійтись із написом. Порядок гілок збережено — «не підтверджені»
+     лишається найпершим, інакше невідомість підмінялась би точним часом. */
+  /* ⚠️ Гілка овертайму вимагає `availTrusted`. Умова невідомості вище тримається
+     на `cap === committedDur` і спрацьовує лише поки в'яже САМЕ консервативна
+     стеля; щойно в'яже інша (наприклад графік при впалій зайнятості), напис
+     мовчки ставав точним часом — екран обіцяв «до 20:00» поруч із банером
+     «збільшувати тривалість поки не можна» (ревʼю р1). Не знаємо — не називаємо. */
+  const labelFor = (cap: number) => (!availTrusted && cap === committedDur
+    ? untrustedLabel
+    : (availTrusted && cap > inSchedCap) ? ("до " + fmtDay(startMin + cap)) : boundaryLabel);
   const windowLabel = labelFor(availableDur);
 
   // Тривалість за довідником (у каталозі — час позиції як є; CONTRAST_DUR
@@ -344,7 +417,19 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   // у «Разом» і в блок сітки, поки область не вибрано.
   const totalDur = rows.reduce((s, r) => s + (r.region ? (Number(r.dur) || 0) : 0), 0);
   const overflow = totalDur > availableDur;
+  /* `remaining` — ЗАПАС ДО ЖОРСТКОЇ СТЕЛІ, і саме він вирішує, чи можна додати ще
+     рядок: без цього персонал не міг би дійти до понаднормового складу взагалі
+     (кнопка «Додати дослідження» гасла б рівно на межі графіка). У рядок
+     доступності він більше НЕ їде — там показуємо запас у ГРАФІКУ (U-20). */
   const remaining = availableDur - totalDur;
+  /* ⚠️ `allowOffSchedule` в умові обовʼязковий. Без нього направник, що відкрив
+     запис зі спадковим `off_schedule`, читав «Понаднормово — до 180 хв з
+     підтвердженням» — підтвердження, якого його роль дати НЕ МОЖЕ ніколи. Це
+     той самий провал U-12 (обіцянка, яку сервер відхилить), заведений заново
+     через нове речення (ревʼю р1). */
+  const overtimeRoom = allowOffSchedule && availableDur > inSchedCap;
+  const freeInSched = inSchedCap - totalDur;        // запас БЕЗ згоди
+  const overFree = totalDur > inSchedCap;           // склад уже вийшов за межу графіка
   // М'яке попередження (НЕ блокує збереження): за фактом старту дослідження+буфер
   // закінчаться пізніше наступного запису кабінету.
   const projectedEndMin = refStartMin + totalDur + buffer;
@@ -354,8 +439,6 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      Без цього збережений колись прапорець працював би як «вічний дозвіл»: запис,
      підтверджений на 5 хв понаднормово, мовчки розтягнули б ще на дві години. */
   const [offOk, setOffOk] = useState(false);
-  const crossesNow = totalDur > inSchedCap;
-  const needsOffConfirm = crossesNow && !overflow && allowOffSchedule;
   /* U-12: ДЗЕРКАЛО серверного гейта 0077 (`scheduleBlock`: `if (!opts.isStaff)
      return OFF_SCHED_ERR`). Рахуємо з ЖИВОГО графіка, а не з прапорця запису:
      графік могли звузити ВЖЕ ПІСЛЯ броні, і тоді запис із `off_schedule=false`
@@ -367,7 +450,43 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      ВЗАГАЛІ, тож заборона була б вигаданою (ревʼю р1). Колонка nullable. */
   const offNow = schedReady && !!patient.scheduled_time
     ? offScheduleKind(startMin, totalDur, roomSched, roomBreaks) : null;
+  /* U-20/U-21/U-22 (с48). Питання «чи потрібна згода» ставимо ТІЙ САМІЙ функції,
+     що й сервер (`offScheduleKind` → `scheduleBlock`), а не арифметиці стель.
+     Стелі відповідали на нього неправильно ТРИЧІ:
+       • U-20 — для запису В ГРАФІКУ `availableDur === inSchedCap`, отже
+         `crossesNow ⟺ overflow`, і `crossesNow && !overflow` тотожно false:
+         галочка недосяжна, хоча сервер подовження дозволяє;
+       • U-21 — `closed` / `before_start` / `too_late` сервер відхиляє гілкою
+         `!info.confirmable` РАНІШЕ за роль, тобто НІКОМУ, — а стелі про вид
+         нічого не знають і показали б персоналу галочку, якої сервер не
+         прийме (обіцянка, що коштує збереження);
+       • U-22 — перерва, що вже ТРИВАЄ на момент старту, у стелі не потрапляє
+         (`nextBreakStart` фільтрує `m > startMin`), тож `crossesNow` лишався
+         false, згоди ніхто не питав, і сервер відповідав «потрібне
+         підтвердження» на форму, яка не мала способу його дати.
+     Тепер обидві гілки читаються з `offNow`: `confirmable` → згода персоналу,
+     `!confirmable` → глухий кут для ВСІХ ролей. `!overflow` лишається: якщо
+     склад не влазить і в grace, просити згоду нема сенсу — треба скорочувати. */
+  const offHardBlocked = !!offNow && !offNow.confirmable;
+  const needsOffConfirm = allowOffSchedule && !!offNow && offNow.confirmable && !overflow;
   const offForbiddenForRole = !allowOffSchedule && !!offNow;
+  /* Згода дається під КОНКРЕТНУ причину: заїзд в обід — не те саме, що робота
+     після закриття. Поки скидання не було, галочка, поставлена під перерву,
+     мовчки підписувала понаднормову роботу: оператор міняв склад, `offNow.kind`
+     ставав `after_end` (теж confirmable), банер перемальовувався, а `offOk`
+     лишався true і їхав на сервер (ревʼю р1). Скидаємо на зміні ВИДУ. */
+  const offKind = offNow?.kind ?? null;
+  const prevOffKind = useRef<string | null>(offKind);
+  useEffect(() => {
+    /* ⚠️ `null` — це ТРАНЗІЄНТ набору, а не зміна причини: щоб замінити «100» на
+       «110», оператор набирає «1», склад на мить вміщується в графік, offKind
+       падає в null і назад. Перша версія скидала галочку саме там — вона гасла
+       без жодної видимої причини, а «Зберегти» сіріла (ревʼю р2). Скидаємо лише
+       на переході між ДВОМА реальними видами. */
+    if (offKind === null || prevOffKind.current === offKind) return;
+    prevOffKind.current = offKind;
+    setOffOk(false);
+  }, [offKind]);
   /* Чи врятує СКОРОЧЕННЯ складу. Свідомо не міркуємо, яка зі стель зараз вʼяже:
      `capByBreakStrict` бачить лише перерву ПІСЛЯ старту, тож запис, що сам стоїть
      УСЕРЕДИНІ перерви (поставлений персоналом за підтвердженням або накритий
@@ -383,11 +502,21 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      `busyReady` — бо inSchedCap включає стелю за наступним записом: поки
      зайнятість не прочитана, вона дорівнює поточній тривалості, і число в
      пораді через секунду мінялося б саме на очах. */
-  const fitsIfShorter = offForbiddenForRole && schedReady && busyReady && inSchedCap >= MIN_ROW_DUR
+  /* U-21: глухих кутів тепер ДВА — рольовий (направник) і «не може ніхто»
+     (closed / before_start / too_late). Питання «чи врятує скорочення» в них
+     спільне, тож і рахуємо його один раз, на диз'юнкції. */
+  const offDeadEnd = offForbiddenForRole || offHardBlocked;
+  /* `closed` і `before_start` не залежать від довжини взагалі: у закритий день і
+     до відкриття кабінету «у графік вміщується N хв» — число з неіснуючого
+     графіка (`roomScheduleFor` для закритого дня повертає дефолтні 08:00–18:00).
+     Екран казав «Разом 30 хв. У графік вміщується 330 хв» червоним і сірою
+     кнопкою — читач робив висновок «усе влазить», а зберегти не міг (ревʼю р1). */
+  const lengthIrrelevant = !!offNow && (offNow.kind === "closed" || offNow.kind === "before_start" || !!curBreak);
+  const fitsIfShorter = offDeadEnd && schedReady && busyReady && inSchedCap >= MIN_ROW_DUR
     && !offScheduleKind(startMin, inSchedCap, roomSched, roomBreaks);
   // 0117 (ревью M2): рядок з областю, але без часу (каталожне «—») — не зберігаємо,
   // інакше в снімок їхав dur 0, а колери мовчки лишали стару тривалість.
-  const valid = rows.length > 0 && rows.every((r) => r.region && (Number(r.dur) || 0) >= MIN_ROW_DUR) && !overflow && (!needsOffConfirm || offOk) && !offForbiddenForRole;
+  const valid = rows.length > 0 && rows.every((r) => r.region && (Number(r.dur) || 0) >= MIN_ROW_DUR) && !overflow && (!needsOffConfirm || offOk) && !offForbiddenForRole && !offHardBlocked;
 
   // ── Сітка слотів (read-only візуалізація дня кабінету) ──────────────────────
   // Показуємо зайнятість кабінету і власне вікно запису (green межі + буфер) —
@@ -486,12 +615,36 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
               із банером відмови на одному екрані стояло три різні числа: скільки
               «доступно», скільки введено, скільки насправді збережеться. Коли
               зберегти поза графіком не можна, чесна межа одна — та, що в графіку. */}
-          <div className={"ctx-hint " + (overflow || offForbiddenForRole ? "red" : "blue")} style={{ fontSize: "0.78125rem" }}>
-            {overflow
-              ? <>⚠ Не вміщується: разом <b>{totalDur} хв</b>, доступно <b>{availableDur} хв</b> ({windowLabel}). Скоротіть на {totalDur - availableDur} хв.</>
-              : offForbiddenForRole
-              ? <>Разом <b>{totalDur} хв</b>. У графік кабінету вміщується <b>{inSchedCap} хв</b>.</>
-              : <>Доступно у слоті: <b>{availableDur} хв</b> ({windowLabel}). Вільно ще <b>{remaining} хв</b>.</>}
+          {/* ⚠️ Порядок гілок вирішує `lengthIrrelevant`, а не «хто перший».
+              Ревʼю р1: у закритому дні / до відкриття / всередині перерви екран
+              радив «Скоротіть на N хв» — порада, яка не спрацює НІКОЛИ, бо
+              довжина там ні до чого; оператор скорочував, overflow зникав, і аж
+              тоді зʼявлявся справжній банер (двокрокова брехня).
+              Ревʼю р2: але й безумовний пріоритет глухого кута — помилка. Для
+              `too_late` (склад довший за grace) скорочення СПРАЦЬОВУЄ: вид
+              міняється на підтверджуваний `after_end`. Безумовна гілка забирала
+              число «скоротіть на 30 хв» і слала оператора перезаписувати
+              пацієнта. Тож overflow виграє скрізь, КРІМ випадків, де довжина не
+              є причиною. */}
+          <div className={"ctx-hint " + (overflow || offDeadEnd ? "red" : "blue")} style={{ fontSize: "0.78125rem" }}>
+            {overflow && !lengthIrrelevant
+              ? <>⚠ Не вміщується: разом <b>{totalDur} хв</b>, доступно <b>{availableDur} хв</b>{overtimeRoom ? <> (з них понад графік — лише з підтвердженням, {windowLabel})</> : <> ({windowLabel})</>}. Скоротіть на {totalDur - availableDur} хв.</>
+              : offDeadEnd && offNow
+              ? (lengthIrrelevant
+                  ? <>Разом <b>{totalDur} хв</b> — {offReasonText(offNow)}. Тривалість тут ні до чого.</>
+                  : <>Разом <b>{totalDur} хв</b>. У графік кабінету вміщується <b>{inSchedCap} хв</b>.</>)
+              /* U-20: головне число рядка — те, що можна зберегти БЕЗ згоди
+                 (межа графіка), а понаднормову стелю називаємо окремим реченням
+                 разом зі словом «підтвердження». Показувати `availableDur` як
+                 «доступно» означало б рекламувати овертайм як звичайну ємність:
+                 оператор читав би «доступно 480 хв» для кабінету, що закриється
+                 за годину. Нуль у графіку — не аномалія, а факт (запис уже поза
+                 графіком), і в нього своя гілка: «доступно 0 хв» звучало б як
+                 «нічого не зробити», хоча понаднормово місце є. */
+              : <>{inSchedCap > 0
+                    ? <>Доступно у слоті: <b>{inSchedCap} хв</b> ({labelFor(inSchedCap)}).{!overFree && <> Вільно ще <b>{freeInSched} хв</b>.</>}</>
+                    : <>У графіку кабінету вільного часу немає ({labelFor(inSchedCap)}).</>}
+                  {overtimeRoom && <> Понаднормово — до <b>{availableDur} хв</b> ({labelFor(availableDur)}) з підтвердженням.</>}</>}
           </div>
           {/* Поки дані кабінету не підтверджені — не даємо збільшувати тривалість
               (fail-closed). При помилці читання це не транзієнт «пусто», а невідомий
@@ -512,16 +665,65 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
           {/* 0077 — тривалість вивела дослідження за графік / у перерву: окрема згода.
               Успадкований прапорець запису тут НЕ рахується за підтвердження — інакше
               одна давня згода дозволяла б тягнути дослідження скільки завгодно. */}
+          {/* ⚠️ У жодного з трьох банерів НЕМАЄ aria-live/role. Спокуса була
+              («банер вирішує, чи можна зберегти»), але їхній вміст містить
+              сумарну тривалість, а `setDur` пише сире значення на КОЖНЕ
+              натискання клавіші: жива область зачитувала б два абзаци тричі за
+              набір «120», а assertive-роль ще й перебивала б поле вводу.
+              Напівзроблена жива область гірша за жодну; чесна вимагає озвучення
+              по blur із нормалізованим числом — заведено окремим пунктом U-26,
+              а не приліплено сюди (ревʼю р2). */}
           {needsOffConfirm && (
             <div className="info-banner offsched" style={{ flexDirection: "column", alignItems: "stretch", gap: 8 }}>
+              {/* ⚠️ Причину називає `offReasonText(offNow)` — та сама функція, що в
+                  банері відмови. Раніше банер називав лише МЕЖУ, і для запису, що
+                  стоїть усередині перерви, це виглядало як «вийде за межу (14:50:
+                  до наступного запису о 15:00)» — три неправди поспіль: запис туди
+                  не доходить, названа межа не є причиною, а «понаднормово» — це
+                  обід (ревʼю р1). */}
               <span className="ib-txt">
-                <b>⏰ Поза графіком.</b> Разом <b>{totalDur} хв</b> — дослідження вийде за межу
-                (<b>{fmt(startMin + inSchedCap)}</b>: {labelFor(inSchedCap)}). Кабінет працюватиме понаднормово.
+                <b>⏰ Поза графіком.</b> Разом <b>{totalDur} хв</b> — {offNow ? offReasonText(offNow) : "дослідження виходить за межі графіка"}.
+                Без згоди вміщується <b>{inSchedCap} хв</b> ({labelFor(inSchedCap)}). Кабінет працюватиме понаднормово.
               </span>
               <label className="fld-lab" style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                 <input type="checkbox" checked={offOk} onChange={(e) => setOffOk(e.target.checked)} />
                 Підтверджую роботу поза графіком
               </label>
+            </div>
+          )}
+          {/* U-21: глухий кут, який НЕ лікується згодою. `closed` / `before_start`
+              / `too_late` сервер відхиляє гілкою `!info.confirmable` РАНІШЕ за
+              перевірку ролі — тобто нікому, персоналу теж. До U-20 персонал сюди
+              просто не доходив: стеля не мала grace, тож спрацьовував `overflow` і
+              екран казав «скоротіть», що для закритого дня чи запису до відкриття
+              є брехнею. Тепер, коли grace відкрита, без цього банера персонал
+              побачив би галочку згоди, яку сервер не прийме.
+              Взаємно виключний з банером згоди (той вимагає `confirmable`) і з
+              рольовою відмовою нижче (та вимагає `!allowOffSchedule`). */}
+          {/* ⚠️ БЕЗ гарда `!overflow`. Він здавався розумним («не дублювати
+              червоне»), а на ділі ховав ЄДИНЕ пояснення сірої кнопки саме тоді,
+              коли воно найпотрібніше: у закритому дні з довгим складом екран
+              казав тільки «Скоротіть на N хв», оператор скорочував — і аж тоді
+              бачив «кабінет цього дня не працює». Направник такого гарда не мав,
+              тобто персонал був поінформований ГІРШЕ за нього (ревʼю р1). */}
+          {allowOffSchedule && offHardBlocked && offNow && (
+            <div className="info-banner offsched" style={{ flexDirection: "column", alignItems: "stretch", gap: 6 }}>
+              <span className="ib-txt">
+                <b>⏰ Поза графіком кабінету.</b> Разом <b>{totalDur} хв</b> — {offReasonText(offNow)}.
+                Такий час не може погодити ніхто: сервер відхиляє його ще до перевірки ролі.
+              </span>
+              {/* ⚠️ Три поради, і кожна відповідає СВОЄМУ виду глухого кута.
+                  `too_late` лікується скороченням — але не до `inSchedCap`, а до
+                  жорсткої стелі: там вид міняється на підтверджуваний `after_end`.
+                  Ревʼю р2 зловило, що без цієї гілки екран радив перезаписувати
+                  пацієнта там, де вистачало прибрати пів години. */}
+              <span className="ib-txt">
+                {fitsIfShorter
+                  ? <>Щоб зберегти зараз — скоротіть склад до <b>{inSchedCap} хв</b>.</>
+                  : (overflow && !lengthIrrelevant)
+                  ? <>Скоротіть склад до <b>{availableDur} хв</b> — тоді вихід за графік стане підтверджуваним.</>
+                  : <>Запис треба перенести на робочий час кабінету — «🗓 Перезаписати» на дошці.</>}
+              </span>
             </div>
           )}
           {/* U-12: ЧЕСНА ВІДМОВА замість мовчазної сірої кнопки. Серверне правило

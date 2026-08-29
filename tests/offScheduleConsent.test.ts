@@ -203,18 +203,38 @@ describe("U-12: у кожному місці виклику написана п�
    тож форму гілок звіряємо статично, а найдорожче рішення (текст причини і сама
    перевірка «чи допоможе скорочення») винесене у функції й перевірене по суті. */
 const GATES: Array<[string, RegExp]> = [
+  /* U-20/U-21/U-22 (с48): питання «чи потрібна згода» ставиться ТІЙ САМІЙ
+     функції, що й серверу (`offNow` ← `offScheduleKind`), а НЕ арифметиці стель.
+     Стара форма `crossesNow && !overflow` була тотожно false для запису в
+     графіку (там availableDur === inSchedCap), нічого не знала про
+     `confirmable` і не бачила перерви, що вже тривала на момент старту. */
   ["галочку овертайму видно лише тому, кому сервер її дозволить",
-    /const needsOffConfirm = crossesNow && !overflow && allowOffSchedule;/],
+    /const needsOffConfirm = allowOffSchedule && !!offNow && offNow\.confirmable && !overflow;/],
+  ["галочка не спирається на арифметику стель — інакше вона знову стане недосяжною",
+    /const needsOffConfirm = (?!.*crossesNow)[^\n]*;/],
+  ["непідтверджуваний вид — глухий кут для ВСІХ ролей, не лише для направника",
+    /const offHardBlocked = !!offNow && !offNow\.confirmable;/],
   ["відмова рахується з ролі та ЖИВОГО графіка, а не з прапорця запису",
     /const offNow = schedReady && !!patient\.scheduled_time\s*\n?\s*\? offScheduleKind\(startMin, totalDur, roomSched, roomBreaks\) : null;/],
   ["роль справді блокує саме збереження",
     /const offForbiddenForRole = !allowOffSchedule && !!offNow;/],
-  ["заборона входить у valid — інакше «Зберегти» лишиться активним",
-    /const valid = [^\n]*&& !offForbiddenForRole;/],
+  ["рольова заборона входить у valid — інакше «Зберегти» лишиться активним",
+    /const valid = [^\n]*&& !offForbiddenForRole && !offHardBlocked;/],
+  ["непідтверджуваний вид теж входить у valid — інакше персонал збереже те, що сервер відхилить",
+    /const valid = [^\n]*&& !offHardBlocked;/],
+  ["обидва глухі кути рахуються однією диз'юнкцією",
+    /const offDeadEnd = offForbiddenForRole \|\| offHardBlocked;/],
   ["порада «скоротіть» перевіряється тією ж функцією, що й заборона",
-    /const fitsIfShorter = offForbiddenForRole && schedReady && busyReady && inSchedCap >= MIN_ROW_DUR\s*\n?\s*&& !offScheduleKind\(startMin, inSchedCap, roomSched, roomBreaks\);/],
-  ["банер відмови рендериться",
+    /const fitsIfShorter = offDeadEnd && schedReady && busyReady && inSchedCap >= MIN_ROW_DUR\s*\n?\s*&& !offScheduleKind\(startMin, inSchedCap, roomSched, roomBreaks\);/],
+  ["банер рольової відмови рендериться",
     /\{offForbiddenForRole && offNow && \(/],
+  /* ⚠️ БЕЗ `!overflow`: гард ховав ЄДИНЕ пояснення сірої кнопки саме там, де воно
+     найпотрібніше (закритий день + довгий склад), і робив персонал поінформованим
+     ГІРШЕ за направника, у якого такого гарда ніколи не було (ревʼю р1). */
+  ["банер «не може погодити ніхто» рендериться для персоналу",
+    /\{allowOffSchedule && offHardBlocked && offNow && \(/],
+  ["банер «не може погодити ніхто» не ховається за overflow",
+    /\{allowOffSchedule && offHardBlocked && offNow && \(\n/],
   /* Ревʼю р1: «зверніться до центру» правдиве лише для confirmable-видів. Для
      closed / before_start / too_late сервер відхиляє гілкою `!info.confirmable`
      ДО перевірки ролі — тобто центр теж безсилий, і порада коштує дзвінка. */
@@ -225,7 +245,80 @@ const GATES: Array<[string, RegExp]> = [
   /* Ревʼю р1: при рольовій забороні «Доступно у слоті» називало стелю З GRACE —
      три різні числа на одному екрані. Межа при відмові одна: та, що в графіку. */
   ["рядок доступності при забороні показує межу графіка, а не grace",
-    /: offForbiddenForRole\s*\n?\s*\? <>Разом <b>\{totalDur\} хв<\/b>\. У графік кабінету вміщується <b>\{inSchedCap\} хв<\/b>\./],
+    /: offDeadEnd && offNow\s*\n?\s*\? \(lengthIrrelevant/],
+  /* Ревʼю р1 + р2, дві протилежні помилки на одній гілці. р1: у закритому дні
+     екран радив «Скоротіть на N хв» — порада, яка не спрацює НІКОЛИ. р2:
+     безумовний пріоритет глухого кута забирав ту саму пораду там, де вона
+     ПРАЦЮЄ (`too_late` — скорочення робить вид підтверджуваним). Обидві
+     помиляються в один бік: пріоритет мусить вирішувати `lengthIrrelevant`. */
+  ["overflow виграє скрізь, крім випадків, де довжина не є причиною",
+    /\{overflow && !lengthIrrelevant\s*\n?\s*\? <>⚠ Не вміщується/],
+  ["глухий кут іде одразу за overflow, а не після нормальної гілки",
+    /\{overflow && !lengthIrrelevant[\s\S]{0,600}?: offDeadEnd && offNow/],
+  ["перерва, що накриває старт, теж не лікується довжиною",
+    /const lengthIrrelevant = !!offNow && \(offNow\.kind === "closed" \|\| offNow\.kind === "before_start" \|\| !!curBreak\);/],
+  ["для too_late банер радить скоротити до жорсткої стелі, а не перезаписувати",
+    /: \(overflow && !lengthIrrelevant\)\s*\n?\s*\? <>Скоротіть склад до <b>\{availableDur\} хв<\/b>/],
+  /* U-20: те саме правило, але для НОРМАЛЬНОГО стану. Відколи grace відкрита і
+     персоналу, `availableDur` — це вже стеля З ОВЕРТАЙМОМ, і показувати її як
+     «Доступно у слоті» означає рекламувати понаднормову ємність як звичайну.
+     Головне число рядка — межа БЕЗ НОВОЇ ЗГОДИ; овертайм — окремим реченням і
+     поруч зі словом «підтвердження». */
+  ["головне число рядка доступності — межа графіка, а не стеля з овертаймом",
+    /\? <>Доступно у слоті: <b>\{inSchedCap\} хв<\/b> \(\{labelFor\(inSchedCap\)\}\)\./],
+  /* ⚠️ Ревʼю р2: проміжний `noConsentCap = offSchedule ? availableDur : inSchedCap`
+     був гірший за початковий дефект — він робив `cap > noConsentCap` і
+     `availableDur > noConsentCap` тотожно хибними для запису поза графіком, тобто
+     вбивав і чесний підпис, і згадку про підтвердження, і ще писав «Без згоди
+     вміщується 60 хв» просто над обовʼязковою галочкою. */
+  /* ⚠️ Пінимо саме УМОВУ разом із гілкою. Перша версія пінила лише текст
+     else-гілки — і мутація `{inSchedCap > 0` → `{true` лишалась ЗЕЛЕНОЮ: текст
+     нікуди не дівається, він просто стає недосяжним. Той самий урок, що в с47
+     з якорем `exAdd` замість `changeType`: зелена мутація означає «сторож
+     дивиться не туди», а не «сторож зайвий». */
+  ["нуль у графіку має власну гілку, а не друкується як «доступно 0 хв»",
+    /\{inSchedCap > 0\s*\n\s*\? <>Доступно у слоті: <b>\{inSchedCap\} хв<\/b>/],
+  ["гілка «часу немає» справді написана",
+    /: <>У графіку кабінету вільного часу немає \(\{labelFor\(inSchedCap\)\}\)\.<\/>\}/],
+  ["овертайм названий окремо, зі словом «підтвердження» і лише тому, хто може його дати",
+    /const overtimeRoom = allowOffSchedule && availableDur > inSchedCap;/],
+  ["овертаймове речення рендериться",
+    /\{overtimeRoom && <> Понаднормово — до <b>\{availableDur\} хв<\/b> \(\{labelFor\(availableDur\)\}\) з підтвердженням\.<\/>\}/],
+  ["«вільно ще» рахується від межі графіка і ховається, щойно склад її перейшов",
+    /const freeInSched = inSchedCap - totalDur;/],
+  ["«вільно ще» ховається саме по overFree",
+    /\{!overFree && <> Вільно ще <b>\{freeInSched\} хв<\/b>\.<\/>\}/],
+  /* Ревʼю р1: згода дається під конкретну ПРИЧИНУ. Банер, що називав лише межу,
+     для запису всередині перерви казав неправду тричі поспіль. */
+  ["банер згоди називає ПРИЧИНУ тією ж функцією, що й банер відмови",
+    /<b>⏰ Поза графіком\.<\/b> Разом <b>\{totalDur\} хв<\/b> — \{offNow \? offReasonText\(offNow\) :/],
+  /* Ревʼю р1: DUR_MAX у стелях. Без нього склад на 500 хв мовчки зберігався б із
+     duration_min = 480 (normDur клампить на сервері) і розходився зі studies[]. */
+  ["обидві стелі клампляться стелею продукту",
+    /const availableDur = Math\.max\(0, Math\.min\(capByNext, capBySched, capByBreak, DUR_MAX\)\);/],
+  ["строга стеля теж клампиться стелею продукту",
+    /const inSchedCap = Math\.max\(0, Math\.min\(capByNext, capBySchedStrict, capByBreakStrict, DUR_MAX\)\);/],
+  /* U-22: перерва, що вже триває на момент старту, мусить давати нуль у СТРОГІЙ
+     стелі — інакше екран пише «вільно ще N хв» запису, який весь стоїть в обіді. */
+  ["перерва, що накриває старт, обнуляє строгу стелю",
+    /const capByBreakStrictRaw = curBreak \? 0 : capByBreakRaw;/],
+  ["нуль іде ЛИШЕ в строгу стелю — інакше відмова перетвориться на «скоротіть»",
+    /const capByBreak = \(offAllowed \|\| !schedApplies\) \? Infinity : \(schedReady \? capByBreakRaw : committedDur\);/],
+  /* Ревʼю р1: підпис межі читає СТРОГІ стелі. З м'якими гілка «до перерви»
+     вмирає (capByBreak = Infinity для персоналу), і межа 13:00 підписується
+     словами «до кінця графіка (18:00)». */
+  ["підпис межі рахується зі строгих стель",
+    /: \(capByBreakStrict <= capByNext && capByBreakStrict <= capBySchedStrict && nextBreakStart != null\)/],
+  ["перерва, що накриває старт, має власний підпис",
+    /const boundaryLabel = curBreak\s*\n?\s*\? \("кабінет у перерві до " \+ curBreak\.end\)/],
+  /* Ревʼю р1: згода під одну причину не має мовчки підписувати іншу. */
+  ["згода скидається на зміні ВИДУ виходу за графік",
+    /if \(offKind === null \|\| prevOffKind\.current === offKind\) return;\s*\n\s*prevOffKind\.current = offKind;\s*\n\s*setOffOk\(false\);/],
+  /* Ревʼю р2: `null` — транзієнт набору («100» → «1» → «110»), а не зміна
+     причини. Перша версія скидала галочку саме там: вона гасла без видимої
+     причини, і «Зберегти» сіріла посеред звичайного редагування. */
+  ["скидання не спрацьовує на транзієнтному null під час набору",
+    /useEffect\(\(\) => \{[\s\S]{0,800}?offKind === null \|\|/],
 ];
 
 describe("U-12: гілки ролі в редакторі досліджень", () => {
@@ -237,16 +330,76 @@ describe("U-12: гілки ролі в редакторі досліджень",
      галочку разом із відмовою означає знову пообіцяти те, чого не буде. */
   it("галочка згоди й банер відмови не можуть зійтись разом", () => {
     const code = src(MODAL);
-    expect(code, "needsOffConfirm мусить вимагати allowOffSchedule").toMatch(/needsOffConfirm = [^\n]*&& allowOffSchedule;/);
+    expect(code, "needsOffConfirm мусить вимагати allowOffSchedule").toMatch(/needsOffConfirm = allowOffSchedule &&/);
     expect(code, "offForbiddenForRole мусить вимагати !allowOffSchedule").toMatch(/offForbiddenForRole = !allowOffSchedule/);
+    /* U-21: третій банер. Він виключний із галочкою по `confirmable` (галочка
+       вимагає true, банер — false) і з рольовою відмовою по ролі (банер вимагає
+       allowOffSchedule, відмова — !allowOffSchedule). Обидві осі пінимо, бо
+       зникнення БУДЬ-ЯКОЇ повертає «дві суперечливі коробки на одному екрані». */
+    expect(code, "offHardBlocked мусить вимагати саме НЕпідтверджуваний вид").toMatch(/offHardBlocked = !!offNow && !offNow\.confirmable;/);
+    expect(code, "банер «не може ніхто» більше не обмежений персоналом — зійдеться з рольовою відмовою")
+      .toMatch(/\{allowOffSchedule && offHardBlocked &&/);
+  });
+
+  /* ⚠️ Ревʼю р2 зарубало проміжний `noConsentCap = offSchedule ? availableDur :
+     inSchedCap`: він робив `cap > noConsentCap` і `availableDur > noConsentCap`
+     тотожно хибними для запису поза графіком — тобто вбивав і чесний підпис, і
+     єдину згадку про підтвердження, а банер писав «Без згоди вміщується 60 хв»
+     просто над обовʼязковою галочкою. Межа без згоди — рівно `inSchedCap`.
+     Тест на ВІДСУТНІСТЬ, бо ця ідея виглядає розумною і повернеться. */
+  it("межа без згоди не «пом'якшується» успадкованим прапорцем", () => {
+    expect(src(MODAL), "повернувся noConsentCap — межа без згоди знову дорівнює стелі з овертаймом")
+      .not.toMatch(/const noConsentCap\s*=/);
+  });
+
+  /* Банер — це коробка, а базові правила коробки (`display:flex`, рамка, кегль
+     `.ib-txt`) живуть у radflow-screens.css. Портал підключав лише radflow.css,
+     тому ЄДИНИЙ банер, який направник узагалі бачить, рендерився без оформлення:
+     два `<span>` зливались в абзац, інлайновий `flexDirection` був інертний.
+     Дефект приїхав із с47 разом із самим банером і прожив до ревʼю U-20. */
+  it("портал направника підключає базові стилі банерів", () => {
+    const code = src("components/ReferralPortal.tsx");
+    expect(code, "без radflow-screens.css банер відмови U-12 знову рендериться без коробки")
+      .toMatch(/import "@\/styles\/prototype\/radflow-screens\.css";/);
+  });
+
+  /* Жива область на банерах, вміст яких міняється з кожним натисканням клавіші
+     в полі тривалості, зачитувала б два абзаци тричі за набір «120». */
+  it("банери не мають aria-live/role, поки немає озвучення по blur (U-26)", () => {
+    const code = src(MODAL);
+    expect(code, "на банері зʼявилась жива область без дебаунсу — скрінрідер зачитає її на кожну клавішу")
+      .not.toMatch(/info-banner offsched" (role|aria-live)=/);
   });
 
   /* Стеля тривалості для запису, що САМ стоїть поза графіком, лишається
      розширеною — інакше повертається провал №1: легально створений запис на
-     17:55 неможливо відредагувати взагалі. */
+     17:55 неможливо відредагувати взагалі. U-20 додав до умови право РОЛІ, але
+     диз'юнкцією: прапорець запису мусить піднімати стелю й тоді, коли овертайму
+     роль не має (направник відкриває запис, що вже стоїть поза графіком). */
   it("успадкований прапорець і далі піднімає стелю на grace", () => {
-    expect(src(MODAL), "capBySched більше не враховує offSchedule — запис поза графіком знову не відредагувати")
-      .toMatch(/offSchedule \? schedEnd \+ OFF_SCHED_GRACE_MIN : schedEnd/);
+    const code = src(MODAL);
+    expect(code, "capBySched більше не враховує offSchedule — запис поза графіком знову не відредагувати")
+      .toMatch(/const offAllowed = offSchedule \|\| allowOffSchedule;/);
+    expect(code, "grace тепер вішається не на offAllowed — умова розійшлась зі стелею перерви")
+      .toMatch(/\(offAllowed \? schedEnd \+ OFF_SCHED_GRACE_MIN : schedEnd\) - startMin/);
+    expect(code, "успадкований прапорець ЗАМІНИЛИ роллю — направник знову не відредагує запис поза графіком")
+      .not.toMatch(/const offAllowed = allowOffSchedule;/);
+  });
+
+  /* U-20 — суть провалу одним рядком: поки grace відкривав ЛИШЕ прапорець
+     запису, для запису В ГРАФІКУ `availableDur` тотожно дорівнював `inSchedCap`
+     (обидві пари стель збігались), отже `crossesNow ⟺ overflow`, отже стара
+     умова галочки `crossesNow && !overflow` була тотожно false. Пінимо саме те,
+     що робить її досяжною: обидві стелі мусять розходитись по `offAllowed`. */
+  it("стеля з овертаймом і межа графіка розходяться саме по offAllowed", () => {
+    const code = src(MODAL);
+    expect(code, "capByBreak знову дивиться на прапорець запису, а не на offAllowed")
+      .toMatch(/const capByBreak = \(offAllowed \|\| !schedApplies\)/);
+    // Строгі стелі не мають знати про овертайм узагалі — інакше межа згоди попливе.
+    expect(code, "capBySchedStrict підхопив grace — межа згоди зникне")
+      .not.toMatch(/capBySchedStrict = [^;]*OFF_SCHED_GRACE_MIN/);
+    expect(code, "capByBreakStrict підхопив offAllowed — межа згоди зникне")
+      .not.toMatch(/capByBreakStrict = [^;]*offAllowed/);
   });
 
   /* Ревʼю р1: два різні мінімуми на одному екрані. `valid` приймає рядок від

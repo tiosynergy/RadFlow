@@ -1961,9 +1961,13 @@ select.inp { cursor: pointer; }
    Дзеркало в TS: NAV_DRAWER_MAX у components/NavDrawer.tsx — міняти парою. */
 
 /* --- Розкладки порталу направника, зняті з інлайн-стилів ---
-   Портал підключає ЛИШЕ radflow.css (див. ReferralPortal.tsx), тому ці правила
-   мусять жити тут, а не в radflow-screens.css — інакше на /referral вони просто
-   не завантажаться. Значення — точні копії колишніх інлайнів. */
+   Історично портал підключав ЛИШЕ radflow.css, тому ці правила осіли тут.
+   ⚠️ З с48 портал підключає ОБИДВА файли (ReferralPortal.tsx: базові
+   `.info-banner`/`.ib-txt` живуть у radflow-screens.css, без них банер відмови
+   U-12 рендерився без коробки). Тобто причина, записана в цьому коментарі,
+   більше не діє — але правила лишаються тут свідомо, бо переносити робочі
+   селектори без потреби дорожче, ніж лишити. Значення — точні копії колишніх
+   інлайнів. */
 .ref-board-grid { max-width: 1280px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
 .stats.stats-ref7 { grid-template-columns: repeat(7, minmax(0, 1fr)); }
 /* ⚠️ Побічний ефект, свідомий: інлайн бив правила щільності, клас — ні, тож

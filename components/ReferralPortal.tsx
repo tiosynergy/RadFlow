@@ -46,7 +46,15 @@ import { slotDataMissLabel, slotDataTrusted, slotDataFromSingleSource } from "@/
 import { DobField, BookingCalendar, fmtShort } from "@/components/BookingModal";
 import RoomSelect, { ROOM_LIST_MAX_CHIPS } from "@/components/RoomSelect";
 import type { Json } from "@/supabase/types";
+/* ⚠️ radflow-screens.css — НЕ косметика для цього екрана. Базові правила
+   `.info-banner` / `.ib-txt` (флекс, рамка, кегль) живуть саме там, а не в
+   radflow.css, де є лише кольорова тема `.info-banner.offsched`. Без цього
+   імпорту єдиний банер, який направник узагалі може побачити — чесна відмова
+   U-12 «зберегти такий склад звідси не вийде», — рендерився без коробки: два
+   `<span>` зливались в один абзац, інлайновий `flexDirection: column` був
+   інертний, рамки не було. Знайдено ревʼю U-20 (с48); дефект приїхав із с47. */
 import "@/styles/prototype/radflow.css";
+import "@/styles/prototype/radflow-screens.css";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null; timezone?: string | null };
