@@ -2,9 +2,12 @@
 
 Context for an AI agent (Claude Code / Cowork) continuing work on RadFlow. This file holds the
 STABLE rules. For the CURRENT state of the work read, in this order: `NEXT_SESSION_PROMPT.md`
-(repo root — the new-session start message), the header + latest session block of
-`docs/HANDOVER.md`, and `claude/radflow-handoff.md` in the claude.ai project "RadFlow"
-(`Projects` tool). Background: `docs/PRODUCT_OVERVIEW.md`, `docs/README.md` (documentation map),
+(repo root — the new-session start message), then `claude/radflow-handoff.md` (in the repo AND
+mirrored in the claude.ai project "RadFlow", `Projects` tool — that pair is the durable state).
+⚠️ **`docs/HANDOVER.md` is NOT current state** — its own header says so: sessions 32+ were never
+written into it, and its footer still claims prod is on `0086`. Read it only for §6 ("why this,
+not that" — decisions taken and rejected, traps).
+Background: `docs/PRODUCT_OVERVIEW.md`, `docs/README.md` (documentation map),
 `docs/audit/FULL_AUDIT_2026-06-25.md`, `docs/audit/DATA_ARCHITECTURE_AUDIT_2026-07-12.md`,
 `docs/audit/BACKLOG_RESIDUAL.md`.
 
@@ -60,13 +63,18 @@ management.
   and authorizes by the access grant, not the profile's `clinic_id`.
 
 ## Migrations
-- Applied to prod MANUALLY via the Supabase SQL editor (no automated migration runner). A Vercel
-  deploy does NOT run them — apply the SQL first, then merge `dev → main`.
+- There is no automated migration runner; a Vercel deploy does NOT run them. Apply the SQL
+  first, then merge `dev → main`. Since 2026-08-27 the agent applies them itself (Supabase MCP
+  `apply_migration` / `execute_sql`, or the SQL editor) under the EXTENDED authority described in
+  `claude/radflow-handoff.md` — the older rule "the owner applies migrations and merges" is
+  cancelled. The safeguards around that authority are not: number from the ledger, file + smoke +
+  a `=== ВІДКАТ ===` section + dry-run, and the order apply → smoke → `invariants_check()` →
+  `db:gate` → build → deploy → live check on prod.
 - Do NOT trust any hardcoded migration number in docs — this very bullet once said "prod on
-  0119" while prod was on 0124 (2026-07 tech audit, High-2). The `docs/HANDOVER.md` header is
-  fresher than this file, and the FINAL source of truth is the prod DB itself: check the highest
-  APPLIED migration (schema objects it creates) before numbering a new one. Number sequentially;
-  a duplicate/lower number is a bug.
+  0119" while prod was on 0124 (2026-07 tech audit, High-2), and `docs/HANDOVER.md` still says
+  `0086`. The FINAL source of truth is the prod DB itself: `select max(name) from
+  public.migration_ledger` (or `npm run db:gate:check`) — the LEDGER, never the folder listing.
+  Number sequentially; a duplicate/lower number is a bug.
 - Keep migrations idempotent (`do $$ … exception when duplicate_object …$$`, `create … if not
   exists`, `drop policy if exists` before `create policy`).
 
