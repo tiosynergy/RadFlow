@@ -920,16 +920,24 @@ html[data-density="spacious"] .fld { gap: 9px; }
    напівпорожнім першим рядком. Саме це власник і прислав скріншотом.
    Три колонки: тип і протипоказання — по вмісту, пріоритет забирає решту й
    стискається. Перенос лишається тільки на телефонах (нижче). */
-.bk-head-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 12px; align-items: start; }
+.bk-head-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 10px; align-items: start; }
 .bk-head-row > .fld { min-width: 0; }
 /* Підписи полів рядка — в один рядок: перенос «Пріоритет пацієнта» на два
    рядки опускав його сегменти нижче за сегменти типу, і «один рівень»
    ставав сходинкою (ревʼю р2). */
 .bk-head-row > .fld > .fld-lab { white-space: nowrap; }
 /* Сегменти в рядку мусять уміти стискатись, інакше грід не втримає три
-   колонки: сам `.prio-seg` — inline-flex із `flex: 0 0 auto` на кнопках. */
+   колонки: сам `.prio-seg` — inline-flex із `flex: 0 0 auto` на кнопках.
+   ⚠️ Компактні відступи саме ТУТ, а не в базовому `.prio-seg` — щоб не
+   зачепити картку пацієнта й інші екрани. Числа зміряні у браузері на проді:
+   при ширині лівої колонки 476px (діалог 860px — рівно випадок зі скріншота
+   власника) трьом сегментам треба 214.5px, а грід дає 192.2px. Компактні
+   відступи знімають 22px і додають 4px через менший gap рядка: потрібно
+   182.5 проти доступних 196.2 — вміщується з запасом. Перевірено на
+   960/900/860/820/780: до 860 включно все в один рядок і без скролу. */
 .bk-head-row .prio-seg, .bk-head-row .bk-seg { min-width: 0; max-width: 100%; flex-wrap: wrap; }
-.bk-head-row .prio-seg-btn { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.bk-head-row .prio-seg { gap: 2px; padding: 2px; }
+.bk-head-row .prio-seg-btn { flex: 0 1 auto; min-width: 0; padding: 5px 6px; overflow: hidden; text-overflow: ellipsis; }
 /* Телефон: три колонки в 360px не мають сенсу — тип і протипоказання поруч,
    пріоритет під ними на всю ширину. */
 @media (max-width: 560px) {
