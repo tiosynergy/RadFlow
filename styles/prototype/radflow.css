@@ -949,6 +949,14 @@ html[data-density="spacious"] .fld { gap: 9px; }
    сходинкою. Резервуємо висоту підказки замість порожнього тексту. */
 .fld-row > .fld { min-width: 0; }
 .bk-time-state { min-height: 15px; }
+/* ⚠️ Поле «Контраст» у ряду з областю/тривалістю мусить мати ЯВНИЙ flex.
+   Коли інлайновий `flex: 0 0 auto` прибрали з JSX, поле успадкувало базове
+   `.fld-row .fld { flex: 1 }` і разом із `min-width: 0` (рядок вище) стиснулось
+   у НУЛЬ: чекбокс зник, а підпис «Контраст» виїхав із коробки і наїхав на
+   «Тривалість». Зловлено живою перевіркою на проді одразу після деплою —
+   ширина поля міряється 0px. Ширина по вмісту, стискатись не дозволяємо. */
+.bk-fld-contrast { flex: 0 0 auto; min-width: 0; }
+.bk-fld-contrast > .fld-lab { white-space: nowrap; }
 
 /* Вік (розраховано з дати народження) — read-only поле */
 .bk-age { display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-variant-numeric: tabular-nums; cursor: default; }
