@@ -290,13 +290,19 @@ export function scheduleScopeText(changed: readonly string[] | null | undefined)
   return parts.length ? parts.join(", ") : FIELD_SCOPE_TEXT.schedule;
 }
 
+/** ЩО саме змінилось — без «хто» і без обгортки. Винесено, щоб груповий підпис
+ *  міг перелічити напрями змін, не розбираючи готове речення рядковими
+ *  операціями (с48, U-30). */
+export function markerWhat(m: ChangeMarker): string {
+  return m.field_scope === "schedule"
+    ? scheduleScopeText(m.changed_fields)
+    : FIELD_SCOPE_TEXT[m.field_scope] ?? "інформація";
+}
+
 /** Доступне імʼя однієї крапки: ХТО і ЩО змінив, без PII. */
 export function markerLabel(m: ChangeMarker): string {
   const who = ACTOR_ROLE_TEXT[m.actor_role] ?? "інший користувач";
-  const what = m.field_scope === "schedule"
-    ? scheduleScopeText(m.changed_fields)
-    : FIELD_SCOPE_TEXT[m.field_scope] ?? "інформація";
-  return `Змінено іншим користувачем: ${what} (${who})`;
+  return `Змінено іншим користувачем: ${markerWhat(m)} (${who})`;
 }
 
 /**
@@ -310,6 +316,47 @@ export function unreadGroupLabel(markers: readonly ChangeMarker[]): string {
   if (n === 0) return "";
   if (n === 1) return markerLabel(markers[0]);
   return `Є непрочитані зміни: ${n}`;
+}
+
+/**
+ * Імʼя крапки, що показує ЧИСЛО (пункт навігації, шапка секції) — с48, U-30.
+ *
+ * ⚠️ Чому окремо від `unreadGroupLabel`. Коли на екрані видно цифру, підпис
+ * мусить починатися з того ж, що й цифра, інакше бейдж «1» читається як
+ * лічильник СУТНОСТЕЙ — рівно так, як «Лист очікування 1» поруч. Власник саме
+ * на цьому й спіткнувся: червона позначка не була розпізнана як «непрочитана
+ * чужа правка».
+ *
+ * Далі — ЩО саме змінилось. На пункті навігації це єдине місце, де людина може
+ * дізнатись причину, не переходячи на дошку, тож хвіст додаємо і для однієї
+ * позначки, і для кількох (для кількох — перелік НАПРЯМІВ без повторів,
+ * не більше трьох, інакше підпис перетворюється на абзац).
+ *
+ * ⚠️ Це СВІДОМА відмінність від MiniCalendar, а не «той самий принцип» — так
+ * було написано в першій версії коментаря, і ревʼю справедливо назвало це
+ * підміною. Календар навмисно НЕ називає напрям: `markerWhat` описує блок поля
+ * («перелік послуг»), якого в контексті ДНЯ не існує. Пункт навігації —
+ * протилежний випадок: він веде саме на ту дошку, де цей блок є, тож назвати
+ * напрям тут корисно, а не збиває.
+ */
+export function unreadNavLabel(markers: readonly ChangeMarker[]): string {
+  const n = markers.length;
+  if (n === 0) return "";
+  const head = `Є непрочитані зміни: ${n}`;
+  if (n === 1) return `${head} — ${markerLabel(markers[0])}`;
+  /* ⚠️ Роздільник — « · », а НЕ кома (ревʼю р2). `markerWhat` для scope
+     `schedule` сам повертає рядок із комами («дата, час або кабінет»), тож
+     кома між напрямами зливалась із комами ВСЕРЕДИНІ напряму: «дата, час,
+     кабінет, тривалість» читалось як чотири напрями і збігалося з підписом
+     зовсім іншого стану. « · » уже вживається як роздільник напрямів у
+     MiniCalendar — беремо той самий. */
+  const order = { critical: 0, important: 1, info: 2 } as const;
+  const whats = [...new Set(
+    [...markers]
+      .sort((a, b) => (order[a.severity] ?? 3) - (order[b.severity] ?? 3))
+      .map(markerWhat),
+  )];
+  return `${head} — ${whats.slice(0, 3).join(" · ")}${whats.length > 3 ? " …" : ""}`;
 }
 
 /* ───────────────── Навігація: surface → пункт бокової панелі ─────────────

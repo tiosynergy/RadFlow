@@ -62,22 +62,30 @@ const M = [
 
 const orig = new Map([[MODAL, readFileSync(MODAL, "utf8")], [PORTAL, readFileSync(PORTAL, "utf8")]]);
 const restore = () => { for (const [f, t] of orig) writeFileSync(f, t); };
+/* ⚠️ Відновлення за БУДЬ-ЯКОГО виходу (ревʼю U-30, с48): між записом мутації і
+   `restore()` лежить прогін до 180 с, і Ctrl-C або падіння в цьому вікні
+   лишали БОЙОВИЙ файл із внесеним дефектом на диску. */
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { restore(); process.exit(1); });
+process.on("uncaughtException", (e) => { restore(); console.error(e); process.exit(1); });
 const lines = ["# Фальсифікація U-20/U-21/U-22", ""];
 
 for (const [name, file, from, to] of M) {
   const src = orig.get(file);
   if (!src.includes(from)) { lines.push(`- **${name}** — ЯКІР НЕ ЗНАЙДЕНО (мутація не застосована)`); continue; }
-  writeFileSync(file, src.replace(from, to));
   let red = [];
   try {
-    execSync("npx vitest run tests/offScheduleConsent.test.ts tests/readErrorTrust.test.ts --reporter=json --outputFile=.vt.json",
-      { stdio: "ignore", timeout: 180000 });
-  } catch { /* ненульовий код = є червоні, це й треба */ }
-  try {
-    const j = JSON.parse(readFileSync(".vt.json", "utf8"));
-    for (const f of j.testResults) for (const a of f.assertionResults) if (a.status === "failed") red.push(a.fullName);
-  } catch { red = ["<звіт не прочитано>"]; }
-  restore();
+    writeFileSync(file, src.replace(from, to));
+    try {
+      execSync("npx vitest run tests/offScheduleConsent.test.ts tests/readErrorTrust.test.ts --reporter=json --outputFile=.vt.json",
+        { stdio: "ignore", timeout: 180000 });
+    } catch { /* ненульовий код = є червоні, це й треба */ }
+    try {
+      const j = JSON.parse(readFileSync(".vt.json", "utf8"));
+      for (const f of j.testResults) for (const a of f.assertionResults) if (a.status === "failed") red.push(a.fullName);
+    } catch { red = ["<звіт не прочитано>"]; }
+  } finally {
+    restore();
+  }
   lines.push(red.length ? `- **${name}** → ЧЕРВОНИЙ: ${red.map((r) => `«${r}»`).join("; ")}`
                         : `- **${name}** → ⚠️ ЗЕЛЕНИЙ — сторож дивиться не туди`);
   console.log(lines[lines.length - 1]);
