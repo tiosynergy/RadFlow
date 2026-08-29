@@ -12,7 +12,7 @@ import { CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import StudySearchBox from "@/components/StudySearchBox";
 import type { StudySearchHit } from "@/lib/studySearch";
-import { roomScheduleFor, effectiveRoomBreaks, inBreak, offScheduleKind, OFF_SCHED_GRACE_MIN, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, effectiveRoomBreaks, inBreak, offScheduleKind, offReasonText, OFF_SCHED_GRACE_MIN, type DayOverride } from "@/lib/schedule";
 import { wallNow, wallMinOfDay, wallDayKey, wallToday0 } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
@@ -21,6 +21,12 @@ import SlotPicker from "@/components/SlotPicker";
 import { useModalA11y } from "@/lib/useModalA11y";
 
 const MIN_STUDY = 15;
+/* Найкоротший склад, який форма ще ЗБЕРЕЖЕ (мінімум на рядок). Це НЕ MIN_STUDY:
+   той відповідає на інше питання — «чи лишилось місце, щоб додати ЩЕ дослідження».
+   Константа спільна для `valid` і для поради «скоротіть до N хв» саме тому, що
+   з двома різними числами екран казав «вкластися неможливо» там, де сам би
+   прийняв склад (ревʼю р1, U-12). */
+const MIN_ROW_DUR = 5;
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null };
 /* filterOn — стан ЧЕКБОКСА «Контраст» у режимі фільтра. Живе В РЯДКУ, а не в
@@ -45,18 +51,44 @@ interface StudyEditModalProps {
       для кабінету цього запису (patient.room_id) поверх бази центру (фаза 2b). */
   roomOverrides?: RoomOverrideRow[];
   onClose: () => void;
-  onConfirm: (arr: StudyOut[], meta: { dur: number; buffer: number; offSchedule?: boolean }) => void;
+  /* `offSchedule` у meta — ОБОВʼЯЗКОВИЙ: це згода, а не деталь. Батько мусить
+     довезти її до сервера (U-12). */
+  onConfirm: (arr: StudyOut[], meta: { dur: number; buffer: number; offSchedule: boolean }) => void;
   /* 0077: запис САМ стоїть поза графіком (створений/перенесений за підтвердженням).
      Тоді кінець графіка і перерва його вже не обмежують — інакше легально створений
-     запис на 17:55 неможливо було б відредагувати взагалі. */
-  offSchedule?: boolean;
+     запис на 17:55 неможливо було б відредагувати взагалі.
+
+     ⚠️ ОБОВʼЯЗКОВИЙ і БЕЗ дефолта (U-12, с47). Поки проп був необовʼязковим,
+     `ReferralPortal` його просто не передавав — і для направника запис, що
+     легально стоїть поза графіком, ставав НЕЗБЕРЕЖУВАНИМ назавжди: стеля
+     тривалості рахувалась по кінцю графіка, «⚠ Не вміщується» і сіре
+     «Зберегти». Рівно той провал, заради якого писалась 0077. Дефолт `= false`
+     означав «запис у графіку» — тобто мовчазне ТВЕРДЖЕННЯ на місці незнання. */
+  offSchedule: boolean;
+  /* Чи МОЖНА цьому користувачу працювати поза графіком. ДЗЕРКАЛО серверного
+     правила 0077: `scheduleBlock` має гілку `if (!opts.isStaff) return
+     OFF_SCHED_ERR` — підтверджуваний вихід за графік дозволений лише персоналу
+     центру. Направник цього не може НІКОЛИ, тож показувати йому галочку
+     «Підтверджую роботу поза графіком» (або активне «Зберегти») означає
+     обіцяти те, що сервер відхилить.
+
+     Назва СПІЛЬНА з RescheduleModal (`allowOffSchedule`) свідомо: це одне й те
+     саме правило на двох сусідніх екранах правки запису, і два імені для нього
+     читались би як два різні поняття.
+
+     ⚠️ На відміну від RescheduleModal — обовʼязковий і без дефолта (U-12, с47).
+     Там мовчання означає «прав немає» і рятує направника, але мовчки ЗАБИРАЄ
+     овертайм у нової дошки персоналу; тут дефолт `true` тихо дав би направнику
+     чужі права, дефолт `false` так само тихо забрав би їх у персоналу. Рішення
+     пише той, хто знає роль, а `tsc` перелічує місця виклику сам. */
+  allowOffSchedule: boolean;
 }
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
 
-export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, services, roomOverrides, onClose, onConfirm, offSchedule = false }: StudyEditModalProps) {
+export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId, clinicTz, services, roomOverrides, onClose, onConfirm, offSchedule, allowOffSchedule }: StudyEditModalProps) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   // Каталог послуг центру (фаза 2a) + переозначення по кабінетах (фаза 2b): виклики
   // резолвера передають кабінет цього запису (roomId) → ціна/тривалість per-room (0108).
@@ -323,10 +355,39 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
      підтверджений на 5 хв понаднормово, мовчки розтягнули б ще на дві години. */
   const [offOk, setOffOk] = useState(false);
   const crossesNow = totalDur > inSchedCap;
-  const needsOffConfirm = crossesNow && !overflow;
+  const needsOffConfirm = crossesNow && !overflow && allowOffSchedule;
+  /* U-12: ДЗЕРКАЛО серверного гейта 0077 (`scheduleBlock`: `if (!opts.isStaff)
+     return OFF_SCHED_ERR`). Рахуємо з ЖИВОГО графіка, а не з прапорця запису:
+     графік могли звузити ВЖЕ ПІСЛЯ броні, і тоді запис із `off_schedule=false`
+     теж не збережеться. Поки графік не прочитаний (`schedReady=false`) —
+     не стверджуємо нічого: стелю там і так тримає `committedDur`. */
+  /* `scheduled_time` — теж УМОВА гейта на сервері (`cur.scheduled_time` у списку
+     разом із room_id/clinic_id/date). Без нього `startMin` = 0 і offScheduleKind
+     чесно каже `before_start` — але сервер для такого запису гейт не запускає
+     ВЗАГАЛІ, тож заборона була б вигаданою (ревʼю р1). Колонка nullable. */
+  const offNow = schedReady && !!patient.scheduled_time
+    ? offScheduleKind(startMin, totalDur, roomSched, roomBreaks) : null;
+  const offForbiddenForRole = !allowOffSchedule && !!offNow;
+  /* Чи врятує СКОРОЧЕННЯ складу. Свідомо не міркуємо, яка зі стель зараз вʼяже:
+     `capByBreakStrict` бачить лише перерву ПІСЛЯ старту, тож запис, що сам стоїть
+     УСЕРЕДИНІ перерви (поставлений персоналом за підтвердженням або накритий
+     перервою, доданою вже після броні), від скорочення поза графіком не вийде —
+     і порада «скоротіть до N хв» була б брехнею. Тому питаємо ту саму функцію,
+     що й сервер: чи буде запис на inSchedCap хвилин усе ще поза графіком.
+     null → скорочення справді допомагає.
+
+     Поріг — MIN_ROW_DUR, той самий, що у `valid`, а НЕ MIN_STUDY (15): MIN_STUDY —
+     це «чи є сенс додавати ЩЕ рядок», а тут питання інше — чи можна вкластися
+     хоч якимось складом. З порогом 15 екран казав «лише центр» там, де сам би
+     прийняв 10-хвилинний склад (ревʼю р1).
+     `busyReady` — бо inSchedCap включає стелю за наступним записом: поки
+     зайнятість не прочитана, вона дорівнює поточній тривалості, і число в
+     пораді через секунду мінялося б саме на очах. */
+  const fitsIfShorter = offForbiddenForRole && schedReady && busyReady && inSchedCap >= MIN_ROW_DUR
+    && !offScheduleKind(startMin, inSchedCap, roomSched, roomBreaks);
   // 0117 (ревью M2): рядок з областю, але без часу (каталожне «—») — не зберігаємо,
   // інакше в снімок їхав dur 0, а колери мовчки лишали стару тривалість.
-  const valid = rows.length > 0 && rows.every((r) => r.region && (Number(r.dur) || 0) >= 5) && !overflow && (!needsOffConfirm || offOk);
+  const valid = rows.length > 0 && rows.every((r) => r.region && (Number(r.dur) || 0) >= MIN_ROW_DUR) && !overflow && (!needsOffConfirm || offOk) && !offForbiddenForRole;
 
   // ── Сітка слотів (read-only візуалізація дня кабінету) ──────────────────────
   // Показуємо зайнятість кабінету і власне вікно запису (green межі + буфер) —
@@ -420,9 +481,16 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
         <div className="bk-grid">
         <div className="bk-col bk-col-left" style={{ gap: 11 }}>
           <div className="ctx-hint blue" style={{ fontSize: "0.8125rem" }}>Пацієнт: <b>{patient.patient_name}</b> · слот {scheduledDate ? <><b>{scheduledDate.split("-").reverse().join(".")}</b> о </> : "о "}<b>{patient.scheduled_time}</b>{room ? <> · {room.name}{lockType ? <> · <b>{roomKind}</b></> : null}</> : null}. {lockType ? <>Усі дослідження слота — лише <b>{roomKind}</b>.</> : null}</div>
-          <div className={"ctx-hint " + (overflow ? "red" : "blue")} style={{ fontSize: "0.78125rem" }}>
+          {/* U-12 (ревʼю р1): при рольовій забороні «Доступно у слоті» називало
+              РОЗШИРЕНУ стелю (графік + 2 год grace, перерва не обмежує) — і поруч
+              із банером відмови на одному екрані стояло три різні числа: скільки
+              «доступно», скільки введено, скільки насправді збережеться. Коли
+              зберегти поза графіком не можна, чесна межа одна — та, що в графіку. */}
+          <div className={"ctx-hint " + (overflow || offForbiddenForRole ? "red" : "blue")} style={{ fontSize: "0.78125rem" }}>
             {overflow
               ? <>⚠ Не вміщується: разом <b>{totalDur} хв</b>, доступно <b>{availableDur} хв</b> ({windowLabel}). Скоротіть на {totalDur - availableDur} хв.</>
+              : offForbiddenForRole
+              ? <>Разом <b>{totalDur} хв</b>. У графік кабінету вміщується <b>{inSchedCap} хв</b>.</>
               : <>Доступно у слоті: <b>{availableDur} хв</b> ({windowLabel}). Вільно ще <b>{remaining} хв</b>.</>}
           </div>
           {/* Поки дані кабінету не підтверджені — не даємо збільшувати тривалість
@@ -454,6 +522,35 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                 <input type="checkbox" checked={offOk} onChange={(e) => setOffOk(e.target.checked)} />
                 Підтверджую роботу поза графіком
               </label>
+            </div>
+          )}
+          {/* U-12: ЧЕСНА ВІДМОВА замість мовчазної сірої кнопки. Серверне правило
+              0077 лишається (`scheduleBlock`: `if (!opts.isStaff) return
+              OFF_SCHED_ERR` — понаднормово підтверджує лише персонал центру), але
+              направник більше не гадає, ЧОМУ «Зберегти» неактивне: до U-12 він бачив
+              лише «⚠ Не вміщується» і думав, що річ у довжині, а не в ролі.
+              Взаємно виключний з блоком вище: той вимагає allowOffSchedule, цей — !allowOffSchedule. */}
+          {offForbiddenForRole && offNow && (
+            <div className="info-banner offsched" style={{ flexDirection: "column", alignItems: "stretch", gap: 6 }}>
+              {/* Дві РІЗНІ відмови, і плутати їх не можна (ревʼю р1): підтверджуваний
+                  вихід за графік (after_end / перерва) центр справді може погодити —
+                  а `closed` / `before_start` / `too_late` сервер відхиляє гілкою
+                  `!info.confirmable` РАНІШЕ за перевірку ролі, тобто НІКОМУ. Слати
+                  людину до центру по те, чого центр теж не може, — та сама брехня,
+                  лише ввічлива: вона коштує дзвінка й повертає пацієнта ні з чим. */}
+              <span className="ib-txt">
+                <b>⏰ Поза графіком кабінету.</b> Разом <b>{totalDur} хв</b> — {offReasonText(offNow)}.
+                {offNow.confirmable
+                  ? <> Роботу поза графіком підтверджує лише центр, тож зберегти такий склад звідси не вийде.</>
+                  : <> Такий час не може погодити ніхто — ні ви, ні центр.</>}
+              </span>
+              <span className="ib-txt">
+                {fitsIfShorter
+                  ? <>Щоб зберегти зараз — скоротіть склад до <b>{inSchedCap} хв</b>.{offNow.confirmable ? <> Якщо потрібно довше — зверніться до центру.</> : null}</>
+                  : offNow.confirmable
+                  ? <>Змінити склад цього запису може лише центр — зверніться до адміністратора.</>
+                  : <>Запис треба перенести на робочий час кабінету — «🗓 Перезаписати» на дошці або зверніться до центру.</>}
+              </span>
             </div>
           )}
           <div className="fld" style={{ marginBottom: 8 }}>

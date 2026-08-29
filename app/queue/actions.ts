@@ -1504,8 +1504,17 @@ export async function editQueueEntryStudies(
   id: string,
   studies: Json,
   durationMin: number,
-  bufferTimeMin?: number,
-  offSchedule?: boolean   // 0077: оператор підтвердив, що дослідження вийде за графік
+  bufferTimeMin: number | undefined,
+  /* 0077: ЗГОДА на роботу поза графіком — оператор підтвердив, що дослідження
+     вийде за межу, або запис і так стоїть поза графіком.
+
+     ⚠️ ОБОВʼЯЗКОВИЙ, і це механізм, а не стиль (U-12, с47). Поки параметр був
+     необовʼязковим, `ReferralPortal` місяцями кликав цю дію ЧОТИРМА аргументами
+     — згода мовчки губилась на клієнті, і сервер відхиляв збереження по
+     `scheduleBlock`. Компілятор про це не казав нічого: пропущений
+     необовʼязковий аргумент — легальний виклик. Тепер tsc перелічує всі місця
+     виклику сам, і промовчати не можна: `false` треба написати ЯВНО. */
+  offSchedule: boolean
 ): Promise<QueueActionResult> {
   /* Валідація НА СЕРВЕРІ (аудит 2026-07-11 + M-12). Клієнт обмежує повзунок
      графіком/перервою/наступним записом, але сам по собі клієнт нічого не гарантує:
@@ -1518,7 +1527,8 @@ export async function editQueueEntryStudies(
     studies: sStudies,
     durationMin: zDuration,
     bufferTimeMin: zBuffer.optional(),
-    offSchedule: z.boolean().optional(),
+    // Не `.optional()`: сигнатура вимагає прапорець явно — див. коментар вище.
+    offSchedule: z.boolean(),
   }), { id, studies, durationMin, bufferTimeMin, offSchedule });
   if (!v.ok) return v;
   id = v.data.id;
