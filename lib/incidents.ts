@@ -534,3 +534,88 @@ export function entryInIncidentWindow(
   const start = new Date(inc.started_at).getTime();
   return dt >= start && dt < incidentEffectiveEnd(inc);
 }
+
+/* ===== U-56 (с49): що аварійна зупинка ВІДДАЄ журналу =====================
+
+   0168 навчив `emergency_stop_rpc` повертати `stopped_incidents` — масив
+   `[{ id, roomId }]` СТВОРЕНИХ інцидентів. До того `app/queue/actions.ts`
+   читав ці id ДРУГИМ запитом одразу після успіху, і U-17 зробив цю залежність
+   гучною (збій читання → `important_event.skipped`), але не прибрав.
+
+   Тепер читати нема чого. Лишається одна нова біда — КОНТРАКТНА: нова збірка
+   застосунку може опинитись перед СТАРОЮ базою (вікно між накатом і деплоєм,
+   або відкат міграції без відкату коду). Тоді поля просто немає — і мовчазний
+   `?? []` перетворив би це на «інцидентів не створено», тобто НУЛЬ подій
+   журналу про аварію, яка вже сталася. Рівно той fail-open, що лікував U-17,
+   тільки з іншого боку. Тому поле РОЗБИРАЄТЬСЯ, а не приймається на віру.
+
+   Чисті функції (а не гілки всередині серверної дії) — з тієї ж причини, що
+   `modalityVerdict` у `lib/studies.ts`: гілки в дії перевіряються лише
+   регулярками по тексту, і найдешевша диверсія — зайвий `return` МІЖ розбором
+   і рішенням — так не ловиться. Виклик ловить. */
+
+export type StoppedIncident = { id: string; roomId: string | null };
+
+export type StoppedIncidentsRead = {
+  /** Елементи, придатні для події (є `id`). */
+  incidents: StoppedIncident[];
+  /** Поля немає взагалі або воно не масив — стара база чи відкат міграції. */
+  absent: boolean;
+  /** Скільки елементів довелось відкинути: без придатного `id` події не буває. */
+  dropped: number;
+  /** Скільки придатних прийшло БЕЗ кабінету — подія буде, але без деталі. */
+  roomless: number;
+};
+
+/** Розбір поля `stopped_incidents` відповіді 0168.
+    ⚠️ Зіпсований елемент НЕ вбиває решту (ревʼю U-56): при зупинці двадцяти
+    кабінетів один нечитабельний елемент коштував би всіх девʼятнадцяти подій —
+    тобто лікування виявилось би дорожчим за хворобу. Відкинуте рахується
+    окремо і робить лог гучним через `stoppedIncidentsGap`.
+    ⚠️ Порожній масив — ЗАКОННА відповідь «створювати не було чого» (усі
+    кабінети вже мали активний простій), а не незнання. Тому `absent` — окреме
+    поле, а не «порожньо». */
+export function readStoppedIncidents(value: unknown): StoppedIncidentsRead {
+  if (!Array.isArray(value)) {
+    return { incidents: [], absent: true, dropped: 0, roomless: 0 };
+  }
+  const out: StoppedIncident[] = [];
+  let dropped = 0, roomless = 0;
+  for (const el of value) {
+    const id = el && typeof el === "object" ? (el as { id?: unknown }).id : undefined;
+    if (typeof id !== "string" || id === "") { dropped++; continue; }
+    const raw = (el as { roomId?: unknown }).roomId;
+    /* `roomId` потрапляє лише в `details` події — без нього подія все одно
+       корисна, тож відсутній кабінет елемент НЕ відкидає. Але й порожнім рядком
+       він не підміняється: `""` у журналі виглядав би як «кабінет є, ось він»,
+       і запит «які кабінети зупиняли» тихо згрупував би всі аварії під ним. */
+    const roomId = typeof raw === "string" && raw !== "" ? raw : null;
+    if (roomId === null) roomless++;
+    out.push({ id, roomId });
+  }
+  return { incidents: out, absent: false, dropped, roomless };
+}
+
+/** Який код логувати, коли журнал аварійної зупинки виходить неповним.
+    Гілки названі за ПРИЧИНОЮ, а не за симптомом, і саме тому їх чотири:
+      • `absent`     — поля немає (стара база / відкат міграції);
+      • `malformed`  — поле є, але елементи не читаються (ключ у SQL перейменували,
+                       тип поїхав) — інша причина і ІНШИЙ фікс, ніж `absent`;
+      • `short`      — придатних менше, ніж зупинено кабінетів;
+      • `no_room`    — події будуть, але без кабінету в `details`.
+    ⚠️ Перша редакція мала дві гілки — і ревʼю показало, що це було СПРОЩЕННЯ
+    НЕ ТУДИ: «поля немає» і «поле є, але не розібралось» відправляють чергового
+    у різні місця, а злиті в один код вони ще й друкували текст «стара база?» на
+    свіжій базі.
+    ⚠️ Порядок гілок — від причини до симптому: `dropped > 0` майже завжди тягне
+    за собою і `short`, і назвати треба ПРИЧИНУ. */
+export function stoppedIncidentsGap(
+  read: StoppedIncidentsRead, expected: number,
+): "incidents_absent_in_rpc" | "incidents_malformed_in_rpc"
+  | "incidents_short_in_rpc" | "incidents_no_room_in_rpc" | null {
+  if (read.absent) return "incidents_absent_in_rpc";
+  if (read.dropped > 0) return "incidents_malformed_in_rpc";
+  if (read.incidents.length < expected) return "incidents_short_in_rpc";
+  if (read.roomless > 0) return "incidents_no_room_in_rpc";
+  return null;
+}

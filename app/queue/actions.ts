@@ -19,12 +19,15 @@ import type { Database, Json, QueueStatus, CallStatus, TablesUpdate, QueueDelayP
 /* `studiesMatchModality` більше не імпортується: після U-18 його кличе САМА
    `modalityVerdict` усередині `lib/studies.ts`, а тут він лишався мертвим
    іменем (попередження lint). */
-import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX, modalityVerdict, incidentGapCode } from "@/lib/studies";
+import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX, modalityVerdict } from "@/lib/studies";
 import { firstClosedService, loadClinicCatalog, studiesKeySet, CatalogUnavailableError } from "@/lib/serviceGate";
 import { firstClosedStudy, type Catalog } from "@/lib/catalog";
 import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
-import { wallNow, wallInstant, wallDayKey, wallInstantOf, wallMinOfDay, wallMinOfInstant } from "@/lib/incidents";
+import {
+  wallNow, wallInstant, wallDayKey, wallInstantOf, wallMinOfDay, wallMinOfInstant,
+  readStoppedIncidents, stoppedIncidentsGap,
+} from "@/lib/incidents";
 import {
   roomScheduleFor, effectiveRoomBreaks, offScheduleKind, OFF_SCHED_GRACE_MIN,
   type DayOverride, type OffScheduleInfo, type Break, type EffectiveRoomSchedule,
@@ -1144,35 +1147,40 @@ export async function emergencyStop(input: { roomIds: string[]; note?: string | 
   // Недоставлене добере cron-воркер /api/outbox/deliver з backoff (0064).
   void deliverPendingOutbox(3).catch(() => { /* backstop — cron */ });
 
-  /* 0128: emergency_stop_rpc не повертає id створених інцидентів — читаємо їх
-     одразу після успіху тим самим RLS-клієнтом (активні emergency-інциденти
-     реально зупинених кабінетів). Подія — на КОЖЕН створений інцидент (зупинка
-     N кабінетів = N інцидентів); у details — лише id кабінету. */
-  const stoppedRooms: string[] = res?.stopped_rooms ?? [];
-  if (stoppedRooms.length > 0) {
-    /* U-17 (с49): `error` тут раніше НЕ звʼязували, і `incs ?? []` перетворював
-       збій читання на «інцидентів немає» — тобто НУЛЬ подій журналу про зупинку,
-       яка ВЖЕ сталася і вже закомічена в RPC. Це єдиний знайдений аудитом
-       fail-open, наслідок якого пишеться в БД, а не показується на екрані:
-       на дошці аварія видима, а в журналі клінічно значущої події просто немає,
-       і нічий екран про це не скаже.
+  /* 0128 + 0168 (U-56): id створених інцидентів віддає САМА RPC — усередині
+     транзакції вона їх знає. Подія — на КОЖЕН створений інцидент (зупинка N
+     кабінетів = N інцидентів); у details — лише id кабінету.
+
+     ⚠️ Скільки кабінетів зупинено, беремо з ТОГО САМОГО поля, яке показуємо
+     користувачеві (`stopped`), а не з сусіднього `stopped_rooms`. Ревʼю U-56
+     показало, що перша редакція гейтила весь блок журналу на
+     `res?.stopped_rooms ?? []` — тобто на полі, яке НЕ розбиралось: варто було
+     йому колись зникнути (а після 0168 воно надлишкове — кабінет є всередині
+     `stopped_incidents`), і весь журнал вимкнувся б МОВЧКИ, тоді як
+     користувачеві й далі писали б «зупинено 3». Це рівно дефект U-17, тільки
+     переставлений на сусіднє поле. Тепер число одне на обидва звіти, і
+     гейта-вимикача немає взагалі: порожній список сам нічого не надішле. */
+  const stoppedCount = typeof res?.stopped === "number" ? res.stopped : 0;
+  {
+    /* ІСТОРІЯ, яку варто памʼятати. До U-17 (с49) id-шники читались ДРУГИМ
+       запитом, і його `error` не звʼязували: `incs ?? []` перетворював збій
+       читання на «інцидентів немає» — НУЛЬ подій журналу про зупинку, яка ВЖЕ
+       сталася і вже закомічена в RPC. Єдиний знайдений аудитом fail-open,
+       наслідок якого пишеться в БД, а не показується на екрані: на дошці
+       аварія видима, а в журналі клінічно значущої події просто немає.
+       U-17 зробив втрату гучною; U-56 (0168) прибрав саму залежність — RPC
+       віддає `stopped_incidents` разом із рештою відповіді.
+
+       ⚠️ Що лишилось і чому тут ВЗАГАЛІ є гілка втрати. Нова збірка може
+       опинитись перед СТАРОЮ базою: вікно між накатом і деплоєм, або відкат
+       міграції без відкату коду. Тоді поля немає — і мовчазний `?? []` дав би
+       рівно ту саму втрату, тільки з іншого боку. Тому поле РОЗБИРАЄТЬСЯ
+       (`readStoppedIncidents`), а незнання логується.
 
        Відмовити користувачеві тут НЕ можна і не треба: зупинка вже відбулася,
        і «помилка» була б брехнею про неї (той самий довід, що для
-       `deliverPendingOutbox` вище). Тому лікуємо не результат дії, а
-       ВИДИМІСТЬ втрати: гучний лог із кодом, який відрізняє три різні біди.
-
-       ⚠️ Межа, названа чесно: сама залежність журналу від ДРУГОГО читання і є
-       коренем. Структурне лікування — навчити `emergency_stop_rpc` повертати
-       `incident_ids` (вона й так `SECURITY DEFINER` і всередині транзакції їх
-       знає), тоді читати нема чого. Це міграція і окремий пакет — борг **U-56**.
-       Тут ми робимо втрату ГУЧНОЮ, а не неможливою.
-
-       ⚠️ Повтору читання тут СВІДОМО немає. Він виглядав би корисним (типовий
-       збій — транзієнт), але коштує дублювання всього ланцюжка фільтрів: дві
-       копії `.eq().eq().in()`, які розійдуться при першій же правці, і читання
-       у формі, якої не розбирає сканер `readErrorTrust` — тобто наступний
-       такий виклик знову проїхав би мовчки. Транзієнт лікує U-56, а не милиця.
+       `deliverPendingOutbox` вище). Лікуємо не результат дії, а ВИДИМІСТЬ
+       втрати.
 
        ⚠️ І чого тут НЕ роблять: не вигадують подію-замінник. У журналі шість
        канонічних сутностей плюс три свідомі розширення (`ImportantEventEntityType`);
@@ -1180,15 +1188,11 @@ export async function emergencyStop(input: { roomIds: string[]; note?: string | 
        `entityType: "incident"` означало б записати неправду в те саме місце,
        яке ми лагодимо. Слід аварії при цьому НЕ зникає повністю: подія
        `event_outbox` пишеться транзакційно в самій RPC. */
-    const incRes = await supabase.from("incidents")
-      .select("id, room_id")
-      .eq("clinic_id", clinicId).eq("reason", "emergency").eq("status", "active")
-      .in("room_id", stoppedRooms);
-    const incs = incRes.error ? null : (incRes.data ?? []);
-    /* Вибір коду — ЧИСТА `incidentGapCode` (`lib/studies.ts`). Ревʼю р2: поки
-       три гілки жили тут, сторож перевіряв лише НАЯВНІСТЬ трьох рядків, і
-       перестановка гілок (збій → «рядків немає») лишалась зеленою. */
-    const gap = incidentGapCode(incs === null ? null : incs.length, stoppedRooms.length);
+    const incs = readStoppedIncidents(res?.stopped_incidents);
+    /* Вибір коду — ЧИСТА `stoppedIncidentsGap` (`lib/incidents.ts`). Ревʼю р2
+       U-17: поки гілки жили тут, сторож перевіряв лише НАЯВНІСТЬ рядків, і
+       перестановка гілок лишалась зеленою. */
+    const gap = stoppedIncidentsGap(incs, stoppedCount);
     if (gap) {
       /* ⚠️ `event` — КАНОНІЧНЕ `important_event.skipped` (§12.11), а не тип
          журнальної події. Ревʼю р1: перша редакція писала сюди
@@ -1202,23 +1206,30 @@ export async function emergencyStop(input: { roomIds: string[]; note?: string | 
         actorId: user.id,
         entityId: null,
         errorCode: gap,
-        /* Текст помилки БД доклеюємо в message — окремого поля під нього в
-           `LogErrorInput` немає, а `scrubLogText` чистить його від PII/секретів
-           на вході в лог. */
-        message: `type=incident.emergency_stop | подій ${incs?.length ?? 0}`
-          + ` на ${stoppedRooms.length} зупинених кабінетів`
-          + (incRes.error ? ` | ${incRes.error.message}` : ""),
+        /* Що саме прийшло — у message: окремого поля під це в `LogErrorInput`
+           немає, а `scrubLogText` чистить текст від PII/секретів на вході.
+           ⚠️ Ревʼю U-56: причина мусить бути в тексті ЗАВЖДИ, а не лише коли
+           вона збіглася з `absent`. Перша редакція друкувала «стара база?» і на
+           перейменований ключ — і черговий, побачивши накатану 0168 в леджері,
+           робив висновок, що бреше лог. */
+        message: `type=incident.emergency_stop | подій ${incs.incidents.length}`
+          + ` на ${stoppedCount} зупинених кабінетів`
+          + (incs.absent ? " | stopped_incidents немає у відповіді RPC (стара база / відкат?)" : "")
+          + (incs.dropped > 0 ? ` | відкинуто елементів: ${incs.dropped} (немає id)` : "")
+          + (incs.roomless > 0 ? ` | без кабінету: ${incs.roomless}` : ""),
       });
     }
     /* Ревʼю с25 (M4): аварійний сценарій — N подій паралельно, не послідовно
-       (20 кабінетів × RTT ≈ секунди зверху; emitImportantEvent не кидає). */
-    await Promise.all((incs ?? []).map((inc) => emitImportantEvent({
+       (20 кабінетів × RTT ≈ секунди зверху; emitImportantEvent не кидає).
+       ⚠️ `details` — `null`, а не `{ roomId: "" }`: подія без деталі чесна,
+       подія з порожньою деталлю бреше, ніби кабінет відомий (ревʼю U-56). */
+    await Promise.all(incs.incidents.map((inc) => emitImportantEvent({
       clinicId,
       actorId: user.id,
       eventType: "incident.emergency_stop",
       entityType: "incident",
       entityId: inc.id,
-      details: { roomId: inc.room_id },
+      details: inc.roomId ? { roomId: inc.roomId } : null,
     })));
   }
 

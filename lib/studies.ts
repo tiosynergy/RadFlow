@@ -234,18 +234,12 @@ export function modalityVerdict(
     ? "ok" : "mismatch";
 }
 
-/** Який код логувати, коли журнал аварійної зупинки вийшов неповним (U-17).
-    Чиста функція з тієї ж причини, що й `modalityVerdict`: вибір із трьох
-    гілок усередині серверної дії перевірявся лише на НАЯВНІСТЬ трьох рядків —
-    і перестановка гілок лишалась зеленою (ревʼю р2). */
-export function incidentGapCode(
-  got: number | null, expected: number,
-): "incidents_read_failed" | "incidents_read_no_rows" | "incidents_read_partial" | null {
-  if (got === null) return "incidents_read_failed";
-  if (got === 0 && expected > 0) return "incidents_read_no_rows";
-  if (got < expected) return "incidents_read_partial";
-  return null;
-}
+/* ⚠️ `incidentGapCode` жила тут із U-17 і пішла з U-56 (0168). Вона обирала код
+   між трьома причинами неповного журналу аварійної зупинки, поки id-шники
+   інцидентів читались ОКРЕМИМ запитом. Тепер їх віддає сама `emergency_stop_rpc`,
+   другого читання немає — і три причини звелись до однієї контрактної. Наступниця
+   живе там, де їй і місце: `stoppedIncidentsGap` у `lib/incidents.ts`.
+   Правило про інциденти в модулі про дослідження було випадковістю сусідства. */
 
 /** Чи є в складі хоча б одне дослідження з КАТАЛОЖНОЮ модальністю (не порожній
     тип і не «Інше»/OTHER). Порожній / без type склад → false. Використовує

@@ -19,7 +19,8 @@
 --        кабінети власних рядків) — множинами; анти-вакуум обома боками;
 --   (a2) персонал (admin) бачить УСІ overrides центру (негативний контроль);
 --   (b)  search_path: у всіх 7 функцій proconfig містить search_path=public…;
---   (c)  anon-EXECUTE знято з усіх 23 функцій (18 тригерних + 5 RPC);
+--   (c)  anon-EXECUTE знято з усіх 24 функцій (18 тригерних + 6 RPC);
+--        ⚠️ шосту — emergency_stop_rpc — дописала 0168 (U-56): пастка 0122;
 --   (c4) authenticated-EXECUTE знято з 18 тригерних (канон 0132) — без цього
 --        drop+create колись повернув би дефолтний ACL непоміченим;
 --   (c2) …а з 11 auth-хелперів НЕ знято (пастка 0073 закрита з обох боків);
@@ -32,10 +33,12 @@
 --        function». Це і є доказ, що EXECUTE при fire не перевіряється;
 --   (e)  протухла сесія: rooms/sro/queue/services/incidents/waitlist під anon
 --        → 0 рядків БЕЗ 42501 (auth-хелпери живі);
---   (f)  anon виклик КОЖНОГО з 4 відкликаних RPC → 42501 із текстом
+--   (f)  anon виклик КОЖНОГО з 6 відкликаних RPC → 42501 із текстом
 --        «permission denied for function» (не будь-який 42501);
 --   (f2) authenticated направник викликає referral_center_card УСПІШНО
---        (позитивна половина: відкликали не в тих).
+--        (позитивна половина: відкликали не в тих);
+--   (c3) …і поіменна позитивна половина для RPC, у яких клієнт МУСИТЬ мати
+--        EXECUTE — з 0168 туди входить і emergency_stop_rpc (+ service_role).
 --
 -- Смоук нічого не лишає по собі: мутація (d) сидить у підтранзакції.
 -- ============================================================================
@@ -58,10 +61,16 @@ declare
     'check_waitlist_consistency()','fn_audit()','guard_call_status_change()',
     'guard_priority_change()','guard_referrer_doctor()','guard_status_change_referrer()',
     'guard_waitlist_room()','handle_new_user()','trg_case_status_recompute()'];
+  /* ⚠️ 0168 (U-56) дописав сюди `emergency_stop_rpc`. Причина названа в шапці
+     тієї міграції і ЗАМІРЯНА: drop+create віддає EXECUTE і `anon`, і PUBLIC
+     (default ACL схеми public), а явний revoke із 0073 зникає разом зі старою
+     функцією. `priv_drift` цю поверхню не пасе — вона стереже TRUNCATE і DELETE.
+     Тому список поіменний: наступний drop+create мусить червоніти ТУТ. */
   c_rpc constant text[] := array[
     'referral_center_card(uuid)','search_referrers(text)',
     'services_import_rpc(jsonb, uuid)','sink_overdue_scheduled()',
-    'save_schedule_override(date, boolean, text, jsonb, text)'];
+    'save_schedule_override(date, boolean, text, jsonb, text)',
+    'emergency_stop_rpc(uuid[], date, text)'];
   c_kept constant text[] := array[
     'auth_clinic_id()','auth_can_refer(uuid)','auth_referrer_clinics()',
     'auth_referrer_visible_rooms()','auth_is_admin()','auth_is_ceo_of(uuid)',
@@ -124,7 +133,14 @@ begin
   v_done := v_done || 'c2:' || array_length(c_kept, 1) || ' ';
   -- (c3) страховка: revoke public НЕ зачепив authenticated — явні гранти в ACL
   -- лишаються (без цього чотири RPC померли б для всього клієнта).
-  if not has_function_privilege('authenticated', 'public.referral_center_card(uuid)', 'EXECUTE')
+  /* ⚠️ 0168 (U-56) дописав сюди `emergency_stop_rpc`. Негативна половина (c) без
+     позитивної ловила б лише «anon дістав зайве», але не «authenticated втратив
+     потрібне»: drop+create із revoke, але БЕЗ grant, на цій базі врятував би
+     дефолт, а на середовищі з іншим дефолтом лишив би аварійну зупинку мертвою
+     для всього клієнта — і жоден зонд не почервонів би. */
+  if not has_function_privilege('authenticated', 'public.emergency_stop_rpc(uuid[], date, text)', 'EXECUTE')
+     or not has_function_privilege('service_role', 'public.emergency_stop_rpc(uuid[], date, text)', 'EXECUTE')
+     or not has_function_privilege('authenticated', 'public.referral_center_card(uuid)', 'EXECUTE')
      or not has_function_privilege('authenticated', 'public.search_referrers(text)', 'EXECUTE')
      or not has_function_privilege('authenticated', 'public.services_import_rpc(jsonb, uuid)', 'EXECUTE')
      or not has_function_privilege('authenticated', 'public.sink_overdue_scheduled()', 'EXECUTE')
@@ -361,13 +377,19 @@ begin
   v_done := v_done || 'e:6таб ';
 
   -- ── (f) anon виклик відкликаного RPC → 42501 ──────────────────────────────
-  -- Усі 4 RPC, не один: майбутня випадкова 42501-помилка іншої природи не
+  -- Усі RPC, не один: майбутня випадкова 42501-помилка іншої природи не
   -- має сходити за зелений зонд — тому й перевірка ТЕКСТУ (ревʼю р.2, m-5).
+  -- ⚠️ 0168 (U-56) дописав сюди `emergency_stop_rpc`, і це БЕЗПЕЧНО: EXECUTE
+  --    перевіряється ДО виконання тіла, тож при справному ACL функція навіть не
+  --    стартує. Якби revoke загубився, вона стартувала б — і одразу впала на
+  --    `auth_clinic_id() is null` → 28000, тобто НІЧОГО не зупинила б, а зонд
+  --    побачив би не «permission denied» і чесно почервонів.
   foreach v_fn in array array['search_referrers(''smoke'')',
                               'referral_center_card(gen_random_uuid())',
                               'services_import_rpc(''[]''::jsonb, null)',
                               'sink_overdue_scheduled()',
-                              'save_schedule_override(current_date, false, null, ''{}''::jsonb, null)'] loop
+                              'save_schedule_override(current_date, false, null, ''{}''::jsonb, null)',
+                              'emergency_stop_rpc(null::uuid[], current_date, null)'] loop
     begin
       perform set_config('request.jwt.claims', '{}', true);
       set local role anon;
@@ -383,7 +405,7 @@ begin
       end if;
     end;
   end loop;
-  v_done := v_done || 'f:5 ';
+  v_done := v_done || 'f:6 ';
 
   -- ── (f2) authenticated направник кличе referral_center_card УСПІШНО ───────
   select ra.id, ra.referrer_id into v_ra_id, v_ref
@@ -402,6 +424,7 @@ begin
     v_done := v_done || 'f2 ';
   end if;
 
-  -- Очікуваний повний набір: 0 b:7 c:23 c4:18 c2:11 c3 a(:N або SKIP,тоді a3) a2 a3 d d2:rls e:6таб f:5 f2
+  -- Очікуваний повний набір: 0 b:7 c:24 c4:18 c2:11 c3 a(:N або SKIP,тоді a3) a2 a3 d d2:rls e:6таб f:6 f2
+  -- (c:24 і f:6 — з 0168: до списків додано emergency_stop_rpc)
   raise exception 'SMOKE_OK: search_path + anon allowlist + sro канон 0139 | виконано: %', v_done;
 end $$;
