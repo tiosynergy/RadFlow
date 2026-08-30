@@ -26,15 +26,22 @@
  * ⚠️ Чому тести ПОВЕДІНКОВІ, а не регулярки по файлу (ревʼю р2): поки рішення
  * жило всередині серверної дії, пін «виклик і розбір на сусідніх рядках» не
  * ловив найдешевшу диверсію — зайвий `return` МІЖ розбором і гілкою рішення.
- * Рішення винесені в чисті `modalityVerdict` / `incidentGapCode`, і така
+ * Рішення винесені в чисті `modalityVerdict` / `stoppedIncidentsGap`, і така
  * вставка стала неможливою за побудовою.
+ *
+ * ⚠️ U-56 (0168): блок про `incidentGapCode` звідси ПІШОВ разом із самою
+ * функцією. Вона обирала код між трьома причинами неповного журналу аварійної
+ * зупинки, поки id-шники читались ОКРЕМИМ запитом; тепер їх віддає сама
+ * `emergency_stop_rpc`, і причина лишилась одна — контрактна. Наступниця
+ * (`stoppedIncidentsGap` + `readStoppedIncidents`, `lib/incidents.ts`) має свій
+ * файл тестів `tests/stoppedIncidents.test.ts`.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { codeOf } from "./helpers/codeOf";
 import {
-  readRoomModality, studiesMatchModality, modalityVerdict, incidentGapCode,
+  readRoomModality, studiesMatchModality, modalityVerdict,
 } from "@/lib/studies";
 
 const ACTIONS = "app/queue/actions.ts";
@@ -121,28 +128,6 @@ describe("modalityVerdict — рішення гейта, перевірене В
           `ok при незнанні: res=${JSON.stringify(res)}`).not.toBe("ok");
       }
     }
-  });
-});
-
-describe("incidentGapCode — вибір коду, перевірений ВИКЛИКОМ", () => {
-  /* Ревʼю р2: поки три гілки жили в серверній дії, сторож бачив лише НАЯВНІСТЬ
-     трьох рядків — перестановка гілок лишалась зеленою. */
-  it("не прочитали → read_failed", () => {
-    expect(incidentGapCode(null, 3)).toBe("incidents_read_failed");
-    expect(incidentGapCode(null, 0)).toBe("incidents_read_failed");
-  });
-  it("прочитали, а рядків немає → no_rows", () => {
-    expect(incidentGapCode(0, 3)).toBe("incidents_read_no_rows");
-  });
-  it("прочитали менше, ніж зупинили → partial", () => {
-    expect(incidentGapCode(2, 3)).toBe("incidents_read_partial");
-  });
-  it("усе на місці → мовчимо", () => {
-    expect(incidentGapCode(3, 3)).toBeNull();
-    expect(incidentGapCode(0, 0)).toBeNull();
-    /* Більше, ніж очікували, — теж не привід кричати (дублікати неможливі:
-       частковий унікальний індекс `incidents_one_active_per_room`). */
-    expect(incidentGapCode(4, 3)).toBeNull();
   });
 });
 
@@ -270,23 +255,67 @@ describe("app/queue/actions.ts — слід аварійної зупинки (U
      `return { ok: false` є законно (той самий клас, що body-scoped сторож
      U-33). Придатність вікна перевіряє КОЖЕН тест нижче, а не сусідній — інакше
      видалення одного тесту зробило б решту вакуумними (ревʼю р2). */
-  const at = code.indexOf("const stoppedRooms: string[]");
+  const at = code.indexOf("const stoppedCount");
   const end = code.indexOf("return { ok: true, stopped:", at);
   const block = at >= 0 && end > at ? code.slice(at, end) : "";
   const ok = () => expect(block.length,
     "вікно блоку аварійної зупинки порожнє — усі перевірки нижче були б вакуумними")
     .toBeGreaterThan(500);
 
-  it("помилку читання інцидентів ЗВʼЯЗУЮТЬ і дивляться", () => {
+  it("ДРУГОГО читання інцидентів більше немає — id-шники дає сама RPC", () => {
     ok();
-    expect(block).toMatch(/const incRes = await supabase\.from\("incidents"\)/);
-    expect(block).toMatch(/const incs = incRes\.error \? null : \(incRes\.data \?\? \[\]\);/);
-    expect(block).not.toMatch(/const \{ data: incs \}/);
+    /* ⚠️ U-56 (0168): головний пін цього блоку перевернувся. Раніше він вимагав,
+       щоб `error` другого читання ЗВʼЯЗАЛИ й подивились; тепер вимагає, щоб
+       читання не було ВЗАГАЛІ — інакше пакет 0168 зробили наполовину: колонка
+       є, а журнал і далі тримається на окремому запиті, який може не відбутись.
+
+       ⚠️ Регулярка ШИРОКА навмисно (ревʼю U-56). Перша редакція вимагала
+       `await supabase.from("incidents")` одним шматком — і не бачила
+       багаторядкового стилю, який лежить у ЦЬОМУ Ж файлі
+       (`incidentSpansFor`: `await supabase` ⏎ `.from("incidents")`). Тобто
+       обійти головний пін пакета можна було копіпастом із сусідньої функції.
+       Тепер дивимось на `.from(<будь-які лапки>incidents)` без огляду на
+       приймач, перенос рядка й лапки.
+
+       ⚠️ Названа межа: винести читання в НОВИЙ файл і викликати хелпер звідси
+       цей пін не спіймає (тіло хелпера поза вікном), а `readErrorTrust` має
+       поіменний `FILES`. Повне закриття коштувало б сканера імпортів; поки що
+       межа названа тут, а не замовчана. */
+    expect(block, "друге читання incidents повернулось — корінь U-56 знову на місці")
+      .not.toMatch(/\.from\(\s*["'`]incidents["'`]\s*\)/);
+    expect(block).toMatch(/const incs = readStoppedIncidents\(res\?\.stopped_incidents\);/);
+  });
+
+  it("очікувана кількість береться з того самого поля, що й звіт користувачу", () => {
+    ok();
+    /* ⚠️ Ревʼю U-56 (BLOCKER): перша редакція гейтила ВЕСЬ блок журналу на
+       `res?.stopped_rooms ?? []` — полі, яке не розбиралось. Зникни воно
+       (а після 0168 воно надлишкове), журнал вимкнувся б МОВЧКИ, а
+       користувачеві й далі писали б «зупинено 3» із сусіднього `stopped`.
+       Тому число одне на обидва звіти, і гейта-вимикача немає. */
+    expect(block).toMatch(/const stoppedCount = typeof res\?\.stopped === "number" \? res\.stopped : 0;/);
+    expect(block, "гілка журналу знову під гейтом сусіднього поля")
+      .not.toMatch(/if \(stoppedRooms\.length > 0\)/);
+    expect(block).toMatch(/stoppedIncidentsGap\(incs, stoppedCount\)/);
+  });
+
+  it("подія пишеться на КОЖЕН інцидент, із його id і його кабінетом", () => {
+    ok();
+    /* ⚠️ Ревʼю U-56: місце склейки не пінив ніхто. Дві мутації були зелені
+       скрізь — переставити `entityId: inc.roomId` (журнал назавжди дістає id
+       кабінетів у полі сутності) і `.slice(0, 1)` перед `.map` (одна подія
+       замість N). */
+    expect(block).toMatch(/await Promise\.all\(incs\.incidents\.map\(\(inc\) => emitImportantEvent\(\{/);
+    expect(block).toMatch(/entityId: inc\.id,/);
+    /* `details` — null, а не порожній рядок: подія без деталі чесна, подія з
+       порожньою деталлю бреше, ніби кабінет відомий. */
+    expect(block).toMatch(/details: inc\.roomId \? \{ roomId: inc\.roomId \} : null,/);
+    expect(block, "список подій урізають перед відправкою").not.toMatch(/\.slice\(/);
   });
 
   it("вибір коду делеговано чистій функції, і лог стоїть ПРЯМО в гілці", () => {
     ok();
-    expect(block).toMatch(/const gap = incidentGapCode\(incs === null \? null : incs\.length, stoppedRooms\.length\);/);
+    expect(block).toMatch(/const gap = stoppedIncidentsGap\(incs, stoppedCount\);/);
     /* ⚠️ Ревʼю р2: пін «умова є» + «logError є» окремо дозволяв обгорнути виклик
        у ще одну умову (`if (process.env.X)`) — текст на місці, журнал мовчить.
        Тому вимагаємо, щоб `logError` був ПЕРШИМ оператором гілки. */

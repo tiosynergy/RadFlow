@@ -1686,6 +1686,13 @@ export type Database = {
           stopped: number;
           affected: number;
           stopped_rooms: string[];
+          /* 0168 (U-56): СТВОРЕНІ інциденти — [{ id, roomId }]. Журнал 0128 бере
+             id звідси, а не другим читанням `incidents`.
+             ⚠️ Тип НЕ звужений до масиву обʼєктів навмисно: у вікні між накатом
+             міграції і деплоєм коду (або при відкаті міграції) поле може бути
+             ВІДСУТНІМ, і `readStoppedIncidents` (`lib/incidents.ts`) мусить мати
+             право це побачити, а не отримати брехливу гарантію від типу. */
+          stopped_incidents: Json;
           patients: Json;
         }[];
       };
