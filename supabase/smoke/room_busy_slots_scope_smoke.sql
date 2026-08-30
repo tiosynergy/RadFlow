@@ -292,8 +292,9 @@ begin
   v_res := public.invariants_check(false);
   -- ⚠️ 0157 підняв 10 → 11 (outbox_emit_failed_26h),
   --    0159 підняв 11 → 12 (outbox_rows_overdue).
-  if (v_res ->> 'checked')::int is distinct from 12 then
-    raise exception 'SMOKE_FAIL j: checked=% (очікував 12)', v_res ->> 'checked';
+  -- ⚠️ 0161 підняв 12 → 13, 0164 — 13 → 14 (ucm_orphan_markers).
+  if (v_res ->> 'checked')::int is distinct from 14 then
+    raise exception 'SMOKE_FAIL j: checked=% (очікував 14)', v_res ->> 'checked';
   end if;
   select f ->> 'offenders' into v_names
     from jsonb_array_elements(v_res -> 'failed') f
