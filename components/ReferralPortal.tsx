@@ -36,7 +36,7 @@ import type { WaitlistEntry } from "@/supabase/types";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
-import { slotBlockedByIncidents, incidentFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
+import { incidentDurCapMin, incidentFeed, studyBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
 import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, normDur, DUR_MAX } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import StudySearchBox from "@/components/StudySearchBox";
@@ -514,13 +514,22 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const isBookToday = date === centerTodayStr;
   const isPastDay = date < centerTodayStr;
   const slots: string[] = buildSlots(schedStart, schedEnd); // крок 5 хв
+  /* U-33: власна сітка направника ставить ТЕ САМЕ питання, що дошка, — «чи
+     прийме це сервер». Раніше тут стояв `slotBlockedByIncidents` (голий масив,
+     предикат МОМЕНТУ), тож дослідження, яке заходить у простій з-під його
+     початку, малювалось вільним, а тригер його відхиляв. Ревʼю пакета знайшло
+     цей екран: у карті споживачів його не було — портал згадувався лише як
+     власник МОДАЛОК, а власну сітку проґавили.
+     Фід збираємо один раз на рендер: `slotsErr` — прапорець збою читання, і
+     «невідомо → заблоковано» вирішує lib, а не JSX. */
+  const incFeed = incidentFeed(incidents, slotsErr);
   function slotState(slot: string) {
     // b — кінець дослідження (має вміститись у графік); bBlock — з буфером (перетин з іншими).
     const a = toMin(slot), b = a + slotDur, bBlock = a + slotDur + buffer;
     if (isPastDay) return "past"; // день у минулому за часом ЦЕНТРУ
     if (roomSched.closed) return "closed";
     const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60);
-    if (slotBlockedByIncidents(incidents, roomId || "", slotMs)) return "blocked";
+    if (studyBlockedByFeed(incFeed, roomId, slotMs, slotDur)) return "blocked";
     if (a < schedStart || a >= schedEnd) return "offhours";
     if (b > schedEnd) return "tight";
     if (inBreak(a, roomBreaks)) return "break";                 // сам слот — перерва кабінету
@@ -1019,11 +1028,17 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
               {time && availTrusted && (() => {
                 const s = toMin(time), e = s + slotDur, eBlock = s + slotDur + buffer;
                 const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(s / 60), s % 60);
-                const blocked = slotBlockedByIncidents(incidents, roomId || "", slotMs);
+                const blocked = studyBlockedByFeed(incFeed, roomId, slotMs, slotDur);
+                /* U-33: рядок-вердикт мусить називати ту саму причину, що й
+                   тултип сітки. «У цей час» тепер неправда, коли сам слот поза
+                   простоєм, а дослідження в нього заходить. */
+                const incCap = blocked ? incidentDurCapMin(incFeed, roomId, slotMs) : undefined;
+                const crosses = blocked && incCap !== undefined && Number.isFinite(incCap) && incCap > 0;
                 const conflict = busySlots.find((b) => s < b.e && b.s < eBlock);
                 return (
                   <div className={"bk-slot-confirm " + (blocked || conflict ? "bad" : "ok")}>
-                    {blocked ? <>⚠ Кабінет на ремонті/ТО у цей час — оберіть інший слот або день</>
+                    {crosses ? <>⚠ Дослідження ({slotDur} хв) заходить у простій кабінету з {fmt(s + (incCap as number))} — вільно лише {incCap} хв</>
+                      : blocked ? <>⚠ Кабінет на ремонті/ТО у цей час — оберіть інший слот або день</>
                       : conflict ? <>⚠ Перетин із записом {fmt(conflict.s)}–{fmt(conflict.e)} — оберіть інший слот</>
                       : <>✓ Слот вільний. Запис: <b>{time}–{fmt(e)}</b> ({slotDur} хв){buffer > 0 ? <> + буфер {buffer} хв (до {fmt(eBlock)})</> : null}.</>}
                   </div>

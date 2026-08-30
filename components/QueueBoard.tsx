@@ -1776,7 +1776,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   /* ФІД ДЛЯ ФОРМ, ЩО ПИШУТЬ `queue_entries` (U-15, ревʼю р2).
      Дзеркалить предикат тригера `check_not_during_incident` РІВНО: він відбирає
      рядки за `status in ('active','planned')` — тобто саме те, що приїхало із
-     запиту, — і про `blocked_until < now` не знає нічого. `incidentsFeed` вище
+     запиту. ⚠️ Точне формулювання (с49): `blocked_until` гард ЗНАЄ — це верхня
+     межа його `tstzrange`, — але НЕ порівнює її з `now()`. Тому рядок, що для
+     клієнта вже «згас», для сервера й далі ріже свій відрізок часу.
+     `incidentsFeed` вище
      додатково викидає «згаслі» (`incidentExpired`), і це правильно для питання
      «чи заблокований кабінет ЗАРАЗ» (виклики, картки, банери), але НЕ для
      питання «чи прийме це сервер»: у вікні до 5 хв між `blocked_until` і
@@ -1784,9 +1787,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      клас брехні, заради якого U-15 і робився.
      Той самий висновок, що з `loadIncidentsFeed` у ревʼю U-11 (F1): один масив
      на два різні питання — і одне з них отримує неправильну відповідь.
-     ⚠️ Решта форм запису (BookingModal, RescheduleModal, WaitlistCandidatesModal)
-     поки лишаються на `incidentsFeed` — те саме розходження живе й там, але це
-     інший пакет зі своєю живою перевіркою (заведено U-33). */
+     ⚠️ U-33 (с49): на цей фід переведені ВСІ форми й поради, що пишуть
+     `queue_entries` — BookingModal (обидва входи), RescheduleModal,
+     WaitlistCandidatesModal, CollisionPanel, QuickRescheduleButton. До того
+     дошка була ЄДИНИМ екраном, який викидав «згаслі» простої: CallListBoard і
+     ReferralPortal подають сирий фід, тобто адміністратор і направник давали
+     різні відповіді на ОДНОМУ записі. Тепер однакові.
+     ⚠️ На `incidentsFeed` свідомо лишились екрани, що питають «чи заблоковано
+     ЗАРАЗ»: картки кабінетів, банери, BreakdownModal (він простої і знімає) та
+     RoomDayOverviewModal (борг U-43: огляд ДНЯ мав би показувати і зняті
+     простої, бо вони зайняли години, — але це читання, і йому потрібна власна
+     жива перевірка). */
   const writeIncidentsFeed = loadIncidentsFeed;
   // Аварійна зупинка: активні інциденти reason='emergency' → кабінети зупинено.
   const emergencyRooms = Array.from(new Set(liveIncidents.filter((i) => i.reason === "emergency").map((i) => i.room_id)));
@@ -2773,7 +2784,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                     collisionPanel={collision?.zone === "clash" && expandedRow === p.id ? (
                       <CollisionPanel
                         entry={p} info={collision} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz}
-                        date={selectedDate} overrides={overridesFeed} incidents={incidentsFeed}
+                        date={selectedDate} overrides={overridesFeed} incidents={writeIncidentsFeed}
                         onMove={(roomId, time) => doCollisionMove(p, roomId, time)}
                         onRecall={() => doCollisionRecall(p)}
                         onManual={() => openReschedule(p)}
@@ -2782,7 +2793,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                     quickReschedule={expandedRow === p.id && isToday && p.room_id && (p.status === "scheduled" || p.status === "waiting") ? (
                       <QuickRescheduleButton
                         entry={p} clinicTz={clinicTz} date={selectedDate} overrides={overridesFeed}
-                        incidents={incidentsFeed} onPick={(time) => quickRescheduleTo(p, time)}
+                        incidents={writeIncidentsFeed} onPick={(time) => quickRescheduleTo(p, time)}
                       />
                     ) : null} />
                 );
@@ -2812,7 +2823,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
           admin/radiologist центру — бачать, реєстратор і направник — ні. */}
       {/* clinicTz — ЯВНО в кожну модалку: покладатися на singleton не можна
           (HANDOVER §6.1), інакше «зараз» тихо з'їде на зону браузера. */}
-      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides} onClose={() => setModalOpen(false)} onSave={saveBooking} onCreateCase={createCaseFromBooking} />}
+      {modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={writeIncidentsFeed} services={services} roomOverrides={roomOverrides} onClose={() => setModalOpen(false)} onSave={saveBooking} onCreateCase={createCaseFromBooking} />}
       {/* referralMode={false} — дошка ПЕРСОНАЛУ центру (сторінка /queue віддає
           направника й керівника редиректом, тож clinic_id профілю = центр запису,
           і серверний `isStaff` тут завжди true). U-12: проп обовʼязковий саме щоб
@@ -2825,7 +2836,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       {openCaseId && <CaseModal caseId={openCaseId} referralMode={false} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={writeIncidentsFeed} services={services} roomOverrides={roomOverrides} onClose={() => setOpenCaseId(null)} onCancelled={reload} />}
       {caseFromEntryFor && (
         <BookingModal
-          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides}
+          rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={writeIncidentsFeed} services={services} roomOverrides={roomOverrides}
           prefill={{
             name: caseFromEntryFor.patient_name || "", phone: caseFromEntryFor.patient_phone || "",
             dob: caseFromEntryFor.patient_dob, gender: caseFromEntryFor.patient_sex,
@@ -2846,7 +2857,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       {slotsOverviewOpen && <RoomDayOverviewModal rooms={visRooms} clinicTz={clinicTz} incidents={incidentsFeed} overrides={overridesFeed} onClose={() => setSlotsOverviewOpen(false)} />}
 
       {wlSuggest && (
-        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={incidentsFeed} services={services} roomOverrides={roomOverrides}
+        <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={writeIncidentsFeed} services={services} roomOverrides={roomOverrides}
           slot={wlSuggest.slot} candidates={wlSuggest.candidates}
           onClose={() => setWlSuggest(null)}
           onBooked={(msg) => { notify(msg, "success"); reload(); }}
@@ -2866,7 +2877,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
       )}
 
       {reschedFor && (
-        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} onClose={() => setReschedFor(null)} onConfirm={doReschedule} allowOffSchedule />
+        <RescheduleModal patient={reschedFor} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={writeIncidentsFeed} onClose={() => setReschedFor(null)} onConfirm={doReschedule} allowOffSchedule />
       )}
 
       {/* 0078–0081 — план при затримці. Обидва плани прийшли з previewDelayPlan;
