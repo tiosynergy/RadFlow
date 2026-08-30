@@ -16,7 +16,10 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate, QueueDelayPolicy } from "@/supabase/types";
-import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX, studiesMatchModality, modalityVerdict, incidentGapCode } from "@/lib/studies";
+/* `studiesMatchModality` більше не імпортується: після U-18 його кличе САМА
+   `modalityVerdict` усередині `lib/studies.ts`, а тут він лишався мертвим
+   іменем (попередження lint). */
+import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX, modalityVerdict, incidentGapCode } from "@/lib/studies";
 import { firstClosedService, loadClinicCatalog, studiesKeySet, CatalogUnavailableError } from "@/lib/serviceGate";
 import { firstClosedStudy, type Catalog } from "@/lib/catalog";
 import { normPriority, type PatientPriority } from "@/lib/priority";
@@ -27,6 +30,7 @@ import {
   type DayOverride, type OffScheduleInfo, type Break, type EffectiveRoomSchedule,
 } from "@/lib/schedule";
 import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
+import { readRow } from "@/lib/readRow";
 import { slotToMin, type BusySpan } from "@/lib/slots";
 import { SLOT_FREE_STATUSES, slotClashIn } from "@/lib/slotOccupancy";
 import {
@@ -525,6 +529,13 @@ const CASE_OVERLAP_ERR: QueueActionResult = {
 const CASE_STALE_ERR: QueueActionResult = {
   ok: false, error: "Запис щойно змінив інший оператор — оновіть дошку і спробуйте ще раз", code: "stale",
 };
+/* U-55 (с49): збій читання рядка черги — це НЕ «немає доступу». Раніше всі пʼять
+   місць віддавали `null` від `maybeSingle()` в одну гілку з відмовою в доступі,
+   і транзієнт мережі діагностувався як заборона. Дії це не міняє (усі пʼять
+   fail-CLOSED, авторизацію робить RPC/RLS) — міняє ЧЕСНІСТЬ діагнозу. */
+const ENTRY_UNREADABLE_ERR: QueueActionResult = {
+  ok: false, error: "Не вдалося прочитати запис — спробуйте ще раз", code: "generic",
+};
 /** Гарди кейса (0094/0095/0106) розпізнаємо за префіксом повідомлення — раніше за
     SQLSTATE, ніж будь-який класифікатор; null, якщо це не помилка кейса. */
 function caseTriggerError(message: string): QueueActionResult | null {
@@ -697,8 +708,16 @@ async function casMiss(
   id: string,
   sameAs?: QueueStatus
 ): Promise<QueueActionResult> {
-  const { data: cur } = await supabase.from("queue_entries").select("status").eq("id", id).maybeSingle();
-  if (!cur) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  /* U-55: збій читання БІЛЬШЕ не показується як «немає доступу». Ця функція
+     пояснює, ЧОМУ оновлення зачепило 0 рядків, тож брехливий діагноз тут
+     особливо дорогий: оператор піде питати права замість «повторіть». */
+  const curRead = readRow(await supabase.from("queue_entries").select("status").eq("id", id).maybeSingle());
+  if (!curRead.known) {
+    return curRead.reason === "missing"
+      ? { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" }
+      : ENTRY_UNREADABLE_ERR;
+  }
+  const cur = curRead.row;
   const current = cur.status as QueueStatus;
   if (sameAs && current === sameAs) return { ok: true }; // хтось уже застосував той самий перехід
   return { ok: false, error: STALE_ERR, code: "stale", currentStatus: current };
@@ -1502,16 +1521,23 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
   // ТРИВАЄ (in_progress), дозволено: воно зупиняється (status → scheduled),
   // кабінет одразу звільняється, а запис переноситься на новий слот (та сама
   // запис, не копія) з поміткою про перенос (from_status='in_progress').
-  const { data: cur } = await supabase.from("queue_entries")
+  const curRead = readRow(await supabase.from("queue_entries")
     // referrer_id — для журналу 0128 (вибір сімʼї події queue.*/referral.*).
     .select("status, scheduled_date, scheduled_time, room_id, clinic_id, studies, referrer_id")
-    .eq("id", input.id).maybeSingle();
+    .eq("id", input.id).maybeSingle());
   /* Рядок не видно під RLS (чужа клініка / не свій запис направника) або він без
      клініки — далі йти нема сенсу. Раніше при cur=null МОВЧКИ пропускались усі три
      мʼякі перевірки (минуле / графік / перетин), і користувач отримував не підказку,
      а мапінг сирої помилки тригера. Дірки в безпеці не було (авторизація — в RPC),
-     але поведінка була неохайною. */
-  if (!cur?.clinic_id) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+     але поведінка була неохайною.
+     ⚠️ U-55: збій читання сюди більше не потрапляє — у нього своя відповідь. */
+  if (!curRead.known) {
+    return curRead.reason === "missing"
+      ? { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" }
+      : ENTRY_UNREADABLE_ERR;
+  }
+  const cur = curRead.row;
+  if (!cur.clinic_id) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
   const clinicId = cur.clinic_id;
   const reason = (input.reason || "").trim();
 
@@ -1673,11 +1699,17 @@ export async function editQueueEntryStudies(
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  const { data: cur } = await supabase.from("queue_entries")
+  const curRead = readRow(await supabase.from("queue_entries")
     // referrer_id — для журналу 0128 (вибір сімʼї події queue.*/referral.*).
     .select("clinic_id, room_id, scheduled_date, scheduled_time, status, in_progress_at, duration_min, buffer_time_min, studies, referrer_id")
-    .eq("id", id).maybeSingle();
-  if (!cur) return { ok: false, error: "Запис не знайдено", code: "forbidden" };
+    .eq("id", id).maybeSingle());
+  // U-55: «не прочитали» ≠ «не знайдено» — див. ENTRY_UNREADABLE_ERR.
+  if (!curRead.known) {
+    return curRead.reason === "missing"
+      ? { ok: false, error: "Запис не знайдено", code: "forbidden" }
+      : ENTRY_UNREADABLE_ERR;
+  }
+  const cur = curRead.row;
   if (cur.room_id) { const mg = await modalityGate(supabase, cur.room_id, studies); if (mg) return mg; }
   // Гейт закритих послуг з grandfather: області, що вже є в записі (снапшот), не
   // ріжемо — інакше не відредагувати запис із послугою, вимкненою вже після броні.
@@ -2085,9 +2117,27 @@ export async function updatePatientDetails(id: string, patch: TablesUpdate<"queu
   if (Object.keys(safePatch).length === 0) return { ok: true };
 
   /* 0128: referrer_id/clinic_id — для журналу; знімок ДО мутації (патч може
-     міняти сам referrer_id — сімʼю події вибираємо за станом до правки). */
-  const { data: pre } = await supabase.from("queue_entries")
-    .select("referrer_id, clinic_id").eq("id", v.data.id).maybeSingle();
+     міняти сам referrer_id — сімʼю події вибираємо за станом до правки).
+     ⚠️ U-55: тут незнання дію НЕ зупиняє — це було б абсурдно: користувач не
+     зміг би виправити телефон пацієнта через збій читання рядка для ЖУРНАЛУ.
+     ⚠️ Але наслідок треба називати ТОЧНО (ревʼю U-55 спіймало неправду в першій
+     редакції цього коментаря): подія не «деградує», її НЕМАЄ ЗОВСІМ — нижче
+     емісія стоїть під `if (pre?.clinic_id)`. Тому і код логу канонічний
+     (`important_event.skipped` + `pre_snapshot_unreadable`), як у сусідньому
+     `caseFromEntry`, а не власний словник.
+     ⚠️ Логуємо лише `error`: `missing` тут — звичайна відмова доступу (правлять
+     чужий запис), і сам UPDATE нижче однаково зачепить 0 рядків. Писати про це
+     в лог помилок означало б шуміти на кожній такій спробі. */
+  const preRead = readRow(await supabase.from("queue_entries")
+    .select("referrer_id, clinic_id").eq("id", v.data.id).maybeSingle());
+  if (!preRead.known && preRead.reason === "error") {
+    logError({
+      event: "important_event.skipped", actorId: user.id, entityId: v.data.id,
+      errorCode: "pre_snapshot_unreadable",
+      message: "type=queue.patient_data_changed — знімок не прочитано, події не буде",
+    });
+  }
+  const pre = preRead.known ? preRead.row : null;
 
   /* CAS тут НЕ ставимо свідомо: ПІБ/телефон правлять і в завершеному записі
      (клік по імені відкриває редактор у будь-якому рядку дошки), а статус ці
@@ -2134,13 +2184,38 @@ export async function setQueuePriority(id: string, priority: PatientPriority): P
   if (!user) return { ok: false, error: "Не авторизовано", code: "auth" };
 
   // Хто редагує: роль + чи це власна запис направника.
-  const [{ data: profile }, { data: entry }] = await Promise.all([
+  const [profRes, entryRes] = await Promise.all([
     supabase.from("profiles").select("role").eq("id", user.id).maybeSingle(),
     supabase.from("queue_entries").select("referrer_id").eq("id", id).maybeSingle(),
   ]);
-  if (!entry) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
-  const isAdmin = profile?.role === "admin";
+  /* ⚠️ U-55, найдорожче місце пакета: тут читання годує АВТОРИЗАЦІЮ. Раніше
+     `const [{ data: profile }, { data: entry }]` не звʼязував жодної помилки, і
+     збій читання профілю давав `profile = null` → `isAdmin = false` → адмін
+     діставав «Змінювати пріоритет може адміністратор або лікар-направник».
+     Дірки в безпеці не було (fail-CLOSED), але людині казали, що вона не той,
+     ким є, — і вона не мала жодного способу зрозуміти, що це збій мережі.
+     Тепер незнання ролі зупиняє дію ЧЕСНО, окремим текстом. */
+  const profRead = readRow(profRes);
+  const entryRead = readRow(entryRes);
+  if (!entryRead.known) {
+    return entryRead.reason === "missing"
+      ? { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" }
+      : ENTRY_UNREADABLE_ERR;
+  }
+  const entry = entryRead.row;
   const isOwnerReferrer = entry.referrer_id != null && entry.referrer_id === user.id;
+  /* ⚠️ Порядок гілок виправлено ревʼю U-55, і це була МОЯ регресія, а не старий
+     дефект. Перша редакція обривала дію на `!profRead.known` ДО обчислення
+     `isOwnerReferrer` — і направник-власник запису, який раніше проходив
+     (роль йому не потрібна: вона годує лише гілку адміна), діставав відмову
+     через збій читання ЧУЖОГО йому профілю. Роль питаємо лише тоді, коли від
+     неї щось залежить.
+     Порожній профіль (missing) — теж незнання ролі, а не «ти не адмін»: рядок
+     профілю є в кожного, кого пустила `auth.getUser()`. */
+  if (!isOwnerReferrer && !profRead.known) {
+    return { ok: false, error: "Не вдалося перевірити ваші права — спробуйте ще раз", code: "generic" };
+  }
+  const isAdmin = profRead.known && profRead.row.role === "admin";
   if (!isAdmin && !isOwnerReferrer) {
     return { ok: false, error: "Змінювати пріоритет може адміністратор або лікар-направник", code: "forbidden" };
   }
@@ -2871,10 +2946,23 @@ export async function caseFromEntry(entryId: string, raw: CaseStepInput): Promis
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  // 0128: referrer_id вихідного запису — успадковується кейсом (вибір сімʼї
-  // події referral.* проти case.*); читаємо ДО мутації тим самим RLS-клієнтом.
-  const { data: srcEntry } = await supabase.from("queue_entries")
-    .select("referrer_id, clinic_id").eq("id", idv.data).maybeSingle();
+  /* 0128: referrer_id вихідного запису — успадковується кейсом (вибір сімʼї
+     події referral.* проти case.*); читаємо ДО мутації тим самим RLS-клієнтом.
+     ⚠️ U-55: як і в `updatePatientDetails`, незнання тут НЕ зупиняє дію (кейс
+     важливіший за рядок у журналі), але мусить бути гучним. Тут подія таки
+     ПИШЕТЬСЯ (нижче `clinicId: srcEntry?.clinic_id ?? clinicId`) — деградує
+     саме атрибуція: сімʼя події і `subject_referrer_id`. Імʼя логу канонічне,
+     як у сусідніх девʼяти місцях. */
+  const srcRead = readRow(await supabase.from("queue_entries")
+    .select("referrer_id, clinic_id").eq("id", idv.data).maybeSingle());
+  if (!srcRead.known && srcRead.reason === "error") {
+    logError({
+      event: "important_event.skipped", actorId: user.id, entityId: idv.data,
+      errorCode: "pre_snapshot_unreadable",
+      message: "type=case.from_entry — знімок не прочитано, атрибуція події деградує",
+    });
+  }
+  const srcEntry = srcRead.known ? srcRead.row : null;
 
   const p_step = caseRpcStep(s);
   { const g = await closedRegionGate(supabase, clinicId, s.roomId, s.studies); if (g) return g; }

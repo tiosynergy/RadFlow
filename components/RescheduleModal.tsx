@@ -174,7 +174,15 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
         setCatalogErr(!!(svc.error || ov.error));
         setSvcRows((svc.data ?? []) as ServiceLike[]);
         setOvRows((ov.data ?? []) as RoomOverrideRow[]);
-        setEntryRow((ent.data ?? null) as Record<string, unknown> | null);
+        /* U-55: `ent.error` читаємо ЯВНО, хоч поведінка від цього не міняється.
+           Збій читання і невидимий рядок ведуть в ОДНУ гілку — `moveBlocked`
+           нижче тримається на `!entryRow` і блокує переоформлення в обох
+           випадках, а текст «не вдалося прочитати картку пацієнта» правдивий
+           теж для обох. Але мовчазне `ent.data ?? null` лишало це РІШЕННЯМ, про
+           яке ніде не сказано: сусідні `svc.error`/`ov.error` перевіряються, і
+           наступний читач резонно вирішив би, що тут просто забули (саме так
+           виглядав дефект U-3, з якого й почався цей сканер). */
+        setEntryRow((ent.error ? null : (ent.data ?? null)) as Record<string, unknown> | null);
       } catch {
         // Картку/прайс не прочитали → переоформлення блокуємо (див. moveBlocked):
         // краще чесна відмова, ніж форма з порожнім ПІБ і чужим переліком послуг.
