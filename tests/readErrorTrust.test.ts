@@ -35,6 +35,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 import { codeOf } from "./helpers/codeOf";
+import { readRoomModality, modalityVerdict } from "@/lib/studies";
 
 const src = (p: string) => codeOf(readFileSync(resolve(process.cwd(), p), "utf8"));
 
@@ -47,11 +48,24 @@ const FILES = [
   "components/StudyEditModal.tsx",
   "components/CollisionPanel.tsx",
   "components/CeoDashboard.tsx",
+  "app/queue/actions.ts",
 ];
 
 /* Лапки будь-які: одинарні/зворотні теж мають потрапляти в скан, інакше
-   найдешевший спосіб обійти сторожа — написати .from('rooms'). */
-const TABLE_RE = /\.from\(\s*["'`](rooms|schedule_overrides)["'`]\s*\)/g;
+   найдешевший спосіб обійти сторожа — написати .from('rooms').
+
+   ⚠️ `incidents` додано в с49 (U-14). Ревʼю U-11 звіряло всі девʼять
+   продуктових читань цієї таблиці руками — дірок не було; сканер потрібен був
+   на МАЙБУТНЄ, і одразу знайшов минуле: `app/queue/actions.ts` (U-17).
+
+   ⚠️ `queue_entries` СВІДОМО не тут — і це заміряно, а не здогад. Один рядок
+   у цій регулярці робить червоними ще **вісім** місць: шість у
+   `app/queue/actions.ts` (серед них `const { data: cur }`, чий збій читання
+   показується як «Запис не знайдено»), одне в `CeoDashboard` і одне в
+   `RescheduleModal`. Це окремий пакет (борг **U-55**), а не хвіст цього:
+   змішати «слід аварійної зупинки» з «читання бреше про ненайдений запис»
+   означало б ревʼювати два різні ризики одним поглядом. */
+const TABLE_RE = /\.from\(\s*["'`](rooms|schedule_overrides|incidents)["'`]\s*\)/g;
 
 /* ── Розбір форм виклику ────────────────────────────────────────────────────
    Три законні форми:
@@ -84,6 +98,15 @@ function scanArray(code: string, arrayOpen: number, target: number): { k: number
   return { k: null, end: code.length };
 }
 
+/* ПРИЙМАЧ виклику — будь-який, а не літеральне імʼя `supabase`.
+   ⚠️ с49: перша редакція вимагала саме `await supabase.from(…)`. Тому
+   `await createClient().from("incidents")` у `ReferralPortal` сканер зарахував
+   у НЕВІДОМУ форму, хоча код там правильний і `error` перевіряє. Наслідок гірший
+   за хибну тривогу: найдешевший спосіб сховати читання від сторожа — назвати
+   клієнт інакше (`sb`, `admin`) або створити його на місці. Приймаємо
+   ідентифікатор, ланцюжок через крапку і виклик із аргументами. */
+const RECEIVER = String.raw`[\w$]+(?:\.[\w$]+)*(?:\([^()]*\))?`;
+
 type Occ = { table: string; index: number; form: "named" | "destructured" | "promise-all" | "unknown"; binder: string; checkFrom: number };
 
 function occurrences(code: string): Occ[] {
@@ -94,12 +117,22 @@ function occurrences(code: string): Occ[] {
     const before = code.slice(Math.max(0, ix - 200), ix);
 
     // F1 — результат зв'язаний іменем безпосередньо перед .from(...)
-    const named = before.match(/(?:const|let)\s+(\w+)\s*=\s*await\s+supabase\s*$/);
+    const named = before.match(new RegExp(String.raw`(?:const|let)\s+(\w+)\s*=\s*await\s+` + RECEIVER + String.raw`\s*$`));
     if (named) { out.push({ table, index: ix, form: "named", binder: named[1], checkFrom: ix }); continue; }
 
-    // F2 — деструктуризація: приймається ЛИШЕ якщо в шаблоні справді є error
-    const destr = before.match(/(?:const|let)\s*\{([^}]*)\}\s*=\s*await\s+supabase\s*$/);
-    if (destr && /\berror\b/.test(destr[1])) { out.push({ table, index: ix, form: "destructured", binder: "", checkFrom: ix }); continue; }
+    /* F2 — деструктуризація. ⚠️ Ревʼю р2: перша редакція приймала цю форму за
+       самим фактом слова `error` у шаблоні і ВИКЛЮЧАЛА її з подальших перевірок
+       (`occ.filter(form !== "destructured")`). Тобто `const { data, error } = …;
+       void error;` проходив мовчки — дірка ширша за обидві задокументовані межі
+       сканера. Тепер витягуємо РЕАЛЬНЕ імʼя (враховуючи аліас `error: e`) і
+       ганяємо по ньому той самий `consultsError`, що й для F1. */
+    const destr = before.match(new RegExp(String.raw`(?:const|let)\s*\{([^}]*)\}\s*=\s*await\s+` + RECEIVER + String.raw`\s*$`));
+    if (destr) {
+      const alias = destr[1].match(/\berror\s*:\s*([\w$]+)/);
+      const plain = /(^|[,{\s])error\s*(,|}|$)/.test(destr[1] + "}");
+      const name = alias ? alias[1] : (plain ? "error" : "");
+      if (name) { out.push({ table, index: ix, form: "destructured", binder: name, checkFrom: ix }); continue; }
+    }
 
     // F3 — елемент масиву Promise.all з деструктуризацією імен вище
     const pa = code.lastIndexOf("Promise.all([", ix);
@@ -108,7 +141,16 @@ function occurrences(code: string): Occ[] {
     const names = pa >= 0 ? code.slice(Math.max(0, pa - 200), pa).match(/(?:const|let)\s*\[([^\]]*)\]\s*=\s*await\s*$/) : null;
     if (arr.k !== null && names) {
       const list = names[1].split(",").map((s) => s.trim()).filter(Boolean);
-      if (list[arr.k]) { out.push({ table, index: ix, form: "promise-all", binder: list[arr.k], checkFrom: arr.end }); continue; }
+      /* ⚠️ Ревʼю р2: біндер мусить бути ІДЕНТИФІКАТОРОМ. Форма
+         `const [{ data: room, error: roomErr }, …] = await Promise.all([…])`
+         давала биндер «{ data: room», з якого будувалась регулярка, що ніколи
+         не збігається, — червоний тест із безглуздим імʼям. Така форма живе в
+         `app/fhir/R4/Slot/route.ts` і чекає лише додавання файлу в FILES.
+         Чесніше визнати форму НЕВІДОМОЮ: тоді автор або приведе її до відомої,
+         або допише сюди розбір. */
+      if (list[arr.k] && /^[\w$]+$/.test(list[arr.k])) {
+        out.push({ table, index: ix, form: "promise-all", binder: list[arr.k], checkFrom: arr.end }); continue;
+      }
     }
 
     out.push({ table, index: ix, form: "unknown", binder: "", checkFrom: ix });
@@ -121,6 +163,13 @@ function occurrences(code: string): Occ[] {
 const consultsError = (window: string, binder: string) =>
   new RegExp("(^|[^\\w$.])" + binder + "\\.error\\b").test(window);
 
+/* Для F2 биндер — це САМА помилка (`const { data, error } = …`), а не відповідь,
+   тож шукати `error.error` безглуздо: перевіряють ЇЇ, а не її поле. Межа тут та
+   сама, що задокументована в шапці для решти форм: сканер вимагає, щоб змінну
+   ПРОЧИТАЛИ, а не щоб із нею щось зробили — `void error;` пройде. */
+const consultsBinding = (window: string, name: string) =>
+  new RegExp("(^|[^\\w$.])" + name + "\\b").test(window);
+
 /* ЧЕТВЕРТА законна форма (U-13, с49): відповідь віддано ПРАВИЛУ, яке саме
    дивиться на `.error` І додатково розрізняє порожній рядок. Без цієї гілки
    сканер вимагав би лишити `res.error` поруч із делегуванням — тобто дві
@@ -130,7 +179,51 @@ const consultsError = (window: string, binder: string) =>
    («правило, якому делегують, справді дивиться на error»): інакше достатньо
    було б назвати будь-яку функцію `readRoomScheduleRow`, і сторож замовк би. */
 const delegatesToRule = (window: string, binder: string) =>
-  new RegExp("(readRoomScheduleRow|roomSchedulesById)\\(\\s*" + binder + "\\b").test(window);
+  new RegExp("(readRoomScheduleRow|roomSchedulesById|readRoomModality|modalityVerdict)\\(\\s*" + binder + "\\b").test(window);
+
+/* Сам ОБСЯГ нагляду — теж інваріант. Без цього тесту звузити сканер (прибрати
+   таблицю зі списку або файл із FILES) можна мовчки: усе лишиться зеленим, бо
+   зелене на порожньому наборі. Саме так у с49 виявилось, що `app/queue/actions.ts`
+   не сканувався ЖОДНОГО дня — і обидва дефекти (U-17, U-18) жили в ньому. */
+describe("Сканер: обсяг нагляду не звужується мовчки", () => {
+  /* ⚠️ Ревʼю р2: перша редакція читала `TABLE_RE.source` і довжину `FILES` —
+     тобто ВЛАСНЕ оголошення, а не поведінку. `rooms` лишався б у `source` і
+     після перейменування в `rooms_v2`, а `FILES.length >= 7` тримався б при
+     викиданні пʼяти екранів і дописуванні одного чужого файла. Перевіряємо
+     ПОВЕДІНКОЮ (сканер справді знаходить читання кожної таблиці) і ПОІМЕННО. */
+  it.each(["rooms", "schedule_overrides", "incidents"])(
+    "сканер справді знаходить читання %s", (t) => {
+      const occ = occurrences(`const a = await supabase.from("${t}").select("x");`);
+      expect(occ.length, `читання ${t} не потрапляє в скан`).toBe(1);
+      expect(occ[0].table).toBe(t);
+    },
+  );
+
+  it("перелік файлів під наглядом — поіменний", () => {
+    /* Дефекти U-17/U-18 жили саме в серверних діях: сканер дивився лише в
+       components/. Список поіменний, щоб зникнення БУДЬ-ЯКОГО з них червоніло,
+       а не ховалось за збереженою довжиною. */
+    expect([...FILES].sort()).toEqual([
+      "app/queue/actions.ts",
+      "components/BookingModal.tsx",
+      "components/CeoDashboard.tsx",
+      "components/CollisionPanel.tsx",
+      "components/ReferralPortal.tsx",
+      "components/RescheduleModal.tsx",
+      "components/StudyEditModal.tsx",
+    ]);
+  });
+
+  it("межа охоплення названа, а не замовчана", () => {
+    /* ⚠️ Ревʼю р2 порахувало: поза `FILES` лишається 30+ літеральних читань цих
+       таблиць (сторінки `page.tsx` під `app/`, дошки, кілька route-handler-ів).
+       Це не обовʼязково дефекти, але новий describe міг створити враження, що
+       охоплення під замком. Межа названа тут і в шапці файла; розширення —
+       борг **U-55** разом із `queue_entries`. */
+    expect(readFileSync(resolve(process.cwd(), "tests/readErrorTrust.test.ts"), "utf8"))
+      .toMatch(/U-55/);
+  });
+});
 
 describe("Сканер: кожне читання rooms/schedule_overrides дивиться на error", () => {
   for (const f of FILES) {
@@ -144,10 +237,25 @@ describe("Сканер: кожне читання rooms/schedule_overrides ди�
       expect(occ.filter((o) => o.form === "unknown").map((o) => o.table + "@" + o.index)).toEqual([]);
     });
 
-    for (const o of occ.filter((x) => x.form !== "destructured")) {
-      it(f + " — " + o.table + " (" + o.form + ", " + o.binder + "): error перевірено", () => {
+    /* ⚠️ Порядковий номер у ЗАГОЛОВКУ (ревʼю р1). У `app/queue/actions.ts` два
+       різні читання `rooms` мають однаковий биндер `roomRes` (`scheduleGate` і
+       `roomDayCtx`), тож без номера обидва тести звались однаково — і по
+       червоному звіту не можна було зрозуміти, яке саме читання зламали.
+       Номер саме порядковий, а не char-index: індекс міняється від будь-якої
+       правки вище по файлу, і імена тестів «пливли» б на кожному коміті. */
+    const seen = new Map<string, number>();
+    /* ⚠️ Ревʼю р2: `destructured` більше НЕ виключена. Раніше вона проходила
+       повз усі перевірки за самим фактом слова `error` у шаблоні. */
+    for (const o of occ) {
+      const key = o.table + "|" + o.form + "|" + o.binder;
+      const nth = (seen.get(key) ?? 0) + 1;
+      seen.set(key, nth);
+      it(f + " — " + o.table + " #" + nth + " (" + o.form + ", " + o.binder + "): error перевірено", () => {
         const w = code.slice(o.checkFrom, o.checkFrom + 700);
-        expect(consultsError(w, o.binder) || delegatesToRule(w, o.binder)).toBe(true);
+        const seen = o.form === "destructured"
+          ? consultsBinding(w, o.binder)
+          : consultsError(w, o.binder) || delegatesToRule(w, o.binder);
+        expect(seen).toBe(true);
       });
     }
   }
@@ -170,6 +278,35 @@ describe("Правило, якому делегує сканер, справді
   it("roomSchedulesById (спискова форма) перевіряє і error, і повноту", () => {
     expect(rule).toMatch(/if \(!res \|\| res\.error\) return \{ known: false, reason: "error" \};/);
     expect(rule).toMatch(/if \(!\(id in byId\)\) return \{ known: false, reason: "missing" \};/);
+  });
+
+  /* U-18 (с49): правила з `lib/studies.ts`, яким сканер довіряє на шляху
+     модальності. ⚠️ Ревʼю р2: перевіряємо їх ВИКЛИКОМ, а не регулярками по
+     тексту файлу. Текстові піни тут нічого не ловили (мутації N01–N04 і так
+     червонили поведінкові тести в `roomModalityRead.test.ts`), зате червоніли
+     б на `if (res.error != null)` чи переносі рядка — тобто на правці без
+     дефекту. Довіра сканера має триматись на ПОВЕДІНЦІ.
+     ⚠️ Текстові піни для `lib/roomSchedule.ts` вище лишені як були: то чужий
+     пакет (U-13), і його поведінку стереже власний файл тестів. Переписати їх
+     тим самим способом — окремий борг **U-57**. */
+  it("readRoomModality: помилка і порожній рядок — це НЕ значення", () => {
+    expect(readRoomModality({ data: null, error: { message: "x" } }).known).toBe(false);
+    expect(readRoomModality({ data: { modality: "MRI" }, error: { message: "x" } }).known).toBe(false);
+    expect(readRoomModality({ data: null, error: null }).known).toBe(false);
+    expect(readRoomModality({ data: { modality: "MRI" }, error: null }))
+      .toEqual({ known: true, modality: "MRI" });
+  });
+
+  it("modalityVerdict: незнання не стає ані ok, ані mismatch", () => {
+    /* Саме на це делегує гейт у `app/queue/actions.ts`; якби вердикт при збої
+       читання давав "ok", сканер мовчав би про рівно вихідний дефект. */
+    expect(modalityVerdict({ data: null, error: { message: "x" } }, [{ type: "КТ" }]))
+      .toBe("unreadable");
+    expect(modalityVerdict({ data: null, error: null }, [{ type: "КТ" }])).toBe("gone");
+    expect(modalityVerdict({ data: { modality: "MRI" }, error: null }, [{ type: "КТ" }]))
+      .toBe("mismatch");
+    expect(modalityVerdict({ data: { modality: "OTHER" }, error: null }, [{ type: "КТ" }]))
+      .toBe("ok");
   });
 });
 
@@ -214,8 +351,38 @@ describe("Сканер: сам себе не обманює", () => {
       ']);\n' +
       'const err = a.error ?? b.error;'
     ));
+    /* ⚠️ До с49 `incidents` не сканувався, і цей зразок давав рівно одне
+       входження. Тепер обидва — і це робить перевірку СИЛЬНІШОЮ: важливо не
+       «скільки знайшли», а що КОЖНЕ звʼязалось зі СВОЇМ елементом масиву.
+       Зсув індексу на одиницю раніше було видно лише за биндером "b". */
+    expect(occ.map((o) => o.table + ":" + o.binder)).toEqual(["incidents:a", "rooms:b"]);
+  });
+
+  /* ⚠️ с49: приймач виклику. Перша редакція вимагала літерального `supabase`,
+     і `createClient().from(…)` у `ReferralPortal` рахувався НЕВІДОМОЮ формою,
+     хоча error там перевіряється. Гірше за хибну тривогу: найдешевший спосіб
+     сховати читання від сторожа — назвати клієнт інакше. */
+  it("приймач будь-який: createClient().from — теж відома форма", () => {
+    const occ = occurrences(wrap(
+      'const { data, error } = await createClient().from("incidents").select("id");'
+    ));
     expect(occ.length).toBe(1);
-    expect(occ[0].binder).toBe("b");   // не "a": коми в рядковому літералі не рахуються
+    expect(occ[0].form).toBe("destructured");
+  });
+
+  it("приймач-змінна з іншим імʼям — теж відома форма", () => {
+    const occ = occurrences(wrap('const r = await sb.from("rooms").select("modality");'));
+    expect(occ[0].form).toBe("named");
+    expect(occ[0].binder).toBe("r");
+  });
+
+  it("делегування правилу зараховується лише для СВОГО биндера", () => {
+    /* Інакше сусіднє `readRoomModality(other)` у тому ж вікні закривало б
+       читання, якого ніхто не розібрав, — той самий клас, що межа слова
+       в consultsError. */
+    expect(delegatesToRule("const m = readRoomModality(res);", "res")).toBe(true);
+    expect(delegatesToRule("const m = readRoomModality(other);", "res")).toBe(false);
+    expect(delegatesToRule("const m = notARule(res);", "res")).toBe(false);
   });
 });
 

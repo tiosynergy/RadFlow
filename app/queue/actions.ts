@@ -16,7 +16,7 @@ import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json, QueueStatus, CallStatus, TablesUpdate, QueueDelayPolicy } from "@/supabase/types";
-import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX, studiesMatchModality } from "@/lib/studies";
+import { BUFFER_DEFAULT, normBuffer, normDur, DUR_MAX, studiesMatchModality, modalityVerdict, incidentGapCode } from "@/lib/studies";
 import { firstClosedService, loadClinicCatalog, studiesKeySet, CatalogUnavailableError } from "@/lib/serviceGate";
 import { firstClosedStudy, type Catalog } from "@/lib/catalog";
 import { normPriority, type PatientPriority } from "@/lib/priority";
@@ -535,9 +535,58 @@ function caseTriggerError(message: string): QueueActionResult | null {
   if (/CASE_NOT_OPEN/i.test(message)) return { ok: false, error: "Кейс не активний — крок додати не можна", code: "generic" };
   return null;
 }
-async function studiesRoomMismatch(supabase: SupabaseClient<Database>, roomId: string, studies: unknown): Promise<boolean> {
-  const { data } = await supabase.from("rooms").select("modality").eq("id", roomId).maybeSingle();
-  return !studiesMatchModality(studies as Array<{ type?: string }> | null, data?.modality ?? null);
+/* U-18 (с49): збій читання модальності БІЛЬШЕ не читається як «збігається».
+   Раніше тут стояло `const { data } = …` — `error` не звʼязували взагалі, і
+   `data?.modality ?? null` віддавало `null`, на якому `studiesMatchModality`
+   свідомо поблажлива (кабінет `OTHER` не має каталогу). Заміряно: колонка
+   `rooms.modality` NOT NULL, рядків із `null` — 0, тобто `null` тут означає
+   РІВНО «не прочитали».
+
+   ⚠️ Чому це НЕ fail-closed (виправлено ревʼю р2). Перша редакція відмовляла
+   при будь-якому незнанні, і обґрунтування було хибним: я написав, що інакше
+   користувач дістає «сиру помилку тригера». Насправді `classifyError` і
+   `mapBookingError` у цьому ж файлі ловлять `MODALITY_MISMATCH` і віддають ТОЙ
+   САМИЙ дружній текст — тобто видимий наслідок дефекту дорівнював нулю, а
+   відмова коштувала б користувачеві дії там, де раніше все проходило штатно.
+   Різниця з `closedRegionGate` (той відмовляє при недоступному каталозі)
+   принципова, а не примхлива: закриті послуги тригер НЕ стереже, а
+   модальність — стереже (0088, заміряно живим запитом).
+
+   Тому: транзієнт (`unreadable`) потік НЕ рве — пише лог, бо втрата другого
+   рубежу мусить бути видимою. Відмовляємо лише там, де запис і так не пройде:
+   зниклий рядок і аномалія значення. Рішення — чисте `modalityVerdict`
+   (`lib/studies.ts`), тут лишається читання і мапа вердикт → відповідь. */
+const ROOM_UNREADABLE_ERR: QueueActionResult = {
+  ok: false, error: "Не вдалося перевірити кабінет — спробуйте ще раз", code: "generic",
+};
+/* ⚠️ code НЕ "forbidden" (ревʼю р1). `ReferralPortal` підмінює текст для цього
+   коду своїм «Немає доступу до цього центру/кабінету» — і єдина дія, яка тут
+   допомагає («оновіть форму»), зникла б саме на шляху направника. Та й по суті
+   це не відмова в доступі: право писати в кабінет перевіряє `grantAllowsRoom`
+   ВИЩЕ за гейт, тож сюди доходить лише зниклий/невидимий рядок. */
+const ROOM_GONE_ERR: QueueActionResult = {
+  ok: false, error: "Кабінет не знайдено або недоступний — оновіть форму", code: "generic",
+};
+/** Гейт модальності: відповідь на запис, або null — «іди далі». */
+async function modalityGate(
+  supabase: SupabaseClient<Database>, roomId: string, studies: unknown,
+): Promise<QueueActionResult | null> {
+  const res = await supabase.from("rooms").select("modality").eq("id", roomId).maybeSingle();
+  switch (modalityVerdict(res, studies)) {
+    case "mismatch": return MODALITY_MISMATCH_ERR;
+    case "gone": return ROOM_GONE_ERR;
+    case "empty": return ROOM_UNREADABLE_ERR;
+    case "unreadable":
+      /* Другий рубіж щойно зник, і зовні цього не видно — тригер 0088 віддасть
+         той самий текст. Мовчати тут означало б лишити дефект U-18 живим,
+         просто без `?? null`. */
+      logError({
+        event: "read.trust", errorCode: "room_modality_unreadable", entityId: roomId,
+        message: "гейт модальності пропущено — правильність тримає лише тригер 0088",
+      });
+      return null;
+    default: return null;
+  }
 }
 
 /* Клінічні тривалості — кратні 5 хв, стеля 480 (= CHECK queue_entries_duration_min_chk,
@@ -1082,10 +1131,66 @@ export async function emergencyStop(input: { roomIds: string[]; note?: string | 
      N кабінетів = N інцидентів); у details — лише id кабінету. */
   const stoppedRooms: string[] = res?.stopped_rooms ?? [];
   if (stoppedRooms.length > 0) {
-    const { data: incs } = await supabase.from("incidents")
+    /* U-17 (с49): `error` тут раніше НЕ звʼязували, і `incs ?? []` перетворював
+       збій читання на «інцидентів немає» — тобто НУЛЬ подій журналу про зупинку,
+       яка ВЖЕ сталася і вже закомічена в RPC. Це єдиний знайдений аудитом
+       fail-open, наслідок якого пишеться в БД, а не показується на екрані:
+       на дошці аварія видима, а в журналі клінічно значущої події просто немає,
+       і нічий екран про це не скаже.
+
+       Відмовити користувачеві тут НЕ можна і не треба: зупинка вже відбулася,
+       і «помилка» була б брехнею про неї (той самий довід, що для
+       `deliverPendingOutbox` вище). Тому лікуємо не результат дії, а
+       ВИДИМІСТЬ втрати: гучний лог із кодом, який відрізняє три різні біди.
+
+       ⚠️ Межа, названа чесно: сама залежність журналу від ДРУГОГО читання і є
+       коренем. Структурне лікування — навчити `emergency_stop_rpc` повертати
+       `incident_ids` (вона й так `SECURITY DEFINER` і всередині транзакції їх
+       знає), тоді читати нема чого. Це міграція і окремий пакет — борг **U-56**.
+       Тут ми робимо втрату ГУЧНОЮ, а не неможливою.
+
+       ⚠️ Повтору читання тут СВІДОМО немає. Він виглядав би корисним (типовий
+       збій — транзієнт), але коштує дублювання всього ланцюжка фільтрів: дві
+       копії `.eq().eq().in()`, які розійдуться при першій же правці, і читання
+       у формі, якої не розбирає сканер `readErrorTrust` — тобто наступний
+       такий виклик знову проїхав би мовчки. Транзієнт лікує U-56, а не милиця.
+
+       ⚠️ І чого тут НЕ роблять: не вигадують подію-замінник. У журналі шість
+       канонічних сутностей плюс три свідомі розширення (`ImportantEventEntityType`);
+       «подія про клініку» серед них немає, і підсунути `clinic_id` під
+       `entityType: "incident"` означало б записати неправду в те саме місце,
+       яке ми лагодимо. Слід аварії при цьому НЕ зникає повністю: подія
+       `event_outbox` пишеться транзакційно в самій RPC. */
+    const incRes = await supabase.from("incidents")
       .select("id, room_id")
       .eq("clinic_id", clinicId).eq("reason", "emergency").eq("status", "active")
       .in("room_id", stoppedRooms);
+    const incs = incRes.error ? null : (incRes.data ?? []);
+    /* Вибір коду — ЧИСТА `incidentGapCode` (`lib/studies.ts`). Ревʼю р2: поки
+       три гілки жили тут, сторож перевіряв лише НАЯВНІСТЬ трьох рядків, і
+       перестановка гілок (збій → «рядків немає») лишалась зеленою. */
+    const gap = incidentGapCode(incs === null ? null : incs.length, stoppedRooms.length);
+    if (gap) {
+      /* ⚠️ `event` — КАНОНІЧНЕ `important_event.skipped` (§12.11), а не тип
+         журнальної події. Ревʼю р1: перша редакція писала сюди
+         `incident.emergency_stop`, і вийшло тихо там, де все й затівалось —
+         єдиний однорідний запит, яким шукають пропуски журналу, шукає саме
+         `important_event.skipped` (так пишуть усі девʼять інших місць у цьому
+         файлі й `app/waitlist/actions.ts`). Тип події місце має в `message`. */
+      logError({
+        event: "important_event.skipped",
+        clinicId,
+        actorId: user.id,
+        entityId: null,
+        errorCode: gap,
+        /* Текст помилки БД доклеюємо в message — окремого поля під нього в
+           `LogErrorInput` немає, а `scrubLogText` чистить його від PII/секретів
+           на вході в лог. */
+        message: `type=incident.emergency_stop | подій ${incs?.length ?? 0}`
+          + ` на ${stoppedRooms.length} зупинених кабінетів`
+          + (incRes.error ? ` | ${incRes.error.message}` : ""),
+      });
+    }
     /* Ревʼю с25 (M4): аварійний сценарій — N подій паралельно, не послідовно
        (20 кабінетів × RTT ≈ секунди зверху; emitImportantEvent не кидає). */
     await Promise.all((incs ?? []).map((inc) => emitImportantEvent({
@@ -1421,8 +1526,9 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
      повернувся сирою помилкою замість зрозумілої. */
   const nextStudies = input.studies as unknown as { type?: string | null; region?: string | null }[] | undefined;
   if (input.roomId !== cur.room_id || nextStudies) {
-    if (nextStudies && await studiesRoomMismatch(supabase, input.roomId, nextStudies)) {
-      return MODALITY_MISMATCH_ERR;
+    if (nextStudies) {
+      const mg = await modalityGate(supabase, input.roomId, nextStudies);
+      if (mg) return mg;
     }
     /* Grandfather — ДЗЕРКАЛО умови тригера (0113/0121): він пропускає старі
        позиції, поки кабінет НЕ змінився. Без цього зміна складу в тому самому
@@ -1572,7 +1678,7 @@ export async function editQueueEntryStudies(
     .select("clinic_id, room_id, scheduled_date, scheduled_time, status, in_progress_at, duration_min, buffer_time_min, studies, referrer_id")
     .eq("id", id).maybeSingle();
   if (!cur) return { ok: false, error: "Запис не знайдено", code: "forbidden" };
-  if (cur.room_id && await studiesRoomMismatch(supabase, cur.room_id, studies)) return MODALITY_MISMATCH_ERR;
+  if (cur.room_id) { const mg = await modalityGate(supabase, cur.room_id, studies); if (mg) return mg; }
   // Гейт закритих послуг з grandfather: області, що вже є в записі (снапшот), не
   // ріжемо — інакше не відредагувати запис із послугою, вимкненою вже після броні.
   if (cur.clinic_id) {
@@ -1704,7 +1810,7 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
   const clinicId = await callerClinicId(supabase);
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
-  if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
+  { const mg = await modalityGate(supabase, input.roomId, input.studies); if (mg) return mg; }
   { const g = await closedRegionGate(supabase, clinicId, input.roomId, input.studies); if (g) return g; }
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   /* 0077: createBooking доступний лише персоналу (clinic_id викликача = clinicId),
@@ -1810,7 +1916,7 @@ export async function scheduleFromWaitlist(waitlistId: string, booking: BookingI
 
   // Пере-перевірки (як createBooking): дають чисту помилку ДО застовплення й рахують
   // off_schedule. Це НЕ мутації — гонку розвʼязує атомарний claim усередині RPC.
-  if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
+  { const mg = await modalityGate(supabase, input.roomId, input.studies); if (mg) return mg; }
   { const g = await closedRegionGate(supabase, clinicId, input.roomId, input.studies); if (g) return g; }
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   const gate = await scheduleBlock(
@@ -2101,7 +2207,7 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
     return { ok: false, error: "Кабінет недоступний для вас", code: "forbidden" };
   }
 
-  if (await studiesRoomMismatch(supabase, input.roomId, input.studies)) return MODALITY_MISMATCH_ERR;
+  { const mg = await modalityGate(supabase, input.roomId, input.studies); if (mg) return mg; }
   { const g = await closedRegionGate(supabase, input.clinicId, input.roomId, input.studies); if (g) return g; }
   if (await isPastSlot(supabase, input.clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   /* 0077: направнику робота поза графіком НЕ доступна (рішення власника: він

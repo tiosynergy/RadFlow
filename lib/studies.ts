@@ -151,6 +151,102 @@ export function studiesMatchModality(studies: Array<{ type?: string }> | null | 
   return arr.every((s) => !s?.type || modalityCode(s.type) === roomModality);
 }
 
+/* ── «Не читали ≠ збігається» для rooms.modality (U-18, с49) ────────────────
+   `studiesMatchModality` ПОВИННА бути поблажливою до `null`: кабінет `OTHER`
+   не має каталогу, і обмежувати склад для нього нема чим. Але виклик у
+   `app/queue/actions.ts` віддавав їй `data?.modality ?? null`, НЕ подивившись
+   на `error` — тобто збій читання й «кабінет без каталогу» приходили одним і
+   тим самим значенням, і збій читання читався як «розбіжності немає».
+
+   Заміряно на проді 2026-08-30, і саме цей замір робить діагноз однозначним:
+   `rooms.modality` — **NOT NULL**, рядків із `null` — **0**. Отже `null` тут не
+   може означати «кабінет без модальності»; він означає РІВНО «ми не прочитали».
+   Поблажливість, потрібна для `OTHER`, діставалась незнанню задарма.
+
+   ⚠️ ЧОГО ЦЕЙ ДЕФЕКТ НЕ КОШТУВАВ — і це виправлено в ревʼю р2, бо перша
+   редакція цього коментаря стверджувала неправду. Я писав, що користувач
+   діставав «сиру помилку тригера». Це НЕ так: обидва класифікатори
+   (`classifyError` і `mapBookingError` у `app/queue/actions.ts`) ловлять
+   `MODALITY_MISMATCH` від тригера 0088 і віддають ТОЙ САМИЙ дружній текст.
+   Тобто видимий наслідок дефекту дорівнював нулю.
+
+   Що справді втрачалось: прикладна перевірка МОВЧКИ переставала існувати. Її
+   робота — не текст (текст і так є), а другий рубіж: щойно читання ламалось,
+   правильність трималась на одному тригері, і дізнатись про це було нізвідки —
+   зовні результат виглядав однаково. Це той самий клас, що знято TRUNCATE у
+   0166: глибина оборони, яка тихо стає глибиною в один шар.
+
+   Саме тому лікування — НЕ «відмовити при збої читання». Відмова коштувала б
+   користувачеві дії там, де раніше все проходило штатно, і нічого не додала б
+   до правильності: тригер її вже забезпечує. Лікуємо ВИДИМІСТЬ (див.
+   `modalityVerdict`: транзієнт → `unreadable`, і місце виклику пише лог, але
+   потік не рве). Відмовляємо лише там, де запис і так не пройшов би — зниклий
+   рядок і аномалія значення. */
+/* ⚠️ У гілці `known: true` тип саме `string`, а НЕ `string | null` (ревʼю р1).
+   Різниця не косметична: споживач — `studiesMatchModality`, яка на `null`
+   свідомо поблажлива, тож `{ known: true, modality: null }` був би РІВНО
+   вихідним дефектом, і компілятор пропустив би його мовчки. Тепер повернення
+   до дефекту — помилка збірки, а не питання уважності.
+   ⚠️ Три причини незнання, а не дві: `empty` (рядок прочитано, значення
+   порожнє) — це аномалія схеми, і діагноз «кабінет не знайдено» для неї був би
+   неправдою: оновлення форми нічого не змінить. */
+export type RoomModalityRead =
+  | { known: true; modality: string }
+  | { known: false; reason: "error" | "missing" | "empty" };
+
+/** Розібрати відповідь на читання `rooms.modality`: помилка / порожній рядок /
+    значення. Дзеркало `readRoomScheduleRow` (U-13) для сусіднього поля. */
+export function readRoomModality(
+  res: { data: { modality?: unknown } | null; error: unknown } | null | undefined,
+): RoomModalityRead {
+  if (!res) return { known: false, reason: "error" };
+  if (res.error) return { known: false, reason: "error" };
+  if (!res.data) return { known: false, reason: "missing" };
+  const m = res.data.modality;
+  /* Порожнє значення в ПРОЧИТАНОМУ рядку теж «не знаємо»: у схемі колонка
+     NOT NULL, тож `null` звідси означав би зміну схеми, а не кабінет без
+     каталогу (той приходить рядком 'OTHER'). Мовчазна поблажливість тут
+     повернула б рівно той самий дефект іншими дверима. */
+  if (m === null || m === undefined || m === "") return { known: false, reason: "empty" };
+  return { known: true, modality: String(m) };
+}
+
+/** Рішення гейта модальності — ЧИСТЕ, без клієнта і без текстів помилок.
+    Винесено з `app/queue/actions.ts` у ревʼю р2: поки рішення жило всередині
+    серверної дії, перевірити його можна було лише регулярками по тексту файлу,
+    а вони не ловлять найдешевшу диверсію — зайвий `return` МІЖ розбором і
+    гілкою рішення. Чисту функцію перевіряють викликом, і така вставка стає
+    неможливою за побудовою. */
+export type ModalityVerdict = "ok" | "mismatch" | "gone" | "empty" | "unreadable";
+
+export function modalityVerdict(
+  res: { data: { modality?: unknown } | null; error: unknown } | null | undefined,
+  studies: unknown,
+): ModalityVerdict {
+  const mod = readRoomModality(res);
+  if (!mod.known) {
+    /* `unreadable` — НЕ відмова (див. блок вище): транзієнт лікує тригер 0088,
+       а відмова коштувала б користувачеві дії. `gone`/`empty` — відмова: там
+       запис і так не пройде, тільки з гіршим текстом. */
+    return mod.reason === "missing" ? "gone" : mod.reason === "empty" ? "empty" : "unreadable";
+  }
+  return studiesMatchModality(studies as Array<{ type?: string }> | null, mod.modality)
+    ? "ok" : "mismatch";
+}
+
+/** Який код логувати, коли журнал аварійної зупинки вийшов неповним (U-17).
+    Чиста функція з тієї ж причини, що й `modalityVerdict`: вибір із трьох
+    гілок усередині серверної дії перевірявся лише на НАЯВНІСТЬ трьох рядків —
+    і перестановка гілок лишалась зеленою (ревʼю р2). */
+export function incidentGapCode(
+  got: number | null, expected: number,
+): "incidents_read_failed" | "incidents_read_no_rows" | "incidents_read_partial" | null {
+  if (got === null) return "incidents_read_failed";
+  if (got === 0 && expected > 0) return "incidents_read_no_rows";
+  if (got < expected) return "incidents_read_partial";
+  return null;
+}
+
 /** Чи є в складі хоча б одне дослідження з КАТАЛОЖНОЮ модальністю (не порожній
     тип і не «Інше»/OTHER). Порожній / без type склад → false. Використовує
     валідація НОВИХ записів (zStudiesRequired): без цього склад без типу мовчки
