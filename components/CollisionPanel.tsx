@@ -19,6 +19,7 @@ import { useEffect, useState } from "react";
 import { isRoomBookable } from "@/lib/rooms";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFromFeed, roomBreaksFromFeed, overridesUnknown, overrideOn, type OverrideFeed, type Break } from "@/lib/schedule";
+import { roomSchedulesById, roomScheduleReadError } from "@/lib/roomSchedule";
 import { incidentEffectiveEnd, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, wallInstant, type IncidentFeed } from "@/lib/incidents";
 import { firstFittingSlot, slotToMin, type BusySpan } from "@/lib/slots";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
@@ -111,10 +112,17 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
            H-6: помилку читання НЕ можна ковтати. Порожній schedById → roomScheduleFor
            відкочується на дефолт «Пн–Сб 08:00–18:00», і панель пропонує слот у час,
            коли кабінет закритий або на перерві. Краще чесно сказати «не можу порадити». */
-        const schedRes = await supabase.from("rooms").select("id, schedule").in("id", cands.map((r) => r.id));
-        if (schedRes.error) throw schedRes.error;
-        const schedById: Record<string, unknown> = {};
-        ((schedRes.data || []) as Array<{ id: string; schedule?: unknown }>).forEach((r) => { schedById[r.id] = r.schedule ?? null; });
+        /* U-13 (с49): перевірки `error` тут теж не досить, і форма ще тихіша за
+           `maybeSingle`. Кабінет, якого немає у ВІДПОВІДІ (RLS 0139 сховала або
+           видалений), давав `schedById[id] === undefined` — ні помилки, ні
+           `?? null`, просто зникла величина, — і `roomScheduleFor` мовчки брав
+           хардкод «Пн–Сб 08:00–18:00». Панель на цьому РАДИТЬ слот, тож
+           «прочитали не всіх» мусить означати «не радимо». */
+        const wanted = cands.map((r) => r.id);
+        const schedRes = await supabase.from("rooms").select("id, schedule").in("id", wanted);
+        const read = roomSchedulesById(schedRes, wanted);
+        if (!read.known) throw roomScheduleReadError(read.reason);
+        const schedById: Record<string, unknown> = read.byId;
 
         const nowMin = wallMinOfDay(wallNow(clinicTz || undefined));
         const found = await Promise.all(cands.map(async (r) => {

@@ -13,6 +13,7 @@ import {
   roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, offScheduleKind, OFF_SCHED_GRACE_MIN,
   type DayOverride,
 } from "@/lib/schedule";
+import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { incidentDurCapMin, incidentEffectiveEnd, roomIncidentsOf, studyBlockedByFeed, wallNow, wallMinOfDay, wallToday0, type IncidentFeed } from "@/lib/incidents";
 
 /* ⚠️ Імена порівнюємо ТІЛЬКИ нормалізовано (trim + пробіли до одного): у БД
@@ -673,13 +674,23 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
       }
       if (!roomId) { if (req === schedReqRef.current) { setRoomSchedule(null); setSchedErr(false); } return; }
       const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
-      if (roomRes.error) throw roomRes.error; // інакше сітка тихо повернеться до хардкоду «Пн–Сб 08–18»
+      /* U-13: `if (roomRes.error) throw` тут стояло — і НЕ рятувало. Порожній
+         рядок (кабінет невидимий за RLS 0139 або видалений) приходить БЕЗ
+         помилки, і сітка тихо поверталась до хардкоду «Пн–Сб 08–18». Заміряно
+         на проді: кабінет 09:00–22:00 малювався 08:00–18:00 — вигадана година
+         зранку і чотири зниклі ввечері, без жодного банера. Правило спільне,
+         живе в lib/roomSchedule; перепис місць виклику — у тесті. */
+      const sched = readRoomScheduleRow(roomRes);
+      if (!sched.known) throw roomScheduleReadError(sched.reason);
       if (req !== schedReqRef.current) return;
-      setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
+      setRoomSchedule(sched.schedule);
       setSchedErr(false);
     } catch {
-      // Транзієнтний збій — модалку не рушимо, але й сітку не малюємо (конвенція проєкту).
-      if (req === schedReqRef.current) setSchedErr(true);
+      /* Транзієнтний збій — модалку не рушимо, але й сітку не малюємо.
+         ⚠️ Прочитане ОБНУЛЯЄМО (ревʼю U-13): решта екранів це давно роблять, а
+         тут ні — і при зміні кабінету на екрані лишався графік ПОПЕРЕДНЬОГО,
+         про який банери говорили як про факт. */
+      if (req === schedReqRef.current) { setOverride(null); setRoomSchedule(null); setSchedErr(true); }
     } finally {
       if (req === schedReqRef.current) setSchedLoading(false);
     }
@@ -1417,8 +1428,15 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
               </div>
               {/* Банери — лише КОЛИ КАБІНЕТ ОБРАНО: без roomId графік падає на дефолт
                   (неділя = вихідний) і показував хибне «Кабінет не працює». */}
-              {roomId && roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
-              {roomId && !roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
+              {/* ⚠️ U-13, знайдено ревʼю пакета: `roomId &&` тут було ЄДИНИМ гейтом,
+                  тоді як сусідній банер про ремонт уже питає `roomIncidents !== null`,
+                  а RescheduleModal і портал давно закриті прапорцем довіри. Обидва
+                  рядки — ТВЕРДЖЕННЯ про графік, і на непрочитаних даних вони
+                  говорили про хардкод 08:00–18:00 (у неділю — «не працює») просто
+                  над банером «дані не завантажились». Гейт той самий, що гасить
+                  «✓ Слот вільний». */}
+              {availTrusted && roomId && roomSched.closed && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🚫 {room ? room.name : "Кабінет"} не працює {fmtShort(bookDate)}{override && override.label ? " · " + override.label : ""}. Оберіть інший день або кабінет.</div>}
+              {availTrusted && roomId && !roomSched.closed && roomSched.custom && <div className="ctx-hint blue" style={{ marginBottom: 10 }}>🕐 Особливий графік {fmtShort(bookDate)}: {roomSched.start}–{roomSched.end}.</div>}
               {/* Банер про ремонт — теж ТВЕРДЖЕННЯ, тож лише коли простої прочитані:
                   при невідомості про них каже спільний банер довіри нижче. */}
               {roomId && !roomSched.closed && roomIncidents !== null && slots.some((s) => slotState(s) === "blocked") && <div className="ctx-hint red" style={{ marginBottom: 10 }}>🔧 {room ? room.name : "Кабінет"} на ремонті/ТО{roomIncidents[0]?.blocked_until ? " до " + new Date(Math.max(...roomIncidents.map((i) => i.blocked_until ? new Date(i.blocked_until).getTime() : 0))).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : ""}. Оберіть слот після відновлення або інший день/кабінет.</div>}

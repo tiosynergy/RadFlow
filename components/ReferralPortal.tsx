@@ -34,6 +34,7 @@ import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority, updateWaitlis
 import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
 import type { WaitlistEntry } from "@/supabase/types";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
+import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { incidentDurCapMin, incidentFeed, studyBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
@@ -438,9 +439,21 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
       // PostgREST не кидає сам — інакше «зайнятий день» став би «вільним»
       const err = ov.error ?? inc.error ?? roomRes.error ?? busy.error;
       if (err) throw err;
+      /* U-13: перевірки помилок вище НЕ ДОСИТЬ для кабінету. Порожній рядок
+         (RLS 0139 сховала кабінет від направника, або кабінет видалили) приходить
+         БЕЗ помилки — і графік тихо ставав хардкодом «Пн–Сб 08:00–18:00». Для
+         направника це найгірше місце: він не бачить дошки й повірить сітці.
+         Заміряно на проді: кабінет 09:00–22:00 показувався 08:00–18:00.
+         `roomId` порожній — читати нічого, і це не незнання (гілка нижче). */
+      if (roomId) {
+        const sched = readRoomScheduleRow(roomRes);
+        if (!sched.known) throw roomScheduleReadError(sched.reason);
+        setRoomSchedule(sched.schedule);
+      } else {
+        setRoomSchedule(null);
+      }
       setOverride((ov.data as unknown as DayOverride) || null);
       setIncidents((inc.data as IncidentLike[] | null) || []);
-      setRoomSchedule((roomRes.data as { schedule?: unknown } | null)?.schedule ?? null);
       setDayEntries((busy.data as BusySlot[] | null) || []);
       setSlotsErr(false);
     } catch {
@@ -452,9 +465,12 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
          `StudyEditModal` і `RescheduleModal` у своїх `catch`. Центр, кабінет і
          дата тут МІНЯЮТЬСЯ при відкритій формі, тож збій на новій даті лишав
          override СТАРОЇ — і портал стверджував «🚫 не працює · Новий рік» про
-         2 січня. Зайнятість і простої свідомо НЕ чіпаємо: вони прикриті тим
-         самим `slotsErr` через `slotDataFromSingleSource`, а обнуляти їх у `[]`
-         означало б підмінити невідомість порожнечею — клас U-11. */
+         2 січня. Зайнятість і простої свідомо НЕ чіпаємо: обнуляти їх у `[]`
+         означало б підмінити невідомість порожнечею — клас U-11.
+         ⚠️ Уточнено ревʼю U-13: раніше тут стояло «вони прикриті тим самим
+         `slotsErr`» — і це була неправда для чипсів «Зайнятий час», які висіли
+         СИБЛІНГОМ гілки помилки. Тепер вони під `availTrusted`, і твердження
+         знову відповідає коду. */
       setOverride(null);
       setRoomSchedule(null);
     } finally {
@@ -1017,7 +1033,13 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                     : `Вільно · ${s}–${fmt(toMin(s) + slotDur)}`}
                 />
               </div>}
-              {busyList.length > 0 && (
+              {/* ⚠️ U-13 (ревʼю пакета): чипси зайнятого часу — теж ТВЕРДЖЕННЯ про
+                  день, і стояли вони СИБЛІНГОМ гілки `slotsErr`, тобто лишались
+                  на екрані, коли сітку вже сховано. Після правки читання кабінету
+                  кидає раніше, ніж `setDayEntries`, тож чипси показували б час
+                  ПОПЕРЕДНЬОГО кабінету як факт. Гейт той самий, що в трьох
+                  підказках вище. */}
+              {availTrusted && busyList.length > 0 && (
                 <div className="bk-busy-list">
                   <span className="bk-busy-lab">Зайнятий час:</span>
                   {busyList.map((b, i) => (

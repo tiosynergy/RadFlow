@@ -18,6 +18,7 @@ import {
   roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, offScheduleKind, OFF_SCHED_GRACE_MIN,
   type DayOverride,
 } from "@/lib/schedule";
+import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { incidentDurCapMin, incidentEffectiveEnd, roomIncidentsOf, studyBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentFeed } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
@@ -218,12 +219,14 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
         }
         if (!roomId) { if (!cancel) { setRoomSchedule(null); setSchedErr(false); } return; }
         const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
-        if (roomRes.error) throw roomRes.error; // без графіка кабінету сітка тихо повернулась би до хардкоду 08–18
-        /* Рядка немає — це НЕ «графіка немає»: maybeSingle() віддає {data:null,
-           error:null}, коли кабінет невидимий за RLS або вже видалений, і сітка
-           так само мовчки відкотилась би до хардкоду. */
-        if (!roomRes.data) throw new Error("room schedule row not readable");
-        if (!cancel) { setRoomSchedule((roomRes.data as { schedule?: unknown }).schedule ?? null); setSchedErr(false); }
+        /* Обидві причини незнання (помилка і відсутній рядок) розрізняє
+           `readRoomScheduleRow`. Раніше це правило жило тут інлайном — і саме
+           тому в `BookingModal`, `ReferralPortal`, кнопці швидкого переносу і
+           СЕРВЕРНОМУ гейті його просто забули (U-13, с49). Одна реалізація,
+           перепис місць виклику — у tests/roomScheduleRead. */
+        const sched = readRoomScheduleRow(roomRes);
+        if (!sched.known) throw roomScheduleReadError(sched.reason);
+        if (!cancel) { setRoomSchedule(sched.schedule); setSchedErr(false); }
       } catch {
         /* Транзієнтний збій (оновлення токена / мережа) — модаль не рушимо, але й
            сітку не малюємо: графік кабінету невідомий. Прочитане ОБНУЛЯЄМО: дата

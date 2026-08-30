@@ -26,6 +26,7 @@ import {
   roomScheduleFor, effectiveRoomBreaks, offScheduleKind, OFF_SCHED_GRACE_MIN,
   type DayOverride, type OffScheduleInfo, type Break, type EffectiveRoomSchedule,
 } from "@/lib/schedule";
+import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { slotToMin, type BusySpan } from "@/lib/slots";
 import { SLOT_FREE_STATUSES, slotClashIn } from "@/lib/slotOccupancy";
 import {
@@ -302,8 +303,25 @@ async function scheduleGate(
      і ГАРД ПРОПУСКАВ запис у кабінет, який насправді зачинений. Кидаємо —
      виклик у write-екшені впаде в SCHED_READ_ERR, і запис НЕ створиться
      (fail-closed: краще «спробуйте ще раз», ніж пацієнт у зачиненому кабінеті). */
-  const { data: room, error: roomErr } = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
-  if (roomErr) throw roomErr;
+  /* ⚠️ U-13 (с49): гілка вище закривала лише ПОМИЛКУ, а `room?.schedule ?? null`
+     пропускав ДРУГУ причину незнання — порожній рядок (кабінет невидимий за
+     RLS 0139 або видалений). Тоді `roomScheduleFor` брав хардкод 08:00–18:00, і
+     гард вирішував «поза графіком чи ні» за вигаданими годинами — рівно те,
+     чого коментар вище обіцяв не допускати. А за тим самим коментарем графік у
+     БД не enforce'иться взагалі, тож для «після кінця дня» цей гард — ЄДИНИЙ
+     рубіж, і мовчазний дефолт тут дорожчий, ніж будь-де в UI.
+
+     ⚠️ ЧЕСНО ПРО ДОСЯЖНІСТЬ (перевірено, а не припущено): шлях НАПРАВНИКА цим
+     не ламається — `createReferralBooking` ще до гарда відсіює чужий кабінет
+     через `grantAllowsRoom` (дзеркало `auth_referrer_can_book_room`), а грант і
+     видимість узгоджені. Персонал бачить усі кабінети своєї клініки. Отже
+     сьогодні дірка ЛАТЕНТНА: реально в неї потрапляє хіба кабінет, видалений
+     між відкриттям форми і збереженням. Правимо саме тому, що гард єдиний:
+     «невідомо» мусить бути відмовою за побудовою, а не завдяки сусідній
+     перевірці, яку завтра перепишуть. */
+  const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+  const sched0 = readRoomScheduleRow(roomRes);
+  if (!sched0.known) throw roomScheduleReadError(sched0.reason);
   const { data: ov, error: ovErr } = await supabase
     .from("schedule_overrides").select("all_closed, label, rooms")
     .eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
@@ -312,8 +330,8 @@ async function scheduleGate(
   const day = new Date(scheduledDate + "T00:00:00");
   if (isNaN(day.getTime())) return null;
   const override = (ov as unknown as DayOverride) || null;
-  const sched = roomScheduleFor(day, roomId, override, room?.schedule ?? null);
-  const breaks = effectiveRoomBreaks(day, roomId, room?.schedule ?? null, override);
+  const sched = roomScheduleFor(day, roomId, override, sched0.schedule);
+  const breaks = effectiveRoomBreaks(day, roomId, sched0.schedule, override);
   const [h, m] = String(scheduledTime).split(":").map(Number);
   return offScheduleKind((h || 0) * 60 + (m || 0), durationMin || 30, sched, breaks);
 }
@@ -431,7 +449,15 @@ async function scheduleBlock(
   let info: OffScheduleInfo | null;
   try {
     info = await scheduleGate(supabase, roomId, clinicId, scheduledDate, scheduledTime, durationMin);
-  } catch {
+  } catch (e) {
+    /* ⚠️ Ревʼю U-13: `catch {}` без біндера ковтав ПРИЧИНУ, і док-коментар
+       `roomScheduleReadError` («причина видима в логах») на головному
+       серверному шляху був неправдою — у лог не йшло нічого. Розрізняти
+       «мережа впала» і «кабінету більше немає» потрібно саме тут: перше
+       лікується повтором, друге — ніколи. Текст користувачу поки СПІЛЬНИЙ
+       (розділення формулювань — продуктове рішення, борг U-50). */
+    logError({ event: "schedule.gate", errorCode: "sched_read_failed",
+      entityId: roomId, message: e instanceof Error ? e.message : String(e) });
     return { blocked: SCHED_READ_ERR };
   }
   if (!info) return { blocked: null, offSchedule: false };   // у межах графіка
@@ -2174,8 +2200,10 @@ async function roomDayCtx(
   clinicId: string,
   date: string
 ): Promise<{ sched: EffectiveRoomSchedule; breaks: Break[] }> {
-  const { data: room, error: roomErr } = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
-  if (roomErr) throw roomErr;
+  /* U-13: те саме, що в offScheduleInfo — порожній рядок теж «не знаємо». */
+  const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
+  const sched0 = readRoomScheduleRow(roomRes);
+  if (!sched0.known) throw roomScheduleReadError(sched0.reason);
   const { data: ov, error: ovErr } = await supabase
     .from("schedule_overrides").select("all_closed, label, rooms")
     .eq("clinic_id", clinicId).eq("override_date", date).maybeSingle();
@@ -2184,8 +2212,8 @@ async function roomDayCtx(
   const day = new Date(date + "T00:00:00");
   const override = (ov as unknown as DayOverride) || null;
   return {
-    sched: roomScheduleFor(day, roomId, override, room?.schedule ?? null),
-    breaks: effectiveRoomBreaks(day, roomId, room?.schedule ?? null, override),
+    sched: roomScheduleFor(day, roomId, override, sched0.schedule),
+    breaks: effectiveRoomBreaks(day, roomId, sched0.schedule, override),
   };
 }
 
@@ -2452,7 +2480,10 @@ export async function applyDelayPlan(raw: {
     let info: OffScheduleInfo | null;
     try {
       info = await scheduleGate(supabase, roomId, prof.clinic_id, date, it.to, durById.get(it.id) ?? 30);
-    } catch {
+    } catch (e) {
+      // Причина в лог — дзеркало scheduleBlock (ревʼю U-13).
+      logError({ event: "schedule.gate", errorCode: "sched_read_failed",
+        entityId: roomId, message: e instanceof Error ? e.message : String(e) });
       return SCHED_READ_ERR;   // fail-closed
     }
     // Обидва хелпери завжди повертають ok:false, але їх тип — ширший QueueActionResult

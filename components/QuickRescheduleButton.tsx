@@ -13,6 +13,7 @@
 import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFromFeed, roomBreaksFromFeed, overridesUnknown, overrideOn, type OverrideFeed, type Break } from "@/lib/schedule";
+import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { incidentEffectiveEnd, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, wallInstant, type IncidentFeed } from "@/lib/incidents";
 import { firstFittingSlot, slotToMin, type BusySpan } from "@/lib/slots";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
@@ -67,8 +68,12 @@ export default function QuickRescheduleButton({ entry, clinicTz, date, overrides
       try {
         const supabase = createClient();
         const schedRes = await supabase.from("rooms").select("id, schedule").eq("id", roomId).maybeSingle();
-        if (schedRes.error) throw schedRes.error;
-        const schedule = (schedRes.data as { schedule?: unknown } | null)?.schedule ?? null;
+        /* U-13: сама лише перевірка `error` пропускала ПОРОЖНІЙ рядок (кабінет
+           невидимий за RLS 0139 або видалений) — і кнопка радила час за хардкодом
+           «Пн–Сб 08:00–18:00» замість справжнього графіка. Правило спільне. */
+        const read = readRoomScheduleRow(schedRes);
+        if (!read.known) throw roomScheduleReadError(read.reason);
+        const schedule = read.schedule;
         /* Недосяжно, поки живий ранній гейт (той самий фід, те саме замикання) —
            розтяжка на випадок, якщо його колись приберуть; так само, як із
            простоями нижче. */
