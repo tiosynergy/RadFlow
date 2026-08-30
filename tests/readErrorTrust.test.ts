@@ -37,6 +37,9 @@ import { resolve } from "path";
 import { codeOf } from "./helpers/codeOf";
 import { readRoomModality, modalityVerdict } from "@/lib/studies";
 import { readRow } from "@/lib/readRow";
+/* U-57: довіра сканера до правил `lib/roomSchedule.ts` перевіряється ВИКЛИКОМ,
+   а не регуляркою по тексту того файла. */
+import { readRoomScheduleRow, roomSchedulesById } from "@/lib/roomSchedule";
 
 const src = (p: string) => codeOf(readFileSync(resolve(process.cwd(), p), "utf8"));
 
@@ -366,19 +369,65 @@ describe("Сканер: кожне читання rooms/schedule_overrides ди�
    довіряють. Без цього тесту четверта форма — дірка: назви функцію потрібним
    іменем, і сканер замовкне (клас «сторож пінить ІМʼЯ», урок с46). */
 describe("Правило, якому делегує сканер, справді дивиться на error", () => {
-  const rule = src("lib/roomSchedule.ts");
+  /* ⚠️ U-57 (с49): усі перевірки цього блоку — ВИКЛИКОМ. Раніше два правила з
+     `lib/roomSchedule.ts` пінились регулярками по тексту файла, і це був борг з
+     двох боків одночасно. Такий пін НЕ ловить дефект: `if (res.error != null)`,
+     інший порядок гілок, винесення умови в хелпер — усе це проходить повз
+     регулярку або, навпаки, червонить її на правці БЕЗ дефекту (перенос рядка,
+     перейменування параметра). Тобто сторож був чутливий рівно до того, до чого
+     не мав, і сліпий до того, заради чого стояв.
+     Глибоке покриття цих правил живе у власному файлі
+     `tests/roomScheduleRead.test.ts` (там і арність, і межі, і спискова форма).
+     ТУТ потрібне інше й вужче: сканер РОЗДАЄ ДОВІРУ за іменем із `RULES`, і
+     кожне таке імʼя мусить бути підперте поведінкою САМЕ в точці роздачі —
+     інакше досить дописати нове імʼя в перелік, і воно дістане пропуск задарма. */
 
-  it("readRoomScheduleRow перевіряє .error", () => {
-    expect(rule).toMatch(/if \(res\.error\) return \{ known: false, reason: "error" \};/);
+  it("readRoomScheduleRow: помилка і ВІДСУТНІЙ рядок — обидва не значення", () => {
+    expect(readRoomScheduleRow({ data: null, error: { message: "x" } }))
+      .toEqual({ known: false, reason: "error" });
+    /* Друга половина — те, чого сама перевірка `error` не ловить: RLS віддає
+       0 рядків БЕЗ помилки (заміряно на проді, U-13). */
+    expect(readRoomScheduleRow({ data: null, error: null }))
+      .toEqual({ known: false, reason: "missing" });
+    expect(readRoomScheduleRow(undefined)).toEqual({ known: false, reason: "error" });
+    /* І межа, без якої правило було б надто суворим: рядок є, `schedule` = null —
+       це ЗНАЄМО (кабінет без власного графіка), а не незнання. */
+    expect(readRoomScheduleRow({ data: { schedule: null }, error: null }))
+      .toEqual({ known: true, schedule: null });
   });
 
-  it("…і окремо ПОРОЖНІЙ рядок — те, чого сама перевірка error не ловить", () => {
-    expect(rule).toMatch(/if \(!res\.data\) return \{ known: false, reason: "missing" \};/);
+  it("roomSchedulesById: помилка і НЕПОВНА відповідь — обидві не значення", () => {
+    expect(roomSchedulesById({ data: null, error: { message: "x" } }, ["a"]))
+      .toEqual({ known: false, reason: "error" });
+    /* Найтихіша форма: кабінета просто немає у відповіді — ні помилки, ні null.
+       ⚠️ Зразок підібраний так, щоб РОЗРІЗНЯТИ перевірку по ключах і по
+       довжині (фальсифікація N05): запитано `a` і `c`, прийшли `a` і `b` —
+       довжини збігаються (2 = 2), а `c` втрачено. Перша редакція брала
+       `["a","b"]` проти одного рядка, і підміна ключів довжиною лишалась тут
+       ЗЕЛЕНОЮ: сканер і далі довіряв би правилу, яке звітує «знаємо» на
+       неповних даних. */
+    expect(roomSchedulesById(
+      { data: [{ id: "a", schedule: null }, { id: "b", schedule: null }], error: null },
+      ["a", "c"],
+    ), "чужий рядок замаскував відсутній кабінет — довіра сканера стала брехнею")
+      .toEqual({ known: false, reason: "missing" });
+    expect(roomSchedulesById({ data: [{ id: "a", schedule: 7 }], error: null }, ["a"]))
+      .toEqual({ known: true, byId: { a: 7 } });
   });
 
-  it("roomSchedulesById (спискова форма) перевіряє і error, і повноту", () => {
-    expect(rule).toMatch(/if \(!res \|\| res\.error\) return \{ known: false, reason: "error" \};/);
-    expect(rule).toMatch(/if \(!\(id in byId\)\) return \{ known: false, reason: "missing" \};/);
+  it("КОЖНЕ імʼя з переліку довіри підперте поведінкою тут", () => {
+    /* ⚠️ Пін, без якого решта блоку неповна: сканер довіряє ІМЕНАМ із `RULES`,
+       і додати туди нове імʼя — однорядкова правка, яка мовчки роздає пропуск
+       усім читанням, обгорнутим у нову функцію. Перелік перевірених правил
+       тримаємо поруч і звіряємо з джерелом довіри. */
+    const trusted = RULES.split("|");
+    const proven = [
+      "readRoomScheduleRow", "roomSchedulesById",
+      "readRoomModality", "modalityVerdict", "readRow",
+    ];
+    expect([...trusted].sort(),
+      "у RULES зʼявилось (або зникло) імʼя без поведінкової перевірки в цьому блоці")
+      .toEqual([...proven].sort());
   });
 
   /* U-18 (с49): правила з `lib/studies.ts`, яким сканер довіряє на шляху
@@ -387,9 +436,8 @@ describe("Правило, якому делегує сканер, справді
      червонили поведінкові тести в `roomModalityRead.test.ts`), зате червоніли
      б на `if (res.error != null)` чи переносі рядка — тобто на правці без
      дефекту. Довіра сканера має триматись на ПОВЕДІНЦІ.
-     ⚠️ Текстові піни для `lib/roomSchedule.ts` вище лишені як були: то чужий
-     пакет (U-13), і його поведінку стереже власний файл тестів. Переписати їх
-     тим самим способом — окремий борг **U-57**. */
+     ⚠️ Борг **U-57** («переписати текстові піни `lib/roomSchedule.ts` тим самим
+     способом») закритий: вони вище, і теж викликом. */
   it("readRoomModality: помилка і порожній рядок — це НЕ значення", () => {
     expect(readRoomModality({ data: null, error: { message: "x" } }).known).toBe(false);
     expect(readRoomModality({ data: { modality: "MRI" }, error: { message: "x" } }).known).toBe(false);
