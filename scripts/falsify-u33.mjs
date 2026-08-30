@@ -88,6 +88,13 @@ const M = [
   ["N20 ReferralPortal повернувся на предикат моменту", RP, NOSTART,
    "if (studyBlockedByFeed(incFeed, roomId, slotMs, slotDur)) return \"blocked\";",
    "if (slotBlockedByFeed(incFeed, roomId, slotMs)) return \"blocked\";"],
+  /* ── додано після ЖИВОЇ перевірки: сторож тултипа читав увесь файл ──────── */
+  ["N21 тултип сітки порталу знову літерал (тексти лишились у вердикті)", RP, TOOLTIP,
+   ": st === \"blocked\" ? blockedLabel(s)",
+   ": st === \"blocked\" ? \"Кабінет на ремонті/ТО\""],
+  ["N22 blockedLabel порталу завжди друкує літерал (привʼязка ціла)", RP, TOOLTIP,
+   "    if (cap > 0 && Number.isFinite(cap)) {",
+   "    if (false && cap > 0 && Number.isFinite(cap)) {"],
 ];
 
 const files = [...new Set(M.map((m) => m[1]))];

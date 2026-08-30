@@ -27,6 +27,23 @@ import { codeOf } from "./helpers/codeOf";
 const DAY = "2026-08-28";
 const at = (t: string) => wallInstant(DAY, t);
 
+/** Тіло названої функції за збігом дужок — щоб пінити те, що бачить оператор,
+ *  а не наявність рядка ДЕСЬ у файлі. Знадобилось після живої перевірки U-33:
+ *  у `ReferralPortal` потрібні тексти були в рядку-вердикті, а тултип сітки
+ *  лишався літералом — і сторож «файл містить текст» був зелений. */
+function bodyOf(code: string, fn: string): string {
+  const head = code.indexOf(`function ${fn}(`);
+  if (head < 0) return "";
+  const open = code.indexOf("{", head);
+  if (open < 0) return "";
+  let depth = 0;
+  for (let i = open; i < code.length; i++) {
+    if (code[i] === "{") depth++;
+    else if (code[i] === "}" && --depth === 0) return code.slice(open + 1, i);
+  }
+  return "";
+}
+
 /** Простій 12:00–14:00 у кабінеті r1. */
 const INC = (over: Partial<IncidentLike> = {}): IncidentLike => ({
   room_id: "r1",
@@ -200,16 +217,25 @@ describe("U-33: форми запису рахують ІНТЕРВАЛ, а не
   /* ⚠️ ТРИ файли, а не два (ревʼю пакета). У `ReferralPortal` — ВЛАСНА сітка
      слотів, а не лише модалки: у першій карті споживачів її не було, і дефект
      U-33 лишався б у направника цілком. */
-  const FORMS: Array<[file: string, call: RegExp, bind: RegExp]> = [
+  /* Четверта колонка — УМОВА гілки «дослідження заходить у простій» усередині
+     `blockedLabel`. Потрібна тому, що статичний сторож не бачить МЕРТВУ гілку:
+     знеструмити умову (`if (false && …)`) — і тултип завжди друкує літерал,
+     хоч потрібний текст лишається у файлі й у тілі функції. Пінити текст +
+     привʼязку тут недостатньо, і чесна межа цього названа в PR (борг U-47:
+     винести побудову тексту в `lib/` і перевіряти ПОВЕДІНКОЮ). */
+  const FORMS: Array<[file: string, call: RegExp, bind: RegExp, cross: RegExp]> = [
     ["components/BookingModal.tsx",
      /studyBlockedByFeed\(incidents, roomId, base, slotDur\)/,
-     /if \(slotBlockedByIncident\(s\)\) return "blocked";/],
+     /if \(slotBlockedByIncident\(s\)\) return "blocked";/,
+     /if \(cap !== undefined && Number\.isFinite\(cap\)\) \{/],
     ["components/RescheduleModal.tsx",
      /studyBlockedByFeed\(incidents, roomId, dt, dur\)/,
-     /if \(slotBlockedByIncident\(a\)\) return "blocked";/],
+     /if \(slotBlockedByIncident\(a\)\) return "blocked";/,
+     /if \(cap !== undefined && Number\.isFinite\(cap\)\) \{/],
     ["components/ReferralPortal.tsx",
      /studyBlockedByFeed\(incFeed, roomId, slotMs, slotDur\)/,
-     /if \(studyBlockedByFeed\(incFeed, roomId, slotMs, slotDur\)\) return "blocked";/],
+     /if \(studyBlockedByFeed\(incFeed, roomId, slotMs, slotDur\)\) return "blocked";/,
+     /if \(cap > 0 && Number\.isFinite\(cap\)\) \{/],
   ];
   const src = (p: string) => readFileSync(resolve(process.cwd(), p), "utf8");
 
@@ -245,20 +271,34 @@ describe("U-33: форми запису рахують ІНТЕРВАЛ, а не
       .not.toContain("slotBlockedByFeed");
   });
 
-  it.each(FORMS)("%s називає СПРАВЖНЮ причину в тултипі, а не «до відновлення»", (file) => {
+  it.each(FORMS)("%s називає СПРАВЖНЮ причину в тултипі, а не «до відновлення»", (file, _c, _b, cross) => {
     /* Старий `blockedLabel` шукав простій, що НАКРИВАЄ сам слот, і при
        `inc === undefined` друкував «Кабінет на ремонті/ТО · До відновлення».
        Після правки це рівно новий випадок — слот ПОЗА простоєм, а заблокований
        тим, що дослідження в нього заходить, — і старий текст називав причиною
        відсутність простою. Тултип тут не косметика: це єдине місце, де оператор
        дізнається, чому зелений слот став червоним. */
+    /* ⚠️ Перша версія цього сторожа читала ВЕСЬ файл — і була зеленою на
+       `ReferralPortal`, де обидва тексти жили в РЯДКУ-ВЕРДИКТІ, а тултип сітки
+       лишався літералом «Кабінет на ремонті/ТО». Знайшла це жива перевірка вже
+       після «зеленого» пакета: сторож пінив наявність рядка у файлі, а не те,
+       що бачить оператор, наводячись на слот. Тепер — ТІЛО функції тултипа
+       плюс сама привʼязка. */
     const code = codeOf(src(file));
-    expect(code, `${file}: тултип не пояснює перетин із простоєм`)
+    const label = bodyOf(code, "blockedLabel");
+    expect(label, `${file}: не знайдено тіло blockedLabel`).not.toBe("");
+    expect(label, `${file}: тултип не пояснює перетин із простоєм`)
       .toContain("заходить у простій кабінету з");
     /* Регістр першої літери різний: у модалках це початок другого рядка
        тултипа, у порталі — середина речення. Пінимо суть, а не оформлення. */
-    expect(code, `${file}: тултип не називає, скільки часу реально вільно`)
+    expect(label, `${file}: тултип не називає, скільки часу реально вільно`)
       .toMatch(/[Вв]ільно лише /);
+    expect(code, `${file}: тултип сітки для "blocked" — літерал, а не пояснення`)
+      .toMatch(/st === "blocked" \? blockedLabel\(s\)/);
+    /* І гілка, що друкує це пояснення, під струмом: інакше текст лишається в
+       тілі, а оператор його ніколи не побачить (мертва гілка). */
+    expect(label, `${file}: гілку «дослідження заходить у простій» знеструмлено`)
+      .toMatch(cross);
   });
 
   it("StudyEditModal (U-15) навпаки лишається на моменті — там слот НЕ обирають", () => {
