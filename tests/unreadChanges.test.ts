@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { codeOf } from "./helpers/codeOf";
 import {
   SURFACE_KEYS, FIELD_SCOPES, MARKER_ENTITY_TYPES, MARKER_SEVERITIES,
   indexMarkers, entityKey, fieldKey,
@@ -755,5 +756,231 @@ describe("U-30: крапка пояснює себе зрячому корист
       .toMatch(/const unreadLabel = dayUnread\.length \? `Є непрочитані зміни: \$\{dayUnread\.length\}` : null;/);
     expect(code, "поріг крапки на дні знову більший за одну позначку")
       .toMatch(/\{dayUnread\.length > 0 && <span className="cal-change"/);
+  });
+});
+
+/* ═══ 10. U-37 (с49): позначка не переживає сутність, на яку вказує ════════
+
+   Скарга власника: «обозначено непрочитанное изменение, но визуально найти
+   не могу». Заміряно в браузері: у сайдбарі «Дошка черги ①», міні-календар
+   веде на 29 серпня, на 29 серпня — НУЛЬ записів і жодної крапки в списку.
+   Позначка вказувала на queue_entry, видалений три хвилини по створенні;
+   ack у проєкті завжди привʼязаний до ВІДРЕНДЕРЕНОГО рядка, тож така
+   позначка не гаситься ніколи. Лікує міграція 0164 (мітла на DELETE).
+
+   ⚠️ Чому тут СКАНЕР, а не список: рівно цей дефект і народився з ручного
+   списку. 0131 завела девʼять типів сутностей, 0132/0133/0134/0138 додавали
+   емісії — і жодна не спитала, що буде, коли рядок видалять. Сканер читає
+   ЖИВІ визначення тригерів емісії і падає на типі, якого немає ні в мітлі,
+   ні у списку свідомих винятків. Той самий прийом, що readErrorTrust. */
+
+describe("U-37: мітла позначок покриває всі типи сутностей (0164)", () => {
+  const dir = resolve(process.cwd(), "supabase/migrations");
+  const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
+  const MIG = readFileSync(
+    resolve(dir, "0164_change_markers_purge_on_delete.sql"), "utf8");
+
+  /** Пари (тип сутності → таблиця), як їх звʼязує проводка 0164.
+   *  ⚠️ Спершу МАСИВ, потім Map: `Map` схлопує дублі, тож два однакові
+   *  `create trigger` (типова копіпаста при додаванні шостої таблиці) дали б
+   *  зелений `toEqual` із пʼятьма парами (ревʼю). */
+  const pairs = [...MIG.matchAll(
+    /create trigger trg_zzz_markers_purge\s+after delete on public\.(\w+)\s+for each row execute function public\.tg_change_markers_purge\('(\w+)'\)/g,
+  )].map((m) => [m[2], m[1]] as [string, string]);
+  const wiring = new Map<string, string>(pairs);
+
+  /** ЖИВЕ джерело сторожа: остання міграція, що передруковує invariants_check
+   *  (0164 → 0165 → …). Пін по конкретному файлу стеріг би мертвий текст. */
+  const guardSrc = (): { fn: string; file: string } => {
+    let best = { fn: "", file: "" };
+    for (const f of files) {
+      const txt = readFileSync(resolve(dir, f), "utf8");
+      const at = txt.indexOf("create or replace function public.invariants_check");
+      if (at < 0) continue;
+      const end = txt.indexOf("\n$function$;", at);
+      expect(end, `${f}: не знайшли кінець тіла invariants_check`).toBeGreaterThan(at);
+      best = { fn: txt.slice(at, end), file: f };
+    }
+    return best;
+  };
+
+  /** Свідомі винятки — з причиною. Порожній рядок причини не приймається. */
+  const ACCEPTED_WITHOUT_PURGE: Record<string, string> = {
+    referral_access:
+      "DELETE-гілка tg_change_markers_access емітить позначку НАВМИСНО; " +
+      "мітла знищила б новину. Борг U-38 — перенести якір на сутність, " +
+      "що переживає видалення (як зроблено для послуг).",
+  };
+
+  /** ЖИВЕ тіло кожного тригера емісії: перемагає ОСТАННЯ міграція, що його
+      визначає (0132 → 0133 → 0134 → 0138 перевипускають одні й ті самі
+      функції; пін по конкретному файлу стеріг би мертвий текст — урок с47). */
+  function liveEmitters(): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const f of files) {
+      const txt = readFileSync(resolve(dir, f), "utf8");
+      for (const m of txt.matchAll(
+        /create (?:or replace )?function public\.(tg_change_markers_\w+)\s*\(/g)) {
+        const at = m.index as number;
+        const ends = ["\n$$;", "\n$function$;", "\n$fn$;"]
+          .map((e) => txt.indexOf(e, at)).filter((i) => i > at);
+        /* ⚠️ НЕ `continue` (ревʼю): нерозпізнаний долар-тег означав би, що
+           емітер тихо випав зі сканера — а разом із ним і його типи. Саме так
+           сканер проти U-37 сам відтворив би U-37. Падаємо голосно. */
+        expect(ends.length, `${f}: тіло ${m[1]} не розпізнане — новий долар-тег?`)
+          .toBeGreaterThan(0);
+        out.set(m[1], txt.slice(at, Math.min(...ends)));
+      }
+    }
+    return out;
+  }
+
+  it("проводка 0164 — рівно пʼять пар (тип → таблиця), без дублів і чужих аргументів", () => {
+    expect(pairs.length, "у файлі не пʼять create trigger — дубль або зайвий").toBe(5);
+    expect([...wiring.entries()].sort()).toEqual([
+      ["incident", "incidents"],
+      ["patient_case", "patient_cases"],
+      ["queue_entry", "queue_entries"],
+      ["room", "rooms"],
+      ["waitlist_entry", "waitlist_entries"],
+    ]);
+  });
+
+  it("КОЖЕН тип сутності, який хтось емітить, або має мітлу, або записаний у винятки", () => {
+    const emitters = liveEmitters();
+    const emitted = new Set<string>();
+    for (const [name, body] of emitters) {
+      if (name === "tg_change_markers_purge") continue;
+      for (const m of body.matchAll(/p_entity_type\s*=>\s*'(\w+)'/g)) emitted.add(m[1]);
+    }
+    /* ⚠️ Антитавтологія: не «>= 5», а ТОЧНИЙ набір (ревʼю). Поріг дозволяв
+       безслідно втратити цілий емітер: досить, щоб один із них випав із
+       розбору, — і його новий тип поїхав би в БД без мітли, тобто U-37 під
+       сторожем проти U-37. Зʼявився новий тип — цей рядок треба змінити
+       СВІДОМО, і тоді ж вирішити, дати йому мітлу чи виняток. */
+    expect([...emitted].sort(), "набір типів, що емітяться, змінився")
+      .toEqual(["incident", "patient_case", "queue_entry", "referral_access",
+                "room", "waitlist_entry"]);
+    const uncovered = [...emitted]
+      .filter((t) => !wiring.has(t) && !(t in ACCEPTED_WITHOUT_PURGE))
+      .sort();
+    expect(uncovered,
+      "новий тип сутності емітиться, але позначку не прибирають при видаленні рядка")
+      .toEqual([]);
+  });
+
+  it("виняток без причини і без номера боргу не приймається, і не протухає", () => {
+    const emitters = liveEmitters();
+    const emitted = new Set<string>();
+    for (const [name, body] of emitters) {
+      if (name === "tg_change_markers_purge") continue;
+      for (const m of body.matchAll(/p_entity_type\s*=>\s*'(\w+)'/g)) emitted.add(m[1]);
+    }
+    for (const [k, why] of Object.entries(ACCEPTED_WITHOUT_PURGE)) {
+      /* Довжина — не причина (ревʼю): «розберемось якось пізніше» теж довге.
+         Вимагаємо НОМЕР БОРГУ — тоді виняток має адресу, а не настрій. */
+      expect(why, `виняток ${k} без номера боргу (U-nn)`).toMatch(/\bU-\d+\b/);
+      expect(why.length, `виняток ${k} без пояснення`).toBeGreaterThan(40);
+      /* І виняток не сміє протухнути: коли борг закриють і тип дістане мітлу,
+         запис тут має зникнути, інакше він мовчки послаблює сканер назавжди. */
+      expect(emitted.has(k), `виняток ${k} більше ніхто не емітить — прибрати`).toBe(true);
+      expect(wiring.has(k), `виняток ${k} уже має мітлу — прибрати з винятків`).toBe(false);
+    }
+  });
+
+  it("мітла фільтрує по ДВОХ колонках і не питає прапорця", () => {
+    const at = MIG.indexOf("create or replace function public.tg_change_markers_purge");
+    expect(at, "у 0164 немає функції мітли").toBeGreaterThan(-1);
+    /* ⚠️ ВСІ асерти читають КОД, а не текст (ревʼю): у тілі мітли стоїть
+       коментар, який ПОЯСНЮЄ, чому прапорця немає і чому фільтр по двох
+       колонках, — наївний `.not.toContain` червонів на власному поясненні
+       (спіймано першим прогоном), а позитивні асерти симетрично
+       «підтверджувались» би прозою після видалення коду. */
+    const sqlCode = (s: string) => codeOf(s).replace(/--[^\n]*/g, " ");
+    const body = sqlCode(MIG.slice(at, MIG.indexOf("\n$fn$;", at)));
+    /* Мутація «прибрати entity_id = old.id» лишає смоук/1..3 зеленими і зносить
+       позначки УСІХ записів того ж типу — сторожимо обидві половини умови. */
+    expect(body, "загублено фільтр по типу сутності")
+      .toMatch(/entity_type\s*=\s*tg_argv\[0\]/);
+    expect(body, "загублено фільтр по рядку — мітла знесе позначки всіх сутностей типу")
+      .toMatch(/entity_id\s*=\s*old\.id/);
+    expect(body, "мітла під прапорцем: вимкнена емісія лишала б вічні сироти")
+      .not.toContain("change_markers_enabled");
+    /* DELETE іде повз RLS лише від власника функції. */
+    const head = MIG.slice(at, at + 400);
+    expect(head).toContain("security definer");
+    expect(head).toMatch(/set search_path = public, pg_temp/);
+  });
+
+  it("разова чистка покриває ті самі пʼять типів, що й проводка", () => {
+    const at = MIG.indexOf("delete from public.user_change_markers m");
+    expect(at, "у 0164 немає разової чистки сиріт").toBeGreaterThan(-1);
+    const stmt = MIG.slice(at, MIG.indexOf(";", at));
+    expect(wiring.size, "проводка не розібралась — цикл нижче був би порожній").toBe(5);
+    for (const [type, tbl] of wiring) {
+      expect(stmt, `чистка не знає типу ${type}`).toContain(`m.entity_type = '${type}'`);
+      expect(stmt, `чистка не звіряється з таблицею ${tbl}`).toContain(`public.${tbl}`);
+    }
+  });
+
+  it("сторож дізнався про мітлу: 14-та перевірка на місці і стереже ОБИДВІ половини", () => {
+    /* ⚠️ Читаємо ОСТАННІЙ передрук, а не 0164: 0165 перевипустив сторожа, і
+       пін по 0164 стеріг би мертвий текст (урок с47). */
+    const { fn, file } = guardSrc();
+    expect(file, "жодна міграція не передруковує invariants_check").not.toBe("");
+    expect(wiring.size, "проводка не розібралась — решта асертів стала б порожньою").toBe(5);
+    /* Рахуємо кроки, а не шукаємо підрядок: перевірку можна «додати» так, що
+       вона нікуди не потрапить (лічильник не зріс) — і сторож мовчатиме. */
+    expect((fn.match(/v_n := v_n \+ 1;/g) || []).length,
+      `${file}: у передрукованому сторожі не 14 перевірок`).toBe(14);
+    expect(fn, "перевірка є, а результат нікуди не кладеться")
+      .toContain("'check', 'ucm_orphan_markers'");
+    /* ПРОВОДКА. ⚠️ Сторож мусить звіряти ПАРУ (таблиця, аргумент) і AFTER
+       DELETE, а не саме лише імʼя тригера (0165, ревʼю 0164): тригер із чужим
+       аргументом виглядає живим і не робить нічого — цю мутацію ловив смоук,
+       а щодобовий сторож пропускав. */
+    expect(fn, "сторож не перевіряє проводку").toContain("'bad_trigger:' || t.tbl");
+    expect(fn, "сторож не звіряє аргумент тригера")
+      .toContain("tg_change_markers_purge(''' || t.arg || ''')");
+    expect(fn, "сторож не звіряє тип події тригера").toContain("AFTER DELETE");
+    for (const [type, tbl] of wiring) {
+      expect(fn, `сторож не питає про пару ${tbl}/${type}`)
+        .toContain(`('${tbl}', '${type}')`);
+      /* НАСЛІДОК: по одній гілці на кожен тип. */
+      expect(fn, `сторож не рахує сиріт типу ${type}`).toContain(`'orphan:${type}:'`);
+    }
+    /* ⚠️ 0165: гілка room звужена КЛІНІКОЮ. `p_entity_id => coalesce(room_id,
+       clinic_id)` означає, що для послуги рівня клініки якір — id КЛІНІКИ;
+       без цього рядка сторож червонів би на штатній правці каталогу, а разова
+       чистка видаляла б живі позначки. */
+    const roomBranch = fn.slice(fn.indexOf("'orphan:room:'"));
+    expect(roomBranch, "гілка room не знає про клінічний якір каталогу")
+      .toContain("public.clinics x where x.id = m.entity_id");
+  });
+
+  it("смоук 0164 живий, і його перший крок звіряє саме пару (таблиця, аргумент)", () => {
+    const smoke = readFileSync(
+      resolve(process.cwd(), "supabase/smoke/change_markers_purge_smoke.sql"), "utf8");
+    expect(wiring.size, "проводка не розібралась — асерти нижче стали б порожніми").toBe(5);
+    /* ⚠️ Пара перевіряється ОДНИМ рядком (ревʼю): дві незалежні підрядки
+       лишались зеленими, якщо у смоуку поміняти аргументи місцями
+       (`('incidents','room')` + `('rooms','incident')`) — тобто смоук звіряв
+       би чужі пари при зеленому сторожі. Пробіли нормалізуємо. */
+    const flat = smoke.replace(/[ \t]+/g, " ");
+    for (const [type, tbl] of wiring) {
+      expect(flat, `смоук не знає пари ${tbl}/${type}`).toContain(`('${tbl}', '${type}')`);
+    }
+    expect(smoke, "смоук не звіряє аргумент тригера")
+      .toContain("tg_change_markers_purge('''");
+    expect(smoke, "смоук не робить живого пострілу").toContain("delete from public.incidents");
+    /* Негативний контроль (крок 7) — без нього крок 6 доводив би лише
+       «зелене дорівнює зеленому». */
+    expect(smoke, "смоук утратив негативний контроль сторожа")
+      .toContain("сирота є, а сторож мовчить");
+    expect(smoke, "смоук не перевіряє клінічний якір каталогу (правка 0165)")
+      .toContain("клінічний якір каталогу порахований сиротою");
+    /* Успіх мусить бути ВИДИМИМ: execute_sql не повертає notice. */
+    expect(smoke, "успіх смоука невидимий — потрібен SMOKE_OK через exception")
+      .toMatch(/raise exception 'SMOKE_OK/);
   });
 });

@@ -44,8 +44,9 @@ begin
   --    червоно — міграція зламала інваріант, який стереже 0154+.
   --    Дельта-канон с39: між накатом і db:gate законно шумить ЛИШЕ ledger_md5.
   v_res := public.invariants_check(false);
-  if (v_res ->> 'checked')::int is distinct from 12 then
-    raise exception 'SMOKE_FAIL a: checked=% (очікував 12)', v_res ->> 'checked';
+  -- ⚠️ 0161 підняв 12 → 13, 0164 — 13 → 14 (ucm_orphan_markers).
+  if (v_res ->> 'checked')::int is distinct from 14 then
+    raise exception 'SMOKE_FAIL a: checked=% (очікував 14)', v_res ->> 'checked';
   end if;
   select string_agg(f ->> 'check', ',') into v_txt
     from jsonb_array_elements(v_res -> 'failed') f

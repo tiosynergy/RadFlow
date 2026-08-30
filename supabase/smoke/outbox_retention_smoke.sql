@@ -53,8 +53,9 @@ begin
   v_done := v_done || ' a';
 
   -- b: перевірок рівно 12 (0157: 11)
-  if (v_base ->> 'checked')::int is distinct from 12 then
-    raise exception 'SMOKE_FAIL b: checked=% (очікував 12)', v_base ->> 'checked';
+  -- ⚠️ 0161 підняв 12 → 13, 0164 — 13 → 14 (ucm_orphan_markers).
+  if (v_base ->> 'checked')::int is distinct from 14 then
+    raise exception 'SMOKE_FAIL b: checked=% (очікував 14)', v_base ->> 'checked';
   end if;
   v_done := v_done || ' b';
 
