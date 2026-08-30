@@ -90,13 +90,13 @@ begin
   end;
   v_done := v_done || ' d';
 
-  -- ── e: сторож рахує 14 перевірок ──
+  -- ── e: сторож рахує 15 перевірок ──
   v_res := public.invariants_check(p_write => false);
   -- ⚠️ 0164 підняв 13 → 14 (ucm_orphan_markers), 0165 перевипустив ту саму
-  --    перевірку. Число живе у ВОСЬМИ смоуках — сторож узгодженості:
-  --    tests/invariantsCheckedPins.test.ts.
-  if (v_res ->> 'checked')::int is distinct from 14 then
-    raise exception 'SMOKE_FAIL e: checked = %, очікував 14', v_res ->> 'checked';
+  --    перевірку, 0166 — 14 → 15 (priv_drift). Число живе у ДЕВʼЯТИ смоуках —
+  --    сторож узгодженості: tests/invariantsCheckedPins.test.ts.
+  if (v_res ->> 'checked')::int is distinct from 15 then
+    raise exception 'SMOKE_FAIL e: checked = %, очікував 15', v_res ->> 'checked';
   end if;
   v_done := v_done || ' e';
 
@@ -145,11 +145,13 @@ begin
     from pg_proc
    where proname = 'invariants_check'
      and pronamespace = 'public'::regnamespace;
-  -- ⚠️ Пін перезнято після 0165 (0161: 935bdd06…, 0164: d8d22ff4…).
-  --    Кожен передрук сторожа міняє це число — знімати ЖИВИМ запитом після
-  --    накату, а не переписувати навмання.
-  if v_txt is distinct from 'f422cce02dc20d1745828a2cf2b1d2e5' then
-    raise exception 'SMOKE_FAIL g: md5 тіла invariants_check = %, очікував f422cce0… (передрук розійшовся)', v_txt;
+  -- ⚠️ Пін перезнято після 0167 (0161: 935bdd06…, 0164: d8d22ff4…, 0165: f422cce0…,
+  --    0166: bc10f4e5…). Кожен передрук сторожа міняє це число — знімати ЖИВИМ
+  --    запитом після накату, а не переписувати навмання.
+  --    Значення 12cf23fe… звірено двічі: живим запитом до прод І незалежним
+  --    розбором тіла з файлу 0167 (сирий md5 тіла 8203acc9… збігся з prosrc).
+  if v_txt is distinct from '12cf23fe529a7f80658e73acca2cf8b9' then
+    raise exception 'SMOKE_FAIL g: md5 тіла invariants_check = %, очікував 12cf23fe… (передрук розійшовся)', v_txt;
   end if;
   v_done := v_done || ' g';
 

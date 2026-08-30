@@ -167,8 +167,8 @@ begin
         p_write => false: слід у maintenance_runs від смоуку не потрібен.
         `ok` тут НЕ звіряємо: до `npm run db:gate` чесно горить ledger_md5. */
   v_res := public.invariants_check(false);
-  if (v_res ->> 'checked')::int is distinct from 14 then
-    raise exception 'СМОУК 0164/6: сторож дає % перевірок замість 14', v_res ->> 'checked'; end if;
+  if (v_res ->> 'checked')::int is distinct from 15 then
+    raise exception 'СМОУК 0164/6: сторож дає % перевірок замість 15', v_res ->> 'checked'; end if;
   if exists (select 1 from jsonb_array_elements(v_res -> 'failed') f
               where f ->> 'check' = 'ucm_orphan_markers') then
     raise exception 'СМОУК 0164/6: сторож червоний саме на ucm_orphan_markers: %',
