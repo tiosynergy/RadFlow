@@ -18,7 +18,7 @@ import {
   roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, offScheduleKind, OFF_SCHED_GRACE_MIN,
   type DayOverride,
 } from "@/lib/schedule";
-import { incidentEffectiveEnd, roomIncidentsOf, slotBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentFeed } from "@/lib/incidents";
+import { incidentDurCapMin, incidentEffectiveEnd, roomIncidentsOf, studyBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentFeed } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { BUFFER_DEFAULT, normBuffer, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
@@ -263,10 +263,13 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const incidentsFailed = roomIncidents === null;
   const roomIncident = roomIncidents ? roomIncidents[0] : undefined;
   function slotBlockedByIncident(slotMin: number) {
-    // «Невідомо → заблоковано» — у lib/incidents (slotBlockedByFeed), спільне з
+    // «Невідомо → заблоковано» — у lib/incidents (studyBlockedByFeed), спільне з
     // BookingModal: саме на цій гілці дві модалки колись розійшлися.
+    /* ⚠️ U-33: питання про ДОСЛІДЖЕННЯ (старт + тривалість), а не про момент —
+       дзеркало діапазонів серверного `check_not_during_incident`. Без буфера:
+       гард рахує рівно `duration_min`. */
     const dt = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(slotMin / 60), slotMin % 60);
-    return slotBlockedByFeed(incidents, roomId, dt);
+    return studyBlockedByFeed(incidents, roomId, dt, dur);
   }
   // 0077: персоналу сітка добудовується на 2 год за кінець графіка (є що клікати);
   // направнику — рівно як раніше, по графіку.
@@ -326,7 +329,21 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
     const dt = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60);
     if (roomIncidents === null) return "Дані про простої кабінету не завантажились";
     const inc = roomIncidents.find((i) => dt >= new Date(i.started_at).getTime() && dt < incidentEffectiveEnd(i));
-    const until = inc?.blocked_until ? new Date(inc.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : null;
+    /* ⚠️ U-33 (дзеркало BookingModal): слот може бути ПОЗА простоєм, а
+       заблокований тим, що дослідження в нього ЗАХОДИТЬ. Старий текст брав
+       «До відновлення» з `inc === undefined`, тобто з ВІДСУТНОСТІ простою —
+       і називав причиною те, що причиною не є. */
+    if (!inc) {
+      const cap = incidentDurCapMin(incidents, roomId, dt);
+      if (cap !== undefined && Number.isFinite(cap)) {
+        // `% 1440` — див. пояснення-дзеркало в BookingModal: «24:10» не буває.
+        return "Дослідження (" + dur + " хв) заходить у простій кабінету з "
+          + fmt((a + cap) % 1440) + "\nВільно лише " + cap + " хв — скоротіть дослідження або оберіть інший час/кабінет";
+      }
+      // `cap === undefined` при непорожньому списку = не розпарсився started_at.
+      return "Дані про простої кабінету неповні — час позначено недоступним";
+    }
+    const until = inc.blocked_until ? new Date(inc.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : null;
     return "Кабінет на ремонті/ТО" + (until ? "\nДо " + until : "\nДо відновлення");
   }
   // Реальна місткість дня для цієї тривалості (жадібна укладка), а не к-сть 5-хв позицій.

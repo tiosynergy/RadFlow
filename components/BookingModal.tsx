@@ -13,7 +13,7 @@ import {
   roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, offScheduleKind, OFF_SCHED_GRACE_MIN,
   type DayOverride,
 } from "@/lib/schedule";
-import { incidentEffectiveEnd, roomIncidentsOf, slotBlockedByFeed, wallNow, wallMinOfDay, wallToday0, type IncidentFeed } from "@/lib/incidents";
+import { incidentDurCapMin, incidentEffectiveEnd, roomIncidentsOf, studyBlockedByFeed, wallNow, wallMinOfDay, wallToday0, type IncidentFeed } from "@/lib/incidents";
 
 /* ⚠️ Імена порівнюємо ТІЛЬКИ нормалізовано (trim + пробіли до одного): у БД
    живуть легасі-рядки з подвійними пробілами, а нові значення нормалізує
@@ -732,12 +732,16 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
   const roomIncidents = roomIncidentsOf(incidents, roomId);
   const incidentsFailed = roomIncidents === null;
   function slotBlockedByIncident(slotMin: number) {
-    /* Рішення «невідомо → заблоковано» живе в lib/incidents (slotBlockedByFeed),
+    /* Рішення «невідомо → заблоковано» живе в lib/incidents (studyBlockedByFeed),
        а не тут: тести цього проєкту компонентів не бачать, і правило, залишене
        в JSX, перевірялось би лише регуляркою. Сітка і так схована гейтом довіри
-       нижче — але жоден шлях не повинен мати змоги сказати «вільно» на незнанні. */
+       нижче — але жоден шлях не повинен мати змоги сказати «вільно» на незнанні.
+       ⚠️ U-33: питаємо про ДОСЛІДЖЕННЯ (старт + тривалість), а не про момент.
+       `slotBlockedByFeed` відповідав лише на «чи вільний цей момент», і запис,
+       що заходить у простій з-під його початку, сітка малювала вільним, а
+       сервер відхиляв. Тривалість — без буфера: гард рахує `duration_min`. */
     const base = Date.UTC(bookDate.getFullYear(), bookDate.getMonth(), bookDate.getDate(), Math.floor(slotMin / 60), slotMin % 60);
-    return slotBlockedByFeed(incidents, roomId, base);
+    return studyBlockedByFeed(incidents, roomId, base, slotDur);
   }
 
   /* 0077 — ПОРЯДОК ПЕРЕВІРОК ТУТ Є ЧАСТИНОЮ БЕЗПЕКИ.
@@ -819,7 +823,27 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
     const base = Date.UTC(bookDate.getFullYear(), bookDate.getMonth(), bookDate.getDate(), Math.floor(s / 60), s % 60);
     if (roomIncidents === null) return "Дані про простої кабінету не завантажились";
     const inc = roomIncidents.find((i) => base >= new Date(i.started_at).getTime() && base < incidentEffectiveEnd(i));
-    const until = inc?.blocked_until ? new Date(inc.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : null;
+    /* ⚠️ U-33: сам слот може бути ПОЗА простоєм, і заблокований він тим, що
+       дослідження в нього ЗАХОДИТЬ. Старий текст («Кабінет на ремонті/ТО · До
+       відновлення») у цьому випадку називав причиною те, що причиною не є, —
+       і «До відновлення» бралося з `inc === undefined`, тобто з відсутності
+       простою. Називаємо справжню причину і скільки часу реально вільно. */
+    if (!inc) {
+      const cap = incidentDurCapMin(incidents, roomId, base);
+      if (cap !== undefined && Number.isFinite(cap)) {
+        /* ⚠️ `% 1440` — сітка персоналу добудовується за кінець графіка (grace),
+           і початок нічного простою міг вийти «24:10» — час, якого не буває
+           (той самий урок, що `fmtDay` у StudyEditModal, U-20). */
+        return "Дослідження (" + slotDur + " хв) заходить у простій кабінету з "
+          + fmtMin((s + cap) % 1440) + "\nВільно лише " + cap + " хв — скоротіть дослідження або оберіть інший час/кабінет";
+      }
+      /* Сюди можна потрапити ЛИШЕ з `cap === undefined` при непорожньому списку
+         простоїв, тобто коли в якогось рядка не розпарсився `started_at`. Це
+         «не знаємо», і казати «на ремонті» тут означало б стверджувати те, чого
+         ми не знаємо (ревʼю пакета). */
+      return "Дані про простої кабінету неповні — час позначено недоступним";
+    }
+    const until = inc.blocked_until ? new Date(inc.blocked_until).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) : null;
     return "Кабінет на ремонті/ТО" + (until ? "\nДо " + until : "\nДо відновлення");
   }
   // Причина «не вміщується» — у тому ж порядку, що й перевірки в slotState.
@@ -900,7 +924,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
     // зі старими spans (зміна кабінету) свій же слот гасити не можна.
     if (busyFreshRef.current !== roomDateKey) return;
     /* U-11 / ревʼю р2 (F3): «зайняли» можна казати лише тоді, коли даним ВІРИМО.
-       При збої простоїв slotBlockedByFeed чесно блокує ВСІ слоти — і без цієї
+       При збої простоїв studyBlockedByFeed чесно блокує ВСІ слоти — і без цієї
        умови обраний (чи підставлений із prefill) час зникав би з повідомленням
        «⚡ Слот щойно зайняли», хоча його ніхто не займав: ми просто не змогли
        прочитати простої. Сітку й «Зберегти» гасить availMiss, тут же йдеться
@@ -1479,7 +1503,14 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                 const conflict = roomBusy.find((b) => s < b.e && b.s < eBlock);
                 return (
                   <div className={"bk-slot-confirm " + (blocked || conflict ? "bad" : "ok")}>
-                    {blocked ? <>⚠ Кабінет на ремонті/ТО у цей час — оберіть інший слот або день</>
+                    {/* U-33: причину бере ТА САМА функція, що й тултип сітки.
+                        Раніше тут стояв літерал «Кабінет на ремонті/ТО у цей
+                        час», і після переходу на інтервальний предикат він брехав
+                        рівно в новому випадку: слот поза простоєм, а заблокований
+                        тим, що дослідження в нього заходить. Ревʼю пакета
+                        показало, що правку зробили в тултипі й забули в
+                        постійно видимій панелі. */}
+                    {blocked ? <>⚠ {blockedLabel(time).replace(/\n/g, " · ")}</>
                       : conflict ? <>⚠ Перетин із записом {fmtMin(conflict.s)}–{fmtMin(conflict.e)} — оберіть інший слот</>
                       : <>✓ Слот вільний. Запис: <b>{time}–{fmtMin(e)}</b> ({slotDur} хв){buffer > 0 ? <> + буфер {buffer} хв (до {fmtMin(eBlock)})</> : null}.</>}
                   </div>
