@@ -21,7 +21,7 @@ management.
 ## Stack & structure
 - Next.js 15 (App Router) + Supabase (Postgres + RLS + Auth) + TypeScript + Tailwind.
 - All components are TypeScript `.tsx` (the earlier prototype `.jsx` were migrated; no `lib/*.js`).
-- ESLint is configured: flat config `eslint.config.mjs` (ESLint 9 / Next 15.5, lenient baseline); `npm run lint` == `eslint .`.
+- ESLint is configured: flat config `eslint.config.mjs` (ESLint 9 / Next 15.5). **Since s50 `npm run lint` == `eslint . --max-warnings 0`** — the baseline is clean (zero warnings), so a `warn`-level rule now fails the gate exactly like `error`. Before s50 `eslint .` exited 0 even with warnings, i.e. the check could not go red at all.
 - `app/` → routes + API route handlers (role-gated; see `middleware.ts` and `lib/supabase/middleware.ts`)
 - `components/` → React components
 - `lib/` → business logic + Supabase clients (`lib/supabase/{client,server,admin}.ts`)
@@ -156,8 +156,13 @@ management.
     Re-add a cron only when upgrading to Pro.
 
 ## Open work — the live list is `NEXT_SESSION_PROMPT.md` («ЧТО ДЕЛАТЬ ДАЛЬШЕ»)
-- Run `npm run typecheck` (== `tsc --noEmit`) and `npm run lint` (== `eslint .`). Note: bare `tsc`
-  is NOT on PATH — use `npx` or the npm script.
+- Run `npm run typecheck` (== `tsc --noEmit`) and `npm run lint` (== `eslint . --max-warnings 0`
+  since s50). Note: bare `tsc` is NOT on PATH — use `npx` or the npm script.
+- ⚠️ Neither of those gates the deploy. Measured in s50 with three mutations: a **type** error
+  fails `npm run build`, a **red test** does not (vitest is not part of `build`), and a **lint**
+  warning does not (`next.config.mjs` sets `eslint.ignoreDuringBuilds`). CI
+  (`.github/workflows/gate.yml`, added s50) runs all four, but only marks a check — it becomes a
+  real gate only with branch protection on `main`. See `docs/audit/PR-F2-toolchain-deps-secrets.md`.
 - **Stage-2 (n8n + AI):** delivery infra now exists — `emergency_stop` webhook + transactional
   `event_outbox` (0055, HMAC + idempotency-key) + `audit_log` (0053). Next up — smart waitlist
   rotation, predictive no-show, schedule optimization, and queue-collision handling when an
