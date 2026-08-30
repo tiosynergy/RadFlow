@@ -36,6 +36,7 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import { codeOf } from "./helpers/codeOf";
 import { readRoomModality, modalityVerdict } from "@/lib/studies";
+import { readRow } from "@/lib/readRow";
 
 const src = (p: string) => codeOf(readFileSync(resolve(process.cwd(), p), "utf8"));
 
@@ -58,24 +59,59 @@ const FILES = [
    продуктових читань цієї таблиці руками — дірок не було; сканер потрібен був
    на МАЙБУТНЄ, і одразу знайшов минуле: `app/queue/actions.ts` (U-17).
 
-   ⚠️ `queue_entries` СВІДОМО не тут — і це заміряно, а не здогад. Один рядок
-   у цій регулярці робить червоними ще **вісім** місць: шість у
-   `app/queue/actions.ts` (серед них `const { data: cur }`, чий збій читання
-   показується як «Запис не знайдено»), одне в `CeoDashboard` і одне в
-   `RescheduleModal`. Це окремий пакет (борг **U-55**), а не хвіст цього:
-   змішати «слід аварійної зупинки» з «читання бреше про ненайдений запис»
-   означало б ревʼювати два різні ризики одним поглядом. */
-const TABLE_RE = /\.from\(\s*["'`](rooms|schedule_overrides|incidents)["'`]\s*\)/g;
+   ⚠️ `queue_entries` додано в с49 як **U-55**, окремим пакетом — і це було
+   правильно: одна ця таблиця дала пʼять місць, де збій читання показувався як
+   «немає доступу / запис не знайдено», одне з них годувало АВТОРИЗАЦІЮ
+   (`setQueuePriority`: збій читання профілю → `isAdmin = false` → адміну
+   казали, що він не адмін), і дві форми, яких сканер не знав. Змішати це з
+   «слідом аварійної зупинки» означало б ревʼювати два різні ризики одним
+   поглядом. */
+const TABLE_RE = /\.from\(\s*["'`](rooms|schedule_overrides|incidents|queue_entries)["'`]\s*\)/g;
 
 /* ── Розбір форм виклику ────────────────────────────────────────────────────
-   Три законні форми:
-     F1 «named»        const res = await supabase.from("rooms")…;    → res.error
-     F2 «destructured» const { data, error } = await supabase.from(…) → error у шаблоні
+   Пʼять законних форм:
+     F0 «rule-wrapped» const r = readRow(await supabase.from(…)…);  → розбір у правилі
+     F1 «named»        const res = await supabase.from("rooms")…;   → res.error
+     F2 «destructured» const { data, error } = await supabase.from(…) → error прочитано
      F3 «promise-all»  const [ov, inc, roomRes] = await Promise.all([ …from… ]);
                        → ov.error ?? inc.error ?? roomRes.error
+     F4 «deferred»     let q = supabase.from(…); … const { data, error } = await q…;
    Форма, якої тут немає, свідомо вважається НЕВІДОМОЮ і валить тест: автор має
    або привести виклик до відомої форми, або дописати сюди розбір — але не
    пройти повз мовчки. Саме так сканер не сліпне на новому синтаксисі. */
+
+/** Кінець виразу (`;` на нульовій глибині дужок) від позиції `from`.
+    ⚠️ Потрібен для F2/F4: перевірка `error` стоїть ПІСЛЯ виразу, а сам вираз
+    буває довгим (payload `insert` у `createBooking` — понад 700 символів), тож
+    вікно від `.from(` до нього просто не діставало, і сторож червонів на
+    правильному коді (U-55). */
+function statementEnd(code: string, from: number): number {
+  let depth = 0, quote = "";
+  const cap = Math.min(code.length, from + 4000);
+  for (let i = from; i < cap; i++) {
+    const ch = code[i];
+    if (quote) {
+      if (ch === "\\") { i++; continue; }
+      if (ch === quote) quote = "";
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue; }
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") {
+      depth--;
+      /* ⚠️ Ревʼю U-55: було `depth <= 0` — і на виразі БЕЗ `;` (колбек,
+         тернарник, JSX) закривні дужки заганяли глибину в мінус, а функція
+         віддавала першу крапку з комою ДЕ ЗАВГОДНО далі по файлу. Заміряно на
+         синтетичному вході: вікно поїхало на 1057 символів, перескочило кінець
+         функції і сіло на чужий `catch (error)` — тобто червоне ставало
+         зеленим. Вийшли за межі виразу — віддаємо початок: вікно тоді
+         рахується від `.from(`, як раніше, і це fail-CLOSED. */
+      if (depth < 0) return from;
+    }
+    else if (ch === ";" && depth === 0) return i;
+  }
+  return from;
+}
 
 /** Межі рядкових літералів пропускаємо: у select() кома всередині
     "room_id, started_at" — НЕ роздільник елементів Promise.all. */
@@ -107,7 +143,14 @@ function scanArray(code: string, arrayOpen: number, target: number): { k: number
    ідентифікатор, ланцюжок через крапку і виклик із аргументами. */
 const RECEIVER = String.raw`[\w$]+(?:\.[\w$]+)*(?:\([^()]*\))?`;
 
-type Occ = { table: string; index: number; form: "named" | "destructured" | "promise-all" | "unknown"; binder: string; checkFrom: number };
+/* Правила, яким сканер довіряє розбір відповіді. Один перелік на дві потреби:
+   форму F0 (`const x = readRow(await supabase.from(…))`) і `delegatesToRule`.
+   Довіра підкріплена ПОВЕДІНКОВИМИ тестами нижче — інакше досить було б назвати
+   будь-яку функцію потрібним іменем (клас «сторож пінить ІМʼЯ», урок с46). */
+const RULES = "readRoomScheduleRow|roomSchedulesById|readRoomModality|modalityVerdict|readRow";
+
+type OccForm = "rule-wrapped" | "named" | "destructured" | "promise-all" | "deferred" | "unknown";
+type Occ = { table: string; index: number; form: OccForm; binder: string; checkFrom: number };
 
 function occurrences(code: string): Occ[] {
   const out: Occ[] = [];
@@ -116,9 +159,30 @@ function occurrences(code: string): Occ[] {
     const table = m[1];
     const before = code.slice(Math.max(0, ix - 200), ix);
 
+    /* F0 — відповідь віддано ПРАВИЛУ прямо у виразі:
+       `const curRead = readRow(await supabase.from(…)…);`
+       Тут перевіряти нема чого: `error` дивиться саме правило, а що воно це
+       робить — доводять поведінкові тести нижче. Без цієї форми найчистіший
+       спосіб написання (U-55) рахувався б НЕВІДОМИМ. */
+    const wrapped = before.match(new RegExp(
+      String.raw`(?:const|let)\s+(\w+)\s*=\s*(` + RULES + String.raw`)\(\s*await\s+` + RECEIVER + String.raw`\s*$`));
+    if (wrapped) {
+      /* ⚠️ Довіряємо не ІМЕНІ, а імені + ІМПОРТУ (ревʼю U-55). Інакше досить
+         оголосити в тому ж файлі свою `function readRow(res) { return
+         { known: true, row: res.data }; }` — і всі читання в ньому дістануть
+         безумовний пропуск. Це рівно клас «сторож пінить імʼя» (урок с46). */
+      const importsRule = new RegExp(
+        String.raw`import\s*\{[^}]*\b` + wrapped[2] + String.raw`\b[^}]*\}\s*from`).test(code);
+      out.push({
+        table, index: ix, binder: wrapped[1], checkFrom: ix,
+        form: importsRule ? "rule-wrapped" : "unknown",
+      });
+      continue;
+    }
+
     // F1 — результат зв'язаний іменем безпосередньо перед .from(...)
     const named = before.match(new RegExp(String.raw`(?:const|let)\s+(\w+)\s*=\s*await\s+` + RECEIVER + String.raw`\s*$`));
-    if (named) { out.push({ table, index: ix, form: "named", binder: named[1], checkFrom: ix }); continue; }
+    if (named) { out.push({ table, index: ix, form: "named", binder: named[1], checkFrom: statementEnd(code, ix) }); continue; }
 
     /* F2 — деструктуризація. ⚠️ Ревʼю р2: перша редакція приймала цю форму за
        самим фактом слова `error` у шаблоні і ВИКЛЮЧАЛА її з подальших перевірок
@@ -131,7 +195,7 @@ function occurrences(code: string): Occ[] {
       const alias = destr[1].match(/\berror\s*:\s*([\w$]+)/);
       const plain = /(^|[,{\s])error\s*(,|}|$)/.test(destr[1] + "}");
       const name = alias ? alias[1] : (plain ? "error" : "");
-      if (name) { out.push({ table, index: ix, form: "destructured", binder: name, checkFrom: ix }); continue; }
+      if (name) { out.push({ table, index: ix, form: "destructured", binder: name, checkFrom: statementEnd(code, ix) }); continue; }
     }
 
     // F3 — елемент масиву Promise.all з деструктуризацією імен вище
@@ -152,6 +216,16 @@ function occurrences(code: string): Occ[] {
         out.push({ table, index: ix, form: "promise-all", binder: list[arr.k], checkFrom: arr.end }); continue;
       }
     }
+
+    /* F4 «deferred» — запит збирають у змінну і чекають ПІЗНІШЕ:
+         let q = supabase.from("queue_entries").select(…);
+         q = statuses ? q.in(…) : q.neq(…);
+         const { data, error } = await q.order(…).limit(1000);
+       Форма законна і жива (`CeoDashboard`), але без неї сканер рахував таке
+       читання НЕВІДОМИМ — хибна тривога на правильному коді, яка змушувала б
+       переписувати робочий запит заради сторожа (ревʼю U-55). */
+    const defer = before.match(new RegExp(String.raw`(?:const|let)\s+(\w+)\s*=\s*` + RECEIVER + String.raw`\s*$`));
+    if (defer) { out.push({ table, index: ix, form: "deferred", binder: defer[1], checkFrom: statementEnd(code, ix) }); continue; }
 
     out.push({ table, index: ix, form: "unknown", binder: "", checkFrom: ix });
   }
@@ -179,7 +253,30 @@ const consultsBinding = (window: string, name: string) =>
    («правило, якому делегують, справді дивиться на error»): інакше достатньо
    було б назвати будь-яку функцію `readRoomScheduleRow`, і сторож замовк би. */
 const delegatesToRule = (window: string, binder: string) =>
-  new RegExp("(readRoomScheduleRow|roomSchedulesById|readRoomModality|modalityVerdict)\\(\\s*" + binder + "\\b").test(window);
+  new RegExp("(" + RULES + ")\\(\\s*" + binder + "\\b").test(window);
+
+/* Для F4 «deferred» перевірка живе НИЖЧЕ по коду: запит чекають окремим
+   виразом. Вимагаємо, щоб те очікування зв'язало `error` і щоб цю змінну
+   прочитали — тобто ту саму дисципліну, що й для F2, лише на крок далі. */
+const deferredChecked = (window: string, name: string) => {
+  const m = window.match(new RegExp(
+    "(?:const|let)\\s*\\{([^}]*)\\}\\s*=\\s*await\\s+" + name + "\\b"));
+  if (m) {
+    const alias = m[1].match(/\berror\s*:\s*([\w$]+)/);
+    const plain = /(^|[,{\s])error\s*(,|}|$)/.test(m[1] + "}");
+    const errName = alias ? alias[1] : (plain ? "error" : "");
+    if (errName) return consultsBinding(window.slice(m.index ?? 0), errName);
+    return false;
+  }
+  /* ⚠️ Другий законний спосіб (ревʼю U-55): результат чекають в ІМʼЯ, а вже
+     його `.error` перевіряють — `const r = await q.limit(10); if (r.error)…`.
+     Без цієї гілки форма F4 лишала хибну тривогу на правильному коді, тобто
+     робила рівно те, заради чого її й додавали. */
+  const named = window.match(new RegExp(
+    "(?:const|let)\\s+([\\w$]+)\\s*=\\s*await\\s+" + name + "\\b"));
+  if (named) return consultsError(window.slice(named.index ?? 0), named[1]);
+  return consultsError(window, name);
+};
 
 /* Сам ОБСЯГ нагляду — теж інваріант. Без цього тесту звузити сканер (прибрати
    таблицю зі списку або файл із FILES) можна мовчки: усе лишиться зеленим, бо
@@ -191,7 +288,7 @@ describe("Сканер: обсяг нагляду не звужується мо
      після перейменування в `rooms_v2`, а `FILES.length >= 7` тримався б при
      викиданні пʼяти екранів і дописуванні одного чужого файла. Перевіряємо
      ПОВЕДІНКОЮ (сканер справді знаходить читання кожної таблиці) і ПОІМЕННО. */
-  it.each(["rooms", "schedule_overrides", "incidents"])(
+  it.each(["rooms", "schedule_overrides", "incidents", "queue_entries"])(
     "сканер справді знаходить читання %s", (t) => {
       const occ = occurrences(`const a = await supabase.from("${t}").select("x");`);
       expect(occ.length, `читання ${t} не потрапляє в скан`).toBe(1);
@@ -252,8 +349,12 @@ describe("Сканер: кожне читання rooms/schedule_overrides ди�
       seen.set(key, nth);
       it(f + " — " + o.table + " #" + nth + " (" + o.form + ", " + o.binder + "): error перевірено", () => {
         const w = code.slice(o.checkFrom, o.checkFrom + 700);
-        const seen = o.form === "destructured"
-          ? consultsBinding(w, o.binder)
+        const seen =
+          /* F0: розбір робить правило прямо у виразі — перевіряти нема чого,
+             довіру підпирають поведінкові тести правил нижче. */
+          o.form === "rule-wrapped" ? true
+          : o.form === "destructured" ? consultsBinding(w, o.binder)
+          : o.form === "deferred" ? deferredChecked(w, o.binder)
           : consultsError(w, o.binder) || delegatesToRule(w, o.binder);
         expect(seen).toBe(true);
       });
@@ -295,6 +396,18 @@ describe("Правило, якому делегує сканер, справді
     expect(readRoomModality({ data: null, error: null }).known).toBe(false);
     expect(readRoomModality({ data: { modality: "MRI" }, error: null }))
       .toEqual({ known: true, modality: "MRI" });
+  });
+
+  it("readRow: помилка, порожня відповідь і порожній рядок — усе НЕ значення", () => {
+    /* U-55: правило, на яке спирається форма F0 («rule-wrapped»). Якби воно
+       віддавало `known: true` на помилці, сканер мовчав би про читання, яке
+       нічого не перевіряє, — тобто був би гіршим, ніж узагалі без форми F0. */
+    expect(readRow({ data: null, error: { message: "x" } })).toEqual({ known: false, reason: "error" });
+    expect(readRow({ data: { id: 1 }, error: { message: "x" } })).toEqual({ known: false, reason: "error" });
+    expect(readRow(null)).toEqual({ known: false, reason: "error" });
+    expect(readRow(undefined)).toEqual({ known: false, reason: "error" });
+    expect(readRow({ data: null, error: null })).toEqual({ known: false, reason: "missing" });
+    expect(readRow({ data: { id: 1 }, error: null })).toEqual({ known: true, row: { id: 1 } });
   });
 
   it("modalityVerdict: незнання не стає ані ok, ані mismatch", () => {
@@ -374,6 +487,107 @@ describe("Сканер: сам себе не обманює", () => {
     const occ = occurrences(wrap('const r = await sb.from("rooms").select("modality");'));
     expect(occ[0].form).toBe("named");
     expect(occ[0].binder).toBe("r");
+  });
+
+  const IMP = 'import { readRow } from "@/lib/readRow";\n';
+
+  it("F0: відповідь, віддана правилу прямо у виразі, — відома форма", () => {
+    /* Найчистіший спосіб написання (U-55). Без цієї форми він рахувався б
+       НЕВІДОМИМ, і сторож підштовхував би автора писати гірше. */
+    const occ = occurrences(IMP + wrap(
+      'const curRead = readRow(await supabase.from("queue_entries").select("status").eq("id", id).maybeSingle());'
+    ));
+    expect(occ.length).toBe(1);
+    expect(occ[0].form).toBe("rule-wrapped");
+    expect(occ[0].binder).toBe("curRead");
+  });
+
+  it("F0 не поширюється на ЧУЖУ функцію з тим самим виглядом", () => {
+    /* Інакше форма стала б дірою: досить було б обгорнути читання будь-чим.
+       ⚠️ Чужа функція тут ІМПОРТОВАНА навмисно (фальсифікація N15). Перша
+       редакція брала неімпортовану `notARule`, і перевірку проходила
+       ІМПОРТ-умова, а не перелік RULES: розмивання `RULES = "\w+"` лишалось
+       ЗЕЛЕНИМ. Дві незалежні умови мусять мати два незалежні зразки. */
+    const occ = occurrences('import { notARule } from "@/lib/notARule";\n' + wrap(
+      'const x = notARule(await supabase.from("queue_entries").select("status"));'
+    ));
+    expect(occ[0].form, "перелік довірених правил розмито — обгортка будь-чим дає пропуск")
+      .not.toBe("rule-wrapped");
+  });
+
+  it("F0 вимагає ІМПОРТУ правила, а не лише його імені", () => {
+    /* ⚠️ Ревʼю U-55: без цієї умови досить було оголосити в тому ж файлі свою
+       `function readRow(res) { return { known: true, row: res.data }; }` — і всі
+       читання файлу діставали безумовний пропуск. Довіра має спиратись на
+       МОДУЛЬ, а не на збіг імені (урок с46). */
+    const occ = occurrences(wrap(
+      'const curRead = readRow(await supabase.from("queue_entries").select("status").maybeSingle());'
+    ));
+    expect(occ[0].form, "правило без імпорту зараховане як довірене").toBe("unknown");
+  });
+
+  it("F4: запит зібрано у змінну, а перевірено після await — відома форма", () => {
+    const occ = occurrences(wrap(
+      'let q = supabase.from("queue_entries").select("status");\n' +
+      'q = flag ? q.eq("a", 1) : q.neq("a", 2);\n' +
+      'const { data, error } = await q.limit(10);\n' +
+      'if (error) return;'
+    ));
+    expect(occ.length).toBe(1);
+    expect(occ[0].form).toBe("deferred");
+    expect(deferredChecked(wrap(
+      'let q = supabase.from("queue_entries").select("status");\n' +
+      'const { data, error } = await q.limit(10);\n' +
+      'if (error) return;'
+    ), "q")).toBe(true);
+  });
+
+  it("F4 без перевірки помилки — НЕ проходить", () => {
+    /* Сама форма законна, але вона не звільняє від перевірки: без `error`
+       у деструктуризації читання лишається неперевіреним. */
+    expect(deferredChecked(
+      'let q = supabase.from("queue_entries").select("x");\nconst { data } = await q.limit(10);\n', "q",
+    )).toBe(false);
+  });
+
+  it("F4 приймає й другий законний спосіб — очікування в імʼя", () => {
+    /* ⚠️ Ревʼю U-55: фолбек шукав `q.error` на БІЛДЕРІ, якого не буває, і
+       правильний код `const r = await q…; if (r.error)` лишався хибною
+       тривогою — тобто форма робила те, від чого мала рятувати. */
+    expect(deferredChecked(
+      'let q = supabase.from("queue_entries").select("id");\nconst r = await q.limit(10);\nif (r.error) return;', "q",
+    )).toBe(true);
+    expect(deferredChecked(
+      'let q = supabase.from("queue_entries").select("id");\nconst r = await q.limit(10);\nreturn r.data;', "q",
+    )).toBe(false);
+  });
+
+  /* ⚠️ Найтихіша частина сканера — межі ВІКНА. Її не видно в жодному
+     продуктовому тесті: якщо вікно поїде далі, ніж треба, усе лишиться
+     ЗЕЛЕНИМ — просто зарахованим за чужий `error`. Ревʼю U-55 спіймало це
+     заміром: з `depth <= 0` закривні дужки виразу БЕЗ `;` (колбек, тернарник,
+     JSX) заганяли глибину в мінус, і функція віддавала першу крапку з комою
+     де завгодно далі — вікно поїхало на 1057 символів, перескочило кінець
+     функції і сіло на чужий `catch (error)`. Тому межу перевіряємо ВИКЛИКОМ:
+     фальсифікація «повернути `depth <= 0`» мусить червоніти саме тут. */
+  it("statementEnd: вихід за межі виразу — це fail-CLOSED, а не крапка з комою деінде", () => {
+    const leaky =
+      '.from("queue_entries").select("id")\n' +   // вираз без свого `;`
+      '  }));\n' +
+      'try { save(); } catch (error) { report(error); }';
+    expect(statementEnd(leaky, 0),
+      "вікно втекло за межі виразу — далі його зарахує чужий catch (error)").toBe(0);
+
+    /* І при цьому нормальний вираз усе ще закінчується СВОЄЮ крапкою з комою:
+       інакше «безпечно» означало б просто «завжди від `.from(`», і форми F2/F4
+       знову червоніли б на правильному коді. */
+    const ok = '.from("queue_entries").select("id").eq("id", x).maybeSingle();\nif (r.error) return;';
+    expect(statementEnd(ok, 0), "кінець виразу не знайдено — F2/F4 знову хибно тривожать")
+      .toBe(ok.indexOf(";"));
+
+    // крапка з комою ВСЕРЕДИНІ літерала — не кінець виразу
+    const str = '.from("queue_entries").select("a;b").eq("id", x);';
+    expect(statementEnd(str, 0)).toBe(str.length - 1);
   });
 
   it("делегування правилу зараховується лише для СВОГО биндера", () => {
