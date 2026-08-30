@@ -554,6 +554,21 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
     const br = inBreak(toMin(slot), roomBreaks);
     return br ? `Перерва в роботі кабінету · ${br.start}–${br.end}` : "Перерва в роботі кабінету";
   }
+  /* U-33, знайдено ЖИВОЮ перевіркою вже після правки: рядок-вердикт порталу
+     називав справжню причину, а тултип сітки лишався літералом «Кабінет на
+     ремонті/ТО» — тобто той самий обман, який пакет прибирає в модалках, тільки
+     в сусідньому рядку. Тултип і вердикт мусять говорити одне й те саме. */
+  function blockedLabel(slot: string) {
+    const a = toMin(slot);
+    const slotMs = Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(a / 60), a % 60);
+    const cap = incidentDurCapMin(incFeed, roomId, slotMs);
+    if (cap === undefined) return "Дані про простої кабінету неповні — час позначено недоступним";
+    if (cap > 0 && Number.isFinite(cap)) {
+      return `Дослідження (${slotDur} хв) заходить у простій кабінету з ${fmt((a + cap) % 1440)}`
+           + `\nВільно лише ${cap} хв — скоротіть дослідження або оберіть інший час/кабінет`;
+    }
+    return "Кабінет на ремонті/ТО";   // cap === 0: сам слот усередині простою
+  }
   // Причина «не вміщується» — у тому ж порядку, що й перевірки в slotState.
   function tightReason(slot: string) {
     const a = toMin(slot);
@@ -994,7 +1009,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                   stateOf={slotState}
                   titleOf={(s, st) => st === "busy" ? "Зайнято"
                     : st === "buffer" ? "Буфер після дослідження — кабінет ще зайнятий"
-                    : st === "blocked" ? "Кабінет на ремонті/ТО"
+                    : st === "blocked" ? blockedLabel(s)
                     : st === "break" ? breakLabel(s)
                     : st === "tight" ? `Не вміщується: блок ${slotDur} хв перетне ${tightReason(s)}`
                     : st === "casebusy" ? "Пацієнт зайнятий іншим кроком кейса в цей час — оберіть інший слот"
