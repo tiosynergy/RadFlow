@@ -13,6 +13,7 @@ import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, 
 import StudySearchBox from "@/components/StudySearchBox";
 import type { StudySearchHit } from "@/lib/studySearch";
 import { roomScheduleFor, effectiveRoomBreaks, inBreak, offScheduleKind, offReasonText, OFF_SCHED_GRACE_MIN, type DayOverride } from "@/lib/schedule";
+import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { wallNow, wallMinOfDay, wallDayKey, wallToday0, wallInstant, incidentDurNotice, incidentsUnknown, slotBlockedByFeed, incidentAtInstant, incidentEndLabel, roomIncidentsOf, type IncidentFeed, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
@@ -162,12 +163,12 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
           if (!cancel) setOverride((ov.data as unknown as DayOverride) || null);
         }
         const roomRes = await supabase.from("rooms").select("schedule").eq("id", patient.room_id).maybeSingle();
-        if (roomRes.error) throw roomRes.error;   // без графіка кабінету межі тихо відкотились би до хардкоду 08–18
-        /* Рядка немає — це НЕ «графіка немає». maybeSingle() віддає {data:null,
-           error:null}, коли кабінет невидимий за RLS або вже видалений; мовчазний
-           відкат на той самий хардкод 08–18 — рівно той дефект, лише без помилки. */
-        if (!roomRes.data) throw new Error("room schedule row not readable");
-        if (!cancel) setRoomSchedule((roomRes.data as { schedule?: unknown }).schedule ?? null);
+        /* Обидві причини незнання розрізняє `readRoomScheduleRow` (U-13, с49):
+           правило переїхало в lib/, бо інлайном воно двічі не доїхало до сусідніх
+           екранів. `known: true` зі `schedule: null` — легітимний дефолт. */
+        const sched = readRoomScheduleRow(roomRes);
+        if (!sched.known) throw roomScheduleReadError(sched.reason);
+        if (!cancel) setRoomSchedule(sched.schedule);
         if (!cancel) setSchedErr(false);
       } catch {
         /* Транзієнтний збій (оновлення токена / мережа) — вікно не рушимо, але й

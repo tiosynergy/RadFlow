@@ -121,6 +121,17 @@ function occurrences(code: string): Occ[] {
 const consultsError = (window: string, binder: string) =>
   new RegExp("(^|[^\\w$.])" + binder + "\\.error\\b").test(window);
 
+/* ЧЕТВЕРТА законна форма (U-13, с49): відповідь віддано ПРАВИЛУ, яке саме
+   дивиться на `.error` І додатково розрізняє порожній рядок. Без цієї гілки
+   сканер вимагав би лишити `res.error` поруч із делегуванням — тобто дві
+   перевірки одного й того самого, і одна з них неминуче б розʼїхалась.
+
+   ⚠️ Делегування — це довіра, тому вона перевіряється окремим тестом нижче
+   («правило, якому делегують, справді дивиться на error»): інакше достатньо
+   було б назвати будь-яку функцію `readRoomScheduleRow`, і сторож замовк би. */
+const delegatesToRule = (window: string, binder: string) =>
+  new RegExp("(readRoomScheduleRow|roomSchedulesById)\\(\\s*" + binder + "\\b").test(window);
+
 describe("Сканер: кожне читання rooms/schedule_overrides дивиться на error", () => {
   for (const f of FILES) {
     const code = src(f);
@@ -135,10 +146,31 @@ describe("Сканер: кожне читання rooms/schedule_overrides ди�
 
     for (const o of occ.filter((x) => x.form !== "destructured")) {
       it(f + " — " + o.table + " (" + o.form + ", " + o.binder + "): error перевірено", () => {
-        expect(consultsError(code.slice(o.checkFrom, o.checkFrom + 700), o.binder)).toBe(true);
+        const w = code.slice(o.checkFrom, o.checkFrom + 700);
+        expect(consultsError(w, o.binder) || delegatesToRule(w, o.binder)).toBe(true);
       });
     }
   }
+});
+
+/* Делегування чинне рівно доти, доки правило справді робить те, за що йому
+   довіряють. Без цього тесту четверта форма — дірка: назви функцію потрібним
+   іменем, і сканер замовкне (клас «сторож пінить ІМʼЯ», урок с46). */
+describe("Правило, якому делегує сканер, справді дивиться на error", () => {
+  const rule = src("lib/roomSchedule.ts");
+
+  it("readRoomScheduleRow перевіряє .error", () => {
+    expect(rule).toMatch(/if \(res\.error\) return \{ known: false, reason: "error" \};/);
+  });
+
+  it("…і окремо ПОРОЖНІЙ рядок — те, чого сама перевірка error не ловить", () => {
+    expect(rule).toMatch(/if \(!res\.data\) return \{ known: false, reason: "missing" \};/);
+  });
+
+  it("roomSchedulesById (спискова форма) перевіряє і error, і повноту", () => {
+    expect(rule).toMatch(/if \(!res \|\| res\.error\) return \{ known: false, reason: "error" \};/);
+    expect(rule).toMatch(/if \(!\(id in byId\)\) return \{ known: false, reason: "missing" \};/);
+  });
 });
 
 /* Сканер має ловити і те, чого в коді зараз немає. Перевіряємо його самого на
@@ -263,9 +295,14 @@ describe("StudyEditModal — межі тривалості не беруться
     expect(code).toMatch(/schedApplies \? \("до кінця графіка \(" \+ fmt\(schedEnd\) \+ "\)"\)/);
   });
 
-  /* Порожній рядок від maybeSingle() — не «графіка немає», а «не знаємо». */
+  /* Порожній рядок від maybeSingle() — не «графіка немає», а «не знаємо».
+     ⚠️ U-13 (с49): перевірка переїхала з інлайну в `lib/roomSchedule`, бо саме
+     інлайновою вона й НЕ доїхала до BookingModal, ReferralPortal, кнопки
+     швидкого переносу і серверного гарда. Тест лишається — але пінить те, що
+     чинне зараз: результат правила ЗУПИНЯЄ завантаження. */
   it("відсутній рядок кабінету трактується як невідомий графік", () => {
-    expect(code).toMatch(/if \(!roomRes\.data\) throw new Error/);
+    expect(code).toMatch(/const sched = readRoomScheduleRow\(roomRes\);/);
+    expect(code).toMatch(/if \(!sched\.known\) throw roomScheduleReadError\(sched\.reason\);/);
   });
 
   /* Прочитане при збої мусить обнулятися, інакше на екрані лишиться графік
@@ -311,8 +348,12 @@ describe("RescheduleModal — застарілий графік не видає�
     expect(code).toMatch(/catch \{[\s\S]{0,500}?setOverride\(null\); setRoomSchedule\(null\); setSchedErr\(true\);/);
   });
 
+  /* ⚠️ U-13 (с49): правило переїхало в `lib/roomSchedule` — інлайновим воно не
+     доїхало до чотирьох сусідніх екранів і серверного гарда. Пін оновлено на
+     чинну форму; сама вимога («порожній рядок = не знаємо») не змінилась. */
   it("відсутній рядок кабінету трактується як невідомий графік", () => {
-    expect(code).toMatch(/if \(!roomRes\.data\) throw new Error/);
+    expect(code).toMatch(/const sched = readRoomScheduleRow\(roomRes\);/);
+    expect(code).toMatch(/if \(!sched\.known\) throw roomScheduleReadError\(sched\.reason\);/);
   });
 
   /* Ці два рядки — поза гейтом сітки, тому потребують власної умови. */
