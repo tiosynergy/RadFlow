@@ -66,7 +66,7 @@ import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import Toast, { type ToastData } from "@/components/Toast";
 import ShortcutsOverlay from "@/components/ShortcutsOverlay";
-import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, incidentFeed, roomIncidentsOf, wallNow, wallToday0, setClinicTz, type IncidentFeed } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, groupIncidentsByRoom, incidentFeed, roomIncidentsOf, wallNow, wallToday0, setClinicTz, type IncidentFeed } from "@/lib/incidents";
 import { quickSearchMatch } from "@/lib/quickSearch";
 import { fmtOrigin } from "@/lib/rescheduleOrigin";
 import { occupiesSlot } from "@/lib/slotOccupancy";
@@ -1802,8 +1802,9 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   // Аварійна зупинка: активні інциденти reason='emergency' → кабінети зупинено.
   const emergencyRooms = Array.from(new Set(liveIncidents.filter((i) => i.reason === "emergency").map((i) => i.room_id)));
   const emergencyActive = emergencyRooms.length > 0;
-  const incidentsByRoom: Record<string, IncidentRow[]> = {};
-  liveIncidents.forEach((i) => { (incidentsByRoom[i.room_id] = incidentsByRoom[i.room_id] || []).push(i); });
+  // Одна формула групування на два екрани (с50): рукописних копій було дві, і
+  // вони встигли розійтись — див. `groupIncidentsByRoom` у lib/incidents.ts.
+  const incidentsByRoom = groupIncidentsByRoom(liveIncidents);
   const blockingByRoom: Record<string, IncidentRow> = {};
   liveIncidents.forEach((i) => {
     const s = new Date(i.started_at).getTime();
@@ -1815,7 +1816,9 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     entries.forEach((e) => {
       if (e.status !== "scheduled" && e.status !== "waiting") return;
       const incs = e.room_id ? incidentsByRoom[e.room_id] : null;
-      if (incs && incs.some((inc) => entryInIncidentWindow(dayKey, e.scheduled_time, inc))) { affectedIds.add(e.id); return; }
+      // durationMin обовʼязковий із с50: постраждалим є запис, ІНТЕРВАЛ якого
+      // перетинає простій, а не лише той, чий старт у нього потрапив.
+      if (incs && incs.some((inc) => entryInIncidentWindow(dayKey, e.scheduled_time, e.duration_min, inc))) { affectedIds.add(e.id); return; }
       if (e.room_id && roomClosedForCallList(e.room_id)) affectedIds.add(e.id);
     });
   }
