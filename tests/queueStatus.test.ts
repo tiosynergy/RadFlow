@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { readFileSync } from "fs";
 import { resolve } from "path";
-import { isLate, needsClarification, computeCallBlock, collisionFor, lateCallClash, callWindowEndMin, SAFETY_UNKNOWN_REASON, type CollisionEntry } from "@/lib/queueStatus";
+import { isLate, needsClarification, computeCallBlock, collisionFor, lateCallClash, callWindowEndMin, CALL_WINDOW_CLOCK_SLACK_MS, SAFETY_UNKNOWN_REASON, type CollisionEntry } from "@/lib/queueStatus";
 import { setClinicTz, wallInstant } from "@/lib/incidents";
 import { codeOf } from "./helpers/codeOf";
 
@@ -96,15 +96,62 @@ describe("computeCallBlock — чому не можна викликати в к
 describe("computeCallBlock — вікно виклику за північ (M-2)", () => {
   const P = { id: "b", room_id: "r1", duration_min: 30, buffer_time_min: 5 };
   const at = (t: string) => wallInstant("2026-07-13", t);
+  // U-70: предикат живе в мілісекундах, тож і входи мусять бути мілісекундними —
+  // на посекундній сітці ні кламп, ні значення слака не розрізняються.
+  const atMs = (t: string, ms: number) => wallInstant("2026-07-13", t) + ms;
 
   it("23:40 + 30 хв + 5 буфер → next_day до 00:15, підтверджуване", () => {
     const r = computeCallBlock(P, [], { schedEnd: "23:59", nowMs: at("23:40") });
     expect(r).toMatchObject({ code: "next_day", durationMin: 30, end: "00:15", confirmable: true });
   });
 
-  it("рівно 24:00 — ще НЕ наступна доба", () => {
-    // 23:25 + 30 + 5 = 24:00 рівно: кабінет звільняється на межі, за добу не виходимо.
-    expect(computeCallBlock(P, [], { schedEnd: "23:59", nowMs: at("23:25") })).toBeNull();
+  /* ⚠️ ПОСИЛКА ЗМІНЕНА В U-70 (знахідка U-67а), і це не «підганяння тесту».
+     Раніше тут стояло `toBeNull()`: 23:25 + 30 + 5 = 24:00 рівно, «кабінет
+     звільняється на межі, за добу не виходимо». Але серверне `now()`
+     мікросекундне — о 23:25:00.xxx вікно гарда тягнеться до 00:00:00.xxx, і
+     запис завтра на 00:00 він ВІДХИЛИТЬ (`ACTUAL_OVERLAP`). Тобто мовчання на
+     цій межі було fail-open: дошка показувала дозволену дію, яку БД відбиває,
+     а записів завтрашньої доби вона не бачить за побудовою.
+     Тепер предикат рахується в мілісекундах із двостороннім слаком і на межі
+     ПОПЕРЕДЖАЄ. Ціна — зайвий діалог рівно в цю мить; вона названа в коді. */
+  it("рівно 24:00 — межа, і саме тут попереджаємо (U-67а)", () => {
+    const r = computeCallBlock(P, [], { schedEnd: "23:59", nowMs: at("23:25") });
+    expect(r).toMatchObject({ code: "next_day", confirmable: true });
+    // Кламп: вікно закінчується в першу хвилину нової доби, а не «-1:-1».
+    expect(r).toMatchObject({ end: "00:00" });
+  });
+
+  it("на дві хвилини раніше межі північ не турбує", () => {
+    // 23:23 + 35 = 23:58 — до півночі ще дві хвилини навіть зі слаком.
+    expect(computeCallBlock(P, [], { schedEnd: "23:59", nowMs: at("23:23") })).toBeNull();
+  });
+
+  /* ⚠️ ВХІД, ЩО СПРАВДІ ДОХОДИТЬ ДО КЛАМПА (знахідка ревʼю Б по U-70, H-4).
+     Тест «рівно 24:00» вище дає на вході клампа РІВНО 0 — тобто мутація
+     `Math.max(0, x)` → `x` лишала б його зеленим, і обіцянка коментаря
+     («без клампа приїхало б відʼємне число, slotFmt(-1) дав би -1:-1»)
+     не перевірялась узагалі. Тут вікно закінчується о 23:59:59, тобто
+     хвилинний аргумент дорівнює −1, і попередження існує ЛИШЕ завдяки слаку. */
+  it("вікно кінчається за секунду до півночі: попереджаємо, і підпис не «-1:-1»", () => {
+    const r = computeCallBlock(P, [], { schedEnd: "23:59", nowMs: atMs("23:24", 59_000) });
+    expect(r, "секунда до півночі — сервер уже за межею, а дошка мовчить").toMatchObject({ code: "next_day" });
+    expect(r, "кламп знято — підпис поїхав у відʼємні хвилини").toMatchObject({ end: "00:00" });
+  });
+
+  /* ⚠️ ЗНАЧЕННЯ СЛАКА в предикаті півночі (знахідка ревʼю Б по U-70, H-5).
+     Усі тести вище лишились би зеленими і зі слаком 0, і зі слаком 60 000:
+     жоден не стоїть на самій межі `24:00 − слак`. Ці три входи розрізняють і
+     ЧИСЛО, і оператор порівняння. Межі рахуються з КОНСТАНТИ — інакше правка
+     слака зробила б тест червоним без дефекту. */
+  it("предикат півночі стоїть саме на «кінець + слак > 24:00»", () => {
+    const edge = 24 * 3600000 - 35 * 60000 - CALL_WINDOW_CLOCK_SLACK_MS;   // «зараз», за якого кінець+слак = 24:00 РІВНО
+    const nowAt = (msOfDay: number) => wallInstant("2026-07-13", "00:00") + msOfDay;
+    expect(computeCallBlock(P, [], { schedEnd: "23:59", nowMs: nowAt(edge) }), "межа стала включною (`>` → `>=`)")
+      .toBeNull();
+    expect(computeCallBlock(P, [], { schedEnd: "23:59", nowMs: nowAt(edge + 1) }), "слак у предикаті меншає або зник")
+      .toMatchObject({ code: "next_day" });
+    expect(computeCallBlock(P, [], { schedEnd: "23:59", nowMs: nowAt(edge - 1) }), "слак у предикаті виріс")
+      .toBeNull();
   });
 
   it("за північ виводить САМ буфер — випадок, який графік не ловить", () => {

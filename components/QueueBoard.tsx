@@ -10,6 +10,7 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { useQueueSounds } from "@/lib/useQueueSounds";
 import { isStudyOverrun, type OverrunSource } from "@/lib/soundEvents";
 import { serverNow } from "@/lib/serverClock";
+import { useFollowToday } from "@/lib/useFollowToday";
 import {
   setQueueEntryStatus,
   cancelQueueEntry,
@@ -1542,12 +1543,23 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      порядку» ніколи не буває застарілим, а список лишається під лінтером. */
   const openBookingRef = useRef(openBooking);
   openBookingRef.current = openBooking;
+  // Гард має покривати УСІ оверлеї, інакше хоткеї (N/«/»/R/цифри) стріляють
+  // під відкритою модалкою. Раніше бракувало 6 станів — зокрема деструктивних
+  // ConfirmDialog (cancelAsk/emergencyConfirm) та DelayPlan/Emergency/Waitlist:
+  // під ними «N» відкривав бронювання, «R» перезавантажував дошку тощо.
+  //
+  // U-70: цей самий прапорець тримає і перенесення дати (useFollowToday нижче).
+  // ОДИН список навмисно: другий екземпляр «що зараз відкрито» розійшовся б із
+  // цим на першій же новій модалці — і розійшовся б МОВЧКИ.
+  const anyModalOpen = modalOpen || helpOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen || !!wlSuggest || !!delayPreview || emergencyOpen || !!offCallAsk || !!cancelAsk || !!emergencyConfirm || !!stuckFinish;
+
+  /* U-70: «сьогодні» рахується з ВИМІРЯНОГО годинника, тож поправка, що
+     перетинає північ клініки, лишила б дошку на попередній добі — вона мовчки
+     стала б архівом. Правило (і його межі) живуть у lib/useFollowToday.ts —
+     один екземпляр на цю дошку й на дошку радіолога. */
+  useFollowToday({ clinicTz, pinnedKey: initialDate, busy: anyModalOpen, setSelectedDate });
+
   useEffect(() => {
-    // Гард має покривати УСІ оверлеї, інакше хоткеї (N/«/»/R/цифри) стріляють
-    // під відкритою модалкою. Раніше бракувало 6 станів — зокрема деструктивних
-    // ConfirmDialog (cancelAsk/emergencyConfirm) та DelayPlan/Emergency/Waitlist:
-    // під ними «N» відкривав бронювання, «R» перезавантажував дошку тощо.
-    const anyModalOpen = modalOpen || helpOpen || slotsOverviewOpen || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen || !!wlSuggest || !!delayPreview || emergencyOpen || !!offCallAsk || !!cancelAsk || !!emergencyConfirm || !!stuckFinish;
     function onKey(e: KeyboardEvent) {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
@@ -1579,7 +1591,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [modalOpen, helpOpen, slotsOverviewOpen, completeFor, reschedFor, editStudiesFor, editPatientFor, caseFromEntryFor, breakdownOpen, schedEditOpen, wlSuggest, delayPreview, emergencyOpen, offCallAsk, cancelAsk, emergencyConfirm, stuckFinish, reload, visRooms]);
+  }, [anyModalOpen, reload, visRooms]);
 
   const rtHealth = useRealtimeRefetch({
     channelName: clinicId ? "queue-" + clinicId : null,
@@ -1954,7 +1966,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
        Знімок містить рядок навіть тоді, коли він не показаний. */
     const expectedFrom = expectedOverride
       ?? (entriesSnap.rows.find((e) => e.id === id)?.status as QueueStatus | undefined);
-    const nowIso = new Date().toISOString();
+    /* ⚠️ U-70: інстант береться з `serverNow()`. Це ОПТИМІСТИЧНЕ значення
+       `in_progress_at`, яке живе до відповіді сервера, а читає його
+       `StudyTimer`/LiveTimer — уже з поправкою. На ПК, що поспішає на 8 хв,
+       незіставні годинники дали б «минуло −8 хв» рівно в перші секунди після
+       натискання «Викликати», тобто саме тоді, коли на таймер і дивляться. */
+    const nowIso = new Date(serverNow()).toISOString();
     /* 0129 (ревʼю с26 р2 L-2): БД більше НЕ скидає in_progress_at на повторному
        in_progress → оптимістичний патч теж не має обнуляти таймер «у кабінеті»,
        якщо запис уже in_progress — інакше до reload() екран бреше. */

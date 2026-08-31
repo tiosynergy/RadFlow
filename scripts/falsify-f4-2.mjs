@@ -50,16 +50,22 @@ const MUTATIONS = [
     to: " + callWindowMinutes(p) * 60000;",
   },
   {
+    /* ⚠️ ЯКІР ПЕРЕПИСАНО В U-70, і сам факт варто зафіксувати: після появи
+       двостороннього слака ліва межа стала `startMsOfDay`, а старий якір
+       `x.s >= nowMsOfDay` перестав знаходитись. Стенд не мовчав — він писав
+       «ЯКІР НЕ УНІКАЛЬНИЙ (0)», тобто мутація ВІДХИЛЕНА і сторож не
+       перевірявся. Це і є причина, чому стенд мусить бути частиною пакета, а
+       не запускатись раз: протухлий якір виглядає майже як успіх. */
     id: "M3", file: "qs", green: false,
     what: "права межа стала включною — блокує слот, якого сервер не блокує",
-    from: "    .filter((x) => x.s >= nowMsOfDay && x.s < endMsOfDay)",
-    to: "    .filter((x) => x.s >= nowMsOfDay && x.s <= endMsOfDay)",
+    from: "    .filter((x) => x.s >= startMsOfDay && x.s < endMsOfDay)",
+    to: "    .filter((x) => x.s >= startMsOfDay && x.s <= endMsOfDay)",
   },
   {
     id: "M4", file: "qs", green: false,
-    what: "ліва межа стала суворою — слот рівно на «зараз» проскакує",
-    from: "    .filter((x) => x.s >= nowMsOfDay && x.s < endMsOfDay)",
-    to: "    .filter((x) => x.s > nowMsOfDay && x.s < endMsOfDay)",
+    what: "ліва межа стала суворою — слот рівно на межі проскакує",
+    from: "    .filter((x) => x.s >= startMsOfDay && x.s < endMsOfDay)",
+    to: "    .filter((x) => x.s > startMsOfDay && x.s < endMsOfDay)",
   },
   {
     id: "M5", file: "qs", green: false,
@@ -70,7 +76,8 @@ const MUTATIONS = [
   {
     id: "M6", file: "qs", green: false,
     what: "слак виріс до хвилини — клієнт гасить кнопку там, де сервер дозволяє",
-    from: "export const CALL_WINDOW_CLOCK_SLACK_MS = 1000;",
+    // Якір оновлено в U-70 разом із самою константою (див. примітку до M3).
+    from: "export const CALL_WINDOW_CLOCK_SLACK_MS = CLOCK_WORST_ERROR_MS + 1000;",
     to: "export const CALL_WINDOW_CLOCK_SLACK_MS = 60000;",
   },
   {

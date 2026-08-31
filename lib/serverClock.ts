@@ -62,6 +62,25 @@ export const CLOCK_MIN_APPLY_MS = 1000;
     вузький RTT. */
 export const CLOCK_STALE_MS = 5 * 60 * 1000;
 
+/** НАЙГІРША помилка ЗАСТОСОВАНОГО зсуву, у мілісекундах.
+
+    ⚠️ Це виведення довелось переписати: перша редакція (U-70) рахувала лише
+    `CLOCK_MAX_RTT_MS/2` і давала вдвічі меншу цифру. Знайшло ревʼю Б, перевірено
+    особисто. Складові:
+      • `CLOCK_MIN_APPLY_MS` — вимірювання, менше за секунду, ми ОБНУЛЯЄМО. Тож
+        справжній зсув до 1 с може лишитись НЕ виправленим, і це не «похибка
+        вимірювання», а свідоме рішення, яке теж треба закласти;
+      • `CLOCK_MAX_RTT_MS / 2` — невизначеність самої проби (асиметрія плечей);
+      • `CLOCK_MAX_MONO_DRIFT_MS / 2` — стінний годинник має право розійтись із
+        монотонним у межах порога, і половина цієї розбіжності лягає на середину
+        вікна запиту.
+    Разом: 1000 + 1000 + 125 = 2125 мс.
+    ⚠️ Сюди НЕ входить дрейф ПК між перезамірами і застрягла оцінка після сну —
+    перше практично мале, друге закрите правилом «стара оцінка не тримається»
+    в applyClockEstimate. Обидва названі там, де живуть. */
+export const CLOCK_WORST_ERROR_MS =
+  CLOCK_MIN_APPLY_MS + CLOCK_MAX_RTT_MS / 2 + CLOCK_MAX_MONO_DRIFT_MS / 2;
+
 export type ClockEstimate = { offsetMs: number; rttMs: number };
 
 /* ⚠️ ЧОМУ RTT МІРЯЄТЬСЯ МОНОТОННИМ ГОДИННИКОМ (знахідка ревʼю Б, HIGH).
@@ -129,6 +148,7 @@ let _offsetMs = 0;
 let _known = false;
 let _rttMs = Number.POSITIVE_INFINITY;
 let _measuredAtMono = Number.NEGATIVE_INFINITY;
+let _measuredAtWall = Number.NEGATIVE_INFINITY;
 let _epoch = 0;
 
 /** Зсув «база − браузер» у мс. 0, поки не виміряно. */
@@ -149,6 +169,18 @@ export function clockRttMs(): number { return _rttMs; }
     приземлення поправки читалось диференціалом як справжнє перевищення і
     давало звук на дослідження, яке простроченим було вже на відкритті. */
 export function clockEpoch(): number { return _epoch; }
+
+/* Підписка на ЗМІНУ зсуву (U-70). Потрібна тим, хто зафіксував похідну від
+   «зараз» у стані і не переживе тихого стрибка — перший такий споживач
+   `selectedDate` дошок: якщо поправка перетинає північ клініки, «сьогодні»
+   їде вперед, а зафіксована дата лишається, і дошка мовчки стає архівом.
+   Опитувати `clockEpoch()` таймером тут не годиться: між приземленням
+   поправки і найближчим тіком (20 с) дошка вже показувала б не той день. */
+const _listeners = new Set<() => void>();
+export function subscribeClock(fn: () => void): () => void {
+  _listeners.add(fn);
+  return () => { _listeners.delete(fn); };
+}
 
 /** «Зараз» за годинником БАЗИ. Єдина заміна `Date.now()` там, де момент
     порівнюється з тим, що записав сервер (`in_progress_at`, `updated_at`). */
@@ -178,9 +210,25 @@ function monoNow(): number {
 export function applyClockEstimate(est: ClockEstimate | null): boolean {
   if (typeof window === "undefined") return false;
   if (!est || !Number.isFinite(est.offsetMs) || !Number.isFinite(est.rttMs)) return false;
+  /* ⚠️ Поріг перевіряється і ТУТ (знахідка ревʼю Б). До цього він жив лише
+     дефолтним параметром `offsetFromSamples`, тобто інваріант «застосований
+     зсув отриманий із проби не повільнішої за CLOCK_MAX_RTT_MS» у точці
+     ЗАСТОСУВАННЯ не тримався — а саме на ньому побудований CLOCK_WORST_ERROR_MS
+     і, через нього, слак вікна виклику. */
+  if (!(est.rttMs >= 0) || est.rttMs > CLOCK_MAX_RTT_MS) return false;
 
-  const now = monoNow();
-  const stale = now - _measuredAtMono > CLOCK_STALE_MS;
+  const mono = monoNow();
+  const wall = Date.now();
+  /* ⚠️ Вік оцінки міряємо ОБОМА годинниками і беремо БІЛЬШИЙ (знахідка ревʼю Б).
+     `performance.now()` на типових платформах НЕ йде під час сну ноутбука —
+     а `visibilitychange` після пробудження це рівно той момент, заради якого
+     підписка й існує. З одним лише монотонним віком свіжа й правильна проба
+     («ОС підтягнула NTP, зсув 8 хвилин») відкидалась би як «гірша за чинну»,
+     бо чинна формально не встигла протухнути. Стінний вік цього не проґавить:
+     якщо годинник стрибнув, вік стрибає разом із ним. */
+  const stale =
+    mono - _measuredAtMono > CLOCK_STALE_MS ||
+    Math.abs(wall - _measuredAtWall) > CLOCK_STALE_MS;
   if (_known && !stale && est.rttMs > _rttMs) return false;
 
   /* Малий зсув не застосовуємо, але факт вимірювання фіксуємо: «поміряли й
@@ -189,9 +237,15 @@ export function applyClockEstimate(est: ClockEstimate | null): boolean {
   const changed = next !== _offsetMs;
   _offsetMs = next;
   _rttMs = est.rttMs;
-  _measuredAtMono = now;
+  _measuredAtMono = mono;
+  _measuredAtWall = wall;
   _known = true;
-  if (changed) _epoch++;
+  if (changed) {
+    _epoch++;
+    /* Кожен слухач — окремо, з ковтанням: слухач, який кинув, не сміє
+       позбавити повідомлення решту. */
+    for (const fn of _listeners) { try { fn(); } catch { /* слухач сам винен */ } }
+  }
   return changed;
 }
 
@@ -201,5 +255,6 @@ export function resetServerClock(): void {
   _known = false;
   _rttMs = Number.POSITIVE_INFINITY;
   _measuredAtMono = Number.NEGATIVE_INFINITY;
+  _measuredAtWall = Number.NEGATIVE_INFINITY;
   _epoch = 0;
 }

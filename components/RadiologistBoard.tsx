@@ -37,6 +37,8 @@ import "@/styles/prototype/radiologist.css";
 import NavDrawer from "@/components/NavDrawer";
 import SoundToggle from "@/components/SoundToggle";
 import { visibleRooms, residualSet, roomOffLabel, bookableRooms } from "@/lib/rooms";
+import { useFollowToday } from "@/lib/useFollowToday";
+import { serverNow } from "@/lib/serverClock";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown; active?: boolean | null };
 type RadEntry = {
@@ -114,10 +116,21 @@ const STEP_PRIMARY: Record<string, { icon: string; label: string; bg: string; co
   done:        { icon: "✓", label: "Дослідження виконано", bg: "var(--card)",  color: "var(--text-faint)", border: "1px solid var(--border-strong)" },
 };
 
-// Годинник — за часом ЦЕНТРУ (як і решта дошки), а не браузера радіолога.
+/* Годинник — за часом ЦЕНТРУ (як і решта дошки), а не браузера радіолога.
+   ⚠️ U-70: і за ВИМІРЯНИМ годинником бази (`serverNow`), а не за `Date.now()`
+   (знахідка ревʼю А, HIGH). Після переведення настінного канону вся дошка —
+   «Запізнення», блокування виклику, сітка слотів, таймери — рахується з
+   поправкою, а цей підпис лишався б на годиннику ПК: на одному екрані два
+   різні «зараз», причому саме той, на який дивиться людина, — невірний.
+   Дефект пакета, заради якого він писався (ПК поспішає на 8 хв), виглядав би
+   тут як «система бреше», бо годинник у шапці підтверджував би хибний час. */
 function LiveClock({ tz }: { tz?: string }) {
   const [now, setNow] = useState<Date | null>(null);
-  useEffect(() => { setNow(new Date()); const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    setNow(new Date(serverNow()));
+    const t = setInterval(() => setNow(new Date(serverNow())), 1000);
+    return () => clearInterval(t);
+  }, []);
   const opts: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" };
   const txt = (() => {
     if (!now) return "--:--:--";
@@ -812,6 +825,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   const today = wallToday0(clinicTz);
   const isToday = sameDay(selectedDate, today);
   const isPast = selectedDate < today;
+
   // H1-5/H4-2: минулий день = архів. Підпис давно казав «Архів — лише перегляд»,
   // але readOnly був фіктивним (false) — кнопки дій лишались живими, UI брехав про
   // режим. Тепер минула дата справді read-only (як і має бути для завершеного дня):
@@ -1149,7 +1163,9 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     const cur = daySnap.rows.find((e) => e.id === id);
     if (status === "done" && cur && cur.status !== "in_progress") { notify("«Виконано» можна лише для пацієнта в кабінеті", "error"); return; }
     // Server Action (серверная сессия + единая обработка ошибок); оптимистично локально.
-    const nowIso = new Date().toISOString();
+    // ⚠️ U-70: serverNow(), а не Date.now() — оптимистичный in_progress_at читает
+    // таймер «у кабінеті», уже идущий с поправкой (та же причина, что в QueueBoard).
+    const nowIso = new Date(serverNow()).toISOString();
     const patch = status === "in_progress" ? { status, in_progress_at: nowIso } : { status };
     setEntries((es) => es.map((e) => (e.id === id ? { ...e, ...patch, updated_at: nowIso } : e)));
     // H-2: cur.status — то, что видит рентгенолог; CAS на сервере.
@@ -1216,6 +1232,23 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
   /* Модалка «Завершення процедури» — та сама, що в реєстратури (с28). */
   const [completeFor, setCompleteFor] = useState<RadEntry | null>(null);
   const [completeBusy, setCompleteBusy] = useState(false);
+
+  /* ⚠️ U-70: те саме правило, що в QueueBoard, і ТИМ САМИМ екземпляром — див.
+     lib/useFollowToday.ts. «Сьогодні» рахується з ВИМІРЯНОГО годинника, тож
+     поправка, що перетинає північ клініки, лишила б дошку на попередній добі.
+     Тут це гучніше, ніж у реєстратури: `isPast` вмикає `readOnly`, тобто
+     радіолог мовчки втрачає ВСІ дії.
+     Виклик стоїть саме тут, а не поряд із `today` вище, бо `busy` мусить бачити
+     УСІ модалки цієї дошки, а дві з них оголошені лише зараз. Список — повний
+     перелік оверлеїв у JSX (CompletionModal, stuckFinish, offCallAsk,
+     DelayPlanModal); нова модалка зобов'язана потрапити і сюди. */
+  useFollowToday({
+    clinicTz,
+    pinnedKey: initialDate,
+    busy: !!completeFor || !!stuckFinish || !!offCallAsk || !!delayPreview,
+    setSelectedDate,
+  });
+
   function callPatient(p: RadEntry) {
     /* Гейт «не знаємо про простої» тепер приходить кодом safety_unknown із
        computeCallBlock (с46) і ловиться загальною гілкою нижче: він
