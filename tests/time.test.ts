@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { wallInstant, wallMinOfDay, wallMinOfInstant, wallInstantOf, wallNow, wallDayKey, wallToday0, setClinicTz, incidentEffectiveEnd } from "@/lib/incidents";
+import { wallInstant, wallMinOfDay, wallMinOfInstant, wallInstantOf, wallNow, wallDayKey, wallDayKeyAt, wallToday0, setClinicTz, incidentEffectiveEnd } from "@/lib/incidents";
 import { busySpans } from "@/lib/slotBusy";
 import { priorityRank, normPriority, isActiveStatus } from "@/lib/priority";
 import { normBuffer, BUFFER_DEFAULT, studyDur, CONTRAST_DUR, MRT_REGIONS } from "@/lib/studies";
@@ -54,6 +54,52 @@ describe("wall-модель часу", () => {
       expect(wallDayKey()).toBe("2026-07-14");
       setClinicTz("UTC");
       expect(wallDayKey()).toBe("2026-07-13");
+    });
+  });
+
+  /* U-70. `wallDayKeyAt` існує заради ОДНОГО питання дошок: «чи перенесла
+     поправка годинника добу?». Питання ставиться так — та сама мить, два різні
+     зсуви; тому функція мусить давати відповідь ІНСТАНТУ, а не «зараз». Якби
+     вона тихо ігнорувала аргумент, правило слідування за «сьогодні» ніколи б не
+     спрацьовувало: обидві доби завжди збігались би, і дошка після поправки за
+     північ мовчки лишалась би архівом — рівно той дефект, який пакет закриває. */
+  describe("wallDayKeyAt — доба ЗАДАНОГО інстанта, а не «зараз»", () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    it("відповідає аргументу, а не системному часу", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-13T10:00:00.000Z"));
+      expect(wallDayKeyAt(Date.parse("2026-07-20T10:00:00.000Z"), "UTC")).toBe("2026-07-20");
+      expect(wallDayKeyAt(Date.parse("2026-07-01T10:00:00.000Z"), "UTC")).toBe("2026-07-01");
+    });
+
+    it("зона враховується так само, як у wallDayKey", () => {
+      const ms = Date.parse("2026-07-13T23:00:00.000Z");
+      expect(wallDayKeyAt(ms, "UTC")).toBe("2026-07-13");
+      expect(wallDayKeyAt(ms, "Europe/Kyiv")).toBe("2026-07-14");
+      expect(wallDayKeyAt(ms, "America/New_York")).toBe("2026-07-13");
+    });
+
+    it("СЦЕНАРІЙ ПАКЕТА: поправка на 8 хв переносить добу — і це видно", () => {
+      // Годинник ПК відстає: він показує 23:56, справжній час — 00:04 наступної доби.
+      const browserNow = Date.parse("2026-07-13T23:56:00.000Z");
+      const offset = 8 * 60000;
+      expect(wallDayKeyAt(browserNow, "UTC"), "доба ДО поправки").toBe("2026-07-13");
+      expect(wallDayKeyAt(browserNow + offset, "UTC"), "доба ПІСЛЯ поправки").toBe("2026-07-14");
+    });
+
+    it("той самий інстант із тим самим зсувом добу не рухає", () => {
+      const ms = Date.parse("2026-07-13T12:00:00.000Z");
+      expect(wallDayKeyAt(ms, "UTC")).toBe(wallDayKeyAt(ms + 1000, "UTC"));
+    });
+
+    it("нефінітний вхід → доба «зараз», без винятку", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-13T10:00:00.000Z"));
+      // new Date(NaN).toISOString() кидає RangeError — саме тому тут є гейт.
+      expect(() => wallDayKeyAt(NaN, "UTC")).not.toThrow();
+      expect(wallDayKeyAt(NaN, "UTC")).toBe("2026-07-13");
+      expect(wallDayKeyAt(Infinity, "UTC")).toBe("2026-07-13");
     });
   });
 
