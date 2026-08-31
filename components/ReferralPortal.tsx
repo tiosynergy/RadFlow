@@ -38,6 +38,7 @@ import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { incidentDurCapMin, incidentFeed, studyBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
+import { useFollowToday } from "@/lib/useFollowToday";
 import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, normDur, DUR_MAX } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import StudySearchBox from "@/components/StudySearchBox";
@@ -166,6 +167,8 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   });
   const [roomId, setRoomId] = useState<string | null>(null);
   const [time, setTime] = useState("");
+  /* U-72: дату перенесла поправка годинника центру (null = не переносили). */
+  const [dateShifted, setDateShifted] = useState<string | null>(null);
   const [dayEntries, setDayEntries] = useState<BusySlot[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(true);
   const [slotsErr, setSlotsErr] = useState(false); // зайнятість/простої не завантажились — сітку не показуємо
@@ -206,6 +209,33 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
       const nx = new Date(t0); nx.setDate(nx.getDate() + 1); return nx;
     });
   }, [selTz]);
+
+  /* ⚠️ U-72. Ефект вище цього НЕ закриває, і це варто назвати явно: він будиться
+     лише зміною ЗОНИ центру, а умова `if (d >= t0) return d` пропускає рівно наш
+     випадок — поправка годинника зсуває добу на одну, і зафіксоване «завтра»
+     ніколи не стає строго минулим.
+     `bookDate` зафіксовано ініціалізатором на `wallToday0(tz) + 1`, а зсув
+     годинника бази приїжджає асинхронно (і перезаміряється кожні 10 хв та на
+     `visibilitychange`). Якщо поправка перетинає північ центру, форма мовчки
+     стоїть на добу мимо наміру — а `date` звідси йде прямо в `scheduledDate`
+     (createReferralBooking нижче). Направник глобальний і часто в іншій зоні,
+     а форму направлення заповнюють довго: вікно експозиції тут ширше, ніж у
+     модалці реєстратури.
+     `busy` — збереження в польоті АБО набраний кейс: кроки в `caseSteps`
+     прив'язані до старої дати (`caseWindows` фільтрує їх по `s.date === date`),
+     і зсув дати мовчки розколов би кейс на дві доби, заразом осліпивши
+     клієнтську перевірку накладень. Серверний гард `CASE_PATIENT_OVERLAP`
+     (0118) цього не ловить: він будує `tsrange` із дати+часу, а при РІЗНИХ
+     датах діапазони не перетинаються (знахідка ревʼю А, MEDIUM).
+     `onShift` — скидаємо обраний час і кажемо про це вголос. */
+  useFollowToday({
+    clinicTz: selTz,
+    offsetDays: 1,
+    busy: busy || caseBusy || caseSteps.length > 0,
+    value: bookDate,
+    setDate: setBookDate,
+    onShift: (d) => { setTime(""); setDateShifted(dateVal(d)); },
+  });
 
   // Каталог послуг ОБРАНОГО центру (фаза 2a): drop-in шорткати lib/studies.
   // Порожній (центр не обрано / без сіду) → статичний фолбэк.
@@ -984,7 +1014,16 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
               )}
             </div>
 
-            <BookingCalendar value={bookDate} today={centerToday} onPick={(d) => { setBookDate(d); setTime(""); }} />
+            <BookingCalendar value={bookDate} today={centerToday} onPick={(d) => { setBookDate(d); setTime(""); setDateShifted(null); }} />
+
+            {/* ⚠️ U-72 (ревʼю А, HIGH): дату перенесла поправка годинника центру.
+                Направник у своїй зоні і форму заповнює довго — без цього рядка
+                зміна дати під його руками не помітна взагалі. */}
+            {dateShifted && (
+              <div className="ctx-hint" role="status" style={{ marginTop: 6 }}>
+                🕐 Годинник центру уточнено — дату змінено на <b>{dateShifted}</b>, час оберіть заново.
+              </div>
+            )}
 
             <div className="fld">
               <div className="bk-slots-head">
