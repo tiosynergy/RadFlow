@@ -12,7 +12,7 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
-import { entryInIncidentWindow, incidentExpired, incidentFeed, setClinicTz, wallDayKey, wallToday0 } from "@/lib/incidents";
+import { entryInIncidentWindow, groupIncidentsByRoom, incidentExpired, incidentFeed, setClinicTz, wallDayKey, wallToday0 } from "@/lib/incidents";
 import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
@@ -36,7 +36,14 @@ type CallEntry = {
   priority_level?: PatientPriority | null; call_note?: string | null; studies: Json; doctor?: string | null; room_id: string | null; scheduled_date: string | null;
   off_schedule?: boolean | null;   // 0077
 };
-type IncidentRow = { id: string; room_id: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string };
+/* ⚠️ `auto_unblock` тут ОБОВʼЯЗКОВИЙ, і це не косметика (ревʼю с50).
+   `incidentExpired` рахує `inc.auto_unblock !== false`, а `undefined !== false`
+   це TRUE — тож без цього поля колл-лист вважав згаслим БУДЬ-ЯКИЙ простій із
+   минулим `blocked_until`, включно з РУЧНИМИ, яких pg_cron не знімає взагалі.
+   Дошка (`QueueBoard`) поле вибирає, і той самий простій там живий: два екрани
+   давали різну відповідь про один запис. tsc мовчав, бо в `IncidentLike` поле
+   необовʼязкове. */
+type IncidentRow = { id: string; room_id: string; reason_label: string | null; note: string | null; started_at: string; blocked_until: string | null; status: string; auto_unblock: boolean };
 
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
@@ -314,6 +321,12 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
      ніхто: useEffect завʼязаний на identity `reload`, яка не мінялась.
      Тому протухле замикання виходить ДО ++genRef. */
   const scopeRef = useRef("");
+  /* Окреме покоління для `loadIncidents` (фаза 4 аудиту, с50): у нього ДВА
+     запити й СВІЙ зріз — `todayKey`, а не обраний день. Спільний лічильник
+     плутав би два незалежні потоки. Оголошено тут, поруч із рештою ref-ів, бо
+     `incScopeRef.current` пишеться в рендері нижче. */
+  const incGenRef = useRef(0);
+  const incScopeRef = useRef("");
   // H-6: збій завантаження ≠ «записів немає» / «простоїв немає».
   const [entriesErr, setEntriesErr] = useState(false);
   const [incidentsErr, setIncidentsErr] = useState(false);
@@ -343,6 +356,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
   const incidentsFeed = incidentFeed(incidents, incidentsErr);
   const scopeKey = clinicId + "|" + dayKey;
   scopeRef.current = scopeKey;   // пишемо в рендері — див. коментар біля scopeRef
+  incScopeRef.current = clinicId + "|" + todayKey;   // зріз loadIncidents — свій
   /* roomsById — ПОВНИЙ список, включно з вимкненими: за ним резолвиться назва
      кабінету в рядку обдзвону й у CSV. Ховаємо кабінет зі СПИСКІВ, а не з записів. */
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
@@ -397,13 +411,26 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
     }
   }, [clinicId, dayKey]);
 
+  /* ⚠️ Гонка тут була детермінованою (фаза 4 аудиту, с50): `setIncidents`
+     стояв ДО другого `await`, `setAffectedToday` — після, і жодної сверки
+     покоління, при тому що сусідній `reload` у цьому ж файлі має і `genRef`, і
+     `scopeRef`. Аварійна зупинка міняє `incidents` І `queue_entries` однією
+     транзакцією і дає ДВА виклики майже одночасно (дві підписки з РІЗНИМИ
+     debounceKey) — повільніший прогін клав свої «постраждалі» зверху свіжих
+     простоїв, і секція нового кабінету писала «Усіх постраждалих опрацьовано
+     ✓» БЕЗ банера: кабінет зупинений, пацієнти записані, дзвонити нема кому. */
   const loadIncidents = useCallback(async () => {
+    const key = clinicId + "|" + todayKey;
+    if (key !== incScopeRef.current) return;   // протухле замикання — ДО ++gen
+    const gen = ++incGenRef.current;
+    const stale = () => gen !== incGenRef.current;
     try {
     const supabase = createClient();
     const { data: incs, error } = await supabase
       .from("incidents")
-      .select("id, room_id, reason_label, note, started_at, blocked_until, status")
+      .select("id, room_id, reason_label, note, started_at, blocked_until, status, auto_unblock")
       .eq("clinic_id", clinicId).in("status", ["active", "planned"]);
+    if (stale()) return;
     if (error) { setIncidentsErr(true); return; }   // «простоїв немає» ≠ «не змогли прочитати»
     setIncidentsErr(false);
     setIncidents(incs || []);
@@ -418,16 +445,25 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
        «У вікні простою активних записів немає», причому БЕЗ банера, бо
        incidentsErr лишався false. Кабінет зламаний, пацієнти на нього записані,
        а оператор бачить, що дзвонити нема кому (той самий клас, що U-3/U-4). */
+    if (stale()) return;
     if (entsRes.error) { setIncidentsErr(true); return; }
     const ents = entsRes.data;
-    const byRoom: Record<string, IncidentRow> = {}; incs.forEach((i) => { byRoom[i.room_id] = i; });
+    /* ⚠️ Простоїв на кабінет може бути КІЛЬКА: вибірка бере `active` І
+       `planned`, тож у кабінета цілком буває активна поломка вранці й планове
+       ТО ввечері. Раніше тут стояла мапа «один простій на кабінет», і
+       останній у масиві затирав попередні — постраждалі другого вікна зникали
+       мовчки, причому який саме зникне, вирішував недетермінований порядок
+       видачі PostgREST. У `QueueBoard` (`incidentsByRoom`) форма ВЖЕ була
+       правильною — розійшлись два екрани про одне й те саме. */
+    const byRoom = groupIncidentsByRoom(incs);
     const aff = (ents || []).filter((e) => {
-      const inc = e.room_id ? byRoom[e.room_id] : null;
-      if (!inc || incidentExpired(inc)) return false;
-      return entryInIncidentWindow(e.scheduled_date, e.scheduled_time, inc);
+      const list = e.room_id ? byRoom[e.room_id] : null;
+      if (!list || !list.length) return false;
+      return list.some((inc) => !incidentExpired(inc)
+        && entryInIncidentWindow(e.scheduled_date, e.scheduled_time, e.duration_min, inc));
     });
     setAffectedToday(aff);
-    } catch { setIncidentsErr(true); }
+    } catch { if (!stale()) setIncidentsErr(true); }
   }, [clinicId, todayKey]);
 
   // Записи на СЬОГОДНІ зі статусом scheduled — джерело секції «Запізнення»
@@ -710,7 +746,19 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
             {incidents.map((inc) => (
               <IncidentCallSection key={inc.id} incident={inc}
                 roomName={roomsById[inc.room_id]?.name || "Апарат"}
-                affected={affectedToday.filter((a) => a.room_id === inc.room_id)}
+                /* ⚠️ Фільтр по КАБІНЕТУ тут більше не годиться (ревʼю с50).
+                   `affectedToday` — ОБʼЄДНАННЯ по всіх простоях кабінета
+                   (`list.some(...)` у `loadIncidents`). Поки простій на кабінет
+                   був один, обʼєднання збігалося з його вікном. Щойно кілька
+                   простоїв стали легальними, той самий фільтр почав класти
+                   пацієнта з ранкової поломки в секцію вечірнього ТО — з чужою
+                   причиною, чужим вікном і чужим лічильником у банері. Це той
+                   самий клас, що описаний в `incidentDurCapMin`: банер не сміє
+                   називати причиною те, що причиною не є. Тому атрибуція — по
+                   ПРОСТОЮ, тим самим предикатом, що й відбір. */
+                affected={affectedToday.filter((a) => a.room_id === inc.room_id
+                  && !incidentExpired(inc)
+                  && entryInIncidentWindow(a.scheduled_date, a.scheduled_time, a.duration_min, inc))}
                 onReschedule={(p) => setReschedFor(p)}
                 onRecall={(p) => setCall(p.id, "to_recall")}
                 onRefuse={(p) => setDeclineAsk({ p, mode: "cancel" })} />

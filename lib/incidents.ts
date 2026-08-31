@@ -522,17 +522,97 @@ export function incidentMinutesForRoom(
   return out;
 }
 
-// Попадает ли запись (scheduled_date 'YYYY-MM-DD' + scheduled_time 'HH:MM') в окно простоя инцидента.
-// Единый предикат «пострадавших» для доски и колл-листа (полный datetime, конец = blocked_until || Infinity).
+/* Простои, сгруппированные ПО КАБИНЕТУ. Список, а не один — и это не запас
+   прочности, а факт схемы: уникальный индекс `incidents_one_active_per_room`
+   ограничивает только `status='active'`, а `planned` не ограничен ничем. То
+   есть у кабинета легально бывает одна активная поломка и сколько угодно
+   плановых ТО.
+
+   ⚠️ Функция появилась в с50 потому, что эту группировку писали РУКАМИ в двух
+   местах — и написали по-разному: `QueueBoard` копил список, `CallListBoard`
+   держал `byRoom[room] = i`, где последний затирал предыдущих. Кто именно
+   потеряется, решал недетерминированный порядок выдачи PostgREST, а терялись
+   пациенты из «пострадавших». Пока формула живёт в двух рукописных копиях,
+   она расходится — это в проекте уже стоило семи копий `room_ids` и отката
+   правки M-7. */
+export function groupIncidentsByRoom<I extends { room_id: string }>(
+  incidents: I[] | null | undefined
+): Record<string, I[]> {
+  const byRoom: Record<string, I[]> = {};
+  for (const i of incidents || []) {
+    if (!i || !i.room_id) continue;
+    (byRoom[i.room_id] = byRoom[i.room_id] || []).push(i);
+  }
+  return byRoom;
+}
+
+/* Попадает ли ЗАПИСЬ в окно простоя. Единый предикат «пострадавших» для доски
+   и колл-листа.
+
+   ⚠️ Сравниваются ИНТЕРВАЛЫ, а не точка старта — это зеркало живого гарда
+   `check_not_during_incident` (сверено `pg_get_functiondef`, не по памяти):
+
+     tstzrange(i.started_at, coalesce(i.blocked_until, 'infinity'))
+       && tstzrange(new.scheduled_at, new.scheduled_at + make_interval(mins => duration_min))
+
+   До с50 здесь стояло `dt >= start && dt < end`, то есть вопрос «начинается ли
+   слот ВНУТРИ простоя». Запись 11:45 длительностью 30 минут при простое с 12:00
+   физически заходит в простой, БД её изменение отобьёт кодом INCIDENT — а в
+   списке «кому звонить» её не было: секция писала «У вікні простою активних
+   записів немає». Никто не звонит, пациент приезжает к стоящему аппарату.
+   Ровно этот класс U-33 (с49) закрыл для `studyBlockedByFeed` — здесь он дожил
+   до фазы 4 аудита, при том что обе функции лежат в ЭТОМ ЖЕ файле.
+
+   ⚠️ Буфер уборки в окно НЕ входит: гард считает ровно `duration_min`. Добавить
+   буфер значило бы звать пациентов, которых сервер простоем не задел.
+
+   ⚠️ Границы полуоткрытые `[)` с обеих сторон, как у `tstzrange`: касание
+   концами пересечением НЕ является. Запись 11:30 + 30 мин и простой с 12:00 —
+   НЕ пострадавшая, и это не округление, а тот же ответ, что даст сервер.
+
+   ⚠️ Зеркало здесь — только ПОЛОВИНА правила. Гард ещё фильтрует
+   `i.status in ('active','planned')`, и эта половина живёт у вызывающих:
+   `.in("status", …)` в `CallListBoard` и `liveIncidents` в `QueueBoard`.
+   Меняешь одну — ищи вторую.
+
+   ⚠️ `durationMin` — обязательный параметр БЕЗ дефолта в сигнатуре: так все
+   места вызова перечисляет сам tsc, а не память автора (правило проекта).
+   Дефолт 30 — тот же, что в `queueStatus`, `delayPlan` и `soundEvents`, но
+   выражен как `dur > 0 ? dur : 30`, а НЕ как `|| 30`: последнее пропустило бы
+   отрицательное значение. На нулевой/неизвестной длительности предикат
+   становится ЧУТЬ ШИРЕ серверного, причём по двум разным причинам: при
+   `duration_min is null` гард выходит первой же строкой, а при `0` его
+   `tstzrange(x, x)` ПУСТ, и `&&` с пустым диапазоном всегда false. Обе — наша
+   сознательная односторонняя расходимость: лишний звонок дешевле пациента у
+   сломанного аппарата. В проде таких записей нет — ветка страховочная. */
 export function entryInIncidentWindow(
   scheduledDate: string | null | undefined,
   scheduledTime: string | null | undefined,
+  durationMin: number | null | undefined,
   inc: IncidentLike | null | undefined
 ): boolean {
   if (!inc || !scheduledDate || !scheduledTime) return false;
-  const dt = wallInstant(scheduledDate, scheduledTime);
-  const start = new Date(inc.started_at).getTime();
-  return dt >= start && dt < incidentEffectiveEnd(inc);
+  const startMs = wallInstant(scheduledDate, scheduledTime);
+  /* ⚠️ Две соседние ветки «не знаем» смотрят в РАЗНЫЕ стороны, и это осознанно
+     (названо ревью с50, иначе читалось бы как оплошность).
+     Нечитаемое время ЗАПИСИ → false: интервал построить не из чего, а вопрос
+     функции — «попадает ли ЭТА запись в окно». Ответить «да» значило бы для
+     каждого простоя пометить пострадавшими все записи с битым временем — то
+     есть залить список обзвона мусором, ничего не защитив: такую запись всё
+     равно нельзя ни перенести, ни назвать пациенту время.
+     Нечитаемый момент ПРОСТОЯ → true (ниже): там неизвестна ГРАНИЦА, а не
+     объект, и «не знаем, когда сломалось» не имеет права стать «не сломалось».
+     Обе ветки на проде недостижимы: `scheduled_date`/`scheduled_time` пустых
+     нет, `started_at` в схеме NOT NULL. */
+  if (!isFinite(startMs)) return false;
+  const dur = Number(durationMin);
+  const endMs = startMs + (isFinite(dur) && dur > 0 ? dur : 30) * 60000;
+  const incStart = new Date(inc.started_at).getTime();
+  /* `incidents.started_at` в схеме NOT NULL, поэтому из PostgREST эта ветка
+     недостижима. Но если момент простоя когда-нибудь станет нечитаемым, «не
+     знаем» не имеет права стать «не пострадал» — правило всего модуля. */
+  if (isNaN(incStart)) return true;
+  return startMs < incidentEffectiveEnd(inc) && endMs > incStart;
 }
 
 /* ===== U-56 (с49): що аварійна зупинка ВІДДАЄ журналу =====================
