@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import ServerClockSync from "@/components/ServerClockSync";
 
 export const metadata: Metadata = {
   title: "RadFlow",
@@ -30,6 +31,12 @@ export default function RootLayout({
               "(function(){try{var d=localStorage.getItem('rf-density');var ok=d==='compact'||d==='comfortable'||d==='spacious';document.documentElement.setAttribute('data-density',ok?d:'comfortable');}catch(e){document.documentElement.setAttribute('data-density','comfortable');}})();",
           }}
         />
+        {/* Ф4-8: єдиний вимірювач зсуву годинника браузера проти годинника БАЗИ.
+            Тут, а не в дошках: одне місце — одне правило довіри до проби.
+            Нічого не малює; без сесії мовчить (server_now() дано лише
+            authenticated); будь-який збій лишає зсув 0, тобто поведінку до
+            пакета. */}
+        <ServerClockSync />
         {children}
       </body>
     </html>

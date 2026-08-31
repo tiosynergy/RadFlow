@@ -6,6 +6,7 @@
 
 import { useState, useEffect, type ReactNode } from "react";
 import { useModalA11y } from "@/lib/useModalA11y";
+import { serverNow } from "@/lib/serverClock";
 
 const FAIL_REASONS = [
   { group: "Стан пацієнта", items: ["Клаустрофобія", "Несумісний імплант", "Кардіостимулятор", "Не готовий", "Погано почувається", "Відмовився"] },
@@ -19,9 +20,12 @@ function fmtTimer(sec: number): string {
   return m + ":" + String(s).padStart(2, "0");
 }
 
+/* Ф4-8: та сама поправка, що в QueueBoard.LiveTimer — enteredAt ставить БАЗА.
+   Дві копії компонента лишаються двома (це не пакет про дублікати), але
+   ГОДИННИК у них тепер один; розійтись вони можуть у розмітці, не в часі. */
 function LiveTimer({ enteredAt, children }: { enteredAt?: string | null; children: (sec: number) => ReactNode }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  const [now, setNow] = useState(() => serverNow());
+  useEffect(() => { const t = setInterval(() => setNow(serverNow()), 1000); return () => clearInterval(t); }, []);
   const sec = enteredAt ? Math.max(0, Math.floor((now - new Date(enteredAt).getTime()) / 1000)) : 0;
   return children(sec);
 }

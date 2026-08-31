@@ -70,7 +70,13 @@ declare
     'referral_center_card(uuid)','search_referrers(text)',
     'services_import_rpc(jsonb, uuid)','sink_overdue_scheduled()',
     'save_schedule_override(date, boolean, text, jsonb, text)',
-    'emergency_stop_rpc(uuid[], date, text)'];
+    'emergency_stop_rpc(uuid[], date, text)',
+    /* ⚠️ 0169 (Ф4-8) дописала `server_now()`. Причина та сама, що в 0168, і
+       вона названа в шапці 0169: `create or replace` у схемі public отримує
+       ДЕФОЛТНИЙ ACL, тобто EXECUTE дістають і PUBLIC, і anon. Міграція має
+       ассерт у своїй транзакції, але він працює РАЗ — при накаті; наступне
+       пере-створення функції має червоніти ТУТ, у живому списку. */
+    'server_now()'];
   c_kept constant text[] := array[
     'auth_clinic_id()','auth_can_refer(uuid)','auth_referrer_clinics()',
     'auth_referrer_visible_rooms()','auth_is_admin()','auth_is_ceo_of(uuid)',
@@ -144,7 +150,10 @@ begin
      or not has_function_privilege('authenticated', 'public.search_referrers(text)', 'EXECUTE')
      or not has_function_privilege('authenticated', 'public.services_import_rpc(jsonb, uuid)', 'EXECUTE')
      or not has_function_privilege('authenticated', 'public.sink_overdue_scheduled()', 'EXECUTE')
-     or not has_function_privilege('authenticated', 'public.save_schedule_override(date, boolean, text, jsonb, text)', 'EXECUTE') then
+     or not has_function_privilege('authenticated', 'public.save_schedule_override(date, boolean, text, jsonb, text)', 'EXECUTE')
+     -- 0169 (Ф4-8): без цього рядка revoke БЕЗ grant лишив би вимірювач
+     -- годинника мертвим для клієнта, і жоден зонд не почервонів би.
+     or not has_function_privilege('authenticated', 'public.server_now()', 'EXECUTE') then
     raise exception 'SMOKE_FAIL(c3): revoke public зачепив authenticated — RPC мертві для клієнта';
   end if;
   v_done := v_done || 'c3 ';
@@ -389,7 +398,8 @@ begin
                               'services_import_rpc(''[]''::jsonb, null)',
                               'sink_overdue_scheduled()',
                               'save_schedule_override(current_date, false, null, ''{}''::jsonb, null)',
-                              'emergency_stop_rpc(null::uuid[], current_date, null)'] loop
+                              'emergency_stop_rpc(null::uuid[], current_date, null)',
+                              'server_now()'] loop
     begin
       perform set_config('request.jwt.claims', '{}', true);
       set local role anon;
@@ -405,7 +415,7 @@ begin
       end if;
     end;
   end loop;
-  v_done := v_done || 'f:6 ';
+  v_done := v_done || 'f:7 ';
 
   -- ── (f2) authenticated направник кличе referral_center_card УСПІШНО ───────
   select ra.id, ra.referrer_id into v_ra_id, v_ref
