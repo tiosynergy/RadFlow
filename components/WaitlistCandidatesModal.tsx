@@ -133,7 +133,8 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
     priority: bookFor.priority_level, notes: bookFor.note, buffer: bookFor.buffer_time_min,
     studies: Array.isArray(bookFor.studies) ? (bookFor.studies as Study[]) : [],
     // Одразу підставляємо вікно, що звільнилося (кабінет/дату/час) — можна змінити.
-    roomId: slot.roomId, date: slot.date, time: slot.time,
+    // U-72: дата з ДАНИХ (доба конкретного вікна) — поправка годинника її не рухає.
+    roomId: slot.roomId, date: slot.date, time: slot.time, datePinned: true,
   } : null;
 
   if (bookFor) {

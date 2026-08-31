@@ -20,6 +20,7 @@ import {
 } from "@/lib/schedule";
 import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { incidentDurCapMin, incidentEffectiveEnd, roomIncidentsOf, studyBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentFeed } from "@/lib/incidents";
+import { useFollowTodayKey } from "@/lib/useFollowToday";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { BUFFER_DEFAULT, normBuffer, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
@@ -390,6 +391,33 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   // Запит у польоті + помилка сервера — показуємо в модалці (див. onConfirm).
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
+  /* U-72: дату перенесла поправка годинника (null = не переносили). Гасне,
+     щойно оператор обере дату сам. */
+  const [dateShifted, setDateShifted] = useState<string | null>(null);
+
+  /* ⚠️ U-72. `dateStr` зафіксовано ініціалізатором на «завтра доби КЛІНІКИ», а
+     зсув годинника бази приїжджає асинхронно і перезаміряється кожні 10 хв та
+     на `visibilitychange`. Поправка через північ робить зафіксоване «завтра»
+     новим «сьогодні» — а `clinicTodayStr` нижче вже жива, тож `isToday` стає
+     істинним і половина сітки закрита як «минуле». Оператор списує це на графік
+     кабінету і переносить пацієнта на СЬОГОДНІ замість завтра; при спішачому ПК
+     — навпаки, на післязавтра, і не спрацьовує нічого, бо перенос у майбутнє
+     легальний. `date` звідси йде в `scheduled_date` переносу (onConfirm нижче).
+     `offsetDays: 1` — саме той дефолт, який стоїть в ініціалізаторі; чужу дату,
+     обрану оператором у полі, правило не чіпає.
+     `onShift` — скидаємо обраний слот і кажемо про це вголос. Без скидання
+     наслідок був би ГІРШИЙ за сам дефект (знахідка ревʼю А, HIGH): оператор
+     диктує пацієнту «друге вересня, девʼята», дата тихо їде на перше, слот
+     «09:00» лишається валідним — і в БД потрапляє день, якого пацієнт не чув.
+     Ручна зміна дати в полі нижче робить рівно те саме `setTime("")`. */
+  useFollowTodayKey({
+    clinicTz: clinicTz || undefined,
+    offsetDays: 1,
+    busy: saving,
+    value: dateStr,
+    setKey: setDateStr,
+    onShift: (d) => { setTime(""); setDateShifted(dateVal(d)); },
+  });
 
   async function handleConfirm() {
     if (!valid || saving) return;   // M-6: подвійний клік більше не переносить двічі
@@ -553,10 +581,14 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
               {/* Клампимо в onChange: атрибут min лише малює межу, але не блокує
                   введення/вставку минулої дати. */}
               <input className="inp tabular" type="date" min={clinicTodayStr} value={dateStr}
-                onChange={(e) => { const v = e.target.value; setDateStr(v && v < clinicTodayStr ? clinicTodayStr : v); setTime(""); }} /></label>
+                onChange={(e) => { const v = e.target.value; setDateStr(v && v < clinicTodayStr ? clinicTodayStr : v); setTime(""); setDateShifted(null); }} /></label>
             <div className="fld"><span className="fld-lab">Вільні слоти · блок {dur} хв · {slotsLoading ? "завантаження…" : "вміщується ще " + fitCount}</span></div>
           </div>
           <div className="fld">
+            {/* ⚠️ U-72 (ревʼю А, HIGH): дату перенесла поправка годинника. Мовчазний
+                перенос тут дорожчий за сам дефект — оператор уже назвав пацієнту
+                день і час уголос. */}
+            {dateShifted && <div className="ctx-hint" role="status" style={{ marginBottom: 10 }}>🕐 Годинник центру уточнено — дату змінено на <b>{dateShifted}</b>, слот оберіть заново.</div>}
             {isPastDay && <div className="ctx-hint red" style={{ marginBottom: 10 }}>⏳ {dateStr} уже минуло — перенести можна лише на майбутній час.</div>}
             {/* Обидва рядки — ТВЕРДЖЕННЯ про графік, тож лише коли він прочитаний.
                 Без цієї умови збій читання (schedErr) показував би графік, який

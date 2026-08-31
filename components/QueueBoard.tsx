@@ -1557,7 +1557,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      перетинає північ клініки, лишила б дошку на попередній добі — вона мовчки
      стала б архівом. Правило (і його межі) живуть у lib/useFollowToday.ts —
      один екземпляр на цю дошку й на дошку радіолога. */
-  useFollowToday({ clinicTz, pinnedKey: initialDate, busy: anyModalOpen, setSelectedDate });
+  useFollowToday({ clinicTz, pinnedKey: initialDate, busy: anyModalOpen, value: selectedDate, setDate: setSelectedDate });
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {

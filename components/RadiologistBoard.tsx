@@ -1246,7 +1246,8 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     clinicTz,
     pinnedKey: initialDate,
     busy: !!completeFor || !!stuckFinish || !!offCallAsk || !!delayPreview,
-    setSelectedDate,
+    value: selectedDate,
+    setDate: setSelectedDate,
   });
 
   function callPatient(p: RadEntry) {

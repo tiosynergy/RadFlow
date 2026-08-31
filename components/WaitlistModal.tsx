@@ -19,6 +19,7 @@ import type { StudySearchHit } from "@/lib/studySearch";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { TIME_PRESETS, timePresetKey } from "@/lib/waitlist";
 import { wallDayKey } from "@/lib/incidents";
+import { useFollowTodayKey } from "@/lib/useFollowToday";
 import type { WaitlistEntry } from "@/supabase/types";
 import { useModalA11y } from "@/lib/useModalA11y";
 
@@ -116,6 +117,29 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   const [timeKey, setTimeKey] = useState(() => (initial ? timePresetKey(initial.desired_time_from, initial.desired_time_to) : "any"));
   const [note, setNote] = useState(initial?.note || "");
   const [saving, setSaving] = useState(false);
+
+  /* ⚠️ U-72. `dateFrom` у режимі СТВОРЕННЯ зафіксовано знімком `todayStr`, а
+     сам `todayStr` живий (тіло рендера). Після поправки годинника через північ
+     вони розходяться, і в `desired_date_from` іде вчорашня доба — кандидат
+     стає доступним на добу раніше, ніж пацієнт готовий.
+     Ціна нижча, ніж у формах запису: `desired_date_from` — це «не раніше ніж»,
+     а не призначення, тож помилка на добу не скасовує візит. Але правило одне
+     на всіх, і винятків «тут майже не боляче» проєкт не тримає.
+
+     ⚠️ ПЕРША РЕДАКЦІЯ ЦЬОГО КОМЕНТАРЯ БУЛА НЕВІРНОЮ (знахідка ревʼю Б, MEDIUM).
+     Вона стверджувала: «у режимі РЕДАГУВАННЯ дефолт інший, тож правило його не
+     чіпає — окремої умови не треба». Це правда лише поки збережена дата ≠
+     сьогодні. А `desired_date_from = сьогодні` — це і є ДЕФОЛТ створення, тобто
+     найчастіший вхід: запис, заведений сьогодні, відкривають на правку, і
+     правило мовчки переставляє поле, якого оператор не торкався, у збережений
+     рядок. Тому пін ЯВНИЙ: збережене значення закріплюємо. */
+  useFollowTodayKey({
+    clinicTz: clinicTz || undefined,
+    pinnedKey: initial?.desired_date_from ?? null,
+    busy: saving,
+    value: dateFrom,
+    setKey: setDateFrom,
+  });
 
   // Доступні модальності: направнику (needCenter) — лише ті, що дозволяє його грант
   // на ОБРАНИЙ центр (передаються в centers[].modalities); персоналу — за наявними

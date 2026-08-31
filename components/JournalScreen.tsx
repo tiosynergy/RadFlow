@@ -22,6 +22,7 @@ import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import { createClient } from "@/lib/supabase/client";
 import { setClinicTz, wallDayKey } from "@/lib/incidents";
+import { useFollowTodayKey } from "@/lib/useFollowToday";
 import { visibleRooms } from "@/lib/rooms";
 import {
   ALL_EVENT_TYPES,
@@ -87,6 +88,22 @@ export default function JournalScreen({
   const [period, setPeriod] = useState<Period>("7");
   const [dateFrom, setDateFrom] = useState(shiftDay(today, -6));
   const [dateTo, setDateTo] = useState(today);
+  /* ⚠️ U-72. Пресети («7 днів», «30 днів») рахуються живим `today` — вони в
+     деп-листі `range` нижче й за поправкою годинника йдуть самі. А ці два поля
+     заморожені ініціалізатором і працюють лише в режимі «Довільний період»:
+     туди оператор потрапляє з уже підставленою парою дат, і після поправки
+     через північ вона на добу позаду.
+     Ціна найнижча в пакеті — журнал лише читає, обидва поля видимі й
+     редаговані. Але заморозка та сама, і лишити її означало б тримати в коді
+     приклад «тут можна не переносити». */
+  /* ⚠️ Два незалежні хуки можуть вивернути діапазон навиворіт, і це прийнято
+     свідомо (знахідка ревʼю А, LOW): якщо оператор лишив «З» дефолтним, а «По»
+     вручну поставив на ту саму дату, перенесення зрушить лише перше — вийде
+     `from > to` і порожня видача. Лікування (звʼязати два хуки або додати гард)
+     дорожче за шкоду: обидва поля видимі поруч, екран лише читає, а виправити
+     їх — секунда. Названо тут, щоб не з'ясовувалось у проді. */
+  useFollowTodayKey({ clinicTz, offsetDays: -6, value: dateFrom, setKey: setDateFrom });
+  useFollowTodayKey({ clinicTz, value: dateTo, setKey: setDateTo });
   const [actor, setActor] = useState<string>("all");
   /** "all" або конкретний ImportantEventType (групи — лише як optgroup). */
   const [eventType, setEventType] = useState<string>("all");

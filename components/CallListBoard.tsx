@@ -13,6 +13,7 @@ import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
 import { entryInIncidentWindow, groupIncidentsByRoom, incidentExpired, incidentFeed, setClinicTz, wallDayKey, wallToday0 } from "@/lib/incidents";
+import { useFollowToday } from "@/lib/useFollowToday";
 import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
@@ -300,6 +301,28 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
   // відкривав обдзвін не на той день.
   const tomorrow = useMemo(() => { const d = wallToday0(clinicTz); d.setDate(d.getDate() + 1); return d; }, [clinicTz]);
   const [date, setDate] = useState(tomorrow);
+  /* ⚠️ U-72. Заморозка тут ПОДВІЙНА: `useMemo` з деп-листом `[clinicTz]`
+     (поправка годинника зону не міняє, тож мемо не перерахується НІКОЛИ) плюс
+     `useState` від нього. Живе поруч `todayKey` нижче — і після поправки через
+     північ екран рветься на два дні: список і CSV ідуть по `dayKey`, а простої
+     та секція «Запізнення» — по `todayKey`.
+     Дату в БД цей екран не пише, але пише СТАТУСИ пачкою: «✓ Всіх підтверджено»
+     бере цілі з відфільтрованого по `dayKey` списку, тобто одним кліком
+     підтверджує записи чужої доби. Тому перенесення тут не косметика.
+     30-секундний тікер нижче не рятує: він лише перемальовує компонент, а
+     `tomorrow`/`date` тримає деп-лист.
+
+     ⚠️ `busy` спершу не передавався ВЗАГАЛІ — знайшли обидва ревʼю, незалежно.
+     Ціна саме тут найгостріша: діалог «✓ Всіх підтверджено» показує КІЛЬКІСТЬ
+     цілей за поточну добу, оператор читає її 2–4 секунди, а `onConfirm`
+     обчислює `confirmTargets` у МОМЕНТ КЛІКА — по вже перезавантаженому
+     списку. Тобто підтвердження пачкою могло піти на інший день, необоротно і
+     без сліду (сам діалог і каже: «дію не можна скасувати однією кнопкою»).
+     Список нижче — повний перелік оверлеїв і запитів у польоті цього екрана,
+     за зразком `anyModalOpen` сусідніх дошок; нова модалка мусить потрапити
+     і сюди. `loading` теж тут: поки список дня не прочитано, цілі невідомі. */
+  // ↓ сам виклик правила стоїть НИЖЧЕ, поряд із оголошенням `anyBusy`: `busy`
+  //   мусить бачити всі оверлеї цього екрана, а вони оголошені далі.
   const [entries, setEntries] = useState<CallEntry[]>([]);
   const [loading, setLoading] = useState(true);
   /* U-1: зріз, до якого належать рядки НА ЕКРАНІ (клініка + день). Спінер раніше
@@ -595,6 +618,15 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
      підтверджених, через ConfirmDialog, і показуємо реальну кількість. */
   const [confirmAllAsk, setConfirmAllAsk] = useState(false);
   const [confirmAllBusy, setConfirmAllBusy] = useState(false);
+
+  /* U-72 — сам виклик правила «дошка слідує за сьогодні». Обґрунтування і ціна
+     розписані нагорі, біля заморозки `tomorrow`/`date`; тут він стоїть тому,
+     що `busy` мусить бачити ВСІ оверлеї, а два з них оголошені щойно.
+     ОДИН вираз на всі стани — другий екземпляр «що зараз відкрито» розійшовся б
+     із цим на першій же новій модалці, і розійшовся б МОВЧКИ. */
+  const anyBusy = loading || confirmAllBusy || confirmAllAsk || declineBusy || !!declineAsk
+    || !!reschedFor || !!editStudiesFor || !!wlSuggest;
+  useFollowToday({ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate });
 
   async function doConfirmAll(ids: string[]) {
     if (!ids.length) return;

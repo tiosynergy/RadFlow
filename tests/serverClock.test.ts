@@ -29,6 +29,7 @@ import {
   clockRttMs,
   clockEpoch,
   serverNow,
+  subscribeClock,
   resetServerClock,
   CLOCK_MAX_RTT_MS,
   CLOCK_MAX_MONO_DRIFT_MS,
@@ -356,6 +357,38 @@ describe("clockEpoch — сигнал «зараз стрибнув» для т�
     applyClockEstimate({ offsetMs: 900, rttMs: 1900 });        // гірша → відхилено
     expect(clockEpoch()).toBe(e);
   });
+
+  /* ⚠️ ГОЛОВНА ЗНАХІДКА РЕВʼЮ Б ПО U-72 (HIGH): уся цепочка пробудження —
+     `applyClockEstimate` → розсилка слухачам → `subscribeClock` →
+     `useClockEpoch` → залежність ефекту — не була покрита НІЧИМ. Найдешевша
+     мутація в проєкті виглядала так:
+         if (changed) { _epoch++; }        // прибрано цикл по _listeners
+     `_listeners` лишається вжитим у `subscribeClock`, тож і лінтер мовчить. А
+     наслідок — обидва пакети МЕРТВІ цілком: ні дошки (U-70), ні сім форм
+     (U-72) ніколи не дізнаються про поправку, тоді як `wallNow()` продовжує
+     їхати. Тобто повертається рівно той дефект, заради якого все й писалось.
+     Чому мовчали інші сторожі: правило перевіряється викликом чистих функцій
+     (розсилка не бере участі), а пінам по джерелу видно лише компоненти й
+     `lib/useFollowToday.ts` — `lib/serverClock.ts` вони не відкривають. */
+  it("зміна зсуву БУДИТЬ підписників, а не лише рухає лічильник", () => {
+    const seen: number[] = [];
+    const off = subscribeClock(() => seen.push(clockEpoch()));
+    applyClockEstimate({ offsetMs: 480_000, rttMs: 20 });     // зміна → повідомлення
+    applyClockEstimate({ offsetMs: 480_000, rttMs: 10 });     // те саме значення → мовчимо
+    applyClockEstimate({ offsetMs: 900, rttMs: 1900 });       // гірша → відхилено, мовчимо
+    off();
+    applyClockEstimate({ offsetMs: 0, rttMs: 5 });            // після відписки — не наша справа
+    expect(seen, "слухач не отримав повідомлення про поправку").toEqual([1]);
+  });
+
+  it("слухач, який кинув, не позбавляє повідомлення решту", () => {
+    const seen: string[] = [];
+    const offBad = subscribeClock(() => { seen.push("bad"); throw new Error("слухач зламався"); });
+    const offGood = subscribeClock(() => { seen.push("good"); });
+    expect(() => applyClockEstimate({ offsetMs: 480_000, rttMs: 20 })).not.toThrow();
+    offBad(); offGood();
+    expect(seen, "виняток одного слухача обірвав розсилку").toEqual(["bad", "good"]);
+  });
 });
 
 describe("Ф4-8 — сценарій аудиту цілком", () => {
@@ -464,13 +497,21 @@ describe("межі правки названі й дотримані", () => {
      `Date.now()` двома зсувами, і різниця може бути тільки поправчина. */
   it("правило питає «чи перенесла ПОПРАВКА добу», а не «чи змінилась доба»", () => {
     const s = src("lib/useFollowToday.ts");
+    /* ⚠️ ПІН ПЕРЕПИСАНО В U-72: рішення переїхало з ефекту в чисту `decideShift`
+       (ревʼю Б), і разом із цим обидві доби стали рахуватись від ОДНОГО
+       параметра `nowMs` — до того `after` брався від власного `Date.now()`
+       усередині `wallDayKey`, тобто інваріант, який тут пінувався, був
+       НЕПРАВДОЮ. Поведінково це тепер покрито у tests/followToday.test.ts
+       («обидві доби рахуються від ОДНОГО моменту»); тут лишається пін самої
+       форми виведення. */
     expect(s, "доба «до» більше не рахується старим зсувом від того самого моменту")
-      .toMatch(/wallDayKeyAt\(Date\.now\(\) \+ prevOffset, clinicTz\)/);
-    expect(s, "доба «після» рахується не поточним годинником").toMatch(/wallDayKey\(clinicTz\)/);
+      .toMatch(/wallDayKeyAt\(nowMs \+ prevOffsetMs, clinicTz\)/);
+    expect(s, "доба «після» рахується не тим самим моментом")
+      .toMatch(/wallDayKeyAt\(nowMs \+ nowOffsetMs, clinicTz\)/);
     expect(s, "правило знову спирається на попередній рендер, а не на зсув")
       .not.toMatch(/prevTodayKeyRef|prevKeyRef/);
     expect(s, "перенесення під відкритою модалкою більше не відкладається")
-      .toMatch(/if \(pending === null \|\| busy\) return;/);
+      .toMatch(/if \(pending === null \|\| busy\) return \{ pendingKey: pending, applyFrom: null, applyTo: null \};/);
   });
 
   it("підпис «завершення о HH:MM» іде через той самий виправлений годинник", () => {

@@ -391,7 +391,9 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
             weight: pfStep?.patient_weight ?? null, email: pfStep?.patient_email || "",
             priority: "planned",
             // Крок кейса — той самий візит: відкриваємо день кейса (кабінет/час не підставляємо).
+            // U-72: дата з ДАНИХ (scheduled_date сусіднього кроку) — поправка годинника її не рухає.
             date: pfStep?.scheduled_date || undefined,
+            datePinned: true,
           }}
           caseSiblings={activeSiblings}
           onAddCaseStep={onAddStep}

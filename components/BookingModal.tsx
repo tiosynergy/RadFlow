@@ -15,6 +15,7 @@ import {
 } from "@/lib/schedule";
 import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { incidentDurCapMin, incidentEffectiveEnd, roomIncidentsOf, studyBlockedByFeed, wallNow, wallMinOfDay, wallToday0, type IncidentFeed } from "@/lib/incidents";
+import { useFollowToday } from "@/lib/useFollowToday";
 
 /* ⚠️ Імена порівнюємо ТІЛЬКИ нормалізовано (trim + пробіли до одного): у БД
    живуть легасі-рядки з подвійними пробілами, а нові значення нормалізує
@@ -77,6 +78,17 @@ export type BookingPrefill = {
   roomId?: string | null;
   date?: string | null; // YYYY-MM-DD
   time?: string | null; // HH:MM
+  /* U-72, знахідка ревʼю А. `date` приходить сюди з ДВОХ різних за смислом
+     джерел, і плутати їх дорого:
+       • із ДАНИХ — `scheduled_date` сусіднього кроку кейса, дата слота, що
+         звільнився. Це усвідомлений вибір доби, і поправка годинника не має
+         права його рухати → `datePinned: true`;
+       • із ЧУЖОГО ДЕФОЛТУ — день дошки, «завтра» форми переносу. Такий `date`
+         сам виведений із «сьогодні» і протухає разом із ним; закріпити його
+         означало б заглушити правило рівно там, де воно й потрібне (перенос
+         поїхав би на добу далі наміру, і мовчки).
+     Тому пін ЯВНИЙ: за замовчуванням дата НЕ закріплена. */
+  datePinned?: boolean;
 };
 
 /* ── Дати ── */
@@ -948,6 +960,39 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
   // Запит у польоті + помилка сервера — показуємо тут, у модалці (див. onSave).
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
+  /* U-72: дату перенесла поправка годинника — підпис для оператора (null = не
+     переносили). Гасне, щойно він обере дату сам. */
+  const [dateShifted, setDateShifted] = useState<string | null>(null);
+
+  /* ⚠️ U-72. `bookDate` зафіксовано ініціалізатором useState на `wallToday0()`,
+     а зсув годинника бази приїжджає АСИНХРОННО — і потім ще раз кожні 10 хв та
+     на `visibilitychange`. Якщо поправка перетинає північ клініки, зафіксована
+     дата протухає, а `clinicToday` нижче вже жива: форма і решта модалки живуть
+     у РІЗНИХ добах.
+     Напрямок несиметричний, і саме тому це не косметика. ПК ВІДСТАЄ →
+     `bookDate` стає минулим, `isPastDay` глушить усю сітку: відмова гучна,
+     дані цілі. ПК СПІШИТЬ → `bookDate` стає ЗАВТРА, а запис на завтра
+     легальний: ні `isPastDay`, ні `isBookToday`, ні гард 0063, ні сервер не
+     заперечать — і `buildPayload()` тихо віддасть `date: bookDate` у
+     `scheduled_date` чужої доби. Пацієнт прийде сьогодні, а запису немає.
+     `pinnedKey` — ЛИШЕ дата з `datePinned` (кейс, звільнений слот): див.
+     розбір біля самого поля в `BookingPrefill`. Дефолт форми переносу сюди не
+     потрапляє навмисно — інакше правило глушилось би рівно там, де потрібне.
+     `busy` — запит у польоті АБО набраний кейс: поки в `caseSteps` лежать
+     кроки, вони прив'язані до старої дати (`caseBusyWindows` фільтрує їх по
+     `sameDay(cs.date, bookDate)`), і зсув дати мовчки розколов би кейс на дві
+     доби та заразом осліпив би клієнтську перевірку накладень (ревʼю А).
+     `onShift` — скидаємо обраний слот і кажемо про це вголос: ручна зміна дати
+     нижче робить рівно те саме, і автоперенесення не має права бути тихішим. */
+  useFollowToday({
+    clinicTz: clinicTz || undefined,
+    pinnedKey: prefill?.datePinned ? prefill.date ?? null : null,
+    busy: saving || caseSteps.length > 0,
+    offsetDays: 0,
+    value: bookDate,
+    setDate: setBookDate,
+    onShift: (d) => { setTime(""); setDateShifted(fmtShort(d)); },
+  });
 
   function buildPayload(): BookingPayload {
     const sel = docs.find((d) => String(d.id) === String(doctorId));
@@ -1419,7 +1464,17 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
               )}
             </div>
 
-            <BookingCalendar value={bookDate} today={clinicToday} onPick={(d) => { setBookDate(d); setTime(""); }} />
+            <BookingCalendar value={bookDate} today={clinicToday} onPick={(d) => { setBookDate(d); setTime(""); setDateShifted(null); }} />
+
+            {/* ⚠️ U-72, знахідка ревʼю А (HIGH). Дата змінилась САМА, і без цього
+                рядка це невідрізнюване від «нічого не сталось»: у двоколонковій
+                формі ПІБ ліворуч, календар праворуч, фокус не рухається. Саме
+                непомітність робила всі інші ризики пакета тихими. */}
+            {dateShifted && (
+              <div className="ctx-hint" role="status" style={{ marginTop: 6 }}>
+                🕐 Годинник центру уточнено — дату змінено на <b>{dateShifted}</b>, час оберіть заново.
+              </div>
+            )}
 
             <div className="fld">
               <div className="bk-slots-head">

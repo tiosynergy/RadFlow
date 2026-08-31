@@ -7,6 +7,7 @@ import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { buildSlots, slotToMin } from "@/lib/slots";
 import { inBreak, overrideOn, roomBreaksFromFeed, roomScheduleFromFeed, type OverrideFeed } from "@/lib/schedule";
 import { incidentEffectiveEnd, roomIncidentsOf, wallNow, wallToday0, wallMinOfDay, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
+import { useFollowTodayKey } from "@/lib/useFollowToday";
 import { modalityShort, modalityKind } from "@/lib/studies";
 
 type Room = {
@@ -42,6 +43,14 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
   const [roomId, setRoomId] = useState(() => rooms[0]?.id || "");
   const [day, setDay] = useState(() => dateKey(wallToday0(clinicTz)));
   const [selectedSlot, setSelectedSlot] = useState("");
+  /* ⚠️ U-72. `day` зафіксовано ініціалізатором, а `isToday` нижче рахується
+     живим `wallToday0`. Після поправки годинника через північ вони розходяться,
+     `isToday` стає хибним — і з `stateOf` зникає гілка «час уже минув»: карта
+     дня показує ЦІЛИЙ день вільним. Карта оголошена дзеркалом форми запису,
+     тож розбіжність саме тут читається як «у формі зайнято, а на карті вільно».
+     Записів цей екран не робить, дата видима й редагована — тому й ціна нижча,
+     ніж у форм. Правило те саме: винятків «тут лише перегляд» не тримаємо. */
+  useFollowTodayKey({ clinicTz, value: day, setKey: setDay });
 
   const room = rooms.find((r) => r.id === roomId) || null;
   const date = useMemo(() => dateFromKey(day), [day]);
