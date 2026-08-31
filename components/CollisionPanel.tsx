@@ -20,7 +20,7 @@ import { isRoomBookable } from "@/lib/rooms";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFromFeed, roomBreaksFromFeed, overridesUnknown, overrideOn, type OverrideFeed, type Break } from "@/lib/schedule";
 import { roomSchedulesById, roomScheduleReadError } from "@/lib/roomSchedule";
-import { incidentEffectiveEnd, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, wallInstant, type IncidentFeed } from "@/lib/incidents";
+import { incidentMinutesOnDay, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, type IncidentFeed } from "@/lib/incidents";
 import { firstFittingSlot, slotToMin, type BusySpan } from "@/lib/slots";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import type { BusyRow } from "@/lib/slotBusy";   // 0074: рядок room_busy_slots — один тип на всіх
@@ -153,21 +153,23 @@ export default function CollisionPanel({ entry, info, rooms, clinicId, clinicTz,
              доби ЧЕРЕЗ ДАТУ дошки і клампимо до меж дня: у incidents прилітають і
              заплановані простої на інші дні, і відкриті «до відновлення» зі вчора —
              без клампа вони вирізали б чужі години (або, гірше, не вирізали свої). */
-          const dayStart = wallInstant(dateStr, "00:00");
-          const DAY = 24 * 60;
           /* Недосяжно, поки живий гейт вище (той самий фід, те саме замикання) —
              і саме тому лишається: це РОЗТЯЖКА. Приберуть ранній гейт заради
              «зайвого запиту» — і тут читання простоїв не стане мовчки порожнім.
              Ревʼю р2 (F5) позначило дублювання; лишили свідомо. */
           const roomInc = roomIncidentsOf(incidents, r.id);
           if (roomInc === null) throw new Error("incidents-unknown");   // невідомо ≠ вільно
+          /* ⚠️ Вікно рахує КАНОНІЧНА `incidentMinutesOnDay`, а не своя формула
+             (F4-7). Тут стояв `Math.round` з обох боків, тоді як канон модуля —
+             початок вниз, кінець вгору: «зайва заблокована хвилина це відмова в
+             записі, недостатня це пацієнт у зламаному апараті». І це не
+             теоретично: `incidents.started_at` НЕ вирівняний на хвилину (у проді
+             5 із 6 простоїв мають дробові секунди, у двох sec ≥ 30), тож `round`
+             зсував початок вікна ВПЕРЕД — панель пропонувала кнопкою
+             «Перенести» слот, який сервер відбивав як 23P01 INCIDENT. */
           roomInc.forEach((i) => {
-            const st = new Date(i.started_at).getTime();
-            const en = incidentEffectiveEnd(i);
-            if (!isFinite(st) || en <= dayStart || st >= dayStart + DAY * 60000) return; // простій не цього дня
-            const s = Math.max(0, Math.round((st - dayStart) / 60000));
-            const e = en === Infinity ? DAY : Math.min(DAY, Math.round((en - dayStart) / 60000));
-            if (e > s) busy.push({ s, e });
+            const span = incidentMinutesOnDay(i, dateStr);
+            if (span) busy.push(span);
           });
           const slot = firstFittingSlot({
             // Не раніше «зараз» І не раніше, ніж кабінет реально звільниться

@@ -26,6 +26,7 @@ import { normPriority, type PatientPriority } from "@/lib/priority";
 import { deliverPendingOutbox } from "@/lib/outbox";
 import {
   wallNow, wallInstant, wallDayKey, wallInstantOf, wallMinOfDay, wallMinOfInstant,
+  incidentMinutesOnDay,
   readStoppedIncidents, stoppedIncidentsGap,
 } from "@/lib/incidents";
 import {
@@ -2413,7 +2414,25 @@ async function roomDayCtx(
    Час інцидентів зберігається в «настінному UTC» (той самий фрейм, що wallInstant),
    тому віднімаємо настінну північ доби, а не робимо getHours().
    Клампінг: початок — floor, кінець — ceil. «Округлення як у школі» повернуло б
-   секунди зайнятого часу в «вільні», і тригер відхилив би бронь саме в них (§6.1.0). */
+   секунди зайнятого часу в «вільні», і тригер відхилив би бронь саме в них (§6.1.0).
+
+   ⚠️ ДЗЕРКАЛО ГАРДА `check_not_during_incident`, і саме тому обидві правки F4-5
+   зроблені разом:
+   • статуси. Гард дивиться `i.status in ('active','planned')`, а тут стояло
+     `.eq("status","active")`. Планове ТО на сьогодні планувальник не бачив
+     ЗОВСІМ: план спокійно ставив пацієнта в його вікно, RPC робив UPDATE, гард
+     піднімав `INCIDENT` — і транзакція відкочувалась ЦІЛКОМ. Жоден запис плану
+     не зсувався, а оператор отримував помилку про запис, якого не обирав;
+   • порожній `blocked_until` — а от тут знахідка фази 4 БУЛА ПЕРЕБІЛЬШЕНА, і
+     виправляю це чесно: так, гард читає NULL як `'infinity'`, а копія читала як
+     «кінець доби», але результат ЗБІГАВСЯ — кламп `min(1440, …)` зводив обидва
+     до тієї самої межі запитаної доби. Реальна різниця лишалась одна: на
+     НЕЧИТАБЕЛЬНОМУ значенні (`blocked_until = 'infinity'` приїжджає рядком
+     "infinity" → NaN) копія робила `continue`, тобто простій зникав із
+     планувальника ЗОВСІМ — fail-OPEN у модулі, який весь fail-CLOSED. Канон
+     віддає Infinity і блокує добу.
+   Копію прибрано, а не «полагоджено»: рукописних копій цієї формули в проєкті
+   було пʼять, розійшлися дві, і саме так вони й розходяться. */
 async function incidentSpansFor(
   supabase: SupabaseClient<Database>,
   roomId: string,
@@ -2423,18 +2442,13 @@ async function incidentSpansFor(
     .from("incidents")
     .select("started_at, blocked_until, status")
     .eq("room_id", roomId)
-    .eq("status", "active");
+    .in("status", ["active", "planned"]);
   if (error) throw error;   // H-6: збій читання простоїв ≠ «простоїв немає»
 
-  const day0 = wallInstant(date, "00:00");
   const spans: BusySpan[] = [];
   for (const i of data || []) {
-    const sMs = new Date(i.started_at).getTime();
-    const eMs = i.blocked_until ? new Date(i.blocked_until).getTime() : day0 + 24 * 3600e3;
-    if (!isFinite(sMs) || !isFinite(eMs)) continue;
-    const s = Math.max(0, Math.floor((sMs - day0) / 60000));
-    const e = Math.min(1440, Math.ceil((eMs - day0) / 60000));
-    if (e > s) spans.push({ s, e });
+    const span = incidentMinutesOnDay(i, date);
+    if (span) spans.push(span);
   }
   return spans;
 }

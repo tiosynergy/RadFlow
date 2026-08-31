@@ -61,12 +61,12 @@ import StudyTimer from "@/components/StudyTimer";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
 import UnreadDot from "@/components/UnreadDot";
 import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
-import { unreadForEntity, unreadForField, unreadForSurface, type UnreadIndex } from "@/lib/unreadChanges";
+import { unreadForEntity, unreadForField, unreadForSurface, calendarDayKey, type UnreadIndex } from "@/lib/unreadChanges";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { PRIORITY_OPTIONS, PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import Toast, { type ToastData } from "@/components/Toast";
 import ShortcutsOverlay from "@/components/ShortcutsOverlay";
-import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, groupIncidentsByRoom, incidentFeed, roomIncidentsOf, wallNow, wallToday0, setClinicTz, type IncidentFeed } from "@/lib/incidents";
+import { incidentEffectiveEnd, incidentExpired, incidentAwaitingManualUnblock, entryInIncidentWindow, groupIncidentsByRoom, incidentFeed, incidentMinutesOnDay, roomIncidentsOf, wallNow, wallToday0, setClinicTz, type IncidentFeed } from "@/lib/incidents";
 import { quickSearchMatch } from "@/lib/quickSearch";
 import { fmtOrigin } from "@/lib/rescheduleOrigin";
 import { occupiesSlot } from "@/lib/slotOccupancy";
@@ -448,13 +448,18 @@ function CurrentCard({ patient, stuck, stuckUnknown, onFinishStuck, roomName, ro
 }
 
 /* ── Завантаженість кабінетів ── */
+/* ⚠️ Вікно простоя рахує КАНОНІЧНА `incidentMinutesOnDay` (F4-7). Тут була
+   пʼята рукописна копія тієї самої формули, і вона розійшлася з каноном одразу
+   в двох місцях: `Math.round` замість floor/ceil і порожній `blocked_until` як
+   «до кінця доби» замість «до відновлення». Тут це лише відсоток завантаження,
+   тобто дефект показний, а не клінічний, — але саме так копії й розходяться:
+   поруч, у планувальнику затримки, та сама розбіжність відкочувала цілу
+   транзакцію (F4-5). Кламп до РОБОЧОГО вікна кабінету лишається тут: канонічна
+   функція клампить до доби, а відсоток рахується від графіка. */
 function incidentWorkMinutes(inc: IncidentRow, date: Date, startMin: number, endMin: number) {
-  const dayStart = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
-  const s = new Date(inc.started_at).getTime();
-  const e = inc.blocked_until ? new Date(inc.blocked_until).getTime() : dayStart + 24 * 3600e3;
-  const sMin = Math.max(startMin, Math.round((s - dayStart) / 60000));
-  const eMin = Math.min(endMin, Math.round((e - dayStart) / 60000));
-  return Math.max(0, eMin - sMin);
+  const span = incidentMinutesOnDay(inc, calendarDayKey(date));
+  if (!span) return 0;
+  return Math.max(0, Math.min(endMin, span.e) - Math.max(startMin, span.s));
 }
 function computeRoomLoad(rooms: RoomOpt[] | undefined, entries: QEntry[], date: Date, overrides: OverrideFeed, incidents: IncidentFeed<IncidentRow>): RoomLoadItem[] {
   return (rooms || []).map((r) => {

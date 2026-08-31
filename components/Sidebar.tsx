@@ -85,10 +85,17 @@ export default function Sidebar({
   const loadWaitCount = useCallback(async () => {
     try {
       const supabase = createClient();
-      const { count } = await supabase
+      /* ⚠️ `error` ЧИТАЄМО (F4-9). PostgREST не кидає — він повертає {data,
+         error}, тож `catch` нижче на збій читання не спрацьовує, і `count ?? 0`
+         писав у бейдж НУЛЬ. Коментар обіцяв «лишаємо попереднє значення», а код
+         робив протилежне: реєстратор, у якого щойно звільнився слот, бачив «у
+         листі нікого» і не відкривав лист. Той самий fail-CLOSED клас, закритий
+         в усіх дошках і пропущений тут. */
+      const { count, error } = await supabase
         .from("waitlist_entries")
         .select("id", { count: "exact", head: true })
         .eq("status", "waiting");
+      if (error) return;   // збій читання ≠ «в листі нікого»
       setWaitCount(count ?? 0);
     } catch { /* транзієнтний збій мережі — лишаємо попереднє значення */ }
   }, []);
