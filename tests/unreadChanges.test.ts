@@ -7,7 +7,7 @@ import {
   indexMarkers, entityKey, fieldKey,
   hasUnreadSurface, hasUnreadEntity, hasUnreadField,
   unreadForSurface, unreadForEntity, unreadForField,
-  topSeverity, ackIdsForScope, snapshotIdsOf,
+  topSeverity, ackIdsForScope, snapshotIdsOf, surfaceListFingerprint, surfaceRefreezeKey,
   unreadForDate, hasUnreadDate, calendarDayKey,
   markerLabel, unreadGroupLabel, unreadNavLabel, scheduleScopeText, hasUnreadNav, unreadForNav,
   type ChangeMarker,
@@ -989,5 +989,133 @@ describe("U-37: мітла позначок покриває всі типи с�
     /* Успіх мусить бути ВИДИМИМ: execute_sql не повертає notice. */
     expect(smoke, "успіх смоука невидимий — потрібен SMOKE_OK через exception")
       .toMatch(/raise exception 'SMOKE_OK/);
+  });
+});
+
+/* ─────────── surfaceListFingerprint: ключ перезаморозки (F4-10) ───────────
+   Перевіряємо ВИКЛИКОМ, а не пінами по тексту: від цієї функції залежить,
+   коли постійно видима поверхня має право гасити крапки, а компонентних
+   тестів у проєкті немає. Дві властивості несумісні за побудовою і саме тому
+   перевіряються окремо: ключ мусить МОВЧАТИ на перестановку і ГОВОРИТИ на
+   будь-яку показану правку. */
+describe("surfaceListFingerprint (F4-10)", () => {
+  const row = (id: string, status: string, updated_at: string) => ({ id, status, updated_at });
+
+  it("перестановка того самого складу ключ НЕ змінює", () => {
+    const a = [row("r1", "waiting", "t1"), row("r2", "scheduled", "t2")];
+    const b = [row("r2", "scheduled", "t2"), row("r1", "waiting", "t1")];
+    expect(surfaceListFingerprint(a)).toBe(surfaceListFingerprint(b));
+  });
+
+  it("зміна статусу ключ змінює — навіть коли вона ще й пересортовує список", () => {
+    const before = [row("r1", "waiting", "t1"), row("r2", "waiting", "t2")];
+    const after = [row("r2", "waiting", "t2"), row("r1", "scheduled", "t3")];
+    expect(surfaceListFingerprint(after)).not.toBe(surfaceListFingerprint(before));
+  });
+
+  it("правка, що не чіпає статус, ключ змінює через updated_at", () => {
+    /* Реєстратор змінив пріоритет / дані пацієнта: статус той самий, але людині
+       показали інший рядок. Без updated_at ключ мовчав би, і крапка про цю
+       правку висіла б до перезавантаження сторінки. */
+    const before = [row("r1", "waiting", "2026-08-30T10:00:00Z")];
+    const after = [row("r1", "waiting", "2026-08-30T10:05:00Z")];
+    expect(surfaceListFingerprint(after)).not.toBe(surfaceListFingerprint(before));
+  });
+
+  it("поява і зникнення рядка ключ змінюють", () => {
+    const one = [row("r1", "waiting", "t1")];
+    const two = [row("r1", "waiting", "t1"), row("r2", "waiting", "t2")];
+    expect(surfaceListFingerprint(two)).not.toBe(surfaceListFingerprint(one));
+    expect(surfaceListFingerprint([])).not.toBe(surfaceListFingerprint(one));
+  });
+
+  it("порожній список, null і undefined дають однаковий порожній ключ", () => {
+    expect(surfaceListFingerprint([])).toBe("");
+    expect(surfaceListFingerprint(null)).toBe("");
+    expect(surfaceListFingerprint(undefined)).toBe("");
+  });
+
+  it("рядки без полів не ламають ключ і не зливаються з іншим складом", () => {
+    const bare = [{ id: "r1" }, { id: "r2" }];
+    expect(surfaceListFingerprint(bare)).not.toBe("");
+    expect(surfaceListFingerprint(bare)).not.toBe(surfaceListFingerprint([{ id: "r1" }]));
+    expect(surfaceListFingerprint(bare)).not.toBe(surfaceListFingerprint([row("r1", "waiting", "t1"), { id: "r2" }]));
+  });
+
+  it("рядок без id у ключ не потрапляє (інакше «» злило б два різні списки)", () => {
+    const withJunk = [row("r1", "waiting", "t1"), { id: "", status: "waiting", updated_at: "t9" }];
+    expect(surfaceListFingerprint(withJunk)).toBe(surfaceListFingerprint([row("r1", "waiting", "t1")]));
+  });
+
+  it("різні поля не склеюються в один і той самий ключ", () => {
+    /* Роздільники мусять лишати склад однозначним: інакше «id=a, status=b:c» і
+       «id=a:b, status=c» дали б однаковий ключ, і реальна правка виглядала б як
+       та сама поверхня. */
+    const x = [{ id: "a", status: "b:c", updated_at: "d" }];
+    const y = [{ id: "a:b", status: "c", updated_at: "d" }];
+    expect(surfaceListFingerprint(x)).not.toBe(surfaceListFingerprint(y));
+  });
+});
+
+/* ── surfaceRefreezeKey: «дозріла» позначка проти «недозрілої» (ревʼю F4-10) ──
+   Головна властивість: ключ реагує на позначку ЛИШЕ тоді, коли показаний рядок
+   уже містить те, про що вона. Обидва напрями гонки перевіряються ВИКЛИКОМ. */
+describe("surfaceRefreezeKey (F4-10, ревʼю р.1)", () => {
+  const T0 = "2026-08-30T10:00:00.000Z";
+  const T1 = "2026-08-30T10:05:00.000Z";
+  const rowAt = (id: string, updated_at: string) => ({ id, status: "waiting", updated_at });
+  const mk = (entity_id: string, created_at: string) =>
+    marker({ surface_key: "waitlist", entity_type: "waitlist_entry", entity_id, created_at });
+
+  it("позначка, яку показаний рядок УЖЕ відображає, входить у ключ", () => {
+    const rows = [rowAt("r1", T1)];
+    const withMarker = surfaceRefreezeKey(rows, [mk("r1", T0)]);
+    expect(withMarker).not.toBe(surfaceRefreezeKey(rows, []));
+  });
+
+  it("позначка ОДНІЄЇ транзакції з рядком входить у ключ (межа <=)", () => {
+    /* `now()` у транзакції один: `created_at` позначки і `updated_at` рядка
+       РІВНІ. Якби критерій був строгим «<», штатний випадок «реєстратор записав
+       пацієнта» не давав би перезаморозки взагалі. */
+    const rows = [rowAt("r1", T1)];
+    expect(surfaceRefreezeKey(rows, [mk("r1", T1)])).not.toBe(surfaceRefreezeKey(rows, []));
+  });
+
+  it("позначка, що ОБІГНАЛА свій рядок, у ключ НЕ входить", () => {
+    /* Це дефект F4-3: список ще старий, ack по ньому погасив би крапку про
+       зміну, якої на екрані немає. */
+    const rows = [rowAt("r1", T0)];
+    expect(surfaceRefreezeKey(rows, [mk("r1", T1)])).toBe(surfaceRefreezeKey(rows, []));
+  });
+
+  it("позначка про рядок, якого в показаному списку немає, у ключ не входить", () => {
+    const rows = [rowAt("r1", T1)];
+    expect(surfaceRefreezeKey(rows, [mk("r2", T0)])).toBe(surfaceRefreezeKey(rows, []));
+  });
+
+  it("нечитабельні дати не дають перезаморозки (fail-closed)", () => {
+    expect(surfaceRefreezeKey([rowAt("r1", "не дата")], [mk("r1", T0)]))
+      .toBe(surfaceRefreezeKey([rowAt("r1", "не дата")], []));
+    expect(surfaceRefreezeKey([rowAt("r1", T1)], [mk("r1", "не дата")]))
+      .toBe(surfaceRefreezeKey([rowAt("r1", T1)], []));
+    expect(surfaceRefreezeKey([{ id: "r1", status: "waiting" }], [mk("r1", T0)]))
+      .toBe(surfaceRefreezeKey([{ id: "r1", status: "waiting" }], []));
+  });
+
+  it("порядок позначок на ключ не впливає", () => {
+    const rows = [rowAt("r1", T1), rowAt("r2", T1)];
+    const a = mk("r1", T0), b = mk("r2", T0);
+    expect(surfaceRefreezeKey(rows, [a, b])).toBe(surfaceRefreezeKey(rows, [b, a]));
+  });
+
+  it("відбиток списку лишається частиною ключа", () => {
+    const before = surfaceRefreezeKey([rowAt("r1", T0)], []);
+    const after = surfaceRefreezeKey([rowAt("r1", T1)], []);
+    expect(after).not.toBe(before);
+  });
+
+  it("порожні входи дають стабільний ключ", () => {
+    expect(surfaceRefreezeKey([], [])).toBe(surfaceRefreezeKey(null, []));
+    expect(surfaceRefreezeKey(undefined, [mk("r1", T0)])).toBe(surfaceRefreezeKey([], []));
   });
 });
