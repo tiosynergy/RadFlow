@@ -22,7 +22,7 @@ import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleMo
 import ReferrerBoard from "@/components/ReferrerBoard";
 import UnreadDot from "@/components/UnreadDot";
 import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
-import { unreadForEntity } from "@/lib/unreadChanges";
+import { unreadForEntity, unreadForSurface, surfaceRefreezeKey } from "@/lib/unreadChanges";
 import ReferrerSidebar from "@/components/ReferrerSidebar";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry, editQueueEntryStudies, createReferralCase, referralCaseFromEntry, type CaseStepInput } from "@/app/queue/actions";
 import CaseModal from "@/components/CaseModal";
@@ -1518,7 +1518,7 @@ function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m
 }
 
 /* ── Лист очікування направника: власні пацієнти в усіх авторизованих центрах ── */
-function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onRestore, onPriority, highlightId = null, loaded, loadErr }: {
+function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onRestore, onPriority, onRetry, highlightId = null, loaded, loadErr }: {
   entries: WaitlistEntry[];
   centersById: Record<string, Center>;
   onOpenAdd: () => void;
@@ -1526,6 +1526,8 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
   onCancel: (e: WaitlistEntry) => void;
   onRestore: (e: WaitlistEntry) => void;
   onPriority: (e: WaitlistEntry, v: PatientPriority) => void;
+  /** Повторна спроба читання листа — для плашки збою (F4-3). */
+  onRetry: () => void;
   /** с22 (deep-link «Пошук»): підсвітити знайдений рядок і проскролити до нього. */
   highlightId?: string | null;
   /** 0138: гард ack — гасити крапки можна лише коли список реально приїхав. */
@@ -1552,20 +1554,60 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
      побачив (ТЗ: «If loading fails, unread state must remain unchanged»), а
      deep-link прямо на цю вкладку встигав би загасити їх до першого рендера. */
   const { index: unreadIx } = useUnreadChanges();
-  useAckWhenVisible({ kind: "surface", surface: "waitlist" }, loaded && !loadErr);
+  /* ⚠️ `refreezeKey` (F4-10, фаза 4 аудиту 2026-08-27). Вкладка лишається
+     розгорнутою скільки завгодно довго, а хук замерзає на знімку МОМЕНТУ
+     розкриття — тобто без ключа гасилось би лише те, що застало монтування, а
+     правка, яка прилетіла лікарю, поки він СИДИТЬ на цій вкладці, світилась би
+     до перезавантаження сторінки. Контракт хука цього прямо й вимагає для
+     постійно розгорнутих поверхонь.
+     Ключ — відбиток УСПІШНО завантаженого списку: перезаморозка стається рівно
+     тоді, коли людині показали новий стан.
+     ⚠️ Позначки входять у ключ НЕ так, як у `QueueBoard`. Там
+     `incidentsRefreezeKey` бере позначки про ПОКАЗАНІ інциденти, і критерій
+     «інцидент є в списку» там доводить, що список уже приїхав (позначка
+     приходить на НОВИЙ інцидент). Тут той самий критерій не доводить нічого:
+     позначка приходить на правку рядка, який на екрані був і ДО неї, — тобто
+     ack пішов би по списку, який ще не перезавантажився, рівно як у дефекті
+     F4-3. Тому критерій інший і сильніший: у ключ ідуть лише позначки, які
+     показаний рядок УЖЕ ВІДОБРАЖАЄ (`created_at <= updated_at`, обидва з
+     одного `now()`), — див. `surfaceRefreezeKey`. */
+  useAckWhenVisible(
+    { kind: "surface", surface: "waitlist" },
+    loaded && !loadErr,
+    surfaceRefreezeKey(list, unreadForSurface(unreadIx, "waitlist")),
+  );
   /* Скрол до підсвіченого рядка — ОДНОРАЗОВО (ревью с22 р2 MEDIUM-A): inline
      ref-колбек викликається на кожен ре-рендер (realtime-оновлення листа), і без
      прапорця сторінку постійно повертало б до підсвіченого рядка. */
   const didScrollHighlight = useRef(false);
   return (
     <div style={{ maxWidth: 1040, margin: "0 auto", display: "flex", flexDirection: "column", gap: 10 }}>
+      {/* ⚠️ Збій читання ЛИСТА не мав на цій вкладці жодного відображення
+          (F4-3): `loadErr` вмикав тільки гард ack, а сам список при першому
+          невдалому читанні малював «Лист порожній» — лікар робив висновок, що
+          його пацієнти з листа зникли. Плашка — дзеркало тієї, що вже стоїть на
+          вкладці направлень (H-6), бо це той самий клас: «не змогли прочитати»
+          не має виглядати як «нічого немає». */}
+      {loadErr && (
+        <div className="ctx-hint red" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }} role="alert">
+          <span>⚠ Лист очікування не завантажився — показане може бути неповним або застарілим.</span>
+          <button className="btn btn-secondary btn-sm" onClick={onRetry}>↻ Спробувати ще раз</button>
+        </div>
+      )}
       <div className="info-banner">
         <span className="ib-ic">⏳</span>
         <span className="ib-txt"><b>Лист очікування</b> — ваші пацієнти, що чекають на вільне вікно в центрі. Коли слот звільниться, центр запише пацієнта — статус зміниться на «Записано».</span>
         <button className="btn btn-primary btn-sm" style={{ flexShrink: 0 }} onClick={onOpenAdd}>＋ Додати пацієнта</button>
       </div>
       {list.length === 0 ? (
-        <div className="empty"><div className="ei">⏳</div><div className="et">Лист порожній</div><div className="es">Додайте пацієнта, що чекає на вільне вікно</div></div>
+        /* ⚠️ При збої читання «порожньо» НЕ малюємо (ревʼю р.1): інакше поруч із
+           плашкою «не завантажився» стояло б УТВЕРДЖЕННЯ «Лист порожній» із
+           закликом «Додайте пацієнта» — і лікар додав би вдруге того, хто вже в
+           листі. Це рівно дефект H-6, від якого захищає плашка сусідньої
+           вкладки, тільки поверхом нижче. */
+        loadErr ? null : (
+          <div className="empty"><div className="ei">⏳</div><div className="et">Лист порожній</div><div className="es">Додайте пацієнта, що чекає на вільне вікно</div></div>
+        )
       ) : (
         list.map((p) => {
           const m = PRIORITY_META[p.priority_level];
@@ -1719,7 +1761,22 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
 
   function notify(msg: string, type = "success") { setToast({ msg, type }); if (toastTimer.current) clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToast(null), 3200); }
 
+  /* ⚠️ Лічильник поколінь для ОБОХ лоадерів порталу (ревʼю пакета F4-3/F4-10,
+     р.1). Обидва тепер зовуть щонайменше сім джерел: підписки realtime, тік
+     `pollWhenSubscribedMs`, повернення на вкладку і фокус, реконнект після
+     обриву, ротація токена — і прямі виклики після дій самого лікаря. Без
+     лічильника відповідь ПОВІЛЬНОГО запиту, що приземлилась після швидкого,
+     затирає свіжий список старим. Для листа це вже не мигання: відбиток списку
+     керує перезаморозкою (F4-10), тож відкат на старі дані ГАСИТЬ позначку про
+     зміну, якої людина не бачила — необоротно. Той самий приймач, що в `loadDay`
+     вище і в дошках; окремого ключа зрізу тут не треба, бо зріз обох лоадерів —
+     це `doctorId`, а він міняє і `channelName`, і саму ідентичність колбеків. */
+  const listGen = useRef(0);
+  const wlGen = useRef(0);
+
   const reload = useCallback(async () => {
+    const gen = ++listGen.current;
+    const stale = () => gen !== listGen.current;
     try {
       const supabase = createClient();
       const { data, error } = await supabase
@@ -1730,10 +1787,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
         .order("scheduled_date", { ascending: false }).order("scheduled_time", { ascending: true });
       // H-6: збій читання показувався як «Немає направлень» — лікар вважав, що
       // його пацієнти не записані, і записував їх удруге.
+      if (stale()) return;
       if (error) { setListErr(true); return; }
       setReferrals(data || []);
       setListErr(false);
-    } catch { setListErr(true); }
+    } catch { if (!stale()) setListErr(true); }
   }, [doctorId]);
 
   /* Лист очікування направника: власні рядки АБО ті, де центр вказав його
@@ -1744,6 +1802,8 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
   const [wlLoaded, setWlLoaded] = useState(false);
   const [wlErr, setWlErr] = useState(false);
   const reloadWaitlist = useCallback(async () => {
+    const gen = ++wlGen.current;
+    const stale = () => gen !== wlGen.current;
     try {
       const supabase = createClient();
       const { data, error } = await supabase
@@ -1751,11 +1811,20 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
         .select("*")
         .or("created_by.eq." + doctorId + ",referrer_id.eq." + doctorId)
         .order("created_at", { ascending: true });
-      if (error) { setListErr(true); setWlErr(true); setWlLoaded(true); return; }
+      /* ⚠️ Збій ЛИСТА не чіпає `listErr` (F4-3). Раніше він піднімав прапорець
+         СПИСКУ НАПРАВЛЕНЬ: на вкладці направлень спалахувала червона плашка
+         «Список направлень не завантажився» про список, який завантажився
+         бездоганно, разом з нею глухнув звук (`entries: listErr ? null : ...`),
+         а на вкладці самого листа не показувалось НІЧОГО. Це той самий клас, що
+         й два окремі прапорці помилок у дошці черги: спільний прапорець завжди
+         бреше про один із двох лоадерів. Свій збій лист тепер показує сам —
+         `wlErr` їде в `MyWaitlist` як `loadErr`. */
+      if (stale()) return;
+      if (error) { setWlErr(true); setWlLoaded(true); return; }
       setWlEntries(data || []);
       setWlErr(false);
       setWlLoaded(true);
-    } catch { setListErr(true); setWlErr(true); setWlLoaded(true); }
+    } catch { if (!stale()) { setWlErr(true); setWlLoaded(true); } }
   }, [doctorId]);
   useEffect(() => { reloadWaitlist(); }, [reloadWaitlist]);
 
@@ -1764,17 +1833,77 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
     channelName: doctorId ? "ref-" + doctorId : null,
     subscriptions: [
       { table: "queue_entries", filter: "referrer_id=eq." + doctorId, onChange: reload },
-      { table: "waitlist_entries", filter: "created_by=eq." + doctorId, onChange: reloadWaitlist },
-      { table: "referral_access", filter: "referrer_id=eq." + doctorId, onChange: () => router.refresh() },
+      /* ⚠️ ДВІ підписки на одну таблицю — по одній на КОЖНУ гілку `.or(...)` у
+         вибірці листа, і це головна правка F4-3. Було: вибірка читає дві гілки
+         (`created_by` АБО `referrer_id`), а підписка стояла на ОДНІЙ. Коли
+         центр записував пацієнта з листа, `created_by` = реєстратор — і подія
+         до направника не доходила взагалі. Позначку ж БД адресує по
+         `referrer_id`, вона приходила своїм каналом: крапка є, список старий, а
+         ack при відкритті вкладки гасив крапку по СТАРОМУ знімку. Лікар
+         назавжди втрачав звістку, що його пацієнта записали.
+         Різав подію саме клієнтський фільтр, не RLS: `waitlist_select` для
+         направника зводиться рівно до `created_by = uid OR referrer_id = uid`
+         (перша гілка політики вимагає `clinic_id = auth_clinic_id()`, а в
+         направника `profiles.clinic_id` порожній не випадково — це тримає CHECK
+         `profiles_role_clinic_chk`: referrer/ceo ⇒ clinic_id IS NULL).
+         ⚠️ Чому не «зняти фільтр і покластись на RLS», як у `rooms` нижче:
+         фільтр postgres_changes працює на СЕРВЕРІ, а RLS-перевірка — після
+         нього. Підписка без фільтра змусила б Realtime перевіряти політику на
+         КОЖНУ зміну листа в усій базі для КОЖНОГО підключеного направника; у
+         `rooms` іншого виходу немає (потрібні всі кабінети дозволених центрів),
+         а тут вихід є — дві точні гілки. Фільтр Realtime не вміє OR, тож їх
+         саме дві.
+         ⚠️ Спільний `debounceKey`: коли лікар сам створив рядок, збігаються
+         ОБИДВІ гілки, і без ключа одна подія давала б два перезавантаження.
+         ⚠️ І ще одна причина тримати фільтр, знайдена ревʼю р.2 і перевірена на
+         проді: на подіях DELETE `realtime.apply_rls` політику не перевіряє
+         ВЗАГАЛІ (`if not is_rls_enabled or action = 'DELETE' then
+         visible_role_sub_ids := ... || subscription_id`). Єдиний сторож там —
+         сам фільтр, який звіряється зі СТАРОЮ версією рядка (для цього й
+         потрібен REPLICA IDENTITY FULL, він на таблиці є). Підписка без фільтра
+         отримувала б повний старий рядок листа — з ПІБ і телефоном — на КОЖНЕ
+         видалення в базі. */
+      { table: "waitlist_entries", filter: "created_by=eq." + doctorId, onChange: reloadWaitlist, debounceKey: "wl" },
+      { table: "waitlist_entries", filter: "referrer_id=eq." + doctorId, onChange: reloadWaitlist, debounceKey: "wl" },
+      /* ⚠️ Спільний debounceKey у всіх чотирьох гілок `router.refresh()`
+         (F4-11). `callAll` дедуплікує рівно по цьому ключу, а дефолтний ключ
+         унікальний на підписку — тобто кожен маунт, кожне повернення на вкладку
+         і кожен тик полінгу давали ЧОТИРИ повні перезавантаження RSC-дерева
+         поспіль. Саме заради цього ключ і вводився (у CEO він давав до 20
+         reload-ів). Ключ спільний і для дебаунсу: сплеск правок каталогу в
+         кількох таблицях → один refresh. */
+      { table: "referral_access", filter: "referrer_id=eq." + doctorId, onChange: () => router.refresh(), debounceKey: "rsc" },
       // 0086: зміни кабінетів дозволених центрів (видалення/графік) → оновлюємо
       // портал. Без filter: RLS доставляє направнику лише кабінети його центрів
       // (REPLICA IDENTITY FULL з 0086 дає clinic_id і в подіях DELETE).
-      { table: "rooms", onChange: () => router.refresh() },
+      { table: "rooms", onChange: () => router.refresh(), debounceKey: "rsc" },
       // Каталог послуг/цін центрів направника (0107/0108) — RLS доставляє лише
       // доступні центри/кабінети (як rooms); зміна каталогу адміном → оновити портал.
-      { table: "services", onChange: () => router.refresh() },
-      { table: "service_room_overrides", onChange: () => router.refresh() },
+      { table: "services", onChange: () => router.refresh(), debounceKey: "rsc" },
+      { table: "service_room_overrides", onChange: () => router.refresh(), debounceKey: "rsc" },
     ],
+    /* Рідка звірка при ЖИВОМУ сокеті (F4-3, третій шар). Realtime доставку не
+       гарантує: загублене повідомлення нікому не досилають, і сокет при цьому
+       лишається SUBSCRIBED — тобто самозцілення без тікера немає взагалі, а
+       направник тримає вкладку відкритою годинами.
+       ⚠️ 60 с, а не 30 як у сітки слотів вище, і причина не «обережність»:
+       пораховано (ревʼю р.2) — один тик тут це `reload` + `reloadWaitlist` +
+       ОДИН `router.refresh()`, а рефреш перерендерює всю RSC-сторінку
+       (`getUser` + profiles + referral_access + clinics + rooms + services +
+       overrides + `residualOffRooms` на кожен активний центр ≈ 6–7 SELECT).
+       У сітки тік — чотири звичайні PostgREST-запити, і 30 с їй СТРУКТУРНО
+       обовʼязкові: RLS не доставляє направнику чужі записи, без тікера його
+       відкрита сітка не оновиться НІКОЛИ. Тут же після другої підписки вище
+       події приходять самі, і тікер — лише страховка: від втраченого
+       повідомлення і від рядка, що ВИЙШОВ зі скоупу (зняли `referrer_id` —
+       нова версія рядка не збігається з жодним фільтром, події не буде, а RLS
+       на UPDATE теж дивиться на нову версію).
+       ⚠️ Реальний інтервал — 45–75 с: хук навмисно джитерить кожен тик
+       (±25 %), щоб не синхронізувати клієнтів. Це стеля затримки для сценарію
+       «рядок вийшов зі скоупу».
+       ⚠️ Без спільного `debounceKey` вище цей тік давав би 4 RSC-рендери на
+       хвилину — тобто вмикати полінг можна тільки разом із ключем. */
+    pollWhenSubscribedMs: 60_000,
   });
 
   /* Звукові сповіщення направника: ЛИШЕ критичні події ВЛАСНИХ направлень —
@@ -2085,7 +2214,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
         {/* Лист очікування — інша вкладка, але модалки ті самі сиблінги в DOM:
             запит, пущений на вкладці направлень, приземлиться і сюди. */}
         {tab === "waitlist" && (
-          <MyWaitlist entries={wlEntries} centersById={centersById} highlightId={initialEntry} loaded={wlLoaded} loadErr={wlErr} onOpenAdd={() => { bumpOpen(); setWlAddOpen(true); }}
+          <MyWaitlist entries={wlEntries} centersById={centersById} highlightId={initialEntry} loaded={wlLoaded} loadErr={wlErr} onRetry={reloadWaitlist} onOpenAdd={() => { bumpOpen(); setWlAddOpen(true); }}
             onEdit={(e) => { bumpOpen(); setWlEditFor(e); }} onCancel={(e) => { bumpOpen(); setWlConfirmRemove(e); }} onRestore={wlRestore} onPriority={wlPrio} />
         )}
         {tab === "centers" && (
