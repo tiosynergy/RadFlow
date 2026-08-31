@@ -2364,8 +2364,21 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   function callPatient(p: QEntry): void | Promise<void> {
     const r = callBlockOf(p);
     // clash — накладення на НАСТУПНИЙ запис. Не жорсткий блок, а підтвердження
-    // («Викликати все одно»): перехоплюємо ДО жорсткого блоку. Сервер override
-    // пропустить — кабінет не зайнятий (інакше раніше спрацював би room_busy).
+    // («Викликати все одно»): перехоплюємо ДО жорсткого блоку.
+    // ⚠️ ЗНАХІДКА U-67 (ревʼю А, с50). Тут стояло «Сервер override пропустить —
+    // кабінет не зайнятий (інакше раніше спрацював би room_busy)». Це НЕПРАВДА:
+    // room_busy — дзеркало гілки (а) гарда 0129 (сидить in_progress), а clash —
+    // дзеркало гілки (б), і вона підніме ACTUAL_OVERLAP незалежно від (а);
+    // параметра override у queue_set_status_rpc немає взагалі.
+    // Наслідок сьогодні: діалог «Викликати все одно» для clash МЕРТВИЙ —
+    // onConfirm нижче перечитує жорсткі блоки, у clash `confirmable` хибний,
+    // і замість виклику оператор отримує загальний тост «Викликати зараз
+    // неможливо» (inProgressBlockReason для clash навмисно віддає null).
+    // Дані це не псує (fail-closed), але кнопка обіцяє те, чого немає.
+    // Полагодити можна лише двома способами, і обидва — рішення власника:
+    // або зняти діалог і показувати причину, як робить RadiologistBoard,
+    // або дати RPC явний p_force і пропустити override крізь гард.
+    // Свідомо НЕ чіпаю в пакеті Ф4-2: це не арифметика часу, а продуктовий вибір.
     if (r && r.code === "clash") { setOffCallAsk({ p, kind: "clash", time: r.time, name: r.name ?? null, durationMin: r.durationMin }); return; }
     if (r && !r.confirmable) { notify(inProgressBlockReason(p) || "Викликати зараз неможливо", "error"); return; }
     /* M-2: вікно виклику переходить за північ. Дошка тримає рівно одну добу,

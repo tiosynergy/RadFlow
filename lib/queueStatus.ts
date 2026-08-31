@@ -8,7 +8,7 @@
    ВРЕМЯ: сравнение «сейчас vs слот» идёт в «настінному» пространстве (wall-as-UTC)
    по ТАЙМЗОНЕ КЛИНИКИ. now по умолчанию = wallNow() (клиника из setClinicTz);
    мультиклиничные экраны передают nowMs = wallNow(entryClinicTz) явно. */
-import { wallNow, wallMinOfDay, wallMinOfInstant } from "./incidents";
+import { wallNow, wallMinOfDay, wallMsOfDay, wallMinOfInstant } from "./incidents";
 import { BUFFER_DEFAULT, normBuffer } from "./studies";
 import { slotFmt } from "./slots";
 
@@ -60,34 +60,97 @@ export function isLate(
    кабінету (scheduled/waiting) — виклик блокується: спершу перенесіть один із
    записів. Захищає сценарії «пацієнт запізнився → все ж прийшов → виклик»
    та будь-який виклик із затримкою. */
+/* Ширина вікна виклику у ХВИЛИНАХ: тривалість + буфер. ОДНА формула на всіх
+   споживачів (lateCallClash, callCrossesMidnight, текст діалогу), щоб вони не
+   розійшлись при першій же правці буфера.
+   Свідомо БЕЗ normBuffer: це вікно — дзеркало серверного
+   `coalesce(q.buffer_time_min, 5)` з гарда 0129. normBuffer (collisionFor,
+   delayPlan) живе в план-просторі; тут розбіжність із БД дорожча за акуратність. */
+export function callWindowMinutes(
+  p: { duration_min: number | null; buffer_time_min: number | null }
+): number {
+  return (p.duration_min || 30) + Math.max(0, p.buffer_time_min ?? BUFFER_DEFAULT);
+}
+
 /* Кінець вікна виклику в ХВИЛИНАХ ДОБИ від 00:00 ПОТОЧНОЇ доби — значення
    МОЖЕ перевищувати 1440, і це не помилка, а факт: виклик о 23:40 на 30 хв
-   з буфером 5 займає кабінет до 00:15 наступної доби. Одна формула на два
-   місця (lateCallClash і перевірка `next_day` нижче), щоб вони не розійшлись
-   при першій же правці буфера. */
-// Свідомо БЕЗ normBuffer: це вікно — дзеркало серверного
-// `coalesce(q.buffer_time_min, 5)` з гарда 0129. normBuffer (collisionFor,
-// delayPlan) живе в план-просторі; тут розбіжність із БД дорожча за акуратність.
+   з буфером 5 займає кабінет до 00:15 наступної доби.
+   ⚠️ Це НЕ дзеркало 0129 (Ф4-2): `wallMinOfDay` усікає секунди вниз, а гард
+   порівнює timestamptz. Лишається саме для тих двох місць, де потрібна
+   ХВИЛИНА для людини: предикат `callCrossesMidnight` і текст «зайнято до
+   HH:MM». Порівняння зі слотами живе нижче, у мілісекундах. */
 export function callWindowEndMin(
   p: { duration_min: number | null; buffer_time_min: number | null },
   nowMs: number = wallNow()
 ): number {
-  return wallMinOfDay(nowMs) + (p.duration_min || 30) + Math.max(0, p.buffer_time_min ?? BUFFER_DEFAULT);
+  return wallMinOfDay(nowMs) + callWindowMinutes(p);
 }
 
+/* Невизначеність «зараз» у МЕЖАХ ОДНІЄЇ СЕКУНДИ — і рівно стільки, скільки
+   названо нижче. wallNow() збирає момент із частин Intl (second: "2-digit") —
+   мілісекунд там немає (перевірено по ВСІХ гілках wallNow: зона є, зони немає,
+   Intl кинув), тож клієнтське «зараз» завжди кратне секунді й не більше за
+   серверне `now()` у ТІЙ САМІЙ секунді. Розширюємо на цю секунду тільки
+   КІНЕЦЬ вікна — тоді розбіжність розрядності перестає давати дозволену дію,
+   яку сервер відхиляє.
+   Ціна: слот, що стоїть РІВНО на кінці вікна, буде заблоковано і в тому
+   (нульової ймовірності) випадку, коли серверне `now()` має рівно нуль
+   мікросекунд і сервер пропустив би. Зайвий блок дешевший за тиху дію, яку
+   відхилить БД.
+
+   ⚠️ ЧОГО ця секунда НЕ закриває — назвати чесно, бо перша редакція цього
+   коментаря стверджувала «множина «клієнт блокує» ⊇ «сервер відхилить»» без
+   умов, і це була неправда (ревʼю А, MEDIUM):
+     • ЗАТРИМКУ між рішенням клієнта і серверним `now()`. Між ними — Server
+       Action, PostgREST і `pg_advisory_xact_lock(room)` у самій RPC, тобто
+       очікування чужої транзакції по тому ж кабінету. Серверне вікно
+       [T+L, T+L+W) з'їжджає ВПЕРЕД, і слот на дальньому краї сервер відхилить,
+       а клієнт його не блокував. Щілина = δ + L − 1000 мс, де δ < 1000 мс —
+       дробова частина секунди, L — затримка. Стала тут не рятує: L
+       необмежена, а великий слак дав би справжні хибні блоки щодня;
+     • ДРЕЙФ ГОДИННИКІВ браузера і сервера — окрема знахідка Ф4-8.
+   Обидва залишки однонаправлені (сервер суворіший) і закінчуються чесною
+   помилкою `slot_unavailable`, а не зіпсованими даними: авторитет — гард.
+   Що змінилось: до Ф4-2 та сама щілина була не «δ + L − 1 с», а «до 59 с + L»,
+   бо хвилинне усічення саме по собі зсувало кінець вікна назад. */
+export const CALL_WINDOW_CLOCK_SLACK_MS = 1000;
+
+/* Мілісекунди доби зі `scheduled_time`. Секунди читаємо, а не відкидаємо:
+   тригер `set_scheduled_at` будує `scheduled_at` кастом
+   ('YYYY-MM-DD' || 'T' || scheduled_time || 'Z')::timestamptz — тобто рядок
+   ГАРАНТОВАНО парситься як час (інакше INSERT падає ще в БД), але CHECK-у на
+   формат 'HH:MM' немає (перевірено на проді 31.08: 96/96 у 'HH:MM', обмеження
+   відсутнє). Старий `toMin` брав лише [h, m] — секунда в даних зробила б
+   клієнт і гард різними. `map(Number)` тримає і дробові секунди ('10:35:30.5'). */
+function slotMsOfDay(t: string): number {
+  const [h, m, s] = String(t).split(":").map(Number);
+  return (h || 0) * 3600000 + (m || 0) * 60000 + (s || 0) * 1000;
+}
+
+/* Дзеркало гілки (б) гарда 0129 (`queue_set_status_rpc`, перевірено на живій
+   функції 31.08):
+     v_actual := (now() at time zone tz) at time zone 'utc';
+     v_end    := v_actual + make_interval(mins => v_dur + coalesce(v_buf, 5));
+     q.scheduled_at >= v_actual and q.scheduled_at < v_end  → ACTUAL_OVERLAP
+   Рахуємо в мілісекундах доби, а не у хвилинах (Ф4-2). Хвилинне усічення
+   зсувало обидві межі вниз і давало дві різні розбіжності:
+     • початок — клієнт блокував БІЛЬШЕ за сервер (слот 10:00, коли вже
+       10:00:30, для гарда вже в минулому) → хибний жорсткий блок до 59 с;
+     • кінець  — клієнт блокував МЕНШЕ (слот рівно на кінці вікна) → оператор
+       бачив дозволений виклик, який сервер відхиляв ACTUAL_OVERLAP.
+   Друга розбіжність і є причина правки: fail-open у дзеркалі гарда. */
 export function lateCallClash(
   p: { id: string; room_id: string | null; duration_min: number | null; buffer_time_min: number | null },
   entries: Array<{ id: string; room_id: string | null; status: string; scheduled_time: string | null; patient_name?: string | null }>,
   nowMs: number = wallNow()
 ): { time: string; name?: string | null } | null {
   if (!p.room_id) return null;
-  const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return (h || 0) * 60 + (m || 0); };
-  const nowMin = wallMinOfDay(nowMs);
-  const endMin = callWindowEndMin(p, nowMs);
+  const nowMsOfDay = wallMsOfDay(nowMs);
+  const endMsOfDay = nowMsOfDay + callWindowMinutes(p) * 60000 + CALL_WINDOW_CLOCK_SLACK_MS;
   const next = entries
     .filter((e) => e.room_id === p.room_id && e.id !== p.id && (e.status === "scheduled" || e.status === "waiting") && e.scheduled_time)
-    .map((e) => ({ s: toMin(String(e.scheduled_time)), time: String(e.scheduled_time), name: e.patient_name }))
-    .filter((x) => x.s >= nowMin && x.s < endMin)
+    .map((e) => ({ s: slotMsOfDay(String(e.scheduled_time)), time: String(e.scheduled_time), name: e.patient_name }))
+    .filter((x) => x.s >= nowMsOfDay && x.s < endMsOfDay)
     .sort((a, b) => a.s - b.s)[0];
   return next || null;
 }
@@ -110,7 +173,25 @@ export function lateCallClash(
    лічильники дня, звук перевищення й таймери кабінетів (та сама причина, що
    в lib/stuckStudy.ts — хвости живуть окремим станом). Натомість чесно
    кажемо, ЧОГО не знаємо: вікно за північчю → підтвердження замість тихого
-   «можна». Дірка з невидимої стає названою. */
+   «можна». Дірка з невидимої стає названою.
+
+   ⚠️ ЗАЛИШОК Ф4-2, названий чесно (ревʼю А, LOW → знахідка U-67). Предикат
+   лишився у ХВИЛИНАХ, тож рівно в хвилині `1440 − (тривалість+буфер)` з
+   НЕНУЛЬОВИМИ секундами попередження не з'явиться: о 23:25:30 при 30+5
+   `callWindowEndMin` = 1440, `1440 > 1440` хибне — а серверне вікно тягнеться
+   до 00:00:30 і запис завтра на 00:00 отримає `ACTUAL_OVERLAP`.
+   І це НЕ «просто пропущене підтвердження»: саме це підтвердження тут і є
+   єдиним замінником блоку (записів завтрашньої доби в `entries` немає за
+   побудовою), тож операційно виходить тиха дія, яку відхилить БД — той самий
+   клас, що закривав Ф4-2, тільки на хвилину вище.
+   Чому не полагоджено тут: перевести предикат у мілісекунди зі слаком —
+   один рядок, але це змінює ПРОДУКТОВЕ рішення, зафіксоване тестом «рівно
+   24:00 — ще НЕ наступна доба»: о 23:25:00 рівно оператор почав би бачити
+   діалог там, де його свідомо не показували. Рішення власника, не інженерне.
+   Якщо міняти — предикат і текст `slotFmt(callWindowEndMin(...) - 1440)`
+   мусять лишитись однією арифметикою; від'ємного аргументу `slotFmt` при
+   секундному кроці wallNow не отримає (перевірено), але сам `slotFmt` від
+   від'ємних не захищений. */
 export function callCrossesMidnight(
   p: { room_id: string | null; duration_min: number | null; buffer_time_min: number | null },
   nowMs: number = wallNow()

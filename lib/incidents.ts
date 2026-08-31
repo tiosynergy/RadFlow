@@ -323,9 +323,31 @@ export function wallNow(tz?: string): number {
 }
 
 // Минуты от начала суток из настенного UTC-мс (getUTC*, т.к. закодировано как UTC).
+// ⚠️ УСЕКАЕТ секунды вниз. Там, где клиентская проверка — зеркало серверного
+// гарда, сравнивающего timestamptz (напр. lateCallClash ↔ 0129), это меняет
+// вердикт на границе окна: берите wallMsOfDay, а не эту функцию (Ф4-2).
 export function wallMinOfDay(ms: number): number {
   const d = new Date(ms);
   return d.getUTCHours() * 60 + d.getUTCMinutes();
+}
+
+// Миллисекунды от начала суток из настенного UTC-мс — то же пространство, что
+// wallMinOfDay, но БЕЗ усечения до минуты. Нужно там, где клиент — зеркало
+// серверного сравнения timestamptz: у сервера now() микросекундный, и минутное
+// усечение сдвигает конец окна назад (fail-open на самой границе).
+// Разрешение самого источника — секунда: wallNow() собирает момент из
+// Intl-частей (second: "2-digit"), миллисекунд там нет. Значит значение всегда
+// кратно 1000, а настоящее серверное «сейчас» лежит в [ms, ms + 1000).
+// Кто строит по нему ОКНО, обязан заложить эту неопределённость в свою сторону
+// (см. CALL_WINDOW_CLOCK_SLACK_MS в lib/queueStatus.ts).
+export function wallMsOfDay(ms: number): number {
+  const d = new Date(ms);
+  return (
+    d.getUTCHours() * 3600000 +
+    d.getUTCMinutes() * 60000 +
+    d.getUTCSeconds() * 1000 +
+    d.getUTCMilliseconds()
+  );
 }
 
 // «Сегодня» (YYYY-MM-DD) в НАСТЕННОМ времени клиники — ключ scheduled_date.
