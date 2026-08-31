@@ -23,6 +23,7 @@
 // ============================================================
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { verdictOf } from "./lib/falsify-verdict.mjs";
 
 const FILES = {
   ft: "lib/useFollowToday.ts",
@@ -138,6 +139,35 @@ const MUTATIONS = [
     what: "доба «після» рахується іншим моментом, ніж доба «до»",
     from: "    const after = wallDayKeyAt(nowMs + nowOffsetMs, clinicTz);     // доба за НОВИМ, ТОЙ САМИЙ момент",
     to: "    const after = wallDayKeyAt(Date.now() + nowOffsetMs, clinicTz);",
+  },
+  {
+    /* ⚠️ ЗАВЕДЕНО В с51 (U-74). Дзеркало M7 з ДРУГОГО боку рівняння, і саме
+       його не було ніде. Стенд U-70 мав сторожа на цей клас (свій M14), але
+       після виносу `decideShift` його якір протух і мутація мовчки
+       відхилялась — тобто клас, названий ревʼю А як HIGH, не тримався НІЧИМ.
+
+       Клас: доба «до» мусить бути добою за ПОПЕРЕДНЬОЮ ЗАСТОСОВАНОЮ поправкою,
+       а не за сирим годинником ПК. Інакше поправка, яка сама півночі не
+       перетинала, привласнює собі чужий перехід (той самий «протухлий ключ»,
+       лише вираженим через референс, а не через памʼять ефекту). */
+    id: "M32", file: "ft", spec: SPEC.follow,
+    what: "доба «до» рахується сирим годинником ПК, а не попередньою поправкою (клас ревʼю А, HIGH)",
+    /* ⚠️ Якір БЕЗ хвостового коментаря: вираз і так унікальний (друге входження
+       має `nowOffsetMs`), а комент у якорі протух би від першої ж правки
+       формулювання — тобто сам був би тим дефектом, проти якого стенд писався. */
+    from: "const before = wallDayKeyAt(nowMs + prevOffsetMs, clinicTz);",
+    to: "const before = wallDayKeyAt(nowMs, clinicTz);",
+  },
+  {
+    /* ⚠️ ЗАВЕДЕНО В с51 (U-74) НА МІСЦЕ falsify-u70 M15, і це виправлення моєї
+       помилки. Знімаючи M15, я послався на M5 — а M5 мутує ПОВЕРНЕННЯ
+       («ключ викинуто»), тоді як M15 знімала САМ ОБЛІК `busy` («перенесення
+       сталось під відкритою модалкою»). Ревʼю Б показало, що це різні дефекти
+       і що другий після зняття M15 не сторожив жоден стенд. */
+    id: "M33", file: "ft", spec: SPEC.follow,
+    what: "`busy` більше не враховується — перенесення відбувається під відкритою модалкою",
+    from: "  if (pending === null || busy) return { pendingKey: pending, applyFrom: null, applyTo: null };",
+    to: "  if (pending === null) return { pendingKey: pending, applyFrom: null, applyTo: null };",
   },
 
   // ============ саме ПРАВИЛО ============
@@ -377,7 +407,13 @@ try {
 } finally {
   restore();
   if (existsSync(REPORT)) unlinkSync(REPORT);
+  /* U-74: відхилений якір — ЧЕРВОНИЙ вердикт стенда, а не рядок у таблиці.
+     Лічильник звіряється з MUTATIONS.length: мутація, що не дала рядка,
+     валить прогін так само, як протухлий якір. */
+  const verdict = verdictOf(lines, MUTATIONS.length);
+  lines.push(`\n${verdict.summary}`);
   writeFileSync(OUT, lines.join("\n") + "\n");
   console.log(lines.join("\n"));
   console.log(`\nЗвіт: ${OUT}. Файли відновлено.`);
+  if (!verdict.ok) process.exitCode = 1;
 }

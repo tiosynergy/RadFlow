@@ -17,6 +17,7 @@
 // ============================================================
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { verdictOf } from "./lib/falsify-verdict.mjs";
 
 const FILES = {
   sc: "lib/serverClock.ts",
@@ -117,24 +118,29 @@ const MUTATIONS = [
     from: "  if (!Number.isFinite(ms)) return wallDayKey(tz);\n",
     to: "",
   },
-  {
-    id: "M14", file: "ft", spec: SPEC.clock,
-    what: "правило знову питає «чи змінилась доба», а не «чи перенесла її поправка» (ревʼю А, HIGH)",
-    from: "      const before = wallDayKeyAt(Date.now() + prevOffset, clinicTz);  // доба за СТАРИМ годинником",
-    to: "      const before = wallDayKey(clinicTz);",
-  },
-  {
-    id: "M15", file: "ft", spec: SPEC.clock,
-    what: "перенесення дати більше не чекає закриття модалки (ревʼю А, MEDIUM)",
-    from: "    if (pending === null || busy) return;",
-    to: "    if (pending === null) return;",
-  },
-  {
-    id: "M16", file: "qb", spec: SPEC.clock,
-    what: "дошка черги втратила правило слідування за «сьогодні»",
-    from: "  useFollowToday({ clinicTz, pinnedKey: initialDate, busy: anyModalOpen, setSelectedDate });",
-    to: "  void anyModalOpen;",
-  },
+  /* ⚠️ M14, M15 і M16 ЗНЯТО В с51 (U-74), і це рішення, а не втрата.
+     Вони мутували правило слідування, поки воно жило ВСЕРЕДИНІ хука. U-72
+     виніс його в чисту `decideShift`, і три якорі протухли — стенд мовчки
+     відхиляв мутації, друкуючи «ЯКІР НЕ УНІКАЛЬНИЙ (0)», а прогін завершувався
+     нулем. Живий прогін с51 це і виявив.
+
+     Куди переїхало покриття — поіменно, ID в ID:
+       • **M14** («доба «до» береться не звідти») → falsify-u72 **M32**;
+       • **M15** («`busy` більше не враховується») → falsify-u72 **M33**;
+       • **M16** («дошка черги втратила правило») → falsify-u72 **M22**
+         (плюс M23 на дошку радіолога, якої тут не було зовсім).
+
+     ⚠️ ОБИДВІ нові мутації (M32, M33) довелося ЗАВЕСТИ, а не знайти. Перша
+     редакція цього коментаря відсилала M15 до falsify-u72 M5 — і це була
+     ПОМИЛКА, яку знайшло ревʼю Б: M5 мутує повернення (`pendingKey: pending`
+     → `null`, тобто «ключ викинуто»), а M15 знімала САМ ОБЛІК `busy`, тобто
+     «перенесення сталось під відкритою модалкою». Різні дефекти. Тобто правило
+     «знімати мутацію лише разом із посиланням» я порушив на першому ж
+     застосуванні — рівно тому воно й записане тут великими літерами.
+
+     ⚠️ ПРАВИЛО, ЯКЕ ЗВІДСИ ВИПЛИВАЄ: мутацію можна ЗНЯТИ лише разом із
+     посиланням на те, де тепер живе її покриття. Мутація, що зникла мовчки, —
+     той самий протухлий якір, тільки без рядка у звіті. */
   {
     id: "M17", file: "rb", spec: SPEC.clock,
     what: "дошка радіолога перестала берегти дату з deep-link «Пошук»",
@@ -190,27 +196,26 @@ const MUTATIONS = [
     from: "  CLOCK_MIN_APPLY_MS + CLOCK_MAX_RTT_MS / 2 + CLOCK_MAX_MONO_DRIFT_MS / 2;",
     to: "  CLOCK_MAX_MONO_DRIFT_MS / 2 + CLOCK_MAX_RTT_MS / 2 + CLOCK_MIN_APPLY_MS;",
   },
-  {
-    id: "T3", file: "ft", green: true,
-    what: "перейменовано локальні «доба до/після» — питання правила не змінилось",
-    edits: [
-      { from: "      const before = wallDayKeyAt(Date.now() + prevOffset, clinicTz);  // доба за СТАРИМ годинником",
-        to: "      const dayBefore = wallDayKeyAt(Date.now() + prevOffset, clinicTz);  // доба за СТАРИМ годинником" },
-      { from: "      const after = wallDayKey(clinicTz);", to: "      const dayAfter = wallDayKey(clinicTz);" },
-      { from: "      if (before !== after && pendingKeyRef.current === null) pendingKeyRef.current = before;",
-        to: "      if (dayBefore !== dayAfter && pendingKeyRef.current === null) pendingKeyRef.current = dayBefore;" },
-    ],
-  },
-  {
-    id: "T4", file: "qb", green: true,
-    what: "перейменовано агрегат відкритих оверлеїв (усі місця)",
-    edits: [
-      { from: "  const anyModalOpen = modalOpen ||", to: "  const overlayOpen = modalOpen ||" },
-      { from: "      if (anyModalOpen) return;", to: "      if (overlayOpen) return;" },
-      { from: "  }, [anyModalOpen, reload, visRooms]);", to: "  }, [overlayOpen, reload, visRooms]);" },
-      { from: "busy: anyModalOpen, setSelectedDate });", to: "busy: overlayOpen, setSelectedDate });" },
-    ],
-  },
+  /* ⚠️ T3 ЗНЯТО В с51 (U-74): перейменування локальних «доба до/після» жило в
+     тілі хука, а після виносу `decideShift` якір протух. Зелені зонди на те
+     саме — falsify-u72 T1 (локальне звʼязування), T2 (проміжна змінна),
+     T5 (перестановка умов). Звірено по коду. */
+  /* ⚠️ T4 ЗНЯТО В с51 (U-74) — і НЕ тому, що якір протух, а тому, що зонд був
+     НЕПРАВДИВИЙ. Спершу я його «полагодив», перевівши якорі на чинний виклик,
+     і стенд видав ЗЕЛЕНЕ. Ревʼю Б показало, чому це зелене нічого не варте:
+     перейменування `anyModalOpen` червонить `tests/followToday.test.ts`
+     (CALL_SITES пінує саме це імʼя), а цього спека в SPECS цього стенда НЕМАЄ.
+     Тобто зонд видавав дозвіл на рефактор, який валить гейт.
+
+     Рішення: зонд знято, бо в цьому проєкті перейменування агрегату НЕ є
+     безпечним рефактором. Пін навмисно фіксує саме `anyModalOpen`: іншого
+     сторожа на те, ЯКИЙ агрегат передано в `busy`, немає взагалі, а сусідній
+     рядок CALL_SITES (дошка радіолога) вже послаблений до `busy: [^;]*?` —
+     тобто там цієї гарантії вже нема.
+
+     ⚠️ Напруга названа і НЕ вирішена: суворий пін ловить підміну агрегату, але
+     падає від чесного перейменування; послаблений — навпаки. Це в U-74
+     частину 2, разом із рештою ревізії. */
   {
     id: "T5", file: "qs", green: true,
     what: "предикат півночі винесено у проміжну змінну — та сама формула",
@@ -304,7 +309,13 @@ try {
 } finally {
   restore();
   if (existsSync(REPORT)) unlinkSync(REPORT);
+  /* U-74: відхилений якір — ЧЕРВОНИЙ вердикт стенда, а не рядок у таблиці.
+     Лічильник звіряється з MUTATIONS.length: мутація, що не дала рядка,
+     валить прогін так само, як протухлий якір. */
+  const verdict = verdictOf(lines, MUTATIONS.length);
+  lines.push(`\n${verdict.summary}`);
   writeFileSync(OUT, lines.join("\n") + "\n");
   console.log(lines.join("\n"));
   console.log(`\nЗвіт: ${OUT}. Файли відновлено.`);
+  if (!verdict.ok) process.exitCode = 1;
 }

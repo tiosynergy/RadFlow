@@ -13,6 +13,7 @@
 // ============================================================
 import { readFileSync, writeFileSync, existsSync, unlinkSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { verdictOf } from "./lib/falsify-verdict.mjs";
 
 /* Файл міграції НЕ захардкоджений (ревʼю Б, MEDIUM): сторож бере ОСТАННЮ
    міграцію, що створює RPC, і стенд мусить правити рівно її — інакше після
@@ -347,7 +348,13 @@ try {
 } finally {
   restore();
   if (existsSync(REPORT)) unlinkSync(REPORT);
+  /* U-74: відхилений якір — ЧЕРВОНИЙ вердикт стенда, а не рядок у таблиці.
+     Лічильник звіряється з MUTATIONS.length: мутація, що не дала рядка,
+     валить прогін так само, як протухлий якір. */
+  const verdict = verdictOf(lines, MUTATIONS.length);
+  lines.push(`\n${verdict.summary}`);
   writeFileSync(OUT, lines.join("\n") + "\n");
   console.log(lines.join("\n"));
   console.log(`\nЗвіт: ${OUT}. Файли відновлено.`);
+  if (!verdict.ok) process.exitCode = 1;
 }
