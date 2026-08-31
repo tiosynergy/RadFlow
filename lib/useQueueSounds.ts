@@ -32,6 +32,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { wallNow } from "./incidents";
+import { clockEpoch, serverNow } from "./serverClock";
 import {
   dedupeHash,
   diffIncidents,
@@ -134,6 +135,22 @@ export function useQueueSounds({
      секунди після повернення, напр. реальна поломка) звучать нормально. */
   const entriesSilentOnceRef = useRef(false);
   const incidentsSilentOnceRef = useRef(false);
+
+  /* ⚠️ Ф4-8, знахідка ревʼю (A/MEDIUM-3, Б/M2). Поправка на зсув годинника
+     приземляється АСИНХРОННО — після `getSession` і трьох RPC, тобто майже
+     завжди ПІЗНІШЕ за перший snapshot дошки, який їде одним запитом. Отже
+     baseline знімався на СЛАМАНОМУ годиннику, а найближчий тік рахувався вже
+     на виправленому — і перехід false → true, породжений стрибком на 8 хвилин,
+     дифер читав як справжнє перевищення. Наслідок: звук на дослідження, яке
+     було простроченим ще до відкриття дошки, — рівно те, що забороняє
+     інваріант «перший прогін тихий» (lib/soundEvents.ts).
+     `has`-гард від цього не рятує: id не новий, поїхав годинник.
+     Тому стрибок годинника трактуємо як повернення на вкладку — тихий
+     ре-baseline. Механізм той самий, що вже перевірений на visibilitychange;
+     нового способу гасити звук не заводимо.
+     Лічильники окремі для кожної лінії: одна не сміє «зʼїсти» подію в іншої. */
+  const incClockEpochRef = useRef(clockEpoch());
+  const overClockEpochRef = useRef(clockEpoch());
 
   useEffect(() => {
     const d = new TabSoundDedupe();
@@ -275,7 +292,12 @@ export function useQueueSounds({
       const list = lastIncidentsRef.current;
       if (!list) return;
       // Перший дифф після повернення видимості — тиха синхронізація baseline.
-      const silentSync = incidentsSilentOnceRef.current;
+      // Стрибок годинника (Ф4-8) трактуємо так само: baseline знято іншим
+      // годинником, тож різниця з «зараз» — не плин часу.
+      const epochNow = clockEpoch();
+      const clockJumped = epochNow !== incClockEpochRef.current;
+      incClockEpochRef.current = epochNow;
+      const silentSync = incidentsSilentOnceRef.current || clockJumped;
       incidentsSilentOnceRef.current = false;
       const { events, next } = diffIncidents(knownIncRef.current, list, wallNow(), incidentRoomIds);
       knownIncRef.current = next;
@@ -307,9 +329,16 @@ export function useQueueSounds({
     const evalOverruns = () => {
       const list = lastEntriesArrRef.current;
       if (!list) return;
-      const silentSync = overrunSilentOnceRef.current;
+      const epochNow = clockEpoch();
+      const clockJumped = epochNow !== overClockEpochRef.current;
+      overClockEpochRef.current = epochNow;
+      const silentSync = overrunSilentOnceRef.current || clockJumped;
       overrunSilentOnceRef.current = false;
-      const { events, next } = diffOverruns(knownOverRef.current, list, Date.now());
+      /* Ф4-8: годинник БАЗИ — поріг перевищення рахується від in_progress_at,
+         який ставить база. З годинником ПК, що поспішає, звук лунав за стільки
+         ж хвилин ДО реального кінця вікна; зі зворотним зсувом — не лунав
+         ніколи. */
+      const { events, next } = diffOverruns(knownOverRef.current, list, serverNow());
       knownOverRef.current = next;
       queueEvents(events, silentSync);
     };

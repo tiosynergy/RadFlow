@@ -13,7 +13,8 @@
    через wallNow() (стінний-як-UTC) + залишок — без подвійного зсуву Intl. */
 
 import { useEffect, useState } from "react";
-import { wallNow } from "@/lib/incidents";
+import { wallServerNow } from "@/lib/incidents";
+import { serverNow } from "@/lib/serverClock";
 
 const CRIT_SEC = 5 * 60; // ≤5 хв → червоне + пульсація
 
@@ -35,9 +36,17 @@ export interface StudyTimerProps {
 }
 
 export default function StudyTimer({ startAt, durationMin, bufferMin = 0, variant = "full", size, caption }: StudyTimerProps) {
-  const [now, setNow] = useState(() => Date.now());
+  /* Ф4-8: «зараз» — за годинником БАЗИ, бо startAt (in_progress_at) поставила
+     БАЗА. Раніше різниця бралася між двома різними годинниками: ПК без NTP,
+     що поспішає на 8 хв, стартував кільце з 27:00 замість 35:00, а «критичне»
+     червоне настає на ті ж 8 хв раніше.
+     ⚠️ finishLabel нижче рахується через wallServerNow() — тобто ТІЄЮ Ж
+     поправкою. Це не збіг, а вимога: до пакета дві помилки скорочувались
+     (обидві з того самого годинника) і час завершення показувався ВІРНО —
+     виправити лише одну з них означало б зламати те, що працювало. */
+  const [now, setNow] = useState(() => serverNow());
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
+    const t = setInterval(() => setNow(serverNow()), 1000);
     return () => clearInterval(t);
   }, []);
 
@@ -50,7 +59,7 @@ export default function StudyTimer({ startAt, durationMin, bufferMin = 0, varian
   const frac = Math.max(0, Math.min(1, remaining / totalSec));
 
   // Час завершення (стінний HH:MM) = стінний зараз + залишок (для over — у минулому).
-  const finishD = new Date(wallNow() + remaining * 1000);
+  const finishD = new Date(wallServerNow() + remaining * 1000);
   const finishLabel = pad(finishD.getUTCHours()) + ":" + pad(finishD.getUTCMinutes());
 
   const dim = size ?? (variant === "mini" ? 42 : 224);

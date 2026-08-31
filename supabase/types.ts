@@ -1862,6 +1862,13 @@ export type Database = {
         Args: Record<PropertyKey, never>;
         Returns: number;
       };
+      /* 0169 (Ф4-8): now() бази — джерело для вимірювання зсуву годинника
+         браузера (lib/serverClock.ts). EXECUTE лише authenticated і
+         service_role; логіки не містить. Повертає ISO-рядок timestamptz. */
+      server_now: {
+        Args: Record<PropertyKey, never>;
+        Returns: string;
+      };
     };
     Enums: {
       user_role: "admin" | "radiologist" | "registrar" | "referrer" | "ceo";

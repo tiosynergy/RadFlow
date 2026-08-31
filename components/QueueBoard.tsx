@@ -9,6 +9,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { useQueueSounds } from "@/lib/useQueueSounds";
 import { isStudyOverrun, type OverrunSource } from "@/lib/soundEvents";
+import { serverNow } from "@/lib/serverClock";
 import {
   setQueueEntryStatus,
   cancelQueueEntry,
@@ -165,10 +166,12 @@ function incidentCoversDay(inc: IncidentRow | null | undefined, dayDate: Date) {
 }
 function enteredAtOf(e: QEntry | null | undefined): string | null { return e ? (e.in_progress_at || e.updated_at) : null; }
 
-/* ── Живий таймер ── */
+/* ── Живий таймер ──
+   Ф4-8: «зараз» — serverNow(), бо enteredAt (in_progress_at) поставила БАЗА.
+   Різниця двох РІЗНИХ годинників давала «хв у кабінеті» зі зсувом ПК. */
 function LiveTimer({ enteredAt, children }: { enteredAt?: string | null; children: (sec: number) => ReactNode }) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  const [now, setNow] = useState(() => serverNow());
+  useEffect(() => { const t = setInterval(() => setNow(serverNow()), 1000); return () => clearInterval(t); }, []);
   const sec = enteredAt ? Math.max(0, Math.floor((now - new Date(enteredAt).getTime()) / 1000)) : 0;
   return children(sec);
 }
@@ -430,7 +433,7 @@ function CurrentCard({ patient, stuck, stuckUnknown, onFinishStuck, roomName, ro
             const over = isStudyOverrun(
               { id: patient.id, status: "in_progress", in_progress_at: enteredAt,
                 duration_min: patient.duration_min, buffer_time_min: patient.buffer_time_min },
-              (enteredAt ? new Date(enteredAt).getTime() : Date.now()) + sec * 1000
+              (enteredAt ? new Date(enteredAt).getTime() : serverNow()) + sec * 1000
             );
             return (<>
               <div className="t tabular" style={over ? { color: "var(--orange)" } : undefined}>{fmtTimer(sec)}</div>
