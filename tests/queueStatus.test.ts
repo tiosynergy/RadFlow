@@ -313,3 +313,42 @@ describe.each(BOARDS)("%s — гейт safety_unknown підключений", (
     for (const b of blocks) expect(b).toMatch(/safetyUnknown:\s*safetyErr\b/);
   });
 });
+
+/* ===== U-67: накладення (clash) — жорсткий блок із названою причиною ===== */
+
+/* Рішення власника (с50). До нього дошка черги трактувала clash як «override з
+   попередженням»: `inProgressBlockReason` віддавав null, а `callPatient`
+   перехоплював clash ПЕРЕД гілкою жорстких блоків і відкривав діалог
+   «⚠ Викликати все одно».
+   ⚠️ Той діалог був МЕРТВИЙ: `onConfirm` перечитує жорсткі блоки в момент
+   кліку (ревʼю с46 р3, F5), а в clash `confirmable` хибний — тож підтвердження
+   ЗАВЖДИ закінчувалось загальним тостом «Викликати зараз неможливо».
+   Полагодити «як задумано» було неможливо без зміни БД: параметра override у
+   `queue_set_status_rpc` немає, гілка (б) гарда 0129 підніме ACTUAL_OVERLAP
+   незалежно від room_busy. Тепер обидві дошки поводяться однаково.
+   Сторожі статичні (environment: "node", JSX компонентними тестами не
+   покривається) — той самий прийом, що в таблиці BOARDS вище. */
+describe.each(BOARDS)("%s — clash названий, а не «підтверджуваний»", (_name, src) => {
+  it("inProgressBlockReason має гілку clash із причиною", () => {
+    expect(src, "clash знову віддає null — кнопка мовчить").toMatch(/r\.code === "clash"/);
+  });
+
+  it("clash НЕ відкриває діалог підтвердження", () => {
+    /* Головний пін. Поки clash перехоплювався окремо ПЕРЕД `!r.confirmable`,
+       він відкривав діалог, який сам себе і скасовував. */
+    expect(src, "clash знову веде в offCallAsk — діалог мертвий за побудовою")
+      .not.toMatch(/setOffCallAsk\(\{[^}]*kind:\s*"clash"/);
+    expect(src, 'у стані діалогу знову зʼявилась гілка kind: "clash"')
+      .not.toMatch(/kind:\s*"clash";/);
+  });
+
+  it("порядок перевірок: жорсткі блоки — перед підтверджуваними", () => {
+    /* `!r.confirmable` мусить стояти ДО гілок next_day / sched_overrun:
+       інакше підтверджуваний код перехопить керування раніше за жорсткий. */
+    const at = src.indexOf("!r.confirmable");
+    const nd = src.indexOf('r.code === "next_day"');
+    expect(at, "гілка жорстких блоків зникла").toBeGreaterThan(0);
+    expect(nd, "гілка next_day зникла").toBeGreaterThan(0);
+    expect(at, "підтверджувані коди перехоплюють раніше за жорсткі").toBeLessThan(nd);
+  });
+});

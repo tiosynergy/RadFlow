@@ -1242,9 +1242,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   // Оголошені тут (а не нижче біля хендлерів), бо їх читає гард хоткеїв anyModalOpen.
   const [cancelAsk, setCancelAsk] = useState<{ p: QEntry; mode: "cancel" | "declined" } | null>(null);
   const [offCallAsk, setOffCallAsk] = useState<
+    /* U-67 (с50): гілки "clash" тут більше немає — накладення стало жорстким
+       блоком із названою причиною (inProgressBlockReason), як на дошці
+       радіолога. Діалог «⚠ Викликати все одно» був мертвий: onConfirm
+       перечитує жорсткі блоки, а clash не confirmable. */
     | { p: QEntry; kind: "overrun"; end: string; durationMin: number }
     | { p: QEntry; kind: "next_day"; end: string; durationMin: number }
-    | { p: QEntry; kind: "clash"; time: string; name: string | null; durationMin: number }
     | null
   >(null);
 
@@ -2353,9 +2356,27 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";
     if (r.code === "room_stuck") return stuckBlockReason(r);
     if (r.code === "stuck_unknown") return STUCK_UNKNOWN_REASON;
-    // clash БІЛЬШЕ не жорсткий блок для адміністратора (принцип «override з попередженням»):
-    // реєстратура володіє розкладом і вирішує сама — виклик через підтвердження
-    // «Викликати все одно» (callPatient нижче), а не глуха стіна. Кнопку не вимикаємо.
+    /* U-67 (рішення власника, с50): clash — ЖОРСТКИЙ блок із названою причиною,
+       як на дошці радіолога. Тут раніше стояв «override з попередженням»:
+       inProgressBlockReason віддавав null, а callPatient відкривав діалог
+       «⚠ Викликати все одно».
+       ⚠️ Той діалог був МЕРТВИЙ, і це головне. `onConfirm` перечитує жорсткі
+       блоки в момент кліку (ревʼю с46 р3, F5), у clash `confirmable` хибний —
+       тож підтвердження завжди закінчувалось загальним тостом «Викликати зараз
+       неможливо». Кнопка обіцяла дію, якої не існувало.
+       ⚠️ І полагодити її «як задумано» було НЕМОЖЛИВО без зміни БД: параметра
+       override у `queue_set_status_rpc` немає, а гілка (б) гарда 0129 підніме
+       ACTUAL_OVERLAP незалежно від room_busy (той старий коментар стверджував
+       протилежне — неправда, знайдено ревʼю А пакета Ф4-2).
+       Варіант «дати RPC явний p_force» власник відхилив: це свідомий дозвіл на
+       накладення в кабінеті, проти якого побудовані решта шарів.
+       Текст — реєстратурний: розкладом володіє саме вона, тож дія називається
+       прямо, без «реєстратура має перенести». */
+    if (r.code === "clash") {
+      return `Дослідження ${r.durationMin} хв зараз не вміститься — о ${r.time} наступний запис` +
+        (r.name ? ` (${r.name.split(" ").slice(0, 2).join(" ")})` : "") +
+        ". Перенесіть один із записів";
+    }
     return null;
   }
   // Виклик поза графіком — через діалог підтвердження (offCallAsk оголошено вище
@@ -2366,23 +2387,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   // (notify / offCallAsk) завершуються синхронно й повертають undefined.
   function callPatient(p: QEntry): void | Promise<void> {
     const r = callBlockOf(p);
-    // clash — накладення на НАСТУПНИЙ запис. Не жорсткий блок, а підтвердження
-    // («Викликати все одно»): перехоплюємо ДО жорсткого блоку.
-    // ⚠️ ЗНАХІДКА U-67 (ревʼю А, с50). Тут стояло «Сервер override пропустить —
-    // кабінет не зайнятий (інакше раніше спрацював би room_busy)». Це НЕПРАВДА:
-    // room_busy — дзеркало гілки (а) гарда 0129 (сидить in_progress), а clash —
-    // дзеркало гілки (б), і вона підніме ACTUAL_OVERLAP незалежно від (а);
-    // параметра override у queue_set_status_rpc немає взагалі.
-    // Наслідок сьогодні: діалог «Викликати все одно» для clash МЕРТВИЙ —
-    // onConfirm нижче перечитує жорсткі блоки, у clash `confirmable` хибний,
-    // і замість виклику оператор отримує загальний тост «Викликати зараз
-    // неможливо» (inProgressBlockReason для clash навмисно віддає null).
-    // Дані це не псує (fail-closed), але кнопка обіцяє те, чого немає.
-    // Полагодити можна лише двома способами, і обидва — рішення власника:
-    // або зняти діалог і показувати причину, як робить RadiologistBoard,
-    // або дати RPC явний p_force і пропустити override крізь гард.
-    // Свідомо НЕ чіпаю в пакеті Ф4-2: це не арифметика часу, а продуктовий вибір.
-    if (r && r.code === "clash") { setOffCallAsk({ p, kind: "clash", time: r.time, name: r.name ?? null, durationMin: r.durationMin }); return; }
+    /* U-67: clash іде в загальну гілку жорстких блоків нижче — окремого
+       перехоплення більше немає. Порядок тут важливий саме тому: доки clash
+       перехоплювався ПЕРЕД `!r.confirmable`, він відкривав діалог, який потім
+       сам себе і скасовував. */
     if (r && !r.confirmable) { notify(inProgressBlockReason(p) || "Викликати зараз неможливо", "error"); return; }
     /* M-2: вікно виклику переходить за північ. Дошка тримає рівно одну добу,
        тож накладення на ранковий запис завтра вона не побачить — кажемо про це
@@ -2959,18 +2967,13 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
           (не галочка, як у модалках): виклик робиться одним кліком просто з дошки. */}
       {offCallAsk && (
         <ConfirmDialog
-          title={offCallAsk.kind === "clash" ? "Викликати попри наступний запис?"
-            : offCallAsk.kind === "next_day" ? "Викликати попри перехід за північ?"
+          title={offCallAsk.kind === "next_day" ? "Викликати попри перехід за північ?"
             : "Викликати поза графіком?"}
-          text={offCallAsk.kind === "clash"
-            ? <><b>{offCallAsk.p.patient_name}</b> · {offCallAsk.durationMin} хв. Наступний запис о <b>{offCallAsk.time}</b>{offCallAsk.name ? " (" + offCallAsk.name.split(" ").slice(0, 2).join(" ") + ")" : ""} — виклик зараз накладеться на нього. Далі перенесіть наступного пацієнта, інакше він зачекає.</>
-            : offCallAsk.kind === "next_day"
+          text={offCallAsk.kind === "next_day"
             ? <><b>{offCallAsk.p.patient_name}</b> · запис о {offCallAsk.p.scheduled_time} · {offCallAsk.durationMin} хв. Кабінет буде зайнятий до <b>{offCallAsk.end}</b> завтра. Дошка бачить лише один день — записів завтра до <b>{offCallAsk.end}</b> вона не показує, перевірте їх перед викликом.</>
             : <><b>{offCallAsk.p.patient_name}</b> · запис о {offCallAsk.p.scheduled_time} · {offCallAsk.durationMin} хв.{" "}Кабінет працює до <b>{offCallAsk.end}</b> — робота триватиме понаднормово.</>}
-          confirmLabel={offCallAsk.kind === "clash" ? "⚠ Викликати все одно"
-            : offCallAsk.kind === "next_day" ? "🌙 Викликати" : "⏰ Викликати"}
+          confirmLabel={offCallAsk.kind === "next_day" ? "🌙 Викликати" : "⏰ Викликати"}
           cancelLabel="Ні"
-          danger={offCallAsk.kind === "clash"}
           busy={offCallBusy}
           onClose={() => setOffCallAsk(null)}
           onConfirm={async () => {
