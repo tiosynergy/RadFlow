@@ -84,6 +84,18 @@ tstzrange(i.started_at, coalesce(i.blocked_until, 'infinity'))
 
 ### F4-2 (HIGH) — дзеркало `lateCallClash` ↔ 0129 розходиться на секунди
 
+> **ЗАКРИТО 31.08.2026** (с50). `lateCallClash` рахує в мілісекундах доби
+> (`wallMsOfDay`), секунди в `scheduled_time` більше не відкидаються, а
+> невизначеність розрядності `wallNow` (секунда) закладена в КІНЕЦЬ вікна
+> (`CALL_WINDOW_CLOCK_SLACK_MS`). Міграція не знадобилась: правий бік —
+> серверний. Обидва сценарії нижче покриті викликами в
+> `tests/lateCallGuardMirror.test.ts`; стенд `scripts/falsify-f4-2.mjs` —
+> 25 червоних мутацій / 8 зелених. Розбір, залишки і два ревʼю:
+> `docs/audit/PR-F4-2-late-call-mirror.md`. Залишки винесені окремо:
+> **U-67** (предикат півночі в хвилинах + мертвий діалог «Викликати все одно»),
+> **U-68** (немає fail-closed на `NaN` у `nowMs`), **U-69** (`clinics.timezone`
+> без CHECK).
+
 `lib/queueStatus.ts:71-90` (`callWindowEndMin`, `lateCallClash`) через
 `wallMinOfDay` (`lib/incidents.ts:326-329`).
 
