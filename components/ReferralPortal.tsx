@@ -494,14 +494,23 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
      рідкий поллінг (pollWhenSubscribedMs, як у useRoomBusy) + refetch по
      focus/visibility вище + повторна перевірка слота на сервері.
      schedule_overrides і rooms — у публікації supabase_realtime: особливий
-     графік дня чи правка перерв кабінету перемальовують сітку без F5. */
+     графік дня чи правка перерв кабінету перемальовують сітку без F5.
+     ⚠️ `clinic_id=eq.` на ВСІХ чотирьох (U-61). Без фільтра ці підписки ловили
+     подію DELETE по ВСІЙ базі: `realtime.apply_rls` політику на DELETE не
+     ОБЧИСЛЮЄ, тож рішення «кому доставити» приймає лише фільтр. Вмісту рядка
+     це не віддавало (та сама функція ріже `old_record` до первинного ключа,
+     коли на таблиці є RLS), але факт і час кожного видалення в чужих клініках
+     приїжджали направнику — крос-тенантний оракул без жодної потреби.
+     Центр тут завжди відомий: без `centerId` канал не створюється. Для
+     потрібних подій фільтр нічого не змінює — сітка й так дивиться рівно на
+     один центр, і клініку ані запис, ані простій, ані кабінет не міняють. */
   useRealtimeRefetch({
     channelName: centerId ? "ref-slots-" + centerId + "-" + (roomId || "none") + "-" + date : null,
     subscriptions: [
-      { table: "queue_entries", onChange: () => loadDay(true), debounceKey: "day" },
-      { table: "incidents", onChange: () => loadDay(true), debounceKey: "day" },
-      { table: "schedule_overrides", onChange: () => loadDay(true), debounceKey: "day" },
-      { table: "rooms", onChange: () => loadDay(true), debounceKey: "day" },
+      { table: "queue_entries", filter: "clinic_id=eq." + centerId, onChange: () => loadDay(true), debounceKey: "day" },
+      { table: "incidents", filter: "clinic_id=eq." + centerId, onChange: () => loadDay(true), debounceKey: "day" },
+      { table: "schedule_overrides", filter: "clinic_id=eq." + centerId, onChange: () => loadDay(true), debounceKey: "day" },
+      { table: "rooms", filter: "clinic_id=eq." + centerId, onChange: () => loadDay(true), debounceKey: "day" },
     ],
     pollWhenSubscribedMs: 30_000,
   });
@@ -1855,14 +1864,23 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
          саме дві.
          ⚠️ Спільний `debounceKey`: коли лікар сам створив рядок, збігаються
          ОБИДВІ гілки, і без ключа одна подія давала б два перезавантаження.
-         ⚠️ І ще одна причина тримати фільтр, знайдена ревʼю р.2 і перевірена на
-         проді: на подіях DELETE `realtime.apply_rls` політику не перевіряє
-         ВЗАГАЛІ (`if not is_rls_enabled or action = 'DELETE' then
-         visible_role_sub_ids := ... || subscription_id`). Єдиний сторож там —
-         сам фільтр, який звіряється зі СТАРОЮ версією рядка (для цього й
-         потрібен REPLICA IDENTITY FULL, він на таблиці є). Підписка без фільтра
-         отримувала б повний старий рядок листа — з ПІБ і телефоном — на КОЖНЕ
-         видалення в базі. */
+         ⚠️ І ще одна причина тримати фільтр. На подіях DELETE `apply_rls`
+         політику НЕ обчислює (`if not is_rls_enabled or action = 'DELETE' then
+         visible_role_sub_ids := … || subscription_id`), тож рішення «кому
+         доставити» приймає лише фільтр, який звіряється зі СТАРОЮ версією
+         рядка — для цього й потрібен REPLICA IDENTITY FULL, він на таблиці є.
+         ⚠️ Виправлення попередньої редакції цього коментаря (ревʼю U-61): тут
+         було написано, що підписка без фільтра отримала б повний старий рядок
+         із ПІБ і телефоном. Це НЕВІРНО. Та сама функція, знаючи про діру,
+         ріже `old_record` до колонок первинного ключа, щойно на таблиці
+         ввімкнено RLS:
+           and ( not is_rls_enabled or (c).is_pkey )
+             -- if RLS enabled, we can't secure deletes so filter to pkey
+         На всіх 11 таблицях публікації `supabase_realtime` RLS увімкнено
+         (заміряно), і це тримає нічний `invariants_check` (перевірка №3).
+         Тобто без фільтра приїхав би не рядок, а `{id}` — крос-тенантний
+         «оракул» ідентифікаторів і часу видалень, без вмісту. Фільтр закриває
+         саме це. */
       { table: "waitlist_entries", filter: "created_by=eq." + doctorId, onChange: reloadWaitlist, debounceKey: "wl" },
       { table: "waitlist_entries", filter: "referrer_id=eq." + doctorId, onChange: reloadWaitlist, debounceKey: "wl" },
       /* ⚠️ Спільний debounceKey у всіх чотирьох гілок `router.refresh()`
