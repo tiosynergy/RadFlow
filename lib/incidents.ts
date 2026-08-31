@@ -419,16 +419,18 @@ export function incidentAwaitingManualUnblock(inc: IncidentLike | null | undefin
   return inc.auto_unblock === false && !!inc.blocked_until && ms >= new Date(inc.blocked_until).getTime();
 }
 
-// Попадает ли слот (мс начала) в окно простоя любого инцидента кабинета — блокирует бронирование.
-export function slotBlockedByIncidents(
-  incidents: IncidentLike[] | null | undefined,
-  roomId: string,
-  slotMs: number
-): boolean {
-  return (incidents || []).some(
-    (i) => i.room_id === roomId && slotMs >= new Date(i.started_at).getTime() && slotMs < incidentEffectiveEnd(i)
-  );
-}
+/* ⚠️ ТУТ БУВ `slotBlockedByIncidents` — і його прибрано навмисно (ревʼю пакета
+   Ф4-5/Ф4-7, обидва раунди назвали його незалежно).
+   Він питав, чи ПОЧИНАЄТЬСЯ слот усередині простою, тобто був предикатом
+   МОМЕНТУ, тоді як гард `check_not_during_incident` порівнює ПЕРЕТИН
+   інтервалів. Це рівно дефект U-33/F4-1: дослідження, що заходить у простій
+   з-під його початку, вважалось вільним. Останній виклик (сітка порталу
+   направника) знято в U-33; далі функція лишалась ЕКСПОРТОВАНОЮ, з найкращою
+   назвою в модулі і fail-open поведінкою — тобто готовою пасткою для сьомої
+   копії формули.
+   Що кликати замість неї: `studyBlockedByFeed` / `incidentDurCapMin` (питання
+   «чи прийме сервер це дослідження»), `entryInIncidentWindow` (перетин запису з
+   простоєм), `incidentMinutesOnDay` (вікно в хвилинах доби). */
 
 /* ===== Простой в «минутах суток» — для публикуемой доступности (аудит с45) =====
 

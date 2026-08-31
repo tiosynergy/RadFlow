@@ -10,7 +10,7 @@
 import { useState } from "react";
 import { bookableRooms } from "@/lib/rooms";
 import { roomScheduleFor, overrideOn, overridesUnknown, type OverrideFeed } from "@/lib/schedule";
-import { roomIncidentsOf, wallNow, type IncidentFeed } from "@/lib/incidents";
+import { incidentEffectiveEnd, roomIncidentsOf, wallNow, type IncidentFeed } from "@/lib/incidents";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { modalityShort, modalityKind } from "@/lib/studies";
 
@@ -134,7 +134,15 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
     const s = dtFrom(startDate, startTime), e = blockedUntil(s);
     if (e && e.getTime() <= s.getTime()) { setErr("Кінець має бути пізніше початку"); return; }
     const eMs = e ? e.getTime() : Infinity;
-    if ((others || []).some((o) => overlaps(s.getTime(), eMs, new Date(o.started_at).getTime(), o.blocked_until ? new Date(o.blocked_until).getTime() : Infinity))) {
+    /* ⚠️ Кінець чужого простою — через `incidentEffectiveEnd` (F4-7, знахідка
+       ревʼю р.1). Тут була шоста рукописна копія тієї самої формули, і вона
+       розходилась із каноном рівно там, де це найдорожче: на НЕЧИТАБЕЛЬНОМУ
+       `blocked_until` (значення `'infinity'` приїжджає рядком) вона давала NaN,
+       а `overlaps` із NaN тотожно false — перетин мовчки пропускався. Це
+       єдиний бар'єр проти простоїв, що накладаються: унікальний індекс
+       `incidents_one_active_per_room` обмежує лише `active`, `planned` не
+       обмежений нічим. Канон на NaN віддає Infinity, тобто fail-CLOSED. */
+    if ((others || []).some((o) => overlaps(s.getTime(), eMs, new Date(o.started_at).getTime(), incidentEffectiveEnd(o)))) {
       setErr("Період перетинається з ТО цього кабінету"); return;
     }
     const durLabel = durKey === "restore" ? "до " + restoreDate + " " + restoreTime : DURATIONS.find((d) => d.k === durKey)?.label;
@@ -218,7 +226,8 @@ function MaintenanceSection({ roomId, existing, others, onSave, onResolve }: Mai
     setErr("");
     const s = dtFrom(startDate, startTime), e = dtFrom(endDate, endTime);
     if (e.getTime() <= s.getTime()) { setErr("Кінець має бути пізніше початку"); return; }
-    if ((others || []).some((o) => overlaps(s.getTime(), e.getTime(), new Date(o.started_at).getTime(), o.blocked_until ? new Date(o.blocked_until).getTime() : Infinity))) {
+    // Кінець чужого простою — канонічний (та сама правка, що в блоці поломки вище).
+    if ((others || []).some((o) => overlaps(s.getTime(), e.getTime(), new Date(o.started_at).getTime(), incidentEffectiveEnd(o)))) {
       setErr("Період перетинається з поломкою цього кабінету"); return;
     }
     onSave({ id: existing?.id, roomId, reason: "maintenance", reasonLabel: "Планове ТО", startedAt: s.toISOString(), blockedUntil: e.toISOString(), autoUnblock, note: "Планове ТО " + startDate + " " + startTime + "–" + endDate + " " + endTime });

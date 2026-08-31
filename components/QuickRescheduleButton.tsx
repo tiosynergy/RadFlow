@@ -14,7 +14,7 @@ import { useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { roomScheduleFromFeed, roomBreaksFromFeed, overridesUnknown, overrideOn, type OverrideFeed, type Break } from "@/lib/schedule";
 import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
-import { incidentEffectiveEnd, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, wallInstant, type IncidentFeed } from "@/lib/incidents";
+import { incidentMinutesOnDay, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, type IncidentFeed } from "@/lib/incidents";
 import { firstFittingSlot, slotToMin, type BusySpan } from "@/lib/slots";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
 import type { BusyRow } from "@/lib/slotBusy";
@@ -94,19 +94,17 @@ export default function QuickRescheduleButton({ entry, clinicTz, date, overrides
           .filter((b) => b.e > b.s);
 
         // Простої кабінету (поломка/ТО) — теж зайнятість (кламп до меж доби, як у CollisionPanel).
-        const dayStart = wallInstant(dateStr, "00:00");
-        const DAY = 24 * 60;
         // Недосяжно, поки живий ранній гейт (те саме замикання) — розтяжка на
         // випадок, якщо його колись приберуть. Ревʼю р2 (F5): лишили свідомо.
         const roomInc = roomIncidentsOf(incidents, roomId);
         if (roomInc === null) throw new Error("incidents-unknown");   // невідомо ≠ вільно
+        /* ⚠️ Канонічна `incidentMinutesOnDay` замість своєї формули (F4-7) — та
+           сама правка, що в `CollisionPanel`, і з тієї ж причини: `Math.round`
+           зсував початок вікна вперед на простоях із дробовими секундами, і
+           кнопка пропонувала слот, який сервер відбиває як 23P01. */
         roomInc.forEach((i) => {
-          const st = new Date(i.started_at).getTime();
-          const en = incidentEffectiveEnd(i);
-          if (!isFinite(st) || en <= dayStart || st >= dayStart + DAY * 60000) return;
-          const s = Math.max(0, Math.round((st - dayStart) / 60000));
-          const e = en === Infinity ? DAY : Math.min(DAY, Math.round((en - dayStart) / 60000));
-          if (e > s) spans.push({ s, e });
+          const span = incidentMinutesOnDay(i, dateStr);
+          if (span) spans.push(span);
         });
 
         const nowMin = wallMinOfDay(wallNow(clinicTz || undefined));
