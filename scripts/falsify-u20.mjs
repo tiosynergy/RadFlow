@@ -93,3 +93,13 @@ for (const [name, file, from, to] of M) {
 restore();
 writeFileSync("falsify-u20.md", lines.join("\n") + "\n");
 console.log("DONE");
+
+/* U-74: ненайдений якір і «сторож дивиться не туди» — ЧЕРВОНИЙ вердикт
+   СТЕНДА, а не рядок у звіті. Лічильника в цьому стенді немає, тож
+   проблемні позиції виводяться з самих рядків звіту. */
+const badLines = lines.filter((l) => /ЯКІР НЕ ЗНАЙДЕНО|ЯКІР НЕ УНІКАЛЬНИЙ|⚠️|❌/.test(String(l)));
+if (badLines.length) {
+  console.log(`\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${badLines.length} проблемних позицій. Стенд НЕ доводить нічого.`);
+  for (const l of badLines) console.log(`   ${l}`);
+  process.exitCode = 1;
+} else console.log(`\n✅ ВЕРДИКТ: стенд зелений.`);
