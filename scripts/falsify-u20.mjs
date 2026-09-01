@@ -14,10 +14,15 @@ const M = [
   ["N02 стеля перерви знову дивиться на прапорець, а не на роль", MODAL,
    "const capByBreak = (offAllowed || !schedApplies)", "const capByBreak = (offSchedule || !schedApplies)"],
   ["N03 гейт згоди знову з арифметики стель", MODAL,
-   "const needsOffConfirm = allowOffSchedule && !!offNow && offNow.confirmable && !overflow;",
-   "const needsOffConfirm = crossesNow && !overflow && allowOffSchedule;"],
+   /* ⚠️ ЯКІР ОНОВЛЕНО в с51 (U-74 ч.2): U-15/U-33 дописали `&& !incidentBlocked`
+      (простій кабінету). Заразом виправлено `to`: у ньому стояв `crossesNow`,
+      якого в файлі НЕМАЄ ЖОДНОГО РАЗУ — лишився тільки в коментарях. Тобто
+      мутація не працювала б і з живим якорем: вона підставляла неоголошене
+      імʼя. Це не «протухло», це було зламане з народження. */
+   "const needsOffConfirm = allowOffSchedule && !!offNow && offNow.confirmable && !overflow && !incidentBlocked;",
+   "const needsOffConfirm = allowOffSchedule && !overflow && !incidentBlocked;"],
   ["N04 непідтверджуваний вид прибрано з valid", MODAL,
-   "&& !offForbiddenForRole && !offHardBlocked;", "&& !offForbiddenForRole;"],
+   "&& !offForbiddenForRole && !offHardBlocked && !incidentBlocked;", "&& !offForbiddenForRole && !incidentBlocked;"],
   ["N05 підпис межі знову читає мʼякі стелі", MODAL,
    ": (capByBreakStrict <= capByNext && capByBreakStrict <= capBySchedStrict && nextBreakStart != null)",
    ": (capByBreak <= capByNext && capByBreak <= capBySched && nextBreakStart != null)"],
@@ -28,19 +33,24 @@ const M = [
    "const overtimeRoom = allowOffSchedule && availableDur > inSchedCap;",
    "const overtimeRoom = availableDur > inSchedCap;"],
   ["N08 стеля продукту прибрана з мʼякої стелі", MODAL,
-   "Math.min(capByNext, capBySched, capByBreak, DUR_MAX)", "Math.min(capByNext, capBySched, capByBreak)"],
+   /* ⚠️ ЯКОРІ N08–N11, N13 ОНОВЛЕНО в с51 (U-74 ч.2). Причина спільна: U-15/U-33
+      додали `capByIncident` / `incidentBlocked` рівно в ці вирази, а U-21
+      переформатував `labelFor` на кілька рядків. Мутації відхилялись мовчки —
+      тобто пʼять класів дефектів у цій модалці не сторожило НІЩО. */
+   "Math.min(capByNext, capBySched, capByBreak, capByIncident, DUR_MAX)",
+   "Math.min(capByNext, capBySched, capByBreak, capByIncident)"],
   ["N09 стеля продукту прибрана зі строгої стелі", MODAL,
-   "Math.min(capByNext, capBySchedStrict, capByBreakStrict, DUR_MAX)",
-   "Math.min(capByNext, capBySchedStrict, capByBreakStrict)"],
+   "Math.min(capByNext, capBySchedStrict, capByBreakStrict, capByIncident, DUR_MAX)",
+   "Math.min(capByNext, capBySchedStrict, capByBreakStrict, capByIncident)"],
   ["N10 підпис овертайму більше не вимагає довіри до даних", MODAL,
-   ": (availTrusted && cap > inSchedCap) ? (\"до \" + fmtDay(startMin + cap))",
-   ": (cap > inSchedCap) ? (\"до \" + fmtDay(startMin + cap))"],
+   ": (availTrusted && cap > inSchedCap)\n      ? (\"до \" + fmtDay(startMin + cap)",
+   ": (cap > inSchedCap)\n      ? (\"до \" + fmtDay(startMin + cap)"],
   ["N11 час за добу друкується сирим fmt", MODAL,
-   "(\"до \" + fmtDay(startMin + cap))", "(\"до \" + fmt(startMin + cap))"],
+   "\"до \" + fmtDay(startMin + cap)", "\"до \" + fmt(startMin + cap)"],
   ["N12 глухий кут знову безумовно виграє в overflow", MODAL,
    "{overflow && !lengthIrrelevant\n              ? <>⚠ Не вміщується", "{overflow\n              ? <>⚠ Не вміщується"],
   ["N13 перерва на старті знову вважається лікованою довжиною", MODAL,
-   "|| offNow.kind === \"before_start\" || !!curBreak);", "|| offNow.kind === \"before_start\");"],
+   "|| offNow.kind === \"before_start\" || !!curBreak));", "|| offNow.kind === \"before_start\"));"],
   ["N14 банер «не може ніхто» знову ховається за overflow", MODAL,
    "{allowOffSchedule && offHardBlocked && offNow && (", "{allowOffSchedule && offHardBlocked && offNow && !overflow && ("],
   ["N15 скидання згоди знову спрацьовує на транзієнтному null", MODAL,

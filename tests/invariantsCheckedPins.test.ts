@@ -43,10 +43,17 @@ function checksInLatestReprint(): { n: number; file: string } {
   let best = { n: 0, file: "" };
   for (const f of files) {
     const txt = readFileSync(resolve(MIGDIR, f), "utf8");
-    const at = txt.indexOf("create or replace function public.invariants_check");
+    /* ⚠️ Якір на ПОЧАТОК РЯДКА і `continue` без терміналізатора (ревʼю Д, с51).
+       Три місця обирають «останній передрук» — цей тест, `guardSrc` в
+       `unreadChanges.test.ts` і `latestReprint()` у `scripts/falsify-u37.mjs`.
+       Гола підрядка ловила б і ЗГАДКУ сторожа в закоментованому відкаті (0167
+       робить саме так), і три вибори могли б розійтись мовчки — тоді стенд
+       стріляв би в один файл, а тести читали б інший. Правило тепер одне на
+       всіх трьох. */
+    const at = txt.search(/^create or replace function public\.invariants_check/m);
     if (at < 0) continue;
     const end = txt.indexOf("\n$function$;", at);
-    expect(end, `${f}: не знайшли кінець тіла invariants_check`).toBeGreaterThan(at);
+    if (end < 0) continue;
     const body = txt.slice(at, end);
     best = { n: (body.match(/v_n := v_n \+ 1;/g) || []).length, file: f };
   }

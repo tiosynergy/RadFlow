@@ -76,8 +76,12 @@ const MUTATIONS = [
   {
     id: "M7", file: "clock", green: false,
     what: "епоха росте на КОЖЕН замір, а не лише на зміну зсуву",
-    from: "  if (changed) _epoch++;",
-    to: "  _epoch++;",
+    /* ⚠️ ЯКІР ОНОВЛЕНО в с51 (U-74 ч.2): U-70 поклав усередину ще й розсилку
+       слухачам, і однорядкове `if (changed) _epoch++;` стало блоком.
+       `to` навмисно НЕ робить безумовним увесь блок: тоді мутація зламала б
+       заразом і розсилку, тобто перевіряла б два дефекти замість названого. */
+    from: "  if (changed) {\n    _epoch++;",
+    to: "  _epoch++;\n  if (changed) {",
   },
   {
     id: "M8", file: "clock", green: false,
@@ -106,9 +110,18 @@ const MUTATIONS = [
   },
   {
     id: "M12", file: "timer", green: false,
-    what: "підпис «завершення о HH:MM» повернувся на wallNow — дві помилки розійшлись",
-    from: "  const finishD = new Date(wallServerNow() + remaining * 1000);",
-    to: "  const finishD = new Date(wallServerNow() + 0 + remaining * 1000);",
+    what: "підпис «завершення о HH:MM» рахується годинником браузера, а не виміряним",
+    /* ⚠️ МУТАЦІЮ ПЕРЕПИСАНО, а не переякорено (с51, U-74 ч.2), і це важливіше
+       за протухлий якір. Стара пара була:
+         from: "… new Date(wallServerNow() + remaining * 1000);"
+         to:   "… new Date(wallServerNow() + 0 + remaining * 1000);"
+       тобто `to` відрізнявся від `from` РІВНО вставкою `+ 0` — арифметично
+       тотожно. Ця мутація не могла почервоніти НІКОЛИ, навіть із живим якорем:
+       вона була пустишкою від народження і при цьому числилась обовʼязковою до
+       червоного. Заразом U-70 згорнув `wallServerNow` у `wallNow`.
+       Тепер мутація робить те, що каже `what`. */
+    from: "  const finishD = new Date(wallNow() + remaining * 1000);",
+    to: "  const finishD = new Date(Date.now() + remaining * 1000);",
   },
   {
     id: "M13", file: "board", green: false,
@@ -130,9 +143,16 @@ const MUTATIONS = [
   },
   {
     id: "M16", file: "inc", green: false,
-    what: "wallNow переведено на serverNow — це U-70, межу пакета зламано",
-    from: "export function wallNow(tz?: string): number {\n  const d = new Date();",
-    to: "export function wallNow(tz?: string): number {\n  const d = new Date(serverNow());",
+    what: "wallNow відкотили на годинник браузера — межу, яку переніс U-70, зламано назад",
+    /* ⚠️ МУТАЦІЮ РОЗВЕРНУТО (с51, U-74 ч.2). Вона писалась у Ф4-8, коли
+       `wallNow` навмисно лишався на `new Date()`, і стерегла МЕЖУ ПАКЕТА:
+       «не тягни сюди serverNow, це вже U-70». Потім U-70 прийшов і зробив
+       рівно це — свідомо. Тобто продуктовий код опинився В ТОМУ СТАНІ, який
+       мутація оголошувала дефектом, а її `from` перестав існувати.
+       Переякорити без розвороту не можна: зміст інвертувався. Тепер вона
+       стереже нову межу — відкат `wallNow` назад на годинник браузера. */
+    from: "export function wallNow(tz?: string): number {\n  const d = new Date(serverNow());",
+    to: "export function wallNow(tz?: string): number {\n  const d = new Date();",
   },
   {
     id: "M17", file: "layout", green: false,
