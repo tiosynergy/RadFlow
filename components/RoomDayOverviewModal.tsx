@@ -8,6 +8,11 @@ import { buildSlots, slotToMin } from "@/lib/slots";
 import { inBreak, overrideOn, roomBreaksFromFeed, roomScheduleFromFeed, type OverrideFeed } from "@/lib/schedule";
 import { incidentEffectiveEnd, roomIncidentsOf, wallNow, wallToday0, wallMinOfDay, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
 import { useFollowTodayKey } from "@/lib/useFollowToday";
+/* Формат дати — ТОЙ САМИЙ, що в банерах форм запису (`fmtShort`, «1 вересня»).
+   Карта дня оголошена дзеркалом форми, тож і про перенесення вона мусить
+   говорити тими самими словами; своя копія форматера розійшлася б із ними
+   мовчки, як уже розходились три інші дублі правил у цьому проєкті. */
+import { fmtShort } from "@/components/BookingModal";
 import { modalityShort, modalityKind } from "@/lib/studies";
 
 type Room = {
@@ -50,7 +55,19 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
      тож розбіжність саме тут читається як «у формі зайнято, а на карті вільно».
      Записів цей екран не робить, дата видима й редагована — тому й ціна нижча,
      ніж у форм. Правило те саме: винятків «тут лише перегляд» не тримаємо. */
-  useFollowTodayKey({ clinicTz, value: day, setKey: setDay });
+  /* ⚠️ Г1-B (знахідка ревʼю Г по с51, пакет с52). До цієї правки виклик стояв
+     БЕЗ `onShift` — і це давало рівно ту ваду, проти якої `onShift` заведено.
+     РУЧНА зміна дати тут скидає обраний слот (`onChange` нижче), АВТОМАТИЧНА
+     не скидала: слот «09:00», обраний на 2 вересня, лишався підсвіченим і
+     підписаним у рядку «Обрано …» вже на карті 1 вересня. Екран оголошений
+     дзеркалом форми запису, а адміністратор саме з нього диктує вільний час
+     оператору або пацієнту — тобто називає час, звірений з ЧУЖОЮ добою, і
+     жоден гард цього не ловить: карта нічого не пише.
+     Скидання і банер — та сама пара, що у трьох форм запису; банер знімає той,
+     хто взяв дату в свої руки (`onChange`), а не таймер. */
+  const [dayShifted, setDayShifted] = useState<{ from: string; to: string } | null>(null);
+  useFollowTodayKey({ clinicTz, value: day, setKey: setDay,
+    onShift: (d, prev) => { setSelectedSlot(""); setDayShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); } });
 
   const room = rooms.find((r) => r.id === roomId) || null;
   const date = useMemo(() => dateFromKey(day), [day]);
@@ -155,7 +172,7 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
 
           <div className="fld-row" style={{ alignItems: "end" }}>
             <label className="fld" style={{ maxWidth: 200 }}><span className="fld-lab">Дата</span>
-              <input className="inp tabular" type="date" value={day} onChange={(e) => { setDay(e.target.value); setSelectedSlot(""); }} />
+              <input className="inp tabular" type="date" value={day} onChange={(e) => { setDay(e.target.value); setSelectedSlot(""); setDayShifted(null); }} />
             </label>
             <div className="fld" style={{ paddingBottom: 8 }}>
               <span className="fld-lab">Режим дня</span>
@@ -165,6 +182,30 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
               {schedule?.custom && <span style={{ marginLeft: 6, color: "var(--blue-text)", fontSize: "0.75rem" }}>особливий графік</span>}
             </div>
           </div>
+
+          {/* ⚠️ Г1-B: банер СТОЇТЬ НАД гілками нижче, а не всередині — інакше
+              при закритому дні / збої читання (там рендер перехоплюється) він
+              зник би саме тоді, коли розбіжність доби найдорожча.
+              Називає ОБИДВІ доби з тієї самої причини, що й у форм (F7): ту, що
+              «була», адміністратор уже сказав уголос, і відкликати треба саме її.
+
+              ⚠️ `from !== to` — НЕ косметика (знахідка ревʼю А по цьому пакету).
+              `from` навмисно не затирається другим викликом, і на поправці, що
+              зʼїхала й повернулась (01→02→01 — штатний випадок, під нього ж
+              написана «фантомна» гілка в `decideShift`), накопичене `from`
+              збігається з новим `to`. Банер читався б «день змінено з 1 вересня
+              на 1 вересня» — тобто екран стверджував би зміну, якої в підсумку
+              не сталось. Слот при цьому справді скинуто двічі, і це видно.
+              ⚠️ У ЧОТИРЬОХ старіших екранів (BookingModal, RescheduleModal,
+              ReferralPortal, CallListBoard) цієї умови НЕМАЄ — там та сама вада
+              жива. Це названий борг Г1-G, а не задум: розширювати пакет на
+              чотири чужі екрани в цьому проході ми не стали. */}
+          {dayShifted && dayShifted.from !== dayShifted.to && (
+            <div className="ctx-hint" role="status" style={{ marginTop: 6 }}>
+              🕐 Годинник центру уточнено — день змінено з <b>{dayShifted.from}</b> на <b>{dayShifted.to}</b>.
+              {" "}Це вже інша карта: назвіть вільний час заново.
+            </div>
+          )}
 
           {/* U-16: гілка невідомості — ПЕРША. Раніше першим стояв `schedule.closed`,
               а він порахований із мапи, якої могло не бути: при збої читання

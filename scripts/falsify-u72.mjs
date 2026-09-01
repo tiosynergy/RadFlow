@@ -78,13 +78,23 @@ const CALL_RM = `  useFollowTodayKey({
     setKey: setDateStr,
     onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
   });`;
+/* ⚠️ ЯКІР ОНОВЛЕНО в с52 разом із Г1-C: у виклик приїхав `onShift`. Стара
+   форма (без нього) дала б 0 входжень і завалила прогін — правило U-74
+   спрацювало вже втретє за два пакети, і це нормально: якір мусить протухати
+   голосно. */
 const CALL_WM = `  useFollowTodayKey({
     clinicTz: clinicTz || undefined,
     pinnedKey: initial?.desired_date_from ?? null,
     busy: saving,
     value: dateFrom,
     setKey: setDateFrom,
+    onShift: (d, prev) => setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })),
   });`;
+/* Те саме для карти дня (Г1-B): виклик став дворядковим. Беремо ОБИДВА рядки
+   цілком — якір на один лишив би висячий літерал, і мутація ламала б збірку
+   замість того, щоб червонити сторожа (той самий урок, що з M17 у с51). */
+const CALL_RD = `  useFollowTodayKey({ clinicTz, value: day, setKey: setDay,
+    onShift: (d, prev) => { setSelectedSlot(""); setDayShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); } });`;
 const CALL_RB = `  useFollowToday({
     clinicTz,
     pinnedKey: initialDate,
@@ -379,7 +389,7 @@ const MUTATIONS = [
   drop("M17", "cl", "  useFollowToday({ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate,\n    onShift: (d, prev) => setDayShifted((s) => ({ from: s?.from ?? fmtFull(prev), to: fmtFull(d) })) });",
     "CallListBoard: «Всіх підтверджено» пачкою по чужій добі"),
   drop("M18", "wm", CALL_WM, "WaitlistModal: desired_date_from на добу раніше"),
-  drop("M19", "rd", "  useFollowTodayKey({ clinicTz, value: day, setKey: setDay });",
+  drop("M19", "rd", CALL_RD,
     "RoomDayOverviewModal: карта дня показує цілий день вільним"),
   drop("M20", "js", "  useFollowTodayKey({ clinicTz, offsetDays: -6, value: dateFrom, setKey: setDateFrom });",
     "JournalScreen: початок довільного періоду"),
@@ -393,8 +403,8 @@ const MUTATIONS = [
        редакції стенда ця властивість не перевірялась узагалі (ревʼю Б). */
     id: "M24", file: "rd", spec: SPEC.follow,
     what: "виклик ЗАКОМЕНТОВАНО — сторож мусить бачити крізь коментар",
-    from: "  useFollowTodayKey({ clinicTz, value: day, setKey: setDay });",
-    to: "  // useFollowTodayKey({ clinicTz, value: day, setKey: setDay });",
+    from: CALL_RD,
+    to: CALL_RD.split("\n").map((l) => "  // " + l.trim()).join("\n"),
   },
 
   // ============ тихі НАПІВправки ============
@@ -594,6 +604,258 @@ const MUTATIONS = [
     from: "    pinnedKey: initial?.desired_date_from ?? null,\n",
     to: "",
   },
+
+  /* ============ Г1-B: карта дня (пакет с52) ============
+     Екран оголошений ДЗЕРКАЛОМ форми запису, і саме з нього адміністратор
+     диктує вільний час. РУЧНА зміна дати скидала слот, автоматична — ні.
+     Записів екран не робить, тож помилка виходить ГОЛОСОМ і не заперечить
+     жоден гард продукту. `expect` тут і нижче — щоб «щось почервоніло в
+     спеці» не рахувалось за «спрацював названий сторож» (урок U-80б). */
+  {
+    id: "M71", file: "rd", spec: SPEC.follow,
+    expect: /RoomDayOverviewModal.*скидає обраний слот/,
+    what: "Г1-B: автоперенесення НЕ скидає слот — карта підписує час чужої доби",
+    from: 'onShift: (d, prev) => { setSelectedSlot(""); setDayShifted(',
+    to: "onShift: (d, prev) => { setDayShifted(",
+  },
+  {
+    id: "M72", file: "rd", spec: SPEC.follow,
+    expect: /RoomDayOverviewModal.*ОБИДВА дні/,
+    what: "Г1-B: банер карти називає лише НОВИЙ день — попередній уже сказано вголос",
+    from: "день змінено з <b>{dayShifted.from}</b> на <b>{dayShifted.to}</b>.",
+    to: "день змінено на <b>{dayShifted.to}</b>.",
+  },
+  {
+    id: "M73", file: "rd", spec: SPEC.follow,
+    expect: /RoomDayOverviewModal.*ОБИДВА дні/,
+    what: "Г1-B: перенесення на карті знову ТИХЕ — підпис прибрано",
+    from: "          {dayShifted && dayShifted.from !== dayShifted.to && (",
+    to: "          {false && dayShifted && dayShifted.from !== dayShifted.to && (",
+  },
+  {
+    id: "M74", file: "rd", spec: SPEC.follow,
+    expect: /RoomDayOverviewModal.*ОБИДВА дні/,
+    what: "Г1-B: повторна поправка затирає ПЕРШУ добу — банер назве проміжний день",
+    from: "setDayShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) }))",
+    to: "setDayShifted({ from: fmtShort(prev), to: fmtShort(d) })",
+  },
+  {
+    /* ⚠️ Зустрічний зонд: банер, який ніхто не знімає, зависає на чужій добі —
+       і оператор перестає його читати. Знімати мусить ЛЮДИНА, змінивши дату. */
+    id: "M75", file: "rd", spec: SPEC.follow,
+    expect: /RoomDayOverviewModal.*знімає ЛЮДИНА/,
+    what: "Г1-B: ручна зміна дати не знімає банер — він лишається назавжди",
+    from: 'onChange={(e) => { setDay(e.target.value); setSelectedSlot(""); setDayShifted(null); }}',
+    to: 'onChange={(e) => { setDay(e.target.value); setSelectedSlot(""); }}',
+  },
+
+  /* ============ Г1-C: вікно листа очікування (пакет с52) ============
+     Вікно має ДВА кінці, слідує один. Тиха вада — порожній `по`; гучна —
+     вузьке вікно, де форма звинувачує оператора в діапазоні, якого він не
+     вводив. Гарди при цьому праві: бракувало не гарда, а ПРИЧИНИ. */
+  {
+    id: "M76", file: "wm", spec: SPEC.follow,
+    expect: /WaitlistModal.*ОБИДВІ доби/,
+    what: "Г1-C: desired_date_from знову їде МОВЧКИ — onShift знято",
+    from: "    setKey: setDateFrom,\n    onShift: (d, prev) => setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })),\n",
+    to: "    setKey: setDateFrom,\n",
+  },
+  {
+    id: "M77", file: "wm", spec: SPEC.follow,
+    expect: /WaitlistModal.*ОБИДВІ доби/,
+    what: "Г1-C: банер листа називає лише НОВУ дату",
+    from: "«готовий з» змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>.",
+    to: "«готовий з» змінено на <b>{dateShifted.to}</b>.",
+  },
+  {
+    /* ⚠️ НАЙТИХІША З ПАКЕТА. Банер лишається, гарди лишаються — зникає лише
+       звʼязок між ними, і два червоні рядки знову звинувачують оператора в
+       діапазоні, який поставило правило. */
+    id: "M78", file: "wm", spec: SPEC.follow,
+    expect: /WaitlistModal.*не називає причину/,
+    what: "Г1-C: банер мовчить про кінець вікна — відмова знову без пояснення",
+    from: "\n              {(badRange || pastWindow) && <> Кінець вікна за поправкою не рухається — перевірте «по».</>}",
+    to: "",
+  },
+  {
+    /* ⚠️ Зустрічний зонд до M78 і пряма знахідка ревʼю А по цьому ж пакету:
+       перша редакція хвоста казала «лишився від старої доби», тобто називала
+       ПРИЧИНУ, якої екран знати не може. Мутація повертає те формулювання. */
+    id: "M85", file: "wm", spec: SPEC.follow,
+    expect: /WaitlistModal.*не називає причину/,
+    what: "Г1-C: хвіст знову звинувачує поправку в кінці вікна, який ввів сам оператор",
+    from: "<> Кінець вікна за поправкою не рухається — перевірте «по».</>",
+    to: "<> Кінець вікна лишився від старої доби — оберіть «по» заново.</>",
+  },
+  {
+    /* ⚠️ Вкладеність хвоста в банер. Винесений назовні, він стріляє й там, де
+       поправки не було зовсім, — «підказка нізвідки». Перша редакція піна
+       (вікно «N символів після гейта») цю мутацію ПРОПУСКАЛА: винесений хвіст
+       лишався в межах вікна. Це вимір, а не припущення. */
+    id: "M86", file: "wm", spec: SPEC.follow,
+    expect: /WaitlistModal.*не називає причину/,
+    what: "Г1-C: хвіст про «по» винесено ЗА банер — підказка спрацює й без поправки",
+    from: "              {\" \"}Назвіть пацієнту нову дату.\n              {(badRange || pastWindow) && <> Кінець вікна за поправкою не рухається — перевірте «по».</>}\n            </div>\n          )}",
+    to: "              {\" \"}Назвіть пацієнту нову дату.\n            </div>\n          )}\n          {(badRange || pastWindow) && <> Кінець вікна за поправкою не рухається — перевірте «по».</>}",
+  },
+  {
+    /* ⚠️ Зустрічний зонд до M78: «пояснити» не означає «пустити». */
+    id: "M79", file: "wm", spec: SPEC.follow,
+    expect: /WaitlistModal.*гарди діапазону лишились/,
+    what: "Г1-C: пояснення підмінило відмову — непридатне вікно знову зберігається",
+    from: "const valid = missingList.length === 0 && !badRange && !pastWindow;",
+    to: "const valid = missingList.length === 0 && !pastWindow;",
+  },
+  {
+    id: "M80", file: "wm", spec: SPEC.follow,
+    expect: /WaitlistModal.*знімає ЛЮДИНА/,
+    what: "Г1-C: ручна зміна «готовий з» не знімає банер",
+    from: 'onChange={(e) => { setDateFrom(e.target.value); setDateShifted(null); }}',
+    to: "onChange={(e) => setDateFrom(e.target.value)}",
+  },
+
+  /* ============ Г1-D: СКЛАД busy, а не його імʼя (пакет с52) ============
+     `CALL_SITES` пінує підпис прапорця і мовчить про його склад. Вимір показав
+     дірку, яку це пропускало: `openCaseId` (CaseModal) не входив у
+     `anyModalOpen` дошки черги — під відкритим кейсом хоткеї стріляли в дошку
+     позаду, а поправка годинника переставляла добу під набором кроків. */
+  {
+    id: "M81", file: "qb", spec: SPEC.follow,
+    expect: /перелічує оверлеї в busy/,
+    what: "Г1-D: CaseModal знову випав зі складу anyModalOpen — рівно знайдений дефект",
+    from: "slotsOverviewOpen || !!openCaseId || !!completeFor",
+    to: "slotsOverviewOpen || !!completeFor",
+  },
+  {
+    id: "M82", file: "cl", spec: SPEC.follow,
+    expect: /перелічує оверлеї в busy/,
+    what: "Г1-D: з anyBusy дошки обдзвону випав оверлей підбору з листа",
+    from: " || !!reschedFor || !!editStudiesFor || !!wlSuggest;",
+    to: " || !!reschedFor || !!editStudiesFor;",
+  },
+  {
+    id: "M83", file: "rb", spec: SPEC.follow,
+    expect: /перелічує оверлеї в busy/,
+    what: "Г1-D: у дошки радіолога busy перестав бачити план затримки",
+    from: "    busy: !!completeFor || !!stuckFinish || !!offCallAsk || !!delayPreview,",
+    to: "    busy: !!completeFor || !!stuckFinish || !!offCallAsk,",
+  },
+  {
+    /* ⚠️ ГОЛОВНИЙ ЗОНД Г1-D, і саме заради нього сторож рахує гейти з дерева, а
+       не звіряє список імен: НОВА модалка, додана повз `busy`. Стара редакція
+       (пін імені прапорця) лишалась би на цій мутації повністю зеленою. */
+    id: "M84", file: "cl", spec: SPEC.follow,
+    expect: /перелічує оверлеї в busy/,
+    what: "Г1-D: у дошку додано НОВУ модалку повз busy — саме той сценарій, що описував коментар",
+    from: "      {declineAsk && (",
+    to: "      {escalateAsk && (\n        <ConfirmDialog title=\"Ескалація\" onCancel={() => {}} onConfirm={() => {}} />\n      )}\n      {declineAsk && (",
+  },
+  {
+    /* ⚠️ Те саме РУКОПИСНИМ оверлеєм. У цьому проєкті оверлей — просто div
+       (`className="overlay"` у 22 файлах), тож суфікс імені компонента не є
+       законом, і сторож, який дивиться лише на `<XxxModal`, ловив би моду, а
+       не властивість. Знайшло ревʼю Б. */
+    id: "M87", file: "cl", spec: SPEC.follow,
+    expect: /перелічує оверлеї в busy/,
+    what: "Г1-D: новий оверлей — рукописний div, а не компонент із суфіксом Modal",
+    from: "      {confirmAllAsk && (",
+    to: "      {escalateAsk && (\n        <div className=\"overlay\"><div className=\"dialog\">Ескалація</div></div>\n      )}\n      {confirmAllAsk && (",
+  },
+  {
+    /* ⚠️ НАЙТИХІШИЙ ОБХІД, знайдений ревʼю Б виміром, а не здогадом. Перша
+       редакція сторожа не знала тернарника — і пошук гейта вгору КРАВ гейт у
+       сусіда: `CaseModal` отримував `modalOpen` від `BookingModal` трьома
+       рядками вище. Кількість гейтів лишалась 18, дір — жодної, і зняття
+       `openCaseId` з `anyModalOpen` було ПОВНІСТЮ зеленим. Тобто сторож
+       рапортував про покриття, якого не було. */
+    id: "M88", file: "qb", spec: SPEC.follow,
+    expect: /перелічує оверлеї в busy/,
+    what: "Г1-D: CaseModal переведено на тернарник і знято з busy — сторож мусить бачити крізь форму запису",
+    edits: [
+      { from: "{openCaseId && <CaseModal", to: "{openCaseId ? <CaseModal" },
+      { from: "onCancelled={reload} />}", to: "onCancelled={reload} /> : null}" },
+      { from: "slotsOverviewOpen || !!openCaseId || !!completeFor", to: "slotsOverviewOpen || !!completeFor" },
+    ],
+  },
+  {
+    /* ⚠️ Мовчазний ВИХІД із перевіреної гілки: розбір `busy` не дістає складу,
+       файл просто зникає зі сканера. Ловить це не перелік дір (він порожній!),
+       а пін повного розподілу по кошиках. */
+    id: "M89", file: "qb", spec: SPEC.follow,
+    expect: /перелічує оверлеї в busy/,
+    what: "Г1-D: anyModalOpen оголошено через let — розбір складу мовчки провалюється",
+    from: "  const anyModalOpen = modalOpen ||",
+    to: "  let anyModalOpen = modalOpen ||",
+  },
+
+  /* ============ знахідки ревʼю по САМОМУ пакету с52 ============ */
+  {
+    /* ⚠️ Поправка «туди й назад» (01→02→01) дає `from === to`, бо `from`
+       накопичується навмисно. Без цієї умови банер стверджував би зміну, якої
+       в підсумку не сталось. Знайшло ревʼю А. */
+    id: "M90", file: "rd", spec: SPEC.follow,
+    expect: /RoomDayOverviewModal.*нульову зміну/,
+    what: "Г1-B: банер оголошує «змінено з 1 вересня на 1 вересня»",
+    from: "{dayShifted && dayShifted.from !== dayShifted.to && (",
+    to: "{dayShifted && (",
+  },
+  {
+    id: "M91", file: "wm", spec: SPEC.follow,
+    expect: /WaitlistModal.*нульову зміну/,
+    what: "Г1-C: те саме в листі очікування — банер про нульову зміну",
+    from: "{dateShifted && dateShifted.from !== dateShifted.to && (",
+    to: "{dateShifted && (",
+  },
+  {
+    /* ⚠️ Роль знята з САМОГО вузла банера. Перша редакція піна шукала
+       `role="status"` у вікні 200 символів після гейта — і лишалась зеленою,
+       якщо роль належала сусідньому вузлу. Знайшло ревʼю Б. */
+    id: "M92", file: "rd", spec: SPEC.follow,
+    expect: /RoomDayOverviewModal.*ОБИДВА дні/,
+    what: "Г1-B: банер більше не оголошений для читача екрана",
+    from: '<div className="ctx-hint" role="status" style={{ marginTop: 6 }}>',
+    to: '<div className="ctx-hint" style={{ marginTop: 6 }}>',
+  },
+  {
+    /* ⚠️ Скидання слота звʼязане з СІТКОЮ, а не з іменем стану: інакше досить
+       завести другий стан під `SlotPicker`, лишивши `selectedSlot` рудиментом.
+       Мутація рве саме звʼязок. Знайшло ревʼю Б. */
+    id: "M93", file: "rd", spec: SPEC.follow,
+    expect: /RoomDayOverviewModal.*скидає обраний слот/,
+    what: "Г1-B: сітка живе не тим станом, який скидає onShift — selectedSlot став рудиментом",
+    edits: [
+      { from: '  const [selectedSlot, setSelectedSlot] = useState("");',
+        to: '  const [selectedSlot, setSelectedSlot] = useState("");\n  const [pickedSlot, setPickedSlot] = useState("");' },
+      { from: "<SlotPicker slots={slots} stateOf={stateOf} value={selectedSlot} onChange={setSelectedSlot}",
+        to: "<SlotPicker slots={slots} stateOf={stateOf} value={pickedSlot} onChange={setPickedSlot}" },
+    ],
+  },
+  {
+    /* ⚠️ Гарди можна не чіпати — досить зняти `valid` з дороги до збереження.
+       Три піни на самі `const` цього не бачили. Знайшло ревʼю Б. */
+    id: "M94", file: "wm", spec: SPEC.follow,
+    expect: /WaitlistModal.*гарди діапазону лишились/,
+    what: "Г1-C: valid більше не тримає функцію збереження — непридатне вікно йде в БД",
+    from: "    if (!valid || saving) return;",
+    to: "    if (saving) return;",
+  },
+  {
+    id: "M95", file: "wm", spec: SPEC.follow,
+    expect: /WaitlistModal.*гарди діапазону лишились/,
+    what: "Г1-C: valid більше не тримає кнопку — оператор тисне «Додати» на зламаному вікні",
+    from: "disabled={!valid || saving}",
+    to: "disabled={saving}",
+  },
+  {
+    /* ⚠️ Дописане `&& !skipRangeGuard` лишає пінований підрядок цілим, а гард
+       вимкненим — тому піни гардів терміновані крапкою з комою. */
+    id: "M96", file: "wm", spec: SPEC.follow,
+    expect: /WaitlistModal.*гарди діапазону лишились/,
+    what: "Г1-C: гард badRange став вимикним прапорцем, підрядок цілий",
+    from: "const badRange = !!(dateFrom && dateTo && dateTo < dateFrom);",
+    to: "const badRange = !!(dateFrom && dateTo && dateTo < dateFrom) && !skipRangeGuard;",
+  },
+
   {
     id: "M31", file: "bm", spec: SPEC.follow,
     what: "BookingModal: у компоненті завелась ВЛАСНА копія правила (підписка на епоху)",
@@ -647,6 +909,21 @@ const MUTATIONS = [
     from: "    for (const fn of _listeners) { try { fn(); } catch { /* слухач сам винен */ } }",
     to: "    for (const fn of Array.from(_listeners)) { try { fn(); } catch { /* слухач сам винен */ } }",
   },
+  {
+    /* ⚠️ Г1-D: сторож дивиться на СКЛАД busy, а не на порядок чи текст.
+       Перестановка операндів — чесний рефактор, і вона мусить лишитись
+       зеленою; інакше це був би пін розкладки під виглядом сторожа. */
+    id: "T7", file: "qb", green: true,
+    what: "Г1-D: операнди anyModalOpen переставлено місцями — набір той самий",
+    from: "modalOpen || helpOpen || slotsOverviewOpen || !!openCaseId ||",
+    to: "modalOpen || slotsOverviewOpen || helpOpen || !!openCaseId ||",
+  },
+  {
+    id: "T8", file: "rb", green: true,
+    what: "Г1-D: те саме в дошки радіолога — інший порядок, той самий склад",
+    from: "    busy: !!completeFor || !!stuckFinish || !!offCallAsk || !!delayPreview,",
+    to: "    busy: !!delayPreview || !!offCallAsk || !!stuckFinish || !!completeFor,",
+  },
 ];
 
 const orig = {};
@@ -666,21 +943,33 @@ function run() {
   if (existsSync(REPORT)) unlinkSync(REPORT);
   spawnSync("npx", ["vitest", "run", ...SPECS, "--reporter=json", `--outputFile.json=${REPORT}`],
     { shell: true, stdio: "ignore" });
-  if (!existsSync(REPORT)) return { crashed: true, ok: false, redBySpec: {}, red: [] };
+  if (!existsSync(REPORT)) return { crashed: true, ok: false, redBySpec: {}, red: [], all: [] };
   let r;
   try { r = JSON.parse(readFileSync(REPORT, "utf8")); }
-  catch { return { crashed: true, ok: false, redBySpec: {}, red: [] }; }
-  const red = [], redBySpec = {};
+  catch { return { crashed: true, ok: false, redBySpec: {}, red: [], all: [] }; }
+  const red = [], redBySpec = {}, all = [];
   for (const f of r.testResults || []) {
     const name = String(f.name || "").replace(/\\/g, "/");
     for (const a of f.assertionResults || []) {
+      all.push(a.fullName || a.title);
       if (a.status === "passed") continue;
-      red.push(a.title);
-      for (const s of SPECS) if (name.endsWith(s)) (redBySpec[s] ??= []).push(a.title);
+      /* ⚠️ `fullName`, а не `title` (урок U-80б): у `describe.each` рівні назви
+         тестів різняться лише ланцюжком describe, і по самому `title` адресну
+         мутацію не відрізнити від сусідньої. */
+      const full = a.fullName || a.title;
+      red.push(full);
+      for (const s of SPECS) if (name.endsWith(s)) (redBySpec[s] ??= []).push(full);
     }
   }
-  return { crashed: false, ok: r.success === true && red.length === 0, red, redBySpec, total: r.numTotalTests };
+  return { crashed: false, ok: r.success === true && red.length === 0, red, redBySpec, all, total: r.numTotalTests };
 }
+
+/* ⚠️ ІНВЕНТАР АДРЕСНИХ МУТАЦІЙ (с52). Число прибите тут, а не рахується з
+   таблиці: інакше «адресних 0/0» було б зеленим підсумком порожнечі — рівно та
+   вада, проти якої писався U-80б. Додаєш мутацію з `expect` — піднімаєш число;
+   не піднімаєш — прогін червоніє. */
+const EXPECTED_ADDRESSED = 26;
+let addressedOk = 0;
 
 const lines = [];
 try {
@@ -714,9 +1003,26 @@ try {
       const gotRed = !res.ok;
       const inNamed = m.spec ? (res.redBySpec[m.spec] || []) : [];
       const heldByNamed = !wantRed || inNamed.length > 0;
-      const verdict = wantRed === gotRed
-        ? (heldByNamed ? "✅" : "⚠️ спіймав ЧУЖИЙ спек, не названий сторож")
-        : "⛔ СТОРОЖ НЕ ТРИМАЄ";
+      /* ⚠️ АДРЕСНІСТЬ (с52, урок U-80б). Спек-ФАЙЛ — це ще не сторож: у
+         `followToday.test.ts` понад сотню тестів, і «щось у файлі почервоніло»
+         цілком сумісне з тим, що названий сторож мовчить, а спіймав сусід.
+         Мутація з полем `expect` мусить почервонити ІМЕННО той тест, чиє імʼя
+         названо. Окремо розрізняємо випадок, коли такого імені НЕМАЄ в дереві
+         взагалі: це дефект СТЕНДА (інвентар бреше), а не продукту.
+         ⚠️ Поле `expect` є ПОКИ НЕ В УСІХ мутацій — старі лишились на
+         адресності рівня файлу, і підсумковий рядок нижче каже про це прямо.
+         Дочистити решту — окремий пакет (U-80г); видавати часткову адресність
+         за повну було б рівно тією вадою, проти якої U-80б і писався. */
+      const missedName = wantRed && gotRed && m.expect && !res.red.some((t) => m.expect.test(t));
+      const noSuchGuard = missedName && !base.all.some((t) => m.expect.test(t));
+      const verdict = noSuchGuard
+        ? "⛔ СТОРОЖА З ТАКИМ ІМЕНЕМ НЕМАЄ (дефект стенда)"
+        : missedName
+          ? "⛔ ЧУЖИЙ спек"
+          : wantRed !== gotRed
+            ? "⛔ СТОРОЖ НЕ ТРИМАЄ"
+            : (heldByNamed ? "✅" : "⚠️ спіймав ЧУЖИЙ спек, не названий сторож");
+      if (verdict === "✅" && wantRed && m.expect) addressedOk++;
       const others = res.red.length - inNamed.length;
       const fact = gotRed
         ? (inNamed.map((t) => `«${t}»`).join("; ") || "—") + (others > 0 ? ` (+${others} в інших спеках)` : "")
@@ -731,9 +1037,24 @@ try {
      Лічильник звіряється з MUTATIONS.length: мутація, що не дала рядка,
      валить прогін так само, як протухлий якір. */
   const verdict = verdictOf(lines, MUTATIONS.length);
+  /* ⚠️ Чесний рядок про АДРЕСНІСТЬ (с52). Без нього звіт тихо видавав би
+     «спіймав спек-файл» за «спрацював названий сторож» — саме те, від чого
+     U-80б лікував решту стендів. Число зліва — скільки мутацій з `expect`
+     червонили ІМЕННО названий тест; праворуч — скільки їх заявлено. */
+  const declared = MUTATIONS.filter((m) => m.expect && !m.green).length;
+  const inventoryLies = declared !== EXPECTED_ADDRESSED;
+  const addressedBad = addressedOk !== EXPECTED_ADDRESSED;
+  lines.push(`\n## ПІДСУМОК: ${addressedOk}/${EXPECTED_ADDRESSED} адресних (названий сторож), `
+    + `${MUTATIONS.filter((m) => !m.green && !m.expect).length} — лише за спек-файлом (борг U-80г)`);
+  if (inventoryLies) {
+    lines.push(`\n⛔ ІНВЕНТАР БРЕШЕ: мутацій із \`expect\` ${declared}, а заявлено ${EXPECTED_ADDRESSED}.`);
+  }
   lines.push(`\n${verdict.summary}`);
+  if (!verdict.ok || addressedBad || inventoryLies) {
+    lines.push(`\n**ВЕРДИКТ: ⛔ СТЕНД ЧЕРВОНИЙ**${addressedBad && verdict.ok ? " — адресних менше, ніж заявлено" : ""}`);
+  }
   writeFileSync(OUT, lines.join("\n") + "\n");
   console.log(lines.join("\n"));
   console.log(`\nЗвіт: ${OUT}. Файли відновлено.`);
-  if (!verdict.ok) process.exitCode = 1;
+  if (!verdict.ok || addressedBad || inventoryLies) process.exitCode = 1;
 }

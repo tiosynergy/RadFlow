@@ -11,7 +11,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { bookableRooms, isRoomBookable, ROOM_OFF_LABEL } from "@/lib/rooms";
 import PhoneInput from "@/components/PhoneInput";
-import { DobField } from "@/components/BookingModal";
+import { DobField, fmtShort } from "@/components/BookingModal";
 import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, type Study, DUR_MAX } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import StudySearchBox from "@/components/StudySearchBox";
@@ -132,13 +132,33 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
      сьогодні. А `desired_date_from = сьогодні` — це і є ДЕФОЛТ створення, тобто
      найчастіший вхід: запис, заведений сьогодні, відкривають на правку, і
      правило мовчки переставляє поле, якого оператор не торкався, у збережений
-     рядок. Тому пін ЯВНИЙ: збережене значення закріплюємо. */
+     рядок. Тому пін ЯВНИЙ: збережене значення закріплюємо.
+
+     ⚠️ Г1-C (пакет с52). Досі виклик стояв БЕЗ `onShift`, і це давало дві
+     вади — тиху і гучну, обидві на тому, що вікно має ДВА кінці, а слідує
+     лише один: у `dateTo` свого хука немає і бути не може (порожній дефолт,
+     а будь-яке непорожнє значення — явний вибір оператора, який правило не
+     чіпає за визначенням).
+       • ТИХА. `dateTo` порожній (найчастіший вхід — «готовий будь-коли»):
+         `desired_date_from` мовчки їде на іншу добу, і в БД лягає день, якого
+         пацієнт не називав. Гучної відмови не буде: «не раніше ніж» у
+         майбутнє — легальне значення, `pastWindow` дивиться на КІНЕЦЬ вікна.
+       • ГУЧНА, І ЦЕ ГІРШЕ. Оператор вибрав вузьке вікно (напр. `по` = та сама
+         доба). Поправка рухає `dateFrom` уперед, `dateTo` лишається — і форма
+         відповідає «Дата «по» раніша за дату «з» — виправте діапазон», тобто
+         звинувачує людину в діапазоні, якого вона не вводила, і посилає
+         правити НЕ ТОЙ кінець. Гарди при цьому праві: діапазон справді
+         непридатний, зберігати його не можна. Бракувало не гарда, а ПРИЧИНИ.
+     Тому: банер називає обидві доби (F7) і, коли вікно поїхало саме через
+     поправку, прямо каже, який кінець перевірити. Гарди лишились як були. */
+  const [dateShifted, setDateShifted] = useState<{ from: string; to: string } | null>(null);
   useFollowTodayKey({
     clinicTz: clinicTz || undefined,
     pinnedKey: initial?.desired_date_from ?? null,
     busy: saving,
     value: dateFrom,
     setKey: setDateFrom,
+    onShift: (d, prev) => setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })),
   });
 
   // Доступні модальності: направнику (needCenter) — лише ті, що дозволяє його грант
@@ -525,7 +545,7 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
           <div className="fld-row">
             <label className="fld">
               <span className="fld-lab">Готовий з</span>
-              <input className="inp tabular" type="date" min={todayStr} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+              <input className="inp tabular" type="date" min={todayStr} value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setDateShifted(null); }} />
             </label>
             <label className="fld">
               <span className="fld-lab">по (включно)</span>
@@ -538,6 +558,39 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
               </select>
             </label>
           </div>
+          {/* ⚠️ Г1-C: банер СТОЇТЬ НАД червоними гардами, бо він — їхня ПРИЧИНА.
+              Гарди нижче лишились дослівно: діапазон і справді непридатний, і
+              зберігати його не можна. Але без цього рядка вони звинувачують
+              оператора в тому, чого він не робив, і посилають правити не той
+              кінець вікна. Знімає банер той, хто взяв дату в свої руки
+              (`onChange` вище) — так само, як у трьох форм запису.
+
+              ⚠️ ХВІСТ ПРО «ПО» НЕ НАЗИВАЄ ПРИЧИНУ, і перша редакція цього рядка
+              була НЕВІРНА (знахідка ревʼю А по цьому ж пакету). Вона казала
+              «Кінець вікна лишився від старої доби» — тобто стверджувала, що
+              винна поправка. Екран цього знати не може: `badRange` рахується з
+              ПОТОЧНИХ значень, а `dateTo` оператор міг ввести вже ПІСЛЯ зсуву
+              (найчастіший шлях: банер попросив назвати нову дату, оператор
+              заразом звузив вікно старою) — і тоді хвіст брехав би йому в очі.
+              У режимі редагування те саме: `pastWindow` буває істинним із
+              першого рендера, ще до будь-якої поправки.
+              Тепер хвіст стверджує лише те, що ВІРНО ЗАВЖДИ: «по» за поправкою
+              не рухається взагалі — власного хука в нього немає і бути не може
+              (порожній дефолт, а будь-яке непорожнє значення — явний вибір
+              оператора, якого правило не чіпає). Умова лишилась
+              `badRange || pastWindow`: пояснювати влаштування вікна при цілому
+              вікні — підказка нізвідки.
+
+              ⚠️ `from !== to` — див. той самий коментар у RoomDayOverviewModal:
+              поправка, що зʼїхала й повернулась, дає банер «змінено з 1 вересня
+              на 1 вересня». Борг Г1-G на чотирьох старіших екранах. */}
+          {dateShifted && dateShifted.from !== dateShifted.to && (
+            <div className="ctx-hint" role="status">
+              🕐 Годинник центру уточнено — «готовий з» змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>.
+              {" "}Назвіть пацієнту нову дату.
+              {(badRange || pastWindow) && <> Кінець вікна за поправкою не рухається — перевірте «по».</>}
+            </div>
+          )}
           {badRange && <div className="ctx-hint red">Дата «по» раніша за дату «з» — виправте діапазон.</div>}
           {pastWindow && <div className="ctx-hint red">Кінець бажаного вікна вже минув — оберіть майбутню дату, інакше пацієнт не потрапить у підбір.</div>}
 
