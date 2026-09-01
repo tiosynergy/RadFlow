@@ -170,6 +170,161 @@ const MUTATIONS = [
     to: "  if (pending === null) return { pendingKey: pending, applyFrom: null, applyTo: null };",
   },
 
+  /* ============ U-77: ПРОВОДКА хука (с51) ============
+     ⚠️ БЛОК ПЕРЕПИСАНО ПІСЛЯ РЕВʼЮ А, і це виправлення моєї помилки. Перша
+     редакція закривала проводку ЧОТИРМА ПІНАМИ ПО ДЖЕРЕЛУ, а поруч я написав,
+     що поведінкового тесту «тут бути не може». Ревʼю А спростувало це
+     рахунком: несучих фактів у проводці було десять, піни тримали чотири, а
+     мутація `nowOffsetMs: nowOffset` → `nowOffsetMs: prevOffsetRef.current`
+     вбивала U-70 і U-72 ЦІЛКОМ і лишалась зеленою в усіх чотирьох.
+
+     Тому проводку винесено в чистий `stepClockShift`. M34–M37, M41 і M44
+     тепер ПОВЕДІНКОВІ: мутують крок або ядро, і їх ловлять виклики, а не
+     текст. Піном по джерелу лишились рівно чотири факти, які поведінково не
+     дістати з `environment: "node"` — годинник як вхід (M42), безумовність
+     запису в ref-и (M43) і свіжість `apply` (M45, M46). Кожен названий у
+     пінах поіменно, і кожен має мутацію тут: пін без мутації — не сторож. */
+  {
+    id: "M34", file: "ft", spec: SPEC.follow,
+    what: "U-77: крок не запамʼятовує НОВИЙ зсув — друга поправка міряється від старого (знахідка ревʼю А, HIGH)",
+    from: "    prevOffsetMs: input.nowOffsetMs,",
+    to: "    prevOffsetMs: state.prevOffsetMs,",
+  },
+  {
+    id: "M35", file: "ft", spec: SPEC.follow,
+    what: "U-77: відкладений ключ не переїжджає в памʼять — перенесення під модалкою губиться",
+    from: "    pendingKey: d.pendingKey,",
+    to: "    pendingKey: null,",
+  },
+  {
+    id: "M36", file: "ft", spec: SPEC.follow,
+    what: "U-77: доби «від» і «до» у кроці НАВПАКИ — дефолт не впізнається ніколи",
+    from: "    apply: d.applyFrom && d.applyTo ? { from: d.applyFrom, to: d.applyTo } : null,",
+    to: "    apply: d.applyFrom && d.applyTo ? { from: d.applyTo, to: d.applyFrom } : null,",
+  },
+  {
+    id: "M37", file: "ft", spec: SPEC.follow,
+    what: "U-77: зона центру не доїжджає до рішення — доба рахується за браузером (ReferralPortal)",
+    from: "    clinicTz: input.clinicTz,\n  });",
+    to: "  });",
+  },
+  {
+    /* ⚠️ ДРУГИЙ бік памʼяті ключа: M35 знімає ЗАПИС, ця — ЧИТАННЯ. До ревʼю А
+       обидва трималися одним піном на один рядок присвоєння, тобто читання не
+       сторожило НІЩО. */
+    id: "M41", file: "ft", spec: SPEC.follow,
+    what: "U-77: крок не ЧИТАЄ відкладений ключ — відкладене перенесення не стається ніколи",
+    from: "    pendingKey: state.pendingKey,",
+    to: "    pendingKey: null,",
+  },
+  {
+    id: "M42", file: "ft", spec: SPEC.follow,
+    what: "U-77: крок не бачить годинника — на вхід їде нуль замість зсуву",
+    from: "      { nowOffsetMs: clockOffsetMs(), nowMs: Date.now(), busy, clinicTz },",
+    to: "      { nowOffsetMs: 0, nowMs: Date.now(), busy, clinicTz },",
+  },
+  {
+    /* ⚠️ Пін сліпий до ПОЗИЦІЇ рядка — рівно урок M5. Присвоєння лишається
+       побайтово тим самим, лише переїжджає під `if`, і поведінка міняється на
+       протилежну: під busy ключ у памʼять не лягає. */
+    id: "M43", file: "ft", spec: SPEC.follow,
+    what: "U-77: запис памʼяті переїхав ПІД `if (s.apply)` — рядок на місці, відкладене перенесення мертве",
+    from: "    prevOffsetRef.current = s.prevOffsetMs;\n    pendingKeyRef.current = s.pendingKey;\n    if (s.apply)",
+    to: "    if (s.apply) prevOffsetRef.current = s.prevOffsetMs;\n    if (s.apply) pendingKeyRef.current = s.pendingKey;\n    if (s.apply)",
+  },
+  {
+    /* ⚠️ ЯКІР ОНОВЛЕНО В ТІЙ САМІЙ СЕСІЇ. Перша редакція цілилась у
+       `applyTo: wallDayKeyAt(nowMs + nowOffsetMs, clinicTz) };`, а через
+       годину фікс фантомного перенесення виніс цей вираз у `const to`. Стенд
+       чесно відхилив мутацію (0 входжень) і завалив прогін — рівно те, заради
+       чого в с51 заведено правило «відхилений якір = ЧЕРВОНИЙ вердикт». */
+    id: "M44", file: "ft", spec: SPEC.follow,
+    what: "U-77: третій wallDayKeyAt (applyTo) втратив зону центру — банер бреше, слот стерто (знахідка ревʼю А)",
+    from: "  const to = wallDayKeyAt(nowMs + nowOffsetMs, clinicTz);",
+    to: "  const to = wallDayKeyAt(nowMs + nowOffsetMs);",
+  },
+  {
+    /* ⚠️ Знахідка ревʼю Б, записана в коментарі ще в с50, але не сторожена
+       НІЧИМ до с51 (це знайшло ревʼю А). React має право відрендерити дерево
+       і викинути результат; мутація ref пережила б викинутий рендер, і ефект
+       ЗАКОМІЧЕНОГО рендера покликав би замикання, якого в дереві не було. */
+    id: "M45", file: "ft", spec: SPEC.follow,
+    what: "U-77: присвоєння applyRef переїхало в тіло рендера — виклик замикання з викинутого рендера",
+    from: "  const applyRef = useRef(apply);\n  useEffect(() => { applyRef.current = apply; });",
+    to: "  const applyRef = useRef(apply);\n  applyRef.current = apply;",
+  },
+  {
+    /* ⚠️ Найтихіша з усіх: обидва ефекти на місці, обидва в ефектах, лише
+       порядок оголошення інший. Наслідок — основний ефект бачить `apply`
+       ПОПЕРЕДНЬОГО коміту, тобто `followedDay` звіряє `curKey` з протухлим
+       значенням і дефолт не впізнається. */
+    id: "M46", file: "ft", spec: SPEC.follow,
+    what: "U-77: ефект свіжості оголошений ПІСЛЯ основного — apply із замикання попереднього коміту",
+    edits: [
+      { from: "  const applyRef = useRef(apply);\n  useEffect(() => { applyRef.current = apply; });\n", to: "  const applyRef = useRef(apply);\n" },
+      { from: "  }, [epoch, busy, clinicTz]);", to: "  }, [epoch, busy, clinicTz]);\n  useEffect(() => { applyRef.current = apply; });" },
+    ],
+  },
+
+  /* ============ ФАНТОМНЕ ПЕРЕНЕСЕННЯ + ЗНАК (ревʼю Б, с51) ============ */
+  {
+    /* ⚠️ Знахідка ревʼю Б, HIGH. До с51 цієї перевірки не було ЗОВСІМ, і
+       найгірше — тест, який мав би її тримати, звався «no-op за смислом» і
+       закріплював протилежне. Мутація знімає перевірку. */
+    id: "M47", file: "ft", spec: SPEC.follow,
+    what: "фантомне перенесення: доба та сама, а onShift стирає слот і банер бреше (ревʼю Б, HIGH)",
+    from: "  if (to === pending) return { pendingKey: null, applyFrom: null, applyTo: null };\n",
+    to: "",
+  },
+  {
+    /* ⚠️ Зустрічний бік M47: перевірка на фантом не сміє зʼїсти СПРАВЖНЄ
+       перенесення. Мутація глушить усе — ловиться зондом-парою. */
+    id: "M48", file: "ft", spec: SPEC.follow,
+    what: "перевірка на фантом розширена до «глушити завжди» — жодне перенесення не оголошується",
+    from: "  if (to === pending) return { pendingKey: null, applyFrom: null, applyTo: null };",
+    to: "  return { pendingKey: null, applyFrom: null, applyTo: null };",
+  },
+  {
+    /* ⚠️ Правдоподібний «захист від сміття»: відʼємний зсув виглядає як
+       помилка виміру, тож його клампають. До с51 лишалось зеленим, бо ЖОДЕН
+       тест ядра не подавав відʼємного зсуву — а це рівно той напрямок, яким
+       обґрунтований весь пакет (ПК спішить → тихий запис у майбутню добу). */
+    id: "M49", file: "ft", spec: SPEC.follow,
+    what: "U-79б: відʼємна поправка клампається до нуля — «ПК спішить» більше не переноситься",
+    from: "    const after = wallDayKeyAt(nowMs + nowOffsetMs, clinicTz);",
+    to: "    const after = wallDayKeyAt(nowMs + Math.max(0, nowOffsetMs), clinicTz);",
+  },
+
+  /* ============ U-78 / U-79: простір входів, який не відвідувався ============ */
+  {
+    /* ⚠️ Правдоподібна «оптимізація»: не смикати екран на дрібних поправках.
+       До с51 лишала ВСІ тести зеленими, бо жоден кейс переносу доби не брав
+       дельту, меншу за годину. */
+    id: "M38", file: "ft", spec: SPEC.follow,
+    what: "U-79: поправка, менша за хвилину, більше не переносить добу",
+    from: "  if (nowOffsetMs !== prevOffsetMs) {",
+    to: "  if (Math.abs(nowOffsetMs - prevOffsetMs) > 60_000) {",
+  },
+  {
+    /* ⚠️ До с51 побайтово той самий результат: TZ прогону прибита
+       `Europe/Kyiv`, і всі тести передавали ту саму зону як зону центру. */
+    id: "M39", file: "ft", spec: SPEC.follow,
+    what: "U-78: доба «після» рахується без зони центру — правило б'є по чужій півночі",
+    from: "    const after = wallDayKeyAt(nowMs + nowOffsetMs, clinicTz);",
+    to: "    const after = wallDayKeyAt(nowMs + nowOffsetMs);",
+  },
+  {
+    /* ⚠️ ДЗЕРКАЛО M39 з ДРУГОГО боку рівняння. Заведено після першого прогону
+       с51: M39 почервонив РІВНО один із двох нових тестів U-78, і поки другий
+       не має власної мутації, його червоність нічим не доведена — тобто пара
+       трималась моїм міркуванням, а не стендом. Тепер кожен із двох тестів має
+       свою мутацію, і жоден не ловить обидві. */
+    id: "M40", file: "ft", spec: SPEC.follow,
+    what: "U-78: доба «до» рахується без зони центру — дзеркало M39",
+    from: "const before = wallDayKeyAt(nowMs + prevOffsetMs, clinicTz);",
+    to: "const before = wallDayKeyAt(nowMs + prevOffsetMs);",
+  },
+
   // ============ саме ПРАВИЛО ============
   {
     id: "M8", file: "ft", spec: SPEC.follow,
