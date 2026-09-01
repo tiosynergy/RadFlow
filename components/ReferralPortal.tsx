@@ -234,7 +234,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
      ревʼю В: банер велить назвати дату ПАЦІЄНТУ вголос, а машинний рядок
      читати нікому; сім рядків нижче цей самий екран уже пише `fmtShort`.
      Перший `from` не затирається повторною поправкою. */
-  useFollowToday({
+  const pendingShift = useFollowToday({
     clinicTz: selTz,
     offsetDays: 1,
     busy: busy || caseBusy || caseSteps.length > 0,
@@ -242,6 +242,17 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
     setDate: setBookDate,
     onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
   });
+  /* ⚠️ Г1-A (HIGH, ревʼю Г; рішення власника с51 — «зупинити збереження,
+     вирішує людина»). Те саме, що в `BookingModal`, і тут ВІКНО ШИРШЕ: форму
+     направлення заповнюють довго, а направник ще й у своїй зоні. Поки кейс
+     набраний, перенесення відкладене; після `createReferralCase` форма
+     скидається — і відкладений ключ помирає, так і не сказавши нікому нічого. */
+  const [shiftAck, setShiftAck] = useState(false);
+  const dayStop = pendingShift && !shiftAck ? pendingShift : null;
+  /* Ключ винесено в змінну — інакше eslint не може статично перевірити
+     список залежностей (`react-hooks/exhaustive-deps`). */
+  const pendingToMs = pendingShift ? pendingShift.to.getTime() : 0;
+  useEffect(() => { setShiftAck(false); }, [pendingToMs]);
 
   // Каталог послуг ОБРАНОГО центру (фаза 2a): drop-in шорткати lib/studies.
   // Порожній (центр не обрано / без сіду) → статичний фолбэк.
@@ -1166,17 +1177,41 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
           )}
           <button className="btn btn-ghost btn-sm" disabled={!valid || caseBusy || roomInCase} onClick={addStepToCase} style={{ marginLeft: "auto" }}
             title={roomInCase ? "Цей кабінет уже у кейсі — оберіть інший кабінет/модальність" : "Додати поточний крок до кейса"}>＋ У кейс</button>
-          <button className="btn btn-primary btn-sm" disabled={caseBusy || caseTotal < 2} onClick={createCaseNow} title="Кейс — щонайменше два кроки в різних кабінетах">
+          <button className="btn btn-primary btn-sm" disabled={!!dayStop || caseBusy || caseTotal < 2} onClick={createCaseNow} title={dayStop ? "Годинник центру уточнено — розберіть перенесення дати нижче" : "Кейс — щонайменше два кроки в різних кабінетах"}>
             {caseBusy ? "Створення…" : `Створити кейс (${caseTotal})`}
           </button>
         </div>
+
+        {/* ⚠️ Г1-A (HIGH): СТОП-БАНЕР — те саме, що в `BookingModal`. Поки
+            відкладене перенесення не розібране людиною, ні кейс, ні направлення
+            не зберігаються. Дві кнопки — це і є «вирішує людина». */}
+        {dayStop && (
+          <div className="ctx-hint orange" role="status" style={{ margin: "0 0 10px" }}>
+            🕐 Годинник центру уточнено: дата направлення має бути <b>{fmtShort(dayStop.to)}</b>, а набрано на{" "}
+            <b>{fmtShort(dayStop.from)}</b>. Пацієнту ви назвали {fmtShort(dayStop.from)} — переспитайте його.
+            <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="btn btn-primary btn-sm" onClick={() => {
+                /* Кроки тут тримають дату РЯДКОМ (`s.date === date`), тож
+                   переносимо їх тим самим `dateVal`, яким вона й будувалась. */
+                setCaseSteps((arr) => arr.map((s) => ({ ...s, date: dateVal(dayStop.to) })));
+                setBookDate(dayStop.to);
+                setTime("");
+                setDateShifted({ from: fmtShort(dayStop.from), to: fmtShort(dayStop.to) });
+                setShiftAck(true);
+              }}>Перенести на {fmtShort(dayStop.to)}</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => setShiftAck(true)}>
+                Залишити {fmtShort(dayStop.from)}
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="dlg-foot">
           {valid
             ? <span className="bk-summary">{name.split(" ").slice(0, 2).join(" ")} · {allStudies.length > 1 ? allStudies.length + " досл." : primaryKind} · {room ? room.name : ""} · {fmtShort(bookDate)} {time}–{fmt(toMin(time) + slotDur)}</span>
             : <span className="bk-missing">{missingList.map((m, i) => <span className="bk-miss-chip" key={i}>{m}</span>)}</span>}
-          <button className="btn btn-primary" disabled={!valid || busy || caseSteps.length > 0} onClick={submit}
-            title={caseSteps.length > 0 ? "Формується кейс — завершіть його кнопкою «Створити кейс» або приберіть кроки" : undefined}>
+          <button className="btn btn-primary" disabled={!!dayStop || !valid || busy || caseSteps.length > 0} onClick={submit}
+            title={dayStop ? "Годинник центру уточнено — розберіть перенесення дати вище" : caseSteps.length > 0 ? "Формується кейс — завершіть його кнопкою «Створити кейс» або приберіть кроки" : undefined}>
             {busy ? "Відправляємо…" : "Відправити направлення"}
           </button>
         </div>

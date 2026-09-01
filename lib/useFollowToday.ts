@@ -40,7 +40,7 @@
    цю поведінку U-70/U-72 не збирались: оператор може дописувати вчорашній день.
    Закривається рівно те, що створив сам перехід на виміряний годинник. */
 
-import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { clockOffsetMs } from "./serverClock";
 import { wallDayKeyAt } from "./incidents";
 import { dateKeyOf } from "./schedule";
@@ -184,7 +184,12 @@ export function decideShift(args: {
 export function stepClockShift(
   state: { prevOffsetMs: number; pendingKey: string | null },
   input: { nowOffsetMs: number; nowMs: number; busy?: boolean; clinicTz?: string },
-): { prevOffsetMs: number; pendingKey: string | null; apply: { from: string; to: string } | null } {
+): {
+  prevOffsetMs: number;
+  pendingKey: string | null;
+  apply: { from: string; to: string } | null;
+  pending: { from: string; to: string } | null;
+} {
   const d = decideShift({
     prevOffsetMs: state.prevOffsetMs,
     nowOffsetMs: input.nowOffsetMs,
@@ -199,7 +204,61 @@ export function stepClockShift(
     prevOffsetMs: input.nowOffsetMs,
     pendingKey: d.pendingKey,
     apply: d.applyFrom && d.applyTo ? { from: d.applyFrom, to: d.applyTo } : null,
+    /* ⚠️ ВІДКЛАДЕНЕ перенесення, ВИДИМЕ СПОЖИВАЧЕВІ (Г1-A, с51, рішення
+       власника «зупинити збереження, вирішує людина»).
+
+       Досі відкладений ключ жив лише в ref-і хука, і екран про нього не знав
+       нічого. Для форм із КЕЙСОМ це смертельно: `busy` тримається набраними
+       кроками, тож перенесення відкладається на весь час набору, а після
+       `createCase` модалка закривається — хук розмонтовується, і ключ помирає
+       разом із ним. `onShift` не викликається НІКОЛИ: до 12 записів ідуть у БД
+       зі старою датою, і при «ПК спішить» не заперечує жоден гард.
+
+       `to` рахується тут, а не в `decideShift`: у гілці відкладання ядро
+       чесно віддає `applyFrom/applyTo = null` (перенесення ще не сталось), а
+       екрану треба показати, ЩО САМЕ станеться, якщо застосувати зараз. Це той
+       самий момент і та сама зона, що і в `decideShift`. */
+    pending: d.pendingKey
+      ? { from: d.pendingKey, to: wallDayKeyAt(input.nowMs + input.nowOffsetMs, input.clinicTz) }
+      : null,
   };
+}
+
+/** ВІДКЛАДЕНЕ перенесення в добах ПОЛЯ. `null` = показувати нічого. */
+export type PendingShift = { from: Date; to: Date } | null;
+
+/** ЧИСТЕ ПРАВИЛО «чи є що показати про відкладене перенесення».
+ *
+ *  ⚠️ Заведено в с51 за знахідкою ревʼю Г (Г1-A, HIGH) і рішенням власника
+ *  «зупинити збереження, вирішує людина».
+ *
+ *  Дві речі, які тут неочевидні і які варто назвати:
+ *
+ *  1. `pending` від ядра — у добах КЛІНІКИ, а екран живе в добах СВОГО ПОЛЯ.
+ *     Для форми переносу (`offsetDays: 1`) це різні дати, і банер, що назве
+ *     добу клініки, збреше оператору про його ж поле. Тому переклад іде через
+ *     `followedDay` — те саме правило, яким перенесення й застосується.
+ *  2. Той самий `followedDay` заразом і ВІДСІКАЄ зайве: якщо оператор уже обрав
+ *     дату сам (або вона прийшла deep-link'ом), він поверне `null` — і ми
+ *     мовчимо. Показувати «дата поїде» там, де вона НЕ поїде, було б новою
+ *     тихою вадою навиворіт: оператор зупинився б без причини. */
+export function pendingShiftOf(
+  pending: { from: string; to: string } | null,
+  args: { curKey: string; curDay: Date; offsetDays?: number; pinnedKey?: string | null },
+): PendingShift {
+  if (!pending) return null;
+  const next = followedDay({
+    prevDay: dayOfKey(pending.from),
+    nextDay: dayOfKey(pending.to),
+    curKey: args.curKey,
+    offsetDays: args.offsetDays,
+    pinnedKey: args.pinnedKey,
+  });
+  if (!next) return null;
+  /* `from` — БУКВАЛЬНО поточне значення поля, а не перерахунок: саме його
+     оператор бачить і саме його він назвав пацієнту. */
+  if (dateKeyOf(next) === args.curKey) return null;   // показувати нічого: доба та сама
+  return { from: args.curDay, to: next };
 }
 
 /** ЯДРО-ХУК. Викликає `apply(prevDay, nextDay)`, коли поправка годинника
@@ -208,10 +267,13 @@ export function stepClockShift(
 function useClockDayShift(
   apply: (prevDay: Date, nextDay: Date) => void,
   { clinicTz, busy }: { clinicTz?: string; busy?: boolean },
-): void {
+): { from: string; to: string } | null {
   const epoch = useClockEpoch();          // не читається в тілі — це БУДИЛЬНИК ефекту
   const prevOffsetRef = useRef(clockOffsetMs());
   const pendingKeyRef = useRef<string | null>(null);
+  /* Той самий відкладений ключ, але У СТАНІ — щоб екран міг його ПОКАЗАТИ.
+     Ref потрібен ефекту (він читає своє попереднє значення), стан — рендеру. */
+  const [pending, setPending] = useState<{ from: string; to: string } | null>(null);
   /* Свіжий `apply` без перепідписки ефекту. ⚠️ Присвоєння живе в ЕФЕКТІ, а не
      в тілі рендера (знахідка ревʼю Б): React має право відрендерити дерево і
      викинути результат, а мутація ref пережила б викинутий рендер — і ефект
@@ -228,8 +290,13 @@ function useClockDayShift(
     );
     prevOffsetRef.current = s.prevOffsetMs;
     pendingKeyRef.current = s.pendingKey;
+    /* ⚠️ Порівняння ПО ЗНАЧЕННЮ, а не присвоєння нового обʼєкта щоразу: інакше
+       кожне пробудження годинника давало б зайвий рендер дев'яти екранам. */
+    setPending((p) => (p?.from === s.pending?.from && p?.to === s.pending?.to ? p : s.pending));
     if (s.apply) applyRef.current(dayOfKey(s.apply.from), dayOfKey(s.apply.to));
   }, [epoch, busy, clinicTz]);
+
+  return pending;
 }
 
 /** ЧИСТЕ ПРАВИЛО — яким має стати значення після того, як поправка перенесла
@@ -269,9 +336,9 @@ export function followedDay(args: {
     той самий рендерний знімок, що бачить оператор. */
 export function useFollowToday(
   opts: FollowTodayCommon & { value: Date; setDate: Dispatch<SetStateAction<Date>> },
-): void {
+): PendingShift {
   const { clinicTz, pinnedKey, busy, offsetDays = 0, value, setDate, onShift } = opts;
-  useClockDayShift((prevDay, nextDay) => {
+  const pending = useClockDayShift((prevDay, nextDay) => {
     const next = followedDay({ prevDay, nextDay, curKey: dateKeyOf(value), offsetDays, pinnedKey });
     if (!next) return;
     setDate(next);
@@ -280,17 +347,19 @@ export function useFollowToday(
        дати, і банер мусить назвати саме поле, а не внутрішній дефолт. */
     onShift?.(next, value);
   }, { clinicTz, busy });
+  return pendingShiftOf(pending, { curKey: dateKeyOf(value), curDay: value, offsetDays, pinnedKey });
 }
 
 /** Те саме для стану-КЛЮЧА «YYYY-MM-DD» (форми з `<input type="date">`). */
 export function useFollowTodayKey(
   opts: FollowTodayCommon & { value: string; setKey: Dispatch<SetStateAction<string>> },
-): void {
+): PendingShift {
   const { clinicTz, pinnedKey, busy, offsetDays = 0, value, setKey, onShift } = opts;
-  useClockDayShift((prevDay, nextDay) => {
+  const pending = useClockDayShift((prevDay, nextDay) => {
     const next = followedDay({ prevDay, nextDay, curKey: value, offsetDays, pinnedKey });
     if (!next) return;
     setKey(dateKeyOf(next));
     onShift?.(next, dayOfKey(value));   // те саме: доба з ПОЛЯ, не стара «сьогодні»
   }, { clinicTz, busy });
+  return pendingShiftOf(pending, { curKey: value, curDay: dayOfKey(value), offsetDays, pinnedKey });
 }
