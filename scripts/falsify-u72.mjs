@@ -53,7 +53,7 @@ const drop = (id, file, call, what, spec = SPEC.follow) =>
   ({ id, file, spec, what, from: call, to: "void 0;" });
 
 /* Багаторядкові виклики беремо ЦІЛКОМ — інакше якір не унікальний. */
-const CALL_BM = `  useFollowToday({
+const CALL_BM = `  const pendingShift = useFollowToday({
     clinicTz: clinicTz || undefined,
     pinnedKey: prefill?.datePinned ? prefill.date ?? null : null,
     busy: saving || caseSteps.length > 0,
@@ -62,7 +62,7 @@ const CALL_BM = `  useFollowToday({
     setDate: setBookDate,
     onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
   });`;
-const CALL_RP = `  useFollowToday({
+const CALL_RP = `  const pendingShift = useFollowToday({
     clinicTz: selTz,
     offsetDays: 1,
     busy: busy || caseBusy || caseSteps.length > 0,
@@ -229,8 +229,8 @@ const MUTATIONS = [
        протилежну: під busy ключ у памʼять не лягає. */
     id: "M43", file: "ft", spec: SPEC.follow,
     what: "U-77: запис памʼяті переїхав ПІД `if (s.apply)` — рядок на місці, відкладене перенесення мертве",
-    from: "    prevOffsetRef.current = s.prevOffsetMs;\n    pendingKeyRef.current = s.pendingKey;\n    if (s.apply)",
-    to: "    if (s.apply) prevOffsetRef.current = s.prevOffsetMs;\n    if (s.apply) pendingKeyRef.current = s.pendingKey;\n    if (s.apply)",
+    from: "    prevOffsetRef.current = s.prevOffsetMs;\n    pendingKeyRef.current = s.pendingKey;\n",
+    to: "    if (s.apply) prevOffsetRef.current = s.prevOffsetMs;\n    if (s.apply) pendingKeyRef.current = s.pendingKey;\n",
   },
   {
     /* ⚠️ ЯКІР ОНОВЛЕНО В ТІЙ САМІЙ СЕСІЇ. Перша редакція цілилась у
@@ -512,6 +512,81 @@ const MUTATIONS = [
     what: "F7: банер переносу повернувся до машинного ISO — «з 2026-09-02 на 2026-09-01» вголос",
     from: 'setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) }));',
     to: "setDateShifted((s) => ({ from: s?.from ?? dateVal(prev), to: dateVal(d) }));",
+  },
+  /* ============ Г1-A: кейс під відкладеним перенесенням (с51) ============
+     Знахідка ревʼю Г, HIGH; рішення власника — «зупинити збереження, вирішує
+     людина». До с51 відкладений ключ жив ЛИШЕ в ref-і хука: після `createCase`
+     форма закривалась, хук розмонтовувався, і ключ помирав. `onShift` не
+     викликався НІКОЛИ — до 12 записів ішли зі старою датою мовчки. */
+  {
+    id: "M61", file: "ft", spec: SPEC.follow,
+    what: "Г1-A: крок більше не віддає ВІДКЛАДЕНЕ перенесення — екран знову про нього не знає",
+    from: "    pending: d.pendingKey\n      ? { from: d.pendingKey, to: wallDayKeyAt(input.nowMs + input.nowOffsetMs, input.clinicTz) }\n      : null,",
+    to: "    pending: null,",
+  },
+  {
+    /* ⚠️ Найтихіша: банер лишається, а НЕЗВОРОТНИЙ запис знову доступний. Саме
+       гейт, а не текст, є тут відповіддю на рішення власника. */
+    id: "M62", file: "bm", spec: SPEC.follow,
+    what: "Г1-A: кейс знову зберігається під відкладеним перенесенням — банер є, гейта немає",
+    from: 'disabled={!!dayStop || saving || (caseSteps.length + (editIndex === null && valid && !roomInCase ? 1 : 0)) < 2}',
+    to: "disabled={saving || (caseSteps.length + (editIndex === null && valid && !roomInCase ? 1 : 0)) < 2}",
+  },
+  {
+    id: "M63", file: "rp", spec: SPEC.follow,
+    what: "Г1-A: портал направника знову зберігає кейс під відкладеним перенесенням",
+    from: "disabled={!!dayStop || caseBusy || caseTotal < 2}",
+    to: "disabled={caseBusy || caseTotal < 2}",
+  },
+  {
+    /* ⚠️ Перенесення мусить рухати ВЕСЬ кейс. Мутація лишає кроки на старій
+       добі: кейс розколовся б на дві доби — рівно те, від чого `busy` і
+       захищав, тільки тепер руками оператора. */
+    id: "M64", file: "bm", spec: SPEC.follow,
+    what: "Г1-A: «Перенести кейс» рухає лише поле, а кроки лишає на старій добі",
+    from: "                setCaseSteps((arr) => arr.map((s) => ({ ...s, date: dayStop.to })));\n",
+    to: "",
+  },
+  {
+    /* ⚠️ Зустрічний зонд: без «Залишити» оператора замкнуло б у банері назавжди
+       — стоп без виходу гірший за тихий запис. */
+    id: "M65", file: "bm", spec: SPEC.follow,
+    what: "Г1-A: у банері не лишилось виходу «залишити як є» — оператор замкнений",
+    from: '              <button className="btn btn-secondary btn-sm" onClick={() => setShiftAck(true)}>',
+    to: '              <button className="btn btn-secondary btn-sm">',
+  },
+  {
+    id: "M66", file: "ft", spec: SPEC.follow,
+    what: "Г1-A: показ відкладеного пішов повз спільне правило — банер зупиняв би на даті, обраній оператором",
+    from: "  const next = followedDay({\n    prevDay: dayOfKey(pending.from),\n    nextDay: dayOfKey(pending.to),",
+    to: "  const next = followedDay({\n    prevDay: dayOfKey(pending.to),\n    nextDay: dayOfKey(pending.from),",
+  },
+  {
+    /* ⚠️ ДРУГИЙ гейт того самого файлу. Заведено після того, як стенд показав,
+       що один спільний пін `disabled={!!dayStop ||` НЕ сторож: два збіги в
+       файлі, і зняття одного лишалось зеленим через інший. */
+    id: "M67", file: "bm", spec: SPEC.follow,
+    what: "Г1-A: одиночний запис знову зберігається під відкладеним перенесенням",
+    from: "disabled={!!dayStop || !valid || saving || (moveMode && roomInCase)}",
+    to: "disabled={!valid || saving || (moveMode && roomInCase)}",
+  },
+  {
+    id: "M68", file: "rp", spec: SPEC.follow,
+    what: "Г1-A: направлення знову відправляється під відкладеним перенесенням",
+    from: "disabled={!!dayStop || !valid || busy || caseSteps.length > 0}",
+    to: "disabled={!valid || busy || caseSteps.length > 0}",
+  },
+  {
+    id: "M69", file: "rp", spec: SPEC.follow,
+    what: "Г1-A: портал направника — «Перенести» рухає лише поле, кроки лишає на старій добі",
+    from: "                setCaseSteps((arr) => arr.map((s) => ({ ...s, date: dateVal(dayStop.to) })));\n",
+    to: "",
+  },
+  {
+    id: "M70", file: "rp", spec: SPEC.follow,
+    what: "Г1-A: портал направника — зник вихід «залишити як є», оператор замкнений",
+    from: '              <button className="btn btn-secondary btn-sm" onClick={() => setShiftAck(true)}>',
+    to: '              <button className="btn btn-secondary btn-sm">',
   },
   {
     id: "M30", file: "wm", spec: SPEC.follow,

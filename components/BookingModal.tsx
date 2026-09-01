@@ -990,7 +990,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
      ⚠️ Перший `from` не затирається повторною поправкою (ревʼю В): інакше при
      коливанні зсуву біля півночі банер назве ПРОМІЖНУ добу замість тієї, яку
      оператор справді сказав пацієнту. */
-  useFollowToday({
+  const pendingShift = useFollowToday({
     clinicTz: clinicTz || undefined,
     pinnedKey: prefill?.datePinned ? prefill.date ?? null : null,
     busy: saving || caseSteps.length > 0,
@@ -999,6 +999,27 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
     setDate: setBookDate,
     onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
   });
+  /* ⚠️ Г1-A (HIGH, ревʼю Г; рішення власника с51 — «зупинити збереження,
+     вирішує людина»). `busy` тримається набраними кроками кейса, тож поки
+     оператор його збирає, перенесення ВІДКЛАДАЄТЬСЯ — і це правильно: інакше
+     дата поїхала б посеред набору і розколола кейс на дві доби. Але після
+     `createCase` модалка закривається, хук розмонтовується — і відкладений
+     ключ помирає разом із ним. `onShift` не викликається НІКОЛИ: до 12 записів
+     ідуть у БД зі старою датою, оператору не сказали нічого, а при «ПК спішить»
+     не заперечує ЖОДЕН гард (запис у майбутнє легальний).
+
+     Тому: доки відкладене перенесення не розібране людиною, збереження
+     ЗАБЛОКОВАНЕ. Оператор бачить обидві доби і сам обирає — перенести кейс або
+     свідомо лишити стару дату. Автоматично не робимо нічого: він у цю мить
+     говорить із пацієнтом, і мовчазна правка дати під ним — це рівно той
+     дефект, від якого весь пакет. */
+  const [shiftAck, setShiftAck] = useState(false);
+  const dayStop = pendingShift && !shiftAck ? pendingShift : null;
+  /* Нове відкладене перенесення знімає старе підтвердження: підтверджували
+     ІНШУ пару діб. Ключ винесено в змінну — інакше eslint не може статично
+     перевірити список залежностей (`react-hooks/exhaustive-deps`). */
+  const pendingToMs = pendingShift ? pendingShift.to.getTime() : 0;
+  useEffect(() => { setShiftAck(false); }, [pendingToMs]);
 
   function buildPayload(): BookingPayload {
     const sel = docs.find((d) => String(d.id) === String(doctorId));
@@ -1651,9 +1672,39 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                 </span>
               )
               : <button className="btn btn-ghost btn-sm" disabled={!valid || saving || roomInCase || needsOffConfirm} onClick={addStepToCase} style={{ marginLeft: "auto" }} title={roomInCase ? "Цей кабінет уже у кейсі — оберіть інший кабінет/модальність" : needsOffConfirm ? "Кроки кейса — лише в межах графіка кабінету" : "Додати поточний крок до кейса"}>＋ У кейс</button>}
-            <button className="btn btn-primary btn-sm" disabled={saving || (caseSteps.length + (editIndex === null && valid && !roomInCase ? 1 : 0)) < 2} onClick={createCaseNow} title="Кейс — щонайменше два кроки в різних кабінетах">
+            <button className="btn btn-primary btn-sm" disabled={!!dayStop || saving || (caseSteps.length + (editIndex === null && valid && !roomInCase ? 1 : 0)) < 2} onClick={createCaseNow} title={dayStop ? "Годинник центру уточнено — розберіть перенесення дати над кнопками" : "Кейс — щонайменше два кроки в різних кабінетах"}>
               Створити кейс ({caseSteps.length + (editIndex === null && valid && !roomInCase ? 1 : 0)})
             </button>
+          </div>
+        )}
+
+        {/* ⚠️ Г1-A (HIGH): СТОП-БАНЕР. Поки відкладене перенесення не розібране
+            людиною, кейс зберегти не можна. Дві кнопки — це і є «вирішує
+            людина»: перенести весь кейс на виправлену добу або свідомо лишити
+            стару. Банер стоїть ПЕРЕД кнопками кейса, а не в колонці календаря:
+            урок F2 — підпис там, куди оператор не дивиться, не відрізняється
+            від тиші. */}
+        {dayStop && (
+          <div className="ctx-hint orange" role="status" style={{ margin: "0 16px 10px" }}>
+            🕐 Годинник центру уточнено: сьогодні <b>{fmtShort(dayStop.to)}</b>, а кейс набрано на{" "}
+            <b>{fmtShort(dayStop.from)}</b>. Пацієнту ви назвали {fmtShort(dayStop.from)} — переспитайте його.
+            <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="btn btn-primary btn-sm" onClick={() => {
+                /* Переносимо ВЕСЬ кейс однією дією: і поле, і кожен набраний
+                   крок. Порізно вони жили б у різних добах — саме те, від чого
+                   `busy` і захищав. Час не чіпаємо: кроки вже мають кабінет і
+                   слот, а їх зайнятість на новій добі перевірять `caseBusyWindows`
+                   і серверний гард `CASE_PATIENT_OVERLAP`. */
+                setCaseSteps((arr) => arr.map((s) => ({ ...s, date: dayStop.to })));
+                setBookDate(dayStop.to);
+                setTime("");
+                setDateShifted({ from: fmtShort(dayStop.from), to: fmtShort(dayStop.to) });
+                setShiftAck(true);
+              }}>Перенести кейс на {fmtShort(dayStop.to)}</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => setShiftAck(true)}>
+                Залишити {fmtShort(dayStop.from)}
+              </button>
+            </div>
           </div>
         )}
 
@@ -1666,8 +1717,8 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
             ? <button className="btn btn-primary" disabled={!valid || saving || roomInCase} onClick={handleAddCaseStep} title={roomInCase ? "Цей кабінет уже у кейсі — оберіть іншу модальність/кабінет" : "Додати крок до кейса"}>
                 {saving ? "Додавання…" : "Додати крок до кейса"}
               </button>
-            : <button className="btn btn-primary" disabled={!valid || saving || (moveMode && roomInCase)} onClick={handleSave}
-                title={moveMode && roomInCase ? "Цей кабінет уже зайнятий іншим кроком кейса — оберіть інший" : undefined}>
+            : <button className="btn btn-primary" disabled={!!dayStop || !valid || saving || (moveMode && roomInCase)} onClick={handleSave}
+                title={dayStop ? "Годинник центру уточнено — розберіть перенесення дати вище" : moveMode && roomInCase ? "Цей кабінет уже зайнятий іншим кроком кейса — оберіть інший" : undefined}>
                 {saving ? "Збереження…" : moveMode ? "Перенести" : "Зберегти запис"}
               </button>}
         </div>
