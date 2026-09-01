@@ -144,12 +144,60 @@ export function decideShift(args: {
      ВІДКЛАДАЄТЬСЯ (ключ лишається в `pendingKey`), а не губиться — інакше ми
      міняли б одну тиху ваду на іншу. */
   if (pending === null || busy) return { pendingKey: pending, applyFrom: null, applyTo: null };
-  return { pendingKey: null, applyFrom: pending, applyTo: wallDayKeyAt(nowMs + nowOffsetMs, clinicTz) };
+  const to = wallDayKeyAt(nowMs + nowOffsetMs, clinicTz);
+  /* ⚠️ ФАНТОМНЕ ПЕРЕНЕСЕННЯ (знахідка ревʼю Б, с51, HIGH). `applyFrom` — доба
+     на момент ВІДКЛАДАННЯ, `applyTo` — доба на момент ЗВІЛЬНЕННЯ, і вони
+     можуть збігтися: поправка з'їхала і повернулась, поки була відкрита
+     модалка. Без цієї перевірки `followedDay` чесно повертав НОВИЙ обʼєкт тієї
+     самої доби, а споживач кликав `onShift` — тобто форма стирала обраний
+     слот і показувала банер «дату змінено на …» з ТІЄЮ САМОЮ датою. Екран
+     брехав і забирав роботу оператора, зроблену за час відкладання.
+     ⚠️ Тест «поправка туди-назад» іменувався «no-op за смислом» і при цьому
+     ЗАКРІПЛЮВАВ старе значення — тобто називав властивість, якої в коді не
+     було. Це рівно той клас, проти якого писався весь пакет. */
+  if (to === pending) return { pendingKey: null, applyFrom: null, applyTo: null };
+  return { pendingKey: null, applyFrom: pending, applyTo: to };
+}
+
+/** ЧИСТИЙ КРОК ЕФЕКТУ: памʼять хука на вході — памʼять хука на виході.
+ *
+ *  ⚠️ ВИНЕСЕНО В с51 ПІСЛЯ РЕВʼЮ А, і це виправлення моєї помилки. Спершу я
+ *  закрив проводку хука ПІНАМИ ПО ДЖЕРЕЛУ і написав, що поведінкового тесту
+ *  «тут бути не може». Ревʼю А показало, що це неправда: з десяти несучих
+ *  фактів проводки піни тримали чотири, а одна однорядкова мутація
+ *  (`nowOffsetMs: nowOffset` → `nowOffsetMs: prevOffsetRef.current`) робить
+ *  `prevOffsetMs === nowOffsetMs` тотожно, вбиває U-70 і U-72 ЦІЛКОМ — і
+ *  лишає зеленими всі чотири піни, tsc і eslint. Тобто «не може» означало
+ *  «я не став виносити далі».
+ *
+ *  Тепер перенесення зсуву, доля відкладеного ключа і сам факт виклику —
+ *  ПОВЕДІНКА, яку видно з `environment: "node"`. В ефекті лишились рівно
+ *  зчитування годинника, запис двох ref-ів і виклик; що з цього НЕ тримається
+ *  поведінкою — перелічено в пінах `tests/followToday.test.ts`. */
+export function stepClockShift(
+  state: { prevOffsetMs: number; pendingKey: string | null },
+  input: { nowOffsetMs: number; nowMs: number; busy?: boolean; clinicTz?: string },
+): { prevOffsetMs: number; pendingKey: string | null; apply: { from: string; to: string } | null } {
+  const d = decideShift({
+    prevOffsetMs: state.prevOffsetMs,
+    nowOffsetMs: input.nowOffsetMs,
+    pendingKey: state.pendingKey,
+    nowMs: input.nowMs,
+    busy: input.busy,
+    clinicTz: input.clinicTz,
+  });
+  return {
+    /* Наступний крок мусить порівнюватись із ЦИМ зсувом, інакше друга поправка
+       міряється від першої і привласнює собі чужий перехід. */
+    prevOffsetMs: input.nowOffsetMs,
+    pendingKey: d.pendingKey,
+    apply: d.applyFrom && d.applyTo ? { from: d.applyFrom, to: d.applyTo } : null,
+  };
 }
 
 /** ЯДРО-ХУК. Викликає `apply(prevDay, nextDay)`, коли поправка годинника
-    перенесла добу клініки. Уся логіка — у `decideShift` вище; тут лишились
-    рівно зчитування стану модуля і зберігання відкладеного ключа. */
+    перенесла добу клініки. Уся логіка — у `decideShift` і `stepClockShift`
+    вище; тут лишились рівно годинник, два ref-и і виклик. */
 function useClockDayShift(
   apply: (prevDay: Date, nextDay: Date) => void,
   { clinicTz, busy }: { clinicTz?: string; busy?: boolean },
@@ -167,18 +215,13 @@ function useClockDayShift(
   useEffect(() => { applyRef.current = apply; });
 
   useEffect(() => {
-    const nowOffset = clockOffsetMs();
-    const d = decideShift({
-      prevOffsetMs: prevOffsetRef.current,
-      nowOffsetMs: nowOffset,
-      pendingKey: pendingKeyRef.current,
-      nowMs: Date.now(),
-      busy,
-      clinicTz,
-    });
-    prevOffsetRef.current = nowOffset;
-    pendingKeyRef.current = d.pendingKey;
-    if (d.applyFrom && d.applyTo) applyRef.current(dayOfKey(d.applyFrom), dayOfKey(d.applyTo));
+    const s = stepClockShift(
+      { prevOffsetMs: prevOffsetRef.current, pendingKey: pendingKeyRef.current },
+      { nowOffsetMs: clockOffsetMs(), nowMs: Date.now(), busy, clinicTz },
+    );
+    prevOffsetRef.current = s.prevOffsetMs;
+    pendingKeyRef.current = s.pendingKey;
+    if (s.apply) applyRef.current(dayOfKey(s.apply.from), dayOfKey(s.apply.to));
   }, [epoch, busy, clinicTz]);
 }
 
