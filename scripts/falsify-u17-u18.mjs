@@ -30,6 +30,120 @@
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
 
+/* ⚠️ МАШИНОЧИТНА ЗАМОРОЗКА (с51, U-74 ч.2). Примітка вище чесно каже, що стенд
+   — артефакт свого коміта, і перелічує, які позиції застаріли. Але це був
+   КОМЕНТАР: `falsify-all` про нього не знав і чесно рахував дев'ять протухлих
+   якорів як дефекти. Виходило, що ревізія назавжди червона з причини, яка
+   дефектом не є, — а ревізія, яка червона завжди, читається так само, як
+   зелена завжди: ніяк.
+
+   Тому перелік застарілого тепер ПЕРЕВІРЯЄТЬСЯ. Правило просте і симетричне:
+     • протухла позиція, ЗАПИСАНА тут, — очікувана, стенд не червоніє;
+     • протухла позиція, НЕ записана тут, — ЧЕРВОНИЙ: заморозка не місце, де
+       ховають нове гниття;
+     • записана позиція, яка ЗНАЙШЛАСЬ, — теж ЧЕРВОНИЙ: перелік бреше, і треба
+       або зняти її звідси, або зрозуміти, звідки вона повернулась.
+   Тобто заморожений стенд усе одно щось доводить — що його власний інвентар
+   застарілого відповідає дійсності. Саме це і був урок сесії про списки. */
+const FROZEN_AT = "d0786d7";
+
+/* ⚠️ КОЖНА ЗАМОРОЖЕНА ПОЗИЦІЯ МАЄ ПЕРЕВІРНУ ОЗНАКУ СМЕРТІ, а не саме лише id.
+   Перша редакція цього блоку була просто набором id — і ревʼю Д одразу
+   показало, чим це погано ДВІЧІ:
+     1) я записав туди N29 і N31, у яких код ЖИВИЙ (U-55 просто дописав
+        альтернативу в регулярку). Тобто вивів робочі позиції з обігу під
+        ярликом «коду більше немає»;
+     2) найдешевший спосіб погасити будь-який майбутній червоний — дописати
+        його id сюди. Усі перевірки симетрії при цьому проходять, бо вони
+        звіряють інвентар САМ ІЗ СОБОЮ.
+   Тому заморозити позицію тепер можна лише разом із твердженням, яке стенд
+   ПЕРЕВІРЯЄ: named identifier, що зник із коду. Якщо він знайдеться —
+   червоний. Приховати живу поломку так уже не вийде: щоб її заморозити,
+   довелось би вигадати ідентифікатор, якого немає, і це видно очима.
+   `FROZEN_AT` лишається довідкою про коміт-джерело і НІЧОГО не доводить —
+   сказано прямо, бо в першій редакції він виглядав як перевірка. */
+/* ⚠️ ДРУГА ПОПРАВКА (с52, ревʼю з лінзою «що обіцяно проти що доведено»).
+   Редакція вище перевіряла РІВНО ОДНЕ: іменованого ідентифікатора немає у
+   названих файлах. А друкувала при цьому «знято з коду разом із дефектом» —
+   тобто твердження про ДЕФЕКТ, підперте доказом про ІМʼЯ. Різниця не
+   схоластична: `incidentGapCode` справді зникла з `lib/studies.ts`, але робота
+   (вибір коду неповноти журналу аварійної зупинки) жива — переїхала в
+   `stoppedIncidentsGap` у `lib/incidents.ts` з U-56. Перевірено очима: надгробок
+   у `lib/studies.ts:237` сам називає наступницю. Тобто перша редакція заморозки
+   вважала б смертю звичайне перейменування з переїздом, і якби сторожі
+   наступниці зникли завтра, тут би нічого не почервоніло.
+   Тому заморозка тепер розповідає ТРИ речі і перевіряє всі три:
+     • `gone` — імені більше немає в `where` (як і було);
+     • `movedTo` — робота жива ось під цим іменем ось у цьому файлі;
+     • `guardedBy` — і стережуть її ось ці спеки, які це імʼя згадують.
+   Заморозити позицію тепер означає ПОКАЗАТИ, хто підхопив її роботу. Якщо
+   спадкоємець зникне або його сторож перестане його згадувати — стенд червоніє,
+   хоча сама позиція давно не мутує нічого. Саме цього від заморозки і треба:
+   вона мусить лишатись твердженням, яке МОЖЕ виявитись хибним. */
+const FROZEN_STALE = new Map([
+  /* U-56 (0168) зняв `incidentGapCode` разом із другим читанням `incidents`:
+     RPC тепер повертає інциденти сам, а повноту судить чиста функція. */
+  ["N10", { gone: "incidentGapCode", where: ["lib/studies.ts"],
+            movedTo: { name: "stoppedIncidentsGap", file: "lib/incidents.ts" },
+            guardedBy: ["tests/stoppedIncidents.test.ts"] }],
+  ["N11", { gone: "incidentGapCode", where: ["lib/studies.ts"],
+            movedTo: { name: "stoppedIncidentsGap", file: "lib/incidents.ts" },
+            guardedBy: ["tests/stoppedIncidents.test.ts"] }],
+  ["N12", { gone: "incidentGapCode", where: ["lib/studies.ts"],
+            movedTo: { name: "stoppedIncidentsGap", file: "lib/incidents.ts" },
+            guardedBy: ["tests/stoppedIncidents.test.ts"] }],
+  /* `incRes` — локальна змінна другого читання `incidents` у серверній дії.
+     Читання знято тим самим U-56; місце, де тепер судять повноту, пінить
+     `roomModalityRead` (виклик), а поведінку — `stoppedIncidents` (функція). */
+  ["N23", { gone: "incRes", where: ["app/queue/actions.ts"],
+            movedTo: { name: "stoppedIncidentsGap", file: "app/queue/actions.ts" },
+            guardedBy: ["tests/roomModalityRead.test.ts", "tests/stoppedIncidents.test.ts"] }],
+  ["N26", { gone: "incRes", where: ["app/queue/actions.ts"],
+            movedTo: { name: "stoppedIncidentsGap", file: "app/queue/actions.ts" },
+            guardedBy: ["tests/roomModalityRead.test.ts", "tests/stoppedIncidents.test.ts"] }],
+  ["N27", { gone: "incRes", where: ["app/queue/actions.ts"],
+            movedTo: { name: "stoppedIncidentsGap", file: "app/queue/actions.ts" },
+            guardedBy: ["tests/roomModalityRead.test.ts", "tests/stoppedIncidents.test.ts"] }],
+  ["N28", { gone: "incRes", where: ["app/queue/actions.ts"],
+            movedTo: { name: "stoppedIncidentsGap", file: "app/queue/actions.ts" },
+            guardedBy: ["tests/roomModalityRead.test.ts", "tests/stoppedIncidents.test.ts"] }],
+]);
+/** Ідентифікатор позиції = префікс до першого пробілу («N10 …» → «N10»). */
+const idOf = (name) => String(name).split(" ")[0];
+
+/** Коментарі зрізаємо — надгробок у коментарі не рахується за живий код. */
+const stripComments = (t) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+const mentions = (file, name) => new RegExp(`\\b${name}\\b`).test(stripComments(readFileSync(file, "utf8")));
+
+/**
+ * Історія заморозки мусить БУТИ правдою — уся, а не лише її перша третина.
+ * Повертає `null`, якщо тримає, або текст причини, якщо ні.
+ */
+function freezeBreaks(mark) {
+  for (const f of mark.where) {
+    if (mentions(f, mark.gone)) {
+      return `заявлено, що \`${mark.gone}\` зник, а він у \`${f}\` Є `
+        + "(значить якір просто зсунувся — переякорюйте, а не заморожуйте)";
+    }
+  }
+  /* ⚠️ Без наступниці заморозка знову звелася б до «імені немає». Обовʼязкова:
+     позиція, робота якої нікуди не перейшла, — це не заморозка, а видалення,
+     і тоді мутацію треба прибрати зі стенда, а не консервувати. */
+  if (!mark.movedTo) return "заморозка не називає, куди переїхала робота (`movedTo`)";
+  if (!mentions(mark.movedTo.file, mark.movedTo.name)) {
+    return `спадкоємець \`${mark.movedTo.name}\` не знайдений у \`${mark.movedTo.file}\` `
+      + "— або він теж переїхав, або роботу зняли зовсім; заморозку треба переписати";
+  }
+  for (const spec of mark.guardedBy || []) {
+    if (!mentions(spec, mark.movedTo.name)) {
+      return `спек \`${spec}\` більше не згадує \`${mark.movedTo.name}\` `
+        + "— роботу спадкоємця перестали стерегти, і заморожена позиція це приховує";
+    }
+  }
+  if (!(mark.guardedBy || []).length) return "заморозка не називає жодного сторожа спадкоємця (`guardedBy`)";
+  return null;
+}
+
 const ACT = "app/queue/actions.ts";
 const LIB = "lib/studies.ts";
 const SCAN = "tests/readErrorTrust.test.ts";
@@ -159,12 +273,20 @@ const M = [
    "    const incRes = await supabase.from(\"incidents\")",
    "    const incRes = await (async () => supabase.from(\"incidents\")"],
   ["N29 сканер перестав бачити таблицю incidents", SCAN, E.scanTables,
-   '(rooms|schedule_overrides|incidents)', '(rooms|schedule_overrides)'],
+   /* ⚠️ ПЕРЕЯКОРЕНО в с51, і це виправлення МОЄЇ помилки. Спершу я записав цю
+      позицію в інвентар заморозки — «код знято разом із дефектом». Ревʼю Д
+      перевірило і показало, що код ЖИВИЙ: U-55 просто дописав альтернативу
+      `|queue_entries` у ту саму регулярку. Тобто я вивів робочу позицію з
+      обігу під ярликом «коду більше немає» — рівно те перетворення червоного
+      на зелене приховуванням, проти якого й будувалась заморозка. */
+   '(rooms|schedule_overrides|incidents|queue_entries)', '(rooms|schedule_overrides|queue_entries)'],
   ["N30 сканер перестав дивитись у серверні дії", SCAN, E.scanFiles,
    '  "app/queue/actions.ts",\n];', "];"],
   ["N31 делегування правилу більше не зараховується", SCAN, E.scanChecked,
-   "(readRoomScheduleRow|roomSchedulesById|readRoomModality|modalityVerdict)",
-   "(readRoomScheduleRow|roomSchedulesById)"],
+   /* ⚠️ ПЕРЕЯКОРЕНО в с51 — те саме виправлення, що в N29. Код живий: список
+      правил переїхав із регулярки в рядкову константу і отримав `|readRow`. */
+   "readRoomScheduleRow|roomSchedulesById|readRoomModality|modalityVerdict|readRow",
+   "readRoomScheduleRow|roomSchedulesById|readRow"],
   ["N32 деструктуризована форма перестала перевірятись (дірка ревʼю р2)", RP, E.scanRPdestr,
    "      if (error) return incidentFeed([], true);\n      return incidentFeed((data as IncidentLike[] | null) || []);",
    "      return incidentFeed((data as IncidentLike[] | null) || []);"],
@@ -174,45 +296,87 @@ const M = [
 const files = [...new Set(M.map((m) => m[1]))];
 const orig = new Map(files.map((f) => [f, readFileSync(f, "utf8")]));
 const restore = () => { for (const [f, t] of orig) writeFileSync(f, t); };
-for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { restore(); process.exit(1); });
-process.on("uncaughtException", (e) => { restore(); console.error(e); process.exit(1); });
+/* Канонічні коди сигналів (с50): 1 плутав «стенд знайшов дефект» із «стенд
+   убили». */
+process.on("SIGINT", () => { restore(); process.exit(130); });
+process.on("SIGTERM", () => { restore(); process.exit(143); });
+process.on("uncaughtException", (e) => { restore(); console.error(e); process.exit(2); });
 
 const SPEC = "tests/roomModalityRead.test.ts tests/readErrorTrust.test.ts";
+/* ⚠️ ВЛАСНИЙ звіт, а не спільний `.vt.json` (с51): спільний файл ділили
+   `u37`, `u13`, `u33`, `0166`, і під `falsify-all` застряглий звіт ЧУЖОГО
+   стенда читався б як свій. */
+const REPORT = ".falsify-u17-u18.json";
 const lines = ["# Фальсифікація U-17 + U-18 + U-14", ""];
 let bad = 0;
 
-/** Прогнати набір і повернути імена червоних; null — звіту немає. */
+/** Прогнати набір і повернути імена червоних; null — вимір НЕ відбувся. */
 function runSpec() {
-  rmSync(".vt.json", { force: true });
+  rmSync(REPORT, { force: true });
   try {
-    execSync(`npx vitest run ${SPEC} --reporter=json --outputFile=.vt.json`,
+    execSync(`npx vitest run ${SPEC} --reporter=json --outputFile=${REPORT}`,
       { stdio: "ignore", timeout: 180000 });
   } catch { /* ненульовий код = є червоні */ }
   try {
-    const j = JSON.parse(readFileSync(".vt.json", "utf8"));
+    const j = JSON.parse(readFileSync(REPORT, "utf8"));
     const red = [];
-    for (const f of j.testResults) for (const a of f.assertionResults) {
+    for (const f of j.testResults || []) for (const a of f.assertionResults || []) {
       if (a.status === "failed") red.push(a.fullName);
     }
+    /* ⚠️ ГІЛКА `crashed` (канон із с50, сюди не доїхала до с51): набір упав, а
+       впалих АСЕРТІВ немає — це зламана збірка, а не «сторож дивиться не
+       туди». Без неї мутація, що ламає трансформ, друкувалась як звинувачення
+       сторожу. */
+    if (j.success !== true && red.length === 0) return null;
     return red;
   } catch { return null; }
 }
 
-/* БАЗОВА ЛІНІЯ: без неї всі 32 рядки могли б бути червоними «за очікуванням». */
+/* БАЗОВА ЛІНІЯ: без неї всі 32 рядки могли б бути червоними «за очікуванням».
+   ⚠️ І вона ГЕЙТИТЬ цикл (с51). Досі вимір ішов далі при червоній базі, а `bad`
+   ріс лише на ОДИНИЦЮ — тобто найгірший стан стенда («він не доводить нічого»)
+   друкувався як «1 проблемних із 32», тобто майже успіх. Це рівно той дефект,
+   який U-80 назвав HIGH №1 для інших стендів; сюди правка не доїхала. */
 const base = runSpec();
-if (base === null) { lines.push("- **БАЗОВА ЛІНІЯ** — ❌ звіту немає"); bad++; }
+const baseOk = base !== null && base.length === 0;
+if (base === null) { lines.push("- **БАЗОВА ЛІНІЯ** — ❌ вимір не відбувся (звіту немає або набір зламано)"); }
 else if (base.length) {
-  bad++;
   lines.push("- **БАЗОВА ЛІНІЯ** — ❌ набір ЧЕРВОНИЙ ще до мутацій: " + base.map((n) => `«${n}»`).join("; "));
 } else {
   lines.push("- **БАЗОВА ЛІНІЯ** → ✅ зелено до мутацій (мутації мають що ламати)");
 }
+if (!baseOk) { bad += M.length; lines.push("", "⛔ Базова лінія не зелена — стенд НІЧОГО не доводить, мутації не ганяємо."); }
 console.log(lines.at(-1));
 
-for (const [name, file, expectRe, from, to] of M) {
+const seenFrozen = new Set();
+for (const [name, file, expectRe, from, to] of baseOk ? M : []) {
   const src = orig.get(file);
+  const id = idOf(name);
+  const mark = FROZEN_STALE.get(id);
+  const declaredStale = !!mark;
   if (!src.includes(from)) {
-    bad++; lines.push(`- **${name}** — ❌ ЯКІР НЕ ЗНАЙДЕНО`); console.log(lines.at(-1)); continue;
+    const breaks = declaredStale ? freezeBreaks(mark) : null;
+    if (declaredStale && breaks) {
+      bad++; seenFrozen.add(id);
+      lines.push(`- **${name}** — ❌ ІНВЕНТАР БРЕШЕ: ${breaks}`);
+    } else if (declaredStale) {
+      seenFrozen.add(id);
+      /* Формулювання рівно таке, як доведено: імені тут немає, робота там,
+         стережуть її ось ці. «Знято разом із дефектом» більше не пишемо — це
+         було твердження ширше за доказ. */
+      lines.push(`- **${name}** — ⏸ ЗАМОРОЖЕНО (\`${mark.gone}\` зник із \`${mark.where.join("`, `")}\`; `
+        + `робота живе як \`${mark.movedTo.name}\` у \`${mark.movedTo.file}\`, стереже \`${mark.guardedBy.join("`, `")}\`)`);
+    } else {
+      bad++;
+      lines.push(`- **${name}** — ❌ ЯКІР НЕ ЗНАЙДЕНО (і його НЕМАЄ в інвентарі заморозки — це нове гниття)`);
+    }
+    console.log(lines.at(-1)); continue;
+  }
+  /* Записаний як застарілий, а знайшовся — інвентар бреше. */
+  if (declaredStale) {
+    bad++; seenFrozen.add(id);
+    lines.push(`- **${name}** — ❌ ІНВЕНТАР БРЕШЕ: позиція записана як застаріла, а якір на місці`);
+    console.log(lines.at(-1)); continue;
   }
   if (src.split(from).length > 2) {
     bad++; lines.push(`- **${name}** — ❌ ЯКІР НЕ УНІКАЛЬНИЙ (${src.split(from).length - 1}×)`);
@@ -237,7 +401,19 @@ for (const [name, file, expectRe, from, to] of M) {
 }
 
 restore();
-lines.push("", bad ? `## ПІДСУМОК: ${bad} проблемних із ${M.length}` : `## ПІДСУМОК: ${M.length}/${M.length} адресних`);
+
+/* Третій бік симетрії: позиція записана в інвентарі, але в масиві мутацій її
+   вже немає — інвентар знову бреше, тільки в інший бік. */
+for (const id of baseOk ? FROZEN_STALE.keys() : []) {
+  if (!seenFrozen.has(id)) {
+    bad++;
+    lines.push(`- **${id}** — ❌ ІНВЕНТАР БРЕШЕ: позиція записана як застаріла, а такої мутації в стенді немає`);
+    console.log(lines.at(-1));
+  }
+}
+lines.push("", `_Стенд ЗАМОРОЖЕНИЙ на \`${FROZEN_AT}\`: ${seenFrozen.size} позицій із ${M.length} застаріли разом зі своїм кодом і перевіряються лише на відповідність інвентарю._`);
+
+lines.push("", bad ? `## ПІДСУМОК: ${bad} проблемних із ${M.length}` : `## ПІДСУМОК: ${M.length - seenFrozen.size}/${M.length - seenFrozen.size} адресних, ${seenFrozen.size} заморожено`);
 writeFileSync("falsify-u17-u18.md", lines.join("\n"), "utf8");
 console.log(lines.at(-1));
 
