@@ -10,7 +10,7 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { useQueueSounds } from "@/lib/useQueueSounds";
 import { isStudyOverrun, type OverrunSource } from "@/lib/soundEvents";
 import { serverNow } from "@/lib/serverClock";
-import { useFollowToday } from "@/lib/useFollowToday";
+import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVisible, type DayShiftNotice } from "@/lib/useFollowToday";
 import {
   setQueueEntryStatus,
   cancelQueueEntry,
@@ -52,7 +52,7 @@ import MiniCalendar from "@/components/MiniCalendar";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
 import RoomDayOverviewModal from "@/components/RoomDayOverviewModal";
-import { overrideFeed, roomScheduleFor, roomScheduleFromFeed, roomBreaksFromFeed, dayStatusFromFeed, offScheduleKind, type OverrideFeed, type DayOverride } from "@/lib/schedule";
+import { overrideFeed, roomScheduleFor, roomScheduleFromFeed, roomBreaksFromFeed, dayStatusFromFeed, offScheduleKind, dateKeyOf, type OverrideFeed, type DayOverride } from "@/lib/schedule";
 import { slotToMin, slotFmt } from "@/lib/slots";
 import { SAFETY_BOOKING_BLOCKED } from "@/lib/availabilityTrust";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, collisionFor, SAFETY_UNKNOWN_REASON, type CollisionInfo } from "@/lib/queueStatus";
@@ -115,7 +115,13 @@ function today0() { return wallToday0(); }
 function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
-function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+/* ⚠️ Г1-E: формат ключа доби — ОДИН на продукт. Тут стояла власна копія тіла
+   `dateKeyOf`, і поки ключ жив усередині екрана, розходження було б непомітним.
+   Тепер `dayKey` цієї дошки порівнюється з ключем, який рахує спільне правило
+   (`dayShiftNoticeVisible`), — дві незалежні копії формату розійшлися б МОВЧКИ,
+   і банер про перенесення доби просто ніколи б не з'явився. Ім'я лишаємо: воно
+   стоїть у десятках місць, і перейменування нічого не додає. */
+function dateKey(d: Date) { return dateKeyOf(d); }
 
 // H4-4: статус НЕ лише кольором. Раніше беджі черги різнились тільки cls (колір) +
 // текст, тоді як колл-лист уже мав гліф (CALL_META.icon). Додаємо гліф до кожного
@@ -1573,18 +1579,52 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   // решти 17 оверлеїв; кейс лише робить вікно найдовшим — його набирають
   // хвилинами. Обмін свідомий: альтернатива (як було) — доба дошки їде під
   // відкритим кейсом, а хоткеї стріляють у дошку позаду.
-  // ⚠️ ЧОГО ТУТ ДОСІ НЕМАЄ: коли `busy` знімається, перенесення застосовується
-  // МОВЧКИ — дошка (як і дошка радіолога) не передає `onShift` і викидає
-  // `pendingShift`, тобто не має ні банера, ні гейта, які є у форм і в дошки
-  // обдзвону. Це не наслідок цієї правки, а незакритий борг Г1-E: що саме
-  // показувати на головній дошці — рішення продуктове, і воно за власником.
+  // ⚠️ Г1-E (с53) ЗАКРИВ ТИШУ ПІСЛЯ ПЕРЕНЕСЕННЯ, А НЕ САМЕ ВІКНО: перенесення й
+  // далі чекає закриття оверлея, і доти дошка стоїть на попередній добі —
+  // невидима під тим самим оверлеєм. Що змінилось: коли вікно закривається і
+  // доба переставляється, дошка про це ГОВОРИТЬ (банер нижче, біля виклику
+  // правила). Чому пояснення САМОГО вікна на дошці немає — виміряно там же.
   const anyModalOpen = modalOpen || helpOpen || slotsOverviewOpen || !!openCaseId || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen || !!wlSuggest || !!delayPreview || emergencyOpen || !!offCallAsk || !!cancelAsk || !!emergencyConfirm || !!stuckFinish;
 
   /* U-70: «сьогодні» рахується з ВИМІРЯНОГО годинника, тож поправка, що
      перетинає північ клініки, лишила б дошку на попередній добі — вона мовчки
      стала б архівом. Правило (і його межі) живуть у lib/useFollowToday.ts —
-     один екземпляр на цю дошку й на дошку радіолога. */
-  useFollowToday({ clinicTz, pinnedKey: initialDate, busy: anyModalOpen, value: selectedDate, setDate: setSelectedDate });
+     один екземпляр на цю дошку й на дошку радіолога.
+
+     ⚠️ Г1-E (с53, рішення власника — «банер, як у форм»). Досі ця дошка була
+     ЄДИНИМ споживачем правила, який не брав `onShift`: доба переставлялась
+     МОВЧКИ. Тепер про це говорить банер «дату дошки змінено з X на Y» — вище,
+     першим у стовпці.
+
+     ⚠️ ГЕЙТИ НЕ ЧІПАЄМО, і це вимір, а не обережність. `isToday` рахується від
+     ВИМІРЯНОГО «сьогодні» (`today` вище), тож поки дошка стоїть на іншій добі,
+     «не сьогодні» — ПРАВДА: `computeCallBlock({ notToday })` закриває виклик, а
+     `useQueueSounds` глушить звук саме тому, що показана доба справді не
+     сьогоднішня. Зробити `isToday` істинним означало б відкрити «Викликати» на
+     добі, яку виміряний годинник сьогоднішньою не вважає — а вікно довге не
+     лише опівночі: воно завдовжки з саму поправку, тобто на збитій даті ПК це
+     чужий день серед білого дня.
+
+     ⚠️ ВІДКЛАДЕНЕ перенесення (`pendingShift`) ця дошка НЕ показує, і це
+     ВИМІРЯНО, а не забуто. Ядро віддає непорожній `pending` ЛИШЕ під `busy`
+     (див. гілку відкладання в `decideShift`), а `busy` тут — це рівно
+     `anyModalOpen`, і кожен оверлей із цього списку малюється як
+     `.overlay` (`position: fixed; inset: 0; z-index: 200;
+     background: rgba(0,0,0,0.55); backdrop-filter: blur(6px)`). Тобто банер
+     про відкладене перенесення існував би РІВНО тоді, коли дошку не видно, і
+     зникав би в мить, коли її відкривають; єдиний кадр, у якому він потрапляє
+     на пікселі, — після закриття вікна, і в ньому його текст «доки відкрите
+     вікно» вже неправда. Перша редакція Г1-E такий банер мала — його знято за
+     рішенням власника після цього виміру. Місце, де пояснення справді було б
+     видно, — САМЕ ВІКНО; це окремий пакет, названий у хендофі. */
+  const [dayShifted, setDayShifted] = useState<DayShiftNotice | null>(null);
+  useFollowToday({ clinicTz, pinnedKey: initialDate, busy: anyModalOpen, value: selectedDate, setDate: setSelectedDate,
+    onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)) });
+  /* Дату взяла в руки ЛЮДИНА — банер про автоперенесення відпрацював. Гасимо
+     ЯВНО, хоч `dayShiftNoticeVisible` і сам сховає банер на чужій добі: умова
+     про безпеку (не брехати про добу, якої на екрані вже немає), а це — про
+     намір (оператор побачив і пішов далі, банер не має повертатись). */
+  const pickDate = useCallback((d: Date) => { setDayShifted(null); setSelectedDate(d); }, []);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -2615,6 +2655,28 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         </header>
         <div className="content-wrap">
           <div className="content">
+            {/* ⚠️ Г1-E (с53, рішення власника — «банер, як у форм»). Стоїть
+                ПЕРШИМ у стовпці, вище банерів простоїв і помилок завантаження:
+                урок дошки обдзвону (F2) був саме про це — підпис у місці, куди
+                оператор не дивиться, не відрізняється від тиші, а над цим
+                блоком їх може накопичитись півдесятка. Усе, що нижче, — про
+                конкретну добу; цей банер каже, ЯКА це доба.
+                Називає ОБИДВІ доби (F7): памʼятати, що стояло в заголовку
+                хвилину тому, оператор не може — він у цей час розмовляє з
+                пацієнтом. Знімає його ЛЮДИНА («Зрозуміло» або зміна дати):
+                автогасіння таймером повернуло б тихий сценарій, а дошка — не
+                модалка, вона не закривається сама.
+                ⚠️ `dayShiftNoticeVisible` — не «чи є стан», а «чи є що сказати
+                ПРО ЦЮ добу»: воно ж відсікає поправку туди-назад («змінено з
+                1 вересня на 1 вересня») і банер, що пережив перехід оператора
+                на іншу дату. Обидві умови живуть у lib/useFollowToday.ts і
+                перевіряються ВИКЛИКОМ (tests/followToday.test.ts). */}
+            {dayShifted && dayShiftNoticeVisible(dayShifted, dayKey) && (
+              <div className="ctx-hint orange" role="status" style={{ marginBottom: 12 }}>
+                🕐 Годинник центру уточнено — дату дошки змінено з <b>{fmtFull(dayOfKey(dayShifted.fromKey))}</b> на <b>{fmtFull(dayOfKey(dayShifted.toKey))}</b>.
+                {" "}<button className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={() => setDayShifted(null)}>Зрозуміло</button>
+              </div>
+            )}
             {safetyErr && (
               <div className="inc-banner fade-in" style={{ borderColor: "var(--red)" }}>
                 <span className="inc-banner-ic">⚠</span>
@@ -2709,7 +2771,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                   <div className="db-sub">{selDayStatus && selDayStatus.kind !== "none" ? selDayStatus.label + " · " : ""}{entriesErr && !scopeReady ? "Дані не завантажились" : !scopeReady ? "Завантаження…" : counts.total ? (isPast ? "Архів — день завершено" : "Заплановані записи") + " · " + counts.total + " записів" : "Записів немає"}</div>
                 </div>
                 {!isPast && <button className="btn btn-secondary btn-sm" onClick={openSchedEdit}>✎ Графік</button>}
-                <button className="btn btn-secondary btn-sm" onClick={() => setSelectedDate(today0())}>← Сьогодні</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => pickDate(today0())}>← Сьогодні</button>
               </div>
             ) : roomView === "all" ? (
               <div className="room-cards">
@@ -2879,7 +2941,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         </div>
 
           <aside className="rpanel">
-            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overrides={overridesFeed} onEditSchedule={openSchedEdit} tz={clinicTz} roomSchedules={roomSchedules} />
+            <MiniCalendar selectedDate={selectedDate} onSelectDate={pickDate} overrides={overridesFeed} onEditSchedule={openSchedEdit} tz={clinicTz} roomSchedules={roomSchedules} />
             {isToday && visRooms.length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} ready={scopeReady} />}
             {!isPast && <NeedsReschedulePanel entries={needsResched} roomsById={roomsById} onReschedule={openReschedule} onToWaitlist={toWaitlist} onCancel={(pt) => setCancelAsk({ p: pt, mode: "cancel" })} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}
