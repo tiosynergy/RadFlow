@@ -961,8 +961,11 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
   /* U-72: дату перенесла поправка годинника — підпис для оператора (null = не
-     переносили). Гасне, щойно він обере дату сам. */
-  const [dateShifted, setDateShifted] = useState<string | null>(null);
+     переносили). Гасне, щойно він обере дату сам.
+     ⚠️ ДВІ дати, а не одна (F7, ревʼю Б + рішення власника с51). Банер «дату
+     змінено на 1 вер.» вимагав від оператора памʼятати, що стояло в полі
+     секунду тому, — а він у цю мить диктує дату пацієнту вголос. */
+  const [dateShifted, setDateShifted] = useState<{ from: string; to: string } | null>(null);
 
   /* ⚠️ U-72. `bookDate` зафіксовано ініціалізатором useState на `wallToday0()`,
      а зсув годинника бази приїжджає АСИНХРОННО — і потім ще раз кожні 10 хв та
@@ -983,7 +986,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
      `sameDay(cs.date, bookDate)`), і зсув дати мовчки розколов би кейс на дві
      доби та заразом осліпив би клієнтську перевірку накладень (ревʼю А).
      `onShift` — скидаємо обраний слот і кажемо про це вголос: ручна зміна дати
-     нижче робить рівно те саме, і автоперенесення не має права бути тихішим. */
+     нижче робить рівно те саме, і автоперенесення не має права бути тихішим.
+     ⚠️ Перший `from` не затирається повторною поправкою (ревʼю В): інакше при
+     коливанні зсуву біля півночі банер назве ПРОМІЖНУ добу замість тієї, яку
+     оператор справді сказав пацієнту. */
   useFollowToday({
     clinicTz: clinicTz || undefined,
     pinnedKey: prefill?.datePinned ? prefill.date ?? null : null,
@@ -991,7 +997,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
     offsetDays: 0,
     value: bookDate,
     setDate: setBookDate,
-    onShift: (d) => { setTime(""); setDateShifted(fmtShort(d)); },
+    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
   });
 
   function buildPayload(): BookingPayload {
@@ -1469,10 +1475,16 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
             {/* ⚠️ U-72, знахідка ревʼю А (HIGH). Дата змінилась САМА, і без цього
                 рядка це невідрізнюване від «нічого не сталось»: у двоколонковій
                 формі ПІБ ліворуч, календар праворуч, фокус не рухається. Саме
-                непомітність робила всі інші ризики пакета тихими. */}
+                непомітність робила всі інші ризики пакета тихими.
+                ⚠️ F7 (ревʼю Б, рішення власника с51): банер називає ОБИДВІ доби
+                і велить переспитати ПАЦІЄНТА, а не лише поправити поле. Стару
+                дату оператор у цю мить уже назвав уголос, і саме її треба
+                відкликати; «час оберіть заново» — про форму, а обовʼязкова дія
+                тут — розмова. */}
             {dateShifted && (
               <div className="ctx-hint" role="status" style={{ marginTop: 6 }}>
-                🕐 Годинник центру уточнено — дату змінено на <b>{dateShifted}</b>, час оберіть заново.
+                🕐 Годинник центру уточнено — дату змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>.
+                {" "}Назвіть пацієнту нову дату і оберіть час заново.
               </div>
             )}
 

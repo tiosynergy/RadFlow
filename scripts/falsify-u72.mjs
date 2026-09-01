@@ -60,7 +60,7 @@ const CALL_BM = `  useFollowToday({
     offsetDays: 0,
     value: bookDate,
     setDate: setBookDate,
-    onShift: (d) => { setTime(""); setDateShifted(fmtShort(d)); },
+    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
   });`;
 const CALL_RP = `  useFollowToday({
     clinicTz: selTz,
@@ -68,7 +68,7 @@ const CALL_RP = `  useFollowToday({
     busy: busy || caseBusy || caseSteps.length > 0,
     value: bookDate,
     setDate: setBookDate,
-    onShift: (d) => { setTime(""); setDateShifted(dateVal(d)); },
+    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
   });`;
 const CALL_RM = `  useFollowTodayKey({
     clinicTz: clinicTz || undefined,
@@ -76,7 +76,7 @@ const CALL_RM = `  useFollowTodayKey({
     busy: saving,
     value: dateStr,
     setKey: setDateStr,
-    onShift: (d) => { setTime(""); setDateShifted(dateVal(d)); },
+    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
   });`;
 const CALL_WM = `  useFollowTodayKey({
     clinicTz: clinicTz || undefined,
@@ -371,7 +371,12 @@ const MUTATIONS = [
   drop("M14", "bm", CALL_BM, "BookingModal: bookDate знову заморожено — scheduled_date мовчки в чужу добу"),
   drop("M15", "rp", CALL_RP, "ReferralPortal: направник записує в чужу добу центру"),
   drop("M16", "rm", CALL_RM, "RescheduleModal: перенос їде на добу мимо"),
-  drop("M17", "cl", "  useFollowToday({ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate });",
+  /* ⚠️ ЯКІР ОНОВЛЕНО в с51 разом із F2: виклик став дворядковим, бо в нього
+     приїхав `onShift`. Стенд відхилив стару однорядкову форму (0 входжень) і
+     завалив прогін — правило U-74 спрацювало вдруге за сесію. Обидва рядки
+     беремо ЦІЛКОМ: якір на один рядок лишив би висячий літерал і мутація
+     ламала б збірку замість того, щоб червонити сторожа. */
+  drop("M17", "cl", "  useFollowToday({ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate,\n    onShift: (d, prev) => setDayShifted((s) => ({ from: s?.from ?? fmtFull(prev), to: fmtFull(d) })) });",
     "CallListBoard: «Всіх підтверджено» пачкою по чужій добі"),
   drop("M18", "wm", CALL_WM, "WaitlistModal: desired_date_from на добу раніше"),
   drop("M19", "rd", "  useFollowTodayKey({ clinicTz, value: day, setKey: setDay });",
@@ -396,8 +401,8 @@ const MUTATIONS = [
   {
     id: "M25", file: "bm", spec: SPEC.follow,
     what: "BookingModal: підключення лишили, а сеттер підмінили на чужий",
-    from: "    setDate: setBookDate,\n    onShift: (d) => { setTime(\"\"); setDateShifted(fmtShort(d)); },",
-    to: "    setDate: (() => {}) as unknown as typeof setBookDate,\n    onShift: (d) => { setTime(\"\"); setDateShifted(fmtShort(d)); },",
+    from: "    setDate: setBookDate,\n    onShift: (d, prev) => { setTime(\"\"); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },",
+    to: "    setDate: (() => {}) as unknown as typeof setBookDate,\n    onShift: (d, prev) => { setTime(\"\"); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },",
   },
   {
     id: "M26", file: "rm", spec: SPEC.follow,
@@ -408,8 +413,8 @@ const MUTATIONS = [
   {
     id: "M27", file: "rm", spec: SPEC.follow,
     what: "RescheduleModal: слот НЕ скидається — оператор назвав пацієнту інший день і час",
-    from: '    onShift: (d) => { setTime(""); setDateShifted(dateVal(d)); },',
-    to: "    onShift: (d) => { setDateShifted(dateVal(d)); },",
+    from: '    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },\n  });\n\n  async function handleConfirm()',
+    to: "    onShift: (d, prev) => { setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },\n  });\n\n  async function handleConfirm()",
   },
   {
     id: "M28", file: "bm", spec: SPEC.follow,
@@ -420,8 +425,93 @@ const MUTATIONS = [
   {
     id: "M29", file: "cl", spec: SPEC.follow,
     what: "CallListBoard: busy знову не передається — масове підтвердження по чужій добі",
-    from: "  useFollowToday({ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate });",
-    to: "  useFollowToday({ clinicTz, offsetDays: 1, value: date, setDate });",
+    from: "  useFollowToday({ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate,",
+    to: "  useFollowToday({ clinicTz, offsetDays: 1, value: date, setDate,",
+  },
+
+  /* ============ F2 / F7: перенесення не сміє бути тихим (с51) ============
+     Обидва класи заведені за знахідками ревʼю Б і РІШЕННЯМИ ВЛАСНИКА. До с51
+     дошка обдзвону міняла день зовсім мовчки, а банер трьох форм називав лише
+     НОВУ дату — тобто вимагав від оператора памʼятати попередню під час
+     розмови з пацієнтом. */
+  {
+    id: "M50", file: "cl", spec: SPEC.follow,
+    what: "F2: дошка обдзвону знову міняє день МОВЧКИ — onShift знято",
+    from: ",\n    onShift: (d, prev) => setDayShifted((s) => ({ from: s?.from ?? fmtFull(prev), to: fmtFull(d) })) });",
+    to: " });",
+  },
+  {
+    /* ⚠️ Найтихіша з пари: банер лишається, а НЕЗВОРОТНА дія знову доступна
+       одразу. Саме гейт, а не текст, є парою до `setTime("")` у формах. */
+    id: "M51", file: "cl", spec: SPEC.follow,
+    what: "F2: «Всіх підтверджено» знову доступне одразу після переносу дня — банер є, гейта немає",
+    from: "disabled={loading || !!dayShifted || confirmTargets.length === 0}",
+    to: "disabled={loading || confirmTargets.length === 0}",
+  },
+  {
+    id: "M52", file: "cl", spec: SPEC.follow,
+    what: "F2: банер дошки називає лише НОВИЙ день — попередній оператор мусив би памʼятати сам",
+    from: "день обдзвону змінено з <b>{dayShifted.from}</b> на <b>{dayShifted.to}</b>.",
+    to: "день обдзвону змінено на <b>{dayShifted.to}</b>.",
+  },
+  {
+    id: "M53", file: "bm", spec: SPEC.follow,
+    what: "F7: банер форми запису називає лише НОВУ дату (стара вже сказана пацієнту вголос)",
+    from: "дату змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>.",
+    to: "дату змінено на <b>{dateShifted.to}</b>.",
+  },
+  {
+    id: "M54", file: "rm", spec: SPEC.follow,
+    what: "F7: банер форми переносу більше не велить переспитати ПАЦІЄНТА — лише про поле форми",
+    from: "Назвіть пацієнту нову дату і оберіть слот заново.",
+    to: "Слот оберіть заново.",
+  },
+  {
+    id: "M55", file: "rp", spec: SPEC.follow,
+    what: "F7: портал направника загубив СТАРУ дату в підписі перенесення",
+    from: "                🕐 Годинник центру уточнено — дату змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>.",
+    to: "                🕐 Годинник центру уточнено — дату змінено на <b>{dateShifted.to}</b>.",
+  },
+  {
+    /* ⚠️ Зустрічний зонд до M51: банер, який гасне САМ, повертає тихий
+       сценарій іншим шляхом — оператор його просто не встигає побачити. */
+    id: "M56", file: "cl", spec: SPEC.follow,
+    what: "F2: банер знімається не людиною — кнопку «Зрозуміло» прибрано",
+    from: '<button className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={() => setDayShifted(null)}>Зрозуміло</button>',
+    to: "",
+  },
+  {
+    /* ⚠️ Дві доби мусять приїхати В САМЕ ПРАВИЛО, інакше жодна форма не зможе
+       назвати стару: `value` на момент виклику вже перезаписано. */
+    id: "M57", file: "ft", spec: SPEC.follow,
+    what: "F7: правило віддає в onShift СТАРУ «сьогодні» замість того, що оператор бачив у полі",
+    from: "    onShift?.(next, value);",
+    to: "    onShift?.(next, prevDay);",
+  },
+  {
+    /* ⚠️ Знахідка ревʼю В. Повторна поправка біля півночі (замір раз на 10 хв
+       + на `visibilitychange`) кличе `onShift` ВДРУГЕ. Пряме присвоєння
+       затирає `from` на ПРОМІЖНУ добу — і банер перестає називати день, який
+       оператор справді сказав пацієнту, тобто саме те, заради чого F7 і
+       робився. Мутація повертає пряме присвоєння. */
+    id: "M58", file: "cl", spec: SPEC.follow,
+    what: "F2: повторна поправка затирає ПЕРШУ добу — банер називає проміжний день замість сказаного",
+    from: "onShift: (d, prev) => setDayShifted((s) => ({ from: s?.from ?? fmtFull(prev), to: fmtFull(d) }))",
+    to: "onShift: (d, prev) => setDayShifted({ from: fmtFull(prev), to: fmtFull(d) })",
+  },
+  {
+    id: "M59", file: "bm", spec: SPEC.follow,
+    what: "F7: те саме у формі запису — друга поправка затирає добу, названу пацієнту",
+    from: 'setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) }));',
+    to: "setDateShifted({ from: fmtShort(prev), to: fmtShort(d) });",
+  },
+  {
+    /* ⚠️ Зустрічний зонд до F7: машинний ISO там, де оператор читає дату
+       ПАЦІЄНТУ вголос. Саме так було до ревʼю В у двох екранах із трьох. */
+    id: "M60", file: "rm", spec: SPEC.follow,
+    what: "F7: банер переносу повернувся до машинного ISO — «з 2026-09-02 на 2026-09-01» вголос",
+    from: 'setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) }));',
+    to: "setDateShifted((s) => ({ from: s?.from ?? dateVal(prev), to: dateVal(d) }));",
   },
   {
     id: "M30", file: "wm", spec: SPEC.follow,

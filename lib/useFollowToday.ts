@@ -91,8 +91,15 @@ export type FollowTodayCommon = {
         • СКАЗАТИ ОПЕРАТОРУ. Дата змінилась сама, а поле дати в двоколонковій
           формі часто поза полем зору (ПІБ ліворуч, календар праворуч). Без
           повідомлення будь-яке «правило саме поправило» невідрізнюване від
-          «нічого не сталось». */
-  onShift?: (nextDay: Date) => void;
+          «нічого не сталось».
+
+      ⚠️ ДРУГИЙ АРГУМЕНТ (`prevDay`) заведено в с51 за знахідкою ревʼю Б (F7) і
+      рішенням власника. Банер, що називає лише НОВУ дату, вимагає від оператора
+      памʼятати, що стояло в полі секунду тому, — а він у цей момент розмовляє з
+      пацієнтом. Щоб сказати «дату змінено З 2 вер. НА 1 вер.», формі потрібна
+      стара доба, і взяти її більше нізвідки: `value` на момент виклику вже
+      перезаписано. */
+  onShift?: (nextDay: Date, prevDay: Date) => void;
 };
 
 /** Рішення ядра: що робити з відкладеним перенесенням і чи застосовувати його
@@ -268,7 +275,10 @@ export function useFollowToday(
     const next = followedDay({ prevDay, nextDay, curKey: dateKeyOf(value), offsetDays, pinnedKey });
     if (!next) return;
     setDate(next);
-    onShift?.(next);
+    /* ⚠️ Друга доба — це `value`, тобто те, що ОПЕРАТОР БАЧИВ У ПОЛІ, а не
+       `prevDay` (стара «сьогодні»). У форм зі зсувом (`offsetDays: 1`) це різні
+       дати, і банер мусить назвати саме поле, а не внутрішній дефолт. */
+    onShift?.(next, value);
   }, { clinicTz, busy });
 }
 
@@ -281,6 +291,6 @@ export function useFollowTodayKey(
     const next = followedDay({ prevDay, nextDay, curKey: value, offsetDays, pinnedKey });
     if (!next) return;
     setKey(dateKeyOf(next));
-    onShift?.(next);
+    onShift?.(next, dayOfKey(value));   // те саме: доба з ПОЛЯ, не стара «сьогодні»
   }, { clinicTz, busy });
 }

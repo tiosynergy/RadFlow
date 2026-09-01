@@ -30,7 +30,7 @@ import SlotPicker from "@/components/SlotPicker";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import RoomSelect, { ROOM_LIST_MAX_CHIPS } from "@/components/RoomSelect";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
-import BookingModal, { type BookingPrefill, type BookingPayload } from "@/components/BookingModal";
+import BookingModal, { fmtShort, type BookingPrefill, type BookingPayload } from "@/components/BookingModal";
 import { updatePatientDetails } from "@/app/queue/actions";
 import type { PatientPriority } from "@/lib/priority";
 import { isRoomBookable, ROOM_OFF_LABEL } from "@/lib/rooms";
@@ -392,8 +392,10 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
   /* U-72: дату перенесла поправка годинника (null = не переносили). Гасне,
-     щойно оператор обере дату сам. */
-  const [dateShifted, setDateShifted] = useState<string | null>(null);
+     щойно оператор обере дату сам.
+     ⚠️ ДВІ дати (F7, ревʼю Б + рішення власника с51): оператор у цю мить уже
+     назвав пацієнту старий день уголос, і саме його треба відкликати. */
+  const [dateShifted, setDateShifted] = useState<{ from: string; to: string } | null>(null);
 
   /* ⚠️ U-72. `dateStr` зафіксовано ініціалізатором на «завтра доби КЛІНІКИ», а
      зсув годинника бази приїжджає асинхронно і перезаміряється кожні 10 хв та
@@ -409,14 +411,17 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
      наслідок був би ГІРШИЙ за сам дефект (знахідка ревʼю А, HIGH): оператор
      диктує пацієнту «друге вересня, девʼята», дата тихо їде на перше, слот
      «09:00» лишається валідним — і в БД потрапляє день, якого пацієнт не чув.
-     Ручна зміна дати в полі нижче робить рівно те саме `setTime("")`. */
+     Ручна зміна дати в полі нижче робить рівно те саме `setTime("")`.
+     ⚠️ `fmtShort` («1 вересня»), а НЕ `dateVal` (ISO «2026-09-01») — знахідка
+     ревʼю В: банер велить назвати дату ПАЦІЄНТУ вголос, і машинний рядок тут
+     читати нікому. Перший `from` не затирається повторною поправкою. */
   useFollowTodayKey({
     clinicTz: clinicTz || undefined,
     offsetDays: 1,
     busy: saving,
     value: dateStr,
     setKey: setDateStr,
-    onShift: (d) => { setTime(""); setDateShifted(dateVal(d)); },
+    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
   });
 
   async function handleConfirm() {
@@ -588,7 +593,9 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
             {/* ⚠️ U-72 (ревʼю А, HIGH): дату перенесла поправка годинника. Мовчазний
                 перенос тут дорожчий за сам дефект — оператор уже назвав пацієнту
                 день і час уголос. */}
-            {dateShifted && <div className="ctx-hint" role="status" style={{ marginBottom: 10 }}>🕐 Годинник центру уточнено — дату змінено на <b>{dateShifted}</b>, слот оберіть заново.</div>}
+            {/* ⚠️ F7 (ревʼю Б, рішення власника с51): називаємо ОБИДВІ доби і
+                веліми переспитати ПАЦІЄНТА — стару дату він уже почув. */}
+            {dateShifted && <div className="ctx-hint" role="status" style={{ marginBottom: 10 }}>🕐 Годинник центру уточнено — дату змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>. Назвіть пацієнту нову дату і оберіть слот заново.</div>}
             {isPastDay && <div className="ctx-hint red" style={{ marginBottom: 10 }}>⏳ {dateStr} уже минуло — перенести можна лише на майбутній час.</div>}
             {/* Обидва рядки — ТВЕРДЖЕННЯ про графік, тож лише коли він прочитаний.
                 Без цієї умови збій читання (schedErr) показував би графік, який

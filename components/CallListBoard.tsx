@@ -618,6 +618,34 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
      підтверджених, через ConfirmDialog, і показуємо реальну кількість. */
   const [confirmAllAsk, setConfirmAllAsk] = useState(false);
   const [confirmAllBusy, setConfirmAllBusy] = useState(false);
+  /* ⚠️ F2 (знахідка ревʼю Б, MED-HIGH; рішення власника с51 — «банер + скидання,
+     як у формах»). Досі цей екран був ЄДИНИМ, де дата одночасно (а) вимовляється
+     пацієнту голосом, (б) задає цілі НЕЗВОРОТНОЇ масової дії і (в) мінялась
+     МОВЧКИ: `onShift` сюди не передавався взагалі.
+
+     Сценарій цілком у межах написаного коду: ПК відстає на 7 хв, оператор
+     відкрив «Обдзвін на 1 вересня», `loading` відклав перенесення, список
+     догрузився — `busy` знявся, шапка стала «на 2 вересня». Оператор дзвонить
+     далі по нових рядках (дати в них правильні, ніщо не натякає на підміну), в
+     кінці тисне «Всіх підтверджено» — статуси лягають записам 2-го, а цілу
+     зміну 1-го НЕ ОБДЗВОНЕНО, і про це не дізнається ніхто.
+
+     Що саме «скидається». У формах запису пара до банера — `setTime("")`: вона
+     робить Save НЕМОЖЛИВИМ, поки оператор не обере слот заново. Прямий аналог
+     тут — не чистити фільтр (це мовчки змінило б КІЛЬКІСТЬ цілей під оператором,
+     тобто одну тиху несподіванку на іншу), а зупинити саму незворотну дію:
+     доки перенесення не підтверджено кнопкою, «Всіх підтверджено» вимкнено.
+     Масова дія знову доступна лише після того, як людина побачила банер і
+     натиснула «Зрозуміло».
+
+     ⚠️ ВІДКРИТИЙ ДІАЛОГ тут закривати НЕ ТРЕБА, і це варто сказати, бо перша
+     редакція цього фіксу кликала `setConfirmAllAsk(false)` в `onShift` —
+     мертвий виклик. `confirmAllAsk` входить у `anyBusy` нижче, тобто при
+     відкритому діалозі перенесення ВІДКЛАДАЄТЬСЯ і `onShift` не виконується
+     взагалі; стану «діалог відкритий І onShift працює» не існує. Захист тут
+     цілком на `busy`, і він був до цього фіксу. Знайшло ревʼю В; сам виклик,
+     коментар про нього і пін, що його закріплював, знято. */
+  const [dayShifted, setDayShifted] = useState<{ from: string; to: string } | null>(null);
 
   /* U-72 — сам виклик правила «дошка слідує за сьогодні». Обґрунтування і ціна
      розписані нагорі, біля заморозки `tomorrow`/`date`; тут він стоїть тому,
@@ -626,7 +654,13 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
      із цим на першій же новій модалці, і розійшовся б МОВЧКИ. */
   const anyBusy = loading || confirmAllBusy || confirmAllAsk || declineBusy || !!declineAsk
     || !!reschedFor || !!editStudiesFor || !!wlSuggest;
-  useFollowToday({ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate });
+  /* ⚠️ Перший `from` НЕ затирається (ревʼю В): коливання поправки біля півночі
+     дало б другий виклик, і день, який оператор реально обдзвонював, у банері
+     вже не назвали б. Коментар СТОЇТЬ НАД викликом, а не всередині: якорі
+     стенда беруть виклик цілком, і комент усередині робив би їх заручниками
+     власного формулювання. */
+  useFollowToday({ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate,
+    onShift: (d, prev) => setDayShifted((s) => ({ from: s?.from ?? fmtFull(prev), to: fmtFull(d) })) });
 
   async function doConfirmAll(ids: string[]) {
     if (!ids.length) return;
@@ -737,16 +771,48 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
             </div>
           </div>
           <div className="tb-right">
-            <input className="inp tabular" type="date" value={dayKey} onChange={(e) => { const [y, m, d] = e.target.value.split("-").map(Number); setDate(new Date(y, m - 1, d)); }} style={{ width: 150 }} />
+            {/* Ручна зміна дня гасить банер сама: оператор бачить, що робить. */}
+            <input className="inp tabular" type="date" value={dayKey} onChange={(e) => { const [y, m, d] = e.target.value.split("-").map(Number); setDate(new Date(y, m - 1, d)); setDayShifted(null); }} style={{ width: 150 }} />
             <button className="btn btn-secondary" disabled={loading} onClick={exportCsv} title={loading ? "Зачекайте — список цього дня ще вантажиться" : "Вивантажити видимий день у CSV"}>↧ Експорт</button>
-            <button className="btn btn-primary" disabled={loading || confirmTargets.length === 0} onClick={() => setConfirmAllAsk(true)}
-              title={isNarrowed ? "Підтвердить лише тих, кого видно за поточним фільтром" : "Підтвердить усіх непідтверджених за цей день"}>
-              ✓ Всіх підтверджено{confirmTargets.length ? ` (${confirmTargets.length})` : ""}
-            </button>
+            {/* ⚠️ F2: доки перенесення дня не підтверджено людиною, НЕЗВОРОТНА
+                масова дія недоступна — це пара до банера нижче і прямий аналог
+                `setTime("")` у трьох формах запису.
+
+                ⚠️ ПОЯСНЕННЯ МУСИТЬ БУТИ ВИДИМИМ (знахідка ревʼю В). Дві пастки,
+                створені самим гейтом: банер живе в ПРОКРУЧУВАНІЙ області
+                (`.content-full`), а шапка не прокручується — оператор, який
+                гортав список, побачив би лише те, що кнопка раптом посіріла; і
+                `title` на DISABLED-кнопці в Chrome та Safari не показується
+                взагалі, бо елемент не отримує вказівникових подій. Тому: сам
+                текст кнопки каже причину, а `title` переїхав на обгортку. */}
+            <span title={dayShifted ? "День змінив годинник центру — підтвердіть банер над списком" : isNarrowed ? "Підтвердить лише тих, кого видно за поточним фільтром" : "Підтвердить усіх непідтверджених за цей день"}>
+              <button className="btn btn-primary" disabled={loading || !!dayShifted || confirmTargets.length === 0} onClick={() => setConfirmAllAsk(true)}>
+                {dayShifted
+                  ? "🕐 День змінено — див. банер"
+                  : `✓ Всіх підтверджено${confirmTargets.length ? ` (${confirmTargets.length})` : ""}`}
+              </button>
+            </span>
           </div>
         </header>
         <div className="content-full">
           <div className="page-max">
+            {/* ⚠️ F2 (ревʼю Б, MED-HIGH; рішення власника с51). Банер стоїть ПЕРШИМ
+                у стовпці, а не в шапці праворуч: у формах запису урок був саме
+                про це — підпис у колонці, куди оператор не дивиться, не
+                відрізняється від тиші. Називає ОБИДВА дні (F7: памʼятати
+                попередній під час розмови оператор не може) і не гасне сам —
+                зняти його може лише людина, і доти масова дія вимкнена. */}
+            {/* ⚠️ `orange`, а не голий `ctx-hint` (ревʼю В): базовий клас — без
+                фону, рамки і кольору, тобто ЄДИНИЙ вихід із заблокованої
+                незворотної операції був намальований слабше за «кабінет не
+                працює». */}
+            {dayShifted && (
+              <div className="ctx-hint orange" role="status" style={{ marginBottom: 12 }}>
+                🕐 Годинник центру уточнено — день обдзвону змінено з <b>{dayShifted.from}</b> на <b>{dayShifted.to}</b>.
+                {" "}Перед масовим підтвердженням перевірте, кого ви вже обдзвонили: попередній день лишився необдзвоненим.
+                {" "}<button className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={() => setDayShifted(null)}>Зрозуміло</button>
+              </div>
+            )}
             {(() => {
               // День «сьогодні» — за настінним часом клініки (той самий, за яким
               // вибрано todayScheduled), інакше isLate рахував би не той день.

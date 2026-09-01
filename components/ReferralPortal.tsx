@@ -168,7 +168,9 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const [roomId, setRoomId] = useState<string | null>(null);
   const [time, setTime] = useState("");
   /* U-72: дату перенесла поправка годинника центру (null = не переносили). */
-  const [dateShifted, setDateShifted] = useState<string | null>(null);
+  /* ⚠️ ДВІ дати (F7, ревʼю Б + рішення власника с51): направник форму заповнює
+     довго і дату пацієнту вже назвав — банер мусить відкликати саме СТАРУ. */
+  const [dateShifted, setDateShifted] = useState<{ from: string; to: string } | null>(null);
   const [dayEntries, setDayEntries] = useState<BusySlot[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(true);
   const [slotsErr, setSlotsErr] = useState(false); // зайнятість/простої не завантажились — сітку не показуємо
@@ -227,14 +229,18 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
      клієнтську перевірку накладень. Серверний гард `CASE_PATIENT_OVERLAP`
      (0118) цього не ловить: він будує `tsrange` із дати+часу, а при РІЗНИХ
      датах діапазони не перетинаються (знахідка ревʼю А, MEDIUM).
-     `onShift` — скидаємо обраний час і кажемо про це вголос. */
+     `onShift` — скидаємо обраний час і кажемо про це вголос.
+     ⚠️ `fmtShort` («1 вересня»), а НЕ `dateVal` (ISO «2026-09-01») — знахідка
+     ревʼю В: банер велить назвати дату ПАЦІЄНТУ вголос, а машинний рядок
+     читати нікому; сім рядків нижче цей самий екран уже пише `fmtShort`.
+     Перший `from` не затирається повторною поправкою. */
   useFollowToday({
     clinicTz: selTz,
     offsetDays: 1,
     busy: busy || caseBusy || caseSteps.length > 0,
     value: bookDate,
     setDate: setBookDate,
-    onShift: (d) => { setTime(""); setDateShifted(dateVal(d)); },
+    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
   });
 
   // Каталог послуг ОБРАНОГО центру (фаза 2a): drop-in шорткати lib/studies.
@@ -1018,10 +1024,13 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
 
             {/* ⚠️ U-72 (ревʼю А, HIGH): дату перенесла поправка годинника центру.
                 Направник у своїй зоні і форму заповнює довго — без цього рядка
-                зміна дати під його руками не помітна взагалі. */}
+                зміна дати під його руками не помітна взагалі.
+                ⚠️ F7 (ревʼю Б, рішення власника с51): називаємо ОБИДВІ доби і
+                веліми переспитати ПАЦІЄНТА — стару дату він уже почув. */}
             {dateShifted && (
               <div className="ctx-hint" role="status" style={{ marginTop: 6 }}>
-                🕐 Годинник центру уточнено — дату змінено на <b>{dateShifted}</b>, час оберіть заново.
+                🕐 Годинник центру уточнено — дату змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>.
+                {" "}Назвіть пацієнту нову дату і оберіть час заново.
               </div>
             )}
 
