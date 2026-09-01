@@ -64,24 +64,28 @@ for (const f of files) {
      у різні сесії. Ловимо всі відомі; невідома дасть 0 у колонці, але код
      повернення стенда все одно вирішальний. */
   const notHeld = (out.match(/НЕ ТРИМАЄ|дивиться не туди|ЧЕРВОНИЙ НЕ ТОЙ|ЧУЖИЙ спек/g) || []).length;
+  /* ⚠️ U-80 ввів ЩЕ ТРИ формулювання, і без них запасний сторож був сліпий саме
+     до них (знахідка ревʼю U-80): прогін, що складався б із самих «мутація
+     зламала збірку», при знятому `process.exitCode` дав би тут ✅. */
+  const noRun = (out.match(/зламала збірку|звіт не прочитано|прогін НЕ ВІДБУВСЯ|набір ЧЕРВОНИЙ ще до мутацій/g) || []).length;
   /* ⚠️ Улики рахуються В ВЕРДИКТ, а не лише друкуються (знахідка ревʼю Б).
      Інакше стенд, у якого хтось зняв `process.exitCode`, дав би рядок
      «✅ 0 | 9 протухлих якорів» і зелений підсумок — режим відмови, який цей
      пакет оголошує закритим. */
-  const red = r.status !== 0 || anchors > 0 || notHeld > 0;
+  const red = r.status !== 0 || anchors > 0 || notHeld > 0 || noRun > 0;
   if (red) failed++;
-  rows.push({ f, sec, status: r.status, crashed, red, anchors, notHeld });
+  rows.push({ f, sec, status: r.status, crashed, red, anchors, notHeld, noRun });
   console.log(red ? `⛔ (код ${r.status}${crashed ? ", впав до вердикту" : ""}, ${sec} с)` : `✅ (${sec} с)`);
 }
 
 const lines = [
   `# Ревізія стендів фальсифікації — ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC\n`,
   `Прогнано ${files.length} стендів за ${Math.round((Date.now() - t0) / 60000)} хв.\n`,
-  `| стенд | код | протухлих якорів | сторож не тримає | час |`,
-  `|---|---|---|---|---|`,
+  `| стенд | код | протухлих якорів | сторож не тримає | прогін не відбувся | час |`,
+  `|---|---|---|---|---|---|`,
 ];
 for (const r of rows) {
-  lines.push(`| ${r.f} | ${r.red ? `⛔ ${r.status}` : "✅ 0"} | ${r.anchors || "—"} | ${r.notHeld || "—"} | ${r.sec} с |`);
+  lines.push(`| ${r.f} | ${r.red ? `⛔ ${r.status}${r.crashed ? " (впав до вердикту)" : ""}` : "✅ 0"} | ${r.anchors || "—"} | ${r.notHeld || "—"} | ${r.noRun || "—"} | ${r.sec} с |`);
 }
 lines.push("");
 if (countMismatch) {

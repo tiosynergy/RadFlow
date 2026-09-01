@@ -5,7 +5,7 @@
    Файли відновлюються за БУДЬ-ЯКОГО виходу (try/finally + сигнали): між
    записом мутації і restore() лежить прогін до 180 с, і Ctrl-C у цьому вікні
    лишав би бойовий файл із дефектом, схожим на робочий код. */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { execSync } from "node:child_process";
 
 const MOD = "components/StudyEditModal.tsx";
@@ -105,43 +105,83 @@ const M = [
 const files = [MOD, LIB, TRUST, RP, "components/QueueBoard.tsx"];
 const orig = new Map(files.map((f) => [f, readFileSync(f, "utf8")]));
 const restore = () => { for (const [f, t] of orig) writeFileSync(f, t); };
-for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { restore(); process.exit(1); });
-process.on("uncaughtException", (e) => { restore(); console.error(e); process.exit(1); });
+/* Коди 130/143/2 — канон проєкту: `falsify-all` відрізняє «стенд впав до
+   вердикту» (>1) від «стенд дав червоний вердикт» (1). Було 1 скрізь. */
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { restore(); process.exit(sig === "SIGINT" ? 130 : 143); });
+process.on("uncaughtException", (e) => { restore(); console.error(e); process.exit(2); });
 
 const SUITES = "tests/incidentDurCap.test.ts tests/offScheduleConsent.test.ts tests/incidentFeedGuard.test.ts tests/availabilityTrust.test.ts tests/readErrorTrust.test.ts";
-const lines = ["# Фальсифікація U-15", ""];
+const REPORT = ".falsify-u15.json";
 
-for (const [name, file, from, to] of M) {
-  const src = orig.get(file);
-  if (!src.includes(from)) { lines.push(`- **${name}** — ЯКІР НЕ ЗНАЙДЕНО`); console.log(lines.at(-1)); continue; }
-  let red = [];
+/* ⚠️ U-80 (с51) — три дефекти прогону, кожен давав ЛОЖНЕ зелене: звіт не
+   видалявся (при збої читався звіт ПОПЕРЕДНЬОЇ мутації); «звіт не прочитано»
+   мало непорожню довжину і друкувалось як «ЧЕРВОНИЙ», тобто мутація, яка НЕ
+   ПЕРЕВІРИЛАСЬ, зараховувалась в успіх; базової лінії не було зовсім.
+   `null` тепер означає «прогін не відбувся». */
+function run() {
+  if (existsSync(REPORT)) unlinkSync(REPORT);
   try {
-    writeFileSync(file, src.replace(from, to));
-    try {
-      execSync(`npx vitest run ${SUITES} --reporter=json --outputFile=.vt.json`,
-        { stdio: "ignore", timeout: 180000 });
-    } catch { /* ненульовий код = є червоні, це й треба */ }
-    try {
-      const j = JSON.parse(readFileSync(".vt.json", "utf8"));
-      for (const f of j.testResults) for (const a of f.assertionResults) if (a.status === "failed") red.push(a.fullName);
-    } catch { red = ["<звіт не прочитано>"]; }
+    execSync(`npx vitest run ${SUITES} --reporter=json --outputFile=${REPORT}`,
+      { stdio: "ignore", timeout: 180000 });
+  } catch { /* ненульовий код = є червоні, це й треба */ }
+  if (!existsSync(REPORT)) return null;
+  try {
+    const j = JSON.parse(readFileSync(REPORT, "utf8"));
+    const red = [];
+    for (const f of j.testResults || []) for (const a of f.assertionResults || []) if (a.status === "failed") red.push(a.fullName);
+    /* ⚠️ Набір ВПАВ, але жодного впалого асерту немає — помилка збирання, а не
+       «сторож не спрацював» (знахідка ревʼю U-80). */
+    if (j.success !== true && red.length === 0) return null;
+    return red;
+  } catch { return null; }
+}
+
+const lines = ["# Фальсифікація U-15", ""];
+let bad = 0;
+
+const base = run();
+/* ⚠️ База ГЕЙТИТЬ цикл, а не просто міряється (знахідка ревʼю U-80): при
+   червоній базі кожна мутація друкувалась би як «ЧЕРВОНИЙ», а підсумок казав
+   би «1 проблемних із N» — дефект замаскований під майже-успіх. */
+const baseOk = base !== null && base.length === 0;
+if (base === null) { bad += M.length; lines.push("- **БАЗОВА ЛІНІЯ** — ❌ прогін НЕ ВІДБУВСЯ (звіту немає або він не розібрався)"); }
+else if (base.length) {
+  bad += M.length;
+  lines.push("- **БАЗОВА ЛІНІЯ** — ❌ набір ЧЕРВОНИЙ ще до мутацій: " + base.slice(0, 4).map((n) => `«${n}»`).join("; "));
+} else lines.push("- **БАЗОВА ЛІНІЯ** → ✅ зелено до мутацій");
+console.log(lines.at(-1));
+if (!baseOk) {
+  lines.push("", "⛔ Мутації НЕ ганялись: при небазовому старті вони нічого не доводять.");
+  console.log(lines.at(-1));
+}
+
+for (const [name, file, from, to] of (baseOk ? M : [])) {
+  const src = orig.get(file);
+  const hits = src.split(from).length - 1;
+  if (hits === 0) { bad++; lines.push(`- **${name}** — ❌ ЯКІР НЕ ЗНАЙДЕНО`); console.log(lines.at(-1)); continue; }
+  if (hits > 1) { bad++; lines.push(`- **${name}** — ❌ ЯКІР НЕ УНІКАЛЬНИЙ (${hits}×)`); console.log(lines.at(-1)); continue; }
+  let red = null;
+  try {
+    writeFileSync(file, src.replace(from, () => to));
+    red = run();
   } finally {
     restore();
   }
-  lines.push(red.length ? `- **${name}** → ЧЕРВОНИЙ: ${red.slice(0, 4).map((r) => `«${r}»`).join("; ")}${red.length > 4 ? ` (+${red.length - 4})` : ""}`
-                        : `- **${name}** → ⚠️ ЗЕЛЕНИЙ — сторож дивиться не туди`);
+  if (red === null) { bad++; lines.push(`- **${name}** — ❌ ПОМИЛКА: звіт не прочитано (мутація НЕ перевірена)`); }
+  else if (!red.length) { bad++; lines.push(`- **${name}** → ⚠️ ЗЕЛЕНИЙ — сторож дивиться не туди`); }
+  else lines.push(`- **${name}** → ЧЕРВОНИЙ: ${red.slice(0, 4).map((r) => `«${r}»`).join("; ")}${red.length > 4 ? ` (+${red.length - 4})` : ""}`);
   console.log(lines.at(-1));
 }
 restore();
+if (existsSync(REPORT)) unlinkSync(REPORT);
+lines.push("", bad ? `## ПІДСУМОК: ${bad} проблемних із ${M.length}` : `## ПІДСУМОК: ${M.length}/${M.length} адресних`);
 writeFileSync("falsify-u15.md", lines.join("\n") + "\n");
+console.log(lines.at(-1));
 console.log("DONE");
 
-/* U-74: ненайдений якір і «сторож дивиться не туди» — ЧЕРВОНИЙ вердикт
-   СТЕНДА, а не рядок у звіті. Лічильника в цьому стенді немає, тож
-   проблемні позиції виводяться з самих рядків звіту. */
-const badLines = lines.filter((l) => /ЯКІР НЕ ЗНАЙДЕНО|ЯКІР НЕ УНІКАЛЬНИЙ|⚠️|❌/.test(String(l)));
-if (badLines.length) {
-  console.log(`\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${badLines.length} проблемних позицій. Стенд НЕ доводить нічого.`);
-  for (const l of badLines) console.log(`   ${l}`);
+/* U-74 → U-80: вердикт спирається на СВІЙ лічильник, а не на розбір власних
+   рядків. Розбір тексту був милицем: він сліпий до рядка, якого немає. */
+if (bad) {
+  console.log(`\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних із ${M.length}. Стенд НЕ доводить нічого.`);
   process.exitCode = 1;
-} else console.log(`\n✅ ВЕРДИКТ: стенд зелений.`);
+} else console.log(`\n✅ ВЕРДИКТ: стенд зелений — ${M.length}/${M.length} адресних.`);
