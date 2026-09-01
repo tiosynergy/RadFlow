@@ -142,13 +142,18 @@ function run() {
   if (existsSync(REPORT)) unlinkSync(REPORT);
   spawnSync("npx", ["vitest", "run", ...SPECS, "--reporter=json", `--outputFile.json=${REPORT}`],
     { shell: true, stdio: "ignore" });
-  if (!existsSync(REPORT)) return { ok: false, red: ["(репортер не віддав JSON)"] };
-  const r = JSON.parse(readFileSync(REPORT, "utf8"));
+  /* ⚠️ U-80 (с51): прогін, який НЕ ВІДБУВСЯ, — окремий стан. До с51 він
+     повертав `ok: false`, тобто «сторож спіймав»: мутація, що зламала збірку,
+     друкувалась як ✅ (канон уже стояв у Ф4-2 і Ф4-8, сюди не доїхав). */
+  if (!existsSync(REPORT)) return { crashed: true, ok: false, red: [] };
+  let r;
+  try { r = JSON.parse(readFileSync(REPORT, "utf8")); }
+  catch { return { crashed: true, ok: false, red: [] }; }
   const red = [];
   for (const f of r.testResults || []) {
     for (const a of f.assertionResults || []) if (a.status !== "passed") red.push(a.title);
   }
-  return { ok: r.success === true && red.length === 0, red, total: r.numTotalTests };
+  return { crashed: false, ok: r.success === true && red.length === 0, red, total: r.numTotalTests };
 }
 
 const lines = [];
@@ -173,6 +178,10 @@ try {
       const res = run();
       writeFileSync(path, src);
       const wantRed = !m.green;
+      if (res.crashed) {
+        lines.push(`| ${m.id} | ${m.what} | ${wantRed ? "ЧЕРВОНЕ" : "ЗЕЛЕНЕ"} | прогін не відбувся | ⛔ мутація зламала збірку |`);
+        continue;
+      }
       const gotRed = !res.ok;
       const verdict = wantRed === gotRed ? "✅" : "⛔ СТОРОЖ НЕ ТРИМАЄ";
       const fact = gotRed ? res.red.map((t) => `«${t}»`).join("; ") : "усе зелене";
