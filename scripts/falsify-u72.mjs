@@ -49,8 +49,8 @@ const REPORT = ".falsify-u72.json";
 
 /** Зняти підключення правила з компонента — та сама «тиха напівправка», що
     трапляється при рефакторі: імпорт лишається, виклик зникає. */
-const drop = (id, file, call, what, spec = SPEC.follow) =>
-  ({ id, file, spec, what, from: call, to: "void 0;" });
+const drop = (id, file, call, what, spec = SPEC.follow, expect = undefined) =>
+  ({ id, file, spec, what, expect, from: call, to: "void 0;" });
 
 /* Багаторядкові виклики беремо ЦІЛКОМ — інакше якір не унікальний. */
 const CALL_BM = `  const pendingShift = useFollowToday({
@@ -95,14 +95,20 @@ const CALL_WM = `  useFollowTodayKey({
    замість того, щоб червонити сторожа (той самий урок, що з M17 у с51). */
 const CALL_RD = `  useFollowTodayKey({ clinicTz, value: day, setKey: setDay,
     onShift: (d, prev) => { setSelectedSlot(""); setDayShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); } });`;
+/* ⚠️ ЯКОРІ ДОШОК ОНОВЛЕНО в с53 разом із Г1-E: у виклик приїхав `onShift`.
+   Стара форма дала б 0 входжень і завалила прогін — саме так якір і мусить
+   протухати: голосно. Це вчетверте за три пакети, і це нормальна ціна того, що
+   якір бере виклик ЦІЛКОМ, а не по шматку. */
 const CALL_RB = `  useFollowToday({
     clinicTz,
     pinnedKey: initialDate,
     busy: !!completeFor || !!stuckFinish || !!offCallAsk || !!delayPreview,
     value: selectedDate,
     setDate: setSelectedDate,
+    onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)),
   });`;
-const CALL_QB = "  useFollowToday({ clinicTz, pinnedKey: initialDate, busy: anyModalOpen, value: selectedDate, setDate: setSelectedDate });";
+const CALL_QB = `  useFollowToday({ clinicTz, pinnedKey: initialDate, busy: anyModalOpen, value: selectedDate, setDate: setSelectedDate,
+    onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)) });`;
 
 const MUTATIONS = [
   // ============ ЛАНЦЮГ ПРОБУДЖЕННЯ (додано після ревʼю Б) ============
@@ -395,8 +401,10 @@ const MUTATIONS = [
     "JournalScreen: початок довільного періоду"),
   drop("M21", "js", "  useFollowTodayKey({ clinicTz, value: dateTo, setKey: setDateTo });",
     "JournalScreen: кінець довільного періоду"),
-  drop("M22", "qb", CALL_QB, "QueueBoard (U-70): дошка знову мовчки стає архівом"),
-  drop("M23", "rb", CALL_RB, "RadiologistBoard (U-70): радіолог мовчки втрачає ВСІ дії (isPast → readOnly)"),
+  drop("M22", "qb", CALL_QB, "QueueBoard (U-70): дошка знову мовчки стає архівом",
+    SPEC.follow, /QueueBoard\.tsx — правило підключене/),
+  drop("M23", "rb", CALL_RB, "RadiologistBoard (U-70): радіолог мовчки втрачає ВСІ дії (isPast → readOnly)",
+    SPEC.follow, /RadiologistBoard\.tsx — правило підключене/),
   {
     /* ⚠️ Зустрічний зонд до T4: закоментований виклик мусить ЧЕРВОНІТИ. Саме це
        і доводить, що `codeOf` (зрізання коментарів) у сторожі працює — у першій
@@ -863,7 +871,253 @@ const MUTATIONS = [
     to: "  useClockEpoch();\n  function buildPayload(): BookingPayload {",
   },
 
+  /* ============ Г1-E: головні дошки більше не мовчать (пакет с53) ============
+     Дві дошки були ЄДИНИМИ споживачами правила, які не брали ні `onShift`, ні
+     `pendingShift`. Мутації нижче б'ють у ЧОТИРИ різні місця, і це навмисно:
+     сам колбек (доба їде мовчки), присвоєння результату (вікно відкладення
+     знову без пояснення), умову видимості (повертаються «з 1 вересня на
+     1 вересня» і банер на чужій добі) і гасіння людиною. Кожна названа ІМЕНЕМ
+     тесту-сторожа: «щось почервоніло у followToday.test.ts» тут нічого не
+     доводить — у файлі понад сотня тестів. */
+  {
+    id: "M97", file: "ft", spec: SPEC.follow,
+    expect: /ПЕРША доба зберігається/,
+    what: "Г1-E: накопичення знято — друга поправка затирає добу, яку оператор назвав пацієнту",
+    from: "  return { fromKey: prev?.fromKey ?? dateKeyOf(prevDay), toKey: dateKeyOf(nextDay) };",
+    to: "  return { fromKey: dateKeyOf(prevDay), toKey: dateKeyOf(nextDay) };",
+  },
+  {
+    id: "M98", file: "ft", spec: SPEC.follow,
+    expect: /ТУДИ-НАЗАД/,
+    what: "Г1-E: умову «доби різні» знято — повертається банер «змінено з 1 вересня на 1 вересня» (клас Г1-G)",
+    from: "  return !!n && n.fromKey !== n.toKey && n.toKey === curKey;",
+    to: "  return !!n && n.toKey === curKey;",
+  },
+  {
+    id: "M99", file: "ft", spec: SPEC.follow,
+    expect: /банер видно САМЕ на тій добі/,
+    what: "Г1-E: прив'язку до поточної доби знято — банер переживає перехід оператора на іншу дату",
+    from: "  return !!n && n.fromKey !== n.toKey && n.toKey === curKey;",
+    to: "  return !!n && n.fromKey !== n.toKey;",
+  },
+  {
+    /* ⚠️ Рівно та підміна, проти якої стан живе в КЛЮЧАХ: порівняння «як
+       підпис», без року. Виглядає як нешкідливе спрощення. */
+    id: "M100", file: "ft", spec: SPEC.follow,
+    expect: /однаковим коротким підписом/,
+    what: "Г1-E: доби порівнюються без року — поправка на рік вирішує, що казати нема чого",
+    from: "  return !!n && n.fromKey !== n.toKey && n.toKey === curKey;",
+    to: "  return !!n && n.fromKey.slice(5) !== n.toKey.slice(5) && n.toKey === curKey;",
+  },
+  {
+    id: "M101", file: "qb", spec: SPEC.follow,
+    expect: /QueueBoard.*ОБИДВІ доби/,
+    what: "Г1-E: дошка черги знову міняє добу МОВЧКИ — onShift прибрано з виклику",
+    from: ",\n    onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)) });",
+    to: " });",
+  },
+  {
+    id: "M102", file: "rb", spec: SPEC.follow,
+    expect: /RadiologistBoard.*ОБИДВІ доби/,
+    what: "Г1-E: дошка радіолога знову міняє добу МОВЧКИ",
+    from: "    setDate: setSelectedDate,\n    onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)),\n",
+    to: "    setDate: setSelectedDate,\n",
+  },
+  {
+    /* ⚠️ ЗУСТРІЧНА мутація на ЗНЯТУ правку. Перша редакція Г1-E малювала на
+       дошці ще й банер про ВІДКЛАДЕНЕ перенесення; вимір ревʼю показав, що він
+       існував би рівно тоді, коли дошку накриває `.overlay`, і зникав би в мить,
+       коли її відкривають. Мертвий UI сам по собі не червонить нічого — тож
+       повернення такого банера мусить ловити названий сторож. */
+    id: "M103", file: "qb", spec: SPEC.follow,
+    expect: /QueueBoard.*відкладене перенесення на дошці НЕ показується/,
+    what: "Г1-E: дошка знову БЕРЕ відкладене перенесення — перший крок назад до UI під оверлеєм",
+    from: "  useFollowToday({ clinicTz, pinnedKey: initialDate,",
+    to: "  const pendingShift = useFollowToday({ clinicTz, pinnedKey: initialDate,",
+  },
+  {
+    id: "M104", file: "rb", spec: SPEC.follow,
+    expect: /RadiologistBoard.*відкладене перенесення на дошці НЕ показується/,
+    what: "Г1-E: те саме на дошці радіолога",
+    from: "  useFollowToday({\n    clinicTz,\n    pinnedKey: initialDate,",
+    to: "  const pendingShift = useFollowToday({\n    clinicTz,\n    pinnedKey: initialDate,",
+  },
+  {
+    id: "M107", file: "qb", spec: SPEC.follow,
+    expect: /QueueBoard.*умови видимості/,
+    what: "Г1-E: гілка рендера питає лише «чи є стан» — спільне правило обійдено",
+    from: "            {dayShifted && dayShiftNoticeVisible(dayShifted, dayKey) && (",
+    to: "            {dayShifted && (",
+  },
+  {
+    id: "M108", file: "rb", spec: SPEC.follow,
+    expect: /RadiologistBoard.*умови видимості/,
+    what: "Г1-E: те саме на дошці радіолога",
+    from: "            {dayShifted && dayShiftNoticeVisible(dayShifted, dayKey) && (",
+    to: "            {dayShifted && (",
+  },
+  {
+    id: "M109", file: "qb", spec: SPEC.follow,
+    expect: /QueueBoard.*знімає ЛЮДИНА/,
+    what: "Г1-E: ручний вибір дати більше не гасить банер — він повернеться на чужій добі",
+    from: "  const pickDate = useCallback((d: Date) => { setDayShifted(null); setSelectedDate(d); }, []);",
+    to: "  const pickDate = useCallback((d: Date) => { setSelectedDate(d); }, []);",
+  },
+  {
+    id: "M110", file: "rb", spec: SPEC.follow,
+    expect: /RadiologistBoard.*знімає ЛЮДИНА/,
+    what: "Г1-E: те саме на дошці радіолога",
+    from: "  const pickDate = useCallback((d: Date) => { setDayShifted(null); setSelectedDate(d); }, []);",
+    to: "  const pickDate = useCallback((d: Date) => { setSelectedDate(d); }, []);",
+  },
+  {
+    id: "M111", file: "qb", spec: SPEC.follow,
+    expect: /QueueBoard.*знімає ЛЮДИНА/,
+    what: "Г1-E: кнопку «Зрозуміло» знято — банер на дошці не зняти нічим",
+    from: "{\" \"}<button className=\"btn btn-secondary btn-sm\" style={{ marginLeft: 6 }} onClick={() => setDayShifted(null)}>Зрозуміло</button>",
+    to: "{\" \"}",
+  },
+  {
+    id: "M112", file: "qb", spec: SPEC.follow,
+    expect: /QueueBoard.*знімає ЛЮДИНА/,
+    what: "Г1-E: календар веде повз pickDate — ручна зміна дати лишає банер",
+    from: "<MiniCalendar selectedDate={selectedDate} onSelectDate={pickDate}",
+    to: "<MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate}",
+  },
+  {
+    id: "M113", file: "rb", spec: SPEC.follow,
+    expect: /RadiologistBoard.*знімає ЛЮДИНА/,
+    what: "Г1-E: те саме на дошці радіолога",
+    from: "<MiniCalendar selectedDate={selectedDate} onSelectDate={pickDate}",
+    to: "<MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate}",
+  },
+  {
+    /* ⚠️ ЗУСТРІЧНА мутація — найпривабливіша «покращувальна» правка в цьому
+       вузлі і саме та, яку власник відхилив після виміру: зробити дошку живою у
+       вікні відкладення. Ціна названа в коді дошки: це відкриває «Викликати» на
+       добі, яку виміряний годинник сьогоднішньою не вважає. */
+    id: "M114", file: "qb", spec: SPEC.follow,
+    expect: /QueueBoard.*виміряного годинника/,
+    what: "Г1-E: дошку зробили «живою» під відкритим вікном — виклик відкривається на чужій добі",
+    from: "  const isToday = sameDay(selectedDate, today);",
+    to: "  const isToday = sameDay(selectedDate, today) || anyModalOpen;",
+  },
+  {
+    id: "M115", file: "rb", spec: SPEC.follow,
+    expect: /RadiologistBoard.*виміряного годинника/,
+    what: "Г1-E: те саме на дошці радіолога (isPast → readOnly знімається на чужій добі)",
+    from: "  const isToday = sameDay(selectedDate, today);",
+    to: "  const isToday = sameDay(selectedDate, today) || !!completeFor;",
+  },
+
+  {
+    /* ⚠️ КОПІЯ, ЩО РОЗХОДИТЬСЯ, а не байт-у-байт та сама (виправлено за ревʼю Б:
+       перша редакція підставляла посимвольно те саме тіло `dateKeyOf`, тобто
+       нічого не ламала — а `what` і повідомлення піна стверджували, що банер
+       зникне; це рівно «твердження розійшлось із виміром»). `toISOString`
+       рахує UTC-добу: у Києві після 21:00 ключ уже інший, банер мовчить, а
+       заразом їде і денний зріз запиту в БД. */
+    id: "M116", file: "qb", spec: SPEC.follow,
+    expect: /QueueBoard.*ключ доби дошки/,
+    what: "Г1-E: у дошці власна копія формату ключа доби, і вона РОЗХОДИТЬСЯ (UTC замість локальної доби)",
+    from: "function dateKey(d: Date) { return dateKeyOf(d); }",
+    to: "function dateKey(d: Date) { return d.toISOString().slice(0, 10); }",
+  },
+  {
+    id: "M117", file: "rb", spec: SPEC.follow,
+    expect: /RadiologistBoard.*ключ доби дошки/,
+    what: "Г1-E: те саме на дошці радіолога",
+    from: "function dateKey(d: Date) { return dateKeyOf(d); }",
+    to: "function dateKey(d: Date) { return d.toISOString().slice(0, 10); }",
+  },
+  {
+    /* ⚠️ ЗНАХІДКА РЕВʼЮ Б: усі фікстури банера рухали добу ВПЕРЕД, тож ця
+       мутація лишалась ЗЕЛЕНОЮ — а вона вимикає банер рівно в напрямку «ПК
+       спішить», заради якого весь вузол існує. Тест на зворотний напрямок
+       заведено разом із нею. */
+    id: "M118", file: "ft", spec: SPEC.follow,
+    expect: /поправка НАЗАД/,
+    what: "Г1-E: «доби різні» стало «доба поїхала вперед» — банер мовчить, коли годинник відкотили назад",
+    from: "  return !!n && n.fromKey !== n.toKey && n.toKey === curKey;",
+    to: "  return !!n && n.fromKey < n.toKey && n.toKey === curKey;",
+  },
+  {
+    /* ⚠️ ТРИ МУТАЦІЇ НА СПОЖИВАЧІВ ГЕЙТА (знахідка ревʼю Б): попередній
+       зустрічний пін тримав ОГОЛОШЕННЯ `isToday`, а послабити гейт можна в
+       місці вживання — оголошення при цьому байт у байт те саме. */
+    id: "M119", file: "qb", spec: SPEC.follow,
+    expect: /QueueBoard.*гейти дня без додаткових умов/,
+    what: "Г1-E: виклик відкрито під відкритою модалкою — гейт дня послаблено в МІСЦІ ВЖИВАННЯ",
+    from: "      notToday: !isToday,",
+    to: "      notToday: !isToday && !anyModalOpen,",
+  },
+  {
+    id: "M120", file: "qb", spec: SPEC.follow,
+    expect: /QueueBoard.*гейти дня без додаткових умов/,
+    what: "Г1-E: звук «пацієнт готовий» увімкнено на не-сьогоднішній добі",
+    from: "    readyEnabled: isToday,",
+    to: "    readyEnabled: isToday || anyModalOpen,",
+  },
+  {
+    id: "M121", file: "rb", spec: SPEC.follow,
+    expect: /RadiologistBoard.*гейти дня без додаткових умов/,
+    what: "Г1-E: read-only архіву знято під відкритою модалкою — радіолог діє на чужій добі",
+    from: "  const readOnly = isPast;",
+    to: "  const readOnly = isPast && !completeFor;",
+  },
+  {
+    /* ⚠️ ЗНАХІДКА РЕВʼЮ Б: гілку рендера можна лишити байт у байт тією самою і
+       обійти спільне правило — локальна функція з тим самим імʼям. Піни на
+       гілку і на «немає рукописного порівняння» лишались зеленими. */
+    id: "M122", file: "qb", spec: SPEC.follow,
+    expect: /QueueBoard.*спільне правило береться з lib/,
+    what: "Г1-E: у дошці власна копія спільного правила під тим самим імʼям — гілка рендера не змінилась",
+    edits: [
+      { from: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVisible, type DayShiftNotice } from \"@/lib/useFollowToday\";",
+        to: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, type DayShiftNotice } from \"@/lib/useFollowToday\";" },
+      { from: "function dateKey(d: Date) { return dateKeyOf(d); }",
+        to: "function dateKey(d: Date) { return dateKeyOf(d); }\nfunction dayShiftNoticeVisible(n: DayShiftNotice | null, curKey: string) { return !!n && n.toKey === curKey; }" },
+    ],
+  },
+  {
+    id: "M123", file: "rb", spec: SPEC.follow,
+    expect: /RadiologistBoard.*спільне правило береться з lib/,
+    what: "Г1-E: те саме на дошці радіолога",
+    edits: [
+      { from: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVisible, type DayShiftNotice } from \"@/lib/useFollowToday\";",
+        to: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, type DayShiftNotice } from \"@/lib/useFollowToday\";" },
+      { from: "function dateKey(d: Date) { return dateKeyOf(d); }",
+        to: "function dateKey(d: Date) { return dateKeyOf(d); }\nfunction dayShiftNoticeVisible(n: DayShiftNotice | null, curKey: string) { return !!n && n.toKey === curKey; }" },
+    ],
+  },
+  {
+    /* Симетрія до M111 (знахідка ревʼю Б: на дошці радіолога кнопку ніхто не пробував). */
+    id: "M124", file: "rb", spec: SPEC.follow,
+    expect: /RadiologistBoard.*знімає ЛЮДИНА/,
+    what: "Г1-E: кнопку «Зрозуміло» знято на дошці радіолога",
+    from: "{\" \"}<button className=\"btn btn-secondary btn-sm\" style={{ marginLeft: 6 }} onClick={() => setDayShifted(null)}>Зрозуміло</button>",
+    to: "{\" \"}",
+  },
+
   // ============ має лишатись ЗЕЛЕНИМ ============
+  {
+    id: "T11", file: "ft", green: true,
+    what: "Г1-E: перейменовано локальне звʼязування у правилі видимості — вердикт той самий",
+    from: "export function dayShiftNoticeVisible(n: DayShiftNotice | null, curKey: string): boolean {\n  return !!n && n.fromKey !== n.toKey && n.toKey === curKey;\n}",
+    to: "export function dayShiftNoticeVisible(notice: DayShiftNotice | null, curKey: string): boolean {\n  return !!notice && notice.fromKey !== notice.toKey && notice.toKey === curKey;\n}",
+  },
+  {
+    id: "T12", file: "ft", green: true,
+    what: "Г1-E: дві умови видимості переставлено місцями — кон'юнкція та сама",
+    from: "  return !!n && n.fromKey !== n.toKey && n.toKey === curKey;",
+    to: "  return !!n && n.toKey === curKey && n.fromKey !== n.toKey;",
+  },
+  {
+    id: "T13", file: "qb", green: true,
+    what: "Г1-E: над банером дописано коментар — сторож бачить крізь коментарі (пара до M107)",
+    from: "            {dayShifted && dayShiftNoticeVisible(dayShifted, dayKey) && (",
+    to: "            {/* TODO: звірити на живому стенді */}\n            {dayShifted && dayShiftNoticeVisible(dayShifted, dayKey) && (",
+  },
   {
     /* ⚠️ ЗОНД ПЕРЕПИСАНО ПІСЛЯ ПЕРШОГО ПРОГОНУ. Перша редакція перейменовувала
        поле в ТИПІ аргументу — тобто публічний контракт, який кличуть тести.
@@ -887,7 +1141,7 @@ const MUTATIONS = [
     id: "T3", file: "qb", green: true,
     what: "виклик у дошці переформатовано на кілька рядків — пін про ЗМІСТ, не про розкладку",
     from: CALL_QB,
-    to: "  useFollowToday({\n    clinicTz,\n    pinnedKey: initialDate,\n    busy: anyModalOpen,\n    value: selectedDate,\n    setDate: setSelectedDate,\n  });",
+    to: "  useFollowToday({\n    clinicTz,\n    pinnedKey: initialDate,\n    busy: anyModalOpen,\n    value: selectedDate,\n    setDate: setSelectedDate,\n    onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)),\n  });",
   },
   {
     id: "T4", file: "bm", green: true,
@@ -968,7 +1222,7 @@ function run() {
    таблиці: інакше «адресних 0/0» було б зеленим підсумком порожнечі — рівно та
    вада, проти якої писався U-80б. Додаєш мутацію з `expect` — піднімаєш число;
    не піднімаєш — прогін червоніє. */
-const EXPECTED_ADDRESSED = 26;
+const EXPECTED_ADDRESSED = 54;
 let addressedOk = 0;
 
 const lines = [];

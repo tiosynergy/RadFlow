@@ -19,7 +19,7 @@ import type { OverrunSource } from "@/lib/soundEvents";
 import { signOutAndRedirect } from "@/lib/auth";
 import { needsClarification, CLARIFY_META, isLate, LATE_META, computeCallBlock, SAFETY_UNKNOWN_REASON } from "@/lib/queueStatus";
 import { visibleStuckByRoom, stuckUnknownOf, stuckDateLabel, stuckDeepLink, stuckBlockReason, canCallIntoRoom, STUCK_UNKNOWN_REASON, type StuckStudy } from "@/lib/stuckStudy";
-import { overrideFeed, roomScheduleFromFeed, dayStatusFromFeed, type DayOverride, type OverrideFeed } from "@/lib/schedule";
+import { overrideFeed, roomScheduleFromFeed, dayStatusFromFeed, dateKeyOf, type DayOverride, type OverrideFeed } from "@/lib/schedule";
 import { diffStudies, studyText, BUFFER_DEFAULT, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
 import { PRIORITY_META, priorityRank, isActiveStatus, type PatientPriority } from "@/lib/priority";
 import { incidentEffectiveEnd, incidentExpired, wallNow, wallToday0, setClinicTz } from "@/lib/incidents";
@@ -37,7 +37,7 @@ import "@/styles/prototype/radiologist.css";
 import NavDrawer from "@/components/NavDrawer";
 import SoundToggle from "@/components/SoundToggle";
 import { visibleRooms, residualSet, roomOffLabel, bookableRooms } from "@/lib/rooms";
-import { useFollowToday } from "@/lib/useFollowToday";
+import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVisible, type DayShiftNotice } from "@/lib/useFollowToday";
 import { serverNow } from "@/lib/serverClock";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown; active?: boolean | null };
@@ -64,7 +64,10 @@ function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() 
 function dowMon(d: Date) { return (d.getDay() + 6) % 7; }
 function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
-function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+/* ⚠️ Г1-E: те саме, що в QueueBoard — власна копія формату ключа доби замінена
+   на спільну `dateKeyOf`. Банер про перенесення звіряє `dayKey` з ключем, який
+   рахує правило; дві копії формату розійшлися б мовчки. */
+function dateKey(d: Date) { return dateKeyOf(d); }
 function procLabel(e: { studies?: unknown; note?: string | null }) {
   const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string; contrast?: boolean }>) : [];
   if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast && !isContrastName(x.region) ? " з контрастом" : "")).join(" + ");
@@ -1241,14 +1244,26 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
      Виклик стоїть саме тут, а не поряд із `today` вище, бо `busy` мусить бачити
      УСІ модалки цієї дошки, а дві з них оголошені лише зараз. Список — повний
      перелік оверлеїв у JSX (CompletionModal, stuckFinish, offCallAsk,
-     DelayPlanModal); нова модалка зобов'язана потрапити і сюди. */
+     DelayPlanModal); нова модалка зобов'язана потрапити і сюди.
+
+     ⚠️ Г1-E (с53, рішення власника — «банер, як у форм»). Дошка радіолога, як
+     і дошка черги, не брала `onShift`: доба переставлялась МОВЧКИ. Тепер про це
+     говорить банер угорі стовпця. Гейти не чіпаємо: `isPast` вмикає read-only
+     саме тому, що показана доба справді не сьогоднішня за ВИМІРЯНИМ
+     годинником. Відкладене перенесення (`pendingShift`) дошка не показує —
+     причина виміряна і розписана в QueueBoard: такий банер існував би рівно
+     тоді, коли дошку закриває оверлей. */
+  const [dayShifted, setDayShifted] = useState<DayShiftNotice | null>(null);
   useFollowToday({
     clinicTz,
     pinnedKey: initialDate,
     busy: !!completeFor || !!stuckFinish || !!offCallAsk || !!delayPreview,
     value: selectedDate,
     setDate: setSelectedDate,
+    onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)),
   });
+  /* Дату взяла в руки ЛЮДИНА — банер відпрацював (те саме, що в QueueBoard). */
+  const pickDate = useCallback((d: Date) => { setDayShifted(null); setSelectedDate(d); }, []);
 
   function callPatient(p: RadEntry) {
     /* Гейт «не знаємо про простої» тепер приходить кодом safety_unknown із
@@ -1374,6 +1389,18 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
         </header>
         <div className="content-wrap">
           <div className="content">
+            {/* ⚠️ Г1-E. Причини — ті самі, що в QueueBoard, і банер стоїть так
+                само ПЕРШИМ у стовпці: усе, що нижче (CITO, простої, помилки
+                завантаження), — про конкретну добу, а цей банер каже, ЯКА це
+                доба. Умови видимості — спільні чисті правила з
+                lib/useFollowToday.ts, а не рукописна копія: саме на рукописних
+                копіях цього банера правило вже розійшлось між екранами. */}
+            {dayShifted && dayShiftNoticeVisible(dayShifted, dayKey) && (
+              <div className="ctx-hint orange" role="status" style={{ marginBottom: 12 }}>
+                🕐 Годинник центру уточнено — дату дошки змінено з <b>{fmtFull(dayOfKey(dayShifted.fromKey))}</b> на <b>{fmtFull(dayOfKey(dayShifted.toKey))}</b>.
+                {" "}<button className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={() => setDayShifted(null)}>Зрозуміло</button>
+              </div>
+            )}
             {isToday && citoList.length > 0 && (
               <div className="inc-banner fade-in" style={{ borderColor: "var(--red)" }}>
                 <span className="inc-banner-ic">🔴</span>
@@ -1453,7 +1480,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                   <div className="db-title">{fmtFull(selectedDate)}</div>
                   <div className="db-sub">{entriesErr && !scopeReady ? "Дані не завантажились" : !scopeReady ? "Завантаження…" : counts.total === 0 ? "Записів немає" : (isPast ? "Архів — день завершено · лише перегляд" : "Заплановані дослідження") + " · " + counts.total + " записів"}</div>
                 </div>
-                <button className="btn btn-secondary btn-sm" onClick={() => setSelectedDate(today0())}>← Сьогодні</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => pickDate(today0())}>← Сьогодні</button>
               </div>
             )}
 
@@ -1548,7 +1575,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
             <RadCancelledPanel key={scope} entries={cancelledDay} roomsById={roomsById} unreadIx={boardUnreadIx} />
           </div>
           <aside className="rpanel">
-            <MiniCalendar selectedDate={selectedDate} onSelectDate={setSelectedDate} overrides={overridesFeed} tz={clinicTz} roomSchedules={roomSchedules} />
+            <MiniCalendar selectedDate={selectedDate} onSelectDate={pickDate} overrides={overridesFeed} tz={clinicTz} roomSchedules={roomSchedules} />
           </aside>
         </div>
       </div>
