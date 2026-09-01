@@ -21,7 +21,7 @@
  *     хука з форми лишило б увесь набір зеленим.
  */
 import { describe, it, expect, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { codeOf } from "./helpers/codeOf";
 import { followedDay, decideShift, dayOfKey, stepClockShift } from "@/lib/useFollowToday";
@@ -516,7 +516,7 @@ const CALL_SITES: Array<[string, RegExp, string]> = [
     "портал направника: «завтра» центру, а не браузера направника"],
   ["components/RescheduleModal.tsx", /useFollowTodayKey\(\{ clinicTz: clinicTz \|\| undefined, offsetDays: 1, busy: saving, value: dateStr, setKey: setDateStr, onShift:/,
     "дата переносу — той самий зсув «завтра», що в ініціалізаторі"],
-  ["components/CallListBoard.tsx", /useFollowToday\(\{ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate,? \}\)/,
+  ["components/CallListBoard.tsx", /useFollowToday\(\{ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate, onShift:/,
     "день обдзвону: за ним іде масове «Всіх підтверджено»"],
   ["components/WaitlistModal.tsx", /useFollowTodayKey\(\{ clinicTz: clinicTz \|\| undefined, pinnedKey: initial\?\.desired_date_from \?\? null, busy: saving, value: dateFrom, setKey: setDateFrom,? \}\)/,
     "desired_date_from листа очікування"],
@@ -535,12 +535,18 @@ const CALL_SITES: Array<[string, RegExp, string]> = [
    чув. Без повідомлення зміна дати в двоколонковій формі просто не помітна.
    Ручна зміна дати в кожній із трьох форм робить рівно те саме — автоматична
    не має права бути тихішою. */
+/* ⚠️ `s?.from ?? …` — не стиль, а вимога (ревʼю В): повторна поправка біля
+   півночі кличе `onShift` ВДРУГЕ, і пряме присвоєння затерло б `from` на
+   проміжну добу — тобто банер перестав би називати день, який оператор
+   справді сказав пацієнту.
+   ⚠️ `fmtShort`, а не `dateVal`: банер велить назвати дату ПАЦІЄНТУ вголос,
+   а `dateVal` дає машинний ISO «2026-09-01» (теж ревʼю В). */
 const ON_SHIFT_SITES: Array<[string, RegExp, string]> = [
-  ["components/BookingModal.tsx", /onShift: \(d\) => \{ setTime\(""\); setDateShifted\(fmtShort\(d\)\); \}/,
+  ["components/BookingModal.tsx", /onShift: \(d, prev\) => \{ setTime\(""\); setDateShifted\(\(s\) => \(\{ from: s\?\.from \?\? fmtShort\(prev\), to: fmtShort\(d\) \}\)\); \}/,
     "форма запису: слот скинуто, перенесення оголошено"],
-  ["components/ReferralPortal.tsx", /onShift: \(d\) => \{ setTime\(""\); setDateShifted\(dateVal\(d\)\); \}/,
+  ["components/ReferralPortal.tsx", /onShift: \(d, prev\) => \{ setTime\(""\); setDateShifted\(\(s\) => \(\{ from: s\?\.from \?\? fmtShort\(prev\), to: fmtShort\(d\) \}\)\); \}/,
     "портал направника: те саме"],
-  ["components/RescheduleModal.tsx", /onShift: \(d\) => \{ setTime\(""\); setDateShifted\(dateVal\(d\)\); \}/,
+  ["components/RescheduleModal.tsx", /onShift: \(d, prev\) => \{ setTime\(""\); setDateShifted\(\(s\) => \(\{ from: s\?\.from \?\? fmtShort\(prev\), to: fmtShort\(d\) \}\)\); \}/,
     "форма переносу: те саме"],
 ];
 
@@ -550,12 +556,134 @@ describe.each(ON_SHIFT_SITES)("%s — перенесення не тихе", (fi
     expect(s, `${file}: ${why}`).toMatch(re);
     expect(s, "немає видимого підпису про перенесення дати").toMatch(/\{dateShifted && /);
     expect(s, "підпис не оголошений для читача екрана").toMatch(/role="status"/);
+
+    /* ⚠️ F7 (ревʼю Б, рішення власника с51). Банер, що називає лише НОВУ дату,
+       вимагає від оператора памʼятати, що стояло в полі секунду тому, — а він у
+       цю мить диктує дату пацієнту вголос. І текст мусить веліти переспитати
+       ПАЦІЄНТА: «час оберіть заново» — інструкція про поле форми, тоді як
+       обовʼязкова дія тут — розмова, бо стару дату людина вже почула. */
+    expect(s, "банер не називає СТАРУ дату — оператор мусив би памʼятати її сам")
+      .toMatch(/змінено з <b>\{dateShifted\.from\}<\/b> на <b>\{dateShifted\.to\}<\/b>/);
+    expect(s, "банер не велить переспитати ПАЦІЄНТА — текст лише про поле форми")
+      .toMatch(/Назвіть пацієнту нову дату/);
+  });
+});
+
+/* ⚠️ F2 (знахідка ревʼю Б, MED-HIGH; рішення власника с51). Дошка обдзвону —
+   ЄДИНИЙ екран, де дата одночасно вимовляється пацієнту голосом, задає цілі
+   НЕЗВОРОТНОЇ масової дії і мінялась МОВЧКИ. Сценарій: після тихого переносу
+   оператор дзвонить по рядках уже ІНШОГО дня, тисне «Всіх підтверджено» —
+   статуси лягають чужій добі, а ціла зміна попереднього дня лишається
+   необдзвоненою, і про це не дізнається ніхто.
+   Тут ДВА сторожі, і другий важливіший за перший: банер — це повідомлення, а
+   гейт кнопки — це пара до `setTime("")` у формах, тобто те, що робить
+   незворотну дію НЕМОЖЛИВОЮ, поки людина не підтвердила. */
+describe("components/CallListBoard.tsx — масова дія після переносу дня", () => {
+  const s = () => src("components/CallListBoard.tsx");
+
+  it("перенесення дня оголошено, і банер називає ОБИДВА дні", () => {
+    /* ⚠️ ТУТ НЕМАЄ `setConfirmAllAsk(false)`, і це навмисно. Перша редакція
+       фіксу його кликала, а пін — закріплював; ревʼю В показало, що виклик
+       НЕДОСЯЖНИЙ: `confirmAllAsk` входить у `anyBusy`, тож при відкритому
+       діалозі перенесення відкладається і `onShift` не виконується взагалі.
+       Пін, що закріплює мертвий рядок, — це рівно «доводить наявність тексту,
+       а не вердикт», проти чого написаний увесь пакет. */
+    expect(s(), "дошка обдзвону знову міняє день мовчки")
+      .toMatch(/onShift: \(d, prev\) => setDayShifted\(\(s\) => \(\{ from: s\?\.from \?\? fmtFull\(prev\), to: fmtFull\(d\) \}\)\)/);
+    expect(s(), "банер не називає обидва дні").toMatch(/змінено з <b>\{dayShifted\.from\}<\/b> на <b>\{dayShifted\.to\}<\/b>/);
+    expect(s(), "підпис не оголошений для читача екрана").toMatch(/\{dayShifted && [\s\S]{0,200}role="status"/);
+  });
+
+  it("«Всіх підтверджено» ВИМКНЕНО, доки перенесення не підтверджено людиною", () => {
+    expect(s(), "незворотна масова дія доступна одразу після тихого переносу дня")
+      .toMatch(/disabled=\{loading \|\| !!dayShifted \|\| confirmTargets\.length === 0\}/);
+    /* Зняти банер може лише людина — автогасіння повернуло б тихий сценарій. */
+    expect(s(), "банер нічим не знімається — оператор лишиться без масової дії назавжди")
+      .toMatch(/onClick=\{\(\) => setDayShifted\(null\)\}/);
   });
 });
 
 describe.each(CALL_SITES)("%s — правило підключене", (file, re, why) => {
   it(why, () => {
     expect(src(file), `${file}: ${why}`).toMatch(re);
+  });
+});
+
+/* ===== СКАНЕРИ ПОВНОТИ (знахідка ревʼю Г, с51) =====
+
+   ⚠️ ЦЕ НАЙВАЖЛИВІШЕ, ЩО Є В ЦЬОМУ ФАЙЛІ, і заведено воно останнім.
+   `CALL_SITES` і `ON_SHIFT_SITES` — РУКОПИСНІ переліки файлів. Вони доводять,
+   що перелічені девʼять місць підключені; про десяте вони не знають нічого — ні
+   `tsc`, ні `eslint`, ні стенд теж (стенд мутує тільки вже відомі файли).
+   Саме цим механізмом `CallListBoard` півроку міняв день МОВЧКИ: він був у
+   переліку підключень і не був у переліку тих, хто мусить оголосити.
+
+   Тому нижче — не перелік, а ВЛАСТИВІСТЬ, знята з дерева. Ідіома в проєкті вже
+   є тричі (`roomScheduleRead`, `unreadChanges`, сканер U-37): знайти всіх, хто
+   має ознаку класу, і звірити перелік В ОБИДВА БОКИ — новий файл валить тест, і
+   файл, що вибув, теж валить. Порожній перелік «відомих» тут неможливий: він
+   помер би тихо. */
+describe("сканери повноти — новий екран не проїде повз правило", () => {
+  const roots = ["components", "app"];
+  const walk = (dir: string, hit: (p: string, code: string) => void) => {
+    for (const e of readdirSync(resolve(process.cwd(), dir), { withFileTypes: true })) {
+      const p = dir + "/" + e.name;
+      if (e.isDirectory()) { walk(p, hit); continue; }
+      if (!/\.(ts|tsx)$/.test(e.name)) continue;
+      hit(p, codeOf(readFileSync(resolve(process.cwd(), p), "utf8")));
+    }
+  };
+
+  /* Ознака класу U-70/U-72: значення, ВИВЕДЕНЕ ЗІ «СЬОГОДНІ», лягає в СТАН.
+     Саме пара «від сьогодні» + «в стані» робить дату замороженою; живий виклик
+     у тілі рендера перераховується сам і правила не потребує. */
+  const FROZEN_TODAY = /(useState|useMemo)\(\s*(\(\)\s*=>\s*)?[^;]{0,200}?(wallToday0|wallDayKey|wallNow)\s*\(/;
+
+  it("новий екран заморозив дату від «сьогодні» — і не підключив правило", () => {
+    const guilty: string[] = [];
+    walk(roots[0], (p, code) => {
+      if (!FROZEN_TODAY.test(code)) return;
+      if (/useFollowToday(Key)?\s*\(/.test(code)) return;
+      guilty.push(p);
+    });
+    walk(roots[1], (p, code) => {
+      if (!FROZEN_TODAY.test(code)) return;
+      if (/useFollowToday(Key)?\s*\(/.test(code)) return;
+      guilty.push(p);
+    });
+    expect(guilty.sort(), "екран заморозив «сьогодні» повз lib/useFollowToday — після поправки годинника він мовчки живе в чужій добі")
+      .toEqual([]);
+  });
+
+  it("перелік споживачів звірено з деревом В ОБИДВА БОКИ", () => {
+    const found: string[] = [];
+    roots.forEach((r) => walk(r, (p, code) => {
+      if (/useFollowToday(Key)?\s*\(\s*\{/.test(code)) found.push(p);
+    }));
+    const known = new Set(CALL_SITES.map(([f]) => f));
+    expect(found.filter((f) => !known.has(f)).sort(),
+      "новий споживач правила не вписаний у CALL_SITES — його підключення не сторожить ніщо").toEqual([]);
+    expect([...known].filter((f) => !found.includes(f)).sort(),
+      "файл із CALL_SITES більше не кличе правило — перелік бреше").toEqual([]);
+    /* Сам перелік не сміє спорожніти: порожній «звірено з деревом» зелений. */
+    expect(found.length, "сканер нічого не знайшов — регекс протух").toBeGreaterThanOrEqual(9);
+  });
+
+  /* ⚠️ Тип `onShift?: (nextDay, prevDay) => void` НЕ рятує: TypeScript завжди
+     дозволяє підставити функцію з МЕНШОЮ кількістю параметрів, тож
+     `onShift: (d) => …` скомпілюється мовчки і поверне рівно F7 — банер без
+     старої дати. Знайшло ревʼю В. Тому перевіряємо не перелік файлів, а КОЖНЕ
+     входження `onShift:` у дереві. */
+  it("кожен onShift бере ОБИДВІ доби — однопараметрового не існує", () => {
+    const bad: string[] = [];
+    roots.forEach((r) => walk(r, (p, code) => {
+      for (const m of code.matchAll(/onShift:\s*\(([^)]*)\)\s*=>/g)) {
+        const args = m[1].split(",").map((a) => a.trim()).filter(Boolean);
+        if (args.length < 2) bad.push(`${p}: onShift(${m[1].trim()})`);
+      }
+    }));
+    expect(bad.sort(), "onShift без другої доби — банер не зможе назвати те, що оператор уже сказав пацієнту")
+      .toEqual([]);
   });
 });
 
@@ -631,7 +759,8 @@ describe("правило живе в ОДНОМУ екземплярі", () => {
        (а) джерело часу: `clockOffsetMs()` і `Date.now()` як входи кроку;
        (б) БЕЗУМОВНИЙ запис результату назад у два ref-и;
        (в) конвертація ключів у `Date` і порядок аргументів `apply`;
-       (г) свіжість `apply`: присвоєння в ЕФЕКТІ і цей ефект — ПЕРШИЙ.
+       (г) свіжість `apply`: присвоєння в ЕФЕКТІ і цей ефект — ПЕРШИЙ;
+       (д) яку саме «стару добу» правило віддає формам у `onShift`.
      Нижче на них стоять піни ПО ДЖЕРЕЛУ, і ось чого вони не вміють: пін
      доводить, що ТЕКСТ такий, і нічого про те, чи він ВИКОНУЄТЬСЯ. Мертвий
      код, недосяжна гілка, ефект без монтування — усе це лишає піни зеленими.
@@ -639,7 +768,7 @@ describe("правило живе в ОДНОМУ екземплярі", () => {
      самий, поведінка протилежна) закриває пін (б), який пінує ПОСЛІДОВНІСТЬ,
      а не наявність; ціна — він чесно почервоніє, якщо два присвоєння
      переставити місцями, і це навмисно.
-     Сторож самих пінів — стенд `falsify-u72.mjs` (M42–M46); без ручного
+     Сторож самих пінів — стенд `falsify-u72.mjs` (M42–M46, M57); без ручного
      прогону стенда ці піни не доводять нічого, а стенд у CI не заведений.
      Регулярки терплять пробіли і переноси: сторож, який падає від prettier,
      знімають при першій же правці (урок U-72). */
@@ -673,5 +802,15 @@ describe("правило живе в ОДНОМУ екземплярі", () => {
            замикання попереднього коміту, тобто зі СТАРИМ `value`. */
     expect(s, "присвоєння applyRef переїхало в тіло рендера або втратило місце ПЕРЕД основним ефектом, дивись M45/M46")
       .toMatch(/const applyRef = useRef\(apply\); useEffect\(\(\) => \{ applyRef\.current = apply; \}\); useEffect\(\(\) => \{ const s = stepClockShift/);
+
+    /* (д) F7: другою добою в `onShift` мусить їхати `value` — те, що оператор
+           БАЧИВ У ПОЛІ, а не `prevDay` (стара «сьогодні»). У форм зі зсувом
+           (`offsetDays: 1` — перенос, портал, обдзвін) це РІЗНІ дати, і банер
+           назвав би добу, якої в полі ніколи не було. Обидві обгортки мусять
+           віддавати те саме — інакше два екрани скажуть різне про одну подію. */
+    expect(s, "useFollowToday віддає в onShift не те, що було в полі — банер назве чужу добу, дивись M57")
+      .toMatch(/setDate\(next\); .*?onShift\?\.\(next, value\);/);
+    expect(s, "useFollowTodayKey віддає в onShift не те, що було в полі, дивись M57")
+      .toMatch(/setKey\(dateKeyOf\(next\)\); onShift\?\.\(next, dayOfKey\(value\)\);/);
   });
 });
