@@ -29,66 +29,80 @@ const REPORT = ".falsify-f4-iw.json";
 const MUTATIONS = [
   {
     id: "N1", file: "actions", green: false,
+    expect: /список статусів простою в клієнті збігається зі списком у гарді/,
     what: "планувальник знову бачить лише active (сам дефект Ф4-5)",
     from: '.in("status", ["active", "planned"]);',
     to: '.eq("status", "active");',
   },
   {
     id: "N2", file: "actions", green: false,
+    expect: /список статусів простою в клієнті збігається зі списком у гарді/,
     what: "зі списку статусів прибрано planned (список є, але вужчий за гард)",
     from: '.in("status", ["active", "planned"]);',
     to: '.in("status", ["active"]);',
   },
   {
     id: "N3", file: "actions", green: false,
+    expect: /app\/queue\/actions\.ts: кличе канонічну функцію/,
     what: "у планувальник повернуто власну формулу з фолбеком «до кінця доби»",
     from: "    const span = incidentMinutesOnDay(i, date);\n    if (span) spans.push(span);",
     to: "    const day0 = wallInstant(date, \"00:00\");\n    const sMs = new Date(i.started_at).getTime();\n    const eMs = i.blocked_until ? new Date(i.blocked_until).getTime() : day0 + 24 * 3600e3;\n    if (!isFinite(sMs) || !isFinite(eMs)) continue;\n    const s = Math.max(0, Math.floor((sMs - day0) / 60000));\n    const e = Math.min(1440, Math.ceil((eMs - day0) / 60000));\n    if (e > s) spans.push({ s, e });",
   },
   {
     id: "N4", file: "panel", green: false,
+    expect: /components\/CollisionPanel\.tsx: кличе канонічну функцію/,
     what: "CollisionPanel знову рахує межі сам, через Math.round (дефект Ф4-7)",
     from: "          roomInc.forEach((i) => {\n            const span = incidentMinutesOnDay(i, dateStr);\n            if (span) busy.push(span);\n          });",
     to: "          const dayStart = wallInstant(dateStr, \"00:00\");\n          roomInc.forEach((i) => {\n            const st = new Date(i.started_at).getTime();\n            const en = incidentEffectiveEnd(i);\n            if (!isFinite(st)) return;\n            const s = Math.max(0, Math.round((st - dayStart) / 60000));\n            const e = en === Infinity ? 1440 : Math.min(1440, Math.round((en - dayStart) / 60000));\n            if (e > s) busy.push({ s, e });\n          });",
   },
   {
     id: "N5", file: "quick", green: false,
+    expect: /components\/QuickRescheduleButton\.tsx: кличе канонічну функцію/,
     what: "QuickRescheduleButton знову рахує межі сам, через Math.round",
     from: "        roomInc.forEach((i) => {\n          const span = incidentMinutesOnDay(i, dateStr);\n          if (span) spans.push(span);\n        });",
     to: "        const dayStart = wallInstant(dateStr, \"00:00\");\n        roomInc.forEach((i) => {\n          const st = new Date(i.started_at).getTime();\n          const en = incidentEffectiveEnd(i);\n          if (!isFinite(st)) return;\n          const s = Math.max(0, Math.round((st - dayStart) / 60000));\n          const e = en === Infinity ? 1440 : Math.min(1440, Math.round((en - dayStart) / 60000));\n          if (e > s) spans.push({ s, e });\n        });",
   },
   {
     id: "N6", file: "board", green: false,
+    expect: /components\/QueueBoard\.tsx: кличе канонічну функцію/,
     what: "QueueBoard знову рахує завантаженість своєю формулою",
     from: "  const span = incidentMinutesOnDay(inc, calendarDayKey(date));\n  if (!span) return 0;\n  return Math.max(0, Math.min(endMin, span.e) - Math.max(startMin, span.s));",
     to: "  const dayStart = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());\n  const s = new Date(inc.started_at).getTime();\n  const e = inc.blocked_until ? new Date(inc.blocked_until).getTime() : dayStart + 24 * 3600e3;\n  const sMin = Math.max(startMin, Math.round((s - dayStart) / 60000));\n  const eMin = Math.min(endMin, Math.round((e - dayStart) / 60000));\n  return Math.max(0, eMin - sMin);",
   },
   {
     id: "N7", file: "lib", green: false,
+    expect: /нерівні секунди: початок вниз, кінець вгору/,
     what: "канон округлює «як у школі» — межі простою зсуваються всередину",
     from: "  return { s: Math.floor((s - dayStart) / 60000), e: Math.ceil((e - dayStart) / 60000) };",
     to: "  return { s: Math.round((s - dayStart) / 60000), e: Math.round((e - dayStart) / 60000) };",
   },
   {
     id: "N8", file: "sidebar", green: false,
+    expect: /помилка читання перевіряється і не перетворюється на 0/,
     what: "лічильник листа знову не дивиться на error (дефект Ф4-9)",
     from: "      const { count, error } = await supabase\n        .from(\"waitlist_entries\")\n        .select(\"id\", { count: \"exact\", head: true })\n        .eq(\"status\", \"waiting\");\n      if (error) return;   // збій читання ≠ «в листі нікого»\n      setWaitCount(count ?? 0);",
     to: "      const { count } = await supabase\n        .from(\"waitlist_entries\")\n        .select(\"id\", { count: \"exact\", head: true })\n        .eq(\"status\", \"waiting\");\n      setWaitCount(count ?? 0);",
   },
   {
     id: "N9", file: "breakdown", green: false,
+    expect: /BreakdownModal бере кінець чужого простою каноном/,
     what: "BreakdownModal знову рахує кінець чужого простою тернарником (шоста копія)",
     from: "incidentEffectiveEnd(o)))) {\n      setErr(\"Період перетинається з ТО цього кабінету\"); return;",
     to: "o.blocked_until ? new Date(o.blocked_until).getTime() : Infinity))) {\n      setErr(\"Період перетинається з ТО цього кабінету\"); return;",
   },
   {
     id: "N10", file: "panel", green: false,
+    expect: /components\/CollisionPanel\.tsx: кличе канонічну функцію/,
     what: "своя формула ПОРУЧ із канонічним викликом, іншими іменами (пін не має триматись на іменах)",
     from: "            const span = incidentMinutesOnDay(i, dateStr);\n            if (span) busy.push(span);",
     to: "            const span = incidentMinutesOnDay(i, dateStr);\n            const base = 0;\n            const s2 = Math.round((new Date(i.started_at).getTime() - base) / 60000);\n            void s2;\n            if (span) busy.push(span);",
   },
   {
     id: "N11", file: "actions", green: false,
+    /* НЕ сторож канонічного виклику: виклик тут лишається на місці, і `Math.*`
+       з діленням на 60000 не зʼявляється — той пін лишився б зеленим. Ловить
+       саме перелік написань «доби» у пін фолбека. */
+    expect: /клієнт не має свого фолбека/,
     what: "фолбек «доба» повернуто тим самим числом іншими словами (86400000)",
     from: "    const span = incidentMinutesOnDay(i, date);\n    if (span) spans.push(span);",
     to: "    const span = incidentMinutesOnDay(i, date) ?? { s: 0, e: 86400000 / 60000 };\n    spans.push(span);",
@@ -96,7 +110,10 @@ const MUTATIONS = [
   /* ↓↓↓ ПРАВКИ БЕЗ ДЕФЕКТУ — мусять лишитись ЗЕЛЕНИМИ ↓↓↓ */
   {
     id: "P5", file: "breakdown", green: true,
-    what: "переформульовано коментар над перевіркою перетину",
+    /* ⚠️ ЗЕЛЕНИЙ ЗА ПОБУДОВОЮ (с52): спеки читають файли через `codeOf`, який
+       ріже коментарі, — цю правку вони не бачать і почервоніти на ній не можуть
+       НІКОЛИ. Запис про намір, а не доказ чутливості. Те саме з P4. */
+    what: "переформульовано коментар над перевіркою перетину (зелений за побудовою: codeOf ріже коментарі)",
     from: "    // Кінець чужого простою — канонічний (та сама правка, що в блоці поломки вище).",
     to: "    // Кінець чужого простою беремо каноном (текст коментаря змінено стендом).",
   },
@@ -120,11 +137,41 @@ const MUTATIONS = [
   },
   {
     id: "P4", file: "sidebar", green: true,
-    what: "змінено лише текст коментаря над читанням лічильника",
+    what: "змінено лише текст коментаря над читанням лічильника (зелений за побудовою: codeOf ріже коментарі)",
     from: "      if (error) return;   // збій читання ≠ «в листі нікого»",
     to: "      if (error) return;   // текст коментаря змінено стендом",
   },
 ];
+
+/* ⚠️ U-80б (с52). Кожна мутація, яка МУСИТЬ почервоніти, називає ТЕСТ-СТОРОЖА.
+   Тут це особливо потрібно: сторожі «кличе канонічну функцію» згенеровані
+   `it.each` по ЧОТИРЬОХ файлах, і без імені файла в очікуванні мутація в
+   `CollisionPanel` доводилась би червоним від `QueueBoard`. */
+for (const m of MUTATIONS) {
+  const bad =
+    (!m.green && !m.expect) ? "мутація мусить червоніти, але не називає сторожа (`expect`)"
+    : (m.green && m.expect) ? "`expect` у рядку, який МУСИТЬ лишитись зеленим — сторожа тут не буває"
+    /* Вертикальна риска зламала б markdown-таблицю, а її розбирає `verdictOf`. */
+    : (m.expect && /\|/.test(m.expect.source)) ? "у регулярці `|` — вона зламає таблицю звіту"
+    : null;
+  if (bad) {
+    console.error(`⛔ ІНВЕНТАР БРЕШЕ: ${m.id} — ${bad}. Стенд НЕ прогнано.`);
+    process.exit(1);
+  }
+}
+
+/* ⚠️ ПІН НА КІЛЬКІСТЬ АДРЕСНИХ ПОЗИЦІЙ (с52, знахідка ревʼю U-80б). Правило
+   вище ВИМАГАЄ прибрати `expect` у рядка з `green: true` — а отже саме воно й
+   дає найдешевший спосіб погасити червону позицію: перевести її в зелені і
+   зняти сторожа. Мутація при цьому далі застосовується, набір лишається
+   зеленим, рядок друкує ✅, і слідів не лишається взагалі. */
+const EXPECTED_RED = 11;
+const redCount = MUTATIONS.filter((m) => !m.green).length;
+if (redCount !== EXPECTED_RED) {
+  console.error(`⛔ ІНВЕНТАР БРЕШЕ: адресних мутацій ${redCount}, а очікується ${EXPECTED_RED}. `
+    + "Якщо позицію знято свідомо — поправте EXPECTED_RED разом із нею. Стенд НЕ прогнано.");
+  process.exit(1);
+}
 
 const orig = {};
 for (const [k, p] of Object.entries(FILES)) orig[k] = readFileSync(p, "utf8");
@@ -149,14 +196,23 @@ function run() {
   let r;
   try { r = JSON.parse(readFileSync(REPORT, "utf8")); }
   catch { return { crashed: true, ok: false, red: [] }; }
-  const red = [];
+  const red = [], all = [];
   for (const f of r.testResults || []) {
-    for (const a of f.assertionResults || []) if (a.status !== "passed") red.push(a.title);
+    /* ⚠️ U-80б (с52): `fullName`, а не `title` — назва describe теж частина
+       адреси сторожа, і без неї однойменні тести з різних блоків зливаються.
+       Повний перелік `all` — щоб відрізнити «спіймав чужий сторож» від
+       «сторожа з таким іменем немає взагалі» (опечатка в стенді). */
+    for (const a of f.assertionResults || []) {
+      const n = a.fullName || a.title;
+      all.push(n);
+      if (a.status !== "passed") red.push(n);
+    }
   }
-  return { crashed: false, ok: r.success === true && red.length === 0, red, total: r.numTotalTests };
+  return { crashed: false, ok: r.success === true && red.length === 0, red, all, total: r.numTotalTests };
 }
 
 const lines = [];
+let addressedOk = 0;
 try {
   const base = run();
   lines.push(`# Стенд фальсифікації Ф4-5 / Ф4-7 / Ф4-9 (вікно простою, с50)\n`);
@@ -183,9 +239,20 @@ try {
         continue;
       }
       const gotRed = !res.ok;
-      const verdict = wantRed === gotRed ? "✅" : "⛔ СТОРОЖ НЕ ТРИМАЄ";
-      const fact = gotRed ? res.red.map((t) => `«${t}»`).join("; ") : "усе зелене";
-      lines.push(`| ${m.id} | ${m.what} | ${wantRed ? "ЧЕРВОНЕ" : "ЗЕЛЕНЕ"} | ${fact} | ${verdict} |`);
+      const fact = gotRed
+        ? res.red.slice(0, 3).map((t) => `«${t}»`).join("; ") + (res.red.length > 3 ? ` (+${res.red.length - 3})` : "")
+        : "усе зелене";
+      /* ⚠️ U-80б: почервоніти мав НАЗВАНИЙ сторож. `some` — по ПОВНОМУ списку. */
+      const missed = wantRed && gotRed && !res.red.some((t) => m.expect.test(t));
+      /* Дві РІЗНІ причини одного «не збіглось» (с52): чужий сторож — або тесту
+         з таким іменем немає взагалі, тобто дефект самого стенда. */
+      const noSuchGuard = missed && !res.all.some((t) => m.expect.test(t));
+      const verdict = noSuchGuard ? "⛔ СТОРОЖА З ТАКИМ ІМЕНЕМ НЕМАЄ (дефект стенда)"
+        : missed ? "⛔ ЧУЖИЙ спек"
+        : (wantRed === gotRed ? "✅" : "⛔ СТОРОЖ НЕ ТРИМАЄ");
+      if (verdict === "✅" && wantRed) addressedOk++;
+      const want = wantRed ? `ЧЕРВОНЕ: ${m.expect.source}` : "ЗЕЛЕНЕ";
+      lines.push(`| ${m.id} | ${m.what} | ${want} | ${fact} | ${verdict} |`);
     }
   }
 } finally {
@@ -196,6 +263,9 @@ try {
      валить прогін так само, як протухлий якір. */
   const verdict = verdictOf(lines, MUTATIONS.length);
   lines.push(`\n${verdict.summary}`);
+  /* ⚠️ ЧЕСНЕ ЧИСЛО ДЛЯ РЕВІЗІЇ (с52): `verdictOf` рахує в `passed` будь-який ✅,
+     разом із рефакторними рядками, які нічого не сторожать за побудовою. */
+  lines.push(`\n## ПІДСУМОК: ${addressedOk}/${EXPECTED_RED} адресних, ${MUTATIONS.length - EXPECTED_RED} рефакторних`);
   writeFileSync(OUT, lines.join("\n") + "\n");
   console.log(lines.join("\n"));
   console.log(`\nЗвіт: ${OUT}. Файли відновлено.`);
