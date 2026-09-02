@@ -10,7 +10,8 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { useQueueSounds } from "@/lib/useQueueSounds";
 import { isStudyOverrun, type OverrunSource } from "@/lib/soundEvents";
 import { serverNow } from "@/lib/serverClock";
-import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
+import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, clockClaimOf, type DayShiftNotice } from "@/lib/useFollowToday";
+import type { ClockClaim } from "@/lib/clockTrust";
 import {
   setQueueEntryStatus,
   cancelQueueEntry,
@@ -2241,12 +2242,18 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   /* Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
      Виняток — 'stale': переносити вже нічого (запис завершено/скасовано), модалку
      закриваємо і синхронізуємо дошку. */
-  async function doReschedule({ roomId, date, time, dur, buffer, reason, offSchedule, studies }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean; studies?: RescheduleStudy[] }) {
+  /* Г1-F: заявка про годинник для ІНЛАЙН-переносів дошки (без модалки). Аргументи
+     дослівно ті самі, що у виклику `useFollowToday` вище (`pinnedKey:
+     initialDate`, зсув 0) — предикат «дата виведена з сьогодні» один і той
+     самий, тож сервер судить рівно про те значення, яке дошка й підставила. */
+  const boardClock = () => clockClaimOf({ clinicTz, curKey: dateKey(selectedDate), pinnedKey: initialDate });
+
+  async function doReschedule({ roomId, date, time, dur, buffer, reason, offSchedule, studies, clock }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean; studies?: RescheduleStudy[]; clock: ClockClaim }) {
     const p = reschedFor;
     if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason, offSchedule, studies });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateKey(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason, offSchedule, studies, clock });
     if (!res.ok) {
       if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
       reload();   // сітка модалки підтягне свіжу зайнятість
@@ -2272,7 +2279,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     const res = await rescheduleQueueEntry({
       id: p.id, roomId: p.room_id, scheduledDate: dateKey(selectedDate), scheduledTime: time, scheduledAt: at,
       durationMin: p.duration_min || 30, bufferTimeMin: p.buffer_time_min ?? BUFFER_DEFAULT,
-      reason: "Перенос на найближче вільне вікно", offSchedule: false,
+      reason: "Перенос на найближче вільне вікно", offSchedule: false, clock: boardClock(),
     });
     if (!res.ok) {
       if (res.code === "stale") { handledStale(res); return; }
@@ -2296,7 +2303,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     const res = await rescheduleQueueEntry({
       id: p.id, roomId, scheduledDate: dateKey(selectedDate), scheduledTime: time, scheduledAt: at,
       durationMin: p.duration_min || 30, bufferTimeMin: p.buffer_time_min ?? undefined,
-      reason: "Накладення: попереднє дослідження затягнулося",
+      reason: "Накладення: попереднє дослідження затягнулося", clock: boardClock(),
     });
     if (!res.ok) {
       const msg = (res.code === "slot_taken" || res.code === "slot_unavailable")

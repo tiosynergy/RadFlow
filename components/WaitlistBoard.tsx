@@ -361,6 +361,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
       priorityLevel: w.priorityLevel, studies: w.studies, durationMin: w.durationMin, bufferTimeMin: w.bufferTimeMin,
       desiredDateFrom: w.desiredDateFrom, desiredDateTo: w.desiredDateTo,
       desiredTimeFrom: w.desiredTimeFrom, desiredTimeTo: w.desiredTimeTo, note: w.note,
+      clock: w.clock,   // Г1-F: заявку про годинник знімає форма в мить кліка
     });
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     setAddOpen(false);
@@ -410,7 +411,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
       desired_date_from: w.desiredDateFrom, desired_date_to: w.desiredDateTo,
       desired_time_from: w.desiredTimeFrom, desired_time_to: w.desiredTimeTo,
       note: w.note, room_id: w.roomId,
-    });
+    }, w.clock);   // Г1-F: патч ВЕЗЕ desired_date_from — заявка обовʼязкова, і вона від форми
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     setEditFor(null);
     notify("Запис листа оновлено", "success");

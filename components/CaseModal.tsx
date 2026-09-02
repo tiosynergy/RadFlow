@@ -42,6 +42,7 @@ import {
 } from "@/lib/case";
 import type { CaseStatus, Json } from "@/supabase/types";
 import type { IncidentFeed } from "@/lib/incidents";
+import type { ClockClaim } from "@/lib/clockTrust";   // Г1-F: заявку про годинник везем від форми
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
@@ -206,7 +207,7 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
 
   /* Перенос кроку. Помилки гардів кейса (CASE_SAME_ROOM/CASE_PATIENT_OVERLAP) і
      звичайні booking-помилки повертаємо в RescheduleModal — вона їх покаже. */
-  async function doReschedule(sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean; studies?: RescheduleStudy[] }): Promise<string | null> {
+  async function doReschedule(sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean; studies?: RescheduleStudy[]; clock: ClockClaim }): Promise<string | null> {
     const st = reschedStep;
     if (!st) return null;
     const [hh, mm] = sel.time.split(":").map(Number);
@@ -215,6 +216,7 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
       id: st.id, roomId: sel.roomId, scheduledDate: dateKey(sel.date), scheduledTime: sel.time,
       scheduledAt: at, durationMin: sel.dur, bufferTimeMin: sel.buffer, reason: sel.reason, offSchedule: sel.offSchedule,
       studies: sel.studies,   // 0122: перепризначений склад для іншого кабінету
+      clock: sel.clock,       // Г1-F: заявку про годинник знімає форма, ми лише везем
     });
     if (!res.ok) return res.error;   // успіх → закриваємо модалку тут
     setReschedStep(null);

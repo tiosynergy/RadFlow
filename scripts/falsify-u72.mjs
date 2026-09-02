@@ -345,8 +345,11 @@ const MUTATIONS = [
   {
     id: "M8", file: "ft", spec: SPEC.follow,
     what: "зсув не враховується при РОЗПІЗНАВАННІ дефолту — форми з «завтра» мертві",
-    from: "  if (curKey !== dateKeyOf(shiftDays(prevDay, offsetDays))) return null;",
-    to: "  if (curKey !== dateKeyOf(prevDay)) return null;",
+    /* ⚠️ ПЕРЕЯКОРЕНО в с54: умову винесено з `followedDay` у спільний предикат
+       `derivedFromToday` (Г1-F — його читає ще й заявка про годинник). Робота
+       та сама, місце інше; ревізія спіймала протухлий якір як «⛔ відхилено». */
+    from: "  if (curKey !== dateKeyOf(shiftDays(todayDay, offsetDays))) return false;",
+    to: "  if (curKey !== dateKeyOf(todayDay)) return false;",
   },
   {
     id: "M9", file: "ft", spec: SPEC.follow,
@@ -357,7 +360,8 @@ const MUTATIONS = [
   {
     id: "M10", file: "ft", spec: SPEC.follow,
     what: "знято захист дати з deep-link/prefill",
-    from: "  if (pinnedKey && curKey === pinnedKey) return null;\n",
+    // ⚠️ ПЕРЕЯКОРЕНО в с54: умова переїхала в `derivedFromToday` (див. M8).
+    from: "  if (pinnedKey && curKey === pinnedKey) return false;\n",
     to: "",
   },
   {
@@ -612,8 +616,15 @@ const MUTATIONS = [
   {
     id: "M30", file: "wm", spec: SPEC.follow,
     what: "WaitlistModal: знято пін збереженої дати — правило переписує чуже значення",
-    from: "    pinnedKey: initial?.desired_date_from ?? null,\n",
-    to: "",
+    /* ⚠️ ПЕРЕЯКОРЕНО в с54: у формі зʼявився ДРУГИЙ `pinnedKey:
+       initial?.desired_date_from ?? null` — у заявці про годинник (Г1-F), і
+       рядок із чотирма пробілами став ПІДРЯДКОМ рядка з десятьма. Ревізія
+       спіймала це як «ЯКІР НЕ УНІКАЛЬНИЙ (2)». Тепер якір бере і попередній
+       рядок виклику хука — той у заявці записаний в один рядок і не збігається.
+       ⚠️ Те, що заявка бере ТОЙ САМИЙ `pinnedKey`, стереже окремо
+       tests/clockTrust.test.ts: «форми будують заявку ТИМИ САМИМИ аргументами». */
+    from: "    clinicTz: clinicTz || undefined,\n    pinnedKey: initial?.desired_date_from ?? null,\n",
+    to: "    clinicTz: clinicTz || undefined,\n",
   },
 
   /* ============ Г1-B: карта дня (пакет с52) ============
@@ -1078,8 +1089,11 @@ const MUTATIONS = [
     expect: /QueueBoard.*спільне правило береться з lib/,
     what: "Г1-E: у дошці власна копія спільного правила під тим самим імʼям — гілка рендера не змінилась",
     edits: [
-      { from: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from \"@/lib/useFollowToday\";",
-        to: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, type DayShiftNotice } from \"@/lib/useFollowToday\";" },
+      // ⚠️ ПЕРЕЯКОРЕНО в с54: у рядку імпорту ДОШКИ ЧЕРГИ зʼявився `clockClaimOf`
+      //    (Г1-F — інлайн-переноси будують свою заявку). У дошки радіолога (M123)
+      //    рядок лишився без нього, тож якорі в них тепер РІЗНІ.
+      { from: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, clockClaimOf, type DayShiftNotice } from \"@/lib/useFollowToday\";",
+        to: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, clockClaimOf, type DayShiftNotice } from \"@/lib/useFollowToday\";" },
       { from: "function dateKey(d: Date) { return dateKeyOf(d); }",
         to: "function dateKey(d: Date) { return dateKeyOf(d); }\nfunction dayShiftNoticeVerdict(n: DayShiftNotice | null, curKey: string) { return !n || n.toKey !== curKey ? \"none\" : \"moved\"; }" },
     ],
@@ -1283,17 +1297,20 @@ const MUTATIONS = [
        а зміна API. Тепер перейменовується лише локальне звʼязування. */
     id: "T1", file: "ft", green: true,
     what: "перейменовано ЛОКАЛЬНЕ звʼязування в тілі правила — контракт той самий",
+    /* ⚠️ ПЕРЕЯКОРЕНО в с54: обидві умови переїхали з `followedDay` у спільний
+       предикат `derivedFromToday`, тож перейменування робимо там же. */
     edits: [
-      { from: "  const { prevDay, nextDay, curKey, offsetDays = 0, pinnedKey } = args;", to: "  const { prevDay, nextDay, curKey: key, offsetDays = 0, pinnedKey } = args;" },
-      { from: "  if (curKey !== dateKeyOf(shiftDays(prevDay, offsetDays))) return null;", to: "  if (key !== dateKeyOf(shiftDays(prevDay, offsetDays))) return null;" },
-      { from: "  if (pinnedKey && curKey === pinnedKey) return null;", to: "  if (pinnedKey && key === pinnedKey) return null;" },
+      { from: "  const { todayDay, curKey, offsetDays = 0, pinnedKey } = args;", to: "  const { todayDay, curKey: key, offsetDays = 0, pinnedKey } = args;" },
+      { from: "  if (curKey !== dateKeyOf(shiftDays(todayDay, offsetDays))) return false;", to: "  if (key !== dateKeyOf(shiftDays(todayDay, offsetDays))) return false;" },
+      { from: "  if (pinnedKey && curKey === pinnedKey) return false;", to: "  if (pinnedKey && key === pinnedKey) return false;" },
     ],
   },
   {
     id: "T2", file: "ft", green: true,
     what: "дефолт за старим годинником винесено у проміжну змінну",
-    from: "  if (curKey !== dateKeyOf(shiftDays(prevDay, offsetDays))) return null;",
-    to: "  const wasKey = dateKeyOf(shiftDays(prevDay, offsetDays));\n  if (curKey !== wasKey) return null;",
+    // ⚠️ ПЕРЕЯКОРЕНО в с54: умова переїхала в `derivedFromToday` (див. M8).
+    from: "  if (curKey !== dateKeyOf(shiftDays(todayDay, offsetDays))) return false;",
+    to: "  const wasKey = dateKeyOf(shiftDays(todayDay, offsetDays));\n  if (curKey !== wasKey) return false;",
   },
   {
     id: "T3", file: "qb", green: true,
@@ -1310,9 +1327,11 @@ const MUTATIONS = [
   {
     id: "T5", file: "ft", green: true,
     what: "порядок двох умов «лишити як є» переставлено — обидві дають той самий вердикт",
+    /* ⚠️ ПЕРЕЯКОРЕНО в с54: обидві умови переїхали в `derivedFromToday`
+       (див. M8), і повертають вони тепер `false`, а не `null`. */
     edits: [
-      { from: "  if (curKey !== dateKeyOf(shiftDays(prevDay, offsetDays))) return null;", to: "  if (pinnedKey && curKey === pinnedKey) return null;" },
-      { from: "  if (pinnedKey && curKey === pinnedKey) return null;\n  return shiftDays(nextDay, offsetDays);", to: "  if (curKey !== dateKeyOf(shiftDays(prevDay, offsetDays))) return null;\n  return shiftDays(nextDay, offsetDays);" },
+      { from: "  if (curKey !== dateKeyOf(shiftDays(todayDay, offsetDays))) return false;", to: "  if (pinnedKey && curKey === pinnedKey) return false;" },
+      { from: "  if (pinnedKey && curKey === pinnedKey) return false;\n  return true;", to: "  if (curKey !== dateKeyOf(shiftDays(todayDay, offsetDays))) return false;\n  return true;" },
     ],
   },
   {

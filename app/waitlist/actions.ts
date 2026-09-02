@@ -23,6 +23,12 @@ import {
   zOptDob, zOptAge, zOptWeight, PATIENT_AGE_MAX, PATIENT_WEIGHT_MAX,
   zDuration, zBuffer, zPriority, zStudiesRequired,
 } from "@/lib/validation";
+/* Г1-F (с54): те саме чисте правило, що в app/queue/actions.ts. ОДИН екземпляр
+   на обидва шляхи запису — дві копії розійшлися б мовчки. */
+import { clockClaimVerdict, serverClockNow, CLOCK_SKEW_MSG, type ClockClaim } from "@/lib/clockTrust";
+
+/** Г1-F: дата виведена з годинника, що розійшовся з часом центру. */
+const CLOCK_SKEW_ERR = { ok: false as const, error: CLOCK_SKEW_MSG, code: "clock_skew" as const };
 
 /* ===== Схеми входу (M-12) — див. lib/validation.ts =====
    Раніше вхід перевірявся лише на «є ПІБ / є id»; усе інше (дати бажаного вікна,
@@ -47,6 +53,11 @@ const sWaitlistInput = z.object({
   desiredTimeTo: z.union([zTime, z.literal(""), z.null(), z.undefined()]).transform((v) => v || null),
   note: zOptText(2000),
   sourceEntryId: zUuid.nullish(),
+  /* Г1-F: заявка про годинник клієнта. `z.unknown()` свідомо — розбір заявки є
+     частиною ПРАВИЛА (`clockClaimVerdict`), і в ньому три різні відповіді;
+     схема тут зробила б гілку «зіпсована заявка» недосяжною. Той самий вибір і
+     з тим самим обґрунтуванням — у `sReschedule` (app/queue/actions.ts). */
+  clock: z.unknown().optional(),
 });
 
 /* Патч рядка листа: колонки БД (як їх шле WaitlistBoard). Усі поля .optional() —
@@ -74,7 +85,7 @@ export type WaitlistActionResult =
   | { ok: true; id?: string }
   // 'stale' — CAS не спрацював: рядок уже змінив стан (напр. кандидата встиг
   // записати інший адміністратор). UI має оновитись, а не мовчки перетерти.
-  | { ok: false; error: string; code?: "forbidden" | "auth" | "duplicate" | "stale" | "generic" };
+  | { ok: false; error: string; code?: "forbidden" | "auth" | "duplicate" | "stale" | "clock_skew" | "generic" };
 
 /* Defense-in-depth (High): послуга вимкнена в каталозі центру / прихована в
    кабінеті / належить ІНШОМУ кабінету (room-owned, 0121). */
@@ -161,6 +172,11 @@ export type WaitlistInput = {
   desiredTimeTo?: string | null;
   note?: string | null;
   sourceEntryId?: string | null; // якщо доданий з наявного запису черги
+  /* Г1-F: заявка про годинник клієнта. ⚠️ ОБОВʼЯЗКОВЕ ПОЛЕ — це і є сторож
+     повноти: не перелік точок виклику, а вимога типу, тож нова форма не зможе
+     мовчки не передати годинник (буде помилка збірки). У РАНТАЙМІ поле
+     необовʼязкове — стара вкладка компілюється не нами. */
+  clock: ClockClaim;
 };
 
 /** Чи доступна направнику модальність у центрі за його грантом.
@@ -239,6 +255,15 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
   }
   if (!clinicId) return { ok: false, error: "Не авторизовано", code: "auth" };
 
+  /* Г1-F: «готовий з» — дефолт від клієнтського «сьогодні», і якщо годинник ПК
+     розійшовся з часом центру, дефолт вказує на чужу добу. Стоїть ПЕРЕД
+     перевіркою минулого вікна: та називає наслідок, ця — причину. */
+  {
+    const tz = (await supabase.from("clinics").select("timezone").eq("id", clinicId).maybeSingle()).data?.timezone;
+    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
   // Бажане вікно цілком у минулому → пацієнт не потрапить у підбір (див. PAST_WINDOW).
   if (input.desiredDateTo && input.desiredDateTo < await clinicTodayKey(supabase, clinicId)) return PAST_WINDOW;
 
@@ -430,7 +455,14 @@ export async function addEntryToWaitlist(
     пропускав у дозволену колонку будь-яке сміття. */
 export async function updateWaitlistEntry(
   id: string,
-  patch: TablesUpdate<"waitlist_entries">
+  patch: TablesUpdate<"waitlist_entries">,
+  /* Г1-F: заявка про годинник. ⚠️ Параметр ОБОВʼЯЗКОВИЙ, але `null` дозволений —
+     і це не половинчастість. Патч листа буває і без жодної дати (нотатка,
+     телефон, кабінет), а такому виклику взяти заявку нізвідки: форми поруч
+     немає. Обовʼязковість у типі змушує КОЖНУ точку виклику зробити свідомий
+     вибір і лишити його видимим у коді; `null` тут — не пропуск, а заявлене
+     «дати я не чіпаю». Хто чіпає — див. умову нижче. */
+  clock: ClockClaim | null,
 ): Promise<WaitlistActionResult> {
   const v = parseInput("updateWaitlistEntry", z.object({ id: zUuid, patch: sWaitlistPatch }), { id, patch });
   if (!v.ok) return v;
@@ -438,6 +470,25 @@ export async function updateWaitlistEntry(
   const supabase = await createClient();
   const caller = await callerProfile(supabase);
   if (!caller) return { ok: false, error: "Не авторизовано", code: "auth" };
+
+  /* Гард потрібен рівно тоді, коли патч ВЕЗЕ дату «готовий з»: саме її форма
+     виводить із «сьогодні». Умова читається з САМОГО патча, а не з переліку
+     викликів — новий шлях, що почне возити цю колонку, потрапить під гард
+     автоматично. */
+  if (v.data.patch.desired_date_from !== undefined) {
+    const { data: row } = await supabase.from("waitlist_entries").select("clinic_id").eq("id", v.data.id).maybeSingle();
+    const tz = row?.clinic_id
+      ? (await supabase.from("clinics").select("timezone").eq("id", row.clinic_id).maybeSingle()).data?.timezone
+      : null;
+    /* ⚠️ `null` ТУТ — ВІДМОВА, і це знахідка ревʼю (HIGH). Тип дозволяє `null`
+       заради патчів БЕЗ дати; але цей патч дату ВЕЗЕ, тобто виклик заявив
+       «дати не чіпаю» і бреше. Без цього рядка найдешевший спосіб зняти гард —
+       написати `null` замість заявки: tsc мовчить, `clockClaimVerdict(null)`
+       віддає `ok`, і слідів не лишається. `undefined` (стара вкладка, що кличе
+       екшен двома аргументами) під це НЕ підпадає — там fail-open свідомий. */
+    if (clock === null) return CLOCK_SKEW_ERR;
+    if (clockClaimVerdict(clock, serverClockNow(tz)) !== "ok") return CLOCK_SKEW_ERR;
+  }
 
   const safePatch: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(v.data.patch)) {

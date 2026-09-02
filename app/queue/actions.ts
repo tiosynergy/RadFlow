@@ -55,13 +55,16 @@ import { emitImportantEvent } from "@/lib/importantEvents.server";
 import { statusLabel } from "@/lib/journalText";
 import { logError } from "@/lib/serverLog";
 import { grantAllowsRoom } from "@/lib/rooms";
+/* Г1-F (с54): довіра до годинника клієнта на дату, ВИВЕДЕНУ з його «сьогодні».
+   Правило — чисте і одне на обидва екшени (черга і лист очікування). */
+import { clockClaimVerdict, serverClockNow, CLOCK_SKEW_MSG, type ClockClaim } from "@/lib/clockTrust";
 
 export type QueueActionResult =
   | { ok: true; id?: string } // id — створений запис (createBooking/createReferralBooking)
   | {
       ok: false;
       error: string;
-      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "stale" | "transition" | "past" | "off_schedule" | "modality_mismatch" | "sched_conflict" | "generic";
+      code?: "room_busy" | "slot_unavailable" | "slot_taken" | "incident" | "forbidden" | "auth" | "duplicate" | "stale" | "transition" | "past" | "off_schedule" | "modality_mismatch" | "sched_conflict" | "clock_skew" | "generic";
       // Для code='stale' (H-2) и 'transition' (M-6): реальный статус на сервере, чтобы доска ресинкнулась.
       // 'transition' — переход из ТЕКУЩЕГО состояния запрещён правилом (p_allowed /
       // ветка направника), никто не опережал: текст про «другого пользователя» тут — ложь.
@@ -158,6 +161,14 @@ const sReschedule = z.object({
      (0121) і позиції довелось перепризначити на каталог цільового кабінету.
      Не передано → склад лишається як був (канон 0070). */
   studies: sStudies.optional(),
+  /* Г1-F: заявка про годинник клієнта. ⚠️ `z.unknown()`, а не описана схема, і
+     це не лінь. Розбір заявки — ЧАСТИНА ПРАВИЛА (`clockClaimVerdict`), і в
+     ньому три різні відповіді: відсутня заявка = стара вкладка (пропускаємо,
+     бо fail-closed поклав би реєстратуру в мить деплою), зіпсована = крафтовий
+     запит (відмова), справна = порівнюємо. Опиши я її тут схемою — зіпсована
+     заявка впала б у ЗАГАЛЬНУ помилку валідації, гілка `malformed` у правилі
+     стала б недосяжною, а пін на неї доводив би наявність мертвого рядка. */
+  clock: z.unknown().optional(),
 });
 
 const sIncident = z.object({
@@ -269,6 +280,13 @@ async function isPastSlot(
   const tz = await clinicTz(supabase, clinicId);
   return slotMs < wallNow(tz) - PAST_TOLERANCE_MIN * 60000;
 }
+
+/** Г1-F: дата виведена з годинника, який розійшовся з часом центру. Відмова
+    ГУЧНА і до запису — саме тому, що мовчазний успіх тут невідрізнимий від
+    правильної роботи (виміряно зондом у с54: під `busy: saving` перенесення
+    відкладається, форму на успіху закриває батько, і відкладений ключ помирає
+    разом із хуком). Текст — один екземпляр на обидва екшени. */
+const CLOCK_SKEW_ERR = { ok: false as const, error: CLOCK_SKEW_MSG, code: "clock_skew" as const };
 
 const PAST_ERR = { ok: false as const, error: "Цей час уже минув — оберіть майбутній слот", code: "past" as const };
 
@@ -1517,6 +1535,14 @@ export type RescheduleInput = {
   /* 0122: НОВИЙ склад — коли переносимо в кабінет з іншим прайсом (0121) і
      позиції перепризначено на його каталог. Не передано → склад не змінюється. */
   studies?: { type?: string; region?: string; contrast?: boolean; dur?: number; price?: number | null }[];
+  /* Г1-F: заявка про годинник клієнта. ⚠️ ОБОВʼЯЗКОВЕ ПОЛЕ, і це і є сторож
+     повноти. Гард — не перелік файлів, а вимога типу: жоден виклик (нинішній
+     чи майбутній) не пройде tsc без заявки, тож «нова точка виклику забула
+     передати годинник» стає помилкою збірки, а не тихою діркою. Саме таким
+     механізмом — рукописним переліком місць — `CallListBoard` півроку міняв
+     день мовчки (пакет 5, с51). У РАНТАЙМІ поле лишається необовʼязковим
+     (`z.unknown().optional()`): стара вкладка компілюється не нами. */
+  clock: ClockClaim;
 };
 
 /** Перенос записи на другой кабинет/дату/время (с пред-проверкой пересечения). */
@@ -1582,6 +1608,18 @@ export async function rescheduleQueueEntry(raw: RescheduleInput): Promise<QueueA
     if (g) return g;
   }
 
+  /* Г1-F: годинник клієнта розійшовся з часом центру, і дата в запиті ВИВЕДЕНА
+     саме з цього годинника. Стоїть ПЕРЕД «минулим» свідомо: обидві відмови
+     можливі одночасно, але ця називає ПРИЧИНУ («годинник»), а «минуле» —
+     наслідок; оператор, який прочитав наслідок, піде правити слот і повернеться
+     сюди ж. Читання `timezone` тут своє: не чіпаємо підпис `isPastSlot`, яким
+     користуються ще чотири шляхи запису. */
+  {
+    const tz = await clinicTz(supabase, clinicId);
+    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
   /* Перенести в МИНУЛЕ не можна — жодною роллю. Клієнтський гейт тут не працював
      (isToday=false → перевірка "past" пропускалась), тому це і є основна діра. */
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
