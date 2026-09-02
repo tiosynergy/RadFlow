@@ -221,7 +221,7 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
             <div className="ctx-hint" role="status" style={{ marginTop: 6 }}>
               {dayShiftSay === "moved"
                 ? <>🕐 Годинник центру уточнено — день змінено з <b>{fmtShort(dayOfKey(dayShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dayShifted.toKey))}</b>. Це вже інша карта: назвіть вільний час заново.</>
-                : <>🕐 Годинник центру уточнювався двічі і повернувся на <b>{fmtShort(dayOfKey(dayShifted.toKey))}</b> — день той самий, але обраний час скинуто. Оберіть його заново.</>}
+                : <>🕐 Годинник центру уточнено — день лишився <b>{fmtShort(dayOfKey(dayShifted.toKey))}</b>, але обраний час скинуто. Оберіть його заново.</>}
             </div>
           )}
 

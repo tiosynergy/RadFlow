@@ -750,17 +750,23 @@ const ON_SHIFT_SITES: Array<[string, RegExp, string, RegExp, RegExp, RegExp]> = 
     "форма запису: слот скинуто, перенесення оголошено",
     /const dateShiftSay = dayShiftNoticeVerdict\(dateShifted, dateKey\(bookDate\)\);/,
     /\{dateShifted && dateShiftSay !== "none" && \( <div className="ctx-hint" role="status"/,
-    /повернувся на <b>\{fmtShort\(dayOfKey\(dateShifted\.toKey\)\)\}<\/b> — дата та сама, але обраний час скинуто/],
+    /* ⚠️ с54, рішення власника: текст «туди-назад» більше НЕ описує механізм
+       («уточнювався двічі і повернувся») — оператору важливе одне: дата та
+       сама, час пропав, оберіть заново. Пін тримає саме те, чим цей текст
+       ВІДРІЗНЯЄТЬСЯ від `moved` («лишилась … але … скинуто»); спільний початок
+       «Годинник центру уточнено» є в обох гілках і сам по собі нічого не
+       розрізняє. */
+    /дата лишилась <b>\{fmtShort\(dayOfKey\(dateShifted\.toKey\)\)\}<\/b>, але обраний час скинуто/],
   ["components/ReferralPortal.tsx", /onShift: \(d, prev\) => \{ setTime\(""\); setDateShifted\(\(s\) => dayShiftNoticeOf\(s, prev, d\)\); \}/,
     "портал направника: те саме",
     /const dateShiftSay = dayShiftNoticeVerdict\(dateShifted, dateVal\(bookDate\)\);/,
     /\{dateShifted && dateShiftSay !== "none" && \( <div className="ctx-hint" role="status"/,
-    /повернувся на <b>\{fmtShort\(dayOfKey\(dateShifted\.toKey\)\)\}<\/b> — дата та сама, але обраний час скинуто/],
+    /дата лишилась <b>\{fmtShort\(dayOfKey\(dateShifted\.toKey\)\)\}<\/b>, але обраний час скинуто/],
   ["components/RescheduleModal.tsx", /onShift: \(d, prev\) => \{ setTime\(""\); setDateShifted\(\(s\) => dayShiftNoticeOf\(s, prev, d\)\); \}/,
     "форма переносу: те саме",
     /const dateShiftSay = dayShiftNoticeVerdict\(dateShifted, dateStr\);/,
     /\{dateShifted && dateShiftSay === "moved" && <div className="ctx-hint" role="status"/,
-    /\{dateShifted && dateShiftSay === "returned" && <div className="ctx-hint" role="status"[^]*?повернувся на <b>\{fmtShort\(dayOfKey\(dateShifted\.toKey\)\)\}<\/b> — дата та сама, але обраний слот скинуто/],
+    /\{dateShifted && dateShiftSay === "returned" && <div className="ctx-hint" role="status"[^]*?дата лишилась <b>\{fmtShort\(dayOfKey\(dateShifted\.toKey\)\)\}<\/b>, але обраний слот скинуто/],
 ];
 
 describe.each(ON_SHIFT_SITES)("%s — перенесення не тихе", (file, re, why, verdictRe, branchRe, returnedRe) => {
@@ -879,7 +885,7 @@ describe("components/CallListBoard.tsx — масова дія після пер
        дії, а кнопка «Зрозуміло» — єдиний вихід із нього — живе ВСЕРЕДИНІ
        банера. Схований банер = відкритий гейт БЕЗ попередження і без виходу. */
     expect(text("components/CallListBoard.tsx"), "«туди-назад» знову без банера — гейт масової дії відкрився мовчки, і виходу з нього не видно")
-      .toMatch(/повернувся на <b>\{fmtFull\(dayOfKey\(dayShifted\.toKey\)\)\}<\/b> — між поправками на дошці стояв інший день/);
+      .toMatch(/день обдзвону лишився <b>\{fmtFull\(dayOfKey\(dayShifted\.toKey\)\)\}<\/b>, але на дошці встиг постояти інший день/);
   });
 
   /* ⚠️ Г1-G (с53): банер і ГЕЙТ мусять питати ОДИН І ТОЙ САМИЙ вердикт. Це не
@@ -1151,7 +1157,7 @@ describe("components/RoomDayOverviewModal.tsx — карта дня не мін�
        без причини. Коментар цього місця до с53 казав «слот скинуто двічі, і це
        видно» — це не аргумент, а та сама тиха вада навиворіт. */
     expect(text("components/RoomDayOverviewModal.tsx"), "«туди-назад» знову без банера: слот скинуто двічі, а карта мовчить")
-      .toMatch(/повернувся на <b>\{fmtShort\(dayOfKey\(dayShifted\.toKey\)\)\}<\/b> — день той самий, але обраний час скинуто/);
+      .toMatch(/день лишився <b>\{fmtShort\(dayOfKey\(dayShifted\.toKey\)\)\}<\/b>, але обраний час скинуто/);
   });
 
   it("«змінено з 1 вересня на 1 вересня» неможливе — банер не оголошує нульову зміну", () => {

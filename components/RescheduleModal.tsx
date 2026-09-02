@@ -634,7 +634,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
             {/* ⚠️ ДРУГИЙ ТЕКСТ — на «туди-назад» (ревʼю А по Г1-G): дата та сама,
                 але обраний слот стерто двічі. */}
             {dateShifted && dateShiftSay === "moved" && <div className="ctx-hint" role="status" style={{ marginBottom: 10 }}>🕐 Годинник центру уточнено — дату змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>. Назвіть пацієнту нову дату і оберіть слот заново.</div>}
-            {dateShifted && dateShiftSay === "returned" && <div className="ctx-hint" role="status" style={{ marginBottom: 10 }}>🕐 Годинник центру уточнювався двічі і повернувся на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b> — дата та сама, але обраний слот скинуто. Оберіть слот заново.</div>}
+            {dateShifted && dateShiftSay === "returned" && <div className="ctx-hint" role="status" style={{ marginBottom: 10 }}>🕐 Годинник центру уточнено — дата лишилась <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>, але обраний слот скинуто. Оберіть слот заново.</div>}
             {isPastDay && <div className="ctx-hint red" style={{ marginBottom: 10 }}>⏳ {dateStr} уже минуло — перенести можна лише на майбутній час.</div>}
             {/* Обидва рядки — ТВЕРДЖЕННЯ про графік, тож лише коли він прочитаний.
                 Без цієї умови збій читання (schedErr) показував би графік, який
