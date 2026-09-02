@@ -1533,7 +1533,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
               <div className="ctx-hint" role="status" style={{ marginTop: 6 }}>
                 {dateShiftSay === "moved"
                   ? <>🕐 Годинник центру уточнено — дату змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>. Назвіть пацієнту нову дату і оберіть час заново.</>
-                  : <>🕐 Годинник центру уточнювався двічі і повернувся на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b> — дата та сама, але обраний час скинуто. Оберіть час заново.</>}
+                  : <>🕐 Годинник центру уточнено — дата лишилась <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>, але обраний час скинуто. Оберіть час заново.</>}
               </div>
             )}
 

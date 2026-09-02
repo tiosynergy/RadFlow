@@ -834,7 +834,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
               <div className="ctx-hint orange" role="status" style={{ marginBottom: 12 }}>
                 {dayShiftSay === "moved"
                   ? <>🕐 Годинник центру уточнено — день обдзвону змінено з <b>{fmtFull(dayOfKey(dayShifted.fromKey))}</b> на <b>{fmtFull(dayOfKey(dayShifted.toKey))}</b>.</>
-                  : <>🕐 Годинник центру уточнювався двічі і повернувся на <b>{fmtFull(dayOfKey(dayShifted.toKey))}</b> — між поправками на дошці стояв інший день.</>}
+                  : <>🕐 Годинник центру уточнено — день обдзвону лишився <b>{fmtFull(dayOfKey(dayShifted.toKey))}</b>, але на дошці встиг постояти інший день.</>}
                 {" "}Перед масовим підтвердженням перевірте, кого ви вже обдзвонили: попередній день лишився необдзвоненим.
                 {" "}<button className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={() => setDayShifted(null)}>Зрозуміло</button>
               </div>
