@@ -11,11 +11,12 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import PhoneInput from "@/components/PhoneInput";
 import {
   roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, offScheduleKind, OFF_SCHED_GRACE_MIN,
+  dateKeyOf,
   type DayOverride,
 } from "@/lib/schedule";
 import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { incidentDurCapMin, incidentEffectiveEnd, roomIncidentsOf, studyBlockedByFeed, wallNow, wallMinOfDay, wallToday0, type IncidentFeed } from "@/lib/incidents";
-import { useFollowToday } from "@/lib/useFollowToday";
+import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
 
 /* ⚠️ Імена порівнюємо ТІЛЬКИ нормалізовано (trim + пробіли до одного): у БД
    живуть легасі-рядки з подвійними пробілами, а нові значення нормалізує
@@ -103,7 +104,12 @@ export function today0() { return wallToday0(); }
 export function sameDay(a: Date, b: Date) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
 function dowMon(d: Date) { return (d.getDay() + 6) % 7; }
 export function fmtShort(d: Date) { return d.getDate() + " " + MONTHS_GEN[d.getMonth()]; }
-function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+/* ⚠️ Г1-G (с53): ОДИН формат ключа доби на продукт. Тут стояла власна копія
+   тіла `dateKeyOf`, і поки ключ не виходив за межі екрана, розходження було
+   невидиме. Тепер ключ цього поля порівнюється з ключем, який рахує спільне
+   правило банера (`dayShiftNoticeVerdict`), — дві копії формату розійшлися б
+   МОВЧКИ, і банер про перенесення дати не з'явився б узагалі. */
+function dateKey(d: Date) { return dateKeyOf(d); }
 
 /* ── Слоти часу ── */
 const BK_START = 8 * 60, BK_END = 18 * 60, BK_STEP = 5; // крок вибору слота — 5 хв (сітка групується у 30-хв блоки в SlotPicker)
@@ -172,7 +178,11 @@ export function DobField({ value, onChange, invalid }: { value: string; onChange
   for (let d = 1; d <= days; d++) cells.push(d);
   function pick(d: number) {
     const cd = new Date(y, mo, d);
-    const iso = cd.getFullYear() + "-" + String(cd.getMonth() + 1).padStart(2, "0") + "-" + String(cd.getDate()).padStart(2, "0");
+    /* ⚠️ Г1-G (с53): і тут теж СПІЛЬНИЙ формат ключа доби, хоч ключ і не про
+       «сьогодні», а про дату народження. Копія була байт у байт рівна
+       `dateKeyOf`, тобто поведінки не міняла — і саме тому лишалась непомітною:
+       розійтись вона могла лише при першій правці `dateKeyOf`, уже мовчки. */
+    const iso = dateKeyOf(cd);
     onChange(iso); setText(dobFmt(iso)); setErr(""); setOpen(false);
   }
   return (
@@ -965,7 +975,13 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
      ⚠️ ДВІ дати, а не одна (F7, ревʼю Б + рішення власника с51). Банер «дату
      змінено на 1 вер.» вимагав від оператора памʼятати, що стояло в полі
      секунду тому, — а він у цю мить диктує дату пацієнту вголос. */
-  const [dateShifted, setDateShifted] = useState<{ from: string; to: string } | null>(null);
+  /* ⚠️ Г1-G (с53): стан — у КЛЮЧАХ доби, а не в готових підписах, і умови
+     видимості беруться зі СПІЛЬНОГО правила (`lib/useFollowToday.ts`). Рукописна
+     пара («перший from» + «from !== to») розійшлась між шістьма екранами: умови
+     `from !== to` тут не було взагалі, тож поправка «туди-назад» давала банер
+     «змінено з 1 вересня на 1 вересня». Підпис форматує екран, вердикт «чи є що
+     казати» — правило. */
+  const [dateShifted, setDateShifted] = useState<DayShiftNotice | null>(null);
 
   /* ⚠️ U-72. `bookDate` зафіксовано ініціалізатором useState на `wallToday0()`,
      а зсув годинника бази приїжджає АСИНХРОННО — і потім ще раз кожні 10 хв та
@@ -997,8 +1013,15 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
     offsetDays: 0,
     value: bookDate,
     setDate: setBookDate,
-    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
+    onShift: (d, prev) => { setTime(""); setDateShifted((s) => dayShiftNoticeOf(s, prev, d)); },
   });
+  /* ⚠️ Г1-G: ОДИН вердикт на банер — рахуємо тут, а не в гілці рендера. Другий
+     екземпляр умови розійшовся б із першим мовчки; у дошки обдзвону той самий
+     вердикт заразом гейтить незворотну масову дію. */
+  /* ⚠️ ТРИЗНАЧНИЙ (ревʼю А по Г1-G): «туди-назад» — не тиша. `onShift` за цей
+     час двічі зробив `setTime("")`, і оператор бачить порожнє поле часу без
+     причини; до пакета він бачив бодай суперечливий банер. */
+  const dateShiftSay = dayShiftNoticeVerdict(dateShifted, dateKey(bookDate));
   /* ⚠️ Г1-A (HIGH, ревʼю Г; рішення власника с51 — «зупинити збереження,
      вирішує людина»). `busy` тримається набраними кроками кейса, тож поки
      оператор його збирає, перенесення ВІДКЛАДАЄТЬСЯ — і це правильно: інакше
@@ -1502,10 +1525,15 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                 дату оператор у цю мить уже назвав уголос, і саме її треба
                 відкликати; «час оберіть заново» — про форму, а обовʼязкова дія
                 тут — розмова. */}
-            {dateShifted && (
+            {/* ⚠️ ДРУГИЙ ТЕКСТ — на «туди-назад» (ревʼю А по Г1-G). Дата в полі
+                та сама, тож відкликати в пацієнта нема чого, але обраний час
+                стерто (двічі), і без цього рядка порожнє поле часу виглядає як
+                збій форми. */}
+            {dateShifted && dateShiftSay !== "none" && (
               <div className="ctx-hint" role="status" style={{ marginTop: 6 }}>
-                🕐 Годинник центру уточнено — дату змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>.
-                {" "}Назвіть пацієнту нову дату і оберіть час заново.
+                {dateShiftSay === "moved"
+                  ? <>🕐 Годинник центру уточнено — дату змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>. Назвіть пацієнту нову дату і оберіть час заново.</>
+                  : <>🕐 Годинник центру уточнювався двічі і повернувся на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b> — дата та сама, але обраний час скинуто. Оберіть час заново.</>}
               </div>
             )}
 
@@ -1698,7 +1726,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                 setCaseSteps((arr) => arr.map((s) => ({ ...s, date: dayStop.to })));
                 setBookDate(dayStop.to);
                 setTime("");
-                setDateShifted({ from: fmtShort(dayStop.from), to: fmtShort(dayStop.to) });
+                /* ⚠️ Г1-G: те саме накопичення, що й в `onShift` — а не пряме
+                   присвоєння. Якщо доба вже їхала раніше, банер мусить назвати
+                   ПЕРШУ добу (ту, яку оператор сказав пацієнту), а не проміжну. */
+                setDateShifted((s) => dayShiftNoticeOf(s, dayStop.from, dayStop.to));
                 setShiftAck(true);
               }}>Перенести кейс на {fmtShort(dayStop.to)}</button>
               <button className="btn btn-secondary btn-sm" onClick={() => setShiftAck(true)}>

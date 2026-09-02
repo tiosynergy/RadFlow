@@ -16,11 +16,12 @@ import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
   roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, offScheduleKind, OFF_SCHED_GRACE_MIN,
+  dateKeyOf,
   type DayOverride,
 } from "@/lib/schedule";
 import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { incidentDurCapMin, incidentEffectiveEnd, roomIncidentsOf, studyBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentFeed } from "@/lib/incidents";
-import { useFollowTodayKey } from "@/lib/useFollowToday";
+import { useFollowTodayKey, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { BUFFER_DEFAULT, normBuffer, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
@@ -74,7 +75,13 @@ interface RescheduleModalProps {
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
-function dateVal(d: Date) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+/* ⚠️ Г1-G (с53, знахідка ревʼю Б): ОДИН формат ключа доби на продукт — тут
+   стояла ще одна власна копія тіла `dateKeyOf`, і саме вона дає початкове
+   значення `dateStr`, тобто `curKey` для спільного правила. Розходження двох
+   копій формату вбило б перенесення МОВЧКИ: `followedDay` порівнює `curKey` із
+   ключем, який рахує `dateKeyOf`, — не збіглись, отже «оператор обрав дату
+   сам», отже не переносимо і нічого не кажемо. */
+function dateVal(d: Date) { return dateKeyOf(d); }
 function procLabel(e: { studies?: unknown; note?: string | null }) {
   const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string; contrast?: boolean }>) : [];
   if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast && !isContrastName(x.region) ? " з контрастом" : "")).join(" + ");
@@ -395,7 +402,9 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
      щойно оператор обере дату сам.
      ⚠️ ДВІ дати (F7, ревʼю Б + рішення власника с51): оператор у цю мить уже
      назвав пацієнту старий день уголос, і саме його треба відкликати. */
-  const [dateShifted, setDateShifted] = useState<{ from: string; to: string } | null>(null);
+  /* ⚠️ Г1-G (с53): стан у КЛЮЧАХ доби, умови видимості — зі спільного правила
+     `lib/useFollowToday.ts`. Умови `from !== to` тут не було. */
+  const [dateShifted, setDateShifted] = useState<DayShiftNotice | null>(null);
 
   /* ⚠️ U-72. `dateStr` зафіксовано ініціалізатором на «завтра доби КЛІНІКИ», а
      зсув годинника бази приїжджає асинхронно і перезаміряється кожні 10 хв та
@@ -421,8 +430,12 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
     busy: saving,
     value: dateStr,
     setKey: setDateStr,
-    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
+    onShift: (d, prev) => { setTime(""); setDateShifted((s) => dayShiftNoticeOf(s, prev, d)); },
   });
+  /* ⚠️ Г1-G: ОДИН вердикт на банер — другий екземпляр умови розійшовся б мовчки.
+     ТРИЗНАЧНИЙ (ревʼю А по Г1-G): «туди-назад» — не тиша, `setTime("")`
+     відпрацював двічі. */
+  const dateShiftSay = dayShiftNoticeVerdict(dateShifted, dateStr);
 
   async function handleConfirm() {
     if (!valid || saving) return;   // M-6: подвійний клік більше не переносить двічі
@@ -595,7 +608,10 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
                 день і час уголос. */}
             {/* ⚠️ F7 (ревʼю Б, рішення власника с51): називаємо ОБИДВІ доби і
                 веліми переспитати ПАЦІЄНТА — стару дату він уже почув. */}
-            {dateShifted && <div className="ctx-hint" role="status" style={{ marginBottom: 10 }}>🕐 Годинник центру уточнено — дату змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>. Назвіть пацієнту нову дату і оберіть слот заново.</div>}
+            {/* ⚠️ ДРУГИЙ ТЕКСТ — на «туди-назад» (ревʼю А по Г1-G): дата та сама,
+                але обраний слот стерто двічі. */}
+            {dateShifted && dateShiftSay === "moved" && <div className="ctx-hint" role="status" style={{ marginBottom: 10 }}>🕐 Годинник центру уточнено — дату змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>. Назвіть пацієнту нову дату і оберіть слот заново.</div>}
+            {dateShifted && dateShiftSay === "returned" && <div className="ctx-hint" role="status" style={{ marginBottom: 10 }}>🕐 Годинник центру уточнювався двічі і повернувся на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b> — дата та сама, але обраний слот скинуто. Оберіть слот заново.</div>}
             {isPastDay && <div className="ctx-hint red" style={{ marginBottom: 10 }}>⏳ {dateStr} уже минуло — перенести можна лише на майбутній час.</div>}
             {/* Обидва рядки — ТВЕРДЖЕННЯ про графік, тож лише коли він прочитаний.
                 Без цієї умови збій читання (schedErr) показував би графік, який

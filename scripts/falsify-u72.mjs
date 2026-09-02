@@ -60,7 +60,7 @@ const CALL_BM = `  const pendingShift = useFollowToday({
     offsetDays: 0,
     value: bookDate,
     setDate: setBookDate,
-    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
+    onShift: (d, prev) => { setTime(""); setDateShifted((s) => dayShiftNoticeOf(s, prev, d)); },
   });`;
 const CALL_RP = `  const pendingShift = useFollowToday({
     clinicTz: selTz,
@@ -68,7 +68,7 @@ const CALL_RP = `  const pendingShift = useFollowToday({
     busy: busy || caseBusy || caseSteps.length > 0,
     value: bookDate,
     setDate: setBookDate,
-    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
+    onShift: (d, prev) => { setTime(""); setDateShifted((s) => dayShiftNoticeOf(s, prev, d)); },
   });`;
 const CALL_RM = `  useFollowTodayKey({
     clinicTz: clinicTz || undefined,
@@ -76,7 +76,7 @@ const CALL_RM = `  useFollowTodayKey({
     busy: saving,
     value: dateStr,
     setKey: setDateStr,
-    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
+    onShift: (d, prev) => { setTime(""); setDateShifted((s) => dayShiftNoticeOf(s, prev, d)); },
   });`;
 /* ⚠️ ЯКІР ОНОВЛЕНО в с52 разом із Г1-C: у виклик приїхав `onShift`. Стара
    форма (без нього) дала б 0 входжень і завалила прогін — правило U-74
@@ -88,13 +88,13 @@ const CALL_WM = `  useFollowTodayKey({
     busy: saving,
     value: dateFrom,
     setKey: setDateFrom,
-    onShift: (d, prev) => setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })),
+    onShift: (d, prev) => setDateShifted((s) => dayShiftNoticeOf(s, prev, d)),
   });`;
 /* Те саме для карти дня (Г1-B): виклик став дворядковим. Беремо ОБИДВА рядки
    цілком — якір на один лишив би висячий літерал, і мутація ламала б збірку
    замість того, щоб червонити сторожа (той самий урок, що з M17 у с51). */
 const CALL_RD = `  useFollowTodayKey({ clinicTz, value: day, setKey: setDay,
-    onShift: (d, prev) => { setSelectedSlot(""); setDayShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); } });`;
+    onShift: (d, prev) => { setSelectedSlot(""); setDayShifted((s) => dayShiftNoticeOf(s, prev, d)); } });`;
 /* ⚠️ ЯКОРІ ДОШОК ОНОВЛЕНО в с53 разом із Г1-E: у виклик приїхав `onShift`.
    Стара форма дала б 0 входжень і завалила прогін — саме так якір і мусить
    протухати: голосно. Це вчетверте за три пакети, і це нормальна ціна того, що
@@ -392,7 +392,7 @@ const MUTATIONS = [
      завалив прогін — правило U-74 спрацювало вдруге за сесію. Обидва рядки
      беремо ЦІЛКОМ: якір на один рядок лишив би висячий літерал і мутація
      ламала б збірку замість того, щоб червонити сторожа. */
-  drop("M17", "cl", "  useFollowToday({ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate,\n    onShift: (d, prev) => setDayShifted((s) => ({ from: s?.from ?? fmtFull(prev), to: fmtFull(d) })) });",
+  drop("M17", "cl", "  useFollowToday({ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate,\n    onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)) });",
     "CallListBoard: «Всіх підтверджено» пачкою по чужій добі"),
   drop("M18", "wm", CALL_WM, "WaitlistModal: desired_date_from на добу раніше"),
   drop("M19", "rd", CALL_RD,
@@ -419,8 +419,8 @@ const MUTATIONS = [
   {
     id: "M25", file: "bm", spec: SPEC.follow,
     what: "BookingModal: підключення лишили, а сеттер підмінили на чужий",
-    from: "    setDate: setBookDate,\n    onShift: (d, prev) => { setTime(\"\"); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },",
-    to: "    setDate: (() => {}) as unknown as typeof setBookDate,\n    onShift: (d, prev) => { setTime(\"\"); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },",
+    from: "    setDate: setBookDate,\n    onShift: (d, prev) => { setTime(\"\"); setDateShifted((s) => dayShiftNoticeOf(s, prev, d)); },",
+    to: "    setDate: (() => {}) as unknown as typeof setBookDate,\n    onShift: (d, prev) => { setTime(\"\"); setDateShifted((s) => dayShiftNoticeOf(s, prev, d)); },",
   },
   {
     id: "M26", file: "rm", spec: SPEC.follow,
@@ -431,14 +431,14 @@ const MUTATIONS = [
   {
     id: "M27", file: "rm", spec: SPEC.follow,
     what: "RescheduleModal: слот НЕ скидається — оператор назвав пацієнту інший день і час",
-    from: '    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },\n  });\n\n  async function handleConfirm()',
-    to: "    onShift: (d, prev) => { setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },\n  });\n\n  async function handleConfirm()",
+    from: '    onShift: (d, prev) => { setTime(""); setDateShifted((s) => dayShiftNoticeOf(s, prev, d)); },\n  });',
+    to: "    onShift: (d, prev) => { setDateShifted((s) => dayShiftNoticeOf(s, prev, d)); },\n  });",
   },
   {
     id: "M28", file: "bm", spec: SPEC.follow,
     what: "BookingModal: перенесення знову ТИХЕ — підпис для оператора прибрано",
-    from: "            {dateShifted && (",
-    to: "            {false && dateShifted && (",
+    from: "            {dateShifted && dateShiftSay !== \"none\" && (",
+    to: "            {false && dateShifted && dateShiftSay !== \"none\" && (",
   },
   {
     id: "M29", file: "cl", spec: SPEC.follow,
@@ -455,7 +455,7 @@ const MUTATIONS = [
   {
     id: "M50", file: "cl", spec: SPEC.follow,
     what: "F2: дошка обдзвону знову міняє день МОВЧКИ — onShift знято",
-    from: ",\n    onShift: (d, prev) => setDayShifted((s) => ({ from: s?.from ?? fmtFull(prev), to: fmtFull(d) })) });",
+    from: ",\n    onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)) });",
     to: " });",
   },
   {
@@ -463,20 +463,20 @@ const MUTATIONS = [
        одразу. Саме гейт, а не текст, є парою до `setTime("")` у формах. */
     id: "M51", file: "cl", spec: SPEC.follow,
     what: "F2: «Всіх підтверджено» знову доступне одразу після переносу дня — банер є, гейта немає",
-    from: "disabled={loading || !!dayShifted || confirmTargets.length === 0}",
+    from: "disabled={loading || dayShiftSay !== \"none\" || confirmTargets.length === 0}",
     to: "disabled={loading || confirmTargets.length === 0}",
   },
   {
     id: "M52", file: "cl", spec: SPEC.follow,
     what: "F2: банер дошки називає лише НОВИЙ день — попередній оператор мусив би памʼятати сам",
-    from: "день обдзвону змінено з <b>{dayShifted.from}</b> на <b>{dayShifted.to}</b>.",
-    to: "день обдзвону змінено на <b>{dayShifted.to}</b>.",
+    from: "день обдзвону змінено з <b>{fmtFull(dayOfKey(dayShifted.fromKey))}</b> на <b>{fmtFull(dayOfKey(dayShifted.toKey))}</b>.",
+    to: "день обдзвону змінено на <b>{fmtFull(dayOfKey(dayShifted.toKey))}</b>.",
   },
   {
     id: "M53", file: "bm", spec: SPEC.follow,
     what: "F7: банер форми запису називає лише НОВУ дату (стара вже сказана пацієнту вголос)",
-    from: "дату змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>.",
-    to: "дату змінено на <b>{dateShifted.to}</b>.",
+    from: "дату змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>. Назвіть пацієнту нову дату і оберіть час заново.",
+    to: "дату змінено на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>. Назвіть пацієнту нову дату і оберіть час заново.",
   },
   {
     id: "M54", file: "rm", spec: SPEC.follow,
@@ -487,8 +487,8 @@ const MUTATIONS = [
   {
     id: "M55", file: "rp", spec: SPEC.follow,
     what: "F7: портал направника загубив СТАРУ дату в підписі перенесення",
-    from: "                🕐 Годинник центру уточнено — дату змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>.",
-    to: "                🕐 Годинник центру уточнено — дату змінено на <b>{dateShifted.to}</b>.",
+    from: "? <>🕐 Годинник центру уточнено — дату змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>.",
+    to: "? <>🕐 Годинник центру уточнено — дату змінено на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>.",
   },
   {
     /* ⚠️ Зустрічний зонд до M51: банер, який гасне САМ, повертає тихий
@@ -514,22 +514,25 @@ const MUTATIONS = [
        робився. Мутація повертає пряме присвоєння. */
     id: "M58", file: "cl", spec: SPEC.follow,
     what: "F2: повторна поправка затирає ПЕРШУ добу — банер називає проміжний день замість сказаного",
-    from: "onShift: (d, prev) => setDayShifted((s) => ({ from: s?.from ?? fmtFull(prev), to: fmtFull(d) }))",
-    to: "onShift: (d, prev) => setDayShifted({ from: fmtFull(prev), to: fmtFull(d) })",
+    from: "onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d))",
+    to: "onShift: (d, prev) => setDayShifted(dayShiftNoticeOf(null, prev, d))",
   },
   {
     id: "M59", file: "bm", spec: SPEC.follow,
     what: "F7: те саме у формі запису — друга поправка затирає добу, названу пацієнту",
-    from: 'setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) }));',
-    to: "setDateShifted({ from: fmtShort(prev), to: fmtShort(d) });",
+    from: 'setDateShifted((s) => dayShiftNoticeOf(s, prev, d));',
+    to: "setDateShifted(dayShiftNoticeOf(null, prev, d));",
   },
   {
     /* ⚠️ Зустрічний зонд до F7: машинний ISO там, де оператор читає дату
-       ПАЦІЄНТУ вголос. Саме так було до ревʼю В у двох екранах із трьох. */
+       ПАЦІЄНТУ вголос. Саме так було до ревʼю В у двох екранах із трьох.
+       ⚠️ Г1-G (с53): вибір формату переїхав із колбека в РЕНДЕР — стан тепер у
+       ключах. Тож і мутація б'є туди, де формат тепер живе; стара форма
+       (`dateVal` у `onShift`) описувала б дефект, якого в коді більше немає. */
     id: "M60", file: "rm", spec: SPEC.follow,
     what: "F7: банер переносу повернувся до машинного ISO — «з 2026-09-02 на 2026-09-01» вголос",
-    from: 'setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) }));',
-    to: "setDateShifted((s) => ({ from: s?.from ?? dateVal(prev), to: dateVal(d) }));",
+    from: "дату змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>",
+    to: "дату змінено з <b>{dateShifted.fromKey}</b> на <b>{dateShifted.toKey}</b>",
   },
   /* ============ Г1-A: кейс під відкладеним перенесенням (с51) ============
      Знахідка ревʼю Г, HIGH; рішення власника — «зупинити збереження, вирішує
@@ -630,22 +633,22 @@ const MUTATIONS = [
     id: "M72", file: "rd", spec: SPEC.follow,
     expect: /RoomDayOverviewModal.*ОБИДВА дні/,
     what: "Г1-B: банер карти називає лише НОВИЙ день — попередній уже сказано вголос",
-    from: "день змінено з <b>{dayShifted.from}</b> на <b>{dayShifted.to}</b>.",
-    to: "день змінено на <b>{dayShifted.to}</b>.",
+    from: "день змінено з <b>{fmtShort(dayOfKey(dayShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dayShifted.toKey))}</b>.",
+    to: "день змінено на <b>{fmtShort(dayOfKey(dayShifted.toKey))}</b>.",
   },
   {
     id: "M73", file: "rd", spec: SPEC.follow,
     expect: /RoomDayOverviewModal.*ОБИДВА дні/,
     what: "Г1-B: перенесення на карті знову ТИХЕ — підпис прибрано",
-    from: "          {dayShifted && dayShifted.from !== dayShifted.to && (",
-    to: "          {false && dayShifted && dayShifted.from !== dayShifted.to && (",
+    from: "          {dayShifted && dayShiftSay !== \"none\" && (",
+    to: "          {false && dayShifted && dayShiftSay !== \"none\" && (",
   },
   {
     id: "M74", file: "rd", spec: SPEC.follow,
     expect: /RoomDayOverviewModal.*ОБИДВА дні/,
     what: "Г1-B: повторна поправка затирає ПЕРШУ добу — банер назве проміжний день",
-    from: "setDayShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) }))",
-    to: "setDayShifted({ from: fmtShort(prev), to: fmtShort(d) })",
+    from: "setDayShifted((s) => dayShiftNoticeOf(s, prev, d))",
+    to: "setDayShifted(dayShiftNoticeOf(null, prev, d))",
   },
   {
     /* ⚠️ Зустрічний зонд: банер, який ніхто не знімає, зависає на чужій добі —
@@ -665,15 +668,15 @@ const MUTATIONS = [
     id: "M76", file: "wm", spec: SPEC.follow,
     expect: /WaitlistModal.*ОБИДВІ доби/,
     what: "Г1-C: desired_date_from знову їде МОВЧКИ — onShift знято",
-    from: "    setKey: setDateFrom,\n    onShift: (d, prev) => setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })),\n",
+    from: "    setKey: setDateFrom,\n    onShift: (d, prev) => setDateShifted((s) => dayShiftNoticeOf(s, prev, d)),\n",
     to: "    setKey: setDateFrom,\n",
   },
   {
     id: "M77", file: "wm", spec: SPEC.follow,
     expect: /WaitlistModal.*ОБИДВІ доби/,
     what: "Г1-C: банер листа називає лише НОВУ дату",
-    from: "«готовий з» змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>.",
-    to: "«готовий з» змінено на <b>{dateShifted.to}</b>.",
+    from: "«готовий з» змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>.",
+    to: "«готовий з» змінено на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>.",
   },
   {
     /* ⚠️ НАЙТИХІША З ПАКЕТА. Банер лишається, гарди лишаються — зникає лише
@@ -803,16 +806,18 @@ const MUTATIONS = [
        в підсумку не сталось. Знайшло ревʼю А. */
     id: "M90", file: "rd", spec: SPEC.follow,
     expect: /RoomDayOverviewModal.*нульову зміну/,
+    /* ⚠️ Г1-G (с53): умова більше не рукописна — мутація б'є по СПІЛЬНОМУ
+       вердикту, тобто по тому самому місцю, що й на дошках. */
     what: "Г1-B: банер оголошує «змінено з 1 вересня на 1 вересня»",
-    from: "{dayShifted && dayShifted.from !== dayShifted.to && (",
-    to: "{dayShifted && (",
+    from: "const dayShiftSay = dayShiftNoticeVerdict(dayShifted, day);",
+    to: "const dayShiftSay = !!dayShifted;",
   },
   {
     id: "M91", file: "wm", spec: SPEC.follow,
     expect: /WaitlistModal.*нульову зміну/,
     what: "Г1-C: те саме в листі очікування — банер про нульову зміну",
-    from: "{dateShifted && dateShifted.from !== dateShifted.to && (",
-    to: "{dateShifted && (",
+    from: "const dateShiftSay = dayShiftNoticeVerdict(dateShifted, dateFrom);",
+    to: "const dateShiftSay = !!dateShifted;",
   },
   {
     /* ⚠️ Роль знята з САМОГО вузла банера. Перша редакція піна шукала
@@ -889,16 +894,16 @@ const MUTATIONS = [
   {
     id: "M98", file: "ft", spec: SPEC.follow,
     expect: /ТУДИ-НАЗАД/,
-    what: "Г1-E: умову «доби різні» знято — повертається банер «змінено з 1 вересня на 1 вересня» (клас Г1-G)",
-    from: "  return !!n && n.fromKey !== n.toKey && n.toKey === curKey;",
-    to: "  return !!n && n.toKey === curKey;",
+    what: "Г1-E: «туди-назад» злито з «доба поїхала» — повертається банер «змінено з 1 вересня на 1 вересня» (клас Г1-G)",
+    from: "  if (!n || n.toKey !== curKey) return \"none\";\n  return n.fromKey === n.toKey ? \"returned\" : \"moved\";",
+    to: "  return !n || n.toKey !== curKey ? \"none\" : \"moved\";",
   },
   {
     id: "M99", file: "ft", spec: SPEC.follow,
     expect: /банер видно САМЕ на тій добі/,
-    what: "Г1-E: прив'язку до поточної доби знято — банер переживає перехід оператора на іншу дату",
-    from: "  return !!n && n.fromKey !== n.toKey && n.toKey === curKey;",
-    to: "  return !!n && n.fromKey !== n.toKey;",
+    what: "Г1-E: прив'язку до поточної доби знято — банер переживає перехід оператора на іншу дату (а з ним і гейт масової дії)",
+    from: "  if (!n || n.toKey !== curKey) return \"none\";\n  return n.fromKey === n.toKey ? \"returned\" : \"moved\";",
+    to: "  if (!n) return \"none\";\n  return n.fromKey === n.toKey ? \"returned\" : \"moved\";",
   },
   {
     /* ⚠️ Рівно та підміна, проти якої стан живе в КЛЮЧАХ: порівняння «як
@@ -906,8 +911,8 @@ const MUTATIONS = [
     id: "M100", file: "ft", spec: SPEC.follow,
     expect: /однаковим коротким підписом/,
     what: "Г1-E: доби порівнюються без року — поправка на рік вирішує, що казати нема чого",
-    from: "  return !!n && n.fromKey !== n.toKey && n.toKey === curKey;",
-    to: "  return !!n && n.fromKey.slice(5) !== n.toKey.slice(5) && n.toKey === curKey;",
+    from: "  if (!n || n.toKey !== curKey) return \"none\";\n  return n.fromKey === n.toKey ? \"returned\" : \"moved\";",
+    to: "  if (!n || n.toKey !== curKey) return \"none\";\n  return n.fromKey.slice(5) === n.toKey.slice(5) ? \"returned\" : \"moved\";",
   },
   {
     id: "M101", file: "qb", spec: SPEC.follow,
@@ -946,14 +951,14 @@ const MUTATIONS = [
     id: "M107", file: "qb", spec: SPEC.follow,
     expect: /QueueBoard.*умови видимості/,
     what: "Г1-E: гілка рендера питає лише «чи є стан» — спільне правило обійдено",
-    from: "            {dayShifted && dayShiftNoticeVisible(dayShifted, dayKey) && (",
+    from: "            {dayShifted && dayShiftSay === \"moved\" && (",
     to: "            {dayShifted && (",
   },
   {
     id: "M108", file: "rb", spec: SPEC.follow,
     expect: /RadiologistBoard.*умови видимості/,
     what: "Г1-E: те саме на дошці радіолога",
-    from: "            {dayShifted && dayShiftNoticeVisible(dayShifted, dayKey) && (",
+    from: "            {dayShifted && dayShiftSay === \"moved\" && (",
     to: "            {dayShifted && (",
   },
   {
@@ -1018,14 +1023,14 @@ const MUTATIONS = [
        рахує UTC-добу: у Києві після 21:00 ключ уже інший, банер мовчить, а
        заразом їде і денний зріз запиту в БД. */
     id: "M116", file: "qb", spec: SPEC.follow,
-    expect: /QueueBoard.*ключ доби дошки/,
+    expect: /QueueBoard.*ключ доби рахує спільна/,
     what: "Г1-E: у дошці власна копія формату ключа доби, і вона РОЗХОДИТЬСЯ (UTC замість локальної доби)",
     from: "function dateKey(d: Date) { return dateKeyOf(d); }",
     to: "function dateKey(d: Date) { return d.toISOString().slice(0, 10); }",
   },
   {
     id: "M117", file: "rb", spec: SPEC.follow,
-    expect: /RadiologistBoard.*ключ доби дошки/,
+    expect: /RadiologistBoard.*ключ доби рахує спільна/,
     what: "Г1-E: те саме на дошці радіолога",
     from: "function dateKey(d: Date) { return dateKeyOf(d); }",
     to: "function dateKey(d: Date) { return d.toISOString().slice(0, 10); }",
@@ -1038,8 +1043,8 @@ const MUTATIONS = [
     id: "M118", file: "ft", spec: SPEC.follow,
     expect: /поправка НАЗАД/,
     what: "Г1-E: «доби різні» стало «доба поїхала вперед» — банер мовчить, коли годинник відкотили назад",
-    from: "  return !!n && n.fromKey !== n.toKey && n.toKey === curKey;",
-    to: "  return !!n && n.fromKey < n.toKey && n.toKey === curKey;",
+    from: "  if (!n || n.toKey !== curKey) return \"none\";\n  return n.fromKey === n.toKey ? \"returned\" : \"moved\";",
+    to: "  if (!n || n.toKey !== curKey) return \"none\";\n  return n.fromKey < n.toKey ? \"moved\" : \"returned\";",
   },
   {
     /* ⚠️ ТРИ МУТАЦІЇ НА СПОЖИВАЧІВ ГЕЙТА (знахідка ревʼю Б): попередній
@@ -1073,10 +1078,10 @@ const MUTATIONS = [
     expect: /QueueBoard.*спільне правило береться з lib/,
     what: "Г1-E: у дошці власна копія спільного правила під тим самим імʼям — гілка рендера не змінилась",
     edits: [
-      { from: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVisible, type DayShiftNotice } from \"@/lib/useFollowToday\";",
+      { from: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from \"@/lib/useFollowToday\";",
         to: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, type DayShiftNotice } from \"@/lib/useFollowToday\";" },
       { from: "function dateKey(d: Date) { return dateKeyOf(d); }",
-        to: "function dateKey(d: Date) { return dateKeyOf(d); }\nfunction dayShiftNoticeVisible(n: DayShiftNotice | null, curKey: string) { return !!n && n.toKey === curKey; }" },
+        to: "function dateKey(d: Date) { return dateKeyOf(d); }\nfunction dayShiftNoticeVerdict(n: DayShiftNotice | null, curKey: string) { return !n || n.toKey !== curKey ? \"none\" : \"moved\"; }" },
     ],
   },
   {
@@ -1084,10 +1089,10 @@ const MUTATIONS = [
     expect: /RadiologistBoard.*спільне правило береться з lib/,
     what: "Г1-E: те саме на дошці радіолога",
     edits: [
-      { from: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVisible, type DayShiftNotice } from \"@/lib/useFollowToday\";",
+      { from: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from \"@/lib/useFollowToday\";",
         to: "import { useFollowToday, dayOfKey, dayShiftNoticeOf, type DayShiftNotice } from \"@/lib/useFollowToday\";" },
       { from: "function dateKey(d: Date) { return dateKeyOf(d); }",
-        to: "function dateKey(d: Date) { return dateKeyOf(d); }\nfunction dayShiftNoticeVisible(n: DayShiftNotice | null, curKey: string) { return !!n && n.toKey === curKey; }" },
+        to: "function dateKey(d: Date) { return dateKeyOf(d); }\nfunction dayShiftNoticeVerdict(n: DayShiftNotice | null, curKey: string) { return !n || n.toKey !== curKey ? \"none\" : \"moved\"; }" },
     ],
   },
   {
@@ -1099,24 +1104,177 @@ const MUTATIONS = [
     to: "{\" \"}",
   },
 
-  // ============ має лишатись ЗЕЛЕНИМ ============
+  /* ============ Г1-G: шість екранів на ОДНОМУ правилі (пакет с53) ============
+     До цього кожен екран тримав рукописну пару («перший from» + «доби різні»),
+     і саме на ній правило розійшлось: умови «доби різні» не було в чотирьох із
+     шести. Мутації нижче повертають рукописний вердикт у кожному з чотирьох —
+     тобто рівно той стан, який був до пакета. */
   {
+    id: "M125", file: "bm", spec: SPEC.follow,
+    expect: /BookingModal.*перенесення не тихе/,
+    what: "Г1-G: форма запису знову вирішує сама — повертається «змінено з 1 вересня на 1 вересня»",
+    from: "  const dateShiftSay = dayShiftNoticeVerdict(dateShifted, dateKey(bookDate));",
+    to: "  const dateShiftSay = !!dateShifted;",
+  },
+  {
+    id: "M126", file: "rp", spec: SPEC.follow,
+    expect: /ReferralPortal.*перенесення не тихе/,
+    what: "Г1-G: те саме в порталі направника",
+    from: "  const dateShiftSay = dayShiftNoticeVerdict(dateShifted, dateVal(bookDate));",
+    to: "  const dateShiftSay = !!dateShifted;",
+  },
+  {
+    id: "M127", file: "rm", spec: SPEC.follow,
+    expect: /RescheduleModal.*перенесення не тихе/,
+    what: "Г1-G: те саме у формі переносу",
+    from: "  const dateShiftSay = dayShiftNoticeVerdict(dateShifted, dateStr);",
+    to: "  const dateShiftSay = !!dateShifted;",
+  },
+  {
+    /* ⚠️ Найдорожча з чотирьох: на цьому екрані вердикт тримає ще й ГЕЙТ
+       незворотної масової дії, тож нульова зміна блокувала «Всіх підтверджено»
+       з причиною, яка сама себе спростовує. */
+    id: "M128", file: "cl", spec: SPEC.follow,
+    expect: /CallListBoard.*ОДИН вердикт/,
+    what: "Г1-G: дошка обдзвону знову вирішує сама — гейт масової дії на нульовій зміні",
+    from: "  const dayShiftSay = dayShiftNoticeVerdict(dayShifted, dayKey);",
+    to: "  const dayShiftSay = !!dayShifted;",
+  },
+  {
+    /* ⚠️ Розходження ГЕЙТА і БАНЕРА — найтихіше з можливих: банера немає, а
+       незворотна дія заблокована без видимої причини. */
+    id: "M129", file: "cl", spec: SPEC.follow,
+    expect: /CallListBoard.*ОДИН вердикт/,
+    what: "Г1-G: гейт масової дії завів ВЛАСНУ умову замість спільного вердикту",
+    from: "disabled={loading || dayShiftSay !== \"none\" || confirmTargets.length === 0}",
+    to: "disabled={loading || !!dayShifted || confirmTargets.length === 0}",
+  },
+  {
+    id: "M130", file: "bm", spec: SPEC.follow,
+    expect: /BookingModal.*ключ доби рахує спільна/,
+    what: "Г1-G: у формі запису знову власна копія формату ключа доби (UTC замість локальної)",
+    from: "function dateKey(d: Date) { return dateKeyOf(d); }",
+    to: "function dateKey(d: Date) { return d.toISOString().slice(0, 10); }",
+  },
+  {
+    id: "M131", file: "rp", spec: SPEC.follow,
+    expect: /ReferralPortal.*ключ доби рахує спільна/,
+    what: "Г1-G: те саме в порталі направника (`dateVal`)",
+    from: "function dateVal(d: Date) { return dateKeyOf(d); }",
+    to: "function dateVal(d: Date) { return d.toISOString().slice(0, 10); }",
+  },
+  {
+    id: "M132", file: "cl", spec: SPEC.follow,
+    expect: /CallListBoard.*ключ доби рахує спільна/,
+    what: "Г1-G: те саме в колл-листі — тут копія тягне за собою ще й денний зріз запиту",
+    from: "function dateKey(d: Date) { return dateKeyOf(d); }",
+    to: "function dateKey(d: Date) { return d.toISOString().slice(0, 10); }",
+  },
+
+  /* ============ Г1-G-fix: три стани вердикту (ревʼю А+Б по самому Г1-G) ======
+     Перша редакція Г1-G звела «чи є що показати» до була, і на поправці
+     «туди-назад» він давав `false`. Мутації нижче повертають рівно той стан. */
+  {
+    /* ⚠️ НАЙДОРОЖЧА В ЦЬОМУ БЛОЦІ. Гейт незворотної масової дії відкривається
+       саме тоді, коли необдзвоненим лишився день, що встиг постояти на дошці
+       між двома поправками, — і без банера в оператора немає ні попередження,
+       ні виходу (кнопка «Зрозуміло» живе ВСЕРЕДИНІ схованого банера). */
+    id: "M133", file: "cl", spec: SPEC.follow,
+    expect: /CallListBoard.*підтверджено.* ВИМКНЕНО/,
+    what: "Г1-G-fix: гейт масової дії знову пропускає «туди-назад» — «Всіх підтверджено» відкрито на дні, який ніхто не обдзвонював",
+    from: "disabled={loading || dayShiftSay !== \"none\" || confirmTargets.length === 0}",
+    to: "disabled={loading || dayShiftSay === \"moved\" || confirmTargets.length === 0}",
+  },
+  {
+    id: "M134", file: "ft", spec: SPEC.follow,
+    expect: /три стани РІЗНІ/,
+    what: "Г1-G-fix: «туди-назад» знову дорівнює тиші — банер зник разом із гейтом, а слот стерто двічі",
+    from: "  return n.fromKey === n.toKey ? \"returned\" : \"moved\";",
+    to: "  return n.fromKey === n.toKey ? \"none\" : \"moved\";",
+  },
+  {
+    id: "M135", file: "bm", spec: SPEC.follow,
+    expect: /BookingModal.*перенесення не тихе/,
+    what: "Г1-G-fix: форма запису мовчить на «туди-назад» — час скинуто двічі, а екран каже, що нічого не сталось",
+    from: "            {dateShifted && dateShiftSay !== \"none\" && (",
+    to: "            {dateShifted && dateShiftSay === \"moved\" && (",
+  },
+  {
+    id: "M136", file: "rm", spec: SPEC.follow,
+    expect: /RescheduleModal.*перенесення не тихе/,
+    what: "Г1-G-fix: у формі переносу знято рядок про «туди-назад» — обраний слот зник без причини",
+    from: "            {dateShifted && dateShiftSay === \"returned\" && <div className=\"ctx-hint\" role=\"status\"",
+    to: "            {false && dateShiftSay === \"returned\" && <div className=\"ctx-hint\" role=\"status\"",
+  },
+  {
+    /* ⚠️ Сьома копія формату ключа доби — і найнебезпечніша: тут вона задає
+       САМЕ `curKey`, тобто вимикає перенесення цілком, а не лише підпис. */
+    id: "M137", file: "rm", spec: SPEC.follow,
+    expect: /RescheduleModal.*ключ доби рахує спільна/,
+    what: "Г1-G-fix: у формі переносу знову власна копія формату ключа (UTC замість локальної доби)",
+    from: "function dateVal(d: Date) { return dateKeyOf(d); }",
+    to: "function dateVal(d: Date) { return d.toISOString().slice(0, 10); }",
+  },
+  {
+    id: "M138", file: "rd", spec: SPEC.follow,
+    expect: /RoomDayOverviewModal.*ключ доби рахує спільна/,
+    what: "Г1-G-fix: те саме в карті дня — ключ, за яким живе весь екран",
+    from: "const dateKey = (d: Date) => dateKeyOf(d);",
+    to: "const dateKey = (d: Date) => d.toISOString().slice(0, 10);",
+  },
+
+  /* ============ має лишатись ЗЕЛЕНИМ ============ */
+  {
+    /* ⚠️ ЦЕЙ ЗОНД БУВ ЗЕЛЕНИМ І ЦЕ БУЛА НЕПРАВДА (знахідка ревʼю Б, HIGH).
+       Він переформатовує підпис банера на кілька рядків і стверджував, що
+       поведінка та сама, — бо `src()` у тесті зводить будь-який пробільний
+       прогін до одного пробілу. JSX так не робить: пробіл на кінці рядка він
+       прибирає і між текстом та сусіднім елементом через перенос НЕ вставляє,
+       тобто підпис рендериться «змінено з1 вересня». Стенд стверджував
+       безпечність правки, яка ламає банер у всіх шести екранах.
+       Тепер це ЧЕРВОНА адресована мутація, а властивість тримає пін по СИРОМУ
+       джерелу (`raw`, не `src`) у tests/followToday.test.ts. */
+    id: "M139", file: "bm", spec: SPEC.follow,
+    expect: /пробіл перед датою/,
+    what: "Г1-G-fix: підпис банера переформатовано на кілька рядків — JSX зʼїдає пробіл, виходить «змінено з1 вересня»",
+    from: "                  ? <>🕐 Годинник центру уточнено — дату змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>. Назвіть пацієнту нову дату і оберіть час заново.</>",
+    to: "                  ? <>🕐 Годинник центру уточнено — дату змінено з\n                      <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на\n                      <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>. Назвіть пацієнту нову дату і оберіть час заново.</>",
+  },
+  {
+    /* Пара до M139: перенос рядка ТАМ, ДЕ ПРОБІЛ ЗБЕРІГАЄТЬСЯ явним `{" "}`,
+       поведінки не міняє — і пін це мусить дозволяти, інакше він забороняв би
+       переформатування взагалі і його зняли б при першій же правці. */
+    id: "T15", file: "bm", green: true,
+    what: "Г1-G-fix: підпис перенесено на новий рядок із явним {\" \"} — пробіл збережено, рендер той самий",
+    from: "                  ? <>🕐 Годинник центру уточнено — дату змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на",
+    to: "                  ? <>🕐 Годинник центру уточнено — дату змінено з{\" \"}\n                      <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на",
+  },
+  {
+    /* ⚠️ ТРИ ПРАВКИ, А НЕ ОДНА: між сигнатурою і тілом стоїть коментар про
+       умову безпеки, тож суцільний якір через нього не проходить. Це і є
+       перевірка «сторож бачить крізь коментарі» для самого правила. */
     id: "T11", file: "ft", green: true,
     what: "Г1-E: перейменовано локальне звʼязування у правилі видимості — вердикт той самий",
-    from: "export function dayShiftNoticeVisible(n: DayShiftNotice | null, curKey: string): boolean {\n  return !!n && n.fromKey !== n.toKey && n.toKey === curKey;\n}",
-    to: "export function dayShiftNoticeVisible(notice: DayShiftNotice | null, curKey: string): boolean {\n  return !!notice && notice.fromKey !== notice.toKey && notice.toKey === curKey;\n}",
+    edits: [
+      { from: "export function dayShiftNoticeVerdict(n: DayShiftNotice | null, curKey: string): DayShiftVerdict {",
+        to: "export function dayShiftNoticeVerdict(notice: DayShiftNotice | null, curKey: string): DayShiftVerdict {" },
+      { from: "  if (!n || n.toKey !== curKey) return \"none\";",
+        to: "  if (!notice || notice.toKey !== curKey) return \"none\";" },
+      { from: "  return n.fromKey === n.toKey ? \"returned\" : \"moved\";",
+        to: "  return notice.fromKey === notice.toKey ? \"returned\" : \"moved\";" },
+    ],
   },
   {
     id: "T12", file: "ft", green: true,
     what: "Г1-E: дві умови видимості переставлено місцями — кон'юнкція та сама",
-    from: "  return !!n && n.fromKey !== n.toKey && n.toKey === curKey;",
-    to: "  return !!n && n.toKey === curKey && n.fromKey !== n.toKey;",
+    from: "  if (!n || n.toKey !== curKey) return \"none\";\n  return n.fromKey === n.toKey ? \"returned\" : \"moved\";",
+    to: "  if (!n || n.toKey !== curKey) return \"none\";\n  return n.toKey === n.fromKey ? \"returned\" : \"moved\";",
   },
   {
     id: "T13", file: "qb", green: true,
     what: "Г1-E: над банером дописано коментар — сторож бачить крізь коментарі (пара до M107)",
-    from: "            {dayShifted && dayShiftNoticeVisible(dayShifted, dayKey) && (",
-    to: "            {/* TODO: звірити на живому стенді */}\n            {dayShifted && dayShiftNoticeVisible(dayShifted, dayKey) && (",
+    from: "            {dayShifted && dayShiftSay === \"moved\" && (",
+    to: "            {/* TODO: звірити на живому стенді */}\n            {dayShifted && dayShiftSay === \"moved\" && (",
   },
   {
     /* ⚠️ ЗОНД ПЕРЕПИСАНО ПІСЛЯ ПЕРШОГО ПРОГОНУ. Перша редакція перейменовувала
@@ -1222,7 +1380,7 @@ function run() {
    таблиці: інакше «адресних 0/0» було б зеленим підсумком порожнечі — рівно та
    вада, проти якої писався U-80б. Додаєш мутацію з `expect` — піднімаєш число;
    не піднімаєш — прогін червоніє. */
-const EXPECTED_ADDRESSED = 54;
+const EXPECTED_ADDRESSED = 69;
 let addressedOk = 0;
 
 const lines = [];

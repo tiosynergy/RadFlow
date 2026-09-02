@@ -5,9 +5,9 @@ import SlotPicker from "@/components/SlotPicker";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { buildSlots, slotToMin } from "@/lib/slots";
-import { inBreak, overrideOn, roomBreaksFromFeed, roomScheduleFromFeed, type OverrideFeed } from "@/lib/schedule";
+import { inBreak, overrideOn, roomBreaksFromFeed, roomScheduleFromFeed, dateKeyOf, type OverrideFeed } from "@/lib/schedule";
 import { incidentEffectiveEnd, roomIncidentsOf, wallNow, wallToday0, wallMinOfDay, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
-import { useFollowTodayKey } from "@/lib/useFollowToday";
+import { useFollowTodayKey, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
 /* Формат дати — ТОЙ САМИЙ, що в банерах форм запису (`fmtShort`, «1 вересня»).
    Карта дня оголошена дзеркалом форми, тож і про перенесення вона мусить
    говорити тими самими словами; своя копія форматера розійшлася б із ними
@@ -32,8 +32,12 @@ type Props = {
   onClose: () => void;
 };
 
-const pad = (n: number) => String(n).padStart(2, "0");
-const dateKey = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+/* ⚠️ Г1-G (с53, знахідка ревʼю Б): ОДИН формат ключа доби на продукт — тут
+   стояла сьома власна копія тіла `dateKeyOf`, і саме вона задає `day`, тобто
+   `curKey` для спільного правила. Розходження двох копій формату вбило б
+   перенесення МОВЧКИ, а разом із ним і банер. Локальний `pad` пішов із нею:
+   інших споживачів у нього не було. */
+const dateKey = (d: Date) => dateKeyOf(d);
 const dateFromKey = (v: string) => {
   const [y, m, d] = v.split("-").map(Number);
   return new Date(y || 1970, (m || 1) - 1, d || 1);
@@ -65,9 +69,16 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
      жоден гард цього не ловить: карта нічого не пише.
      Скидання і банер — та сама пара, що у трьох форм запису; банер знімає той,
      хто взяв дату в свої руки (`onChange`), а не таймер. */
-  const [dayShifted, setDayShifted] = useState<{ from: string; to: string } | null>(null);
+  /* ⚠️ Г1-G (с53): стан у КЛЮЧАХ доби, а рукописна пара умов замінена спільним
+     правилом із `lib/useFollowToday.ts` — своя копія була і тут. */
+  const [dayShifted, setDayShifted] = useState<DayShiftNotice | null>(null);
   useFollowTodayKey({ clinicTz, value: day, setKey: setDay,
-    onShift: (d, prev) => { setSelectedSlot(""); setDayShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); } });
+    onShift: (d, prev) => { setSelectedSlot(""); setDayShifted((s) => dayShiftNoticeOf(s, prev, d)); } });
+  /* ⚠️ Г1-G: ОДИН вердикт на банер — другий екземпляр умови розійшовся б мовчки.
+     ТРИЗНАЧНИЙ (ревʼю А по Г1-G): «туди-назад» — не тиша, `setSelectedSlot("")`
+     відпрацював двічі. До Г1-G тут стояло «і це видно» — не аргумент: порожнє
+     поле без причини і є та сама тиха вада навиворіт. */
+  const dayShiftSay = dayShiftNoticeVerdict(dayShifted, day);
 
   const room = rooms.find((r) => r.id === roomId) || null;
   const date = useMemo(() => dateFromKey(day), [day]);
@@ -195,15 +206,22 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
               написана «фантомна» гілка в `decideShift`), накопичене `from`
               збігається з новим `to`. Банер читався б «день змінено з 1 вересня
               на 1 вересня» — тобто екран стверджував би зміну, якої в підсумку
-              не сталось. Слот при цьому справді скинуто двічі, і це видно.
-              ⚠️ У ЧОТИРЬОХ старіших екранів (BookingModal, RescheduleModal,
-              ReferralPortal, CallListBoard) цієї умови НЕМАЄ — там та сама вада
-              жива. Це названий борг Г1-G, а не задум: розширювати пакет на
-              чотири чужі екрани в цьому проході ми не стали. */}
-          {dayShifted && dayShifted.from !== dayShifted.to && (
+              не сталось.
+              ⚠️ Г1-G ЗАКРИТО (с53): умова більше не рукописна і не місцева —
+              вердикт дає спільне `dayShiftNoticeVerdict`, те саме в усіх шести
+              екранах і на двох дошках. Раніше цієї умови не було в чотирьох із
+              шести, і саме розходження рукописних копій було самим боргом.
+              ⚠️ І ВІДРАЗУ ПОПРАВКА ДО ЦЬОГО Ж КОМЕНТАРЯ (ревʼю А по Г1-G).
+              Тут стояло «слот при цьому справді скинуто двічі, і це видно» —
+              це не аргумент, а та сама тиха вада навиворіт: порожнє поле часу
+              без причини оператор читає як збій форми. Тому «туди-назад» тепер
+              не мовчить, а каже СВОЇМ текстом — банер є, але про скинутий час,
+              а не про зміну дня, якої не сталось. */}
+          {dayShifted && dayShiftSay !== "none" && (
             <div className="ctx-hint" role="status" style={{ marginTop: 6 }}>
-              🕐 Годинник центру уточнено — день змінено з <b>{dayShifted.from}</b> на <b>{dayShifted.to}</b>.
-              {" "}Це вже інша карта: назвіть вільний час заново.
+              {dayShiftSay === "moved"
+                ? <>🕐 Годинник центру уточнено — день змінено з <b>{fmtShort(dayOfKey(dayShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dayShifted.toKey))}</b>. Це вже інша карта: назвіть вільний час заново.</>
+                : <>🕐 Годинник центру уточнювався двічі і повернувся на <b>{fmtShort(dayOfKey(dayShifted.toKey))}</b> — день той самий, але обраний час скинуто. Оберіть його заново.</>}
             </div>
           )}
 

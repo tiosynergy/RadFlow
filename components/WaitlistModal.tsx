@@ -19,7 +19,7 @@ import type { StudySearchHit } from "@/lib/studySearch";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { TIME_PRESETS, timePresetKey } from "@/lib/waitlist";
 import { wallDayKey } from "@/lib/incidents";
-import { useFollowTodayKey } from "@/lib/useFollowToday";
+import { useFollowTodayKey, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
 import type { WaitlistEntry } from "@/supabase/types";
 import { useModalA11y } from "@/lib/useModalA11y";
 
@@ -151,15 +151,26 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
          непридатний, зберігати його не можна. Бракувало не гарда, а ПРИЧИНИ.
      Тому: банер називає обидві доби (F7) і, коли вікно поїхало саме через
      поправку, прямо каже, який кінець перевірити. Гарди лишились як були. */
-  const [dateShifted, setDateShifted] = useState<{ from: string; to: string } | null>(null);
+  /* ⚠️ Г1-G (с53): стан у КЛЮЧАХ доби, а рукописна пара умов замінена спільним
+     правилом із `lib/useFollowToday.ts`. Тут умова «доби різні» вже була — але
+     СВОЯ; шість своїх копій і є той борг, який закривається. */
+  const [dateShifted, setDateShifted] = useState<DayShiftNotice | null>(null);
   useFollowTodayKey({
     clinicTz: clinicTz || undefined,
     pinnedKey: initial?.desired_date_from ?? null,
     busy: saving,
     value: dateFrom,
     setKey: setDateFrom,
-    onShift: (d, prev) => setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })),
+    onShift: (d, prev) => setDateShifted((s) => dayShiftNoticeOf(s, prev, d)),
   });
+  /* ⚠️ Г1-G: ОДИН вердикт на банер — другий екземпляр умови розійшовся б мовчки.
+     ⚠️ ТУТ «туди-назад» ЛИШАЄТЬСЯ БЕЗ БАНЕРА, і це свідомо (ревʼю А по Г1-G).
+     Правило дає три стани; який із них показувати — знає екран, бо це залежить
+     від того, ЩО САМЕ зруйнував `onShift`. У формах запису і в карті дня він
+     стирає обраний час, на дошці обдзвону — тримає гейт масової дії; тут він
+     не робить нічого, крім самого повідомлення, тож на `returned` казати
+     нема про що: «готовий з» лишився тією самою датою. */
+  const dateShiftSay = dayShiftNoticeVerdict(dateShifted, dateFrom);
 
   // Доступні модальності: направнику (needCenter) — лише ті, що дозволяє його грант
   // на ОБРАНИЙ центр (передаються в centers[].modalities); персоналу — за наявними
@@ -581,12 +592,15 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
               `badRange || pastWindow`: пояснювати влаштування вікна при цілому
               вікні — підказка нізвідки.
 
-              ⚠️ `from !== to` — див. той самий коментар у RoomDayOverviewModal:
+              ⚠️ «Доби різні» — див. той самий коментар у RoomDayOverviewModal:
               поправка, що зʼїхала й повернулась, дає банер «змінено з 1 вересня
-              на 1 вересня». Борг Г1-G на чотирьох старіших екранах. */}
-          {dateShifted && dateShifted.from !== dateShifted.to && (
+              на 1 вересня». З с53 (Г1-G) цю умову дає СПІЛЬНЕ правило
+              `dayShiftNoticeVerdict` — рукописних копій більше немає, а вибір
+              «на `returned` тут мовчимо» названий і обґрунтований біля виклику
+              вердикту, а не схований у цій гілці. */}
+          {dateShifted && dateShiftSay === "moved" && (
             <div className="ctx-hint" role="status">
-              🕐 Годинник центру уточнено — «готовий з» змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>.
+              🕐 Годинник центру уточнено — «готовий з» змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>.
               {" "}Назвіть пацієнту нову дату.
               {(badRange || pastWindow) && <> Кінець вікна за поправкою не рухається — перевірте «по».</>}
             </div>

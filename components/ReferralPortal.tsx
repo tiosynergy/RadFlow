@@ -33,12 +33,12 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
 import type { WaitlistEntry } from "@/supabase/types";
-import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, dateKeyOf, type DayOverride } from "@/lib/schedule";
 import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { incidentDurCapMin, incidentFeed, studyBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
-import { useFollowToday } from "@/lib/useFollowToday";
+import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
 import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, normDur, DUR_MAX } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import StudySearchBox from "@/components/StudySearchBox";
@@ -97,7 +97,10 @@ type ApiResult = { ok: boolean; data: any }; // eslint-disable-line @typescript-
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function toMin(t: string | null | undefined) { const p = String(t || "").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
 function fmt(m: number) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); }
-function dateVal(d: Date) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+/* ⚠️ Г1-G (с53): ОДИН формат ключа доби на продукт — тут стояла власна копія.
+   Ключ цього поля тепер порівнюється з ключем, який рахує спільне правило
+   банера, і дві копії формату розійшлися б МОВЧКИ. */
+function dateVal(d: Date) { return dateKeyOf(d); }
 function calcAge(dob: string | null | undefined) { if (!dob) return null; return Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 3600 * 1000)); }
 function procLabel(e: { studies?: unknown; note?: string | null }) {
   const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string }>) : [];
@@ -170,7 +173,10 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   /* U-72: дату перенесла поправка годинника центру (null = не переносили). */
   /* ⚠️ ДВІ дати (F7, ревʼю Б + рішення власника с51): направник форму заповнює
      довго і дату пацієнту вже назвав — банер мусить відкликати саме СТАРУ. */
-  const [dateShifted, setDateShifted] = useState<{ from: string; to: string } | null>(null);
+  /* ⚠️ Г1-G (с53): стан у КЛЮЧАХ доби, умови видимості — зі спільного правила
+     `lib/useFollowToday.ts`. Умови `from !== to` тут не було, тож поправка
+     «туди-назад» давала банер «змінено з 1 вересня на 1 вересня». */
+  const [dateShifted, setDateShifted] = useState<DayShiftNotice | null>(null);
   const [dayEntries, setDayEntries] = useState<BusySlot[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(true);
   const [slotsErr, setSlotsErr] = useState(false); // зайнятість/простої не завантажились — сітку не показуємо
@@ -240,8 +246,12 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
     busy: busy || caseBusy || caseSteps.length > 0,
     value: bookDate,
     setDate: setBookDate,
-    onShift: (d, prev) => { setTime(""); setDateShifted((s) => ({ from: s?.from ?? fmtShort(prev), to: fmtShort(d) })); },
+    onShift: (d, prev) => { setTime(""); setDateShifted((s) => dayShiftNoticeOf(s, prev, d)); },
   });
+  /* ⚠️ Г1-G: ОДИН вердикт на банер — другий екземпляр умови розійшовся б мовчки. */
+  /* ⚠️ ТРИЗНАЧНИЙ (ревʼю А по Г1-G): «туди-назад» — не тиша, `setTime("")`
+     відпрацював двічі. */
+  const dateShiftSay = dayShiftNoticeVerdict(dateShifted, dateVal(bookDate));
   /* ⚠️ Г1-A (HIGH, ревʼю Г; рішення власника с51 — «зупинити збереження,
      вирішує людина»). Те саме, що в `BookingModal`, і тут ВІКНО ШИРШЕ: форму
      направлення заповнюють довго, а направник ще й у своїй зоні. Поки кейс
@@ -1038,10 +1048,13 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 зміна дати під його руками не помітна взагалі.
                 ⚠️ F7 (ревʼю Б, рішення власника с51): називаємо ОБИДВІ доби і
                 веліми переспитати ПАЦІЄНТА — стару дату він уже почув. */}
-            {dateShifted && (
+            {/* ⚠️ ДРУГИЙ ТЕКСТ — на «туди-назад» (ревʼю А по Г1-G): дата та сама,
+                але обраний час стерто двічі. */}
+            {dateShifted && dateShiftSay !== "none" && (
               <div className="ctx-hint" role="status" style={{ marginTop: 6 }}>
-                🕐 Годинник центру уточнено — дату змінено з <b>{dateShifted.from}</b> на <b>{dateShifted.to}</b>.
-                {" "}Назвіть пацієнту нову дату і оберіть час заново.
+                {dateShiftSay === "moved"
+                  ? <>🕐 Годинник центру уточнено — дату змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>. Назвіть пацієнту нову дату і оберіть час заново.</>
+                  : <>🕐 Годинник центру уточнювався двічі і повернувся на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b> — дата та сама, але обраний час скинуто. Оберіть час заново.</>}
               </div>
             )}
 
@@ -1196,7 +1209,9 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 setCaseSteps((arr) => arr.map((s) => ({ ...s, date: dateVal(dayStop.to) })));
                 setBookDate(dayStop.to);
                 setTime("");
-                setDateShifted({ from: fmtShort(dayStop.from), to: fmtShort(dayStop.to) });
+                /* ⚠️ Г1-G: те саме накопичення, що й в `onShift`, — банер мусить
+                   назвати ПЕРШУ добу, а не проміжну. */
+                setDateShifted((s) => dayShiftNoticeOf(s, dayStop.from, dayStop.to));
                 setShiftAck(true);
               }}>Перенести на {fmtShort(dayStop.to)}</button>
               <button className="btn btn-secondary btn-sm" onClick={() => setShiftAck(true)}>

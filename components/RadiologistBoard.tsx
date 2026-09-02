@@ -37,7 +37,7 @@ import "@/styles/prototype/radiologist.css";
 import NavDrawer from "@/components/NavDrawer";
 import SoundToggle from "@/components/SoundToggle";
 import { visibleRooms, residualSet, roomOffLabel, bookableRooms } from "@/lib/rooms";
-import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVisible, type DayShiftNotice } from "@/lib/useFollowToday";
+import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
 import { serverNow } from "@/lib/serverClock";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; schedule?: unknown; active?: boolean | null };
@@ -1262,6 +1262,11 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
     setDate: setSelectedDate,
     onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)),
   });
+  /* ⚠️ ОДИН вердикт на екран, порахований ТУТ, а не в гілці рендера (ревʼю А по
+     Г1-G). На `returned` дошка мовчить із тієї самої причини, що й у
+     QueueBoard: `onShift` тут нічого не руйнує і нічого не гейтить, а дата в
+     підсумку та сама. */
+  const dayShiftSay = dayShiftNoticeVerdict(dayShifted, dayKey);
   /* Дату взяла в руки ЛЮДИНА — банер відпрацював (те саме, що в QueueBoard). */
   const pickDate = useCallback((d: Date) => { setDayShifted(null); setSelectedDate(d); }, []);
 
@@ -1394,8 +1399,10 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
                 завантаження), — про конкретну добу, а цей банер каже, ЯКА це
                 доба. Умови видимості — спільні чисті правила з
                 lib/useFollowToday.ts, а не рукописна копія: саме на рукописних
-                копіях цього банера правило вже розійшлось між екранами. */}
-            {dayShifted && dayShiftNoticeVisible(dayShifted, dayKey) && (
+                копіях цього банера правило вже розійшлось між екранами. Вердикт
+                рахується ОДИН РАЗ біля хука, а не тут: другий екземпляр умови
+                розійшовся б із першим мовчки. */}
+            {dayShifted && dayShiftSay === "moved" && (
               <div className="ctx-hint orange" role="status" style={{ marginBottom: 12 }}>
                 🕐 Годинник центру уточнено — дату дошки змінено з <b>{fmtFull(dayOfKey(dayShifted.fromKey))}</b> на <b>{fmtFull(dayOfKey(dayShifted.toKey))}</b>.
                 {" "}<button className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={() => setDayShifted(null)}>Зрозуміло</button>
