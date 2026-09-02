@@ -10,7 +10,7 @@ import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { useQueueSounds } from "@/lib/useQueueSounds";
 import { isStudyOverrun, type OverrunSource } from "@/lib/soundEvents";
 import { serverNow } from "@/lib/serverClock";
-import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVisible, type DayShiftNotice } from "@/lib/useFollowToday";
+import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
 import {
   setQueueEntryStatus,
   cancelQueueEntry,
@@ -118,7 +118,7 @@ function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
 /* ⚠️ Г1-E: формат ключа доби — ОДИН на продукт. Тут стояла власна копія тіла
    `dateKeyOf`, і поки ключ жив усередині екрана, розходження було б непомітним.
    Тепер `dayKey` цієї дошки порівнюється з ключем, який рахує спільне правило
-   (`dayShiftNoticeVisible`), — дві незалежні копії формату розійшлися б МОВЧКИ,
+   (`dayShiftNoticeVerdict`), — дві незалежні копії формату розійшлися б МОВЧКИ,
    і банер про перенесення доби просто ніколи б не з'явився. Ім'я лишаємо: воно
    стоїть у десятках місць, і перейменування нічого не додає. */
 function dateKey(d: Date) { return dateKeyOf(d); }
@@ -1620,8 +1620,16 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   const [dayShifted, setDayShifted] = useState<DayShiftNotice | null>(null);
   useFollowToday({ clinicTz, pinnedKey: initialDate, busy: anyModalOpen, value: selectedDate, setDate: setSelectedDate,
     onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)) });
+  /* ⚠️ ОДИН вердикт на екран, порахований ТУТ, а не в гілці рендера (ревʼю А по
+     Г1-G): другий екземпляр умови розійшовся б із першим мовчки.
+     ⚠️ ДОШКА МОВЧИТЬ НА `returned`, і це свідомо. Вердикт тризначний саме тому,
+     що «туди-назад» не всюди дорівнює тиші: у форм запису `onShift` за цей час
+     двічі стер обраний час, на дошці обдзвону — тримає гейт масової дії. Тут
+     він не робить нічого, крім самого повідомлення, і дата дошки в підсумку та
+     сама — казати нема про що. */
+  const dayShiftSay = dayShiftNoticeVerdict(dayShifted, dayKey);
   /* Дату взяла в руки ЛЮДИНА — банер про автоперенесення відпрацював. Гасимо
-     ЯВНО, хоч `dayShiftNoticeVisible` і сам сховає банер на чужій добі: умова
+     ЯВНО, хоч вердикт і сам сховає банер на чужій добі: умова
      про безпеку (не брехати про добу, якої на екрані вже немає), а це — про
      намір (оператор побачив і пішов далі, банер не має повертатись). */
   const pickDate = useCallback((d: Date) => { setDayShifted(null); setSelectedDate(d); }, []);
@@ -2666,12 +2674,14 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                 пацієнтом. Знімає його ЛЮДИНА («Зрозуміло» або зміна дати):
                 автогасіння таймером повернуло б тихий сценарій, а дошка — не
                 модалка, вона не закривається сама.
-                ⚠️ `dayShiftNoticeVisible` — не «чи є стан», а «чи є що сказати
+                ⚠️ `dayShiftNoticeVerdict` — не «чи є стан», а «що саме сказати
                 ПРО ЦЮ добу»: воно ж відсікає поправку туди-назад («змінено з
                 1 вересня на 1 вересня») і банер, що пережив перехід оператора
                 на іншу дату. Обидві умови живуть у lib/useFollowToday.ts і
-                перевіряються ВИКЛИКОМ (tests/followToday.test.ts). */}
-            {dayShifted && dayShiftNoticeVisible(dayShifted, dayKey) && (
+                перевіряються ВИКЛИКОМ (tests/followToday.test.ts). Вердикт
+                рахується ОДИН РАЗ біля хука; чому дошка мовчить на `returned` —
+                написано там же, поруч із причиною. */}
+            {dayShifted && dayShiftSay === "moved" && (
               <div className="ctx-hint orange" role="status" style={{ marginBottom: 12 }}>
                 🕐 Годинник центру уточнено — дату дошки змінено з <b>{fmtFull(dayOfKey(dayShifted.fromKey))}</b> на <b>{fmtFull(dayOfKey(dayShifted.toKey))}</b>.
                 {" "}<button className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={() => setDayShifted(null)}>Зрозуміло</button>

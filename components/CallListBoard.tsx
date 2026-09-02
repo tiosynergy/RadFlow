@@ -13,7 +13,8 @@ import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
 import { entryInIncidentWindow, groupIncidentsByRoom, incidentExpired, incidentFeed, setClinicTz, wallDayKey, wallToday0 } from "@/lib/incidents";
-import { useFollowToday } from "@/lib/useFollowToday";
+import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
+import { dateKeyOf } from "@/lib/schedule";
 import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import StudyEditModal from "@/components/StudyEditModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
@@ -49,7 +50,11 @@ type IncidentRow = { id: string; room_id: string; reason_label: string | null; n
 const WK = ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
 function fmtFull(d: Date) { return WK[d.getDay()] + ", " + d.getDate() + " " + MON_GEN[d.getMonth()] + " " + d.getFullYear(); }
-function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+/* ⚠️ Г1-G (с53): ОДИН формат ключа доби на продукт — тут стояла власна копія.
+   `dayKey` тепер порівнюється з ключем, який рахує спільне правило банера, і
+   дві копії формату розійшлися б МОВЧКИ: банер зник би, а разом із ним і гейт
+   масової дії, який на нього спирається. */
+function dateKey(d: Date) { return dateKeyOf(d); }
 /* U-1: підпис дати В РЯДКУ рахується з САМОГО рядка, а не з обраної дати.
    Раніше в кожен рядок їхав `dateShort={shortDate(date)}` — мітка бралася зі
    СТАНУ ПІКЕРА (сам форматер після правки лишився без споживачів і прибраний
@@ -645,7 +650,12 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
      взагалі; стану «діалог відкритий І onShift працює» не існує. Захист тут
      цілком на `busy`, і він був до цього фіксу. Знайшло ревʼю В; сам виклик,
      коментар про нього і пін, що його закріплював, знято. */
-  const [dayShifted, setDayShifted] = useState<{ from: string; to: string } | null>(null);
+  /* ⚠️ Г1-G (с53): стан у КЛЮЧАХ доби, умови видимості — зі спільного правила
+     `lib/useFollowToday.ts`. Умови `from !== to` тут не було, а ціна саме на
+     цьому екрані найвища: банер не просто підпис — на нього спирається ГЕЙТ
+     незворотної масової дії, тож «змінено з 1 вересня на 1 вересня» блокувало
+     «Всіх підтверджено» з причиною, яка сама себе спростовує. */
+  const [dayShifted, setDayShifted] = useState<DayShiftNotice | null>(null);
 
   /* U-72 — сам виклик правила «дошка слідує за сьогодні». Обґрунтування і ціна
      розписані нагорі, біля заморозки `tomorrow`/`date`; тут він стоїть тому,
@@ -660,7 +670,16 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
      стенда беруть виклик цілком, і комент усередині робив би їх заручниками
      власного формулювання. */
   useFollowToday({ clinicTz, offsetDays: 1, busy: anyBusy, value: date, setDate,
-    onShift: (d, prev) => setDayShifted((s) => ({ from: s?.from ?? fmtFull(prev), to: fmtFull(d) })) });
+    onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)) });
+  /* ⚠️ Г1-G: ОДИН вердикт на банер І на гейт масової дії. Два екземпляри умови
+     розійшлися б мовчки — і найгірший бік розходження не «зайвий банер», а
+     заблокована незворотна дія без видимої причини.
+     ⚠️ ВЕРДИКТ ТРИЗНАЧНИЙ (ревʼю А по Г1-G, HIGH). Перша редакція пакета дала
+     сюди бул, і на поправці «туди-назад» він давав `false`: банер зникав, а
+     РАЗОМ ІЗ НИМ відкривався гейт незворотної масової дії — саме тоді, коли
+     необдзвоненим лишався день, що встиг постояти на дошці між двома
+     поправками. Гейт дивиться на «не none», текст — на конкретний стан. */
+  const dayShiftSay = dayShiftNoticeVerdict(dayShifted, dayKey);
 
   async function doConfirmAll(ids: string[]) {
     if (!ids.length) return;
@@ -785,9 +804,9 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
                 `title` на DISABLED-кнопці в Chrome та Safari не показується
                 взагалі, бо елемент не отримує вказівникових подій. Тому: сам
                 текст кнопки каже причину, а `title` переїхав на обгортку. */}
-            <span title={dayShifted ? "День змінив годинник центру — підтвердіть банер над списком" : isNarrowed ? "Підтвердить лише тих, кого видно за поточним фільтром" : "Підтвердить усіх непідтверджених за цей день"}>
-              <button className="btn btn-primary" disabled={loading || !!dayShifted || confirmTargets.length === 0} onClick={() => setConfirmAllAsk(true)}>
-                {dayShifted
+            <span title={dayShiftSay !== "none" ? "День змінив годинник центру — підтвердіть банер над списком" : isNarrowed ? "Підтвердить лише тих, кого видно за поточним фільтром" : "Підтвердить усіх непідтверджених за цей день"}>
+              <button className="btn btn-primary" disabled={loading || dayShiftSay !== "none" || confirmTargets.length === 0} onClick={() => setConfirmAllAsk(true)}>
+                {dayShiftSay !== "none"
                   ? "🕐 День змінено — див. банер"
                   : `✓ Всіх підтверджено${confirmTargets.length ? ` (${confirmTargets.length})` : ""}`}
               </button>
@@ -806,9 +825,15 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
                 фону, рамки і кольору, тобто ЄДИНИЙ вихід із заблокованої
                 незворотної операції був намальований слабше за «кабінет не
                 працює». */}
-            {dayShifted && (
+            {/* ⚠️ ДВА ТЕКСТИ, ОДИН ВЕРДИКТ (ревʼю А по Г1-G). `returned` — це не
+                «нічого не сталось»: поправок було дві, і між ними на дошці
+                стояв ІНШИЙ день, який так і лишився необдзвоненим. Мовчати тут
+                означало б відкрити гейт масової дії саме в цю мить. */}
+            {dayShifted && dayShiftSay !== "none" && (
               <div className="ctx-hint orange" role="status" style={{ marginBottom: 12 }}>
-                🕐 Годинник центру уточнено — день обдзвону змінено з <b>{dayShifted.from}</b> на <b>{dayShifted.to}</b>.
+                {dayShiftSay === "moved"
+                  ? <>🕐 Годинник центру уточнено — день обдзвону змінено з <b>{fmtFull(dayOfKey(dayShifted.fromKey))}</b> на <b>{fmtFull(dayOfKey(dayShifted.toKey))}</b>.</>
+                  : <>🕐 Годинник центру уточнювався двічі і повернувся на <b>{fmtFull(dayOfKey(dayShifted.toKey))}</b> — між поправками на дошці стояв інший день.</>}
                 {" "}Перед масовим підтвердженням перевірте, кого ви вже обдзвонили: попередній день лишився необдзвоненим.
                 {" "}<button className="btn btn-secondary btn-sm" style={{ marginLeft: 6 }} onClick={() => setDayShifted(null)}>Зрозуміло</button>
               </div>
