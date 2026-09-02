@@ -39,6 +39,7 @@ import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { incidentDurCapMin, incidentFeed, studyBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
 import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
+import type { ClockClaim } from "@/lib/clockTrust";
 import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, normDur, DUR_MAX } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
 import StudySearchBox from "@/components/StudySearchBox";
@@ -2040,6 +2041,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
       priorityLevel: w.priorityLevel, studies: w.studies, durationMin: w.durationMin, bufferTimeMin: w.bufferTimeMin,
       desiredDateFrom: w.desiredDateFrom, desiredDateTo: w.desiredDateTo,
       desiredTimeFrom: w.desiredTimeFrom, desiredTimeTo: w.desiredTimeTo, note: w.note,
+      clock: w.clock,   // Г1-F: заявку про годинник знімає форма в мить кліка
     });
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     setWlAddOpen(false);
@@ -2056,7 +2058,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
       desired_date_from: w.desiredDateFrom, desired_date_to: w.desiredDateTo,
       desired_time_from: w.desiredTimeFrom, desired_time_to: w.desiredTimeTo,
       note: w.note,
-    });
+    }, w.clock);   // Г1-F: патч ВЕЗЕ desired_date_from — заявка обовʼязкова, і вона від форми
     if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
     setWlEditFor(null);
     notify("Запис листа оновлено", "success");
@@ -2092,11 +2094,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
   }
 
   // Повертає ТЕКСТ помилки — модалка покаже його в собі (тост тонув під оверлеєм).
-  async function doReschedule({ roomId, date, time, dur, buffer, reason, studies }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; studies?: RescheduleStudy[] }) {
+  async function doReschedule({ roomId, date, time, dur, buffer, reason, studies, clock }: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; studies?: RescheduleStudy[]; clock: ClockClaim }) {
     const p = reschedFor?.r; if (!p) return null;
     const [hh, mm] = time.split(":").map(Number);
     const at = new Date(date.getFullYear(), date.getMonth(), date.getDate(), hh, mm).toISOString();
-    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason, studies });
+    const res = await rescheduleQueueEntry({ id: p.id, roomId, scheduledDate: dateVal(date), scheduledTime: time, scheduledAt: at, durationMin: dur, bufferTimeMin: buffer, reason, studies, clock });
     if (!res.ok) {
       if (res.code === "stale") { setReschedFor(null); handledStale(res); return null; }
       reload();

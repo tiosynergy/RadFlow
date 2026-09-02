@@ -41,10 +41,11 @@
    Закривається рівно те, що створив сам перехід на виміряний годинник. */
 
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { clockOffsetMs } from "./serverClock";
+import { clockOffsetMs, serverNow } from "./serverClock";
 import { wallDayKeyAt } from "./incidents";
 import { dateKeyOf } from "./schedule";
 import { useClockEpoch } from "./useClockEpoch";
+import type { ClockClaim } from "./clockTrust";
 
 /** Локальна північ дати з ключа «YYYY-MM-DD» — той самий фрейм, що віддає
     `wallToday0` (локальна північ, календарний день клініки).
@@ -388,13 +389,59 @@ export function followedDay(args: {
   pinnedKey?: string | null;
 }): Date | null {
   const { prevDay, nextDay, curKey, offsetDays = 0, pinnedKey } = args;
-  // Дефолт за СТАРИМ годинником. Не збігся — користувач обрав дату сам.
-  if (curKey !== dateKeyOf(shiftDays(prevDay, offsetDays))) return null;
-  /* Дата прийшла ззовні явно (deep-link «Пошук», prefill із картки пацієнта):
-     оператор прийшов саме по неї, і забрати її з-під нього означає зламати
-     єдину причину переходу. Щойно він піде з цієї дати сам — правило знову діє. */
-  if (pinnedKey && curKey === pinnedKey) return null;
+  if (!derivedFromToday({ todayDay: prevDay, curKey, offsetDays, pinnedKey })) return null;
   return shiftDays(nextDay, offsetDays);
+}
+
+/** ⚠️ ПРЕДИКАТ «ЗНАЧЕННЯ — ЦЕ ДЕФОЛТ, ВИВЕДЕНИЙ ІЗ СЬОГОДНІ», винесений із
+    `followedDay` у с54 (Г1-F) БЕЗ зміни поведінки: там лишились рівно ці дві
+    умови, і тепер вони одні на два споживачі.
+
+    Другий споживач — заявка про годинник (`clockClaimOf` нижче), яку читає
+    СЕРВЕР. Якби форма рахувала «виведена з сьогодні» власною копією умов,
+    копії розійшлися б мовчки, і гард на сервері судив би не про те значення:
+    саме таким механізмом у цьому проєкті вже тричі розходились правила (гейт
+    `safetyUnknown`, дзеркало вікна виклику, годинник у шапці).
+
+    Умова 1 — дефолт за ЦИМ годинником. Не збігся — користувач обрав дату сам.
+    Умова 2 — дата прийшла ззовні явно (deep-link «Пошук», prefill із картки
+    пацієнта): оператор прийшов саме по неї, і забрати її з-під нього означає
+    зламати єдину причину переходу. Щойно він піде з цієї дати сам — правило
+    (і гард) знову діють. */
+export function derivedFromToday(args: {
+  todayDay: Date;
+  curKey: string;
+  offsetDays?: number;
+  pinnedKey?: string | null;
+}): boolean {
+  const { todayDay, curKey, offsetDays = 0, pinnedKey } = args;
+  if (curKey !== dateKeyOf(shiftDays(todayDay, offsetDays))) return false;
+  if (pinnedKey && curKey === pinnedKey) return false;
+  return true;
+}
+
+/** ЗАЯВКА ПРО ГОДИННИК для запису, що йде на сервер (Г1-F, с54).
+
+    ⚠️ МОМЕНТ ОДИН НА ОБИДВА ПОЛЯ. `wallDayKey()` усередині кличе `serverNow()`
+    ще раз, і справжня північ між двома викликами зробила б заявку суперечливою
+    саме в тій точці, заради якої вона існує. Тому момент береться РАЗ і доба
+    рахується з нього ж — той самий прийом, що в `decideShift`. */
+export function clockClaimOf(args: {
+  clinicTz?: string;
+  curKey: string;
+  offsetDays?: number;
+  pinnedKey?: string | null;
+}): ClockClaim {
+  const nowMs = serverNow();
+  const dayKey = wallDayKeyAt(nowMs, args.clinicTz);
+  return {
+    nowMs,
+    dayKey,
+    fromToday: derivedFromToday({
+      todayDay: dayOfKey(dayKey), curKey: args.curKey,
+      offsetDays: args.offsetDays, pinnedKey: args.pinnedKey,
+    }),
+  };
 }
 
 /** Стан-ДАТА, похідний від «сьогодні» (`useState(() => wallToday0(tz))` і т.п.).

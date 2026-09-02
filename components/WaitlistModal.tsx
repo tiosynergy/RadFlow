@@ -19,7 +19,8 @@ import type { StudySearchHit } from "@/lib/studySearch";
 import { PRIORITY_OPTIONS, PRIORITY_META, type PatientPriority } from "@/lib/priority";
 import { TIME_PRESETS, timePresetKey } from "@/lib/waitlist";
 import { wallDayKey } from "@/lib/incidents";
-import { useFollowTodayKey, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
+import { useFollowTodayKey, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, clockClaimOf, type DayShiftNotice } from "@/lib/useFollowToday";
+import type { ClockClaim } from "@/lib/clockTrust";
 import type { WaitlistEntry } from "@/supabase/types";
 import { useModalA11y } from "@/lib/useModalA11y";
 
@@ -46,6 +47,12 @@ export type WaitlistFormOut = {
   desiredTimeFrom: string | null;
   desiredTimeTo: string | null;
   note: string | null;
+  /* ⚠️ Г1-F (с54): заявка про годинник, ОБОВʼЯЗКОВА — сторож повноти живе в
+     типі, а не в переліку місць. Форму на успіху закриває батько, тож рішення
+     ухвалює сервер; довезти заявку мусить кожна точка виклику, і забута
+     передача стає помилкою збірки. Будує заявку форма — лише вона знає, чи
+     «готовий з» досі дефолт від «сьогодні». */
+  clock: ClockClaim;
 };
 
 function calcAge(d: string): number | null {
@@ -375,6 +382,15 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
         desiredTimeFrom: preset.from,
         desiredTimeTo: preset.to,
         note: note.trim() || null,
+        /* Г1-F: заявка знімається В МИТЬ КЛІКА, до `await` — саме в цьому вікні
+           приходить поправка, а навантаження вже складене. Аргументи дослівно
+           ті самі, що у виклику `useFollowTodayKey` вище (`offsetDays` за
+           замовчуванням 0, `pinnedKey` — збережене значення в режимі правки):
+           предикат один і той самий, тож форма і сервер судять про ОДНЕ. */
+        clock: clockClaimOf({
+          clinicTz: clinicTz || undefined, curKey: dateFrom,
+          pinnedKey: initial?.desired_date_from ?? null,
+        }),
       });
     } finally {
       setSaving(false);

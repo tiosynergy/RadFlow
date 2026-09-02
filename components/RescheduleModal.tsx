@@ -21,7 +21,8 @@ import {
 } from "@/lib/schedule";
 import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { incidentDurCapMin, incidentEffectiveEnd, roomIncidentsOf, studyBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentFeed } from "@/lib/incidents";
-import { useFollowTodayKey, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
+import { useFollowTodayKey, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, clockClaimOf, type DayShiftNotice } from "@/lib/useFollowToday";
+import type { ClockClaim } from "@/lib/clockTrust";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { BUFFER_DEFAULT, normBuffer, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
@@ -59,7 +60,14 @@ interface RescheduleModalProps {
      не сталося». Тут це критичніше: без блокування кнопки подвійний клік проходив
      ДВІЧІ (M-6), і другий виклик перезаписував reschedule_origin знімком уже нового
      слота — історія переносу псувалась. */
-  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean; studies?: RescheduleStudy[] }) => Promise<string | null> | void;
+  /* ⚠️ Г1-F (с54): `clock` — ОБОВʼЯЗКОВЕ поле, і саме воно є сторожем повноти.
+     Форму на успіху закриває БАТЬКО, тож сказати щось після відповіді вона не
+     може; рішення ухвалює сервер, а заявку про годинник йому мусить довезти
+     кожна точка виклику. Обовʼязковість у типі робить забуту передачу помилкою
+     ЗБІРКИ — на відміну від рукописного переліку місць, яким `CallListBoard`
+     півроку міняв день мовчки. Заявку будує форма (вона знає, чи дата — дефолт
+     від «сьогодні»), а сюди віддає як є. */
+  onConfirm: (sel: { roomId: string; date: Date; time: string; dur: number; buffer: number; reason: string; offSchedule?: boolean; studies?: RescheduleStudy[]; clock: ClockClaim }) => Promise<string | null> | void;
   /* 0077: чи можна переносити ПОЗА графік (після закриття / у перерву) з підтвердженням.
      true — лише дошки ПЕРСОНАЛУ (черга, колл-лист). Портал направника НЕ передає цей
      проп: направник записує пацієнтів ззовні й не знає, чи лишиться зміна. Сервер і
@@ -445,6 +453,13 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
       const err = await onConfirm({
         roomId, date: dateObj, time, dur, buffer, reason: reason.trim(),
         offSchedule: needsOffConfirm && offOk,   // 0077 — згода оператора
+        /* Г1-F: заявку знімаємо ТУТ — у мить кліка, тим самим годинником, яким
+           щойно порахована `dateStr`. Взяти її після `await` було б безглуздо:
+           саме там поправка і приходить, а полезне навантаження вже складене.
+           `offsetDays: 1` і відсутність `pinnedKey` — дослівно ті самі
+           аргументи, що у виклику `useFollowTodayKey` вище; предикат один і
+           той самий (`derivedFromToday`), тож форма і сервер судять про ОДНЕ. */
+        clock: clockClaimOf({ clinicTz: clinicTz || undefined, curKey: dateStr, offsetDays: 1 }),
       });
       if (err) setSaveErr(err);     // успіх → батько закриває модалку
     } catch {
@@ -506,6 +521,14 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
       roomId: b.roomId, date: b.date, time: b.time, dur: b.dur, buffer: b.buffer,
       reason: reason.trim(), offSchedule: b.offSchedule,
       studies: b.studies as RescheduleStudy[],
+      /* Г1-F, гілка «інший кабінет». Дату сюди привозить вкладена `BookingModal`,
+         але ПОХОДЖЕННЯ в неї наше: `movePrefill.date = dateStr`, тобто дефолт
+         «завтра» форми переносу (`datePinned` не передається, тож власне правило
+         вкладеної форми цю дату не веде — її `offsetDays: 0` з нею не збігається).
+         Тому й предикат беремо ЗВІДСИ, зі зсувом 1: якщо оператор дату всередині
+         змінив, ключ перестане дорівнювати «завтра» і заявка чесно скаже «обрала
+         людина»; якщо не змінив — це наш дефолт, і його стереже сервер. */
+      clock: clockClaimOf({ clinicTz: clinicTz || undefined, curKey: dateKeyOf(b.date), offsetDays: 1 }),
     });
     // Правки пацієнта вже в базі — кажемо про це прямо, інакше користувач закриє
     // форму в упевненості, що «нічого не збереглося», і введе їх удруге.
