@@ -29,10 +29,10 @@ begin
   end if;
   v_done := v_done || ' a';
 
-  -- b: перевірок рівно 12 (0156: 10, 0157: 11, 0159: +outbox_rows_overdue)
+  -- b: перевірок рівно 18 (0156: 10, 0157: 11, 0159: +outbox_rows_overdue)
   -- ⚠️ 0161 підняв 12 → 13, 0164 — 13 → 14 (ucm_orphan_markers), 0166 — 14 → 15 (priv_drift).
-  if (v_base ->> 'checked')::int is distinct from 16 then
-    raise exception 'SMOKE_FAIL b: checked=% (очікував 16)', v_base ->> 'checked';
+  if (v_base ->> 'checked')::int is distinct from 18 then
+    raise exception 'SMOKE_FAIL b: checked=% (очікував 18)', v_base ->> 'checked';
   end if;
   v_done := v_done || ' b';
 
