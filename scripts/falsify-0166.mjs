@@ -58,7 +58,7 @@ const CHECKS = (() => {
    `(0170)`, хоч 18 прийшло з 0171: атрибуція вже брехала, і стенд ЗАОХОЧУВАВ
    тримати брехню — чесна правка «(0170) → (0172)» ламала якір (замір: 1 → 0).
    Тепер рот той самий, що з числом: беремо з файлу, а не з памʼяті. */
-const MIG = REPRINT.match(/(\d{4})_/)[1];
+const REPRINT_NO = REPRINT.match(/(\d{4})_/)[1];
 const SMK  = "supabase/smoke/privilege_surface_smoke.sql";
 const CMP  = "supabase/smoke/change_markers_purge_smoke.sql";
 const RBS  = "supabase/smoke/room_busy_slots_scope_smoke.sql";
@@ -215,7 +215,7 @@ M.push(
    `raise exception 'СМОУК 0164/6: сторож дає % перевірок замість ${CHECKS}'`,
    `raise exception 'СМОУК 0164/6: сторож дає % перевірок замість ${CHECKS - 1}'`],
   ["N35 шапка смоуку бреше числом (канал, якого сторож не бачив)", RBS, E.pins,
-   `--   (j) invariants_check(false): checked = ${CHECKS} (${MIG})`,
+   `--   (j) invariants_check(false): checked = ${CHECKS} (${REPRINT_NO})`,
    `--   (j) invariants_check(false): checked = 12 (0159)`],
   ["N36 пін переписали формою, якої сторож не розбирає", GCAL, E.pinform,
    `if (v_res ->> 'checked')::int is distinct from ${CHECKS} then`,
