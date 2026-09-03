@@ -11,11 +11,49 @@
       відрізняє поломки від переписування.
 
    Запуск: node scripts/falsify-0166.mjs   (звіт → falsify-0166.md) */
-import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { execSync } from "node:child_process";
 
 const MIG  = "supabase/migrations/0166_privilege_surface.sql";
 const HARD = "supabase/migrations/0167_privilege_surface_hardening.sql";
+
+/* ⚠️ ЖИВИЙ ПЕРЕДРУК, А НЕ ПРИБИТИЙ ФАЙЛ (с55, ревізія після 0170).
+   Позиції N15–N24 стріляють у ТІЛО `invariants_check`, а обидва спеки-сторожі
+   читають не 0167, а ОСТАННЮ за іменем міграцію, що його передруковує
+   (`guardSrc()` в unreadChanges, `checksInLatestReprint()` в
+   invariantsCheckedPins). Поки 0167 і був останнім, це не мало значення.
+   0170 передрукував сторожа (16-та перевірка policy_digest) — і всі десять
+   мутацій почали правити файл, якого сторож НЕ ЧИТАЄ: ревізія дала десять
+   «сторож дивиться не туди». Це ДОСЛІВНО той самий дефект, який у с51 уже
+   знайшли і полагодили у `falsify-u37` (шість мертвих позицій, коментар там
+   закінчується словами «наступна ж міграція, що передрукує сторожа, знову
+   зробить стенд сліпим — мовчки»). Так і сталось — у сусідньому стенді.
+   Правило одне на всі три місця: якір на початок рядка + терміналізатор.
+   `HARD` лишається для N08–N14: вони стріляють у власний вміст 0167
+   (розтяжки, спільна функція «це клієнт?»), а не в передрук. */
+function latestReprint() {
+  const dir = "supabase/migrations";
+  let best = "";
+  for (const f of readdirSync(dir).filter((x) => x.endsWith(".sql")).sort()) {
+    const txt = readFileSync(`${dir}/${f}`, "utf8");
+    const at = txt.search(/^create or replace function public\.invariants_check/m);
+    if (at < 0) continue;
+    if (txt.indexOf("\n$function$;", at) < 0) continue;
+    best = dir + "/" + f;
+  }
+  if (!best) { console.error("НЕ ЗНАЙДЕНО жодного передруку invariants_check"); process.exit(2); }
+  return best;
+}
+const REPRINT = latestReprint();
+/* Число перевірок — з ТОГО САМОГО передруку, а не константа: інакше піни
+   N32–N37 протухають при кожному наступному передруку (с55: шість «якір не
+   знайдено» рівно з цієї причини). */
+const CHECKS = (() => {
+  const txt = readFileSync(REPRINT, "utf8");
+  const at = txt.search(/^create or replace function public\.invariants_check/m);
+  const body = txt.slice(at, txt.indexOf("\n$function$;", at));
+  return (body.match(/v_n := v_n \+ 1;/g) || []).length;
+})();
 const SMK  = "supabase/smoke/privilege_surface_smoke.sql";
 const CMP  = "supabase/smoke/change_markers_purge_smoke.sql";
 const RBS  = "supabase/smoke/room_busy_slots_scope_smoke.sql";
@@ -106,32 +144,32 @@ M.push(
    "      ('function:request_is_client_role()'),\n", ""],
 );
 
-/* ── живий сторож: 15-та перевірка в ОСТАННЬОМУ передруку ────────────────── */
+/* ── живий сторож: перевірки в ОСТАННЬОМУ передруку (ціль — REPRINT, не файл) ── */
 M.push(
-  ["N15 priv_drift тихо зникла з передруку", HARD, E.privdrift,
+  ["N15 priv_drift тихо зникла з передруку", REPRINT, E.privdrift,
    "'check', 'priv_drift', 'offenders', to_jsonb(v_tmp)", "'check', 'priv', 'offenders', to_jsonb(v_tmp)"],
-  ["N16 із передруку випала стара перевірка ucm_orphan_markers", HARD, E.prevchk,
+  ["N16 із передруку випала стара перевірка ucm_orphan_markers", REPRINT, E.prevchk,
    "'check', 'ucm_orphan_markers', 'offenders', to_jsonb(v_tmp)",
    "'check', 'ucm_orphan', 'offenders', to_jsonb(v_tmp)"],
-  ["N17 ролі знову хардкод — нова клієнтська роль невидима", HARD, E.roles,
+  ["N17 ролі знову хардкод — нова клієнтська роль невидима", REPRINT, E.roles,
    "        cross join (select g.rolname as rol\n                      from pg_auth_members m\n                      join pg_roles g on g.oid = m.roleid\n                      join pg_roles a on a.oid = m.member\n                     where a.rolname = 'authenticator'\n                       and g.rolname <> 'service_role') r",
    "        cross join (values ('anon'), ('authenticated')) as r(rol)"],
-  ["N18 foreign table випала з гілки (a) — грантор supabase_admin поза наглядом", HARD, E.relkind,
+  ["N18 foreign table випала з гілки (a) — грантор supabase_admin поза наглядом", REPRINT, E.relkind,
    "c.relkind in ('r', 'p', 'v', 'm', 'f')", "c.relkind in ('r', 'p', 'v', 'm')"],
-  ["N19 гілка (b): inner join знову губить defaclnamespace = 0", HARD, E.branchB,
+  ["N19 гілка (b): inner join знову губить defaclnamespace = 0", REPRINT, E.branchB,
    "        left join pg_namespace n on n.oid = d.defaclnamespace",
    "        join pg_namespace n on n.oid = d.defaclnamespace"],
-  ["N20 гілка (b): грант на PUBLIC перестав бути порушником", HARD, E.branchB,
+  ["N20 гілка (b): грант на PUBLIC перестав бути порушником", REPRINT, E.branchB,
    "and (a.grantee = 0 or a.grantee::regrole::text in ('anon', 'authenticated'))",
    "and a.grantee::regrole::text in ('anon', 'authenticated')"],
-  ["N21 зникла таблиця знову вбиває сторожа винятком", HARD, E.regclass,
+  ["N21 зникла таблиця знову вбиває сторожа винятком", REPRINT, E.regclass,
    "       where to_regclass('public.incidents') is not null\n         and has_table_privilege(r.rol, 'public.incidents', 'DELETE')",
    "       where has_table_privilege(r.rol, 'public.incidents', 'DELETE')"],
-  ["N22 гілка (d) ловить і restrictive/службові політики — вічно червона", HARD, E.branchD,
+  ["N22 гілка (d) ловить і restrictive/службові політики — вічно червона", REPRINT, E.branchD,
    "         and p.polpermissive\n", ""],
-  ["N23 гілка (e) перестала стерегти SECURITY DEFINER розтяжок", HARD, E.branchE,
+  ["N23 гілка (e) перестала стерегти SECURITY DEFINER розтяжок", REPRINT, E.branchE,
    "      select 'tripwire_definer:' || pr.proname", "      select 'x' where false --"],
-  ["N24 гілка (e) забула розтяжку на queue_entries", HARD, E.branchE,
+  ["N24 гілка (e) забула розтяжку на queue_entries", REPRINT, E.branchE,
    "from (values ('queue_entries'), ('waitlist_entries'), ('incidents')) as t(tbl)",
    "from (values ('waitlist_entries'), ('incidents')) as t(tbl)"],
 );
@@ -162,28 +200,28 @@ M.push(
 /* ── сторож пінів: три канали + позитивний контроль ──────────────────────── */
 M.push(
   ["N32 асерт-пін розійшовся з передруком", GCAL, E.pins,
-   "if (v_res ->> 'checked')::int is distinct from 15 then",
-   "if (v_res ->> 'checked')::int is distinct from 14 then"],
+   `if (v_res ->> 'checked')::int is distinct from ${CHECKS} then`,
+   `if (v_res ->> 'checked')::int is distinct from ${CHECKS - 1} then`],
   ["N33 текст «очікував» бреше окремо від коду", GCAL, E.pins,
-   "raise exception 'SMOKE_FAIL e: checked = %, очікував 15'",
-   "raise exception 'SMOKE_FAIL e: checked = %, очікував 14'"],
+   `raise exception 'SMOKE_FAIL e: checked = %, очікував ${CHECKS}'`,
+   `raise exception 'SMOKE_FAIL e: checked = %, очікував ${CHECKS - 1}'`],
   /* N34/N35 — саме ті два канали, яких у першій редакції сторожа НЕ БУЛО. */
   ["N34 текст «замість N» бреше (канал, якого сторож не бачив)", CMP, E.pins,
-   "raise exception 'СМОУК 0164/6: сторож дає % перевірок замість 15'",
-   "raise exception 'СМОУК 0164/6: сторож дає % перевірок замість 14'"],
+   `raise exception 'СМОУК 0164/6: сторож дає % перевірок замість ${CHECKS}'`,
+   `raise exception 'СМОУК 0164/6: сторож дає % перевірок замість ${CHECKS - 1}'`],
   ["N35 шапка смоуку бреше числом (канал, якого сторож не бачив)", RBS, E.pins,
-   "--   (j) invariants_check(false): checked = 15 (0166)",
-   "--   (j) invariants_check(false): checked = 12 (0159)"],
+   `--   (j) invariants_check(false): checked = ${CHECKS} (0170)`,
+   `--   (j) invariants_check(false): checked = 12 (0159)`],
   ["N36 пін переписали формою, якої сторож не розбирає", GCAL, E.pinform,
-   "if (v_res ->> 'checked')::int is distinct from 15 then",
-   "if (v_res ->> 'checked')::int = 15 then null; elsif true then"],
+   `if (v_res ->> 'checked')::int is distinct from ${CHECKS} then`,
+   `if (v_res ->> 'checked')::int = ${CHECKS} then null; elsif true then`],
   /* ⚠️ ПОЗИТИВНИЙ КОНТРОЛЬ. `<>` — легальна форма, і сторож мусить її ПРИЙНЯТИ.
      Якби він червонів і тут, «розширення регекспа» було б фікцією: сторож
      реагував би на будь-яку зміну тексту, а не на розбіжність чисел. */
   ["N37 [позитивний контроль] пін через `<>` — легальна форма, має лишитись зеленою",
    GCAL, GREEN,
-   "if (v_res ->> 'checked')::int is distinct from 15 then",
-   "if (v_res ->> 'checked')::int <> 15 then"],
+   `if (v_res ->> 'checked')::int is distinct from ${CHECKS} then`,
+   `if (v_res ->> 'checked')::int <> ${CHECKS} then`],
 );
 
 /* ── припущення, на якому побудований revoke DELETE ──────────────────────── */
