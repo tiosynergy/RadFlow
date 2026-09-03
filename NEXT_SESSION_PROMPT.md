@@ -64,7 +64,7 @@ const fromBuildId = (t.match(/\\"b\\":\\"([A-Za-z0-9_-]{15,30})\\"/) || [])[1];
 | що | значення |
 |---|---|
 | `main` / `dev` | рівні; останній КОД — **`f2d44d9`** (пакет 20) поверх `b4e986b` (пакет 19) поверх `7f851e3`; зверху — docs-коміт цієї правки, звіряти `git ls-remote` |
-| деплой | ✅ ВИМІРЯНО В ОБИДВА БОКИ: `e932OVvljPInjNmjAczZb` → **`fVozhjCleDHRFwhmhFEvX`**, HTTP 200; після docs-пушу відбиток знову інший |
+| деплой | ✅ ВИМІРЯНО В ОБИДВА БОКИ двічі: пакет 19 `e932OVvljPInjNmjAczZb` → `fVozhjCleDHRFwhmhFEvX`; пакет 20 `or5cYBt7COfKy9qJP2KHJ` → **`6T0P3n3zmUsN3TtIvIqcI`**, HTTP 200. Після docs-пушу відбиток знову інший — це нормально, код він не міняв |
 | прод-БД | **`0171`** (`0171_guard_triggers_and_server_now.sql`), ledger **171/171**, 0 незаштампованих |
 | `invariants_check()` | `ok:true`, **`checked:18`**, `failed:[]` |
 | **наступна міграція** | **0172** — номер брати з леджера; кандидат — дайджест ТІЛ guard-функцій |
