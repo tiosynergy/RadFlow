@@ -39,42 +39,49 @@ const MUTATIONS = [
   // ---------- арифметика довіри до проби ----------
   {
     id: "M1", file: "clock", green: false,
+    expect: /береться проба з НАЙМЕНШИМ RTT/,
     what: "перемагає ОСТАННЯ валідна проба, а не найкраща за RTT",
     from: "    if (best === null || rtt < best.rttMs) {",
     to: "    if (true) {",
   },
   {
     id: "M2", file: "clock", green: false,
+    expect: /зіпсована проба не перемагає чесну/,
     what: "тривалість знову міряється стінним годинником — тим, який і перевіряємо",
     from: "    const rtt = mono1 - mono0;                 // монотонна тривалість запиту",
     to: "    const rtt = t1 - t0;",
   },
   {
     id: "M3", file: "clock", green: false,
+    expect: /крок годинника посеред проби — проба відкидається/,
     what: "знято детектор стрибка стінного годинника посеред проби",
     from: "    if (Math.abs((t1 - t0) - rtt) > CLOCK_MAX_MONO_DRIFT_MS) continue;",
     to: "    if (false) continue;",
   },
   {
     id: "M4", file: "clock", green: false,
+    expect: /зсув = час сервера мінус середина вікна запиту/,
     what: "зсув рахується від початку вікна, а не від середини",
     from: "      best = { offsetMs: serverMs - (t0 + t1) / 2, rttMs: rtt };",
     to: "      best = { offsetMs: serverMs - t0, rttMs: rtt };",
   },
   {
     id: "M5", file: "clock", green: false,
+    expect: /поріг застосування — саме межа, і працює в обидва боки/,
     what: "поріг застосування перестав бути модульним — відʼємний зсув «малий»",
     from: "  const next = Math.abs(est.offsetMs) < CLOCK_MIN_APPLY_MS ? 0 : est.offsetMs;",
     to: "  const next = est.offsetMs < CLOCK_MIN_APPLY_MS ? 0 : est.offsetMs;",
   },
   {
     id: "M6", file: "clock", green: false,
+    expect: /гірша оцінка НЕ заміняє кращу/,
     what: "гірша оцінка знову заміняє кращу (гонка заходів)",
     from: "  if (_known && !stale && est.rttMs > _rttMs) return false;",
     to: "  if (false) return false;",
   },
   {
     id: "M7", file: "clock", green: false,
+    expect: /росте ЛИШЕ коли зсув реально змінився/,
     what: "епоха росте на КОЖЕН замір, а не лише на зміну зсуву",
     /* ⚠️ ЯКІР ОНОВЛЕНО в с51 (U-74 ч.2): U-70 поклав усередину ще й розсилку
        слухачам, і однорядкове `if (changed) _epoch++;` стало блоком.
@@ -85,12 +92,14 @@ const MUTATIONS = [
   },
   {
     id: "M8", file: "clock", green: false,
+    expect: /значення БЕЗ зони — це NaN/,
     what: "розбір приймає значення БЕЗ зони — «локальний час» замість UTC",
     from: '  if (!/(?:Z|[+-]\\d{2}(?::?\\d{2})?)$/i.test(s)) return NaN;',
     to: "  // зона більше не обовʼязкова",
   },
   {
     id: "M9", file: "clock", green: false,
+    expect: /поза браузером зсув НЕ застосовується/,
     what: "знято захист «не застосовувати зсув поза браузером»",
     from: '  if (typeof window === "undefined") return false;',
     to: "  // захист знято",
@@ -98,18 +107,21 @@ const MUTATIONS = [
   // ---------- місця вживання: відкат мусить бути ПОМІТНИМ ----------
   {
     id: "M10", file: "timer", green: false,
+    expect: /кільце таймера рахує від in_progress_at/,
     what: "кільце таймера знову рахує годинником браузера",
     from: "  const [now, setNow] = useState(() => serverNow());",
     to: "  const [now, setNow] = useState(() => Date.now());",
   },
   {
     id: "M11", file: "timer", green: false,
+    expect: /тік таймера теж мусить іти за годинником бази/,
     what: "тік таймера повернувся на Date.now()",
     from: "    const t = setInterval(() => setNow(serverNow()), 1000);",
     to: "    const t = setInterval(() => setNow(Date.now()), 1000);",
   },
   {
     id: "M12", file: "timer", green: false,
+    expect: /підпис «завершення о HH:MM»/,
     what: "підпис «завершення о HH:MM» рахується годинником браузера, а не виміряним",
     /* ⚠️ МУТАЦІЮ ПЕРЕПИСАНО, а не переякорено (с51, U-74 ч.2), і це важливіше
        за протухлий якір. Стара пара була:
@@ -125,24 +137,28 @@ const MUTATIONS = [
   },
   {
     id: "M13", file: "board", green: false,
+    expect: /LiveTimer «хв у кабінеті» рахує від in_progress_at/,
     what: "LiveTimer дошки знову рахує годинником браузера",
     from: "  const [now, setNow] = useState(() => serverNow());\n  useEffect(() => { const t = setInterval(() => setNow(serverNow()), 1000); return () => clearInterval(t); }, []);\n  const sec = enteredAt ? Math.max(0, Math.floor((now - new Date(enteredAt).getTime()) / 1000)) : 0;\n  return children(sec);\n}\n\n/* ── StatsBar ── */",
     to: "  const [now, setNow] = useState(() => Date.now());\n  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);\n  const sec = enteredAt ? Math.max(0, Math.floor((now - new Date(enteredAt).getTime()) / 1000)) : 0;\n  return children(sec);\n}\n\n/* ── StatsBar ── */",
   },
   {
     id: "M14", file: "modal", green: false,
+    expect: /друга копія LiveTimer — той самий годинник/,
     what: "друга копія LiveTimer повернулась на Date.now()",
     from: "  const [now, setNow] = useState(() => serverNow());",
     to: "  const [now, setNow] = useState(() => Date.now());",
   },
   {
     id: "M15", file: "sounds", green: false,
+    expect: /поріг перевищення — від інстанта бази/,
     what: "поріг перевищення знову рахується годинником браузера",
     from: "      const { events, next } = diffOverruns(knownOverRef.current, list, serverNow());",
     to: "      const { events, next } = diffOverruns(knownOverRef.current, list, Date.now());",
   },
   {
     id: "M16", file: "inc", green: false,
+    expect: /wallNow рахує від виміряного годинника/,
     what: "wallNow відкотили на годинник браузера — межу, яку переніс U-70, зламано назад",
     /* ⚠️ МУТАЦІЮ РОЗВЕРНУТО (с51, U-74 ч.2). Вона писалась у Ф4-8, коли
        `wallNow` навмисно лишався на `new Date()`, і стерегла МЕЖУ ПАКЕТА:
@@ -156,6 +172,7 @@ const MUTATIONS = [
   },
   {
     id: "M17", file: "layout", green: false,
+    expect: /вимірювач змонтований рівно один раз/,
     what: "вимірювач знято з кореневого layout — міряти нікому",
     from: "        <ServerClockSync />\n",
     to: "",
@@ -207,6 +224,37 @@ const MUTATIONS = [
   },
 ];
 
+/* ⚠️ U-80г (с56). Досі вердикт спирався на «почервонів НОВИЙ спек-ФАЙЛ»
+   (`redInNew`) — а в `serverClock.test.ts` під сімдесят тестів про пʼять
+   механізмів. «Щось у моєму спеку впало» доводить, що набір реагує, а не що
+   спрацював гвард, заради якого позицію писали.
+
+   ⚠️ Інвентар заповнено НЕ з прогону (канон с52): сторожі названі читанням
+   спеків ДО першого запуску. Розбіжність «чекав А, почервонів Б» — ЗНАХІДКА,
+   а не привід переписати очікування. */
+for (const m of MUTATIONS) {
+  const bad =
+    (!m.green && !m.expect) ? "мутація мусить червоніти, але не називає сторожа (`expect`)"
+    : (m.green && m.expect) ? "`expect` у рядку, який МУСИТЬ лишитись зеленим — сторожа тут не буває"
+    : (m.expect && /\|/.test(m.expect.source)) ? "у регулярці `|` — вона зламає таблицю звіту"
+    : null;
+  if (bad) {
+    console.error(`⛔ ІНВЕНТАР БРЕШЕ: ${m.id} — ${bad}. Стенд НЕ прогнано.`);
+    process.exit(1);
+  }
+}
+
+/* ⚠️ ПІН НА КІЛЬКІСТЬ АДРЕСНИХ (с52): правило вище саме ж і дає найдешевший
+   спосіб погасити червону позицію — перевести її в `green: true` і зняти
+   сторожа, лишивши мутацію. Рядок при цьому друкує ✅. */
+const EXPECTED_RED = 17;
+const redCount = MUTATIONS.filter((m) => !m.green).length;
+if (redCount !== EXPECTED_RED) {
+  console.error(`⛔ ІНВЕНТАР БРЕШЕ: адресних мутацій ${redCount}, а очікується ${EXPECTED_RED}. `
+    + "Якщо позицію знято свідомо — поправте EXPECTED_RED разом із нею. Стенд НЕ прогнано.");
+  process.exit(1);
+}
+
 const orig = {};
 for (const [k, p] of Object.entries(FILES)) orig[k] = readFileSync(p, "utf8");
 let restored = false;
@@ -226,23 +274,31 @@ function run() {
   if (existsSync(REPORT)) unlinkSync(REPORT);
   spawnSync("npx", ["vitest", "run", ...SPECS, "--reporter=json", `--outputFile.json=${REPORT}`],
     { shell: true, stdio: "ignore" });
-  if (!existsSync(REPORT)) return { crashed: true, ok: false, red: [], redInNew: [] };
+  if (!existsSync(REPORT)) return { crashed: true, ok: false, red: [], redInNew: [], all: [] };
   let r;
   try { r = JSON.parse(readFileSync(REPORT, "utf8")); }
-  catch { return { crashed: true, ok: false, red: [], redInNew: [] }; }
-  const red = [], redInNew = [];
+  catch { return { crashed: true, ok: false, red: [], redInNew: [], all: [] }; }
+  const red = [], redInNew = [], all = [];
   for (const f of r.testResults || []) {
     const isNew = String(f.name || "").replace(/\\/g, "/").endsWith(NEW_SPEC);
     for (const a of f.assertionResults || []) {
+      /* ⚠️ U-80г (с56): `fullName`, а не `title`. Тут це не теорія: девʼять із
+         сімнадцяти позицій ловляться `describe.each(CALL_SITES)`, де імʼя
+         describe несе ФАЙЛ, а `title` у двох записів StudyTimer різний лише
+         текстом причини. Повний перелік `all` — щоб відрізнити «спіймав ЧУЖИЙ
+         сторож» від «сторожа з таким іменем немає» (дефект стенда). */
+      const n = a.fullName || a.title;
+      all.push(n);
       if (a.status === "passed") continue;
-      red.push(a.title);
-      if (isNew) redInNew.push(a.title);
+      red.push(n);
+      if (isNew) redInNew.push(n);
     }
   }
-  return { crashed: false, ok: r.success === true && red.length === 0, red, redInNew, total: r.numTotalTests };
+  return { crashed: false, ok: r.success === true && red.length === 0, red, redInNew, all, total: r.numTotalTests };
 }
 
 const lines = [];
+let addressedOk = 0;
 try {
   const base = run();
   lines.push(`# Стенд фальсифікації Ф4-8 — годинник сервера (с50)\n`);
@@ -272,15 +328,23 @@ try {
         continue;
       }
       const gotRed = !res.ok;
-      const heldByNew = !wantRed || res.redInNew.length > 0;
-      const verdict = wantRed === gotRed
-        ? (heldByNew ? "✅" : "⚠️ спіймав ЧУЖИЙ спек, не новий сторож")
-        : "⛔ СТОРОЖ НЕ ТРИМАЄ";
+      /* ⚠️ U-80г: почервоніти мав НАЗВАНИЙ сторож, а не будь-хто в спеку. */
+      const missed = wantRed && gotRed && !res.red.some((t) => m.expect.test(t));
+      /* Дві РІЗНІ причини одного «не збіглось» (с52): чужий сторож — або тесту
+         з таким іменем немає взагалі, і тоді це дефект СТЕНДА, не покриття. */
+      const noSuchGuard = missed && !res.all.some((t) => m.expect.test(t));
+      const verdict = noSuchGuard ? "⛔ СТОРОЖА З ТАКИМ ІМЕНЕМ НЕМАЄ (дефект стенда)"
+        : missed ? "⛔ ЧУЖИЙ сторож"
+        : (wantRed === gotRed ? "✅" : "⛔ СТОРОЖ НЕ ТРИМАЄ");
+      if (verdict === "✅" && wantRed) addressedOk++;
+      const others = res.red.length - res.redInNew.length;
       const fact = gotRed
-        ? res.redInNew.concat(res.redInNew.length < res.red.length ? [`(+${res.red.length - res.redInNew.length} в іншому спеку)`] : [])
-            .map((t) => (t.startsWith("(+") ? t : `«${t}»`)).join("; ")
+        ? (res.redInNew.slice(0, 3).map((t) => `«${t}»`).join("; ") || "—")
+          + (res.redInNew.length > 3 ? ` (+${res.redInNew.length - 3})` : "")
+          + (others > 0 ? ` (+${others} в іншому спеку)` : "")
         : "усе зелене";
-      lines.push(`| ${m.id} | ${m.what} | ${wantRed ? "ЧЕРВОНЕ" : "ЗЕЛЕНЕ"} | ${fact} | ${verdict} |`);
+      const want = wantRed ? `ЧЕРВОНЕ: ${m.expect.source}` : "ЗЕЛЕНЕ";
+      lines.push(`| ${m.id} | ${m.what} | ${want} | ${fact} | ${verdict} |`);
     }
   }
 } finally {
@@ -291,6 +355,9 @@ try {
      валить прогін так само, як протухлий якір. */
   const verdict = verdictOf(lines, MUTATIONS.length);
   lines.push(`\n${verdict.summary}`);
+  /* ⚠️ ЧЕСНЕ ЧИСЛО ДЛЯ РЕВІЗІЇ (с52): `verdictOf` рахує в `passed` будь-який
+     ✅, разом із зеленими зондами, які нічого не сторожать за побудовою. */
+  lines.push(`\n## ПІДСУМОК: ${addressedOk}/${EXPECTED_RED} адресних, ${MUTATIONS.length - EXPECTED_RED} рефакторних`);
   writeFileSync(OUT, lines.join("\n") + "\n");
   console.log(lines.join("\n"));
   console.log(`\nЗвіт: ${OUT}. Файли відновлено.`);
