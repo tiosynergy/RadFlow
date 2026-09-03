@@ -1,15 +1,19 @@
 import { createServerClient, type SetAllCookies } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-// Routes that require authentication.
+/* Routes that require authentication.
+
+   ⚠️ Ф6-2 (с55): звідси прибрано `/board-app` і `/incidents` — сторінок із
+   такими шляхами в `app/` НЕМАЄ (перевірено переліком тек). Мертвий запис сам
+   по собі нешкідливий, шкідливо було інше: цей allowlist рукописний, і до с55
+   його не звіряв із деревом ЖОДЕН тест. Тепер звіряє `tests/authSurface.test.ts`
+   в обидва боки: сторінка поза списком і запис без сторінки однаково червоні. */
 const PROTECTED = [
   "/setup",
   "/queue",
-  "/board-app",
   "/radiologist",
   "/call-list",
   "/waitlist",
-  "/incidents",
   "/ceo",
   "/ceo-admin",
   "/referral",

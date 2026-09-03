@@ -18,6 +18,15 @@ export default async function CallListPage() {
   if (!profile) redirect("/login");
   if (profile.role === "radiologist") redirect("/radiologist");
   if (profile.role === "referrer") redirect("/referral");
+  /* ⚠️ Ф6-3 (с55). Цього рядка тут НЕ БУЛО, хоч в обох сусідів по столу він є:
+     `/queue` відводить `ceo`, `/waitlist` — `ceo` і порожній `clinic_id`. А
+     `ceo` за конституцією БД (`profiles_role_clinic_chk`) має `clinic_id IS
+     NULL`, тож нижче йшов запит `.eq("clinic_id", null as string)` — каст
+     ховав дірку від типів, і керівник потрапляв саме на той екран, де живе
+     НЕЗВОРОТНЕ масове «Всіх підтверджено» (F2, с51).
+     Це дослівно урок фази 4: дефект живе не там, де правила немає, а там, де
+     правило є і про нього забули — тут воно було у двох місцях із трьох. */
+  if (profile.role === "ceo" || !profile.clinic_id) redirect("/ceo");
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
     | { name?: string; configured_at: string | null; timezone?: string | null }
