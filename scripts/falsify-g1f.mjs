@@ -215,7 +215,12 @@ const MUTATIONS = [
     id: "M22", file: "qb", green: false,
     expect: /дошка черги будує заявку ТИМИ САМИМИ аргументами/,
     what: "заявка дошки завжди каже «обрала людина» — гард вимкнено для обох інлайн-переносів",
-    from: `  const boardClock = () => clockClaimOf({ clinicTz, curKey: dateKey(selectedDate), pinnedKey: initialDate });`,
+    /* ⚠️ ПЕРЕЯКОРЕНО в с55 (F3): із заявки дошки знято `pinnedKey: initialDate`
+       — пін глушив відмову Г1-F рівно на дип-лінку в сьогоднішній день. Старий
+       якір дав 0 входжень, і передпольотна перевірка чесно НЕ ПУСТИЛА стенд
+       (0 с, «ЯКОРІ ПРОТУХЛИ»). Мутація лишається тією самою по СЕНСУ: зробити
+       `fromToday` тотожно хибним, тільки тепер це додавання піна, а не підміна. */
+    from: `  const boardClock = () => clockClaimOf({ clinicTz, curKey: dateKey(selectedDate) });`,
     to: `  const boardClock = () => clockClaimOf({ clinicTz, curKey: dateKey(selectedDate), pinnedKey: dateKey(selectedDate) });`,
   },
   {

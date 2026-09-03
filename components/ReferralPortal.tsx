@@ -38,7 +38,7 @@ import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { incidentDurCapMin, incidentFeed, studyBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
-import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
+import { useFollowToday, dateOnCenterSwitch, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
 import type { ClockClaim } from "@/lib/clockTrust";
 import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, normDur, DUR_MAX } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
@@ -178,6 +178,17 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
      `lib/useFollowToday.ts`. Умови `from !== to` тут не було, тож поправка
      «туди-назад» давала банер «змінено з 1 вересня на 1 вересня». */
   const [dateShifted, setDateShifted] = useState<DayShiftNotice | null>(null);
+  /* ⚠️ F4 (с55), знахідка ревʼю А по цьому ж пакету. Дата їде ще й від ЗМІНИ
+     ЦЕНТРУ — і до правки F4 цей шлях рухав її лише коли вона вже стала строго
+     минулою, тобто в гучному випадку, де всі слоти й так закриті гардом
+     «минуле». Правка розширила шлях на цілу добу в обидва боки, і мовчання
+     разом із ним: у сусіднього шляху (поправка годинника) є банер, скидання
+     часу і відкладення під `busy`, а тут не було нічого. Стан ОКРЕМИЙ від
+     `dateShifted` навмисно: причина інша, і чужий текст («годинник центру
+     уточнено») був би просто неправдою. Механізм спільний — той самий
+     `dayShiftNoticeOf` / `dayShiftNoticeVerdict`, тож «туди-назад» (A→B→A) тут
+     теж не тиша: час скинуто двічі. */
+  const [centerShift, setCenterShift] = useState<DayShiftNotice | null>(null);
   const [dayEntries, setDayEntries] = useState<BusySlot[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(true);
   const [slotsErr, setSlotsErr] = useState(false); // зайнятість/простої не завантажились — сітку не показуємо
@@ -206,23 +217,66 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   const roomsOfType = rooms.filter((r) => r.modality === modality);
   const room = roomsOfType.find((r) => r.id === roomId) || null;
 
-  /* Центр обрано (або змінено) → підтягуємо дату до доби ЦЕНТРУ, якщо поточний
-     вибір уже минув за його часом. Інакше направник із іншої зони відкривав день,
-     який у центрі позаду, і всі слоти були закриті гардом «минуле» (0063). */
+  /* Центр обрано (або змінено) → підтягуємо дату до доби ЦЕНТРУ. ПРИЧИН ДВІ, і
+     друга додана в с55 (F4).
+
+     Причина 1 (було): вибір уже минув за часом центру — направник із іншої зони
+     відкривав день, який у центрі позаду, і всі слоти були закриті гардом
+     «минуле» (0063).
+
+     ⚠️ Причина 2 — F4 (MEDIUM, знахідка ревʼю). Умова `d >= t0` пропускала рівно
+     той перехід, заради якого екран і мультицентровий: у центр, чия доба
+     ПОЗАДУ. Дефолт «завтра» попереднього центру строго минулим не стає ніколи,
+     тож дата лишалась від ПОПЕРЕДНЬОГО центру, а `clinicTz` уже був новий —
+     `derivedFromToday` бачив невідповідність і вирішував, що дату обрала
+     ЛЮДИНА. Наслідок: на ЄДИНОМУ мультицентровому екрані правило «слідувати за
+     поправкою годинника» мовчало до кінця сесії. Виміряно зондом с55 (P8–P11):
+     Київ 03.09 00:30 / Нью-Йорк 02.09 17:30 — дефолт 04.09 лишався, предикат
+     давав `false`; у зворотному напрямку (день попереду) — `true`.
+
+     ⚠️ САМЕ ПРАВИЛО — чиста `dateOnCenterSwitch` у `lib/useFollowToday.ts`, поруч
+     із предикатом, яким воно й судить. Тут лишається тільки проводка: зони в
+     доби. Причина не косметична — компонентних тестів у проєкті немає, тож
+     правило, залишене в ефекті, перевірялось би регексом по джерелу, а це не
+     сторож; а власна копія умови «це дефолт?» розійшлась би з правилом мовчки.
+     `prevTzRef` тримає зону, ЗА ЯКОЮ порахований поточний дефолт; стартове
+     значення дослівно те саме, що в ініціалізаторі `bookDate` вище. `offsetDays: 1`
+     — той самий зсув, що у виклику `useFollowToday` нижче. */
   const selTz = (selCenter?.timezone || activeCenters[0]?.timezone) || undefined;
+  const prevTzRef = useRef<string | undefined>(activeCenters[0]?.timezone || undefined);
+  /* ⚠️ Поточна дата береться РЕФОМ, а не із замикання ефекту, і це не стиль.
+     Поставити `bookDate` в залежності означало б будити ефект на КОЖНУ зміну
+     дати — тобто він гасив би сам себе, а рішення ухвалювалось би не на зміні
+     зони. Той самий прийом, що з `applyRef` у `lib/useFollowToday.ts`; реф
+     оновлюється ефектом, оголошеним ВИЩЕ за той, що його читає, тож на рендері
+     зі зміненою зоною тут уже свіже значення. */
+  const bookDateRef = useRef(bookDate);
+  useEffect(() => { bookDateRef.current = bookDate; });
   useEffect(() => {
     if (!selTz) return;
-    setBookDate((d) => {
-      const t0 = wallToday0(selTz);
-      if (d >= t0) return d;
-      const nx = new Date(t0); nx.setDate(nx.getDate() + 1); return nx;
+    const prevTz = prevTzRef.current;
+    prevTzRef.current = selTz;
+    /* ⚠️ Рішення — ПОЗА апдейтером стану: апдейтер мусить лишатись чистим, а
+       React у StrictMode кличе його двічі. Банер і скидання часу — побічні дії,
+       і вони не сміють залежати від кількості викликів (той самий висновок, що
+       записаний у шапці `useFollowToday`). */
+    const cur = bookDateRef.current;
+    const next = dateOnCenterSwitch({
+      value: cur, prevToday: wallToday0(prevTz), nextToday: wallToday0(selTz), offsetDays: 1,
     });
+    /* Тотожність, а не порівняння ключів: правило повертає САМЕ ТОЙ обʼєкт,
+       коли міняти нема чого, — тож ця перевірка і є «дата не рухалась». */
+    if (next === cur) return;
+    setBookDate(next);
+    setTime("");
+    setCenterShift((s) => dayShiftNoticeOf(s, cur, next));
   }, [selTz]);
 
   /* ⚠️ U-72. Ефект вище цього НЕ закриває, і це варто назвати явно: він будиться
-     лише зміною ЗОНИ центру, а умова `if (d >= t0) return d` пропускає рівно наш
-     випадок — поправка годинника зсуває добу на одну, і зафіксоване «завтра»
-     ніколи не стає строго минулим.
+     лише зміною ЗОНИ ЦЕНТРУ (`[selTz]`), а поправка годинника зони не міняє —
+     тобто ефект на неї не прокидається взагалі. Правка F4 (с55) цього не
+     змінила: вона розширила те, ЩО ефект робить, коли його вже розбудили, і не
+     торкалась того, КОЛИ він будиться.
      `bookDate` зафіксовано ініціалізатором на `wallToday0(tz) + 1`, а зсув
      годинника бази приїжджає асинхронно (і перезаміряється кожні 10 хв та на
      `visibilitychange`). Якщо поправка перетинає північ центру, форма мовчки
@@ -253,6 +307,10 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
   /* ⚠️ ТРИЗНАЧНИЙ (ревʼю А по Г1-G): «туди-назад» — не тиша, `setTime("")`
      відпрацював двічі. */
   const dateShiftSay = dayShiftNoticeVerdict(dateShifted, dateVal(bookDate));
+  /* F4 (с55): другий вердикт — на перенесення від ЗМІНИ ЦЕНТРУ. Той самий
+     механізм видимості, що й у сусіда: банер гасне сам, щойно оператор пішов на
+     іншу добу, і не бреше про добу, якої на екрані вже немає. */
+  const centerShiftSay = dayShiftNoticeVerdict(centerShift, dateVal(bookDate));
   /* ⚠️ Г1-A (HIGH, ревʼю Г; рішення власника с51 — «зупинити збереження,
      вирішує людина»). Те саме, що в `BookingModal`, і тут ВІКНО ШИРШЕ: форму
      направлення заповнюють довго, а направник ще й у своїй зоні. Поки кейс
@@ -1042,7 +1100,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
               )}
             </div>
 
-            <BookingCalendar value={bookDate} today={centerToday} onPick={(d) => { setBookDate(d); setTime(""); setDateShifted(null); }} />
+            <BookingCalendar value={bookDate} today={centerToday} onPick={(d) => { setBookDate(d); setTime(""); setDateShifted(null); setCenterShift(null); }} />
 
             {/* ⚠️ U-72 (ревʼю А, HIGH): дату перенесла поправка годинника центру.
                 Направник у своїй зоні і форму заповнює довго — без цього рядка
@@ -1056,6 +1114,17 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 {dateShiftSay === "moved"
                   ? <>🕐 Годинник центру уточнено — дату змінено з <b>{fmtShort(dayOfKey(dateShifted.fromKey))}</b> на <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>. Назвіть пацієнту нову дату і оберіть час заново.</>
                   : <>🕐 Годинник центру уточнено — дата лишилась <b>{fmtShort(dayOfKey(dateShifted.toKey))}</b>, але обраний час скинуто. Оберіть час заново.</>}
+              </div>
+            )}
+
+            {/* F4 (с55): перенесення від ЗМІНИ ЦЕНТРУ. Причина інша, ніж у банера
+                вище, тому й текст свій — редакція власника. «Туди-назад» (A→B→A)
+                тут теж не тиша: час скинуто двічі. */}
+            {centerShift && centerShiftSay !== "none" && (
+              <div className="ctx-hint" role="status" style={{ marginTop: 6 }}>
+                {centerShiftSay === "moved"
+                  ? <>🌍 У цьому центрі зараз інша дата — дату змінено з <b>{fmtShort(dayOfKey(centerShift.fromKey))}</b> на <b>{fmtShort(dayOfKey(centerShift.toKey))}</b>. Назвіть пацієнту нову дату і оберіть час заново.</>
+                  : <>🌍 У цьому центрі зараз інша дата — дата лишилась <b>{fmtShort(dayOfKey(centerShift.toKey))}</b>, але обраний час скинуто. Оберіть час заново.</>}
               </div>
             )}
 

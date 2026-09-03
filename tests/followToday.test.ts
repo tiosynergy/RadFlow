@@ -24,7 +24,7 @@ import { describe, it, expect, vi } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { codeOf } from "./helpers/codeOf";
-import { followedDay, decideShift, dayOfKey, stepClockShift, pendingShiftOf, dayShiftNoticeOf, dayShiftNoticeVerdict } from "@/lib/useFollowToday";
+import { followedDay, decideShift, dayOfKey, stepClockShift, pendingShiftOf, dayShiftNoticeOf, dayShiftNoticeVerdict, derivedFromToday, dateOnCenterSwitch } from "@/lib/useFollowToday";
 
 /* Джерело БЕЗ коментарів і з нормалізованими пробілами. Нормалізація тут не
    зручність: пін, чутливий до переносу рядка, червонів би на чесному
@@ -693,9 +693,26 @@ const CALL_SITES: Array<[string, RegExp, string]> = [
      ⚠️ `pendingShift` дошки НЕ беруть, і це вимір, а не пропуск: ядро віддає
      непорожній `pending` лише під `busy`, а `busy` тут — «відкритий оверлей»,
      який накриває дошку цілком. Пояснення жило б рівно там, де його не видно. */
-  ["components/QueueBoard.tsx", /useFollowToday\(\{ clinicTz, pinnedKey: initialDate, busy: anyModalOpen, value: selectedDate, setDate: setSelectedDate, onShift:/,
+  /* ⚠️ ПЕРЕЯКОРЕНО в с55 (F3): з обох дощок ЗНЯТО `pinnedKey: initialDate`.
+     Причина поруч, щоб наступний не повернув його назад «для симетрії з
+     формами»: пін порівнював ЗНАЧЕННЯ (`pinnedKey && curKey === pinnedKey`), а
+     перша умова предиката вже відсікає будь-яку ЧУЖУ дату — тож пін міняв
+     вислід РІВНО в одному стані, дип-лінк на СЬОГОДНІ, де він і шкодив:
+     правило мовчало (мовчазний архів, тобто повернений Г1-E), а `clockClaimOf`
+     заявляв серверу `fromToday: false` і вимикав відмову Г1-F на інлайн-
+     переносах. Виміряно зондом с55: P2/P3 (правило), P5a/P6a (гард), P7
+     (на чужій даті пін не міняє нічого). Форми `pinnedKey` ЗБЕРІГАЮТЬ — там він
+     стереже значення з БД (режим правки листа очікування), а не навігацію. */
+  ["components/QueueBoard.tsx", /useFollowToday\(\{ clinicTz, busy: anyModalOpen, value: selectedDate, setDate: setSelectedDate, onShift:/,
     "дошка черги слідує за «сьогодні», чекає закриття модалок і оголошує перенесення"],
-  ["components/RadiologistBoard.tsx", /useFollowToday\(\{ clinicTz, pinnedKey: initialDate, busy: [^;]*?, value: selectedDate, setDate: setSelectedDate, onShift:/,
+  /* ⚠️ `[^,;]`, а не `[^;]` — знахідка ревʼю Б. У виразі `busy` крапок з комою
+     немає, тому лінива діра `[^;]*?` переступала через КОМИ: вставлене поле
+     (`offsetDays: 1`) мовчки лягало в проміжок, і пін лишався зеленим. А саме
+     ця вставка вбиває правило на дошці цілком — `derivedFromToday` почав би
+     звірятись із «сьогодні + 1», тобто дошка, що стоїть на сьогодні, дефолтом
+     не вважалась би НІКОЛИ. Сусідній запис `QueueBoard` заякорений дослівно і
+     такої діри не мав. */
+  ["components/RadiologistBoard.tsx", /useFollowToday\(\{ clinicTz, busy: [^,;]*?, value: selectedDate, setDate: setSelectedDate, onShift:/,
     "дошка радіолога — те саме правило (у неї isPast вмикає read-only)"],
   /* U-72 — форми, які ПИШУТЬ дату в БД. Тут ціна вища за дошки: тихий запис у
      чужу добу замість гучної відмови. */
@@ -1656,5 +1673,153 @@ describe("правило живе в ОДНОМУ екземплярі", () => {
       .toMatch(/setDate\(next\); .*?onShift\?\.\(next, value\);/);
     expect(s, "useFollowTodayKey віддає в onShift не те, що було в полі, дивись M57")
       .toMatch(/setKey\(dateKeyOf\(next\)\); onShift\?\.\(next, dayOfKey\(value\)\);/);
+  });
+});
+
+/* ===== F3 (с55) — ЩО НАСПРАВДІ РОБИТЬ `pinnedKey` =====
+
+   Пакет зняв пін із дощок, і зняв не «бо заважав», а тому що вимір показав: він
+   міняє вислід РІВНО в одному стані. Ця властивість — причина рішення, тож вона
+   мусить бути СТОРОЖЕМ, а не абзацом у PR-доці: якщо колись предикат почне
+   реагувати на пін ширше, рішення «дошкам пін не потрібен» стане неправдою
+   мовчки. */
+describe("F3 — pinnedKey впливає РІВНО там, де збігається з дефолтом", () => {
+  const today = day("2026-09-02");
+
+  it("на ЧУЖІЙ даті пін не додає нічого: перша умова вже сказала «ні»", () => {
+    for (const key of ["2026-09-05", "2026-08-30", "2026-09-03"]) {
+      expect(derivedFromToday({ todayDay: today, curKey: key, pinnedKey: key }),
+        `пін почав щось означати на чужій даті ${key} — рішення F3 більше не спирається ні на що`).toBe(false);
+      expect(derivedFromToday({ todayDay: today, curKey: key, pinnedKey: null }),
+        `значення ${key} раптом стало вважатись дефолтом — зміст предиката поїхав`).toBe(false);
+    }
+  });
+
+  it("пін, який НЕ дорівнює значенню, не глушить нічого", () => {
+    /* ⚠️ ЦЮ ПОЛОВИНУ ВЛАСТИВОСТІ ПЕРША РЕДАКЦІЯ БЛОКУ НЕ ДОВОДИЛА, і показав це
+       стенд, а не читання. Мутація `if (pinnedKey && curKey === pinnedKey)` →
+       `if (pinnedKey)` лишала весь блок ЗЕЛЕНИМ: усі його випадки були про
+       ЧУЖУ дату, де перша умова спрацьовує РАНІШЕ і другу вже не питають.
+       Червонів сусідній старий тест — тобто блок називав властивість ширше,
+       ніж перевіряв. Класика: назва тесту — це теж твердження. */
+    expect(derivedFromToday({ todayDay: today, curKey: "2026-09-02", pinnedKey: "2026-09-07" }),
+      "пін глушить правило незалежно від того, на яку дату він вказує").toBe(true);
+    expect(derivedFromToday({ todayDay: today, curKey: "2026-09-03", offsetDays: 1, pinnedKey: "2026-09-07" }),
+      "те саме для форми зі зсувом").toBe(true);
+  });
+
+  it("на дефолті пін — ЄДИНЕ, що міняє відповідь (зонд с55, P2/P3)", () => {
+    expect(derivedFromToday({ todayDay: today, curKey: "2026-09-02", pinnedKey: "2026-09-02" })).toBe(false);
+    expect(derivedFromToday({ todayDay: today, curKey: "2026-09-02", pinnedKey: null }),
+      "без піна дефолт перестав вважатись дефолтом — правило слідування вимкнулось би скрізь").toBe(true);
+  });
+
+  it("зі зсувом стан той самий: пін живий лише на `сьогодні + offsetDays`", () => {
+    expect(derivedFromToday({ todayDay: today, curKey: "2026-09-03", offsetDays: 1, pinnedKey: "2026-09-03" })).toBe(false);
+    expect(derivedFromToday({ todayDay: today, curKey: "2026-09-03", offsetDays: 1, pinnedKey: null })).toBe(true);
+    /* А ось «сьогодні» для форми зі зсувом — уже ЧУЖА дата, і пін там мертвий. */
+    expect(derivedFromToday({ todayDay: today, curKey: "2026-09-02", offsetDays: 1, pinnedKey: "2026-09-02" })).toBe(false);
+    expect(derivedFromToday({ todayDay: today, curKey: "2026-09-02", offsetDays: 1, pinnedKey: null })).toBe(false);
+  });
+});
+
+/* ===== F4 (с55) — перемикання центру в порталі направника =====
+
+   КЛАС ДЕФЕКТУ. Ефект тягнув дату лише коли вона стала СТРОГО минулою за часом
+   нового центру. Дефолт «завтра» строго минулим не стає ніколи, тож перехід у
+   центр, чия доба ПОЗАДУ, лишав дату від попереднього центру — і `clinicTz` уже
+   був новий. `derivedFromToday` бачив невідповідність, вирішував «дату обрала
+   людина» і замовкав до кінця сесії. На ЄДИНОМУ мультицентровому екрані.
+
+   ⚠️ Сторож перевіряє не тільки нову дату, а й ВЛАСТИВІСТЬ, заради якої пакет
+   існує: після перемикання правило слідування знову мусить ПЕРЕНОСИТИ дату при
+   поправці годинника. І перевіряється це ЛАНЦЮГОМ через `followedDay`, а не
+   повторним викликом предиката: ревʼю Б показало, що предикат і `dateOnCenterSwitch`
+   рахують дефолт ОДНИМ `shiftDays`, тож ассерт-переказ не міг почервоніти
+   окремо від першого — він обіцяв охорону, якої не давав. */
+describe("F4 — dateOnCenterSwitch", () => {
+  const KYIV_TODAY = day("2026-09-03");   // Київ 03.09 00:30
+  const NY_TODAY = day("2026-09-02");     // Нью-Йорк ще 02.09 17:30
+
+  it("центр із добою ПОЗАДУ: дефолт переїжджає, правило знову живе", () => {
+    const value = day("2026-09-04");      // дефолт «завтра» київського центру
+    const next = dateOnCenterSwitch({ value, prevToday: KYIV_TODAY, nextToday: NY_TODAY, offsetDays: 1 });
+    expect(keyOf(next), "дата лишилась від ПОПЕРЕДНЬОГО центру — це і є F4").toBe("2026-09-03");
+    /* ⚠️ ЗНАХІДКА РЕВʼЮ Б: другий ассерт першої редакції був ПЕРЕКАЗОМ першого.
+       `derivedFromToday` звіряє значення з тим самим `shiftDays`, яким
+       будується `def`, тож стан «правильне число мимо предиката» неможливий ЗА
+       ПОБУДОВОЮ, і рядок не міг почервоніти окремо — тобто обіцяв охорону, якої
+       не давав. Доводимо ЛАНЦЮГОМ: після перемикання правило слідування
+       зобовʼязане ПЕРЕНЕСТИ дату, коли приїде поправка годинника нового центру.
+       Саме цю здатність F4 і повертає. */
+    const moved = followedDay({ prevDay: NY_TODAY, nextDay: day("2026-09-01"), curKey: keyOf(next)!, offsetDays: 1 });
+    expect(keyOf(moved),
+      "після перемикання центру правило слідування мовчить — F4 не закрита").toBe("2026-09-02");
+  });
+
+  it("ЗЕЛЕНА БАЗА — центр із добою ПОПЕРЕДУ вів себе правильно і до с55", () => {
+    const value = day("2026-09-03");      // дефолт «завтра» нью-йоркського центру
+    const next = dateOnCenterSwitch({ value, prevToday: NY_TODAY, nextToday: KYIV_TODAY, offsetDays: 1 });
+    expect(keyOf(next)).toBe("2026-09-04");
+    expect(derivedFromToday({ todayDay: KYIV_TODAY, curKey: keyOf(next)!, offsetDays: 1 })).toBe(true);
+  });
+
+  it("свідомий вибір ЛЮДИНИ не чіпаємо — і це той самий обʼєкт", () => {
+    const value = day("2026-09-20");
+    const next = dateOnCenterSwitch({ value, prevToday: KYIV_TODAY, nextToday: NY_TODAY, offsetDays: 1 });
+    expect(next, "перемикання центру стерло свідомо обрану дату").toBe(value);
+  });
+
+  it("вибір людини, що вже МИНУВ у новому центрі, підтягуємо (поведінка 0063 збережена)", () => {
+    const value = day("2026-08-28");
+    const next = dateOnCenterSwitch({ value, prevToday: KYIV_TODAY, nextToday: NY_TODAY, offsetDays: 1 });
+    expect(keyOf(next)).toBe("2026-09-03");
+  });
+
+  it("доба нового центру та сама → повертається СТАРИЙ обʼєкт, зайвого рендера немає", () => {
+    const value = day("2026-09-04");
+    const next = dateOnCenterSwitch({ value, prevToday: KYIV_TODAY, nextToday: KYIV_TODAY, offsetDays: 1 });
+    expect(next, "новий Date із тим самим моментом — зайвий рендер і новий знімок значення для правила").toBe(value);
+  });
+
+  /* Місце вживання: сама проводка в порталі. Правило чисте і покрите викликом,
+     але переклад «зона → доба» живе в ефекті, а компонентних тестів у проєкті
+     немає за задумом — без цього піна переплутані місцями доби або незмінний
+     `prevTzRef` лишили б увесь набір зеленим. */
+  it("портал направника кличе правило тими самими добами і тим самим зсувом", () => {
+    const s = src("components/ReferralPortal.tsx");
+    /* ⚠️ Кінцівка `,? \}\)` — не педантизм: вимагати ВИСЯЧУ кому означає падати
+       від чесного переформатування (знахідка ревʼю Б; той самий урок уже
+       записаний над `CALL_SITES`). */
+    expect(s, "доби переплутано або зона попереднього центру не передається — правило вирішить, що дефолт обрала людина")
+      .toMatch(/dateOnCenterSwitch\(\{ value: cur, prevToday: wallToday0\(prevTz\), nextToday: wallToday0\(selTz\), offsetDays: 1,? \}\)/);
+    expect(s, "прапорець попередньої зони не оновлюється — наступне перемикання порівнюватиметься з протухлою зоною")
+      .toMatch(/const prevTz = prevTzRef\.current; prevTzRef\.current = selTz;/);
+    /* ⚠️ ЗНАХІДКА РЕВʼЮ Б: пін тримав ТІЛО ефекту і мовчав про те, КОЛИ ефект
+       будиться. Мутація `}, [selTz]);` → `}, []);` лишала обидва рядки вище
+       побайтово тими самими, а F4 поверталась ЦІЛКОМ — разом із «причиною 1»
+       (підтягування минулої дати, гард 0063), бо ефект відпрацьовував би один
+       раз на монтуванні. `react-hooks/exhaustive-deps` тут не рятує: у конфігу
+       він "warn", а не "error". */
+    expect(s, "ефект перестав будитись зміною зони центру — F4 повертається цілком, разом із гардом «минуле»")
+      .toMatch(/setCenterShift\(\(s\) => dayShiftNoticeOf\(s, cur, next\)\); \}, \[selTz\]\);/);
+    /* ⚠️ ЗНАХІДКА РЕВʼЮ А по цьому ж пакету: правка F4 розширила шлях «зміна
+       центру» на цілу добу в обидва боки, а мовчання лишила. Перенесення тут
+       мусить бути таким самим ГОЛОСНИМ, як і перенесення від поправки годинника
+       поруч: скинутий час і банер. */
+    expect(s, "зміна центру рухає дату мовчки: обраний час не скинуто")
+      .toMatch(/if \(next === cur\) return; setBookDate\(next\); setTime\(""\);/);
+    expect(s, "банер про перенесення від зміни центру не показується")
+      .toMatch(/centerShift && centerShiftSay !== "none"/);
+    expect(s, "банер зміни центру не гасне, коли дату взяла ЛЮДИНА")
+      .toMatch(/setDateShifted\(null\); setCenterShift\(null\);/);
+  });
+
+  it("`сьогодні` нового центру дорівнює вибору людини — не минуле, тож не чіпаємо", () => {
+    /* Межа: `value >= nextToday` не строге. Вибір, що дорівнює сьогодні нового
+       центру, — ще не минуле, і забирати його немає підстав. */
+    const value = day("2026-09-02");
+    const next = dateOnCenterSwitch({ value, prevToday: KYIV_TODAY, nextToday: NY_TODAY, offsetDays: 1 });
+    expect(next).toBe(value);
   });
 });
