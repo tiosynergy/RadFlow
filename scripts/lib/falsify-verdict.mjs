@@ -39,10 +39,10 @@ function cellsOf(line) {
  *
  * @param {string[]} lines   рядки звіту, як їх зібрав стенд
  * @param {number} expected  скільки мутацій мало бути прогнано (MUTATIONS.length)
- * @returns {{ok: boolean, summary: string, counts: {passed: number, rejected: number, crashed: number, notHeld: number, wrongSpec: number, unknown: number}}}
+ * @returns {{ok: boolean, summary: string, counts: {passed: number, rejected: number, crashed: number, notHeld: number, wrongSpec: number, noSuchGuard: number, unknown: number}}}
  */
 export function verdictOf(lines, expected) {
-  const counts = { passed: 0, rejected: 0, crashed: 0, notHeld: 0, wrongSpec: 0, unknown: 0 };
+  const counts = { passed: 0, rejected: 0, crashed: 0, notHeld: 0, wrongSpec: 0, noSuchGuard: 0, unknown: 0 };
   const baselineRed = lines.some((l) => typeof l === "string" && l.includes("Базова лінія червона"));
   const unknownSamples = [];
 
@@ -55,13 +55,26 @@ export function verdictOf(lines, expected) {
     if (last.includes("відхилено")) { counts.rejected++; continue; }
     if (last.includes("зламала збірку")) { counts.crashed++; continue; }
     if (last.includes("НЕ ТРИМАЄ")) { counts.notHeld++; continue; }
-    if (last.includes("ЧУЖИЙ спек")) { counts.wrongSpec++; continue; }
+    /* ⚠️ ДВА ДІАГНОЗИ U-80б, яких цей модуль НЕ ЗНАВ (с56). Стенди, переведені
+       на адресність, друкують «СТОРОЖА З ТАКИМ ІМЕНЕМ НЕМАЄ» і «ЧУЖИЙ сторож»
+       — і обидва падали в `unknown`. Прогін від цього червонів (кількість
+       сходилась не за тим кошиком), тобто нічого не ховалось; але ПРИЧИНА в
+       підсумку називалась «невпізнаний вердикт» замість справжньої. Сторож,
+       який червоніє з неправильним поясненням, лікується не тим місцем.
+       ⚠️ «Немає сторожа з таким іменем» — окремий кошик НАВМИСНО: це дефект
+       САМОГО СТЕНДА (опечатка в `expect`), а не дірка в покритті, і плутати
+       їх означає шукати вчорашній день у продукті. */
+    if (last.includes("ТАКИМ ІМЕНЕМ НЕМАЄ")) { counts.noSuchGuard++; continue; }
+    if (/ЧУЖИЙ (спек|сторож)/.test(last)) { counts.wrongSpec++; continue; }
     counts.unknown++;
     if (unknownSamples.length < 3) unknownSamples.push(last.slice(0, 60));
   }
 
+  /* ⚠️ Новий кошик мусить бути І тут (с56). Забути його в сумі означало б
+     діагноз «N мутацій не дали рядка в таблиці» на рядок, який у таблиці Є, —
+     тобто сторож указував би не на те місце. */
   const total = counts.passed + counts.rejected + counts.crashed + counts.notHeld
-    + counts.wrongSpec + counts.unknown;
+    + counts.wrongSpec + counts.noSuchGuard + counts.unknown;
 
   /* ⚠️ НЕ `Number.isFinite(expected) ? … : 0` (знахідка ревʼю А). Така форма
      ТИХО вимикала б половину сторожа: стенд, який колись покличе verdictOf без
@@ -78,7 +91,8 @@ export function verdictOf(lines, expected) {
   if (counts.rejected) problems.push(`${counts.rejected} відхилених якорів (мутація НЕ відбулась — протухлий якір)`);
   if (counts.crashed) problems.push(`${counts.crashed} мутацій зламали збірку`);
   if (counts.notHeld) problems.push(`${counts.notHeld} сторожів НЕ ТРИМАЮТЬ`);
-  if (counts.wrongSpec) problems.push(`${counts.wrongSpec} мутацій спіймав ЧУЖИЙ спек, а не названий сторож`);
+  if (counts.wrongSpec) problems.push(`${counts.wrongSpec} мутацій спіймав ЧУЖИЙ сторож, а не названий`);
+  if (counts.noSuchGuard) problems.push(`${counts.noSuchGuard} мутацій називають сторожа, ЯКОГО НЕМАЄ — дефект стенда, не покриття`);
   if (counts.unknown) problems.push(`${counts.unknown} рядків із невпізнаним вердиктом (${unknownSamples.join(" / ")})`);
   if (missing > 0) problems.push(`${missing} мутацій не дали рядка в таблиці`);
   if (missing < 0) problems.push(`рядків більше, ніж мутацій (${total} проти ${expected})`);
