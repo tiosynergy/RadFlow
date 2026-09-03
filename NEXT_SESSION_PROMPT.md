@@ -64,7 +64,7 @@ const fromBuildId = (t.match(/\\"b\\":\\"([A-Za-z0-9_-]{15,30})\\"/) || [])[1];
 | що | значення |
 |---|---|
 | `main` / `dev` | рівні; останній КОД — **`d3c53cf`** (пакет 21) поверх `f2d44d9` (пакет 20) поверх `b4e986b` (пакет 19); зверху — docs-коміт цієї правки, звіряти `git ls-remote` |
-| деплой | ✅ ВИМІРЯНО В ОБИДВА БОКИ двічі: пакет 19 `e932OVvljPInjNmjAczZb` → `fVozhjCleDHRFwhmhFEvX`; пакет 20 `or5cYBt7COfKy9qJP2KHJ` → **`6T0P3n3zmUsN3TtIvIqcI`**, HTTP 200. Після docs-пушу відбиток знову інший — це нормально, код він не міняв |
+| деплой | ✅ ВИМІРЯНО В ОБИДВА БОКИ тричі: пакет 19 `e932OVvljPInjNmjAczZb` → `fVozhjCleDHRFwhmhFEvX`; пакет 20 `or5cYBt7COfKy9qJP2KHJ` → `6T0P3n3zmUsN3TtIvIqcI`; пакет 21 `h7m7ctrrOpHnjrgJtjI81` → **`IbbjE0XrMeHWEvyxbYVCN`**, HTTP 200. Збірка Vercel гоняє `migration-gate --build`, тож зелений деплой сам доводить, що міграція в леджері прода. Після docs-пушу відбиток знову інший — це нормально |
 | прод-БД | **`0172`** (`0172_guard_fn_bodies_invariant.sql`), ledger **172/172**, 0 незаштампованих |
 | `invariants_check()` | `ok:true`, **`checked:19`**, `failed:[]` |
 | **наступна міграція** | **0173** — номер брати з леджера; кандидати — названі межі 0172 (аудит-тригери; обробники винятків для решти 18 перевірок) |
