@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import SetupWizard from "@/components/SetupWizard";
+import SignOutButton from "@/components/SignOutButton";
 import { normalizeRoomSchedule } from "@/lib/schedule";
 import { modalityLabel } from "@/lib/studies";
 import type { QueueDelayPolicy } from "@/supabase/types";
@@ -36,6 +37,11 @@ export default async function SetupPage() {
             Майстер налаштувань доступний лише адміністратору центру. Зверніться до адміністратора —
             після налаштування кабінетів і графіка черга запрацює.
           </p>
+          {/* ⚠️ Ф6-5 (с55). Кнопки тут НЕ БУЛО, і екран термінальний: посилань
+              із нього немає, /queue веде назад сюди, а middleware жене
+              залогіненого з /login на /queue. Реєстратор у щойно зареєстрованому
+              центрі опинявся в петлі без жодного способу з неї вийти. */}
+          <div style={{ marginTop: 20 }}><SignOutButton /></div>
         </div>
       </div>
     );

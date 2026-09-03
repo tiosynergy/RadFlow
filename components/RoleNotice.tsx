@@ -1,3 +1,5 @@
+import SignOutButton from "@/components/SignOutButton";
+
 /**
  * ЕКРАН-ВІДМОВА ДЛЯ РОЛІ, ЯКІЙ РОЗДІЛ НЕ НАЛЕЖИТЬ (Ф6-4, с55).
  *
@@ -13,9 +15,11 @@
  * шоста роль: без нього вона мовчки отримала б дошку черги і колл-лист із
  * НЕЗВОРОТНИМ масовим «Всіх підтверджено».
  *
- * ⚠️ Кнопки виходу тут НЕМАЄ — свідоме рішення власника (с55). Сусідні
- * екрани-відмови в `/radiologist` і `/referral` кнопку несуть; якщо цей екран
- * колись стане досяжним живою роллю, це рішення варто перечитати.
+ * ⚠️ КНОПКА ВИХОДУ ОБОВʼЯЗКОВА, і це не оформлення. Екран термінальний:
+ * посилань із нього немає, а `middleware` жене залогіненого з `/login` назад
+ * сюди. Без кнопки людина замкнена в петлі й не має чим із неї вийти —
+ * рівно тому вона стоїть і на сусідніх екранах-відмовах у `/radiologist` та
+ * `/referral`. (У першій редакції с55 кнопки не було; додана того ж дня.)
  */
 export default function RoleNotice({ title, text }: { title: string; text: string }) {
   return (
@@ -24,6 +28,7 @@ export default function RoleNotice({ title, text }: { title: string; text: strin
         <div style={{ fontSize: "2.375rem", marginBottom: 12 }}>🔒</div>
         <h1 style={{ fontSize: "1.25rem", fontWeight: 650 }}>{title}</h1>
         <p style={{ fontSize: "0.875rem", color: "#8e8e93", marginTop: 10, lineHeight: 1.5 }}>{text}</p>
+        <div style={{ marginTop: 20 }}><SignOutButton /></div>
       </div>
     </div>
   );

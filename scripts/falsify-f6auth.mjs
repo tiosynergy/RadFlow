@@ -41,6 +41,7 @@ const FILES = {
   se: "app/search/page.tsx",
   ty: "supabase/types.ts",
   mg: "supabase/migrations/0001_init.sql",
+  rn: "components/RoleNotice.tsx",
   as: AS,
 };
 const SPECS = [AS];
@@ -196,6 +197,19 @@ const MUTATIONS = [
     what: "текст відмови підмінено дошкою — «render» лишився б зеленим, якби піни не тримали ТЕКСТ",
     from: '    return <RoleNotice title="Доступ обмежено" text="У вашій ролі цей розділ недоступний. Зверніться до адміністратора центру." />;',
     to: '    return <CallListBoard clinicId={profile.clinic_id as string} rooms={[]} entries={[]} />;',
+  },
+
+  /* ---------- термінальні екрани (Ф6-5) ---------- */
+  {
+    id: "M28", file: "rn", spec: AS, expect: /термінальні екрани дають вихід/,
+    what: "з екрана-відмови знято кнопку виходу — людина замкнена в петлі (рівно Ф6-5, знайдена на /setup)",
+    from: '        <div style={{ marginTop: 20 }}><SignOutButton /></div>\n', to: "",
+  },
+  {
+    id: "M29", spec: AS, expect: /термінальні екрани дають вихід/,
+    what: "зʼявився новий повноекранний екран без виходу — саме той напрям, у якому Ф6-5 і просочилась",
+    newFile: "components/ZzFalsifyTerminal.tsx",
+    content: 'export default function ZzFalsifyTerminal() {\n  return <div style={{ minHeight: "100vh" }}>falsify</div>;\n}\n',
   },
 
   /* ---------- словник ролей ---------- */
