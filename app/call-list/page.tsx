@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import CallListBoard from "@/components/CallListBoard";
+import RoleNotice from "@/components/RoleNotice";
 
 export default async function CallListPage() {
   const supabase = await createClient();
@@ -27,6 +28,12 @@ export default async function CallListPage() {
      Це дослівно урок фази 4: дефект живе не там, де правила немає, а там, де
      правило є і про нього забули — тут воно було у двох місцях із трьох. */
   if (profile.role === "ceo" || !profile.clinic_id) redirect("/ceo");
+  /* ⚠️ ЗАКРИВАЮЧИЙ ПОЗИТИВ (Ф6-4, с55). Ланцюг вище — НЕГАТИВНИЙ: роль, якої в
+     ньому немає, проходила далі — на екран із НЕЗВОРОТНИМ масовим «Всіх
+     підтверджено». Відводити нікуди, тому рендеримо пояснення. Див. RoleNotice. */
+  if (profile.role !== "admin" && profile.role !== "registrar") {
+    return <RoleNotice title="Доступ обмежено" text="У вашій ролі цей розділ недоступний. Зверніться до адміністратора центру." />;
+  }
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
     | { name?: string; configured_at: string | null; timezone?: string | null }

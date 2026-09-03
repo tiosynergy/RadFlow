@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import QueueBoard from "@/components/QueueBoard";
+import RoleNotice from "@/components/RoleNotice";
 
 // с22: deep-link зі сторінки «Пошук» — ?date=YYYY-MM-DD&entry=<uuid>. Валідуємо
 // формат тут (сторінка — межа довіри), PII в URL немає: тільки id та дата.
@@ -37,6 +38,13 @@ export default async function QueuePage({ searchParams }: { searchParams?: Promi
   if (profile.role === "radiologist") redirect("/radiologist");
   if (profile.role === "referrer") redirect("/referral");
   if (profile.role === "ceo") redirect("/ceo"); // керівник — на свій дашборд
+  /* ⚠️ ЗАКРИВАЮЧИЙ ПОЗИТИВ (Ф6-4, с55). Ланцюг вище — НЕГАТИВНИЙ: він розводить
+     кожну ВІДОМУ роль, а роль, якої в ньому немає, просто проходила далі. Шоста
+     роль в ENUM отримала б дошку черги мовчки. Відводити її нікуди (це і є
+     /queue), тому рендеримо пояснення — як на /setup. Див. RoleNotice. */
+  if (profile.role !== "admin" && profile.role !== "registrar") {
+    return <RoleNotice title="Доступ обмежено" text="У вашій ролі цей розділ недоступний. Зверніться до адміністратора центру." />;
+  }
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
     | { name?: string; configured_at: string | null; timezone?: string | null }

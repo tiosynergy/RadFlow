@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import WaitlistBoard from "@/components/WaitlistBoard";
+import RoleNotice from "@/components/RoleNotice";
 
 // с22: deep-link зі сторінки «Пошук» — ?tab=waiting|scheduled|removed&entry=<uuid>.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -31,6 +32,12 @@ export default async function WaitlistPage({ searchParams }: { searchParams?: Pr
   if (profile.role === "radiologist") redirect("/radiologist");
   if (profile.role === "referrer") redirect("/referral");
   if (profile.role === "ceo" || !profile.clinic_id) redirect("/ceo");
+  /* ⚠️ ЗАКРИВАЮЧИЙ ПОЗИТИВ (Ф6-4, с55). Ланцюг вище — НЕГАТИВНИЙ: роль, якої в
+     ньому немає, проходила далі. Відводити нікуди, тому рендеримо пояснення.
+     Див. RoleNotice. */
+  if (profile.role !== "admin" && profile.role !== "registrar") {
+    return <RoleNotice title="Доступ обмежено" text="У вашій ролі цей розділ недоступний. Зверніться до адміністратора центру." />;
+  }
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
     | { name?: string; configured_at: string | null; timezone?: string | null }

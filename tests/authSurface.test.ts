@@ -118,22 +118,28 @@ type Gate = { may: string[]; closes: "redirect" | "render" | "NONE"; pin: RegExp
 
 const CHAIN_RAD_REF = 'if \\(profile\\.role === "radiologist"\\) redirect\\("\\/radiologist"\\); if \\(profile\\.role === "referrer"\\) redirect\\("\\/referral"\\); ';
 const ADMIN_ONLY = new RegExp(CHAIN_RAD_REF + 'if \\(profile\\.role !== "admin"\\) redirect\\("\\/queue"\\); const clinic = ');
+/* Закриваючий позитив трьох дощок (Ф6-4 закрито в с55): відводити таку роль
+   нікуди — свого екрана в неї немає, а редірект на /queue із самого /queue дав
+   би петлю. Тому РЕНДЕР пояснення. Текст — у піні навмисно: без нього відмову
+   можна було б підмінити дошкою і лишитись зеленим (той самий урок, що на
+   /setup). */
+const ROLE_NOTICE = 'if \\(profile\\.role !== "admin" && profile\\.role !== "registrar"\\) \\{ return <RoleNotice title="Доступ обмежено" text="У вашій ролі цей розділ недоступний\\. Зверніться до адміністратора центру\\." \\/>; \\} const clinic = ';
 
 const GATES: Record<string, Gate> = {
   "/queue": {
-    may: ["admin", "registrar"], closes: "NONE",
-    why: "Ф6-4: закриваючого позитива немає — шоста роль отримала б дошку черги. Текст екрана-відмови ще не затверджений власником; поки тримаємо як НАЗВАНИЙ виняток, а не як норму.",
-    pin: new RegExp(CHAIN_RAD_REF + 'if \\(profile\\.role === "ceo"\\) redirect\\("\\/ceo"\\); const clinic = '),
+    may: ["admin", "registrar"], closes: "render",
+    why: "Ф6-4 закрито в с55: редірект дав би петлю (це і є /queue), тому невідома роль бачить пояснення. Текст власника: «Доступ обмежено».",
+    pin: new RegExp(CHAIN_RAD_REF + 'if \\(profile\\.role === "ceo"\\) redirect\\("\\/ceo"\\); ' + ROLE_NOTICE),
   },
   "/call-list": {
-    may: ["admin", "registrar (лише з непорожнім clinic_id)"], closes: "NONE",
-    why: "Ф6-4, те саме. Ф6-3 (гейт на ceo і порожній clinic_id) закрито в с55.",
-    pin: new RegExp(CHAIN_RAD_REF + 'if \\(profile\\.role === "ceo" \\|\\| !profile\\.clinic_id\\) redirect\\("\\/ceo"\\); const clinic = '),
+    may: ["admin", "registrar (лише з непорожнім clinic_id)"], closes: "render",
+    why: "Ф6-4 закрито в с55, те саме. Ф6-3 (гейт на ceo і порожній clinic_id) закрито тоді ж.",
+    pin: new RegExp(CHAIN_RAD_REF + 'if \\(profile\\.role === "ceo" \\|\\| !profile\\.clinic_id\\) redirect\\("\\/ceo"\\); ' + ROLE_NOTICE),
   },
   "/waitlist": {
-    may: ["admin", "registrar (лише з непорожнім clinic_id)"], closes: "NONE",
-    why: "Ф6-4, те саме; ceo і порожній clinic_id відводяться.",
-    pin: new RegExp(CHAIN_RAD_REF + 'if \\(profile\\.role === "ceo" \\|\\| !profile\\.clinic_id\\) redirect\\("\\/ceo"\\); const clinic = '),
+    may: ["admin", "registrar (лише з непорожнім clinic_id)"], closes: "render",
+    why: "Ф6-4 закрито в с55, те саме; ceo і порожній clinic_id відводяться вище.",
+    pin: new RegExp(CHAIN_RAD_REF + 'if \\(profile\\.role === "ceo" \\|\\| !profile\\.clinic_id\\) redirect\\("\\/ceo"\\); ' + ROLE_NOTICE),
   },
   "/ceo-admin": { may: ["admin"], closes: "redirect", pin: ADMIN_ONLY },
   "/journal": { may: ["admin"], closes: "redirect", pin: ADMIN_ONLY },
@@ -174,9 +180,12 @@ const GATES: Record<string, Gate> = {
   },
 };
 
-/* Єдине місце, де «незакритий гейт» дозволений — і воно мусить збігатися з
-   інвентарем ТОЧНО, інакше новий негативний ланцюг просочиться мовчки. */
-const OPEN_BY_DESIGN = ["/call-list", "/queue", "/waitlist"];
+/* Єдине місце, де «незакритий гейт» дозволений. У с55 воно ПОРОЖНЄ: Ф6-4
+   закрито, всі тринадцять роутів мають закриваючий позитив. Порожній перелік —
+   найсильніша форма цього сторожа: будь-який новий екран із самим лише
+   негативним ланцюгом червонить його одразу. Дописувати сюди роут можна тільки
+   разом із `why`, і це видно в дифі. */
+const OPEN_BY_DESIGN: string[] = [];
 /* Сторінки, де гейт відірваний від голови вибіркою даних. Теж поіменно. */
 const GATE_APART = ["/ceo", "/radiologist", "/search"];
 
@@ -311,7 +320,8 @@ describe("поверхня авторизації — самі гейти", () =
   it("перелік НЕЗАКРИТИХ гейтів — рівно названі винятки", () => {
     /* ⚠️ Це і є ліки від Ф6-4: новий екран із самим лише негативним ланцюгом
        мусить або отримати закриваючий позитив, або бути НАЗВАНИМ тут разом із
-       причиною. Мовчки просочитись він не може. */
+       причиною. Мовчки просочитись він не може.
+       У с55 перелік винятків ПОРОЖНІЙ — Ф6-4 закрито на всіх трьох дошках. */
     const open = Object.keys(GATES).filter((r) => !hasPositive(src(`app${r}/page.tsx`))).sort();
     expect(open, "зʼявився новий екран без закриваючого позитива — або закрийте гейт, або назвіть виняток із причиною").toEqual(OPEN_BY_DESIGN);
     for (const r of OPEN_BY_DESIGN) {

@@ -187,9 +187,15 @@ const MUTATIONS = [
   },
   {
     id: "M20", file: "qb", spec: AS, expect: /перелік НЕЗАКРИТИХ гейтів/,
-    what: "/queue отримав закриваючий позитив — названий виняток Ф6-4 більше не збігається з кодом",
-    from: '  if (profile.role === "ceo") redirect("/ceo"); // керівник — на свій дашборд',
-    to: '  if (profile.role !== "admin" && profile.role !== "registrar") redirect("/ceo"); // керівник — на свій дашборд',
+    what: "з /queue знято закриваючий позитив — Ф6-4 повернена: шоста роль отримує дошку черги мовчки",
+    from: '  if (profile.role !== "admin" && profile.role !== "registrar") {\n    return <RoleNotice title="Доступ обмежено" text="У вашій ролі цей розділ недоступний. Зверніться до адміністратора центру." />;\n  }\n',
+    to: "",
+  },
+  {
+    id: "M27", file: "cl", spec: AS, expect: /\/call-list — гейт на місці/,
+    what: "текст відмови підмінено дошкою — «render» лишився б зеленим, якби піни не тримали ТЕКСТ",
+    from: '    return <RoleNotice title="Доступ обмежено" text="У вашій ролі цей розділ недоступний. Зверніться до адміністратора центру." />;',
+    to: '    return <CallListBoard clinicId={profile.clinic_id as string} rooms={[]} entries={[]} />;',
   },
 
   /* ---------- словник ролей ---------- */
@@ -214,10 +220,17 @@ const MUTATIONS = [
 
   /* ---------- ЗЕЛЕНІ ---------- */
   {
-    id: "G1", file: "qb", green: true,
-    what: "над гейтом /queue вставлено КОМЕНТАР із текстом закриваючого позитива — codeOf його зріже, /queue лишається названим винятком",
-    from: '  if (profile.role === "ceo") redirect("/ceo"); // керівник — на свій дашборд',
-    to: '  /* приклад: const allowed = profile.role === "admin"; */\n  if (profile.role === "ceo") redirect("/ceo"); // керівник — на свій дашборд',
+    id: "G1", file: "st", green: true,
+    /* ⚠️ Позиція переписана після закриття Ф6-4. Попередня вставляла коментар
+       у /queue і була б зеленою НЕЗАЛЕЖНО від codeOf, щойно /queue отримав
+       справжній позитив — тобто знову стала б наповнювачем (це дефект R10,
+       який ревʼю вже одного разу знайшло). Тепер коментар містить ВІДВІД
+       адміна: якби codeOf його не зрізав, скан `bounced` побачив би "admin",
+       а він у `may` — і сторож «інвентар не називає допущеною роль» почервонів
+       би. Зелено тут може бути лише тому, що коментарі зрізаються. */
+    what: "над гейтом /staff — КОМЕНТАР із відводом адміна: codeOf його зріже, скан ролей його не побачить",
+    from: '  if (profile.role !== "admin") redirect("/queue"); // лише адміністратор',
+    to: '  /* приклад із історії: if (profile.role === "admin") redirect("/queue"); */\n  if (profile.role !== "admin") redirect("/queue"); // лише адміністратор',
   },
   {
     id: "G2", file: "jr", green: true,
