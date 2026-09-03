@@ -128,3 +128,44 @@ new:rooms.rooms_ceo_read        ← політика зʼявилась поза
 | `npm run db:gate` | проштамповано md5 для `0170`, **170/170** |
 | `select public.invariants_check()` | `ok:true`, **`checked:16`**, `failed:[]` |
 | відбиток деплою `/login` | `11WYebxt_zkW1tkRsrdhQ` → `XehL2Gj_TG9i2UeDjf6rt`, HTTP 200 — **перший замір в обидві сторони за всю фазу** |
+
+## 10. Правильність — прочитано для чотирьох PII-таблиць (того ж дня, після ревізії)
+
+Межа з §8 («незмінність ≠ правильність») знята ЧИТАННЯМ для таблиць, де лежать
+персональні дані: `profiles`, `queue_entries`, `waitlist_entries`, `patient_cases`,
+плюс звʼязкові `referral_access`, `ceo_access`, `radiologist_rooms`, `clinics`.
+Читались `pg_policies` і тіла BEFORE-тригерів прода запитом, без жодної зміни.
+Кожен рядок нижче — гіпотеза «тут дірка», спростована прочитаним гардом.
+
+| Гіпотеза | Що прочитано | Вердикт |
+|---|---|---|
+| **Самоескалація.** `profiles_update_self` дозволяє `UPDATE` власного рядка — отже, і `role = 'admin'` собі | `guard_profile_privileges()` — BEFORE UPDATE (`trg_guard_profile_privileges`) | ❌ Спростовано. Роль міняє лише адмін СВОГО центру і лише ЧУЖОМУ профілю (`old.id <> auth.uid()`); `clinic_id` незмінний; `login`, `email`, `invite_token`, `password_set`, `approved` пише лише сервер (`auth.uid() is null` = service-role). Політика ширша за потрібне; відмовляє тригер |
+| **Направник пише в чужий центр.** `queue_write_referrer` перевіряє `auth_referrer_can_book_room(room_id)`, а `clinic_id` рядка — ні | `guard_room_in_clinic()` — BEFORE INSERT/UPDATE (`trg_guard_queue_room`); `auth_referrer_can_book_room` | ❌ Спростовано. Тригер вимагає `rooms.clinic_id = new.clinic_id`; функція — активний `referral_access` на центр кабінету (і на сам кабінет, якщо `room_ids` не NULL). `room_id = NULL` для направника відкидає сама політика (`exists` по NULL — false). У `waitlist_write_referrer` `clinic_id` перевіряється прямо: `auth_can_refer(clinic_id)` |
+| **Направник видаляє.** `queue_write_referrer` / `waitlist_write_referrer` — `FOR ALL`, тобто й DELETE | `guard_no_client_delete()` — BEFORE DELETE (`a01_no_client_delete` на обох таблицях) | ❌ Спростовано. Клієнтський DELETE відкидається тригером незалежно від політики («запис не видаляють — його скасовують»); саму привʼязку тригера стереже `priv_drift` (e) з 0166 |
+| **Рентгенолог читає/пише чужі кабінети** | `queue_select` / `waitlist_select` / `cases_select_staff` → `auth_radiologist_room_ok(room_id)`; `a00_radiologist_scope` (черга), `a00_radiologist_no_write` (лист, кейси) | ❌ Спростовано. SELECT звужений до `radiologist_rooms`; запис у чергу гардить тригер по `new.room_id` І `old.room_id`, у лист і кейси — заборонений цілком. Сам `radiologist_rooms` пише лише адмін центру (`radrooms_admin_write`) |
+| **Хтось дописує собі доступ** у `referral_access` / `ceo_access` | політики цих таблиць | ❌ Спростовано. Клієнтських політик лише на SELECT (`ra_clinic_select`, `ra_referrer_select`, `ceo_access_clinic_select`, `ceo_access_self_select`); запис — лише service-role |
+| **Чужий центр править `clinics`** | `clinics_update` | ❌ Спростовано. `id = auth_clinic_id() AND auth_is_admin()` в обох половинах (`USING` і `WITH CHECK`) |
+
+**Висновок — і нова знахідка.** На PII-поверхні політики місцями ширші за
+потрібне (`profiles_update_self`, `FOR ALL` у направника), і **кожну зайву
+ширину закриває BEFORE-тригер**. Тобто правильність тримається на тригерах —
+а `policy_digest` стереже лише політики. Перевірено по тексту
+`invariants_check` запитом: `guard_profile_privileges`, `guard_room_in_clinic`,
+`guard_waitlist_room`, `guard_radiologist_scope` / `guard_radiologist_no_write`
+в ньому **не згадані** (`canonical_objects` знає 12 обʼєктів, з тригерів — лише
+`trg_cleanup_orphan_clinic`; `priv_drift` — лише розтяжку DELETE), а слово
+`tgenabled` у функції **відсутнє взагалі**: `alter table … disable trigger …`
+лишає рядок у `pg_trigger` на місці, і навіть перевірки існування пройдуть.
+
+Отже, `drop trigger trg_guard_profile_privileges on profiles` в UI Supabase
+робить самоескалацію можливою — **при зелених 16 інваріантах**. Сьогодні це не
+дірка (тригери на місці, звірено `tgenabled = 'O'` для всіх), а **непокрита
+поверхня** того самого класу, що й політики до 0170. Кандидат на **0171**:
+перевірка `guard_triggers` — існування + `tgenabled = 'O'` + правильна функція
+на правильній таблиці для названого списку. ⚠️ Кожен передрук `invariants_check`
+ламає стенди, прибиті до передруку (§ ревізії в хендоффі с55), тож 0171 варто
+зібрати ОДНИМ передруком разом із U-76 (`server_now()` ACL), а не двома.
+
+**Що НЕ читалось:** решта 13 таблиць із політиками (із 21; 64 політики) тримаються лише дайджестом —
+§8 для них лишається в силі. Живої перевірки під кожною роллю не було: для неї
+потрібні сесії персоналу, яких агент не просить.
