@@ -345,12 +345,22 @@ describe("Г1-F — проводка гарда в шляхах запису", (
        `doCollisionMove`) пишуть дату дошки ПРЯМО в rescheduleQueueEntry, минаючи
        модалку, і їхня заявка не пінувалась нічим. Мутація `pinnedKey:
        initialDate` → `pinnedKey: dateKey(selectedDate)` робить `fromToday`
-       тотожно хибним і вимикає гард для обох шляхів — тихо і зелено. */
+       тотожно хибним і вимикає гард для обох шляхів — тихо і зелено.
+       ⚠️ ПЕРЕЯКОРЕНО в с55 (F3), і це не переформатування: `pinnedKey` знято з
+       ОБОХ місць. Виявилось, що описана вище мутація була не гіпотетичною —
+       той самий ефект давав ЖИВИЙ код без жодної мутації, щойно оператор
+       приходив дип-лінком на СЬОГОДНІШНІЙ день: `curKey === pinnedKey` з
+       першого рендера, `fromToday: false`, вердикт сервера `ok` замість `skew`
+       (зонд с55, P5a/P6a). Тепер пін стереже ВІДСУТНІСТЬ `pinnedKey` в обох
+       місцях — повернути його в одне з них означає знову розвести заявку і
+       правило. */
     const s = src("components/QueueBoard.tsx");
     expect(s, "заявка дошки будується не тими аргументами, що виклик useFollowToday поруч — гард судитиме про чуже значення")
-      .toMatch(/const boardClock = \(\) => clockClaimOf\(\{ clinicTz, curKey: dateKey\(selectedDate\), pinnedKey: initialDate \}\);/);
-    expect(s, "правило дошки більше не бере ті самі pinnedKey і значення — заявка і правило розійшлись")
-      .toMatch(/useFollowToday\(\{ clinicTz, pinnedKey: initialDate, busy: anyModalOpen, value: selectedDate,/);
+      .toMatch(/const boardClock = \(\) => clockClaimOf\(\{ clinicTz, curKey: dateKey\(selectedDate\) \}\);/);
+    expect(s, "правило дошки більше не бере те саме значення — заявка і правило розійшлись")
+      .toMatch(/useFollowToday\(\{ clinicTz, busy: anyModalOpen, value: selectedDate,/);
+    expect(s, "F3: `pinnedKey` повернувся в код дошки черги — дип-лінк на сьогодні знову глушить і правило, і відмову Г1-F")
+      .not.toMatch(/pinnedKey/);
     expect(s.split("boardClock()").length - 1, "інлайн-шлях запису перестав возити заявку дошки (їх два: найближче вікно і колізія)").toBe(2);
   });
 });

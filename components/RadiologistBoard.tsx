@@ -1254,9 +1254,14 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
      причина виміряна і розписана в QueueBoard: такий банер існував би рівно
      тоді, коли дошку закриває оверлей. */
   const [dayShifted, setDayShifted] = useState<DayShiftNotice | null>(null);
+  /* ⚠️ F3 (с55): `pinnedKey: initialDate` знято — те саме рішення власника і той
+     самий вимір, що в `QueueBoard` (там розписано повністю, позиції P2/P7 зонда).
+     Коротко: пін порівнював ЗНАЧЕННЯ, а не «оператор ще не йшов із цієї дати»,
+     і через це міняв поведінку РІВНО в одному стані — дип-лінк на СЬОГОДНІ, —
+     де дошка мовчки лишалась на протухлій добі. Названа ціна: запис, по який
+     прийшли дип-лінком, після переносу доби лишається на іншій добі. */
   useFollowToday({
     clinicTz,
-    pinnedKey: initialDate,
     busy: !!completeFor || !!stuckFinish || !!offCallAsk || !!delayPreview,
     value: selectedDate,
     setDate: setSelectedDate,
