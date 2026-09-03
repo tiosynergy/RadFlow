@@ -99,15 +99,20 @@ const CALL_RD = `  useFollowTodayKey({ clinicTz, value: day, setKey: setDay,
    Стара форма дала б 0 входжень і завалила прогін — саме так якір і мусить
    протухати: голосно. Це вчетверте за три пакети, і це нормальна ціна того, що
    якір бере виклик ЦІЛКОМ, а не по шматку. */
+/* ⚠️ ПЕРЕЯКОРЕНО в с55 (F3), і причина — ПʼЯТА за чотири пакети, тож записую її
+   поруч, а не в звіті: з обох дощок знято `pinnedKey: initialDate`. Пін
+   порівнював ЗНАЧЕННЯ, і на дип-лінку в СЬОГОДНІШНІЙ день глушив і правило, і
+   відмову Г1-F (рішення власника; вимір — зонд с55, розбір — у
+   `docs/audit/PR-F3-F4-F6-time-node-tails.md`). Старі якорі дали 0 входжень і
+   завалили прогін — саме так якір і мусить протухати: голосно. */
 const CALL_RB = `  useFollowToday({
     clinicTz,
-    pinnedKey: initialDate,
     busy: !!completeFor || !!stuckFinish || !!offCallAsk || !!delayPreview,
     value: selectedDate,
     setDate: setSelectedDate,
     onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)),
   });`;
-const CALL_QB = `  useFollowToday({ clinicTz, pinnedKey: initialDate, busy: anyModalOpen, value: selectedDate, setDate: setSelectedDate,
+const CALL_QB = `  useFollowToday({ clinicTz, busy: anyModalOpen, value: selectedDate, setDate: setSelectedDate,
     onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)) });`;
 
 const MUTATIONS = [
@@ -948,15 +953,17 @@ const MUTATIONS = [
     id: "M103", file: "qb", spec: SPEC.follow,
     expect: /QueueBoard.*відкладене перенесення на дошці НЕ показується/,
     what: "Г1-E: дошка знову БЕРЕ відкладене перенесення — перший крок назад до UI під оверлеєм",
-    from: "  useFollowToday({ clinicTz, pinnedKey: initialDate,",
-    to: "  const pendingShift = useFollowToday({ clinicTz, pinnedKey: initialDate,",
+    /* ⚠️ Переякорено в с55 (F3): `pinnedKey` пішов із виклику. */
+    from: "  useFollowToday({ clinicTz, busy: anyModalOpen,",
+    to: "  const pendingShift = useFollowToday({ clinicTz, busy: anyModalOpen,",
   },
   {
     id: "M104", file: "rb", spec: SPEC.follow,
     expect: /RadiologistBoard.*відкладене перенесення на дошці НЕ показується/,
     what: "Г1-E: те саме на дошці радіолога",
-    from: "  useFollowToday({\n    clinicTz,\n    pinnedKey: initialDate,",
-    to: "  const pendingShift = useFollowToday({\n    clinicTz,\n    pinnedKey: initialDate,",
+    /* ⚠️ Переякорено в с55 (F3): `pinnedKey` пішов із виклику. */
+    from: "  useFollowToday({\n    clinicTz,\n    busy: !!completeFor",
+    to: "  const pendingShift = useFollowToday({\n    clinicTz,\n    busy: !!completeFor",
   },
   {
     id: "M107", file: "qb", spec: SPEC.follow,
@@ -1315,8 +1322,11 @@ const MUTATIONS = [
   {
     id: "T3", file: "qb", green: true,
     what: "виклик у дошці переформатовано на кілька рядків — пін про ЗМІСТ, не про розкладку",
+    /* ⚠️ Переякорено в с55 (F3): `pinnedKey` пішов і з `CALL_QB`, і звідси —
+       інакше «переформатування» тихо повертало б пін назад, тобто зонд ЗМІНЮВАВ
+       би зміст, а не розкладку. */
     from: CALL_QB,
-    to: "  useFollowToday({\n    clinicTz,\n    pinnedKey: initialDate,\n    busy: anyModalOpen,\n    value: selectedDate,\n    setDate: setSelectedDate,\n    onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)),\n  });",
+    to: "  useFollowToday({\n    clinicTz,\n    busy: anyModalOpen,\n    value: selectedDate,\n    setDate: setSelectedDate,\n    onShift: (d, prev) => setDayShifted((s) => dayShiftNoticeOf(s, prev, d)),\n  });",
   },
   {
     id: "T4", file: "bm", green: true,
