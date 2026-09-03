@@ -224,8 +224,8 @@ begin
      цього файла НЕ БАЧИВ узагалі, тобто наступний передрук підняв би число у
      восьми смоуках, а девʼятий мовчки лишився б із 15 і почервонів на проді.
      Рівно той інцидент, проти якого сторож пінів і написаний (ревʼю 0166). */
-  if (v_res ->> 'checked')::int is distinct from 18 then
-    raise exception 'SMOKE FAIL h: checked = %, очікував 18', v_res ->> 'checked';
+  if (v_res ->> 'checked')::int is distinct from 19 then
+    raise exception 'SMOKE FAIL h: checked = %, очікував 19', v_res ->> 'checked';
   end if;
   v_ok := v_ok || ' h';
 

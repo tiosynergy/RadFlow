@@ -42,7 +42,7 @@ begin
   end if;
   v_done := v_done || ' c';
 
-  -- d: перевірок рівно 18 — якщо додали/прибрали, смоук має про це сказати,
+  -- d: перевірок рівно 19 — якщо додали/прибрали, смоук має про це сказати,
   -- а не тихо пропустити (кількість перевірок сама є інваріантом).
   -- ⚠️ 0155 підняв 8 → 9: перевірку cron_daily_ran_48h розділено на
   -- cron_daily_stalled і cron_daily_never_ran.
@@ -50,8 +50,8 @@ begin
   -- ⚠️ 0157 підняв 10 → 11: додано outbox_emit_failed_26h (H-1 аудиту 23.08).
   -- ⚠️ 0159 підняв 11 → 12: додано outbox_rows_overdue (ретенція event_outbox).
   -- ⚠️ 0161 підняв 12 → 13, 0164 — 13 → 14 (ucm_orphan_markers), 0166 — 14 → 15 (priv_drift).
-  if (v_res ->> 'checked')::int is distinct from 18 then
-    raise exception 'SMOKE_FAIL d: checked=% (очікував 18)', v_res ->> 'checked';
+  if (v_res ->> 'checked')::int is distinct from 19 then
+    raise exception 'SMOKE_FAIL d: checked=% (очікував 19)', v_res ->> 'checked';
   end if;
   v_done := v_done || ' d';
 
@@ -102,6 +102,30 @@ begin
     when (v_base ->> 'ok')::boolean then 'чисто'
     else 'шум(' || coalesce((select string_agg(f ->> 'check', ',')
                                from jsonb_array_elements(v_base -> 'failed') f), '?') || ')' end;
+
+  -- h2: ЖИВИЙ ЗОНД №19 `guard_fn_bodies` (0172). Крок (g) доводить, що сторож
+  -- бачить таблицю без RLS; про тіла гардів це не каже нічого. Тут міняємо
+  -- РІВНО `search_path` найхолоднішого гарда і чекаємо іменований діагноз.
+  -- ⚠️ Свідомо гілка `attrs:`, а не `body:`: `create or replace` тримав би
+  --    блокування на функції до кінця транзакції і міг би стопорити живі
+  --    записи в `waitlist_entries`, поки смоук іде на проді.
+  alter function public.guard_waitlist_room() set search_path = pg_temp, public;
+  v_res := public.invariants_check(false);
+  if v_res::text not like '%attrs:guard_waitlist_room()%' then
+    raise exception 'SMOKE_FAIL h2: №19 не побачила зміну search_path гарда: %',
+      v_res -> 'failed';
+  end if;
+  if v_res::text not like '%guard_fn_bodies%' then
+    raise exception 'SMOKE_FAIL h2: порушника названо не тією перевіркою: %',
+      v_res -> 'failed';
+  end if;
+  alter function public.guard_waitlist_room() set search_path = public;
+  v_res := public.invariants_check(false);
+  if v_res::text like '%guard_fn_bodies%' then
+    raise exception 'SMOKE_FAIL h2: після повернення search_path №19 лишилась червоною: %',
+      v_res -> 'failed';
+  end if;
+  v_done := v_done || ' h2';
 
   -- i: інформаційно — чи заведено задачу (міграція планувальник не чіпає)
   v_done := v_done || ' i:cron=' || case
