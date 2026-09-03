@@ -32,7 +32,7 @@
 --   (g) anon                                 → 42501 (EXECUTE не видано);
 --   (h) персонал ЧУЖОЇ клініки               → 0 рядків;
 --   (i) 14 тригерних функцій — без EXECUTE у public/anon/authenticated;
---   (j) invariants_check(false): checked = 15 (0166), room_busy_service_role мовчить;
+--   (j) invariants_check(false): checked = 16 (0166), room_busy_service_role мовчить;
 --   (k) структура рядків admin: 0 ≤ start_min < end_min ≤ 1440,
 --       scheduled_time узгоджений зі start_min (арифметика 0074 не зачеплена).
 -- ============================================================================
@@ -293,8 +293,8 @@ begin
   -- ⚠️ 0157 підняв 10 → 11 (outbox_emit_failed_26h),
   --    0159 підняв 11 → 12 (outbox_rows_overdue).
   -- ⚠️ 0161 підняв 12 → 13, 0164 — 13 → 14 (ucm_orphan_markers), 0166 — 14 → 15 (priv_drift).
-  if (v_res ->> 'checked')::int is distinct from 15 then
-    raise exception 'SMOKE_FAIL j: checked=% (очікував 15)', v_res ->> 'checked';
+  if (v_res ->> 'checked')::int is distinct from 16 then
+    raise exception 'SMOKE_FAIL j: checked=% (очікував 16)', v_res ->> 'checked';
   end if;
   select f ->> 'offenders' into v_names
     from jsonb_array_elements(v_res -> 'failed') f

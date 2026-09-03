@@ -95,8 +95,8 @@ begin
   -- ⚠️ 0164 підняв 13 → 14 (ucm_orphan_markers), 0165 перевипустив ту саму
   --    перевірку, 0166 — 14 → 15 (priv_drift). Число живе у ДЕВʼЯТИ смоуках —
   --    сторож узгодженості: tests/invariantsCheckedPins.test.ts.
-  if (v_res ->> 'checked')::int is distinct from 15 then
-    raise exception 'SMOKE_FAIL e: checked = %, очікував 15', v_res ->> 'checked';
+  if (v_res ->> 'checked')::int is distinct from 16 then
+    raise exception 'SMOKE_FAIL e: checked = %, очікував 16', v_res ->> 'checked';
   end if;
   v_done := v_done || ' e';
 
@@ -145,13 +145,16 @@ begin
     from pg_proc
    where proname = 'invariants_check'
      and pronamespace = 'public'::regnamespace;
-  -- ⚠️ Пін перезнято після 0167 (0161: 935bdd06…, 0164: d8d22ff4…, 0165: f422cce0…,
-  --    0166: bc10f4e5…). Кожен передрук сторожа міняє це число — знімати ЖИВИМ
-  --    запитом після накату, а не переписувати навмання.
-  --    Значення 12cf23fe… звірено двічі: живим запитом до прод І незалежним
-  --    розбором тіла з файлу 0167 (сирий md5 тіла 8203acc9… збігся з prosrc).
-  if v_txt is distinct from '12cf23fe529a7f80658e73acca2cf8b9' then
-    raise exception 'SMOKE_FAIL g: md5 тіла invariants_check = %, очікував 12cf23fe… (передрук розійшовся)', v_txt;
+  -- ⚠️ Пін перезнято після 0170 (0161: 935bdd06…, 0164: d8d22ff4…, 0165: f422cce0…,
+  --    0166: bc10f4e5…, 0167: 12cf23fe…). Кожен передрук сторожа міняє це число —
+  --    знімати ЖИВИМ запитом після накату, а не переписувати навмання.
+  --    Значення d754ee12… звірено двічі: живим запитом до прода І незалежним
+  --    розбором тіла з файлу 0170 — md5 тіла між `as $function$` і `$function$;`
+  --    дав 22f8bbbde1c4b501f2f079cf0cc4bba3 і В ФАЙЛІ, і в проді (довжина
+  --    29932 з обох боків). Тобто прод і артефакт міграції збігаються ДОСЛІВНО,
+  --    а не «схоже».
+  if v_txt is distinct from 'd754ee12bc92fbf05269b443c8660c58' then
+    raise exception 'SMOKE_FAIL g: md5 тіла invariants_check = %, очікував d754ee12… (передрук розійшовся)', v_txt;
   end if;
   v_done := v_done || ' g';
 
