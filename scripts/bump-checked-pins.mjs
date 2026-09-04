@@ -35,9 +35,14 @@ const ANCHORED = [
 const NEAR_CHECKED = [
   [new RegExp(`((?:очікував(?:и)?|замість)\\s+)${from}\\b`, "g"), `$1${to}`],
 ];
-/* Проза — лише у файлі, який САМ читає сторожа (та сама властивість, що в
-   тесті-стороже): інакше під заміну потрапило б чесне «усі 7 перевірок
-   пройдено» в `clinic_people_view_smoke`. */
+/* Проза — лише в РЯДКУ, який САМ говорить про сторожа (та сама властивість, що
+   в тесті-стороже): інакше під заміну потрапило б чесне «усі 7 перевірок
+   пройдено» в `clinic_people_view_smoke`.
+   ⚠️ с57: звуження переїхало з ФАЙЛА на РЯДОК разом із тестом. Доти воно
+   трималось на тому, що той смоук не читає `'checked'` — випадковість, а не
+   властивість. Рядок нижче ЗАПІНЕНО в `tests/invariantsCheckedPins.test.ts`
+   дослівно, щоб інструмент і сторож не могли розійтись мовчки. */
+const ABOUT_GUARD = /сторож|invariants_check|перевірок\s+рівно\s+\d/i;
 const PROSE = [
   [new RegExp(`\\b${from}(\\s+перевір(?:ок|ки|ку))`, "g"), `${to}$1`],
   [new RegExp(`(перевірок\\s+(?:рівно\\s+)?)${from}\\b`, "g"), `$1${to}`],
@@ -47,12 +52,11 @@ let files = 0, rows = 0;
 for (const f of readdirSync(dir).filter((x) => x.endsWith(".sql"))) {
   const p = `${dir}/${f}`;
   const src = readFileSync(p, "utf8");
-  const reads = src.includes("'checked'");
   const out = src.split("\n").map((line) => {
     let s = line;
     for (const [re, rep] of ANCHORED) s = s.replace(re, rep);
     if (s.includes("checked")) for (const [re, rep] of NEAR_CHECKED) s = s.replace(re, rep);
-    if (reads) for (const [re, rep] of PROSE) s = s.replace(re, rep);
+    if (ABOUT_GUARD.test(s)) for (const [re, rep] of PROSE) s = s.replace(re, rep);
     return s;
   }).join("\n");
   if (out === src) continue;
