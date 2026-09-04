@@ -322,7 +322,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
           на цій сторінці не рахуємо (їх нема звідки взяти без tz центру), тому
           спрацьовує документований fail-closed із lib/rooms.ts: без residual
           видимими лишаються активні. Пацієнта це не зачіпає — тут немає записів. */}
-      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={visibleRooms(rooms)} activeNav="staff" />}
+      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" clinicIds={clinicId ? [clinicId] : []} rooms={visibleRooms(rooms)} activeNav="staff" />}
       <div className={embedded ? "setup-embed-main" : "main"}>
         {!embedded && (
           <header className="topbar">

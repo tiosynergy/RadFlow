@@ -106,10 +106,16 @@ export function busyTooltip(b: BusyDetailSpan): string {
 export function useRoomBusy(opts: {
   roomId: string | null | undefined;
   dateStr: string;
+  /* ⚠️ КЛЮЧ ОБОВʼЯЗКОВИЙ, значення — може бути порожнім (U-65, с57). Це той
+     самий прийом, що з `clock` у Г1-F: обовʼязковість ТИПУ змушує tsc
+     перелічити всі місця виклику, а не мене — згадати їх. Порожнє значення
+     не «знімає фільтр», а вимикає підписку ЦІЛКОМ (див. channelName): краще
+     без realtime, ніж без фільтра. */
+  clinicId: string | null | undefined;
   excludeId?: string | null;
   enabled?: boolean;
 }) {
-  const { roomId, dateStr, excludeId = null, enabled = true } = opts;
+  const { roomId, dateStr, clinicId, excludeId = null, enabled = true } = opts;
   const [rows, setRows] = useState<BusyRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -166,7 +172,13 @@ export function useRoomBusy(opts: {
        чистить стан, тож БЕЗ переподписки (callAll → load) ніхто не завантажив би
        нові дані до повільного тика. Сьогодні всі споживачі тримають excludeId
        константним на маунт — це страховка від майбутнього in-place свопа. */
-    channelName: enabled && roomId && dateStr
+    /* ⚠️ `clinicId` — теж умова каналу (U-65). Без клініки фільтр нижче був би
+       брехнею (`clinic_id=eq.undefined`), а зняти його — означало б повернути
+       крос-тенантний оракул. Тож без клініки підписки НЕМАЄ ЗОВСІМ: сітка
+       оновиться при відкритті модалки і по focus/visibility. Заміряно: усі
+       чотири місця виклику клініку мають, тож у житті ця гілка не вмикається —
+       вона fail-CLOSED на майбутнє. */
+    channelName: enabled && roomId && dateStr && clinicId
       ? "slots-busy-" + roomId + "-" + dateStr + (excludeId ? "-x" + excludeId : "")
       : null,
     subscriptions: [
@@ -186,17 +198,20 @@ export function useRoomBusy(opts: {
          фільтр звіряється з НОВИМ рядком), а звільнений слот провисить
          зайнятим до 30-секундного тика. Тобто цей фільтр тримається на
          поведінці UI, а не на інваріанті БД.
-         `queue_entries` — БЕЗ фільтра, і саме так треба: запис кабінет МІНЯЄ, а
-         в UPDATE фільтр звіряється з НОВИМ рядком, тож `room_id=eq.` проковтнув
-         би подію «пацієнта перенесли ЗВІДСИ» і звільнений слот висів би
-         зайнятим до тику полінгу.
-         ⚠️ Вмісту рядка це не віддає: `apply_rls` ріже `old_record` до
+         `queue_entries` — `clinic_id=eq.`, і саме ЦЕЙ фільтр, а не `room_id`
+         (U-65 закрито в с57). Запис кабінет МІНЯЄ, а в UPDATE фільтр звіряється
+         з НОВИМ рядком, тож `room_id=eq.` проковтнув би подію «пацієнта
+         перенесли ЗВІДСИ» і звільнений слот висів би зайнятим до тику полінгу.
+         Клініку ж запис НЕ міняє в жодному шляху, тож `clinic_id=eq.` не ріже
+         нічого потрібного — і водночас закриває те, заради чого U-65 і заведено:
+         без фільтра сюди прилітав ФАКТ і ЧАС кожного видалення запису в УСІЙ
+         базі, тобто крос-тенантний оракул ідентифікаторів.
+         ⚠️ Вмісту рядка не віддавав і раніше: `apply_rls` ріже `old_record` до
          первинного ключа, щойно на таблиці ввімкнено RLS (`and ( not
          is_rls_enabled or (c).is_pkey )`), а RLS увімкнено на всіх таблицях
-         публікації. Лишається лише факт і час видалення — борг рівня LOW,
-         закривається фільтром `clinic_id=eq.` (клініка в запису не міняється),
-         але клініки в пропах цього хука немає: окремий пакет U-65. */
-      { table: "queue_entries", onChange: load, debounceKey: "busy" },
+         публікації (стереже перевірка №3). Тобто закрито саме оракул, а не
+         витік вмісту — і це різні речі. */
+      { table: "queue_entries", filter: "clinic_id=eq." + clinicId, onChange: load, debounceKey: "busy" },
       { table: "incidents", filter: "room_id=eq." + roomId, onChange: load, debounceKey: "busy" },
     ],
     /* Аудит H-3B: realtime під RLS не доставляє направнику зміни ЧУЖИХ записів —

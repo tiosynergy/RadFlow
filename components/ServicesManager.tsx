@@ -64,7 +64,7 @@ export default function ServicesManager({ clinicId, clinicTz, initialServices, r
   return (
     <div className="app">
       <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin"
-        rooms={visRooms} roomNoteOf={offNote} activeNav="services" />
+        clinicIds={clinicId ? [clinicId] : []} rooms={visRooms} roomNoteOf={offNote} activeNav="services" />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">

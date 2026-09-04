@@ -48,8 +48,10 @@ const M = [
    "{modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={writeIncidentsFeed}",
    "{modalOpen && <BookingModal rooms={rooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed}"],
   ["N07 екран «зараз» перевели на серверний фід", QB, READNOW,
-   "<RoomDayOverviewModal rooms={visRooms} clinicTz={clinicTz} incidents={incidentsFeed}",
-   "<RoomDayOverviewModal rooms={visRooms} clinicTz={clinicTz} incidents={writeIncidentsFeed}"],
+   /* с57, U-65: у виклику зʼявився `clinicId` (сітка зайнятості підписується
+     по клініці) — якір протух і стенд чесно відхилив позицію. */
+  "<RoomDayOverviewModal rooms={visRooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed}",
+   "<RoomDayOverviewModal rooms={visRooms} clinicId={clinicId} clinicTz={clinicTz} incidents={writeIncidentsFeed}"],
   ["N08 НОВИЙ споживач простоїв заїхав некласифікованим", QB, CLASSED,
    "<RoomDayOverviewModal rooms={visRooms}", "<SlotsOverviewPane rooms={visRooms}"],
   ["N09 BookingModal повернувся на предикат моменту", BM, NOSTART,
