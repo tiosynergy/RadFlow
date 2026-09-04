@@ -26,21 +26,38 @@ import { resolve } from "node:path";
 
 const MIGDIR = resolve(process.cwd(), "supabase/migrations");
 
-/** Пари (таблиця, тригер), заради яких перевірка №17 і писалась. */
+/** Пари (таблиця, тригер), заради яких перевірка №17 і писалась.
+ *
+ *  ⚠️ 0173 додав ШІСТЬ аудит-тригерів (14 → 20) — закриття названої межі 0172.
+ *  Замір, який її довів: у транзакції з відкотом знято `trg_audit_profiles`
+ *  (тригерів 1 → 0), сторож віддав `ok:true, checked:19, failed:[]`. Тобто
+ *  аудит-слід на таблиці, де міняються РОЛІ, вимикався однією командою при всіх
+ *  девʼятнадцяти зелених інваріантах. Тіло `fn_audit` пінить №19, але тіло не
+ *  каже, що функція до чогось прицеплена.
+ *
+ *  ⚠️ Порядок тут — той самий, що у списку міграції (таблиця, потім тригер), і
+ *  це не косметика: тест нижче звіряє ЧИСЛО рядків, а розсинхрон порядку
+ *  сховав би підміну пари всередині однакової кількості. */
 const GUARDS: ReadonlyArray<readonly [string, string]> = [
+  ["ceo_access", "trg_audit_ceo_access"],
   ["incidents", "a01_no_client_delete"],
+  ["incidents", "trg_audit_incidents"],
   ["incidents", "trg_guard_incident_room"],
   ["patient_cases", "a00_radiologist_no_write"],
+  ["profiles", "trg_audit_profiles"],
   ["profiles", "trg_cleanup_orphan_clinic"],
   ["profiles", "trg_guard_profile_privileges"],
   ["queue_entries", "a00_radiologist_scope"],
   ["queue_entries", "a01_no_client_delete"],
   ["queue_entries", "check_case_clinic_match"],
+  ["queue_entries", "trg_audit_queue_entries"],
   ["queue_entries", "trg_guard_queue_room"],
   ["queue_entries", "trg_guard_referrer_doctor"],
   ["queue_entries", "trg_guard_status_referrer"],
+  ["referral_access", "trg_audit_referral_access"],
   ["waitlist_entries", "a00_radiologist_no_write"],
   ["waitlist_entries", "a01_no_client_delete"],
+  ["waitlist_entries", "trg_audit_waitlist_entries"],
   ["waitlist_entries", "trg_guard_waitlist_room"],
 ];
 
@@ -70,7 +87,7 @@ describe("№17 guard_triggers — інвентар гардів у сторож
       .toContain("'check', 'server_now'");
   });
 
-  it("усі 14 гардів названі ПАРОЮ (таблиця, тригер) і з повним визначенням", () => {
+  it("усі 20 пар названі ПАРОЮ (таблиця, тригер) і з повним визначенням", () => {
     /* ⚠️ Пара, а не імʼя (урок 0165): `a01_no_client_delete` живе на трьох
        таблицях, `a00_radiologist_no_write` на двох. Пін по імені звіряв би
        чужі пари, і зняття гарда з ОДНІЄЇ таблиці лишалось би зеленим. */
