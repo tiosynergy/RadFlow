@@ -151,6 +151,13 @@ offender без самого дефолту; знято фільтр `attisdropp
 
 Гейт: tsc 0, eslint 0, vitest **2568/2568** (87 файлів), `db:gate` 175/175.
 
+Деплой виміряно В ОБИДВА БОКИ: `dkX_lY1TPyV7DE3JOsCTM` →
+**`xlwxLd4SEluKh1_Q8pIbI`**, HTTP 200 (04.09, 16:47 UTC).
+⚠️ Збірка Vercel гоняє `migration-gate --build`, тож ЗЕЛЕНИЙ ДЕПЛОЙ САМ
+доводить, що 0175 лежить у леджері прода — це незалежний від мене канал.
+Після деплою: `ok:true, checked:20`, ledger 175/175, 0 незаштампованих,
+дефолти на `profiles` — рівно `created_at=now(), password_set=false`.
+
 ---
 
 ## 8. Що лишається межею
