@@ -2044,7 +2044,8 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
          ⚠️ Виправлення попередньої редакції цього коментаря (ревʼю U-61): тут
          було написано, що підписка без фільтра отримала б повний старий рядок
          із ПІБ і телефоном. Це НЕВІРНО. Та сама функція, знаючи про діру,
-         ріже `old_record` до колонок первинного ключа, щойно на таблиці
+         ріже `old_record` до колонок первинного ключа — У ГІЛЦІ DELETE
+         (уточнення с57, U-66: у гілці UPDATE обрізки немає), щойно на таблиці
          ввімкнено RLS:
            and ( not is_rls_enabled or (c).is_pkey )
              -- if RLS enabled, we can't secure deletes so filter to pkey
