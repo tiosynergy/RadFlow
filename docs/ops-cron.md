@@ -35,7 +35,7 @@ UTC-ніч, і зі зміною літнього/зимового часу во
 | `prune-rate-limits` | `7 * * * *` | чистить `rate_limits` старші за добу | `cron_jobs.sql` §5 |
 | `prune-important-events` | `20 3 * * *` | видаляє журнал подій старший за 180 днів | міграція `0128` |
 | `prune-change-markers` | `25 3 * * *` | видаляє ПРОЧИТАНІ мітки старші за 180 днів | міграція `0132` |
-| `invariants` | `50 3 * * *` | `select public.invariants_check()` — сторож інваріантів (**20 перевірок** з `0175`), слід у `maintenance_runs` | міграція `0154`–`0175` |
+| `invariants` | `50 3 * * *` | `select public.invariants_check()` — сторож інваріантів (**21 перевірок** з `0177`), слід у `maintenance_runs` | міграція `0154`–`0177` |
 | `gcal-backup-sync` | `*/2 * * * *` | `POST /api/integrations/google-calendar/sync-all`, Bearer із Vault (`cron_secret`) — дзеркало черги в Google Calendar для всіх увімкнених клінік; HTTP-результат pg_net НЕ фіксує, застій ловить перевірка 13 сторожа | міграція `0161` |
 
 **Знято в с37:** `prune-audit-log` (`15 3 * * *`, delete старше 180 днів) —
