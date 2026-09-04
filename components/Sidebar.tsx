@@ -102,7 +102,8 @@ export default function Sidebar({
      ОБЧИСЛЮЄ (`if not is_rls_enabled or action = 'DELETE' then …`), тож рішення
      «кому доставити» приймає лише фільтр підписки — а його тут немає.
      ⚠️ Але вмісту рядка це НЕ віддає (перевірено в тілі функції на проді,
-     U-61): знаючи про діру, вона ріже `old_record` до первинного ключа, щойно
+     U-61): знаючи про діру, вона ріже `old_record` до первинного ключа —
+     У ГІЛЦІ DELETE (уточнення с57, U-66: у гілці UPDATE обрізки НЕМАЄ), щойно
      на таблиці ввімкнено RLS —
        and ( not is_rls_enabled or (c).is_pkey )
          -- if RLS enabled, we can't secure deletes so filter to pkey
