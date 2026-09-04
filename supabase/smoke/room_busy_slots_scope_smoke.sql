@@ -2,7 +2,7 @@
 -- room_busy_slots_scope_smoke.sql — смоук міграції 0156
 -- «room_busy_slots: радіолог бачить лише призначені кабінети, направник — канон
 --  0139, service_role — зайнятість без деталей; тригерні функції без EXECUTE;
---  сторож рахує 19 перевірок (0172)».
+--  сторож рахує 19 перевірок (0173)».
 --
 -- ДВА РЕЖИМИ ЗАПУСКУ:
 --   • DRY-RUN (до накату): текст 0156 БЕЗ його begin;/commit; + цей файл одним
@@ -32,7 +32,7 @@
 --   (g) anon                                 → 42501 (EXECUTE не видано);
 --   (h) персонал ЧУЖОЇ клініки               → 0 рядків;
 --   (i) 14 тригерних функцій — без EXECUTE у public/anon/authenticated;
---   (j) invariants_check(false): checked = 19 (0172), room_busy_service_role мовчить;
+--   (j) invariants_check(false): checked = 19 (0173), room_busy_service_role мовчить;
 --   (k) структура рядків admin: 0 ≤ start_min < end_min ≤ 1440,
 --       scheduled_time узгоджений зі start_min (арифметика 0074 не зачеплена).
 -- ============================================================================
@@ -288,7 +288,7 @@ begin
   end if;
   v_done := v_done || ' i';
 
-  -- (j) сторож: 19 перевірок (0172), room_busy_service_role мовчить.
+  -- (j) сторож: 19 перевірок (0173), room_busy_service_role мовчить.
   v_res := public.invariants_check(false);
   -- ⚠️ 0157 підняв 10 → 11 (outbox_emit_failed_26h),
   --    0159 підняв 11 → 12 (outbox_rows_overdue).

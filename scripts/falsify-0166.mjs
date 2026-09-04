@@ -54,15 +54,28 @@ const CHECKS = (() => {
   const body = txt.slice(at, txt.indexOf("\n$function$;", at));
   return (body.match(/v_n := v_n \+ 1;/g) || []).length;
 })();
-/* Номер міграції — з ТОГО САМОГО передруку. У с56 якір N35 був прибитий до
-   `(0170)`, хоч 18 прийшло з 0171: атрибуція вже брехала, і стенд ЗАОХОЧУВАВ
-   тримати брехню — чесна правка «(0170) → (0172)» ламала якір (замір: 1 → 0).
-   Тепер рот той самий, що з числом: беремо з файлу, а не з памʼяті. */
-const REPRINT_NO = REPRINT.match(/(\d{4})_/)[1];
 const SMK  = "supabase/smoke/privilege_surface_smoke.sql";
 const CMP  = "supabase/smoke/change_markers_purge_smoke.sql";
 const RBS  = "supabase/smoke/room_busy_slots_scope_smoke.sql";
 const GCAL = "supabase/smoke/gcal_pg_cron_smoke.sql";
+/* ⚠️ ЯКІР N35 БЕРЕТЬСЯ З ФАЙЛУ, А НЕ ПЕРЕДБАЧАЄТЬСЯ. Історія в два кроки:
+   у с56 він був прибитий до `(0170)`, хоч 18 прийшло з 0171 — атрибуція вже
+   брехала, і стенд ЗАОХОЧУВАВ тримати брехню (чесна правка ламала якір,
+   замір 1 → 0). Пакет 20 зробив номер самооновлюваним із передруку — і 0173
+   миттєво показав, що цього мало: провенанс у СМОУЦІ лишався ручним, стенд
+   чекав `(0173)`, файл казав `(0172)`, позиція дала «ЯКІР НЕ ЗНАЙДЕНО».
+   Передбачати текст чужого файлу — та сама рот, лише на крок далі. Тому
+   рядок ЗНАХОДИТЬСЯ регекспом, а мутація псує в ньому саме ЧИСЛО. */
+const RBS_J_LINE = (() => {
+  const m = readFileSync(RBS, "utf8")
+    .match(/^--   \(j\) invariants_check\(false\): checked = \d+ \([^)]*\)/m);
+  if (!m) {
+    console.error("⛔ ІНВЕНТАР БРЕШЕ: рядка (j) у шапці room_busy_slots_scope_smoke немає. Стенд НЕ прогнано.");
+    process.exit(1);
+  }
+  return m[0];
+})();
+
 const LIB  = "lib/incidents.ts";           // сюди підсаджуємо «застосунок видаляє простій»
 
 const GREEN = Symbol("мутація мусить лишитись зеленою");
@@ -215,7 +228,7 @@ M.push(
    `raise exception 'СМОУК 0164/6: сторож дає % перевірок замість ${CHECKS}'`,
    `raise exception 'СМОУК 0164/6: сторож дає % перевірок замість ${CHECKS - 1}'`],
   ["N35 шапка смоуку бреше числом (канал, якого сторож не бачив)", RBS, E.pins,
-   `--   (j) invariants_check(false): checked = ${CHECKS} (${REPRINT_NO})`,
+   RBS_J_LINE,
    `--   (j) invariants_check(false): checked = 12 (0159)`],
   ["N36 пін переписали формою, якої сторож не розбирає", GCAL, E.pinform,
    `if (v_res ->> 'checked')::int is distinct from ${CHECKS} then`,
