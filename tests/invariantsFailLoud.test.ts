@@ -1,0 +1,98 @@
+/**
+ * Статичний сторож 0174: сторож інваріантів не падає МОВЧКИ.
+ *
+ * ЧОМУ ВІН ІСНУЄ. Замір до 0174: у тілі був рівно ОДИН `exception when` (у №18)
+ * плюс той, що 0172 дав №19. Виняток у будь-якій іншій перевірці відкочував
+ * транзакцію ЦІЛКОМ — рядок у `maintenance_runs` не зʼявлявся взагалі, і тиша
+ * читалась як здоровʼя. Зонд із відкотом на проді показав обидва боки: та сама
+ * диверсія (`1/0` у перевірці №3) на тілі 0173 давала «ВИКЛИК ВПАВ 22012», а на
+ * тілі 0174 — `checked=19` і `tables_rls_enabled → raised:22012:division by zero`.
+ *
+ * ⚠️ ЧОГО ЦЕЙ ФАЙЛ НЕ ДОВОДИТЬ: він читає ТЕКСТ міграції, а не виконує SQL.
+ *    «Обгортка написана» ≠ «обгортка ловить» — останнє довів зонд вище.
+ *    Тут стережеться рівно те, що можна стерегти статично: обгорнуті ВСІ, і
+ *    жодна не втратила імені.
+ *
+ * ⚠️ Джерело — ОСТАННІЙ передрук, а не файл 0174 за іменем (урок с47/с55).
+ */
+import { describe, it, expect } from "vitest";
+import { readFileSync, readdirSync } from "node:fs";
+import { resolve } from "node:path";
+
+const MIGDIR = resolve(process.cwd(), "supabase/migrations");
+const MARK = "  /* 0174 */ ";
+
+function latestReprint(): { fn: string; file: string } {
+  const files = readdirSync(MIGDIR).filter((f) => f.endsWith(".sql")).sort();
+  let best = { fn: "", file: "" };
+  for (const f of files) {
+    const txt = readFileSync(resolve(MIGDIR, f), "utf8");
+    const at = txt.search(/^create or replace function public\.invariants_check/m);
+    if (at < 0) continue;
+    const end = txt.indexOf("\n$function$;", at);
+    if (end < 0) throw new Error(`${f}: передрук не закритий "$function$;"`);
+    best = { fn: txt.slice(at, end), file: f };
+  }
+  if (!best.fn) throw new Error("НЕ ЗНАЙДЕНО жодного передруку invariants_check");
+  return best;
+}
+
+const { fn: SRC, file: FILE } = latestReprint();
+const LINES = SRC.split("\n");
+
+/** Мітки перевірок у порядку появи — джерело істини для «жодна не забута». */
+const LABELS = [...SRC.matchAll(/'check',\s*'([a-z0-9_]+)',\s*'offenders'/g)].map((m) => m[1]);
+
+describe(`0174 — сторож не падає мовчки (${FILE})`, () => {
+  it("кожна перевірка, крім уже обгорнутої 0172, має свою обгортку", () => {
+    const begins = LINES.filter((l) => l === MARK + "begin").length;
+    expect(begins, "число обгорток розійшлося з числом перевірок — хтось лишився голим").toBe(18);
+  });
+
+  it("обробників рівно двадцять: 18 нових плюс №18 і №19", () => {
+    expect((SRC.match(/exception when others then/g) || []).length).toBe(20);
+  });
+
+  it("лічильник лишається ЗЗОВНІ обгортки — впала перевірка все одно порахована", () => {
+    /* Інакше «19 → 18» довелося б відрізняти від «перевірку прибрали»: два
+       різні дефекти з однаковим слідом. */
+    for (let i = 0; i < LINES.length; i++) {
+      if (LINES[i] !== MARK + "begin") continue;
+      /* ⚠️ Перша редакція цього піна була ПЕРЕВЕРНУТА (`not.toBe`) — тобто
+         вимагала, щоб лічильника перед обгорткою НЕ було, і сама ж упала на
+         правильному коді. Властивість зворотна: рядок лічильника мусить бути
+         останнім кодом ПЕРЕД `begin` — тоді він поза блоком і працює навіть
+         на впалій перевірці. */
+      const before = LINES.slice(0, i).reverse().find((l) => l.trim() && !l.trim().startsWith("--"));
+      expect(before, "лічильник заїхав ВСЕРЕДИНУ обгортки — впала перевірка перестане рахуватись").toBe("  v_n := v_n + 1;");
+    }
+    expect((SRC.match(/^  v_n := v_n \+ 1;$/gm) || []).length).toBe(19);
+  });
+
+  it.each(
+    // усі мітки, крім тієї, що 0172 обгорнув по-своєму
+    [...new Set(LABELS)].filter((l) => l !== "guard_fn_bodies")
+  )("обробник перевірки %s називає САМЕ її", (label) => {
+    /* Скопійований обробник із чужим іменем — це «чужий сторож» на рівні
+       звіту: червоне вказало б чергувальнику не на ту перевірку. */
+    expect(SRC).toContain(MARK + `    'check', '${label}', 'offenders',`);
+  });
+
+  it("обробник несе SQLSTATE і текст, а не голе «щось впало»", () => {
+    const h = LINES.filter((l) => l.startsWith(MARK + "    to_jsonb(array["));
+    expect(h.length, "рядок з діагнозом зник або роздвоївся").toBe(18);
+    for (const l of h) {
+      expect(l).toContain("'raised:' || sqlstate || ':' || left(sqlerrm, 120)");
+    }
+  });
+
+  it("зняття рядків обгортки лишає ТІЛЬКИ код перевірок — відступи не зсунуті", () => {
+    /* Умова перевірності збірки: тіло без маркерів мусить бути валідним
+       передруком тих самих девʼятнадцяти перевірок. Якби обгортка зсувала
+       код, цей пін був би неможливий. */
+    const back = LINES.filter((l) => !l.startsWith(MARK)).join("\n");
+    expect((back.match(/^  v_n := v_n \+ 1;$/gm) || []).length).toBe(19);
+    expect((back.match(/exception when others then/g) || []).length).toBe(2);
+    expect(back).not.toContain("/* 0174 */");
+  });
+});
