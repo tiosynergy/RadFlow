@@ -287,9 +287,14 @@ M.push(
   ["N49 перевірку тихо прибрали з передруку", REPRINT, E.pdPresent,
    "'check', 'profiles_defaults', 'offenders', to_jsonb(v_tmp)",
    "'check', 'profiles_defaults_x', 'offenders', to_jsonb(v_tmp)"],
+  /* ⚠️ ЯКІР У ДВА РЯДКИ, і це не перестраховка — перша редакція дала «ЯКІР НЕ
+     УНІКАЛЬНИЙ (2×)» у ревізії. Другий збіг — у МОЄМУ Ж коментарі «=== ПІСЛЯ
+     НАКАТУ ===» тієї самої міграції: там той самий запит наведений як рецепт
+     звірки, лише під `--`, а однорядковий якір із чотирма пробілами є
+     ПІДРЯДКОМ рядка з `--` і вісьмома. Той самий клас, що M30 у с54. */
   ["N50 перевірка дивиться не в pg_attrdef — дефолти більше не при чому", REPRINT, E.pdCatalog,
-   "    join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum",
-   "    left join pg_attrdef d on false"],
+   "    from pg_attribute a\n    join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum",
+   "    from pg_attribute a\n    left join pg_attrdef d on false"],
   ["N51 виняток розширено роллю — «дефолт на ролі дозволений»", REPRINT, E.pdExcept,
    "array['created_at', 'password_set']", "array['created_at', 'password_set', 'role']"],
   ["N52 offender лишився без самого дефолту — чергувальник не знає, що повернулось",
