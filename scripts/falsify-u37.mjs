@@ -107,7 +107,11 @@ const M = [
    "    or (m.entity_type = 'incident'\n        and not exists (select 1 from public.incidents        x where x.id = m.entity_id))",
    ""],
   ["N09 результат перевірки кладеться під чужим імʼям", M65, GUARD,
-   "'check', 'ucm_orphan_markers'", "'check', 'ucm_orphan'"],
+   /* ⚠️ Якір розширено до ЗВІТНОЇ форми: після 0174 голе імʼя трапляється
+      двічі (звіт і обробник винятку), і стенд справедливо сказав «ЯКІР НЕ
+      УНІКАЛЬНИЙ (2)». */
+   "'check', 'ucm_orphan_markers', 'offenders', to_jsonb(v_tmp)",
+   "'check', 'ucm_orphan', 'offenders', to_jsonb(v_tmp)"],
   /* ⚠️ ЦЯ ПОЗИЦІЯ ЗНАЙШЛА СПРАВЖНІЙ ДЕФЕКТ У СТОРОЖІ (с51). Після переїзду на
      живий передрук вона дала «ЧЕРВОНИЙ НЕ ТОЙ»: названий сторож
      («сторож дізнався про мітлу») мовчав, а ловив її сусідній тест про піни.
