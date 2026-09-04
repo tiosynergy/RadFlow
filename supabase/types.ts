@@ -1427,6 +1427,16 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      /* 0176 (U-66) — правка картки пацієнта ТРЬОМА statement-ами в одній
+         транзакції: ЗВУЖЕННЯ (`referrer_id → null`) → ДАНІ → РОЗШИРЕННЯ.
+         Порядок не косметичний: realtime на UPDATE віддає підписнику ПОВНИЙ
+         старий рядок, а доставку вирішує НОВА версія, тож зміна даних під
+         старим направником віддала б їх йому, а під новим — віддала б новому
+         попереднього пацієнта. `p_referrer` — нерозривна пара або null. */
+      update_patient_details: {
+        Args: { p_id: string; p_data?: Json; p_referrer?: Json };
+        Returns: Json;
+      };
       // 0160 — Vault-хелпери резервного дзеркала GCal (service_role only,
       // скоуп 'gcal:'): секрети OAuth ніколи не лежать у public-таблицях.
       gcal_secret_store: {
