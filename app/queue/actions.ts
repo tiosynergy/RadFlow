@@ -2222,13 +2222,51 @@ export async function updatePatientDetails(id: string, patch: TablesUpdate<"queu
   /* CAS тут НЕ ставимо свідомо: ПІБ/телефон правлять і в завершеному записі
      (клік по імені відкриває редактор у будь-якому рядку дошки), а статус ці
      колонки не чіпають — воскресити запис ними неможливо (за це відповідає схема). */
-  const { data, error } = await supabase
-    .from("queue_entries")
-    .update(safePatch as TablesUpdate<"queue_entries">)
-    .eq("id", v.data.id)
-    .select("id");
+
+  /* ⚠️ U-66: ПРАВКУ ВИКОНУЄ RPC, А НЕ ОДИН UPDATE ЗВІДСИ.
+     ---------------------------------------------------------------------
+     `realtime.apply_rls` у гілці UPDATE НЕ ріже `old_record` до первинного
+     ключа (у гілці DELETE — ріже), а кому доставляти вирішує НОВА версія
+     рядка: і фільтр підписки, і політика RLS. Тому одним statement-ом
+     «дані пацієнта + новий направник» новий направник отримував разом із
+     подією ПОПЕРЕДНЬОГО пацієнта.
+     Порядок мусить бути ЗВУЖЕННЯ → ДАНІ → РОЗШИРЕННЯ, і всі три — в ОДНІЙ
+     транзакції (інакше відмова посередині лишає запис без направника).
+     PostgREST дає транзакцію на запит, отже це функція БД — `0176`.
+     ⚠️ Наївне «дані, потім звʼязок» двома викликами звідси НЕ підходить і
+     було відкинуте після ревʼю: при заміні R1 → R2 перший statement
+     комітиться, поки `referrer_id` ще R1, і дані НОВОГО пацієнта їдуть
+     СТАРОМУ направнику. Розбір — `docs/audit/PR-U66-*.md`. */
+  const hasDoctor = Object.prototype.hasOwnProperty.call(safePatch, "doctor");
+  const hasRef    = Object.prototype.hasOwnProperty.call(safePatch, "referrer_id");
+  /* Пара нерозривна — те саме правило, що в тілі RPC. Половина пари лишила б
+     рядок із розʼїханими `doctor` і `referrer_id` (регрес с31/с43), а
+     `referrer_id` без `doctor` ще й тихо стер би імʼя. Єдиний живий викликач
+     (`PatientEditModal`) завжди шле обидва — `referrerPatchFor`. */
+  if (hasDoctor !== hasRef) {
+    return { ok: false, error: "Направника треба міняти парою: імʼя і звʼязок", code: "generic" };
+  }
+  const dataPatch: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(safePatch)) {
+    if (k !== "doctor" && k !== "referrer_id") dataPatch[k] = val;
+  }
+  const refPatch = hasRef
+    ? { doctor: safePatch.doctor ?? null, referrer_id: safePatch.referrer_id ?? null }
+    : null;
+
+  const { data: rpcRaw, error } = await supabase.rpc("update_patient_details", {
+    p_id: v.data.id,
+    p_data: dataPatch as Json,
+    p_referrer: refPatch as Json,
+  });
   if (error) return { ok: false, error: safeDbError("updatePatientDetails", error), code: "generic" };
-  if (!data || data.length === 0) return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  /* Функція віддає `{ok:false, code:'forbidden'}`, коли рядка не видно під
+     RLS, — і НЕ кидає: відмова доступу це не збій. Читаємо це явно, інакше
+     `ok` міг би виявитись undefined і мовчки зійти за успіх. */
+  const rpcRes = (rpcRaw ?? null) as { ok?: boolean; code?: string; changed?: string[] } | null;
+  if (!rpcRes || rpcRes.ok !== true) {
+    return { ok: false, error: "Немає доступу або запис не знайдено", code: "forbidden" };
+  }
 
   /* 0128: журнал правки даних пацієнта — БЕЗ details узагалі (значення полів —
      PII); changed_fields — лише ІМЕНА реально переданих колонок патча. */
