@@ -45,8 +45,8 @@ begin
   --    Дельта-канон с39: між накатом і db:gate законно шумить ЛИШЕ ledger_md5.
   v_res := public.invariants_check(false);
   -- ⚠️ 0161 підняв 12 → 13, 0164 — 13 → 14 (ucm_orphan_markers), 0166 — 14 → 15 (priv_drift).
-  if (v_res ->> 'checked')::int is distinct from 19 then
-    raise exception 'SMOKE_FAIL a: checked=% (очікував 19)', v_res ->> 'checked';
+  if (v_res ->> 'checked')::int is distinct from 20 then
+    raise exception 'SMOKE_FAIL a: checked=% (очікував 20)', v_res ->> 'checked';
   end if;
   select string_agg(f ->> 'check', ',') into v_txt
     from jsonb_array_elements(v_res -> 'failed') f

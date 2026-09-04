@@ -52,12 +52,12 @@ begin
   end if;
   v_done := v_done || ' a';
 
-  -- b: перевірок рівно 19 (0157: 11)
+  -- b: перевірок рівно 20 (0157: 11)
   -- ⚠️ 0161 підняв 12 → 13, 0164 — 13 → 14 (ucm_orphan_markers), 0166 — 14 → 15 (priv_drift),
   --    0170 — 15 → 16 (policy_digest), 0171 — 16 → 18 (guard_triggers,
   --    server_now), 0172 — 18 → 19 (guard_fn_bodies).
-  if (v_base ->> 'checked')::int is distinct from 19 then
-    raise exception 'SMOKE_FAIL b: checked=% (очікував 19)', v_base ->> 'checked';
+  if (v_base ->> 'checked')::int is distinct from 20 then
+    raise exception 'SMOKE_FAIL b: checked=% (очікував 20)', v_base ->> 'checked';
   end if;
   v_done := v_done || ' b';
 

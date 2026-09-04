@@ -62,6 +62,8 @@ const RBS  = "supabase/smoke/room_busy_slots_scope_smoke.sql";
 const CPV  = "supabase/smoke/clinic_people_view_smoke.sql";
 /* Інструмент бампу пінів — його звуження прози мусить збігатись зі сторожем. */
 const BUMP = "scripts/bump-checked-pins.mjs";
+/* 0175 — сама міграція: DDL і відкат живуть у файлі, а не в передруку. */
+const MIG0175 = "supabase/migrations/0175_profiles_no_default.sql";
 const GCAL = "supabase/smoke/gcal_pg_cron_smoke.sql";
 /* ⚠️ ЯКІР N35 БЕРЕТЬСЯ З ФАЙЛУ, А НЕ ПЕРЕДБАЧАЄТЬСЯ. Історія в два кроки:
    у с56 він був прибитий до `(0170)`, хоч 18 прийшло з 0171 — атрибуція вже
@@ -118,7 +120,10 @@ const E = {
   del2:      /жодного \.delete\(\) по incidents \(канал 2/,
   /* 0174 — «сторож не падає мовчки». Імена звірені з `it()`, не з памʼяті. */
   wrapAll:    /має свою обгортку/,
-  handlers20: /обробників рівно двадцять/,
+  /* ⚠️ Ім'я змінилось у с57: константи 18/20/19 у тесті стали ВІДНОШЕННЯМИ від
+     числа перевірок, і заголовок «рівно двадцять» перестав би бути правдою при
+     першому ж новому передруку. */
+  handlers20: /обробників на два більше, ніж обгорток/,
   counterOut: /лічильник лишається ЗЗОВНІ обгортки/,
   ownName:    (l) => new RegExp(`обробник перевірки ${l} називає САМЕ її`),
   diagnosis:  /обробник несе SQLSTATE і текст/,
@@ -126,6 +131,14 @@ const E = {
   /* с57 — борг с56: канал прози звужений рядком, а не файлом. */
   proseLine:  /кожен пін у смоуках дорівнює цьому числу/,
   proseTool:  /канал прози розрізняє мову про СТОРОЖА/,
+  /* 0175 — у profiles немає fail-open дефолтів (RF-4, схемна половина). */
+  pdPresent:  /перевірка є в передруку і звітує у канонічній формі/,
+  pdCatalog:  /дивиться саме на ДЕФОЛТИ саме таблиці profiles/,
+  pdExcept:   /виняток — РІВНО дві колонки/,
+  pdOffender: /offender несе САМ дефолт/,
+  pdDropped:  /прибрані колонки відсіяні/,
+  pdDdl:      /міграція справді ЗНІМАЄ обидва дефолти/,
+  pdRollback: /секція ВІДКАТУ повертає рівно те, що знято/,
 };
 
 const M = [];
@@ -265,6 +278,35 @@ M.push(
    "const ABOUT_GUARD = /сторож|перевірок\\s+рівно\\s+\\d/i;"],
 );
 
+/* ── 0175: у profiles немає fail-open дефолтів (RF-4, схемна половина) ───────
+   Сім позицій — по одній на кожен блок `tests/profilesDefaultsInvariant`.
+   Ціль — REPRINT і сам файл міграції: перевірка живе в передруку, а DDL і
+   відкат — у файлі, і розходження між ними було б найгіршим станом (сторож
+   червоніє на проді, бо дефолт ніхто не знімав). */
+M.push(
+  ["N49 перевірку тихо прибрали з передруку", REPRINT, E.pdPresent,
+   "'check', 'profiles_defaults', 'offenders', to_jsonb(v_tmp)",
+   "'check', 'profiles_defaults_x', 'offenders', to_jsonb(v_tmp)"],
+  ["N50 перевірка дивиться не в pg_attrdef — дефолти більше не при чому", REPRINT, E.pdCatalog,
+   "    join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum",
+   "    left join pg_attrdef d on false"],
+  ["N51 виняток розширено роллю — «дефолт на ролі дозволений»", REPRINT, E.pdExcept,
+   "array['created_at', 'password_set']", "array['created_at', 'password_set', 'role']"],
+  ["N52 offender лишився без самого дефолту — чергувальник не знає, що повернулось",
+   REPRINT, E.pdOffender,
+   "  select array_agg('default:profiles.' || a.attname || '->'\n                   || pg_get_expr(d.adbin, d.adrelid) order by a.attname)",
+   "  select array_agg('default:profiles.' || a.attname order by a.attname)"],
+  ["N53 прибрані колонки більше не відсіяні — сторож червонітиме від привидів",
+   REPRINT, E.pdDropped,
+   "     and a.attnum > 0 and not a.attisdropped", "     and a.attnum > 0"],
+  ["N54 сторож є, а DDL немає — перевірка червонітиме на проді з першого прогону",
+   MIG0175, E.pdDdl,
+   "alter table public.profiles alter column role     drop default;\n", ""],
+  ["N55 відкат не повертає роль — після відкату дефолту немає, а код 0174 його чекає",
+   MIG0175, E.pdRollback,
+   "-- alter table public.profiles alter column role     set default 'admin'::user_role;\n", ""],
+);
+
 /* ── смоук ───────────────────────────────────────────────────────────────── */
 M.push(
   ["N25 смоук звіряє список замість каталогу — нова таблиця проїде мовчки", SMK, E.catalog,
@@ -347,7 +389,7 @@ process.on("uncaughtException", (e) => { restore(); console.error(e); process.ex
 /* ⚠️ Третій файл доданий у с57 разом із позиціями N40–N45: до того сторожа
    0174 не запускав жоден стенд. Зайві червоні від нього нікому не шкодять —
    вердикт вимагає, щоб серед червоних був НАЗВАНИЙ, а не щоб він був один. */
-const SPEC = "tests/privilegeSurface.test.ts tests/invariantsCheckedPins.test.ts tests/invariantsFailLoud.test.ts";
+const SPEC = "tests/privilegeSurface.test.ts tests/invariantsCheckedPins.test.ts tests/invariantsFailLoud.test.ts tests/profilesDefaultsInvariant.test.ts";
 const lines = ["# Фальсифікація пакета привілеїв (0166 + 0167)", ""];
 let bad = 0;
 

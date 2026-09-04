@@ -214,7 +214,7 @@ describe("сторож СЬОГОДНІ (останній передрук, а �
        `'offenders', to_jsonb(v_tmp)`, якої в обробнику немає. */
     for (const name of ["views_security_invoker", "secdef_search_path", "ledger_md5",
                         "room_busy_service_role", "outbox_emit_failed_26h",
-                        "ucm_orphan_markers"]) {
+                        "ucm_orphan_markers", "profiles_defaults"]) {
       expect(latest.body, `${latest.file}: у передруку зникла перевірка ${name}`)
         .toContain(`'check', '${name}', 'offenders', to_jsonb(v_tmp)`);
     }

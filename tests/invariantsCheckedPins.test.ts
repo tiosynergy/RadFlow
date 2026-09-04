@@ -103,9 +103,47 @@ function checksInLatestReprint(): { n: number; file: string } {
   return best;
 }
 
-/** Усі піни числа перевірок у смоуках. */
+/* ⚠️ ОДИН ДОК ПОЗА СМОУКАМИ (с57). Заголовок цього сторожа обіцяє «однакове
+   СКРІЗЬ», а скан ходив ЛИШЕ по `supabase/smoke`. Замір при бампі 19 → 20
+   показав, що те саме число живе ще й у `docs/ops-cron.md` (реєстр нічних
+   задач) — двічі, і жоден із чотирьох каналів його не бачив. Це не «додали
+   файл до списку», а виправлення обіцянки: реєстр описує ЖИВИЙ стан.
+   ⚠️ Чому саме цей файл, а не `docs/` цілком: журнал аудиту і PR-доки навмисно
+   тримають СТАРІ числа («0166 — 14 → 15», «на тілі 0173 — checked=19»), і скан
+   по всьому `docs/` зробив би порушниками десятки чесних рядків історії.
+   Межа названа: інший док, який почне тримати ЖИВЕ число, під нагляд сам собою
+   не потрапить. */
+const LIVE_DOCS = ["docs/ops-cron.md"];
+
+/** Текстовий і прозовий канали — вони не залежать від того, SQL це чи доку. */
+function textAndProse(file: string, txt: string, out: Pin[]): void {
+  /* Незалежний канал: будь-який рядок, що згадує `checked`, не має брехати
+     числом — навіть коментар у шапці. Обмеження саме на такі рядки не
+     випадкове: «очікував N» у смоуках трапляється і про зовсім інші числа
+     (migration_ledger_smoke рахує міграції) — перша версія регулярки
+     згребла їх усі й дала 17 хибних порушників. */
+  txt.split(/\r?\n/).forEach((line, i) => {
+    if (line.includes("checked")) {
+      for (const c of line.matchAll(CLAIM)) {
+        out.push({ file, num: Number(c[1] ?? c[2]), kind: "text", line: i + 1 });
+      }
+    }
+    /* Четвертий канал — проза, і лише в рядку, який САМ говорить про сторожа
+       (с57: було «у файлі, який читає сторожа» — див. шапку ABOUT_GUARD). */
+    if (ABOUT_GUARD.test(line)) {
+      for (const c of line.matchAll(PROSE)) {
+        out.push({ file, num: Number(c[1] ?? c[2]), kind: "prose", line: i + 1 });
+      }
+    }
+  });
+}
+
+/** Усі піни числа перевірок — у смоуках і в живих доках. */
 function pinsInSmokes(): Pin[] {
   const out: Pin[] = [];
+  for (const d of LIVE_DOCS) {
+    textAndProse(d, readFileSync(resolve(process.cwd(), d), "utf8"), out);
+  }
   for (const f of readdirSync(SMOKEDIR).filter((x) => x.endsWith(".sql"))) {
     const txt = readFileSync(resolve(SMOKEDIR, f), "utf8");
     const lineOf = (idx: number) => txt.slice(0, idx).split("\n").length;
@@ -129,26 +167,7 @@ function pinsInSmokes(): Pin[] {
       }
     }
 
-    /* Незалежний канал: будь-який рядок, що згадує `checked`, не має брехати
-       числом — навіть коментар у шапці. Обмеження саме на такі рядки не
-       випадкове: «очікував N» у смоуках трапляється і про зовсім інші числа
-       (migration_ledger_smoke рахує міграції) — перша версія регулярки
-       згребла їх усі й дала 17 хибних порушників. */
-    txt.split(/\r?\n/).forEach((line, i) => {
-      if (!line.includes("checked")) return;
-      for (const c of line.matchAll(CLAIM)) {
-        out.push({ file: f, num: Number(c[1] ?? c[2]), kind: "text", line: i + 1 });
-      }
-    });
-
-    /* Четвертий канал — проза, і лише в рядку, який САМ говорить про сторожа
-       (с57: було «у файлі, який читає сторожа» — див. шапку ABOUT_GUARD). */
-    txt.split(/\r?\n/).forEach((line, i) => {
-      if (!ABOUT_GUARD.test(line)) return;
-      for (const c of line.matchAll(PROSE)) {
-        out.push({ file: f, num: Number(c[1] ?? c[2]), kind: "prose", line: i + 1 });
-      }
-    });
+    textAndProse(f, txt, out);
   }
   return out;
 }
@@ -254,8 +273,12 @@ describe("число перевірок invariants_check однакове скр
     const covered = new Set(pinsInSmokes().map((p) => `${p.file}:${p.line}`));
     const missed: string[] = [];
     let scanned = 0;
-    for (const f of readdirSync(SMOKEDIR).filter((x) => x.endsWith(".sql"))) {
-      const txt = readFileSync(resolve(SMOKEDIR, f), "utf8");
+    const scan: Array<[string, string]> = [
+      ...LIVE_DOCS.map((d) => [d, readFileSync(resolve(process.cwd(), d), "utf8")] as [string, string]),
+      ...readdirSync(SMOKEDIR).filter((x) => x.endsWith(".sql"))
+        .map((f) => [f, readFileSync(resolve(SMOKEDIR, f), "utf8")] as [string, string]),
+    ];
+    for (const [f, txt] of scan) {
       txt.split(/\r?\n/).forEach((line, i) => {
         if (!line.includes("перевірок") || !/\d/.test(line)) return;
         if (!ABOUT_GUARD.test(line)) return;
