@@ -111,6 +111,13 @@ const E = {
   pinform:   /кожен смоук, що читає ключ 'checked', має асерт у формі/,
   del1:      /жодного \.delete\(\) по incidents \(канал 1/,
   del2:      /жодного \.delete\(\) по incidents \(канал 2/,
+  /* 0174 — «сторож не падає мовчки». Імена звірені з `it()`, не з памʼяті. */
+  wrapAll:    /має свою обгортку/,
+  handlers20: /обробників рівно двадцять/,
+  counterOut: /лічильник лишається ЗЗОВНІ обгортки/,
+  ownName:    (l) => new RegExp(`обробник перевірки ${l} називає САМЕ її`),
+  diagnosis:  /обробник несе SQLSTATE і текст/,
+  stripBack:  /зняття рядків обгортки лишає ТІЛЬКИ код перевірок/,
 };
 
 const M = [];
@@ -192,6 +199,42 @@ M.push(
    "from (values ('waitlist_entries'), ('incidents')) as t(tbl)"],
 );
 
+/* ── 0174: сторож не падає МОВЧКИ ────────────────────────────────────────────
+   ⚠️ ДІРКА, ЯКУ ЗНАЙШЛА РЕВІЗІЯ с57. `tests/invariantsFailLoud.test.ts` (23
+   тести) приїхав у коміті 67f8a49 БЕЗ ЖОДНОЇ позиції фальсифікації: `SPEC`
+   цього стенда знав два тестові файли, і третій не запускав ніхто з 24 стендів.
+   Сторож без названого червоного тесту не вважається зробленим — нижче по одній
+   позиції на кожен блок `it`/`it.each` того файлу.
+
+   Ціль — REPRINT (останній передрук), а не файл 0174 за іменем: наступний
+   передрук успадкує обгортки, і стенд мусить їхати за ним (урок с47/с55). */
+M.push(
+  ["N40 одна перевірка лишилась БЕЗ обгортки — виняток у ній знову вбʼє весь виклик",
+   REPRINT, E.wrapAll,
+   "  v_n := v_n + 1;\n  /* 0174 */ begin\n  if exists (\n    select 1 from pg_proc\n     where proname = 'cleanup_orphan_clinic'",
+   "  v_n := v_n + 1;\n  if exists (\n    select 1 from pg_proc\n     where proname = 'cleanup_orphan_clinic'"],
+  ["N41 обробник звужено до одного SQLSTATE — решта винятків знову тихі",
+   REPRINT, E.handlers20,
+   "  /* 0174 */ exception when others then\n  /* 0174 */   v_fail := v_fail || jsonb_build_array(jsonb_build_object(\n  /* 0174 */     'check', 'canonical_objects', 'offenders',",
+   "  /* 0174 */ exception when division_by_zero then\n  /* 0174 */   v_fail := v_fail || jsonb_build_array(jsonb_build_object(\n  /* 0174 */     'check', 'canonical_objects', 'offenders',"],
+  ["N42 лічильник заїхав УСЕРЕДИНУ обгортки — впала перевірка перестане рахуватись",
+   REPRINT, E.counterOut,
+   "  v_n := v_n + 1;\n  /* 0174 */ begin\n  if exists (\n    select 1 from pg_proc\n     where proname = 'cleanup_orphan_clinic'",
+   "  /* 0174 */ begin\n  v_n := v_n + 1;\n  if exists (\n    select 1 from pg_proc\n     where proname = 'cleanup_orphan_clinic'"],
+  ["N43 обробник назвав ЧУЖУ перевірку — червоне вкаже чергувальнику не туди",
+   REPRINT, E.ownName("orphan_broom_no_hardcode"),
+   "  /* 0174 */     'check', 'orphan_broom_no_hardcode', 'offenders',",
+   "  /* 0174 */     'check', 'canonical_objects', 'offenders',"],
+  ["N44 діагноз без SQLSTATE — «щось впало» замість коду і тексту",
+   REPRINT, E.diagnosis,
+   "  /* 0174 */     'check', 'ledger_md5', 'offenders',\n  /* 0174 */     to_jsonb(array['raised:' || sqlstate || ':' || left(sqlerrm, 120)])));",
+   "  /* 0174 */     'check', 'ledger_md5', 'offenders',\n  /* 0174 */     to_jsonb(array['raised'])));"],
+  ["N45 маркер 0174 просочився в рядок КОДУ — зняття маркерів більше не оборотне",
+   REPRINT, E.stripBack,
+   "  end if;\n  /* 0174 */ exception when others then\n  /* 0174 */   v_fail := v_fail || jsonb_build_array(jsonb_build_object(\n  /* 0174 */     'check', 'orphan_broom_no_hardcode', 'offenders',",
+   "  end if; /* 0174 */\n  /* 0174 */ exception when others then\n  /* 0174 */   v_fail := v_fail || jsonb_build_array(jsonb_build_object(\n  /* 0174 */     'check', 'orphan_broom_no_hardcode', 'offenders',"],
+);
+
 /* ── смоук ───────────────────────────────────────────────────────────────── */
 M.push(
   ["N25 смоук звіряє список замість каталогу — нова таблиця проїде мовчки", SMK, E.catalog,
@@ -271,7 +314,10 @@ const restore = () => { for (const [f, t] of orig) writeFileSync(f, t); };
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { restore(); process.exit(1); });
 process.on("uncaughtException", (e) => { restore(); console.error(e); process.exit(1); });
 
-const SPEC = "tests/privilegeSurface.test.ts tests/invariantsCheckedPins.test.ts";
+/* ⚠️ Третій файл доданий у с57 разом із позиціями N40–N45: до того сторожа
+   0174 не запускав жоден стенд. Зайві червоні від нього нікому не шкодять —
+   вердикт вимагає, щоб серед червоних був НАЗВАНИЙ, а не щоб він був один. */
+const SPEC = "tests/privilegeSurface.test.ts tests/invariantsCheckedPins.test.ts tests/invariantsFailLoud.test.ts";
 const lines = ["# Фальсифікація пакета привілеїв (0166 + 0167)", ""];
 let bad = 0;
 
