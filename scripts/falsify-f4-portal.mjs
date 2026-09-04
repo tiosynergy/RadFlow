@@ -55,8 +55,12 @@ const MUTATIONS = [
     id: "M2", file: "portal", green: false,
     expect: /у КОЖНОЇ гілки refresh спільний debounceKey/,
     what: "з однієї гілки router.refresh() знято спільний ключ (дефект Ф4-11)",
-    from: '{ table: "rooms", onChange: () => router.refresh(), debounceKey: "rsc" },',
-    to: '{ table: "rooms", onChange: () => router.refresh() },',
+    /* ⚠️ ПЕРЕЯКОРЕНО в с57 (U-65). Підписка на `rooms` була БЕЗ фільтра —
+       саме її й закрив фан-аут по центрах направника, тож старий якір
+       («{ table: "rooms", onChange: … }») зник, і стенд чесно відхилив
+       позицію. Властивість, яку вона стереже, не змінилась. */
+    from: '        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc" },',
+    to: '        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh() },',
   },
   {
     id: "M3", file: "portal", green: false,
@@ -167,8 +171,9 @@ const MUTATIONS = [
   {
     id: "G4", file: "portal", green: true,
     what: "підписку rooms розбито на два рядки (пін мусить терпіти переніс)",
-    from: '      { table: "rooms", onChange: () => router.refresh(), debounceKey: "rsc" },',
-    to: '      { table: "rooms", onChange: () => router.refresh(),\n        debounceKey: "rsc" },',
+    /* ⚠️ Переякорено в с57 разом із M2 — та сама причина (U-65). */
+    from: '        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc" },',
+    to: '        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(),\n          debounceKey: "rsc" },',
   },
   {
     id: "G5", file: "lib", green: true,
