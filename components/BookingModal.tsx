@@ -16,7 +16,8 @@ import {
 } from "@/lib/schedule";
 import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { incidentDurCapMin, incidentEffectiveEnd, roomIncidentsOf, studyBlockedByFeed, wallNow, wallMinOfDay, wallToday0, type IncidentFeed } from "@/lib/incidents";
-import { useFollowToday, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
+import { useFollowToday, clockClaimOf, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
+import type { ClockClaim } from "@/lib/clockTrust";
 
 /* ⚠️ Імена порівнюємо ТІЛЬКИ нормалізовано (trim + пробіли до одного): у БД
    живуть легасі-рядки з подвійними пробілами, а нові значення нормалізує
@@ -60,6 +61,18 @@ export type BookingPayload = {
   // Це лише «згода», а не «слот поза графіком»: що писати в БД — вирішує сервер.
   offSchedule?: boolean;
 };
+
+/** Те саме навантаження ПЛЮС заявка про годинник — рівно те, що йде на сервер.
+
+    ⚠️ ЧОМУ ОКРЕМИЙ ТИП, А НЕ ПОЛЕ В `BookingPayload` (Г1-F, пакет 22, с56).
+    `buildPayload()` кличеться не лише на збереженні: ним же знімаються КРОКИ
+    КЕЙСА, які лежать у стані і їдуть на сервер набагато пізніше. Заявка,
+    зафіксована в мить набору кроку, до відправки протухає — і якби `createCase`
+    колись почав її читати, гард відмовляв би ЧЕСНІЙ роботі з `skew`, якого не
+    було. Тому заявка додається в мить кліка, у `handleSave`, а не всередині
+    `buildPayload()`. Шлях кейса заявки не возить — це названа межа пакета 22:
+    його стереже клієнтський `dayStop`, той самий, що тримає кнопку. */
+export type BookingSave = BookingPayload & { clock: ClockClaim };
 type ParsedDob = { ok: false; partial?: boolean; err?: string } | { ok: true; iso: string };
 
 /** Передзаповнення форми (напр. запис пацієнта з листа очікування). */
@@ -304,7 +317,7 @@ interface BookingModalProps {
      (z-index 100 проти 200) — користувач тиснув «Зберегти» і не бачив нічого.
      Тепер помилку показує сама модалка. Заразом це закриває M-6: поки запит
      у польоті, кнопка заблокована (подвійний клік більше не створює дубль). */
-  onSave: (b: BookingPayload) => Promise<string | null> | void;
+  onSave: (b: BookingSave) => Promise<string | null> | void;
   /** Пакетний режим (кейс): якщо передано, зʼявляється «＋ У кейс» / «Створити кейс».
       Приймає накопичені кроки різних модальностей → одна атомарна дія createCase. */
   onCreateCase?: (steps: BookingPayload[]) => Promise<string | null> | void;
@@ -1062,7 +1075,19 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
     setSaving(true);
     setSaveErr(null);
     try {
-      const err = await onSave(buildPayload());
+      /* Г1-F (пакет 22): заявка будується САМЕ ТУТ, у мить кліка, і рівно з тих
+         самих аргументів, що й `useFollowToday` вище. Дві копії умови
+         («виведено з сьогодні») розійшлись би мовчки — тому обидві сторони
+         питають один предикат `derivedFromToday` через `clockClaimOf`. */
+      const err = await onSave({
+        ...buildPayload(),
+        clock: clockClaimOf({
+          clinicTz: clinicTz || undefined,
+          curKey: dateKey(bookDate),
+          offsetDays: 0,
+          pinnedKey: prefill?.datePinned ? prefill.date ?? null : null,
+        }),
+      });
       // Успіх → батько закриває модалку. Помилка → лишаємось відкритими й показуємо її.
       if (err) setSaveErr(err);
     } catch {

@@ -204,6 +204,8 @@ const QA = "app/queue/actions.ts";
 const WA = "app/waitlist/actions.ts";
 const RM = "components/RescheduleModal.tsx";
 const WM = "components/WaitlistModal.tsx";
+const BM = "components/BookingModal.tsx";   // пакет 22
+const RP = "components/ReferralPortal.tsx"; // пакет 22
 
 describe("Г1-F — проводка гарда в шляхах запису", () => {
   it("перенос запису: гард стоїть і стоїть ДО перевірки минулого", () => {
@@ -213,8 +215,11 @@ describe("Г1-F — проводка гарда в шляхах запису", (
        `void CLOCK_SKEW_ERR;` лишала його ЗЕЛЕНИМ: гард на місці, читається,
        нічого не робить. Це той самий клас, що M11, на рівень вище — «є рядок»
        замість «є вердикт». Тепер у піні є і `return`, і сама відповідь. */
-    expect(s, "гард годинника зник або перестав ВІДМОВЛЯТИ — доба, виведена зі збитого годинника, знову їде в scheduled_date мовчки")
-      .toMatch(/clockClaimVerdict\(input\.clock as ClockClaim \| undefined, serverClockNow\(tz\)\) !== "ok"\) \{ return CLOCK_SKEW_ERR; \}/);
+    /* ⚠️ ЦЕЙ ПІН БУВ ФАЙЛОВИМ І СТАВ НЕОДНОЗНАЧНИМ У ПАКЕТІ 22 (знайшов стенд,
+       позиція M18). Текст гарда дослівно однаковий у ЧОТИРЬОХ шляхах запису,
+       тож `toMatch` по всьому файлу знаходив ЧУЖИЙ гард і лишався зеленим,
+       коли знімали `return` саме тут. Пін переїхав у тіло функції нижче —
+       той самий урок, що вже записаний двома абзацами вище про `indexOf`. */
     expect(s, "відповідь гарда більше не бере спільний текст — оператор прочитає відмову без причини і без виходу")
       .toMatch(/const CLOCK_SKEW_ERR = \{ ok: false as const, error: CLOCK_SKEW_MSG, code: "clock_skew" as const \};/);
     /* ⚠️ ПОРЯДОК — частина рішення, а не стиль. Обидві відмови можливі
@@ -242,6 +247,8 @@ describe("Г1-F — проводка гарда в шляхах запису", (
     const past = `if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;`;
     expect(body.split(gate).length - 1, "виклик гарда в тілі функції більше не унікальний — порівняння індексів візьме не той").toBe(1);
     expect(body.split(past).length - 1, "перевірка минулого в тілі функції більше не унікальна — порівняння індексів візьме не ту").toBe(1);
+    expect(body, "гард годинника зник або перестав ВІДМОВЛЯТИ у ПЕРЕНОСІ — доба, виведена зі збитого годинника, знову їде в scheduled_date мовчки")
+      .toContain(`${gate}) { return CLOCK_SKEW_ERR; }`);
     expect(body.indexOf(gate), "гард годинника з'їхав ПІСЛЯ перевірки минулого — оператор прочитає наслідок замість причини")
       .toBeLessThan(body.indexOf(past));
   });
@@ -318,8 +325,12 @@ describe("Г1-F — проводка гарда в шляхах запису", (
     /* Опиши заявку схемою — і зіпсована заявка впаде в ЗАГАЛЬНУ помилку
        валідації, а гілка `malformed` у правилі стане недосяжною: пін на неї
        доводив би наявність мертвого рядка (клас, на якому пакет 5 уже горів). */
-    expect(src(QA), "заявку почали розбирати схемою — гілка malformed у правилі стала недосяжною")
-      .toMatch(/clock: z\.unknown\(\)\.optional\(\)/);
+    /* ⚠️ ЛІЧИМО, А НЕ ШУКАЄМО (знахідка стенда, M13). Схем із заявкою три
+       (sBooking, sReferralBooking, sReschedule), і `toMatch` лишався зеленим,
+       поки ціла бодай одна: мутація однієї схеми проходила непоміченою. */
+    expect(src(QA).split("clock: z.unknown().optional()").length - 1,
+      "одну зі схем входу почали розбирати zod — гілка malformed у правилі стала для неї недосяжною")
+      .toBe(3);
     expect(src(WA), "заявку почали розбирати схемою (лист очікування)")
       .toMatch(/clock: z\.unknown\(\)\.optional\(\)/);
   });
@@ -362,5 +373,109 @@ describe("Г1-F — проводка гарда в шляхах запису", (
     expect(s, "F3: `pinnedKey` повернувся в код дошки черги — дип-лінк на сьогодні знову глушить і правило, і відмову Г1-F")
       .not.toMatch(/pinnedKey/);
     expect(s.split("boardClock()").length - 1, "інлайн-шлях запису перестав возити заявку дошки (їх два: найближче вікно і колізія)").toBe(2);
+  });
+
+  /* ======================================================================
+     ПАКЕТ 22 (с56) — три шляхи СТВОРЕННЯ. Рішення власника з вимірюванням:
+     дублювати на сервері захист, яка досі жила лише на клієнті (`dayStop`).
+     ⚠️ Форма піна та сама, що у переносу вище, і це не копіпаста: «десь у
+     файлі» тут не годиться — `isPastSlot(...)` трапляється у файлі кілька
+     разів, тож і гард, і порядок пінуються ВСЕРЕДИНІ тіла своєї функції.
+     ====================================================================== */
+  const qaBody = (name: string) => {
+    const s = src(QA);
+    const at = s.indexOf(`export async function ${name}(`);
+    expect(at, `функції ${name} більше немає — пін гарда не має до чого кріпитись`).toBeGreaterThan(-1);
+    const next = s.indexOf("export async function ", at + 10);
+    return s.slice(at, next === -1 ? s.length : next);
+  };
+
+  it.each([
+    ["createBooking", "clinicId"],
+    ["scheduleFromWaitlist", "clinicId"],
+    ["createReferralBooking", "input.clinicId"],
+  ])("створення (%s): гард стоїть, ВІДМОВЛЯЄ і стоїть ДО перевірки минулого", (fn, clinicArg) => {
+    const body = qaBody(fn);
+    const gate = `clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok"`;
+    const past = `if (await isPastSlot(supabase, ${clinicArg}, input.scheduledDate, input.scheduledTime)) return PAST_ERR;`;
+    expect(body, `${fn}: гард годинника зник або перестав ВІДМОВЛЯТИ — доба, виведена зі збитого годинника, знову їде в scheduled_date мовчки`)
+      .toContain(`${gate}) { return CLOCK_SKEW_ERR; }`);
+    expect(body, `${fn}: зона для гарда більше не читається — serverClockNow дістане не ту добу`)
+      .toMatch(/const tz = await clinicTz\(supabase, (clinicId|input\.clinicId)\);/);
+    expect(body.split(gate).length - 1, `${fn}: виклик гарда в тілі функції більше не унікальний — порівняння індексів візьме не той`).toBe(1);
+    expect(body.split(past).length - 1, `${fn}: перевірка минулого в тілі функції більше не унікальна`).toBe(1);
+    expect(body.indexOf(gate), `${fn}: гард з'їхав ПІСЛЯ перевірки минулого — оператор прочитає наслідок замість причини`)
+      .toBeLessThan(body.indexOf(past));
+  });
+
+  it("у листі очікування гард стоїть ДО атомарного CAS — відмова не столбить кандидата", () => {
+    /* Інакше «годинник збився» коштував би кандидату статусу `scheduled` без
+       запису: людина зникла б із листа, не потрапивши в чергу. */
+    const body = qaBody("scheduleFromWaitlist");
+    const gate = body.indexOf(`clockClaimVerdict(input.clock as ClockClaim | undefined`);
+    const rpc = body.indexOf("schedule_from_waitlist_rpc");
+    expect(gate, "гард зник із scheduleFromWaitlist").toBeGreaterThan(-1);
+    expect(rpc, "виклик RPC зник — пін порядку не має до чого кріпитись").toBeGreaterThan(-1);
+    expect(gate, "гард з'їхав ПІСЛЯ CAS — відмова через годинник тепер столбить кандидата в листі очікування")
+      .toBeLessThan(rpc);
+  });
+
+  it("заявка ОБОВʼЯЗКОВА в обох типах створення — сторож повноти той самий", () => {
+    const s = src(QA);
+    for (const t of ["BookingInput", "ReferralBookingInput"]) {
+      const at = s.indexOf(`export type ${t} = {`);
+      expect(at, `типу ${t} більше немає`).toBeGreaterThan(-1);
+      const body = s.slice(at, s.indexOf("};", at) + 2);
+      expect(body, `clock у ${t} став необовʼязковим — нова точка виклику зможе мовчки його не передати`)
+        .toMatch(/clock: ClockClaim;/);
+      expect(body, `clock у ${t} позначено \`?\` — сторож повноти знято`).not.toMatch(/clock\?: ClockClaim/);
+    }
+    /* `scheduleFromWaitlist` бере `BookingInput` цілком — окремого типу немає,
+       і саме тому обидва шляхи створення закриті ОДНІЄЮ вимогою. */
+    expect(s, "scheduleFromWaitlist перестав брати BookingInput — третій шлях вийшов з-під вимоги типу")
+      .toMatch(/export async function scheduleFromWaitlist\(waitlistId: string, booking: BookingInput\)/);
+  });
+
+  it("форма запису будує заявку ТИМИ САМИМИ аргументами, що й її правило", () => {
+    /* ⚠️ Заявка будується в мить КЛІКА, а не в `buildPayload()`: ним же
+       знімаються кроки кейса, які їдуть на сервер набагато пізніше, і заявка в
+       них протухла б — гард відмовляв би ЧЕСНІЙ роботі з `skew`, якого не було. */
+    const s = src(BM);
+    expect(s, "модалка запису будує заявку іншими аргументами, ніж веде її правило — сервер судитиме про чуже значення")
+      .toMatch(/clock: clockClaimOf\(\{ clinicTz: clinicTz \|\| undefined, curKey: dateKey\(bookDate\), offsetDays: 0, pinnedKey: prefill\?\.datePinned \? prefill\.date \?\? null : null, \}\)/);
+    expect(s, "правило модалки більше не бере ті самі аргументи — заявка і правило розійшлись")
+      .toMatch(/pinnedKey: prefill\?\.datePinned \? prefill\.date \?\? null : null, busy: saving \|\| caseSteps\.length > 0, offsetDays: 0, value: bookDate,/);
+    expect(s.split("clockClaimOf(").length - 1, "кількість заявок у модалці запису змінилась — нову точку ніхто не звіряв із правилом").toBe(1);
+    /* Заявка їде рівно в `onSave`, а `buildPayload()` лишається без неї. */
+    expect(s, "заявку перенесли всередину buildPayload — кроки кейса почали возити протухлий момент")
+      .toMatch(/const err = await onSave\(\{ \.\.\.buildPayload\(\), clock: clockClaimOf/);
+    expect(s, "тип відправки більше не вимагає заявку — модалка зможе віддати навантаження без годинника")
+      .toMatch(/export type BookingSave = BookingPayload & \{ clock: ClockClaim \};/);
+  });
+
+  it("портал направника будує заявку зоною ЦЕНТРУ, а не своєю", () => {
+    /* Направник глобальний і часто в іншій зоні; доба, з якої виведена дата, —
+       доба центру. Той самий вибір, що в `dateOnCenterSwitch` для цього екрана. */
+    const s = src(RP);
+    expect(s, "портал будує заявку не тими аргументами, що виклик useFollowToday поруч (зона центру, зсув 1)")
+      .toMatch(/clock: clockClaimOf\(\{ clinicTz: selTz, curKey: dateVal\(bookDate\), offsetDays: 1 \}\)/);
+    expect(s, "правило порталу більше не бере зону центру і зсув 1 — заявка і правило розійшлись")
+      .toMatch(/useFollowToday\(\{ clinicTz: selTz, offsetDays: 1,/);
+    expect(s.split("clockClaimOf(").length - 1, "кількість заявок у порталі змінилась — нову точку ніхто не звіряв із правилом").toBe(1);
+  });
+
+  it("усі три споживачі модалки везуть заявку далі, а не гублять її", () => {
+    /* tsc це вже вимагає, але пін називає МІСЦЯ: мовчазна втрата тут виглядала б
+       як «гард є, а не спрацьовує» — той самий клас, що M11 у переносі. */
+    for (const [file, label] of [
+      ["components/QueueBoard.tsx", "дошка черги"],
+      ["components/WaitlistBoard.tsx", "дошка листа очікування"],
+      ["components/WaitlistCandidatesModal.tsx", "кандидати на звільнений слот"],
+    ] as const) {
+      const s = src(file);
+      expect(s, `${label}: заявка з модалки не доїжджає до екшена`).toMatch(/clock: b\.clock,/);
+      expect(s, `${label}: обробник більше не типізований BookingSave — заявка стала необовʼязковою`)
+        .toMatch(/async function saveBooking\(b: BookingSave\)/);
+    }
   });
 });

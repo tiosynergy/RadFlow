@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { isContrastName } from "@/lib/studies";
 import { createClient } from "@/lib/supabase/client";
-import BookingModal, { type BookingPayload, type BookingPrefill } from "@/components/BookingModal";
+import BookingModal, { type BookingSave, type BookingPrefill } from "@/components/BookingModal";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { scheduleFromWaitlist } from "@/app/queue/actions";
 import { desiredWindowText, timeToMin } from "@/lib/waitlist";
@@ -97,7 +97,7 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
   function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
 
   // Повертає ТЕКСТ помилки — BookingModal покаже його в собі (тост тонув під оверлеєм).
-  async function saveBooking(b: BookingPayload) {
+  async function saveBooking(b: BookingSave) {
     const wl = bookFor;
     if (!wl) return null;
     const [hh, mm] = b.time.split(":").map(Number);
@@ -105,6 +105,7 @@ export default function WaitlistCandidatesModal({ clinicId, clinicTz, rooms, inc
     // Атомарно: спершу «застовплюємо» кандидата (CAS waiting→scheduled), і лише
     // переможець створює запис — два адміністратори не задвоять пацієнта.
     const res = await scheduleFromWaitlist(wl.id, {
+      clock: b.clock,   // Г1-F (пакет 22) — див. WaitlistBoard.saveBooking
       roomId: b.roomId, referrerId: b.referrerId ?? (wl.referrer_id || null),
       name: b.name, phone: b.phone || null, email: b.email ?? null,
       dob: b.dob || null, sex: b.gender || null, age: b.age || null, weight: b.weight ?? null,

@@ -35,7 +35,7 @@ import {
 } from "@/app/queue/actions";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
-import BookingModal, { type BookingPayload } from "@/components/BookingModal";
+import BookingModal, { type BookingSave, type BookingPayload } from "@/components/BookingModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
 import { addEntryToWaitlist } from "@/app/waitlist/actions";
 import type { WaitlistEntry } from "@/supabase/types";
@@ -2573,10 +2573,11 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     return null;
   }
 
-  async function saveBooking(b: BookingPayload) {
+  async function saveBooking(b: BookingSave) {
     const [hh, mm] = b.time.split(":").map(Number);
     const at = new Date(b.date.getFullYear(), b.date.getMonth(), b.date.getDate(), hh, mm).toISOString();
     const res = await createBooking({
+      clock: b.clock,   // Г1-F (пакет 22): заявку будує модалка — вона ж володіє датою
       roomId: b.roomId, referrerId: b.referrerId ?? null,
       name: b.name, phone: b.phone || null, email: b.email ?? null,
       dob: b.dob || null, sex: b.gender || null, age: b.age || null, weight: b.weight ?? null,

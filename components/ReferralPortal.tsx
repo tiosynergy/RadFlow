@@ -38,7 +38,7 @@ import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
 import { incidentDurCapMin, incidentFeed, studyBlockedByFeed, wallNow, wallMinOfDay, wallDayKey, wallToday0, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
-import { useFollowToday, dateOnCenterSwitch, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
+import { useFollowToday, clockClaimOf, dateOnCenterSwitch, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
 import type { ClockClaim } from "@/lib/clockTrust";
 import { CONTRAST_DUR, CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, normDur, DUR_MAX } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
@@ -751,6 +751,10 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
       hasContra: !!hasContra, priorityLevel: priority || undefined, studies: allStudies as Json,
       doctorName, note: comment.trim() || null, durationMin: slotDur, bufferTimeMin: buffer,
       scheduledDate: date, scheduledTime: time, scheduledAt: at,
+      /* Г1-F (пакет 22): аргументи ті самі, що у виклику `useFollowToday` вище —
+         зона ЦЕНТРУ (`selTz`), зсув 1. Направник глобальний і часто в іншій
+         зоні; доба, з якої виведена дата, — доба центру, і сервер судить нею ж. */
+      clock: clockClaimOf({ clinicTz: selTz, curKey: dateVal(bookDate), offsetDays: 1 }),
     });
     setBusy(false);
     if (!res.ok) {

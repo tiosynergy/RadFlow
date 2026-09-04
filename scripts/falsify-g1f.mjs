@@ -27,6 +27,12 @@ const FILES = {
   wm: "components/WaitlistModal.tsx",
   qb: "components/QueueBoard.tsx",
   wb: "components/WaitlistBoard.tsx",
+  /* Пакет 22 (с56): три шляхи СТВОРЕННЯ і обидві точки, де народжується
+     їхня заявка. Без них карта знову обіцяла б «весь ланцюг», не маючи
+     половини — рівно та помилка, яку тут уже виправляли. */
+  bm: "components/BookingModal.tsx",
+  rp: "components/ReferralPortal.tsx",
+  wcm: "components/WaitlistCandidatesModal.tsx",
 };
 /* ⚠️ КАРТА ФАЙЛІВ ПОКРИВАЄ ВЕСЬ ЛАНЦЮГ, а не лише «свої» (урок U-72, с50):
    правило, предикат, обидва екшени, обидві форми — і, за знахідкою ревʼю,
@@ -112,8 +118,18 @@ const MUTATIONS = [
     id: "M10", file: "qa", green: false,
     expect: /гард стоїть і стоїть ДО перевірки минулого/,
     what: "гард знято з rescheduleQueueEntry",
-    from: `    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {`,
-    to: `    if (false) {`,
+    /* Якір несе ще й наступний рядок переносу: у пакеті 22 голий виклик гарда
+       став збігатись у чотирьох шляхах запису. */
+    from: `    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
+  /* Перенести в МИНУЛЕ не можна`,
+    to: `    if (false) {
+      return CLOCK_SKEW_ERR;
+    }
+  }
+  /* Перенести в МИНУЛЕ не можна`,
   },
   {
     id: "M11", file: "qa", green: false,
@@ -141,16 +157,26 @@ const MUTATIONS = [
     expect: /заявка ОБОВʼЯЗКОВА в типі/,
     what: "заявку в RescheduleInput зроблено необовʼязковою — сторож повноти знято",
     from: `  clock: ClockClaim;
-};`,
+};
+
+/** Перенос записи`,
     to: `  clock?: ClockClaim;
-};`,
+};
+
+/** Перенос записи`,
   },
   {
     id: "M13", file: "qa", green: false,
     expect: /схема входу лишає розбір заявки ПРАВИЛУ/,
     what: "заявку почали розбирати схемою — гілка malformed стала недосяжною",
-    from: `  clock: z.unknown().optional(),`,
-    to: `  clock: z.object({ nowMs: z.number(), dayKey: zDateKey, fromToday: z.boolean() }).optional(),`,
+    from: `  clock: z.unknown().optional(),
+});
+
+const sIncident`,
+    to: `  clock: z.object({ nowMs: z.number(), dayKey: zDateKey, fromToday: z.boolean() }).optional(),
+});
+
+const sIncident`,
   },
   {
     id: "M14", file: "wa", green: false,
@@ -260,6 +286,174 @@ const MUTATIONS = [
   },
 
   /* ---------- ПРАВКИ БЕЗ ДЕФЕКТУ — мусять лишитись ЗЕЛЕНИМИ ---------- */
+  /* ---------- ПАКЕТ 22 (с56): три шляхи СТВОРЕННЯ ---------- */
+  {
+    id: "P1", file: "qa", green: false,
+    expect: /створення \(createBooking\)/,
+    what: "гард знято зі створення запису — доба зі збитого годинника знову їде мовчки",
+    from: `    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
+  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  /* 0077: createBooking доступний лише персоналу`,
+    to: `    void tz;
+  }
+  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  /* 0077: createBooking доступний лише персоналу`,
+  },
+  {
+    id: "P2", file: "qa", green: false,
+    expect: /створення \(createBooking\)/,
+    what: "гард створення читається, але більше не ВІДМОВЛЯЄ",
+    from: `      return CLOCK_SKEW_ERR;
+    }
+  }
+  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  /* 0077: createBooking доступний лише персоналу`,
+    to: `      void CLOCK_SKEW_ERR;
+    }
+  }
+  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  /* 0077: createBooking доступний лише персоналу`,
+  },
+  {
+    id: "P3", file: "qa", green: false,
+    expect: /створення \(createBooking\)/,
+    what: "гард створення з'їхав ПІСЛЯ перевірки минулого — оператор прочитає наслідок",
+    from: `  {
+    const tz = await clinicTz(supabase, clinicId);
+    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
+  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  /* 0077: createBooking доступний лише персоналу`,
+    to: `  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  {
+    const tz = await clinicTz(supabase, clinicId);
+    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
+  /* 0077: createBooking доступний лише персоналу`,
+  },
+  {
+    id: "P4", file: "qa", green: false,
+    expect: /створення \(scheduleFromWaitlist\)/,
+    what: "гард знято з листа очікування — запис із чужої доби створюється мовчки",
+    from: `    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
+  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  const gate = await scheduleBlock(`,
+    to: `    void tz;
+  }
+  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  const gate = await scheduleBlock(`,
+  },
+  {
+    id: "P5", file: "qa", green: false,
+    expect: /ДО атомарного CAS/,
+    what: "гард листа очікування з'їхав ПІСЛЯ CAS — відмова столбить кандидата",
+    from: `  {
+    const tz = await clinicTz(supabase, clinicId);
+    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
+  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  const gate = await scheduleBlock(`,
+    to: `  if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
+  const gate = await scheduleBlock(`,
+  },
+  {
+    id: "P6", file: "qa", green: false,
+    expect: /створення \(createReferralBooking\)/,
+    what: "гард знято з направлення — направник записує в чужу добу мовчки",
+    from: `    const tz = await clinicTz(supabase, input.clinicId);
+    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }`,
+    to: `    const tz = await clinicTz(supabase, input.clinicId);
+    void tz;`,
+  },
+  {
+    id: "P7", file: "qa", green: false,
+    expect: /створення \(createReferralBooking\)/,
+    what: "гард направлення взяв зону не центру — доба рахується чужим годинником",
+    from: `    const tz = await clinicTz(supabase, input.clinicId);
+    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {`,
+    to: `    const tz = await clinicTz(supabase, input.roomId);
+    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {`,
+  },
+  {
+    id: "P8", file: "qa", green: false,
+    expect: /ОБОВ.ЯЗКОВА в обох типах створення/,
+    what: "заявка в BookingInput стала необовʼязковою — сторож повноти знято",
+    from: `  clock: ClockClaim;
+};
+
+/** Создать новую запись`,
+    to: `  clock?: ClockClaim;
+};
+
+/** Создать новую запись`,
+  },
+  {
+    id: "P9", file: "qa", green: false,
+    expect: /ОБОВ.ЯЗКОВА в обох типах створення/,
+    what: "заявка в ReferralBookingInput стала необовʼязковою",
+    from: `  clock: ClockClaim;   // Г1-F, пакет 22 — див. коментар у BookingInput`,
+    to: `  clock?: ClockClaim;   // Г1-F, пакет 22 — див. коментар у BookingInput`,
+  },
+  {
+    id: "P10", file: "bm", green: false,
+    expect: /форма запису будує заявку/,
+    what: "заявка модалки будується іншим зсувом, ніж веде її правило",
+    from: `          curKey: dateKey(bookDate),
+          offsetDays: 0,`,
+    to: `          curKey: dateKey(bookDate),
+          offsetDays: 1,`,
+  },
+  {
+    id: "P11", file: "bm", green: false,
+    expect: /форма запису будує заявку/,
+    what: "у заявки модалки прибрано pinnedKey — дата з картки пацієнта стала «дефолтом»",
+    from: `          offsetDays: 0,
+          pinnedKey: prefill?.datePinned ? prefill.date ?? null : null,
+        }),`,
+    to: `          offsetDays: 0,
+        }),`,
+  },
+  {
+    id: "P12", file: "rp", green: false,
+    expect: /портал направника будує заявку зоною/,
+    what: "портал будує заявку своєю зоною замість зони центру",
+    from: `      clock: clockClaimOf({ clinicTz: selTz, curKey: dateVal(bookDate), offsetDays: 1 }),`,
+    to: `      clock: clockClaimOf({ clinicTz: undefined, curKey: dateVal(bookDate), offsetDays: 1 }),`,
+  },
+  {
+    id: "P13", file: "wcm", green: false,
+    expect: /усі три споживачі модалки везуть заявку далі/,
+    what: "кандидати на звільнений слот перестали везти заявку далі",
+    from: `      clock: b.clock,   // Г1-F (пакет 22) — див. WaitlistBoard.saveBooking`,
+    to: `      // clock прибрано`,
+  },
+  {
+    id: "P14", file: "wb", green: false,
+    expect: /усі три споживачі модалки везуть заявку далі/,
+    what: "дошка листа очікування перестала везти заявку модалки",
+    from: `      clock: b.clock,   // Г1-F (пакет 22) — гард стоїть ДО CAS, кандидат не столбиться`,
+    to: `      // clock прибрано`,
+  },
+  {
+    id: "G6", file: "bm", green: true,
+    what: "[позитивний контроль] коментар у модалці переписано іншим стилем — сторожів тут нема",
+    from: `    if (!valid || saving) return;   // M-6: подвійний клік не створює другий запис`,
+    to: `    if (!valid || saving) return;   /* M-6: подвійний клік не створює другий запис */`,
+  },
   {
     id: "G1", file: "ct", green: true,
     what: "той самий формат ключа доби, записаний конструктором RegExp",
@@ -275,8 +469,16 @@ const MUTATIONS = [
   {
     id: "G3", file: "qa", green: true,
     what: "гард переформатовано на два рядки (пін по нормалізованому джерелу)",
-    from: `    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {`,
-    to: `    if (clockClaimVerdict(input.clock as ClockClaim | undefined,\n      serverClockNow(tz)) !== "ok") {`,
+    from: `    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
+  /* Перенести в МИНУЛЕ не можна`,
+    to: `    if (clockClaimVerdict(input.clock as ClockClaim | undefined,\n      serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
+  /* Перенести в МИНУЛЕ не можна`,
   },
   {
     id: "G4", file: "wa", green: true,
@@ -308,7 +510,7 @@ for (const m of MUTATIONS) {
 /* ⚠️ ПІН НА КІЛЬКІСТЬ АДРЕСНИХ ПОЗИЦІЙ (с52). Правило вище ВИМАГАЄ прибрати
    `expect` у рядка з `green: true` — а отже саме воно й дає найдешевший спосіб
    погасити червону позицію: перевести її в зелені і зняти сторожа. */
-const EXPECTED_RED = 27;
+const EXPECTED_RED = 41;   // +14 у пакеті 22 (три шляхи створення)
 const redCount = MUTATIONS.filter((m) => !m.green).length;
 if (redCount !== EXPECTED_RED) {
   console.error(`⛔ ІНВЕНТАР БРЕШЕ: адресних мутацій ${redCount}, а очікується ${EXPECTED_RED}. `

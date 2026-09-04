@@ -135,6 +135,10 @@ const sBooking = z.object({
   // 0077: оператор підтвердив роботу поза графіком (після закриття / у перерву).
   // Сам по собі прапорець нічого не відкриває — див. scheduleBlock().
   offSchedule: z.boolean().optional(),
+  /* Г1-F (пакет 22, с56): заявка про годинник. `z.unknown()` — з тієї самої
+     причини, що в `sReschedule` нижче: розбір заявки є ЧАСТИНОЮ правила, і
+     описана схема зробила б гілку `malformed` недосяжною. */
+  clock: z.unknown().optional(),
   ...sPatientFields,
 });
 
@@ -143,6 +147,7 @@ const sReferralBooking = z.object({
   roomId: zUuid,
   doctorName: zOptName,   // імʼя: trim + схлопування пробілів (с31)
   note: zOptText(2000),
+  clock: z.unknown().optional(),   // Г1-F, пакет 22 — див. коментар у sBooking
   ...sPatientFields,
 });
 
@@ -1878,6 +1883,12 @@ export type BookingInput = {
   scheduledDate: string;
   scheduledTime: string;
   scheduledAt: string;
+  /* Г1-F (пакет 22, с56): заявка про годинник. ⚠️ ОБОВʼЯЗКОВЕ ПОЛЕ — сторож
+     повноти той самий, що в `RescheduleInput`: гард не перелік файлів, а вимога
+     типу. `scheduleFromWaitlist` бере `BookingInput` цілком, тож обидва шляхи
+     створення закриті однією вимогою. У РАНТАЙМІ поле лишається
+     необовʼязковим (`z.unknown().optional()`): стару вкладку компілюємо не ми. */
+  clock: ClockClaim;
 };
 
 /** Создать новую запись (с пред-проверкой пересечения; clinic_id/created_by — с сервера). */
@@ -1894,6 +1905,17 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
 
   { const mg = await modalityGate(supabase, input.roomId, input.studies); if (mg) return mg; }
   { const g = await closedRegionGate(supabase, clinicId, input.roomId, input.studies); if (g) return g; }
+  /* Г1-F (пакет 22): те саме правило і той самий порядок, що в
+     `rescheduleQueueEntry` — гард стоїть ПЕРЕД «минулим», бо називає ПРИЧИНУ
+     («годинник»), а «минуле» лише наслідок. До пакета 22 цей шлях тримався
+     виключно на клієнтській зупинці Г1-A (`dayStop` у `BookingModal`), яку не
+     бачать ані вкладка, відкрита до деплою, ані виклик екшена повз UI. */
+  {
+    const tz = await clinicTz(supabase, clinicId);
+    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   /* 0077: createBooking доступний лише персоналу (clinic_id викликача = clinicId),
      тому isStaff тут завжди true — але передаємо явно, щоб гейт лишався одним
@@ -2000,6 +2022,14 @@ export async function scheduleFromWaitlist(waitlistId: string, booking: BookingI
   // off_schedule. Це НЕ мутації — гонку розвʼязує атомарний claim усередині RPC.
   { const mg = await modalityGate(supabase, input.roomId, input.studies); if (mg) return mg; }
   { const g = await closedRegionGate(supabase, clinicId, input.roomId, input.studies); if (g) return g; }
+  /* Г1-F (пакет 22) — до CAS усередині RPC свідомо: відмова через годинник не
+     має застовплювати кандидата в листі очікування. */
+  {
+    const tz = await clinicTz(supabase, clinicId);
+    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
   if (await isPastSlot(supabase, clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   const gate = await scheduleBlock(
     supabase, input.roomId, clinicId, input.scheduledDate, input.scheduledTime, input.durationMin,
@@ -2300,6 +2330,7 @@ export type ReferralBookingInput = {
   scheduledDate: string;
   scheduledTime: string;
   scheduledAt: string;
+  clock: ClockClaim;   // Г1-F, пакет 22 — див. коментар у BookingInput
 };
 
 /** Створення направлення направником у обраний центр. Сервер перевіряє активний
@@ -2334,6 +2365,15 @@ export async function createReferralBooking(raw: ReferralBookingInput): Promise<
 
   { const mg = await modalityGate(supabase, input.roomId, input.studies); if (mg) return mg; }
   { const g = await closedRegionGate(supabase, input.clinicId, input.roomId, input.studies); if (g) return g; }
+  /* Г1-F (пакет 22). ⚠️ Зона береться від ЦЕНТРУ, а не від направника: він
+     глобальний і часто в іншій зоні, а доба, з якої виведена дата, — доба
+     центру. Той самий вибір, що в `dateOnCenterSwitch` для його ж екрана. */
+  {
+    const tz = await clinicTz(supabase, input.clinicId);
+    if (clockClaimVerdict(input.clock as ClockClaim | undefined, serverClockNow(tz)) !== "ok") {
+      return CLOCK_SKEW_ERR;
+    }
+  }
   if (await isPastSlot(supabase, input.clinicId, input.scheduledDate, input.scheduledTime)) return PAST_ERR;
   /* 0077: направнику робота поза графіком НЕ доступна (рішення власника: він
      записує пацієнтів ззовні й не знає, чи лишиться зміна). isStaff: false —

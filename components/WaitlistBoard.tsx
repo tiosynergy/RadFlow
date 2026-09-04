@@ -16,7 +16,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
-import BookingModal, { type BookingPayload, type BookingPrefill } from "@/components/BookingModal";
+import BookingModal, { type BookingSave, type BookingPrefill } from "@/components/BookingModal";
 import WaitlistModal, { type WaitlistFormOut } from "@/components/WaitlistModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { scheduleFromWaitlist } from "@/app/queue/actions";
@@ -370,7 +370,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
   }
 
   // Повертає ТЕКСТ помилки — BookingModal покаже його в собі (тост тонув під оверлеєм).
-  async function saveBooking(b: BookingPayload) {
+  async function saveBooking(b: BookingSave) {
     const wl = bookFor;
     if (!wl) return null;
     const [hh, mm] = b.time.split(":").map(Number);
@@ -378,6 +378,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
     // Атомарно: спершу застовплюємо кандидата (CAS waiting→scheduled), лише
     // переможець створює запис — два адміністратори не задвоять пацієнта.
     const res = await scheduleFromWaitlist(wl.id, {
+      clock: b.clock,   // Г1-F (пакет 22) — гард стоїть ДО CAS, кандидат не столбиться
       roomId: b.roomId, referrerId: b.referrerId ?? (wl.referrer_id || null),
       name: b.name, phone: b.phone || null, email: b.email ?? null,
       dob: b.dob || null, sex: b.gender || null, age: b.age || null, weight: b.weight ?? null,
