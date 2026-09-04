@@ -539,7 +539,11 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   return (
     <div className="app">
       {/* Сайдбар — робочий список кабінетів (див. visRooms вище). */}
-      <Sidebar clinicName={scopeName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={visRooms} activeNav="ceo" />
+      {/* ⚠️ `clinics`, а НЕ `clinicIds` (U-65): бейдж листа рахує ВСІ центри
+          керівника незалежно від вибраного зрізу, тож і підписки мають бути на
+          всі. Передати сюди `clinicIds` (звужений `scope`) означало б, що при
+          виборі одного центру лічильник по решті мовчки застигає. */}
+      <Sidebar clinicName={scopeName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} clinicIds={clinics.map((c) => c.id)} rooms={visRooms} activeNav="ceo" />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">

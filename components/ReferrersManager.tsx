@@ -494,7 +494,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           на цій сторінці не рахуємо (їх нема звідки взяти без tz центру), тому
           спрацьовує документований fail-closed із lib/rooms.ts: без residual
           видимими лишаються активні. На гранти це не впливає — вони вище. */}
-      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" rooms={visibleRooms(rooms)} activeNav="referrers" />}
+      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" clinicIds={clinicId ? [clinicId] : []} rooms={visibleRooms(rooms)} activeNav="referrers" />}
       {/* ⚠️ У embedded-режимі (майстер /setup) штатного Sidebar немає — а саме
           він монтує підписку на позначки. Без цього маунта store лишався в
           'loading' з нулем маркерів: ані крапок на рядках, ані ack при

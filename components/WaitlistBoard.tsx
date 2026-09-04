@@ -481,7 +481,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
 
   return (
     <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={visRooms} roomNoteOf={offNote}
+      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} clinicIds={clinicId ? [clinicId] : []} rooms={visRooms} roomNoteOf={offNote}
         activeNav="waitlist" activeRoom={roomView} onSelectRoom={setRoomView} />
       <div className="main">
         <header className="topbar">

@@ -2677,6 +2677,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     <div className="app">
       <Sidebar
         clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey}
+        clinicIds={clinicId ? [clinicId] : []}
         rooms={visRooms} roomNoteOf={offNote} activeRoom={roomView} onSelectRoom={setRoomView} onNew={openBooking}
         onSlotsOverview={roleKey === "admin" ? () => setSlotsOverviewOpen(true) : undefined}
         incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }}
@@ -3044,7 +3045,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
           onClose={() => setCaseFromEntryFor(null)}
         />
       )}
-      {slotsOverviewOpen && <RoomDayOverviewModal rooms={visRooms} clinicTz={clinicTz} incidents={incidentsFeed} overrides={overridesFeed} onClose={() => setSlotsOverviewOpen(false)} />}
+      {slotsOverviewOpen && <RoomDayOverviewModal rooms={visRooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} overrides={overridesFeed} onClose={() => setSlotsOverviewOpen(false)} />}
 
       {wlSuggest && (
         <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={writeIncidentsFeed} services={services} roomOverrides={roomOverrides}

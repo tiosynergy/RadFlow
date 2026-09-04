@@ -26,6 +26,10 @@ type RoomIncident = IncidentLike & { reason_label?: string | null };
 
 type Props = {
   rooms: Room[];
+  /** ⚠️ U-65: потрібен НЕ для запитів, а для ФІЛЬТРА realtime-підписки —
+   *  `clinic_id=eq.` на `queue_entries` (див. `lib/slotBusy.ts`). Без нього
+   *  підписки не буде зовсім: краще без realtime, ніж крос-тенантний оракул. */
+  clinicId: string | null | undefined;
   clinicTz: string;
   incidents: IncidentFeed<RoomIncident>;   // U-11: фід (rows+failed), не голий масив
   overrides: OverrideFeed;                 // U-16: фід (мапа+failed), не гола мапа
@@ -47,7 +51,7 @@ const dateFromKey = (v: string) => {
  * room_busy_slots + SlotPicker, что и перенос: визуальный ответ на вопрос
  * «кабинет свободен?» не должен расходиться с формой записи.
  */
-export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overrides, onClose }: Props) {
+export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incidents, overrides, onClose }: Props) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   const [roomId, setRoomId] = useState(() => rooms[0]?.id || "");
   const [day, setDay] = useState(() => dateKey(wallToday0(clinicTz)));
@@ -95,7 +99,7 @@ export default function RoomDayOverviewModal({ rooms, clinicTz, incidents, overr
      `breaks.length` до цього масиву не доходять. Виносиш розрахунок сітки
      з-під тієї гілки — спершу поверни сюди `null` (ревʼю р1 F4 / р2 F7). */
   const breaks = roomBreaksFromFeed(date, roomId, room?.schedule ?? null, overrides) || [];
-  const { spans, loading, error, reload } = useRoomBusy({ roomId, dateStr: day, enabled: !!roomId });
+  const { spans, loading, error, reload } = useRoomBusy({ roomId, dateStr: day, clinicId, enabled: !!roomId });
   /* Примітиви в депсах: сам `schedule` — новий обʼєкт на кожен рендер.
      Невідомий графік дає порожню сітку так само, як зачинений день: показувати
      її нема з чого, а гілка-банер нижче все одно перехоплює цей стан. */

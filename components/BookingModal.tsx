@@ -740,7 +740,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
          дані реєстратора все одно летіли б у браузер;
        • RPC уже рахує окупацію in_progress від ФАКТИЧНОГО старту (0060) — не
          треба дублювати цю арифметику на клієнті. */
-  const { spans: roomBusy, loading: busyLoading, error: busyError } = useRoomBusy({ roomId, dateStr: dateKeyStr });
+  const { spans: roomBusy, loading: busyLoading, error: busyError } = useRoomBusy({ roomId, dateStr: dateKeyStr, clinicId });
   const slotsLoading = busyLoading || schedLoading;
 
   /* Свіжість зайнятості кабінету. useRoomBusy лишає СТАРІ spans до кінця

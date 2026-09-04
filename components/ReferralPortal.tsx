@@ -2063,14 +2063,26 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
          reload-ів). Ключ спільний і для дебаунсу: сплеск правок каталогу в
          кількох таблицях → один refresh. */
       { table: "referral_access", filter: "referrer_id=eq." + doctorId, onChange: () => router.refresh(), debounceKey: "rsc" },
-      // 0086: зміни кабінетів дозволених центрів (видалення/графік) → оновлюємо
-      // портал. Без filter: RLS доставляє направнику лише кабінети його центрів
-      // (REPLICA IDENTITY FULL з 0086 дає clinic_id і в подіях DELETE).
-      { table: "rooms", onChange: () => router.refresh(), debounceKey: "rsc" },
-      // Каталог послуг/цін центрів направника (0107/0108) — RLS доставляє лише
-      // доступні центри/кабінети (як rooms); зміна каталогу адміном → оновити портал.
-      { table: "services", onChange: () => router.refresh(), debounceKey: "rsc" },
-      { table: "service_room_overrides", onChange: () => router.refresh(), debounceKey: "rsc" },
+      /* Каталог центрів направника: кабінети (0086) і послуги/ціни (0107/0108).
+         ⚠️ БУЛО БЕЗ ФІЛЬТРА, з поясненням «RLS доставляє лише центри
+         направника». Для подій DELETE це НЕВІРНО — саме та помилка, заради
+         якої заведено U-61: `realtime.apply_rls` політику на DELETE не
+         обчислює, тож без фільтра сюди прилітав факт і час КОЖНОГО видалення
+         кабінета/послуги в усій базі з їхніми id. Вмісту не було (`old_record`
+         ріжеться до PK при ввімкненому RLS), тож це LOW — але це саме та
+         поверхня, яку U-65 і закриває.
+         ⚠️ Одна рівність на підписку — тому фан-аут по центру, як у
+         CeoDashboard і в сайдбарі. Беремо ВСІ центри направника, а не лише
+         активні: вкладка «Мої центри» показує й очікувані, і саме перехід у
+         active має приїхати живим. Порожній список центрів → цих підписок
+         немає зовсім; активацію центру однаково приносить `referral_access`
+         вище (він фільтрований по самому направнику), а з нею — новий набір
+         підписок. */
+      ...centers.flatMap((c) => ([
+        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc" },
+        { table: "services", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc" },
+        { table: "service_room_overrides", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc" },
+      ])),
     ],
     /* Рідка звірка при ЖИВОМУ сокеті (F4-3, третій шар). Realtime доставку не
        гарантує: загублене повідомлення нікому не досилають, і сокет при цьому

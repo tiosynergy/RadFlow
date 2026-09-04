@@ -781,7 +781,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
 
   return (
     <div className="app">
-      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} rooms={visRooms} roomNoteOf={offNote} activeNav="calls" />
+      <Sidebar clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey} clinicIds={clinicId ? [clinicId] : []} rooms={visRooms} roomNoteOf={offNote} activeNav="calls" />
       <div className="main">
         <header className="topbar">
           <div className="tb-title">

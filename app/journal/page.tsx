@@ -50,6 +50,7 @@ export default async function JournalPage() {
 
   return (
     <JournalScreen
+      clinicId={clinicId}
       clinicName={clinic?.name ?? ""}
       clinicTz={clinic?.timezone ?? undefined}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}

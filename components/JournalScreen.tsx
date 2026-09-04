@@ -68,12 +68,19 @@ function shiftDay(dateStr: string, days: number): string {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export default function JournalScreen({
+  clinicId,
   clinicName,
   clinicTz,
   adminName,
   rooms,
   staff,
 }: {
+  /* Журналу центр не потрібен — він читає `important_events` під RLS. Проп є
+     заради Sidebar: бейдж листа очікування підписується по `clinic_id=eq.`
+     (U-65), і єдиний, хто тут знає центр, — сторінка. Наскрізна передача
+     чесніша за спробу дістати центр із сесії всередині сайдбара: сервер уже
+     порахував його з перевіреної сесії, клієнт лише повторив би цю логіку. */
+  clinicId: string;
   clinicName: string;
   clinicTz?: string;
   adminName: string;
@@ -288,6 +295,7 @@ export default function JournalScreen({
         adminName={adminName}
         adminRole="Адміністратор"
         roleKey="admin"
+        clinicIds={clinicId ? [clinicId] : []}
         rooms={visibleRooms(rooms)}
         activeNav="journal"
       />

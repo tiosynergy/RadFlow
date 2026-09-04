@@ -186,6 +186,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   // Зайнятість кабінету на дату запису (realtime) — сам редагований запис виключаємо
   // (p_exclude), щоб його власне вікно не рахувалося «наступним записом».
   const { spans: roomBusy, loading: busyLoading, error: busyErr } = useRoomBusy({
+    clinicId,
     roomId: patient.room_id, dateStr: scheduledDate || "", excludeId: patient.id,
   });
   // H-6: поки зайнятість НЕ підтверджена (грузиться/впала), nextStart=null не можна

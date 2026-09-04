@@ -162,7 +162,7 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
 
   return (
     <div className={embedded ? "setup-embed" : "app"}>
-      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" activeNav="ceo-admin" />}
+      {!embedded && <Sidebar clinicName={clinicName} adminName={adminName} adminRole="Адміністратор" roleKey="admin" clinicIds={clinicId ? [clinicId] : []} activeNav="ceo-admin" />}
       <div className={embedded ? "setup-embed-main" : "main"}>
         {!embedded && (
           <header className="topbar">

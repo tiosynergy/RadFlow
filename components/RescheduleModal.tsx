@@ -267,7 +267,7 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   /* Зайнятість — спільний хук: RPC room_busy_slots + realtime (queue_entries,
      incidents). Поки не завантажилась — сітку не показуємо як «усе вільно».
      Деталі (ПІБ/статус/дослідження) сервер віддає лише адміну та радіологу (0062). */
-  const { spans: busy, loading: busyLoading, error: busyError } = useRoomBusy({ roomId, dateStr, excludeId: patient.id });
+  const { spans: busy, loading: busyLoading, error: busyError } = useRoomBusy({ roomId, dateStr, clinicId, excludeId: patient.id });
   const slotsLoading = busyLoading || schedLoading;
   const dateObj = new Date(dateStr + "T00:00:00");
   // «Зараз» у настінному часі клініки (wall-as-UTC мс): і хвилини доби, і «сьогодні».
