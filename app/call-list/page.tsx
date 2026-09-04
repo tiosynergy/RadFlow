@@ -82,7 +82,7 @@ export default async function CallListPage() {
       clinicName={clinic?.name ?? ""}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
       adminRole={profile.role ? ROLE_LABELS[profile.role as string] ?? (profile.role as string) : "Адміністратор"}
-      roleKey={(profile.role as string) ?? "admin"}
+      roleKey={profile.role as string}
     />
   );
 }

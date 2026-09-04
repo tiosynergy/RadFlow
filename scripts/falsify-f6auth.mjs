@@ -39,6 +39,9 @@ const FILES = {
   sv: "app/services/page.tsx",
   rf: "app/referral/page.tsx",
   se: "app/search/page.tsx",
+  /* с57: RF-2 (гейт піднято над вибіркою) і RF-4 (роль не підставляється). */
+  rd: "app/radiologist/page.tsx",
+  sb: "components/Sidebar.tsx",
   ty: "supabase/types.ts",
   mg: "supabase/migrations/0001_init.sql",
   rn: "components/RoleNotice.tsx",
@@ -136,8 +139,14 @@ const MUTATIONS = [
   {
     id: "M18", file: "as", spec: AS, expect: /гейт відірваний від голови/,
     what: "з інвентарю знято позначку `apart` — послаблення перестало бути названим",
-    from: '    may: ["admin", "radiologist"], closes: "redirect", apart: true,',
-    to: '    may: ["admin", "radiologist"], closes: "redirect",',
+    /* ⚠️ ПЕРЕЯКОРЕНО в с57. Якір стояв на `/radiologist`, а RF-2 закрито — тієї
+       позначки більше немає, і стенд чесно сказав «ЯКІР НЕ УНІКАЛЬНИЙ (0)».
+       Це не рот стенда, а наслідок правки продукту: позиція перевіряє
+       ВЛАСТИВІСТЬ («послаблення мусить бути названим»), тож стріляє в будь-яке
+       живе послаблення — тепер у `/ceo`, чиє відірвання по суті, а не через
+       недогляд. */
+    from: '    may: ["admin", "ceo", "будь-хто з активним ceo_access"], closes: "redirect", apart: true,',
+    to: '    may: ["admin", "ceo", "будь-хто з активним ceo_access"], closes: "redirect",',
   },
   {
     id: "M19", file: "as", spec: AS, expect: /\/ceo — пін доводить НАСЛІДОК/,
@@ -262,6 +271,37 @@ const MUTATIONS = [
     id: "G4", green: true,
     what: "приватна папка app/_zz — Next не робить її маршрутом, сканер теж не сміє",
     newFile: "app/_zzfalsify/page.tsx", content: PAGE_STUB,
+  },
+
+  /* ---------- с57: RF-2 і RF-4 ---------- */
+  {
+    id: "M30", file: "rd", spec: AS, expect: /гейт стоїть впритул за перевіркою користувача/,
+    what: "RF-2 повернувся: між головою і рольовим гейтом /radiologist знову зʼявилась вибірка",
+    from: '  if (profile.role === "referrer") redirect("/referral");',
+    to: '  const { data: pre } = await supabase.from("rooms").select("id");\n  void pre;\n  if (profile.role === "referrer") redirect("/referral");',
+  },
+  {
+    id: "M31", file: "se", spec: AS, expect: /імʼя ролі ніколи не стоїть праворуч від/,
+    what: "RF-4 повернувся: /search знову підставляє «admin» замість відсутньої ролі",
+    from: '  const role = (profile.role as string | null) ?? "";',
+    to: '  const role = (profile.role as string) || "admin";',
+  },
+  {
+    id: "M32", file: "sb", spec: AS, expect: /roleKey — обовʼязковий проп/,
+    what: "roleKey знову необовʼязковий — екран без ролі знову збирається",
+    from: "  roleKey: string;", to: "  roleKey?: string;",
+  },
+  {
+    id: "M33", file: "as", spec: AS, expect: /обхід не порожній/,
+    what: "скан RF-4 більше нічого не обходить — обидва його сторожі стали б зеленими на порожнечі",
+    from: 'const APP_SRC = ["app", "components", "lib"].flatMap((d) => tsFilesUnder(d));',
+    to: "const APP_SRC: string[] = [];",
+  },
+  {
+    id: "G5", file: "sb", green: true,
+    what: "легальне порівняння ролі після `||` — сканер fail-open не сміє на нього реагувати",
+    from: "  const isAdmin = roleKey === \"admin\";",
+    to: "  const isAdmin = roleKey === \"admin\" || roleKey === \"admin\";",
   },
 ];
 

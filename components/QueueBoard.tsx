@@ -1180,14 +1180,15 @@ interface QueueBoardProps {
   clinicName?: string;
   adminName?: string;
   adminRole?: string;
-  roleKey?: string;
+  /** ⚠️ Обовʼязковий, без типового значення — RF-4, с57. Див. Sidebar. */
+  roleKey: string;
   /** с22 (deep-link зі сторінки «Пошук»): відкрити дошку на цій даті (YYYY-MM-DD). */
   initialDate?: string | null;
   /** с22: id запису, який треба розгорнути після завантаження дня. */
   initialEntry?: string | null;
 }
 
-export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin", initialDate = null, initialEntry = null }: QueueBoardProps) {
+export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey, initialDate = null, initialEntry = null }: QueueBoardProps) {
   /* Зона центру виставляється СИНХРОННО, до першого рендера й до ініціалізаторів
      useState — інакше selectedDate = today0() зафіксував би день БРАУЗЕРА назавжди
      (раніше tz прилітала з клієнтського fetch уже ПІСЛЯ монтування).

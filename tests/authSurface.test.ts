@@ -154,9 +154,12 @@ const GATES: Record<string, Gate> = {
     pin: /if \(profile\.role === "radiologist"\) redirect\("\/radiologist"\); if \(profile\.role !== "admin" && profile\.role !== "referrer"\) redirect\("\/queue"\); if \(profile\.role === "referrer" && !profile\.approved\) \{ return <Notice/,
   },
   "/radiologist": {
-    may: ["admin", "radiologist"], closes: "redirect", apart: true,
-    why: "ролева гілка стоїть НИЖЧЕ вибірки `rooms` (RF-2): до відводу сторінка вже сходила в базу за кабінетами центру. Шкоди сьогодні немає — вибірка йде під RLS користувача, — але гейт має піднятись; тримаємо як названий борг.",
-    pin: /\} else if \(profile\.role === "referrer"\) \{ redirect\("\/referral"\); \} else if \(profile\.role !== "admin"\) \{ redirect\("\/queue"\); \}/,
+    may: ["admin", "radiologist"], closes: "redirect",
+    /* RF-2 закрито в с57: гейт піднято НАД вибіркою `rooms`. Доти направник і
+       керівник встигали сходити в базу за кабінетами центру і лише потім їх
+       відводило. Склад виходів не змінився — змінилось МІСЦЕ, тому цей пін
+       перевіряється ще й склеєним із головою (тест «впритул»). */
+    pin: /if \(profile\.role === "referrer"\) redirect\("\/referral"\); if \(profile\.role !== "admin" && profile\.role !== "radiologist"\) redirect\("\/queue"\); if \(profile\.role === "radiologist" && !profile\.approved\) \{ return <Notice title="Очікує підтвердження"/,
   },
   "/ceo": {
     may: ["admin", "ceo", "будь-хто з активним ceo_access"], closes: "redirect", apart: true,
@@ -186,8 +189,12 @@ const GATES: Record<string, Gate> = {
    негативним ланцюгом червонить його одразу. Дописувати сюди роут можна тільки
    разом із `why`, і це видно в дифі. */
 const OPEN_BY_DESIGN: string[] = [];
-/* Сторінки, де гейт відірваний від голови вибіркою даних. Теж поіменно. */
-const GATE_APART = ["/ceo", "/radiologist", "/search"];
+/* Сторінки, де гейт відірваний від голови вибіркою даних. Теж поіменно.
+   ⚠️ с57: `/radiologist` звідси ПІШОВ — RF-2 закрито, гейт піднято над вибіркою
+   `rooms`. Лишились двоє, і обидва відірвані ПО СУТІ, а не через недогляд:
+   `/ceo` спирається на `ceo_access` (без вибірки немає з чим порівнювати), а на
+   `/search` гейт — це термінальний `else` чотиригілкового розбору ролі. */
+const GATE_APART = ["/ceo", "/search"];
 
 describe("поверхня авторизації — перелік проти дерева", () => {
   it("форма дерева — без груп і паралельних слотів", () => {
@@ -419,5 +426,73 @@ describe("поверхня авторизації — самі гейти", () =
     }
     const strangers = [...named].filter((r) => !enumRoles.includes(r));
     expect(strangers, "гейт порівнює роль з рядком, якого немає в ENUM — опечатка вимикає гейт мовчки").toEqual([]);
+  });
+});
+
+/* ===== 8. RF-4 — РОЛЬ НЕ ПІДСТАВЛЯЄТЬСЯ ЗАМІСТЬ ВІДСУТНЬОЇ =====
+   Історія (аудит Ф6, с55; закрито в с57): `/search` тримав
+   `const role = (profile.role as string) || "admin";`, тобто порожня роль тихо
+   ставала АДМІНСЬКОЮ гілкою і термінальний `else` — сам гейт цієї сторінки —
+   не спрацьовував ніколи. Ще чотири сторінки тримали `?? "admin"` / `?? "ceo"`
+   на `roleKey`, а пʼять компонентів — типове значення `roleKey = "admin"` у
+   сигнатурі. Жодне з них не було досяжним сьогодні (колонка `not null`, вище
+   стоїть закриваючий позитив), і саме тому вони прожили стільки: мертва
+   ідіома виглядає як обережність, а насправді це ГОТОВА заготовка регресу —
+   досить прибрати позитив вище або дати рядку прийти без ролі.
+
+   Обидва сторожі — ВЛАСТИВОСТІ з дерева, не переліки: новий файл із тією
+   самою ідіомою червонить їх одразу, без правки жодного списку. */
+const ROLE_LITERALS = ["admin", "registrar", "radiologist", "referrer", "ceo"];
+
+function tsFilesUnder(dir: string, acc: string[] = []): string[] {
+  for (const e of readdirSync(resolve(process.cwd(), dir), { withFileTypes: true })) {
+    if (e.isDirectory()) {
+      if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+      tsFilesUnder(`${dir}/${e.name}`, acc);
+    } else if (/\.tsx?$/.test(e.name)) acc.push(`${dir}/${e.name}`);
+  }
+  return acc;
+}
+const APP_SRC = ["app", "components", "lib"].flatMap((d) => tsFilesUnder(d));
+
+describe("RF-4 — роль не підставляється замість відсутньої", () => {
+  it("обхід не порожній — інакше сторожі нижче наглядають за порожнечею", () => {
+    expect(APP_SRC.length, "скан не знайшов жодного файлу — зламався сам обхід").toBeGreaterThan(100);
+  });
+
+  it("імʼя ролі ніколи не стоїть праворуч від `||` чи `??`", () => {
+    /* ⚠️ Умова — на ПРАВІЙ стороні, а не на лівій, і це навмисно: що саме стоїть
+       ліворуч, сканер знати не може (`profile.role`, локальний псевдонім,
+       результат чужої функції), а от імʼя ролі як ЗАПАСНЕ значення означає
+       рівно одне — «не знаємо ролі, вважаємо цією». Це і є fail-open.
+       Літерал ролі в інших позиціях (порівняння, JSX-проп, ключ словника)
+       сюди не підпадає — сканер бачить лише запасне значення. */
+    const re = new RegExp(`(?:\\|\\||\\?\\?)\\s*["'](${ROLE_LITERALS.join("|")})["']`, "g");
+    const bad: string[] = [];
+    for (const f of APP_SRC) {
+      const s = codeOf(readFileSync(resolve(process.cwd(), f), "utf8"));
+      s.split(/\r?\n/).forEach((line, i) => {
+        for (const m of line.matchAll(re)) bad.push(`${f}:${i + 1} — ${m[0].trim()}`);
+      });
+    }
+    expect(bad, "роль підставляється замість відсутньої (fail-open) — відсутня роль мусить вести до ВІДМОВИ, а не до допуску").toEqual([]);
+  });
+
+  it("roleKey — обовʼязковий проп, без типового значення", () => {
+    /* Необовʼязковий проп плюс типове значення в сигнатурі — та сама ідіома на
+       рівні компонента: екран, який забув передати роль, отримував адмінське
+       меню. Обовʼязковий тип перекладає повноту на tsc (прийом `clock` із
+       Г1-F): виклик без ролі просто не збереться. */
+    const optional: string[] = [];
+    const defaulted: string[] = [];
+    for (const f of APP_SRC) {
+      const s = codeOf(readFileSync(resolve(process.cwd(), f), "utf8"));
+      s.split(/\r?\n/).forEach((line, i) => {
+        if (/roleKey\?\s*:/.test(line)) optional.push(`${f}:${i + 1}`);
+        if (/roleKey\s+=\s*["']/.test(line)) defaulted.push(`${f}:${i + 1}`);
+      });
+    }
+    expect(optional, "roleKey знову необовʼязковий — компонент без ролі знову збирається").toEqual([]);
+    expect(defaulted, "у roleKey зʼявилось типове значення — забутий проп знову отримає роль мовчки").toEqual([]);
   });
 });

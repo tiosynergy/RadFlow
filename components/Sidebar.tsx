@@ -28,7 +28,13 @@ interface SidebarProps {
   clinicName?: string;
   adminName?: string;
   adminRole?: string;
-  roleKey?: string;
+  /* ⚠️ ОБОВʼЯЗКОВИЙ, БЕЗ ТИПОВОГО ЗНАЧЕННЯ (RF-4, с57). Було `roleKey?: string`
+     плюс `roleKey = "admin"` у сигнатурі: екран, який забув передати роль,
+     мовчки отримував АДМІНСЬКЕ меню. Виклик без ролі тепер не збирається —
+     повнота тримається типом, а не пильністю (той самий прийом, що з `clock`
+     у Г1-F). Усі виклики роль передавали й раніше: правка нічого не змінює
+     сьогодні і закриває ідіому назавжди. */
+  roleKey: string;
   rooms?: SidebarRoom[];
   activeRoom?: string;
   activeNav?: string;
@@ -55,7 +61,7 @@ export default function Sidebar({
   clinicName,
   adminName,
   adminRole,
-  roleKey = "admin",
+  roleKey,
   rooms,
   roomNoteOf,
   activeRoom = "all",

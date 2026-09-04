@@ -64,7 +64,7 @@ export default async function CeoPage() {
       clinicName={clinics.length === 1 ? clinics[0].name : "Всі центри"}
       adminName={(profile.full_name as string) ?? (user.email ?? "")}
       adminRole={profile.role ? ROLE_LABELS[profile.role as string] ?? (profile.role as string) : "Керівник"}
-      roleKey={(profile.role as string) ?? "ceo"}
+      roleKey={profile.role as string}
     />
   );
 }

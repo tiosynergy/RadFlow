@@ -170,10 +170,11 @@ interface CeoDashboardProps {
   clinicName?: string;
   adminName?: string;
   adminRole?: string;
-  roleKey?: string;
+  /** ⚠️ Обовʼязковий, без типового значення — RF-4, с57. Див. Sidebar. */
+  roleKey: string;
 }
 
-export default function CeoDashboard({ clinics, clinicName, adminName, adminRole, roleKey = "admin" }: CeoDashboardProps) {
+export default function CeoDashboard({ clinics, clinicName, adminName, adminRole, roleKey }: CeoDashboardProps) {
   const [period, setPeriod] = useState("today");
   // scope: "all" — агрегат по всіх доступних центрах, або конкретний clinic_id.
   const [scope, setScope] = useState<string>(clinics.length === 1 ? clinics[0].id : "all");

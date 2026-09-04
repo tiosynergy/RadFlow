@@ -44,6 +44,21 @@ export default async function RadiologistPage({ searchParams }: { searchParams?:
     .eq("id", user.id)
     .single();
   if (!profile) redirect("/login");
+  /* ⚠️ РОЛЬОВИЙ ГЕЙТ СТОЇТЬ ПЕРШИМ — ДО БУДЬ-ЯКОЇ ВИБІРКИ (RF-2, закрито в с57).
+     Досі ланцюг ролей стояв НИЖЧЕ запиту `rooms`: направник і керівник, які
+     сюди не мають доступу взагалі, встигали сходити в базу за кабінетами
+     центру, і лише потім їх відводило. Шкоди не було (вибірка йде під RLS
+     користувача, а в направника `clinic_id` порожній), але «спершу читаємо,
+     потім вирішуємо, чи мав він право» — це порядок, який одного дня стане
+     дірою: досить додати вибірку, що не спирається на RLS.
+     ⚠️ Поведінка НЕ змінилась: ті самі три виходи в тому самому складі —
+     направник на /referral, будь-яка інша роль, крім адміна і радіолога, на
+     /queue, непідтверджений радіолог бачить пояснення. Перенесено лише МІСЦЕ. */
+  if (profile.role === "referrer") redirect("/referral");
+  if (profile.role !== "admin" && profile.role !== "radiologist") redirect("/queue");
+  if (profile.role === "radiologist" && !profile.approved) {
+    return <Notice title="Очікує підтвердження" text="Ваш акаунт радіолога зареєстровано. Адміністратор клініки має підтвердити доступ — після цього ви побачите свою чергу пацієнтів." />;
+  }
 
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
     | { configured_at: string | null; timezone?: string | null }
@@ -63,9 +78,6 @@ export default async function RadiologistPage({ searchParams }: { searchParams?:
   let radiologistScoped = false;
 
   if (profile.role === "radiologist") {
-    if (!profile.approved) {
-      return <Notice title="Очікує підтвердження" text="Ваш акаунт радіолога зареєстровано. Адміністратор клініки має підтвердити доступ — після цього ви побачите свою чергу пацієнтів." />;
-    }
     const { data: rr } = await supabase
       .from("radiologist_rooms")
       .select("room_id")
@@ -76,10 +88,6 @@ export default async function RadiologistPage({ searchParams }: { searchParams?:
       return <Notice title="Кабінети не призначено" text="Адміністратор ще не надав вам доступ до жодного кабінету. Зверніться до адміністратора клініки." />;
     }
     radiologistScoped = true;
-  } else if (profile.role === "referrer") {
-    redirect("/referral");
-  } else if (profile.role !== "admin") {
-    redirect("/queue");
   }
 
   /* Вимкнений кабінет ховаємо зі списків — але поки в ньому лишились живі записи,

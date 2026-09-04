@@ -24,7 +24,14 @@ export default async function SearchPage() {
     .eq("id", user.id)
     .single();
   if (!profile) redirect("/login");
-  const role = (profile.role as string) || "admin";
+  /* ⚠️ БЕЗ fail-open (RF-4, закрито в с57). Було `|| "admin"`: порожня або
+     відсутня роль тихо ставала АДМІНСЬКОЮ гілкою — і термінальний `else`, який
+     тут і є гейтом, не спрацьовував НІКОЛИ. Колонка `not null`, тож сьогодні
+     стан недосяжний; але це рівно та ідіома, через яку `DEFAULT 'admin'` на
+     `profiles.role` перетворює будь-який рядок без ролі на адміна. Порожній
+     рядок ПРОВАЛЮЄТЬСЯ в `else` — тобто на /queue, де стоїть закриваючий
+     позитив із поясненням. Відмова, а не мовчазний допуск. */
+  const role = (profile.role as string | null) ?? "";
 
   let clinics: SearchClinicOpt[] = [];
   let rooms: SearchRoomOpt[] = [];

@@ -293,10 +293,11 @@ interface CallListBoardProps {
   clinicName?: string;
   adminName?: string;
   adminRole?: string;
-  roleKey?: string;
+  /** ⚠️ Обовʼязковий, без типового значення — RF-4, с57. Див. Sidebar. */
+  roleKey: string;
 }
 
-export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin" }: CallListBoardProps) {
+export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey }: CallListBoardProps) {
   // Синхронно, до ініціалізаторів useState: від зони залежить і «завтра» (день
   // обдзвону), і todayKey (секції «Запізнення» / «постраждалі»). Тільки на клієнті.
   if (typeof window !== "undefined") setClinicTz(clinicTz);

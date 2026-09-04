@@ -110,14 +110,15 @@ interface WaitlistBoardProps {
   clinicName?: string;
   adminName?: string;
   adminRole?: string;
-  roleKey?: string;
+  /** ⚠️ Обовʼязковий, без типового значення — RF-4, с57. Див. Sidebar. */
+  roleKey: string;
   /** с22 (deep-link зі сторінки «Пошук»): стартова вкладка листа. */
   initialTab?: "waiting" | "scheduled" | "removed" | null;
   /** с22: id рядка листа, який розгорнути після завантаження. */
   initialEntry?: string | null;
 }
 
-export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey = "admin", initialTab = null, initialEntry = null }: WaitlistBoardProps) {
+export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomIds, residualRoomCounts, services, roomOverrides, clinicName, adminName, adminRole, roleKey, initialTab = null, initialEntry = null }: WaitlistBoardProps) {
   /* Зона центру — синхронно, до першого рендера. Раніше вона прилітала клієнтським
      fetch уже після монтування, і wallNow() у BookingModal, відкритій із листа
      очікування, встигав порахувати «зараз» за браузером (минулі слоти — вибірні). */
