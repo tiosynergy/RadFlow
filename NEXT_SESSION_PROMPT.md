@@ -121,7 +121,7 @@ immediately. Have both in mind; do not spend the session retrying one.
 
 | what | expected |
 |---|---|
-| `main` / `dev` | **`3c96898`** / **`2fd730f`** (the session-57 docs commit and its merge, on top of `1dee210` / `f7d5e0f` from package 34), **plus the final docs commit of this handover on top** — take the hashes from `git ls-remote`, not from here. Tree clean |
+| `main` / `dev` | **`81a7b46`** / **`608df9a`** (the session-57 docs, on top of `3c96898` / `2fd730f` and of `1dee210` / `f7d5e0f` from package 34), **plus the final docs commit of this handover on top** — take the hashes from `git ls-remote`, not from here. Tree clean |
 | prod DB | **`0177_realtime_filter_premise.sql`**, ledger **177/177** |
 | **next migration** | **0178** — the number comes FROM THE LEDGER, never from the folder. No named candidate: the queue is empty except the LOW batch and the owner's forks |
 | `invariants_check()` | `ok:true`, **`checked:21`**, `failed:[]` |
@@ -129,7 +129,7 @@ immediately. Have both in mind; do not spend the session retrying one.
 | nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50 → `ok:true, checked:21, failed:[]`. The 05.09 run was the FIRST one with check №21 and it was clean |
 | toolchain | tsc **0**, eslint **0**, vitest **2714/2714** (**91** files, ~20 s), `db:gate` **177/177** |
 | stand revision | **25/25 green, 588 addressed** (`falsify-0166` 60/60; `falsify-u61` 19 addressed + 6 refactor). A full run takes **40–45 min** |
-| `/login` fingerprint | measured in BOTH directions on 05.09: `1KXTYxqAKBzhqunU7Gqbk` → **`6B4LcEMX3j8kVL4iFwWbI`**, HTTP 200. ⚠️ The FINAL docs push of this handover changes it once more — that is normal; whatever you measure at TASK #0 should differ from `6B4LcEMX3j8kVL4iFwWbI`, and if it does not, the last docs deploy did not land |
+| `/login` fingerprint | chain measured on 05.09: `1KXTYxqAKBzhqunU7Gqbk` → `6B4LcEMX3j8kVL4iFwWbI` → **`hl0zFtCe7lUNp_Bql-tnn`**, HTTP 200 each time. ⚠️ **The terminal value cannot be recorded from inside the session that produces it** — writing it down requires a commit, and that commit deploys and changes it again. So expect at TASK #0 a value that DIFFERS from `hl0zFtCe7lUNp_Bql-tnn` by exactly one docs deploy. **What proves the deploy is the CHANGE, not the value** — if it equals `hl0zFtCe7lUNp_Bql-tnn`, the last docs deploy did not land |
 
 ⚠️ **The eslint gate runs with `--max-warnings 0`.** Any stray scratch file you
 leave in the repo root (`.tmp-*.mjs` and friends) makes the gate RED for a
