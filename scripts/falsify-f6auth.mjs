@@ -26,7 +26,7 @@
 import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { spawnSync } from "node:child_process";
-import { verdictOf } from "./lib/falsify-verdict.mjs";
+import { verdictOf, finishStand } from "./lib/falsify-verdict.mjs";
 
 const AS = "tests/authSurface.test.ts";
 const FILES = {
@@ -457,5 +457,8 @@ try {
   if (!verdict.ok || addressedBad || uncovered.length) lines.push(`\n**ВЕРДИКТ: ⛔ СТЕНД ЧЕРВОНИЙ**`);
   writeFileSync(OUT, lines.join("\n") + "\n", "utf8");
   console.log(lines.join("\n"));
-  if (!verdict.ok || addressedBad || uncovered.length) process.exitCode = 1;
+  finishStand({
+  ok: !(!verdict.ok || addressedBad || uncovered.length),
+  red: "\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — причина в таблиці вище.",
+});
 }

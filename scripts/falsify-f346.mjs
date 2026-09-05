@@ -15,7 +15,7 @@
 // ============================================================
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { verdictOf } from "./lib/falsify-verdict.mjs";
+import { verdictOf, finishStand } from "./lib/falsify-verdict.mjs";
 
 const FILES = {
   fu: "lib/useFollowToday.ts",
@@ -372,5 +372,8 @@ try {
   writeFileSync(OUT, lines.join("\n") + "\n", "utf8");
   console.log(lines.join("\n"));
   console.log(`\nЗвіт: ${OUT}. Файли відновлено.`);
-  if (!verdict.ok || addressedBad || inventoryLies) process.exitCode = 1;
+  finishStand({
+  ok: !(!verdict.ok || addressedBad || inventoryLies),
+  red: "\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — причина в таблиці вище.",
+});
 }

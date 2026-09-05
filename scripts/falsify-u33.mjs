@@ -5,6 +5,7 @@
    прогоном, «звіту немає» — окремий статус ПОМИЛКА, звіряється ІМʼЯ. */
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { finishStand } from "./lib/falsify-verdict.mjs";
 
 const LIB = "lib/incidents.ts";
 const QB  = "components/QueueBoard.tsx";
@@ -154,7 +155,8 @@ console.log("DONE");
 
 /* U-74: ненайдений/неунікальний якір і «сторож дивиться не туди» — ЧЕРВОНИЙ
    вердикт СТЕНДА, а не рядок у звіті. До с51 код повернення був завжди 0. */
-if (bad) {
-  console.log(`\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних позицій. Стенд НЕ доводить нічого.`);
-  process.exitCode = 1;
-} else console.log(`\n✅ ВЕРДИКТ: стенд зелений.`);
+finishStand({
+  ok: !bad,
+  red: `\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних позицій. Стенд НЕ доводить нічого.`,
+  green: `\n✅ ВЕРДИКТ: стенд зелений.`,
+});

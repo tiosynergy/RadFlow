@@ -4,6 +4,7 @@
    туди (урок с47). Звіт — falsify-u20.md, файли завжди відновлюються. */
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { finishStand } from "./lib/falsify-verdict.mjs";
 
 const MODAL = "components/StudyEditModal.tsx";
 const PORTAL = "components/ReferralPortal.tsx";
@@ -251,7 +252,8 @@ console.log("DONE");
 /* U-74 → U-80: вердикт тепер спирається на СВІЙ лічильник, а не на розбір
    власних рядків. Розбір тексту був тимчасовим милицем: він сліпий до рядка,
    якого немає, і до формулювання, якої не знає. */
-if (bad) {
-  console.log(`\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних із ${M.length}. Стенд НЕ доводить нічого.`);
-  process.exitCode = 1;
-} else console.log(`\n✅ ВЕРДИКТ: стенд зелений — ${M.length}/${M.length} адресних.`);
+finishStand({
+  ok: !bad,
+  red: `\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних із ${M.length}. Стенд НЕ доводить нічого.`,
+  green: `\n✅ ВЕРДИКТ: стенд зелений — ${M.length}/${M.length} адресних.`,
+});
