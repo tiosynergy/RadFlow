@@ -2,6 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+/* U-62: рішення хука винесені в чисті функції — їх можна запінити тестом.
+   DOM-тестів у проєкті немає навмисно (шапка vitest.config.ts), тож інакше
+   ці правила лишились би без сторожа взагалі. */
+import {
+  POLL_BASE_MS,
+  nextPollDelay,
+  shouldRefetchOnReturn,
+  shouldResetBackoff,
+} from "@/lib/realtimeRefetchPolicy";
 
 export type RealtimeSub = {
   /** Таблица public.* для подписки на postgres_changes. */
@@ -96,6 +105,14 @@ export function useRealtimeRefetch({
   const [health, setHealth] = useState<RealtimeHealth>(HEALTH_INITIAL);
   // Подписки берём через ref, чтобы смена идентичности лоадеров (useCallback)
   // не вызывала переподписку — она зависит только от channelName.
+  /* ⚠️ U-62/Д4, названо чесно замість обіцянки, якої код не дає. Присвоєння
+     йде в ТІЛІ рендера, а перепідписка — в ефекті: між ними є вікно, у якому
+     `subsRef.current` уже НОВИЙ, а серверні біндинги ще СТАРІ. Обробник бере
+     `subsRef.current[i]` за індексом, тож у цьому вікні подія теоретично може
+     потрапити в чужий лоадер. Сьогодні це НЕДОСЯЖНО: усі споживачі міняють
+     склад підписок тільки разом із `subscriptionKey`, а він перестворює канал.
+     Тому це не дефект, а МЕЖА — і вона тут написана, бо раніше на цьому місці
+     стояла гарантія, якої немає. */
   const subsRef = useRef(subscriptions);
   subsRef.current = subscriptions;
 
@@ -127,8 +144,13 @@ export function useRealtimeRefetch({
        ПЕРВУЮ подписку (данные только что загрузили) от ВОЗВРАТА после потери
        связи (данные устарели на длину обрыва). */
     let hadDisconnect = false;
-    let pollDelay = 8000;
-    const POLL_MAX = 60000;
+    let pollDelay = POLL_BASE_MS;
+    /* U-62/Д3: коли прийшов останній SUBSCRIBED. Потрібен, щоб відрізнити
+       СТАБІЛЬНУ підписку від дребезгу сокета — див. shouldResetBackoff. */
+    let subscribedAt: number | null = null;
+    /* U-62/Д1: коли востаннє перезапитували через повернення у вкладку.
+       Повернення приходить ДВОМА подіями, і без цього кожне давало два callAll. */
+    let lastReturnAt: number | null = null;
     /* Джиттер ±25% на КАЖДЫЙ интервал (техаудит Medium-1): без него все клиенты,
        потерявшие realtime в один момент (рестарт Realtime, сетевой сбой), стартуют
        поллинг синхронно и бьют в Supabase одновременными полными reload'ами —
@@ -163,12 +185,16 @@ export function useRealtimeRefetch({
       );
     };
 
+    /* ⚠️ U-62/Д3: тут БІЛЬШЕ НЕ СКИДАЄТЬСЯ `pollDelay`. Скид переїхав у гілку
+       ОБРИВУ і став умовним (`shouldResetBackoff`): раніше кожен `SUBSCRIBED`
+       повертав затримку до восьми секунд, тож при дребезгу сокета backoff не
+       розганявся ніколи і клієнт бив повним `callAll` кожні 8 с — саме тоді,
+       коли сервісу найгірше. */
     const stopPolling = () => {
       if (pollTimer) {
         clearTimeout(pollTimer);
         pollTimer = undefined;
       }
-      pollDelay = 8000;
     };
 
     const startPolling = () => {
@@ -176,7 +202,7 @@ export function useRealtimeRefetch({
       const tick = () => {
         if (cancelled) return; // страховка от тика, запланированного до cleanup
         callAll();
-        pollDelay = Math.min(Math.round(pollDelay * 1.5), POLL_MAX);
+        pollDelay = nextPollDelay(pollDelay);
         pollTimer = setTimeout(tick, jittered(pollDelay));
       };
       pollTimer = setTimeout(tick, jittered(pollDelay));
@@ -249,6 +275,7 @@ export function useRealtimeRefetch({
             : (!h.live && h.failed ? h : { live: false, everLive: h.everLive, failed: true })
         );
         if (status === "SUBSCRIBED") {
+          subscribedAt = Date.now();
           stopPolling();
           /* ⚠️ ВОЗВРАТ ПОСЛЕ ОБРЫВА — это ещё и дыра в данных, а не только
              восстановленный сокет. События, случившиеся ПОКА связи не было,
@@ -267,6 +294,12 @@ export function useRealtimeRefetch({
           startSlowPolling();   // H-3B: редкая подстраховка при живом сокете
         } else {
           hadDisconnect = true;
+          /* U-62/Д3: backoff повертається до базового ЛИШЕ після стабільної
+             підписки. Дребезг (SUBSCRIBED на пів секунди → CLOSED) накопичений
+             backoff зберігає, тож частота поллінга падає замість того, щоб
+             вічно стояти на восьми секундах. */
+          if (shouldResetBackoff(subscribedAt, Date.now())) pollDelay = POLL_BASE_MS;
+          subscribedAt = null;
           stopSlowPolling();
           startPolling();       // CHANNEL_ERROR / TIMED_OUT / CLOSED
         }
@@ -285,8 +318,17 @@ export function useRealtimeRefetch({
       authUnsub = () => authSub.subscription.unsubscribe();
     })();
 
+    /* ⚠️ U-62/Д1: повернення у вкладку приходить ДВОМА подіями —
+       `visibilitychange` (visible) і `focus`, — і браузери шлють їх обидві.
+       Досі на кожне повернення летіло ДВА повні `callAll`; на дошці черги це
+       до шести `router.refresh()` замість трьох. Дедуплікуємо за часом:
+       правило — чиста функція, і саме вона запінена. */
     const onVisible = () => {
-      if (document.visibilityState === "visible") callAll();
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (!shouldRefetchOnReturn(lastReturnAt, now)) return;
+      lastReturnAt = now;
+      callAll();
     };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
