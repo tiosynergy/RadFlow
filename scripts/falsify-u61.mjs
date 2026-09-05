@@ -17,10 +17,13 @@ import { verdictOf, finishStand } from "./lib/falsify-verdict.mjs";
 const FILES = {
   busy: "lib/slotBusy.ts",
   portal: "components/ReferralPortal.tsx",
+  /* U-62 (с57): політика перезапитів і сам хук. Тема та сама — realtime. */
+  hook: "lib/useRealtimeRefetch.ts",
+  policy: "lib/realtimeRefetchPolicy.ts",
   sb: "components/Sidebar.tsx",
   test: "tests/realtimeSubscriptionSurface.test.ts",
 };
-const SPECS = ["tests/realtimeSubscriptionSurface.test.ts"];
+const SPECS = ["tests/realtimeSubscriptionSurface.test.ts", "tests/realtimeRefetchPolicy.test.ts"];
 const OUT = "falsify-u61.md";
 const REPORT = ".falsify-u61.json";
 
@@ -163,6 +166,54 @@ const MUTATIONS = [
     from: '{ table: "rooms", filter: "clinic_id=eq." + centerId, onChange: () => loadDay(true), debounceKey: "day" },',
     to: '{ table: "rooms", filter: "clinic_id=eq." + centerId, onChange: () => { loadDay(true); }, debounceKey: "day" },',
   },
+
+  /* ── U-62 (с57): політика перезапитів хука ────────────────────────────────
+     Тема та сама — realtime, тож позиції живуть тут, а не в новому стенді.
+     Замір, що їх завів: хук має 12 споживачів і жодного поведінкового сторожа;
+     DOM-тестів у проєкті немає навмисно, тому правила винесені в чисті функції
+     `lib/realtimeRefetchPolicy.ts`, а ці пʼять мутацій стріляють і в правила,
+     і в те, що хук ними КОРИСТУЄТЬСЯ. */
+  {
+    id: "U1", file: "hook", green: false,
+    expect: /скид backoff стоїть у гілці ОБРИВУ/,
+    what: "скид backoff повернувся в stopPolling — дребезг сокета знову тримає 8 с",
+    from: "    const stopPolling = () => {\n      if (pollTimer) {\n        clearTimeout(pollTimer);\n        pollTimer = undefined;\n      }\n    };",
+    to: "    const stopPolling = () => {\n      if (pollTimer) {\n        clearTimeout(pollTimer);\n        pollTimer = undefined;\n      }\n      pollDelay = POLL_BASE_MS;\n    };",
+  },
+  {
+    id: "U2", file: "hook", green: false,
+    expect: /обидві події повернення ведуть в ОДИН дедуплікований обробник/,
+    what: "дедуплікацію повернення знято — visibilitychange і focus знову дають два callAll",
+    from: "      if (!shouldRefetchOnReturn(lastReturnAt, now)) return;\n      lastReturnAt = now;",
+    to: "      lastReturnAt = now;",
+  },
+  {
+    id: "U3", file: "policy", green: false,
+    expect: /друга подія того самого повернення — НЕ перезапитує/,
+    what: "правило повернення завжди істинне — дедуплікації немає ніде",
+    from: "  const dt = now - lastAt;\n  if (dt < 0) return true;\n  return dt >= gapMs;",
+    to: "  return true;",
+  },
+  {
+    id: "U4", file: "policy", green: false,
+    expect: /дребезг сокета backoff НЕ скидає/,
+    what: "будь-яка підписка вважається стабільною — backoff скидається завжди",
+    from: "  return lived >= stableMs;",
+    to: "  return true;",
+  },
+  {
+    id: "U5", file: "policy", green: false,
+    expect: /сміттєвий вхід не обнуляє крок/,
+    what: "крок backoff довіряє вхідному числу — NaN дає setTimeout(NaN) = 0 мс",
+    from: "  const base = Number.isFinite(prev) && prev > 0 ? prev : POLL_BASE_MS;",
+    to: "  const base = prev;",
+  },
+  {
+    id: "T5", file: "policy", green: true,
+    what: "«* 1.5» переписано як «* 3 / 2» — арифметика та сама, має лишитись зеленою",
+    from: "  return Math.min(Math.round(base * 1.5), maxMs);",
+    to: "  return Math.min(Math.round((base * 3) / 2), maxMs);",
+  },
 ];
 
 /* ⚠️ U-80б (с52). КОЖНА мутація, яка МУСИТЬ почервоніти, називає ТЕСТ-СТОРОЖА
@@ -236,8 +287,10 @@ for (const m of MUTATIONS) {
    заморозки, яку ревізія показує окремою колонкою. Тому кількість адресних —
    константа, і зменшити її можна лише свідомо, правкою цього рядка. */
 /* с57: 9 → 10. Знято S9 (недосяжна при порожньому словнику — див. умову її
-   повернення вище), додано N1 і N2 — по одній на кожну половину U-65. */
-const EXPECTED_RED = 10;
+   повернення вище), додано N1 і N2 — по одній на кожну половину U-65.
+   с57, пакет 33: 10 → 15. Додано U1–U5 (політика перезапитів, U-62) і один
+   позитивний контроль T5. */
+const EXPECTED_RED = 15;
 const redCount = MUTATIONS.filter((m) => !m.green).length;
 if (redCount !== EXPECTED_RED) {
   console.error(`⛔ ІНВЕНТАР БРЕШЕ: адресних мутацій ${redCount}, а очікується ${EXPECTED_RED}. `
