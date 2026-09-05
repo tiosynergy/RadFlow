@@ -42,7 +42,7 @@ begin
   end if;
   v_done := v_done || ' c';
 
-  -- d: перевірок рівно 20 — якщо додали/прибрали, смоук має про це сказати,
+  -- d: перевірок рівно 21 — якщо додали/прибрали, смоук має про це сказати,
   -- а не тихо пропустити (кількість перевірок сама є інваріантом).
   -- ⚠️ 0155 підняв 8 → 9: перевірку cron_daily_ran_48h розділено на
   -- cron_daily_stalled і cron_daily_never_ran.
@@ -50,8 +50,8 @@ begin
   -- ⚠️ 0157 підняв 10 → 11: додано outbox_emit_failed_26h (H-1 аудиту 23.08).
   -- ⚠️ 0159 підняв 11 → 12: додано outbox_rows_overdue (ретенція event_outbox).
   -- ⚠️ 0161 підняв 12 → 13, 0164 — 13 → 14 (ucm_orphan_markers), 0166 — 14 → 15 (priv_drift).
-  if (v_res ->> 'checked')::int is distinct from 20 then
-    raise exception 'SMOKE_FAIL d: checked=% (очікував 20)', v_res ->> 'checked';
+  if (v_res ->> 'checked')::int is distinct from 21 then
+    raise exception 'SMOKE_FAIL d: checked=% (очікував 21)', v_res ->> 'checked';
   end if;
   v_done := v_done || ' d';
 

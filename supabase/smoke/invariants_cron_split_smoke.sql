@@ -27,14 +27,14 @@ begin
   end if;
   v_done := v_done || ' a';
 
-  -- b: перевірок рівно 20 (0155: 9, 0156: +room_busy_service_role,
+  -- b: перевірок рівно 21 (0155: 9, 0156: +room_busy_service_role,
   -- 0157: +outbox_emit_failed_26h, 0159: +outbox_rows_overdue).
   -- ⚠️ Далі: 0170 — 15 → 16 (policy_digest), 0171 — 16 → 18 (guard_triggers,
   --    server_now), 0172 — 18 → 19 (guard_fn_bodies).
   -- Кількість перевірок сама є інваріантом.
   -- ⚠️ 0161 підняв 12 → 13, 0164 — 13 → 14 (ucm_orphan_markers), 0166 — 14 → 15 (priv_drift).
-  if (v_base ->> 'checked')::int is distinct from 20 then
-    raise exception 'SMOKE_FAIL b: checked=% (очікував 20)', v_base ->> 'checked';
+  if (v_base ->> 'checked')::int is distinct from 21 then
+    raise exception 'SMOKE_FAIL b: checked=% (очікував 21)', v_base ->> 'checked';
   end if;
   v_done := v_done || ' b';
 

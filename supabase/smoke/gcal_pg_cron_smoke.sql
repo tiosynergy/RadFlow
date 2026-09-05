@@ -90,14 +90,14 @@ begin
   end;
   v_done := v_done || ' d';
 
-  -- ── e: сторож рахує 20 перевірок ──
+  -- ── e: сторож рахує 21 перевірок ──
   v_res := public.invariants_check(p_write => false);
   -- ⚠️ 0164 підняв 13 → 14 (ucm_orphan_markers), 0165 перевипустив ту саму
   --    перевірку, 0166 — 14 → 15 (priv_drift), 0170 — 15 → 16 (policy_digest),
   --    0171 — 16 → 18 (guard_triggers + server_now). Число живе у ДЕВʼЯТИ смоуках —
   --    сторож узгодженості: tests/invariantsCheckedPins.test.ts.
-  if (v_res ->> 'checked')::int is distinct from 20 then
-    raise exception 'SMOKE_FAIL e: checked = %, очікував 20', v_res ->> 'checked';
+  if (v_res ->> 'checked')::int is distinct from 21 then
+    raise exception 'SMOKE_FAIL e: checked = %, очікував 21', v_res ->> 'checked';
   end if;
   v_done := v_done || ' e';
 
@@ -146,21 +146,21 @@ begin
     from pg_proc
    where proname = 'invariants_check'
      and pronamespace = 'public'::regnamespace;
-  -- ⚠️ Пін перезнято після 0175 (0161: 935bdd06…, 0164: d8d22ff4…, 0165: f422cce0…,
+  -- ⚠️ Пін перезнято після 0177 (0161: 935bdd06…, 0164: d8d22ff4…, 0165: f422cce0…,
   --    0166: bc10f4e5…, 0167: 12cf23fe…, 0170: d754ee12…, 0171: c61de84b…,
-  --    0172: 5af876d2…, 0173: 07a4e102…, 0174: a26cb538…).
+  --    0172: 5af876d2…, 0173: 07a4e102…, 0174: a26cb538…, 0175: 76f886a1…).
   --    Кожен передрук сторожа
   --    міняє це число — знімати ЖИВИМ запитом після накату, а не переписувати
   --    навмання.
-  --    Значення 76f886a1… звірено двічі: живим запитом до прода І незалежним
-  --    розбором тіла з файлу 0175 (між `as $function$` і `$function$;`, плюс
+  --    Значення b8f17ba1… звірено двічі: живим запитом до прода І незалежним
+  --    розбором тіла з файлу 0177 (між `as $function$` і `$function$;`, плюс
   --    хвостовий перевід рядка) з тією самою нормалізацією, що вище. Обидва
-  --    боки дали 76f886a1…, а піни g2 — cb66234b… теж з обох боків.
+  --    боки дали b8f17ba1…, а піни g2 — 51abbdb1… теж з обох боків.
   -- ⚠️ НОРМАЛІЗАЦІЯ ТУТ — НЕ КОСМЕТИКА, і це заміряно (с56). Кінці рядків
   --    залежать від ШЛЯХУ накату, а не від міграції:
   --      • 0171 накатували через SQL Editor із Windows — у проді тіло мало
   --        53579 байтів при 811 CR, тоді як у файлі 52768 і самі LF;
-  --      • 0172–0175 накатано DO-блоком через MCP — заміряно `cr_count = 0`, і
+  --      • 0172–0177 накатано DO-блоком через MCP — заміряно `cr_count = 0`, і
   --        `md5(prosrc)` збігається з файлом БЕЗ жодного зведення.
   --    Тобто побайтна рівність досяжна, але лише на шляху без SQL Editor.
   --    `replace(chr(13), '')` лишається страховкою на наступний ручний накат.
@@ -169,8 +169,8 @@ begin
   --    коротший (без хвостового переводу рядка), а 29932 — СИМВОЛИ, не байти.
   --    Рівність файл ↔ прод той замір усе одно доводив (однакове з обох
   --    боків), але число ні з чим у базі не збігалось.
-  if v_txt is distinct from '76f886a161138674818c76ad8220e5af' then
-    raise exception 'SMOKE_FAIL g: md5 тіла invariants_check = %, очікував 76f886a1… (передрук розійшовся)', v_txt;
+  if v_txt is distinct from 'b8f17ba1f44df9481f065ac74c35b598' then
+    raise exception 'SMOKE_FAIL g: md5 тіла invariants_check = %, очікував b8f17ba1… (передрук розійшовся)', v_txt;
   end if;
   -- ── g2: тіло прода == тіло ФАЙЛУ, з точністю до кінців рядків ──
   -- ⚠️ Пін вище схлопує ПРОБІЛИ І ЗНІМАЄ КОМЕНТАРІ, тобто доводить лише «код
@@ -181,8 +181,8 @@ begin
     from pg_proc
    where proname = 'invariants_check'
      and pronamespace = 'public'::regnamespace;
-  if v_txt is distinct from 'cb66234b638fbe12a771bd2ec7a4fd5a' then
-    raise exception 'SMOKE_FAIL g2: тіло прода != тіло файлу 0175 (md5 без CR = %)', v_txt;
+  if v_txt is distinct from '51abbdb14a75bf19a57d04ffa85477ea' then
+    raise exception 'SMOKE_FAIL g2: тіло прода != тіло файлу 0177 (md5 без CR = %)', v_txt;
   end if;
   v_done := v_done || ' g g2';
 
