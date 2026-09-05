@@ -59,7 +59,7 @@ const MUTATIONS = [
        саме її й закрив фан-аут по центрах направника, тож старий якір
        («{ table: "rooms", onChange: … }») зник, і стенд чесно відхилив
        позицію. Властивість, яку вона стереже, не змінилась. */
-    from: '        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc" },',
+    from: '        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc", skipInitial: true },',
     to: '        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh() },',
   },
   {
@@ -172,8 +172,8 @@ const MUTATIONS = [
     id: "G4", file: "portal", green: true,
     what: "підписку rooms розбито на два рядки (пін мусить терпіти переніс)",
     /* ⚠️ Переякорено в с57 разом із M2 — та сама причина (U-65). */
-    from: '        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc" },',
-    to: '        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(),\n          debounceKey: "rsc" },',
+    from: '        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc", skipInitial: true },',
+    to: '        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(),\n          debounceKey: "rsc", skipInitial: true },',
   },
   {
     id: "G5", file: "lib", green: true,
