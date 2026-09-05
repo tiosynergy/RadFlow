@@ -7,6 +7,7 @@
    лишав би бойовий файл із дефектом, схожим на робочий код. */
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { finishStand } from "./lib/falsify-verdict.mjs";
 
 const MOD = "components/StudyEditModal.tsx";
 const LIB = "lib/incidents.ts";
@@ -268,7 +269,8 @@ console.log("DONE");
 
 /* U-74 → U-80: вердикт спирається на СВІЙ лічильник, а не на розбір власних
    рядків. Розбір тексту був милицем: він сліпий до рядка, якого немає. */
-if (bad) {
-  console.log(`\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних із ${M.length}. Стенд НЕ доводить нічого.`);
-  process.exitCode = 1;
-} else console.log(`\n✅ ВЕРДИКТ: стенд зелений — ${M.length}/${M.length} адресних.`);
+finishStand({
+  ok: !bad,
+  red: `\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних із ${M.length}. Стенд НЕ доводить нічого.`,
+  green: `\n✅ ВЕРДИКТ: стенд зелений — ${M.length}/${M.length} адресних.`,
+});

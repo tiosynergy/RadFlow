@@ -12,6 +12,7 @@
 import { readFileSync, writeFileSync, rmSync, readdirSync, existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve } from "node:path";
+import { finishStand } from "./lib/falsify-verdict.mjs";
 
 const M64   = "supabase/migrations/0164_change_markers_purge_on_delete.sql";
 
@@ -249,11 +250,15 @@ lines.push("", bad ? `## ПІДСУМОК: ${bad} проблемних із ${M.
 console.log(lines.at(-1));
 writeFileSync("falsify-u37.md", lines.join("\n") + "\n");
 console.log("DONE");
-if (bad) process.exitCode = 1;
+/* ⚠️ Тут стояв ДУБЛЬ звʼязки `if (bad) process.exitCode = 1;` — слід ручного
+   копіювання хвоста, знайдений заміром U-81 (с57). Він був безпечним лише
+   випадково: обидві копії ставили те саме значення. Знято; єдиний екземпляр
+   звʼязки тепер у `finishStand`. */
 
 /* U-74: ненайдений/неунікальний якір і «сторож дивиться не туди» — ЧЕРВОНИЙ
    вердикт СТЕНДА, а не рядок у звіті. До с51 код повернення був завжди 0. */
-if (bad) {
-  console.log(`\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних позицій. Стенд НЕ доводить нічого.`);
-  process.exitCode = 1;
-} else console.log(`\n✅ ВЕРДИКТ: стенд зелений.`);
+finishStand({
+  ok: !bad,
+  red: `\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних позицій. Стенд НЕ доводить нічого.`,
+  green: `\n✅ ВЕРДИКТ: стенд зелений.`,
+});

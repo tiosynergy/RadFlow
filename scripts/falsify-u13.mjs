@@ -5,6 +5,7 @@
    стенд двічі сказав «ЧЕРВОНИЙ НЕ ТОЙ» на правильному сторожі. */
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { finishStand } from "./lib/falsify-verdict.mjs";
 
 const LIB = "lib/roomSchedule.ts";
 const BM  = "components/BookingModal.tsx";
@@ -160,9 +161,8 @@ console.log(lines.at(-1));
    червоний — це ЧЕРВОНИЙ вердикт СТЕНДА, а не рядок у звіті. До с51 стенд
    виходив нулем при будь-якому вмісті таблиці, і мутація, яка НЕ ВІДБУЛАСЬ,
    читалась як успіх. */
-if (bad) {
-  console.log(`\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних позицій. Стенд НЕ доводить нічого.`);
-  process.exitCode = 1;
-} else {
-  console.log(`\n✅ ВЕРДИКТ: стенд зелений.`);
-}
+finishStand({
+  ok: !bad,
+  red: `\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних позицій. Стенд НЕ доводить нічого.`,
+  green: `\n✅ ВЕРДИКТ: стенд зелений.`,
+});

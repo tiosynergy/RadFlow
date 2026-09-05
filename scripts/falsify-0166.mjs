@@ -13,6 +13,7 @@
    Запуск: node scripts/falsify-0166.mjs   (звіт → falsify-0166.md) */
 import { readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { execSync } from "node:child_process";
+import { finishStand } from "./lib/falsify-verdict.mjs";
 
 const MIG  = "supabase/migrations/0166_privilege_surface.sql";
 const HARD = "supabase/migrations/0167_privilege_surface_hardening.sql";
@@ -142,6 +143,16 @@ const E = {
   pdDropped:  /прибрані колонки відсіяні/,
   pdDdl:      /міграція справді ЗНІМАЄ обидва дефолти/,
   pdRollback: /секція ВІДКАТУ повертає рівно те, що знято/,
+  /* U-81 — звʼязка «вердикт стенда → код повернення» (с57, пакет 32). */
+  /* ⚠️ Обидві мутації (звʼязка розповзлась / виклик зник) ловить ОДИН пін по
+     хвосту — перша редакція сторожа мала два тести, і якорі протухли разом із
+     перейменуванням. Ключі лишились різні НАВМИСНО: вони називають різні
+     дефекти, і якщо колись пін розділиться назад, тут не доведеться гадати. */
+  u81Direct:  /у хвості рівно один finishStand і жодного process\.exitCode/,
+  u81Once:    /у хвості рівно один finishStand і жодного process\.exitCode/,
+  u81NotConst:/веде до finishStand свій ПРОВАЛ, а не константу/,
+  u81Red:     /червоний вердикт дає НЕнульовий код виходу/,
+  u81Loud:    /червоний текст справді друкується/,
 };
 
 const M = [];
@@ -315,6 +326,29 @@ M.push(
    "-- alter table public.profiles alter column role     set default 'admin'::user_role;\n", ""],
 );
 
+/* ── U-81: звʼязка «вердикт стенда → код повернення» (с57, пакет 32) ──────
+   Замір, який завів ці позиції: звʼязка жила у 25 незалежних копіях хвоста,
+   і `falsify-u37` уже містив ДУБЛЬ. Тепер екземпляр один — у `finishStand`;
+   ці пʼять мутацій стріляють у нього і в його сторожа.
+   ⚠️ Жертва — `falsify-u13`: найкоротший рукописний хвіст. Мутації ламають
+   САМ стенд, але 0166 запускає лише SPEC-тести, стендів не ганяє. */
+const VLIB  = "scripts/lib/falsify-verdict.mjs";
+const STAND = "scripts/falsify-u13.mjs";
+M.push(
+  ["N56 стенд знову ставить код повернення сам — звʼязка розповзлась", STAND, E.u81Direct,
+   "finishStand({\n  ok: !bad,",
+   "if (bad) process.exitCode = 1;\nfinishStand({\n  ok: !bad,"],
+  ["N57 стенд віддає в finishStand КОНСТАНТУ — більше не вміє червоніти", STAND, E.u81NotConst,
+   "  ok: !bad,", "  ok: true,"],
+  ["N58 виклик finishStand зник — підсумку немає, код завжди нуль", STAND, E.u81Once,
+   "finishStand({", "noFinishStand({"],
+  ["N59 бібліотека більше не ставить код на червоному вердикті", VLIB, E.u81Red,
+   "  if (!v.ok) process.exitCode = 1;", "  if (!v.ok) { /* знято */ }"],
+  ["N60 червоний вердикт друкується мовчки — запасний сторож falsify-all сліпне", VLIB, E.u81Loud,
+   `  console.log(v.ok ? (v.green ?? "\\n✅ ВЕРДИКТ: стенд зелений.") : v.red);`,
+   `  if (v.ok) console.log(v.green ?? "\\n✅ ВЕРДИКТ: стенд зелений.");`],
+);
+
 /* ── смоук ───────────────────────────────────────────────────────────────── */
 M.push(
   ["N25 смоук звіряє список замість каталогу — нова таблиця проїде мовчки", SMK, E.catalog,
@@ -397,7 +431,7 @@ process.on("uncaughtException", (e) => { restore(); console.error(e); process.ex
 /* ⚠️ Третій файл доданий у с57 разом із позиціями N40–N45: до того сторожа
    0174 не запускав жоден стенд. Зайві червоні від нього нікому не шкодять —
    вердикт вимагає, щоб серед червоних був НАЗВАНИЙ, а не щоб він був один. */
-const SPEC = "tests/privilegeSurface.test.ts tests/invariantsCheckedPins.test.ts tests/invariantsFailLoud.test.ts tests/profilesDefaultsInvariant.test.ts";
+const SPEC = "tests/privilegeSurface.test.ts tests/invariantsCheckedPins.test.ts tests/invariantsFailLoud.test.ts tests/profilesDefaultsInvariant.test.ts tests/falsifyExitCode.test.ts";
 const lines = ["# Фальсифікація пакета привілеїв (0166 + 0167)", ""];
 let bad = 0;
 
@@ -457,9 +491,8 @@ console.log(lines.at(-1));
    червоний — це ЧЕРВОНИЙ вердикт СТЕНДА, а не рядок у звіті. До с51 стенд
    виходив нулем при будь-якому вмісті таблиці, і мутація, яка НЕ ВІДБУЛАСЬ,
    читалась як успіх. */
-if (bad) {
-  console.log(`\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних позицій. Стенд НЕ доводить нічого.`);
-  process.exitCode = 1;
-} else {
-  console.log(`\n✅ ВЕРДИКТ: стенд зелений.`);
-}
+finishStand({
+  ok: !bad,
+  red: `\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — ${bad} проблемних позицій. Стенд НЕ доводить нічого.`,
+  green: `\n✅ ВЕРДИКТ: стенд зелений.`,
+});
