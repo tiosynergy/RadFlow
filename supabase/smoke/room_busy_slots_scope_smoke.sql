@@ -32,7 +32,7 @@
 --   (g) anon                                 → 42501 (EXECUTE не видано);
 --   (h) персонал ЧУЖОЇ клініки               → 0 рядків;
 --   (i) 14 тригерних функцій — без EXECUTE у public/anon/authenticated;
---   (j) invariants_check(false): checked = 21 (0175), room_busy_service_role мовчить;
+--   (j) invariants_check(false): checked = 21 (0177), room_busy_service_role мовчить;
 --   (k) структура рядків admin: 0 ≤ start_min < end_min ≤ 1440,
 --       scheduled_time узгоджений зі start_min (арифметика 0074 не зачеплена).
 -- ============================================================================
