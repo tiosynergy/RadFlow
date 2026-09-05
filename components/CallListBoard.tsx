@@ -539,10 +539,10 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
         onChange: () => { reload(); loadIncidents(); loadTodayScheduled(); if ((residualRoomIds?.length ?? 0) > 0) router.refresh(); } },
       { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
       // 0086: rooms — SSR-проп (назви кабінетів у колл-листі); правку/видалення підхоплюємо через router.refresh.
-      { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh(), skipInitial: true },
       // Каталог послуг/цін (0107/0108) — SSR-проп у форми запису; зміна адміном → оновити.
-      { table: "services", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
-      { table: "service_room_overrides", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      { table: "services", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh(), skipInitial: true },
+      { table: "service_room_overrides", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh(), skipInitial: true },
     ],
   });
 
