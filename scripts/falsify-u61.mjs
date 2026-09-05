@@ -20,10 +20,13 @@ const FILES = {
   /* U-62 (с57): політика перезапитів і сам хук. Тема та сама — realtime. */
   hook: "lib/useRealtimeRefetch.ts",
   policy: "lib/realtimeRefetchPolicy.ts",
+  /* U-62 частина 2: холоста робота на маунті. */
+  qb: "components/QueueBoard.tsx",
+  wl: "components/WaitlistBoard.tsx",
   sb: "components/Sidebar.tsx",
   test: "tests/realtimeSubscriptionSurface.test.ts",
 };
-const SPECS = ["tests/realtimeSubscriptionSurface.test.ts", "tests/realtimeRefetchPolicy.test.ts"];
+const SPECS = ["tests/realtimeSubscriptionSurface.test.ts", "tests/realtimeRefetchPolicy.test.ts", "tests/realtimeInitialLoad.test.ts"];
 const OUT = "falsify-u61.md";
 const REPORT = ".falsify-u61.json";
 
@@ -81,8 +84,11 @@ const MUTATIONS = [
     id: "N2", file: "portal", green: false,
     expect: /кожна підписка БЕЗ фільтра стоїть у явному списку/,
     what: "з фан-ауту каталогу в порталі знято clinic_id-фільтр на services",
-    from: '{ table: "services", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc" },',
-    to: '{ table: "services", onChange: () => router.refresh(), debounceKey: "rsc" },',
+    /* ⚠️ Якір переїхав у с57 (пакет 34): підписка отримала `skipInitial: true`
+       (U-62/Д2 — на маунті цей RSC-refresh холостий). Стенд це впіймав як
+       «якір не унікальний (0)» у той самий прогін, у який правка приїхала. */
+    from: '{ table: "services", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc", skipInitial: true },',
+    to: '{ table: "services", onChange: () => router.refresh(), debounceKey: "rsc", skipInitial: true },',
   },
   {
     /* ⚠️ ПЕРЕПИСАНО в с57. Якір («…waitlist_entries": "accepted"») зник разом
@@ -214,6 +220,42 @@ const MUTATIONS = [
     from: "  return Math.min(Math.round(base * 1.5), maxMs);",
     to: "  return Math.min(Math.round((base * 3) / 2), maxMs);",
   },
+
+  /* ── U-62 частина 2 (с57, пакет 34): холоста робота на маунті ───────────── */
+  {
+    id: "U6", file: "qb", green: false,
+    expect: /кожна така підписка має skipInitial/,
+    what: "з підписки на rooms знято skipInitial — маунт знову робить холостий RSC-refresh",
+    from: '{ table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh(), skipInitial: true },',
+    to: '{ table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },',
+  },
+  {
+    id: "U7", file: "hook", green: false,
+    expect: /первинний виклик позначений initial, і він один/,
+    what: "первинний callAll більше не позначений initial — skipInitial ніде не діє",
+    from: "callAll({ initial: true }); // первичная загрузка",
+    to: "callAll(); // первичная загрузка",
+  },
+  {
+    id: "U8", file: "hook", green: false,
+    expect: /пропуск стоїть ДО дедуплікації за ключем/,
+    what: "пропуск переїхав ПІСЛЯ дедуплікації — пропущена підписка зʼїдає спільний ключ",
+    from: "        if (opts?.initial && s.skipInitial) return;\n        const key = s.debounceKey ?? s.table + \":\" + i;\n        if (seen.has(key)) return;\n        seen.add(key);",
+    to: "        const key = s.debounceKey ?? s.table + \":\" + i;\n        if (seen.has(key)) return;\n        seen.add(key);\n        if (opts?.initial && s.skipInitial) return;",
+  },
+  {
+    id: "U9", file: "wl", green: false,
+    expect: /первинне завантаження лишилось за власними ефектами/,
+    what: "⚠️ НАЙНЕБЕЗПЕЧНІША: ефект первинного завантаження знято, а skipInitial лишився — лист відкриється ПОРОЖНІМ",
+    from: "  useEffect(() => { reload(); loadIncidents(); }, [reload, loadIncidents]);",
+    to: "",
+  },
+  {
+    id: "T6", file: "qb", green: true,
+    what: "skipInitial переставлено перед onChange — порядок ключів не має значення, лишається зеленою",
+    from: '{ table: "services", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh(), skipInitial: true },',
+    to: '{ table: "services", filter: "clinic_id=eq." + clinicId, skipInitial: true, onChange: () => router.refresh() },',
+  },
 ];
 
 /* ⚠️ U-80б (с52). КОЖНА мутація, яка МУСИТЬ почервоніти, називає ТЕСТ-СТОРОЖА
@@ -289,8 +331,10 @@ for (const m of MUTATIONS) {
 /* с57: 9 → 10. Знято S9 (недосяжна при порожньому словнику — див. умову її
    повернення вище), додано N1 і N2 — по одній на кожну половину U-65.
    с57, пакет 33: 10 → 15. Додано U1–U5 (політика перезапитів, U-62) і один
-   позитивний контроль T5. */
-const EXPECTED_RED = 15;
+   позитивний контроль T5.
+   с57, пакет 34: 15 → 19. Додано U6–U9 (холоста робота на маунті, U-62 ч.2) і
+   позитивний контроль T6. */
+const EXPECTED_RED = 19;
 const redCount = MUTATIONS.filter((m) => !m.green).length;
 if (redCount !== EXPECTED_RED) {
   console.error(`⛔ ІНВЕНТАР БРЕШЕ: адресних мутацій ${redCount}, а очікується ${EXPECTED_RED}. `

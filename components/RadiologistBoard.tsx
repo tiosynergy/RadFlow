@@ -1068,7 +1068,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
       { table: "schedule_overrides", filter: "clinic_id=eq." + clinicId, onChange: loadOverrides },
       // 0086: rooms — SSR-проп (у радіолога ще й ВІДФІЛЬТРОВАНИЙ призначеними
       // кабінетами); зміни долітають через router.refresh (сервер перерахує підмножину).
-      { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh(), skipInitial: true },
     ],
   });
 

@@ -2063,7 +2063,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
          поспіль. Саме заради цього ключ і вводився (у CEO він давав до 20
          reload-ів). Ключ спільний і для дебаунсу: сплеск правок каталогу в
          кількох таблицях → один refresh. */
-      { table: "referral_access", filter: "referrer_id=eq." + doctorId, onChange: () => router.refresh(), debounceKey: "rsc" },
+      { table: "referral_access", filter: "referrer_id=eq." + doctorId, onChange: () => router.refresh(), debounceKey: "rsc", skipInitial: true },
       /* Каталог центрів направника: кабінети (0086) і послуги/ціни (0107/0108).
          ⚠️ БУЛО БЕЗ ФІЛЬТРА, з поясненням «RLS доставляє лише центри
          направника». Для подій DELETE це НЕВІРНО — саме та помилка, заради
@@ -2080,9 +2080,9 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
          вище (він фільтрований по самому направнику), а з нею — новий набір
          підписок. */
       ...centers.flatMap((c) => ([
-        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc" },
-        { table: "services", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc" },
-        { table: "service_room_overrides", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc" },
+        { table: "rooms", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc", skipInitial: true },
+        { table: "services", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc", skipInitial: true },
+        { table: "service_room_overrides", filter: "clinic_id=eq." + c.clinicId, onChange: () => router.refresh(), debounceKey: "rsc", skipInitial: true },
       ])),
     ],
     /* Рідка звірка при ЖИВОМУ сокеті (F4-3, третій шар). Realtime доставку не

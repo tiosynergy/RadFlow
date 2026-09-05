@@ -342,16 +342,22 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
       /* Залишок може триматись САМЕ вейтліст-броню (residualOffRooms рахує обидві
          таблиці) — тож знята остання бронь мусить прибрати кабінет зі списку без
          перезавантаження сторінки. */
-      { table: "waitlist_entries", filter: "clinic_id=eq." + clinicId,
+      /* ⚠️ U-62/Д5 (с57): `skipInitial` тут — НЕ оптимізація «про всяк випадок»,
+         а замір. На маунті цей лист робив ПО ДВА виклики кожного лоадера:
+         `reload()` і `loadIncidents()` — власний `useEffect` вище плюс первинний
+         `callAll`; `loadCounts()` — окремий `useEffect` плюс той самий `callAll`.
+         Первинне завантаження лишається за ефектами (вони ж перезавантажують лист
+         при зміні клініки/фільтра/режиму), а хук веде РЕАКЦІЮ на події. */
+      { table: "waitlist_entries", filter: "clinic_id=eq." + clinicId, skipInitial: true,
         onChange: () => { reload(); loadCounts(); if ((residualRoomIds?.length ?? 0) > 0) router.refresh(); } },
-      { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents },
+      { table: "incidents", filter: "clinic_id=eq." + clinicId, onChange: loadIncidents, skipInitial: true },
       // 0086: rooms — SSR-проп; додавання/зміна модальності/видалення кабінету долітає
       // до відкритого листа через перечитування серверних пропів (інакше стале-фільтри
       // кабінетів і allowedModalities у WaitlistModal/BookingModal до ручного refresh).
-      { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      { table: "rooms", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh(), skipInitial: true },
       // Каталог послуг/цін (0107/0108) — SSR-проп у форми листа; зміна адміном → оновити.
-      { table: "services", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
-      { table: "service_room_overrides", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh() },
+      { table: "services", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh(), skipInitial: true },
+      { table: "service_room_overrides", filter: "clinic_id=eq." + clinicId, onChange: () => router.refresh(), skipInitial: true },
     ],
   });
 
