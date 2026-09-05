@@ -105,9 +105,15 @@ const t = await r.text();
 const b = (t.match(/\\"b\\":\\"([A-Za-z0-9_-]{15,30})\\"/) || [])[1];
 ```
 
-⚠️ **In the owner's Chrome a staff session is LIVE:** `/login` redirects to
-`/radiologist` and the page is ~20 000 bytes instead of ~96 000. The buildId is
-unaffected, but **byte counts must not be compared between browsers.**
+⚠️ **BOTH browsers now carry a live RadFlow session** (measured 05.09): in the
+owner's Chrome `/login` redirects to `/radiologist` (~20 000 bytes), in the
+built-in browser to `/queue` (~96 900 bytes). The doc line "the built-in browser
+is NOT authenticated in RadFlow", alive since session 43, is **no longer true** —
+so live checks are feasible from either. The buildId is unaffected by any of
+this, but **byte counts must not be compared between browsers.**
+⚠️ **Claude in Chrome went unresponsive mid-session** (`CDP Runtime.evaluate
+timed out`, four attempts across two tabs) while the built-in browser answered
+immediately. Have both in mind; do not spend the session retrying one.
 ⚠️ A Vercel deploy takes ~2–3 min. For packages with no client code there is no
 "the new bundle arrived" signal in principle — say so instead of inventing one.
 
@@ -115,7 +121,7 @@ unaffected, but **byte counts must not be compared between browsers.**
 
 | what | expected |
 |---|---|
-| `main` / `dev` | **`1dee210`** (merge of package 34) / **`f7d5e0f`** (docs commit of package 34), **plus the docs commit(s) of this handover on top** — take the hashes from `git ls-remote`, not from here. Tree clean |
+| `main` / `dev` | **`3c96898`** / **`2fd730f`** (the session-57 docs commit and its merge, on top of `1dee210` / `f7d5e0f` from package 34), **plus the final docs commit of this handover on top** — take the hashes from `git ls-remote`, not from here. Tree clean |
 | prod DB | **`0177_realtime_filter_premise.sql`**, ledger **177/177** |
 | **next migration** | **0178** — the number comes FROM THE LEDGER, never from the folder. No named candidate: the queue is empty except the LOW batch and the owner's forks |
 | `invariants_check()` | `ok:true`, **`checked:21`**, `failed:[]` |
@@ -123,7 +129,7 @@ unaffected, but **byte counts must not be compared between browsers.**
 | nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50 → `ok:true, checked:21, failed:[]`. The 05.09 run was the FIRST one with check №21 and it was clean |
 | toolchain | tsc **0**, eslint **0**, vitest **2714/2714** (**91** files, ~20 s), `db:gate` **177/177** |
 | stand revision | **25/25 green, 588 addressed** (`falsify-0166` 60/60; `falsify-u61` 19 addressed + 6 refactor). A full run takes **40–45 min** |
-| `/login` fingerprint | last measured **`1KXTYxqAKBzhqunU7Gqbk`**, HTTP 200. The docs push of this handover changes it again — that is normal, and it is the "after" side you must measure |
+| `/login` fingerprint | measured in BOTH directions on 05.09: `1KXTYxqAKBzhqunU7Gqbk` → **`6B4LcEMX3j8kVL4iFwWbI`**, HTTP 200. ⚠️ The FINAL docs push of this handover changes it once more — that is normal; whatever you measure at TASK #0 should differ from `6B4LcEMX3j8kVL4iFwWbI`, and if it does not, the last docs deploy did not land |
 
 ⚠️ **The eslint gate runs with `--max-warnings 0`.** Any stray scratch file you
 leave in the repo root (`.tmp-*.mjs` and friends) makes the gate RED for a
