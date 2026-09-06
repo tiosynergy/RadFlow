@@ -1,15 +1,17 @@
-# RadFlow — attachment for the next session (session 58)
+# RadFlow — attachment for the next session (session 59)
 
 > **This file is the ATTACHMENT.** The owner pastes
-> `claude/session58-start-prompt.md` as the first message and attaches this
-> file. Rewritten in English at the end of session 57 (2026-09-05); previous
-> editions were Ukrainian and stacked history back to session 50 — that history
-> now lives where it belongs, in `claude/radflow-handoff.md`.
+> `claude/session59-start-prompt.md` as the first message and attaches this
+> file. Session-specific part rewritten at the end of session 58 (2026-09-06);
+> the permanent part below is carried unchanged. History lives in
+> `claude/radflow-handoff.md`.
 >
 > ⚠️ **DO NOT TRUST THIS FILE.** Everything below is what SHOULD come out, not
-> the source of truth. In session 50 this file lied about its own state at
-> session start. Verify by query and by command (TASK #0). **A discrepancy is a
-> FINDING — name it, do not silently patch the doc.**
+> the source of truth. Verify by query and by command (TASK #0). **A
+> discrepancy is a FINDING — name it, do not silently patch the doc.**
+> Session 58 found exactly such a lie in the previous edition of this file: the
+> fingerprint rule (see below) would have made every session report a phantom
+> incident.
 
 You are continuing development and production of the **RadFlow** SaaS (patient
 flow in MRI/CT rooms). You are the orchestrator and Full Task developer.
@@ -31,34 +33,29 @@ The old rule "merge/push/apply is done by the owner" is **CANCELLED**. If you
 find it in the docs as a live rule, fix it in place (`docs/HANDOVER.md` and the
 old audits keep it as history — leave those alone).
 
-### ⚠️ APPLYING SQL — the rule was refined in session 56 and is LIVE
+### ⚠️ APPLYING SQL — apply automatically, but verify the Results
 
-The owner changed it twice in one session; the current edition is the last one:
-**"apply automatically without me, but with MANDATORY verification of the
-Results."**
-
-So the apply is yours, and "Success" is not proof. After EVERY apply, verify by
-measurement: the function body (`md5(replace(prosrc, chr(13), ''))` against the
-md5 of the file's body — the SQL Editor brings CRLF), the ledger row (name,
-`md5`, `applied_at`), `invariants_check(false)`, the smoke pins. In session 56
-"Success. No rows returned" hid TWO discrepancies: a foreign md5 in the ledger
-from an earlier edition of the file, and CRLF inside the body.
+"Success" is not proof. After EVERY apply, verify by measurement: the function
+body (`md5(replace(prosrc, chr(13), ''))` against the md5 of the file's body —
+the SQL Editor brings CRLF), the ledger row, `invariants_check(false)`, the
+smoke pins. In session 56 "Success. No rows returned" hid TWO discrepancies.
 
 ## SAFEGUARDS — NOT CANCELLED IN ANY DEGREE
 
 - **Two independent review rounds with DIFFERENT lenses** on anything that
   touches RLS, grants, `SECURITY DEFINER`, triggers, authorization, service-role
   code, integration contracts, concurrency or production migrations. **You
-  validate subagent conclusions personally.** Proven lens pairs: "what breaks
-  for the next person" × "did the author overstate his own measurements";
-  "operational risk and operator experience" × "falsification: where is the rule
-  wrong and where would the guard stay green".
+  validate subagent conclusions personally.** ⚠️ Session 58 is the strongest
+  case yet for this rule holding even on plain UI work: two rounds found FOUR
+  ways past my own fresh pins, each leaving the whole package green, and the
+  main one meant U-59 was not closed at all for the three busiest surfaces.
+  Proven lens pairs: "falsification: which mutation leaves this pin green" ×
+  "operational risk and operator experience"; "what breaks for the next person"
+  × "did the author overstate his own measurements".
 - **Falsifying a guard requires a NAMED red test and a GREEN baseline.**
-  "Something somewhere went red" is not a verdict.
 - **Live production check in BOTH directions, by measurement.** If there is
   nothing to check on, say so plainly instead of faking a check.
-- **Production data only by an explicit list of ids** with before-images. **No
-  mass deletions by a vague predicate.**
+- **Production data only by an explicit list of ids** with before-images.
 - **Secrets and PII go NOWHERE** — not into a report, not into a log, not into a
   subagent prompt.
 - **`npm audit fix --force` is FORBIDDEN.** dev and prod are **ONE DB**.
@@ -89,15 +86,12 @@ npm run db:gate:check
 
 …plus the **deploy fingerprint** of `/login`.
 
-### How to take the fingerprint (the method changed in session 56, confirmed in 57)
+### How to take the fingerprint — CORRECTED IN SESSION 58
 
-The prod URL is **`https://rad-flow-tau.vercel.app`** — it is written in
-`AGENTS.md` and it also sits in `cron.job.command`. **Never ask the owner for
-it again.**
-
-The reliable channel is the **Next.js buildId in the RSC payload**. Measure it
-from the browser **on the owner's machine** (Claude in Chrome), NOT with
-`WebFetch` from the container — the container strips HTML comments:
+The prod URL is **`https://rad-flow-tau.vercel.app`** (also in `AGENTS.md` and
+in `cron.job.command`). The channel is the Next.js **buildId** in the RSC
+payload — measure it from a browser, NOT with `WebFetch` from the container
+(the container strips HTML comments):
 
 ```js
 const r = await fetch("/login?cb=" + Date.now(), { cache: "no-store" });
@@ -105,189 +99,169 @@ const t = await r.text();
 const b = (t.match(/\\"b\\":\\"([A-Za-z0-9_-]{15,30})\\"/) || [])[1];
 ```
 
-⚠️ **BOTH browsers now carry a live RadFlow session** (measured 05.09): in the
-owner's Chrome `/login` redirects to `/radiologist` (~20 000 bytes), in the
-built-in browser to `/queue` (~96 900 bytes). The doc line "the built-in browser
-is NOT authenticated in RadFlow", alive since session 43, is **no longer true** —
-so live checks are feasible from either. The buildId is unaffected by any of
-this, but **byte counts must not be compared between browsers.**
-⚠️ **Claude in Chrome went unresponsive mid-session** (`CDP Runtime.evaluate
-timed out`, four attempts across two tabs) while the built-in browser answered
-immediately. Have both in mind; do not spend the session retrying one.
-⚠️ A Vercel deploy takes ~2–3 min. For packages with no client code there is no
-"the new bundle arrived" signal in principle — say so instead of inventing one.
+⛔ **THE RULE WRITTEN AT THE END OF SESSION 57 WAS WRONG, and session 58
+falsified it by measurement.** It said the fingerprint must differ from the
+last recorded value by exactly one docs commit, and that an equal value means
+"the last docs deploy did not arrive". Measured: two merges into `main` that
+carried **only `.md`** did NOT change it in ~24 hours (checked twice, with two
+instruments, at `x-vercel-cache: MISS` and `age: 0`), while a merge carrying
+**code** changed it in 4 minutes. `next.config.mjs` sets no `generateBuildId`
+and `vercel.json` is empty, so a real rebuild would necessarily change it.
 
-### Expected state (measured 2026-09-05, end of session 57)
+**Correct rule: a docs commit does NOT change the fingerprint. Only a commit
+with code proves a deploy.** An unchanged fingerprint after a docs-only push is
+NORMAL, not an incident.
+
+⚠️ **Which browser lands where — measured, and it is NOT what session 57 wrote.**
+`lib/supabase/middleware.ts` sends a logged-in user from `/login` to `/queue`
+UNCONDITIONALLY; `app/queue/page.tsx` then routes by role (radiologist →
+`/radiologist`, referrer → `/referral`, ceo → `/ceo`), and only **admin /
+registrar** stay on `/queue`. So the landing page tells you the ROLE of the live
+session, nothing more. In session 58 both reachable instruments (Claude in
+Chrome "Browser 1" and the built-in browser) held an **admin/registrar**
+session — `/queue`, ~96 900 bytes. Session 57 recorded a radiologist session in
+"the owner's Chrome"; **there are two Chromes on the account**, so do not treat
+either as canonical. Byte counts must not be compared between browsers; the
+buildId can.
+
+⚠️ **Claude in Chrome went unresponsive mid-session in BOTH 57 and 58**
+(`CDP Runtime.evaluate timed out`). The built-in browser IS authorized in
+RadFlow now and did the whole job in 58 — prefer it, and if you use both, say
+which instrument took which end.
+⚠️ A Vercel deploy takes ~2–3 min after a code push.
+
+### Expected state (measured 2026-09-06, end of session 58)
 
 | what | expected |
 |---|---|
-| `main` / `dev` | **`81a7b46`** / **`608df9a`** (the session-57 docs, on top of `3c96898` / `2fd730f` and of `1dee210` / `f7d5e0f` from package 34), **plus the final docs commit of this handover on top** — take the hashes from `git ls-remote`, not from here. Tree clean |
+| `main` / `dev` | **`8382eeb`** (merge of package 35) / **`5a9e3e8`**, **plus the docs commit(s) of this handover on top** — take the hashes from `git ls-remote`. Tree clean |
 | prod DB | **`0177_realtime_filter_premise.sql`**, ledger **177/177** |
-| **next migration** | **0178** — the number comes FROM THE LEDGER, never from the folder. No named candidate: the queue is empty except the LOW batch and the owner's forks |
+| **next migration** | **0178** — the number comes FROM THE LEDGER, never from the folder. Session 58 shipped NO migration |
 | `invariants_check()` | `ok:true`, **`checked:21`**, `failed:[]` |
-| guard body | `md5(replace(prosrc, chr(13), ''))` = **`51abbdb14a75bf19a57d04ffa85477ea`**, length 74611, `cr_count 0` — byte-for-byte equal to the migration file |
-| nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50 → `ok:true, checked:21, failed:[]`. The 05.09 run was the FIRST one with check №21 and it was clean |
-| toolchain | tsc **0**, eslint **0**, vitest **2714/2714** (**91** files, ~20 s), `db:gate` **177/177** |
-| stand revision | **25/25 green, 588 addressed** (`falsify-0166` 60/60; `falsify-u61` 19 addressed + 6 refactor). A full run takes **40–45 min** |
-| `/login` fingerprint | chain measured on 05.09: `1KXTYxqAKBzhqunU7Gqbk` → `6B4LcEMX3j8kVL4iFwWbI` → **`hl0zFtCe7lUNp_Bql-tnn`**, HTTP 200 each time. ⚠️ **The terminal value cannot be recorded from inside the session that produces it** — writing it down requires a commit, and that commit deploys and changes it again. So expect at TASK #0 a value that DIFFERS from `hl0zFtCe7lUNp_Bql-tnn` by exactly one docs deploy. **What proves the deploy is the CHANGE, not the value** — if it equals `hl0zFtCe7lUNp_Bql-tnn`, the last docs deploy did not land |
+| guard body | `md5(replace(prosrc, chr(13), ''))` = **`51abbdb14a75bf19a57d04ffa85477ea`**, length 74611, `cr_count 0` |
+| nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50 → `ok:true, checked:21, failed:[]` |
+| toolchain | tsc **0**, eslint **0**, vitest **2763/2763** (**93** files), `db:gate` **177/177** |
+| stand revision | **26/26 green, 619 addressed**. A full run took **52 min**. New stand `falsify-u59-u60` — 33/33, 31 addressed |
+| `/login` fingerprint | last measured **`6w5PbW59Lb0Coh2XTeASf`**, HTTP 200. ⚠️ The docs push of this handover will NOT change it — see the corrected rule above |
 
-⚠️ **The eslint gate runs with `--max-warnings 0`.** Any stray scratch file you
-leave in the repo root (`.tmp-*.mjs` and friends) makes the gate RED for a
-reason that has nothing to do with the package. Clean up after probes.
+⚠️ **The eslint gate runs with `--max-warnings 0`.** Clean up scratch files.
 
 ---
 
-## WHAT SESSION 57 DID — eleven packages, four migrations, queue §2.4 emptied
+## WHAT SESSION 58 DID — one package, no migration, the LOW batch emptied
 
-`checked` 19 → **21**, stands 24 → **25**, tests 2553 → **2714**, addressed
-mutations 545 → **588**. Full per-package detail with the measurements is in
-`claude/radflow-handoff.md` (top block "СОСТОЯНИЕ НА КОНЕЦ с57" plus one block
-per package); the PR docs are in `docs/audit/`.
+Full detail with the measurements: `claude/radflow-handoff.md` (top block) and
+`docs/audit/PR-U59-U60-ack-visibility.md`.
 
-| pkg | what | trail |
-|---|---|---|
-| 24 | **0174** — 18 of 19 checks wrapped in their own `exception`; the counter sits OUTSIDE the wrapper, so `checked` stays honest even when a check fell over. Before it, a failing check wrote NO row into `maintenance_runs` at all | `PR-0174-invariants-fail-loud.md` |
-| 25 | the PROSE-channel debt closed | — |
-| 26 | **RF-2 and RF-4 (code)** — the gate sits above the query, the role is not substituted | — |
-| 27 | **0175** — no privilege-granting defaults in `profiles` (RF-4, schema). `checked` 19 → 20 | `PR-0175-profiles-no-default.md` |
-| 28 | **U-65** — not a single realtime subscription without a clinic filter | `PR-U65-realtime-clinic-filter.md` |
-| 29 | **U-66** — the fix was written and **WITHDRAWN** after measurement | `PR-U66-visibility-widening-update.md` |
-| 30 | **0176** — U-66 closed by "narrow → data → widen": the link is written LAST | `PR-0176-visibility-widen-last.md` |
-| 31 | **0177** — check №21 guards the premise realtime filtering rests on. `checked` 20 → 21 | `PR-0177-realtime-filter-premise.md` |
-| 32 | **U-81** — one single verdict→exit-code linkage (`finishStand`), 105 tests | `PR-U81-stand-exit-code.md` |
-| 33 | **U-62 part 1** — the hook's refetch policy extracted into `lib/realtimeRefetchPolicy.ts` | `PR-U62-refetch-policy.md` |
-| 34 | **U-62 part 2** — idle work on mount (`skipInitial`). **U-62 fully closed** | `PR-U62-initial-load.md` |
+| item | what |
+|---|---|
+| **U-59** | ack no longer clears unread marks while the tab is in the background. The decision lives in `lib/ackVisibility.ts` (`ackGate`), the freeze arithmetic in `nextFreeze`, document visibility in `lib/useDocumentVisible.ts` behind an injectable host (so it is testable without DOM) |
+| **U-60** | "zero" and "we don't know" are no longer the same pixel. `lib/sidebarBadge.ts`; unknown renders as a quiet grey `—`. ⚠️ Measured THREE places, not the one the doc named |
+| **U-75** | **CLOSED WITH NO CODE** — its stated defect has been false since session 52 |
+| stands | new `falsify-u59-u60` (33/33, 31 addressed); `EXPECTED_STANDS` 25 → **26** |
+| **RF-1** | dug out and struck off — see below |
 
-## LESSONS OF SESSION 57 — each one cost a discarded edition of my own work
+## LESSONS OF SESSION 58
 
-1. **A positional probe over someone else's function body is not a guard**
-   (package 31). The first edition of check №21 pinned the body of
-   `realtime.apply_rls` by the ORDER of markers. Measured on a copy of
-   `prosrc`: the probe stayed **GREEN** both when the PK trim is moved out of
-   the DELETE branch and when the delivery predicate is removed ENTIRELY — i.e.
-   it was green on exactly the breakage it existed for. The cure is a
-   **behavioural oracle** (call the stable `realtime.is_visible_through_filters`)
-   plus ONE non-positional probe,
-   `is_visible_through_filters\s*\(\s*old_columns`.
-   ⚠️ A reviewer's alternative (`strpos(prosrc, 'is_visible_through_filters')
-   = 0`) was REJECTED by my own measurement — a second occurrence of the name
-   survives the mutation.
-2. **A list without schema qualification is fail-open** (same package). The
-   publication-configuration check compared BARE table names; measured:
-   swapping `public.doctors` for `shadow.doctors` yields ZERO offenders. Same
-   class as "a regex without an anchor to the PLACE".
-3. **The guard over the guards is a suspect too** (package 32). Two editions of
-   the `process.exitCode` pin were discarded and the STAND found both: a
-   whole-file search went red on `falsify-0166` (which carries the linkage
-   strings as mutation DATA) and killed two positive controls; stripping string
-   literals with a regex lost the call in 2 files of 25, and a character scanner
-   made it 6 of 25. That is precisely the trap named in the header of
-   `tests/helpers/codeOf.ts`: "⚠️ Це НЕ токенізатор". The pin moved to the TAIL
-   of the file (last 12 non-empty code lines) and holds in 25 of 25.
-
-4. **A doc's list is a HYPOTHESIS, not a result — the eighth time this project**
-   (package 32). `PR-U-74-falsify-verdict.md` said the linkage "lives in 20
-   copies and is checked by nothing; the cure is a test for the presence of
-   `process.exitCode`". Measured: **25** copies; `process.exitCode` was present
-   in **all** of them (so the test the doc proposed would have been green from
-   day one); and "checked by nothing" had been **false since session 52** —
-   `falsify-all` computes `loudRed = status !== 0 || anchors || notHeld ||
-   noRun || verdictRed`, and `verdictRed` parses the printed verdict as a backup
-   channel. **Read the doc, then measure the claim before acting on it.**
-5. **A product fix silently rots the anchors of OTHER stands** — it happened
-   TWICE in one package (34): first `falsify-u61` N2, then the full revision
-   found two more in `falsify-f4-portal` (M2 and G4). Nothing is visible to the
-   eye: the code is correct, the tests are green, and the stand has stopped
-   proving anything. **Only a FULL revision catches this.**
-6. **Two different md5s are two different metrics** (package 30). After a deploy
-   `md5(pg_get_functiondef(oid))` did not match the value recorded after the
-   apply, and it looked like body drift; measuring both metrics side by side
-   showed the recorded values were `md5(prosrc)` and matched byte-for-byte.
-   **Always name an md5 together with the expression that produced it.**
-7. **A fix can be correct and still make things worse** (package 29). Splitting
-   the patch into "data → link" closes the leak only for `null → X`; for
-   `X → Y` the first statement commits while `referrer_id` is still the OLD one,
-   so the event with the NEW patient's data goes to the OLD referrer, who
-   received nothing before the fix. The leak would have been MOVED to another
-   person and to a more visible place. The code was withdrawn before it shipped
-   — the second such withdrawal in the project (the first was the U-61
-   migration, cancelled before apply).
+1. **A guard written in the same hour is exactly as much a suspect as someone
+   else's old code.** Two review rounds found FOUR ways past my own fresh pins,
+   each leaving every test green: the background flag folded in at the CALL
+   SITE (`surfaceVisible: visible && documentVisible`); the visibility store
+   with ZERO stand positions (three one-character edits silenced it while both
+   lexical pins stayed green); success flags pinned by PRESENCE rather than
+   PLACE (moving `set*Ok(true)` above the error branch brings U-60 back in all
+   three places at once); and a value pin cut off mid-expression.
+2. **The first edition closed U-59 where it almost never fires.** `hold` kept
+   the freeze but not the KEY inside it, so a surface with `refreezeKey` that
+   reloaded in the background came back with a stale key and refroze on the
+   first run under a visible tab — clearing exactly what the person had not
+   seen, ~200 ms after they switched back. And the comment claimed the opposite.
+3. **The shorter the anchor, the less surface to go stale.** Re-anchoring
+   another stand took TWO attempts: the first new anchor spanned six lines and
+   broke on a comment inserted in the MIDDLE of the block.
+4. **A doc's list is a HYPOTHESIS — the ninth and tenth time in this project.**
+   U-75's stated defect was already cured, differently and better, in session
+   52; U-60's "one place" was three.
 
 ---
 
-## QUEUE FOR SESSION 58 — a menu, not an order
+## QUEUE FOR SESSION 59 — a menu, not an order
 
-⚠️ **Ask before coding.** In session 52 the owner picked something other than
-the top item three times running. Compose a plan (`TaskCreate`) and **AGREE THE
-FIRST PACKAGE WITH ME BEFORE WRITING CODE.** If a package is product-facing,
-show me the texts before they land.
+⚠️ **Ask before coding.** Compose a plan (`TaskCreate`) and **AGREE THE FIRST
+PACKAGE WITH ME BEFORE WRITING CODE.** If a package is product-facing, show me
+the texts before they land.
 
-Queue §2.4 of `claude/plan-s57.md` is **empty** — session 57 closed all of it.
-What is left:
-
-1. **LOW batch — U-59, U-60, U-75 (~2–3 h).** The only remaining engineering
-   work that needs no decision from the owner. ⚠️ Note U-75 was already closed
-   ONCE, differently, in session 52 (a literal `OVERLAYS` list would have been a
-   SECOND copy of "what is open now" — the very thing the comment above
-   `anyModalOpen` warns against); re-read that before planning it.
-
-2. **Live checks** — the cheapest big one is a single run through
-   `RescheduleModal` with a chosen slot (it closes the time node in one go);
-   then Ф4-8 (timer ring and sound), Ф4-2 (call-window edges), the `cas`
-   scenario, and Г1-F itself. ⚠️ **The status changed and this is a
-   measurement, not a guess:** in the owner's Chrome a staff session is already
-   live, so a run is feasible **without a single password** — but it means
-   acting as the owner in production. Ask before every step that writes, and do
-   nothing irreversible.
-3. **The named debts below** — each is small, each has a place where it lives.
+1. **Р6 — re-measure RF-01 … RF-08 (the owner already said yes).** The August
+   reliability audit's eight findings are tracked by NOTHING: they occur only
+   inside their own doc. Two are High. Measured for RF-01 already: the
+   `radiologist_rooms` predicate is in NONE of the four `queue_entries`
+   policies (green baseline: `auth_clinic_id` is found in two of them); a live
+   re-test under a radiologist JWT was NOT done. Deliverable: one measurement
+   per finding, "alive / closed / accepted by design", and tracked names in the
+   handoff.
+2. **The second half of U-59 — "the surface is covered by a modal".** ⚠️ The
+   cost was OVERSTATED by my own first comment and is now measured: the flag
+   already exists (`anyModalOpen`, `QueueBoard.tsx:1589`) and its COMPLETENESS
+   is already guarded by the session-52 test. What is missing is a fourth
+   `ackGate` input `overlayShown` with outcome `hold` plus one prop into the
+   row — on the order of ten lines. By frequency this is MORE common than a
+   background tab: a registrar has a modal open a noticeable part of the shift.
+3. **Live checks** — the cheapest big one is a single run through
+   `RescheduleModal` with a chosen slot; then Ф4-8 (timer ring and sound),
+   Ф4-2 (call-window edges), the `cas` scenario, and Г1-F itself. A staff
+   session is live in both reachable browsers, so this needs no password — but
+   it means acting as the owner in production. Ask before every step that
+   writes, and do nothing irreversible.
+4. **The named debts below.**
 
 ## FORKS Р1–Р5 — these cannot start without the owner's decision
 
-Full text with the measurements: `claude/plan-s57.md` §3.
+Full text with the measurements: `claude/plan-s57.md` §3. Unchanged by session 58.
 
 | # | fork | what has been measured so we do not decide blind |
 |---|---|---|
-| **Р1** | the CASE path for Г1-F — duplicate the clock guard on the server, as was done for the three creation paths? | The case steps are captured by `buildPayload()` long before submission, so a naive claim would go stale and the guard would reject HONEST work. Needs a different scheme (claim taken at submit time), ~2 h |
+| **Р1** | the CASE path for Г1-F — duplicate the clock guard on the server? | The case steps are captured by `buildPayload()` long before submission, so a naive claim would go stale and the guard would reject HONEST work. Needs a claim taken at submit time, ~2 h |
 | **Р2** | the rule "where an audit trigger is required" (the named boundary of 0173) | Today the list says "these six must exist", not "audit must exist everywhere it is needed". A NEW table with PII and no audit trigger is invisible to everyone |
-| **Р3** | extend list №19 to the 38 schedule trigger functions? | Cost measured: a trigger function body is touched by 8 of the last 30 migrations vs 4 of 30 for the current list — i.e. twice as many 1100-line reprints of the guard. ⚠️ Package 31 added two concrete named candidates, both measured: `update_patient_details(uuid,jsonb,jsonb)` (the only live defence against U-66, and NOT in list №19) and `tg_change_markers_queue()` (SECURITY DEFINER over a PII table, pinned by nothing). One line each — but it changes the semantics of №19 |
-| **Р4** | Playwright / E2E by role | The project has no browser test at all, **by design** (`vitest.config.ts` says tests are pure functions from `lib/*`). This is the decision to create the first one — a new dependency and a change of approach |
-| **Р5** | `user_change_markers` → `REPLICA IDENTITY FULL` | **Both sides measured.** Today it is the only one of the 11 published tables without FULL, so a DELETE of a marker NEVER reaches the subscriber and the unread dot is cleared by a 60-second reconciliation instead. With FULL the dot clears in <1 s, but a side channel opens: measured in the body of `apply_rls`, **on DELETE the function does not evaluate RLS at all** — the only boundary is the filter the CLIENT supplies. Content does not leak (the DELETE payload is trimmed to the PK); the FACT and the TIME do. Mitigation: the client never reads the payload (`onChange: () => void`, it re-selects under RLS). The same price is already accepted for ten other tables, but `user_change_markers` is the only one that ties a PERSON to an ENTITY. Technical cost: 261 rows / 344 kB, WAL growth is noise; but `alter table` takes ACCESS EXCLUSIVE and fail-CLOSED triggers on SEVEN hot tables write into it — apply only in its own short transaction with `lock_timeout`, outside the 03:20–03:55 window. ⚠️ Check №21 holds the exception **assertively**, so on the day of the switch the guard itself goes red and demands the exception be removed. That is by design |
+| **Р3** | extend list №19 to the 38 schedule trigger functions? | A trigger function body is touched by 8 of the last 30 migrations vs 4 of 30 for the current list — twice as many 1100-line reprints. Two named candidates, both measured: `update_patient_details(uuid,jsonb,jsonb)` (the only live defence against U-66) and `tg_change_markers_queue()` (SECURITY DEFINER over a PII table) |
+| **Р4** | Playwright / E2E by role | The project has no browser test at all, **by design**. This is the decision to create the first one |
+| **Р5** | `user_change_markers` → `REPLICA IDENTITY FULL` | Both sides measured. Today a DELETE of a marker never reaches the subscriber and the dot clears by a 60-second reconciliation. With FULL it clears in <1 s, but on DELETE `apply_rls` evaluates no RLS at all — content does not leak (payload trimmed to PK), the FACT and the TIME do. ⚠️ Check №21 holds the exception assertively, so on the day of the switch the guard itself goes red and demands the exception be removed. That is by design |
 
 ## NAMED DEBTS — open, each with the place it lives
 
-- **`room_id` in `queue_reschedule_rpc`** — the second half of the U-66 finding
-  itself: the same "widening visibility in one UPDATE" class, not covered by
-  0176. Same class again in **`updateWaitlistEntry`**.
+- **The second half of U-59 (modal overlay)** — cost corrected, see queue item 2.
+- **`incidentCount` in the staff sidebar** is still a two-state falsy gate: its
+  load state arrives as a finished number from `QueueBoard`
+  (`liveIncidents.length`). NOT examined in package 35.
+- **The `services` surface** is the only permanently-visible one without a
+  `refreezeKey`: the freeze is taken once, so a marker that arrives later never
+  clears until F5. Older than package 35 (from session 28).
+- **`Sidebar` reads `loadWaitCount` twice on mount** — its own `useEffect` plus
+  the initial `callAll` without `skipInitial`. Same class as U-62/Д5.
+- **`room_id` in `queue_reschedule_rpc`** — the second half of the U-66 finding,
+  not covered by 0176. Same class again in **`updateWaitlistEntry`**.
 - **No consolidated list of the visibility columns of `queue_entries`**
-  (`{referrer_id, clinic_id, room_id, created_by, case_id}`). Until it exists,
-  every new writer has to rediscover which columns move a row across a
-  subscriber boundary.
-- **The "assigned" event reuses `referral.patient_data_changed`** — the type
-  says the wrong thing about what happened.
-- **12 of the 25 stands still do not use `verdictOf`** — they carry their own
-  `bad` counters. A separate debt descending from U-80б: unifying the VERDICT is
-  not the same as unifying the LINKAGE (which U-81 did).
+  (`{referrer_id, clinic_id, room_id, created_by, case_id}`).
+- **The "assigned" event reuses `referral.patient_data_changed`.**
+- **12 of the 26 stands still do not use `verdictOf`** — descended from U-80б.
 - **Subscriptions with a CONDITIONAL `router.refresh()`** did not get
-  `skipInitial` — there the initial call is not always idle, and proving it
-  needs its own measurement.
-- **The body of `tg_change_markers_queue`** (SECURITY DEFINER over a PII table)
-  is pinned by nothing — adjacent to fork Р3.
-- ⚠️ **RF-1 is a DANGLING REFERENCE.** Measured: it occurs in exactly three
-  places and all three are ENUMERATIONS (`claude/radflow-handoff.md`,
-  `claude/session56-start-prompt.md`, the deep audit journal). Nowhere does
-  anything say WHAT it is — RF-2 and RF-4 are described, RF-1 is not.
-  **Question for the owner: is RF-1 a real debt whose description was lost, or
-  a leftover of the numbering?** Work cannot be planned from a name with no
-  content.
+  `skipInitial`.
+- **The body of `tg_change_markers_queue`** is pinned by nothing — adjacent to Р3.
+- **The stand runs only `vitest`, not `tsc`/`build`** — a mutation that breaks
+  TYPES but not syntax passes through esbuild, so "the mutation broke the build"
+  only catches syntax and crashes.
 
-### There are NO open questions for the owner other than the forks and RF-1 above
+### Open questions for the owner: the five forks above, and nothing else
 
-Decisions already made — do not reopen them: branch protection on `main` stays
-OFF for now; the service-role key rotation is tied to the first real centre with
-real patients (so the audit verdict stays deliberately at CONDITIONAL GO); the
-window of a DEFERRED day shift on the boards is not a problem; the `returned`
-banner texts and the short `CLOCK_SKEW_MSG` are approved; the two test
-`queue_entries` from 31.08 are the owner's own.
+⚠️ **RF-1 is CLOSED as a question** (struck off — it never had a description).
+But its dig opened Р6, which the owner has already approved: see queue item 1.
+
+Decisions already made — do not reopen: branch protection on `main` stays OFF;
+the service-role key rotation is tied to the first real centre with real
+patients (so the audit verdict stays at CONDITIONAL GO); the DEFERRED day-shift
+window on the boards is not a problem; the `returned` banner texts and the short
+`CLOCK_SKEW_MSG` are approved; the two test `queue_entries` from 31.08 are the
+owner's own; the U-59 background semantics (freeze survives the background) and
+the U-60 unknown-badge look (quiet grey `—`) are approved and shipped.
 
 ---
 
@@ -423,13 +397,16 @@ straight after `{cond && (`.
    audit journal. Phases 2, 4 and 6 are closed; the `cas` scenario and the live
    checks remain open tails; **the verdict is not issued** and cannot go above
    CONDITIONAL GO until the key rotation.
-7. **The PR docs of session 57** (all in `docs/audit/`):
+7. **The PR doc of session 58:** `docs/audit/PR-U59-U60-ack-visibility.md` —
+   U-59, U-60, why U-75 needed no code, the four ways review found past my own
+   fresh pins, and the corrected deploy-fingerprint rule.
+8. **The PR docs of session 57** (all in `docs/audit/`):
    `PR-0174-invariants-fail-loud.md`, `PR-0175-profiles-no-default.md`,
    `PR-U65-realtime-clinic-filter.md`, `PR-U66-visibility-widening-update.md`,
    `PR-0176-visibility-widen-last.md`, `PR-0177-realtime-filter-premise.md`,
    `PR-U81-stand-exit-code.md`, `PR-U62-refetch-policy.md`,
    `PR-U62-initial-load.md`.
-8. **`docs/ops-cron.md`** — the registry of the nightly jobs (10 tasks;
+9. **`docs/ops-cron.md`** — the registry of the nightly jobs (10 tasks;
    `invariants` runs `50 3 * * *` and now reports 21 checks).
 
 ⚠️ **And do not lean on THIS file either.** Verify the hashes (`git ls-remote`)
