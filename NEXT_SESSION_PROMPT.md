@@ -99,18 +99,38 @@ const t = await r.text();
 const b = (t.match(/\\"b\\":\\"([A-Za-z0-9_-]{15,30})\\"/) || [])[1];
 ```
 
-⛔ **THE RULE WRITTEN AT THE END OF SESSION 57 WAS WRONG, and session 58
-falsified it by measurement.** It said the fingerprint must differ from the
-last recorded value by exactly one docs commit, and that an equal value means
-"the last docs deploy did not arrive". Measured: two merges into `main` that
-carried **only `.md`** did NOT change it in ~24 hours (checked twice, with two
-instruments, at `x-vercel-cache: MISS` and `age: 0`), while a merge carrying
-**code** changed it in 4 minutes. `next.config.mjs` sets no `generateBuildId`
-and `vercel.json` is empty, so a real rebuild would necessarily change it.
+⛔ **THE FINGERPRINT IS A ONE-DIRECTION SIGNAL. Session 58 got this wrong TWICE
+before measuring enough of it — do not repeat either mistake.** Four
+measurements, all at `x-vercel-cache: MISS` and `age: 0`:
 
-**Correct rule: a docs commit does NOT change the fingerprint. Only a commit
-with code proves a deploy.** An unchanged fingerprint after a docs-only push is
-NORMAL, not an incident.
+| when (UTC) | `main` | merge carried | fingerprint |
+|---|---|---|---|
+| 05.09 12:05 | `3c96898` | docs | `L5hONrcdRbznxb-qwKMum` |
+| 06.09 11:39 (two instruments) | `27b8056` (+2 docs merges) | docs | `L5hONrcdRbznxb-qwKMum` — **unchanged for ~24 h** |
+| 06.09 13:59 (+4 min) | `8382eeb` | **code** | `6w5PbW59Lb0Coh2XTeASf` — changed |
+| 06.09 14:18 (+5 min) | `09ff11b` | docs | `2S_QeCfEd-xbLsmKC1VOX` — **changed**, stable over three reads from different edge nodes |
+
+`next.config.mjs` sets no `generateBuildId` and `vercel.json` is empty, so the
+buildId is random per build: a changed value means a build shipped.
+
+**What follows, and only this:**
+
+* "a docs commit does not rebuild" — **REFUTED** (that was session 58's own
+  forty-minute-old rule, broken by the fourth measurement);
+* "every push rebuilds" — not observed either: the 05.09 pair did not;
+* **so the fingerprint is a reliable POSITIVE signal and an unreliable negative
+  one.** Changed → a build arrived. Unchanged → **draw no conclusion**, and do
+  not declare an incident.
+
+**Rule for TASK #0:** a changed fingerprint proves the deploy. An unchanged one
+is a fact to record, not a diagnosis — and if your session ships code, use your
+own push as the test (measure before and after).
+
+⚠️ **Unexplained and needing the Vercel dashboard, which the container cannot
+see:** why the 05.09 pair produced no build, and why the chain recorded at the
+end of session 57 (`1KXTYxqAKBzhqunU7Gqbk` → `6B4LcEMX3j8kVL4iFwWbI` →
+`hl0zFtCe7lUNp_Bql-tnn`) could not be reproduced — prod served none of those
+last two values. **A question for the owner or a session with dashboard access.**
 
 ⚠️ **Which browser lands where — measured, and it is NOT what session 57 wrote.**
 `lib/supabase/middleware.ts` sends a logged-in user from `/login` to `/queue`
@@ -142,7 +162,7 @@ which instrument took which end.
 | nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50 → `ok:true, checked:21, failed:[]` |
 | toolchain | tsc **0**, eslint **0**, vitest **2763/2763** (**93** files), `db:gate` **177/177** |
 | stand revision | **26/26 green, 619 addressed**. A full run took **52 min**. New stand `falsify-u59-u60` — 33/33, 31 addressed |
-| `/login` fingerprint | last measured **`6w5PbW59Lb0Coh2XTeASf`**, HTTP 200. ⚠️ The docs push of this handover will NOT change it — see the corrected rule above |
+| `/login` fingerprint | last measured **`2S_QeCfEd-xbLsmKC1VOX`**, HTTP 200 — that value came from a DOCS merge, and the docs commit carrying this very table will change it again. So expect it to DIFFER; if it does not, record the fact and read the one-direction rule above instead of declaring an incident |
 
 ⚠️ **The eslint gate runs with `--max-warnings 0`.** Clean up scratch files.
 
@@ -182,6 +202,13 @@ Full detail with the measurements: `claude/radflow-handoff.md` (top block) and
 4. **A doc's list is a HYPOTHESIS — the ninth and tenth time in this project.**
    U-75's stated defect was already cured, differently and better, in session
    52; U-60's "one place" was three.
+5. ⚠️ **And the worst one was mine, not inherited: I rewrote the deploy
+   fingerprint rule TWICE in one session.** First I refuted session 57's
+   version from two measurements, wrote my own into five docs — and forty
+   minutes later the third measurement broke it. That is exactly the failure
+   this project keeps catching, committed by the person writing the warning
+   about it. The cure is not a better rule but a smaller claim: the fingerprint
+   is a positive signal, and "unchanged" is a fact, not a diagnosis.
 
 ---
 
