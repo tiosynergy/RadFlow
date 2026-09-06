@@ -218,5 +218,10 @@ export async function POST(req: Request) {
     },
   });
 
-  return NextResponse.json({ ok: true, status: resultStatus, created_account: createdAccount, login, invite_token: inviteToken });
+  /* RF-09: `referrer_id` у відповіді — щоб екран міг покласти свіжий токен у
+     карту за ключем профілю. З таблиці токен більше не читається (0178), тож
+     відповідь роута — єдине місце, де він взагалі зʼявляється на клієнті.
+     Витоку тут немає: `referrer_id` цього ж гранта адмін і так бачить у
+     `referral_access` на цьому екрані. */
+  return NextResponse.json({ ok: true, status: resultStatus, created_account: createdAccount, login, referrer_id: referrerId, invite_token: inviteToken });
 }

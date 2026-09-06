@@ -19,6 +19,7 @@ import PhoneInput from "@/components/PhoneInput";
 import { normalizeLogin, isValidLogin, LOGIN_HINT } from "@/lib/login";
 import { modalityLabel } from "@/lib/studies";
 import { bookableRooms, isRoomBookable, visibleRooms, ROOM_OFF_LABEL } from "@/lib/rooms";
+import { EMPTY_TOKENS, REISSUE_HINT, forgetToken, inviteHint, rememberToken, type FreshTokens } from "@/lib/inviteLink";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
@@ -32,7 +33,10 @@ type StaffForm = { login: string; full_name: string; email: string; phone: strin
 type Radiologist = {
   id: string; login: string | null; full_name: string | null; email: string | null;
   contact_email: string | null;   // 0124: справжня пошта радіолога (email — службовий)
-  phone: string | null; note: string | null; password_set: boolean; invite_token: string | null;
+  phone: string | null; note: string | null; password_set: boolean;
+  /* ⚠️ RF-09: `invite_token` тут БІЛЬШЕ НЕМАЄ і бути не повинно — міграція 0178
+     зняла право читати цю колонку у клієнтських ролей. Токен приходить лише у
+     відповіді роута видачі й живе в окремій карті (lib/inviteLink.ts). */
   role: StaffRole;
 };
 type RadRoom = { profile_id: string; room_id: string };
@@ -74,6 +78,10 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
   const [ask, setAsk] = useState<null | { title: string; text: ReactNode; confirmLabel: string; danger?: boolean; run: () => void }>(null);
   const [origin, setOrigin] = useState("");
   const [pwModal, setPwModal] = useState<PwModal | null>(null);
+  /* RF-09: токени, ОТРИМАНІ У ВІДПОВІДЯХ роутів у цій сесії екрана. Живуть
+     ПОРУЧ зі списком, а не в його рядках: `reload()` перезбирає список на
+     кожен фокус вкладки і затер би токен разом із рядком. */
+  const [freshTokens, setFreshTokens] = useState<FreshTokens>(EMPTY_TOKENS);
   const [edit, setEdit] = useState<EditForm | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
@@ -92,7 +100,10 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
     const supabase = createClient();
     const [{ data: profs }, { data: rr }] = await Promise.all([
       // Персонал центру = радіологи + реєстратори (адмін керує собою сам).
-      supabase.from("profiles").select("id, login, full_name, email, contact_email, phone, note, password_set, invite_token, role")
+      /* ⚠️ RF-09: БЕЗ `invite_token`. Після 0178 клієнтська роль не має права
+         на цю колонку, і згадка про неї тут поклала б ВЕСЬ запит у 42501 —
+         список персоналу став би порожнім. */
+      supabase.from("profiles").select("id, login, full_name, email, contact_email, phone, note, password_set, role")
         .eq("clinic_id", clinicId).in("role", ["radiologist", "registrar"]).order("full_name"),
       supabase.from("radiologist_rooms").select("profile_id, room_id").eq("clinic_id", clinicId),
     ]);
@@ -180,6 +191,9 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { notify(data.error || "Помилка створення", "error"); setBusy(false); return; }
       const createdRole = formRole;
+      /* RF-09: токен беремо З ВІДПОВІДІ роута — з таблиці його вже не прочитати.
+         Кладемо ДО reload(): карта від нього не залежить. */
+      setFreshTokens((m) => rememberToken(m, String(data.id ?? ""), data.invite_token));
       setForm(EMPTY); setFormRooms([]);
       // warning: акаунт створено, але кабінети не призначились — це треба показати,
       // інакше радіолог мовчки лишиться без жодного кабінету.
@@ -258,7 +272,10 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
   function askResetPassword(profileId: string, label: string | null) {
     setAsk({
       title: `Скинути пароль для «${label}»?`,
-      text: "Поточний пароль перестане діяти. Користувач задасть новий на /set-password за своїм логіном.",
+      /* ⚠️ Було «задасть новий на /set-password ЗА СВОЇМ ЛОГІНОМ» — неправда з
+         міграції 0032: пароль задається лише за одноразовим токеном, логін тут
+         ні до чого. Текст жив хибним, бо його ніхто не перечитував. */
+      text: "Поточний пароль перестане діяти. Ви отримаєте нове посилання — передайте його користувачу.",
       confirmLabel: "Скинути пароль",
       run: () => { void resetPassword(profileId); },
     });
@@ -268,7 +285,11 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { notify(data.error || "Помилка", "error"); return; }
     setRadiologists((rs) => rs.map((r) => (r.id === profileId ? { ...r, password_set: false } : r)));
-    notify("Пароль скинуто — користувач задасть новий на /set-password", "info");
+    /* RF-09: роут повертає СВІЖИЙ токен — це єдиний момент, коли екран його
+       бачить. Раніше кнопка «Скопіювати» тут зʼявлялась лише після наступного
+       читання таблиці; тепер зʼявляється одразу. */
+    setFreshTokens((m) => rememberToken(m, profileId, data.invite_token));
+    notify("Пароль скинуто — скопіюйте нове посилання в картці й передайте співробітнику.", "info");
   }
   function setPassword(profileId: string) { setPwModal({ id: profileId, val: "", busy: false }); }
   async function submitPassword() {
@@ -278,6 +299,9 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { notify(data.error || "Помилка", "error"); setPwModal((m) => (m ? { ...m, busy: false } : m)); return; }
     setRadiologists((rs) => rs.map((r) => (r.id === pwModal.id ? { ...r, password_set: true } : r)));
+    /* Пароль задано — токен на сервері погашено. Забуваємо і тут, інакше
+       карта показувала б МЕРТВЕ посилання як живе. */
+    setFreshTokens((m) => forgetToken(m, pwModal.id));
     notify("Пароль встановлено", "success");
     setPwModal(null);
   }
@@ -296,6 +320,9 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
     if (error) { notify("Помилка: " + error.message, "error"); return; }
     setRadiologists((rs) => rs.filter((r) => r.id !== profileId));
     setRadRooms((rr) => rr.filter((x) => x.profile_id !== profileId));
+    /* Акаунта більше немає — токен у карті мертвий. Докстрінг `forgetToken`
+       називає цей випадок другою причиною свого існування (ревʼю Б, MINOR). */
+    setFreshTokens((m) => forgetToken(m, profileId));
     notify("Акаунт радіолога видалено", "info");
   }
   async function toggleRoom(profileId: string, roomId: string) {
@@ -501,13 +528,26 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                     </div>
                   </div>
                 )}
-                {!r.password_set && r.invite_token && (
-                  <div style={{ fontSize: "0.75rem", marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                    <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для встановлення пароля:</span>
-                    <code style={{ fontSize: "0.71875rem", color: "var(--text-secondary)", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
-                    <button className="btn btn-secondary btn-sm" onClick={() => copyLink(r.invite_token as string)}>Скопіювати</button>
-                  </div>
-                )}
+                {(() => {
+                  /* RF-09: три стани замість двох. «Пароль не задано, токена на
+                     руках немає» — це НЕ «нічого не показувати»: адмін мусить
+                     бачити, що запрошення висить, і знати, як передати його ще
+                     раз. Рішення — в lib/inviteLink.ts, тут лише малюємо. */
+                  const hint = inviteHint(r.password_set, freshTokens, r.id);
+                  if (hint.kind === "none") return null;
+                  if (hint.kind === "reissue") {
+                    return (
+                      <div style={{ fontSize: "0.75rem", marginTop: 8, color: "var(--text-muted)" }}>{REISSUE_HINT}</div>
+                    );
+                  }
+                  return (
+                    <div style={{ fontSize: "0.75rem", marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для встановлення пароля:</span>
+                      <code style={{ fontSize: "0.71875rem", color: "var(--text-secondary)", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
+                      <button className="btn btn-secondary btn-sm" onClick={() => copyLink(hint.token)}>Скопіювати</button>
+                    </div>
+                  );
+                })()}
                 {/* Кабінети призначаються лише радіологу (/api/staff/rooms це теж вимагає). */}
                 {r.role === "radiologist" && (
                 <div style={{ marginTop: 10 }}>
