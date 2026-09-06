@@ -109,6 +109,18 @@ measurements, all at `x-vercel-cache: MISS` and `age: 0`:
 | 06.09 11:39 (two instruments) | `27b8056` (+2 docs merges) | docs | `L5hONrcdRbznxb-qwKMum` — **unchanged for ~24 h** |
 | 06.09 13:59 (+4 min) | `8382eeb` | **code** | `6w5PbW59Lb0Coh2XTeASf` — changed |
 | 06.09 14:18 (+5 min) | `09ff11b` | docs | `2S_QeCfEd-xbLsmKC1VOX` — **changed**, stable over three reads from different edge nodes |
+| 06.09 14:25 (+3 min) | `7edf276` | docs | still `2S_QeC…` — **the build had not landed yet** |
+| 06.09 14:29 (+7 min) | `7edf276` | docs | `Dnmjxdw03-CgSJsXREkCm` — **changed** |
+
+⚠️ **BUILD LATENCY IS 4 TO 7+ MINUTES, not the "2–3" the older docs claim.** At
+the three-minute mark I nearly wrote down "no build". Measure no earlier than
+8 minutes after the push, and preferably twice with a gap.
+
+⚠️ **And this reweighs the anomaly:** today THREE merges in a row (code, docs,
+docs) produced three builds; on 05.09 two merges produced none in 24 hours. So
+the norm is "every merge rebuilds", and 05.09 is a local anomaly of unknown
+cause — not a mode of operation. It does not change the conclusion below:
+"unchanged" is still not a diagnosis.
 
 `next.config.mjs` sets no `generateBuildId` and `vercel.json` is empty, so the
 buildId is random per build: a changed value means a build shipped.
@@ -148,7 +160,8 @@ buildId can.
 (`CDP Runtime.evaluate timed out`). The built-in browser IS authorized in
 RadFlow now and did the whole job in 58 — prefer it, and if you use both, say
 which instrument took which end.
-⚠️ A Vercel deploy takes ~2–3 min after a code push.
+⚠️ A Vercel deploy takes **4–7+ min** after a push — measured in session 58,
+and the "~2–3 min" in the older docs is too optimistic to act on.
 
 ### Expected state (measured 2026-09-06, end of session 58)
 
