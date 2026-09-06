@@ -116,11 +116,31 @@ measurements, all at `x-vercel-cache: MISS` and `age: 0`:
 the three-minute mark I nearly wrote down "no build". Measure no earlier than
 8 minutes after the push, and preferably twice with a gap.
 
-⚠️ **And this reweighs the anomaly:** today THREE merges in a row (code, docs,
-docs) produced three builds; on 05.09 two merges produced none in 24 hours. So
-the norm is "every merge rebuilds", and 05.09 is a local anomaly of unknown
-cause — not a mode of operation. It does not change the conclusion below:
-"unchanged" is still not a diagnosis.
+⚠️ **CORRECTED ON 06.09 FROM THE VERCEL DASHBOARD (session 58, third rewrite of
+this rule — read this before you trust the table above).** The claim "on 05.09
+two merges produced no build" is **REFUTED by the primary source**. The
+Deployments list shows a deployment for EVERY commit, on `main` and on `dev`
+alike, with no gaps:
+
+* `81a7b46` — Production, Ready, 1m 2s, 05.09;
+* `27b8056` — Production, Ready, 58s, **created 05.09 15:12:39 GMT+3**.
+
+So the norm is not merely "every merge rebuilds" — **every merge did rebuild,
+including both of the 05.09 docs merges.** What is left is a sharper anomaly:
+`27b8056` had been built and Ready for ~20 hours by the time of the 06.09 11:39
+measurement, and the fingerprint was nevertheless still the 05.09 12:05 value.
+Build and fingerprint disagree; the dashboard is the primary source and wins.
+
+Hypothesis tested and **falsified** on the spot: "the `rad-flow-tau.vercel.app`
+alias was never moved to those builds". Their detail pages do not list that
+domain — but neither does `eead31e`, which certainly served production two
+hours earlier. Vercel's Domains block shows only the domains assigned **right
+now**, so its absence on an old deployment proves nothing.
+
+Still unexplained, and it is now a fingerprint-instrument question, not a
+build question: how a live `/login` read at `x-vercel-cache: MISS`, `age: 0`
+returned a 20-hour-old buildId. Until that is understood, treat the fingerprint
+as stated below.
 
 `next.config.mjs` sets no `generateBuildId` and `vercel.json` is empty, so the
 buildId is random per build: a changed value means a build shipped.
@@ -129,20 +149,26 @@ buildId is random per build: a changed value means a build shipped.
 
 * "a docs commit does not rebuild" — **REFUTED** (that was session 58's own
   forty-minute-old rule, broken by the fourth measurement);
-* "every push rebuilds" — not observed either: the 05.09 pair did not;
+* "every push rebuilds" — **CONFIRMED at the dashboard on 06.09**: every commit
+  on `main` and `dev`, docs commits included, has its own Ready deployment;
 * **so the fingerprint is a reliable POSITIVE signal and an unreliable negative
-  one.** Changed → a build arrived. Unchanged → **draw no conclusion**, and do
-  not declare an incident.
+  one.** Changed → a build arrived. Unchanged → **draw no conclusion**: on
+  05.09 an unchanged fingerprint sat on top of two builds that had shipped.
+  Do not declare an incident from it.
 
 **Rule for TASK #0:** a changed fingerprint proves the deploy. An unchanged one
 is a fact to record, not a diagnosis — and if your session ships code, use your
 own push as the test (measure before and after).
 
-⚠️ **Unexplained and needing the Vercel dashboard, which the container cannot
-see:** why the 05.09 pair produced no build, and why the chain recorded at the
-end of session 57 (`1KXTYxqAKBzhqunU7Gqbk` → `6B4LcEMX3j8kVL4iFwWbI` →
+⚠️ **Still unexplained (the dashboard answered half of it on 06.09):** the
+05.09 pair DID build — see the correction above — so what is open is why the
+`/login` fingerprint did not follow, and why the chain recorded at the end of
+session 57 (`1KXTYxqAKBzhqunU7Gqbk` → `6B4LcEMX3j8kVL4iFwWbI` →
 `hl0zFtCe7lUNp_Bql-tnn`) could not be reproduced — prod served none of those
-last two values. **A question for the owner or a session with dashboard access.**
+last two values. Both are now suspicions about the INSTRUMENT (the regex over
+the RSC payload of `/login`), not about the deploy pipeline. Next session: pin
+the instrument by measuring the same commit twice from two different edges, and
+cross-check the buildId against `/_next/static/<buildId>/_buildManifest.js`.
 
 ⚠️ **Which browser lands where — measured, and it is NOT what session 57 wrote.**
 `lib/supabase/middleware.ts` sends a logged-in user from `/login` to `/queue`
@@ -287,11 +313,27 @@ the texts before they land.
 Full text with the measurements: `claude/plan-s57.md` §3. **Р6 is DONE** (the
 RF-01…RF-08 re-measure, package 36). Р1–Р5 unchanged by session 58.
 
-⚠️ **And Р6 produced one question only the owner can answer, in one page of
-settings:** are `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` set
-in the Vercel BUILD environment, and is `RADFLOW_SKIP_MIGRATION_GATE` set
-anywhere? That decides whether the deploy gate runs in production at all or
-soft-skips every deploy. The container cannot see the dashboard.
+✅ **Р6's one open question is now CLOSED — measured on the dashboard, 06.09,
+Production deployment `36a9a42` (`AizJDW1o8…`), build log line 19:18:30.562:**
+
+```
+> node scripts/migration-gate.mjs --build && next build
+[migration-gate] OK: 177/177 міграцій звірено з леджером.
+```
+
+**The gate runs for real in production.** That single line rules out both
+failure modes at once: the soft-skip branch would have printed "немає
+NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY", and the bypass branch
+would have printed "WARN: пропущено через RADFLOW_SKIP_MIGRATION_GATE=1".
+Corroborated by Settings → Environment Variables: `SUPABASE_SERVICE_ROLE_KEY`
+and `NEXT_PUBLIC_SUPABASE_URL` both exist with scope **Production and Preview**
+(added 17.06), and a search for `RADFLOW` returns **No Results Found** in both
+the Project and the Shared tab — the bypass variable does not exist anywhere.
+The build's only warning is `npm warn allow-scripts` (esbuild, unrs-resolver),
+unrelated to the gate.
+
+⚠️ Re-measure this whenever the ledger count changes: the number in the log is
+the assertion, and `OK: N/N` with the wrong N is still a green line.
 
 | # | fork | what has been measured so we do not decide blind |
 |---|---|---|
