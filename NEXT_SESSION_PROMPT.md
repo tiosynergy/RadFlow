@@ -193,6 +193,7 @@ Full detail with the measurements: `claude/radflow-handoff.md` (top block) and
 | **U-75** | **CLOSED WITH NO CODE** — its stated defect has been false since session 52 |
 | stands | new `falsify-u59-u60` (33/33, 31 addressed); `EXPECTED_STANDS` 25 → **26** |
 | **RF-1** | dug out and struck off — see below |
+| **package 36 (Р6)** | RF-01 … RF-08 re-measured, no code. Two High are dead; three findings are partial; **one NEW High found — RF-09**. `docs/audit/PR-RF01-RF08-remeasure.md` |
 
 ## LESSONS OF SESSION 58
 
@@ -222,6 +223,14 @@ Full detail with the measurements: `claude/radflow-handoff.md` (top block) and
    this project keeps catching, committed by the person writing the warning
    about it. The cure is not a better rule but a smaller claim: the fingerprint
    is a positive signal, and "unchanged" is a fact, not a diagnosis.
+6. ⚠️ **A GREEN BASELINE VALIDATES THE INSTRUMENT, NOT THE QUERY.** I reported
+   RF-01 as still live because a search for `radiologist_rooms` in the policy
+   text came back empty — and I had a green baseline (`auth_clinic_id` WAS
+   found), so I trusted it. But the policy calls the helper
+   `auth_radiologist_room_ok(room_id)`, not the table. The baseline proved the
+   tool was reading the text; it proved nothing about my search term. Before
+   writing "not found", find something that MUST be found **by that same
+   query**, not by a neighbouring one.
 
 ---
 
@@ -231,32 +240,58 @@ Full detail with the measurements: `claude/radflow-handoff.md` (top block) and
 PACKAGE WITH ME BEFORE WRITING CODE.** If a package is product-facing, show me
 the texts before they land.
 
-1. **Р6 — re-measure RF-01 … RF-08 (the owner already said yes).** The August
-   reliability audit's eight findings are tracked by NOTHING: they occur only
-   inside their own doc. Two are High. Measured for RF-01 already: the
-   `radiologist_rooms` predicate is in NONE of the four `queue_entries`
-   policies (green baseline: `auth_clinic_id` is found in two of them); a live
-   re-test under a radiologist JWT was NOT done. Deliverable: one measurement
-   per finding, "alive / closed / accepted by design", and tracked names in the
-   handoff.
-2. **The second half of U-59 — "the surface is covered by a modal".** ⚠️ The
+1. ⚠️⚠️ **RF-09 (High) — `profiles.invite_token` is readable by the whole
+   clinic.** Found in session 58 while re-measuring RF-02 (Р6 is DONE — see
+   `docs/audit/PR-RF01-RF08-remeasure.md`). Measured, and confirmed
+   independently under a live registrar JWT: `authenticated` and `anon` both
+   have SELECT on the column, `authenticated` also has UPDATE, and
+   `profiles_select` is clinic-wide. So between "the admin issues an invite"
+   and "the person sets their password", ANY colleague in the clinic can read
+   the token and POST it to `/api/account/set-password` — which requires
+   nothing but the token. Account takeover **including the admin's**, with
+   privilege escalation, and the atomic claim and rate limit from RF-02 do not
+   help: it is one legitimate request with a valid token. Not burning right
+   now — 0 live tokens of 9 profiles.
+   ⚠️ **Not a one-liner:** a plain `revoke select (invite_token)` breaks
+   `StaffManager:95` and `ReferrersManager:252`, which read the column to draw
+   "Скопіювати посилання". ✅ But the safe pattern already exists in the tree —
+   `CeoManager` goes through the security-definer RPC `ceo_list_for_clinic`
+   precisely so as not to expose other roles' tokens, and all four invite
+   routes already return the token in their response. Needs its own migration,
+   smoke, dry-run, two reviews and stand positions.
+2. **The residues of the eight, now that they are measured.** In order of what
+   the measurement says: `sched_referrer_read` leaks non-granted room ids,
+   hours and closures to a referrer through the `rooms jsonb` column (RF-03);
+   no regression check on grants, so one `GRANT` silently reopens RF-04; the
+   deploy gate has TWO fail-opens and CI relies on one of them (RF-05);
+   leaked-password protection is still off — one switch, the cheapest item in
+   the whole audit (RF-08); and `add_case_step_rpc` was not traced to the end
+   (RF-01).
+3. **The second half of U-59 — "the surface is covered by a modal".** ⚠️ The
    cost was OVERSTATED by my own first comment and is now measured: the flag
    already exists (`anyModalOpen`, `QueueBoard.tsx:1589`) and its COMPLETENESS
    is already guarded by the session-52 test. What is missing is a fourth
    `ackGate` input `overlayShown` with outcome `hold` plus one prop into the
    row — on the order of ten lines. By frequency this is MORE common than a
    background tab: a registrar has a modal open a noticeable part of the shift.
-3. **Live checks** — the cheapest big one is a single run through
+4. **Live checks** — the cheapest big one is a single run through
    `RescheduleModal` with a chosen slot; then Ф4-8 (timer ring and sound),
    Ф4-2 (call-window edges), the `cas` scenario, and Г1-F itself. A staff
    session is live in both reachable browsers, so this needs no password — but
    it means acting as the owner in production. Ask before every step that
    writes, and do nothing irreversible.
-4. **The named debts below.**
+5. **The named debts below.**
 
 ## FORKS Р1–Р5 — these cannot start without the owner's decision
 
-Full text with the measurements: `claude/plan-s57.md` §3. Unchanged by session 58.
+Full text with the measurements: `claude/plan-s57.md` §3. **Р6 is DONE** (the
+RF-01…RF-08 re-measure, package 36). Р1–Р5 unchanged by session 58.
+
+⚠️ **And Р6 produced one question only the owner can answer, in one page of
+settings:** are `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` set
+in the Vercel BUILD environment, and is `RADFLOW_SKIP_MIGRATION_GATE` set
+anywhere? That decides whether the deploy gate runs in production at all or
+soft-skips every deploy. The container cannot see the dashboard.
 
 | # | fork | what has been measured so we do not decide blind |
 |---|---|---|
