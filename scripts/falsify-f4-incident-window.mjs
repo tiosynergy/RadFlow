@@ -80,8 +80,19 @@ const MUTATIONS = [
     id: "N8", file: "sidebar", green: false,
     expect: /помилка читання перевіряється і не перетворюється на 0/,
     what: "лічильник листа знову не дивиться на error (дефект Ф4-9)",
-    from: "      const { count, error } = await supabase\n        .from(\"waitlist_entries\")\n        .select(\"id\", { count: \"exact\", head: true })\n        .eq(\"status\", \"waiting\");\n      if (error) return;   // збій читання ≠ «в листі нікого»\n      setWaitCount(count ?? 0);",
-    to: "      const { count } = await supabase\n        .from(\"waitlist_entries\")\n        .select(\"id\", { count: \"exact\", head: true })\n        .eq(\"status\", \"waiting\");\n      setWaitCount(count ?? 0);",
+    /* ⚠️ ПЕРЕЯКОРЕНО в с58 (пакет 35), і ДВІЧІ — перша спроба теж не влучила.
+       Якір протух не від рефактора, а від правки, яка ту саму властивість
+       ПОСИЛИЛА (`setWaitErr` плюс `count == null`). А перше переякорення
+       розтягувалось на шість рядків і зламалось об коментар, вставлений
+       ПОСЕРЕДИНІ блоку. Тому якір тепер ОДНОРЯДКОВИЙ: чим коротший, тим менше
+       поверхні, об яку тухнути.
+       ⚠️ Мутація звузилась і це названо: раніше вона знімала `error` з
+       деструктуризації, тепер підміняє САМУ УМОВУ на правдоподібне
+       «спрощення» `if (!count)` — воно ігнорує `error` і заразом оголошує
+       чесний нуль збоєм. Обидві половини властивості F4-9 тримає той самий
+       сторож. */
+    from: "      if (error || count == null) { setWaitErr(true); return; }   // збій читання ≠ «в листі нікого»\n      setWaitCount(count);",
+    to: "      if (!count) { setWaitErr(true); return; }   // збій читання ≠ «в листі нікого»\n      setWaitCount(count);",
   },
   {
     id: "N9", file: "breakdown", green: false,
@@ -138,8 +149,9 @@ const MUTATIONS = [
   {
     id: "P4", file: "sidebar", green: true,
     what: "змінено лише текст коментаря над читанням лічильника (зелений за побудовою: codeOf ріже коментарі)",
-    from: "      if (error) return;   // збій читання ≠ «в листі нікого»",
-    to: "      if (error) return;   // текст коментаря змінено стендом",
+    /* ⚠️ Переякорено разом із N8 (с58). */
+    from: "      if (error || count == null) { setWaitErr(true); return; }   // збій читання ≠ «в листі нікого»",
+    to: "      if (error || count == null) { setWaitErr(true); return; }   // текст коментаря змінено стендом",
   },
 ];
 

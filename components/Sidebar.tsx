@@ -16,6 +16,7 @@ import { modalityShort, modalityKind } from "@/lib/studies";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
 import { unreadForNav } from "@/lib/unreadChanges";
+import { badgeOf, loadStatusOf } from "@/lib/sidebarBadge";
 
 type SidebarRoom = {
   id: string;
@@ -115,6 +116,12 @@ export default function Sidebar({
      ідентифікаторів. ЗАКРИТО в с57 (U-65): підписка йде по одній на КОЖЕН
      видимий центр, з `clinic_id=eq.` — див. нижче. */
   const [waitCount, setWaitCount] = useState(0);
+  /* U-60: F4-9 закрив збій ДРУГОГО читання (лишаємо попереднє значення), але
+     на ПЕРШОМУ читанні попереднього значення немає — і `waitCount` лишався
+     нулем, тобто «у листі нікого». Розводимо: `waitOk` — чи було хоч одне
+     успішне читання, `waitErr` — чи впала остання спроба. */
+  const [waitOk, setWaitOk] = useState(false);
+  const [waitErr, setWaitErr] = useState(false);
   const loadWaitCount = useCallback(async () => {
     try {
       const supabase = createClient();
@@ -128,11 +135,33 @@ export default function Sidebar({
         .from("waitlist_entries")
         .select("id", { count: "exact", head: true })
         .eq("status", "waiting");
-      if (error) return;   // збій читання ≠ «в листі нікого»
-      setWaitCount(count ?? 0);
-    } catch { /* транзієнтний збій мережі — лишаємо попереднє значення */ }
+      /* ⚠️ `count == null` — ТЕЖ «не знаємо», і це знайшло ревʼю с58, а не
+         мутація. `head: true` бере число з заголовка `Content-Range`; якщо він
+         не приїхав або не розібрався, `count` порожній ПРИ `error === null` —
+         і `count ?? 0` знову писав би в бейдж довірений нуль, тобто рівно той
+         дефект, проти якого стоїть весь U-60. */
+      if (error || count == null) { setWaitErr(true); return; }   // збій читання ≠ «в листі нікого»
+      setWaitCount(count);
+      setWaitOk(true);
+      setWaitErr(false);
+    } catch { setWaitErr(true); /* транзієнтний збій — попереднє значення лишаємо, див. loadStatusOf */ }
   }, []);
   useEffect(() => { loadWaitCount(); }, [loadWaitCount]);
+  /* ⚠️ ПЕРЕЧИТУВАННЯ ПО ПОВЕРНЕННІ, КОЛИ КАНАЛУ НЕМАЄ (ревʼю с58). Коментар
+     нижче обіцяв, що бейдж «оновиться при поверненні на вкладку», — і не
+     виконував: при порожньому `clinicIds` канал не створюється, а
+     `useRealtimeRefetch` виходить по `if (!channelName) return;` ДО того, як
+     навісить слухач видимості. До U-60 це було непомітно (висіло старе число),
+     після — сірий прочерк висів би до перезавантаження сторінки.
+     ⚠️ Слухач лише в ЦЬОМУ випадку: коли канал є, повернення вже перечитує
+     хук, і другий слухач дав би два читання на одне повернення — та сама
+     холоста робота, яку прибирав U-62. */
+  useEffect(() => {
+    if (clinicIds.length || typeof document === "undefined") return;
+    const onVis = () => { if (document.visibilityState === "visible") void loadWaitCount(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { document.removeEventListener("visibilitychange", onVis); };
+  }, [clinicIds.length, loadWaitCount]);
   /* U-65: по підписці на КОЖЕН видимий центр, кожна з `clinic_id=eq.`.
      ⚠️ Чому не один фільтр: `postgres_changes` уміє рівно одну рівність, а
      керівник бачить кілька центрів — той самий фан-аут, що в CeoDashboard,
@@ -176,6 +205,9 @@ export default function Sidebar({
      панель НЕ повинна падати через те, що батько її не обгорнув. */
   const { index: unreadIx } = useUnreadChanges();
   const navUnread = (key: string) => unreadForNav(unreadIx, key);
+
+  /* U-60: три стани бейджа листа замість двох. */
+  const waitBadge = badgeOf(loadStatusOf(waitOk, waitErr), waitCount);
 
   async function signOut() {
     await signOutAndRedirect(router);
@@ -240,7 +272,9 @@ export default function Sidebar({
             <span className="ic">⏳</span>
             <span className="sb-item-lab">Лист очікування</span>
             <UnreadDot markers={navUnread("waitlist")} withCount />
-            {waitCount ? <span className="sb-badge">{waitCount}</span> : null}
+            {waitBadge.kind === "unknown"
+              ? <span className="sb-badge dim" title="Не вдалося завантажити">—</span>
+              : waitBadge.kind === "count" ? <span className="sb-badge">{waitBadge.value}</span> : null}
           </a>
           {/* ?from= — щоб портал знав, куди повернути адміна. Значення звіряється
               зі списком маршрутів на сервері (lib/portalBack), тож підроблений

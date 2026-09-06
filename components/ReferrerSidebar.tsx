@@ -10,6 +10,7 @@ import { modalityShort, modalityKind } from "@/lib/studies";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
 import { unreadForNav } from "@/lib/unreadChanges";
+import { badgeOf, type BadgeValue } from "@/lib/sidebarBadge";
 import NavDrawer from "@/components/NavDrawer";
 import SoundToggle from "@/components/SoundToggle";
 import { roomsInGrant } from "@/lib/rooms";
@@ -42,7 +43,11 @@ interface Props {
   onSelectRoom?: (clinicId: string, roomId: string) => void;
   activeClinic?: string;
   activeRoom?: string;
-  counts: { mine: number; waitlist: number; pendingInvites: number };
+  /* U-60: `mine` і `waitlist` приходять уже РОЗВЕДЕНИМИ («нуль» проти «не
+     знаємо») — див. `lib/sidebarBadge.ts`. `pendingInvites` рахується з
+     пропа `centers`, який портал отримує з сервера разом зі сторінкою, тож
+     стану завантаження в нього немає. */
+  counts: { mine: BadgeValue; waitlist: BadgeValue; pendingInvites: number };
   canManage: boolean;
   onSignOut: () => void;
   /* Адмін відкрив портал з свого робочого місця (Sidebar → «Портал направлень»).
@@ -63,11 +68,11 @@ export default function ReferrerSidebar({ centers, roomsByClinic, rawRoomCountOf
     : key === "waitlist" ? unreadForNav(unreadIx, "waitlist")
     : key === "centers" ? unreadForNav(unreadIx, "centers")
     : [];
-  const nav: Array<{ key: string; label: string; icon: string; badge?: number; badgeBlue?: boolean }> = [
+  const nav: Array<{ key: string; label: string; icon: string; badge?: BadgeValue; badgeBlue?: boolean }> = [
     { key: "new", label: "Нове направлення", icon: "＋" },
     { key: "mine", label: "Мої направлення", icon: "▦", badge: counts.mine },
     { key: "waitlist", label: "Лист очікування", icon: "⏳", badge: counts.waitlist },
-    { key: "centers", label: "Мої центри", icon: "🏥", badge: counts.pendingInvites, badgeBlue: true },
+    { key: "centers", label: "Мої центри", icon: "🏥", badge: badgeOf("ready", counts.pendingInvites), badgeBlue: true },
     ...(canManage ? [{ key: "profile", label: "Мій профіль", icon: "👤" }] : []),
   ];
 
@@ -159,7 +164,14 @@ export default function ReferrerSidebar({ centers, roomsByClinic, rawRoomCountOf
               <span className="ic">{it.icon}</span>
               <span className="sb-item-lab">{it.label}</span>
               <UnreadDot markers={navUnread(it.key)} withCount />
-              {it.badge ? <span className="sb-badge" style={it.badgeBlue ? { background: "var(--blue)", color: "#fff", boxShadow: "inset 0 0 0 1px var(--blue-line)" } : undefined}>{it.badge}</span> : null}
+              {/* U-60: три стани, а не два. `dim` — уже наявний тихий сірий
+                  вигляд бейджа (`styles/prototype/radflow.css`), окремого
+                  класу заводити не довелось. */}
+              {it.badge?.kind === "unknown"
+                ? <span className="sb-badge dim" title="Не вдалося завантажити">—</span>
+                : it.badge?.kind === "count"
+                  ? <span className="sb-badge" style={it.badgeBlue ? { background: "var(--blue)", color: "#fff", boxShadow: "inset 0 0 0 1px var(--blue-line)" } : undefined}>{it.badge.value}</span>
+                  : null}
             </button>
           ))}
           {/* с22: універсальний пошук — окрема сторінка (не вкладка порталу);
