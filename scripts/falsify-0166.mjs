@@ -212,8 +212,14 @@ M.push(
    "'check', 'ucm_orphan_markers', 'offenders', to_jsonb(v_tmp)",
    "'check', 'ucm_orphan', 'offenders', to_jsonb(v_tmp)"],
   ["N17 ролі знову хардкод — нова клієнтська роль невидима", REPRINT, E.roles,
-   "        cross join (select g.rolname as rol\n                      from pg_auth_members m\n                      join pg_roles g on g.oid = m.roleid\n                      join pg_roles a on a.oid = m.member\n                     where a.rolname = 'authenticator'\n                       and g.rolname <> 'service_role') r",
-   "        cross join (values ('anon'), ('authenticated')) as r(rol)"],
+   /* ⚠️ Якір ПЕРЕАНКОРЕНО (с58, пакет 37). Раніше він починався просто з
+      `cross join (select g.rolname as rol` — і 0178 зробив його НЕунікальним:
+      гілка (f2) нової перевірки RF-09 містить рівно той самий підзапит ролей
+      із тим самим відступом. Додано рядок-попередник із гілки (a), який у
+      передруку існує в однині. Той самий клас, що ловили в f4-incident-window:
+      короткий якір переживає рефактор рівно до наступного передруку. */
+   "        join pg_namespace n on n.oid = c.relnamespace\n        cross join (select g.rolname as rol\n                      from pg_auth_members m\n                      join pg_roles g on g.oid = m.roleid\n                      join pg_roles a on a.oid = m.member\n                     where a.rolname = 'authenticator'\n                       and g.rolname <> 'service_role') r",
+   "        join pg_namespace n on n.oid = c.relnamespace\n        cross join (values ('anon'), ('authenticated')) as r(rol)"],
   ["N18 foreign table випала з гілки (a) — грантор supabase_admin поза наглядом", REPRINT, E.relkind,
    "c.relkind in ('r', 'p', 'v', 'm', 'f')", "c.relkind in ('r', 'p', 'v', 'm')"],
   ["N19 гілка (b): inner join знову губить defaclnamespace = 0", REPRINT, E.branchB,
@@ -317,7 +323,12 @@ M.push(
    "  select array_agg('default:profiles.' || a.attname order by a.attname)"],
   ["N53 прибрані колонки більше не відсіяні — сторож червонітиме від привидів",
    REPRINT, E.pdDropped,
-   "     and a.attnum > 0 and not a.attisdropped", "     and a.attnum > 0"],
+   /* ⚠️ Якір ПЕРЕАНКОРЕНО (с58, пакет 37) — з тієї ж причини, що N17. Гілки
+      (f) і (f3) RF-09 містять `and a.attnum > 0 and not a.attisdropped)` з
+      більшим відступом, і короткий якір ловився в них ПІДРЯДКОМ: 1 → 3.
+      Додано рядок-попередник перевірки profiles_defaults. */
+   "   where a.attrelid = 'public.profiles'::regclass\n     and a.attnum > 0 and not a.attisdropped",
+   "   where a.attrelid = 'public.profiles'::regclass\n     and a.attnum > 0"],
   ["N54 сторож є, а DDL немає — перевірка червонітиме на проді з першого прогону",
    MIG0175, E.pdDdl,
    "alter table public.profiles alter column role     drop default;\n", ""],
