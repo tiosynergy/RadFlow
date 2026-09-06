@@ -193,17 +193,25 @@ and the "~2–3 min" in the older docs is too optimistic to act on.
 
 | what | expected |
 |---|---|
-| `main` / `dev` | **`8382eeb`** (merge of package 35) / **`5a9e3e8`**, **plus the docs commit(s) of this handover on top** — take the hashes from `git ls-remote`. Tree clean |
-| prod DB | **`0177_realtime_filter_premise.sql`**, ledger **177/177** |
-| **next migration** | **0178** — the number comes FROM THE LEDGER, never from the folder. Session 58 shipped NO migration |
-| `invariants_check()` | `ok:true`, **`checked:21`**, `failed:[]` |
-| guard body | `md5(replace(prosrc, chr(13), ''))` = **`51abbdb14a75bf19a57d04ffa85477ea`**, length 74611, `cr_count 0` |
+| `main` / `dev` | **`7fd1581`** / **`1788dcd`** (packages 35–37), **plus the docs commit(s) of this handover on top** — take the hashes from `git ls-remote`. Tree clean |
+| prod DB | **`0178_rf09_invite_token_grant.sql`**, ledger **178/178** |
+| **next migration** | **0179** — the number comes FROM THE LEDGER, never from the folder |
+| `invariants_check()` | `ok:true`, **`checked:21`**, `failed:[]` — 0178 EXTENDED the existing `priv_drift` check rather than adding one, so the number did NOT move and `bump-checked-pins.mjs` was not run |
+| guard body | `md5(replace(prosrc, chr(13), ''))` = **`6ff5dd3db1681620ff6ccef18904e7f2`**, length **77313**. Normalized pin g = **`10b3204c97781909c3e53a3f901056ec`**. Both verified against the FILE and against PROD separately |
 | nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50 → `ok:true, checked:21, failed:[]` |
-| toolchain | tsc **0**, eslint **0**, vitest **2763/2763** (**93** files), `db:gate` **177/177** |
-| stand revision | **26/26 green, 619 addressed**. A full run took **52 min**. New stand `falsify-u59-u60` — 33/33, 31 addressed |
-| `/login` fingerprint | last measured **`2S_QeCfEd-xbLsmKC1VOX`**, HTTP 200 — that value came from a DOCS merge, and the docs commit carrying this very table will change it again. So expect it to DIFFER; if it does not, record the fact and read the one-direction rule above instead of declaring an incident |
+| toolchain | tsc **0**, eslint **0**, vitest **2798/2798** (**94** files), `db:gate` **178/178** |
+| stands | `EXPECTED_STANDS` **27**. New stand `falsify-rf09` — 28/28, 25 addressed, 3 positive controls |
+| `/login` fingerprint | last measured **`XEfZ9gvV38zNgfK4T-Gfq`**, stable across two reads 7 min apart at `x-vercel-cache: MISS`, `age: 0`, and cross-checked against `/_next/static/<buildId>/_buildManifest.js`. The docs commit carrying this very table will change it again, so expect it to DIFFER; if it does not, record the fact and read the one-direction rule above instead of declaring an incident |
 
 ⚠️ **The eslint gate runs with `--max-warnings 0`.** Clean up scratch files.
+
+⚠️⚠️ **RUN THE FULL STAND REVISION ONLY ON A CLEAN TREE, AND TOUCH NOTHING
+WHILE IT RUNS.** Session 58 knew this rule and broke it anyway: I edited
+`claude/radflow-handoff.md` while `falsify-all.mjs` was running. It checks the
+tree between stands, saw a modified file, read it as "the stand failed to
+restore the live files", **stopped the revision on the very first stand and
+reverted my edit with `git checkout --`**. An hour of run time and the text of
+the edit, gone. Write the docs before or after — never in parallel.
 
 ---
 
@@ -266,25 +274,42 @@ Full detail with the measurements: `claude/radflow-handoff.md` (top block) and
 PACKAGE WITH ME BEFORE WRITING CODE.** If a package is product-facing, show me
 the texts before they land.
 
-1. ⚠️⚠️ **RF-09 (High) — `profiles.invite_token` is readable by the whole
-   clinic.** Found in session 58 while re-measuring RF-02 (Р6 is DONE — see
-   `docs/audit/PR-RF01-RF08-remeasure.md`). Measured, and confirmed
-   independently under a live registrar JWT: `authenticated` and `anon` both
-   have SELECT on the column, `authenticated` also has UPDATE, and
-   `profiles_select` is clinic-wide. So between "the admin issues an invite"
-   and "the person sets their password", ANY colleague in the clinic can read
-   the token and POST it to `/api/account/set-password` — which requires
-   nothing but the token. Account takeover **including the admin's**, with
-   privilege escalation, and the atomic claim and rate limit from RF-02 do not
-   help: it is one legitimate request with a valid token. Not burning right
-   now — 0 live tokens of 9 profiles.
-   ⚠️ **Not a one-liner:** a plain `revoke select (invite_token)` breaks
-   `StaffManager:95` and `ReferrersManager:252`, which read the column to draw
-   "Скопіювати посилання". ✅ But the safe pattern already exists in the tree —
-   `CeoManager` goes through the security-definer RPC `ceo_list_for_clinic`
-   precisely so as not to expose other roles' tokens, and all four invite
-   routes already return the token in their response. Needs its own migration,
-   smoke, dry-run, two reviews and stand positions.
+1. ⚠️⚠️ **RF-09 (High) — PARTIALLY CLOSED: one channel of three. Migration
+   `0179` closes the other two, and it is the top of the queue.**
+   Package 37 (`0178`) removed the TABLE-level SELECT grant on `profiles` from
+   `anon` and `authenticated` and put back a column allow-list of 14 of 15
+   columns, without `invite_token`. Measured live under the role, both ways:
+   `select invite_token` → **42501**, `… where invite_token = 'zz'` → **42501**,
+   `select id, login, role, password_set` → passes, `select *` → 42501 (the
+   named cost; there is no such query anywhere in the tree).
+   ⚠️ The measurement worth carrying forward: a column-level
+   `revoke select (col)` ON TOP of a table grant does **nothing** —
+   `has_column_privilege` stays true. Only «revoke ON TABLE + grant by column»
+   removes access. That is also why the new guard branch tests
+   `has_column_privilege` and not `has_table_privilege`.
+   ⚠️ And UPDATE was never the hole: trigger `trg_guard_profile_privileges`
+   (0064) rejects service-field writes with 42501. Package 36's wording
+   ("`authenticated` also has UPDATE") is true of the grant and false of the fact.
+
+   **The two channels still open, both confirmed by query against prod:**
+   * **RF-09b — `ceo_list_for_clinic`**: SECURITY DEFINER, `EXECUTE` granted to
+     `authenticated`, returns `invite_token` for `role='ceo'` accounts. A
+     column grant does not constrain a definer function at all. Escalation: a
+     CEO holding `ceo_access` on two clinics; the admin of clinic B reads their
+     token and takes over an account that sees clinic A. Not burning: 1 active
+     CEO grant, 0 CEOs with two clinics, 0 live tokens.
+     ⚠️ This function is **absent** from check №19 `guard_fn_bodies` — the
+     `auth_is_admin()` gate inside it can be removed and no invariant reddens.
+   * **RF-09c — `audit_log`**: trigger `fn_audit` writes the whole `profiles`
+     row. Measured: 74 rows, **4 with a non-NULL token**, 2 of them with a real
+     `clinic_id` → visible to that clinic's admin and to any CEO with an active
+     grant. Not exploitable today: those 4 values are dead because
+     `set-password` also requires `password_set = false`, and all 9 profiles
+     have `true`.
+   ⚠️ And the comment on the new branch (f) claims more than the branch checks
+   ("the token is not readable by client roles") — it only looks at the table's
+   column ACLs. Said out loud on purpose. Full write-up:
+   `docs/audit/PR-0178-rf09-invite-token.md`.
 2. **The residues of the eight, now that they are measured.** In order of what
    the measurement says: `sched_referrer_read` leaks non-granted room ids,
    hours and closures to a referrer through the `rooms jsonb` column (RF-03);
