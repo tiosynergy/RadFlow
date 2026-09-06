@@ -22,6 +22,7 @@ import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleMo
 import ReferrerBoard from "@/components/ReferrerBoard";
 import UnreadDot from "@/components/UnreadDot";
 import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
+import { badgeOf, loadStatusOf } from "@/lib/sidebarBadge";
 import { unreadForEntity, unreadForSurface, surfaceRefreezeKey } from "@/lib/unreadChanges";
 import ReferrerSidebar from "@/components/ReferrerSidebar";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry, editQueueEntryStudies, createReferralCase, referralCaseFromEntry, type CaseStepInput } from "@/app/queue/actions";
@@ -1924,6 +1925,10 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
   const [referrals, setReferrals] = useState<Referral[]>([]);
   // H-6: збій читання списку ≠ «направлень немає» (сітку слотів уже прикриває slotsErr).
   const [listErr, setListErr] = useState(false);
+  /* U-60: «хоч раз прочиталось успішно». `listErr` сам по собі не розводить
+     «нуль» і «не знаємо» — саме тому бейдж «Мої направлення» мовчав про збій
+     ПЕРШОГО читання, хоч плашку над списком H-6 завів ще давно. */
+  const [listOk, setListOk] = useState(false);
   // U-11: направлення і простої його центру їдуть ОДНИМ станом — інакше між
   // await і setState вони розʼїжджаються на різні центри.
   const [reschedFor, setReschedFor] = useState<{ r: Referral; incidents: IncidentFeed } | null>(null);
@@ -1972,6 +1977,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
       if (error) { setListErr(true); return; }
       setReferrals(data || []);
       setListErr(false);
+      setListOk(true);
     } catch { if (!stale()) setListErr(true); }
   }, [doctorId]);
 
@@ -1982,6 +1988,10 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
      екрані немає — і будь-який ack її або тихо гасив, або вона висіла б вічно. */
   const [wlLoaded, setWlLoaded] = useState(false);
   const [wlErr, setWlErr] = useState(false);
+  /* U-60: `wlLoaded` вмикається В ОБОХ гілках (і на успіху, і на збої) — воно
+     означає «спроба скінчилась», а не «є що показувати». Бейджу потрібне саме
+     друге. */
+  const [wlOk, setWlOk] = useState(false);
   const reloadWaitlist = useCallback(async () => {
     const gen = ++wlGen.current;
     const stale = () => gen !== wlGen.current;
@@ -2005,6 +2015,7 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
       setWlEntries(data || []);
       setWlErr(false);
       setWlLoaded(true);
+      setWlOk(true);
     } catch { if (!stale()) { setWlErr(true); setWlLoaded(true); } }
   }, [doctorId]);
   useEffect(() => { reloadWaitlist(); }, [reloadWaitlist]);
@@ -2369,7 +2380,11 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
         onSelectRoom={(clinicId, roomId) => { setBoardFocus({ clinicId, roomId, nonce: Date.now() }); setTab("mine"); }}
         activeClinic={tab === "mine" ? boardFocus?.clinicId : undefined}
         activeRoom={tab === "mine" ? boardFocus?.roomId : undefined}
-        counts={{ mine: referrals.length, waitlist: wlEntries.filter((e) => e.status === "waiting").length, pendingInvites }}
+        counts={{
+          mine: badgeOf(loadStatusOf(listOk, listErr), referrals.length),
+          waitlist: badgeOf(loadStatusOf(wlOk, wlErr), wlEntries.filter((e) => e.status === "waiting").length),
+          pendingInvites,
+        }}
         canManage={canManage} onSignOut={signOut} />
       <div className="main">
         <header className="topbar">

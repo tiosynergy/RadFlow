@@ -34,6 +34,8 @@ import {
   ackIdsForScope, EMPTY_INDEX, indexMarkers, snapshotIdsOf,
   type AckScope, type ChangeMarker, type UnreadIndex, type UnreadStatus,
 } from "@/lib/unreadChanges";
+import { ackGate, nextFreeze, type AckFreeze } from "@/lib/ackVisibility";
+import { useDocumentVisible } from "@/lib/useDocumentVisible";
 
 /** Стеля пакета. Непрочитаного в нормі десятки. */
 const FETCH_LIMIT = 500;
@@ -409,6 +411,15 @@ export function useUnreadChanges(): UnreadChangesApi {
  * після того, як дані успішно завантажились І блок відрендерився. Поки
  * картка згорнута, а блок прихований — позначка лишається непрочитаною.
  *
+ * ⚠️ U-59 (с58): `visible` — це слово КОМПОНЕНТА про себе, і воно нічого не
+ * знає про вкладку. До цього пакета позначки гасились і тоді, коли вкладка
+ * була у фоні: «відрендерено в DOM» не дорівнює «показано людині». Тепер
+ * рішення ухвалює `ackGate` (`lib/ackVisibility.ts`), і фонова вкладка дає
+ * `hold` — не гасимо, але й ЗАМОРОЗКУ НЕ СКИДАЄМО, тож повернення на вкладку
+ * підтверджує рівно те, що людина лишила, а не те, що прилетіло без неї.
+ * ⚠️ Друга половина U-59 — «поверхню перекрито модалкою» — НЕ закрита: ознака
+ * «наді мною оверлей» живе в екранах і сюди не доходить. Названо в хендофі.
+ *
  * ⚠️ ЗНІМОК ЗАМОРОЖУЄТЬСЯ В МОМЕНТ РОЗКРИТТЯ (рішення власника, с28).
  * Жива перевірка с28 показала: коли знімок перечитувався на кожному
  * оновленні пулу, позначка, що НАРОДИЛАСЬ при вже розгорнутому блоці,
@@ -434,6 +445,7 @@ export function useUnreadChanges(): UnreadChangesApi {
  */
 export function useAckWhenVisible(scope: AckScope | null, visible: boolean, refreezeKey?: string): void {
   const { status } = useUnreadChanges();
+  const documentVisible = useDocumentVisible(!!scope && visible);
   const snap = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
   const key = scope
@@ -458,29 +470,36 @@ export function useAckWhenVisible(scope: AckScope | null, visible: boolean, refr
      зробила б freeze беззмістовним. userId у записі — щоб релогін у тій
      самій вкладці при живому маунті не лишав постійно видиму поверхню зі
      заморозкою чужої сесії (ревʼю с28-р1, L-1). */
-  const frozenRef = useRef<{ key: string; refreeze: string; uid: string | null; ids: string[] } | null>(null);
+  const frozenRef = useRef<AckFreeze | null>(null);
 
   useEffect(() => {
-    // Згортання/зникнення scope → скинути заморозку: наступне розкриття
-    // зафіксує НОВИЙ знімок (і тим самим підтвердить те, що прилетіло).
-    if (!visible || !scopeRef.current) { frozenRef.current = null; return; }
-    // 'ready' обовʼязкове: підтверджувати прочитання поверх помилки
-    // завантаження означало б погасити крапку, не показавши зміну. Заморозку
-    // при цьому НЕ чіпаємо і не створюємо: розкриття під час loading
-    // зафіксує знімок першим успішним завантаженням.
-    if (status !== "ready") return;
-
+    /* U-59 (с58): саме РІШЕННЯ — чиста функція `ackGate` (lib/ackVisibility.ts),
+       бо DOM-тестів у проєкті немає навмисно. Тут лишається застосування. */
+    const sc = scopeRef.current;
+    const gate = ackGate({
+      hasScope: !!sc,
+      surfaceVisible: visible,
+      documentVisible,
+      status,
+    });
+    /* ⚠️ УСЯ арифметика заморозки — в `nextFreeze`, тут РІВНО одне присвоєння.
+       Так зроблено після ревʼю с58: доти скид жив окремою гілкою, і будь-яка
+       наступна правка могла завести другий скид, лишивши правило цілим. */
     const rk = refreezeKey ?? "";
-    let fr = frozenRef.current;
-    if (fr === null || fr.key !== key || fr.refreeze !== rk || fr.uid !== state.userId) {
-      fr = {
-        key,
-        refreeze: rk,
-        uid: state.userId,
-        ids: ackIdsForScope(state.index, scopeRef.current, state.snapshotIds),
-      };
-      frozenRef.current = fr;
-    }
+    const fr = nextFreeze(
+      gate,
+      frozenRef.current,
+      { key, refreeze: rk, uid: state.userId },
+      () => (sc ? ackIdsForScope(state.index, sc, state.snapshotIds) : []),
+    );
+    frozenRef.current = fr;
+    /* 'collapse' — блок згорнувся або зник scope: заморозку вже скинуто.
+       'hold' — документ у фоні: не гасимо; ключ перезаморозки `nextFreeze`
+       переніс уперед, id лишились «доотходні» — саме через це повернення на
+       вкладку більше не гасить те, що прилетіло без людини.
+       'wait' — індекс ще не 'ready': підтверджувати прочитання поверх помилки
+       завантаження означало б погасити крапку, не показавши зміну. */
+    if (gate !== "ack" || fr === null) return;
 
     // Гасимо ЛИШЕ заморожені id, і лише ті з них, що ще непрочитані —
     // повторний виклик RPC з уже погашеними id не потрібен.
@@ -489,7 +508,7 @@ export function useAckWhenVisible(scope: AckScope | null, visible: boolean, refr
     if (!ids.length) return;
     void ackMarkerIds(ids);
     // scope навмисно через ref: це новий обʼєкт на кожен рендер. Реальні
-    // тригери — key, видимість, статус, відбиток пулу, refreezeKey і
-    // лічильник невдач ack.
-  }, [key, visible, status, fp, refreezeKey, snap.ackFailGen]);
+    // тригери — key, видимість блока, видимість ДОКУМЕНТА (U-59), статус,
+    // відбиток пулу, refreezeKey і лічильник невдач ack.
+  }, [key, visible, documentVisible, status, fp, refreezeKey, snap.ackFailGen]);
 }

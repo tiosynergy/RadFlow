@@ -238,7 +238,19 @@ describe("F4-9 — лічильник листа в сайдбарі: збій �
     const body = code.slice(at, code.indexOf("}, []);", at));
     expect(body, "error не деструктурується — PostgREST не кидає, і catch не спрацює")
       .toMatch(/const \{ count, error \} = await supabase/);
-    expect(body, "після помилки лічильник усе одно записується")
-      .toMatch(/if \(error\) return;\s*\n?\s*setWaitCount\(count \?\? 0\);/);
+    /* ⚠️ ПЕРЕЯКОРЕНО з ДОСЛІВНОГО тексту на ВЛАСТИВІСТЬ (с58, пакет 35).
+       Старий пін вимагав рівно `if (error) return;` і покраснів на правці
+       U-60, яка ту саму властивість ПОСИЛИЛА: тепер збій ще й запамʼятовується
+       (`setWaitErr`) і `count == null` теж рахується збоєм. Тобто сторож
+       краснів на тексті при цілій властивості — рівно те, проти чого сам і
+       стоїть. Пін тепер вимагає ПОРЯДКУ: гілка відмови вища за запис
+       лічильника і виходить із функції. */
+    const guardAt = body.search(/if \(error[^)]*\) (?:\{[^}]*return;[^}]*\}|return;)/);
+    const writeAt = body.indexOf("setWaitCount(");
+    expect(guardAt, "гілка відмови по `error` зникла або перестала виходити з функції")
+      .toBeGreaterThan(-1);
+    expect(writeAt, "запис лічильника зник — пін більше нічого не стереже").toBeGreaterThan(-1);
+    expect(guardAt, "лічильник пишеться ДО перевірки помилки")
+      .toBeLessThan(writeAt);
   });
 });
