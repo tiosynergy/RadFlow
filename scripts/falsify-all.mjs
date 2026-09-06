@@ -37,7 +37,7 @@ const only = argv.filter((a) => !a.startsWith("--"));
    вибірки, і ревізія друкує «усі 19 стендів зелені» — той самий мовчазний
    розхід, проти якого написана вся ця машинерія. Одна константа, а не
    двадцять: аргумент «магічні числа розійдуться» тут не працює. */
-const EXPECTED_STANDS = 26;   // с55: +f346, +f6auth, +f6srv; с57: +falsify-u66 (правка картки через RPC 0176); с58: +falsify-u59-u60 (пакет 35)
+const EXPECTED_STANDS = 27;   // с55: +f346, +f6auth, +f6srv; с57: +falsify-u66 (правка картки через RPC 0176); с58: +falsify-u59-u60 (пакет 35), +falsify-rf09 (пакет 37)
 
 const all = readdirSync(DIR)
   .filter((f) => /^falsify-.*\.mjs$/.test(f) && f !== "falsify-all.mjs")

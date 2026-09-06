@@ -21,11 +21,18 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
 import { unreadForEntity } from "@/lib/unreadChanges";
+/* `forgetToken` тут не потрібен: пароль направник задає сам, екран цієї події
+   не бачить, а `inviteHint` при `password_set=true` і так повертає `none` —
+   мертвий токен у карті не показується. */
+import { EMPTY_TOKENS, REISSUE_HINT, inviteHint, rememberToken, type FreshTokens } from "@/lib/inviteLink";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
-type ReferrerProfile = { id?: string; login?: string | null; full_name?: string | null; phone?: string | null; note?: string | null; password_set?: boolean; invite_token?: string | null };
+/* ⚠️ RF-09: `invite_token` тут БІЛЬШЕ НЕМАЄ і бути не повинно — 0178 зняла
+   право читати цю колонку у клієнтських ролей. Токен приходить лише у
+   відповіді роута видачі й живе в окремій карті (lib/inviteLink.ts). */
+type ReferrerProfile = { id?: string; login?: string | null; full_name?: string | null; phone?: string | null; note?: string | null; password_set?: boolean };
 type AccessRow = { access_id: string; referrer_id: string; status: string; policy: string | null; room_ids: string[] | null; note: string | null; referrer: ReferrerProfile };
 /* Картка довідника лікарів (таблиця doctors) — с43. */
 type DocRow = { id: string; name: string; spec: string | null; clinic_name: string | null; phone: string | null };
@@ -103,6 +110,10 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const [busyId, setBusyId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const [origin, setOrigin] = useState("");
+  /* RF-09: токени, ОТРИМАНІ У ВІДПОВІДЯХ роутів у цій сесії екрана. Живуть
+     ПОРУЧ зі списком, а не в його рядках: realtime-`reload()` перезбирає рядки
+     і затирав би токен разом із ними (саме це й ставалось до 0178). */
+  const [freshTokens, setFreshTokens] = useState<FreshTokens>(EMPTY_TOKENS);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({ policy: "direct", room_ids: [], note: "" });
   /** Вимкнені кабінети, що були в гранті на момент відкриття картки. Заморожені
@@ -249,7 +260,9 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     const ids = Array.from(new Set(list.map((a) => a.referrer_id)));
     const profById: Record<string, ReferrerProfile> = {};
     if (ids.length) {
-      const { data: profs } = await supabase.from("profiles").select("id, login, full_name, phone, note, password_set, invite_token").in("id", ids);
+      /* ⚠️ RF-09: БЕЗ `invite_token`. Після 0178 згадка про цю колонку поклала б
+         ВЕСЬ запит у 42501 — список направників став би порожнім. */
+      const { data: profs } = await supabase.from("profiles").select("id, login, full_name, phone, note, password_set").in("id", ids);
       (profs || []).forEach((p) => { profById[p.id] = p; });
     }
     setRows(list.map((a) => ({ access_id: a.id, referrer_id: a.referrer_id, status: a.status, policy: a.policy, room_ids: a.room_ids, note: a.note, referrer: profById[a.referrer_id] || {} })));
@@ -349,6 +362,9 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     if (!ok) { notify(data.error || "Помилка", "error"); return; }
     setForm(emptyForm());
     setExistingPicked(false);
+    /* RF-09: свіжий токен — із відповіді роута; `referrer_id` роут повертає
+       саме для цього ключа. Кладемо ДО reload(): карта від нього не залежить. */
+    setFreshTokens((m) => rememberToken(m, String(data.referrer_id ?? ""), data.invite_token));
     if (data.status === "active") {
       notify("Доступ активовано (лікар уже надсилав запит)", "success");
     } else if (data.created_account) {
@@ -373,7 +389,11 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     const { ok, data } = await postJSON("/api/staff/password", { userId: r.referrer_id, action: "reset" });
     setBusyId(null);
     if (!ok) { notify(data.error || "Помилка", "error"); return; }
-    setRows((rs) => rs.map((x) => (x.referrer_id === r.referrer_id ? { ...x, referrer: { ...x.referrer, password_set: false, invite_token: data.invite_token } } : x)));
+    setRows((rs) => rs.map((x) => (x.referrer_id === r.referrer_id ? { ...x, referrer: { ...x.referrer, password_set: false } } : x)));
+    /* RF-09: токен — у КАРТУ, а не в рядок списку. Раніше він лежав у рядку, і
+       будь-який наступний realtime-`reload()` затирав його разом із рядком:
+       кнопка «Скопіювати» зникала сама собою. Карту перезбір списку не чіпає. */
+    setFreshTokens((m) => rememberToken(m, r.referrer_id, data.invite_token));
     notify("Пароль скинуто — скопіюйте нове посилання для входу й передайте лікарю", "success");
   }
 
@@ -412,6 +432,10 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
     });
     setBusyId(null);
     if (!ok) { notify(data.error || "Помилка", "error"); return; }
+    /* ⚠️ ТРЕТІЙ шлях видачі, знайдений ревʼю Б. Роут той самий, токен у
+       відповіді той самий — а клали його раніше лише на двох шляхах, тож
+       «Запросити знову» видавало живе посилання й мовчки його викидало. */
+    setFreshTokens((m) => rememberToken(m, String(data.referrer_id ?? ""), data.invite_token));
     notify("Запрошення надіслано повторно — очікує підтвердження лікаря", "success");
     reload();
   }
@@ -474,13 +498,23 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
               </div>
             );
           })()}
-          {!r.referrer.password_set && r.referrer.invite_token && (
-            <div style={{ fontSize: "0.75rem", marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-              <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для входу:</span>
-              <code style={{ fontSize: "0.71875rem", color: "var(--text-secondary)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
-              <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); copyLink(r.referrer.invite_token as string); }}>Скопіювати</button>
-            </div>
-          )}
+          {(() => {
+            /* RF-09: три стани замість двох — див. lib/inviteLink.ts. «Пароль не
+               задано, токена на руках немає» більше не мовчить: адмін бачить,
+               що запрошення висить, і знає, як передати його ще раз. */
+            const hint = inviteHint(r.referrer.password_set, freshTokens, r.referrer_id);
+            if (hint.kind === "none") return null;
+            if (hint.kind === "reissue") {
+              return <div style={{ fontSize: "0.75rem", marginTop: 4, color: "var(--text-muted)" }}>{REISSUE_HINT}</div>;
+            }
+            return (
+              <div style={{ fontSize: "0.75rem", marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для входу:</span>
+                <code style={{ fontSize: "0.71875rem", color: "var(--text-secondary)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
+                <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); copyLink(hint.token); }}>Скопіювати</button>
+              </div>
+            );
+          })()}
         </div>
         <span className={"badge " + m.cls}>{m.label}</span>
         {children}
@@ -606,7 +640,16 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
               : active.map((r) => (
                 <div key={r.access_id}>
                   <Row r={r} expandable expanded={editingId === r.access_id} onClick={() => (editingId === r.access_id ? setEditingId(null) : startEdit(r))}>
-                    {r.referrer.password_set && r.referrer.id && (
+                    {/* ⚠️ Гейт `password_set` знято (BLOCKER ревʼю Б, пакет 37).
+                        Він робив кнопку і нову підказку ВЗАЄМОВИКЛЮЧНИМИ:
+                        підказка «натисніть „Скинути пароль“» показується саме
+                        при `password_set = false`, а кнопка існувала лише при
+                        `true`. Тобто найчастіший сценарій — запросили лікаря,
+                        оновили сторінку — давав текст, у якому нема що
+                        натискати. Роут `/api/staff/password` з `action:"reset"`
+                        від `password_set` не залежить: він просто пише новий
+                        токен і гасить старий. */}
+                    {r.referrer.id && (
                       <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); askResetPassword(r); }} title="Скинути пароль — лікар задасть новий за посиланням">Скинути пароль</button>
                     )}
                     <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); setAsk({ title: `Відкликати доступ для «${r.referrer.full_name || r.referrer.login}»?`, text: "Створені ним направлення лишаться. Нові він створювати не зможе.", confirmLabel: "Відкликати", danger: true, run: () => { void decide(r.access_id, "revoke"); } }); }}>Відкликати доступ</button>
@@ -666,7 +709,17 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
           {invited.length > 0 && (
             <div style={card}>
               <div className="bk-section-label" style={{ marginTop: 0 }}>Запрошені — очікують прийняття ({invited.length})</div>
-              {invited.map((r) => <Row key={r.access_id} r={r} />)}
+              {/* ⚠️ Раніше рядок тут був БЕЗ кнопок узагалі (BLOCKER ревʼю Б).
+                  Саме тут найчастіше й висить невикористане запрошення, тож
+                  саме тут підказка «натисніть „Скинути пароль“» мусить мати
+                  на що вказувати. */}
+              {invited.map((r) => (
+                <Row key={r.access_id} r={r}>
+                  {r.referrer.id && (
+                    <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); askResetPassword(r); }} title="Видати нове посилання — старе перестане діяти">Скинути пароль</button>
+                  )}
+                </Row>
+              ))}
             </div>
           )}
 
