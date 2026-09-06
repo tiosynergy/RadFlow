@@ -200,7 +200,7 @@ and the "~2–3 min" in the older docs is too optimistic to act on.
 | guard body | `md5(replace(prosrc, chr(13), ''))` = **`6ff5dd3db1681620ff6ccef18904e7f2`**, length **77313**. Normalized pin g = **`10b3204c97781909c3e53a3f901056ec`**. Both verified against the FILE and against PROD separately |
 | nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50 → `ok:true, checked:21, failed:[]` |
 | toolchain | tsc **0**, eslint **0**, vitest **2798/2798** (**94** files), `db:gate` **178/178** |
-| stands | `EXPECTED_STANDS` **27**. New stand `falsify-rf09` — 28/28, 25 addressed, 3 positive controls |
+| stand revision | **27/27 green, 644 addressed**, a full run took **~44 min**. `EXPECTED_STANDS` **27**; new stand `falsify-rf09` — 28/28, 25 addressed, 3 positive controls. ⚠️ The first run was 26/27: the 0178 reprint made two anchors in `falsify-0166` non-unique (N17, N53) — re-anchored with a preceding line |
 | `/login` fingerprint | last measured **`XEfZ9gvV38zNgfK4T-Gfq`**, stable across two reads 7 min apart at `x-vercel-cache: MISS`, `age: 0`, and cross-checked against `/_next/static/<buildId>/_buildManifest.js`. The docs commit carrying this very table will change it again, so expect it to DIFFER; if it does not, record the fact and read the one-direction rule above instead of declaring an incident |
 
 ⚠️ **The eslint gate runs with `--max-warnings 0`.** Clean up scratch files.
