@@ -189,7 +189,7 @@ which instrument took which end.
 ⚠️ A Vercel deploy takes **4–7+ min** after a push — measured in session 58,
 and the "~2–3 min" in the older docs is too optimistic to act on.
 
-### Expected state (measured 2026-09-06, end of session 58)
+### Expected state (measured 2026-09-06/07, end of session 58)
 
 | what | expected |
 |---|---|
@@ -198,10 +198,10 @@ and the "~2–3 min" in the older docs is too optimistic to act on.
 | **next migration** | **0179** — the number comes FROM THE LEDGER, never from the folder |
 | `invariants_check()` | `ok:true`, **`checked:21`**, `failed:[]` — 0178 EXTENDED the existing `priv_drift` check rather than adding one, so the number did NOT move and `bump-checked-pins.mjs` was not run |
 | guard body | `md5(replace(prosrc, chr(13), ''))` = **`6ff5dd3db1681620ff6ccef18904e7f2`**, length **77313**. Normalized pin g = **`10b3204c97781909c3e53a3f901056ec`**. Both verified against the FILE and against PROD separately |
-| nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50 → `ok:true, checked:21, failed:[]` |
+| nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50. ✅ **The 07.09 03:50 run is the FIRST nightly one on the 0178 body and it came back `ok:true, checked:21, failed:[]`** — the three new RF-09 branches raise no false alarm on the scheduled path, not just when called by hand |
 | toolchain | tsc **0**, eslint **0**, vitest **2798/2798** (**94** files), `db:gate` **178/178** |
 | stand revision | **27/27 green, 644 addressed**, a full run took **~44 min**. `EXPECTED_STANDS` **27**; new stand `falsify-rf09` — 28/28, 25 addressed, 3 positive controls. ⚠️ The first run was 26/27: the 0178 reprint made two anchors in `falsify-0166` non-unique (N17, N53) — re-anchored with a preceding line |
-| `/login` fingerprint | last measured **`XEfZ9gvV38zNgfK4T-Gfq`**, stable across two reads 7 min apart at `x-vercel-cache: MISS`, `age: 0`, and cross-checked against `/_next/static/<buildId>/_buildManifest.js`. The docs commit carrying this very table will change it again, so expect it to DIFFER; if it does not, record the fact and read the one-direction rule above instead of declaring an incident |
+| `/login` fingerprint | **`vQtASefO7hWs9piyM8iv9`** — measured 07.09 09:44 UTC, twice, both at `x-vercel-cache: MISS`, `age: 0`. It moved from `XEfZ9gvV38zNgfK4T-Gfq` after the DOCS merge `4c5e21e` — one more data point for "every commit rebuilds" and against the refuted "a docs commit does not rebuild". ⚠️ The docs commit carrying this very table will move it again, so expect it to DIFFER; if it does not, record the fact and read the one-direction rule above instead of declaring an incident |
 
 ⚠️ **The eslint gate runs with `--max-warnings 0`.** Clean up scratch files.
 
@@ -215,19 +215,22 @@ the edit, gone. Write the docs before or after — never in parallel.
 
 ---
 
-## WHAT SESSION 58 DID — one package, no migration, the LOW batch emptied
+## WHAT SESSION 58 DID — THREE packages, one migration, the LOW batch emptied
 
-Full detail with the measurements: `claude/radflow-handoff.md` (top block) and
-`docs/audit/PR-U59-U60-ack-visibility.md`.
+Full detail with the measurements: `claude/radflow-handoff.md` (top block),
+`docs/audit/PR-U59-U60-ack-visibility.md`, `docs/audit/PR-RF01-RF08-remeasure.md`,
+`docs/audit/PR-0178-rf09-invite-token.md`.
 
 | item | what |
 |---|---|
 | **U-59** | ack no longer clears unread marks while the tab is in the background. The decision lives in `lib/ackVisibility.ts` (`ackGate`), the freeze arithmetic in `nextFreeze`, document visibility in `lib/useDocumentVisible.ts` behind an injectable host (so it is testable without DOM) |
 | **U-60** | "zero" and "we don't know" are no longer the same pixel. `lib/sidebarBadge.ts`; unknown renders as a quiet grey `—`. ⚠️ Measured THREE places, not the one the doc named |
 | **U-75** | **CLOSED WITH NO CODE** — its stated defect has been false since session 52 |
-| stands | new `falsify-u59-u60` (33/33, 31 addressed); `EXPECTED_STANDS` 25 → **26** |
-| **RF-1** | dug out and struck off — see below |
 | **package 36 (Р6)** | RF-01 … RF-08 re-measured, no code. Two High are dead; three findings are partial; **one NEW High found — RF-09**. `docs/audit/PR-RF01-RF08-remeasure.md` |
+| **package 37 (RF-09)** | migration **0178**: table-level SELECT on `profiles` revoked from `anon`/`authenticated`, column allow-list of 14 of 15 put back — without `invite_token`. Screens take the token from the issuing route's RESPONSE (`lib/inviteLink.ts`). ⚠️ **One channel of three — RF-09 is NOT closed**; see the queue below |
+| stands | new `falsify-u59-u60` (33/33, 31 addressed) and `falsify-rf09` (28/28, 25 addressed, 3 positive controls); `EXPECTED_STANDS` 25 → **27** |
+| **RF-1** | dug out and struck off — see below |
+| deploy gate | ✅ verified from the BUILD LOG, not the doc: it runs for real in prod. Settings hold the keys with scope Production and Preview; `RADFLOW_SKIP_MIGRATION_GATE` exists nowhere |
 
 ## LESSONS OF SESSION 58
 
@@ -265,6 +268,35 @@ Full detail with the measurements: `claude/radflow-handoff.md` (top block) and
    tool was reading the text; it proved nothing about my search term. Before
    writing "not found", find something that MUST be found **by that same
    query**, not by a neighbouring one.
+7. ⚠️ **NINE ways past my own pins in one session — four in package 35, five
+   in package 37.** The stand caught two of the five; review caught three, and
+   every one of them left the WHOLE gate green: zeroing the token map inside
+   `reload()` (the link vanishes a second after it is issued, because `reload()`
+   fires on every tab focus); splitting `from("profiles")` from `.select()`
+   through a variable, which blinds a lexical pin while its "at least one
+   select exists" safety net stays satisfied by the OLD, clean query; and
+   deleting the hint from the JSX while leaving the constant imported. The
+   pattern across all nine: **pins that check PRESENCE rather than PLACE.**
+8. ⚠️ **A pin that reddens on a benign refactor will be removed — so remove it
+   yourself and replace it.** One package-37 pin went red when the column list
+   was extracted into a named constant. That is lesson 0141 arriving in person:
+   a permanently red check is a deleted check. It was replaced by a stricter one
+   that accepts both forms, and a third positive control was added for exactly
+   that shape. Also: a hard-coded count (`toBe(2)`) blocked the FIX for a third
+   issuance path — count the paths, do not hard-code the number.
+9. ⚠️ **A reprint of the guard breaks stands pinned to the previous edition, and
+   it does it SILENTLY.** The full revision came back 26/27: migration 0178 made
+   two anchors in `falsify-0166` non-unique — one because branch (f2) repeats an
+   existing role subquery verbatim, the other because a short anchor matched as
+   a SUBSTRING inside two new branches with deeper indentation (1 → 3). Both
+   re-anchored with a preceding line. **Budget a full revision after every
+   reprint, and expect to pay in re-anchoring.**
+10. ⚠️ **And I broke a rule I had written down myself two hours earlier:** I
+   edited `claude/radflow-handoff.md` while the revision was running.
+   `falsify-all.mjs` read the modified file as "a stand failed to restore the
+   live files", stopped on the first stand and reverted my edit with
+   `git checkout --`. An hour of run time and the text, gone. Knowing a trap is
+   not the same as respecting it while impatient.
 
 ---
 
