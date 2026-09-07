@@ -50,6 +50,11 @@ const PINNED: readonly string[] = [
   "validate_referral_rooms()",
   "prune_referral_rooms_on_room_delete()",
   "integration_outbox_enqueue()",
+  // 0179 (с59, RF-09b): єдина definer-RPC, що легально віддавала токен
+  // запрошення; тепер `null::text as invite_token` і гейт auth_is_admin() —
+  // під дайджестом. Знахідка ревʼю А: без цього рядка тест на «рівно стільки
+  // пінів» червонів би рівно в момент, коли леджер уже 179/179.
+  "ceo_list_for_clinic(p_clinic uuid)",
 ];
 
 function latestReprint(): { fn: string; file: string } {
