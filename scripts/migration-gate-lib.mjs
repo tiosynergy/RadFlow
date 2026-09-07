@@ -90,3 +90,81 @@ export function planGate(disk, ledger, badNames = []) {
 
   return { failures, stamps, ok };
 }
+
+/**
+ * RF-05 (пакет 39, с59): РІШЕННЯ «бігти / пропустити / впасти» ДО першого
+ * запиту в базу — чиста функція, щоб обидва fail-open гейта стали
+ * перевірюваними, а не жили в `main()` двома `return`-ами.
+ *
+ * До пакета 39 гейт мав ДВА обходи, і CI спирався на другий:
+ *   1. `RADFLOW_SKIP_MIGRATION_GATE=1` → WARN і вихід у БУДЬ-ЯКОМУ середовищі,
+ *      зокрема у прод-збірці Vercel (перевірялось до env, тож взводилось і з
+ *      `.env.local`);
+ *   2. `--build` без ключів → «мʼякий пропуск» — і `.github/workflows/gate.yml`
+ *      без секретів проходив на цьому щоразу.
+ *
+ * Тепер:
+ *   • на Vercel (`VERCEL=1`) обходів НЕМАЄ: і skip-змінна, і відсутність
+ *     ключів, і «явно без БД» — `fail`. Прод-збірка без звірки леджера не
+ *     сміє зібратись; це і є гейт;
+ *   • поза Vercel відсутність ключів у `--build` — `fail`, ЯКЩО не сказано
+ *     явно `RADFLOW_GATE_NO_DB=1` (CI без секретів каже це у workflow, і
+ *     рядок логу називає це словами «БЕЗ ЗВІРКИ»; мовчазного пропуску немає);
+ *   • `RADFLOW_SKIP_MIGRATION_GATE=1` поза Vercel лишається аварійним
+ *     обходом із WARN — але без `--build` він більше не дозволений: локальний
+ *     `db:gate`/`db:gate:check` — це саме перевірка, її не обходять.
+ *
+ * ⚠️ `VERCEL` читається як факт середовища, а не як налаштування: Vercel
+ * ставить його сам у КОЖНІЙ збірці. Підробити його локально можна — але це
+ * лише зробить локальну збірку суворішою, не мʼякшою.
+ *
+ * @param {{buildMode: boolean, vercel: boolean, skip: boolean, noDb: boolean,
+ *          hasUrl: boolean, hasKey: boolean}} env
+ * @returns {{action: "run"|"skip"|"fail", message: string|null}}
+ */
+export function gateEnvDecision(env) {
+  const { buildMode, vercel, skip, noDb, hasUrl, hasKey } = env;
+  const hasKeys = Boolean(hasUrl && hasKey);
+  if (vercel) {
+    if (skip) {
+      return { action: "fail", message:
+        "[migration-gate] ВІДМОВА: RADFLOW_SKIP_MIGRATION_GATE=1 у збірці Vercel — " +
+        "обхід гейта в проді заборонений (RF-05). Зніміть змінну в Settings → Environment Variables." };
+    }
+    if (noDb) {
+      return { action: "fail", message:
+        "[migration-gate] ВІДМОВА: RADFLOW_GATE_NO_DB=1 у збірці Vercel — " +
+        "прод-збірка без звірки леджера заборонена (RF-05)." };
+    }
+    if (!hasKeys) {
+      return { action: "fail", message:
+        "[migration-gate] ВІДМОВА: у збірці Vercel немає NEXT_PUBLIC_SUPABASE_URL / " +
+        "SUPABASE_SERVICE_ROLE_KEY — гейт не може звірити леджер, збірка зупинена (RF-05). " +
+        "Перевірте scope змінних (Production and Preview)." };
+    }
+    return { action: "run", message: null };
+  }
+  if (skip) {
+    if (!buildMode) {
+      return { action: "fail", message:
+        "[migration-gate] ВІДМОВА: RADFLOW_SKIP_MIGRATION_GATE=1 діє лише для --build; " +
+        "db:gate / db:gate:check — це сама перевірка, її не обходять." };
+    }
+    return { action: "skip", message:
+      "[migration-gate] WARN: пропущено через RADFLOW_SKIP_MIGRATION_GATE=1 — " +
+      "локальна збірка БЕЗ ЗВІРКИ леджера (аварійний обхід, не норма)." };
+  }
+  if (!hasKeys) {
+    if (buildMode && noDb) {
+      return { action: "skip", message:
+        "[migration-gate] SKIP: RADFLOW_GATE_NO_DB=1 — збірка БЕЗ ЗВІРКИ леджера " +
+        "(CI без секретів; це названо явно, а не мовчки)." };
+    }
+    return { action: "fail", message:
+      "[migration-gate] немає NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY" +
+      (buildMode
+        ? " — локальна збірка без ключів зупинена; якщо БД тут справді недосяжна, скажіть це явно: RADFLOW_GATE_NO_DB=1."
+        : ".") };
+  }
+  return { action: "run", message: null };
+}

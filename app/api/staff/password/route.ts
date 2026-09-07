@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
 import { parseBody } from "@/lib/validationHttp";
 import { safeDbError, zUuid, zPassword } from "@/lib/validation";
+import { emitImportantEvent } from "@/lib/importantEvents.server";
 
 /* M-12. action="set" вимагає пароль (мін. 8) — раніше це перевірялось окремим if
    уже після звернень до БД; тепер контракт «set ⇒ є пароль» тримає схема. */
@@ -21,7 +22,7 @@ export async function POST(req: Request) {
   // адміном бути не може) обробляється в requireRole.
   const gate = await requireRole(["admin"], { needClinic: true, forbidden: "Лише адміністратор" });
   if (!gate.ok) return gate.res;
-  const { me } = gate;
+  const { user, me } = gate;
 
   const parsed = await parseBody("api/staff/password", req, sPassword, "Некоректний запит (перевірте пароль: мінімум 8 символів)");
   if (!parsed.ok) return parsed.res;
@@ -80,6 +81,22 @@ export async function POST(req: Request) {
   const { error: uErr } = await admin.auth.admin.updateUserById(targetId, { password: newPass });
   if (uErr) return NextResponse.json({ error: safeDbError("api/staff/password", uErr) }, { status: 400 });
   await admin.from("profiles").update({ password_set: passwordSet, invite_token: inviteToken }).eq("id", targetId);
+
+  /* Пакет 39 (с59, ревʼю Б пакета 38): скидання/встановлення пароля — це
+     ЄДИНИЙ «гучний» шлях до чужого акаунта, що лишився після RF-09 (адмін
+     будь-якого центру CEO → reset → свіжий токен → вхід), і до цього пакета
+     він не лишав у журналі НІЧОГО, крім `password_set=false` у profiles.
+     Подія — ПІСЛЯ обох записів (auth і profiles), details без PII: лише дія
+     і роль цілі; токен сюди не потрапляє ні під яким ключем. Тип — той самий
+     `staff.access_changed`, що й у гранту/відкликання CEO (action розрізняє). */
+  await emitImportantEvent({
+    clinicId: me.clinic_id,
+    actorId: user.id,
+    eventType: "staff.access_changed",
+    entityType: "staff",
+    entityId: targetId,
+    details: { action: parsed.data.action === "reset" ? "password_reset" : "password_set", targetRole: target.role },
+  });
 
   return NextResponse.json({ ok: true, invite_token: inviteToken });
 }
