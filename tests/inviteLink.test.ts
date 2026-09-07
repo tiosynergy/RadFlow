@@ -196,6 +196,17 @@ describe("RF-09 — жоден клієнтський select не просить
       expect(code).toContain("useState<FreshTokens>(EMPTY_TOKENS)");
       const resets = code.match(/setFreshTokens\(\s*EMPTY_TOKENS\s*\)/g) || [];
       expect(resets.length, "карту токенів скидають викликом setFreshTokens(EMPTY_TOKENS) — reload() затре свіже посилання").toBe(0);
+      /* Ревʼю А с59 (пакет 38): пін на ЛІТЕРАЛ обходиться `setFreshTokens({})`
+         чи `setFreshTokens(() => EMPTY_TOKENS)` у reload(). Тому додатково: у
+         тілі reload() — жодного setFreshTokens, а всі оновлення — функціональні. */
+      const at = code.indexOf("const reload = useCallback(");
+      const end = code.indexOf("}, [clinicId]);", at);
+      expect(at, "reload не знайдено — пін осліп").toBeGreaterThan(-1);
+      expect(end, "кінець reload не знайдено — пін осліп").toBeGreaterThan(at);
+      expect(code.slice(at, end), "reload() чіпає карту токенів").not.toMatch(/setFreshTokens\(/);
+      const calls = code.match(/setFreshTokens\([^;\n]*/g) || [];
+      expect(calls.length, "жодного оновлення карти — пін осліп").toBeGreaterThan(0);
+      for (const c of calls) expect(c, "карту оновлюють не через (m) => …").toMatch(/^setFreshTokens\(\s*\(m\)\s*=>/);
     });
 
     /* ⚠️ Знахідка ревʼю Б (M-3): шар РЕНДЕРУ не був запінений узагалі —
@@ -223,9 +234,120 @@ describe("RF-09 — жоден клієнтський select не просить
     expect(resp![0]).toContain("invite_token: inviteToken");
   });
 
-  it("CeoManager НЕ чіпаємо: він бере токен через security-definer RPC, а не з таблиці", () => {
+  /* ⚠️ Пакет 37 лишив CeoManager «як є», бо він читає список через
+     security-definer RPC. Пакет 38 (0179) закрив саме цей канал (RF-09b): RPC
+     більше не віддає токен нікому, і екран мусить жити за тим самим правилом,
+     що й два інші, — токен лише з відповіді роута видачі. */
+  it("CeoManager: список — через RPC, до profiles напряму не ходить", () => {
     const code = codeOf("components/CeoManager.tsx");
     expect(code).toContain("ceo_list_for_clinic");
     expect(code).not.toMatch(/from\("profiles"\)/);
+  });
+});
+
+/* ⚠️ Ревʼю А (с59): піни нижче першої редакції були ПО ПРИСУТНОСТІ, а не по
+   місцю — закоментований виклик, виклик у гілці помилки перед `return`, або
+   `return null` перед вузлом підказки лишали все зеленим. Тому: (1) коментарі
+   стрипаються ДО матчу; (2) виклик шукається у ВІКНІ успішного шляху, а не
+   будь-де в обробнику; (3) між гілкою `reissue` і вузлом не сміє стояти ані
+   `return`, ані `hidden`. Названа межа: це все ще текст, не DOM (Р4). */
+const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/[^\n]*/g, "$1");
+const bodyOf = (code: string, fn: string) => {
+  const at = code.indexOf(`async function ${fn}(`);
+  expect(at, `обробник ${fn} не знайдено — пін осліп`).toBeGreaterThan(-1);
+  const end = code.indexOf("\n  }", at);
+  expect(end, `кінець ${fn} не знайдено — пін осліп`).toBeGreaterThan(at);
+  return code.slice(at, end);
+};
+
+describe("RF-09b — CeoManager живе за тим самим правилом, що й два інші екрани", () => {
+  const rel = "components/CeoManager.tsx";
+
+  it("токен кладуть у карту в КОЖНОМУ обробнику видачі (grant, resetPassword) — на УСПІШНОМУ шляху", () => {
+    const code = stripComments(codeOf(rel));
+    /* grant: вікно між `setForm(EMPTY)` (перший рядок після перевірки res.ok)
+       і `reload()` — виклик у гілці `if (!res.ok)` сюди не потрапляє. Ключ
+       карти — саме `ceo_id` з відповіді: інший ключ (login, created_account)
+       дасть карту, з якої inviteHint ніколи нічого не візьме. */
+    const g = bodyOf(code, "grant");
+    const gWin = g.slice(g.indexOf("setForm(EMPTY)"), g.indexOf("reload()"));
+    expect(gWin.length, "вікно успішного шляху grant не знайдено — пін осліп").toBeGreaterThan(20);
+    expect(gWin).toMatch(/setFreshTokens\(\s*\(m\)\s*=>\s*rememberToken\(\s*m\s*,\s*data\.ceo_id\s*,\s*data\.invite_token\s*\)\s*\)/);
+    /* resetPassword: від оптимістичного `setCeos(` (перший рядок ПІСЛЯ гілки
+       помилки) до фінального notify */
+    const r = bodyOf(code, "resetPassword");
+    const rWin = r.slice(r.indexOf("setCeos("), r.lastIndexOf("notify("));
+    expect(rWin.length, "вікно успішного шляху resetPassword не знайдено — пін осліп").toBeGreaterThan(20);
+    expect(rWin).toMatch(/setFreshTokens\(\s*\(m\)\s*=>\s*rememberToken\(\s*m\s*,\s*id\s*,\s*data\.invite_token\s*\)\s*\)/);
+    expect(rWin).not.toMatch(/if\s*\(\s*false\s*\)/);
+  });
+
+  it("«invite_token» як поле рядка списку більше не існує — тип Ceo без нього", () => {
+    const code = codeOf(rel);
+    expect(code).not.toMatch(/\br\.invite_token\b/);
+    const typeDecl = code.match(/type Ceo = \{[\s\S]*?\};/);
+    expect(typeDecl, "тип Ceo не знайдено — пін осліп").not.toBeNull();
+    expect(typeDecl![0]).not.toContain("invite_token");
+  });
+
+  it("карту токенів не обнуляють ніде, крім useState — і reload() її НЕ ЧІПАЄ", () => {
+    const code = stripComments(codeOf(rel));
+    expect(code).toContain("useState<FreshTokens>(EMPTY_TOKENS)");
+    /* Ревʼю А/Б: пін на літерал `EMPTY_TOKENS` обходився `setFreshTokens({})`
+       чи `setFreshTokens(() => EMPTY_TOKENS)`. Тому: у тілі reload() — ЖОДНОГО
+       setFreshTokens, а поза ним — лише функціональні оновлення карти. */
+    const at = code.indexOf("const reload = useCallback(");
+    const end = code.indexOf("}, [clinicId]);", at);
+    expect(at, "reload не знайдено — пін осліп").toBeGreaterThan(-1);
+    expect(end, "кінець reload не знайдено — пін осліп").toBeGreaterThan(at);
+    expect(code.slice(at, end)).not.toMatch(/setFreshTokens\(/);
+    const calls = code.match(/setFreshTokens\([^;\n]*/g) || [];
+    expect(calls.length, "жодного оновлення карти — пін осліп").toBeGreaterThan(0);
+    for (const c of calls) expect(c, "карту оновлюють не через (m) => …").toMatch(/^setFreshTokens\(\s*\(m\)\s*=>/);
+  });
+
+  it("підказку «перевидати» справді МАЛЮЮТЬ, і «Скопіювати» бере токен з hint, а не з рядка", () => {
+    const code = stripComments(codeOf(rel));
+    const branches = code.match(/hint\.kind === "reissue"/g) || [];
+    expect(branches.length, "гілки reissue в рендері немає").toBe(1);
+    /* Вузол — між гілкою і `}` її блоку: без `return null`, без `hidden`,
+       текст — ДИТИНА елемента, і для CEO-only це саме REISSUE_HINT. */
+    const at = code.indexOf('hint.kind === "reissue"');
+    const block = code.slice(at, code.indexOf("\n                  }", at));
+    expect(block, "між гілкою reissue і вузлом стоїть return/hidden").not.toMatch(/return\s+null|hidden/);
+    expect(block, "REISSUE_HINT не є дитиною вузла (атрибут title не рахується)")
+      .toMatch(/>\s*\{r\.role === "ceo" \? REISSUE_HINT : FOREIGN_ROLE_HINT\}\s*</);
+    expect(code).toMatch(/copyLink\(hint\.token\)/);
+  });
+
+  it("крос-рольовий без пароля НЕ отримує поради «Скинути пароль» (роут відповів би 403)", () => {
+    const code = codeOf(rel);
+    expect(code).toMatch(/const FOREIGN_ROLE_HINT =\s*"[^"]*адміністратор того центру[^"]*"/);
+    expect(code).not.toMatch(/FOREIGN_ROLE_HINT =\s*"[^"]*Скинути пароль/);
+    // і тост після grant розгалужений за роллю з відповіді
+    const g = stripComments(bodyOf(codeOf(rel), "grant"));
+    expect(g).toMatch(/data\.role === "ceo"/);
+    expect(g).toMatch(/адміністратор його центру/);
+  });
+
+  it("токен забувають там, де сервер його гасить: set / revoke / delete", () => {
+    const code = stripComments(codeOf(rel));
+    for (const fn of ["submitPassword", "revoke", "deleteCeo"]) {
+      const body = bodyOf(code, fn);
+      // після гілки помилки (`if (!res.ok)`) і ДО notify — на успішному шляху
+      const win = body.slice(body.indexOf("if (!res.ok)"), body.lastIndexOf("notify("));
+      expect(win, `${fn} не забуває токен на успішному шляху`).toMatch(/setFreshTokens\(\s*\(m\)\s*=>\s*forgetToken\(/);
+    }
+  });
+
+  /* Пін у ВІДПОВІДІ роута (урок B6 пакета 37): `ceo_id` — ключ карти на
+     екрані; без нього токен нового акаунта нема куди покласти. Поведінка
+     самого роута (RF-09d) — у tests/ceoGrantRoute.test.ts, не тут. */
+  it("роут /api/ceo/grant повертає ceo_id та invite_token у фінальній відповіді", () => {
+    const code = codeOf("app/api/ceo/grant/route.ts");
+    const resp = code.match(/return NextResponse\.json\(\{[^}]*\}\);\s*\}\s*$/);
+    expect(resp, "фінальний NextResponse.json роута не знайдено — пін осліп").not.toBeNull();
+    expect(resp![0]).toContain("ceo_id: ceoId");
+    expect(resp![0]).toContain("invite_token: inviteToken");
   });
 });
