@@ -199,23 +199,26 @@ is too optimistic to act on.
 |---|---|---|---|
 | 07.09 09:59 | `8cd4ce7` | docs | `MSywNHFc1NY8g-T_ezLt1` — differed from the s58 table, as predicted; `_buildManifest.js` for it → **200**, for the two previous ids → **404** |
 | 07.09 11:45 (+9 min) | `f2013d6` | **code** (package 38 step 1) | `PcSts0KigRuth5_eho5UV` — changed |
+| 07.09 (package 38, migration + docs merges) | `087dab0` + docs | migration 0179 + docs | `fctmkCrYxXlaq0MsPpG9o` → `f4suUurdNCq2L9CANWdJG` — changed after each |
+| 07.09 14:58 push → 14:59 read (+1.5 min) | `41e7e5c` | **code** (package 39) | `oXDM3lxbUoAeFSj8Kx4qb` — differed from `f4suU…` (404) but TOO EARLY to be package 39: most likely the last docs commit of package 38, never re-measured |
+| 07.09 15:02 (+4 min) | `41e7e5c` | **code** (package 39) | **`uh7QxBj9ypJ-9BrDkEwu4`** — changed again; `_buildManifest.js` for it → 200, for `oXDM…` and `f4suU…` → 404. Consistent with the 4–9 min build latency |
 
 The manifest cross-check answers session 58's open instrument question:
 the regex reads the buildId that production actually serves.
 
-### Expected state (measured 2026-09-07, end of session 59)
+### Expected state (measured 2026-09-07, end of session 59, after package 39)
 
 | what | expected |
 |---|---|
-| `main` / `dev` | **`087dab0`** / **`54a6e30`** (package 38), **plus the docs commit(s) of this handover on top** — take the hashes from `git ls-remote`. Tree clean |
-| prod DB | **`0179_rf09_definer_and_audit.sql`**, ledger **179/179**, file md5 `6a77600e6b3659a9e70839ac035e6e0c` |
+| `main` / `dev` | **`41e7e5c`** / **`6a7dcef`** (package 39), **plus the docs commit(s) of this handover on top** — take the hashes from `git ls-remote`. Tree clean |
+| prod DB | **`0179_rf09_definer_and_audit.sql`** (package 39 shipped NO migration), ledger **179/179**, file md5 `6a77600e6b3659a9e70839ac035e6e0c` |
 | **next migration** | **0180** — the number comes FROM THE LEDGER, never from the folder |
 | `invariants_check()` | `ok:true`, **`checked:21`**, `failed:[]` — 0179 EXTENDED №15 (`priv_drift` (g)/(g2)) and №19 (23 functions); the number did NOT move, `bump-checked-pins.mjs` was not run |
 | guard body | `md5(replace(prosrc, chr(13), ''))` = **`5e468b5e4796c42f825820eb17505070`**, length **80871**, CR 0. Normalized pin g = **`71e552c2e128bdc251c68834d3827f2a`**. Both taken from the FILE (instrument verified on 0178) and from PROD after the apply — equal |
 | nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50. ⚠️ The 08.09 03:50 run will be the FIRST nightly one on the 0179 body — check it reports `ok:true, checked:21, failed:[]` |
-| toolchain | tsc **0**, eslint **0**, vitest **2818/2818**, `db:gate` **179/179**, build log `[migration-gate] OK: 179/179` |
-| stand revision | **27/27 green, 663 addressed**, a full run took **~72 min** (the machine was 2× slower than on 06.09; `u72` alone 20 min). `EXPECTED_STANDS` **27**; `falsify-rf09` grew 25 → **44** addressed. The 0179 reprint broke NO anchors (`falsify-0166` 60/60) |
-| `/login` fingerprint | `PcSts0KigRuth5_eho5UV` after the code merge; the migration merge `087dab0` and the docs commit(s) carrying this table will move it again — expect it to DIFFER; if it does not, record the fact and read the one-direction rule above |
+| toolchain | tsc **0**, eslint **0**, vitest **2852/2852** (+34 over package 38), `db:gate` **179/179**, build log `[migration-gate] OK: 179/179` — i.e. decision `run` on a machine WITH keys (RF-05: without keys `--build` is now exit 1 unless `RADFLOW_GATE_NO_DB=1`; on Vercel nothing bypasses) |
+| stand revision | full run after package 38: **27/27 green, 663 addressed, ~72 min**. Package 39 reprinted no guard → no full revision; the new stand **`falsify-rf05` 28/28, 26 addressed, 97 s** ran via `falsify-all.mjs rf05` on a CLEAN tree after the commit. `EXPECTED_STANDS` **28** (27 + rf05). Next full revision expected **28/28, 689 addressed** |
+| `/login` fingerprint | **`uh7QxBj9ypJ-9BrDkEwu4`** at 15:02Z (+4 min after the package-39 merge); the docs commit(s) carrying this table will move it again — expect it to DIFFER; if it does not, record the fact and read the one-direction rule above |
 
 ### Expected state (measured 2026-09-06/07, end of session 58) — HISTORY
 
@@ -243,13 +246,17 @@ the edit, gone. Write the docs before or after — never in parallel.
 
 ---
 
-## WHAT SESSION 59 DID — ONE package (38), two deploy steps, RF-09 closed on all four channels
+## WHAT SESSION 59 DID — TWO packages (38, 39): RF-09 closed on all four channels, RF-05 closed in code
 
-Full detail with the measurements: `claude/radflow-handoff.md` (top block)
-and `docs/audit/PR-0179-rf09-definer-audit.md`.
+Full detail with the measurements: `claude/radflow-handoff.md` (top block),
+`docs/audit/PR-0179-rf09-definer-audit.md` (38) and
+`docs/audit/PR-RF05-gate-fail-closed.md` (39).
 
 | item | what |
 |---|---|
+| **Package 39 — RF-05** | `scripts/migration-gate.mjs` had TWO silent fail-opens (skip variable honoured everywhere incl. Vercel and via `.env.local`; `--build` without keys → soft skip, and CI passed on exactly that). Now a pure `gateEnvDecision` in `migration-gate-lib.mjs`: on Vercel (`VERCEL=1`) NOTHING bypasses (skip / `RADFLOW_GATE_NO_DB` / missing keys → exit 1, message names the variable set); outside Vercel skip only for `--build` with WARN «БЕЗ ЗВІРКИ»; no keys in `--build` → exit 1 unless `RADFLOW_GATE_NO_DB=1` is said explicitly (`gate.yml` does). Prod build unchanged (`OK: 179/179`). `AGENTS.md`/`ROLLBACK.md` no longer recommend a bypass that now kills the Vercel build. No migration |
+| **Package 39 — audit event** | `/api/staff/password` emits `staff.access_changed` `{action: password_reset\|password_set, targetRole}` AFTER both writes, no token/password in details, `clinicId` = the admin's clinic (the CEO sees it via the grant). Titles «скинув/встановив пароль керівника / направника / співробітника» — approved by the owner. Found by the behavioural test: the route did not take `user` from the gate → `ReferenceError` on EVERY call |
+| **Package 39 — reviews/stand** | 11 findings closed (one-line early `return` invisible to the pin; double could not fail GoTrue → `authUpdateError`; CEO grant gate had no negative tests — the RF-09 path itself; `VERCEL: ""` ≠ unset; docs recommending the bypass; title hid the target role), 1 rejected, 2 named debts (PII key list lacks `password`/`pw` — DB CHECK mirror, needs a migration; `profiles.update` error ignored after the auth write — pre-existing). `falsify-rf05` 28/28, 26 addressed; `EXPECTED_STANDS` **28**; tsc caught a spec type error vitest cannot see |
 | **RF-09b** | `ceo_list_for_clinic` returns `null::text as invite_token`; its body is now in №19 (22 → 23). `CeoManager` follows the package-37 rule: `freshTokens` map from route responses, three card states, `forgetToken` on set/revoke/delete |
 | **RF-09c** | `fn_audit` writes `before/after` without the `invite_token` key; the 4 historical rows cleaned by explicit ids with after-md5 pins inside the migration; №15 (g) — no non-empty token anywhere in `audit_log` |
 | **RF-09d — NEW** | `/api/ceo/grant` returned the STORED token (or silently wrote a new one) for any EXISTING profile with `password_set=false` — an admin of clinic B with the login of an un-activated staff member of clinic A got the token silently, under service_role, past 0178 and 0179. Closed in code (owner's variant A): token only for an account created by this call; response +`ceo_id`, +`role`, +`password_set`. Behavioural test `tests/ceoGrantRoute.test.ts` on a double that now has `insert/update/auth.admin` and a query log |
@@ -428,8 +435,10 @@ the measurements it carries; the live queue starts at item 2.**
 2. **The residues of the eight, now that they are measured.** In order of what
    the measurement says: `sched_referrer_read` leaks non-granted room ids,
    hours and closures to a referrer through the `rooms jsonb` column (RF-03);
-   no regression check on grants, so one `GRANT` silently reopens RF-04; the
-   deploy gate has TWO fail-opens and CI relies on one of them (RF-05);
+   no regression check on grants, so one `GRANT` silently reopens RF-04;
+   ~~the deploy gate has TWO fail-opens and CI relies on one of them (RF-05)~~
+   — **CLOSED by package 39** (`gateEnvDecision`, no bypass on Vercel, CI
+   skip explicit; `docs/audit/PR-RF05-gate-fail-closed.md`);
    leaked-password protection is still off — one switch, the cheapest item in
    the whole audit (RF-08); and `add_case_step_rpc` was not traced to the end
    (RF-01). ⚠️ RF-04 is now guarded for `profiles` only (0178 (f)/(f2)); the
@@ -487,10 +496,13 @@ the assertion, and `OK: N/N` with the wrong N is still a green line.
 
 ## NAMED DEBTS — open, each with the place it lives
 
-- **No audit EVENT on password reset** (`/api/staff/password`, action
-  `reset`): the loud takeover path (admin B → `grant` → `reset` → login as a
-  CEO of clinic A, model 0044/0064) leaves only `password_set=false` in
-  `profiles`. Session 59, review B. One `emitImportantEvent` call.
+- ~~**No audit EVENT on password reset**~~ — **CLOSED by package 39** (event
+  `staff.access_changed` / `password_reset|password_set`, after both writes).
+  Two debts it left NAMED: `lib/importantEvents.ts` PII key list has no
+  `password`/`pw` (it mirrors the DB CHECK of 0128/0160 — needs a migration,
+  not a one-line edit); `/api/staff/password` ignores the `profiles.update`
+  error after the auth write (pre-existing) — on that failure the response
+  carries a token that is not in the DB.
 - **`waitlist_entries.claim_token` is a dead column** since 0100 (the atomic
   RPC clears it and nobody reads it) — NOT a secret, measured in 59. Drop it
   or say why it stays.
