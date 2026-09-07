@@ -90,14 +90,14 @@ begin
   end;
   v_done := v_done || ' d';
 
-  -- ── e: сторож рахує 21 перевірок ──
+  -- ── e: сторож рахує 22 перевірок ──
   v_res := public.invariants_check(p_write => false);
   -- ⚠️ 0164 підняв 13 → 14 (ucm_orphan_markers), 0165 перевипустив ту саму
   --    перевірку, 0166 — 14 → 15 (priv_drift), 0170 — 15 → 16 (policy_digest),
   --    0171 — 16 → 18 (guard_triggers + server_now). Число живе у ДЕВʼЯТИ смоуках —
   --    сторож узгодженості: tests/invariantsCheckedPins.test.ts.
-  if (v_res ->> 'checked')::int is distinct from 21 then
-    raise exception 'SMOKE_FAIL e: checked = %, очікував 21', v_res ->> 'checked';
+  if (v_res ->> 'checked')::int is distinct from 22 then
+    raise exception 'SMOKE_FAIL e: checked = %, очікував 22', v_res ->> 'checked';
   end if;
   v_done := v_done || ' e';
 
@@ -162,11 +162,13 @@ begin
   --    відомій відповіді, а не лише на новій. ПІСЛЯ накату 0178 обидва числа
   --    звірені живим запитом до прода: g = 10b3204c…, g2 = 6ff5dd3d…,
   --    length(prosrc) = 77313 — збіглось із файлом до біта.
-  --    ⚠️ Піни перезнято під 0179 (RF-09b/c; попередні: g 10b3204c…,
-  --    g2 6ff5dd3d…, 77313). Обидва числа зняті ДВІЧІ: з файлу 0179 тим самим
-  --    розбором (прилад звірено на 0178: відтворює 6ff5dd3d…/10b3204c…) і
-  --    живим запитом до прода ПІСЛЯ накату 07.09.2026: g = 71e552c2…,
-  --    g2 = 5e468b5e…, length(prosrc) = 80871, cr_count = 0 — збіглось.
+  --    ⚠️ Піни перезнято під 0180 (RF-04, перевірка №22 grant_digest;
+  --    попередні: 0179 g 71e552c2…, g2 5e468b5e…, 80871; 0178 g 10b3204c…,
+  --    g2 6ff5dd3d…, 77313). Обидва числа зняті ДВІЧІ: розбором ФАЙЛА 0180
+  --    (прилад звірено на 0179: той самий розбір відтворює
+  --    71e552c2…/5e468b5e… і довжину 80871) і живим запитом до прода ПІСЛЯ
+  --    накату 07.09.2026: g = c7670d89…, g2 = caecded8…,
+  --    length(prosrc) = 94298, cr_count = 0 — збіглось до біта.
   -- ⚠️ НОРМАЛІЗАЦІЯ ТУТ — НЕ КОСМЕТИКА, і це заміряно (с56). Кінці рядків
   --    залежать від ШЛЯХУ накату, а не від міграції:
   --      • 0171 накатували через SQL Editor із Windows — у проді тіло мало
@@ -180,8 +182,8 @@ begin
   --    коротший (без хвостового переводу рядка), а 29932 — СИМВОЛИ, не байти.
   --    Рівність файл ↔ прод той замір усе одно доводив (однакове з обох
   --    боків), але число ні з чим у базі не збігалось.
-  if v_txt is distinct from '71e552c2e128bdc251c68834d3827f2a' then
-    raise exception 'SMOKE_FAIL g: md5 тіла invariants_check = %, очікував 71e552c2… (передрук розійшовся)', v_txt;
+  if v_txt is distinct from 'c7670d890ac9737cdcb0e0aade0e4957' then
+    raise exception 'SMOKE_FAIL g: md5 тіла invariants_check = %, очікував c7670d89… (передрук розійшовся)', v_txt;
   end if;
   -- ── g2: тіло прода == тіло ФАЙЛУ, з точністю до кінців рядків ──
   -- ⚠️ Пін вище схлопує ПРОБІЛИ І ЗНІМАЄ КОМЕНТАРІ, тобто доводить лише «код
@@ -192,8 +194,8 @@ begin
     from pg_proc
    where proname = 'invariants_check'
      and pronamespace = 'public'::regnamespace;
-  if v_txt is distinct from '5e468b5e4796c42f825820eb17505070' then
-    raise exception 'SMOKE_FAIL g2: тіло прода != тіло файлу 0179 (md5 без CR = %)', v_txt;
+  if v_txt is distinct from 'caecded86d138146d518fbbc1b71b740' then
+    raise exception 'SMOKE_FAIL g2: тіло прода != тіло файлу 0180 (md5 без CR = %)', v_txt;
   end if;
   v_done := v_done || ' g g2';
 
