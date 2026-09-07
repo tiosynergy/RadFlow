@@ -1,10 +1,13 @@
-# RadFlow — attachment for the next session (session 59)
+# RadFlow — attachment for the next session (session 60)
 
 > **This file is the ATTACHMENT.** The owner pastes
-> `claude/session59-start-prompt.md` as the first message and attaches this
-> file. Session-specific part rewritten at the end of session 58 (2026-09-06);
+> `claude/session60-start-prompt.md` as the first message and attaches this
+> file. Session-specific part rewritten at the end of session 59 (2026-09-07);
 > the permanent part below is carried unchanged. History lives in
 > `claude/radflow-handoff.md`.
+> ⚠️ Session 59 opened on a PASTED text one package older than its own
+> attachment (0177/177/2763/26 vs 0178/178/2798/27) — the two must be from
+> the same end-of-session edit. Check that before pasting.
 >
 > ⚠️ **DO NOT TRUST THIS FILE.** Everything below is what SHOULD come out, not
 > the source of truth. Verify by query and by command (TASK #0). **A
@@ -186,10 +189,35 @@ buildId can.
 (`CDP Runtime.evaluate timed out`). The built-in browser IS authorized in
 RadFlow now and did the whole job in 58 — prefer it, and if you use both, say
 which instrument took which end.
-⚠️ A Vercel deploy takes **4–7+ min** after a push — measured in session 58,
-and the "~2–3 min" in the older docs is too optimistic to act on.
+⚠️ A Vercel deploy takes **4–9 min** after a push — measured in sessions 58
+and 59 (59: +9 min for the code merge), and the "~2–3 min" in the older docs
+is too optimistic to act on.
 
-### Expected state (measured 2026-09-06/07, end of session 58)
+### Session 59 measurements (instrument pinned)
+
+| when (UTC) | `main` | merge carried | fingerprint |
+|---|---|---|---|
+| 07.09 09:59 | `8cd4ce7` | docs | `MSywNHFc1NY8g-T_ezLt1` — differed from the s58 table, as predicted; `_buildManifest.js` for it → **200**, for the two previous ids → **404** |
+| 07.09 11:45 (+9 min) | `f2013d6` | **code** (package 38 step 1) | `PcSts0KigRuth5_eho5UV` — changed |
+
+The manifest cross-check answers session 58's open instrument question:
+the regex reads the buildId that production actually serves.
+
+### Expected state (measured 2026-09-07, end of session 59)
+
+| what | expected |
+|---|---|
+| `main` / `dev` | **`087dab0`** / **`54a6e30`** (package 38), **plus the docs commit(s) of this handover on top** — take the hashes from `git ls-remote`. Tree clean |
+| prod DB | **`0179_rf09_definer_and_audit.sql`**, ledger **179/179**, file md5 `6a77600e6b3659a9e70839ac035e6e0c` |
+| **next migration** | **0180** — the number comes FROM THE LEDGER, never from the folder |
+| `invariants_check()` | `ok:true`, **`checked:21`**, `failed:[]` — 0179 EXTENDED №15 (`priv_drift` (g)/(g2)) and №19 (23 functions); the number did NOT move, `bump-checked-pins.mjs` was not run |
+| guard body | `md5(replace(prosrc, chr(13), ''))` = **`5e468b5e4796c42f825820eb17505070`**, length **80871**, CR 0. Normalized pin g = **`71e552c2e128bdc251c68834d3827f2a`**. Both taken from the FILE (instrument verified on 0178) and from PROD after the apply — equal |
+| nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50. ⚠️ The 08.09 03:50 run will be the FIRST nightly one on the 0179 body — check it reports `ok:true, checked:21, failed:[]` |
+| toolchain | tsc **0**, eslint **0**, vitest **2818/2818**, `db:gate` **179/179**, build log `[migration-gate] OK: 179/179` |
+| stand revision | **27/27 green, 663 addressed**, a full run took **~72 min** (the machine was 2× slower than on 06.09; `u72` alone 20 min). `EXPECTED_STANDS` **27**; `falsify-rf09` grew 25 → **44** addressed. The 0179 reprint broke NO anchors (`falsify-0166` 60/60) |
+| `/login` fingerprint | `PcSts0KigRuth5_eho5UV` after the code merge; the migration merge `087dab0` and the docs commit(s) carrying this table will move it again — expect it to DIFFER; if it does not, record the fact and read the one-direction rule above |
+
+### Expected state (measured 2026-09-06/07, end of session 58) — HISTORY
 
 | what | expected |
 |---|---|
@@ -215,7 +243,58 @@ the edit, gone. Write the docs before or after — never in parallel.
 
 ---
 
-## WHAT SESSION 58 DID — THREE packages, one migration, the LOW batch emptied
+## WHAT SESSION 59 DID — ONE package (38), two deploy steps, RF-09 closed on all four channels
+
+Full detail with the measurements: `claude/radflow-handoff.md` (top block)
+and `docs/audit/PR-0179-rf09-definer-audit.md`.
+
+| item | what |
+|---|---|
+| **RF-09b** | `ceo_list_for_clinic` returns `null::text as invite_token`; its body is now in №19 (22 → 23). `CeoManager` follows the package-37 rule: `freshTokens` map from route responses, three card states, `forgetToken` on set/revoke/delete |
+| **RF-09c** | `fn_audit` writes `before/after` without the `invite_token` key; the 4 historical rows cleaned by explicit ids with after-md5 pins inside the migration; №15 (g) — no non-empty token anywhere in `audit_log` |
+| **RF-09d — NEW** | `/api/ceo/grant` returned the STORED token (or silently wrote a new one) for any EXISTING profile with `password_set=false` — an admin of clinic B with the login of an un-activated staff member of clinic A got the token silently, under service_role, past 0178 and 0179. Closed in code (owner's variant A): token only for an account created by this call; response +`ceo_id`, +`role`, +`password_set`. Behavioural test `tests/ceoGrantRoute.test.ts` on a double that now has `insert/update/auth.admin` and a query log |
+| **№15 (g2)** | no SECURITY DEFINER function with client EXECUTE touches `invite_token` (result signature, arguments, BODY TEXT) or returns `profiles` whole; the one exception is `ceo_list_for_clinic`, whose body №19 pins. Named boundary: `returns jsonb` with `to_jsonb(p)` and no `invite_token` in the body is not caught |
+| **product** | cross-role member (staff/referrer of another clinic with a CEO grant) without a password no longer gets a hint pointing at «Скинути пароль», which returns 403 for them — the route returns `role`, the hint and toast branch (review B) |
+| stands | `falsify-rf09` 25 → 44 addressed; `EXPECTED_STANDS` stays **27**; full revision 27/27, 663 addressed, ~72 min |
+| apply path | sections 1–3 verbatim via MCP; the 1400-line guard reprint through a DO block that rebuilds the body from the 0178 prosrc with five anchored replacements, md5 asserted equal to the file before and after `create or replace`, whole catalog row verified after apply. The 95 KB file was produced by two independent generators (python in the container, node on the owner's machine) with one md5 |
+| `claim_token` | measured and EXCLUDED: a transient CAS marker (0089), read by nobody, only ever nulled by two RPCs, 0 rows with a value — a dead-column debt, not a security finding |
+
+## LESSONS OF SESSION 59
+
+1. **A guard branch that reads a SIGNATURE is not a guard over DATA.** The
+   first (g2) checked `pg_get_function_result` for the word `invite_token`;
+   `returns setof profiles` carries no column name at all. Both review rounds
+   found it independently; the branch was widened to arguments, body text
+   and `prorettype = profiles` before the apply — and the probe with
+   `returns setof public.profiles` went red for `anon` too, because a new
+   function gets EXECUTE for PUBLIC by default.
+2. **A count pin on a list is a landmine for the next reprint.** The №19 test
+   pinned "exactly 22 rows"; committing 0179 would have reddened the gate
+   exactly when the ledger was already 179/179 and the file could not be
+   withdrawn (symmetric gate). Review A caught it as a BLOCKER.
+3. **The two lenses agree on the code and still find different things.**
+   Falsification found the untested reactivation branch, the single-role
+   fixture and the key-not-value assertion; operations found the hint that
+   led the operator to a button returning 403. Neither would have found the
+   other's.
+4. **A hostile double that can only READ cannot test a route that WRITES.**
+   It grew `insert`/`update`/`auth.admin` and a query log — and the log
+   mattered at once: `seen` kept only the LAST query per table, so a dirty
+   select made first was invisible.
+5. **Pins by PRESENCE fell again** (comment-out, call in the error branch,
+   `return null` before the node, `setFreshTokens({})` instead of the
+   literal). Cure: strip comments, match inside the success-path WINDOW,
+   forbid any `setFreshTokens` inside `reload()` — applied to all three
+   managers, since package 37's pins had the same gap.
+6. **"Success. No rows returned" was not the proof — and the first
+   `invariants_check` after the apply was RED on `ledger_md5`,** exactly as
+   it must be until `npm run db:gate` stamps the file. Read the failed list;
+   do not read the colour.
+7. **The pasted opening text and the attachment disagreed** — one package
+   apart. The reconciliation cost a paragraph; the fix is a rule in the
+   attachment header.
+
+## WHAT SESSION 58 DID — THREE packages, one migration, the LOW batch emptied (HISTORY)
 
 Full detail with the measurements: `claude/radflow-handoff.md` (top block),
 `docs/audit/PR-U59-U60-ack-visibility.md`, `docs/audit/PR-RF01-RF08-remeasure.md`,
@@ -232,7 +311,7 @@ Full detail with the measurements: `claude/radflow-handoff.md` (top block),
 | **RF-1** | dug out and struck off — see below |
 | deploy gate | ✅ verified from the BUILD LOG, not the doc: it runs for real in prod. Settings hold the keys with scope Production and Preview; `RADFLOW_SKIP_MIGRATION_GATE` exists nowhere |
 
-## LESSONS OF SESSION 58
+## LESSONS OF SESSION 58 (HISTORY)
 
 1. **A guard written in the same hour is exactly as much a suspect as someone
    else's old code.** Two review rounds found FOUR ways past my own fresh pins,
@@ -300,13 +379,17 @@ Full detail with the measurements: `claude/radflow-handoff.md` (top block),
 
 ---
 
-## QUEUE FOR SESSION 59 — a menu, not an order
+## QUEUE FOR SESSION 60 — a menu, not an order
 
 ⚠️ **Ask before coding.** Compose a plan (`TaskCreate`) and **AGREE THE FIRST
 PACKAGE WITH ME BEFORE WRITING CODE.** If a package is product-facing, show me
 the texts before they land.
 
-1. ⚠️⚠️ **RF-09 (High) — PARTIALLY CLOSED: one channel of three. Migration
+✅ **RF-09 is CLOSED on all four channels (0178 table ACL; 0179 definer-RPC and
+audit trail; code for the issuing route). Item 1 below is HISTORY — kept for
+the measurements it carries; the live queue starts at item 2.**
+
+1. (HISTORY — session 58's wording) ⚠️⚠️ **RF-09 (High) — PARTIALLY CLOSED: one channel of three. Migration
    `0179` closes the other two, and it is the top of the queue.**
    Package 37 (`0178`) removed the TABLE-level SELECT grant on `profiles` from
    `anon` and `authenticated` and put back a column allow-list of 14 of 15
@@ -349,7 +432,9 @@ the texts before they land.
    deploy gate has TWO fail-opens and CI relies on one of them (RF-05);
    leaked-password protection is still off — one switch, the cheapest item in
    the whole audit (RF-08); and `add_case_step_rpc` was not traced to the end
-   (RF-01).
+   (RF-01). ⚠️ RF-04 is now guarded for `profiles` only (0178 (f)/(f2)); the
+   general "one GRANT reopens it" claim still stands for every other table.
+   RF-08 re-measured 07.09 via `get_advisors`: still **WARN — disabled**.
 3. **The second half of U-59 — "the surface is covered by a modal".** ⚠️ The
    cost was OVERSTATED by my own first comment and is now measured: the flag
    already exists (`anyModalOpen`, `QueueBoard.tsx:1589`) and its COMPLETENESS
@@ -368,7 +453,7 @@ the texts before they land.
 ## FORKS Р1–Р5 — these cannot start without the owner's decision
 
 Full text with the measurements: `claude/plan-s57.md` §3. **Р6 is DONE** (the
-RF-01…RF-08 re-measure, package 36). Р1–Р5 unchanged by session 58.
+RF-01…RF-08 re-measure, package 36). Р1–Р5 unchanged by sessions 58 and 59.
 
 ✅ **Р6's one open question is now CLOSED — measured on the dashboard, 06.09,
 Production deployment `36a9a42` (`AizJDW1o8…`), build log line 19:18:30.562:**
@@ -402,7 +487,20 @@ the assertion, and `OK: N/N` with the wrong N is still a green line.
 
 ## NAMED DEBTS — open, each with the place it lives
 
-- **The second half of U-59 (modal overlay)** — cost corrected, see queue item 2.
+- **No audit EVENT on password reset** (`/api/staff/password`, action
+  `reset`): the loud takeover path (admin B → `grant` → `reset` → login as a
+  CEO of clinic A, model 0044/0064) leaves only `password_set=false` in
+  `profiles`. Session 59, review B. One `emitImportantEvent` call.
+- **`waitlist_entries.claim_token` is a dead column** since 0100 (the atomic
+  RPC clears it and nobody reads it) — NOT a secret, measured in 59. Drop it
+  or say why it stays.
+- **`fn_audit` swallows every error** (`exception when others then null`) —
+  a silently dead audit trail is invisible to every invariant. Adjacent to Р2.
+- **Guard №15 (g2) boundary:** a definer RPC `returns jsonb` built with
+  `to_jsonb(p)` and no `invite_token` in its body is not caught.
+- **Live browser check of the CEO card** under an admin — still not done
+  (37 and 38 both shipped on unit tests and stands only).
+- **The second half of U-59 (modal overlay)** — cost corrected, see queue item 3.
 - **`incidentCount` in the staff sidebar** is still a two-state falsy gate: its
   load state arrives as a finished number from `QueueBoard`
   (`liveIncidents.length`). NOT examined in package 35.
@@ -427,7 +525,13 @@ the assertion, and `OK: N/N` with the wrong N is still a green line.
 ### Open questions for the owner: the five forks above, and nothing else
 
 ⚠️ **RF-1 is CLOSED as a question** (struck off — it never had a description).
-But its dig opened Р6, which the owner has already approved: see queue item 1.
+But its dig opened Р6, which the owner has already approved and which is done.
+
+Decisions made in session 59 — do not reopen: RF-09d variant A (the issuing
+route returns a token ONLY for an account it created; an existing account
+gets its link via «Скинути пароль»); `claim_token` is out of scope of RF-09;
+the three CEO-card texts (foreign-role hint, foreign-role toast, build-skew
+toast) are approved and shipped.
 
 Decisions already made — do not reopen: branch protection on `main` stays OFF;
 the service-role key rotation is tied to the first real centre with real
