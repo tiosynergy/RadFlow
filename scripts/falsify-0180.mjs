@@ -14,11 +14,29 @@
 //
 //  Запуск: node scripts/falsify-0180.mjs   Звіт: falsify-0180.md (gitignore)
 // ============================================================
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, unlinkSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { verdictOf, finishStand } from "./lib/falsify-verdict.mjs";
 
-const FILES = { mig: "supabase/migrations/0180_grant_digest.sql" };
+/* ⚠️ ОСТАННІЙ передрук, а не 0180 (ревʼю пакета 41). Мутації цього стенда
+   стріляють у блок №22, а статичні сторожі читають ФАЙЛ ОСТАННЬОГО передруку
+   (`latestReprint()`): щойно наступна міграція передрукує `invariants_check`,
+   правка в 0180 перестала б бути тим текстом, який тести читають, — стенд
+   зазеленів би МОВЧКИ. Той самий урок, що з56 виучила на falsify-0166. */
+function latestReprint() {
+  const dir = "supabase/migrations";
+  let best = "";
+  for (const f of readdirSync(dir).filter((x) => x.endsWith(".sql")).sort()) {
+    const txt = readFileSync(`${dir}/${f}`, "utf8");
+    const at = txt.search(/^create or replace function public\.invariants_check/m);
+    if (at < 0) continue;
+    if (txt.indexOf("\n$function$;", at) < 0) continue;
+    best = dir + "/" + f;
+  }
+  if (!best) { console.error("НЕ ЗНАЙДЕНО жодного передруку invariants_check"); process.exit(2); }
+  return best;
+}
+const FILES = { mig: latestReprint() };
 const SPECS = [
   "tests/grantDigestInvariant.test.ts",
   "tests/invariantsCheckedPins.test.ts",
