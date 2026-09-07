@@ -25,6 +25,14 @@ export interface FakeDb {
   rpc: Record<string, Row[]>;
   /** Останні застосовані фільтри по таблиці — для перевірок «а чи питали?». */
   seen: Record<string, Record<string, unknown> | undefined>;
+  /** с59: id, який `auth.admin.createUser` віддасть НАСТУПНОМУ створеному
+      акаунту. Не задано — виклик КИДАЄ (тест, що створює акаунт, мусить
+      сказати це явно). Журнал викликів auth.admin — у `authCalls`. */
+  nextUserId?: string;
+  authCalls?: string[];
+  /** с59: УСІ запити по порядку (ревʼю А: `seen` тримає лише ОСТАННІЙ запит
+      по таблиці, тож «брудний» select, зроблений першим, зникав із поля зору). */
+  queries?: Array<{ table: string; cols: string[]; wrote?: "insert" | "update" }>;
 }
 
 export const emptyDb = (): FakeDb => ({ tables: {}, errors: {}, rpc: {}, seen: {} });
@@ -45,6 +53,13 @@ class FakeQuery {
   private cols: string[] = [];
   private orExpr: string | null = null;
   private wantSingle = false;
+  /* с59 (пакет 38): запис. `insert` кладе рядок у таблицю фікстури, `update`
+     накладає патч на ВІДФІЛЬТРОВАНІ рядки (фільтри після `.update()` діють
+     по-справжньому, як у PostgREST). Обидва повертають {data:null,error:null},
+     як supabase-js без `.select()`. Ніякого `upsert`/`delete` — не реалізовано
+     = кидає, за каноном двійника. */
+  private patch: Row | null = null;
+  private inserted: Row[] | null = null;
 
   constructor(private table: string, private db: FakeDb) {}
 
@@ -52,6 +67,8 @@ class FakeQuery {
     this.cols = (cols ?? "").split(",").map((c) => c.trim()).filter(Boolean);
     return this;
   }
+  insert(rows: Row | Row[]) { this.inserted = Array.isArray(rows) ? rows : [rows]; return this; }
+  update(patch: Row) { this.patch = patch; return this; }
   eq(col: string, val: unknown) { this.filters.push({ op: "eq", col, val }); return this; }
   neq(col: string, val: unknown) { this.filters.push({ op: "neq", col, val }); return this; }
   in(col: string, val: unknown[]) { this.filters.push({ op: "in", col, val }); return this; }
@@ -82,7 +99,22 @@ class FakeQuery {
       cols: this.cols,
       filters: this.filters.map((f) => `${f.op}:${f.col}`),
       or: this.orExpr,
+      wrote: this.inserted ? "insert" : this.patch ? "update" : undefined,
     };
+    (this.db.queries ??= []).push({
+      table: this.table, cols: this.cols,
+      wrote: this.inserted ? "insert" : this.patch ? "update" : undefined,
+    });
+
+    if (this.inserted) {
+      this.db.tables[this.table] = rows.concat(this.inserted.map((r) => ({ ...r })));
+      return { data: null, error: null };
+    }
+    if (this.patch) {
+      const patch = this.patch;
+      this.db.tables[this.table] = rows.map((r) => (this.matches(r) ? { ...r, ...patch } : r));
+      return { data: null, error: null };
+    }
 
     const out = rows.filter((r) => this.matches(r));
     return this.wantSingle ? { data: out[0] ?? null, error: null } : { data: out, error: null };
@@ -155,6 +187,26 @@ export function fakeAdminClient(db: FakeDb) {
         const key = `${name}:${String(args?.p_date ?? "")}`;
         return Promise.resolve({ data: db.rpc[key] ?? [], error: null });
       },
+      /* с59: рівно три методи service-role auth, які кличуть роути видачі
+         запрошень. Кожен пишеться в `db.authCalls`, щоб тест міг сказати «роут
+         НЕ створював акаунт» ствердно, а не за відсутністю помилки. */
+      auth: strict(
+        {
+          admin: strict(
+            {
+              createUser: async () => {
+                (db.authCalls ??= []).push("createUser");
+                if (!db.nextUserId) throw new Error("FakeSupabase: auth.admin.createUser без db.nextUserId — тест не сказав, який id віддати");
+                return { data: { user: { id: db.nextUserId } }, error: null };
+              },
+              deleteUser: async (id: string) => { (db.authCalls ??= []).push(`deleteUser:${id}`); return { data: null, error: null }; },
+              updateUserById: async (id: string) => { (db.authCalls ??= []).push(`updateUserById:${id}`); return { data: null, error: null }; },
+            },
+            "auth.admin"
+          ),
+        },
+        "auth"
+      ),
     },
     "client"
   );

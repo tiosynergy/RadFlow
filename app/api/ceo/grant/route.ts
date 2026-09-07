@@ -44,25 +44,39 @@ export async function POST(req: Request) {
   const admin = createAdminClient();
 
   // Чи вже є користувач із таким логіном?
+  /* RF-09d (пакет 38). Раніше цей select тягнув ще й `invite_token`, і для
+     НАЯВНОГО профілю будь-якої ролі з `password_set=false` роут повертав
+     збережений токен у відповіді (а без токена — мовчки записував новий).
+     Тобто адмін клініки B, знаючи лише логін ще не активованого реєстратора
+     клініки A, отримував його токен тихо — без скидання пароля, без сліду в
+     картці. Ні 0178 (колонковий грант), ні 0179 (RPC/аудит) цього не бачать:
+     роут працює під service_role. Рішення власника (с59, варіант А): токен у
+     відповіді — ЛИШЕ для акаунта, створеного цим самим викликом; наявному
+     акаунту токен не читається й не видається. Передати посилання наявному
+     CEO-only акаунту без пароля можна одним шляхом — «Скинути пароль» у
+     картці (/api/staff/password reset): він гасить старий токен і ставить
+     password_set=false. ⚠️ Окремої події аудиту на скидання НЕМАЄ (ревʼю Б
+     с59) — «слід» це лише стан рядка profiles. Для крос-рольового акаунта
+     (персонал/направник іншого центру) reset тут дає 403 — посилання видає
+     адміністратор ЙОГО центру; тому у відповіді є `role`, і екран каже це
+     замість того, щоб вести на кнопку з помилкою. */
   const { data: existingProf } = await admin
     .from("profiles")
-    .select("id, role, login, password_set, invite_token")
+    .select("id, role, login, password_set")
     .eq("login", login)   // 0124: логін нормалізований у zLogin
     .maybeSingle();
 
   let ceoId: string;
   let createdAccount = false;
   let inviteToken: string | null = null;
+  let passwordSet = false;
+  let targetRole = "ceo";
 
   if (existingProf) {
     // Наявному користувачу (будь-яка роль) лише ДОДАЄМО CEO-доступ; роль не чіпаємо.
     ceoId = existingProf.id;
-    if (!existingProf.password_set) {
-      inviteToken = existingProf.invite_token || (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, "");
-      if (!existingProf.invite_token) {
-        await admin.from("profiles").update({ invite_token: inviteToken }).eq("id", ceoId);
-      }
-    }
+    passwordSet = existingProf.password_set === true;
+    targetRole = String(existingProf.role ?? "");
   } else {
     // Новий CEO-only акаунт — ПІБ і телефон обовʼязкові.
     if (!fullName || !phone) {
@@ -145,5 +159,10 @@ export async function POST(req: Request) {
     details: { action: "ceo_granted", targetClinicId: me.clinic_id },
   });
 
-  return NextResponse.json({ ok: true, created_account: createdAccount, login, invite_token: inviteToken });
+  /* `ceo_id` — ключ карти свіжих токенів на екрані (lib/inviteLink.ts);
+     `password_set` і `role` — щоб екран сказав наявному акаунту без пароля
+     ПРАВДУ: CEO-only → «Скинути пароль» у картці; крос-рольовий → посилання
+     видає адміністратор його центру (reset тут відповів би 403).
+     `invite_token` тут НЕ null лише для щойно створеного акаунта (RF-09d). */
+  return NextResponse.json({ ok: true, created_account: createdAccount, ceo_id: ceoId, login, role: targetRole, password_set: createdAccount ? false : passwordSet, invite_token: inviteToken });
 }

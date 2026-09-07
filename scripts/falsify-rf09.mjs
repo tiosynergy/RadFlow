@@ -28,8 +28,11 @@ const FILES = {
   refs: "components/ReferrersManager.tsx",
   route: "app/api/referrers/invite/route.ts",
   ceo: "components/CeoManager.tsx",
+  grant: "app/api/ceo/grant/route.ts",
 };
-const SPECS = ["tests/inviteLink.test.ts"];
+/* с59 (пакет 38): другий спек — ПОВЕДІНКОВИЙ тест роута /api/ceo/grant
+   (RF-09d). Мутації D1–D4 червонять саме його, а не лексичний пін. */
+const SPECS = ["tests/inviteLink.test.ts", "tests/ceoGrantRoute.test.ts"];
 const OUT = "falsify-rf09.md";
 const REPORT = ".falsify-rf09.json";
 
@@ -185,7 +188,7 @@ const MUTATIONS = [
        відводить CeoManager назад на пряме читання таблиці — тобто відкриває
        RF-09 з іншого боку. */
     id: "B7", file: "ceo", green: false,
-    expect: /CeoManager НЕ чіпаємо/,
+    expect: /CeoManager: список — через RPC/,
     what: "CeoManager відводять від RPC назад на пряме читання profiles",
     from: '.rpc("ceo_list_for_clinic"',
     to: '.from("profiles").select("id, invite_token").eq("zz", "ceo_list_for_clinic"',
@@ -273,6 +276,188 @@ const MUTATIONS = [
     from: "  const t = profileId ? tokenOf(fresh[profileId]) : null;\n  return t === null ? { kind: \"reissue\" } : { kind: \"link\", token: t };",
     to: "  const tok = profileId ? tokenOf(fresh[profileId]) : null;\n  return tok === null ? { kind: \"reissue\" } : { kind: \"link\", token: tok };",
   },
+
+  /* ================= с59, пакет 38: CeoManager (RF-09b) ================= */
+  {
+    /* Обробник видачі нового акаунта перестає класти токен — після 0179 це
+       єдиний момент, коли екран його бачить; кнопка «Скопіювати» для нового
+       керівника не зʼявиться НІКОЛИ. */
+    id: "C1", file: "ceo", green: false,
+    expect: /обробнику видачі \(grant, resetPassword\)/,
+    what: "CeoManager.grant не кладе токен із відповіді роута в карту",
+    from: "      setFreshTokens((m) => rememberToken(m, data.ceo_id, data.invite_token));\n",
+    to: "",
+  },
+  {
+    /* Рівно той дефект, з яким CeoManager жив до пакета 38: скидання пароля
+       не кладе токен, і посилання зʼявлялось лише з RPC — який 0179 закрив. */
+    id: "C2", file: "ceo", green: false,
+    expect: /обробнику видачі \(grant, resetPassword\)/,
+    what: "CeoManager.resetPassword не кладе свіжий токен — після 0179 «Скинути пароль» не дає посилання",
+    from: "    setFreshTokens((m) => rememberToken(m, id, data.invite_token));\n",
+    to: "",
+  },
+  {
+    /* Токен покладено під ЧУЖИМ ключем (login замість ceo_id): карта повна,
+       inviteHint нічого з неї не візьме — кожен юніт на lib зелений. */
+    id: "C3", file: "ceo", green: false,
+    expect: /обробнику видачі \(grant, resetPassword\)/,
+    what: "grant кладе токен під ключем login, а не ceo_id — картка його не знайде",
+    from: "rememberToken(m, data.ceo_id, data.invite_token)",
+    to: "rememberToken(m, data.login, data.invite_token)",
+  },
+  {
+    /* Повернення токена в рядок списку — той самий прихований дефект, що
+       B5 у ReferrersManager: realtime-`reload()` затирає його разом із рядком. */
+    id: "C4", file: "ceo", green: false,
+    expect: /тип Ceo без нього/,
+    what: "invite_token повернули в тип рядка списку CeoManager",
+    from: "  phone: string | null; note: string | null; password_set: boolean; role: string;\n};",
+    to: "  phone: string | null; note: string | null; password_set: boolean; invite_token: string | null; role: string;\n};",
+  },
+  {
+    id: "C5", file: "ceo", green: false,
+    expect: /CeoManager живе.*не обнуляють/s,
+    what: "карту токенів скидають у reload() CeoManager — посилання зникає на першому фокусі вкладки",
+    from: "      setCeos((data || []) as Ceo[]);",
+    to: "      setCeos((data || []) as Ceo[]);\n      setFreshTokens(EMPTY_TOKENS);",
+  },
+  {
+    id: "C6", file: "ceo", green: false,
+    expect: /CeoManager живе.*справді МАЛЮЮТЬ/s,
+    what: "підказку «перевидати» в CeoManager зробили тултипом",
+    from: '                      <div style={{ fontSize: "0.75rem", marginTop: 8, color: "var(--text-muted)" }}>{r.role === "ceo" ? REISSUE_HINT : FOREIGN_ROLE_HINT}</div>',
+    to: '                      <div style={{ fontSize: "0.75rem", marginTop: 8, color: "var(--text-muted)" }} title={r.role === "ceo" ? REISSUE_HINT : FOREIGN_ROLE_HINT} />',
+  },
+  {
+    /* Після «Задати пароль» сервер гасить токен; карта лишає старий — і
+       картка пропонує скопіювати мертве посилання. */
+    id: "C7", file: "ceo", green: false,
+    expect: /забувають там, де сервер його гасить/,
+    what: "після ручного встановлення пароля токен не забувають — мертве посилання лишається в картці",
+    from: "    setFreshTokens((m) => forgetToken(m, pwModal.id)); // токен погашено сервером — не показувати мертвий\n",
+    to: "",
+  },
+  /* ---- C8–C12: обходи, названі ревʼю А/Б с59 (кожен був ЗЕЛЕНИМ до правки пінів) ---- */
+  {
+    /* Ревʼю А (4) + Б (3): пін на ЛІТЕРАЛ `EMPTY_TOKENS` — `setFreshTokens({})`
+       у reload() обнуляє карту так само, а пін мовчить. */
+    id: "C8", file: "ceo", green: false,
+    expect: /CeoManager живе.*не обнуляють/s,
+    what: "карту обнуляють у reload() через {} замість EMPTY_TOKENS — старий пін цього не бачив",
+    from: "      setCeos((data || []) as Ceo[]);",
+    to: "      setCeos((data || []) as Ceo[]);\n      setFreshTokens({});",
+  },
+  {
+    /* Ревʼю А (5б): закоментований виклик — регулярка по сирому тексту
+       матчить коментар. */
+    id: "C9", file: "ceo", green: false,
+    expect: /обробнику видачі \(grant, resetPassword\)/,
+    what: "rememberToken у grant закоментовано — старий пін матчив коментар",
+    from: "      setFreshTokens((m) => rememberToken(m, data.ceo_id, data.invite_token));",
+    to: "      // setFreshTokens((m) => rememberToken(m, data.ceo_id, data.invite_token));",
+  },
+  {
+    /* Ревʼю А (5г): `return null` ПЕРЕД вузлом — count гілок 1, вузол у файлі
+       є, а на екрані порожнеча. */
+    id: "C10", file: "ceo", green: false,
+    expect: /CeoManager живе.*справді МАЛЮЮТЬ/s,
+    what: "return null перед вузлом підказки — вузол у файлі є, на екрані порожнеча",
+    from: '                    return (\n                      <div style={{ fontSize: "0.75rem", marginTop: 8, color: "var(--text-muted)" }}>{r.role',
+    to: '                    return null;\n                    return (\n                      <div style={{ fontSize: "0.75rem", marginTop: 8, color: "var(--text-muted)" }}>{r.role',
+  },
+  {
+    /* Ревʼю Б (1), САМ ДЕФЕКТ: крос-рольовому без пароля показують «натисніть
+       «Скинути пароль»» — кнопка відповість 403. */
+    id: "C11", file: "ceo", green: false,
+    expect: /CeoManager живе.*справді МАЛЮЮТЬ/s,
+    what: "підказка для крос-рольового знову веде на «Скинути пароль» (403)",
+    from: '>{r.role === "ceo" ? REISSUE_HINT : FOREIGN_ROLE_HINT}<',
+    to: ">{REISSUE_HINT}<",
+  },
+  {
+    id: "C12", file: "ceo", green: false,
+    expect: /крос-рольовий без пароля НЕ отримує поради/,
+    what: "тост після grant для крос-рольового знову радить «Скинути пароль»",
+    from: '            ? (data.role === "ceo"\n              ? "Роль CEO призначено. Пароль у цього акаунта ще не задано — щоб передати посилання, натисніть «Скинути пароль» у картці."\n              : "Роль CEO призначено. Пароль у цього акаунта ще не задано — посилання для входу видає адміністратор його центру.")',
+    to: '            ? "Роль CEO призначено. Пароль у цього акаунта ще не задано — щоб передати посилання, натисніть «Скинути пароль» у картці."',
+  },
+
+  /* ================= с59, пакет 38: /api/ceo/grant (RF-09d) ================= */
+  {
+    /* ⚠️ САМА ДІРА RF-09d, повернута ДРУГИМ запитом (перший select чистий —
+       лексичний пін по ньому був би зелений): наявному профілю без пароля
+       роут віддає його збережений токен. Червоніє ПОВЕДІНКОВИЙ тест. */
+    id: "D1", file: "grant", green: false,
+    expect: /токен у таблиці НЕ читано й НЕ переписано/,
+    what: "роут знову віддає збережений токен наявного акаунта (окремим запитом)",
+    from: "    targetRole = String(existingProf.role ?? \"\");\n  } else {",
+    to: "    targetRole = String(existingProf.role ?? \"\");\n    const { data: full } = await admin.from(\"profiles\").select(\"id, invite_token\").eq(\"id\", ceoId).maybeSingle();\n    inviteToken = (full as { invite_token?: string | null } | null)?.invite_token ?? null;\n  } else {",
+  },
+  {
+    /* Мовчазна видача: наявному акаунту без пароля пишуть НОВИЙ токен. Із
+       відповіді він не витікає, але «одноразовий» токен виник без сліду й
+       без рішення адміна — і його вже можна прочитати іншими каналами. */
+    id: "D2", file: "grant", green: false,
+    expect: /НЕ записує новий/,
+    what: "роут мовчки записує новий токен наявному акаунту без пароля",
+    from: "    targetRole = String(existingProf.role ?? \"\");\n  } else {",
+    to: "    targetRole = String(existingProf.role ?? \"\");\n    if (!passwordSet) await admin.from(\"profiles\").update({ invite_token: \"fresh-silent\" }).eq(\"id\", ceoId);\n  } else {",
+  },
+  {
+    id: "D3", file: "grant", green: false,
+    expect: /повертає ceo_id та invite_token/,
+    what: "відповідь роута без ceo_id — карті на екрані нема ключа",
+    from: "ceo_id: ceoId, login,",
+    to: "login,",
+  },
+  {
+    /* Токен нового акаунта у відповіді не збігається з тим, що ліг у таблицю
+       (тут — null): посилання «показуємо один раз» не показано жодного. */
+    id: "D4", file: "grant", green: false,
+    expect: /токен, записаний у profiles/,
+    what: "для щойно створеного акаунта роут не повертає токен — єдиний шанс показати посилання втрачено",
+    from: "invite_token: inviteToken });",
+    to: "invite_token: createdAccount ? null : inviteToken });",
+  },
+  /* ---- D5–D7: обходи, названі ревʼю А с59 (кожен був ЗЕЛЕНИМ у першій редакції тесту) ---- */
+  {
+    /* Ревʼю А (1): гілка РЕАКТИВАЦІЇ відкликаного гранту не виконувалась
+       жодним кейсом — токен, виданий саме тут, лишав файл зеленим. */
+    id: "D5", file: "grant", green: false,
+    expect: /реактивація відкликаного гранту/,
+    what: "токен віддають у гілці реактивації відкликаного гранту",
+    from: "    await admin.from(\"ceo_access\").update({ status: \"active\", granted_by: user.id, note, revoked_at: null }).eq(\"id\", existingAccess.id);",
+    to: "    await admin.from(\"ceo_access\").update({ status: \"active\", granted_by: user.id, note, revoked_at: null }).eq(\"id\", existingAccess.id);\n    const { data: full } = await admin.from(\"profiles\").select(\"id, invite_token\").eq(\"id\", ceoId).maybeSingle();\n    inviteToken = (full as { invite_token?: string | null } | null)?.invite_token ?? null;",
+  },
+  {
+    /* Ревʼю А (2): «для CEO ж можна, він глобальний» — умовна видача лише
+       для role='ceo'; фікстура з однією роллю цього не бачила. */
+    id: "D6", file: "grant", green: false,
+    expect: /CEO-only акаунт без центру, без пароля/,
+    what: "токен віддають лише для role='ceo' — умовна видача",
+    from: "    targetRole = String(existingProf.role ?? \"\");\n  } else {",
+    to: "    targetRole = String(existingProf.role ?? \"\");\n    if (targetRole === \"ceo\" && !passwordSet) {\n      const { data: full } = await admin.from(\"profiles\").select(\"id, invite_token\").eq(\"id\", ceoId).maybeSingle();\n      inviteToken = (full as { invite_token?: string | null } | null)?.invite_token ?? null;\n    }\n  } else {",
+  },
+  {
+    /* Ревʼю А (3): токен ІНШИМ каналом — у note гранту ceo_access, який адмін
+       читає з таблиці; у відповіді ключа invite_token немає, старий тест
+       зелений. Тепер токен шукається як РЯДОК в усіх таблицях. */
+    id: "D7", file: "grant", green: false,
+    expect: /реєстратор чужого центру, без пароля/,
+    what: "токен кладуть у note гранту ceo_access — інший канал, той самий витік",
+    from: "      .insert({ ceo_id: ceoId, clinic_id: me.clinic_id, status: \"active\", granted_by: user.id, note });",
+    to: "      .insert({ ceo_id: ceoId, clinic_id: me.clinic_id, status: \"active\", granted_by: user.id, note: note ?? (await admin.from(\"profiles\").select(\"id, invite_token\").eq(\"id\", ceoId).maybeSingle()).data?.invite_token });",
+  },
+  {
+    /* ПОЗИТИВНИЙ КОНТРОЛЬ: порядок полів у відповіді — не контракт. Піни
+       стережуть НАЯВНІСТЬ `ceo_id: ceoId` та `invite_token: inviteToken` у
+       фінальній відповіді, а не їхнє місце. */
+    id: "T4", file: "grant", green: true,
+    what: "поля у відповіді /api/ceo/grant переставлено місцями",
+    from: "{ ok: true, created_account: createdAccount, ceo_id: ceoId, login,",
+    to: "{ ok: true, ceo_id: ceoId, created_account: createdAccount, login,",
+  },
 ];
 
 const editsOf = (m) => m.edits ?? [{ file: m.file, from: m.from, to: m.to }];
@@ -306,8 +491,18 @@ for (const m of MUTATIONS) {
    (B13). Жодна з них не «докинута для числа» — кожна відповідає названій
    ревʼю дірці, і кожна була ЗЕЛЕНОЮ до правки пінів.
    Плюс три позитивні контролі T1, T2, T3 (T3 — за MINOR ревʼю: іменована
-   константа з переліком колонок мусить лишатись зеленою). */
-const EXPECTED_RED = 25;
+   константа з переліком колонок мусить лишатись зеленою).
+   ⚠️ с59, пакет 38 (RF-09b/RF-09d): C1–C7 — CeoManager переведено на те саме
+   правило, що й два інші екрани (карта токенів, три стани, forgetToken);
+   D1–D4 — роут /api/ceo/grant, ПОВЕДІНКОВО (tests/ceoGrantRoute.test.ts):
+   повернення збереженого токена наявному акаунту, мовчазна видача, ключ
+   ceo_id у відповіді, токен нового акаунта. Плюс контроль T4 (порядок полів).
+   ⚠️ C8–C12 і D5–D7 заведені ПІСЛЯ двох ревʼю с59, які пробили першу редакцію
+   пінів пакета 38: {} замість EMPTY_TOKENS, закоментований виклик, return null
+   перед вузлом, підказка/тост «Скинути пароль» крос-рольовому (403), гілка
+   реактивації, умовна видача для role='ceo', токен у note гранту. Кожна була
+   ЗЕЛЕНОЮ до правки пінів. */
+const EXPECTED_RED = 44;
 const redCount = MUTATIONS.filter((m) => !m.green).length;
 if (redCount !== EXPECTED_RED) {
   console.error(`⛔ ІНВЕНТАР БРЕШЕ: адресних мутацій ${redCount}, а очікується ${EXPECTED_RED}. `

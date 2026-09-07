@@ -11,6 +11,7 @@ import Toast from "@/components/Toast";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { createClient } from "@/lib/supabase/client";
 import { isTechnicalEmail } from "@/lib/login";
+import { EMPTY_TOKENS, REISSUE_HINT, forgetToken, inviteHint, rememberToken, type FreshTokens } from "@/lib/inviteLink";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import PhoneInput from "@/components/PhoneInput";
@@ -18,13 +19,24 @@ import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
 type CeoForm = { login: string; full_name: string; email: string; phone: string; note: string };
+/* RF-09b (0179): `invite_token` у відповіді RPC більше НЕМАЄ — definer-функція
+   обходила колонковий грант 0178 і віддавала живий токен CEO будь-якому адміну
+   будь-якого з його центрів. Токен екран знає лише з відповіді роута видачі. */
 type Ceo = {
   id: string; login: string | null; full_name: string | null; email: string | null;
-  phone: string | null; note: string | null; password_set: boolean; invite_token: string | null; role: string;
+  phone: string | null; note: string | null; password_set: boolean; role: string;
 };
 type PwModal = { id: string; val: string; busy: boolean };
 
 const EMPTY: CeoForm = { login: "", full_name: "", email: "", phone: "", note: "" };
+
+/* Крос-рольовий член списку (персонал чи направник ІНШОГО центру з
+   CEO-грантом) без пароля: «Скинути пароль» тут відповість 403 —
+   /api/staff/password авторизує персонал лише свого центру, а направника —
+   лише за активним referral_access. Вести адміна на кнопку з помилкою не
+   можна (ревʼю Б с59), тож кажемо, хто насправді видає посилання. */
+const FOREIGN_ROLE_HINT =
+  "🔗 Пароль ще не встановлено. Цей акаунт належить іншому центру (персонал або направник) — посилання для входу видає адміністратор того центру.";
 
 interface CeoManagerProps {
   clinicId: string;
@@ -41,6 +53,10 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
   const [origin, setOrigin] = useState("");
   const [pwModal, setPwModal] = useState<PwModal | null>(null);
+  /* RF-09: токени, ОТРИМАНІ У ВІДПОВІДЯХ роутів у цій сесії екрана. Живуть
+     ПОРУЧ зі списком, а не в його рядках: `reload()` смикається на кожен фокус
+     вкладки і затер би токен разом із рядком. */
+  const [freshTokens, setFreshTokens] = useState<FreshTokens>(EMPTY_TOKENS);
   /* Підтвердження деструктивних дій — ConfirmDialog у стилі RadFlow замість
      window.confirm (с28, зауваження власника). */
   const [ask, setAsk] = useState<null | { title: string; text: ReactNode; confirmLabel: string; danger?: boolean; run: () => void }>(null);
@@ -58,8 +74,10 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
 
   const reload = useCallback(async () => {
     // Повний список членства CEO центру через security-definer RPC (0044):
-    // показує й крос-рольових/крос-клінічних CEO, не послаблюючи RLS і не
-    // розкриваючи invite_token користувачів інших ролей.
+    // показує й крос-рольових/крос-клінічних CEO, не послаблюючи RLS.
+    // ⚠️ RF-09b (0179): RPC більше не віддає invite_token НІКОМУ — поле у
+    // відповіді завжди null і в тип Ceo не входить. Токен — лише з карти
+    // freshTokens, яку наповнюють відповіді роутів видачі.
     try {
       const supabase = createClient();
       const { data, error } = await supabase.rpc("ceo_list_for_clinic", { p_clinic: clinicId });
@@ -91,9 +109,25 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { notify(data.error || "Помилка призначення", "error"); setBusy(false); return; }
       setForm(EMPTY);
-      notify(data.created_account
-        ? "Керівника створено. Скопіюйте в його картці посилання для встановлення пароля й передайте йому."
-        : "Роль CEO призначено наявному користувачу.", "success");
+      /* RF-09: роут повертає токен ЛИШЕ для акаунта, створеного цим самим
+         викликом (RF-09d: наявному акаунту токен не видається й не читається —
+         інакше адмін чужого центру брав би його за одним логіном). Тому для
+         наявного акаунта без пароля підказуємо єдиний легітимний шлях —
+         «Скинути пароль» у картці. */
+      setFreshTokens((m) => rememberToken(m, data.ceo_id, data.invite_token));
+      if (data.created_account && !data.ceo_id) {
+        /* Розсинхрон збірок (старий сервер / новий клієнт): токен є, а ключа
+           для карти немає — посилання щойно втрачено. Кажемо це, а не «скопіюйте». */
+        notify("Керівника створено, але посилання не вдалося показати — оновіть сторінку і натисніть «Скинути пароль» у його картці.", "error");
+      } else {
+        notify(data.created_account
+          ? "Керівника створено. Скопіюйте в його картці посилання для встановлення пароля й передайте йому."
+          : (data.password_set === false
+            ? (data.role === "ceo"
+              ? "Роль CEO призначено. Пароль у цього акаунта ще не задано — щоб передати посилання, натисніть «Скинути пароль» у картці."
+              : "Роль CEO призначено. Пароль у цього акаунта ще не задано — посилання для входу видає адміністратор його центру.")
+            : "Роль CEO призначено наявному користувачу."), "success");
+      }
       reload();
     } catch { notify("Помилка зʼєднання із сервером", "error"); }
     setBusy(false);
@@ -102,7 +136,10 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
   function askResetPassword(id: string, label: string | null) {
     setAsk({
       title: `Скинути пароль для «${label}»?`,
-      text: "Поточний пароль перестане діяти. Керівник задасть новий на /set-password за своїм логіном.",
+      /* ⚠️ Було «задасть новий на /set-password ЗА СВОЇМ ЛОГІНОМ» — неправда з
+         міграції 0032: пароль задається лише за одноразовим токеном. Той самий
+         хибний текст пакет 37 зняв у StaffManager і ReferrersManager. */
+      text: "Поточний пароль перестане діяти. Ви отримаєте нове посилання — передайте його керівнику.",
       confirmLabel: "Скинути пароль",
       run: () => { void resetPassword(id); },
     });
@@ -111,8 +148,12 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
     const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: id, action: "reset" }) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { notify(data.error || "Помилка", "error"); return; }
-    notify("Пароль скинуто — керівник задасть новий на /set-password", "info");
-    reload();
+    setCeos((rs) => rs.map((r) => (r.id === id ? { ...r, password_set: false } : r)));
+    /* RF-09: роут повертає СВІЖИЙ токен — це єдиний момент, коли екран його
+       бачить. До пакета 38 цей обробник токен із відповіді не клав узагалі:
+       кнопка «Скопіювати» жила ВИКЛЮЧНО за рахунок RPC, який 0179 закриває. */
+    setFreshTokens((m) => rememberToken(m, id, data.invite_token));
+    notify("Пароль скинуто — скопіюйте нове посилання в картці й передайте керівнику.", "info");
   }
   function setPassword(id: string) { setPwModal({ id, val: "", busy: false }); }
   async function submitPassword() {
@@ -122,6 +163,7 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { notify(data.error || "Помилка", "error"); setPwModal((m) => (m ? { ...m, busy: false } : m)); return; }
     setCeos((rs) => rs.map((r) => (r.id === pwModal.id ? { ...r, password_set: true } : r)));
+    setFreshTokens((m) => forgetToken(m, pwModal.id)); // токен погашено сервером — не показувати мертвий
     notify("Пароль встановлено", "success");
     setPwModal(null);
   }
@@ -139,6 +181,7 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { notify(data.error || "Помилка", "error"); return; }
     setCeos((rs) => rs.filter((r) => r.id !== id));
+    setFreshTokens((m) => forgetToken(m, id));
     notify("Доступ відкликано", "info");
   }
   function askDeleteCeo(id: string, label: string | null) {
@@ -155,6 +198,7 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { notify(data.error || "Помилка видалення", "error"); return; }
     setCeos((rs) => rs.filter((r) => r.id !== id));
+    setFreshTokens((m) => forgetToken(m, id));
     notify("CEO-акаунт видалено", "info");
   }
 
@@ -222,13 +266,28 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
                     <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити CEO-акаунт назавжди (лише якщо це єдиний центр)" onClick={() => askDeleteCeo(r.id, r.full_name || r.login)}>🗑</button>
                   )}
                 </div>
-                {!r.password_set && r.invite_token && (
-                  <div style={{ fontSize: "0.75rem", marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                    <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для встановлення пароля:</span>
-                    <code style={{ fontSize: "0.71875rem", color: "var(--text-secondary)", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
-                    <button className="btn btn-secondary btn-sm" onClick={() => copyLink(r.invite_token as string)}>Скопіювати</button>
-                  </div>
-                )}
+                {(() => {
+                  /* RF-09: три стани замість двох — рішення в lib/inviteLink.ts,
+                     тут лише малюємо. «Пароль не задано, токена на руках немає»
+                     показує адміну, що запрошення висить і як передати його
+                     знову (той самий вузол, що у StaffManager/ReferrersManager). */
+                  const hint = inviteHint(r.password_set, freshTokens, r.id);
+                  if (hint.kind === "none") return null;
+                  if (hint.kind === "reissue") {
+                    /* Кнопка «Скинути пароль», на яку веде підказка, працює
+                       лише для CEO-only акаунта; крос-рольовому — чесний текст. */
+                    return (
+                      <div style={{ fontSize: "0.75rem", marginTop: 8, color: "var(--text-muted)" }}>{r.role === "ceo" ? REISSUE_HINT : FOREIGN_ROLE_HINT}</div>
+                    );
+                  }
+                  return (
+                    <div style={{ fontSize: "0.75rem", marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для встановлення пароля:</span>
+                      <code style={{ fontSize: "0.71875rem", color: "var(--text-secondary)", maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
+                      <button className="btn btn-secondary btn-sm" onClick={() => copyLink(hint.token)}>Скопіювати</button>
+                    </div>
+                  );
+                })()}
               </div>
             ))}
           </div>
