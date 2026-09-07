@@ -15,20 +15,26 @@
 //      npm run db:gate:check    # лише звірити, БЕЗ записів
 //      … --build                # режим збірки (вшито в npm run build):
 //                               #   read-only ЗАВЖДИ (Vercel-чекаут гілки не
-//                               #   сміє штампувати еталон), без env-ключів —
-//                               #   мʼякий пропуск (exit 0)
+//                               #   сміє штампувати еталон); без env-ключів —
+//                               #   exit 1 (з с59; явний RADFLOW_GATE_NO_DB=1
+//                               #   поза Vercel — SKIP із написом «БЕЗ ЗВІРКИ»)
 //  Штампування виконується ТІЛЬКИ якщо розбіжностей нуль — інакше можна
 //  вштампувати md5 не тієї гілки.
 //
 //  Env: NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (або .env.local).
-//  Обхід у надзвичайній ситуації: RADFLOW_SKIP_MIGRATION_GATE=1 (shell/Vercel
-//  або .env.local) — свідомо лишає WARN, не робіть це нормою.
+//  ⚠️ RF-05 (пакет 39, с59): на Vercel (VERCEL=1) обходів НЕМАЄ — ні
+//  RADFLOW_SKIP_MIGRATION_GATE, ні RADFLOW_GATE_NO_DB, ні відсутність ключів
+//  не пропускають збірку: усе це exit 1. Поза Vercel: аварійний обхід
+//  RADFLOW_SKIP_MIGRATION_GATE=1 лишає WARN і діє лише для --build;
+//  збірка без ключів зупиняється, якщо не сказано явно RADFLOW_GATE_NO_DB=1
+//  (так робить CI без секретів — і його лог каже «БЕЗ ЗВІРКИ»).
+//  Рішення — gateEnvDecision у migration-gate-lib.mjs, під тестами.
 // ============================================================
 
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { planGate, readDiskMigrations } from "./migration-gate-lib.mjs";
+import { gateEnvDecision, planGate, readDiskMigrations } from "./migration-gate-lib.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MIG_DIR = path.join(ROOT, "supabase", "migrations");
@@ -51,22 +57,27 @@ async function main() {
 
   loadEnvLocal(); // до перевірки skip: обхід можна задати і в .env.local
 
-  if (process.env.RADFLOW_SKIP_MIGRATION_GATE === "1") {
-    console.warn("[migration-gate] WARN: пропущено через RADFLOW_SKIP_MIGRATION_GATE=1");
-    return;
-  }
-
+  /* RF-05 (пакет 39): обидва fail-open — skip-змінна і «мʼякий пропуск» без
+     ключів — тепер РІШЕННЯ чистої функції (gateEnvDecision, тестується без
+     БД). На Vercel обходів немає взагалі; поза Vercel пропуск лише ЯВНИЙ і
+     лише для --build. Дія `fail` = exit 1 — до першого запиту в базу. */
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) {
-    const msg = "[migration-gate] немає NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY";
-    if (buildMode) {
-      // Локальна збірка без секретів — не блокуємо.
-      console.warn(msg + " — мʼякий пропуск (режим --build).");
-      return;
-    }
-    console.error(msg);
+  const decision = gateEnvDecision({
+    buildMode,
+    vercel: process.env.VERCEL === "1",
+    skip: process.env.RADFLOW_SKIP_MIGRATION_GATE === "1",
+    noDb: process.env.RADFLOW_GATE_NO_DB === "1",
+    hasUrl: Boolean(url),
+    hasKey: Boolean(key),
+  });
+  if (decision.action === "fail") {
+    console.error(decision.message);
     process.exit(1);
+  }
+  if (decision.action === "skip") {
+    console.warn(decision.message);
+    return;
   }
 
   const { createClient } = await import("@supabase/supabase-js");

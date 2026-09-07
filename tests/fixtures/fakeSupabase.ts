@@ -30,6 +30,10 @@ export interface FakeDb {
       сказати це явно). Журнал викликів auth.admin — у `authCalls`. */
   nextUserId?: string;
   authCalls?: string[];
+  /** с59 (пакет 39, ревʼю А): помилка, яку віддасть `auth.admin.updateUserById`
+      — без неї шлях «GoTrue відмовив» неперевірюваний, а саме на ньому
+      подія журналу НЕ сміє зʼявитись. */
+  authUpdateError?: { message: string };
   /** с59: УСІ запити по порядку (ревʼю А: `seen` тримає лише ОСТАННІЙ запит
       по таблиці, тож «брудний» select, зроблений першим, зникав із поля зору). */
   queries?: Array<{ table: string; cols: string[]; wrote?: "insert" | "update" }>;
@@ -200,7 +204,10 @@ export function fakeAdminClient(db: FakeDb) {
                 return { data: { user: { id: db.nextUserId } }, error: null };
               },
               deleteUser: async (id: string) => { (db.authCalls ??= []).push(`deleteUser:${id}`); return { data: null, error: null }; },
-              updateUserById: async (id: string) => { (db.authCalls ??= []).push(`updateUserById:${id}`); return { data: null, error: null }; },
+              updateUserById: async (id: string) => {
+                (db.authCalls ??= []).push(`updateUserById:${id}`);
+                return { data: null, error: db.authUpdateError ?? null };
+              },
             },
             "auth.admin"
           ),

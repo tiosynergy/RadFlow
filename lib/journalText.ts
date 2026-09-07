@@ -293,6 +293,17 @@ export function eventTitle(item: {
       const action = str(d, "action");
       if (action === "ceo_granted") return say("надав доступ керівника", "надано доступ керівника");
       if (action === "ceo_revoked") return say("відкликав доступ керівника", "відкликано доступ керівника");
+      /* Пакет 39 (с59): скидання/встановлення пароля адміном — «гучний» шлях
+         до чужого акаунта; до цього журнал його не бачив. Ревʼю Б: роль цілі —
+         це і є сенс події (адмін будь-якого центру CEO скидає пароль
+         КЕРІВНИКА), тож вона в заголовку, а не лише в details. */
+      if (action === "password_reset" || action === "password_set") {
+        const tr = str(d, "targetRole");
+        const whose = tr === "ceo" ? "керівника" : tr === "referrer" ? "направника" : "співробітника";
+        return action === "password_reset"
+          ? say(`скинув пароль ${whose}`, `скинуто пароль ${whose}`)
+          : say(`встановив пароль ${whose}`, `встановлено пароль ${whose}`);
+      }
       const role = str(d, "role");
       if (role) return say("створив акаунт співробітника", "створено акаунт співробітника", ` (${role})`);
       const rooms = num(d, "roomsCount");

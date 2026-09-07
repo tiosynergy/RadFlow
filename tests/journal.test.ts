@@ -61,6 +61,21 @@ describe("eventTitle: формат за прикладами ТЗ §11", () => {
       .toBe("Адміністратор відкликав доступ направника до центру");
   });
 
+  /* Пакет 39 (с59): скидання/встановлення пароля адміном — «гучний» шлях до
+     чужого акаунта, що після RF-09 лишався без сліду в журналі. */
+  it("«Адміністратор скинув пароль керівника/направника/співробітника» / «встановив пароль …»", () => {
+    const t = (action: string, targetRole: string | null) =>
+      eventTitle({ eventType: "staff.access_changed", actorRole: "admin", details: { action, targetRole } });
+    // роль цілі — в заголовку (ревʼю Б пакета 39): це і є сенс події
+    expect(t("password_reset", "ceo")).toBe("Адміністратор скинув пароль керівника");
+    expect(t("password_reset", "referrer")).toBe("Адміністратор скинув пароль направника");
+    expect(t("password_reset", "registrar")).toBe("Адміністратор скинув пароль співробітника");
+    expect(t("password_set", "radiologist")).toBe("Адміністратор встановив пароль співробітника");
+    expect(t("password_set", "ceo")).toBe("Адміністратор встановив пароль керівника");
+    // старий запис без targetRole (журнал старший за код) — не падає
+    expect(t("password_reset", null)).toBe("Адміністратор скинув пароль співробітника");
+  });
+
   it("статуси перекладені, а не сирі", () => {
     const t = eventTitle({
       eventType: "queue.status_changed",
