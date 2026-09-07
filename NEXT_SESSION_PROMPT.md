@@ -202,23 +202,25 @@ is too optimistic to act on.
 | 07.09 (package 38, migration + docs merges) | `087dab0` + docs | migration 0179 + docs | `fctmkCrYxXlaq0MsPpG9o` → `f4suUurdNCq2L9CANWdJG` — changed after each |
 | 07.09 14:58 push → 14:59 read (+1.5 min) | `41e7e5c` | **code** (package 39) | `oXDM3lxbUoAeFSj8Kx4qb` — differed from `f4suU…` (404) but TOO EARLY to be package 39: most likely the last docs commit of package 38, never re-measured |
 | 07.09 15:02 (+4 min) | `41e7e5c` | **code** (package 39) | **`uh7QxBj9ypJ-9BrDkEwu4`** — changed again; `_buildManifest.js` for it → 200, for `oXDM…` and `f4suU…` → 404. Consistent with the 4–9 min build latency |
+| 07.09 15:06 → docs merge | `8d9a53d` | docs (package 39) | `cjHcGeyPZ142wKCPKLmgt` — changed |
+| 07.09 20:57 push → 21:06 read (+9 min) | `0da8a86` | **code + migration** (package 40) | **`sk6WLPyxCWYIN-GSgGAAE`** — changed; manifest 200 for it, 404 for `cjHcGeyP…`. Read at 20:58 (+1.5 min) it was still the OLD id — measure no earlier than 8 minutes, as the rule above says |
 
 The manifest cross-check answers session 58's open instrument question:
 the regex reads the buildId that production actually serves.
 
-### Expected state (measured 2026-09-07, end of session 59, after package 39)
+### Expected state (measured 2026-09-07, end of session 59, after package 40)
 
 | what | expected |
 |---|---|
 | `main` / `dev` | **`41e7e5c`** / **`6a7dcef`** (package 39), **plus the docs commit(s) of this handover on top** — take the hashes from `git ls-remote`. Tree clean |
-| prod DB | **`0179_rf09_definer_and_audit.sql`** (package 39 shipped NO migration), ledger **179/179**, file md5 `6a77600e6b3659a9e70839ac035e6e0c` |
-| **next migration** | **0180** — the number comes FROM THE LEDGER, never from the folder |
-| `invariants_check()` | `ok:true`, **`checked:21`**, `failed:[]` — 0179 EXTENDED №15 (`priv_drift` (g)/(g2)) and №19 (23 functions); the number did NOT move, `bump-checked-pins.mjs` was not run |
-| guard body | `md5(replace(prosrc, chr(13), ''))` = **`5e468b5e4796c42f825820eb17505070`**, length **80871**, CR 0. Normalized pin g = **`71e552c2e128bdc251c68834d3827f2a`**. Both taken from the FILE (instrument verified on 0178) and from PROD after the apply — equal |
-| nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50. ⚠️ The 08.09 03:50 run will be the FIRST nightly one on the 0179 body — check it reports `ok:true, checked:21, failed:[]` |
-| toolchain | tsc **0**, eslint **0**, vitest **2852/2852** (+34 over package 38), `db:gate` **179/179**, build log `[migration-gate] OK: 179/179` — i.e. decision `run` on a machine WITH keys (RF-05: without keys `--build` is now exit 1 unless `RADFLOW_GATE_NO_DB=1`; on Vercel nothing bypasses) |
-| stand revision | full run after package 38: **27/27 green, 663 addressed, ~72 min**. Package 39 reprinted no guard → no full revision; the new stand **`falsify-rf05` 28/28, 26 addressed, 97 s** ran via `falsify-all.mjs rf05` on a CLEAN tree after the commit. `EXPECTED_STANDS` **28** (27 + rf05). Next full revision expected **28/28, 689 addressed** |
-| `/login` fingerprint | **`uh7QxBj9ypJ-9BrDkEwu4`** at 15:02Z (+4 min after the package-39 merge); the docs commit(s) carrying this table will move it again — expect it to DIFFER; if it does not, record the fact and read the one-direction rule above |
+| prod DB | **`0180_grant_digest.sql`**, ledger **180/180**, file md5 `71814091da891580734f8362faafe5ea` |
+| **next migration** | **0181** — the number comes FROM THE LEDGER, never from the folder |
+| `invariants_check()` | `ok:true`, **`checked:22`**, `failed:[]` — 0180 ADDED check №22 `grant_digest` (RF-04); `bump-checked-pins.mjs 21 22` rewrote nine smokes, and `docs/ops-cron.md` was fixed BY HAND (the bump script only walks `supabase/smoke`) |
+| guard body | `md5(replace(prosrc, chr(13), ''))` = **`caecded86d138146d518fbbc1b71b740`**, length **94298**, CR 0. Normalized pin g = **`c7670d890ac9737cdcb0e0aade0e4957`**. Both taken from the FILE 0180 (instrument verified on 0179: it reproduces `71e552c2…`/`5e468b5e…`/80871) and from PROD after the apply — equal |
+| nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50. ⚠️ The 08.09 03:50 run will be the FIRST nightly one on the 0180 body and the FIRST EVER for check №22 — check it reports `ok:true, checked:22, failed:[]` |
+| toolchain | tsc **0**, eslint **0**, vitest **2869/2869** (+17 over package 39), `db:gate` **180/180**, build log `[migration-gate] OK: 180/180` — i.e. decision `run` on a machine WITH keys (RF-05: without keys `--build` is exit 1 unless `RADFLOW_GATE_NO_DB=1`; on Vercel nothing bypasses) |
+| stand revision | full run after package 40: **29 stands, 704 addressed, 103 min**. 27/29 green in the batch; two (`falsify-0166`, `falsify-u30`) failed as «прогін не відбувся» — an EMPTY vitest report under machine load, not a guard failure — and were re-run INDIVIDUALLY: **60/60** and **15/15**, both positions red as designed. `EXPECTED_STANDS` **29**. ⚠️ Read a red stand with an empty facts table as «did not finish» and re-run it alone before believing it |
+| `/login` fingerprint | **`sk6WLPyxCWYIN-GSgGAAE`** at 21:06Z (+9 min after the package-40 merge `0da8a86`); the docs commit(s) carrying this table will move it again — expect it to DIFFER; if it does not, record the fact and read the one-direction rule above |
 
 ### Expected state (measured 2026-09-06/07, end of session 58) — HISTORY
 
