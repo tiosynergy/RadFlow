@@ -4,8 +4,15 @@ import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { clientIp, rateLimitOk } from "@/lib/rateLimit";
 import { parseBody } from "@/lib/validationHttp";
 import { safeDbError, zPassword } from "@/lib/validation";
+import { inviteState } from "@/lib/inviteTtl";
 
 const INVALID = "Посилання недійсне або вже використане. Зверніться до адміністратора.";
+/* RF-02 (пакет 43): протухле посилання відрізняємо від недійсного НАВМИСНО.
+   ⚠️ Оракула це не створює: щоб побачити цей текст, треба вже мати на руках
+      дійсний токен на 256 біт — тобто знати те, що й так відкриває акаунт.
+      Натомість людині кажемо правду, і вона йде по нове посилання, а не
+      думає, що помилилась при копіюванні. Текст затверджено власником. */
+const EXPIRED = "Термін дії посилання минув. Зверніться до адміністратора за новим.";
 
 /* invite_token — hex довжиною 64 (два UUID без дефісів, див. /api/staff). Форма
    токена перевіряється ДО звернення до БД: сміття не має доїжджати до lookup. */
@@ -25,19 +32,26 @@ export async function GET(req: Request) {
 
   // Rate-limit за IP — захист від перебору токенів через lookup.
   const ip = clientIp(req);
-  if (!(await rateLimitOk(`setpw:lookup:${ip}`, 30, 600))) {
+  /* fail-CLOSED: тут лімітер — ЄДИНИЙ захист від перебору по lookup-у.
+     Краще 429, ніж тихо відкритий перебір. */
+  if (!(await rateLimitOk(`setpw:lookup:${ip}`, 30, 600, "closed"))) {
     return NextResponse.json({ error: "Забагато спроб. Зачекайте кілька хвилин і спробуйте знову." }, { status: 429 });
   }
 
   const admin = createAdminClient();
   const { data: profile } = await admin
     .from("profiles")
-    .select("login, full_name, password_set")
+    .select("login, full_name, password_set, invite_issued_at")
     .eq("invite_token", token)
     .maybeSingle();
 
   if (!profile || profile.password_set) {
     return NextResponse.json({ error: INVALID }, { status: 400 });
+  }
+  /* TTL перевіряємо і ТУТ, а не лише на POST: інакше людина заповнила б форму
+     і дізналась про протух лише після сабміту. */
+  if (inviteState(profile.invite_issued_at) !== "valid") {
+    return NextResponse.json({ error: EXPIRED }, { status: 400 });
   }
 
   return NextResponse.json({ login: profile.login, full_name: profile.full_name });
@@ -61,6 +75,23 @@ export async function POST(req: Request) {
   }
 
   const admin = createAdminClient();
+
+  /* RF-02 хвіст (пакет 43): ТЕРМІН ДІЇ — ДО клейму.
+     ⚠️ Порядок не косметичний. Клейм гасить токен; якби TTL перевірявся
+        ПІСЛЯ, протухле посилання спалювало б токен і людина втратила б навіть
+        можливість попросити те саме — довелось би перевидавати. Тому спершу
+        читаємо штамп, і лише потім забираємо токен.
+     ⚠️ Гонка тут нешкідлива: між читанням і клеймом токен могли погасити —
+        тоді клейм поверне 0 рядків і людина побачить INVALID, що правда. */
+  const { data: pre } = await admin
+    .from("profiles")
+    .select("invite_issued_at")
+    .eq("invite_token", token)
+    .eq("password_set", false)
+    .maybeSingle();
+  if (pre && inviteState(pre.invite_issued_at) !== "valid") {
+    return NextResponse.json({ error: EXPIRED }, { status: 400 });
+  }
 
   /* RF-02 (аудит с32): токен гаситься АТОМАРНО — одним умовним UPDATE, ДО зміни
      пароля. Стара схема «select → updateUserById → окремий update» давала гонку:
