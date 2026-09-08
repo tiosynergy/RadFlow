@@ -55,6 +55,14 @@ const PINNED: readonly string[] = [
   // під дайджестом. Знахідка ревʼю А: без цього рядка тест на «рівно стільки
   // пінів» червонів би рівно в момент, коли леджер уже 179/179.
   "ceo_list_for_clinic(p_clinic uuid)",
+  // 0181 (с59, RF-01): дві case-RPC — SECURITY DEFINER з EXECUTE у
+  // `authenticated`, тобто RLS усередині них НЕ діє, а рішення «чий це кейс»
+  // вони ухвалюють самі. Це другий рубіж під головною правкою (гард
+  // `guard_radiologist_scope`, чий дайджест 0181 теж перезняла): ревʼю
+  // показало зондом на проді, що RPC — НЕ єдиний письменник, і саме тому
+  // пінити треба обидва рівні, а не лише RPC.
+  "add_case_step_rpc(p_case_id uuid, p_step jsonb)",
+  "case_from_entry_rpc(p_entry_id uuid, p_step jsonb)",
 ];
 
 function latestReprint(): { fn: string; file: string } {
