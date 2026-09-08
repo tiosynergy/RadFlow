@@ -220,7 +220,7 @@ the regex reads the buildId that production actually serves.
 | nightly jobs | `outbox-retention` 03:30, `audit-retention` 03:40, `invariants` 03:50 — schedule verified BY QUERY against `cron.job` (id 13, `50 3 * * *`, active), 9 active jobs total. ✅ The 08.09 03:50 run is already checked: `maintenance_runs` id **113**, `ok:true, checked:22, failed:[]` — and it was the first nightly with `checked:22` at all (07.09 and 06.09 both 21) |
 | toolchain | tsc **0**, eslint **0**, vitest **2876/2876**, `db:gate` **181/181** |
 | stand revision | full run BEFORE the merge on a clean tree: **30 stands, 712 addressed, 67 min**, **30/30 green** (report `falsify-all.md`, 08.09 00:25 UTC). `EXPECTED_STANDS` **30** (new `falsify-0181`: 11 mutations, 8 addressed). ⚠️ It was launched through a one-shot `schtasks` task and finished AFTER the desktop bridge dropped — that is exactly why the task, not a foreground run, is the canon here |
-| `/login` fingerprint | ⚠️ **NO WORKING INSTRUMENT — see the finding below.** The asset-set hash of `/login` was **`3089dc62`** (27 assets) at 05:22 and 05:25 UTC, before and after the `main` push |
+| deploy fingerprint | ✅ **FIXED IN PACKAGE 42 — and it is now a TWO-DIRECTION signal.** `GET /api/build` returns `{stamp, reason, env}` where `stamp = sha256(VERCEL_GIT_COMMIT_SHA)[:12]`. Compute the expected value LOCALLY from the SHA you just pushed and compare — equal means THAT commit is live, not merely «something arrived». Measured 08.09 08:52 UTC on `main = 390e9f1…`: expected `2b6d33a49cc4`, prod returned `2b6d33a49cc4`, `reason: null`, `env: production`, `cache-control: no-store`. Build latency still 4–9 min. ⚠️ It says WHICH commit is served, NOT that the build is healthy — that stays with live checks |
 
 #### ⚠️ TWO DOC LIES FOUND BY MEASUREMENT (session 59, package 41)
 
@@ -228,17 +228,13 @@ the regex reads the buildId that production actually serves.
    (separate worktree, the 0181 file removed): **2873**. The number in the docs was taken
    BEFORE the docs commit, and several specs enumerate migration and doc files through
    `it.each`. After package 41: **2876**.
-2. **The fingerprint instrument `/_next/static/<buildId>/_buildManifest.js` → 200 does not
-   work on this application.** Measured 08.09: `/login` carries **no buildId at all** — the
-   app is App Router, the HTML holds only `/_next/static/css/…` and `/_next/static/chunks/…`,
-   the string `_buildManifest` does not appear, and the id `sk6WLPyxCWYIN-GSgGAAE` recorded
-   at the end of package 40 is **not present in the served page**. Twelve 21-char tokens from
-   the page were probed as manifest paths — all **404**. So either the instrument broke or it
-   never read what the table claims; both are suspicions about the INSTRUMENT, exactly as
-   session 58 concluded about its predecessor. **Rewriting the deploy signal is an open task:
-   today there is no working answer to «did the build arrive».** For package 41 it would have
-   proven nothing anyway — 0181 changes not one line of application code, so a correct build
-   legitimately serves identical assets.
+2. **The fingerprint instrument `/_next/static/<buildId>/_buildManifest.js` → 200 did not
+   work on this application** — `/login` carries no buildId at all, `_buildManifest` never
+   appears in the page, the id recorded at the end of package 40 is absent from what prod
+   serves, and twelve candidate tokens probed as manifest paths all returned 404. ✅ **CLOSED
+   by package 42**, which replaced it with `/api/build` — see the row above and
+   `docs/audit/PR-42-deploy-stamp.md`. Keep the lesson: two consecutive sessions recorded a
+   fingerprint number that neither could reproduce, because nobody pinned the INSTRUMENT.
 
 ### Expected state (measured 2026-09-07, end of session 59, after package 40)
 
