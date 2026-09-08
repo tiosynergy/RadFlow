@@ -208,6 +208,19 @@ is too optimistic to act on.
 The manifest cross-check answers session 58's open instrument question:
 the regex reads the buildId that production actually serves.
 
+### Expected state (measured 2026-09-08, end of session 59, after package 43)
+
+| what | expected |
+|---|---|
+| `main` / `dev` | **`65c096a`** / **`a1b1d17`**, plus the docs commit(s) on top — take the hashes from `git ls-remote` |
+| prod DB | **`0182_rf02_invite_ttl.sql`**, ledger **182/182** |
+| **next migration** | **0183** — the number comes FROM THE LEDGER |
+| `invariants_check()` | `ok:true`, **`checked:22`**, `failed:[]` — 0182 did not touch the counter |
+| guard body | md5 without CR **`c936ff4a209b852c7dc766448f99b4e7`**, length **95662**, CR 0; normalized pin g **`498f86f71c5f6a0cf6196bb384494d3b`** |
+| toolchain | tsc **0**, eslint **0**, vitest **2908/2908**, `db:gate` **182/182** |
+| stand revision | full run BEFORE the merge: **32 stands, 54 min, 32/32 green**. `EXPECTED_STANDS` **32** |
+| deploy stamp | `GET /api/build` → `88320dc80fc4` for `main = 65c096a…` (expected value computed LOCALLY first — that is the whole point of the instrument) |
+
 ### Expected state (measured 2026-09-08, end of session 59, after package 41)
 
 | what | expected |
