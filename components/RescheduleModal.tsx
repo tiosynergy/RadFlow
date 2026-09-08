@@ -233,7 +233,11 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
       try {
         const supabase = createClient();
         if (clinicId) {
-          const ovRes = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateStr).maybeSingle();
+          /* RF-03 (0183): через RPC, а не таблицею — політика
+             `sched_referrer_read` знята, бо віддавала мапу `rooms` цілком.
+             Персоналу RPC віддає ту саму повну мапу, тож поведінка цього
+             екрана для реєстратора не змінюється (заміряно на проді). */
+          const ovRes = await supabase.rpc("sched_override_read", { p_clinic: clinicId, p_date: dateStr }).maybeSingle();
           /* U-3 (с46): помилку цього читання ковтали, хоча сусіднє (rooms) її вже
              перевіряло. PostgREST не кидає — {data:null, error}, і збій ставав
              «особливого дня немає»: закритий святковий день малювався робочим, а

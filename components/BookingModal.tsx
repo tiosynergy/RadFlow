@@ -702,7 +702,11 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
     try {
       const supabase = createClient();
       if (clinicId) {
-        const ovRes = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", dateKeyStr).maybeSingle();
+        /* RF-03 (0183): через RPC, а не таблицею. ⚠️ ЦЕЙ ФАЙЛ У ПЕРЕЛІКУ НЕ БУВ
+           — перший перелік називав три екрани, а `BookingModal` рендериться і з
+           `ReferralPortal` (рядок 2501). Рівно та сама помилка, що в пакеті 41:
+           перелік місць завжди вужчий за дерево. Знайдено грепом, а не пам'яттю. */
+        const ovRes = await supabase.rpc("sched_override_read", { p_clinic: clinicId, p_date: dateKeyStr }).maybeSingle();
         if (ovRes.error) throw ovRes.error;
         if (req !== schedReqRef.current) return;
         setOverride((ovRes.data as unknown as DayOverride) || null);

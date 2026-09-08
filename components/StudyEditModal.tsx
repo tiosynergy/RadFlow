@@ -158,7 +158,10 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
       try {
         const supabase = createClient();
         if (clinicId) {
-          const ov = await supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", clinicId).eq("override_date", scheduledDate).maybeSingle();
+          /* RF-03 (0183): через RPC, а не таблицею — див. пояснення в
+             ReferralPortal.loadDay. Модалка рендериться і з порталу
+             направника, тож пряме читання тут дало б йому 0 рядків. */
+          const ov = await supabase.rpc("sched_override_read", { p_clinic: clinicId, p_date: scheduledDate }).maybeSingle();
           if (ov.error) throw ov.error;   // без оверрайда закритий/скорочений день виглядав би звичайним
           if (!cancel) setOverride((ov.data as unknown as DayOverride) || null);
         }
