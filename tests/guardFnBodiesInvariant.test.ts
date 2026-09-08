@@ -63,6 +63,11 @@ const PINNED: readonly string[] = [
   // пінити треба обидва рівні, а не лише RPC.
   "add_case_step_rpc(p_case_id uuid, p_step jsonb)",
   "case_from_entry_rpc(p_entry_id uuid, p_step jsonb)",
+  // 0182 (с59, RF-02): штамп часу видачі запрошення. Тіло під дайджестом
+  // навмисно — вихолощений штамп (`return new;`) зняв би TTL МОВЧКИ: токен
+  // жив би вічно при всіх зелених перевірках, бо №17 бачить лише наявність
+  // тригера, а не те, що його тіло щось робить (межа названа в самому №17).
+  "guard_invite_issued_at()",
 ];
 
 function latestReprint(): { fn: string; file: string } {

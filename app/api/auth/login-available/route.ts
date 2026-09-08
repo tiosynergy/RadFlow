@@ -41,8 +41,8 @@ export async function POST(req: Request) {
      перевірок, а різниця між «швидко» і «дуже швидко» тут нічого не варта. */
   const ip = clientIp(req);
   const [okIp, okLogin] = await Promise.all([
-    rateLimitOk(`login-avail:ip:${ip}`, 10, 300),
-    rateLimitOk(rlKey("login-avail:id", login), 5, 3600),
+    rateLimitOk(`login-avail:ip:${ip}`, 10, 300, "closed"),
+    rateLimitOk(rlKey("login-avail:id", login), 5, 3600, "closed"),
   ]);
   if (!okIp || !okLogin) {
     return NextResponse.json({ error: "Забагато перевірок. Зачекайте кілька хвилин." }, { status: 429 });

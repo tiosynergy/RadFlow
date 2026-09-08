@@ -205,6 +205,9 @@ export type Database = {
           city: string | null;
           password_set: boolean;
           invite_token: string | null;
+          /* RF-02 (0182): час видачі токена; ставить тригер zz_invite_issued_at.
+             Клієнтським ролям колонка НЕ роздана — читає лише service-role. */
+          invite_issued_at: string | null;
         };
         Insert: {
           id: string;
@@ -222,6 +225,7 @@ export type Database = {
           city?: string | null;
           password_set?: boolean;
           invite_token?: string | null;
+          invite_issued_at?: string | null;
         };
         Update: {
           id?: string;
@@ -239,6 +243,7 @@ export type Database = {
           city?: string | null;
           password_set?: boolean;
           invite_token?: string | null;
+          invite_issued_at?: string | null;
         };
         Relationships: [
           {
