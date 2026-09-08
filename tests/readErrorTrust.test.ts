@@ -69,7 +69,19 @@ const FILES = [
    казали, що він не адмін), і дві форми, яких сканер не знав. Змішати це з
    «слідом аварійної зупинки» означало б ревʼювати два різні ризики одним
    поглядом. */
-const TABLE_RE = /\.from\(\s*["'`](rooms|schedule_overrides|incidents|queue_entries)["'`]\s*\)/g;
+/* ⚠️ 0183 (RF-03, с60): друга гілка — НЕ прикраса, а латка на дірку, яку
+   міграція щойно прорізала б у самому сканері. RF-03 зняла політику
+   `sched_referrer_read`, і чотири екрани перевели читання дня з
+   `.from("schedule_overrides")` на `.rpc("sched_override_read")`. Сканер знав
+   лише `.from(...)` — тобто після переводу ці чотири читання просто ЗНИКЛИ б
+   із нагляду, а тест лишився б зеленим (`occ.length > 0` тримається на
+   сусідніх читаннях `rooms`). Це рівно те, що заборонено describe-ом «обсяг
+   нагляду не звужується мовчки»: сторож перестав би стерегти, нічим про це не
+   повідомивши. RPC читає ту саму таблицю і має ту саму пастку (PostgREST не
+   кидає), тож і форма нагляду та сама — розбір F0–F4 нижче працює без змін,
+   бо він дивиться на ПРИЙМАЧА перед викликом, а не на імʼя методу. */
+const TABLE_RE =
+  /\.from\(\s*["'`](rooms|schedule_overrides|incidents|queue_entries)["'`]\s*\)|\.rpc\(\s*["'`]sched_override_read["'`]/g;
 
 /* ── Розбір форм виклику ────────────────────────────────────────────────────
    Пʼять законних форм:
@@ -159,7 +171,10 @@ function occurrences(code: string): Occ[] {
   const out: Occ[] = [];
   for (const m of code.matchAll(TABLE_RE)) {
     const ix = m.index as number;
-    const table = m[1];
+    // Друга гілка TABLE_RE (`.rpc("sched_override_read")`) читає ту саму
+    // таблицю — під наглядом вона мусить лишатись «schedule_overrides», інакше
+    // поіменні перевірки нижче її не побачать.
+    const table = m[1] ?? "schedule_overrides";
     const before = code.slice(Math.max(0, ix - 200), ix);
 
     /* F0 — відповідь віддано ПРАВИЛУ прямо у виразі:
@@ -298,6 +313,20 @@ describe("Сканер: обсяг нагляду не звужується мо
       expect(occ[0].table).toBe(t);
     },
   );
+
+  /* ⚠️ 0183 (RF-03): та сама перевірка ПОВЕДІНКОЮ для другої форми. Без неї
+     розширення TABLE_RE лишилось би оголошенням, а не фактом — рівно те, за що
+     ревʼю р2 переписало цей describe. Форма `named`: RPC у Promise.all дає
+     `promise-all`, окремим виразом — `named`; тут перевіряємо, що виклик узагалі
+     ВИДИМИЙ сканеру і числиться за потрібною таблицею. */
+  it("сканер бачить читання дня через RPC, а не лише через .from", () => {
+    const occ = occurrences(
+      'const ov = await supabase.rpc("sched_override_read", { p_clinic: c, p_date: d }).maybeSingle();',
+    );
+    expect(occ.length, "читання через sched_override_read не потрапляє в скан").toBe(1);
+    expect(occ[0].table).toBe("schedule_overrides");
+    expect(occ[0].form).toBe("named");
+  });
 
   it("перелік файлів під наглядом — поіменний", () => {
     /* Дефекти U-17/U-18 жили саме в серверних діях: сканер дивився лише в

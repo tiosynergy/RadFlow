@@ -537,8 +537,14 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
     try {
       const supabase = createClient();
       const [ov, inc, roomRes, busy] = await Promise.all([
+        /* RF-03 (0183): день читаємо RPC, а не таблицею. Політика
+           `sched_referrer_read` віддавала РЯДОК цілком, а весь графік дня живе
+           в одній JSONB-колонці `rooms` — тобто грант на один кабінет показував
+           години ВСІХ. RLS ріже рядки, не значення всередині них, тож фільтрує
+           definer-RPC. Політику знято тією ж міграцією: пряме читання цієї
+           таблиці направником тепер дає 0 рядків, і повертати його не можна. */
         centerId
-          ? supabase.from("schedule_overrides").select("all_closed, label, rooms").eq("clinic_id", centerId).eq("override_date", date).maybeSingle()
+          ? supabase.rpc("sched_override_read", { p_clinic: centerId, p_date: date }).maybeSingle()
           : Promise.resolve({ data: null, error: null }),
         centerId
           ? supabase.from("incidents").select("room_id, started_at, blocked_until, status, auto_unblock").eq("clinic_id", centerId).in("status", ["active", "planned"])
@@ -620,7 +626,18 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
      приїжджали направнику — крос-тенантний оракул без жодної потреби.
      Центр тут завжди відомий: без `centerId` канал не створюється. Для
      потрібних подій фільтр нічого не змінює — сітка й так дивиться рівно на
-     один центр, і клініку ані запис, ані простій, ані кабінет не міняють. */
+     один центр, і клініку ані запис, ані простій, ані кабінет не міняють.
+     ⚠️ RF-03 (0183): підписка на `schedule_overrides` ЛИШАЄТЬСЯ, і це рішення
+     за ЗАМІРОМ, а не за інерцією. Спершу її планували зняти як мертву —
+     міграція зняла політику `sched_referrer_read`, тож направнику подія по цій
+     таблиці більше не доставляється (realtime ходить під RLS). Але цей екран
+     відкриває НЕ лише направник: `app/referral/page.tsx` пускає сюди ще й
+     `admin`, а для нього жива `sched_staff_read` — тобто подія доставляється
+     як і раніше. Знявши підписку, ми зламали б адміну миттєве перемальовування
+     заради направника, у якого воно й так уже не працює.
+     ЦІНА ДЛЯ НАПРАВНИКА, названа вголос: особливий графік дня він побачить не
+     миттєво, а на найближчому тику `pollWhenSubscribedMs` (30 с) або на
+     focus/visibility. Миттєвість повертає 0183b (позначки змін). */
   useRealtimeRefetch({
     channelName: centerId ? "ref-slots-" + centerId + "-" + (roomId || "none") + "-" + date : null,
     subscriptions: [

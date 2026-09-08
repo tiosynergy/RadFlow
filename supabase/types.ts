@@ -1632,6 +1632,23 @@ export type Database = {
           studies: Json | null;
         }[];
       };
+      sched_override_read: {
+        Args: { p_clinic: string; p_date: string };
+        /* RF-03 (0183). Перевизначення графіка на дату — ЗАМІСТЬ прямого
+           читання `schedule_overrides`: політику направника знято, бо вона
+           віддавала JSONB `rooms` цілком (години ВСІХ кабінетів центру при
+           гранті на один). Персоналу свого центру RPC віддає мапу цілком,
+           усім іншим — лише ключі `auth_referrer_visible_rooms()`.
+           `all_closed` і `label` — властивість ДНЯ центру, тому не ріжуться.
+           Виклик іде через `.maybeSingle()`: на дату є щонайбільше один рядок. */
+        Returns: {
+          clinic_id: string;
+          override_date: string;
+          all_closed: boolean;
+          label: string | null;
+          rooms: Json;
+        }[];
+      };
       search_clinics: {
         Args: { q: string };
         Returns: {

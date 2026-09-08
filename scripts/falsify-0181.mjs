@@ -114,8 +114,15 @@ const MUTATIONS = [
     id: "A7", file: "mig", green: false,
     expect: /sqlbody/,
     what: "тіло беруть лише з prosrc, sqlbody відкинуто",
-    from: "p.prosrc || coalesce(pg_get_function_sqlbody(p.oid)::text, '')",
-    to: "p.prosrc || coalesce('', '')",
+    /* ⚠️ ЯКІР РОЗШИРЕНО РЕВІЗІЄЮ с60. Був голий вираз
+       `p.prosrc || coalesce(pg_get_function_sqlbody(p.oid)::text, '')` — і
+       0183 зробила його НЕУНІКАЛЬНИМ (2 збіги): та сама формула стоїть тепер
+       і в асерті §3.3 самої міграції, який звіряє тіло нової RPC з піном у
+       №19. Це не дефект 0183 — навпаки, формула там мусить бути ДОСЛІВНО та
+       сама, інакше асерт нічого не доводить. Тому якір тепер тягне ще й
+       хвіст `as body,`, який є ЛИШЕ всередині №19. */
+    from: "                   p.prosrc || coalesce(pg_get_function_sqlbody(p.oid)::text, ''),\n                   '\\s+', ' ', 'g'))) as body,",
+    to: "                   p.prosrc || coalesce('', ''),\n                   '\\s+', ' ', 'g'))) as body,",
   },
   {
     /* Мітка перевірки — рівно одна: подвоєння ламає розбір offenders. */
