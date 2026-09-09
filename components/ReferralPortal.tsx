@@ -24,6 +24,7 @@ import UnreadDot from "@/components/UnreadDot";
 import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
 import { badgeOf, loadStatusOf } from "@/lib/sidebarBadge";
 import { unreadForEntity, unreadForSurface, surfaceRefreezeKey } from "@/lib/unreadChanges";
+import { schedAckKeyOf } from "@/lib/ackVisibility";
 import ReferrerSidebar from "@/components/ReferrerSidebar";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry, editQueueEntryStudies, createReferralCase, referralCaseFromEntry, type CaseStepInput } from "@/app/queue/actions";
 import CaseModal from "@/components/CaseModal";
@@ -648,6 +649,52 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
     ],
     pollWhenSubscribedMs: 30_000,
   });
+
+  /* ── RF-03b (0184): поверхня графіка з ack ────────────────────────────────
+     0183 зняла політику `sched_referrer_read`, а разом із нею — і realtime на
+     `schedule_overrides` для направника: Supabase доставляє рядок лише тому,
+     кому його дозволяє RLS. Ціна була названа вголос — до 30 с на тику вище.
+     Миттєвість повертає канал ПОЗНАЧОК: емітер 0184 шле крапку кожному
+     направнику з активним грантом на зачеплений кабінет, а гасить її ось цей
+     хук — рівно тут, на єдиному екрані направника, де графік дня видно.
+
+     ⚠️ `refreezeKey` ОБОВʼЯЗКОВИЙ, а не «на всяк випадок»: цей екран
+        змонтований постійно, поки вкладка «Нове направлення» відкрита. Без
+        ключа заморозка береться один раз, і позначка, що прилетіла пізніше,
+        не гасне до F5 — рівно той борг, який уже названо за поверхнею
+        `services`. Ключ — відбиток УСПІШНО завантажених даних дня.
+     ⚠️ `slotsErr` виводить ключ у порожній рядок навмисно: при збої читання
+        ми НЕ маємо права стверджувати «людина побачила поточний графік».
+     ⚠️ ТРИ МЕЖІ, названі вголос — і третю перша редакція пропустила.
+        (а) ack ПОВЕРХНЕВИЙ: перехід на день/кабінет, про який прийшла крапка,
+            гасить заразом крапки про ІНШІ кабінети й дати;
+        (б) і про ІНШІ ЦЕНТРИ теж — `unreadForSurface` фільтра по клініці не
+            має взагалі. Це той самий клас, який проєкт уже лікував у 0133
+            (`unreadForDate` приймає обовʼязковий `clinicId` саме тому), і в
+            першій редакції цього коментаря він названий НЕ БУВ;
+        (в) підпис крапки несе дату й «кабінет/центр», але не назву кабінету.
+        Чому це прийнято: підпис (`scheduleSurfaceText`) людина читає ДО того,
+        як крапка згасне, тож новина не зникає безслідно. Звуження ack по даті
+        й центру вимагає розширити `AckScope` — тобто чіпає СПІЛЬНУ підсистему
+        всіх поверхонь, і це окремий пакет із власним ревʼю. Записано в борги.
+     ⚠️ Сам ключ живе в `lib/ackVisibility.ts` навмисно: інлайном пін тримав
+        лише ІМʼЯ змінної, і викидання `override` з ключа проходило мовчки. */
+  const schedAckKey = useMemo(
+    () => schedAckKeyOf({ clinicId: centerId, date, roomId, override, loadFailed: slotsErr }),
+    [slotsErr, centerId, date, roomId, override],
+  );
+  /* ⚠️ `roomId` У ГЕЙТІ ОБОВʼЯЗКОВИЙ. Без нього ack спрацьовував тоді, коли
+     кабінет ще НЕ обраний (модальність із кількома кабінетами лишає `roomId`
+     порожнім), а всі три вердикти про графік і сама сітка заперті саме на
+     `roomId` — тобто на екрані про графік не сказано НІЧОГО, а всі крапки
+     поверхні вже погашені. Це ЗА межами того, що названо у коментарі вище:
+     там ідеться про «відкрив інший день», а тут не відкрито нічого. Знахідка
+     другого ревʼю. */
+  useAckWhenVisible(
+    centerId && roomId ? { kind: "surface", surface: "schedule" } : null,
+    !!centerId && !!roomId && !slotsErr && !slotsLoading,
+    schedAckKey,
+  );
 
   const dateObj = new Date(date + "T00:00:00");
   const roomSched = roomScheduleFor(dateObj, roomId || "", override, roomSchedule);

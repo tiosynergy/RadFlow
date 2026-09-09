@@ -63,6 +63,18 @@ const GUARDS: ReadonlyArray<readonly [string, string]> = [
   ["queue_entries", "trg_guard_referrer_doctor"],
   ["queue_entries", "trg_guard_status_referrer"],
   ["referral_access", "trg_audit_referral_access"],
+  /* 0184 (RF-03b), ДВІ нові пари. Обидві — у списку, бо їх зняття не червонить
+     нічого іншого:
+       • `trg_zzz_sched_markers_prune` — мітла, що знищує непрочитані позначки
+         графіка, коли грант виходить зі стану `active`. Без неї направник із
+         відкликаними ВСІМА грантами лишається з ВІЧНОЮ крапкою: `centerId`
+         порожній → scope `null` → `ackGate` дає `collapse` → ack не
+         виконується ніколи, а ретенція непрочитане не чіпає;
+       • `trg_zz_change_markers` на `schedule_overrides` — сам емітер. Без
+         нього RF-03b просто не існує, і мовчки: жоден інший сторож не помітить,
+         що позначки перестали приходити. */
+  ["referral_access", "trg_zzz_sched_markers_prune"],
+  ["schedule_overrides", "trg_zz_change_markers"],
   ["waitlist_entries", "a00_radiologist_no_write"],
   ["waitlist_entries", "a01_no_client_delete"],
   ["waitlist_entries", "trg_audit_waitlist_entries"],

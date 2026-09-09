@@ -67,6 +67,12 @@ export default function ReferrerSidebar({ centers, roomsByClinic, rawRoomCountOf
     key === "mine" ? unreadForNav(unreadIx, "queue")
     : key === "waitlist" ? unreadForNav(unreadIx, "waitlist")
     : key === "centers" ? unreadForNav(unreadIx, "centers")
+    /* 0184 (RF-03b): «Нове направлення» — зміна графіка дня в кабінеті, до
+       якого в направника є грант. 0183 зняла політику на schedule_overrides,
+       а з нею й realtime; крапка повертає миттєвість. Гасить її
+       `useAckWhenVisible({surface:'schedule'})` у NewReferral — тобто рівно
+       на цьому екрані, куди пункт і веде. */
+    : key === "new" ? unreadForNav(unreadIx, "new")
     : [];
   const nav: Array<{ key: string; label: string; icon: string; badge?: BadgeValue; badgeBlue?: boolean }> = [
     { key: "new", label: "Нове направлення", icon: "＋" },
