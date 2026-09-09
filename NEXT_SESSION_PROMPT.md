@@ -1,13 +1,18 @@
-# RadFlow — attachment for the next session (session 60)
+# RadFlow — attachment for the next session (session 61)
 
 > **This file is the ATTACHMENT.** The owner pastes
-> `claude/session60-start-prompt.md` as the first message and attaches this
-> file. Session-specific part rewritten at the end of session 59 (2026-09-07);
+> `claude/session61-start-prompt.md` as the first message and attaches this
+> file. Session-specific part rewritten at the end of session 60 (2026-09-08);
 > the permanent part below is carried unchanged. History lives in
 > `claude/radflow-handoff.md`.
 > ⚠️ Session 59 opened on a PASTED text one package older than its own
 > attachment (0177/177/2763/26 vs 0178/178/2798/27) — the two must be from
 > the same end-of-session edit. Check that before pasting.
+> ⚠️ Session 60 hit the same class from the other side: the file
+> `claude/session61-start-prompt.md` had been written at the end of session 59
+> and still described the pre-session-60 state (0180, vitest 2869, 29 stands).
+> It was rewritten wholesale, not patched. **A start prompt is only as good as
+> its last rewrite — check its own date line before you paste it.**
 >
 > ⚠️ **DO NOT TRUST THIS FILE.** Everything below is what SHOULD come out, not
 > the source of truth. Verify by query and by command (TASK #0). **A
@@ -208,7 +213,31 @@ is too optimistic to act on.
 The manifest cross-check answers session 58's open instrument question:
 the regex reads the buildId that production actually serves.
 
-### Expected state (measured 2026-09-08, end of session 59, after package 43)
+### Expected state (measured 2026-09-08, END OF SESSION 60) — START HERE
+
+| what | expected |
+|---|---|
+| `main` / `dev` | **`c01ebcb`** / **`299ca78`** — take the hashes from `git ls-remote` |
+| prod DB | **`0183_rf03_sched_override_read.sql`**, ledger **183/183** |
+| **next migration** | **0184** — the number comes FROM THE LEDGER |
+| `invariants_check()` | `ok:true`, **`checked:22`**, `failed:[]` — 0183 did not touch the counter |
+| guard body | md5 without CR **`3ac1aa3c88230816b8cf5ade32c1305d`**, length **96322**, CR 0; normalized pin g **`00d9ad82253bc2588b9f0cb70444a5b9`** |
+| toolchain | tsc **0**, eslint **0**, vitest **2931/2931** (101 files), `db:gate` **183/183** |
+| stand revision | **33/33 green**, `EXPECTED_STANDS` **33** — but ASSEMBLED FROM TWO RUNS (the machine died mid-revision; see the handoff block for s60) |
+| deploy stamp | `GET /api/build` → **`cda0815f210b`** for `main = c01ebcb…`. It matched on the nose three times in s60: `e749d66→0c835d40a3d5`, `ae6a2e4→92d934266e6d`, `d5714f4→cda0815f210b` |
+| seeded test data | **228 entries, 12 cases, 29 `source='seed'` services**, window 2026-09-09…15, tag `note LIKE '%[seed-2026-09-08]%'` |
+| RF-08 | **CLOSED by the owner** — leaked-password protection on; verified by a fresh security-advisor scan, not by report |
+
+⚠️ The nightly `invariants_check` at 03:50 on 09.09 is the FIRST on the 0183
+body. Check it reports `ok:true, checked:22, failed:[]`.
+
+⚠️ **The deploy stamp is a TWO-DIRECTION instrument — use it as one.** Compute
+`sha256(<full 40-char SHA of main>)[:12]` YOURSELF first, then fetch
+`/api/build`. A stamp equal to the PREVIOUS head means the build has not landed
+yet: that is a real answer, not a failure. This replaces the old `_buildManifest`
+method entirely — that one was one-directional and is kept below only as history.
+
+### Expected state (measured 2026-09-08, end of session 59, after package 43) — HISTORY
 
 | what | expected |
 |---|---|
@@ -288,6 +317,66 @@ reverted my edit with `git checkout --`**. An hour of run time and the text of
 the edit, gone. Write the docs before or after — never in parallel.
 
 ---
+
+## WHAT SESSION 60 DID — packages 41–45 and the test-data seed
+
+**41–44** (carried from 59): RF-01 closed via 0181; the deploy-stamp instrument
+(`/api/build`, package 42); the RF-02 tail via 0182 (invite TTL); a docs truth-up.
+
+**45 — RF-03, first half (0183).** `sched_referrer_read` handed a referrer the
+WHOLE `schedule_overrides` row, and the entire hourly schedule of a day lives in
+one JSONB column `rooms`: RLS cuts ROWS, not values inside them, so a grant on
+ONE room showed the hours of ALL. Measured on prod with a rolled-back probe: a
+referrer granted exactly «КТ Суприя 32» saw TWO keys in the 2026-08-09 row.
+Fix: definer RPC `sched_override_read(p_clinic, p_date)` filters `rooms` by
+`auth_referrer_visible_rooms()`; the policy is dropped. Reprint: №16 64→63
+policies, №19 26→27 function bodies, `checked` unchanged at 22.
+
+⚠️ The branch is on **"staff of THIS clinic"**, NOT on the role name.
+`auth_role() = 'referrer'` would have made any FUTURE role a silent full reader.
+
+**Test-data seed:** 228 entries, 12 cases, 29 `source='seed'` services across six
+active rooms. `docs/audit/SEED-2026-09-08-test-data.md`.
+
+**RF-08 closed by the owner**, verified by a fresh advisor scan.
+
+## LESSONS OF SESSION 60 — each one cost something
+
+1. **A reprint breaks stands pinned to the previous edition SILENTLY.** Both red
+   stands in the revision were 0183's own doing. `falsify-0181` A7 lost anchor
+   UNIQUENESS — the formula `p.prosrc || coalesce(pg_get_function_sqlbody(…),'')`
+   now also lives in 0183's §3.3 assert, and it MUST, otherwise the assert proves
+   nothing. After the fix: 8/8 addressed, up from 7/8 — a check that had stopped
+   working came back.
+2. **An anchor into a migration's HEADER is doomed by construction.**
+   `file: "mig"` is not "my migration", it is `latestReprint()` — always the
+   newest. Anchor into the guard BODY: reprints carry it forward verbatim.
+3. **A hard-killed stand does NOT run `finally`.** The machine died mid-revision
+   and left a live mutation in `app/waitlist/actions.ts` (`{` →
+   `if (input.sourceEntryId) {`), narrowing the clock-skew guard to one branch.
+   Committed, it would have silently disabled the guard on the ordinary path.
+   **Check `git status` before AND after every revision.**
+4. **An empty vitest report under load reads as red and proves nothing.**
+   `falsify-u55` came back red (N15 "no report", N16 "wrong red"); alone on a
+   quiet machine it was 24/24. That run took 88 min for 19 stands against 58 min
+   for 33; u55 alone went 550 s vs 76 s. Re-run before believing a red stand.
+5. **My RF-03 estimate was short three times, and every correction came from a
+   grep, not from thinking.** "Three call sites" was four (`BookingModal` is
+   rendered by `ReferralPortal:2501`); "remove the dead subscription" was wrong
+   (`app/referral/page.tsx:67` lets `admin` onto that screen, and
+   `sched_staff_read` is alive for him).
+6. **Introducing a catalog for a modality in the "legacy" state closes the escape
+   and can break existing rows.** CT/US had 0 services but 23 region names already
+   in use; the names were taken `INSERT … SELECT DISTINCT` from live `studies`, so
+   they matched byte for byte. Mammography was the one place names had to be
+   invented — and they were shown to the owner before they landed.
+7. **Re-stamping an applied migration is legitimate ONLY with a measured basis:**
+   the builder reproduces the file at exactly the ledger md5, and the diff is
+   confined to lines after `commit;`. Then `md5 = null` + re-gate.
+8. **A guard that is green with the safety off is a guard that is off.**
+   `schedOverrideDoor`'s first edition read the whole migration text, so
+   `-- drop policy …` in the ROLLBACK comment satisfied it. The stand caught it.
+   Parse only lines that actually execute.
 
 ## WHAT SESSION 59 DID — TWO packages (38, 39): RF-09 closed on all four channels, RF-05 closed in code
 
@@ -429,11 +518,60 @@ Full detail with the measurements: `claude/radflow-handoff.md` (top block),
 
 ---
 
-## QUEUE FOR SESSION 60 — a menu, not an order
+## QUEUE FOR SESSION 61 — a menu, not an order
 
 ⚠️ **Ask before coding.** Compose a plan (`TaskCreate`) and **AGREE THE FIRST
 PACKAGE WITH ME BEFORE WRITING CODE.** If a package is product-facing, show me
 the texts before they land.
+
+### 1. 0183b — give the referrer instant schedule updates back
+
+The named, deferred half of RF-03. The cost is **MEASURED, not guessed**: this is
+not "wire up markers", it is **build** them.
+
+* `change_marker_recipients` has **NO fan-out to a clinic's referrers at all** —
+  the referrer branch addresses ONE `p_referrer` and only for
+  `scope_kind in ('entry','access')`. A new scope kind plus a fan-out over active
+  `referral_access`, filtered by room grants, is needed.
+* `schedule_overrides` has **no emitter trigger** (`rooms` carries only the purge
+  trigger — the earlier claim that room config emits markers was WRONG; measured).
+* A marker with no `useAckWhenVisible` is a **DEFECT by this project's own rule**,
+  written inside `change_marker_recipients` itself: "крапка, що запалюється й не
+  гасне ніколи". `ReferralPortal` has two acks (`referral_access` entity,
+  `waitlist` surface) — neither covers a schedule surface.
+* It touches the SHARED function every marker emitter depends on, and that
+  function is pinned by check №19.
+* Honest estimate: **6–8 h for RF-03 as a whole**, of which 0183a is spent.
+* Cost of NOT doing it, already named in the code and the PR doc: the referrer
+  learns about a schedule override on the existing `pollWhenSubscribedMs: 30_000`
+  tick — up to 30 s late. That is a small, bounded, documented cost.
+
+### 2. The seed rots on 2026-09-15
+
+All 228 entries sit in the 2026-09-09…15 window. Once it is in the past, the
+`sink-overdue` cron (every 5 min) stamps `clarify_at` on every one of them and the
+board fills with «потребує уточнення». Not harmful, but noisy. Either re-seed into
+a fresh window or clear it — cleanup is §6 of
+`docs/audit/SEED-2026-09-08-test-data.md`, three DELETEs by the tag, rehearsed
+under a rollback with invariants staying green.
+
+### 3. 14 existing MRI rows in Medicom have an unresolvable `region`
+
+E.g. «Головний мозок», «Черевна порожнина», names with «(GE Signa, Закревського)».
+They predate the seed. Editing `studies` or moving them to another room fails with
+`SERVICE_CLOSED` **today**. Either add the names to the catalog or migrate
+`studies` to canonical names. Two of them also have `room_id IS NULL`.
+
+### 4. Advisor noise that needs a DECISION, not a fix
+
+`pg_trgm` and `pg_net` sit in schema `public` (WARN); 12 tables have RLS on with
+no policies (INFO — `migration_ledger`, `rate_limits`, `event_outbox` and friends,
+where "no policies" means "no client sees it", which is the intent).
+
+---
+
+⬇️ **Everything below this line is the session-60 queue, kept as HISTORY for the
+measurements it carries.** RF-03 first half, RF-08 and the seed are DONE.
 
 ✅ **RF-09 is CLOSED on all four channels (0178 table ACL; 0179 definer-RPC and
 audit trail; code for the issuing route). Item 1 below is HISTORY — kept for
