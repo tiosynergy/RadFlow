@@ -40,6 +40,13 @@ function latestReprint() {
 
 const FILES = {
   mig: latestReprint(),
+  /* ⚠️ ОКРЕМИЙ КЛЮЧ НА 0183, і це не дублікат `mig`. Урок с60 (мутація T2):
+     `file: "mig"` — це `latestReprint()`, тобто ЗАВЖДИ найновіша міграція, а
+     не «моя». Поки передруку не було, вони збігались; 0184 передрукувала
+     сторожа, і `mig` поїхав на неї. Якорі, що цілять у СПИСКИ сторожа (A1),
+     мусять їхати за найновішою — у тому й сенс. Якір A7 цілить у `drop policy`,
+     який живе ТІЛЬКИ у файлі 0183, і мусить лишитись на ньому. */
+  mig0183: "supabase/migrations/0183_rf03_sched_override_read.sql",
   door: "tests/schedOverrideDoor.test.ts",
   fnb: "tests/guardFnBodiesInvariant.test.ts",
   scan: "tests/readErrorTrust.test.ts",
@@ -120,7 +127,7 @@ const MUTATIONS = [
   {
     /* Клієнт можна переписати, політику — ні. Якщо `drop policy` зникне з
        дерева міграцій, стара дорога відкрита, хоч би як гарно виглядав клієнт. */
-    id: "A7", file: "mig", green: false,
+    id: "A7", file: "mig0183", green: false,
     expect: /існує рівно одна/,
     what: "drop policy sched_referrer_read закоментовано в міграції",
     from: "drop policy sched_referrer_read on public.schedule_overrides;\n",
