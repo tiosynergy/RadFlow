@@ -190,8 +190,15 @@ begin
   --    коротший (без хвостового переводу рядка), а 29932 — СИМВОЛИ, не байти.
   --    Рівність файл ↔ прод той замір усе одно доводив (однакове з обох
   --    боків), але число ні з чим у базі не збігалось.
-  if v_txt is distinct from '00d9ad82253bc2588b9f0cb70444a5b9' then
-    raise exception 'SMOKE_FAIL g: md5 тіла invariants_check = %, очікував 00d9ad82… (передрук розійшовся)', v_txt;
+  --    ⚠️ Піни перезнято під 0184 (RF-03b, позначки про графік дня; №17
+  --    отримав дві нові пари тригерів, №19 — `change_marker_recipients`
+  --    27 → 28; `checked` НЕ мінявся, 22). Обидва числа зняті ДВІЧІ, і прилад
+  --    перевірено на ВІДОМІЙ відповіді: той самий розбір ФАЙЛА на 0183
+  --    відтворює 00d9ad82…/3ac1aa3c… і довжину 96322. Для 0184 розбір файла
+  --    дав g = 673861da…, g2 = 11a29731…, 97025 — і живий запит до прода ПІСЛЯ
+  --    накату 09.09.2026 повернув рівно ті самі числа при cr = 0.
+  if v_txt is distinct from '673861da14838e8a21c5365cb91572ce' then
+    raise exception 'SMOKE_FAIL g: md5 тіла invariants_check = %, очікував 673861da… (передрук розійшовся)', v_txt;
   end if;
   -- ── g2: тіло прода == тіло ФАЙЛУ, з точністю до кінців рядків ──
   -- ⚠️ Пін вище схлопує ПРОБІЛИ І ЗНІМАЄ КОМЕНТАРІ, тобто доводить лише «код
@@ -202,8 +209,8 @@ begin
     from pg_proc
    where proname = 'invariants_check'
      and pronamespace = 'public'::regnamespace;
-  if v_txt is distinct from '3ac1aa3c88230816b8cf5ade32c1305d' then
-    raise exception 'SMOKE_FAIL g2: тіло прода != тіло файлу 0183 (md5 без CR = %)', v_txt;
+  if v_txt is distinct from '11a297318da068f53b113c3d9120e6b8' then
+    raise exception 'SMOKE_FAIL g2: тіло прода != тіло файлу 0184 (md5 без CR = %)', v_txt;
   end if;
   v_done := v_done || ' g g2';
 
