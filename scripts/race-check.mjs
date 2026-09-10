@@ -352,6 +352,24 @@ function userClient(jwt) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !anon) throw new Error("Потрібні NEXT_PUBLIC_SUPABASE_URL і NEXT_PUBLIC_SUPABASE_ANON_KEY");
+  /* ⚠️ ДРУКУЄМО МЕТАДАНІ ТОКЕНА — і НІКОЛИ жодного його фрагмента.
+     Привід (с62): перший прогін `cas` упав з `PGRST301 No suitable key or
+     wrong key type`, і діагностика стала гаданням, бо ніхто не знав, ЯКИМ
+     алгоритмом підписано токен. Проєкт переведено на асиметричні ключі
+     (`alg: ES256` + `kid`); токен, підписаний ЛЕГАСІ-секретом (`HS256`),
+     PostgREST більше не перевіряє. Один рядок нижче відрізняє «токен не той»
+     від «харнес зламаний» ДО пострілу, а не після. */
+  try {
+    const h = JSON.parse(Buffer.from(jwt.split(".")[0], "base64url").toString("utf8"));
+    const b = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8"));
+    const left = b.exp ? Math.round((b.exp * 1000 - Date.now()) / 60000) : "?";
+    console.log(`Токен: alg=${h.alg}${h.kid ? " kid=є" : " kid=НЕМАЄ"} · role=${b.role}`
+      + ` · лишилось ~${left} хв`);
+    if (h.alg !== "ES256") {
+      console.log(`  ⚠️ Очікується ES256 (проєкт на асиметричних ключах). ${h.alg}`
+        + " PostgREST відхилить: PGRST301 «No suitable key or wrong key type».");
+    }
+  } catch { console.log("Токен: заголовок не розібрався — це не схоже на JWT"); }
   return createClient(url, anon, {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { headers: { Authorization: `Bearer ${jwt}` } },
