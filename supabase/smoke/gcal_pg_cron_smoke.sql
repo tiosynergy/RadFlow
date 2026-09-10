@@ -90,14 +90,14 @@ begin
   end;
   v_done := v_done || ' d';
 
-  -- ── e: сторож рахує 22 перевірок ──
+  -- ── e: сторож рахує 23 перевірок ──
   v_res := public.invariants_check(p_write => false);
   -- ⚠️ 0164 підняв 13 → 14 (ucm_orphan_markers), 0165 перевипустив ту саму
   --    перевірку, 0166 — 14 → 15 (priv_drift), 0170 — 15 → 16 (policy_digest),
   --    0171 — 16 → 18 (guard_triggers + server_now). Число живе у ДЕВʼЯТИ смоуках —
   --    сторож узгодженості: tests/invariantsCheckedPins.test.ts.
-  if (v_res ->> 'checked')::int is distinct from 22 then
-    raise exception 'SMOKE_FAIL e: checked = %, очікував 22', v_res ->> 'checked';
+  if (v_res ->> 'checked')::int is distinct from 23 then
+    raise exception 'SMOKE_FAIL e: checked = %, очікував 23', v_res ->> 'checked';
   end if;
   v_done := v_done || ' e';
 
