@@ -241,11 +241,16 @@ interface RoomStatusCardProps {
   nextWaiting?: QEntry | null;
   blocked?: IncidentRow | null;
   schedClosed?: string | boolean | null;
+  /** ЖОРСТКА причина, чому виклик неможливий — той самий рядок, що в рядку
+      черги (`inProgressBlockReason`). Живе окремим пропом, а не рахується
+      всередині: `computeCallBlock` потребує простоїв, графіка й «зараз», яких
+      у картки немає. Див. пояснення біля кнопки. */
+  callBlockReason?: string | null;
   onComplete: (p: QEntry) => void;
   onCall: (p: QEntry) => void;
   onUnblock: (inc: IncidentRow) => void;
 }
-function RoomStatusCard({ room, patient, stuck, stuckUnknown, onFinishStuck, enteredAt, nextWaiting, blocked, schedClosed, onComplete, onCall, onUnblock }: RoomStatusCardProps) {
+function RoomStatusCard({ room, patient, stuck, stuckUnknown, onFinishStuck, enteredAt, nextWaiting, blocked, schedClosed, callBlockReason, onComplete, onCall, onUnblock }: RoomStatusCardProps) {
   const kind = modalityShort(room.modality);
   const { busy, run } = useCardBusy();
   if (!blocked && schedClosed) {
@@ -340,8 +345,20 @@ function RoomStatusCard({ room, patient, stuck, stuckUnknown, onFinishStuck, ent
       ) : (
         <div className="rc-body empty">
           <div className="rc-free-row"><span className="rc-free-dot" /><span className="rc-free">Кабінет вільний</span></div>
+          {/* ⚠️ `callBlockReason` у кнопці нижче ОБОВʼЯЗКОВИЙ, і ось чому
+              (знахідка живої перевірки Ф4-2, 10.09.2026). Досі стояло лише
+              `disabled={!!busy}`: плитка світила яскраво-синьою кнопкою в ту
+              саму секунду, коли рядок черги вже був погашений із названою
+              причиною. `callPatient` натиск ловить і віддає тост, тобто дірки
+              в даних немає — але кнопка обіцяла дію, якої не існує. Рівно той
+              клас U-67, який уже чинили один раз (мертвий діалог «Викликати
+              все одно») і на плитці забули. На дошці радіолога цей проп стояв
+              від початку — правило застосували в сусіда й забули тут. */}
           {nextWaiting && (
-            <button className="btn btn-primary btn-sm" onClick={run(() => onCall(nextWaiting), "call")} disabled={!!busy} aria-busy={busy === "call"}>
+            <button className="btn btn-primary btn-sm" onClick={run(() => onCall(nextWaiting), "call")}
+                    disabled={!!busy || !!callBlockReason}
+                    title={callBlockReason || "Викликати наступного"}
+                    aria-busy={busy === "call"}>
               {busy === "call"
                 ? <><span className="rf-spin" aria-hidden="true" /> Опрацьовується…</>
                 : <>Викликати: {(nextWaiting.patient_name || "").split(" ").slice(0, 2).join(" ")} · {nextWaiting.scheduled_time}</>}
@@ -2833,6 +2850,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                     patient={currentByRoom[r.id]} enteredAt={enteredAtOf(currentByRoom[r.id])}
                     stuck={stuckRooms[r.id]} stuckUnknown={stuckUnknown} onFinishStuck={setStuckFinish}
                     nextWaiting={nextWaitingByRoom[r.id]} blocked={blockingByRoom[r.id]}
+                    callBlockReason={nextWaitingByRoom[r.id] ? inProgressBlockReason(nextWaitingByRoom[r.id]) : null}
                     schedClosed={!blockingByRoom[r.id] && roomSchedClosed(r.id) ? (selDayStatus?.label || "Не працює за графіком") : null}
                     onComplete={openComplete} onCall={callPatient} onUnblock={resolveIncident} />
                 ))}
