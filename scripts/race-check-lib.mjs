@@ -69,6 +69,22 @@ export const CAS_TO = "waiting";
     стережеться. */
 export const WAITLIST_STALE_SQLSTATE = "55000";
 
+/** SQLSTATE, яким `add_case_step_rpc` відмовляє, коли кейс уже НЕ `open`.
+
+    ⚠️ Гарант тут — той самий клас, що в листі очікування: перевірка стоїть
+    ПІСЛЯ `select … for update` на рядку кейса, і саме лок робить її чесною.
+    Перенести перевірку ПЕРЕД лок — і вона читатиме знімок ДО коміту
+    скасування: крок ляже в уже скасований кейс, `case_recompute_status` для
+    нього не перерахується, і в проді залишиться кейс `cancelled` з АКТИВНИМ
+    кроком. Жодної помилки БД при цьому не буде. Це і є заборонений стан. */
+export const CASE_NOT_OPEN_SQLSTATE = "22023";
+
+/** Статуси кроку, які `check_case_distinct_room`, `check_case_no_time_overlap`
+    і `case_recompute_status` вважають АКТИВНИМИ (звірено з тілами в проді
+    10.09.2026). Список тут один на всі три місця: розійшовшись, він зробив би
+    вердикт «заборонений стан» м'якшим за саму БД. */
+export const CASE_ACTIVE_STATUSES = ["scheduled", "waiting", "in_progress", "needs_reschedule"];
+
 /** SQLSTATE тієї ж RPC, коли кандидата немає в ЦЬОМУ центрі. У вердикті
     гонки він означає не «інший оператор випередив», а зламану фікстуру —
     і `verdictExclusive` покаже це окремим рядком «впали НЕ через гонку». */
@@ -172,6 +188,35 @@ export function buildWaitlistBooking({ roomId, day, time, study }) {
     room_id: roomId,
     patient_name: `${FIXTURE_NAME} лист-запис`,
     patient_phone: FIXTURE_PHONE,
+    studies: [study],
+    duration_min: FIXTURE_DUR_MIN,
+    buffer_time_min: FIXTURE_BUF_MIN,
+    scheduled_date: day,
+    scheduled_time: time,
+  };
+}
+
+/** Рядок КЕЙСА для сценарію `case`. `status` не задаємо — дефолт БД `'open'`,
+    і саме його перевіряє `add_case_step_rpc` під локом. */
+export function buildCaseFixture({ id, clinicId, label }) {
+  return {
+    id, clinic_id: clinicId,
+    patient_name: `${FIXTURE_NAME} ${label}`,
+    patient_phone: FIXTURE_PHONE,
+  };
+}
+
+/** `p_step` для `add_case_step_rpc`.
+
+    ⚠️ Ключі — рівно ті, які тіло RPC перевіряє ДО взяття локів
+    (`room_id`, непорожній масив `studies`, `duration_min`, `scheduled_date`,
+    `scheduled_time`); звірено з `pg_get_functiondef` 10.09.2026. Пропустивши
+    будь-який, ми отримали б `22023 BAD_INPUT` — той самий SQLSTATE, що й
+    «кейс не активний», і вердикт зарахував би зламану фікстуру за коректну
+    відмову. Саме тому склад тут будується, а не пишеться в місці виклику. */
+export function buildCaseStep({ roomId, day, time, study }) {
+  return {
+    room_id: roomId,
     studies: [study],
     duration_min: FIXTURE_DUR_MIN,
     buffer_time_min: FIXTURE_BUF_MIN,
@@ -384,6 +429,95 @@ export function verdictCas(outcomes, { target, spreadLimitMs = START_SPREAD_LIMI
     verdict: "PASS", spread,
     reason: `1 updated=true з ${outcomes.length}, решта побачили «${target}» — лок і перечитування працюють`,
     ids: wins.map((o) => o.id),
+  };
+}
+
+/** Вердикт гонки «скасування кейса ПРОТИ додавання кроку».
+
+    ⚠️ ЧОМУ ЦЕ НЕ ДРАБИНКА ВЗАЄМНОГО ВИКЛЮЧЕННЯ. Тут немає «переможця» й
+    «невдах»: обидва впорядкування ЗАКОННІ, і в обох кінцевий стан однаковий —
+    кейс `cancelled`, усі кроки `cancelled`. Різниця лише в тому, чи встиг крок
+    додатись до скасування. Тому вердикт дивиться не на кількість удач, а на
+    КІНЦЕВИЙ СТАН, і питання в нього одне:
+
+      чи існує кейс `cancelled`, у якого лишився АКТИВНИЙ крок?
+
+    Такого стану не має бути ні за яким порядком. Він зʼявляється рівно тоді,
+    коли перевірка `status = 'open'` читає знімок ДО коміту скасування — тобто
+    коли її винесли з-під `select … for update`. Помилки БД при цьому немає:
+    крок вставляється успішно, `case_recompute_status` для нього не
+    перераховується, і кейс лишається скасованим із живим кроком усередині.
+
+    @param {{ok: boolean, entryId: string|null, sqlstate: string, message: string,
+              startedAt: number, finishedAt: number}} add
+    @param {{ok: boolean, cancelled: number|null, sqlstate: string, message: string,
+              startedAt: number, finishedAt: number}} cancel
+    @param {{caseStatus: string|null, steps: Array<{id: string, status: string}>}} final */
+export function verdictCaseCancelRace(add, cancel, final, { spreadLimitMs = START_SPREAD_LIMIT_MS } = {}) {
+  const outcomes = [add, cancel];
+  const spread = startSpreadMs(outcomes);
+  const active = (final.steps || []).filter((s) => CASE_ACTIVE_STATUSES.includes(s.status));
+
+  /* Скасування має пройти ЗАВЖДИ: воно не конкурує за право діяти, воно лише
+     чекає лок. Виняток тут — не «програш у гонці», а зламана постановка. */
+  if (!cancel.ok) {
+    return {
+      verdict: "FAIL", spread,
+      reason: `скасування впало (${cancel.sqlstate}: ${String(cancel.message).slice(0, 70)}) — постановка зламана, гонки не було`,
+    };
+  }
+
+  /* ГОЛОВНЕ ТВЕРДЖЕННЯ. Перевіряємо ПЕРШИМ: заборонений стан — доведений
+     дефект незалежно від того, що повернули виклики і чи довели ми одночасність. */
+  if (final.caseStatus === "cancelled" && active.length) {
+    return {
+      verdict: "FAIL", spread,
+      reason: `ЗАБОРОНЕНИЙ СТАН: кейс cancelled, але лишились активні кроки `
+        + `(${active.map((s) => s.status).join(", ")}) — перевірка «кейс відкритий» пішла повз лок`,
+      ids: active.map((s) => s.id),
+    };
+  }
+
+  if (add.ok) {
+    /* Крок додався → скасування прийшло ПІСЛЯ і мусило змести його разом з
+       рештою. Живий крок тут — той самий заборонений стан, лише спійманий
+       за id, а не за статусом кейса. */
+    const mine = (final.steps || []).find((s) => s.id === add.entryId);
+    if (mine && CASE_ACTIVE_STATUSES.includes(mine.status)) {
+      return {
+        verdict: "FAIL", spread,
+        reason: `доданий крок лишився активним (${mine.status}) попри скасування кейса — його не було в списку локів`,
+        ids: [mine.id],
+      };
+    }
+  } else if (add.sqlstate !== CASE_NOT_OPEN_SQLSTATE) {
+    /* Крок не додався — але ЧОМУ. Єдина законна причина: кейс уже не `open`.
+       Будь-яка інша (42501 доступ, 23505 кабінет уже в кейсі, 40P01 дедлок)
+       означає, що ми перевіряли не те, що обіцяли. */
+    return {
+      verdict: "FAIL", spread,
+      reason: `крок відмовлено НЕ через скасування: ${add.sqlstate} (${String(add.message).slice(0, 70)})`,
+    };
+  }
+
+  if (!windowsOverlap(outcomes)) {
+    return {
+      verdict: "INCONCLUSIVE", spread,
+      reason: "вікна запитів НЕ перетнулись — виклики пішли по черзі, "
+        + "а послідовний порядок нічого не каже про лок",
+    };
+  }
+  if (spread > spreadLimitMs) {
+    return {
+      verdict: "INCONCLUSIVE", spread,
+      reason: `розкид стартів ${spread} мс > ${spreadLimitMs} мс — одночасність не доведена`,
+    };
+  }
+  return {
+    verdict: "PASS", spread,
+    reason: add.ok
+      ? `порядок «крок → скасування»: крок додано, скасування змело ${cancel.cancelled} кроків, заборонений стан не виник`
+      : `порядок «скасування → крок»: скасування змело ${cancel.cancelled} кроків, крок відмовлено ${CASE_NOT_OPEN_SQLSTATE}, заборонений стан не виник`,
   };
 }
 

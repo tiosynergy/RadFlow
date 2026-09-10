@@ -14,6 +14,8 @@ import {
   OVERLAP_SQLSTATE, IN_PROGRESS_SQLSTATE, FIXTURE_NAME, CAS_TO,
   WAITLIST_STALE_SQLSTATE, WAITLIST_NOT_FOUND_SQLSTATE,
   FIXTURE_DUR_MIN, FIXTURE_BUF_MIN,
+  verdictCaseCancelRace, buildCaseFixture, buildCaseStep,
+  CASE_NOT_OPEN_SQLSTATE, CASE_ACTIVE_STATUSES,
 } from "../scripts/race-check-lib.mjs";
 
 /* ⚠️ ЗНАЙДЕНО СТЕНДОМ `falsify-race-check` (с62), і це дефект САМИХ ТЕСТІВ,
@@ -41,6 +43,18 @@ describe("SQLSTATE-константи припнуті до заміряних �
   });
   it("кандидата немає — 42501, і це НЕ програш у гонці", () => {
     expect(WAITLIST_NOT_FOUND_SQLSTATE).toBe("42501");
+  });
+  it("кейс не активний — 22023 з add_case_step_rpc", () => {
+    expect(CASE_NOT_OPEN_SQLSTATE).toBe("22023");
+  });
+  /* ⚠️ Цей список — дзеркало ТРЬОХ місць у БД одночасно
+     (`check_case_distinct_room`, `check_case_no_time_overlap`,
+     `case_recompute_status`). Розійшовшись із ними, він зробив би вердикт
+     «заборонений стан» мʼякшим за саму базу: крок у пропущеному статусі
+     БД вважала б активним, а харнес — ні, і дефект пройшов би як PASS. */
+  it("активні статуси кроку — рівно ті чотири, що знає БД", () => {
+    expect([...CASE_ACTIVE_STATUSES].sort()).toEqual(
+      ["in_progress", "needs_reschedule", "scheduled", "waiting"]);
   });
 });
 
@@ -253,6 +267,138 @@ describe("verdictWaitlistRace — двоє записують одного ка�
       { id: "b", ok: true, sqlstate: "", message: "", startedAt: 1005, finishedAt: 1009 },
     ]);
     expect(r.verdict).toBe("FAIL");
+  });
+});
+
+/* Сценарій «кейс» (с62): вердикт дивиться не на кількість удач, а на КІНЦЕВИЙ
+   СТАН. Обидва впорядкування законні й дають однаковий кінець — кейс
+   `cancelled`, усі кроки `cancelled`; різниця лише в тому, чи встиг крок
+   додатись. Питання одне: чи може існувати кейс `cancelled` з АКТИВНИМ кроком. */
+describe("verdictCaseCancelRace — скасування кейса проти додавання кроку", () => {
+  const add = (o: Partial<{ok: boolean; entryId: string | null; sqlstate: string; startedAt: number; finishedAt: number}> = {}) => ({
+    ok: true, entryId: "e-new", sqlstate: "", message: "",
+    startedAt: 1000, finishedAt: 1080, ...o,
+  });
+  const cancel = (o: Partial<{ok: boolean; cancelled: number | null; sqlstate: string; startedAt: number; finishedAt: number}> = {}) => ({
+    ok: true, cancelled: 2, sqlstate: "", message: "",
+    startedAt: 1005, finishedAt: 1090, ...o,
+  });
+
+  it("порядок «крок → скасування»: крок додано і зметено → PASS", () => {
+    const r = verdictCaseCancelRace(add(), cancel(), {
+      caseStatus: "cancelled",
+      steps: [{ id: "e1", status: "cancelled" }, { id: "e-new", status: "cancelled" }],
+    });
+    expect(r.verdict).toBe("PASS");
+    expect(r.reason).toMatch(/крок → скасування/);
+  });
+
+  it("порядок «скасування → крок»: крок відмовлено 22023 → PASS", () => {
+    const r = verdictCaseCancelRace(
+      add({ ok: false, entryId: null, sqlstate: "22023" }), cancel(),
+      { caseStatus: "cancelled", steps: [{ id: "e1", status: "cancelled" }] });
+    expect(r.verdict).toBe("PASS");
+    expect(r.reason).toMatch(/скасування → крок/);
+  });
+
+  /* ⚠️ ГОЛОВНЕ ТВЕРДЖЕННЯ ФАЙЛУ для цього сценарію. Саме так виглядає
+     перевірка «кейс відкритий», винесена з-під `for update`: жодної помилки
+     БД, крок вставився, а кейс лишився скасованим із живим кроком усередині. */
+  it("кейс cancelled із АКТИВНИМ кроком → FAIL (заборонений стан)", () => {
+    const r = verdictCaseCancelRace(add(), cancel(), {
+      caseStatus: "cancelled",
+      steps: [{ id: "e1", status: "cancelled" }, { id: "e-new", status: "scheduled" }],
+    });
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/ЗАБОРОНЕНИЙ СТАН/);
+    expect(r.ids).toEqual(["e-new"]);
+  });
+
+  /* Кожен із чотирьох активних статусів мусить ловитись однаково: пропущений
+     у списку статус зробив би вердикт мʼякшим за БД. */
+  it.each(["scheduled", "waiting", "in_progress", "needs_reschedule"])(
+    "активний крок у статусі %s теж дає FAIL", (st) => {
+      const r = verdictCaseCancelRace(add(), cancel(), {
+        caseStatus: "cancelled", steps: [{ id: "e-new", status: st }],
+      });
+      expect(r.verdict).toBe("FAIL");
+    });
+
+  it("термінальний крок (no_show) НЕ вважається живим — PASS", () => {
+    const r = verdictCaseCancelRace(add(), cancel(), {
+      caseStatus: "cancelled", steps: [{ id: "e-new", status: "no_show" }],
+    });
+    expect(r.verdict).toBe("PASS");
+  });
+
+  /* Другий бік того самого дефекту: кейс міг лишитись `open` (наприклад
+     скасування нічого не змело), але доданий крок живий попри скасування. */
+  it("доданий крок лишився активним при кейсі open → FAIL за id", () => {
+    const r = verdictCaseCancelRace(add(), cancel(), {
+      caseStatus: "open", steps: [{ id: "e-new", status: "scheduled" }],
+    });
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/лишився активним/);
+  });
+
+  it("крок відмовлено ЧУЖИМ кодом (23505) → FAIL, а не PASS", () => {
+    const r = verdictCaseCancelRace(
+      add({ ok: false, entryId: null, sqlstate: "23505" }), cancel(),
+      { caseStatus: "cancelled", steps: [{ id: "e1", status: "cancelled" }] });
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/НЕ через скасування/);
+  });
+
+  it("скасування впало → FAIL: постановка зламана", () => {
+    const r = verdictCaseCancelRace(add(), cancel({ ok: false, cancelled: null, sqlstate: "42501" }), {
+      caseStatus: "open", steps: [],
+    });
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/постановка зламана/);
+  });
+
+  it("вікна НЕ перетнулись → INCONCLUSIVE", () => {
+    const r = verdictCaseCancelRace(
+      add({ startedAt: 1000, finishedAt: 1002 }),
+      cancel({ startedAt: 1005, finishedAt: 1009 }),
+      { caseStatus: "cancelled", steps: [{ id: "e-new", status: "cancelled" }] });
+    expect(r.verdict).toBe("INCONCLUSIVE");
+    expect(r.reason).toMatch(/вікна запитів НЕ перетнулись/);
+  });
+
+  /* Дефект важливіший за недоведену одночасність — інакше реальний
+     заборонений стан сховався б за «нічого не зʼясували». */
+  it("заборонений стан без перетину вікон — усе одно FAIL", () => {
+    const r = verdictCaseCancelRace(
+      add({ startedAt: 1000, finishedAt: 1002 }),
+      cancel({ startedAt: 1005, finishedAt: 1009 }),
+      { caseStatus: "cancelled", steps: [{ id: "e-new", status: "scheduled" }] });
+    expect(r.verdict).toBe("FAIL");
+  });
+});
+
+describe("фікстури сценарію «кейс»", () => {
+  const study = { dur: FIXTURE_DUR_MIN, type: "КТ", price: 100, region: "КТ ОГК", contrast: false };
+
+  /* `status` не задаємо: дефолт БД `'open'` — саме той, який перевіряє
+     `add_case_step_rpc` під локом. Продубльований тут, він мовчки розійшовся б. */
+  it("рядок кейса НЕ задає status — його дає дефолт БД", () => {
+    const k = buildCaseFixture({ id: "c1", clinicId: "cl1", label: "кейс" });
+    expect(Object.keys(k)).not.toContain("status");
+    expect(k.patient_name.startsWith(FIXTURE_NAME)).toBe(true);
+  });
+
+  /* ⚠️ Усі чотири поля перевіряються в тілі RPC ДО взяття локів і дають
+     `22023 BAD_INPUT` — ТОЙ САМИЙ SQLSTATE, що й «кейс не активний». Тобто
+     неповний `p_step` виглядав би як коректна відмова через скасування, і
+     вердикт зарахував би зламану фікстуру за PASS. */
+  it("p_step несе всі поля, які RPC перевіряє ДО локів", () => {
+    const s = buildCaseStep({ roomId: "r1", day: "2026-09-20", time: "10:00", study });
+    for (const k of ["room_id", "studies", "duration_min", "scheduled_date", "scheduled_time"]) {
+      expect(s[k as keyof typeof s], `у p_step немає ${k} — RPC дасть 22023 BAD_INPUT`).toBeDefined();
+    }
+    expect(Array.isArray(s.studies) && s.studies.length).toBeTruthy();
+    expect(s.scheduled_time).toMatch(/^\d{2}:\d{2}$/);
   });
 });
 

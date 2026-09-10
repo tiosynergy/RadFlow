@@ -114,11 +114,15 @@ const MUTATIONS = [
     to: "    modality,\n    room_id: null,\n    duration_min: FIXTURE_DUR_MIN, buffer_time_min: FIXTURE_BUF_MIN,\n  };\n}",
   },
   {
+    /* ⚠️ ЯКІР ПЕРЕПИСАНО (с62). Він починався з `studies: [study],` і став
+       НЕУНІКАЛЬНИМ, щойно поруч зʼявився `buildCaseStep` із таким самим
+       хвостом. Стенд це й показав — «ЯКІР НЕ УНІКАЛЬНИЙ (2)». Тепер якір
+       починається з рядка, який є ЛИШЕ в `buildWaitlistBooking`. */
     id: "M9", file: "lib", green: false,
     expect: /p_booking несе всі NOT NULL-поля/,
     what: "з p_booking зникла duration_min — вставка впала б на NOT NULL",
-    from: "    studies: [study],\n    duration_min: FIXTURE_DUR_MIN,\n    buffer_time_min: FIXTURE_BUF_MIN,\n    scheduled_date: day,",
-    to: "    studies: [study],\n    buffer_time_min: FIXTURE_BUF_MIN,\n    scheduled_date: day,",
+    from: "    patient_phone: FIXTURE_PHONE,\n    studies: [study],\n    duration_min: FIXTURE_DUR_MIN,\n    buffer_time_min: FIXTURE_BUF_MIN,\n    scheduled_date: day,",
+    to: "    patient_phone: FIXTURE_PHONE,\n    studies: [study],\n    buffer_time_min: FIXTURE_BUF_MIN,\n    scheduled_date: day,",
   },
   {
     /* `scheduled_time` у БД — text-колонка без касту, тож зайві секунди
@@ -126,8 +130,8 @@ const MUTATIONS = [
     id: "M10", file: "lib", green: false,
     expect: /p_booking несе всі NOT NULL-поля/,
     what: "у scheduled_time додано секунди — text-колонка проковтне й зіпсує формат",
-    from: "    scheduled_date: day,\n    scheduled_time: time,",
-    to: "    scheduled_date: day,\n    scheduled_time: `${time}:00`,",
+    from: "    buffer_time_min: FIXTURE_BUF_MIN,\n    scheduled_date: day,\n    scheduled_time: time,\n  };\n}\n\n/** Рядок КЕЙСА",
+    to: "    buffer_time_min: FIXTURE_BUF_MIN,\n    scheduled_date: day,\n    scheduled_time: `${time}:00`,\n  };\n}\n\n/** Рядок КЕЙСА",
   },
   {
     /* Гейт перетину вікон — єдиний свідок того, що КОРИСТУВАЦЬКИЙ клієнт
@@ -147,14 +151,53 @@ const MUTATIONS = [
     from: '  if (base.verdict === "PASS" && !windowsOverlap(outcomes)) {',
     to: '  if (!windowsOverlap(outcomes)) {',
   },
+  {
+    /* ⚠️ ГОЛОВНА МУТАЦІЯ СЦЕНАРІЮ «КЕЙС». Заборонений стан — кейс `cancelled`
+       з живим кроком — це ЄДИНЕ, заради чого сценарій існує. Знявши гілку,
+       отримуємо PASS на стані, який у проді означає скасований кейс із
+       пацієнтом, що досі стоїть у сітці кабінету. */
+    id: "M13", file: "lib", green: false,
+    expect: /кейс cancelled із АКТИВНИМ кроком → FAIL/,
+    what: "вердикт кейса перестав вважати «cancelled + активний крок» дефектом",
+    from: '  if (final.caseStatus === "cancelled" && active.length) {',
+    to: '  if (false && final.caseStatus === "cancelled" && active.length) {',
+  },
+  {
+    /* Список активних статусів — дзеркало ТРЬОХ місць у БД. Викинувши один,
+       робимо вердикт мʼякшим за базу: крок у цьому статусі БД вважає живим,
+       а харнес — уже ні. */
+    id: "M14", file: "lib", green: false,
+    expect: /активні статуси кроку — рівно ті чотири/,
+    what: "зі списку активних статусів кроку зник needs_reschedule",
+    from: 'export const CASE_ACTIVE_STATUSES = ["scheduled", "waiting", "in_progress", "needs_reschedule"];',
+    to: 'export const CASE_ACTIVE_STATUSES = ["scheduled", "waiting", "in_progress"];',
+  },
+  {
+    /* Другий бік того самого дефекту: крок, доданий пострілом, лишився живим,
+       але статус кейса до `cancelled` не дійшов — за id це ще ловиться. */
+    id: "M15", file: "lib", green: false,
+    expect: /доданий крок лишився активним при кейсі open → FAIL за id/,
+    what: "перевірка «доданий крок зметено» знята",
+    from: "    if (mine && CASE_ACTIVE_STATUSES.includes(mine.status)) {",
+    to: "    if (false && mine && CASE_ACTIVE_STATUSES.includes(mine.status)) {",
+  },
+  {
+    /* Відмова кроку ЧУЖИМ кодом означає, що перевіряли не те, що обіцяли:
+       23505 — «кабінет уже в кейсі», тобто зламана постановка, а не гонка. */
+    id: "M16", file: "lib", green: false,
+    expect: /крок відмовлено ЧУЖИМ кодом \(23505\) → FAIL/,
+    what: "будь-яка відмова кроку зараховується як «через скасування»",
+    from: "  } else if (add.sqlstate !== CASE_NOT_OPEN_SQLSTATE) {",
+    to: "  } else if (false && add.sqlstate !== CASE_NOT_OPEN_SQLSTATE) {",
+  },
   /* ⚠️ РЕФАКТОРНІ КОНТРОЛІ. Без них «усе червоніє» неможливо відрізнити від
      «сторож надчутливий»: спек, який червоніє на будь-яку правку, не сторож,
      а сигналізація на вітер. */
   {
     id: "T1", file: "lib", green: true,
     what: "переставлено порядок полів у p_booking (семантика та сама)",
-    from: "    scheduled_date: day,\n    scheduled_time: time,\n  };\n}",
-    to: "    scheduled_time: time,\n    scheduled_date: day,\n  };\n}",
+    from: "    scheduled_date: day,\n    scheduled_time: time,\n  };\n}\n\n/** Рядок КЕЙСА",
+    to: "    scheduled_time: time,\n    scheduled_date: day,\n  };\n}\n\n/** Рядок КЕЙСА",
   },
   {
     id: "T2", file: "lib", green: true,
@@ -185,7 +228,7 @@ for (const m of MUTATIONS) {
    червону позицію: перевести її в зелені і зняти сторожа. Мутація при цьому
    далі застосовується, набір лишається зеленим, рядок друкує ✅, слідів немає.
    Тому кількість адресних — константа. */
-const EXPECTED_RED = 12;
+const EXPECTED_RED = 16;   // +M13..M16 (с62): сценарій «кейс»
 const redCount = MUTATIONS.filter((m) => !m.green).length;
 if (redCount !== EXPECTED_RED) {
   console.error(`⛔ ІНВЕНТАР БРЕШЕ: адресних мутацій ${redCount}, а очікується ${EXPECTED_RED}. `
