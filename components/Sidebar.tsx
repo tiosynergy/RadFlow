@@ -16,7 +16,7 @@ import { modalityShort, modalityKind } from "@/lib/studies";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
 import { unreadForNav } from "@/lib/unreadChanges";
-import { badgeOf, loadStatusOf } from "@/lib/sidebarBadge";
+import { badgeOf, loadStatusOf, type LoadStatus } from "@/lib/sidebarBadge";
 
 type SidebarRoom = {
   id: string;
@@ -54,6 +54,12 @@ interface SidebarProps {
   roomNoteOf?: (roomId: string) => string | null;
   onNew?: () => void;
   onSlotsOverview?: () => void;
+  /* ⚠️ Стан завантаження простоїв, а не лише їх число (с63). Дефолт `"ready"`
+     свідомий: сайдбар стоїть на девʼяти екранах, і на восьми з них простої не
+     читаються ВЗАГАЛІ — там `incidentCount` не передають, кнопки «Інциденти»
+     немає, і питання «нуль чи не знаємо» не виникає. Дефолт `"loading"`
+     ховав би бейдж на дошці до першого читання і давав би зайве блимання. */
+  incidentStatus?: LoadStatus;
   incidentCount?: number;
   onBreakdown?: () => void;
   onEmergency?: () => void;
@@ -80,6 +86,7 @@ export default function Sidebar({
   onSelectRoom,
   onNew,
   onSlotsOverview,
+  incidentStatus = "ready",
   incidentCount = 0,
   onBreakdown,
   onEmergency,
@@ -146,7 +153,21 @@ export default function Sidebar({
       setWaitErr(false);
     } catch { setWaitErr(true); /* транзієнтний збій — попереднє значення лишаємо, див. loadStatusOf */ }
   }, []);
-  useEffect(() => { loadWaitCount(); }, [loadWaitCount]);
+  /* ⚠️ КЛЮЧ ЗА ЗНАЧЕННЯМ, а не сам масив: `clinicIds` у `CeoDashboard`
+     будується як `clinics.map(...)`, тобто новий масив на КОЖЕН рендер —
+     у списку залежностей він давав би читання на кожен рендер. */
+  const clinicKey = clinicIds.join(",");
+  /* ⚠️ ЧОМУ ТУТ `clinicKey`, А НЕ САМИЙ ЛИШЕ `loadWaitCount` (борг U-62/Д5,
+     закрито в с63). Нижче підписки позначені `skipInitial`, бо первинне
+     читання робить САМЕ цей ефект: до правки маунт із непорожнім `clinicIds`
+     давав ДВА однакові HEAD-запити — один звідси, другий із
+     `callAll({ initial: true })` у хуці.
+     Але прибрати початкове читання хука й лишити залежність `[loadWaitCount]`
+     не можна: `loadWaitCount` стабільний (`useCallback` з `[]`), а в
+     `CeoDashboard` склад центрів приїжджає ПІСЛЯ маунту (`[] → [ids]`). Тоді
+     канал створюється вдруге, його `initial` пропущено — і без цієї залежності
+     проміжок між першим читанням і появою підписки не закрив би ніхто. */
+  useEffect(() => { void loadWaitCount(); }, [loadWaitCount, clinicKey]);
   /* ⚠️ ПЕРЕЧИТУВАННЯ ПО ПОВЕРНЕННІ, КОЛИ КАНАЛУ НЕМАЄ (ревʼю с58). Коментар
      нижче обіцяв, що бейдж «оновиться при поверненні на вкладку», — і не
      виконував: при порожньому `clinicIds` канал не створюється, а
@@ -181,6 +202,10 @@ export default function Sidebar({
       filter: "clinic_id=eq." + cid,
       onChange: loadWaitCount,
       debounceKey: "wait-badge",
+      /* U-62/Д5: первинне читання робить ефект вище — інакше маунт давав два
+         однакові HEAD-запити на `waitlist_entries`. Решта викликів (подія,
+         повернення на вкладку, поллінг) `skipInitial` не стосується. */
+      skipInitial: true,
     })),
   });
   useEffect(() => {
@@ -208,6 +233,15 @@ export default function Sidebar({
 
   /* U-60: три стани бейджа листа замість двох. */
   const waitBadge = badgeOf(loadStatusOf(waitOk, waitErr), waitCount);
+  /* ⚠️ МЕЖА U-60, ЯКУ ВІН САМ НАЗВАВ І ЯКУ ЗАКРИТО В с63. `sidebarBadge.ts`
+     прямо писав: «`incidentCount` приходить готовим числом із `QueueBoard`, і
+     його стан завантаження сюди НЕ доходить». Тобто бейдж інцидентів лишався
+     двостановим falsy-гейтом: збій читання давав `[]` → `0` → порожнє місце,
+     тобто «простоїв немає». Для листа очікування це коштувало б зайвого
+     кліку, а тут — впевненості, що жоден кабінет не стоїть.
+     Стан у дошці ВЖЕ був (`incidentsLoaded` / `incidentsErr`, обидва заведені
+     ще в U-11 і F4-9) — його просто не було кому передати. */
+  const incidentBadge = badgeOf(incidentStatus, incidentCount);
 
   async function signOut() {
     await signOutAndRedirect(router);
@@ -283,7 +317,9 @@ export default function Sidebar({
           {onBreakdown && <button type="button" onClick={() => onBreakdown()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">⚠</span>
             <span className="sb-item-lab">Інциденти</span>
-            {incidentCount ? <span className="sb-badge sb-badge-red">{incidentCount}</span> : null}
+            {incidentBadge.kind === "unknown"
+              ? <span className="sb-badge dim" title="Не вдалося завантажити простої">—</span>
+              : incidentBadge.kind === "count" ? <span className="sb-badge sb-badge-red">{incidentBadge.value}</span> : null}
           </button>}
           {onEmergency && (
             <button type="button" onClick={() => onEmergency()} aria-pressed={emergencyActive}

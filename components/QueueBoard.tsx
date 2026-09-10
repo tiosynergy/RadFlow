@@ -35,6 +35,9 @@ import {
 } from "@/app/queue/actions";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
+/* с63: бейдж інцидентів у сайдбарі отримує СТАН, а не лише число — див.
+   коментар біля `incidentBadge` у Sidebar.tsx. */
+import { loadStatusOf } from "@/lib/sidebarBadge";
 import BookingModal, { type BookingSave, type BookingPayload } from "@/components/BookingModal";
 import WaitlistCandidatesModal, { fetchWaitlistCandidates, type FreedSlotInfo } from "@/components/WaitlistCandidatesModal";
 import { addEntryToWaitlist } from "@/app/waitlist/actions";
@@ -2697,6 +2700,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         clinicIds={clinicId ? [clinicId] : []}
         rooms={visRooms} roomNoteOf={offNote} activeRoom={roomView} onSelectRoom={setRoomView} onNew={openBooking}
         onSlotsOverview={roleKey === "admin" ? () => setSlotsOverviewOpen(true) : undefined}
+        incidentStatus={loadStatusOf(incidentsLoaded, incidentsErr)}
         incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }}
         onEmergency={handleEmergencyClick}
         emergencyActive={roomView !== "all" ? emergencyRooms.includes(roomView) : emergencyActive}
