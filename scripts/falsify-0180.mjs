@@ -88,15 +88,77 @@ const MUTATIONS = [
     id: "A6", file: "mig", green: false,
     expect: /changed: каже очікуване/,
     what: "changed: більше не каже ОЧІКУВАНЕ — offender о 03:50 не читається без другого запиту",
-    from: "    select 'changed:' || c.key || ':' || e.dig || '->' || c.dig as what",
-    to: "    select 'changed:' || c.key || '->' || c.dig as what",
+    /* ⚠️ ЯКІР ТЯГНЕТЬСЯ ДО ІМЕНІ СВОЄЇ ПЕРЕВІРКИ, і це не багатослівність.
+       Форма offenders-діфа — КАНОН: кожна нова перевірка копіює її дослівно.
+       Коротка версія цього якоря була унікальна рівно доти, доки 0185 не
+       додала №23 з тією самою формою — і стенд відхилив мутацію як
+       «ЯКІР НЕ УНІКАЛЬНИЙ (2)». Хвіст із `'check', 'grant_digest'` робить
+       якір унікальним НАЗАВЖДИ, бо імʼя перевірки одне на всю схему. */
+    from: "    select 'changed:' || c.key || ':' || e.dig || '->' || c.dig as what\n"
+      + "      from cur c join expd e on e.key = c.key\n"
+      + "     where e.dig <> c.dig\n"
+      + "    union all\n"
+      + "    select 'new:' || c.key || '->' || c.dig\n"
+      + "      from cur c\n"
+      + "     where not exists (select 1 from expd e where e.key = c.key)\n"
+      + "    union all\n"
+      + "    select 'missing:' || e.key\n"
+      + "      from expd e\n"
+      + "     where not exists (select 1 from cur c where c.key = e.key)\n"
+      + "  ) x;\n"
+      + "  if v_tmp is not null then\n"
+      + "    v_fail := v_fail || jsonb_build_array(jsonb_build_object(\n"
+      + "      'check', 'grant_digest', 'offenders', to_jsonb(v_tmp)));",
+    to: "    select 'changed:' || c.key || '->' || c.dig as what\n"
+      + "      from cur c join expd e on e.key = c.key\n"
+      + "     where e.dig <> c.dig\n"
+      + "    union all\n"
+      + "    select 'new:' || c.key || '->' || c.dig\n"
+      + "      from cur c\n"
+      + "     where not exists (select 1 from expd e where e.key = c.key)\n"
+      + "    union all\n"
+      + "    select 'missing:' || e.key\n"
+      + "      from expd e\n"
+      + "     where not exists (select 1 from cur c where c.key = e.key)\n"
+      + "  ) x;\n"
+      + "  if v_tmp is not null then\n"
+      + "    v_fail := v_fail || jsonb_build_array(jsonb_build_object(\n"
+      + "      'check', 'grant_digest', 'offenders', to_jsonb(v_tmp)));",
   },
   {
     id: "A7", file: "mig", green: false,
     expect: /порівняння дайджестів не знешкоджене константою/,
     what: "порівняння дайджестів знешкоджене константою (перевірка тримається лише на лічильнику)",
-    from: "      from cur c join expd e on e.key = c.key\n     where e.dig <> c.dig",
-    to: "      from cur c join expd e on e.key = c.key\n     where e.dig <> c.dig and false",
+    /* ⚠️ Той самий клас, що в A6: форма діфа канонічна і повторюється в
+       кожній новій перевірці. Тягнемо якір до `'check', 'grant_digest'`. */
+    from: "      from cur c join expd e on e.key = c.key\n"
+      + "     where e.dig <> c.dig\n"
+      + "    union all\n"
+      + "    select 'new:' || c.key || '->' || c.dig\n"
+      + "      from cur c\n"
+      + "     where not exists (select 1 from expd e where e.key = c.key)\n"
+      + "    union all\n"
+      + "    select 'missing:' || e.key\n"
+      + "      from expd e\n"
+      + "     where not exists (select 1 from cur c where c.key = e.key)\n"
+      + "  ) x;\n"
+      + "  if v_tmp is not null then\n"
+      + "    v_fail := v_fail || jsonb_build_array(jsonb_build_object(\n"
+      + "      'check', 'grant_digest', 'offenders', to_jsonb(v_tmp)));",
+    to: "      from cur c join expd e on e.key = c.key\n"
+      + "     where e.dig <> c.dig and false\n"
+      + "    union all\n"
+      + "    select 'new:' || c.key || '->' || c.dig\n"
+      + "      from cur c\n"
+      + "     where not exists (select 1 from expd e where e.key = c.key)\n"
+      + "    union all\n"
+      + "    select 'missing:' || e.key\n"
+      + "      from expd e\n"
+      + "     where not exists (select 1 from cur c where c.key = e.key)\n"
+      + "  ) x;\n"
+      + "  if v_tmp is not null then\n"
+      + "    v_fail := v_fail || jsonb_build_array(jsonb_build_object(\n"
+      + "      'check', 'grant_digest', 'offenders', to_jsonb(v_tmp)));",
   },
   {
     id: "A8", file: "mig", green: false,
