@@ -68,8 +68,9 @@ import {
   FIXTURE_NAME, FIXTURE_DUR_MIN, FIXTURE_BUF_MIN,
   MODALITY_STUDY_TYPE, buildFixture, clinicDay, CAS_FROM, CAS_TO,
   buildWaitlistFixture, buildWaitlistBooking,
+  buildCaseFixture, buildCaseStep, CASE_ACTIVE_STATUSES,
   verdictSlotRace, verdictControl, verdictInProgressRace, verdictCas,
-  verdictWaitlistRace,
+  verdictWaitlistRace, verdictCaseCancelRace,
 } from "./race-check-lib.mjs";
 
 function adminClient() {
@@ -100,6 +101,26 @@ async function pickRoom(db, roomOpt) {
   }
   if (!usable.length) throw new Error("немає жодного активного кабінету з придатною модальністю");
   return usable[0];
+}
+
+/** ДРУГИЙ кабінет того самого центру — потрібен лише сценарію `case`.
+
+    ⚠️ Не «зручність», а вимога тригера `check_case_distinct_room`: активні
+    кроки одного кейса мусять бути в РІЗНИХ кабінетах, інакше 23505. Модальність
+    може бути будь-яка з придатних — склад для неї підбирає `pickStudy`. */
+async function pickSecondRoom(db, room) {
+  const { data: rooms, error } = await db
+    .from("rooms")
+    .select("id, name, modality, clinic_id, active, clinics(id, name, timezone)")
+    .eq("active", true).eq("clinic_id", room.clinic_id);
+  if (error) throw new Error(`не читаються кабінети центру: ${error.message}`);
+  const other = (rooms || []).find((r) => r.id !== room.id && MODALITY_STUDY_TYPE[r.modality]);
+  if (!other) {
+    throw new Error(
+      `у центрі лише один придатний кабінет — сценарію «кейс» потрібні ДВА.\n` +
+      "  Тригер check_case_distinct_room не дасть двом активним крокам кейса стояти в одному кабінеті.");
+  }
+  return other;
 }
 
 /** Позиція складу, ВИДИМА в цьому кабінеті. Дзеркалить умову видимості з
@@ -508,6 +529,99 @@ async function runWaitlistRace(db, user, { room, study, slot, n, cleanupIds, wai
   };
 }
 
+/** Прибирання КЕЙСА: кроки, потім сам кейс.
+
+    ⚠️ ПОРЯДОК ОБОВʼЯЗКОВИЙ і має ту саму природу, що в листі очікування. FK
+    `queue_entries_case_id_fkey` — `ON DELETE SET NULL` (заміряно
+    `pg_get_constraintdef` 10.09.2026). Видаливши кейс ПЕРШИМ, ми власноруч
+    обнулили б `case_id` у всіх його кроках — і єдиний слід, за яким їх можна
+    знайти після втраченої відповіді, зник би разом із ним. */
+async function cleanupCase(db, caseIds) {
+  if (!caseIds.length) return { cases: null };
+  const e = await db.from("patient_cases").delete().in("id", caseIds);
+  const m = await db.from("user_change_markers").delete().in("entity_id", caseIds);
+  return { cases: e.error?.message ?? null, markers: m.error?.message ?? null };
+}
+
+/** Сценарій «кейс»: `cancel_case_rpc` ПРОТИ `add_case_step_rpc` на ОДНОМУ кейсі.
+
+    Гарант — `select … for update` на рядку кейса як ЄДИНА точка серіалізації
+    всіх мутацій кейса, і перевірка `status = 'open'` ПІСЛЯ нього.
+
+    ⚠️ ПОСТАНОВКА ВРАХОВУЄ ДВА ТРИГЕРИ КЕЙСА, і без них фікстура не лягла б:
+    * `check_case_distinct_room` — активні кроки одного кейса мусять бути в
+      РІЗНИХ кабінетах (23505). Тому крок-фікстура і крок, який додаємо, беруть
+      РІЗНІ кабінети, і обидва — з центру кейса.
+    * `check_case_no_time_overlap` — пацієнт не може бути у двох кабінетах
+      одночасно (23P01). Тому слоти рознесені (кандидати `findSlots` стоять на
+      годину один від одного).
+    Пропустивши це, ми отримали б відмову кроку з чужим SQLSTATE — і вердикт
+    чесно сказав би «відмовлено НЕ через скасування», але прогін не довів би
+    нічого. */
+async function runCaseCancelRace(db, user, { room, study, room2, study2, slots, cleanupIds, caseIds }) {
+  const kase = buildCaseFixture({ id: randomUUID(), clinicId: room.clinic_id, label: "кейс" });
+  caseIds.push(kase.id);
+  const insCase = await db.from("patient_cases").insert(kase);
+  if (insCase.error) throw new Error(`фікстуру кейса не вставлено: ${insCase.error.code} ${insCase.error.message}`);
+
+  // Крок 1 — службовою роллю, напряму: він лише створює кейсу «вміст».
+  const step1 = buildFixture({
+    id: randomUUID(), clinicId: room.clinic_id, roomId: room.id,
+    day: slots[0].day, time: slots[0].time, label: "кейс-крок-1", study,
+  });
+  step1.case_id = kase.id;
+  step1.case_step = 1;
+  cleanupIds.push(step1.id);
+  const ins1 = await fire(db, step1);
+  if (!ins1.ok) throw new Error(`крок 1 кейса не вставлено: ${ins1.sqlstate} ${ins1.message}`);
+
+  // Крок 2 — той, який ДОДАЄМО в гонці: ІНШИЙ кабінет, ІНШИЙ слот.
+  const p_step = buildCaseStep({
+    roomId: room2.id, day: slots[1].day, time: slots[1].time, study: study2,
+  });
+
+  const [add, cancel] = await Promise.all([
+    (async () => {
+      const startedAt = Date.now();
+      const { data, error } = await user.rpc("add_case_step_rpc", { p_case_id: kase.id, p_step });
+      return {
+        startedAt, finishedAt: Date.now(), ok: !error,
+        entryId: typeof data === "string" ? data : null,
+        sqlstate: error?.code ?? "", message: error?.message ?? "",
+      };
+    })(),
+    (async () => {
+      const startedAt = Date.now();
+      const { data, error } = await user.rpc("cancel_case_rpc", { p_case_id: kase.id });
+      return {
+        startedAt, finishedAt: Date.now(), ok: !error,
+        cancelled: typeof data === "number" ? data : null,
+        sqlstate: error?.code ?? "", message: error?.message ?? "",
+      };
+    })(),
+  ]);
+  if (add.entryId) cleanupIds.push(add.entryId);
+
+  /* КІНЦЕВИЙ СТАН читаємо з БД, а не збираємо з відповідей. Відповідь може
+     загубитись, а стан — ні; і саме стан, а не відповіді, є предметом
+     твердження. Заразом це єдиний спосіб знайти крок, доданий пострілом із
+     втраченою відповіддю (`case_id` ще на місці — кейс ми не видаляли). */
+  const cs = await db.from("patient_cases").select("status").eq("id", kase.id).maybeSingle();
+  const st = await db.from("queue_entries").select("id, case_step, status").eq("case_id", kase.id);
+  for (const s of st.data || []) if (!cleanupIds.includes(s.id)) cleanupIds.push(s.id);
+
+  const final = {
+    caseStatus: cs.error ? null : (cs.data?.status ?? null),
+    steps: st.error ? [] : (st.data || []),
+    readError: cs.error?.message || st.error?.message || null,
+  };
+  if (final.readError) {
+    return { add, cancel, final, verdict: { verdict: "INCONCLUSIVE", spread: 0,
+      reason: `кінцевий стан не прочитався (${final.readError}) — судити нема про що` } };
+  }
+  return { add, cancel, final, verdict: verdictCaseCancelRace(add, cancel, final) };
+}
+
 /** Основний сценарій: N пострілів в ОДИН слот. */
 async function runRace(db, { room, study, slot, n, cleanupIds }) {
   const rows = Array.from({ length: n }, (_, i) => buildFixture({
@@ -654,7 +768,15 @@ async function assertRoomFree(db, roomId) {
 
     ⚠️ Порядок той самий, що у `finally`: спершу дочитати `scheduled_entry_id`
     (FK `on delete set null`), потім видаляти. Інакше запис, створений
-    пострілом і не привʼязаний до імені-маркера, лишився б у проді. */
+    пострілом і не привʼязаний до імені-маркера, лишився б у проді.
+
+    ⚠️ НАЗВАНА ЗАЛЕЖНІСТЬ, на якій тримається порятунок СИРОТИ (знахідка
+    ревʼю А, с62). Крок, у якого `case_id` уже обнулено, знаходиться тут лише
+    за іменем — і знаходиться тому, що `add_case_step_rpc` копіює
+    `v_case.patient_name` у створюваний запис. Тобто RPC-створений крок
+    успадковує маркер «ТЕСТ Гонка с38 …». Перестане копіювати — сирота стане
+    незнаходжуваною ОБОМА шляхами. Це не гіпотеза: звірено з
+    `pg_get_functiondef(add_case_step_rpc)` 10.09.2026. */
 async function cmdCleanup(db, write) {
   const q = await db
     .from("queue_entries").select("id, patient_name, scheduled_date, scheduled_time")
@@ -664,10 +786,18 @@ async function cmdCleanup(db, write) {
     .from("waitlist_entries").select("id, patient_name, status, scheduled_entry_id")
     .like("patient_name", `${FIXTURE_NAME}%`);
   if (w.error) throw new Error(`не читаються залишки листа очікування: ${w.error.message}`);
+  /* Третя таблиця — з тієї ж причини, що й друга: сценарій `case` лишає слід
+     у `patient_cases`, і без цього рядка «Залишків немає» було б ХИБНОЮ
+     заявою. Перелік місць знову виявився вужчим за дерево. */
+  const c = await db
+    .from("patient_cases").select("id, patient_name, status")
+    .like("patient_name", `${FIXTURE_NAME}%`);
+  if (c.error) throw new Error(`не читаються залишки кейсів: ${c.error.message}`);
 
   const qRows = q.data || [];
   const wRows = w.data || [];
-  if (!qRows.length && !wRows.length) { console.log("Залишків фікстур немає."); return; }
+  const cRows = c.data || [];
+  if (!qRows.length && !wRows.length && !cRows.length) { console.log("Залишків фікстур немає."); return; }
 
   if (qRows.length) {
     console.log(`Черга — ${qRows.length}:`);
@@ -678,6 +808,10 @@ async function cmdCleanup(db, write) {
     wRows.forEach((r) => console.log(`  ${r.id}  ${r.patient_name}  ${r.status}`
       + (r.scheduled_entry_id ? `  → запис ${r.scheduled_entry_id}` : "")));
   }
+  if (cRows.length) {
+    console.log(`Кейси — ${cRows.length}:`);
+    cRows.forEach((r) => console.log(`  ${r.id}  ${r.patient_name}  ${r.status}`));
+  }
   if (!write) { console.log("\nБез --run нічого не видалено."); return; }
 
   const ids = qRows.map((r) => r.id);
@@ -687,16 +821,52 @@ async function cmdCleanup(db, write) {
       console.log(`  дочитано запис ${r.scheduled_entry_id} за звʼязком із листа`);
     }
   }
-  await cleanup(db, ids);
+  if (cRows.length) {
+    const st = await db.from("queue_entries").select("id").in("case_id", cRows.map((r) => r.id));
+    if (st.error) throw new Error(`не читаються кроки кейсів: ${st.error.message}`);
+    for (const r of st.data || []) {
+      if (!ids.includes(r.id)) { ids.push(r.id); console.log(`  дочитано крок кейса ${r.id}`); }
+    }
+  }
+  let bad = 0;
+  const delQ = await cleanup(db, ids);
+  if (delQ.entries) { console.log(`⚠️ записи НЕ видалено: ${delQ.entries}`); bad = 1; }
+  if (delQ.markers) { console.log(`⚠️ позначки НЕ знято: ${delQ.markers}. Явний список entity_id: ${ids.join(", ")}`); bad = 1; }
   const left = await verifyClean(db, ids);
   console.log(`Черга прибрана. Лишилось: записів ${left.entriesLeft}, позначок ${left.markersLeft}.`);
+  if (left.entriesLeft !== 0 || left.markersLeft !== 0) bad = 1;
 
   const wIds = wRows.map((r) => r.id);
   if (wIds.length) {
     await cleanupWaitlist(db, wIds);
     const leftW = await verifyCleanWaitlist(db, wIds);
     console.log(`Лист прибраний. Лишилось: рядків ${leftW.entriesLeft}, позначок ${leftW.markersLeft}.`);
+    if (leftW.entriesLeft !== 0 || leftW.markersLeft !== 0) bad = 1;
   }
+
+  const cIds = cRows.map((r) => r.id);
+  if (cIds.length) {
+    /* ⚠️ ТОЙ САМИЙ ГЕЙТ, ЩО У `finally` (знахідка ревʼю А, с62): кейс
+       видаляємо, лише коли його кроків у базі СПРАВДІ не лишилось. FK
+       `on delete set null` інакше обнулить `case_id` над живим кроком і
+       відріже його від звʼязку — а команда відрапортує успіх. */
+    const st2 = await db.from("queue_entries").select("id").in("case_id", cIds);
+    const nSteps = st2.error ? "?" : (st2.data?.length ?? "?");
+    if (nSteps !== 0) {
+      console.log(`⚠️ Кейси НЕ видалено: у них лишилось кроків ${nSteps}. Спершу приберіть кроки.`);
+      bad = 1;
+    } else {
+      await cleanupCase(db, cIds);
+      const leftC = await db.from("patient_cases").select("id").in("id", cIds);
+      const n = leftC.error ? "?" : (leftC.data?.length ?? "?");
+      console.log(`Кейси прибрані. Лишилось: ${n}.`);
+      if (n !== 0) bad = 1;
+    }
+  }
+  /* ⚠️ КОМАНДА МУСИТЬ ВІДДАВАТИ КОД (знахідка ревʼю А). Раніше `cmdCleanup`
+     просто повертався, і `main` завершувався БЕЗ `process.exit` — прогін, що
+     надрукував «Лишилось: записів 3», виходив нулем, тобто рапортував успіх. */
+  return bad;
 }
 
 async function main() {
@@ -707,19 +877,21 @@ async function main() {
   const db = adminClient();
 
   if (cmd === "help" || opts.help) {
-    console.log("race-check.mjs plan | run --run [--n 2..8] [--room <uuid>] | room --run | cas --run | waitlist --run | cleanup [--run]");
+    console.log("race-check.mjs plan | run --run [--n 2..8] [--room <uuid>] | room --run | cas --run | waitlist --run | case --run | cleanup [--run]");
     console.log("  run  — двоє в ОДИН слот (тригер 0064)");
     console.log("  room — двох в ОДИН кабінет (унікальний індекс 0018)");
     console.log("  cas  — двоє міняють статус ОДНОГО запису (for update у 0075).");
     console.log("  waitlist — двоє записують ОДНОГО кандидата листа очікування");
     console.log("         (умовний UPDATE у schedule_from_waitlist_rpc → 55000 WAITLIST_STALE).");
-    console.log("         cas і waitlist потребують RADFLOW_USER_JWT — токен живого персоналу.");
+    console.log("  case — скасування кейса ПРОТИ додавання кроку (for update на кейсі).");
+    console.log("         Питання одне: чи може виникнути кейс cancelled з АКТИВНИМ кроком.");
+    console.log("         cas, waitlist і case потребують RADFLOW_USER_JWT — токен живого персоналу.");
     console.log("         Сесія у COOKIE (@supabase/ssr), не в localStorage — сніпет у шапці файлу.");
     console.log("         Живе ~годину. Не друкувати, не класти в лог, не слати в переписку.");
     return;
   }
-  if (cmd === "cleanup") { await cmdCleanup(db, write); return; }
-  if (!["plan", "run", "room", "cas", "waitlist"].includes(cmd)) throw new Error(`невідома команда «${cmd}»`);
+  if (cmd === "cleanup") { process.exit(await cmdCleanup(db, write)); }
+  if (!["plan", "run", "room", "cas", "waitlist", "case"].includes(cmd)) throw new Error(`невідома команда «${cmd}»`);
 
   const room = await pickRoom(db, opts.room);
   const study = await pickStudy(db, room);
@@ -754,7 +926,7 @@ async function main() {
      за дизайном. Немає токена — чесний SKIP з інструкцією, а не імітація
      перевірки службовою роллю (вона дала б 42501 і виглядала б як «дефект»). */
   let user = null;
-  if (cmd === "cas" || cmd === "waitlist") {
+  if (cmd === "cas" || cmd === "waitlist" || cmd === "case") {
     const jwt = process.env.RADFLOW_USER_JWT;
     if (!jwt) {
       console.log(`\nSKIP: немає RADFLOW_USER_JWT — сценарій ${cmd} не запускався.`);
@@ -776,6 +948,7 @@ async function main() {
 
   const cleanupIds = [];
   const waitlistIds = [];
+  const caseIds = [];
   let code = 0;
   try {
     const { slots, tried } = await findSlots(db, room, study, {
@@ -848,6 +1021,47 @@ async function main() {
           : race.verdict.verdict === "INCONCLUSIVE" ? 2
           : (linkOk ? 0 : 2);
       }
+    } else if (cmd === "case") {
+      /* ⛔ СЦЕНАРІЙ НЕ ГОТОВИЙ — і гейт стоїть тут навмисно, щоб він не міг
+         віддати ЗЕЛЕНИЙ результат, який нічого не доводить.
+
+         Ревʼю Б (с62) показало головне: постріл робиться ОДИН раз, а з двох
+         можливих упорядкувань лише ОДНЕ щось перевіряє. Якщо `add` виграє лок
+         першим, правильний і зламаний код дають БАЙТ У БАЙТ той самий
+         результат — щойно крок закомічено, скасування неминуче змете його
+         своїм `for update`. Тобто приблизно половина прогонів — PASS, який не
+         відрізняє справний лок від знятого. Це рівно той клас «зелений, що
+         нічого не значить», проти якого написана вся ця машинерія.
+
+         Що треба доробити (деталі — docs/audit/PLAN-case-scenario-gaps.md):
+           1. ганяти пару БАГАТО разів і вимагати, щоб упорядкування
+              «скасування → крок» справді трапилось хоч раз;
+           2. власний контроль: крок додається НАОДИНЦІ — інакше «22023»
+              неможливо приписати скасуванню (RPC кидає 22023 і на BAD_INPUT
+              ДО локів);
+           3. розрізняти два 22023 за ТЕКСТОМ, а не лише за SQLSTATE;
+           4. слоти для ДРУГОГО кабінету теж пробувати `findSlots` — зараз
+              беруться слоти, перевірені лише для першого;
+           5. стверджувати `cancel.cancelled >= 1` і досяжні кінцеві стани. */
+      console.log("\n⛔ Сценарій `case` НЕ ГОТОВИЙ і навмисно не запускається.");
+      console.log("   Ревʼю показало: ~половина прогонів дала б PASS, не перевіривши гарант.");
+      console.log("   Причини й план доробки — docs/audit/PLAN-case-scenario-gaps.md");
+      code = 2;
+    } else if (cmd === "case_DISABLED_PENDING_REDESIGN") {
+      const room2 = await pickSecondRoom(db, room);
+      const study2 = await pickStudy(db, room2);
+      console.log(`Другий кабінет: ${room2.name} [${room2.modality}] — ${study2.type} / ${study2.region}`);
+      const race = await runCaseCancelRace(db, user, {
+        room, study, room2, study2, slots, cleanupIds, caseIds,
+      });
+      printOutcomes("ГОНКА ЗА КЕЙС (add_case_step_rpc ПРОТИ cancel_case_rpc)", [
+        { ...race.add, id: "add" }, { ...race.cancel, id: "cancel" },
+      ]);
+      console.log(`  → ${race.verdict.verdict}: ${race.verdict.reason}`);
+      console.log(`  розкид стартів: ${race.verdict.spread} мс`);
+      console.log(`  кінцевий стан: кейс=${race.final.caseStatus ?? "?"} · кроки: `
+        + ((race.final.steps || []).map((s) => `#${s.case_step}:${s.status}`).join(", ") || "немає"));
+      code = race.verdict.verdict === "PASS" ? 0 : (race.verdict.verdict === "FAIL" ? 1 : 2);
     } else if (cmd === "cas") {
       const race = await runCas(db, user, { room, study, slot: slots[0], n, cleanupIds });
       printCasOutcomes(`ПАРАЛЕЛЬНИЙ CAS (${n} × ${CAS_FROM} → ${CAS_TO} на ОДНОМУ записі)`, race.outcomes);
@@ -915,6 +1129,61 @@ async function main() {
     if (left.entriesLeft !== 0 || left.markersLeft !== 0) {
       console.log("⚠️ Залишки! Добити: node scripts/race-check.mjs cleanup --run");
       code = code || 1;
+    }
+    /* ⚠️ Кроки кейса — ПЕРЕД самим кейсом (FK `on delete set null`): видаливши
+       кейс першим, ми обнулили б `case_id` і втратили б слід до кроків. Тому
+       дочитуємо їх ДО `cleanup` вище — і робимо це навіть якщо `runCaseCancelRace`
+       упав до свого читання. */
+    if (caseIds.length) {
+      const st = await step("дочитати кроки кейса", () =>
+        db.from("queue_entries").select("id").in("case_id", caseIds));
+      if (!st || st.error) {
+        console.log(`⚠️ НЕ вдалося дочитати кроки кейса (${st?.error?.message ?? "виняток"}).`);
+        console.log(`   Кейс НЕ видалено навмисно: ${caseIds.join(", ")}`);
+        console.log("   Спершу прогляньте його кроки, потім: node scripts/race-check.mjs cleanup --run");
+        code = code || 1;
+      } else {
+        /* ⚠️ БЕРЕМО ВСІ кроки, а не «ще не в списку» (знахідка ревʼю А, с62).
+           Перша редакція фільтрувала `!cleanupIds.includes(id)` — і крок, чиє
+           видалення вище ВЖЕ провалилось, випадав із повтору саме тому, що він
+           у списку. Повторний delete по видаленому id — безпечний no-op, тож
+           фільтр не економив нічого, а ціну мав високу. */
+        const stepIds = (st.data || []).map((r) => r.id);
+        let stepsGone = true;
+        if (stepIds.length) {
+          console.log(`  кроків кейса в базі: ${stepIds.length} — видаляю`);
+          const d = await step("видалити кроки кейса", () => cleanup(db, stepIds));
+          /* ⚠️ `cleanup` ПОВЕРТАЄ помилку, а не кидає — тож `step` її не
+             спіймає, і мовчазне ігнорування результату було б дірою. */
+          if (!d || d.entries) { stepsGone = false; console.log(`⚠️ кроки НЕ видалено (${d?.entries ?? "виняток"})`); }
+        }
+        /* Звіряємо ЗАПИТОМ, а не за поверненням delete: «delete не повернув
+           помилки» ≠ «рядків немає». */
+        const leftSteps = await step("звірити кроки кейса", () =>
+          db.from("queue_entries").select("id").in("case_id", caseIds));
+        const nSteps = leftSteps?.error ? "?" : (leftSteps?.data?.length ?? "?");
+        if (nSteps !== 0) stepsGone = false;
+
+        /* ⚠️ КЕЙС ВИДАЛЯЄМО, ЛИШЕ ЯКЩО КРОКІВ СПРАВДІ НЕ ЛИШИЛОСЬ. FK
+           `on delete set null`: видаливши кейс над живим кроком, ми власноруч
+           обнулили б `case_id` — тобто знищили б єдиний шлях, яким цей крок
+           знаходиться за звʼязком. Знахідка ревʼю А: перша редакція видаляла
+           кейс беззастережно і друкувала «Лишилось: 0», бо рахувала лише
+           `patient_cases`. */
+        if (!stepsGone) {
+          console.log(`⚠️ Кейс НЕ видалено навмисно (кроків лишилось ${nSteps}): ${caseIds.join(", ")}`);
+          console.log("   Добити: node scripts/race-check.mjs cleanup --run");
+          code = code || 1;
+        } else {
+          const delC = await step("видалити кейси", () => cleanupCase(db, caseIds));
+          if (delC?.cases) { console.log(`⚠️ кейс НЕ видалено (${delC.cases}): ${caseIds.join(", ")}`); code = code || 1; }
+          const leftC = await step("звірити прибирання кейсів", () =>
+            db.from("patient_cases").select("id").in("id", caseIds));
+          const nLeft = leftC?.error ? "?" : (leftC?.data?.length ?? "?");
+          console.log(`Кейси: прибрано ${caseIds.length} id, кроків 0. Лишилось кейсів: ${nLeft}.`);
+          if (nLeft !== 0) { console.log("⚠️ Залишки кейсів! Добити: node scripts/race-check.mjs cleanup --run"); code = code || 1; }
+        }
+      }
     }
     if (waitlistIds.length) {
       /* ⚠️ РЯДОК ЛИСТА НЕ ВИДАЛЯЄМО, ЯКЩО ЗВʼЯЗОК НЕ ПРОЧИТАНО. Він — єдиний
