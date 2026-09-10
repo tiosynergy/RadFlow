@@ -65,7 +65,11 @@ const MUTATIONS = [
        «сторожа з таким іменем немає» — регулярка цілила в імʼя тригера, а не
        в назву тесту. */
     id: "A2", file: "mig", green: false,
-    expect: /21 пара/,
+    /* ⚠️ БЕЗ ЧИСЛА. Раніше тут стояло /21 пара/ — і рівно на переліку пар,
+       який росте з кожним пакетом, стенд оголосив «СТОРОЖА З ТАКИМ ІМЕНЕМ
+       НЕМАЄ» (с62: заголовок став «23 пари»). Очікування мусить триматись за
+       СТАЛУ частину назви, а не за лічильник, який ми ж і рухаємо. */
+    expect: /ПАРОЮ \(таблиця, тригер\)/,
     what: "пару (profiles, zz_invite_issued_at) прибрано зі списку №17",
     from: "      ('profiles','zz_invite_issued_at','CREATE TRIGGER zz_invite_issued_at BEFORE INSERT OR UPDATE ON public.profiles FOR EACH ROW EXECUTE FUNCTION guard_invite_issued_at()'),\n",
     to: "",
@@ -73,7 +77,7 @@ const MUTATIONS = [
   {
     /* Другий бік лічильника: інвентар у ТЕСТІ всох, а файл цілий. */
     id: "A3", file: "trg", green: false,
-    expect: /21 пара/,
+    expect: /ПАРОЮ \(таблиця, тригер\)/,   // без числа — див. A2
     what: "пару прибрано з інвентарю GUARDS у самому тесті",
     from: '  ["profiles", "zz_invite_issued_at"],\n',
     to: "",
