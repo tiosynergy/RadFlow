@@ -56,6 +56,24 @@ export const IN_PROGRESS_SQLSTATE = "23505";
 export const CAS_FROM = "scheduled";
 export const CAS_TO = "waiting";
 
+/** SQLSTATE, яким `schedule_from_waitlist_rpc` відмовляє тому, хто програв
+    гонку за КАНДИДАТА листа очікування.
+
+    ⚠️ Гарант тут — НЕ тригер і НЕ індекс, а УМОВНИЙ UPDATE усередині самої
+    RPC: `set status='scheduled' where id=… and status='waiting'`. Той, хто
+    прийшов другим, чекає на рядковому блокуванні, після коміту переможця
+    бачить уже `'scheduled'`, отримує `row_count = 0` і піднімає це виключення
+    РУКАМИ. Тобто на відміну від 23P01/23505 його не породжує двигун — його
+    написали в тілі, і саме тому мутація «прибрати умову `status='waiting'`»
+    зробила б сценарій зеленим із ДВОМА переможцями. Це головне, що тут
+    стережеться. */
+export const WAITLIST_STALE_SQLSTATE = "55000";
+
+/** SQLSTATE тієї ж RPC, коли кандидата немає в ЦЬОМУ центрі. У вердикті
+    гонки він означає не «інший оператор випередив», а зламану фікстуру —
+    і `verdictExclusive` покаже це окремим рядком «впали НЕ через гонку». */
+export const WAITLIST_NOT_FOUND_SQLSTATE = "42501";
+
 /** Тривалість і буфер фікстури: 20+5 = 25 хв зайнятості.
     Кандидати слотів рознесені на годину (див. TIMES у CLI), тож вікна
     зайнятості контрольного сценарію не перетинаються за побудовою. */
@@ -111,6 +129,54 @@ export function buildFixture({ id, clinicId, roomId, day, time, label, study }) 
     duration_min: FIXTURE_DUR_MIN, buffer_time_min: FIXTURE_BUF_MIN,
     scheduled_date: day, scheduled_time: time,
     status: "scheduled", call_status: "not_called",
+  };
+}
+
+/** Рядок ЛИСТА ОЧІКУВАННЯ для сценарію `waitlist`.
+
+    ⚠️ `modality` тут ОБОВʼЯЗКОВА і мусить збігатися з типом кожної позиції
+    складу: `check_waitlist_consistency` (0103) звіряє `study_type_modality(type)`
+    з колонкою і кидає 23514 `WAITLIST_MODALITY_MISMATCH`. Взяти модальність
+    із кабінету — не «зручність», а єдиний спосіб не розійтися з тим самим
+    мапінгом, що вже живе в `MODALITY_STUDY_TYPE`.
+
+    ⚠️ `room_id` НЕ ставимо, і це рішення. Гард `guard_waitlist_room` вимагає
+    кабінет СВОГО центру, а `check_waitlist_consistency` — ще й збіг
+    модальності; обидва ми б задовольнили. Але жорстко привʼязаний кабінет
+    звужує те, що ми перевіряємо: гонка йде за КАНДИДАТА, а не за кабінет,
+    і зайва привʼязка додала б у сценарій другий гарант, який тут не при
+    справах. Кабінет приходить у `p_booking` кроком запису.
+
+    ⚠️ `status` НЕ задаємо: дефолт `'waiting'` — саме той стан, який CAS у
+    `schedule_from_waitlist_rpc` і застовплює. Написати його руками означало б
+    продублювати дефолт БД у харнесі й не помітити, якщо його колись змінять. */
+export function buildWaitlistFixture({ id, clinicId, modality, study, label }) {
+  return {
+    id, clinic_id: clinicId,
+    patient_name: `${FIXTURE_NAME} ${label}`,
+    patient_phone: FIXTURE_PHONE,
+    studies: [study],
+    modality,
+    duration_min: FIXTURE_DUR_MIN, buffer_time_min: FIXTURE_BUF_MIN,
+  };
+}
+
+/** `p_booking` для `schedule_from_waitlist_rpc`.
+
+    ⚠️ Ключі — рівно ті, які читає тіло RPC (звірено з `pg_get_functiondef`
+    10.09.2026). `scheduled_time` там **text**-колонка і кладеться без касту,
+    тож формат «HH:MM» тримається саме тут; `studies` іде і в `studies`, і в
+    `studies_original` — це робить сама RPC, дублювати не треба. */
+export function buildWaitlistBooking({ roomId, day, time, study }) {
+  return {
+    room_id: roomId,
+    patient_name: `${FIXTURE_NAME} лист-запис`,
+    patient_phone: FIXTURE_PHONE,
+    studies: [study],
+    duration_min: FIXTURE_DUR_MIN,
+    buffer_time_min: FIXTURE_BUF_MIN,
+    scheduled_date: day,
+    scheduled_time: time,
   };
 }
 
@@ -212,6 +278,54 @@ export function verdictInProgressRace(outcomes, { spreadLimitMs = START_SPREAD_L
     noWin: "у кабінет не зайшов НІХТО — фікстура непридатна",
     spreadLimitMs,
   });
+}
+
+/** Вердикт гонки за КАНДИДАТА листа очікування: N паралельних
+    `schedule_from_waitlist_rpc` на ОДНОМУ `p_waitlist_id`.
+
+    ⚠️ ЧОМУ ЦЕ ТА САМА ДРАБИНКА, ЩО Й СЛОТ/КАБІНЕТ, а не форма CAS. Тут
+    невдаха отримує саме ВИНЯТОК (`55000`), а не «`updated=false`»: RPC
+    повертає `uuid`, тож сказати «не вийшло» їй нічим, крім `raise`. Отже
+    `ok` мапиться один-в-один і `verdictExclusive` підходить без натяжки.
+
+    ⚠️ ЩО СТЕРЕЖЕ САМЕ ЦЕЙ ВЕРДИКТ, а що — ні. Він доводить взаємне виключення
+    ЗАСТОВПЛЕННЯ (крок 1 RPC). Він НЕ доводить, що переможець дійсно створив
+    запис черги: вставка (крок 2) може впасти на booking-тригері й відкотити
+    застовплення разом із собою. Тоді переможців буде нуль, а невдахи впадуть
+    із чужим SQLSTATE — і драбинка скаже це вголос («впали НЕ через гонку»),
+    а не видасть за успіх. Перевірку «звʼязок проставлено» робить CLI окремо,
+    бо це вже не про конкурентність. */
+export function verdictWaitlistRace(outcomes, { spreadLimitMs = START_SPREAD_LIMIT_MS } = {}) {
+  const base = verdictExclusive(outcomes, {
+    sqlstate: WAITLIST_STALE_SQLSTATE,
+    guard: "CAS-застовплення в schedule_from_waitlist_rpc",
+    doubleWin: "КАНДИДАТА ЗАПИСАЛИ ДВІЧІ",
+    noWin: "кандидата не записав НІХТО — фікстура або слот непридатні",
+    spreadLimitMs,
+  });
+  /* ⚠️ ДОДАТКОВИЙ ГЕЙТ, ЯКОГО НЕМАЄ В ІНШИХ СЦЕНАРІЯХ, і причина конкретна
+     (знахідка ревʼю Б, с62). `verdictExclusive` міряє одночасність лише
+     розкидом СТАРТІВ, а він ≈0 за побудовою: `startedAt` пишеться до `await`.
+     У `run`/`room` цю дірку закриває КОНТРОЛЬ — він ганяє ТОЙ САМИЙ клієнт
+     тим самим транспортом і перевіряє `windowsOverlap`. Тут клієнт ІНШИЙ
+     (користувацький, з токеном персоналу), тож контроль службової ролі про
+     його паралельність не говорить нічого.
+
+     Що це ловить насправді: якщо N запитів користувацького клієнта пішли
+     ПО ЧЕРЗІ (один сокет, `maxSockets: 1`, оновлення токена всередині
+     supabase-js, пул PostgREST на одне зʼєднання), то «1 удача + N−1 × 55000»
+     зʼявиться і БЕЗ жодного блокування рядка: другий просто прочитає вже
+     закомічений 'scheduled'. Такий самий зелений результат дала б RPC, у якій
+     взаємного виключення немає взагалі. Тому без перетину вікон — не PASS. */
+  if (base.verdict === "PASS" && !windowsOverlap(outcomes)) {
+    return {
+      ...base,
+      verdict: "INCONCLUSIVE",
+      reason: "вікна запитів НЕ перетнулись — виклики пішли по черзі, "
+        + "а послідовний CAS дає ті самі 55000 і без взаємного виключення",
+    };
+  }
+  return base;
 }
 
 /** Вердикт паралельного CAS на ОДНОМУ записі (`queue_set_status_rpc` з

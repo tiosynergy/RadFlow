@@ -7,15 +7,22 @@
      node scripts/race-check.mjs run --run --n 4 --room <uuid>
      node scripts/race-check.mjs room --run                # ПИШЕ: гонка за кабінет
      node scripts/race-check.mjs cas --run                 # ПИШЕ: паралельний CAS
+     node scripts/race-check.mjs waitlist --run            # ПИШЕ: гонка за кандидата
      node scripts/race-check.mjs cleanup --run             # аварійне прибирання
 
-   ТРИ СЦЕНАРІЇ — три РІЗНІ гаранти, і плутати їх не можна:
+   ЧОТИРИ СЦЕНАРІЇ — чотири РІЗНІ гаранти, і плутати їх не можна:
      run  — двоє пишуться в ОДИН слот     → тригер `check_no_overlap` (0064), 23P01;
      room — двох заводять в ОДИН кабінет  → унікальний індекс
             `queue_one_in_progress_per_room` (0018), 23505;
      cas  — двоє міняють статус ОДНОГО запису → `for update` + звірка
             `p_expected` всередині `queue_set_status_rpc` (0075), БЕЗ винятку:
-            невдаха отримує `updated=false` і статус переможця.
+            невдаха отримує `updated=false` і статус переможця;
+     waitlist — двоє записують ОДНОГО кандидата листа → УМОВНИЙ UPDATE
+            (`where … status='waiting'`) всередині `schedule_from_waitlist_rpc`,
+            55000 `WAITLIST_STALE`. ⚠️ Гарант тут написаний РУКАМИ в тілі
+            функції, а не породжений двигуном, як 23P01/23505 — тому зняття
+            однієї умови в `where` не дало б жодної помилки БД, лише двох
+            переможців. Це єдиний сценарій, де гарант можна вимкнути мовчки.
 
    ⚠️ Пише в ПРОД (dev і prod — одна БД). Без `--run` жодного запису:
    `plan` лише знаходить придатний слот і друкує намір. Прибирання йде за
@@ -60,7 +67,9 @@ import { parseArgs, isUuid, loadEnvLocal } from "./integration-admin-lib.mjs";
 import {
   FIXTURE_NAME, FIXTURE_DUR_MIN, FIXTURE_BUF_MIN,
   MODALITY_STUDY_TYPE, buildFixture, clinicDay, CAS_FROM, CAS_TO,
+  buildWaitlistFixture, buildWaitlistBooking,
   verdictSlotRace, verdictControl, verdictInProgressRace, verdictCas,
+  verdictWaitlistRace,
 } from "./race-check-lib.mjs";
 
 function adminClient() {
@@ -191,6 +200,38 @@ async function cleanup(db, ids) {
   return { entries: e.error?.message ?? null, markers: m.error?.message ?? null };
 }
 
+/** Прибирання рядків ЛИСТА ОЧІКУВАННЯ — окремою функцією, а не параметром
+    `cleanup`, свідомо: id черги й id листа живуть у РІЗНИХ таблицях, і одна
+    спільна функція з прапорцем рано чи пізно видалила б не там. Списки теж
+    окремі (`cleanupIds` / `waitlistIds`).
+
+    ⚠️ `scheduled_entry_id` знімати не треба: FK
+    `waitlist_entries_scheduled_entry_id_fkey` — `ON DELETE SET NULL`
+    (заміряно `pg_get_constraintdef` 10.09.2026, не припущено). Саме тому
+    порядок у прибиранні ЗВОРОТНИЙ до інтуїції: спершу ПРОЧИТАТИ
+    `scheduled_entry_id`, і лише потім видаляти. Видаливши рядок черги
+    першим, ми власноруч обнулили б єдиний слід, яким шукається запис,
+    створений у пострілі з ВТРАЧЕНОЮ відповіддю. */
+async function cleanupWaitlist(db, ids) {
+  if (!ids.length) return { entries: null, markers: null };
+  const e = await db.from("waitlist_entries").delete().in("id", ids);
+  const m = await db.from("user_change_markers").delete().in("entity_id", ids);
+  return { entries: e.error?.message ?? null, markers: m.error?.message ?? null };
+}
+
+/** Те саме для листа очікування: «delete не повернув помилки» ≠ «прибрано».
+    Окремий рахунок, бо змішаний із чергою він приховав би, ЯКА саме таблиця
+    лишила слід. */
+async function verifyCleanWaitlist(db, ids) {
+  if (!ids.length) return { entriesLeft: 0, markersLeft: 0 };
+  const e = await db.from("waitlist_entries").select("id").in("id", ids);
+  const m = await db.from("user_change_markers").select("id").in("entity_id", ids);
+  return {
+    entriesLeft: e.error ? `?(${e.error.message})` : (e.data?.length ?? 0),
+    markersLeft: m.error ? `?(${m.error.message})` : (m.data?.length ?? 0),
+  };
+}
+
 /** Перевірка, що прибрано СПРАВДІ (а не «delete не повернув помилки»).
     Урок с36: успіх без перевірки — припущення, не факт. */
 async function verifyClean(db, ids) {
@@ -306,6 +347,139 @@ async function runCas(db, user, { room, study, slot, n, cleanupIds }) {
   return { outcomes, verdict: verdictCas(outcomes, { target: CAS_TO }) };
 }
 
+/** КОНТРОЛЬ саме для сценарію «лист очікування»: N паралельних
+    `schedule_from_waitlist_rpc` на N РІЗНИХ кандидатах у N РІЗНИХ слотів.
+
+    ⚠️ ЧОМУ СПІЛЬНОГО `runControl` ТУТ НЕ ВИСТАЧАЄ (знахідка ревʼю Б, с62).
+    Він вставляє рядки черги НАПРЯМУ службовою роллю. Це інший клієнт, інший
+    транспорт, інші таблиці й інші гарди. Тобто висновок «ті N−1 відмов
+    спричинені конкуренцією» він НЕ ліцензує: не показано, що кожен із тих
+    викликів пройшов би НАОДИНЦІ. У `run`/`room` така ліцензія є саме тому,
+    що контроль — ТА САМА операція в різні слоти.
+
+    Що доводить цей контроль, і кожен пункт тут потрібен:
+      • токен персоналу справді приймається, а RPC доступна цій ролі;
+      • фікстура листа валідна (modality ↔ склад, клініка, дефолт статусу);
+      • `p_booking` несе всі колонки, яких вимагає вставка кроку 2;
+      • КОРИСТУВАЦЬКИЙ клієнт справді стріляє паралельно (`windowsOverlap`).
+
+    ⚠️ Кандидатів і слотів рівно `n`, а не `slots.length`: спільний контроль
+    брав `slots.length`, і при `--n 8` з двома придатними слотами вісім
+    пострілів «контролювались» двома. */
+async function runWaitlistControl(db, user, { room, study, slots, n, cleanupIds, waitlistIds }) {
+  const use = slots.slice(0, n);
+  if (use.length < n) {
+    return { outcomes: [], verdict: { verdict: "FAIL", reason: `придатних слотів ${use.length}, а контролю треба ${n}` } };
+  }
+  const rows = use.map((_, i) => buildWaitlistFixture({
+    id: randomUUID(), clinicId: room.clinic_id, modality: room.modality,
+    study, label: `лист-контроль-${i + 1}`,
+  }));
+  for (const r of rows) {
+    waitlistIds.push(r.id);
+    const ins = await db.from("waitlist_entries").insert(r);
+    if (ins.error) throw new Error(`контрольну фікстуру листа не вставлено: ${ins.error.code} ${ins.error.message}`);
+  }
+
+  const outcomes = await Promise.all(rows.map(async (r, i) => {
+    const booking = buildWaitlistBooking({
+      roomId: room.id, day: use[i].day, time: use[i].time, study,
+    });
+    const startedAt = Date.now();
+    const { data, error } = await user.rpc("schedule_from_waitlist_rpc", {
+      p_waitlist_id: r.id, p_booking: booking,
+    });
+    const entryId = typeof data === "string" ? data : null;
+    return {
+      id: entryId || r.id, entryId,
+      startedAt, finishedAt: Date.now(),
+      ok: !error, sqlstate: error?.code ?? "", message: error?.message ?? "",
+    };
+  }));
+  for (const o of outcomes) if (o.entryId) cleanupIds.push(o.entryId);
+  return { outcomes, verdict: verdictControl(outcomes) };
+}
+
+/** Сценарій «лист очікування»: N паралельних `schedule_from_waitlist_rpc` на
+    ОДНОМУ кандидаті.
+
+    Гарант — умовний UPDATE усередині RPC (`where … status = 'waiting'`):
+    рівно один застовплює кандидата, решта отримують `55000 WAITLIST_STALE`.
+    Фікстуру створює службова роль, стріляє КОРИСТУВАЦЬКИЙ клієнт — RPC
+    службову роль не пускає (`auth_clinic_id()` = NULL → 28000).
+
+    ⚠️ ВСІ N стріляють в ОДИН слот, і це безпечно саме через порядок кроків у
+    RPC: застовплення (крок 1) стоїть ПЕРЕД вставкою (крок 2), тож до вставки
+    доходить лише переможець. Розводити слоти було б помилкою — це замаскувало б
+    зняття умови `status='waiting'`: з різними слотами обидва пройшли б і
+    вердикт лишився б зеленим.
+
+    ⚠️ НАЗВАНА МЕЖА (ревʼю Б, с62): при знятій умові `status='waiting'` обидва
+    проходять крок 1, і «рівно одного переможця» тут утримає вже НЕ той гарант,
+    що перевіряється, а тригер 0064 на спільному слоті — другий отримає 23P01.
+    Вердикт це побачить (`невдахи впали НЕ через гонку` → FAIL), тобто дефект
+    не сховається; але формулювання говоритиме про непридатну фікстуру, а не
+    про зняте застовплення. Єдиний прямий свідок кроку 1 — SQLSTATE невдахи.
+
+    ⚠️ ID ЗАПИСУ ЧЕРГИ НАПЕРЕД НЕВІДОМИЙ — його повертає RPC. Тому список
+    прибирання поповнюється ПІСЛЯ пострілу, і саме тут харнес може лишити
+    слід: якщо відповідь загубилась у мережі, транзакція вже закомічена, а id
+    у нас немає. Єдиний слід — `waitlist_entries.scheduled_entry_id`, і ми
+    ЗАВЖДИ дочитуємо його з БД, а не покладаємось на повернене значення.
+    Це не перестраховка: без цього кроку втрачена відповідь лишила б у проді
+    справжнє бронювання на робочому слоті. */
+async function runWaitlistRace(db, user, { room, study, slot, n, cleanupIds, waitlistIds }) {
+  const wl = buildWaitlistFixture({
+    id: randomUUID(), clinicId: room.clinic_id, modality: room.modality,
+    study, label: "лист",
+  });
+  waitlistIds.push(wl.id);
+  const ins = await db.from("waitlist_entries").insert(wl);
+  if (ins.error) throw new Error(`фікстуру листа не вставлено: ${ins.error.code} ${ins.error.message}`);
+
+  const booking = buildWaitlistBooking({
+    roomId: room.id, day: slot.day, time: slot.time, study,
+  });
+
+  const outcomes = await Promise.all(Array.from({ length: n }, async () => {
+    const startedAt = Date.now();
+    const { data, error } = await user.rpc("schedule_from_waitlist_rpc", {
+      p_waitlist_id: wl.id, p_booking: booking,
+    });
+    return {
+      id: typeof data === "string" ? data : wl.id,
+      entryId: typeof data === "string" ? data : null,
+      startedAt, finishedAt: Date.now(),
+      ok: !error,
+      sqlstate: error?.code ?? "",
+      message: error?.message ?? "",
+    };
+  }));
+
+  // Повернені id — у прибирання ДО будь-яких перевірок.
+  for (const o of outcomes) if (o.entryId) cleanupIds.push(o.entryId);
+
+  /* Дочитуємо звʼязок ЗАВЖДИ. Дві причини, і друга важливіша за першу:
+       • це окрема перевірка кроку 3 RPC («звʼязок проставлено в тій самій
+         транзакції») — вердикт гонки про неї нічого не знає;
+       • це ЄДИНИЙ спосіб знайти запис, створений пострілом із втраченою
+         відповіддю. */
+  const link = await db.from("waitlist_entries")
+    .select("status, scheduled_entry_id").eq("id", wl.id).maybeSingle();
+  const linkedId = link.data?.scheduled_entry_id ?? null;
+  if (linkedId && !cleanupIds.includes(linkedId)) cleanupIds.push(linkedId);
+
+  return {
+    outcomes,
+    verdict: verdictWaitlistRace(outcomes),
+    link: {
+      status: link.error ? `?(${link.error.message})` : (link.data?.status ?? null),
+      entryId: linkedId,
+      matchesWinner: outcomes.some((o) => o.entryId && o.entryId === linkedId),
+    },
+  };
+}
+
 /** Основний сценарій: N пострілів в ОДИН слот. */
 async function runRace(db, { room, study, slot, n, cleanupIds }) {
   const rows = Array.from({ length: n }, (_, i) => buildFixture({
@@ -405,19 +579,59 @@ async function assertRoomFree(db, roomId) {
   }
 }
 
+/** Аварійне прибирання за іменем-маркером фікстури.
+
+    ⚠️ ДВІ ТАБЛИЦІ, і це не симетрія заради симетрії. Сценарій `waitlist`
+    лишає слід у `waitlist_entries`, і поки тут стояла лише черга, «Залишків
+    фікстур немає» було б ХИБНОЮ заявою: рядок листа лишався б назавжди, а
+    команда рапортувала б чисто. Це той самий клас, що вже коштував проєкту
+    кілька разів — перелік місць вужчий за дерево.
+
+    ⚠️ Порядок той самий, що у `finally`: спершу дочитати `scheduled_entry_id`
+    (FK `on delete set null`), потім видаляти. Інакше запис, створений
+    пострілом і не привʼязаний до імені-маркера, лишився б у проді. */
 async function cmdCleanup(db, write) {
-  const { data, error } = await db
+  const q = await db
     .from("queue_entries").select("id, patient_name, scheduled_date, scheduled_time")
     .like("patient_name", `${FIXTURE_NAME}%`);
-  if (error) throw new Error(`не читаються залишки: ${error.message}`);
-  if (!data?.length) { console.log("Залишків фікстур немає."); return; }
-  console.log(`Знайдено ${data.length} залишків:`);
-  data.forEach((r) => console.log(`  ${r.id}  ${r.patient_name}  ${r.scheduled_date} ${r.scheduled_time}`));
+  if (q.error) throw new Error(`не читаються залишки черги: ${q.error.message}`);
+  const w = await db
+    .from("waitlist_entries").select("id, patient_name, status, scheduled_entry_id")
+    .like("patient_name", `${FIXTURE_NAME}%`);
+  if (w.error) throw new Error(`не читаються залишки листа очікування: ${w.error.message}`);
+
+  const qRows = q.data || [];
+  const wRows = w.data || [];
+  if (!qRows.length && !wRows.length) { console.log("Залишків фікстур немає."); return; }
+
+  if (qRows.length) {
+    console.log(`Черга — ${qRows.length}:`);
+    qRows.forEach((r) => console.log(`  ${r.id}  ${r.patient_name}  ${r.scheduled_date} ${r.scheduled_time}`));
+  }
+  if (wRows.length) {
+    console.log(`Лист очікування — ${wRows.length}:`);
+    wRows.forEach((r) => console.log(`  ${r.id}  ${r.patient_name}  ${r.status}`
+      + (r.scheduled_entry_id ? `  → запис ${r.scheduled_entry_id}` : "")));
+  }
   if (!write) { console.log("\nБез --run нічого не видалено."); return; }
-  const ids = data.map((r) => r.id);
+
+  const ids = qRows.map((r) => r.id);
+  for (const r of wRows) {
+    if (r.scheduled_entry_id && !ids.includes(r.scheduled_entry_id)) {
+      ids.push(r.scheduled_entry_id);
+      console.log(`  дочитано запис ${r.scheduled_entry_id} за звʼязком із листа`);
+    }
+  }
   await cleanup(db, ids);
   const left = await verifyClean(db, ids);
-  console.log(`Прибрано. Лишилось: записів ${left.entriesLeft}, позначок ${left.markersLeft}.`);
+  console.log(`Черга прибрана. Лишилось: записів ${left.entriesLeft}, позначок ${left.markersLeft}.`);
+
+  const wIds = wRows.map((r) => r.id);
+  if (wIds.length) {
+    await cleanupWaitlist(db, wIds);
+    const leftW = await verifyCleanWaitlist(db, wIds);
+    console.log(`Лист прибраний. Лишилось: рядків ${leftW.entriesLeft}, позначок ${leftW.markersLeft}.`);
+  }
 }
 
 async function main() {
@@ -428,17 +642,19 @@ async function main() {
   const db = adminClient();
 
   if (cmd === "help" || opts.help) {
-    console.log("race-check.mjs plan | run --run [--n 2..8] [--room <uuid>] | room --run | cas --run | cleanup [--run]");
+    console.log("race-check.mjs plan | run --run [--n 2..8] [--room <uuid>] | room --run | cas --run | waitlist --run | cleanup [--run]");
     console.log("  run  — двоє в ОДИН слот (тригер 0064)");
     console.log("  room — двох в ОДИН кабінет (унікальний індекс 0018)");
     console.log("  cas  — двоє міняють статус ОДНОГО запису (for update у 0075).");
-    console.log("         Потрібен RADFLOW_USER_JWT — токен живого персоналу.");
+    console.log("  waitlist — двоє записують ОДНОГО кандидата листа очікування");
+    console.log("         (умовний UPDATE у schedule_from_waitlist_rpc → 55000 WAITLIST_STALE).");
+    console.log("         cas і waitlist потребують RADFLOW_USER_JWT — токен живого персоналу.");
     console.log("         Сесія у COOKIE (@supabase/ssr), не в localStorage — сніпет у шапці файлу.");
     console.log("         Живе ~годину. Не друкувати, не класти в лог, не слати в переписку.");
     return;
   }
   if (cmd === "cleanup") { await cmdCleanup(db, write); return; }
-  if (!["plan", "run", "room", "cas"].includes(cmd)) throw new Error(`невідома команда «${cmd}»`);
+  if (!["plan", "run", "room", "cas", "waitlist"].includes(cmd)) throw new Error(`невідома команда «${cmd}»`);
 
   const room = await pickRoom(db, opts.room);
   const study = await pickStudy(db, room);
@@ -452,7 +668,7 @@ async function main() {
     console.log(`Дні-кандидати: +${DAYS[0]}..+${DAYS[DAYS.length - 1]}, часи: ${TIMES.join(", ")}.`);
     console.log("Пошук слота вимагає пробного запису — тому `plan` його НЕ робить.");
     console.log("Запуск: node scripts/race-check.mjs run --run");
-    console.log("Інші сценарії: room --run (гонка за кабінет), cas --run (паралельний CAS).");
+    console.log("Інші сценарії: room --run (кабінет), cas --run (CAS), waitlist --run (кандидат листа).");
     return;
   }
 
@@ -473,15 +689,15 @@ async function main() {
      за дизайном. Немає токена — чесний SKIP з інструкцією, а не імітація
      перевірки службовою роллю (вона дала б 42501 і виглядала б як «дефект»). */
   let user = null;
-  if (cmd === "cas") {
+  if (cmd === "cas" || cmd === "waitlist") {
     const jwt = process.env.RADFLOW_USER_JWT;
     if (!jwt) {
-      console.log("\nSKIP: немає RADFLOW_USER_JWT — сценарій CAS не запускався.");
-      console.log("  `queue_set_status_rpc` службову роль НЕ пускає (auth_clinic_id() = NULL → 42501),");
+      console.log(`\nSKIP: немає RADFLOW_USER_JWT — сценарій ${cmd} не запускався.`);
+      console.log("  RPC службову роль НЕ пускає (auth_clinic_id() = NULL → 42501/28000),");
       console.log("  тож без токена живого персоналу перевіряти нічого.");
       console.log("  Токен: сесія у COOKIE `sb-<ref>-auth-token` (@supabase/ssr), НЕ в localStorage.");
       console.log("         Готовий сніпет для консолі браузера — у шапці scripts/race-check.mjs.");
-      console.log("  Запуск: $env:RADFLOW_USER_JWT=\"...\"; node scripts/race-check.mjs cas --run");
+      console.log(`  Запуск: $env:RADFLOW_USER_JWT="..."; node scripts/race-check.mjs ${cmd} --run`);
       console.log("  Токен живе ~годину; у переписку й лог він не потрапляє.");
       return;
     }
@@ -489,6 +705,7 @@ async function main() {
   }
 
   const cleanupIds = [];
+  const waitlistIds = [];
   let code = 0;
   try {
     const { slots, tried } = await findSlots(db, room, study, {
@@ -514,6 +731,53 @@ async function main() {
       console.log(`  → ${race.verdict.verdict}: ${race.verdict.reason}`);
       console.log(`  розкид стартів: ${race.verdict.spread} мс`);
       code = race.verdict.verdict === "PASS" ? 0 : (race.verdict.verdict === "FAIL" ? 1 : 2);
+    } else if (cmd === "waitlist") {
+      /* ⚠️ ВЛАСНИЙ КОНТРОЛЬ, ПОВЕРХ спільного (знахідка ревʼю Б, с62).
+         Спільний контроль вище доводить придатність слотів і паралельність
+         СЛУЖБОВОГО клієнта. Про користувацький клієнт, токен персоналу,
+         доступність RPC і валідність фікстури листа він не говорить нічого —
+         а без цього «N−1 × 55000» не можна приписати конкуренції. */
+      const wlControl = await runWaitlistControl(db, user, {
+        room, study, slots, n, cleanupIds, waitlistIds,
+      });
+      if (wlControl.outcomes.length) {
+        printOutcomes(`КОНТРОЛЬ ЛИСТА (${n} × RPC на РІЗНИХ кандидатах у РІЗНІ слоти)`, wlControl.outcomes);
+      }
+      console.log(`  → ${wlControl.verdict.verdict}: ${wlControl.verdict.reason}\n`);
+      if (wlControl.verdict.verdict !== "PASS") {
+        /* ⚠️ Без `return`: він вискочив би повз `process.exit(code)` після
+           `finally`, і процес завершився б нулем — тобто «контроль не
+           пройшов» читалось би як успіх. */
+        console.log("Гонку НЕ запускаємо: контроль листа не пройшов, її результат був би неінтерпретований.");
+        code = 2;
+      } else {
+        const race = await runWaitlistRace(db, user, {
+          room, study, slot: slots[0], n, cleanupIds, waitlistIds,
+        });
+        printOutcomes(`ГОНКА ЗА КАНДИДАТА (${n} × schedule_from_waitlist_rpc на ОДНОМУ кандидаті)`, race.outcomes);
+        console.log(`  → ${race.verdict.verdict}: ${race.verdict.reason}`);
+        console.log(`  розкид стартів: ${race.verdict.spread} мс`);
+        /* Крок 3 RPC — окремим рядком, бо вердикт гонки про нього не знає.
+           «Кандидат scheduled, звʼязок веде на запис переможця» — це і є
+           атомарність кроків 1–3, заявлена в тілі функції. */
+        console.log(`  кандидат: status=${race.link.status ?? "?"} · scheduled_entry_id=`
+          + `${race.link.entryId ? "є" : "НЕМАЄ"} · збігається з переможцем: `
+          + `${race.link.matchesWinner ? "так" : "НІ"}`);
+        const linkOk = race.link.status === "scheduled" && race.link.entryId && race.link.matchesWinner;
+        if (!linkOk && race.verdict.verdict === "PASS") {
+          console.log("  ⚠️ Гонка чиста, але звʼязок кандидата з записом НЕ зійшовся — крок 3 під питанням.");
+        }
+        /* ⚠️ `PASS && !linkOk` — це 2 (НЕ ДОВЕДЕНО), а не 1 (ДОВЕДЕНИЙ ДЕФЕКТ)
+           — знахідка ревʼю Б, с62. Перша редакція давала тут 1, а `linkOk`
+           хибніє і від збою ДІАГНОСТИЧНОГО читання (`status` стає рядком
+           `?(…)`), і від зміни форми відповіді PostgREST на скалярний `uuid`
+           (тоді `entryId` порожній у ВСІХ пострілів). Жодне з двох нічого не
+           каже про взаємне виключення, а «1» у цьому файлі скрізь означає
+           доведений дефект. */
+        code = race.verdict.verdict === "FAIL" ? 1
+          : race.verdict.verdict === "INCONCLUSIVE" ? 2
+          : (linkOk ? 0 : 2);
+      }
     } else if (cmd === "cas") {
       const race = await runCas(db, user, { room, study, slot: slots[0], n, cleanupIds });
       printCasOutcomes(`ПАРАЛЕЛЬНИЙ CAS (${n} × ${CAS_FROM} → ${CAS_TO} на ОДНОМУ записі)`, race.outcomes);
@@ -530,12 +794,82 @@ async function main() {
   } finally {
     /* Прибирання і в разі падіння: недоприбраний запис блокує РЕАЛЬНИЙ слот.
        Повторний delete по вже видалених id — безпечний no-op. */
-    await cleanup(db, cleanupIds);
-    const left = await verifyClean(db, cleanupIds);
+    /* ⚠️ КОЖЕН КРОК — У СВОЄМУ try (знахідка ревʼю А, с62). Блок `finally`
+       був прямою послідовністю: відмова мережі на першому ж `await` кидала
+       виняток, решта кроків не виконувалась узагалі, і фікстура листа
+       лишалась у проді БЕЗ жодного рядка-підказки. Тепер кожен крок або
+       робить своє, або гучно каже, що не зміг. */
+    const step = async (what, fn) => {
+      try { return await fn(); }
+      catch (e) { console.log(`⚠️ крок прибирання «${what}» упав: ${e.message}`); code = code || 1; return null; }
+    };
+
+    /* ⚠️ ПОРЯДОК: спершу дочитати звʼязок, і лише потім видаляти. FK
+       `scheduled_entry_id` — `ON DELETE SET NULL`, тож видалення черги
+       ПЕРШИМ обнулило б єдиний слід до запису, чия відповідь загубилась.
+       У щасливому шляху `runWaitlistRace` уже дочитав його; тут — на випадок
+       падіння ДО того місця (наприклад мережа впала посеред `Promise.all`).
+
+       ⚠️ ПОМИЛКУ ЦЬОГО ЧИТАННЯ ПЕРЕВІРЯЄМО (знахідка ревʼю А, с62). Перша
+       редакція брала `link.data || []` і мовчки йшла далі: при збою читання
+       нічого не додавалось у список, `verifyClean` рахував ЛИШЕ відомі id і
+       чесно друкував «Лишилось: записів 0» — ХИБНА заява про чистоту, після
+       якої наступний крок видаляв рядок листа разом із єдиним слідом. */
+    let linkReadOk = true;
+    if (waitlistIds.length) {
+      const link = await step("дочитати звʼязок кандидата", () =>
+        db.from("waitlist_entries").select("scheduled_entry_id").in("id", waitlistIds));
+      if (!link || link.error) {
+        linkReadOk = false;
+        console.log(`⚠️ НЕ вдалося дочитати scheduled_entry_id (${link?.error?.message ?? "виняток"}).`);
+      } else {
+        for (const r of link.data || []) {
+          if (r.scheduled_entry_id && !cleanupIds.includes(r.scheduled_entry_id)) {
+            cleanupIds.push(r.scheduled_entry_id);
+            console.log(`  дочитано осиротілий запис ${r.scheduled_entry_id} — у прибирання`);
+          }
+        }
+      }
+    }
+    const delQ = await step("видалити записи черги", () => cleanup(db, cleanupIds));
+    /* ⚠️ Помилку видалення ПОЗНАЧОК друкуємо разом зі списком id: рядок-батько
+       вже видалено, тож `cleanup --run` цю позначку за іменем НЕ знайде
+       (знахідка ревʼю А). Явний список — єдине, що лишає її знімабельною. */
+    if (delQ?.markers) {
+      console.log(`⚠️ позначки НЕ знято (${delQ.markers}). Явний список entity_id: ${cleanupIds.join(", ")}`);
+      code = code || 1;
+    }
+    const left = (await step("звірити прибирання черги", () => verifyClean(db, cleanupIds)))
+      ?? { entriesLeft: "?", markersLeft: "?" };
     console.log(`\nПрибрано ${cleanupIds.length} id. Лишилось: записів ${left.entriesLeft}, позначок ${left.markersLeft}.`);
     if (left.entriesLeft !== 0 || left.markersLeft !== 0) {
       console.log("⚠️ Залишки! Добити: node scripts/race-check.mjs cleanup --run");
       code = code || 1;
+    }
+    if (waitlistIds.length) {
+      /* ⚠️ РЯДОК ЛИСТА НЕ ВИДАЛЯЄМО, ЯКЩО ЗВʼЯЗОК НЕ ПРОЧИТАНО. Він — єдиний
+         покажчик на запис черги, створений пострілом із втраченою відповіддю.
+         Видалити його наосліп означає власноруч зробити той запис
+         незнаходжуваним. Краще лишити фікстуру (її знайде `cleanup --run` за
+         іменем) і сказати про це вголос. */
+      if (!linkReadOk) {
+        console.log(`⚠️ Рядок листа НЕ видалено навмисно: ${waitlistIds.join(", ")}`);
+        console.log("   Спершу прогляньте scheduled_entry_id, потім: node scripts/race-check.mjs cleanup --run");
+        code = code || 1;
+      } else {
+        const delW = await step("видалити рядки листа", () => cleanupWaitlist(db, waitlistIds));
+        if (delW?.markers) {
+          console.log(`⚠️ позначки листа НЕ знято (${delW.markers}). Явний список entity_id: ${waitlistIds.join(", ")}`);
+          code = code || 1;
+        }
+        const leftW = (await step("звірити прибирання листа", () => verifyCleanWaitlist(db, waitlistIds)))
+          ?? { entriesLeft: "?", markersLeft: "?" };
+        console.log(`Лист очікування: прибрано ${waitlistIds.length} id. Лишилось: рядків ${leftW.entriesLeft}, позначок ${leftW.markersLeft}.`);
+        if (leftW.entriesLeft !== 0 || leftW.markersLeft !== 0) {
+          console.log("⚠️ Залишки в листі очікування! Добити: node scripts/race-check.mjs cleanup --run");
+          code = code || 1;
+        }
+      }
     }
   }
   process.exit(code);
