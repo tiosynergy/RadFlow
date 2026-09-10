@@ -397,6 +397,34 @@ async function runWaitlistControl(db, user, { room, study, slots, n, cleanupIds,
     };
   }));
   for (const o of outcomes) if (o.entryId) cleanupIds.push(o.entryId);
+
+  /* ⚠️ ПРИБИРАЄМО ЗА СОБОЮ ОДРАЗУ, а не в `finally` — і це не оптимізація, а
+     ПОМИЛКА, знайдена ПЕРШИМ ЖЕ живим прогоном (с62). Контроль створює РЕАЛЬНІ
+     записи черги в тих самих слотах, які потім бере гонка. Поки вони висіли до
+     кінця прогону, обидва постріли гонки отримували `23P01 OVERLAP` від тригера
+     0064 — тобто сценарій падав на СВОЇХ ЖЕ фікстурах.
+
+     Вердикт при цьому не збрехав: він сказав «кандидата не записав НІХТО —
+     фікстура або слот непридатні» і назвав SQLSTATE. Саме так і має поводитись
+     драбинка — але прогін не доводив нічого. Той самий порядок, що в
+     `runControl` і `runRace`: створив → вистрілив → прибрав.
+
+     Порядок усередині теж важливий: спершу дочитати звʼязок (FK
+     `on delete set null`), потім видалити чергу, потім лист. */
+  const link = await db.from("waitlist_entries")
+    .select("scheduled_entry_id").in("id", rows.map((r) => r.id));
+  if (!link.error) {
+    for (const r of link.data || []) {
+      if (r.scheduled_entry_id && !cleanupIds.includes(r.scheduled_entry_id)) {
+        cleanupIds.push(r.scheduled_entry_id);
+      }
+    }
+  }
+  const ids = outcomes.map((o) => o.entryId).filter(Boolean)
+    .concat((link.data || []).map((r) => r.scheduled_entry_id).filter(Boolean));
+  if (ids.length) await cleanup(db, [...new Set(ids)]);
+  await cleanupWaitlist(db, rows.map((r) => r.id));
+
   return { outcomes, verdict: verdictControl(outcomes) };
 }
 
