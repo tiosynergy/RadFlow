@@ -31,6 +31,7 @@
 // ============================================================
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { verdictOf, finishStand } from "./lib/falsify-verdict.mjs";
 
 const FILES = {
@@ -190,6 +191,66 @@ const MUTATIONS = [
     from: "  } else if (add.sqlstate !== CASE_NOT_OPEN_SQLSTATE) {",
     to: "  } else if (false && add.sqlstate !== CASE_NOT_OPEN_SQLSTATE) {",
   },
+  /* ---------------------------------------- сценарій «аварійна зупинка» (с63) */
+  {
+    /* ⚠️ ГОЛОВНА МУТАЦІЯ СЦЕНАРІЮ. 40P01 — ЄДИНИЙ спостережуваний наслідок
+       зламаної дисципліни порядку локів; знявши цей гейт, ми отримаємо
+       PASS на прогоні, який щойно спіймав дедлок у проді. */
+    id: "M17", file: "lib", green: false,
+    expect: /40P01 хоч в одного → FAIL з назвою учасника/,
+    what: "дедлок більше не вважається дефектом",
+    from: "  const dead = all.filter((o) => o.sqlstate === DEADLOCK_SQLSTATE);",
+    to: "  const dead = all.filter((o) => false && o.sqlstate === DEADLOCK_SQLSTATE);",
+  },
+  {
+    id: "M18", file: "lib", green: false,
+    expect: /ОБИДВІ зупинки заявили той самий кабінет/,
+    what: "подвійна зупинка одного кабінету більше не дефект",
+    from: "  const twice = [...claims].filter(([, who]) => who.length > 1);",
+    to: "  const twice = [...claims].filter(([, who]) => who.length > 2);",
+  },
+  {
+    /* Найкоштовніший гейт після дедлока: без нього вердикт судить за
+       ВІДПОВІДЯМИ RPC, а інваріант 0017 — про РЯДКИ в таблиці. */
+    id: "M19", file: "lib", green: false,
+    expect: /в базі ДВА активні інциденти → FAIL/,
+    what: "стан у базі більше не перевіряється — судимо за відповідями RPC",
+    from: "  const wrongDb = rooms.filter((r) => activeByRoom[r] !== 1);",
+    to: "  const wrongDb = rooms.filter((r) => false && activeByRoom[r] !== 1);",
+  },
+  {
+    /* ⚠️ Саме цей гейт лишився ЄДИНИМ доказом конкуренції після того, як
+       «слід зіткнення» визнано порожнім. Знявши його, сценарій починає
+       видавати PASS за послідовний прогін. */
+    id: "M20", file: "lib", green: false,
+    expect: /послідовний прогін із «слідами зіткнення» → INCONCLUSIVE/,
+    what: "перетин вікон більше не потрібен — послідовний прогін дає PASS",
+    from: "  if (!windowsOverlap(all)) {",
+    to: "  if (false && !windowsOverlap(all)) {",
+  },
+  {
+    id: "M21", file: "lib", green: false,
+    expect: /невдахи фінішували РАНІШЕ за переможця → INCONCLUSIVE/,
+    what: "слід чекання на локу більше не вимагається",
+    from: "  if (empty.length && early.length === empty.length) {",
+    to: "  if (false && empty.length && early.length === empty.length) {",
+  },
+  {
+    id: "M22", file: "lib", green: false,
+    expect: /«поломка» впала ЧУЖИМ кодом \(42501\) → FAIL/,
+    what: "будь-яка відмова «поломки» зараховується як програш індексу 0017",
+    from: "  if (!breakdown.ok && breakdown.sqlstate !== INCIDENT_TAKEN_SQLSTATE) {",
+    to: "  if (false && !breakdown.ok && breakdown.sqlstate !== INCIDENT_TAKEN_SQLSTATE) {",
+  },
+  {
+    /* Повернення до першої редакції: `claims.get(r)?.push(…)` мовчки ковтав
+       кабінет, якого не просили. */
+    id: "M23", file: "lib", green: false,
+    expect: /зупинено кабінет, якого НЕ просили → FAIL/,
+    what: "кабінет поза набором мовчки випадає з підрахунку",
+    from: "    else strangers.push(`${who}→${r}`);",
+    to: "    else if (false) strangers.push(`${who}→${r}`);",
+  },
   /* ⚠️ РЕФАКТОРНІ КОНТРОЛІ. Без них «усе червоніє» неможливо відрізнити від
      «сторож надчутливий»: спек, який червоніє на будь-яку правку, не сторож,
      а сигналізація на вітер. */
@@ -205,11 +266,21 @@ const MUTATIONS = [
     from: 'patient_name: `${FIXTURE_NAME} лист-запис`,',
     to: 'patient_name: `${FIXTURE_NAME} запис-з-листа`,',
   },
+  {
+    /* Порядок учасників у зведеному масиві семантично байдужий:
+       `startSpreadMs` бере min/max, `windowsOverlap` сортує сам. Якщо ця
+       перестановка щось червонить — сторожі тримаються за порядок масиву,
+       а не за інваріант. */
+    id: "T3", file: "lib", green: true,
+    what: "переставлено порядок учасників у зведеному масиві аварійної зупинки",
+    from: "  const all = [...stops, breakdown];",
+    to: "  const all = [breakdown, ...stops];",
+  },
 ];
 
 /* ⚠️ Кожна мутація, яка МУСИТЬ почервоніти, називає ТЕСТ-СТОРОЖА. Без цього
    вердикт спирався б на «набір червоний», байдуже який тест — а в цьому спеку
-   38 тестів про пʼять різних сценаріїв, і зачепити сусіда тут дуже легко. */
+   81 тест про ШІСТЬ різних сценаріїв, і зачепити сусіда тут дуже легко. */
 for (const m of MUTATIONS) {
   const bad =
     (!m.green && !m.expect) ? "мутація мусить червоніти, але не називає сторожа (`expect`)"
@@ -228,7 +299,7 @@ for (const m of MUTATIONS) {
    червону позицію: перевести її в зелені і зняти сторожа. Мутація при цьому
    далі застосовується, набір лишається зеленим, рядок друкує ✅, слідів немає.
    Тому кількість адресних — константа. */
-const EXPECTED_RED = 16;   // +M13..M16 (с62): сценарій «кейс»
+const EXPECTED_RED = 23;   // +M17..M23 (с63): сценарій «аварійна зупинка»
 const redCount = MUTATIONS.filter((m) => !m.green).length;
 if (redCount !== EXPECTED_RED) {
   console.error(`⛔ ІНВЕНТАР БРЕШЕ: адресних мутацій ${redCount}, а очікується ${EXPECTED_RED}. `
@@ -236,13 +307,44 @@ if (redCount !== EXPECTED_RED) {
   process.exit(1);
 }
 
+/* ⚠️ ЗАМОК. ЗАПЛАЧЕНО ПОМИЛКОЮ В с63, і вона варта окремого абзацу.
+
+   Стенд працює тим, що ПИШЕ мутацію в БОЙОВИЙ файл і повертає оригінал
+   назад. Поки він біжить, файл на диску — не той, що в редакторі. У с63 я
+   правив `race-check-lib.mjs` рівно тоді, коли стенд крутив по ньому свої
+   мутації: `orig` було знято з уже мутованої копії, і `restore()` чесно
+   повернув… мутацію T3 (`[breakdown, ...stops]`). Вона пролізла б у коміт —
+   цього разу нешкідлива саме тому, що T3 і задумана як рефакторний контроль.
+   Наступного разу пощастило б менше: те саме сталося б із будь-якою M-мутацією,
+   тобто в проді опинився б вердикт зі знятим гардом, а стенд рапортував би ✅.
+
+   Слід був один-єдиний — рядок «ЯКІР НЕ УНІКАЛЬНИЙ» у T3. Тобто аварія
+   виявлялась випадково.
+
+   Замок не вміє зупинити редактор — але робить стан ВИДИМИМ: поки файл
+   лежить, файли мутуються, і другий стенд не стартує поверх першого.
+   Плюс друкуємо md5 до і після: розбіжність означає, що під час прогону
+   у файл писав хтось іще. */
+const LOCK = ".falsify-race-check.lock";
+if (existsSync(LOCK)) {
+  console.error(`⛔ ${LOCK} існує — стенд уже біжить (або впав, не прибравши замок).`);
+  console.error("   Поки він біжить, файли МУТОВАНІ: не редагуйте їх і не запускайте другий стенд.");
+  console.error(`   Якщо попередній прогін точно мертвий: перевірте \`git diff\` і видаліть ${LOCK}.`);
+  process.exit(2);
+}
+
 const orig = {};
+const md5 = (s) => createHash("md5").update(s).digest("hex").slice(0, 12);
 for (const [k, p] of Object.entries(FILES)) orig[k] = readFileSync(p, "utf8");
+writeFileSync(LOCK, `${process.pid} ${new Date().toISOString()}\n`
+  + Object.entries(FILES).map(([k, p]) => `${k} ${p} ${md5(orig[k])}`).join("\n") + "\n");
+
 let restored = false;
 function restore() {
   if (restored) return;
   restored = true;
   for (const [k, p] of Object.entries(FILES)) writeFileSync(p, orig[k]);
+  if (existsSync(LOCK)) unlinkSync(LOCK);
 }
 process.on("SIGINT", () => { restore(); process.exit(130); });
 process.on("SIGTERM", () => { restore(); process.exit(143); });
@@ -274,6 +376,8 @@ function run() {
 
 const lines = [];
 let addressedOk = 0;
+/* Файли, які змінилися під нами ПОСЕРЕД прогону (див. блок «ЗАМОК» вище). */
+const driftSeen = [];
 try {
   const base = run();
   lines.push(`# Стенд фальсифікації вердиктів харнеса конкурентності (с62)\n`);
@@ -286,6 +390,14 @@ try {
     for (const m of MUTATIONS) {
       const path = FILES[m.file];
       const src = readFileSync(path, "utf8");
+      /* ⚠️ ДРЕЙФ ЛОВИМО САМЕ ТУТ. `src` читається наново на кожній мутації,
+         тож розбіжність із `orig` означає, що між ітераціями у файл писав
+         хтось іще (редактор, друга сесія). Далі стенд працює вже з ЧУЖИМ
+         кодом, а після себе відновить `orig` — тобто чужу правку затре, а
+         власну мутацію може лишити. Це і сталося в с63. */
+      if (md5(src) !== md5(orig[m.file]) && !driftSeen.includes(m.file)) {
+        driftSeen.push(m.file);
+      }
       const edits = m.edits ?? [{ from: m.from, to: m.to }];
       let mutated = src, bad = "";
       for (const e of edits) {
@@ -319,6 +431,15 @@ try {
   }
 } finally {
   restore();
+  /* ⚠️ ЗВІРЯТИ ФАЙЛ ПІСЛЯ `restore()` — БЕЗГЛУЗДО, і перша редакція цього
+     блоку саме це й робила: порівнювала md5 з тим, що сама щойно записала.
+     Такий «сторож» зелений завжди. Дрейф ловиться ТАМ, ДЕ ВІН ВИДИМИЙ —
+     усередині циклу мутацій, де файл читається наново (`driftSeen`). */
+  if (driftSeen.length) {
+    lines.push(`\n⛔ ФАЙЛ ЗМІНЮВАВСЯ ПІД ЧАС ПРОГОНУ (${driftSeen.join(", ")}). `
+      + "У нього писав хтось паралельно — перевірте `git diff`: у дереві може "
+      + "лишитись чужа мутація, а результати вище знято з іншого коду.");
+  }
   if (existsSync(REPORT)) unlinkSync(REPORT);
   const verdict = verdictOf(lines, MUTATIONS.length);
   lines.push(`\n${verdict.summary}`);
@@ -326,8 +447,11 @@ try {
   writeFileSync(OUT, lines.join("\n") + "\n");
   console.log(lines.join("\n"));
   console.log(`\nЗвіт: ${OUT}. Файли відновлено.`);
+  /* ⚠️ ДРЕЙФ ВАЛИТЬ СТЕНД, а не «згадується в звіті». Прогін, під час якого
+     файл змінювався, знято з коду, якого вже немає — його ✅ нічого не
+     доводить, а мовчазне «зелено» тут дорожче за будь-яку мутацію. */
   finishStand({
-    ok: !(!verdict.ok),
+    ok: verdict.ok === true && driftSeen.length === 0,
     red: "\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — причина в таблиці вище.",
   });
 }

@@ -16,6 +16,7 @@ import {
   FIXTURE_DUR_MIN, FIXTURE_BUF_MIN,
   verdictCaseCancelRace, buildCaseFixture, buildCaseStep,
   CASE_NOT_OPEN_SQLSTATE, CASE_ACTIVE_STATUSES,
+  verdictEmergencyStop, DEADLOCK_SQLSTATE, INCIDENT_TAKEN_SQLSTATE,
 } from "../scripts/race-check-lib.mjs";
 
 /* ⚠️ ЗНАЙДЕНО СТЕНДОМ `falsify-race-check` (с62), і це дефект САМИХ ТЕСТІВ,
@@ -46,6 +47,16 @@ describe("SQLSTATE-константи припнуті до заміряних �
   });
   it("кейс не активний — 22023 з add_case_step_rpc", () => {
     expect(CASE_NOT_OPEN_SQLSTATE).toBe("22023");
+  });
+  it("дедлок — 40P01, і це ЄДИНИЙ спостережуваний наслідок зламаного порядку локів", () => {
+    expect(DEADLOCK_SQLSTATE).toBe("40P01");
+  });
+  /* ⚠️ Літерал збігається з `IN_PROGRESS_SQLSTATE`, і саме тому пін окремий:
+     за ними стоять РІЗНІ індекси (0017 проти 0018). Звести їх до однієї
+     константи означало б, що правка одного сценарію нечутно перевизначає
+     очікування іншого. */
+  it("кабінет уже має простій — 23505 від індексу 0017 (НЕ 0018)", () => {
+    expect(INCIDENT_TAKEN_SQLSTATE).toBe("23505");
   });
   /* ⚠️ Цей список — дзеркало ТРЬОХ місць у БД одночасно
      (`check_case_distinct_room`, `check_case_no_time_overlap`,
@@ -552,5 +563,237 @@ describe("buildFixture — id приходить ззовні, бо він же 
       label: "l", study: { dur: 20, type: "МРТ", price: 1, region: "r", contrast: false },
     });
     expect(row.duration_min + row.buffer_time_min).toBe(25);
+  });
+});
+
+/* ------------------------------------------------------- аварійна зупинка */
+
+/* ⚠️ ВХОДИ — ЛІТЕРАЛИ, а не константи модуля (правило 2 з с50, підтверджене
+   стендом у с62). Подати `DEADLOCK_SQLSTATE` і на вхід, і в очікування
+   означало б порівняти значення САМЕ ІЗ СОБОЮ: мутація «40P01 → 23P01»
+   лишила б увесь набір зеленим. Константи припнуті окремо, вище. */
+const R_A = "room-A";
+const R_B = "room-B";
+
+function stopShot(id: string, rooms: string[], o: {
+  startedAt?: number; ms?: number; sqlstate?: string; asked?: string[];
+} = {}) {
+  const startedAt = o.startedAt ?? 1000;
+  const sqlstate = o.sqlstate ?? "";
+  return {
+    id, ok: !sqlstate, rooms, asked: o.asked ?? [R_A, R_B],
+    sqlstate, message: sqlstate ? `помилка ${sqlstate}` : "",
+    startedAt, finishedAt: startedAt + (o.ms ?? 40),
+  };
+}
+
+function brkShot(o: {
+  ok?: boolean; sqlstate?: string; room?: string; startedAt?: number; ms?: number;
+} = {}) {
+  const ok = o.ok ?? false;
+  const sqlstate = ok ? "" : (o.sqlstate ?? "23505");
+  const startedAt = o.startedAt ?? 1000;
+  return {
+    id: "поломка(B)", ok, room: o.room ?? R_B,
+    sqlstate, message: sqlstate ? `помилка ${sqlstate}` : "",
+    startedAt, finishedAt: startedAt + (o.ms ?? 70),
+  };
+}
+
+/** Здорова сцена: зупинка[A,B] забрала обидва кабінети, зупинка[B,A] не
+    забрала нічого і чекала на локу, «поломка» програла індексу 0017. */
+function healthy() {
+  return {
+    stops: [
+      stopShot("зупинка[A,B]", [R_A, R_B], { ms: 40 }),
+      stopShot("зупинка[B,A]", [], { ms: 55 }),
+    ],
+    breakdown: brkShot({ ms: 70 }),
+    rooms: [R_A, R_B],
+    activeByRoom: { [R_A]: 1, [R_B]: 1 },
+  };
+}
+
+describe("verdictEmergencyStop — дві аварійні зупинки навхрест", () => {
+  it("дедлоку немає, по одному інциденту на кабінет, невдахи чекали → PASS", () => {
+    const v = verdictEmergencyStop(healthy());
+    expect(v.verdict).toBe("PASS");
+    /* PASS тут свідомо слабший за решту сценаріїв — і мусить це говорити. */
+    expect(v.reason).toContain("НЕ доказ дисципліни порядку");
+  });
+
+  it("40P01 хоч в одного → FAIL з назвою учасника", () => {
+    const s = healthy();
+    s.stops[1] = stopShot("зупинка[B,A]", [], { ms: 55, sqlstate: "40P01" });
+    const v = verdictEmergencyStop(s);
+    expect(v.verdict).toBe("FAIL");
+    expect(v.reason).toContain("ДЕДЛОК");
+    expect(v.ids).toEqual(["зупинка[B,A]"]);
+  });
+
+  it("дедлок важливіший за недоведену одночасність: великий розкид усе одно FAIL", () => {
+    const s = healthy();
+    s.stops[1] = stopShot("зупинка[B,A]", [], { startedAt: 9000, ms: 20, sqlstate: "40P01" });
+    const v = verdictEmergencyStop(s);
+    expect(v.verdict).toBe("FAIL");
+    expect(v.reason).toContain("ДЕДЛОК");
+  });
+
+  it("дедлок у «поломки» теж ловиться — вона учасник, а не діагностика", () => {
+    const s = healthy();
+    s.breakdown = brkShot({ sqlstate: "40P01", ms: 70 });
+    const v = verdictEmergencyStop(s);
+    expect(v.verdict).toBe("FAIL");
+    expect(v.ids).toEqual(["поломка(B)"]);
+  });
+
+  it("ОБИДВІ зупинки заявили той самий кабінет → FAIL: індекс 0017 не втримав", () => {
+    const s = healthy();
+    s.stops[1] = stopShot("зупинка[B,A]", [R_B], { ms: 55 });
+    s.activeByRoom = { [R_A]: 1, [R_B]: 2 };
+    const v = verdictEmergencyStop(s);
+    expect(v.verdict).toBe("FAIL");
+    expect(v.reason).toContain("ЗУПИНЕНО ДВІЧІ");
+  });
+
+  /* ⚠️ Кабінет, якого не просили, — окремий дефект, а не привід мовчки його
+     пропустити: він означає, що RPC зупинила НЕ ТЕ, що їй передали. */
+  it("зупинено кабінет, якого НЕ просили → FAIL, а не тихий пропуск", () => {
+    const s = healthy();
+    s.stops[1] = stopShot("зупинка[B,A]", ["room-C"], { ms: 55 });
+    const v = verdictEmergencyStop(s);
+    expect(v.verdict).toBe("FAIL");
+    expect(v.reason).toContain("якого не просили");
+  });
+
+  it("«поломка» ПРОЙШЛА на кабінеті, який уже зупинили → FAIL (той самий інваріант)", () => {
+    const s = healthy();
+    s.breakdown = brkShot({ ok: true, ms: 70 });
+    const v = verdictEmergencyStop(s);
+    expect(v.verdict).toBe("FAIL");
+    expect(v.reason).toContain("ЗУПИНЕНО ДВІЧІ");
+  });
+
+  /* ⚠️ Стан судимо ЗА БАЗОЮ, а не за відповідями RPC. Відповіді можуть бути
+     бездоганні, а рядків у базі — два: саме це і є дефект індексу 0017. */
+  it("відповіді чисті, а в базі ДВА активні інциденти → FAIL", () => {
+    const s = healthy();
+    s.activeByRoom = { [R_A]: 1, [R_B]: 2 };
+    const v = verdictEmergencyStop(s);
+    expect(v.verdict).toBe("FAIL");
+    expect(v.reason).toContain("не по одному активному інциденту");
+    expect(v.ids).toEqual([R_B]);
+  });
+
+  it("кабінет узагалі не зупинено (у базі 0) → FAIL, а не PASS «бо подвійного нема»", () => {
+    const s = healthy();
+    s.activeByRoom = { [R_A]: 1, [R_B]: 0 };
+    const v = verdictEmergencyStop(s);
+    expect(v.verdict).toBe("FAIL");
+  });
+
+  it("інцидент у базі є, але його не заявив ніхто → FAIL: сцена не наша", () => {
+    const s = healthy();
+    s.stops[0] = stopShot("зупинка[A,B]", [R_A], { ms: 40 });
+    const v = verdictEmergencyStop(s);
+    expect(v.verdict).toBe("FAIL");
+    expect(v.reason).toContain("інцидент чужий");
+  });
+
+  it("зупинка впала НЕ дедлоком (42501) → FAIL: гард ролі, а не гонка", () => {
+    const s = healthy();
+    s.stops[1] = stopShot("зупинка[B,A]", [], { ms: 55, sqlstate: "42501" });
+    const v = verdictEmergencyStop(s);
+    expect(v.verdict).toBe("FAIL");
+    expect(v.reason).toContain("зупинка впала НЕ через гонку");
+  });
+
+  it("«поломка» впала ЧУЖИМ кодом (42501) → FAIL, хоча падати їй можна", () => {
+    const s = healthy();
+    s.breakdown = brkShot({ sqlstate: "42501", ms: 70 });
+    const v = verdictEmergencyStop(s);
+    expect(v.verdict).toBe("FAIL");
+    expect(v.reason).toContain("«поломка» впала НЕ через гонку");
+  });
+
+  it("менше двох зупинок — гонки не було", () => {
+    const s = healthy();
+    s.stops = [s.stops[0]];
+    expect(verdictEmergencyStop(s).verdict).toBe("FAIL");
+  });
+
+  it("розкид стартів більший за межу → INCONCLUSIVE", () => {
+    const s = healthy();
+    s.stops[1] = stopShot("зупинка[B,A]", [], { startedAt: 4000, ms: 55 });
+    s.breakdown = brkShot({ startedAt: 4000, ms: 70 });
+    const v = verdictEmergencyStop(s);
+    expect(v.verdict).toBe("INCONCLUSIVE");
+    expect(v.reason).toContain("розкид стартів");
+  });
+
+  /* ⚠️ ГОЛОВНИЙ ТЕСТ ЦЬОГО ФАЙЛА, і він фіксує рішення, а не поведінку.
+     Перша редакція драбинки мала гейт «слід зіткнення»: 23505 у «поломки»
+     або неповний `stopped_rooms`. Обидва — порожні: ПОСЛІДОВНИЙ прогін дає
+     їх один-в-один. Сцена нижче — саме послідовна (вікна не перетинаються),
+     а «сліди» на місці. PASS тут означав би той самий вакуум, через який
+     заблоковано сценарій `case`. */
+  it("послідовний прогін із «слідами зіткнення» → INCONCLUSIVE, а не PASS", () => {
+    const v = verdictEmergencyStop({
+      stops: [
+        stopShot("зупинка[A,B]", [R_A, R_B], { startedAt: 1000, ms: 60 }),
+        stopShot("зупинка[B,A]", [], { startedAt: 1100, ms: 40 }),
+      ],
+      breakdown: brkShot({ startedAt: 1160, ms: 30 }),
+      rooms: [R_A, R_B],
+      activeByRoom: { [R_A]: 1, [R_B]: 1 },
+    });
+    expect(v.verdict).toBe("INCONCLUSIVE");
+    expect(v.reason).toContain("НЕ перетнулись");
+  });
+
+  /* ⚠️ Другий бік того самого рішення: вікна перетнулись, але ВСІ невдахи
+     фінішували раніше за переможця. На advisory-локу вони не стояли — отже
+     їхня відмова прийшла звідкись іще, і PASS був би припущенням. */
+  it("вікна перетнулись, але невдахи фінішували РАНІШЕ за переможця → INCONCLUSIVE", () => {
+    const v = verdictEmergencyStop({
+      stops: [
+        stopShot("зупинка[A,B]", [R_A, R_B], { startedAt: 1000, ms: 200 }),
+        stopShot("зупинка[B,A]", [], { startedAt: 1010, ms: 20 }),
+      ],
+      breakdown: brkShot({ startedAt: 1010, ms: 25 }),
+      rooms: [R_A, R_B],
+      activeByRoom: { [R_A]: 1, [R_B]: 1 },
+    });
+    expect(v.verdict).toBe("INCONCLUSIVE");
+    expect(v.reason).toContain("на локу вони не чекали");
+  });
+
+  it("досить ОДНОГО невдахи, що дочекався коміту → PASS", () => {
+    const v = verdictEmergencyStop({
+      stops: [
+        stopShot("зупинка[A,B]", [R_A, R_B], { startedAt: 1000, ms: 200 }),
+        stopShot("зупинка[B,A]", [], { startedAt: 1010, ms: 20 }),
+      ],
+      breakdown: brkShot({ startedAt: 1010, ms: 400 }),
+      rooms: [R_A, R_B],
+      activeByRoom: { [R_A]: 1, [R_B]: 1 },
+    });
+    expect(v.verdict).toBe("PASS");
+  });
+
+  /* ⚠️ Дефект важливіший за недоведену одночасність — той самий канон, що в
+     `verdictExclusive`: подвійна зупинка реальна незалежно від таймінгів. */
+  it("подвійна зупинка при послідовному прогоні — усе одно FAIL", () => {
+    const v = verdictEmergencyStop({
+      stops: [
+        stopShot("зупинка[A,B]", [R_A, R_B], { startedAt: 1000, ms: 40 }),
+        stopShot("зупинка[B,A]", [R_B], { startedAt: 9000, ms: 40 }),
+      ],
+      breakdown: brkShot({ startedAt: 9000, ms: 40 }),
+      rooms: [R_A, R_B],
+      activeByRoom: { [R_A]: 1, [R_B]: 2 },
+    });
+    expect(v.verdict).toBe("FAIL");
+    expect(v.reason).toContain("ЗУПИНЕНО ДВІЧІ");
   });
 });

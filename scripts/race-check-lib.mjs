@@ -90,6 +90,32 @@ export const CASE_ACTIVE_STATUSES = ["scheduled", "waiting", "in_progress", "nee
     і `verdictExclusive` покаже це окремим рядком «впали НЕ через гонку». */
 export const WAITLIST_NOT_FOUND_SQLSTATE = "42501";
 
+/** Дедлок. ЄДИНИЙ спостережуваний наслідок того, що дисципліна порядку
+    захвату локів у `emergency_stop_rpc` / `submit_incident_rpc` (0083, 0109)
+    зламалась.
+
+    ⚠️ ЧЕСНО ПРО МЕЖУ ЦЬОГО СЦЕНАРІЮ. Усі інші гонки в цьому файлі стережуть
+    ПОДІЮ: 23P01, 23505, 55000 — те, що з'являється, коли гард спрацював. Тут
+    навпаки: гарантія — це ВІДСУТНІСТЬ 40P01. Червону базу на живому проді для
+    неї отримати неможливо, бо «червоне» тут означає «прод зламаний»; а
+    рукотворний AB-BA-контроль на тих самих ключах вимагав би нової
+    SECURITY DEFINER-функції в проді, тобто нової поверхні заради тесту.
+    Тому червона база для самої драбинки живе у `falsify-race-check.mjs`
+    (мутує lib, не БД), а прогін у проді доводить рівно одне: сьогодні
+    регресії немає. Це слабше за інші чотири сценарії, і так і написано. */
+export const DEADLOCK_SQLSTATE = "40P01";
+
+/** SQLSTATE, яким `submit_incident_rpc` (0110) відмовляє, коли кабінет уже має
+    активний простій. Це РУКОТВОРНИЙ `raise` після `on conflict do nothing`, а
+    не помилка двигуна — сама RPC конфлікт ковтає, а потім бачить `v_id is null`.
+
+    ⚠️ ОКРЕМА КОНСТАНТА, хоч літерал збігається з `IN_PROGRESS_SQLSTATE`. За
+    ними стоять РІЗНІ гаранти — частковий індекс 0017 (один активний інцидент
+    на кабінет) проти 0018 (один in_progress на кабінет). Злити їх в одну
+    означало б, що правка одного сценарію нечутно перевизначає очікування
+    іншого. */
+export const INCIDENT_TAKEN_SQLSTATE = "23505";
+
 /** Тривалість і буфер фікстури: 20+5 = 25 хв зайнятості.
     Кандидати слотів рознесені на годину (див. TIMES у CLI), тож вікна
     зайнятості контрольного сценарію не перетинаються за побудовою. */
@@ -518,6 +544,199 @@ export function verdictCaseCancelRace(add, cancel, final, { spreadLimitMs = STAR
     reason: add.ok
       ? `порядок «крок → скасування»: крок додано, скасування змело ${cancel.cancelled} кроків, заборонений стан не виник`
       : `порядок «скасування → крок»: скасування змело ${cancel.cancelled} кроків, крок відмовлено ${CASE_NOT_OPEN_SQLSTATE}, заборонений стан не виник`,
+  };
+}
+
+/** Вердикт гонки АВАРІЙНИХ ЗУПИНОК.
+
+    Що стріляє (три постріли в одному `Promise.all`):
+      S1 `emergency_stop_rpc([A, B], D)`
+      S2 `emergency_stop_rpc([B, A], D)`   ← той самий набір у ПРОТИЛЕЖНОМУ порядку
+      S3 `submit_incident_rpc(B)`          ← пара, названа в шапці 0083
+
+    Що стережеться:
+      1) 40P01 не виникає в жодного — дисципліна порядку (`order by pc.id` →
+         `order by q.id` → advisory `order by r.id`) тримається. Порядок
+         `p_room_ids` на захват не впливає ЗА ПОБУДОВОЮ, і в цьому вся суть:
+         зникне `order by r.id` — S1 і S2 візьмуть advisory навхрест.
+      2) кабінет не зупиняється ДВІЧІ: `stopped_rooms` двох зупинок не
+         перетинаються, і в кожному кабінеті рівно один активний інцидент
+         (частковий індекс 0017 — єдиний арбітр, `on conflict do nothing`).
+      3) обидва кабінети зупинені бодай кимось.
+
+    ⚠️ ДОКАЗ КОНКУРЕНЦІЇ ТУТ ЛИШЕ ЧАСОВИЙ, і це не лінощі. Послідовний прогін
+    дає ТУ САМУ картину результатів: другий бачить уже закомічені інциденти,
+    ковтає конфлікт і повертає порожній `stopped_rooms`, а «поломка» так само
+    кидає 23505. Тобто ні 23505, ні неповний набір кабінетів конкуренції не
+    доводять. Доводить перетин вікон плюс те, що невдаха фінішував НЕ раніше
+    за переможця — бо він стояв на advisory-локу. Деталі — у гейтах 6–7.
+
+    ⚠️ І навіть PASS тут слабший за PASS решти сценаріїв: він означає «40P01
+    не сталося сьогодні», а не «дисципліна порядку доведена». Причина — у
+    коментарі до `DEADLOCK_SQLSTATE`.
+
+    @param {{stops: Array<{id: string, ok: boolean, rooms: string[], asked: string[],
+                           sqlstate: string, message: string,
+                           startedAt: number, finishedAt: number}>,
+             breakdown: {id: string, ok: boolean, room: string, sqlstate: string,
+                         message: string, startedAt: number, finishedAt: number},
+             rooms: string[],
+             activeByRoom: Record<string, number>}} shots
+    activeByRoom — скільки АКТИВНИХ інцидентів у кожному кабінеті ПІСЛЯ гонки
+    (звірено запитом, а не за відповідями RPC: «RPC не повернула помилки» ≠
+    «в базі один рядок»). */
+export function verdictEmergencyStop({ stops, breakdown, rooms, activeByRoom },
+                                     { spreadLimitMs = START_SPREAD_LIMIT_MS } = {}) {
+  const all = [...stops, breakdown];
+  const spread = startSpreadMs(all);
+
+  if (stops.length < 2 || !breakdown) {
+    return { verdict: "FAIL", spread, reason: `учасників ${all.length}, гонки не було` };
+  }
+
+  /* 1. ДЕДЛОК — головне, заради чого сценарій існує. Стоїть першим: він
+     реальний незалежно від того, довели ми одночасність чи ні. */
+  const dead = all.filter((o) => o.sqlstate === DEADLOCK_SQLSTATE);
+  if (dead.length) {
+    return {
+      verdict: "FAIL", spread,
+      reason: `ДЕДЛОК ${DEADLOCK_SQLSTATE} у ${dead.map((o) => o.id).join(", ")} — `
+        + "порядок захвату локів більше не детермінований (0083/0109)",
+      ids: dead.map((o) => o.id),
+    };
+  }
+
+  /* 2. Аварійна зупинка НЕ МАЄ падати взагалі: конфлікт інцидентів вона
+     ковтає (`on conflict do nothing`), а решта причин — це зламана фікстура
+     або гард ролі, тобто діагноз «не через гонку». */
+  const badStops = stops.filter((o) => !o.ok);
+  if (badStops.length) {
+    return {
+      verdict: "FAIL", spread,
+      reason: "зупинка впала НЕ через гонку: "
+        + badStops.map((o) => `${o.id}=${o.sqlstate}(${(o.message || "").slice(0, 60)})`).join("; "),
+    };
+  }
+  /* «Поломці» ж програти МОЖНА і треба — але саме 23505 від індексу 0017. */
+  if (!breakdown.ok && breakdown.sqlstate !== INCIDENT_TAKEN_SQLSTATE) {
+    return {
+      verdict: "FAIL", spread,
+      reason: `«поломка» впала НЕ через гонку: ${breakdown.sqlstate}`
+        + `(${(breakdown.message || "").slice(0, 60)})`,
+    };
+  }
+
+  /* 3. Подвійна зупинка одного кабінету.
+
+     ⚠️ ЧУЖИЙ КАБІНЕТ У ВІДПОВІДІ — ОКРЕМИЙ ДЕФЕКТ, а не привід мовчки його
+     пропустити. Перша редакція писала `claims.get(r)?.push(...)`: кабінет,
+     якого ми не просили, просто зникав з підрахунку. А означав би він, що
+     RPC зупинила НЕ ТЕ, що їй передали — тобто рівно ту аварію, від якої весь
+     сценарій і стереже. */
+  const claims = new Map(rooms.map((r) => [r, []]));
+  const strangers = [];
+  const claim = (r, who) => {
+    if (claims.has(r)) claims.get(r).push(who);
+    else strangers.push(`${who}→${r}`);
+  };
+  for (const s of stops) for (const r of s.rooms || []) claim(r, s.id);
+  if (breakdown.ok) claim(breakdown.room, breakdown.id);
+  if (strangers.length) {
+    return {
+      verdict: "FAIL", spread,
+      reason: `зупинено КАБІНЕТ, якого не просили: ${strangers.join(", ")}`,
+      ids: strangers,
+    };
+  }
+  const twice = [...claims].filter(([, who]) => who.length > 1);
+  if (twice.length) {
+    return {
+      verdict: "FAIL", spread,
+      reason: "КАБІНЕТ ЗУПИНЕНО ДВІЧІ: "
+        + twice.map(([r, who]) => `${r} ← ${who.join(" + ")}`).join("; ")
+        + " — індекс 0017 гонку не втримав",
+      ids: twice.map(([r]) => r),
+    };
+  }
+
+  /* 4. Стан У БАЗІ, а не у відповідях. Рівно один активний інцидент на
+     кабінет — це і є інваріант, який стереже 0017. */
+  const wrongDb = rooms.filter((r) => activeByRoom[r] !== 1);
+  if (wrongDb.length) {
+    return {
+      verdict: "FAIL", spread,
+      reason: "у базі не по одному активному інциденту: "
+        + wrongDb.map((r) => `${r}→${activeByRoom[r]}`).join(", "),
+      ids: wrongDb,
+    };
+  }
+
+  /* 5. Кабінет, якого не зупинив НІХТО (при тому, що в базі інцидент є —
+     значить його поставив хтось сторонній, і сцена не наша). */
+  const orphan = [...claims].filter(([, who]) => who.length === 0);
+  if (orphan.length) {
+    return {
+      verdict: "FAIL", spread,
+      reason: "кабінет зупинено, але жоден наш постріл цього не заявив: "
+        + orphan.map(([r]) => r).join(", ") + " — інцидент чужий, сцена не наша",
+      ids: orphan.map(([r]) => r),
+    };
+  }
+
+  /* 6. ОДНОЧАСНІСТЬ — останньою (канон `verdictExclusive`): дефекти вище
+     реальні незалежно від того, довели ми одночасність чи ні.
+
+     ⚠️ ТУТ ЖИВЕ ЄДИНИЙ ДОКАЗ КОНКУРЕНЦІЇ, І ВІН ЧАСОВИЙ. Перша редакція цієї
+     драбинки мала окремий гейт «слід зіткнення»: 23505 у «поломки» або
+     зупинка, що забрала МЕНШЕ кабінетів, ніж просила. Обидва — порожні.
+     ПОСЛІДОВНИЙ прогін дає їх один-в-один: другий приходить до вже
+     закомічених інцидентів, ковтає конфлікт і повертає порожній
+     `stopped_rooms`, а «поломка» так само бачить активний простій і кидає
+     23505. Тобто «сліди» не відрізняють гонку від черги взагалі — рівно той
+     клас зеленого, проти якого написана вся ця машинерія (урок сценарію
+     `case`, с62).
+
+     Що ВІДРІЗНЯЄ: невдаха, який справді конкурував, паркується на
+     advisory-локу і НЕ МОЖЕ завершитись раніше, ніж переможець закомітить.
+     Тобто його вікно перетинає вікно переможця. Послідовний невдаха
+     стартує вже ПІСЛЯ коміту — перетину немає за побудовою. */
+  if (spread > spreadLimitMs) {
+    return {
+      verdict: "INCONCLUSIVE", spread,
+      reason: `розкид стартів ${spread} мс > ${spreadLimitMs} мс — одночасність не доведена`,
+    };
+  }
+  if (!windowsOverlap(all)) {
+    return {
+      verdict: "INCONCLUSIVE", spread,
+      reason: "вікна запитів НЕ перетнулись — виклики пішли по черзі. "
+        + "23505 і неповний `stopped_rooms` при цьому виглядають так само, "
+        + "тож без перетину доводити нічого",
+    };
+  }
+
+  /* 7. Слід чекання на локу — сильніший за простий перетин вікон. Той, хто
+     нічого не забрав, мусив дочекатись коміту переможця, отже фінішує НЕ
+     раніше за нього. Якщо ж він фінішував першим — його відмова прийшла з
+     чогось іншого, ніж лок, і PASS був би припущенням. */
+  const winners = stops.filter((s) => (s.rooms || []).length > 0);
+  const empty = [...stops.filter((s) => (s.rooms || []).length === 0),
+                 ...(breakdown.ok ? [] : [breakdown])];
+  const lastWin = winners.length ? Math.max(...winners.map((s) => s.finishedAt)) : 0;
+  const early = empty.filter((o) => o.finishedAt < lastWin);
+  if (empty.length && early.length === empty.length) {
+    return {
+      verdict: "INCONCLUSIVE", spread,
+      reason: `усі невдахи (${early.map((o) => o.id).join(", ")}) завершились РАНІШЕ за переможця `
+        + "— на локу вони не чекали, тож їхня відмова не доводить серіалізації",
+    };
+  }
+
+  return {
+    verdict: "PASS", spread,
+    reason: `дедлоку немає, кабінетів ${rooms.length} — по одному активному інциденту, `
+      + `вікна перетинаються, невдах, що чекали на локу: ${empty.length - early.length}. `
+      + "⚠️ Це «регресії сьогодні немає», а НЕ доказ дисципліни порядку",
   };
 }
 

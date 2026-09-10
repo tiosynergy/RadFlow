@@ -70,7 +70,7 @@ import {
   buildWaitlistFixture, buildWaitlistBooking,
   buildCaseFixture, buildCaseStep, CASE_ACTIVE_STATUSES,
   verdictSlotRace, verdictControl, verdictInProgressRace, verdictCas,
-  verdictWaitlistRace, verdictCaseCancelRace,
+  verdictWaitlistRace, verdictCaseCancelRace, verdictEmergencyStop,
 } from "./race-check-lib.mjs";
 
 function adminClient() {
@@ -622,6 +622,171 @@ async function runCaseCancelRace(db, user, { room, study, room2, study2, slots, 
   return { add, cancel, final, verdict: verdictCaseCancelRace(add, cancel, final) };
 }
 
+/** Прибирання ІНЦИДЕНТІВ за явним списком id.
+
+    ⚠️ Саме DELETE, а не `status='resolved'`. «Вирішений» інцидент лишається в
+    історії кабінету назавжди — тобто харнес дописав би центру подію, якої не
+    було. Видалення прибирає рядок, який ми ж і створили, і не лишає сліду в
+    журналі простоїв. */
+async function cleanupIncidents(db, ids) {
+  if (!ids.length) return { incidents: null };
+  const e = await db.from("incidents").delete().in("id", ids);
+  return { incidents: e.error?.message ?? null };
+}
+
+/** Скільки АКТИВНИХ інцидентів у кожному з кабінетів — читаємо ЗАПИТОМ.
+    Відповіді RPC для цього не годяться: «RPC не повернула помилки» ≠ «в базі
+    рівно один рядок», а весь інваріант 0017 — саме про рядки. */
+async function activeIncidentsByRoom(db, roomIds) {
+  const { data, error } = await db.from("incidents")
+    .select("id, room_id").in("room_id", roomIds).eq("status", "active");
+  if (error) throw new Error(`не читаються активні інциденти: ${error.message}`);
+  const byRoom = Object.fromEntries(roomIds.map((r) => [r, 0]));
+  const ids = [];
+  for (const r of data || []) { byRoom[r.room_id] = (byRoom[r.room_id] || 0) + 1; ids.push(r.id); }
+  return { byRoom, ids };
+}
+
+/** ГОЛОВНИЙ ГАРД сценарію `stop`, і він фіксує рішення власника (с63):
+    аварійну зупинку ганяємо ТІЛЬКИ у смоук-центрі.
+
+    ⚠️ Перевіряємо ВЛАСТИВІСТЬ, а не назву клініки. Гард «якщо центр
+    називається смоук» обходиться перейменуванням і нічого не гарантує; гард
+    «у цих кабінетах немає ЧУЖОЇ роботи» падає на живому центрі за побудовою,
+    бо там завжди є записи. Fail-closed.
+
+    Чому саме такий предикат. `emergency_stop_rpc` б'є ПО ПРЕДИКАТУ, а не за
+    списком id, і рівно двома способами, які харнес не контролює:
+      • `call_status = 'to_recall'` — усім scheduled/waiting/in_progress
+        кабінету на `p_date`;
+      • `status = 'not_held'` — усім in_progress кабінету на БУДЬ-ЯКУ дату
+        (`p_date` тут не діє взагалі).
+    Тобто «взяти майбутню дату» від другого удару НЕ рятує. Єдина чесна
+    межа — щоб у кабінеті взагалі не було нічого, крім наших фікстур.
+
+    ⚠️ Активний інцидент до пострілу теж заборонений: тоді `on conflict do
+    nothing` зʼїв би обидві зупинки, вердикт побачив би «кабінет не зупинив
+    ніхто» і показав би це як дефект індексу, хоча кабінет просто був зайнятий. */
+async function assertRoomsUsableForStop(db, roomIds) {
+  /* ⚠️ ФІЛЬТР «не наша фікстура» — НА СЕРВЕРІ, а не в JS. Клієнтська
+     фільтрація тут була б дірою в самому гарді: PostgREST ріже вибірку по
+     `db-max-rows` (у Supabase — 1000), і кабінет, у якого перша тисяча
+     рядків — наші фікстури від попередніх прогонів, віддав би «чужого немає»,
+     а чужі рядки просто не доїхали б. Гард, який мовчки бачить не все, гірший
+     за відсутній: він дає дозвіл. */
+  const { data, error } = await db.from("queue_entries")
+    .select("id, patient_name, scheduled_date, status, room_id")
+    .in("room_id", roomIds)
+    .in("status", ["scheduled", "waiting", "in_progress"])
+    .not("patient_name", "like", `${FIXTURE_NAME}%`)
+    .limit(50);
+  if (error) throw new Error(`не читається стан кабінетів: ${error.message}`);
+  const foreign = data || [];
+  if (foreign.length) {
+    throw new Error(
+      `у кабінетах є ЧУЖА робота (щонайменше ${foreign.length} записів, напр. ${foreign[0].scheduled_date} `
+      + `${foreign[0].status}) — аварійна зупинка зняла б її з виклику й вибила б з кабінету.\n`
+      + "  Сценарій `stop` ганяється ТІЛЬКИ у смоук-центрі: --room <uuid> кабінету смоук-клініки.\n"
+      + "  Це рішення власника (с63), а не технічне обмеження: RPC б'є по предикату,\n"
+      + "  а `status='not_held'` ігнорує `p_date` і дістає in_progress БУДЬ-ЯКОЇ дати.");
+  }
+  const { byRoom } = await activeIncidentsByRoom(db, roomIds);
+  const busy = roomIds.filter((r) => byRoom[r] > 0);
+  if (busy.length) {
+    throw new Error(
+      `кабінети вже мають активний простій (${busy.join(", ")}) — гонка неможлива: `
+      + "обидві зупинки зʼїли б конфлікт мовчки.\n"
+      + "  Зніміть простій у центрі або візьміть інші кабінети.");
+  }
+}
+
+/** Сценарій «аварійна зупинка»: дві `emergency_stop_rpc` на ОДНОМУ наборі
+    кабінетів у ПРОТИЛЕЖНОМУ порядку + `submit_incident_rpc` на спільному
+    кабінеті. Питання одне: чи лишається порядок захвату локів детермінованим
+    (0083/0109), тобто чи не виникає 40P01.
+
+    ⚠️ ФІКСТУРИ ПОТРІБНІ, і не для краси. Без записів у черзі фаза
+    `perform 1 from queue_entries … for update` не лочить НІЧОГО — тобто саме
+    та ланка порядку, яку ми стережемо, у прогоні не бере участі. По одному
+    запису в кожен кабінет на дату зупинки роблять її справжньою.
+
+    ⚠️ Обидві фікстури мусять стояти на ОДНІЙ даті: `p_date` у RPC один на
+    весь набір кабінетів. */
+async function runEmergencyStopRace(db, user, { room, room2, study, study2, slotA, slotB, cleanupIds }) {
+  const rooms = [room.id, room2.id];
+  const date = slotA.day;
+  if (slotB.day !== date) {
+    throw new Error(`слоти кабінетів на РІЗНІ дати (${date} / ${slotB.day}) — p_date у RPC один`);
+  }
+
+  const fixtures = [
+    buildFixture({ id: randomUUID(), clinicId: room.clinic_id, roomId: room.id,
+                   day: date, time: slotA.time, label: "зупинка-A", study }),
+    buildFixture({ id: randomUUID(), clinicId: room2.clinic_id, roomId: room2.id,
+                   day: date, time: slotB.time, label: "зупинка-B", study: study2 }),
+  ];
+  for (const f of fixtures) {
+    cleanupIds.push(f.id);
+    const ins = await fire(db, f);
+    if (!ins.ok) throw new Error(`фікстуру зупинки не вставлено (${f.room_id}): ${ins.sqlstate} ${ins.message}`);
+  }
+
+  const note = `${FIXTURE_NAME} — харнес`;
+  const shoot = async (id, call) => {
+    const startedAt = Date.now();
+    const { data, error } = await call();
+    const finishedAt = Date.now();
+    return {
+      id, startedAt, finishedAt, ok: !error,
+      row: Array.isArray(data) ? data[0] : data,
+      sqlstate: error?.code ?? "", message: error?.message ?? "",
+    };
+  };
+
+  const [a, b, brk] = await Promise.all([
+    shoot("зупинка[A,B]", () => user.rpc("emergency_stop_rpc",
+      { p_room_ids: [room.id, room2.id], p_date: date, p_note: note })),
+    shoot("зупинка[B,A]", () => user.rpc("emergency_stop_rpc",
+      { p_room_ids: [room2.id, room.id], p_date: date, p_note: note })),
+    shoot("поломка(B)", () => user.rpc("submit_incident_rpc",
+      { p_room_id: room2.id, p_reason: "breakdown", p_reason_label: note, p_note: note })),
+  ]);
+
+  const stops = [a, b].map((s) => ({
+    ...s, asked: rooms, rooms: s.row?.stopped_rooms ?? [],
+    affected: s.row?.affected ?? null,
+  }));
+  const breakdown = { ...brk, room: room2.id };
+
+  /* Стан У БАЗІ — до будь-якого прибирання.
+
+     ⚠️ ЗБІЙ ЦЬОГО ЧИТАННЯ НЕ МАЄ ВБИВАТИ ПРОГІН (той самий клас, що ревʼю Б
+     знайшло в листі очікування, с62). `activeIncidentsByRoom` кидає — а
+     виняток тут означав би, що результати трьох пострілів, які вже сталися і
+     закомічені, не побачить ніхто. Інциденти при цьому створені, і про них
+     треба сказати вголос, а не мовчки впасти. Тому: ловимо, віддаємо
+     INCONCLUSIVE з причиною, а прибирання у `finally` спрацює як завжди. */
+  let byRoom = null;
+  let readError = null;
+  try {
+    ({ byRoom } = await activeIncidentsByRoom(db, rooms));
+  } catch (e) {
+    readError = e.message;
+  }
+  if (readError) {
+    return {
+      stops, breakdown, byRoom: {},
+      verdict: { verdict: "INCONCLUSIVE", spread: 0,
+        reason: `стан інцидентів у базі не прочитався (${readError}) — судити нема про що` },
+    };
+  }
+
+  return {
+    stops, breakdown, byRoom,
+    verdict: verdictEmergencyStop({ stops, breakdown, rooms, activeByRoom: byRoom }),
+  };
+}
+
 /** Основний сценарій: N пострілів в ОДИН слот. */
 async function runRace(db, { room, study, slot, n, cleanupIds }) {
   const rows = Array.from({ length: n }, (_, i) => buildFixture({
@@ -644,6 +809,23 @@ function printOutcomes(title, outcomes) {
     const verdict = o.ok ? "УДАЧА " : `ВІДМОВА ${o.sqlstate}`;
     console.log(`    +${String(o.startedAt - t0).padStart(4)} мс  ${String(o.finishedAt - o.startedAt).padStart(5)} мс  ${verdict}` +
       (o.ok ? "" : `  ${o.message.slice(0, 70)}`));
+  }
+}
+
+/** Аварійну зупинку друкуємо ІНАКШЕ — з ІМЕНЕМ пострілу.
+
+    ⚠️ Спільний принтер ховає саме те, на чому тримається вердикт. Тут доказ
+    конкуренції — «хто саме чекав на локу», тобто пара «ім'я → тривалість».
+    Без імені три однакові рядки з різними мілісекундами не читаються взагалі.
+    Той самий мотив, що й у `printCasOutcomes`. */
+function printStopOutcomes(title, outcomes) {
+  const t0 = Math.min(...outcomes.map((o) => o.startedAt));
+  console.log(`  ${title}:`);
+  for (const o of outcomes) {
+    const verdict = o.ok ? "УДАЧА " : `ВІДМОВА ${o.sqlstate}`;
+    console.log(`    ${String(o.id).padEnd(14)} +${String(o.startedAt - t0).padStart(4)} мс  `
+      + `${String(o.finishedAt - o.startedAt).padStart(5)} мс  ${verdict}`
+      + (o.ok ? "" : `  ${String(o.message || "").slice(0, 60)}`));
   }
 }
 
@@ -793,11 +975,22 @@ async function cmdCleanup(db, write) {
     .from("patient_cases").select("id, patient_name, status")
     .like("patient_name", `${FIXTURE_NAME}%`);
   if (c.error) throw new Error(`не читаються залишки кейсів: ${c.error.message}`);
+  /* Четверта таблиця — слід сценарію `stop`. Незнятий інцидент коштує дорожче
+     за всі попередні залишки разом: він блокує КАБІНЕТ, а не слот. Шукається
+     за нотаткою: `runEmergencyStopRace` кладе в `note`/`reason_label` той
+     самий маркер `FIXTURE_NAME`, яким живуть решта трьох таблиць. */
+  const inc = await db
+    .from("incidents").select("id, room_id, status, note, started_at")
+    .like("note", `${FIXTURE_NAME}%`).eq("status", "active");
+  if (inc.error) throw new Error(`не читаються залишки інцидентів: ${inc.error.message}`);
 
   const qRows = q.data || [];
   const wRows = w.data || [];
   const cRows = c.data || [];
-  if (!qRows.length && !wRows.length && !cRows.length) { console.log("Залишків фікстур немає."); return; }
+  const iRows = inc.data || [];
+  if (!qRows.length && !wRows.length && !cRows.length && !iRows.length) {
+    console.log("Залишків фікстур немає."); return 0;
+  }
 
   if (qRows.length) {
     console.log(`Черга — ${qRows.length}:`);
@@ -812,7 +1005,18 @@ async function cmdCleanup(db, write) {
     console.log(`Кейси — ${cRows.length}:`);
     cRows.forEach((r) => console.log(`  ${r.id}  ${r.patient_name}  ${r.status}`));
   }
-  if (!write) { console.log("\nБез --run нічого не видалено."); return; }
+  if (iRows.length) {
+    console.log(`⚠️ АКТИВНІ ІНЦИДЕНТИ (кабінети заблоковані!) — ${iRows.length}:`);
+    iRows.forEach((r) => console.log(`  ${r.id}  кабінет ${r.room_id}  від ${r.started_at}`));
+  }
+  /* ⚠️ БЕЗ --run КОМАНДА ТЕЖ МУСИТЬ ВІДДАВАТИ НЕНУЛЬ. Раніше сухий прогін
+     друкував список залишків і виходив нулем — тобто рапортував успіх рівно
+     в тій ситуації, заради якої його запускають. Той самий клас, що знайшло
+     ревʼю А в `--run`-гілці, просто на сусідній гілці. */
+  if (!write) {
+    console.log("\nБез --run нічого не видалено.");
+    return 1;
+  }
 
   const ids = qRows.map((r) => r.id);
   for (const r of wRows) {
@@ -829,6 +1033,21 @@ async function cmdCleanup(db, write) {
     }
   }
   let bad = 0;
+
+  /* ІНЦИДЕНТИ ПЕРШИМИ: доки вони активні, кабінети для центру мертві. */
+  if (iRows.length) {
+    const iIds = iRows.map((r) => r.id);
+    const delI = await cleanupIncidents(db, iIds);
+    if (delI.incidents) { console.log(`⚠️ інциденти НЕ видалено: ${delI.incidents}`); bad = 1; }
+    const leftI = await db.from("incidents").select("id").in("id", iIds).eq("status", "active");
+    const nI = leftI.error ? "?" : (leftI.data?.length ?? "?");
+    console.log(`Інциденти зняті. Лишилось активних: ${nI}.`);
+    if (nI !== 0) {
+      console.log(`⚠️ КАБІНЕТИ ЛИШИЛИСЬ ЗАБЛОКОВАНИМИ — зніміть простій у центрі: ${iRows.map((r) => r.room_id).join(", ")}`);
+      bad = 1;
+    }
+  }
+
   const delQ = await cleanup(db, ids);
   if (delQ.entries) { console.log(`⚠️ записи НЕ видалено: ${delQ.entries}`); bad = 1; }
   if (delQ.markers) { console.log(`⚠️ позначки НЕ знято: ${delQ.markers}. Явний список entity_id: ${ids.join(", ")}`); bad = 1; }
@@ -877,7 +1096,7 @@ async function main() {
   const db = adminClient();
 
   if (cmd === "help" || opts.help) {
-    console.log("race-check.mjs plan | run --run [--n 2..8] [--room <uuid>] | room --run | cas --run | waitlist --run | case --run | cleanup [--run]");
+    console.log("race-check.mjs plan | run --run [--n 2..8] [--room <uuid>] | room --run | cas --run | waitlist --run | case --run | stop --run | cleanup [--run]");
     console.log("  run  — двоє в ОДИН слот (тригер 0064)");
     console.log("  room — двох в ОДИН кабінет (унікальний індекс 0018)");
     console.log("  cas  — двоє міняють статус ОДНОГО запису (for update у 0075).");
@@ -885,13 +1104,19 @@ async function main() {
     console.log("         (умовний UPDATE у schedule_from_waitlist_rpc → 55000 WAITLIST_STALE).");
     console.log("  case — скасування кейса ПРОТИ додавання кроку (for update на кейсі).");
     console.log("         Питання одне: чи може виникнути кейс cancelled з АКТИВНИМ кроком.");
-    console.log("         cas, waitlist і case потребують RADFLOW_USER_JWT — токен живого персоналу.");
+    console.log("  stop — дві АВАРІЙНІ ЗУПИНКИ на одному наборі кабінетів у ПРОТИЛЕЖНОМУ порядку");
+    console.log("         + «поломка» на спільному кабінеті. Питання: чи лишився детермінованим");
+    console.log("         порядок захвату локів (0083/0109), тобто чи не виникає 40P01.");
+    console.log("         ⚠️ ТІЛЬКИ СМОУК-ЦЕНТР. RPC б'є по предикату: знімає з виклику весь день");
+    console.log("         кабінету і вибиває in_progress БУДЬ-ЯКОЇ дати. Гард падає, якщо в");
+    console.log("         кабінетах є хоч один чужий запис.");
+    console.log("         cas, waitlist, case і stop потребують RADFLOW_USER_JWT — токен живого персоналу.");
     console.log("         Сесія у COOKIE (@supabase/ssr), не в localStorage — сніпет у шапці файлу.");
     console.log("         Живе ~годину. Не друкувати, не класти в лог, не слати в переписку.");
     return;
   }
   if (cmd === "cleanup") { process.exit(await cmdCleanup(db, write)); }
-  if (!["plan", "run", "room", "cas", "waitlist", "case"].includes(cmd)) throw new Error(`невідома команда «${cmd}»`);
+  if (!["plan", "run", "room", "cas", "waitlist", "case", "stop"].includes(cmd)) throw new Error(`невідома команда «${cmd}»`);
 
   const room = await pickRoom(db, opts.room);
   const study = await pickStudy(db, room);
@@ -922,11 +1147,26 @@ async function main() {
   await assertNoLiveWebhook(db, room.clinic_id);
   if (cmd === "room") await assertRoomFree(db, room.id);
 
+  /* `stop` бере ДРУГИЙ кабінет і свій гард — обидва ДО першого запису.
+     Гард тут найважливіший у файлі: аварійна зупинка б'є по предикату, тож
+     помилитись центром означає зняти з виклику чужий робочий день. */
+  let stopRoom2 = null;
+  let stopStudy2 = null;
+  const stopRooms = [];
+  if (cmd === "stop") {
+    stopRoom2 = await pickSecondRoom(db, room);
+    stopStudy2 = await pickStudy(db, stopRoom2);
+    console.log(`Другий кабінет: ${stopRoom2.name} [${stopRoom2.modality}] ${stopRoom2.id}`);
+    console.log(`Склад 2: ${stopStudy2.type} / ${stopStudy2.region}`);
+    stopRooms.push(room.id, stopRoom2.id);
+    await assertRoomsUsableForStop(db, stopRooms);
+  }
+
   /* CAS вимагає живого токена персоналу — службова роль до RPC не допущена
      за дизайном. Немає токена — чесний SKIP з інструкцією, а не імітація
      перевірки службовою роллю (вона дала б 42501 і виглядала б як «дефект»). */
   let user = null;
-  if (cmd === "cas" || cmd === "waitlist" || cmd === "case") {
+  if (cmd === "cas" || cmd === "waitlist" || cmd === "case" || cmd === "stop") {
     const jwt = process.env.RADFLOW_USER_JWT;
     if (!jwt) {
       console.log(`\nSKIP: немає RADFLOW_USER_JWT — сценарій ${cmd} не запускався.`);
@@ -1062,6 +1302,41 @@ async function main() {
       console.log(`  кінцевий стан: кейс=${race.final.caseStatus ?? "?"} · кроки: `
         + ((race.final.steps || []).map((s) => `#${s.case_step}:${s.status}`).join(", ") || "немає"));
       code = race.verdict.verdict === "PASS" ? 0 : (race.verdict.verdict === "FAIL" ? 1 : 2);
+    } else if (cmd === "stop") {
+      /* ⚠️ ДЛЯ ДРУГОГО КАБІНЕТА — СВІЙ `findSlots`, а не слоти першого. Це
+         пункт 4 з `PLAN-case-scenario-gaps.md`: сценарій `case` брав слоти,
+         перевірені лише для кабінету A, і для B вони могли бути непридатні
+         (свій графік, своя перерва, свій інцидент). Тут ця помилка не
+         повторюється. */
+      const found2 = await findSlots(db, stopRoom2, stopStudy2, {
+        days: DAYS, times: TIMES, count: TIMES.length, cleanupIds,
+      });
+      /* Дата має бути СПІЛЬНА: `p_date` у RPC один на весь набір кабінетів. */
+      const slotA = slots.find((s) => found2.slots.some((x) => x.day === s.day));
+      const slotB = slotA ? found2.slots.find((x) => x.day === slotA.day) : null;
+      if (!slotA || !slotB) {
+        throw new Error(
+          "спільної дати для двох кабінетів не знайшлось — аварійна зупинка бере ОДИН p_date.\n"
+          + `  кабінет A: ${slots.map((s) => s.day).join(", ")}\n`
+          + `  кабінет B: ${found2.slots.map((s) => s.day).join(", ")}`);
+      }
+      console.log(`Спільна дата зупинки: ${slotA.day} (A ${slotA.time}, B ${slotB.time})`);
+
+      const race = await runEmergencyStopRace(db, user, {
+        room, room2: stopRoom2, study, study2: stopStudy2, slotA, slotB, cleanupIds,
+      });
+      printStopOutcomes("ГОНКА АВАРІЙНИХ ЗУПИНОК (набір кабінетів у ПРОТИЛЕЖНОМУ порядку + «поломка»)",
+        [...race.stops, race.breakdown]);
+      for (const s of race.stops) {
+        console.log(`  ${s.id}: зупинено кабінетів ${s.rooms.length}/${s.asked.length}`
+          + `, знято з виклику ${s.affected ?? "?"}`);
+      }
+      console.log(`  поломка(B): ${race.breakdown.ok ? "простій створено" : `відмовлено ${race.breakdown.sqlstate}`}`);
+      console.log(`  активних інцидентів у базі: `
+        + Object.entries(race.byRoom).map(([r, k]) => `${r.slice(0, 8)}→${k}`).join(", "));
+      console.log(`  → ${race.verdict.verdict}: ${race.verdict.reason}`);
+      console.log(`  розкид стартів: ${race.verdict.spread} мс`);
+      code = race.verdict.verdict === "PASS" ? 0 : (race.verdict.verdict === "FAIL" ? 1 : 2);
     } else if (cmd === "cas") {
       const race = await runCas(db, user, { room, study, slot: slots[0], n, cleanupIds });
       printCasOutcomes(`ПАРАЛЕЛЬНИЙ CAS (${n} × ${CAS_FROM} → ${CAS_TO} на ОДНОМУ записі)`, race.outcomes);
@@ -1087,6 +1362,48 @@ async function main() {
       try { return await fn(); }
       catch (e) { console.log(`⚠️ крок прибирання «${what}» упав: ${e.message}`); code = code || 1; return null; }
     };
+
+    /* ІНЦИДЕНТИ — ПЕРШИМИ, і це не стиль. Активний інцидент блокує РЕАЛЬНИЙ
+       кабінет: доки він висить, кабінет для центру мертвий. Незнята фікстура
+       черги коштує одного слота, незнятий інцидент — цілого кабінету.
+
+       ⚠️ ЧОМУ ТУТ ЧИТАННЯ ПО КАБІНЕТАХ, А НЕ СПИСОК ID ІЗ ВІДПОВІДЕЙ RPC
+       (правило с14 — прибирати за ЯВНИМ списком). Список із відповідей
+       неповний за побудовою: постріл, чия відповідь загубилась у мережі,
+       міг закомітити інцидент, id якого ми не побачили ніколи. Тому список
+       будується ЧИТАННЯМ — і він лишається явним: id спершу вичитуються,
+       друкуються, і лише потім видаляються поіменно.
+
+       Право вважати ці рядки СВОЇМИ дає `assertRoomsUsableForStop`: він
+       упав би ще до пострілу, якби в цих кабінетах був хоч один активний
+       інцидент. Тобто before-image тут — «активних інцидентів 0», і він
+       знятий, а не припущений. */
+    if (stopRooms.length) {
+      const inc = await step("вичитати інциденти зупинки", () => activeIncidentsByRoom(db, stopRooms));
+      if (!inc) {
+        console.log(`⚠️ НЕ вдалося вичитати інциденти — кабінети можуть лишитись ЗАБЛОКОВАНИМИ: ${stopRooms.join(", ")}`);
+        console.log("   Зніміть простій у центрі руками або повторіть: node scripts/race-check.mjs stop --run");
+        code = code || 1;
+      } else if (inc.ids.length) {
+        console.log(`  активних інцидентів до зняття: ${inc.ids.length} — ${inc.ids.join(", ")}`);
+        const d = await step("видалити інциденти", () => cleanupIncidents(db, inc.ids));
+        /* `cleanupIncidents` ПОВЕРТАЄ помилку, а не кидає — `step` її не спіймає. */
+        if (!d || d.incidents) {
+          console.log(`⚠️ інциденти НЕ видалено (${d?.incidents ?? "виняток"}): ${inc.ids.join(", ")}`);
+          code = code || 1;
+        }
+        /* Звіряємо ЗАПИТОМ: «delete не повернув помилки» ≠ «рядків немає». */
+        const after = await step("звірити зняття інцидентів", () => activeIncidentsByRoom(db, stopRooms));
+        const leftInc = after ? after.ids.length : "?";
+        console.log(`Інциденти: знято ${inc.ids.length}. Лишилось активних: ${leftInc}.`);
+        if (leftInc !== 0) {
+          console.log(`⚠️ КАБІНЕТИ ЛИШИЛИСЬ ЗАБЛОКОВАНИМИ: ${stopRooms.join(", ")} — зніміть простій у центрі.`);
+          code = code || 1;
+        }
+      } else {
+        console.log("Інциденти: активних немає (зупинка не відбулась або вже знята).");
+      }
+    }
 
     /* ⚠️ ПОРЯДОК: спершу дочитати звʼязок, і лише потім видаляти. FK
        `scheduled_entry_id` — `ON DELETE SET NULL`, тож видалення черги
