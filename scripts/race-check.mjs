@@ -103,24 +103,53 @@ async function pickRoom(db, roomOpt) {
   return usable[0];
 }
 
-/** ДРУГИЙ кабінет того самого центру — потрібен лише сценарію `case`.
+/** ДРУГИЙ кабінет того самого центру — сценаріям `case` і `stop`.
 
     ⚠️ Не «зручність», а вимога тригера `check_case_distinct_room`: активні
     кроки одного кейса мусять бути в РІЗНИХ кабінетах, інакше 23505. Модальність
-    може бути будь-яка з придатних — склад для неї підбирає `pickStudy`. */
-async function pickSecondRoom(db, room) {
+    може бути будь-яка з придатних — склад для неї підбирає `pickStudy`.
+    Для `stop` другий кабінет потрібен інакше: набір з одного елемента робить
+    «той самий набір у протилежному порядку» тотожним самому собі. */
+async function pickSecondRoom(db, room, room2Opt) {
   const { data: rooms, error } = await db
     .from("rooms")
     .select("id, name, modality, clinic_id, active, clinics(id, name, timezone)")
     .eq("active", true).eq("clinic_id", room.clinic_id);
   if (error) throw new Error(`не читаються кабінети центру: ${error.message}`);
-  const other = (rooms || []).find((r) => r.id !== room.id && MODALITY_STUDY_TYPE[r.modality]);
-  if (!other) {
-    throw new Error(
-      `у центрі лише один придатний кабінет — сценарію «кейс» потрібні ДВА.\n` +
-      "  Тригер check_case_distinct_room не дасть двом активним крокам кейса стояти в одному кабінеті.");
+  const cand = (rooms || []).filter((r) => r.id !== room.id && MODALITY_STUDY_TYPE[r.modality]);
+
+  if (room2Opt) {
+    if (!isUuid(room2Opt)) throw new Error(`--room2 «${room2Opt}» не uuid`);
+    if (room2Opt === room.id) throw new Error("--room2 збігається з --room: потрібні РІЗНІ кабінети");
+    const hit = cand.find((r) => r.id === room2Opt);
+    if (!hit) {
+      throw new Error(
+        `кабінет ${room2Opt} не підходить як другий: він неактивний, з іншого центру `
+        + "або має модальність без канонічного типу.\n"
+        + `  Придатні: ${cand.map((r) => `${r.id} «${r.name}»`).join(", ") || "жодного"}`);
+    }
+    return hit;
   }
-  return other;
+
+  if (!cand.length) {
+    throw new Error(
+      `у центрі лише один придатний кабінет — потрібні ДВА.\n` +
+      "  Для «кейса»: тригер check_case_distinct_room не дасть двом активним крокам стояти в одному кабінеті.\n" +
+      "  Для «зупинки»: набір з одного кабінету робить «протилежний порядок» безглуздим.");
+  }
+  /* ⚠️ НЕОДНОЗНАЧНІСТЬ — ПОМИЛКА, А НЕ ПРИВІД ВГАДУВАТИ (с63). Перша редакція
+     брала `.find(...)`, тобто ПЕРШИЙ-ліпший кабінет у порядку, який віддала
+     база. Поки центрів-пісочниць було по два кабінети, це працювало
+     випадково. Щойно в смоук-центрі зʼявився третій, той самий рядок міг
+     мовчки обрати кабінет із ЖИВИМИ записами — а для аварійної зупинки це
+     означає зняти з виклику чужий день. Ціна вгадування несиметрична, тож
+     вгадувати не можна взагалі. */
+  if (cand.length > 1) {
+    throw new Error(
+      `у центрі ${cand.length} придатних других кабінети — оберіть явно: --room2 <uuid>\n`
+      + cand.map((r) => `  ${r.id}  «${r.name}» [${r.modality}]`).join("\n"));
+  }
+  return cand[0];
 }
 
 /** Позиція складу, ВИДИМА в цьому кабінеті. Дзеркалить умову видимості з
@@ -1110,6 +1139,8 @@ async function main() {
     console.log("         ⚠️ ТІЛЬКИ СМОУК-ЦЕНТР. RPC б'є по предикату: знімає з виклику весь день");
     console.log("         кабінету і вибиває in_progress БУДЬ-ЯКОЇ дати. Гард падає, якщо в");
     console.log("         кабінетах є хоч один чужий запис.");
+    console.log("         Другий кабінет: --room2 <uuid>. ОБОВʼЯЗКОВИЙ, якщо придатних більше одного —");
+    console.log("         вгадувати не можна: не той кабінет = знятий з виклику чужий день.");
     console.log("         cas, waitlist, case і stop потребують RADFLOW_USER_JWT — токен живого персоналу.");
     console.log("         Сесія у COOKIE (@supabase/ssr), не в localStorage — сніпет у шапці файлу.");
     console.log("         Живе ~годину. Не друкувати, не класти в лог, не слати в переписку.");
@@ -1154,7 +1185,7 @@ async function main() {
   let stopStudy2 = null;
   const stopRooms = [];
   if (cmd === "stop") {
-    stopRoom2 = await pickSecondRoom(db, room);
+    stopRoom2 = await pickSecondRoom(db, room, opts.room2);
     stopStudy2 = await pickStudy(db, stopRoom2);
     console.log(`Другий кабінет: ${stopRoom2.name} [${stopRoom2.modality}] ${stopRoom2.id}`);
     console.log(`Склад 2: ${stopStudy2.type} / ${stopStudy2.region}`);
@@ -1174,7 +1205,8 @@ async function main() {
       console.log("  тож без токена живого персоналу перевіряти нічого.");
       console.log("  Токен: сесія у COOKIE `sb-<ref>-auth-token` (@supabase/ssr), НЕ в localStorage.");
       console.log("         Готовий сніпет для консолі браузера — у шапці scripts/race-check.mjs.");
-      console.log(`  Запуск: $env:RADFLOW_USER_JWT="..."; node scripts/race-check.mjs ${cmd} --run --room <uuid>`);
+      console.log(`  Запуск: $env:RADFLOW_USER_JWT="..."; node scripts/race-check.mjs ${cmd} --run --room <uuid>`
+        + (cmd === "stop" ? " --room2 <uuid>" : ""));
       console.log("  ⚠️ --room ОБОВʼЯЗКОВИЙ, якщо центрів кілька: без нього береться перший");
       console.log("     активний кабінет, і він може бути з ЧУЖОГО центру — RPC дасть 42501.");
       console.log("  Токен живе ~годину; у переписку й лог він не потрапляє.");
@@ -1288,7 +1320,7 @@ async function main() {
       console.log("   Причини й план доробки — docs/audit/PLAN-case-scenario-gaps.md");
       code = 2;
     } else if (cmd === "case_DISABLED_PENDING_REDESIGN") {
-      const room2 = await pickSecondRoom(db, room);
+      const room2 = await pickSecondRoom(db, room, opts.room2);
       const study2 = await pickStudy(db, room2);
       console.log(`Другий кабінет: ${room2.name} [${room2.modality}] — ${study2.type} / ${study2.region}`);
       const race = await runCaseCancelRace(db, user, {
