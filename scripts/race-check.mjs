@@ -397,6 +397,34 @@ async function runWaitlistControl(db, user, { room, study, slots, n, cleanupIds,
     };
   }));
   for (const o of outcomes) if (o.entryId) cleanupIds.push(o.entryId);
+
+  /* ⚠️ ПРИБИРАЄМО ЗА СОБОЮ ОДРАЗУ, а не в `finally` — і це не оптимізація, а
+     ПОМИЛКА, знайдена ПЕРШИМ ЖЕ живим прогоном (с62). Контроль створює РЕАЛЬНІ
+     записи черги в тих самих слотах, які потім бере гонка. Поки вони висіли до
+     кінця прогону, обидва постріли гонки отримували `23P01 OVERLAP` від тригера
+     0064 — тобто сценарій падав на СВОЇХ ЖЕ фікстурах.
+
+     Вердикт при цьому не збрехав: він сказав «кандидата не записав НІХТО —
+     фікстура або слот непридатні» і назвав SQLSTATE. Саме так і має поводитись
+     драбинка — але прогін не доводив нічого. Той самий порядок, що в
+     `runControl` і `runRace`: створив → вистрілив → прибрав.
+
+     Порядок усередині теж важливий: спершу дочитати звʼязок (FK
+     `on delete set null`), потім видалити чергу, потім лист. */
+  const link = await db.from("waitlist_entries")
+    .select("scheduled_entry_id").in("id", rows.map((r) => r.id));
+  if (!link.error) {
+    for (const r of link.data || []) {
+      if (r.scheduled_entry_id && !cleanupIds.includes(r.scheduled_entry_id)) {
+        cleanupIds.push(r.scheduled_entry_id);
+      }
+    }
+  }
+  const ids = outcomes.map((o) => o.entryId).filter(Boolean)
+    .concat((link.data || []).map((r) => r.scheduled_entry_id).filter(Boolean));
+  if (ids.length) await cleanup(db, [...new Set(ids)]);
+  await cleanupWaitlist(db, rows.map((r) => r.id));
+
   return { outcomes, verdict: verdictControl(outcomes) };
 }
 
@@ -550,6 +578,43 @@ function userClient(jwt) {
   });
 }
 
+/** Гард ПЕРЕД першим записом для сценаріїв із живим токеном: центр токена
+    мусить збігатися з центром обраного кабінету.
+
+    ⚠️ ЦЕ НЕ ПЕДАНТИЗМ — це заміряна пастка (с62). `pickRoom` без `--room`
+    бере ПЕРШИЙ активний кабінет із придатною модальністю, а він може лежати
+    в ІНШОМУ центрі: у проді таких центрів два, і перший у вибірці — тестовий
+    `titenkosmokeCLINIC`, тоді як сесія персоналу майже завжди в `Medicom`.
+    Фікстура ляже в центр кабінету, а RPC звіряє центр ТОКЕНА — і поверне
+    `42501 WAITLIST_NOT_FOUND` / `FORBIDDEN`. Вердикт при цьому чесно скаже
+    «невдахи впали НЕ через гонку», тобто дефекту не сховає, але діагноз
+    пошле шукати помилку в гарді, якого ніхто не ламав.
+
+    Питаємо ту саму функцію, якою користується сама RPC (`auth_clinic_id()`,
+    EXECUTE є в `authenticated`) — не декодуємо токен і не вигадуємо
+    паралельного джерела правди. */
+async function assertTokenClinicMatches(user, room) {
+  const { data, error } = await user.rpc("auth_clinic_id");
+  if (error) {
+    /* Не блокуємо: якщо читання впало, справжня причина зʼясується на першому
+       ж пострілі, а глушити прогін через діагностику — гірше, ніж попередити. */
+    console.log(`⚠️ не вдалося звірити центр токена (${error.code || ""} ${error.message}) — прогін триває`);
+    return;
+  }
+  if (!data) {
+    throw new Error(
+      "токен не належить персоналу центру: auth_clinic_id() = NULL.\n" +
+      "  Так виглядає прострочений токен або сесія направника — RPC такий виклик не пустить.");
+  }
+  if (data !== room.clinic_id) {
+    throw new Error(
+      `центр ТОКЕНА і центр КАБІНЕТА різні — RPC відмовить 42501, і це виглядатиме як дефект гарда.\n` +
+      `  кабінет «${room.name}» → центр ${room.clinic_id} (${room.clinics?.name ?? "?"})\n` +
+      `  токен персоналу      → центр ${data}\n` +
+      "  Виберіть кабінет свого центру: --room <uuid>");
+  }
+}
+
 /** Гард перед записом у ПРОД: якщо в клініки є УВІМКНЕНИЙ вебхук, фікстури
     поїдуть партнеру (тригер 0145 емітить події на кожну зміну запису).
     Прибирання черги подій харнес не робить свідомо — видаляти чужі рядки
@@ -697,11 +762,16 @@ async function main() {
       console.log("  тож без токена живого персоналу перевіряти нічого.");
       console.log("  Токен: сесія у COOKIE `sb-<ref>-auth-token` (@supabase/ssr), НЕ в localStorage.");
       console.log("         Готовий сніпет для консолі браузера — у шапці scripts/race-check.mjs.");
-      console.log(`  Запуск: $env:RADFLOW_USER_JWT="..."; node scripts/race-check.mjs ${cmd} --run`);
+      console.log(`  Запуск: $env:RADFLOW_USER_JWT="..."; node scripts/race-check.mjs ${cmd} --run --room <uuid>`);
+      console.log("  ⚠️ --room ОБОВʼЯЗКОВИЙ, якщо центрів кілька: без нього береться перший");
+      console.log("     активний кабінет, і він може бути з ЧУЖОГО центру — RPC дасть 42501.");
       console.log("  Токен живе ~годину; у переписку й лог він не потрапляє.");
       return;
     }
     user = userClient(jwt);
+    /* ДО першого запису: центр токена ↔ центр кабінету. Ставимо саме тут —
+       після `assertNoLiveWebhook` і ПЕРЕД `findSlots`, який уже пише проби. */
+    await assertTokenClinicMatches(user, room);
   }
 
   const cleanupIds = [];
