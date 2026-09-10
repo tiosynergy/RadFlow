@@ -197,8 +197,14 @@ begin
   --    відтворює 00d9ad82…/3ac1aa3c… і довжину 96322. Для 0184 розбір файла
   --    дав g = 673861da…, g2 = 11a29731…, 97025 — і живий запит до прода ПІСЛЯ
   --    накату 09.09.2026 повернув рівно ті самі числа при cr = 0.
-  if v_txt is distinct from '673861da14838e8a21c5365cb91572ce' then
-    raise exception 'SMOKE_FAIL g: md5 тіла invariants_check = %, очікував 673861da… (передрук розійшовся)', v_txt;
+  --    ⚠️ Піни перезнято під 0185 (№23 schema_digest; `checked` 22 → 23).
+  --    Обидва числа рахує ГЕНЕРАТОР `scripts/build-0185-reprint.mjs`, і прилад
+  --    для `g` звірено на ВІДОМІЙ відповіді: та сама формула на тілі 0184
+  --    відтворює 673861da… Живий запит до прода ПІСЛЯ накату 10.09.2026 дав
+  --    рівно ті самі числа: g = 6eac0bb1…, g2 = 8871cad0…, довжина 111592,
+  --    cr = 0. Попередні: 0184 g 673861da…, g2 11a29731…, 97025.
+  if v_txt is distinct from '6eac0bb1e3c18c8d7eb5e465f9ce3b27' then
+    raise exception 'SMOKE_FAIL g: md5 тіла invariants_check = %, очікував 6eac0bb1… (передрук розійшовся)', v_txt;
   end if;
   -- ── g2: тіло прода == тіло ФАЙЛУ, з точністю до кінців рядків ──
   -- ⚠️ Пін вище схлопує ПРОБІЛИ І ЗНІМАЄ КОМЕНТАРІ, тобто доводить лише «код
@@ -209,8 +215,8 @@ begin
     from pg_proc
    where proname = 'invariants_check'
      and pronamespace = 'public'::regnamespace;
-  if v_txt is distinct from '11a297318da068f53b113c3d9120e6b8' then
-    raise exception 'SMOKE_FAIL g2: тіло прода != тіло файлу 0184 (md5 без CR = %)', v_txt;
+  if v_txt is distinct from '8871cad05dbbee6c4cef4f4f9a3fb515' then
+    raise exception 'SMOKE_FAIL g2: тіло прода != тіло файлу 0185 (md5 без CR = %)', v_txt;
   end if;
   v_done := v_done || ' g g2';
 

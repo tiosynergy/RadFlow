@@ -1,4 +1,4 @@
--- СУХИЙ ПРОГІН (з маркером відкоту) 0185 — згенеровано build-0185-apply.mjs
+-- БОЙОВИЙ НАКАТ 0185 — згенеровано build-0185-apply.mjs
 do $apply$
 declare
   v_def text; v_body text; v_new text; v_head text;
@@ -335,7 +335,6 @@ begin
   insert into public.migration_ledger (name) values ('0185_schema_digest.sql')
     on conflict (name) do nothing;
 
-  -- ⚠️ МАРКЕР ВІДКОТУ. Прибирається ЛИШЕ прапорцем --live.
-  raise exception 'RB:0185 СУХИЙ ПРОГІН OK — md5 % len % checked 23', v_md5, v_len;
+  raise notice '0185 НАКАТАНО: md5 % len % checked 23', v_md5, v_len;
 end
 $apply$;
