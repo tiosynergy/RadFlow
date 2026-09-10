@@ -94,6 +94,36 @@ const MUTATIONS = [
     to: '    // Кабінет зайнятий — дзеркало гілки (а) гарда 0129.\n    if (r.code === "room_busy") return "Кабінет зайнятий — спершу завершіть поточного пацієнта";',
   },
   {
+    /* ⚠️ ТРИ ПОЗИЦІЇ НИЖЧЕ — про ПЛИТКУ КАБІНЕТУ (жива перевірка Ф4-2,
+       10.09.2026). Плитка — друга поверхня виклику, і вона показувала
+       ПРОТИЛЕЖНИЙ рядку черги вердикт. Кожна з трьох мутацій відтворює саме
+       той стан, у якому дефект і знайшли. */
+    id: "N1", file: "board", green: false,
+    expect: /QueueBoard.*плитка кабінету гасить кнопку виклику/,
+    what: "кнопка плитки дошки черги знову гасне лише по busy — причину не читає",
+    from: "                    disabled={!!busy || !!callBlockReason}",
+    to: "                    disabled={!!busy}",
+  },
+  {
+    /* Найпідступніше: проп оголошений і читається в кнопці, але дошка його не
+       передає. Три піни на саму картку лишаються зеленими, `undefined` не
+       блокує, кнопка світиться як до правки. */
+    id: "N2", file: "board", green: false,
+    expect: /QueueBoard.*дошка ПЕРЕДАЄ причину в плитку/,
+    what: "дошка черги перестала передавати callBlockReason у плитку",
+    from: "                    callBlockReason={nextWaitingByRoom[r.id] ? inProgressBlockReason(nextWaitingByRoom[r.id]) : null}\n",
+    to: "",
+  },
+  {
+    /* Та сама правка на ДОШЦІ РАДІОЛОГА: `RoomStatusCard` існує у двох
+       копіях, і сторож мусить тримати обидві. */
+    id: "N3", file: "rad", green: false,
+    expect: /RadiologistBoard.*плитка кабінету гасить кнопку виклику/,
+    what: "кнопка плитки дошки радіолога перестала гаснути за причиною",
+    from: 'disabled={!!callBlockReason} title={callBlockReason || "Викликати наступного"}',
+    to: 'disabled={false} title={callBlockReason || "Викликати наступного"}',
+  },
+  {
     id: "T3", file: "board", green: true,
     what: "змінено підпис кнопки в діалозі «поза графіком»",
     from: 'confirmLabel={offCallAsk.kind === "next_day" ? "🌙 Викликати" : "⏰ Викликати"}',
@@ -125,7 +155,7 @@ for (const m of MUTATIONS) {
    зняти сторожа. Мутація при цьому далі застосовується (якір живий, тож і
    «відхилено» не буде), набір лишається зеленим, рядок друкує ✅. Слідів не
    лишається взагалі. Тому кількість адресних — константа. */
-const EXPECTED_RED = 6;
+const EXPECTED_RED = 9;   // +N1/N2/N3 (с62): плитка кабінету, обидві дошки
 const redCount = MUTATIONS.filter((m) => !m.green).length;
 if (redCount !== EXPECTED_RED) {
   console.error(`⛔ ІНВЕНТАР БРЕШЕ: адресних мутацій ${redCount}, а очікується ${EXPECTED_RED}. `
