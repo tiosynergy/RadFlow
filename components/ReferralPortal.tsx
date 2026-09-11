@@ -2204,14 +2204,19 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
       desiredTimeFrom: w.desiredTimeFrom, desiredTimeTo: w.desiredTimeTo, note: w.note,
       clock: w.clock,   // Г1-F: заявку про годинник знімає форма в мить кліка
     });
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    /* ⚠️ Текст ПОВЕРТАЄМО модалці, а не кличемо `notify` — знахідка живого
+       прогону Г1-F 11.09.2026: тост малюється під оверлеєм, і оператор не
+       бачить ані запису, ані причини. Розбір — у контракті `onSave`
+       (`components/WaitlistModal.tsx`). */
+    if (!res.ok) return res.error;
     setWlAddOpen(false);
     notify("Додано до листа очікування: " + w.name, "success");
     reloadWaitlist();
+    return null;
   }
   async function wlEditSave(w: WaitlistFormOut) {
     const p = wlEditFor;
-    if (!p) return;
+    if (!p) return null;
     const res = await updateWaitlistEntry(p.id, {
       patient_name: w.name, patient_phone: w.phone, patient_email: w.email,
       patient_dob: w.dob, patient_sex: w.sex, patient_age: w.age, patient_weight: w.weight,
@@ -2220,10 +2225,12 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
       desired_time_from: w.desiredTimeFrom, desired_time_to: w.desiredTimeTo,
       note: w.note,
     }, w.clock);   // Г1-F: патч ВЕЗЕ desired_date_from — заявка обовʼязкова, і вона від форми
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    /* Той самий контракт, що в `wlAdd`: текст повертаємо модалці. */
+    if (!res.ok) return res.error;
     setWlEditFor(null);
     notify("Запис листа оновлено", "success");
     reloadWaitlist();
+    return null;
   }
 
   const [wlConfirmRemove, setWlConfirmRemove] = useState<WaitlistEntry | null>(null);

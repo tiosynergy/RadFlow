@@ -370,10 +370,17 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
       desiredTimeFrom: w.desiredTimeFrom, desiredTimeTo: w.desiredTimeTo, note: w.note,
       clock: w.clock,   // Г1-F: заявку про годинник знімає форма в мить кліка
     });
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    /* ⚠️ ПОВЕРТАЄМО ТЕКСТ, а не кличемо `notify` — знахідка ЖИВОГО прогону
+       Г1-F 11.09.2026. Тост малюється на ДОШЦІ, під оверлеєм модалки
+       (z-index 100 проти 200): оператор тиснув «Додати до листа» і не бачив
+       нічого — ні запису, ні причини. Найдорожче це коштувало саме відмові
+       гарда годинника, текст якої писався так, щоб назвати причину і вихід.
+       Той самий контракт, що в `saveBooking` нижче. */
+    if (!res.ok) return res.error;
     setAddOpen(false);
     notify("Додано до листа очікування: " + w.name, "success");
     refresh();
+    return null;
   }
 
   // Повертає ТЕКСТ помилки — BookingModal покаже його в собі (тост тонув під оверлеєм).
@@ -411,7 +418,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
   // Редагування даних пацієнта/досліджень/вікна в місці ухвалення рішення.
   async function onEditSave(w: WaitlistFormOut) {
     const p = editFor;
-    if (!p) return;
+    if (!p) return null;
     const res = await updateWaitlistEntry(p.id, {
       patient_name: w.name, patient_phone: w.phone, patient_email: w.email,
       patient_dob: w.dob, patient_sex: w.sex, patient_age: w.age, patient_weight: w.weight,
@@ -420,10 +427,12 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
       desired_time_from: w.desiredTimeFrom, desired_time_to: w.desiredTimeTo,
       note: w.note, room_id: w.roomId,
     }, w.clock);   // Г1-F: патч ВЕЗЕ desired_date_from — заявка обовʼязкова, і вона від форми
-    if (!res.ok) { notify("Помилка: " + res.error, "error"); return; }
+    /* Той самий контракт, що в `onAdd`: текст повертаємо модалці. */
+    if (!res.ok) return res.error;
     setEditFor(null);
     notify("Запис листа оновлено", "success");
     refresh();
+    return null;
   }
 
   async function restore(p: WaitlistEntry) {
