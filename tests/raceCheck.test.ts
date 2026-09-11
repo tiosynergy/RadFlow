@@ -6,6 +6,8 @@
    описані невірно й нікого не насторожили). */
 
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   verdictSlotRace, verdictControl, verdictInProgressRace, verdictCas,
   verdictWaitlistRace,
@@ -17,6 +19,7 @@ import {
   verdictCaseCancelRace, buildCaseFixture, buildCaseStep,
   CASE_NOT_OPEN_SQLSTATE, CASE_ACTIVE_STATUSES,
   verdictEmergencyStop, DEADLOCK_SQLSTATE, INCIDENT_TAKEN_SQLSTATE,
+  RETRYABLE_LOCK_SQLSTATES,
   verdictCaseRounds, CASE_NOT_OPEN_MESSAGE,
   verdictMidnightRace, MIDNIGHT_LATE_TIME, MIDNIGHT_EARLY_TIME, MIDNIGHT_CONTROL_TIME,
 } from "../scripts/race-check-lib.mjs";
@@ -819,6 +822,136 @@ describe("verdictEmergencyStop — дві аварійні зупинки нав
     });
     expect(v.verdict).toBe("FAIL");
     expect(v.reason).toContain("ЗУПИНЕНО ДВІЧІ");
+  });
+});
+
+/* --------------------------- аварійна зупинка ЗІ ЗВʼЯЗКОЮ КЕЙСА (пакет 61) */
+
+/** Четвертий постріл — `cancel_case_rpc`. Саме він дає інверсію порядку
+    (case→queue) проти зупинки, яка після AFTER-тригера йде queue→case. */
+function cancelShot(o: {
+  sqlstate?: string; startedAt?: number; ms?: number;
+} = {}) {
+  const sqlstate = o.sqlstate ?? "";
+  const startedAt = o.startedAt ?? 1000;
+  return {
+    id: "скасування кейса", ok: !sqlstate,
+    sqlstate, message: sqlstate ? `помилка ${sqlstate}` : "",
+    startedAt, finishedAt: startedAt + (o.ms ?? 90),
+  };
+}
+
+function healthyWithCase() {
+  return { ...healthy(), canceller: cancelShot({ ms: 90 }) };
+}
+
+describe("verdictEmergencyStop — режим caseLinked (stop --with-case)", () => {
+  /* ⚠️ ГОЛОВНИЙ ТЕСТ ЦЬОГО БЛОКУ: послаблення НЕ ПОШИРЮЄТЬСЯ на звичайний
+     прогін. Сторожем регресії лишається сцена БЕЗ кейса, і там 40P01 —
+     дефект. Якби режим протік у дефолт, проєкт мовчки втратив би єдине
+     місце, де 40P01 узагалі видно. */
+  it("без caseLinked 40P01 лишається FAIL — старий сторож недоторканий", () => {
+    const s = healthyWithCase();
+    s.stops[1] = stopShot("зупинка[B,A]", [], { ms: 55, sqlstate: "40P01" });
+    const v = verdictEmergencyStop(s);            // caseLinked НЕ переданий
+    expect(v.verdict).toBe("FAIL");
+    expect(v.reason).toContain("ДЕДЛОК");
+  });
+
+  it("caseLinked + 40P01 → INCONCLUSIVE з назвою ОГОЛОШЕНОГО вікна", () => {
+    const s = healthyWithCase();
+    s.stops[1] = stopShot("зупинка[B,A]", [], { ms: 55, sqlstate: "40P01" });
+    const v = verdictEmergencyStop(s, { caseLinked: true });
+    expect(v.verdict).toBe("INCONCLUSIVE");
+    expect(v.reason).toContain("ОГОЛОШЕНЕ ВІКНО");
+    expect(v.ids).toEqual(["зупинка[B,A]"]);
+  });
+
+  /* ⚠️ Причина мусить нести ОБИДВІ половини межі, інакше наступний читач
+     побачить INCONCLUSIVE і вирішить, що це просто «не довели». */
+  it("причина називає і механізм (in_progress-передлок), і те, що бачить оператор", () => {
+    const s = healthyWithCase();
+    s.canceller = cancelShot({ sqlstate: "40P01", ms: 90 });
+    const v = verdictEmergencyStop(s, { caseLinked: true });
+    expect(v.reason).toContain("in_progress");
+    expect(v.reason).toContain("cancel_case_rpc");
+    expect(v.reason).toContain("ЖЕРТВУ");
+    expect(v.reason).toContain("спробуйте ще раз");
+  });
+
+  /* ⚠️ Без четвертого пострілу інверсії немає ЗА ПОБУДОВОЮ: обидві зупинки
+     лочать `order by q.id` однаково. Терпіти 40P01 у такій сцені означало б
+     ковтати реальний дефект дисципліни. Тому не «тихо FAIL», а ВИНЯТОК:
+     це помилка виклику, а не результат заміру. */
+  it("caseLinked без canceller — КИДАЄ, а не послаблює мовчки", () => {
+    expect(() => verdictEmergencyStop(healthy(), { caseLinked: true }))
+      .toThrow(/caseLinked без canceller/);
+  });
+
+  it("скасування впало НЕ дедлоком (42501) → FAIL: четвертого учасника не було", () => {
+    const s = healthyWithCase();
+    s.canceller = cancelShot({ sqlstate: "42501", ms: 90 });
+    const v = verdictEmergencyStop(s, { caseLinked: true });
+    expect(v.verdict).toBe("FAIL");
+    expect(v.reason).toContain("четвертого учасника в сцені не було");
+    expect(v.ids).toEqual(["скасування кейса"]);
+  });
+
+  it("здорова сцена з кейсом → PASS, і PASS чесно каже, що вікно ЛИШЕ не відкрилось", () => {
+    const v = verdictEmergencyStop(healthyWithCase(), { caseLinked: true });
+    expect(v.verdict).toBe("PASS");
+    expect(v.reason).toContain("НЕ доказ, що його немає");
+  });
+
+  it("без caseLinked той самий PASS цієї приписки НЕ має", () => {
+    const v = verdictEmergencyStop(healthy());
+    expect(v.verdict).toBe("PASS");
+    expect(v.reason).not.toContain("НЕ доказ, що його немає");
+  });
+
+  /* ⚠️ Четвертий постріл — УЧАСНИК, а не спостерігач: його старт мусить
+     рахуватись у розкиді. Інакше сцена, де скасування пішло на секунду
+     пізніше, виглядала б одночасною. */
+  it("старт скасування входить у розкид — пізній четвертий дає INCONCLUSIVE", () => {
+    const s = healthyWithCase();
+    s.canceller = cancelShot({ startedAt: 9000, ms: 90 });
+    const v = verdictEmergencyStop(s, { caseLinked: true });
+    expect(v.verdict).toBe("INCONCLUSIVE");
+    expect(v.reason).toContain("розкид стартів");
+  });
+});
+
+/* ⚠️ ПІН КОНТРАКТУ З ПРОДУКТОМ, а не з памʼяттю. Уся терпимість режиму
+   `--with-case` до 40P01 спирається на заяву БД «транзієнтне, клієнт
+   повторює». Розійдеться `isRetryableLockError` із цим списком — і терпимість
+   стане безпідставною МОВЧКИ. Тому читаємо САМ `actions.ts`. */
+describe("RETRYABLE_LOCK_SQLSTATES звірено з продуктом", () => {
+  const actions = readFileSync(resolve(process.cwd(), "app/queue/actions.ts"), "utf8");
+  const body = actions.slice(
+    actions.indexOf("function isRetryableLockError"),
+    actions.indexOf("function classifyError"));
+
+  it("механізм піна робочий: тіло isRetryableLockError знайдено", () => {
+    expect(body.length).toBeGreaterThan(40);
+    expect(body).toContain("return code ===");
+  });
+
+  it.each(["40P01", "40001", "55P03", "57014"])(
+    "%s — і в харнесі, і в продукті", (code) => {
+      expect(RETRYABLE_LOCK_SQLSTATES).toContain(code);
+      expect(body).toContain(`"${code}"`);
+    });
+
+  it("список харнеса не ширший за продуктовий", () => {
+    for (const code of RETRYABLE_LOCK_SQLSTATES) expect(body).toContain(`"${code}"`);
+  });
+
+  /* ⚠️ Половина піна, без якої він не фальсифікується: аварійна зупинка
+     мусить і далі ПРОПУСКАТИ 40P01 через цей предикат. Приберуть виклик —
+     заява «клієнт повторює» стане неправдою, а тест лишався б зеленим. */
+  it("emergencyStop і далі класифікує локову помилку цим предикатом", () => {
+    const stop = actions.slice(actions.indexOf('rpc("emergency_stop_rpc"'));
+    expect(stop.slice(0, 1200)).toContain("isRetryableLockError");
   });
 });
 

@@ -133,6 +133,23 @@ export const WAITLIST_NOT_FOUND_SQLSTATE = "42501";
     ЄДИНЕ місце, де 40P01 узагалі видно. */
 export const DEADLOCK_SQLSTATE = "40P01";
 
+/** SQLSTATE, які ПРОДУКТ вважає транзієнтними локовими помилками, — знято з
+    `isRetryableLockError` (`app/queue/actions.ts`) 11.09.2026.
+
+    ⚠️ НАВІЩО КОПІЯ В ХАРНЕСІ. Режим `stop --with-case` (с63) спирається на
+    заяву БД «вікно 40P01 транзієнтне, клієнт повторює». Заява вірна рівно
+    доти, доки клієнт справді класифікує 40P01 як транзієнт. Розійдеться
+    продукт із цим списком — і терпимість вердикту до дедлока стане
+    безпідставною МОВЧКИ. Тому список не переказується памʼяттю, а пінить
+    його тест `tests/raceCheck.test.ts`, читаючи сам `actions.ts`.
+
+    ⚠️ І ОДРАЗУ ЧЕСНО ПРО МЕЖУ САМОГО СЛОВА «ПОВТОРЮЄ». Автоматичного ретраю
+    в продукті НЕМАЄ: на 40P01 аварійна зупинка віддає
+    `{ ok: false, error: "Кабінет саме зараз зупиняє інший оператор —
+    спробуйте ще раз" }`, і повторює ЛЮДИНА, натиснувши ще раз. Тобто в те
+    вікно зупинка НЕ СТАЄТЬСЯ, а оператор під час аварії бачить підказку. */
+export const RETRYABLE_LOCK_SQLSTATES = ["40P01", "40001", "55P03", "57014"];
+
 /** SQLSTATE, яким `submit_incident_rpc` (0110) відмовляє, коли кабінет уже має
     активний простій. Це РУКОТВОРНИЙ `raise` після `on conflict do nothing`, а
     не помилка двигуна — сама RPC конфлікт ковтає, а потім бачить `v_id is null`.
@@ -837,12 +854,42 @@ export function verdictCaseRounds(rounds) {
     лочиться, тригер перерахунку не спрацьовує, і в те вікно прогін потрапити
     не може — воно поза сценою. Прогін 10.09 (PASS) під цю умову підпадає.
 
-    Щойно у фікстури `stop` зʼявиться `case_id` — а це природний наступний крок
-    («аварійна зупинка з реальними задетими рядками» стоїть у списку
-    ненаписаних сценаріїв), — умова зникне, і вердикт почне називати дефектом
-    те, що база вважає транзієнтом. Тому умову стереже АСЕРТ у самому сценарії
-    (`assertFixturesHaveNoCase` у race-check.mjs), а не памʼять: межа, яка
-    тримається на памʼяті, — це майбутня брехня харнеса.
+    ⚠️ РЕЖИМ `caseLinked` (с63, пакет 61) — і він відповідає на ІНШЕ ПИТАННЯ.
+    Фікстури зі звʼязкою кейса плюс ЧЕТВЕРТИЙ постріл `cancel_case_rpc` на
+    тому ж кейсі. Навіщо четвертий: двох зупинок для інверсії НЕ ВИСТАЧАЄ.
+    Заміряно з тіла `emergency_stop_rpc` 11.09.2026 — передлок кейсів там є,
+    але з предикатом `q.status = 'in_progress'`:
+
+      perform 1 from public.patient_cases pc
+       where pc.id in (select distinct q.case_id from public.queue_entries q
+                        where … and q.status = 'in_progress' and q.case_id is not null)
+       order by pc.id for update;
+
+    А `update … set call_status = 'to_recall'` далі бʼє по
+    `status in ('scheduled','waiting','in_progress')`. Тобто крок кейса у
+    статусі `scheduled` оновлюється БЕЗ передлока свого кейса, і лок на
+    `patient_cases` бере вже AFTER-тригер `trg_z_case_status_recompute` через
+    `case_recompute_status` — тобто queue→case. `cancel_case_rpc` іде
+    case→queue. Ось ця пара і є ABBA; дві зупинки між собою йдуть в однаковому
+    порядку `order by q.id` і не інвертуються за побудовою.
+
+    ⚠️ ЧОМУ В ЦЬОМУ РЕЖИМІ 40P01 — INCONCLUSIVE, А НЕ PASS І НЕ FAIL.
+    Postgres називає лише ЖЕРТВУ, а не другого учасника дедлока. Тобто харнес
+    не може відрізнити оголошене вікно (зупинка ↔ скасування кейса) від
+    зламаної дисципліни порядку, яка дала б 40P01 між двома зупинками. PASS
+    тут був би припущенням, FAIL — звинуваченням бази в тому, що вона сама
+    оголосила допустимим. Чесна відповідь одна: «вікно відкрилось, судити про
+    дисципліну звідси не можна».
+
+    ⚠️ І ТОМУ ЦЕЙ РЕЖИМ НЕ ЗАМІНЮЄ ЗВИЧАЙНИЙ. Сторожем регресії лишається
+    прогін БЕЗ `caseLinked`: там фікстури без `case_id`, вікно поза сценою, і
+    будь-який 40P01 — дефект. `--with-case` питає інше: чи відкривається
+    оголошене вікно в проді ВЗАГАЛІ і що при цьому бачить оператор.
+
+    Умову тримає не памʼять, а асерти в самому сценарії
+    (`assertFixturesHaveNoCase` / `assertFixturesHaveCase` у race-check.mjs) і
+    `caseLinked` без `canceller`, який кидає: межа, що тримається на памʼяті, —
+    це майбутня брехня харнеса.
 
     @param {{stops: Array<{id: string, ok: boolean, rooms: string[], asked: string[],
                            sqlstate: string, message: string,
@@ -850,13 +897,28 @@ export function verdictCaseRounds(rounds) {
              breakdown: {id: string, ok: boolean, room: string, sqlstate: string,
                          message: string, startedAt: number, finishedAt: number},
              rooms: string[],
-             activeByRoom: Record<string, number>}} shots
+             activeByRoom: Record<string, number>,
+             canceller?: {id: string, ok: boolean, sqlstate: string, message: string,
+                          startedAt: number, finishedAt: number} | null}} shots
     activeByRoom — скільки АКТИВНИХ інцидентів у кожному кабінеті ПІСЛЯ гонки
     (звірено запитом, а не за відповідями RPC: «RPC не повернула помилки» ≠
-    «в базі один рядок»). */
-export function verdictEmergencyStop({ stops, breakdown, rooms, activeByRoom },
-                                     { spreadLimitMs = START_SPREAD_LIMIT_MS } = {}) {
-  const all = [...stops, breakdown];
+    «в базі один рядок»).
+    canceller — четвертий постріл `cancel_case_rpc`; є ЛИШЕ в режимі caseLinked.
+    @param {{spreadLimitMs?: number, caseLinked?: boolean}} [opts] */
+export function verdictEmergencyStop({ stops, breakdown, rooms, activeByRoom, canceller = null },
+                                     { spreadLimitMs = START_SPREAD_LIMIT_MS,
+                                       caseLinked = false } = {}) {
+  /* ⚠️ КИДАЄМО, А НЕ ПОСЛАБЛЮЄМО МОВЧКИ. `caseLinked` без `cancel_case_rpc` —
+     це сцена, де інверсії порядку немає за побудовою (обидві зупинки йдуть
+     queue→case в однаковому `order by q.id`). Терпіти в ній 40P01 означало б
+     ковтати РЕАЛЬНИЙ дефект дисципліни під виглядом оголошеного вікна. */
+  if (caseLinked && !canceller) {
+    throw new Error(
+      "verdictEmergencyStop: caseLinked без canceller — інверсії порядку в такій сцені немає,\n"
+      + "  і терпимість до 40P01 була б безпідставною. Дайте четвертий постріл cancel_case_rpc\n"
+      + "  або не вмикайте caseLinked.");
+  }
+  const all = [...stops, breakdown, ...(canceller ? [canceller] : [])];
   const spread = startSpreadMs(all);
 
   if (stops.length < 2 || !breakdown) {
@@ -867,6 +929,23 @@ export function verdictEmergencyStop({ stops, breakdown, rooms, activeByRoom },
      реальний незалежно від того, довели ми одночасність чи ні. */
   const dead = all.filter((o) => o.sqlstate === DEADLOCK_SQLSTATE);
   if (dead.length) {
+    /* ⚠️ У режимі caseLinked це ОГОЛОШЕНЕ вікно, і судити звідси не можна:
+       Postgres називає лише жертву, а не другого учасника дедлока. Деталі —
+       у шапці функції. Не PASS (це було б припущення) і не FAIL (це було б
+       звинувачення бази в тому, що вона сама оголосила допустимим). */
+    if (caseLinked) {
+      return {
+        verdict: "INCONCLUSIVE", spread,
+        reason: `ОГОЛОШЕНЕ ВІКНО ${DEADLOCK_SQLSTATE} відкрилось у ${dead.map((o) => o.id).join(", ")}. `
+          + "Передлок кейсів у emergency_stop_rpc бере лише in_progress-кроки, тож крок "
+          + "у статусі scheduled лочить свій кейс уже з AFTER-тригера (queue→case), а "
+          + "cancel_case_rpc іде case→queue. Двигун називає лише ЖЕРТВУ, тож відрізнити це "
+          + "вікно від зламаної дисципліни порядку звідси НЕМОЖЛИВО — сторожем регресії "
+          + "лишається прогін БЕЗ --with-case. Продукт на 40P01 не ретраїть сам: оператор "
+          + "бачить «спробуйте ще раз», а зупинка НЕ СТАЛАСЬ",
+        ids: dead.map((o) => o.id),
+      };
+    }
     return {
       verdict: "FAIL", spread,
       reason: `ДЕДЛОК ${DEADLOCK_SQLSTATE} у ${dead.map((o) => o.id).join(", ")} — `
@@ -892,6 +971,19 @@ export function verdictEmergencyStop({ stops, breakdown, rooms, activeByRoom },
       verdict: "FAIL", spread,
       reason: `«поломка» впала НЕ через гонку: ${breakdown.sqlstate}`
         + `(${(breakdown.message || "").slice(0, 60)})`,
+    };
+  }
+  /* 2б. Скасування кейса (є лише в caseLinked). 40P01 у нього вже розібрано
+     гейтом 1; будь-яка ІНША відмова — це зламана фікстура або гард ролі, тобто
+     сцена не відбулась. Мовчки її пропустити означало б рахувати зеленим
+     прогін, у якому четвертого учасника фактично не було — а без нього
+     інверсії порядку немає, і вся терпимість до дедлока безпідставна. */
+  if (canceller && !canceller.ok) {
+    return {
+      verdict: "FAIL", spread,
+      reason: `скасування кейса впало НЕ через гонку: ${canceller.sqlstate}`
+        + `(${(canceller.message || "").slice(0, 60)}) — четвертого учасника в сцені не було`,
+      ids: [canceller.id],
     };
   }
 
@@ -1005,7 +1097,15 @@ export function verdictEmergencyStop({ stops, breakdown, rooms, activeByRoom },
     verdict: "PASS", spread,
     reason: `дедлоку немає, кабінетів ${rooms.length} — по одному активному інциденту, `
       + `вікна перетинаються, невдах, що чекали на локу: ${empty.length - early.length}. `
-      + "⚠️ Це «регресії сьогодні немає», а НЕ доказ дисципліни порядку",
+      + "⚠️ Це «регресії сьогодні немає», а НЕ доказ дисципліни порядку"
+      /* ⚠️ PASS у caseLinked слабший ЩЕ НА ОДИН крок, і мусить це говорити:
+         оголошене вікно вузьке, тож «не відкрилось цього разу» не означає
+         «не відкриється в проді». Мовчазний PASS тут читався б як «вікна
+         немає» — а воно є, заміряне з тіла RPC. */
+      + (caseLinked
+        ? ". Сцена БУЛА зі звʼязкою кейса (скасування поруч) — оголошене вікно 40P01 "
+          + "цього разу не відкрилось. Вікно вузьке: це НЕ доказ, що його немає"
+        : ""),
   };
 }
 

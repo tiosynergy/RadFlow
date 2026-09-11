@@ -845,7 +845,39 @@ function assertFixturesHaveNoCase(fixtures) {
       `фікстури зупинки звʼязані з кейсом (${withCase.length}) — вердикт цього сценарію став би брехливим.\n`
       + "  Він вважає БУДЬ-ЯКИЙ 40P01 дефектом, а `cancel_case_rpc` оголошує вікно дедлока\n"
       + "  «зупинка ↔ тригер перерахунку статусу кейса» ТРАНЗІЄНТНИМ (клієнт повторює).\n"
-      + "  Хочете гонку зупинки з кроками кейса — спершу послабте вердикт і поясніть межу.");
+      + "  Хочете гонку зупинки з кроками кейса — режим `--with-case` (пакет 61, с63).");
+  }
+}
+
+/** ДЗЕРКАЛЬНИЙ асерт режиму `--with-case`, і він не «для симетрії».
+
+    ⚠️ Без нього прапорець міг би тихо запустити СТАРУ сцену: фікстури без
+    `case_id`, четвертий постріл б'є по кейсу, якого ніхто не чіпає, інверсії
+    порядку немає — і прогін віддав би зелене, нічого не перевіривши. Рівно
+    той клас порожнього зеленого, проти якого написана вся ця машинерія.
+    Тому режим стверджує те, ЩО ВВІМКНУВ, а не те, що не зламалось. */
+function assertFixturesHaveCase(fixtures, caseId) {
+  const loose = fixtures.filter((f) => f.case_id !== caseId || f.case_step == null);
+  if (loose.length) {
+    throw new Error(
+      `у режимі --with-case ${loose.length} фікстур(и) БЕЗ звʼязки з кейсом ${caseId} — `
+      + "сцена не та, яку вмикали.\n"
+      + "  Інверсія порядку (queue→case проти case→queue) виникає ЛИШЕ коли зупинка "
+      + "оновлює крок КЕЙСА,\n  а поруч іде cancel_case_rpc того ж кейса. Без звʼязки "
+      + "прогін був би зеленим, не перевіривши нічого.");
+  }
+  const rooms = new Set(fixtures.map((f) => f.room_id));
+  if (rooms.size !== fixtures.length) {
+    throw new Error(
+      "кроки одного кейса опинились в ОДНОМУ кабінеті — `check_case_distinct_room` дасть 23505.\n"
+      + "  Це зламана фікстура, а не гонка: візьміть різні кабінети.");
+  }
+  const times = new Set(fixtures.map((f) => `${f.scheduled_date} ${f.scheduled_time}`));
+  if (times.size !== fixtures.length) {
+    throw new Error(
+      "кроки одного кейса стоять в ОДИН слот — `check_case_no_time_overlap` дасть 23P01 "
+      + "(пацієнт не буває у двох кабінетах одночасно).\n"
+      + "  Це зламана фікстура, а не гонка: рознесіть слоти в межах спільної дати.");
   }
 }
 
@@ -861,7 +893,8 @@ function assertFixturesHaveNoCase(fixtures) {
 
     ⚠️ Обидві фікстури мусять стояти на ОДНІЙ даті: `p_date` у RPC один на
     весь набір кабінетів. */
-async function runEmergencyStopRace(db, user, { room, room2, study, study2, slotA, slotB, cleanupIds }) {
+async function runEmergencyStopRace(db, user, { room, room2, study, study2, slotA, slotB,
+                                               cleanupIds, caseIds = null, withCase = false }) {
   const rooms = [room.id, room2.id];
   const date = slotA.day;
   if (slotB.day !== date) {
@@ -874,6 +907,21 @@ async function runEmergencyStopRace(db, user, { room, room2, study, study2, slot
     buildFixture({ id: randomUUID(), clinicId: room2.clinic_id, roomId: room2.id,
                    day: date, time: slotB.time, label: "зупинка-B", study: study2 }),
   ];
+
+  /* ⚠️ КЕЙС СТВОРЮЄМО СЛУЖБОВОЮ РОЛЛЮ, а кроки звʼязуємо ПЕРЕД вставкою —
+     так само, як це робить сценарій `case`. Причина та сама: кейс тут не
+     предмет твердження, а ОБСТАВИНА сцени; предмет — порядок локів. Пускати
+     на створення `add_case_step_rpc` означало б внести в сцену ще одну RPC зі
+     своїми локами і вже не знати, чий саме порядок ми міряємо. */
+  let kase = null;
+  if (withCase) {
+    if (!caseIds) throw new Error("--with-case без caseIds — кейс не буде прибрано, прогін не запускаємо");
+    kase = buildCaseFixture({ id: randomUUID(), clinicId: room.clinic_id, label: "зупинка-кейс" });
+    caseIds.push(kase.id);
+    const insCase = await db.from("patient_cases").insert(kase);
+    if (insCase.error) throw new Error(`кейс зупинки не вставлено: ${insCase.error.code} ${insCase.error.message}`);
+    fixtures.forEach((f, i) => { f.case_id = kase.id; f.case_step = i + 1; });
+  }
   /* ⚠️ АСЕРТ, ЯКИЙ ТРИМАЄ МЕЖУ ВЕРДИКТА (замір с63, див. `verdictEmergencyStop`).
      Вердикт вважає БУДЬ-ЯКИЙ 40P01 дефектом. Це правда лише поки фікстури без
      `case_id`: тіло `cancel_case_rpc` (рядки 56–60 у проді) прямо оголошує
@@ -881,8 +929,13 @@ async function runEmergencyStopRace(db, user, { room, room2, study, study2, slot
      КЕЙСА транзієнтним — «клієнт повторює». Зі звʼязкою кейса той самий
      дедлок став би законним, а вердикт продовжив би кричати «дефект».
      Тому умова перевіряється, а не памʼятається: додасть хтось крок кейса у
-     фікстуру — прогін зупиниться тут із поясненням, а не збреше потім. */
-  assertFixturesHaveNoCase(fixtures);
+     фікстуру — прогін зупиниться тут із поясненням, а не збреше потім.
+
+     ⚠️ У режимі `--with-case` перевіряється ДЗЕРКАЛЬНА умова: звʼязка мусить
+     БУТИ, кабінети РІЗНІ, слоти РІЗНІ. Прапорець, який тихо запустив би стару
+     сцену, був би гіршим за відсутній — він давав би зелене ні про що. */
+  if (withCase) assertFixturesHaveCase(fixtures, kase.id);
+  else assertFixturesHaveNoCase(fixtures);
 
   for (const f of fixtures) {
     cleanupIds.push(f.id);
@@ -902,20 +955,30 @@ async function runEmergencyStopRace(db, user, { room, room2, study, study2, slot
     };
   };
 
-  const [a, b, brk] = await Promise.all([
+  /* ⚠️ ЧЕТВЕРТИЙ ПОСТРІЛ — НЕ ПРИКРАСА, А ЄДИНЕ ДЖЕРЕЛО ІНВЕРСІЇ.
+     Двох зупинок для ABBA НЕ ВИСТАЧАЄ: обидві лочать `order by q.id`, тобто
+     в однаковому порядку, і кейс беруть однаково пізно (AFTER-тригером).
+     Інверсію дає саме `cancel_case_rpc`: він іде case→queue. Розбір — у
+     шапці `verdictEmergencyStop`. */
+  const shots = [
     shoot("зупинка[A,B]", () => user.rpc("emergency_stop_rpc",
       { p_room_ids: [room.id, room2.id], p_date: date, p_note: note })),
     shoot("зупинка[B,A]", () => user.rpc("emergency_stop_rpc",
       { p_room_ids: [room2.id, room.id], p_date: date, p_note: note })),
     shoot("поломка(B)", () => user.rpc("submit_incident_rpc",
       { p_room_id: room2.id, p_reason: "breakdown", p_reason_label: note, p_note: note })),
-  ]);
+  ];
+  if (withCase) {
+    shots.push(shoot("скасування кейса", () => user.rpc("cancel_case_rpc", { p_case_id: kase.id })));
+  }
+  const [a, b, brk, cancel = null] = await Promise.all(shots);
 
   const stops = [a, b].map((s) => ({
     ...s, asked: rooms, rooms: s.row?.stopped_rooms ?? [],
     affected: s.row?.affected ?? null,
   }));
   const breakdown = { ...brk, room: room2.id };
+  const canceller = cancel ? { ...cancel, caseId: kase.id } : null;
 
   /* Стан У БАЗІ — до будь-якого прибирання.
 
@@ -934,15 +997,28 @@ async function runEmergencyStopRace(db, user, { room, room2, study, study2, slot
   }
   if (readError) {
     return {
-      stops, breakdown, byRoom: {},
+      stops, breakdown, canceller, caseId: kase?.id ?? null, byRoom: {}, caseFinal: null,
       verdict: { verdict: "INCONCLUSIVE", spread: 0,
         reason: `стан інцидентів у базі не прочитався (${readError}) — судити нема про що` },
     };
   }
 
+  /* Кінцевий стан КЕЙСА — з БАЗИ, а не з відповідей (той самий принцип, що в
+     сценарії `case`). Він нічого не вирішує у вердикті: предмет твердження
+     тут — порядок локів, а не статус кейса. Але надрукувати його треба, бо
+     саме він показує, ЧИ дійшло скасування до кінця, коли вікно відкрилось. */
+  let caseFinal = null;
+  if (kase) {
+    const cs = await db.from("patient_cases").select("status").eq("id", kase.id).maybeSingle();
+    caseFinal = cs.error ? { status: null, readError: cs.error.message }
+                         : { status: cs.data?.status ?? null, readError: null };
+  }
+
   return {
-    stops, breakdown, byRoom,
-    verdict: verdictEmergencyStop({ stops, breakdown, rooms, activeByRoom: byRoom }),
+    stops, breakdown, canceller, caseId: kase?.id ?? null, byRoom, caseFinal,
+    verdict: verdictEmergencyStop(
+      { stops, breakdown, rooms, activeByRoom: byRoom, canceller },
+      { caseLinked: withCase }),
   };
 }
 
@@ -1430,6 +1506,12 @@ async function main() {
     console.log("         кабінетах є хоч один чужий запис.");
     console.log("         Другий кабінет: --room2 <uuid>. ОБОВʼЯЗКОВИЙ, якщо придатних більше одного —");
     console.log("         вгадувати не можна: не той кабінет = знятий з виклику чужий день.");
+    console.log("         --with-case — фікстури стають КРОКАМИ одного кейса + ЧЕТВЕРТИЙ постріл");
+    console.log("         cancel_case_rpc. Двох зупинок для інверсії НЕ ВИСТАЧАЄ: обидві лочать");
+    console.log("         `order by q.id`, інверсію (case→queue) дає саме скасування.");
+    console.log("         ⚠️ Це ІНШЕ питання, а не сильніша версія. 40P01 тут — ОГОЛОШЕНЕ вікно");
+    console.log("         (передлок кейсів у RPC бере лише in_progress-кроки) → INCONCLUSIVE, бо");
+    console.log("         двигун називає лише ЖЕРТВУ. Сторож регресії — прогін БЕЗ прапорця.");
     console.log("         cas, waitlist, case і stop потребують RADFLOW_USER_JWT — токен живого персоналу.");
     console.log("         Сесія у COOKIE (@supabase/ssr), не в localStorage — сніпет у шапці файлу.");
     console.log("         Живе ~годину. Не друкувати, не класти в лог, не слати в переписку.");
@@ -1684,25 +1766,46 @@ async function main() {
       });
       /* Дата має бути СПІЛЬНА: `p_date` у RPC один на весь набір кабінетів. */
       const slotA = slots.find((s) => found2.slots.some((x) => x.day === s.day));
-      const slotB = slotA ? found2.slots.find((x) => x.day === slotA.day) : null;
+      /* ⚠️ У режимі `--with-case` слот B мусить бути ще й в ІНШИЙ ЧАС: два
+         кроки одного кейса — це ОДИН пацієнт, і `check_case_no_time_overlap`
+         (23P01) не пустить його у два кабінети одночасно. Без цієї умови
+         прогін упав би об власну фікстуру, а не об гонку. */
+      const withCase = opts["with-case"] === true;
+      const slotB = slotA
+        ? found2.slots.find((x) => x.day === slotA.day && (!withCase || x.time !== slotA.time))
+        : null;
       if (!slotA || !slotB) {
         throw new Error(
           "спільної дати для двох кабінетів не знайшлось — аварійна зупинка бере ОДИН p_date.\n"
-          + `  кабінет A: ${slots.map((s) => s.day).join(", ")}\n`
-          + `  кабінет B: ${found2.slots.map((s) => s.day).join(", ")}`);
+          + (withCase ? "  (--with-case вимагає ще й РІЗНИЙ час: кроки одного кейса — один пацієнт)\n" : "")
+          + `  кабінет A: ${slots.map((s) => `${s.day} ${s.time}`).join(", ")}\n`
+          + `  кабінет B: ${found2.slots.map((s) => `${s.day} ${s.time}`).join(", ")}`);
       }
       console.log(`Спільна дата зупинки: ${slotA.day} (A ${slotA.time}, B ${slotB.time})`);
+      if (withCase) {
+        console.log("Режим --with-case: кроки ОДНОГО кейса + четвертий постріл cancel_case_rpc.");
+        console.log("  ⚠️ Це НЕ сторож регресії. Сторожем лишається прогін БЕЗ прапорця:");
+        console.log("     там будь-який 40P01 — дефект. Тут 40P01 = оголошене вікно → INCONCLUSIVE.");
+      }
 
       const race = await runEmergencyStopRace(db, user, {
-        room, room2: stopRoom2, study, study2: stopStudy2, slotA, slotB, cleanupIds,
+        room, room2: stopRoom2, study, study2: stopStudy2, slotA, slotB,
+        cleanupIds, caseIds, withCase,
       });
-      printStopOutcomes("ГОНКА АВАРІЙНИХ ЗУПИНОК (набір кабінетів у ПРОТИЛЕЖНОМУ порядку + «поломка»)",
-        [...race.stops, race.breakdown]);
+      printStopOutcomes("ГОНКА АВАРІЙНИХ ЗУПИНОК (набір кабінетів у ПРОТИЛЕЖНОМУ порядку + «поломка»"
+        + (withCase ? " + скасування кейса)" : ")"),
+        [...race.stops, race.breakdown, ...(race.canceller ? [race.canceller] : [])]);
       for (const s of race.stops) {
         console.log(`  ${s.id}: зупинено кабінетів ${s.rooms.length}/${s.asked.length}`
           + `, знято з виклику ${s.affected ?? "?"}`);
       }
       console.log(`  поломка(B): ${race.breakdown.ok ? "простій створено" : `відмовлено ${race.breakdown.sqlstate}`}`);
+      if (race.canceller) {
+        console.log(`  скасування кейса: ${race.canceller.ok
+          ? `знято кроків ${typeof race.canceller.row === "number" ? race.canceller.row : "?"}`
+          : `відмовлено ${race.canceller.sqlstate}`}`
+          + `, кейс у базі = ${race.caseFinal?.status ?? "?"}`);
+      }
       console.log(`  активних інцидентів у базі: `
         + Object.entries(race.byRoom).map(([r, k]) => `${r.slice(0, 8)}→${k}`).join(", "));
       console.log(`  → ${race.verdict.verdict}: ${race.verdict.reason}`);
