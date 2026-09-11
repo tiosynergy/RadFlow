@@ -8,10 +8,20 @@
      node scripts/race-check.mjs room --run                # ПИШЕ: гонка за кабінет
      node scripts/race-check.mjs cas --run                 # ПИШЕ: паралельний CAS
      node scripts/race-check.mjs waitlist --run            # ПИШЕ: гонка за кандидата
+     node scripts/race-check.mjs case --run                # ПИШЕ: скасування кейса vs крок
+     node scripts/race-check.mjs stop --run                # ПИШЕ: дві аварійні зупинки
+     node scripts/race-check.mjs midnight --run            # ПИШЕ: перетин ЧЕРЕЗ північ
      node scripts/race-check.mjs cleanup --run             # аварійне прибирання
 
-   ЧОТИРИ СЦЕНАРІЇ — чотири РІЗНІ гаранти, і плутати їх не можна:
+   СІМ СЦЕНАРІЇВ — і кожен стереже СВІЙ гарант; плутати їх не можна:
      run  — двоє пишуться в ОДИН слот     → тригер `check_no_overlap` (0064), 23P01;
+     midnight — той самий тригер, але вікна перетинаються ЧЕРЕЗ МЕЖУ ДОБИ
+            (23:50 доби D проти 00:00 доби D+1). ЄДИНИЙ сценарій, де у фікстур
+            РІЗНА `scheduled_date`. Тригер порівнює абсолютні `tstzrange` на
+            «настінному UTC» (0035) і меж доби не знає — але поза добою цього
+            ніхто не міряв, а продукт хвости через північ підтримує явно
+            (`room_busy_slots` 0074 обрізає вікна по добі, мʼяка пред-перевірка
+            в `app/queue/actions.ts` спеціально бере сусідні доби ±1);
      room — двох заводять в ОДИН кабінет  → унікальний індекс
             `queue_one_in_progress_per_room` (0018), 23505;
      cas  — двоє міняють статус ОДНОГО запису → `for update` + звірка
@@ -69,8 +79,10 @@ import {
   MODALITY_STUDY_TYPE, buildFixture, clinicDay, CAS_FROM, CAS_TO,
   buildWaitlistFixture, buildWaitlistBooking,
   buildCaseFixture, buildCaseStep, CASE_ACTIVE_STATUSES,
+  MIDNIGHT_LATE_TIME, MIDNIGHT_EARLY_TIME, MIDNIGHT_CONTROL_TIME,
   verdictSlotRace, verdictControl, verdictInProgressRace, verdictCas,
   verdictWaitlistRace, verdictCaseCancelRace, verdictCaseRounds, verdictEmergencyStop,
+  verdictMidnightRace,
 } from "./race-check-lib.mjs";
 
 function adminClient() {
@@ -949,6 +961,159 @@ async function runRace(db, { room, study, slot, n, cleanupIds }) {
 const DAYS = [7, 8, 9, 10, 11, 12, 13, 14];
 const TIMES = ["10:00", "11:00", "15:00", "16:00"];
 
+/** Пара СУСІДНІХ діб, придатна для сценарію `midnight`: пізній слот доби D,
+    ранній і контрольний — доби D+1.
+
+    ⚠️ Власний пошук, а не `findSlots`: той шукає БУДЬ-ЯКІ придатні слоти й
+    віддав би чотири зручні денні. Тут потрібні три КОНКРЕТНІ часи на двох
+    КОНКРЕТНИХ сусідніх добах — три пробні вставки, і якщо хоч одна не пройшла,
+    ця пара доб не годиться (закритий день, простій, чужий запис поруч) і
+    береться наступна.
+
+    ⚠️ Проби йдуть ПО ЧЕРЗІ й кожна одразу прибирається. Паралельно вони
+    заважали б одна одній (пізня і рання перетинаються за побудовою — у тому й
+    сенс сценарію), і пара доб виглядала б непридатною через нас самих. */
+async function findMidnightDays(db, room, study, { days, cleanupIds }) {
+  const tz = room.clinics?.timezone || "UTC";
+  const tried = [];
+  for (const d of days) {
+    const dayLate = clinicDay(tz, d);
+    const dayEarly = clinicDay(tz, d + 1);
+    const probes = [
+      { day: dayLate, time: MIDNIGHT_LATE_TIME, offSchedule: true },
+      { day: dayEarly, time: MIDNIGHT_EARLY_TIME, offSchedule: false },
+      { day: dayEarly, time: MIDNIGHT_CONTROL_TIME, offSchedule: false },
+    ];
+    let ok = true;
+    for (const p of probes) {
+      const id = randomUUID();
+      const row = buildFixture({
+        id, clinicId: room.clinic_id, roomId: room.id,
+        day: p.day, time: p.time, label: "проба-північ", study, offSchedule: p.offSchedule,
+      });
+      cleanupIds.push(id);          // ДО пострілу: успішна проба інакше лишилась би в слоті
+      const r = await fire(db, row);
+      if (!r.ok) {
+        tried.push(`${p.day} ${p.time}: ${r.sqlstate} ${r.message.slice(0, 60)}`);
+        ok = false; break;
+      }
+      await cleanup(db, [id]);
+    }
+    if (ok) return { dayLate, dayEarly, tried };
+  }
+  throw new Error(
+    `придатної пари сусідніх діб не знайдено (потрібні ${MIDNIGHT_LATE_TIME} доби D, `
+    + `${MIDNIGHT_EARLY_TIME} і ${MIDNIGHT_CONTROL_TIME} доби D+1). Спроби:\n  ${tried.join("\n  ")}`);
+}
+
+/** ПЕРЕДУМОВА сценарію `midnight`: кабінет мусить працювати ЦІЛОДОБОВО і всі
+    сім днів.
+
+    ⚠️ ЧОМУ ЦЕ АСЕРТ, А НЕ «спробуємо й побачимо». Перший прогін 11.09 дав вісім
+    рядків `23514` поспіль і повідомлення «придатної пари сусідніх діб не
+    знайдено» — тобто сценарій виглядав зламаним, хоча зламаною була ПЕРЕДУМОВА.
+    Діагноз коштував окремого зонда в прод. Асерт називає причину одразу.
+
+    ⚠️ ЩО САМЕ вимагає графіка (заміряно з тіла `check_room_schedule`, 0084):
+      • ранній запис 00:00 — `v_slot_start < v_open_min` = BEFORE_OPEN, і це
+        заборона БЕЗ права підтвердження: `off_schedule` її не відкриває.
+        Отже `start` кабінету мусить бути рівно `00:00`;
+      • пізній 23:50 — `v_slot_end = 1450 > v_close_min` завжди (бо
+        `v_close_min ≤ 1440`), тож потрібні І прапорець `off_schedule`, І стеля
+        `v_close_min + 120 ≥ 1450`, тобто `end` не раніше 22:10. Беремо 24:00;
+      • день мусить бути відкритий у `days` — інакше ROOM_CLOSED, теж без права
+        підтвердження. Доби перебираються поспіль, тож потрібні всі сім.
+
+    ⚠️ Читаємо СИРИЙ `rooms.schedule` і розбираємо його тут, а не кличемо
+    `roomScheduleFor` із `lib/schedule.ts`: то TS-модуль застосунку, а харнес —
+    голий Node без збірки. Дзеркалимо лише ту частину, що потрібна для
+    передумови, і кажемо про це вголос. */
+async function assertRoomOpenAroundMidnight(db, room) {
+  const { data, error } = await db.from("rooms").select("schedule").eq("id", room.id).maybeSingle();
+  if (error) throw new Error(`не прочитали графік кабінету: ${error.message}`);
+  if (!data) throw new Error("рядка кабінету не видно — графік невідомий (fail-closed)");
+  const s = data.schedule;
+  const fail = (why) => {
+    throw new Error(
+      `кабінет ${room.name} не годиться для сценарію «північ»: ${why}.\n`
+      + "  Потрібен графік ЦІЛОДОБОВО і всі сім днів — інакше 00:00 відсікає BEFORE_OPEN,\n"
+      + "  а 23:50 не влазить у стелю +120 хв (check_room_schedule, 0084).\n"
+      + "  Для харнесного кабінету смоук-центру це разова правка:\n"
+      + `    update public.rooms set schedule = '{"days":[1,1,1,1,1,1,1],"start":"00:00","end":"24:00",`
+      + `"breaks":[],"perDay":false}'::jsonb where id = '${room.id}';`);
+  };
+  if (!s || typeof s !== "object") fail("графіка немає — працює дефолт 08:00–18:00, неділя закрита");
+  const days = Array.isArray(s.days) ? s.days : null;
+  if (!days || days.length !== 7 || days.some((d) => !d)) fail(`відкриті не всі сім днів (days = ${JSON.stringify(s.days)})`);
+  if (s.perDay) fail("увімкнено perDay — погодинний графік по днях тут не розбирається, вимкніть його");
+  const toMinLocal = (t) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || ""));
+    return m ? Number(m[1]) * 60 + Number(m[2]) : NaN;
+  };
+  const open = toMinLocal(s.start);
+  const close = toMinLocal(s.end);
+  if (open !== 0) fail(`відкриття о ${s.start}, а ранній запис ${MIDNIGHT_EARLY_TIME} потребує рівно 00:00`);
+  /* Стеля грації — константа тригера (c_grace = 120). Дублюємо число тут
+     свідомо і називаємо джерело: харнес до SQL-констант доступу не має. */
+  const lateEnd = 23 * 60 + 50 + FIXTURE_DUR_MIN;
+  if (!(close + 120 >= lateEnd)) fail(`закриття о ${s.end}: ${MIDNIGHT_LATE_TIME} + ${FIXTURE_DUR_MIN} хв виходить за стелю +120 хв`);
+  if (Array.isArray(s.breaks) && s.breaks.length) fail(`у кабінету є перерви (${s.breaks.length}) — check_not_during_break може відсікти пробу`);
+}
+
+/** Контроль сценарію `midnight`: ті самі дві доби, але вікна НЕ перетинаються
+    (23:50 доби D і 03:00 доби D+1).
+
+    ⚠️ Спільного контролю тут НЕ ДОСИТЬ, і причина конкретна. Він ганяє два
+    ДЕННІ слоти однієї доби — тобто доводить паралельність клієнта, але нічого
+    не каже про те, чи взагалі можна записати двох людей на РІЗНІ сусідні доби
+    одночасно. Без цього подвійна відмова в гонці читалась би як «межа доби
+    ламає запис узагалі», а не як дефект тригера. */
+async function runMidnightControl(db, { room, study, dayLate, dayEarly, cleanupIds }) {
+  const rows = [
+    { day: dayLate, time: MIDNIGHT_LATE_TIME, label: "контроль-північ-пізній", offSchedule: true },
+    { day: dayEarly, time: MIDNIGHT_CONTROL_TIME, label: "контроль-північ-ранній", offSchedule: false },
+  ].map((s) => buildFixture({
+    id: randomUUID(), clinicId: room.clinic_id, roomId: room.id,
+    day: s.day, time: s.time, label: s.label, study, offSchedule: s.offSchedule,
+  }));
+  rows.forEach((r) => cleanupIds.push(r.id));
+  const outcomes = await Promise.all(rows.map((r) => fire(db, r)));
+  await cleanup(db, rows.map((r) => r.id));
+  return { outcomes, verdict: verdictControl(outcomes) };
+}
+
+/** Гонка ЧЕРЕЗ МЕЖУ ДОБИ: 23:50 доби D проти 00:00 доби D+1. Рівно ДВА
+    учасники — геометрія в них РІЗНА, тож `--n` тут не має сенсу (третій
+    довелось би ставити на ще одну добу, і це вже інший сценарій). */
+async function runMidnightRace(db, { room, study, dayLate, dayEarly, cleanupIds }) {
+  const rows = [
+    /* ⚠️ Прапорець ЛИШЕ в пізнього, і це не дрібниця. Ранній (00:00 + 20 хв)
+       закінчується всередині доби, тож підтвердження йому не потрібне —
+       поставивши його «за компанію», ми ослабили б фікстуру без потреби і
+       перестали б помічати, якби 00:00 раптом почав вимагати дозволу. */
+    { day: dayLate, time: MIDNIGHT_LATE_TIME, label: "північ-пізній", offSchedule: true },
+    { day: dayEarly, time: MIDNIGHT_EARLY_TIME, label: "північ-ранній", offSchedule: false },
+  ].map((s) => buildFixture({
+    id: randomUUID(), clinicId: room.clinic_id, roomId: room.id,
+    day: s.day, time: s.time, label: s.label, study, offSchedule: s.offSchedule,
+  }));
+  rows.forEach((r) => cleanupIds.push(r.id));
+  const outcomes = await Promise.all(rows.map((r) => fire(db, r)));
+  await cleanup(db, rows.map((r) => r.id));
+  return {
+    outcomes,
+    verdict: verdictMidnightRace(outcomes, {
+      dayLate, timeLate: MIDNIGHT_LATE_TIME,
+      dayEarly, timeEarly: MIDNIGHT_EARLY_TIME,
+      /* Зайнятість = дослідження + буфер, рівно як її рахує тригер 0064
+         (`duration_min + coalesce(buffer_time_min, 5)`). Передаємо, а не
+         зашиваємо у вердикт: інакше зміна фікстури тихо розійшлася б із
+         перевіркою геометрії, яка на цьому числі й тримається. */
+      occMin: FIXTURE_DUR_MIN + FIXTURE_BUF_MIN,
+    }),
+  };
+}
+
 function printOutcomes(title, outcomes) {
   const t0 = Math.min(...outcomes.map((o) => o.startedAt));
   console.log(`  ${title}:`);
@@ -1243,7 +1408,7 @@ async function main() {
   const db = adminClient();
 
   if (cmd === "help" || opts.help) {
-    console.log("race-check.mjs plan | run --run [--n 2..8] [--room <uuid>] | room --run | cas --run | waitlist --run | case --run | stop --run | cleanup [--run]");
+    console.log("race-check.mjs plan | run --run [--n 2..8] [--room <uuid>] | room --run | cas --run | waitlist --run | case --run | stop --run | midnight --run | cleanup [--run]");
     console.log("  run  — двоє в ОДИН слот (тригер 0064)");
     console.log("  room — двох в ОДИН кабінет (унікальний індекс 0018)");
     console.log("  cas  — двоє міняють статус ОДНОГО запису (for update у 0075).");
@@ -1254,6 +1419,9 @@ async function main() {
     console.log("         СЕРІЯ раундів (--rounds 2..40, типово 20): з двох упорядкувань лише");
     console.log("         «скасування → крок» щось перевіряє, тож вердикт ВИМАГАЄ його хоч раз.");
     console.log("         Другий кабінет: --room2 <uuid>, слоти для нього шукаються окремо.");
+    console.log("  midnight — пізній запис доби D проти раннього доби D+1 (той самий тригер 0064,");
+    console.log("         але вікна перетинаються ЧЕРЕЗ МЕЖУ ДОБИ). Рівно два учасники: --n не діє.");
+    console.log("         Єдиний сценарій, де у фікстур РІЗНА scheduled_date; токен не потрібен.");
     console.log("  stop — дві АВАРІЙНІ ЗУПИНКИ на одному наборі кабінетів у ПРОТИЛЕЖНОМУ порядку");
     console.log("         + «поломка» на спільному кабінеті. Питання: чи лишився детермінованим");
     console.log("         порядок захвату локів (0083/0109), тобто чи не виникає 40P01.");
@@ -1268,7 +1436,7 @@ async function main() {
     return;
   }
   if (cmd === "cleanup") { process.exit(await cmdCleanup(db, write)); }
-  if (!["plan", "run", "room", "cas", "waitlist", "case", "stop"].includes(cmd)) throw new Error(`невідома команда «${cmd}»`);
+  if (!["plan", "run", "room", "cas", "waitlist", "case", "stop", "midnight"].includes(cmd)) throw new Error(`невідома команда «${cmd}»`);
 
   const room = await pickRoom(db, opts.room);
   const study = await pickStudy(db, room);
@@ -1282,7 +1450,9 @@ async function main() {
     console.log(`Дні-кандидати: +${DAYS[0]}..+${DAYS[DAYS.length - 1]}, часи: ${TIMES.join(", ")}.`);
     console.log("Пошук слота вимагає пробного запису — тому `plan` його НЕ робить.");
     console.log("Запуск: node scripts/race-check.mjs run --run");
-    console.log("Інші сценарії: room --run (кабінет), cas --run (CAS), waitlist --run (кандидат листа).");
+    console.log("Інші сценарії: room --run (кабінет), cas --run (CAS), waitlist --run (кандидат листа),");
+    console.log(`               case --run (кейс), stop --run (аварійні зупинки), midnight --run`);
+    console.log(`               (перетин через північ: ${MIDNIGHT_LATE_TIME} доби D проти ${MIDNIGHT_EARLY_TIME} доби D+1).`);
     return;
   }
 
@@ -1298,6 +1468,10 @@ async function main() {
   // у клініки увімкнено вебхук. Перевіряємо ДО першого запису.
   await assertNoLiveWebhook(db, room.clinic_id);
   if (cmd === "room") await assertRoomFree(db, room.id);
+  /* ПЕРЕДУМОВА «півночі» — ДО першого запису, як і гард `stop`. Без неї прогін
+     давав вісім рядків `23514` і повідомлення «пари діб не знайдено», тобто
+     звинувачував сценарій у тому, що насправді є графіком кабінету. */
+  if (cmd === "midnight") await assertRoomOpenAroundMidnight(db, room);
 
   /* `stop` бере ДРУГИЙ кабінет і свій гард — обидва ДО першого запису.
      Гард тут найважливіший у файлі: аварійна зупинка б'є по предикату, тож
@@ -1367,6 +1541,31 @@ async function main() {
       console.log(`  → ${race.verdict.verdict}: ${race.verdict.reason}`);
       console.log(`  розкид стартів: ${race.verdict.spread} мс`);
       code = race.verdict.verdict === "PASS" ? 0 : (race.verdict.verdict === "FAIL" ? 1 : 2);
+    } else if (cmd === "midnight") {
+      /* ⚠️ ВЛАСНІ ДОБИ, а не `slots` спільного пошуку. Той шукає будь-які
+         придатні слоти й віддає денні — тут потрібні три конкретні часи на
+         двох СУСІДНІХ добах. Спільний контроль вище лишається і робить свою
+         роботу (паралельність клієнта), власний нижче доводить інше: що двоє
+         на різні сусідні доби записуються одночасно без перешкод. */
+      const { dayLate, dayEarly, tried } = await findMidnightDays(db, room, study, {
+        days: DAYS, cleanupIds,
+      });
+      console.log(`Доби переходу: ${dayLate} ${MIDNIGHT_LATE_TIME} → ${dayEarly} ${MIDNIGHT_EARLY_TIME}`
+        + ` (відкинуто проб: ${tried.length}).`);
+      const ctl = await runMidnightControl(db, { room, study, dayLate, dayEarly, cleanupIds });
+      printOutcomes(`КОНТРОЛЬ ПІВНОЧІ (${MIDNIGHT_LATE_TIME} доби D + ${MIDNIGHT_CONTROL_TIME} доби D+1)`, ctl.outcomes);
+      console.log(`  → ${ctl.verdict.verdict}: ${ctl.verdict.reason}\n`);
+      if (ctl.verdict.verdict !== "PASS") {
+        console.log("Гонку НЕ запускаємо: через межу доби не записались навіть ті, чиї вікна");
+        console.log("не перетинаються, — відмова в гонці нічого не довела б про тригер.");
+        code = 2;
+      } else {
+        const race = await runMidnightRace(db, { room, study, dayLate, dayEarly, cleanupIds });
+        printOutcomes(`ГОНКА ЧЕРЕЗ ПІВНІЧ (${dayLate} ${MIDNIGHT_LATE_TIME} проти ${dayEarly} ${MIDNIGHT_EARLY_TIME})`, race.outcomes);
+        console.log(`  → ${race.verdict.verdict}: ${race.verdict.reason}`);
+        console.log(`  розкид стартів: ${race.verdict.spread} мс`);
+        code = race.verdict.verdict === "PASS" ? 0 : (race.verdict.verdict === "FAIL" ? 1 : 2);
+      }
     } else if (cmd === "waitlist") {
       /* ⚠️ ВЛАСНИЙ КОНТРОЛЬ, ПОВЕРХ спільного (знахідка ревʼю Б, с62).
          Спільний контроль вище доводить придатність слотів і паралельність

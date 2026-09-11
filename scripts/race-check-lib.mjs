@@ -188,8 +188,22 @@ export function clinicDay(tz, offsetDays, now = new Date()) {
 }
 
 /** Рядок фікстури. `id` приходить ЗЗОВНІ (згенерований до пострілу) — саме
-    він потім є явним списком для прибирання. */
-export function buildFixture({ id, clinicId, roomId, day, time, label, study }) {
+    він потім є явним списком для прибирання.
+
+    ⚠️ `offSchedule` (с63, сценарій `midnight`). Дефолт `false` — жоден наявний
+    сценарій не змінюється. Ставиться РІВНО там, де без нього фікстура
+    незаконна: запис, що ПЕРЕТИНАЄ північ, закінчується після закриття будь-якого
+    кабінету за побудовою (`check_room_schedule` рахує кінець як
+    `start + duration` У ХВИЛИНАХ ТІЄЇ Ж ДОБИ, тож 23:50 + 20 хв = 1450 > 1440 ≥
+    будь-якого `close`). Продукт для такої роботи вимагає підтвердження
+    оператора, і прапорець — саме воно, а не обхід гарда: закритий день, час до
+    відкриття і стеля +120 хв він НЕ відкриває (0084).
+
+    ⚠️ Чому це взагалі працює з-під харнеса: `guard_off_schedule` (0077) б'є по
+    `auth.uid() is not null and auth_clinic_id() is null`, тобто по направнику й
+    CEO. Службова роль має `auth.uid()` = NULL і в гарді прямо названа
+    довіреною. Заміряно з тіла функції, не припущено. */
+export function buildFixture({ id, clinicId, roomId, day, time, label, study, offSchedule = false }) {
   const studies = [study];
   return {
     id, clinic_id: clinicId, room_id: roomId,
@@ -199,6 +213,7 @@ export function buildFixture({ id, clinicId, roomId, day, time, label, study }) 
     duration_min: FIXTURE_DUR_MIN, buffer_time_min: FIXTURE_BUF_MIN,
     scheduled_date: day, scheduled_time: time,
     status: "scheduled", call_status: "not_called",
+    off_schedule: offSchedule,
   };
 }
 
@@ -359,6 +374,117 @@ export function verdictSlotRace(outcomes, { spreadLimitMs = START_SPREAD_LIMIT_M
     guard: "тригера 0064",
     doubleWin: "ПОДВІЙНЕ БРОНЮВАННЯ",
     noWin: "не записався НІХТО — слот або фікстура непридатні",
+    spreadLimitMs,
+  });
+}
+
+/** Часи фікстур сценарію `midnight` — ПЕРЕХІД ЧЕРЕЗ ПІВНІЧ.
+
+    Геометрія: 23:50 доби D займає кабінет до 00:15 доби D+1 (20 хв
+    дослідження + 5 хв буфера), а 00:00 доби D+1 — до 00:25. Вікна САМИХ
+    ДОСЛІДЖЕНЬ (без буфера) перетинаються 00:00–00:10, тобто перетин не
+    тримається на буфері й лишився б перетином, навіть якби буфер прибрали.
+
+    ⚠️ Числа не «зручні», а підібрані під `FIXTURE_DUR_MIN`. Зміните
+    тривалість — перевірте, що перетин ще існує: `verdictMidnightRace` рахує
+    його сам і віддає INCONCLUSIVE, якщо сцена виродилась. Саме цієї
+    перевірки бракувало сценарію `case` до с63. */
+export const MIDNIGHT_LATE_TIME = "23:50";
+export const MIDNIGHT_EARLY_TIME = "00:00";
+/** Контрольний слот НАСТУПНОЇ доби: свідомо далеко від хвоста 00:15. */
+export const MIDNIGHT_CONTROL_TIME = "03:00";
+
+/** Хвилини доби з «HH:MM». Без дефолтів: зламаний рядок має дати NaN і
+    провалити перевірку геометрії, а не тихо стати нулем. */
+function minOfDay(hhmm) {
+  const m = /^(\d{2}):(\d{2})$/.exec(String(hhmm || ""));
+  return m ? Number(m[1]) * 60 + Number(m[2]) : NaN;
+}
+
+/** Різниця дат «YYYY-MM-DD» у добах. Рахуємо в UTC, де DST не існує: доби
+    переходу не 24 години, і наївна різниця мілісекунд локального часу дала б
+    0 або 2 замість 1 (той самий клас, що закривав `clinicDay` і lib/fhirTime). */
+function dayDiff(a, b) {
+  const p = (s) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ""));
+    return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : NaN;
+  };
+  return (p(b) - p(a)) / 86400000;
+}
+
+/** Вердикт гонки ЧЕРЕЗ МЕЖУ ДОБИ: пізній запис доби D проти раннього доби D+1.
+
+    ЩО САМЕ ТУТ ПЕРЕВІРЯЄТЬСЯ І ЧОМУ ЦЕ НЕ ДУБЛІКАТ `run`. Гарант той самий —
+    тригер `check_no_overlap` (0064), — але геометрія інша, і саме вона ніколи
+    не ганялась: у всіх пʼяти наявних сценаріїв обидві фікстури мають ОДНАКОВУ
+    `scheduled_date`. Тригер порівнює `tstzrange` на `scheduled_at`, тобто на
+    абсолютних «настінних UTC» миттєвостях (0035), і межі доби не знає взагалі
+    — але це ТВЕРДЖЕННЯ ПРО КОД, і поза добою його ніхто не міряв. Продукт
+    хвости через північ підтримує явно: `room_busy_slots` (0074) обрізає вікна
+    по добі й віддає «хвостові» рядки з `duration_min = 0`, а мʼяка
+    пред-перевірка в `app/queue/actions.ts` спеціально бере СУСІДНІ доби (±1)
+    саме тому, що інакше «слот зелений, але незаписуваний».
+
+    ⚠️ ТРИ ГЕЙТИ ГЕОМЕТРІЇ СТОЯТЬ ПЕРЕД ДРАБИНКОЮ, і кожен закриває свій
+    спосіб зробити сценарій вакуумним — тобто зеленим, який нічого не довів:
+      1. доби РІЗНІ. Однакові — і це просто `run` під іншим іменем;
+      2. доби СУСІДНІ. `dayDiff = 1` перевіряємо самі з рядків, а не віримо
+         тому, хто їх побудував: 23:50 доби D і 00:00 доби D+5 не перетнуться
+         ніколи, і «не записався НІХТО» прочиталось би як дефект тригера;
+      3. вікна ЗАЙНЯТОСТІ справді перетинаються. Хвіст пізнього запису заходить
+         у наступну добу на `minOfDay(timeLate) + occMin − 1440` хвилин; якщо це
+         не більше за старт раннього, ЗАБОРОНЕНОГО СТАНУ НЕ ІСНУЄ, і «рівно одна
+         удача» була б чистим збігом. Рівно ця перевірка й відрізняє доказ від
+         збігу — її відсутність в `case` коштувала сесії 62 хибного блокування.
+
+    Усі три дають INCONCLUSIVE, а не FAIL: зіпсована сцена — це «нічого не
+    довели», а не «знайдено дефект». Плутати їх не можна.
+
+    ⚠️ Форма сцени оголошена JSDoc-ом НАВМИСНО, а не лишена на висновок. У .mjs
+    TypeScript виводить тип деструктурованого параметра з дефолта `= {}` плюс
+    ті поля, що мають власні дефолти, — тобто вийшло б `{ spreadLimitMs?: … }`,
+    і будь-який виклик із реальною сценою не збирався б (TS2559/TS2353). Це не
+    косметика: без анотації спек цієї функції не написати взагалі.
+
+    @param {Array<Outcome>} outcomes
+    @param {{ dayLate?: string, timeLate?: string, dayEarly?: string,
+              timeEarly?: string, occMin?: number, spreadLimitMs?: number }} [scene] */
+export function verdictMidnightRace(outcomes, {
+  dayLate, timeLate, dayEarly, timeEarly, occMin,
+  spreadLimitMs = START_SPREAD_LIMIT_MS,
+} = {}) {
+  const spread = startSpreadMs(outcomes || []);
+  const diff = dayDiff(dayLate, dayEarly);
+  if (!Number.isFinite(diff)) {
+    return { verdict: "INCONCLUSIVE", spread,
+      reason: `дати фікстур нечитані (${dayLate} → ${dayEarly}) — сцену не перевірити` };
+  }
+  if (diff === 0) {
+    return { verdict: "INCONCLUSIVE", spread,
+      reason: `обидві фікстури на ОДНУ добу (${dayLate}) — це сценарій \`run\` під іншим іменем, `
+        + "межу доби не перетнуто" };
+  }
+  if (diff !== 1) {
+    return { verdict: "INCONCLUSIVE", spread,
+      reason: `доби не сусідні (${dayLate} → ${dayEarly}, різниця ${diff}) — вікна не могли перетнутись` };
+  }
+  const lateStart = minOfDay(timeLate);
+  const earlyStart = minOfDay(timeEarly);
+  const tail = lateStart + Number(occMin) - 1440;   // скільки хвилин хвіст заходить у добу D+1
+  if (!Number.isFinite(tail) || !Number.isFinite(earlyStart)) {
+    return { verdict: "INCONCLUSIVE", spread,
+      reason: `часи або зайнятість нечитані (${timeLate} +${occMin} хв, ${timeEarly})` };
+  }
+  if (tail <= earlyStart) {
+    return { verdict: "INCONCLUSIVE", spread,
+      reason: `вікна НЕ перетинаються: ${timeLate} +${occMin} хв закінчується на ${tail} хв доби D+1, `
+        + `а ранній запис починається на ${earlyStart} — забороненого стану не існує` };
+  }
+  return verdictExclusive(outcomes, {
+    sqlstate: OVERLAP_SQLSTATE,
+    guard: "тригера 0064 ЧЕРЕЗ межу доби",
+    doubleWin: "ПОДВІЙНЕ БРОНЮВАННЯ ЧЕРЕЗ ПІВНІЧ",
+    noWin: "не записався НІХТО — слоти біля півночі або фікстура непридатні",
     spreadLimitMs,
   });
 }

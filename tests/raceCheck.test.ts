@@ -18,6 +18,7 @@ import {
   CASE_NOT_OPEN_SQLSTATE, CASE_ACTIVE_STATUSES,
   verdictEmergencyStop, DEADLOCK_SQLSTATE, INCIDENT_TAKEN_SQLSTATE,
   verdictCaseRounds, CASE_NOT_OPEN_MESSAGE,
+  verdictMidnightRace, MIDNIGHT_LATE_TIME, MIDNIGHT_EARLY_TIME, MIDNIGHT_CONTROL_TIME,
 } from "../scripts/race-check-lib.mjs";
 
 /* ⚠️ ЗНАЙДЕНО СТЕНДОМ `falsify-race-check` (с62), і це дефект САМИХ ТЕСТІВ,
@@ -572,6 +573,21 @@ describe("buildFixture — id приходить ззовні, бо він же 
     });
     expect(row.duration_min + row.buffer_time_min).toBe(25);
   });
+
+  /* ⚠️ Пакет 56: фікстура отримала `offSchedule`, і ДЕФОЛТ тут — головне.
+     `off_schedule = true` вимикає єдину гілку `check_room_schedule`, яку
+     взагалі можна вимкнути («робота після закриття»). Поставши дефолтом, він
+     мовчки ослабив би ВСІ пʼять наявних сценаріїв: їхні фікстури перестали б
+     перевірятись графіком, і ніхто б не помітив — вони й так у робочих
+     годинах. Тому пінимо обидва боки. */
+  it("off_schedule за замовчуванням ВИМКНЕНО — інакше графік перестає стерегти фікстури", () => {
+    const base = {
+      id: "x", clinicId: "c1", roomId: "r1", day: "2026-08-30", time: "10:00",
+      label: "l", study: { dur: 20, type: "МРТ", price: 1, region: "r", contrast: false },
+    };
+    expect(buildFixture(base).off_schedule).toBe(false);
+    expect(buildFixture({ ...base, offSchedule: true }).off_schedule).toBe(true);
+  });
 });
 
 /* ------------------------------------------------------- аварійна зупинка */
@@ -894,5 +910,151 @@ describe("verdictCaseRounds — серія, бо половина упорядк
 
   it("порожня серія — гонки не було", () => {
     expect(verdictCaseRounds([]).verdict).toBe("FAIL");
+  });
+});
+
+/* ── Сценарій `midnight`: перетин ЧЕРЕЗ МЕЖУ ДОБИ (пакет 56, с63) ──────────
+   Гарант той самий, що в `run` — тригер `check_no_overlap` (0064). Нове тут
+   ОДНЕ: у фікстур РІЗНА `scheduled_date`. Тригер порівнює абсолютні
+   `tstzrange` на «настінному UTC» (0035) і меж доби не знає — але це
+   твердження про КОД, і поза добою його ніколи не міряли, хоча продукт
+   хвости через північ підтримує явно (`room_busy_slots` 0074 обрізає вікна по
+   добі, а мʼяка пред-перевірка в `app/queue/actions.ts` спеціально бере
+   сусідні доби ±1 — «інакше слот зелений, але незаписуваний»).
+
+   ⚠️ ПІВ ФАЙЛА ТУТ — ПРО ВИРОДЖЕННЯ СЦЕНИ, і це не перестраховка. Урок с62/63
+   (`case`): сценарій, у якому заборонений стан НЕ МІГ виникнути, дає «рівно
+   одну удачу» і читається як PASS. Тому геометрія перевіряється вердиктом
+   САМОСТІЙНО — з тих самих рядків дат і часів, — а не береться на віру від
+   того, хто фікстури будував. */
+describe("гонка через межу доби — вердикт відрізняє доказ від збігу", () => {
+  /* ⚠️ Входи — ЛІТЕРАЛИ, а не константи модуля (правило 2 з с50, і рівно на
+     цьому файлі воно вже було порушене для трьох сценаріїв). Подавши
+     `OVERLAP_SQLSTATE` і на вхід, і в очікування, ми порівнювали б значення
+     саме із собою: мутація константи лишила б набір зеленим. */
+  const shot = (ok: boolean, sqlstate = "", startedAt = 0, finishedAt = 40) =>
+    ({ id: `id-${startedAt}-${sqlstate}`, ok, sqlstate, message: "", startedAt, finishedAt });
+  /* Заміряна геометрія: 23:50 + 25 хв = 00:15 доби D+1, ранній стартує о 00:00.
+     Хвіст заходить на 15 хв, перетин реальний. */
+  const scene = {
+    dayLate: "2026-09-20", timeLate: "23:50",
+    dayEarly: "2026-09-21", timeEarly: "00:00",
+    occMin: 25,
+  };
+
+  it("константи часів лишились тими, під які рахована геометрія", () => {
+    /* Пін на ЗАМІРЯНІ значення: зміна часу фікстури мовчки зробила б перетин
+       нульовим, а сценарій — вакуумним. Тут же видно, що контрольний слот
+       свідомо далеко від хвоста 00:15. */
+    expect(MIDNIGHT_LATE_TIME).toBe("23:50");
+    expect(MIDNIGHT_EARLY_TIME).toBe("00:00");
+    expect(MIDNIGHT_CONTROL_TIME).toBe("03:00");
+  });
+
+  it("зайнятість фікстури справді заводить хвіст у наступну добу", () => {
+    /* Без цього піна вся сцена трималась би на числах, які ніхто не звіряв із
+       самою фікстурою: 23:50 + (20+5) = 00:15 доби D+1. */
+    const lateMin = 23 * 60 + 50;
+    expect(lateMin + FIXTURE_DUR_MIN + FIXTURE_BUF_MIN).toBeGreaterThan(1440);
+  });
+
+  it("рівно одна удача, невдаха 23P01 → PASS", () => {
+    const r = verdictMidnightRace([shot(true, "", 0), shot(false, "23P01", 3)], scene);
+    expect(r.verdict).toBe("PASS");
+    expect(r.reason).toMatch(/ЧЕРЕЗ межу доби/);
+  });
+
+  it("обидва записались → FAIL: межа доби відкрила дірку в тригері", () => {
+    const r = verdictMidnightRace([shot(true, "", 0), shot(true, "", 3)], scene);
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/ПОДВІЙНЕ БРОНЮВАННЯ ЧЕРЕЗ ПІВНІЧ/);
+  });
+
+  it("невдаха впав не тим SQLSTATE → FAIL, а не PASS", () => {
+    /* 23505 — це індекс 0018 (двоє в кабінеті), зовсім інший гарант. Зарахувати
+       його за перемогу тригера 0064 означало б сказати неправду про те, що
+       саме втримало гонку. */
+    const r = verdictMidnightRace([shot(true, "", 0), shot(false, "23505", 3)], scene);
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/НЕ через гонку/);
+  });
+
+  it("не записався ніхто → FAIL", () => {
+    const r = verdictMidnightRace([shot(false, "23P01", 0), shot(false, "23P01", 3)], scene);
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/слоти біля півночі/);
+  });
+
+  it("послідовний прогін НЕ дає PASS, хоча удача рівно одна", () => {
+    const r = verdictMidnightRace(
+      [shot(true, "", 0), shot(false, "23P01", 3000)], scene);
+    expect(r.verdict).toBe("INCONCLUSIVE");
+    expect(r.reason).toMatch(/одночасність не доведена/);
+  });
+
+  /* ── три гейти геометрії ─────────────────────────────────────────────── */
+
+  it("обидві фікстури на ОДНУ добу → INCONCLUSIVE: це `run` під іншим іменем", () => {
+    /* Найдешевший спосіб зробити сценарій вакуумним і не помітити: сплутати
+       доби при побудові фікстур. Результат виглядав би бездоганним PASS. */
+    const r = verdictMidnightRace([shot(true, "", 0), shot(false, "23P01", 3)],
+      { ...scene, dayEarly: scene.dayLate });
+    expect(r.verdict).toBe("INCONCLUSIVE");
+    expect(r.reason).toMatch(/ОДНУ добу/);
+  });
+
+  it("доби не сусідні → INCONCLUSIVE, а не «дефект тригера»", () => {
+    /* 23:50 доби D і 00:00 доби D+5 не перетнуться ніколи, тож «не записався
+       НІХТО» тут означав би зламану сцену, а не дірку в гаранті. */
+    const r = verdictMidnightRace([shot(false, "23P01", 0), shot(false, "23P01", 3)],
+      { ...scene, dayEarly: "2026-09-25" });
+    expect(r.verdict).toBe("INCONCLUSIVE");
+    expect(r.reason).toMatch(/не сусідні/);
+  });
+
+  it("сусідство рахується по КАЛЕНДАРЮ — межа місяця не збиває", () => {
+    /* Наївна арифметика по рядку («+1 до дня») зламалась би на 30 → 01. */
+    const r = verdictMidnightRace([shot(true, "", 0), shot(false, "23P01", 3)],
+      { ...scene, dayLate: "2026-09-30", dayEarly: "2026-10-01" });
+    expect(r.verdict).toBe("PASS");
+  });
+
+  it("вікна не перетинаються → INCONCLUSIVE: забороненого стану не існує", () => {
+    /* Зайнятість 5 хв: 23:50 закінчується рівно о 23:55, хвоста немає взагалі.
+       Саме цю перевірку `case` не мав до с63, і сесія 62 заплатила за це
+       хибним блокуванням сценарію. */
+    const r = verdictMidnightRace([shot(true, "", 0), shot(false, "23P01", 3)],
+      { ...scene, occMin: 5 });
+    expect(r.verdict).toBe("INCONCLUSIVE");
+    expect(r.reason).toMatch(/НЕ перетинаються/);
+  });
+
+  it("хвіст рівно ДО старту раннього — теж вироджена сцена", () => {
+    /* 23:50 + 10 хв = рівно 00:00. `tstzrange` напіввідкритий, тож дотик кінця
+       й початку перетином НЕ є — і тригер обидва записи пропустив би законно.
+       Межа `<=`, а не `<`, саме тому. */
+    const r = verdictMidnightRace([shot(true, "", 0), shot(false, "23P01", 3)],
+      { ...scene, occMin: 10 });
+    expect(r.verdict).toBe("INCONCLUSIVE");
+    expect(r.reason).toMatch(/НЕ перетинаються/);
+  });
+
+  it("нечитані дати або часи → INCONCLUSIVE, а не мовчазний нуль", () => {
+    /* `minOfDay`/`dayDiff` навмисно без дефолтів: «01» замість «01:00» мусить
+       дати NaN і зупинити сцену, а не тихо стати північчю. */
+    expect(verdictMidnightRace([shot(true, "", 0), shot(false, "23P01", 3)],
+      { ...scene, dayEarly: "завтра" }).verdict).toBe("INCONCLUSIVE");
+    expect(verdictMidnightRace([shot(true, "", 0), shot(false, "23P01", 3)],
+      { ...scene, timeLate: "23-50" }).verdict).toBe("INCONCLUSIVE");
+  });
+
+  it("геометрія перевіряється ДО драбинки — зламана сцена не стає FAIL", () => {
+    /* Порядок — частина правила. Якби гейти стояли після `verdictExclusive`,
+       два переможці на одній добі дали б FAIL «подвійне бронювання через
+       північ» — тобто звинувачення тригера в дефекті, якого ніхто не міряв. */
+    const r = verdictMidnightRace([shot(true, "", 0), shot(true, "", 3)],
+      { ...scene, dayEarly: scene.dayLate });
+    expect(r.verdict).toBe("INCONCLUSIVE");
+    expect(r.reason).not.toMatch(/ПОДВІЙНЕ/);
   });
 });
