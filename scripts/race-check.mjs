@@ -70,7 +70,7 @@ import {
   buildWaitlistFixture, buildWaitlistBooking,
   buildCaseFixture, buildCaseStep, CASE_ACTIVE_STATUSES,
   verdictSlotRace, verdictControl, verdictInProgressRace, verdictCas,
-  verdictWaitlistRace, verdictCaseCancelRace, verdictEmergencyStop,
+  verdictWaitlistRace, verdictCaseCancelRace, verdictCaseRounds, verdictEmergencyStop,
 } from "./race-check-lib.mjs";
 
 function adminClient() {
@@ -587,8 +587,8 @@ async function cleanupCase(db, caseIds) {
     Пропустивши це, ми отримали б відмову кроку з чужим SQLSTATE — і вердикт
     чесно сказав би «відмовлено НЕ через скасування», але прогін не довів би
     нічого. */
-async function runCaseCancelRace(db, user, { room, study, room2, study2, slots, cleanupIds, caseIds }) {
-  const kase = buildCaseFixture({ id: randomUUID(), clinicId: room.clinic_id, label: "кейс" });
+async function runCaseRound(db, user, { room, study, room2, study2, slotA, slotB, cleanupIds, caseIds, label = "кейс" }) {
+  const kase = buildCaseFixture({ id: randomUUID(), clinicId: room.clinic_id, label });
   caseIds.push(kase.id);
   const insCase = await db.from("patient_cases").insert(kase);
   if (insCase.error) throw new Error(`фікстуру кейса не вставлено: ${insCase.error.code} ${insCase.error.message}`);
@@ -596,7 +596,7 @@ async function runCaseCancelRace(db, user, { room, study, room2, study2, slots, 
   // Крок 1 — службовою роллю, напряму: він лише створює кейсу «вміст».
   const step1 = buildFixture({
     id: randomUUID(), clinicId: room.clinic_id, roomId: room.id,
-    day: slots[0].day, time: slots[0].time, label: "кейс-крок-1", study,
+    day: slotA.day, time: slotA.time, label: "кейс-крок-1", study,
   });
   step1.case_id = kase.id;
   step1.case_step = 1;
@@ -606,7 +606,7 @@ async function runCaseCancelRace(db, user, { room, study, room2, study2, slots, 
 
   // Крок 2 — той, який ДОДАЄМО в гонці: ІНШИЙ кабінет, ІНШИЙ слот.
   const p_step = buildCaseStep({
-    roomId: room2.id, day: slots[1].day, time: slots[1].time, study: study2,
+    roomId: room2.id, day: slotB.day, time: slotB.time, study: study2,
   });
 
   const [add, cancel] = await Promise.all([
@@ -645,10 +645,104 @@ async function runCaseCancelRace(db, user, { room, study, room2, study2, slots, 
     readError: cs.error?.message || st.error?.message || null,
   };
   if (final.readError) {
-    return { add, cancel, final, verdict: { verdict: "INCONCLUSIVE", spread: 0,
+    return { caseId: kase.id, add, cancel, final, verdict: { verdict: "INCONCLUSIVE", spread: 0,
       reason: `кінцевий стан не прочитався (${final.readError}) — судити нема про що` } };
   }
-  return { add, cancel, final, verdict: verdictCaseCancelRace(add, cancel, final) };
+  return { caseId: kase.id, add, cancel, final, verdict: verdictCaseCancelRace(add, cancel, final) };
+}
+
+/** Прибрати рядки ОДНОГО раунду відразу, не чекаючи `finally`.
+
+    ⚠️ ЦЕ НЕ АКУРАТНІСТЬ, А УМОВА ПРАЦЕЗДАТНОСТІ СЕРІЇ. Раунди йдуть по тих
+    самих двох слотах; лишивши кроки попереднього раунду в базі, наступний
+    дістав би 23P01 від `check_no_overlap` — і сценарій упав би об власні
+    фікстури. Рівно так у с62 впав перший прод-прогін листа очікування:
+    контроль створював записи в тих слотах, які потім брала гонка, і прибирав
+    їх лише у `finally`.
+
+    ⚠️ Порядок той самий, що всюди: спершу КРОКИ, потім кейс. FK
+    `queue_entries.case_id` — `on delete set null`, тож видалений першим кейс
+    обнулив би `case_id` і відрізав кроки від звʼязку. Id лишаються в
+    `cleanupIds`/`caseIds`: повторне видалення — безпечний no-op, а от
+    ВИКРЕСЛИТИ їх звідти означало б утратити слід, якщо видалення не вдалось. */
+async function cleanupRound(db, caseId) {
+  const st = await db.from("queue_entries").select("id").eq("case_id", caseId);
+  if (st.error) return { left: `кроки не прочитались: ${st.error.message}` };
+  const ids = (st.data || []).map((r) => r.id);
+  if (ids.length) {
+    const d = await cleanup(db, ids);
+    if (d.entries) return { left: `кроки не видалені: ${d.entries}` };
+  }
+  const after = await db.from("queue_entries").select("id").eq("case_id", caseId);
+  if (after.error) return { left: `звірка кроків не вдалась: ${after.error.message}` };
+  if ((after.data || []).length) return { left: `кроків лишилось ${after.data.length}` };
+  const dc = await cleanupCase(db, [caseId]);
+  if (dc.cases) return { left: `кейс не видалено: ${dc.cases}` };
+  return { left: null };
+}
+
+/** КОНТРОЛЬ сценарію «кейс»: крок додається НАОДИНЦІ, без скасування поруч.
+
+    ⚠️ Без нього «22023» у гонці нема чому приписати. `add_case_step_rpc`
+    піднімає цей самий код ще в чотирьох місцях — усі вони валідація входу
+    (кабінет, дослідження, тривалість, слот), тобто ознака непридатної
+    фікстури. Контроль доводить, що САМЕ ЦЯ фікстура проходить, коли їй ніхто
+    не заважає, — і лише після цього відмова в гонці щось означає.
+
+    Спільний контроль угорі (`runControl`) сюди не годиться: він міряє
+    службовий клієнт і вставку в чергу, а тут питання про користувацький
+    токен, RPC кейса і три його тригери. */
+async function runCaseControl(db, user, { room, study, room2, study2, slotA, slotB, cleanupIds, caseIds }) {
+  const kase = buildCaseFixture({ id: randomUUID(), clinicId: room.clinic_id, label: "кейс-контроль" });
+  caseIds.push(kase.id);
+  const insCase = await db.from("patient_cases").insert(kase);
+  if (insCase.error) throw new Error(`контрольний кейс не вставлено: ${insCase.error.code} ${insCase.error.message}`);
+
+  const step1 = buildFixture({
+    id: randomUUID(), clinicId: room.clinic_id, roomId: room.id,
+    day: slotA.day, time: slotA.time, label: "контроль-крок-1", study,
+  });
+  step1.case_id = kase.id;
+  step1.case_step = 1;
+  cleanupIds.push(step1.id);
+  const ins1 = await fire(db, step1);
+  if (!ins1.ok) throw new Error(`контрольний крок 1 не вставлено: ${ins1.sqlstate} ${ins1.message}`);
+
+  const p_step = buildCaseStep({ roomId: room2.id, day: slotB.day, time: slotB.time, study: study2 });
+  const startedAt = Date.now();
+  const { data, error } = await user.rpc("add_case_step_rpc", { p_case_id: kase.id, p_step });
+  const out = {
+    id: "контроль", startedAt, finishedAt: Date.now(), ok: !error,
+    entryId: typeof data === "string" ? data : null,
+    sqlstate: error?.code ?? "", message: error?.message ?? "",
+  };
+  if (out.entryId) cleanupIds.push(out.entryId);
+
+  const left = await cleanupRound(db, kase.id);
+  const verdict = out.ok
+    ? { verdict: "PASS", reason: "крок наодинці додається — фікстура придатна, відмова в гонці матиме сенс" }
+    : { verdict: "FAIL", reason: `крок НЕ додається навіть наодинці: ${out.sqlstate} (${String(out.message).slice(0, 80)}) — фікстура непридатна` };
+  return { out, verdict, left: left.left };
+}
+
+/** СЕРІЯ раундів: контроль, потім `rounds` гонок, потім спільний вердикт. */
+async function runCaseSeries(db, user, { room, study, room2, study2, slotA, slotB, rounds, cleanupIds, caseIds }) {
+  const control = await runCaseControl(db, user, { room, study, room2, study2, slotA, slotB, cleanupIds, caseIds });
+  if (control.verdict.verdict !== "PASS") return { control, rounds: [], verdict: control.verdict };
+
+  const out = [];
+  for (let i = 0; i < rounds; i++) {
+    const r = await runCaseRound(db, user, {
+      room, study, room2, study2, slotA, slotB, cleanupIds, caseIds, label: `кейс-${i + 1}`,
+    });
+    /* ⚠️ Прибирання ДО наступного раунду, і його збій — привід зупинитись, а
+       не «спробувати ще»: наступний раунд усе одно впав би об ці рядки, і
+       діагноз виглядав би як дефект гонки. */
+    const cl = await cleanupRound(db, r.caseId);
+    out.push({ ...r, cleanupLeft: cl.left });
+    if (cl.left) break;
+  }
+  return { control, rounds: out, verdict: verdictCaseRounds(out) };
 }
 
 /** Прибирання ІНЦИДЕНТІВ за явним списком id.
@@ -729,6 +823,20 @@ async function assertRoomsUsableForStop(db, roomIds) {
   }
 }
 
+/** Фікстури сценарію `stop` НЕ МОЖУТЬ бути звʼязані з кейсом — чому саме,
+    написано в `verdictEmergencyStop` і в місці виклику. Винесено окремою
+    функцією, щоб її можна було назвати в мутації стенда. */
+function assertFixturesHaveNoCase(fixtures) {
+  const withCase = fixtures.filter((f) => f.case_id != null || f.case_step != null);
+  if (withCase.length) {
+    throw new Error(
+      `фікстури зупинки звʼязані з кейсом (${withCase.length}) — вердикт цього сценарію став би брехливим.\n`
+      + "  Він вважає БУДЬ-ЯКИЙ 40P01 дефектом, а `cancel_case_rpc` оголошує вікно дедлока\n"
+      + "  «зупинка ↔ тригер перерахунку статусу кейса» ТРАНЗІЄНТНИМ (клієнт повторює).\n"
+      + "  Хочете гонку зупинки з кроками кейса — спершу послабте вердикт і поясніть межу.");
+  }
+}
+
 /** Сценарій «аварійна зупинка»: дві `emergency_stop_rpc` на ОДНОМУ наборі
     кабінетів у ПРОТИЛЕЖНОМУ порядку + `submit_incident_rpc` на спільному
     кабінеті. Питання одне: чи лишається порядок захвату локів детермінованим
@@ -754,6 +862,16 @@ async function runEmergencyStopRace(db, user, { room, room2, study, study2, slot
     buildFixture({ id: randomUUID(), clinicId: room2.clinic_id, roomId: room2.id,
                    day: date, time: slotB.time, label: "зупинка-B", study: study2 }),
   ];
+  /* ⚠️ АСЕРТ, ЯКИЙ ТРИМАЄ МЕЖУ ВЕРДИКТА (замір с63, див. `verdictEmergencyStop`).
+     Вердикт вважає БУДЬ-ЯКИЙ 40P01 дефектом. Це правда лише поки фікстури без
+     `case_id`: тіло `cancel_case_rpc` (рядки 56–60 у проді) прямо оголошує
+     вікно 40P01 між багаторядковою зупинкою і тригером перерахунку статусу
+     КЕЙСА транзієнтним — «клієнт повторює». Зі звʼязкою кейса той самий
+     дедлок став би законним, а вердикт продовжив би кричати «дефект».
+     Тому умова перевіряється, а не памʼятається: додасть хтось крок кейса у
+     фікстуру — прогін зупиниться тут із поясненням, а не збреше потім. */
+  assertFixturesHaveNoCase(fixtures);
+
   for (const f of fixtures) {
     cleanupIds.push(f.id);
     const ins = await fire(db, f);
@@ -1133,6 +1251,9 @@ async function main() {
     console.log("         (умовний UPDATE у schedule_from_waitlist_rpc → 55000 WAITLIST_STALE).");
     console.log("  case — скасування кейса ПРОТИ додавання кроку (for update на кейсі).");
     console.log("         Питання одне: чи може виникнути кейс cancelled з АКТИВНИМ кроком.");
+    console.log("         СЕРІЯ раундів (--rounds 2..20, типово 8): з двох упорядкувань лише");
+    console.log("         «скасування → крок» щось перевіряє, тож вердикт ВИМАГАЄ його хоч раз.");
+    console.log("         Другий кабінет: --room2 <uuid>, слоти для нього шукаються окремо.");
     console.log("  stop — дві АВАРІЙНІ ЗУПИНКИ на одному наборі кабінетів у ПРОТИЛЕЖНОМУ порядку");
     console.log("         + «поломка» на спільному кабінеті. Питання: чи лишився детермінованим");
     console.log("         порядок захвату локів (0083/0109), тобто чи не виникає 40P01.");
@@ -1294,46 +1415,53 @@ async function main() {
           : (linkOk ? 0 : 2);
       }
     } else if (cmd === "case") {
-      /* ⛔ СЦЕНАРІЙ НЕ ГОТОВИЙ — і гейт стоїть тут навмисно, щоб він не міг
-         віддати ЗЕЛЕНИЙ результат, який нічого не доводить.
-
-         Ревʼю Б (с62) показало головне: постріл робиться ОДИН раз, а з двох
-         можливих упорядкувань лише ОДНЕ щось перевіряє. Якщо `add` виграє лок
-         першим, правильний і зламаний код дають БАЙТ У БАЙТ той самий
-         результат — щойно крок закомічено, скасування неминуче змете його
-         своїм `for update`. Тобто приблизно половина прогонів — PASS, який не
-         відрізняє справний лок від знятого. Це рівно той клас «зелений, що
-         нічого не значить», проти якого написана вся ця машинерія.
-
-         Що треба доробити (деталі — docs/audit/PLAN-case-scenario-gaps.md):
-           1. ганяти пару БАГАТО разів і вимагати, щоб упорядкування
-              «скасування → крок» справді трапилось хоч раз;
-           2. власний контроль: крок додається НАОДИНЦІ — інакше «22023»
-              неможливо приписати скасуванню (RPC кидає 22023 і на BAD_INPUT
-              ДО локів);
-           3. розрізняти два 22023 за ТЕКСТОМ, а не лише за SQLSTATE;
-           4. слоти для ДРУГОГО кабінету теж пробувати `findSlots` — зараз
-              беруться слоти, перевірені лише для першого;
-           5. стверджувати `cancel.cancelled >= 1` і досяжні кінцеві стани. */
-      console.log("\n⛔ Сценарій `case` НЕ ГОТОВИЙ і навмисно не запускається.");
-      console.log("   Ревʼю показало: ~половина прогонів дала б PASS, не перевіривши гарант.");
-      console.log("   Причини й план доробки — docs/audit/PLAN-case-scenario-gaps.md");
-      code = 2;
-    } else if (cmd === "case_DISABLED_PENDING_REDESIGN") {
+      /* ⚠️ СЦЕНАРІЙ РОЗБЛОКОВАНО В с63. Блокування с62 стояло через те, що
+         постріл робився ОДИН раз, а з двох упорядкувань лише одне щось
+         перевіряє. Тепер це вимога вердикту, а не сподівання: серія раундів,
+         і хоча б один мусить лягти в «скасування → крок». Деталі — у
+         `verdictCaseRounds` і docs/audit/PLAN-case-scenario-gaps.md. */
       const room2 = await pickSecondRoom(db, room, opts.room2);
       const study2 = await pickStudy(db, room2);
       console.log(`Другий кабінет: ${room2.name} [${room2.modality}] — ${study2.type} / ${study2.region}`);
-      const race = await runCaseCancelRace(db, user, {
-        room, study, room2, study2, slots, cleanupIds, caseIds,
+
+      /* ⚠️ ДЛЯ ДРУГОГО КАБІНЕТА — СВІЙ `findSlots` (пункт 4 плану доробки).
+         Раніше сюди йшли слоти, перевірені лише для кабінету A: у B свій
+         графік, своя перерва і свої простої, тож слот міг бути непридатний —
+         і крок падав би чужим SQLSTATE, а виглядало б це як зламаний гард. */
+      const found2 = await findSlots(db, room2, study2, {
+        days: DAYS, times: TIMES, count: TIMES.length, cleanupIds,
       });
-      printOutcomes("ГОНКА ЗА КЕЙС (add_case_step_rpc ПРОТИ cancel_case_rpc)", [
-        { ...race.add, id: "add" }, { ...race.cancel, id: "cancel" },
-      ]);
-      console.log(`  → ${race.verdict.verdict}: ${race.verdict.reason}`);
-      console.log(`  розкид стартів: ${race.verdict.spread} мс`);
-      console.log(`  кінцевий стан: кейс=${race.final.caseStatus ?? "?"} · кроки: `
-        + ((race.final.steps || []).map((s) => `#${s.case_step}:${s.status}`).join(", ") || "немає"));
-      code = race.verdict.verdict === "PASS" ? 0 : (race.verdict.verdict === "FAIL" ? 1 : 2);
+      /* ⚠️ Слоти двох кабінетів мусять бути на ОДНУ дату і РІЗНИЙ час:
+         `check_case_no_time_overlap` не дасть пацієнтові стояти у двох
+         кабінетах одночасно (23P01), а різні дати зробили б сцену
+         неправдоподібною. Кандидати `findSlots` рознесені на годину. */
+      const slotA = slots.find((s) => found2.slots.some((x) => x.day === s.day && x.time !== s.time));
+      const slotB = slotA ? found2.slots.find((x) => x.day === slotA.day && x.time !== slotA.time) : null;
+      if (!slotA || !slotB) {
+        throw new Error(
+          "не знайшлось пари «та сама дата, різний час» для двох кабінетів.\n"
+          + `  кабінет A: ${slots.map((s) => s.day + " " + s.time).join(", ")}\n`
+          + `  кабінет B: ${found2.slots.map((s) => s.day + " " + s.time).join(", ")}`);
+      }
+      const rounds = Math.max(2, Math.min(20, Number(opts.rounds) || 8));
+      console.log(`Слоти кейса: A ${slotA.day} ${slotA.time} · B ${slotB.day} ${slotB.time}`);
+      console.log(`Раундів: ${rounds} (кожен зі своїм кейсом і прибиранням одразу)`);
+
+      const series = await runCaseSeries(db, user, {
+        room, study, room2, study2, slotA, slotB, rounds, cleanupIds, caseIds,
+      });
+      console.log(`  КОНТРОЛЬ (крок наодинці): ${series.control.verdict.verdict} — ${series.control.verdict.reason}`);
+      if (series.control.left) console.log(`  ⚠️ контроль лишив по собі: ${series.control.left}`);
+      for (const [i, r] of series.rounds.entries()) {
+        const order = r.add.ok ? "крок → скасування" : "скасування → крок";
+        console.log(`  раунд ${i + 1}: ${r.verdict.verdict} · ${order} · знято ${r.cancel.cancelled ?? "?"} кроків`
+          + ` · кейс=${r.final.caseStatus ?? "?"} · розкид ${r.verdict.spread} мс`
+          + (r.add.ok ? "" : ` · ${r.add.sqlstate}`));
+        if (r.verdict.verdict !== "PASS") console.log(`      ${r.verdict.reason}`);
+        if (r.cleanupLeft) console.log(`      ⚠️ прибирання раунду: ${r.cleanupLeft}`);
+      }
+      console.log(`  → ${series.verdict.verdict}: ${series.verdict.reason}`);
+      code = series.verdict.verdict === "PASS" ? 0 : (series.verdict.verdict === "FAIL" ? 1 : 2);
     } else if (cmd === "stop") {
       /* ⚠️ ДЛЯ ДРУГОГО КАБІНЕТА — СВІЙ `findSlots`, а не слоти першого. Це
          пункт 4 з `PLAN-case-scenario-gaps.md`: сценарій `case` брав слоти,

@@ -17,6 +17,7 @@ import {
   verdictCaseCancelRace, buildCaseFixture, buildCaseStep,
   CASE_NOT_OPEN_SQLSTATE, CASE_ACTIVE_STATUSES,
   verdictEmergencyStop, DEADLOCK_SQLSTATE, INCIDENT_TAKEN_SQLSTATE,
+  verdictCaseRounds, CASE_NOT_OPEN_MESSAGE,
 } from "../scripts/race-check-lib.mjs";
 
 /* ⚠️ ЗНАЙДЕНО СТЕНДОМ `falsify-race-check` (с62), і це дефект САМИХ ТЕСТІВ,
@@ -286,7 +287,10 @@ describe("verdictWaitlistRace — двоє записують одного ка�
    `cancelled`, усі кроки `cancelled`; різниця лише в тому, чи встиг крок
    додатись. Питання одне: чи може існувати кейс `cancelled` з АКТИВНИМ кроком. */
 describe("verdictCaseCancelRace — скасування кейса проти додавання кроку", () => {
-  const add = (o: Partial<{ok: boolean; entryId: string | null; sqlstate: string; startedAt: number; finishedAt: number}> = {}) => ({
+  /* `message` у типі з с63: текст відмови став частиною вердикту (той самий
+     22023 RPC піднімає ще в чотирьох валідаціях входу), тож подавати його
+     тести мусять. Без цього поля `tsc` червонів — а vitest проходив. */
+  const add = (o: Partial<{ok: boolean; entryId: string | null; sqlstate: string; message: string; startedAt: number; finishedAt: number}> = {}) => ({
     ok: true, entryId: "e-new", sqlstate: "", message: "",
     startedAt: 1000, finishedAt: 1080, ...o,
   });
@@ -306,7 +310,11 @@ describe("verdictCaseCancelRace — скасування кейса проти �
 
   it("порядок «скасування → крок»: крок відмовлено 22023 → PASS", () => {
     const r = verdictCaseCancelRace(
-      add({ ok: false, entryId: null, sqlstate: "22023" }), cancel(),
+      /* ⚠️ ТЕКСТ ОБОВʼЯЗКОВИЙ із с63: сам по собі 22023 більше не зараховується.
+         Та сама RPC піднімає його ще в чотирьох валідаціях входу. */
+      add({ ok: false, entryId: null, sqlstate: "22023",
+            message: "BAD_INPUT: кейс не активний — крок додати не можна" }),
+      cancel(),
       { caseStatus: "cancelled", steps: [{ id: "e1", status: "cancelled" }] });
     expect(r.verdict).toBe("PASS");
     expect(r.reason).toMatch(/скасування → крок/);
@@ -795,5 +803,96 @@ describe("verdictEmergencyStop — дві аварійні зупинки нав
     });
     expect(v.verdict).toBe("FAIL");
     expect(v.reason).toContain("ЗУПИНЕНО ДВІЧІ");
+  });
+});
+
+/* ------------------------------------------ с63: серія раундів замість пострілу */
+
+describe("с63 — 22023 розрізняється за ТЕКСТОМ, а не лише за кодом", () => {
+  /* ⚠️ Пін на ЗАМІРЯНИЙ факт: `add_case_step_rpc` піднімає 22023 у пʼяти
+     місцях, і чотири з них — валідація входу ДО локів. */
+  it("фрагмент тексту припнуто до заміряного", () => {
+    expect(CASE_NOT_OPEN_MESSAGE).toBe("кейс не активний");
+  });
+
+  const add = (o: Record<string, unknown> = {}) => ({
+    ok: true, entryId: "e-new", sqlstate: "", message: "",
+    startedAt: 1000, finishedAt: 1080, ...o,
+  });
+  const cancel = (o: Record<string, unknown> = {}) => ({
+    ok: true, cancelled: 2, sqlstate: "", message: "",
+    startedAt: 1005, finishedAt: 1090, ...o,
+  });
+  const swept = { caseStatus: "cancelled", steps: [{ id: "e1", status: "cancelled" }] };
+
+  /* ⚠️ ЦЕНТРАЛЬНИЙ ТЕСТ ПРАВКИ. «Крок без слота» — валідація входу, тобто
+     ЗЛАМАНА ФІКСТУРА; до с63 вердикт зараховував її за програш у гонці й
+     видавав PASS на прогоні, у якому гонки не було взагалі. */
+  it("22023 від ВАЛІДАЦІЇ входу → FAIL, а не «програв скасуванню»", () => {
+    const r = verdictCaseCancelRace(
+      add({ ok: false, entryId: null, sqlstate: "22023", message: "BAD_INPUT: крок без слота" }),
+      cancel(), swept);
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/НЕ через скасування/);
+  });
+
+  it("22023 з ГОНОЧНИМ текстом → PASS", () => {
+    const r = verdictCaseCancelRace(
+      add({ ok: false, entryId: null, sqlstate: "22023",
+            message: "BAD_INPUT: кейс не активний — крок додати не можна" }),
+      cancel(), swept);
+    expect(r.verdict).toBe("PASS");
+  });
+
+  /* ⚠️ `cancel_case_rpc` повертає row_count свого UPDATE. Нуль означає, що
+     скасовувати не було чого — сцена розвалилась ДО гонки, і «заборонений
+     стан не виник» тут не заслуга, а тавтологія. */
+  it("скасування не зачепило жодного кроку → FAIL, а не PASS", () => {
+    const r = verdictCaseCancelRace(add(), cancel({ cancelled: 0 }),
+      { caseStatus: "cancelled", steps: [{ id: "e-new", status: "cancelled" }] });
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/ЖОДНОГО кроку/);
+  });
+});
+
+describe("verdictCaseRounds — серія, бо половина упорядкувань вакуумна", () => {
+  const round = (addOk: boolean, v: string, spread = 5) => ({
+    add: { ok: addOk },
+    cancel: { cancelled: 2 },
+    final: {},
+    verdict: { verdict: v, reason: `раунд ${v}`, spread },
+  });
+
+  /* ⚠️ ГОЛОВНЕ ТВЕРДЖЕННЯ. Саме через це сценарій був заблокований у с62:
+     коли `add` виграє лок, справний і зламаний код дають той самий результат,
+     тож серія з самих таких раундів не перевірила НІЧОГО. */
+  it("усі раунди у ВАКУУМНОМУ упорядкуванні → INCONCLUSIVE, а не PASS", () => {
+    const r = verdictCaseRounds([round(true, "PASS"), round(true, "PASS"), round(true, "PASS")]);
+    expect(r.verdict).toBe("INCONCLUSIVE");
+    expect(r.reason).toMatch(/крок → скасування/);
+  });
+
+  it("хоч один раунд у ВИРІШАЛЬНОМУ упорядкуванні → PASS", () => {
+    const r = verdictCaseRounds([round(true, "PASS"), round(false, "PASS"), round(true, "PASS")]);
+    expect(r.verdict).toBe("PASS");
+    expect(r.reason).toMatch(/1 у вирішальному/);
+  });
+
+  it("дефект у будь-якому раунді важливіший за статистику серії", () => {
+    const r = verdictCaseRounds([round(false, "PASS"), round(true, "FAIL"), round(false, "PASS")]);
+    expect(r.verdict).toBe("FAIL");
+    expect(r.reason).toMatch(/прогін 2\/3/);
+  });
+
+  /* ⚠️ Раунд, у якому вікна не перетнулись, про упорядкування не свідчить —
+     інакше «вирішальним» зарахувався б послідовний прогін. */
+  it("раунди без доведеної одночасності не рахуються за вирішальні", () => {
+    const r = verdictCaseRounds([round(false, "INCONCLUSIVE"), round(false, "INCONCLUSIVE")]);
+    expect(r.verdict).toBe("INCONCLUSIVE");
+    expect(r.reason).toMatch(/не довів одночасності/);
+  });
+
+  it("порожня серія — гонки не було", () => {
+    expect(verdictCaseRounds([]).verdict).toBe("FAIL");
   });
 });

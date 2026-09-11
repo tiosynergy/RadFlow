@@ -188,8 +188,55 @@ const MUTATIONS = [
     id: "M16", file: "lib", green: false,
     expect: /крок відмовлено ЧУЖИМ кодом \(23505\) → FAIL/,
     what: "будь-яка відмова кроку зараховується як «через скасування»",
-    from: "  } else if (add.sqlstate !== CASE_NOT_OPEN_SQLSTATE) {",
-    to: "  } else if (false && add.sqlstate !== CASE_NOT_OPEN_SQLSTATE) {",
+    /* ⚠️ ЯКІР ОНОВЛЕНО В с63: умова стала ДВОРЯДКОВОЮ (додався текстовий
+       дискримінатор), і старий однорядковий якір протух би мовчки — рівно той
+       клас, заради якого в ревізії є колонка «протухлих якорів». Мутуємо ВСЮ
+       умову: вимкнувши лише половину, ми лишили б другу тримати сторожа, і
+       позиція показала б «не тримає» там, де вона просто неповна. */
+    from: "  } else if (add.sqlstate !== CASE_NOT_OPEN_SQLSTATE\n"
+        + "             || !String(add.message).includes(CASE_NOT_OPEN_MESSAGE)) {",
+    to: "  } else if (false) {",
+  },
+  /* ------------------------------- сценарій «кейс»: розблокування (с63) */
+  {
+    /* ⚠️ ГОЛОВНА МУТАЦІЯ РОЗБЛОКУВАННЯ. Без текстового дискримінатора вердикт
+       зараховує за «програш у гонці» будь-яку з ЧОТИРЬОХ валідацій входу —
+       тобто видає PASS на прогоні, де гонки не було зовсім. */
+    id: "M24", file: "lib", green: false,
+    expect: /22023 від ВАЛІДАЦІЇ входу → FAIL/,
+    what: "22023 знову зараховується без перевірки тексту",
+    from: "             || !String(add.message).includes(CASE_NOT_OPEN_MESSAGE)) {",
+    to: "             || (false && !String(add.message).includes(CASE_NOT_OPEN_MESSAGE))) {",
+  },
+  {
+    id: "M25", file: "lib", green: false,
+    expect: /скасування не зачепило жодного кроку → FAIL/,
+    what: "порожнє скасування більше не дефект — «заборонений стан не виник» по порожньому кейсу",
+    from: "  if (cancel.cancelled != null && cancel.cancelled < 1) {",
+    to: "  if (false && cancel.cancelled != null && cancel.cancelled < 1) {",
+  },
+  {
+    /* ⚠️ Рівно те, через що сценарій стояв заблокованим: серія з самих
+       вакуумних упорядкувань знову давала б PASS. */
+    id: "M26", file: "lib", green: false,
+    expect: /усі раунди у ВАКУУМНОМУ упорядкуванні → INCONCLUSIVE/,
+    what: "вимога «хоч один вирішальний раунд» знята",
+    from: "  if (!decisive.length) {",
+    to: "  if (false && !decisive.length) {",
+  },
+  {
+    id: "M27", file: "lib", green: false,
+    expect: /раунди без доведеної одночасності не рахуються за вирішальні/,
+    what: "у вирішальні зараховуються раунди, які не довели одночасності",
+    from: "  const good = rounds.filter((r) => r.verdict.verdict === \"PASS\");",
+    to: "  const good = rounds;",
+  },
+  {
+    id: "M28", file: "lib", green: false,
+    expect: /дефект у будь-якому раунді важливіший за статистику серії/,
+    what: "червоний раунд тоне в статистиці серії",
+    from: "  const bad = rounds.findIndex((r) => r.verdict.verdict === \"FAIL\");",
+    to: "  const bad = rounds.findIndex((r) => false && r.verdict.verdict === \"FAIL\");",
   },
   /* ---------------------------------------- сценарій «аварійна зупинка» (с63) */
   {
@@ -299,7 +346,7 @@ for (const m of MUTATIONS) {
    червону позицію: перевести її в зелені і зняти сторожа. Мутація при цьому
    далі застосовується, набір лишається зеленим, рядок друкує ✅, слідів немає.
    Тому кількість адресних — константа. */
-const EXPECTED_RED = 23;   // +M17..M23 (с63): сценарій «аварійна зупинка»
+const EXPECTED_RED = 28;   // +M17..M23 зупинка, +M24..M28 розблокування «кейса» (с63)
 const redCount = MUTATIONS.filter((m) => !m.green).length;
 if (redCount !== EXPECTED_RED) {
   console.error(`⛔ ІНВЕНТАР БРЕШЕ: адресних мутацій ${redCount}, а очікується ${EXPECTED_RED}. `
