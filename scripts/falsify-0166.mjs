@@ -13,7 +13,7 @@
    Запуск: node scripts/falsify-0166.mjs   (звіт → falsify-0166.md) */
 import { readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { finishStand } from "./lib/falsify-verdict.mjs";
+import { finishStand, baselineVerdict } from "./lib/falsify-verdict.mjs";
 
 const MIG  = "supabase/migrations/0166_privilege_surface.sql";
 const HARD = "supabase/migrations/0167_privilege_surface_hardening.sql";
@@ -351,8 +351,13 @@ M.push(
    "if (bad) process.exitCode = 1;\nfinishStand({\n  ok: !bad,"],
   ["N57 стенд віддає в finishStand КОНСТАНТУ — більше не вміє червоніти", STAND, E.u81NotConst,
    "  ok: !bad,", "  ok: true,"],
+  /* ⚠️ ЯКІР РОЗШИРЕНО в с63, і причина варта рядка. Він був `"finishStand({"`,
+     а в `falsify-u13` зʼявився ДРУГИЙ виклик — гілка «базова лінія не зелена».
+     Стенд чесно відхилив мутацію («ЯКІР НЕ УНІКАЛЬНИЙ 2×») і почервонів; це
+     рівно те, заради чого перевірка унікальності й стоїть. Цілимось у
+     ПІДСУМКОВИЙ виклик — той, що з `ok: !bad`. */
   ["N58 виклик finishStand зник — підсумку немає, код завжди нуль", STAND, E.u81Once,
-   "finishStand({", "noFinishStand({"],
+   "finishStand({\n  ok: !bad,", "noFinishStand({\n  ok: !bad,"],
   ["N59 бібліотека більше не ставить код на червоному вердикті", VLIB, E.u81Red,
    "  if (!v.ok) process.exitCode = 1;", "  if (!v.ok) { /* знято */ }"],
   ["N60 червоний вердикт друкується мовчки — запасний сторож falsify-all сліпне", VLIB, E.u81Loud,
@@ -446,6 +451,40 @@ const SPEC = "tests/privilegeSurface.test.ts tests/invariantsCheckedPins.test.ts
 const lines = ["# Фальсифікація пакета привілеїв (0166 + 0167)", ""];
 let bad = 0;
 
+/** Один прогін спеків → імена червоних тестів (`null` — звіту немає). */
+function runSpec() {
+  rmSync(".vt.json", { force: true });
+  try {
+    execSync(`npx vitest run ${SPEC} --reporter=json --outputFile=.vt.json`,
+      { stdio: "ignore", timeout: 180000 });
+  } catch { /* ненульовий код = є червоні */ }
+  try {
+    const j = JSON.parse(readFileSync(".vt.json", "utf8"));
+    const red = [];
+    for (const f of j.testResults) for (const a of f.assertionResults) {
+      if (a.status === "failed") red.push(a.fullName);
+    }
+    return red;
+  } catch { return null; }
+}
+
+/* ⚠️ БАЗОВА ЛІНІЯ (с63). Тут її не було ЗОВСІМ — тобто всі 60 вердиктів
+   отримані інструментом, який не перевірив, що до мутацій усе зелене. На
+   червоному наборі кожна мутація «спрацьовує» сама собою, і стенд друкує
+   повне покриття. Заміряно вживу на сусідньому стенді: один підсаджений
+   провальний тест дав «23/23 адресних, стенд зелений» і код 0.
+   ⚠️ Для ЦЬОГО стенда дірка ширша за інші: серед його мутацій є GREEN-позиції
+   («мав лишитись зеленим»), і на червоній базі вони, навпаки, давали б
+   ХИБНИЙ ЧЕРВОНИЙ — тобто звинувачували б правильний код. */
+const base = baselineVerdict(runSpec());
+lines.push(base.line, "");
+console.log(base.line);
+if (!base.ok) {
+  writeFileSync("falsify-0166.md", lines.join("\n"), "utf8");
+  finishStand({ ok: false, red: "\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — базова лінія не зелена." });
+  process.exit(1);
+}
+
 for (const [name, file, expectRe, from, to] of M) {
   const src = orig.get(file);
   if (!src.includes(from)) {
@@ -457,19 +496,8 @@ for (const [name, file, expectRe, from, to] of M) {
   }
   let red = null;
   try {
-    rmSync(".vt.json", { force: true });
     writeFileSync(file, src.replace(from, () => to));
-    try {
-      execSync(`npx vitest run ${SPEC} --reporter=json --outputFile=.vt.json`,
-        { stdio: "ignore", timeout: 180000 });
-    } catch { /* ненульовий код = є червоні */ }
-    try {
-      const j = JSON.parse(readFileSync(".vt.json", "utf8"));
-      red = [];
-      for (const f of j.testResults) for (const a of f.assertionResults) {
-        if (a.status === "failed") red.push(a.fullName);
-      }
-    } catch { red = null; }
+    red = runSpec();
   } finally {
     writeFileSync(file, src);
   }
