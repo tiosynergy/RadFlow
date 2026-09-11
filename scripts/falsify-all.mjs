@@ -43,7 +43,7 @@ const only = argv.filter((a) => !a.startsWith("--"));
    вибірки, і ревізія друкує «усі 19 стендів зелені» — той самий мовчазний
    розхід, проти якого написана вся ця машинерія. Одна константа, а не
    двадцять: аргумент «магічні числа розійдуться» тут не працює. */
-const EXPECTED_STANDS = 36;   // с55: +f346, +f6auth, +f6srv; с57: +falsify-u66 (правка картки через RPC 0176); с58: +falsify-u59-u60 (пакет 35), +falsify-rf09 (пакет 37); с59: +falsify-rf05 (пакет 39), +falsify-0180 (пакет 40), +falsify-0181 (пакет 41), +falsify-build-stamp (пакет 42), +falsify-0182 (пакет 43); с60: +falsify-0183 (пакет 45, RF-03); с61: +falsify-0184 (пакет 46, RF-03b); с62: +falsify-0185 (пакет 47, №23 schema_digest), +falsify-race-check (пакет 48, сценарій waitlist; вердикти харнеса не мали стенда ЖОДНОГО з с38)
+const EXPECTED_STANDS = 37;   // с63: +falsify-sched-refetch (пакет 54, графік у трьох модалках оновлюється); с55: +f346, +f6auth, +f6srv; с57: +falsify-u66 (правка картки через RPC 0176); с58: +falsify-u59-u60 (пакет 35), +falsify-rf09 (пакет 37); с59: +falsify-rf05 (пакет 39), +falsify-0180 (пакет 40), +falsify-0181 (пакет 41), +falsify-build-stamp (пакет 42), +falsify-0182 (пакет 43); с60: +falsify-0183 (пакет 45, RF-03); с61: +falsify-0184 (пакет 46, RF-03b); с62: +falsify-0185 (пакет 47, №23 schema_digest), +falsify-race-check (пакет 48, сценарій waitlist; вердикти харнеса не мали стенда ЖОДНОГО з с38)
 
 const all = readdirSync(DIR)
   .filter((f) => /^falsify-.*\.mjs$/.test(f) && f !== "falsify-all.mjs")

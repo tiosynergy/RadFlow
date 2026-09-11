@@ -12,7 +12,7 @@
       свій прайс. Запис лишається тим самим (id не змінюється), тож кейс,
       направник і історія переносів на місці. */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
   roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, offScheduleKind, OFF_SCHED_GRACE_MIN,
@@ -24,6 +24,7 @@ import { incidentDurCapMin, incidentEffectiveEnd, roomIncidentsOf, studyBlockedB
 import { useFollowTodayKey, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, clockClaimOf, type DayShiftNotice } from "@/lib/useFollowToday";
 import type { ClockClaim } from "@/lib/clockTrust";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
+import { useScheduleRefetch } from "@/lib/useScheduleRefetch";
 import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { BUFFER_DEFAULT, normBuffer, modalityLabel, modalityShort, modalityKind, isContrastName} from "@/lib/studies";
 import { useModalA11y } from "@/lib/useModalA11y";
@@ -226,10 +227,15 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
   const nestedOpen = showMove || showMoveLoading || askClose;
   const dialogRef = useModalA11y<HTMLDivElement>(requestClose, !nestedOpen);
 
-  useEffect(() => {
-    let cancel = false;
-    setSchedLoading(true);
-    (async () => {
+  /* ⚠️ Лічильник поколінь замість прапорця `cancel` із замикання ефекту (с63).
+     Лоадер тепер кличе і `useScheduleRefetch` — ПОЗА будь-яким ефектом, тож
+     `cancel` до такого виклику не має стосунку взагалі, і відповідь по старому
+     кабінету/даті перетерла б нову. Той самий прийом уже стоїть у `useRoomBusy`
+     (genRef) і в `BookingModal.loadSched` (schedReqRef). */
+  const schedReqRef = useRef(0);
+  const loadSched = useCallback(async () => {
+    const req = ++schedReqRef.current;
+    {
       try {
         const supabase = createClient();
         if (clinicId) {
@@ -243,9 +249,10 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
              «особливого дня немає»: закритий святковий день малювався робочим, а
              скорочений — повним. Те саме джерело недовіри, що й нижче. */
           if (ovRes.error) throw ovRes.error;
-          if (!cancel) setOverride((ovRes.data as unknown as DayOverride) || null);
+          if (req !== schedReqRef.current) return;
+          setOverride((ovRes.data as unknown as DayOverride) || null);
         }
-        if (!roomId) { if (!cancel) { setRoomSchedule(null); setSchedErr(false); } return; }
+        if (!roomId) { if (req === schedReqRef.current) { setRoomSchedule(null); setSchedErr(false); } return; }
         const roomRes = await supabase.from("rooms").select("schedule").eq("id", roomId).maybeSingle();
         /* Обидві причини незнання (помилка і відсутній рядок) розрізняє
            `readRoomScheduleRow`. Раніше це правило жило тут інлайном — і саме
@@ -254,19 +261,30 @@ export default function RescheduleModal({ patient, rooms, clinicId, clinicTz, in
            перепис місць виклику — у tests/roomScheduleRead. */
         const sched = readRoomScheduleRow(roomRes);
         if (!sched.known) throw roomScheduleReadError(sched.reason);
-        if (!cancel) { setRoomSchedule(sched.schedule); setSchedErr(false); }
+        if (req !== schedReqRef.current) return;
+        setRoomSchedule(sched.schedule); setSchedErr(false);
       } catch {
         /* Транзієнтний збій (оновлення токена / мережа) — модаль не рушимо, але й
            сітку не малюємо: графік кабінету невідомий. Прочитане ОБНУЛЯЄМО: дата
            й кабінет тут МІНЯЮТЬСЯ при відкритій модалці, і збій на новій даті
            лишав би оверрайд СТАРОЇ — «🚫 не працює · Новий рік» на 2 січня. */
-        if (!cancel) { setOverride(null); setRoomSchedule(null); setSchedErr(true); }
+        if (req === schedReqRef.current) { setOverride(null); setRoomSchedule(null); setSchedErr(true); }
       } finally {
-        if (!cancel) setSchedLoading(false);
+        if (req === schedReqRef.current) setSchedLoading(false);
       }
-    })();
-    return () => { cancel = true; };
+    }
   }, [roomId, dateStr, clinicId]);
+
+  /* ⚠️ `setSchedLoading(true)` — ТУТ, а не всередині `loadSched`: хук нижче
+     кличе той самий лоадер фоново (подія realtime / тик 30 с), і сітка не має
+     блимати «завантаження» на кожному оновленні. Взірець — `BookingModal`. */
+  useEffect(() => { setSchedLoading(true); loadSched(); }, [loadSched]);
+  /* с63: графік кабінету оновлюється, поки вікно відкрите. Доти обидві половини
+     сітки жили по-різному: зайнятість — через `useRoomBusy` з realtime, а межі
+     дня і перерви читались РІВНО РАЗ. Адмін закривав день — а людина з
+     відкритим вікном необмежено довго обирала слоти старого графіка, і дізнавалась
+     про це лише з відмови сервера після «Зберегти». */
+  useScheduleRefetch({ clinicId, dateStr, roomId, scope: "resched", onChange: loadSched });
 
   /* Зайнятість — спільний хук: RPC room_busy_slots + realtime (queue_entries,
      incidents). Поки не завантажилась — сітку не показуємо як «усе вільно».
