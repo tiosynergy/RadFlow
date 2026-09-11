@@ -19,7 +19,7 @@ import {
   verdictCaseCancelRace, buildCaseFixture, buildCaseStep,
   CASE_NOT_OPEN_SQLSTATE, CASE_ACTIVE_STATUSES,
   verdictEmergencyStop, DEADLOCK_SQLSTATE, INCIDENT_TAKEN_SQLSTATE,
-  RETRYABLE_LOCK_SQLSTATES,
+  RETRYABLE_LOCK_SQLSTATES, assertUsableJwt,
   verdictCaseRounds, CASE_NOT_OPEN_MESSAGE,
   verdictMidnightRace, MIDNIGHT_LATE_TIME, MIDNIGHT_EARLY_TIME, MIDNIGHT_CONTROL_TIME,
 } from "../scripts/race-check-lib.mjs";
@@ -952,6 +952,69 @@ describe("RETRYABLE_LOCK_SQLSTATES звірено з продуктом", () => 
   it("emergencyStop і далі класифікує локову помилку цим предикатом", () => {
     const stop = actions.slice(actions.indexOf('rpc("emergency_stop_rpc"'));
     expect(stop.slice(0, 1200)).toContain("isRetryableLockError");
+  });
+});
+
+/* ⚠️ ЗАПЛАЧЕНО ЖИВИМ ПРОГОНОМ 11.09.2026. У `RADFLOW_USER_JWT` опинився
+   ПЛЕЙСХОЛДЕР із довідки («<токен>», кирилицею). Харнес надрукував правильний
+   діагноз «це не схоже на JWT» — і пішов у мережу з цим значенням, упавши за
+   двісті рядків сирим «Cannot convert argument to a ByteString … value of 1090
+   which is greater than 255». Діагностика, яка не зупиняє, — це коментар.
+   Тести нижче стережуть саме ЗУПИНКУ, а не текст. */
+describe("assertUsableJwt — токен перевіряється ДО мережі", () => {
+  /* Валідний за ФОРМОЮ токен; підпис нікого тут не цікавить. Збираємо його
+     з частин, а не беремо константою: у репозиторії не має лежати нічого,
+     що виглядає як справжній токен. */
+  const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
+  const exp = Math.floor(Date.now() / 1000) + 3600;
+  const good = `${b64({ alg: "ES256", kid: "k1" })}.${b64({ role: "authenticated", exp })}.sig`;
+
+  it("придатний токен → метадані, і ЖОДНОГО фрагмента самого токена", () => {
+    const m = assertUsableJwt(good);
+    expect(m).toMatchObject({ alg: "ES256", kid: true, role: "authenticated" });
+    expect(m.minLeft).toBeGreaterThan(50);
+    expect(JSON.stringify(m)).not.toContain("sig");
+  });
+
+  it("порожня змінна — окреме повідомлення «не задана», а не «зіпсутий»", () => {
+    expect(() => assertUsableJwt("")).toThrow(/порожній/);
+    expect(() => assertUsableJwt(undefined as unknown as string)).toThrow(/порожній/);
+  });
+
+  /* ⚠️ ГОЛОВНИЙ ТЕСТ: рівно той вхід, який поклав живий прогін. Байт > 255
+     у значенні заголовка HTTP заборонений — і причина мусить називатись
+     своїм імʼям, а не ховатись за загальним «не схоже на JWT». */
+  it("кирилиця в токені → кидає ІЗ НАЗВОЮ причини (не-ASCII), а не йде в мережу", () => {
+    expect(() => assertUsableJwt("<токен>")).toThrow(/не-ASCII/);
+    expect(() => assertUsableJwt("<токен>")).toThrow(/ПЛЕЙСХОЛДЕР/);
+  });
+
+  it("позиція поганого символу названа — інакше шукати нічого", () => {
+    expect(() => assertUsableJwt("abcdefghт")).toThrow(/позиція 8/);
+  });
+
+  it("ASCII, але не три частини → кидає про форму", () => {
+    expect(() => assertUsableJwt("abc.def")).toThrow(/частин 2/);
+  });
+
+  it("три частини, але не JSON → кидає про розбір", () => {
+    expect(() => assertUsableJwt("aaaa.bbbb.cccc")).toThrow(/не розбираються як JSON/);
+  });
+
+  /* ⚠️ Половина піна, без якої він не фальсифікується: гард має бути ВПАЯНИЙ
+     у `userClient`. Лишиться він у файлі, але без виклику — тести були б
+     зеленими, а прогін падав би як 11.09. */
+  it("userClient справді кличе гард ДО createClient", () => {
+    const src = readFileSync(resolve(process.cwd(), "scripts/race-check.mjs"), "utf8");
+    const fn = src.slice(src.indexOf("function userClient"));
+    const body = fn.slice(0, fn.indexOf("\n}"));
+    expect(body).toContain("assertUsableJwt(jwt)");
+    expect(body.indexOf("assertUsableJwt(jwt)")).toBeLessThan(body.indexOf("createClient("));
+    /* ⚠️ Пінимо ПОВЕДІНКУ, а не фразу. Перша редакція цього тесту шукала
+       рядок «не схоже на JWT» і почервоніла об ВЛАСНИЙ пояснювальний
+       коментар, який ту фразу цитує. Ковтання — це `catch`, що лише друкує;
+       його й перевіряємо. */
+    expect(body.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/catch\s*\{\s*console\.log/);
   });
 });
 

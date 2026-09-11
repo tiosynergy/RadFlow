@@ -150,6 +150,67 @@ export const DEADLOCK_SQLSTATE = "40P01";
     вікно зупинка НЕ СТАЄТЬСЯ, а оператор під час аварії бачить підказку. */
 export const RETRYABLE_LOCK_SQLSTATES = ["40P01", "40001", "55P03", "57014"];
 
+/** ГАРД ФОРМИ ТОКЕНА. Кидає з ІМЕНЕМ причини; значення токена НЕ повертає і
+    НЕ друкує — жодного фрагмента, навіть у повідомленні помилки.
+
+    ⚠️ ЗАПЛАЧЕНО ЖИВИМ ПРОГОНОМ 11.09.2026 (пакет 61). У `RADFLOW_USER_JWT`
+    опинився ПЛЕЙСХОЛДЕР із довідки — `<токен>`, кирилицею. Харнес діагноз
+    поставив правильно і надрукував «заголовок не розібрався — це не схоже на
+    JWT»… після чого пішов у мережу з цим значенням у заголовку
+    `Authorization`. `fetch` відмовився ще на рівні HTTP:
+
+      Cannot convert argument to a ByteString because the character at index 8
+      has a value of 1090 which is greater than 255.
+
+    Тобто ВЕРДИКТ ПРО ПРИДАТНІСТЬ ТОКЕНА ІСНУВАВ, але нічого не вирішував:
+    діагностика, яка не зупиняє, — це коментар. Той самий клас, що
+    `fn_audit` із `exception when others then null` (0187), просто в харнесі.
+
+    Чому саме ця трійка перевірок і в цьому порядку:
+      1) порожньо — окреме повідомлення, бо це «змінна не задана», а не
+         «токен зіпсутий»;
+      2) НЕ-ASCII — САМЕ ця умова ламає `fetch`, і вона мусить називатись
+         своїм імʼям, а не ховатись за «не схоже на JWT». Байт > 255 у
+         значенні заголовка HTTP заборонений за специфікацією;
+      3) форма `a.b.c` + розбір header/payload — власне JWT.
+    @param {string} jwt
+    @returns {{alg: string, kid: boolean, role: string, minLeft: number | null}} */
+export function assertUsableJwt(jwt) {
+  const t = String(jwt ?? "");
+  if (!t) {
+    throw new Error("RADFLOW_USER_JWT порожній — змінна не задана.");
+  }
+  /* Ітеруємо по code points, а не по `charCodeAt`: сурогатна пара дала б
+     два «символи» по 0xD800+, і позиція у повідомленні поїхала б. */
+  const badAt = [...t].findIndex((ch) => ch.codePointAt(0) > 255);
+  if (badAt >= 0) {
+    throw new Error(
+      `RADFLOW_USER_JWT містить не-ASCII символ (позиція ${badAt}) — це не токен.\n`
+      + "  Найчастіша причина: у змінну пішов ПЛЕЙСХОЛДЕР із довідки («<токен>»), а не значення.\n"
+      + "  Такий рядок не можна покласти в заголовок Authorization: HTTP забороняє байт > 255,\n"
+      + "  і fetch упав би сирим «Cannot convert argument to a ByteString».\n"
+      + "  Візьміть токен сніпетом із шапки scripts/race-check.mjs (він кладе його в буфер обміну).");
+  }
+  const parts = t.split(".");
+  if (parts.length !== 3) {
+    throw new Error(
+      `RADFLOW_USER_JWT не має форми JWT (частин ${parts.length}, очікується 3).`);
+  }
+  let h, b;
+  try {
+    h = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
+    b = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+  } catch {
+    throw new Error("RADFLOW_USER_JWT: header або payload не розбираються як JSON — це не токен.");
+  }
+  return {
+    alg: String(h.alg ?? "?"),
+    kid: Boolean(h.kid),
+    role: String(b.role ?? "?"),
+    minLeft: b.exp ? Math.round((b.exp * 1000 - Date.now()) / 60000) : null,
+  };
+}
+
 /** SQLSTATE, яким `submit_incident_rpc` (0110) відмовляє, коли кабінет уже має
     активний простій. Це РУКОТВОРНИЙ `raise` після `on conflict do nothing`, а
     не помилка двигуна — сама RPC конфлікт ковтає, а потім бачить `v_id is null`.

@@ -82,7 +82,7 @@ import {
   MIDNIGHT_LATE_TIME, MIDNIGHT_EARLY_TIME, MIDNIGHT_CONTROL_TIME,
   verdictSlotRace, verdictControl, verdictInProgressRace, verdictCas,
   verdictWaitlistRace, verdictCaseCancelRace, verdictCaseRounds, verdictEmergencyStop,
-  verdictMidnightRace,
+  verdictMidnightRace, assertUsableJwt,
 } from "./race-check-lib.mjs";
 
 function adminClient() {
@@ -1245,17 +1245,21 @@ function userClient(jwt) {
      (`alg: ES256` + `kid`); токен, підписаний ЛЕГАСІ-секретом (`HS256`),
      PostgREST більше не перевіряє. Один рядок нижче відрізняє «токен не той»
      від «харнес зламаний» ДО пострілу, а не після. */
-  try {
-    const h = JSON.parse(Buffer.from(jwt.split(".")[0], "base64url").toString("utf8"));
-    const b = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8"));
-    const left = b.exp ? Math.round((b.exp * 1000 - Date.now()) / 60000) : "?";
-    console.log(`Токен: alg=${h.alg}${h.kid ? " kid=є" : " kid=НЕМАЄ"} · role=${b.role}`
-      + ` · лишилось ~${left} хв`);
-    if (h.alg !== "ES256") {
-      console.log(`  ⚠️ Очікується ES256 (проєкт на асиметричних ключах). ${h.alg}`
-        + " PostgREST відхилить: PGRST301 «No suitable key or wrong key type».");
-    }
-  } catch { console.log("Токен: заголовок не розібрався — це не схоже на JWT"); }
+  /* ⚠️ ГАРД — FAIL-CLOSED, і це правка ЖИВОГО ПРОГОНУ 11.09.2026.
+     Тут стояв `try { … } catch { console.log("це не схоже на JWT") }` — тобто
+     вердикт про придатність токена ІСНУВАВ, друкувався і НІЧОГО не вирішував:
+     далі createClient клав те саме значення в заголовок, і прогін падав за
+     двісті рядків сирим «Cannot convert argument to a ByteString». Діагностика,
+     яка не зупиняє, — це коментар. Тепер причина називається і зупиняє. */
+  const meta = assertUsableJwt(jwt);
+  console.log(`Токен: alg=${meta.alg}${meta.kid ? " kid=є" : " kid=НЕМАЄ"} · role=${meta.role}`
+    + ` · лишилось ~${meta.minLeft ?? "?"} хв`);
+  /* alg НЕ валить прогін: токен формою придатний, і чесніше дати PostgREST
+     сказати своє PGRST301, ніж вгадувати за нього. */
+  if (meta.alg !== "ES256") {
+    console.log(`  ⚠️ Очікується ES256 (проєкт на асиметричних ключах). ${meta.alg}`
+      + " PostgREST відхилить: PGRST301 «No suitable key or wrong key type».");
+  }
   return createClient(url, anon, {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { headers: { Authorization: `Bearer ${jwt}` } },
