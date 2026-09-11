@@ -1104,6 +1104,35 @@ describe("verdictCaseRounds — серія, бо половина упорядк
     expect(r.reason).toMatch(/не довів одночасності/);
   });
 
+  /* ⚠️ ПАКЕТ 62. Вирішальне упорядкування САМЕ ділиться навпіл, і PASS мусить
+     це казати. Замір із прода: `add_case_step_rpc` бере `for update` і ЛИШЕ
+     потім звіряє статус, тож «add чекав на локу» (доказ) і «скасування
+     встигло закомітити до старту add» (вакуум) дають ОДНАКОВУ відмову 22023.
+     Мовчазний PASS читався б як доведений гарант. */
+  it("PASS називає вакуумну половину ВСЕРЕДИНІ вирішального упорядкування", () => {
+    const r = verdictCaseRounds([round(false, "PASS"), round(false, "PASS"), round(true, "PASS")]);
+    expect(r.verdict).toBe("PASS");
+    expect(r.reason).toMatch(/ділиться навпіл/);
+    expect(r.reason).toMatch(/не розрізняються/);
+  });
+
+  /* ⚠️ Один вирішальний прогін міг бути вакуумним цілком — спертись немає на
+     що. Опора PASS тут статистична («щоб УСІ k були вакуумними…»), і при
+     k = 1 її просто немає. Вердикт мусить розрізняти ці два випадки. */
+  it("рівно ОДИН вирішальний прогін — PASS, але зі слабкістю названою вголос", () => {
+    const r = verdictCaseRounds([round(false, "PASS"), round(true, "PASS")]);
+    expect(r.verdict).toBe("PASS");
+    expect(r.reason).toMatch(/ВИРІШАЛЬНИЙ ПРОГІН РІВНО ОДИН/);
+    expect(r.reason).toMatch(/збільште --rounds/);
+  });
+
+  it("два і більше вирішальних — опора названа, попередження про єдиний зникає", () => {
+    const r = verdictCaseRounds([round(false, "PASS"), round(false, "PASS")]);
+    expect(r.verdict).toBe("PASS");
+    expect(r.reason).not.toMatch(/ВИРІШАЛЬНИЙ ПРОГІН РІВНО ОДИН/);
+    expect(r.reason).toMatch(/щоб усі 2 були вакуумними/);
+  });
+
   it("порожня серія — гонки не було", () => {
     expect(verdictCaseRounds([]).verdict).toBe("FAIL");
   });
