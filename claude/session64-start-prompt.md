@@ -40,7 +40,7 @@ quietly patch the doc.
 
 | what | expected (measured 2026-09-12) |
 |---|---|
-| `main` / `dev` | **`e67a2b5`** / **`c54cd92`** — take the hashes from `git ls-remote`, not `git fetch` |
+| `main` / `dev` | **`e67a2b5`** / **`c54cd92`** + the docs commit(s) of this handover on top (**`853300e`** at the time of writing) — ⚠️ expect `dev` to DIFFER; take the hashes from `git ls-remote`, not `git fetch`. That difference is not a finding |
 | prod DB | **`0189_room_busy_slots_tz_once.sql`**, ledger **189/189**, unstamped 0 → next is **0190**, the number comes FROM THE LEDGER |
 | `invariants_check(false)` | `ok:true`, **`checked:23`**, `failed:[]` |
 | guard body | md5 without CR **`95b0b4d2ba635e85c335ff7615c3b0a3`**, length **111 592**, CR **0** |
