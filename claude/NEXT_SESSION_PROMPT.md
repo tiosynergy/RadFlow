@@ -1,8 +1,8 @@
-# RadFlow — attachment for the next session (session 64)
+# RadFlow — attachment for the next session (session 65)
 
 > **This file is the ATTACHMENT.** The owner pastes
-> `claude/session64-start-prompt.md` as the first message and attaches this
-> file. Session-specific part rewritten at the end of session 63 (2026-09-12);
+> `claude/session65-start-prompt.md` as the first message and attaches this
+> file. Session-specific part rewritten at the end of session 64 (2026-09-12);
 > the permanent part below is carried unchanged.
 >
 > ⚠️ **The two must come from the same end-of-session edit.** Session 59 opened
@@ -161,8 +161,9 @@ answer, not a failure. It says WHICH commit is served, NOT that the build is
 healthy — that stays with live checks.
 
 ⚠️ **Measure it from the owner's machine or with a unique cache-buster** — the
-container's `WebFetch` cache outlives the session (s61 finding). Build latency is
-**4–9 minutes**, not the "2–3" the older docs claim.
+container's `WebFetch` cache outlives the session (s61 finding). Build latency
+was **~11 minutes** in s64 (measured end to end), and 4–9 minutes before that —
+so a stamp still showing the PREVIOUS head at minute 8 is normal, not a failure.
 
 ⚠️ The older `/login` buildId fingerprint method is **dead** — it was
 one-directional, it could not be reproduced across two sessions, and `/login`
