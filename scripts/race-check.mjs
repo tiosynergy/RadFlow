@@ -83,6 +83,8 @@ import {
   verdictSlotRace, verdictControl, verdictInProgressRace, verdictCas,
   verdictWaitlistRace, verdictCaseCancelRace, verdictCaseRounds, verdictEmergencyStop,
   verdictMidnightRace, assertUsableJwt,
+  deliveryGuardVerdict, N8N_EVIDENCE_WINDOW_DAYS, INTEGRATION_PREFIX_MIRROR,
+  N8N_DEFER_NOTE, N8N_FREE_COMMANDS,
 } from "./race-check-lib.mjs";
 
 function adminClient() {
@@ -1303,19 +1305,69 @@ async function assertTokenClinicMatches(user, room) {
   }
 }
 
-/** Гард перед записом у ПРОД: якщо в клініки є УВІМКНЕНИЙ вебхук, фікстури
-    поїдуть партнеру (тригер 0145 емітить події на кожну зміну запису).
+/** Гард перед записом у ПРОД: чи піде фікстура НАЗОВНІ. Гілок доставки ДВІ —
+    вебхук клініки (тригер 0145 емітить `integration.*` на кожну зміну запису)
+    і n8n (усе інше, зокрема `emergency_stop` сценарію `stop`). Рішення живе
+    в `deliveryGuardVerdict` (race-check-lib.mjs) — саме там воно під vitest і
+    під стендом; тут лише збір фактів.
+
+    ⚠️ ЧИТАЄМО ЛИШЕ ЛІЧИЛЬНИКИ. `payload` аварійних подій несе ПІБ і
+    телефони — у харнес він не потрапляє навіть на мить: усі три запити йдуть
+    `head: true` (жодного рядка), четвертий бере одну колонку `delivered_at`.
+
+    ⚠️ ФІЛЬТР ПРЕФІКСА — НА СЕРВЕРІ. Перша редакція фільтрувала в JS після
+    `select` без ліміту, і ревʼю це зловило: PostgREST ріже вибірку по
+    `db-max-rows` (у Supabase 1000), тож на центрі з увімкненою інтеграцією у
+    тисячу потрапили б переважно `integration.*`, а доставлені `emergency_stop`
+    лишились би ЗА межею — `delivered` упав би до нуля і ВІДМОВА стала б
+    дозволом. Той самий заборонений прийом, який на 800 рядків вище вже
+    названий дірою (`assertRoomsUsableForStop`). `count: "exact"` стелі рядків
+    не має взагалі.
+
     Прибирання черги подій харнес не робить свідомо — видаляти чужі рядки
-    outbox небезпечніше, ніж не стріляти зовсім. */
-async function assertNoLiveWebhook(db, clinicId) {
-  const { data, error } = await db.from("integration_webhooks")
-    .select("id, enabled").eq("clinic_id", clinicId).eq("enabled", true);
-  if (error) throw new Error(`не читаються вебхуки клініки: ${error.message}`);
-  if (data?.length) {
-    throw new Error(
-      "у клініки УВІМКНЕНО вебхук інтеграції — фікстури харнеса пішли б партнеру.\n" +
-      "  Вимкніть вебхук на час прогону або оберіть іншу клініку (--room <uuid> іншого центру).");
+    outbox небезпечніше, ніж не стріляти зовсім.
+
+    ⚠️ НАЗВАНА МЕЖА: `cleanup` іде до цього гарда (`cmdCleanup` вище у `main`),
+    а DELETE записів теж емітить `integration.appointment.deleted` через 0145.
+    Payload тієї події — id і clinic_id без проекції, тож ціна мала, але
+    асиметрія реальна. */
+async function assertNoLiveDelivery(db, clinicId, { allowN8n, scenarioEmitsN8n }) {
+  const hooks = await db.from("integration_webhooks")
+    .select("id, enabled").eq("clinic_id", clinicId).eq("enabled", true).limit(50);
+  if (hooks.error) console.error(`  не читаються вебхуки клініки: ${hooks.error.message}`);
+  /* `data == null` БЕЗ error — теж «не знаю», а не «нуль вебхуків»
+     (знахідка ревʼю А): мовчазний нуль тут відкрив би гард. */
+  const enabledHooks = hooks.error || hooks.data == null ? NaN : hooks.data.length;
+
+  let n8n = null;
+  if (scenarioEmitsN8n) {
+    const since = new Date(Date.now() - N8N_EVIDENCE_WINDOW_DAYS * 86_400_000).toISOString();
+    const branch = () => db.from("event_outbox")
+      .select("id", { count: "exact", head: true })
+      .gte("created_at", since)
+      .not("event_type", "like", `${INTEGRATION_PREFIX_MIRROR}%`);
+    const rowsQ = await branch();
+    const deliveredQ = await branch().not("delivered_at", "is", null);
+    const deferredQ = await branch().is("delivered_at", null).eq("last_error", N8N_DEFER_NOTE);
+    const lastQ = await db.from("event_outbox")
+      .select("delivered_at")
+      .gte("created_at", since)
+      .not("event_type", "like", `${INTEGRATION_PREFIX_MIRROR}%`)
+      .not("delivered_at", "is", null)
+      .order("delivered_at", { ascending: false })
+      .limit(1);
+    const broken = [rowsQ, deliveredQ, deferredQ, lastQ].find((q) => q.error);
+    if (broken) console.error(`  не читається event_outbox: ${broken.error.message}`);
+    else n8n = {
+      windowDays: N8N_EVIDENCE_WINDOW_DAYS,
+      rows: rowsQ.count, delivered: deliveredQ.count, deferred: deferredQ.count,
+      lastDeliveredAt: lastQ.data?.[0]?.delivered_at ?? null,
+    };
   }
+
+  const verdict = deliveryGuardVerdict({ enabledHooks, n8n, allowN8n, scenarioEmitsN8n });
+  if (!verdict.ok) throw new Error(verdict.message);
+  console.log(`Доставка назовні: ${verdict.message}`);
 }
 
 /** Кабінет має бути ВІЛЬНИЙ: якщо в ньому вже є `in_progress`, перший же
@@ -1485,10 +1537,17 @@ async function main() {
   const { cmd, opts } = parseArgs(process.argv.slice(2));
   const write = opts.run === true;
   const n = Math.max(2, Math.min(8, Number(opts.n) || 2));
+  /* ⚠️ Прапорець БЕЗ значення. `parseArgs` віддає `true` лише коли наступний
+     токен відсутній або починається з `--`; `--allow-n8n true` поклав би рядок
+     «true», порівняння `=== true` його відкинуло б, і оператор отримав би ту
+     саму відмову без жодного пояснення (знахідка ревʼю Б). */
+  if (opts["allow-n8n"] !== undefined && opts["allow-n8n"] !== true) {
+    throw new Error("прапорець --allow-n8n не приймає значення: пишіть просто --allow-n8n");
+  }
   const db = adminClient();
 
   if (cmd === "help" || opts.help) {
-    console.log("race-check.mjs plan | run --run [--n 2..8] [--room <uuid>] | room --run | cas --run | waitlist --run | case --run | stop --run | midnight --run | cleanup [--run]");
+    console.log("race-check.mjs plan | run --run [--n 2..8] [--room <uuid>] | room --run | cas --run | waitlist --run | case --run | stop --run [--room2 <uuid>] [--allow-n8n] | midnight --run | cleanup [--run]");
     console.log("  run  — двоє в ОДИН слот (тригер 0064)");
     console.log("  room — двох в ОДИН кабінет (унікальний індекс 0018)");
     console.log("  cas  — двоє міняють статус ОДНОГО запису (for update у 0075).");
@@ -1516,6 +1575,12 @@ async function main() {
     console.log("         ⚠️ Це ІНШЕ питання, а не сильніша версія. 40P01 тут — ОГОЛОШЕНЕ вікно");
     console.log("         (передлок кейсів у RPC бере лише in_progress-кроки) → INCONCLUSIVE, бо");
     console.log("         двигун називає лише ЖЕРТВУ. Сторож регресії — прогін БЕЗ прапорця.");
+    console.log("         --allow-n8n — СВІДОМО зняти перевірку n8n-гілки. Стосується ЛИШЕ `stop`:");
+    console.log("         інші сценарії подій поза префіксом `integration.` не породжують узагалі.");
+    console.log("         `emergency_stop` іде не вебхуком клініки, а в N8N_WEBHOOK_URL, і в с61/с63");
+    console.log("         чотири такі події реально пішли назовні. Гард закритий, поки кожен");
+    console.log("         недоставлений рядок вікна не має помітки воркера `n8n_deferred`.");
+    console.log("         Вебхук клініки цим прапорцем НЕ знімається ніколи.");
     console.log("         cas, waitlist, case і stop потребують RADFLOW_USER_JWT — токен живого персоналу.");
     console.log("         Сесія у COOKIE (@supabase/ssr), не в localStorage — сніпет у шапці файлу.");
     console.log("         Живе ~годину. Не друкувати, не класти в лог, не слати в переписку.");
@@ -1550,9 +1615,15 @@ async function main() {
     return;
   }
 
-  // Фікстури — звичайні записи черги: тригер 0145 емітить їх партнеру, якщо
-  // у клініки увімкнено вебхук. Перевіряємо ДО першого запису.
-  await assertNoLiveWebhook(db, room.clinic_id);
+  /* Фікстури — звичайні записи черги: тригер 0145 емітить їх партнеру, якщо у
+     клініки увімкнено вебхук, а `stop` емітить ще й `emergency_stop` у
+     n8n-гілку. Обидві гілки перевіряємо ДО першого запису.
+     ⚠️ `N8N_FREE_COMMANDS` — список НЕ-емітентів, тож невідома команда
+     потрапляє під гард, а не повз нього. */
+  await assertNoLiveDelivery(db, room.clinic_id, {
+    allowN8n: opts["allow-n8n"] === true,
+    scenarioEmitsN8n: !N8N_FREE_COMMANDS.includes(cmd),
+  });
   if (cmd === "room") await assertRoomFree(db, room.id);
   /* ПЕРЕДУМОВА «півночі» — ДО першого запису, як і гард `stop`. Без неї прогін
      давав вісім рядків `23514` і повідомлення «пари діб не знайдено», тобто
@@ -1595,7 +1666,7 @@ async function main() {
     }
     user = userClient(jwt);
     /* ДО першого запису: центр токена ↔ центр кабінету. Ставимо саме тут —
-       після `assertNoLiveWebhook` і ПЕРЕД `findSlots`, який уже пише проби. */
+       після `assertNoLiveDelivery` і ПЕРЕД `findSlots`, який уже пише проби. */
     await assertTokenClinicMatches(user, room);
   }
 
