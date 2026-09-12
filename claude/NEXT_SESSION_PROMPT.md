@@ -413,19 +413,23 @@ thing, look at what is actually available in the session. Proven in combat:
 - Also: the built-in browser, **Claude in Chrome** (live UI checks), Figma,
   Google Drive, n8n, Lovable.
 
-## ENVIRONMENT TRAPS (verified, sessions 43–63)
+## ENVIRONMENT TRAPS (verified, sessions 43–64)
 
 ### Around stands and long runs
 
 ⚠️ **Any edit in the repository while ANY stand is running is silently rolled
 back.** A stand snapshots the live files on start and restores them in
 `finally` — not just `falsify-all`, every `falsify-*.mjs`. While a stand is
-running, do not touch the tree at all.
+running, do not touch the tree at all. ⚠️ **This includes the OWNER** (s64): he
+saved the root `NEXT_SESSION_PROMPT.md` mid-revision, the between-stand tree
+check read it as an unrestored mutation, the revision stopped at stand 8 of 37
+and its own `git checkout --` discarded his edit. Warn him out loud before
+starting a revision — and remember that the writer is not always a stand.
 ⚠️ **`falsify-all.mjs` REFUSES to start on a dirty tree.** **The order is: gate →
 commit → revision on a clean tree.** Or `--allow-dirty` if you deliberately
 measure the working copy.
-⚠️ **A full revision takes 40–45 min; `falsify-u72` alone is 15–25 min.** Plan it
-as background work, not as a step.
+⚠️ **A full revision takes 40–50 min** (s64: 50 min for all 37, `falsify-u72`
+alone 471 s). Plan it as background work, not as a step.
 ⚠️ **A stand that is red with an EMPTY facts table "did not finish"** — that is
 not "the guard does not hold". Run that stand separately before believing it.
 ⚠️ **A TOOL TIMEOUT DOES NOT CANCEL THE COMMAND.** `start_process` returning
@@ -501,7 +505,7 @@ it resets to the reset value, which for a placeholder GUC is the empty string.
 1. **`AGENTS.md`** — the stable rules. "Конвенції коду" holds the time canon; the
    0122 trap is in the migrations section.
 2. **`claude/radflow-handoff.md`** — the durable state, FRESHEST first. It opens
-   with «СОСТОЯНИЕ НА КОНЕЦ с63»; below it, one block per session in reverse
+   with «СОСТОЯНИЕ НА КОНЕЦ с64»; below it, one block per session in reverse
    order.
 3. **`claude/plan-s57.md`** — the live queue and the five forks with their
    measurements.
