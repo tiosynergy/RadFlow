@@ -80,28 +80,28 @@ that is what found what neither review round saw.
 
 ---
 
-## ⛔ STATE OF PLAY — production cannot be built from `main` right now
+## ✅ STATE OF PLAY — the merge blocker is CLOSED (s64, 12.09.2026)
 
-Measured 2026-09-12, not assumed:
+`dev` → `main` was merged in s64: `main` = **`7dfdaf2`**, and production serves
+it (`/api/build` → **`887f3738c8ee`** = `sha256(7dfdaf29…)[:12]`, computed
+locally BEFORE fetching). Order kept: gate → clean tree → full revision 37/37
+green → merge (`--no-ff`, ort, no conflicts) → `db:gate:check` 189/189 and
+`npm run build` exit 0 → push → deploy → stamp in both directions. The live
+write check on the new build passed in both directions — detail in the s64 block
+of `claude/radflow-handoff.md`.
 
-* `git ls-tree main supabase/migrations/` tops out at **0185**;
-* `select count(*) from public.migration_ledger` → **189**;
-* the gate is **symmetric**: `scripts/migration-gate-lib.mjs:82-88` fails on
-  every ledger row with no file on disk (`НЕМАЄ ФАЙЛА`).
+⚠️ **The gate is symmetric** (`scripts/migration-gate-lib.mjs:82-88`): a ledger
+row with no file on disk fails the build exactly as loudly as a file with no
+ledger row. That is WHY an unmerged branch carrying applied migrations blocks
+production. Keep `main` and the ledger in step — do not let four migrations pile
+up on `dev` again.
 
-So **any production build from today's `main` dies on four files** (0186, 0187,
-0188, 0189). Production is only alive because nothing has been pushed to `main`
-since 0185: `/api/build` returns `377d428d64a0`, exactly `sha256(e67a2b50…)[:12]`.
-`dev` is **21+ commits ahead** and unmerged.
-
-⚠️ Second half of the same drift: **the DB is ahead of the code.** 0186–0189 are
-already in production and the code on `main` knows nothing about them. 0187 made
-`fn_audit` **loud** — it now raises instead of swallowing. On the old code that
-can fail a write if an audit trigger hits an error. Not observed, and not
-checked. A live write check after the merge is mandatory.
-
-⚠️ Merging requires a **full stand revision on a clean tree** (37 stands, 40–45
-min) BEFORE the merge.
+⚠️ **The old claim that 0187 made `fn_audit` RAISE is FALSE** (s64 finding).
+It raises a **`warning`**; the failure mode stays **fail-open** and the business
+write is never rolled back — the function's own comment says «ПОВЕДІНКА НЕ
+МІНЯЄТЬСЯ НІ НА БІТ». Measured: **76** audit rows across three tables since 0187
+was applied, not one lost write. Do not resurrect the "the DB is ahead of the
+code and writes may fail" story; that risk never existed.
 
 ---
 
@@ -122,18 +122,27 @@ npm run db:gate:check
 
 …plus the **deploy stamp** of `/api/build`.
 
-### Expected state (measured 2026-09-12, END OF SESSION 63) — START HERE
+### Expected state (measured 2026-09-12, END OF SESSION 64) — START HERE
+
+⚠️ **Every body md5 below NAMES ITS RECIPE** (s64 finding: two md5 taken with
+two different recipes sat side by side unlabelled, and the unlabelled one is the
+input to queue item 2). The two recipes are:
+* **raw** — `md5(replace(prosrc, chr(13), ''))`;
+* **normalized** — `md5(btrim(regexp_replace(replace(prosrc, chr(13), ''), '[[:space:]]+', ' ', 'g')))`.
 
 | what | expected |
 |---|---|
-| `main` / `dev` | **`e67a2b5`** / **`c54cd92`** + the docs commits of this handover on top (**`542d900`** at the time of writing) — ⚠️ expect `dev` to DIFFER and take the hashes from `git ls-remote`; that is not a finding |
+| `main` / `dev` | **`7dfdaf2`** (the s64 merge commit) / **`76db233`** + the docs commits of this handover on top — ⚠️ expect `dev` to DIFFER and take the hashes from `git ls-remote`; that is not a finding |
+| branches | `main..dev` docs-only after s64; ⚠️ `dev..main` is ~21 (merge commits of `main`'s own history), so `--ff-only` will NOT work — merge with `--no-ff -F .commitmsg` |
 | prod DB | **`0189_room_busy_slots_tz_once.sql`**, ledger **189/189**, unstamped 0 |
 | **next migration** | **0190** — the number comes FROM THE LEDGER, never from the folder |
 | `invariants_check(false)` | `ok:true`, **`checked:23`**, `failed:[]` |
-| guard body | md5 without CR **`95b0b4d2ba635e85c335ff7615c3b0a3`**, length **111 592**, CR **0**; normalized pin `g` **`53440c9a5df574c64fe45824a4327c9f`** |
-| toolchain | tsc **0**, eslint **0**, vitest **3213/3213**, `db:gate` **189/189** |
-| stand revision | `EXPECTED_STANDS` **37** (s63: +`falsify-sched-refetch`) |
-| deploy stamp | `GET /api/build` → **`377d428d64a0`** for `main = e67a2b5` |
+| guard body | **raw** **`95b0b4d2ba635e85c335ff7615c3b0a3`**, length **111 592**, CR **0**; **normalized** = pin `g` **`53440c9a5df574c64fe45824a4327c9f`** |
+| `room_busy_slots` body | **raw** **`4d7b653117bb1b302666b31e829cc381`** (4883 chars, identical to the `$fn$` body in the 0189 file); **normalized** **`83ddb89d6b1cd33ae19c8d314d29b73c`** — the latter is what check №19 needs |
+| toolchain | tsc **0**, eslint **0**, vitest **3213/3213** (630 suites), `db:gate` **189/189**, `npm run build` exit **0** |
+| stand revision | `EXPECTED_STANDS` **37**, all 37 green, ~50 min |
+| migration files | **191** `.sql` on disk vs **189** in the gate — NOT a hole: `0064_PRECHECK.sql` and `0066_PRECHECK.sql` are excluded by the gate on purpose, and its own code says so |
+| deploy stamp | `GET /api/build` → **`887f3738c8ee`** for `main = 7dfdaf2`. ⚠️ Build latency measured at **~11 min** in s64, not the "4–9" the older docs claim |
 
 ⚠️ **The guard body length is the SAME as at the end of s62 (111 592) but the
 md5 DIFFERS.** Not a finding: 0187 reprinted the guard and swapped one 32-char
@@ -246,16 +255,31 @@ deleted — `09fe3a92-0e5a-4adb-b719-ec0ed48a6922` and
 
 ---
 
-## QUEUE FOR SESSION 64 — a menu, not an order
+## QUEUE FOR SESSION 65 — a menu, not an order
 
 ⚠️ **Ask before coding.** Compose a plan (`TaskCreate`) and **AGREE THE FIRST
 PACKAGE WITH ME BEFORE WRITING CODE.** If a package is product-facing, show me
 the texts before they land.
 
-1. **Merge `dev` → `main`, deploy, live write check.** Blocker, not a tail. The
-   live check must exercise a write that fires an audit trigger, because 0187
-   made `fn_audit` loud.
-2. **`assertNoLiveWebhook` does not cover the n8n branch.** The guard only looks
+**Closed in s64:** merge `dev` → `main`, deploy, live write check. Do not redo
+it — verify it (TASK #0).
+
+**New, opened by s64:**
+
+* **The root `NEXT_SESSION_PROMPT.md` duplicate must go.** Two tracked copies
+  exist: the root one (1016 lines, last touched by `6bfa74d`, the s60 docs — two
+  editions stale) and `claude/NEXT_SESSION_PROMPT.md` (the canon since s63).
+  `docs/AGENT_ONBOARDING.md` still calls the root one canonical. In s64 the
+  stale copy cost an hour of revision: the owner saved into it mid-run and the
+  revision's own `git checkout --` discarded that edit. Needs the owner's OK
+  before `git rm`.
+* **Find where the `sink-overdue` cron actually lives.** `maintenance_runs` has
+  only ever carried three jobs (`invariants` 75, `audit-retention` 20,
+  `outbox-retention` 19) — `sink-overdue` appears **zero** times. Queue item
+  «seed window» below rests on that cron stamping `clarify_at`; check the
+  premise before acting on it.
+
+1. **`assertNoLiveWebhook` does not cover the n8n branch.** The guard only looks
    at `integration_webhooks`, but `emergency_stop` travels via
    `N8N_WEBHOOK_URL`/`N8N_WEBHOOK_SECRET`. **Four such rows were actually
    delivered externally** during harness runs. The payloads carried fixtures
@@ -302,8 +326,10 @@ Full text with the measurements: `claude/plan-s57.md` §3. **Р6 is DONE.**
 ## NAMED DEBTS — open, each with the place it lives
 
 - **`room_busy_slots` and the five other tz functions are absent from check
-  №19's named list** — see queue item 3.
-- **`assertNoLiveWebhook` covers only `integration_webhooks`** — see queue item 2.
+  №19's named list** — queue item «Pin `room_busy_slots`». ⚠️ Use the
+  **normalized** md5 `83ddb89d…`, not the raw `4d7b6531…` (s64 finding).
+- **`assertNoLiveWebhook` covers only `integration_webhooks`** — queue item
+  «`assertNoLiveWebhook` does not cover the n8n branch».
 - **`lib/importantEvents.ts` PII key list has no `password`/`pw`** — it mirrors
   the DB CHECK of 0128/0160, so it needs a migration, not a one-line edit.
 - **`/api/staff/password` ignores the `profiles.update` error after the auth
