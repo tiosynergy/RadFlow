@@ -1,8 +1,9 @@
 # RadFlow — Agent Onboarding
 
 Context for an AI agent (Claude Code / Cowork) continuing work on RadFlow. This file holds the
-STABLE rules. For the CURRENT state of the work read, in this order: `NEXT_SESSION_PROMPT.md`
-(repo root — the new-session start message), then `claude/radflow-handoff.md` (in the repo AND
+STABLE rules. For the CURRENT state of the work read, in this order: `claude/NEXT_SESSION_PROMPT.md`
+(the start-prompt attachment — the stale root copy was removed in s65), then
+`claude/radflow-handoff.md` (in the repo AND
 mirrored in the claude.ai project "RadFlow", `Projects` tool — that pair is the durable state).
 ⚠️ **`docs/HANDOVER.md` is NOT current state** — its own header says so: sessions 32+ were never
 written into it, and its footer still claims prod is on `0086`. Read it only for §6 ("why this,
@@ -155,7 +156,7 @@ management.
     REMOVED from `vercel.json` (it blocked the deploy); `vercel.json` now only carries `$schema`.
     Re-add a cron only when upgrading to Pro.
 
-## Open work — the live list is `NEXT_SESSION_PROMPT.md` («ЧТО ДЕЛАТЬ ДАЛЬШЕ»)
+## Open work — the live list is `claude/NEXT_SESSION_PROMPT.md` («QUEUE FOR SESSION N»)
 - Run `npm run typecheck` (== `tsc --noEmit`) and `npm run lint` (== `eslint . --max-warnings 0`
   since s50). Note: bare `tsc` is NOT on PATH — use `npx` or the npm script.
 - ⚠️ Neither of those gates the deploy. Measured in s50 with three mutations: a **type** error
@@ -201,5 +202,5 @@ management.
   in as the needed role, then inspect.
 - Use a subagent for RLS/security review on anything touching multi-tenant policies.
 - Track work with the task list. At the end of a session update `docs/HANDOVER.md` (new session
-  block), `NEXT_SESSION_PROMPT.md` (priorities) and `claude/radflow-handoff.md` in the claude.ai
+  block), `claude/NEXT_SESSION_PROMPT.md` (priorities) and `claude/radflow-handoff.md` in the claude.ai
   project.

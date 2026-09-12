@@ -17,7 +17,7 @@
 Обязательно прочитай:
 
 1. `AGENTS.md`;
-2. `NEXT_SESSION_PROMPT.md`;
+2. `claude/NEXT_SESSION_PROMPT.md`;
 3. шапку и актуальный блок `docs/HANDOVER.md`;
 4. `docs/PRODUCT_OVERVIEW.md`.
 
@@ -278,4 +278,4 @@
 7. известные ограничения;
 8. подтверждение, что миграций, commit, push и deploy не выполнялось.
 
-После завершения обнови `docs/HANDOVER.md` и `NEXT_SESSION_PROMPT.md` в соответствии с правилами проекта, не переписывая несвязанные исторические разделы.
+После завершения обнови `docs/HANDOVER.md` и `claude/NEXT_SESSION_PROMPT.md` в соответствии с правилами проекта, не переписывая несвязанные исторические разделы.

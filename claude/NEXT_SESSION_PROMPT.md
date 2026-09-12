@@ -1,8 +1,8 @@
-# RadFlow — attachment for the next session (session 64)
+# RadFlow — attachment for the next session (session 65)
 
 > **This file is the ATTACHMENT.** The owner pastes
-> `claude/session64-start-prompt.md` as the first message and attaches this
-> file. Session-specific part rewritten at the end of session 63 (2026-09-12);
+> `claude/session65-start-prompt.md` as the first message and attaches this
+> file. Session-specific part rewritten at the end of session 64 (2026-09-12);
 > the permanent part below is carried unchanged.
 >
 > ⚠️ **The two must come from the same end-of-session edit.** Session 59 opened
@@ -80,28 +80,45 @@ that is what found what neither review round saw.
 
 ---
 
-## ⛔ STATE OF PLAY — production cannot be built from `main` right now
+## ✅ STATE OF PLAY — after s65 (12.09.2026)
 
-Measured 2026-09-12, not assumed:
+s65 shipped three packages: the stale root `NEXT_SESSION_PROMPT.md` is gone;
+the race-harness guard now covers BOTH outbox branches (`emergency_stop` goes
+to n8n, and five such rows in prod were ALL delivered); migration **0190** makes
+check №19 cover the PII-visibility PATH — `room_busy_slots` **and**
+`auth_can_see_slot_details` (the function that actually decides), plus an
+`extra:` branch that makes an OVERLOAD of a pinned name visible. Full revision
+37/37 green after the reprint.
 
-* `git ls-tree main supabase/migrations/` tops out at **0185**;
-* `select count(*) from public.migration_ledger` → **189**;
-* the gate is **symmetric**: `scripts/migration-gate-lib.mjs:82-88` fails on
-  every ledger row with no file on disk (`НЕМАЄ ФАЙЛА`).
+⚠️ **Two reviews with different lenses are not a ritual.** The first edition of
+the delivery guard passed its own ten tests and four mutations and carried THREE
+independent ways to turn a refusal into permission; the first edition of 0190
+pinned the caller and left the decider. Neither was caught by re-running tests.
 
-So **any production build from today's `main` dies on four files** (0186, 0187,
-0188, 0189). Production is only alive because nothing has been pushed to `main`
-since 0185: `/api/build` returns `377d428d64a0`, exactly `sha256(e67a2b50…)[:12]`.
-`dev` is **21+ commits ahead** and unmerged.
+### The s64 block below stays as the merge-blocker archaeology
 
-⚠️ Second half of the same drift: **the DB is ahead of the code.** 0186–0189 are
-already in production and the code on `main` knows nothing about them. 0187 made
-`fn_audit` **loud** — it now raises instead of swallowing. On the old code that
-can fail a write if an audit trigger hits an error. Not observed, and not
-checked. A live write check after the merge is mandatory.
 
-⚠️ Merging requires a **full stand revision on a clean tree** (37 stands, 40–45
-min) BEFORE the merge.
+
+`dev` → `main` was merged in s64: `main` = **`7dfdaf2`**, and production serves
+it (`/api/build` → **`887f3738c8ee`** = `sha256(7dfdaf29…)[:12]`, computed
+locally BEFORE fetching). Order kept: gate → clean tree → full revision 37/37
+green → merge (`--no-ff`, ort, no conflicts) → `db:gate:check` 189/189 and
+`npm run build` exit 0 → push → deploy → stamp in both directions. The live
+write check on the new build passed in both directions — detail in the s64 block
+of `claude/radflow-handoff.md`.
+
+⚠️ **The gate is symmetric** (`scripts/migration-gate-lib.mjs:82-88`): a ledger
+row with no file on disk fails the build exactly as loudly as a file with no
+ledger row. That is WHY an unmerged branch carrying applied migrations blocks
+production. Keep `main` and the ledger in step — do not let four migrations pile
+up on `dev` again.
+
+⚠️ **The old claim that 0187 made `fn_audit` RAISE is FALSE** (s64 finding).
+It raises a **`warning`**; the failure mode stays **fail-open** and the business
+write is never rolled back — the function's own comment says «ПОВЕДІНКА НЕ
+МІНЯЄТЬСЯ НІ НА БІТ». Measured: **76** audit rows across three tables since 0187
+was applied, not one lost write. Do not resurrect the "the DB is ahead of the
+code and writes may fail" story; that risk never existed.
 
 ---
 
@@ -122,23 +139,34 @@ npm run db:gate:check
 
 …plus the **deploy stamp** of `/api/build`.
 
-### Expected state (measured 2026-09-12, END OF SESSION 63) — START HERE
+### Expected state (measured 2026-09-12, END OF SESSION 65) — START HERE
+
+⚠️ **Every body md5 below NAMES ITS RECIPE** (s64 finding: two md5 taken with
+two different recipes sat side by side unlabelled, and the unlabelled one is the
+input to queue item 2). The two recipes are:
+* **raw** — `md5(replace(prosrc, chr(13), ''))`;
+* **normalized** — `md5(btrim(regexp_replace(replace(prosrc, chr(13), ''), '[[:space:]]+', ' ', 'g')))`.
 
 | what | expected |
 |---|---|
-| `main` / `dev` | **`e67a2b5`** / **`c54cd92`** + the docs commits of this handover on top (**`542d900`** at the time of writing) — ⚠️ expect `dev` to DIFFER and take the hashes from `git ls-remote`; that is not a finding |
-| prod DB | **`0189_room_busy_slots_tz_once.sql`**, ledger **189/189**, unstamped 0 |
-| **next migration** | **0190** — the number comes FROM THE LEDGER, never from the folder |
+| `main` / `dev` | take BOTH from `git ls-remote` — s65 merged `dev` → `main` at the end of the session, and the docs commit of this handover lands on `dev` after it. A difference here is not a finding |
+| branches | ⚠️ `dev..main` is large (merge commits of `main`'s own history), so `--ff-only` will NOT work — merge with `--no-ff -F .commitmsg` |
+| prod DB | **`0190_room_busy_slots_pinned.sql`**, ledger **190/190**, unstamped 0 |
+| **next migration** | **0191** — the number comes FROM THE LEDGER, never from the folder |
 | `invariants_check(false)` | `ok:true`, **`checked:23`**, `failed:[]` |
-| guard body | md5 without CR **`95b0b4d2ba635e85c335ff7615c3b0a3`**, length **111 592**, CR **0**; normalized pin `g` **`53440c9a5df574c64fe45824a4327c9f`** |
-| toolchain | tsc **0**, eslint **0**, vitest **3213/3213**, `db:gate` **189/189** |
-| stand revision | `EXPECTED_STANDS` **37** (s63: +`falsify-sched-refetch`) |
-| deploy stamp | `GET /api/build` → **`377d428d64a0`** for `main = e67a2b5` |
+| guard body | **raw** **`9680c291c01469e19cc8f6f99fd0093f`**, length **112 207**, CR **0**; **normalized** = pin `g` **`2e637a752614c08b587322cc46503377`** |
+| `room_busy_slots` body | **raw** **`4d7b653117bb1b302666b31e829cc381`** (4883 chars); **normalized** **`83ddb89d6b1cd33ae19c8d314d29b73c`** — the latter is the pin in list №19 |
+| `auth_can_see_slot_details` | **normalized** **`19fe1040308640b29a5d8b1bb7506873`** — pinned by 0190; it is the function that DECIDES PII visibility |
+| list №19 | **30** signatures (was 28), plus the new `extra:` branch for overloads |
+| toolchain | tsc **0**, eslint **0**, vitest **3235/3235** (631 suites), `db:gate` **190/190**, `npm run build` exit **0** |
+| stand revision | `EXPECTED_STANDS` **37**, all 37 green, **3041 s ≈ 51 min** (s65 measurement) |
+| migration files | **192** `.sql` on disk vs **190** in the gate — NOT a hole: `0064_PRECHECK.sql` and `0066_PRECHECK.sql` are excluded by the gate on purpose, and its own code says so |
+| deploy stamp | compute `sha256(<40-char SHA of main>)[:12]` LOCALLY first, then fetch `GET /api/build`. ⚠️ Build latency measured at **~11 min** in s64, not the "4–9" the older docs claim |
 
-⚠️ **The guard body length is the SAME as at the end of s62 (111 592) but the
-md5 DIFFERS.** Not a finding: 0187 reprinted the guard and swapped one 32-char
-`fn_audit` md5 inside check №19 for another 32-char one — an equal-length
-substitution. Written down here precisely because it looks alarming otherwise.
+⚠️ **The guard body grew by 615 chars in 0190** (111 592 → 112 207): two pin
+rows plus the `extra:` branch. In s64 the length stayed the same while the md5
+changed (an equal-length md5 substitution) — both shapes are normal, so compare
+BOTH numbers and never infer "nothing changed" from the length alone.
 
 ### How to take the deploy stamp
 
@@ -152,8 +180,9 @@ answer, not a failure. It says WHICH commit is served, NOT that the build is
 healthy — that stays with live checks.
 
 ⚠️ **Measure it from the owner's machine or with a unique cache-buster** — the
-container's `WebFetch` cache outlives the session (s61 finding). Build latency is
-**4–9 minutes**, not the "2–3" the older docs claim.
+container's `WebFetch` cache outlives the session (s61 finding). Build latency
+was **~11 minutes** in s64 (measured end to end), and 4–9 minutes before that —
+so a stamp still showing the PREVIOUS head at minute 8 is normal, not a failure.
 
 ⚠️ The older `/login` buildId fingerprint method is **dead** — it was
 one-directional, it could not be reproduced across two sessions, and `/login`
@@ -244,29 +273,71 @@ deleted — `09fe3a92-0e5a-4adb-b719-ec0ed48a6922` and
 10. **The clipboard is not a channel** — the owner copies my own command block
     back. Use a file or console history.
 
+### Added by session 65
+
+11. **A green test set and a green stand do not mean the guard guards.** The
+    first edition of the delivery guard passed its own ten tests and four
+    mutations and carried THREE ways to turn a refusal into permission. What
+    found them was two reviews with DIFFERENT lenses, not a third run.
+12. **Before explaining why your trick is safe, look for that trick in your own
+    file.** Client-side filtering after a `select` without a limit is named as a
+    hole 800 lines above in `race-check.mjs` — and I wrote it anyway, with a
+    comment claiming the opposite.
+13. **"Not delivered" is not proof of silence** — a POSITIVE marker is required.
+    Absence of evidence to the contrary is not evidence.
+14. **An evidence window wider than the retention horizon is a relaxation
+    disguised as caution**: it can only add rows that cannot carry the evidence.
+15. **Pinning the caller and leaving the decider = closing the door and leaving
+    the window.** Ask "who ACTUALLY decides?" before writing the pin.
+16. **A named list without an `extra:` branch has no closure** — it guards the
+    named bodies, not the absence of new doors (an overload walks past).
+17. **A pin an honest comment can break is noise; a pin a comment can satisfy is
+    a lie.** Both cure the same way: read the CODE, not the text.
+18. **`tsc` catches what vitest does not** — the "broken facts" test did not
+    compile because a JSDoc type promised numbers are always numbers.
+19. **One source is not a conclusion** — «`sink-overdue` is nowhere» rested on
+    `maintenance_runs`, where that job simply never writes.
+
 ---
 
-## QUEUE FOR SESSION 64 — a menu, not an order
+## QUEUE FOR SESSION 66 — a menu, not an order
 
 ⚠️ **Ask before coding.** Compose a plan (`TaskCreate`) and **AGREE THE FIRST
 PACKAGE WITH ME BEFORE WRITING CODE.** If a package is product-facing, show me
 the texts before they land.
 
-1. **Merge `dev` → `main`, deploy, live write check.** Blocker, not a tail. The
-   live check must exercise a write that fires an audit trigger, because 0187
-   made `fn_audit` loud.
-2. **`assertNoLiveWebhook` does not cover the n8n branch.** The guard only looks
-   at `integration_webhooks`, but `emergency_stop` travels via
-   `N8N_WEBHOOK_URL`/`N8N_WEBHOOK_SECRET`. **Four such rows were actually
-   delivered externally** during harness runs. The payloads carried fixtures
-   only, but `lib/outbox.ts` states that these payloads carry patient names and
-   phones. Widen the guard; clean the harness's own `event_outbox` rows by an
-   explicit id list with before-images.
-3. **Pin `room_busy_slots` in check №19's named list.** SECURITY DEFINER, decides
-   who sees patient names/status/studies, and absent from the list along with the
-   other five tz functions. New body md5 for `expd`:
-   **`83ddb89d6b1cd33ae19c8d314d29b73c`**. Touches `invariants_check` → reprint →
-   full revision → two review rounds.
+**Closed in s64:** merge `dev` → `main`, deploy, live write check.
+**Closed in s65:** the root `NEXT_SESSION_PROMPT.md` duplicate (`git rm`, ten
+live pointers moved to `claude/`); the n8n branch of the harness delivery guard;
+the pin of `room_busy_slots` in check №19 — **and of
+`auth_can_see_slot_details`, the function that actually decides PII
+visibility**, plus an `extra:` branch against overloads (migration 0190).
+Do not redo any of it — verify it (TASK #0).
+
+**Answered by measurement in s65, so do not re-open it as a question:**
+`sink-overdue` is NOT missing. It is **pg_cron jobid 1**, `*/5 * * * *`, active,
+`select public.sink_overdue_scheduled_all();`, 288 successful runs in 24 h. It
+simply never writes to `maintenance_runs` — only three jobs log there. The
+seed-window item rests on it, and the premise HOLDS.
+**Owner's decision on the seed window (s65): leave as is** — 97 of 225 entries
+already carry `clarify_at`.
+**Owner's decision on `event_outbox` (s65): do NOT delete the four harness rows
+(id 60–63)** — they are the evidence that the n8n branch is live; retention
+removes them ~10.10.
+
+1. **`proacl` into the `attrs` of check №19.** `grant execute on function … to
+   <a role member of authenticator>` and `revoke … from authenticated` are
+   invisible today: №22 filters by `anon` and delegates bodies to №19, and №19
+   does not look at ACL at all — the ring is not closed. The cure is one
+   expression (`;acl=` in attrs), but it changes all 30 values: its own
+   migration, its own two reviews, its own full revision.
+3. **The five definer functions that decide or return PII and are pinned by
+   nothing:** `emergency_stop_rpc` (returns `patient_name` and `patient_phone`),
+   `queue_set_status_rpc`, `submit_incident_rpc`, `check_no_overlap`,
+   `check_not_in_past` (the last two are ROW triggers on `queue_entries` and are
+   absent from the list of №17 as well). ⚠️ This is an OWNER'S decision, not
+   leftover tz-debt: the intersection of "slow because of tz" and "decides
+   access" is accidental.
 4. **`pg_timezone_names` phase 2 — owner's decision first.** Five functions
    remain, two of them ROW triggers on `queue_entries`, so every write pays at
    least two scans. Blocked on: `Europe/Kiev` is a legacy alias; if tzdata drops
@@ -275,10 +346,21 @@ the texts before they land.
 5. **`auth_rls_initplan` — 15 policies**, separate from RF-07. The win is **not
    automatic**: measured that the planner already folds `auth_clinic_id()` into
    an `Index Cond` without the wrapper. Measure per policy.
-6. **The seed window** — all seeded entries sat in 2026-09-09…15. Once past, the
-   `sink-overdue` cron stamps `clarify_at` on every one and the board fills with
-   «потребує уточнення». Re-seed into a fresh window or clear it (§6 of
-   `docs/audit/SEED-2026-09-08-test-data.md`, three DELETEs by the tag).
+6. **The seed window — CLOSED BY THE OWNER'S DECISION (s65): leave as is.**
+   Measured 12.09: the window is 10–16.09 and **97 of 225** entries already
+   carry `clarify_at` (10.09 — 32/32, 11.09 — 36/36, 12.09 — 29/29). Re-seeding
+   is a treadmill: the cron stamps every slot as it passes, not "after the
+   window". Do not re-open without the owner.
+6b. **`docs/README.md` says «9 кронов на 2026-08-24»; `cron.job` has 10** (ids
+   1, 3, 4, 5, 6, 10, 11, 12, 13, 17). Cheap and worth doing: find which one
+   appeared and fix the registry. ⚠️ `docs/ops-cron.md` is a LIVE doc pinned by
+   `invariantsCheckedPins` (`LIVE_DOCS`) — it must not lie.
+6c. **A behavioural stand for the acl branch of `room_busy_slots`.** 0190 pins
+   the CURRENT body, not its correctness: had prod already been hollowed out,
+   the pin would have cemented that. There is no `falsify-0190.mjs`.
+6d. **`assertNoLiveDelivery` does not cover `cleanup`** — that command runs
+   before the guard in `main()`, and DELETE of entries emits
+   `integration.appointment.deleted` via 0145. The boundary is named in the code.
 7. **14 existing MRI rows in Medicom have an unresolvable `region`.** Editing
    `studies` or moving them fails with `SERVICE_CLOSED` today. Two also have
    `room_id IS NULL`.
@@ -302,8 +384,10 @@ Full text with the measurements: `claude/plan-s57.md` §3. **Р6 is DONE.**
 ## NAMED DEBTS — open, each with the place it lives
 
 - **`room_busy_slots` and the five other tz functions are absent from check
-  №19's named list** — see queue item 3.
-- **`assertNoLiveWebhook` covers only `integration_webhooks`** — see queue item 2.
+  №19's named list** — queue item «Pin `room_busy_slots`». ⚠️ Use the
+  **normalized** md5 `83ddb89d…`, not the raw `4d7b6531…` (s64 finding).
+- **`assertNoLiveWebhook` covers only `integration_webhooks`** — queue item
+  «`assertNoLiveWebhook` does not cover the n8n branch».
 - **`lib/importantEvents.ts` PII key list has no `password`/`pw`** — it mirrors
   the DB CHECK of 0128/0160, so it needs a migration, not a one-line edit.
 - **`/api/staff/password` ignores the `profiles.update` error after the auth
@@ -386,19 +470,23 @@ thing, look at what is actually available in the session. Proven in combat:
 - Also: the built-in browser, **Claude in Chrome** (live UI checks), Figma,
   Google Drive, n8n, Lovable.
 
-## ENVIRONMENT TRAPS (verified, sessions 43–63)
+## ENVIRONMENT TRAPS (verified, sessions 43–64)
 
 ### Around stands and long runs
 
 ⚠️ **Any edit in the repository while ANY stand is running is silently rolled
 back.** A stand snapshots the live files on start and restores them in
 `finally` — not just `falsify-all`, every `falsify-*.mjs`. While a stand is
-running, do not touch the tree at all.
+running, do not touch the tree at all. ⚠️ **This includes the OWNER** (s64): he
+saved the root `NEXT_SESSION_PROMPT.md` mid-revision, the between-stand tree
+check read it as an unrestored mutation, the revision stopped at stand 8 of 37
+and its own `git checkout --` discarded his edit. Warn him out loud before
+starting a revision — and remember that the writer is not always a stand.
 ⚠️ **`falsify-all.mjs` REFUSES to start on a dirty tree.** **The order is: gate →
 commit → revision on a clean tree.** Or `--allow-dirty` if you deliberately
 measure the working copy.
-⚠️ **A full revision takes 40–45 min; `falsify-u72` alone is 15–25 min.** Plan it
-as background work, not as a step.
+⚠️ **A full revision takes 40–50 min** (s64: 50 min for all 37, `falsify-u72`
+alone 471 s). Plan it as background work, not as a step.
 ⚠️ **A stand that is red with an EMPTY facts table "did not finish"** — that is
 not "the guard does not hold". Run that stand separately before believing it.
 ⚠️ **A TOOL TIMEOUT DOES NOT CANCEL THE COMMAND.** `start_process` returning
@@ -474,7 +562,7 @@ it resets to the reset value, which for a placeholder GUC is the empty string.
 1. **`AGENTS.md`** — the stable rules. "Конвенції коду" holds the time canon; the
    0122 trap is in the migrations section.
 2. **`claude/radflow-handoff.md`** — the durable state, FRESHEST first. It opens
-   with «СОСТОЯНИЕ НА КОНЕЦ с63»; below it, one block per session in reverse
+   with «СОСТОЯНИЕ НА КОНЕЦ с64»; below it, one block per session in reverse
    order.
 3. **`claude/plan-s57.md`** — the live queue and the five forks with their
    measurements.

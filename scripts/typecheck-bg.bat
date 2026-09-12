@@ -3,7 +3,7 @@ REM ===== Фоновий typecheck =====
 REM Навіщо: міст Desktop Commander рве будь-який виклик приблизно на 60 с, а
 REM `tsc --noEmit` на цьому проєкті йде довше. Тому не чекаємо в самому виклику,
 REM а пускаємо у фоні й опитуємо МАРКЕР — той самий прийом, що описаний у
-REM «пастках середовища» (NEXT_SESSION_PROMPT.md).
+REM «пастках середовища» (claude/NEXT_SESSION_PROMPT.md).
 REM
 REM Використання:
 REM   start "" /b scripts\typecheck-bg.bat

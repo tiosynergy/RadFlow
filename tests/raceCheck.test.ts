@@ -22,6 +22,8 @@ import {
   RETRYABLE_LOCK_SQLSTATES, assertUsableJwt,
   verdictCaseRounds, CASE_NOT_OPEN_MESSAGE,
   verdictMidnightRace, MIDNIGHT_LATE_TIME, MIDNIGHT_EARLY_TIME, MIDNIGHT_CONTROL_TIME,
+  deliveryGuardVerdict, N8N_EVIDENCE_WINDOW_DAYS, INTEGRATION_PREFIX_MIRROR,
+  N8N_DEFER_NOTE, N8N_FREE_COMMANDS,
 } from "../scripts/race-check-lib.mjs";
 
 /* ⚠️ ЗНАЙДЕНО СТЕНДОМ `falsify-race-check` (с62), і це дефект САМИХ ТЕСТІВ,
@@ -1281,5 +1283,183 @@ describe("гонка через межу доби — вердикт відрі�
       { ...scene, dayEarly: scene.dayLate });
     expect(r.verdict).toBe("INCONCLUSIVE");
     expect(r.reason).not.toMatch(/ПОДВІЙНЕ/);
+  });
+});
+
+/* ГАРД ДОСТАВКИ (пакет с65). Перший тест на цей гард узагалі: до с65 слово
+   «webhook» не зустрічалось у цьому файлі ЖОДНОГО разу — заміряно пошуком,
+   а сам гард жив у CLI `race-check.mjs`, половині харнеса, яку не покривали
+   ні vitest, ні стенд (названа межа у шапці falsify-race-check.mjs).
+
+   ⚠️ ВХОДИ — ЛІТЕРАЛИ, очікування — КОДИ вердикту. Урок с62 з цього ж файлу:
+   подавати ту саму константу і на вхід, і в очікування означає порівнювати
+   значення саме із собою, і мутація лишає набір зеленим. */
+describe("гард доставки: гілок outbox дві, а не одна", () => {
+  /* Факти подаються ЛІТЕРАЛАМИ; хелпер лише не дає забути поле, бо забуте
+     поле — це NaN, і воно мусить давати `n8n_malformed`, а не мовчазний
+     дозвіл (див. окремий тест нижче). */
+  const facts = (o = {}) => ({ windowDays: 30, rows: 0, delivered: 0, deferred: 0, ...o });
+
+  it("увімкнений вебхук клініки — відмова, і --allow-n8n її НЕ знімає", () => {
+    /* Прапорець названий «n8n» і мусить знімати САМЕ n8n: вебхук клініки — це
+       чужий партнер, а не наш приймач. */
+    const r = deliveryGuardVerdict({
+      enabledHooks: 1, n8n: facts({ rows: 5, deferred: 5 }), allowN8n: true,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("webhook_live");
+  });
+
+  it("нечитані вебхуки — відмова, і ні прапорець, ні «сценарій без n8n» її не знімають", () => {
+    /* `enabledHooks: NaN` — це «запит впав», а не «нуль вебхуків»; мовчазний
+       нуль тут був би fail-open рівно того класу, що `<>` проти NULL.
+       ⚠️ Перша редакція пінила тільки `.code`, і тому мутація `ok: false →
+       true` лишала набір зеленим (знахідка ревʼю А). Пінимо ОБОЄ, і ще
+       порядок: сліпота на вебхуках важливіша за обидва послаблення. */
+    const blind = deliveryGuardVerdict({ enabledHooks: Number.NaN, n8n: facts({ rows: 1, deferred: 1 }) });
+    expect(blind.ok).toBe(false);
+    expect(blind.code).toBe("hooks_unknown");
+    expect(deliveryGuardVerdict({ enabledHooks: Number.NaN, n8n: null, allowN8n: true }).ok).toBe(false);
+    expect(deliveryGuardVerdict({
+      enabledHooks: Number.NaN, n8n: null, scenarioEmitsN8n: false,
+    }).ok).toBe(false);
+  });
+
+  it("сценарій без n8n-подій — гілка не перевіряється, і це НЕ вакуум", () => {
+    /* `run`/`room`/`cas`/`waitlist`/`midnight` пишуть лише `queue_entries`,
+       звідки йдуть тільки `integration.*`. Відмовляти їм «за вакуумом» —
+       вимкнути чотири робочі сценарії заради гілки, якої вони не торкаються
+       (знахідка ревʼю Б). Вебхук клініки для них уже перевірено вище. */
+    const r = deliveryGuardVerdict({ enabledHooks: 0, n8n: null, scenarioEmitsN8n: false });
+    expect(r.ok).toBe(true);
+    expect(r.code).toBe("n8n_not_in_play");
+  });
+
+  it("нечитаний event_outbox — відмова, і прапорець сліпоту не лікує", () => {
+    expect(deliveryGuardVerdict({ enabledHooks: 0, n8n: null }).code).toBe("n8n_unknown");
+    expect(deliveryGuardVerdict({ enabledHooks: 0, n8n: null, allowN8n: true }).ok).toBe(false);
+  });
+
+  it("доставлена подія n8n-гілки — відмова: транспорт ЖИВИЙ", () => {
+    /* Саме цей випадок і був у проді 12.09.2026: пʼять `emergency_stop`, усі
+       пʼять із `delivered_at`. Старий гард на цих самих фактах казав «чисто». */
+    const r = deliveryGuardVerdict({ enabledHooks: 0, n8n: facts({ rows: 5, delivered: 5 }) });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("n8n_live");
+  });
+
+  it("ОДНІЄЇ доставленої достатньо — гард не рахує «більшість»", () => {
+    const r = deliveryGuardVerdict({ enabledHooks: 0, n8n: facts({ rows: 40, delivered: 1, deferred: 39 }) });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("n8n_live");
+  });
+
+  it("мовчання доводиться ПОМІТКОЮ воркера, а не відсутністю доставок", () => {
+    /* Єдиний випадок, коли гард пускає без прапорця: КОЖЕН недоставлений
+       рядок вікна відкладено з поміткою «гілка не сконфігурована». */
+    const r = deliveryGuardVerdict({ enabledHooks: 0, n8n: facts({ rows: 3, deferred: 3 }) });
+    expect(r.ok).toBe(true);
+    expect(r.code).toBe("n8n_silent");
+  });
+
+  it("недоставлені БЕЗ помітки — це не мовчання, а незʼясований стан", () => {
+    /* ⚠️ Перша редакція вважала «доставлено 0» доказом мовчання. Але рядок
+       без помітки — це або щойно емітований, або той, що падає помилкою
+       транспорту, тобто при ЖИВОМУ URL (знахідка ревʼю А). */
+    const r = deliveryGuardVerdict({ enabledHooks: 0, n8n: facts({ rows: 3, deferred: 2 }) });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("n8n_unclear");
+  });
+
+  it("жодної події у вікні — це «не знаю», а не «чисто»", () => {
+    /* Невакуумність вбудована в сам вердикт (урок с63). Порожнє вікно — не
+       доказ мовчання: перевіряти просто не було на чому. */
+    const r = deliveryGuardVerdict({ enabledHooks: 0, n8n: facts() });
+    expect(r.ok).toBe(false);
+    expect(r.code).toBe("n8n_vacuous");
+  });
+
+  it("зіпсуті факти — відмова, а не провал у фінальний дозвіл", () => {
+    /* NaN не більший за нуль і не дорівнює нулю, тож без окремої перевірки всі
+       ці входи дійшли б до останнього `return` і отримали дозвіл. */
+    for (const bad of [
+      {}, { rows: 5 }, { rows: -1, deferred: -1 }, { rows: 1, delivered: 3 }, { rows: 2, deferred: 3 },
+    ]) {
+      const r = deliveryGuardVerdict({ enabledHooks: 0, n8n: { windowDays: 30, ...bad } });
+      expect(r.ok).toBe(false);
+      expect(r.code).toBe("n8n_malformed");
+    }
+  });
+
+  it("--allow-n8n знімає живу гілку, вакуум і незʼясований стан — і тільки їх", () => {
+    expect(deliveryGuardVerdict({
+      enabledHooks: 0, n8n: facts({ rows: 9, delivered: 9 }), allowN8n: true,
+    }).code).toBe("n8n_allowed");
+    expect(deliveryGuardVerdict({ enabledHooks: 0, n8n: facts(), allowN8n: true }).code).toBe("n8n_allowed");
+    expect(deliveryGuardVerdict({
+      enabledHooks: 0, n8n: facts({ rows: 4, deferred: 1 }), allowN8n: true,
+    }).code).toBe("n8n_allowed");
+    /* А зіпсуті факти прапорець НЕ знімає: знімати перевірку можна свідомо,
+       рахувати по сміттю — ні. */
+    expect(deliveryGuardVerdict({ enabledHooks: 0, n8n: { windowDays: 30 }, allowN8n: true }).ok).toBe(false);
+  });
+
+  it("кожна відмова називає ВИХІД, а порада про змінну оточення — чесна", () => {
+    /* ⚠️ Перша редакція радила «зніміть N8N_WEBHOOK_URL і запустіть знову».
+       Порада не працює: вердикт читає ІСТОРІЮ, і доставлений рядок лишається
+       у вікні (знахідка ревʼю Б). Оператор зняв би змінну в проді, отримав
+       той самий текст і вирішив, що гард зламаний. */
+    const live = deliveryGuardVerdict({ enabledHooks: 0, n8n: facts({ rows: 2, delivered: 2, lastDeliveredAt: "2026-09-11T15:28:03Z" }) });
+    expect(live.message).toMatch(/2026-09-11/);
+    expect(live.message).toMatch(/НЕ змінить/);
+    for (const r of [
+      live,
+      deliveryGuardVerdict({ enabledHooks: 0, n8n: facts() }),
+      deliveryGuardVerdict({ enabledHooks: 0, n8n: facts({ rows: 3, deferred: 1 }) }),
+    ]) expect(r.message).toMatch(/--allow-n8n/);
+    expect(deliveryGuardVerdict({ enabledHooks: 1, n8n: facts({ rows: 1, deferred: 1 }) }).message)
+      .toMatch(/Вимкніть вебхук/);
+  });
+
+  it("вікно доказу дорівнює горизонту прибирання доставлених із 0159", () => {
+    /* ⚠️ Пін читає МІГРАЦІЮ, а не літерал у тесті (знахідка обох ревʼю).
+       Ширше вікно не додає ЖОДНОГО доказу живості — доставлені старші за
+       горизонт уже видалені, — зате додає недоставлених, яких ретенція не
+       чіпає ніколи, і тим посуває вердикт у бік дозволу. */
+    const sql = readFileSync(resolve(process.cwd(), "supabase/migrations/0159_outbox_retention.sql"), "utf8");
+    const m = sql.match(/p_delivered_days\s+integer\s+default\s+(\d+)/);
+    expect(Number(m?.[1])).toBe(N8N_EVIDENCE_WINDOW_DAYS);
+  });
+
+  it("дзеркало префікса збігається з контрактом lib/integrationContract.ts", () => {
+    /* Пін не тавтологічний: значення читається з ІНШОГО файлу. Розійдуться —
+       гард рахуватиме не ту гілку й мовчки подобрішає. */
+    const src = readFileSync(resolve(process.cwd(), "lib/integrationContract.ts"), "utf8");
+    const m = src.match(/INTEGRATION_EVENT_PREFIX\s*=\s*"([^"]+)"/);
+    expect(m?.[1]).toBe(INTEGRATION_PREFIX_MIRROR);
+  });
+
+  it("дзеркало помітки відкладання збігається з lib/outbox.ts", () => {
+    /* Помітка — єдиний позитивний доказ мовчання. Перейменують її у воркері —
+       `deferred` стане нулем, і кожен прогін почне впиратись у n8n_unclear. */
+    const src = readFileSync(resolve(process.cwd(), "lib/outbox.ts"), "utf8");
+    const m = src.match(/deferRows\(deferredN8nIds,[^,]+,\s*"([^"]+)"\)/);
+    expect(m?.[1]).toBe(N8N_DEFER_NOTE);
+  });
+
+  it("`stop` НЕ в списку сценаріїв без n8n — інакше гард знімається сам собою", () => {
+    expect(N8N_FREE_COMMANDS).not.toContain("stop");
+    expect(N8N_FREE_COMMANDS).toEqual(["run", "room", "cas", "waitlist", "midnight"]);
+  });
+
+  it("гард ВПАЯНИЙ у main — і список сценаріїв береться з константи, а не з літерала", () => {
+    /* ⚠️ Половина піна, без якої він не фальсифікується (той самий прийом, що
+       для гарда токена вище): вердикт лишиться під тестами й стендом, а
+       виклик зникне — і набір буде зеленим, поки фікстури їдуть назовні. */
+    const src = readFileSync(resolve(process.cwd(), "scripts/race-check.mjs"), "utf8");
+    const main = src.slice(src.indexOf("async function main()"));
+    expect(main).toContain("assertNoLiveDelivery(db, room.clinic_id, {");
+    expect(main.indexOf("assertNoLiveDelivery(")).toBeLessThan(main.indexOf("findSlots("));
+    expect(main).toMatch(/scenarioEmitsN8n:\s*!N8N_FREE_COMMANDS\.includes\(cmd\)/);
   });
 });

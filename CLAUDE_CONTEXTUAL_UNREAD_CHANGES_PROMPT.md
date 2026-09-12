@@ -13,7 +13,7 @@ RadFlow is a multi-tenant B2B SaaS platform for MRI/CT patient queue automation.
 Before making changes, read:
 
 1. `AGENTS.md`
-2. `NEXT_SESSION_PROMPT.md`
+2. `claude/NEXT_SESSION_PROMPT.md`
 3. The latest section of `docs/HANDOVER.md`
 4. `supabase/migrations/0128_important_events.sql`
 5. `lib/importantEvents.ts`
