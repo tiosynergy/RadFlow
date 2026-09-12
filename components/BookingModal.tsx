@@ -27,6 +27,7 @@ import type { ClockClaim } from "@/lib/clockTrust";
    а tg_change_markers_queue розіслав би крапки на рівному місці. */
 const normName = (s: string | null | undefined) => (s || "").trim().replace(/\s+/g, " ");
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
+import { useScheduleRefetch } from "@/lib/useScheduleRefetch";
 import { slotDataMissLabel, slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { CONTRAST_SURCHARGE, CONTRAST_DUR, BUFFER_DEFAULT, BUFFER_OPTIONS, studyLabel, normDur, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah, DUR_MAX } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
@@ -736,6 +737,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
   }, [roomId, dateKeyStr, clinicId]);
 
   useEffect(() => { setSchedLoading(true); loadSched(); }, [loadSched]);
+  /* ⚠️ `setSchedLoading(true)` лишається ТУТ, а не всередині `loadSched`: хук
+     нижче кличе той самий лоадер фоново, і сітка не має блимати «…» на кожному
+     тику. */
+  useScheduleRefetch({ clinicId, dateStr: dateKeyStr, roomId, scope: "booking", onChange: loadSched });
 
   /* Зайнятість — через RPC room_busy_slots (спільний хук + realtime), а НЕ прямим
      select із queue_entries. Дві причини:

@@ -96,7 +96,24 @@ interface WaitlistModalProps {
   /** Переозначення за центрами (направник) — clinic_id → service_room_overrides[]. */
   roomOverridesByCenter?: Record<string, RoomOverrideRow[]>;
   onClose: () => void;
-  onSave: (w: WaitlistFormOut) => void | Promise<void>;
+  /* Повертає ТЕКСТ ПОМИЛКИ (або null/undefined, якщо збережено).
+
+     ⚠️ ЗАПЛАЧЕНО ЖИВИМ ПРОГОНОМ Г1-F 11.09.2026. Раніше тут стояло
+     `=> void | Promise<void>`, а батько показував відмову через `notify()`
+     — тобто тостом НА ДОШЦІ, під оверлеєм модалки (z-index 100 проти 200).
+     Оператор натискав «Додати до листа» і не бачив НІЧОГО: кнопка мовчала,
+     запис не створювався, пояснення не було. Тост існував — і був невидимий,
+     поки модалку не закриєш.
+
+     Особливо дорого це коштувало саме гарду годинника: `CLOCK_SKEW_MSG`
+     писався так, щоб назвати причину і вихід («Перевірте дату і збережіть
+     ще раз»), — і не доходив до людини взагалі.
+
+     ⚠️ Це НЕ нова ідея, а та сама правка, яку вже зробили сусідній модалці:
+     `BookingModal.onSave` повертає текст рівно з цієї причини, і коментар
+     там (рядки 315-320) описує ТОЙ САМИЙ z-index. Жити з двома різними
+     контрактами в одній родині форм означало б чинити цей дефект ще раз. */
+  onSave: (w: WaitlistFormOut) => void | Promise<void> | Promise<string | null>;
 }
 
 export default function WaitlistModal({ centers, rooms, initial, allowedModalities, clinicTz, services, servicesByCenter, roomOverrides, roomOverridesByCenter, onClose, onSave }: WaitlistModalProps) {
@@ -124,6 +141,8 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   const [timeKey, setTimeKey] = useState(() => (initial ? timePresetKey(initial.desired_time_from, initial.desired_time_to) : "any"));
   const [note, setNote] = useState(initial?.note || "");
   const [saving, setSaving] = useState(false);
+  /* Помилка сервера — показуємо ТУТ, у модалці (див. контракт `onSave` вище). */
+  const [saveErr, setSaveErr] = useState<string | null>(null);
 
   /* ⚠️ U-72. `dateFrom` у режимі СТВОРЕННЯ зафіксовано знімком `todayStr`, а
      сам `todayStr` живий (тіло рендера). Після поправки годинника через північ
@@ -361,9 +380,10 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
   async function handleSave() {
     if (!valid || saving) return;
     setSaving(true);
+    setSaveErr(null);
     try {
       const preset = TIME_PRESETS.find((p) => p.key === timeKey) || TIME_PRESETS[0];
-      await onSave({
+      const err = await onSave({
         clinicId: needCenter ? centerId : undefined,
         roomId: roomId || null,
         name: name.trim(),
@@ -392,6 +412,11 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
           pinnedKey: initial?.desired_date_from ?? null,
         }),
       });
+      /* Успіх → батько закриває модалку. Помилка → лишаємось відкритими й
+         показуємо її ТУТ. Дослівно як у `BookingModal.handleSave`. */
+      if (err) setSaveErr(err);
+    } catch {
+      setSaveErr("Не вдалося зберегти — спробуйте ще раз");
     } finally {
       setSaving(false);
     }
@@ -644,6 +669,13 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
             <textarea className="inp bk-notes" placeholder="Побажання пацієнта, скеровання, коментар…" value={note} onChange={(e) => setNote(e.target.value)} />
           </label>
         </div>
+
+        {/* Помилка сервера — ТУТ, а не тостом під оверлеєм. Той самий вузол і
+            той самий клас, що в `BookingModal`: дві різні подачі одного й того
+            самого класу відмов розходяться мовчки. */}
+        {saveErr && (
+          <div className="dlg-err" role="alert">⚠ {saveErr}</div>
+        )}
 
         <div className="dlg-foot">
           {valid

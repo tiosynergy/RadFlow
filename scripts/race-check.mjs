@@ -8,10 +8,20 @@
      node scripts/race-check.mjs room --run                # ПИШЕ: гонка за кабінет
      node scripts/race-check.mjs cas --run                 # ПИШЕ: паралельний CAS
      node scripts/race-check.mjs waitlist --run            # ПИШЕ: гонка за кандидата
+     node scripts/race-check.mjs case --run                # ПИШЕ: скасування кейса vs крок
+     node scripts/race-check.mjs stop --run                # ПИШЕ: дві аварійні зупинки
+     node scripts/race-check.mjs midnight --run            # ПИШЕ: перетин ЧЕРЕЗ північ
      node scripts/race-check.mjs cleanup --run             # аварійне прибирання
 
-   ЧОТИРИ СЦЕНАРІЇ — чотири РІЗНІ гаранти, і плутати їх не можна:
+   СІМ СЦЕНАРІЇВ — і кожен стереже СВІЙ гарант; плутати їх не можна:
      run  — двоє пишуться в ОДИН слот     → тригер `check_no_overlap` (0064), 23P01;
+     midnight — той самий тригер, але вікна перетинаються ЧЕРЕЗ МЕЖУ ДОБИ
+            (23:50 доби D проти 00:00 доби D+1). ЄДИНИЙ сценарій, де у фікстур
+            РІЗНА `scheduled_date`. Тригер порівнює абсолютні `tstzrange` на
+            «настінному UTC» (0035) і меж доби не знає — але поза добою цього
+            ніхто не міряв, а продукт хвости через північ підтримує явно
+            (`room_busy_slots` 0074 обрізає вікна по добі, мʼяка пред-перевірка
+            в `app/queue/actions.ts` спеціально бере сусідні доби ±1);
      room — двох заводять в ОДИН кабінет  → унікальний індекс
             `queue_one_in_progress_per_room` (0018), 23505;
      cas  — двоє міняють статус ОДНОГО запису → `for update` + звірка
@@ -69,8 +79,10 @@ import {
   MODALITY_STUDY_TYPE, buildFixture, clinicDay, CAS_FROM, CAS_TO,
   buildWaitlistFixture, buildWaitlistBooking,
   buildCaseFixture, buildCaseStep, CASE_ACTIVE_STATUSES,
+  MIDNIGHT_LATE_TIME, MIDNIGHT_EARLY_TIME, MIDNIGHT_CONTROL_TIME,
   verdictSlotRace, verdictControl, verdictInProgressRace, verdictCas,
-  verdictWaitlistRace, verdictCaseCancelRace,
+  verdictWaitlistRace, verdictCaseCancelRace, verdictCaseRounds, verdictEmergencyStop,
+  verdictMidnightRace, assertUsableJwt,
 } from "./race-check-lib.mjs";
 
 function adminClient() {
@@ -103,24 +115,53 @@ async function pickRoom(db, roomOpt) {
   return usable[0];
 }
 
-/** ДРУГИЙ кабінет того самого центру — потрібен лише сценарію `case`.
+/** ДРУГИЙ кабінет того самого центру — сценаріям `case` і `stop`.
 
     ⚠️ Не «зручність», а вимога тригера `check_case_distinct_room`: активні
     кроки одного кейса мусять бути в РІЗНИХ кабінетах, інакше 23505. Модальність
-    може бути будь-яка з придатних — склад для неї підбирає `pickStudy`. */
-async function pickSecondRoom(db, room) {
+    може бути будь-яка з придатних — склад для неї підбирає `pickStudy`.
+    Для `stop` другий кабінет потрібен інакше: набір з одного елемента робить
+    «той самий набір у протилежному порядку» тотожним самому собі. */
+async function pickSecondRoom(db, room, room2Opt) {
   const { data: rooms, error } = await db
     .from("rooms")
     .select("id, name, modality, clinic_id, active, clinics(id, name, timezone)")
     .eq("active", true).eq("clinic_id", room.clinic_id);
   if (error) throw new Error(`не читаються кабінети центру: ${error.message}`);
-  const other = (rooms || []).find((r) => r.id !== room.id && MODALITY_STUDY_TYPE[r.modality]);
-  if (!other) {
-    throw new Error(
-      `у центрі лише один придатний кабінет — сценарію «кейс» потрібні ДВА.\n` +
-      "  Тригер check_case_distinct_room не дасть двом активним крокам кейса стояти в одному кабінеті.");
+  const cand = (rooms || []).filter((r) => r.id !== room.id && MODALITY_STUDY_TYPE[r.modality]);
+
+  if (room2Opt) {
+    if (!isUuid(room2Opt)) throw new Error(`--room2 «${room2Opt}» не uuid`);
+    if (room2Opt === room.id) throw new Error("--room2 збігається з --room: потрібні РІЗНІ кабінети");
+    const hit = cand.find((r) => r.id === room2Opt);
+    if (!hit) {
+      throw new Error(
+        `кабінет ${room2Opt} не підходить як другий: він неактивний, з іншого центру `
+        + "або має модальність без канонічного типу.\n"
+        + `  Придатні: ${cand.map((r) => `${r.id} «${r.name}»`).join(", ") || "жодного"}`);
+    }
+    return hit;
   }
-  return other;
+
+  if (!cand.length) {
+    throw new Error(
+      `у центрі лише один придатний кабінет — потрібні ДВА.\n` +
+      "  Для «кейса»: тригер check_case_distinct_room не дасть двом активним крокам стояти в одному кабінеті.\n" +
+      "  Для «зупинки»: набір з одного кабінету робить «протилежний порядок» безглуздим.");
+  }
+  /* ⚠️ НЕОДНОЗНАЧНІСТЬ — ПОМИЛКА, А НЕ ПРИВІД ВГАДУВАТИ (с63). Перша редакція
+     брала `.find(...)`, тобто ПЕРШИЙ-ліпший кабінет у порядку, який віддала
+     база. Поки центрів-пісочниць було по два кабінети, це працювало
+     випадково. Щойно в смоук-центрі зʼявився третій, той самий рядок міг
+     мовчки обрати кабінет із ЖИВИМИ записами — а для аварійної зупинки це
+     означає зняти з виклику чужий день. Ціна вгадування несиметрична, тож
+     вгадувати не можна взагалі. */
+  if (cand.length > 1) {
+    throw new Error(
+      `у центрі ${cand.length} придатних других кабінети — оберіть явно: --room2 <uuid>\n`
+      + cand.map((r) => `  ${r.id}  «${r.name}» [${r.modality}]`).join("\n"));
+  }
+  return cand[0];
 }
 
 /** Позиція складу, ВИДИМА в цьому кабінеті. Дзеркалить умову видимості з
@@ -558,8 +599,8 @@ async function cleanupCase(db, caseIds) {
     Пропустивши це, ми отримали б відмову кроку з чужим SQLSTATE — і вердикт
     чесно сказав би «відмовлено НЕ через скасування», але прогін не довів би
     нічого. */
-async function runCaseCancelRace(db, user, { room, study, room2, study2, slots, cleanupIds, caseIds }) {
-  const kase = buildCaseFixture({ id: randomUUID(), clinicId: room.clinic_id, label: "кейс" });
+async function runCaseRound(db, user, { room, study, room2, study2, slotA, slotB, cleanupIds, caseIds, label = "кейс" }) {
+  const kase = buildCaseFixture({ id: randomUUID(), clinicId: room.clinic_id, label });
   caseIds.push(kase.id);
   const insCase = await db.from("patient_cases").insert(kase);
   if (insCase.error) throw new Error(`фікстуру кейса не вставлено: ${insCase.error.code} ${insCase.error.message}`);
@@ -567,7 +608,7 @@ async function runCaseCancelRace(db, user, { room, study, room2, study2, slots, 
   // Крок 1 — службовою роллю, напряму: він лише створює кейсу «вміст».
   const step1 = buildFixture({
     id: randomUUID(), clinicId: room.clinic_id, roomId: room.id,
-    day: slots[0].day, time: slots[0].time, label: "кейс-крок-1", study,
+    day: slotA.day, time: slotA.time, label: "кейс-крок-1", study,
   });
   step1.case_id = kase.id;
   step1.case_step = 1;
@@ -577,7 +618,7 @@ async function runCaseCancelRace(db, user, { room, study, room2, study2, slots, 
 
   // Крок 2 — той, який ДОДАЄМО в гонці: ІНШИЙ кабінет, ІНШИЙ слот.
   const p_step = buildCaseStep({
-    roomId: room2.id, day: slots[1].day, time: slots[1].time, study: study2,
+    roomId: room2.id, day: slotB.day, time: slotB.time, study: study2,
   });
 
   const [add, cancel] = await Promise.all([
@@ -616,10 +657,369 @@ async function runCaseCancelRace(db, user, { room, study, room2, study2, slots, 
     readError: cs.error?.message || st.error?.message || null,
   };
   if (final.readError) {
-    return { add, cancel, final, verdict: { verdict: "INCONCLUSIVE", spread: 0,
+    return { caseId: kase.id, add, cancel, final, verdict: { verdict: "INCONCLUSIVE", spread: 0,
       reason: `кінцевий стан не прочитався (${final.readError}) — судити нема про що` } };
   }
-  return { add, cancel, final, verdict: verdictCaseCancelRace(add, cancel, final) };
+  return { caseId: kase.id, add, cancel, final, verdict: verdictCaseCancelRace(add, cancel, final) };
+}
+
+/** Прибрати рядки ОДНОГО раунду відразу, не чекаючи `finally`.
+
+    ⚠️ ЦЕ НЕ АКУРАТНІСТЬ, А УМОВА ПРАЦЕЗДАТНОСТІ СЕРІЇ. Раунди йдуть по тих
+    самих двох слотах; лишивши кроки попереднього раунду в базі, наступний
+    дістав би 23P01 від `check_no_overlap` — і сценарій упав би об власні
+    фікстури. Рівно так у с62 впав перший прод-прогін листа очікування:
+    контроль створював записи в тих слотах, які потім брала гонка, і прибирав
+    їх лише у `finally`.
+
+    ⚠️ Порядок той самий, що всюди: спершу КРОКИ, потім кейс. FK
+    `queue_entries.case_id` — `on delete set null`, тож видалений першим кейс
+    обнулив би `case_id` і відрізав кроки від звʼязку. Id лишаються в
+    `cleanupIds`/`caseIds`: повторне видалення — безпечний no-op, а от
+    ВИКРЕСЛИТИ їх звідти означало б утратити слід, якщо видалення не вдалось. */
+async function cleanupRound(db, caseId) {
+  const st = await db.from("queue_entries").select("id").eq("case_id", caseId);
+  if (st.error) return { left: `кроки не прочитались: ${st.error.message}` };
+  const ids = (st.data || []).map((r) => r.id);
+  if (ids.length) {
+    const d = await cleanup(db, ids);
+    if (d.entries) return { left: `кроки не видалені: ${d.entries}` };
+  }
+  const after = await db.from("queue_entries").select("id").eq("case_id", caseId);
+  if (after.error) return { left: `звірка кроків не вдалась: ${after.error.message}` };
+  if ((after.data || []).length) return { left: `кроків лишилось ${after.data.length}` };
+  const dc = await cleanupCase(db, [caseId]);
+  if (dc.cases) return { left: `кейс не видалено: ${dc.cases}` };
+  return { left: null };
+}
+
+/** КОНТРОЛЬ сценарію «кейс»: крок додається НАОДИНЦІ, без скасування поруч.
+
+    ⚠️ Без нього «22023» у гонці нема чому приписати. `add_case_step_rpc`
+    піднімає цей самий код ще в чотирьох місцях — усі вони валідація входу
+    (кабінет, дослідження, тривалість, слот), тобто ознака непридатної
+    фікстури. Контроль доводить, що САМЕ ЦЯ фікстура проходить, коли їй ніхто
+    не заважає, — і лише після цього відмова в гонці щось означає.
+
+    Спільний контроль угорі (`runControl`) сюди не годиться: він міряє
+    службовий клієнт і вставку в чергу, а тут питання про користувацький
+    токен, RPC кейса і три його тригери. */
+async function runCaseControl(db, user, { room, study, room2, study2, slotA, slotB, cleanupIds, caseIds }) {
+  const kase = buildCaseFixture({ id: randomUUID(), clinicId: room.clinic_id, label: "кейс-контроль" });
+  caseIds.push(kase.id);
+  const insCase = await db.from("patient_cases").insert(kase);
+  if (insCase.error) throw new Error(`контрольний кейс не вставлено: ${insCase.error.code} ${insCase.error.message}`);
+
+  const step1 = buildFixture({
+    id: randomUUID(), clinicId: room.clinic_id, roomId: room.id,
+    day: slotA.day, time: slotA.time, label: "контроль-крок-1", study,
+  });
+  step1.case_id = kase.id;
+  step1.case_step = 1;
+  cleanupIds.push(step1.id);
+  const ins1 = await fire(db, step1);
+  if (!ins1.ok) throw new Error(`контрольний крок 1 не вставлено: ${ins1.sqlstate} ${ins1.message}`);
+
+  const p_step = buildCaseStep({ roomId: room2.id, day: slotB.day, time: slotB.time, study: study2 });
+  const startedAt = Date.now();
+  const { data, error } = await user.rpc("add_case_step_rpc", { p_case_id: kase.id, p_step });
+  const out = {
+    id: "контроль", startedAt, finishedAt: Date.now(), ok: !error,
+    entryId: typeof data === "string" ? data : null,
+    sqlstate: error?.code ?? "", message: error?.message ?? "",
+  };
+  if (out.entryId) cleanupIds.push(out.entryId);
+
+  const left = await cleanupRound(db, kase.id);
+  const verdict = out.ok
+    ? { verdict: "PASS", reason: "крок наодинці додається — фікстура придатна, відмова в гонці матиме сенс" }
+    : { verdict: "FAIL", reason: `крок НЕ додається навіть наодинці: ${out.sqlstate} (${String(out.message).slice(0, 80)}) — фікстура непридатна` };
+  return { out, verdict, left: left.left };
+}
+
+/** СЕРІЯ раундів: контроль, потім `rounds` гонок, потім спільний вердикт. */
+async function runCaseSeries(db, user, { room, study, room2, study2, slotA, slotB, rounds, cleanupIds, caseIds }) {
+  const control = await runCaseControl(db, user, { room, study, room2, study2, slotA, slotB, cleanupIds, caseIds });
+  if (control.verdict.verdict !== "PASS") return { control, rounds: [], verdict: control.verdict };
+
+  const out = [];
+  for (let i = 0; i < rounds; i++) {
+    const r = await runCaseRound(db, user, {
+      room, study, room2, study2, slotA, slotB, cleanupIds, caseIds, label: `кейс-${i + 1}`,
+    });
+    /* ⚠️ Прибирання ДО наступного раунду, і його збій — привід зупинитись, а
+       не «спробувати ще»: наступний раунд усе одно впав би об ці рядки, і
+       діагноз виглядав би як дефект гонки. */
+    const cl = await cleanupRound(db, r.caseId);
+    out.push({ ...r, cleanupLeft: cl.left });
+    if (cl.left) break;
+  }
+  return { control, rounds: out, verdict: verdictCaseRounds(out) };
+}
+
+/** Прибирання ІНЦИДЕНТІВ за явним списком id.
+
+    ⚠️ Саме DELETE, а не `status='resolved'`. «Вирішений» інцидент лишається в
+    історії кабінету назавжди — тобто харнес дописав би центру подію, якої не
+    було. Видалення прибирає рядок, який ми ж і створили, і не лишає сліду в
+    журналі простоїв. */
+async function cleanupIncidents(db, ids) {
+  if (!ids.length) return { incidents: null };
+  const e = await db.from("incidents").delete().in("id", ids);
+  return { incidents: e.error?.message ?? null };
+}
+
+/** Скільки АКТИВНИХ інцидентів у кожному з кабінетів — читаємо ЗАПИТОМ.
+    Відповіді RPC для цього не годяться: «RPC не повернула помилки» ≠ «в базі
+    рівно один рядок», а весь інваріант 0017 — саме про рядки. */
+async function activeIncidentsByRoom(db, roomIds) {
+  const { data, error } = await db.from("incidents")
+    .select("id, room_id").in("room_id", roomIds).eq("status", "active");
+  if (error) throw new Error(`не читаються активні інциденти: ${error.message}`);
+  const byRoom = Object.fromEntries(roomIds.map((r) => [r, 0]));
+  const ids = [];
+  for (const r of data || []) { byRoom[r.room_id] = (byRoom[r.room_id] || 0) + 1; ids.push(r.id); }
+  return { byRoom, ids };
+}
+
+/** ГОЛОВНИЙ ГАРД сценарію `stop`, і він фіксує рішення власника (с63):
+    аварійну зупинку ганяємо ТІЛЬКИ у смоук-центрі.
+
+    ⚠️ Перевіряємо ВЛАСТИВІСТЬ, а не назву клініки. Гард «якщо центр
+    називається смоук» обходиться перейменуванням і нічого не гарантує; гард
+    «у цих кабінетах немає ЧУЖОЇ роботи» падає на живому центрі за побудовою,
+    бо там завжди є записи. Fail-closed.
+
+    Чому саме такий предикат. `emergency_stop_rpc` б'є ПО ПРЕДИКАТУ, а не за
+    списком id, і рівно двома способами, які харнес не контролює:
+      • `call_status = 'to_recall'` — усім scheduled/waiting/in_progress
+        кабінету на `p_date`;
+      • `status = 'not_held'` — усім in_progress кабінету на БУДЬ-ЯКУ дату
+        (`p_date` тут не діє взагалі).
+    Тобто «взяти майбутню дату» від другого удару НЕ рятує. Єдина чесна
+    межа — щоб у кабінеті взагалі не було нічого, крім наших фікстур.
+
+    ⚠️ Активний інцидент до пострілу теж заборонений: тоді `on conflict do
+    nothing` зʼїв би обидві зупинки, вердикт побачив би «кабінет не зупинив
+    ніхто» і показав би це як дефект індексу, хоча кабінет просто був зайнятий. */
+async function assertRoomsUsableForStop(db, roomIds) {
+  /* ⚠️ ФІЛЬТР «не наша фікстура» — НА СЕРВЕРІ, а не в JS. Клієнтська
+     фільтрація тут була б дірою в самому гарді: PostgREST ріже вибірку по
+     `db-max-rows` (у Supabase — 1000), і кабінет, у якого перша тисяча
+     рядків — наші фікстури від попередніх прогонів, віддав би «чужого немає»,
+     а чужі рядки просто не доїхали б. Гард, який мовчки бачить не все, гірший
+     за відсутній: він дає дозвіл. */
+  const { data, error } = await db.from("queue_entries")
+    .select("id, patient_name, scheduled_date, status, room_id")
+    .in("room_id", roomIds)
+    .in("status", ["scheduled", "waiting", "in_progress"])
+    .not("patient_name", "like", `${FIXTURE_NAME}%`)
+    .limit(50);
+  if (error) throw new Error(`не читається стан кабінетів: ${error.message}`);
+  const foreign = data || [];
+  if (foreign.length) {
+    throw new Error(
+      `у кабінетах є ЧУЖА робота (щонайменше ${foreign.length} записів, напр. ${foreign[0].scheduled_date} `
+      + `${foreign[0].status}) — аварійна зупинка зняла б її з виклику й вибила б з кабінету.\n`
+      + "  Сценарій `stop` ганяється ТІЛЬКИ у смоук-центрі: --room <uuid> кабінету смоук-клініки.\n"
+      + "  Це рішення власника (с63), а не технічне обмеження: RPC б'є по предикату,\n"
+      + "  а `status='not_held'` ігнорує `p_date` і дістає in_progress БУДЬ-ЯКОЇ дати.");
+  }
+  const { byRoom } = await activeIncidentsByRoom(db, roomIds);
+  const busy = roomIds.filter((r) => byRoom[r] > 0);
+  if (busy.length) {
+    throw new Error(
+      `кабінети вже мають активний простій (${busy.join(", ")}) — гонка неможлива: `
+      + "обидві зупинки зʼїли б конфлікт мовчки.\n"
+      + "  Зніміть простій у центрі або візьміть інші кабінети.");
+  }
+}
+
+/** Фікстури сценарію `stop` НЕ МОЖУТЬ бути звʼязані з кейсом — чому саме,
+    написано в `verdictEmergencyStop` і в місці виклику. Винесено окремою
+    функцією, щоб її можна було назвати в мутації стенда. */
+function assertFixturesHaveNoCase(fixtures) {
+  const withCase = fixtures.filter((f) => f.case_id != null || f.case_step != null);
+  if (withCase.length) {
+    throw new Error(
+      `фікстури зупинки звʼязані з кейсом (${withCase.length}) — вердикт цього сценарію став би брехливим.\n`
+      + "  Він вважає БУДЬ-ЯКИЙ 40P01 дефектом, а `cancel_case_rpc` оголошує вікно дедлока\n"
+      + "  «зупинка ↔ тригер перерахунку статусу кейса» ТРАНЗІЄНТНИМ (клієнт повторює).\n"
+      + "  Хочете гонку зупинки з кроками кейса — режим `--with-case` (пакет 61, с63).");
+  }
+}
+
+/** ДЗЕРКАЛЬНИЙ асерт режиму `--with-case`, і він не «для симетрії».
+
+    ⚠️ Без нього прапорець міг би тихо запустити СТАРУ сцену: фікстури без
+    `case_id`, четвертий постріл б'є по кейсу, якого ніхто не чіпає, інверсії
+    порядку немає — і прогін віддав би зелене, нічого не перевіривши. Рівно
+    той клас порожнього зеленого, проти якого написана вся ця машинерія.
+    Тому режим стверджує те, ЩО ВВІМКНУВ, а не те, що не зламалось. */
+function assertFixturesHaveCase(fixtures, caseId) {
+  const loose = fixtures.filter((f) => f.case_id !== caseId || f.case_step == null);
+  if (loose.length) {
+    throw new Error(
+      `у режимі --with-case ${loose.length} фікстур(и) БЕЗ звʼязки з кейсом ${caseId} — `
+      + "сцена не та, яку вмикали.\n"
+      + "  Інверсія порядку (queue→case проти case→queue) виникає ЛИШЕ коли зупинка "
+      + "оновлює крок КЕЙСА,\n  а поруч іде cancel_case_rpc того ж кейса. Без звʼязки "
+      + "прогін був би зеленим, не перевіривши нічого.");
+  }
+  const rooms = new Set(fixtures.map((f) => f.room_id));
+  if (rooms.size !== fixtures.length) {
+    throw new Error(
+      "кроки одного кейса опинились в ОДНОМУ кабінеті — `check_case_distinct_room` дасть 23505.\n"
+      + "  Це зламана фікстура, а не гонка: візьміть різні кабінети.");
+  }
+  const times = new Set(fixtures.map((f) => `${f.scheduled_date} ${f.scheduled_time}`));
+  if (times.size !== fixtures.length) {
+    throw new Error(
+      "кроки одного кейса стоять в ОДИН слот — `check_case_no_time_overlap` дасть 23P01 "
+      + "(пацієнт не буває у двох кабінетах одночасно).\n"
+      + "  Це зламана фікстура, а не гонка: рознесіть слоти в межах спільної дати.");
+  }
+}
+
+/** Сценарій «аварійна зупинка»: дві `emergency_stop_rpc` на ОДНОМУ наборі
+    кабінетів у ПРОТИЛЕЖНОМУ порядку + `submit_incident_rpc` на спільному
+    кабінеті. Питання одне: чи лишається порядок захвату локів детермінованим
+    (0083/0109), тобто чи не виникає 40P01.
+
+    ⚠️ ФІКСТУРИ ПОТРІБНІ, і не для краси. Без записів у черзі фаза
+    `perform 1 from queue_entries … for update` не лочить НІЧОГО — тобто саме
+    та ланка порядку, яку ми стережемо, у прогоні не бере участі. По одному
+    запису в кожен кабінет на дату зупинки роблять її справжньою.
+
+    ⚠️ Обидві фікстури мусять стояти на ОДНІЙ даті: `p_date` у RPC один на
+    весь набір кабінетів. */
+async function runEmergencyStopRace(db, user, { room, room2, study, study2, slotA, slotB,
+                                               cleanupIds, caseIds = null, withCase = false }) {
+  const rooms = [room.id, room2.id];
+  const date = slotA.day;
+  if (slotB.day !== date) {
+    throw new Error(`слоти кабінетів на РІЗНІ дати (${date} / ${slotB.day}) — p_date у RPC один`);
+  }
+
+  const fixtures = [
+    buildFixture({ id: randomUUID(), clinicId: room.clinic_id, roomId: room.id,
+                   day: date, time: slotA.time, label: "зупинка-A", study }),
+    buildFixture({ id: randomUUID(), clinicId: room2.clinic_id, roomId: room2.id,
+                   day: date, time: slotB.time, label: "зупинка-B", study: study2 }),
+  ];
+
+  /* ⚠️ КЕЙС СТВОРЮЄМО СЛУЖБОВОЮ РОЛЛЮ, а кроки звʼязуємо ПЕРЕД вставкою —
+     так само, як це робить сценарій `case`. Причина та сама: кейс тут не
+     предмет твердження, а ОБСТАВИНА сцени; предмет — порядок локів. Пускати
+     на створення `add_case_step_rpc` означало б внести в сцену ще одну RPC зі
+     своїми локами і вже не знати, чий саме порядок ми міряємо. */
+  let kase = null;
+  if (withCase) {
+    if (!caseIds) throw new Error("--with-case без caseIds — кейс не буде прибрано, прогін не запускаємо");
+    kase = buildCaseFixture({ id: randomUUID(), clinicId: room.clinic_id, label: "зупинка-кейс" });
+    caseIds.push(kase.id);
+    const insCase = await db.from("patient_cases").insert(kase);
+    if (insCase.error) throw new Error(`кейс зупинки не вставлено: ${insCase.error.code} ${insCase.error.message}`);
+    fixtures.forEach((f, i) => { f.case_id = kase.id; f.case_step = i + 1; });
+  }
+  /* ⚠️ АСЕРТ, ЯКИЙ ТРИМАЄ МЕЖУ ВЕРДИКТА (замір с63, див. `verdictEmergencyStop`).
+     Вердикт вважає БУДЬ-ЯКИЙ 40P01 дефектом. Це правда лише поки фікстури без
+     `case_id`: тіло `cancel_case_rpc` (рядки 56–60 у проді) прямо оголошує
+     вікно 40P01 між багаторядковою зупинкою і тригером перерахунку статусу
+     КЕЙСА транзієнтним — «клієнт повторює». Зі звʼязкою кейса той самий
+     дедлок став би законним, а вердикт продовжив би кричати «дефект».
+     Тому умова перевіряється, а не памʼятається: додасть хтось крок кейса у
+     фікстуру — прогін зупиниться тут із поясненням, а не збреше потім.
+
+     ⚠️ У режимі `--with-case` перевіряється ДЗЕРКАЛЬНА умова: звʼязка мусить
+     БУТИ, кабінети РІЗНІ, слоти РІЗНІ. Прапорець, який тихо запустив би стару
+     сцену, був би гіршим за відсутній — він давав би зелене ні про що. */
+  if (withCase) assertFixturesHaveCase(fixtures, kase.id);
+  else assertFixturesHaveNoCase(fixtures);
+
+  for (const f of fixtures) {
+    cleanupIds.push(f.id);
+    const ins = await fire(db, f);
+    if (!ins.ok) throw new Error(`фікстуру зупинки не вставлено (${f.room_id}): ${ins.sqlstate} ${ins.message}`);
+  }
+
+  const note = `${FIXTURE_NAME} — харнес`;
+  const shoot = async (id, call) => {
+    const startedAt = Date.now();
+    const { data, error } = await call();
+    const finishedAt = Date.now();
+    return {
+      id, startedAt, finishedAt, ok: !error,
+      row: Array.isArray(data) ? data[0] : data,
+      sqlstate: error?.code ?? "", message: error?.message ?? "",
+    };
+  };
+
+  /* ⚠️ ЧЕТВЕРТИЙ ПОСТРІЛ — НЕ ПРИКРАСА, А ЄДИНЕ ДЖЕРЕЛО ІНВЕРСІЇ.
+     Двох зупинок для ABBA НЕ ВИСТАЧАЄ: обидві лочать `order by q.id`, тобто
+     в однаковому порядку, і кейс беруть однаково пізно (AFTER-тригером).
+     Інверсію дає саме `cancel_case_rpc`: він іде case→queue. Розбір — у
+     шапці `verdictEmergencyStop`. */
+  const shots = [
+    shoot("зупинка[A,B]", () => user.rpc("emergency_stop_rpc",
+      { p_room_ids: [room.id, room2.id], p_date: date, p_note: note })),
+    shoot("зупинка[B,A]", () => user.rpc("emergency_stop_rpc",
+      { p_room_ids: [room2.id, room.id], p_date: date, p_note: note })),
+    shoot("поломка(B)", () => user.rpc("submit_incident_rpc",
+      { p_room_id: room2.id, p_reason: "breakdown", p_reason_label: note, p_note: note })),
+  ];
+  if (withCase) {
+    shots.push(shoot("скасування кейса", () => user.rpc("cancel_case_rpc", { p_case_id: kase.id })));
+  }
+  const [a, b, brk, cancel = null] = await Promise.all(shots);
+
+  const stops = [a, b].map((s) => ({
+    ...s, asked: rooms, rooms: s.row?.stopped_rooms ?? [],
+    affected: s.row?.affected ?? null,
+  }));
+  const breakdown = { ...brk, room: room2.id };
+  const canceller = cancel ? { ...cancel, caseId: kase.id } : null;
+
+  /* Стан У БАЗІ — до будь-якого прибирання.
+
+     ⚠️ ЗБІЙ ЦЬОГО ЧИТАННЯ НЕ МАЄ ВБИВАТИ ПРОГІН (той самий клас, що ревʼю Б
+     знайшло в листі очікування, с62). `activeIncidentsByRoom` кидає — а
+     виняток тут означав би, що результати трьох пострілів, які вже сталися і
+     закомічені, не побачить ніхто. Інциденти при цьому створені, і про них
+     треба сказати вголос, а не мовчки впасти. Тому: ловимо, віддаємо
+     INCONCLUSIVE з причиною, а прибирання у `finally` спрацює як завжди. */
+  let byRoom = null;
+  let readError = null;
+  try {
+    ({ byRoom } = await activeIncidentsByRoom(db, rooms));
+  } catch (e) {
+    readError = e.message;
+  }
+  if (readError) {
+    return {
+      stops, breakdown, canceller, caseId: kase?.id ?? null, byRoom: {}, caseFinal: null,
+      verdict: { verdict: "INCONCLUSIVE", spread: 0,
+        reason: `стан інцидентів у базі не прочитався (${readError}) — судити нема про що` },
+    };
+  }
+
+  /* Кінцевий стан КЕЙСА — з БАЗИ, а не з відповідей (той самий принцип, що в
+     сценарії `case`). Він нічого не вирішує у вердикті: предмет твердження
+     тут — порядок локів, а не статус кейса. Але надрукувати його треба, бо
+     саме він показує, ЧИ дійшло скасування до кінця, коли вікно відкрилось. */
+  let caseFinal = null;
+  if (kase) {
+    const cs = await db.from("patient_cases").select("status").eq("id", kase.id).maybeSingle();
+    caseFinal = cs.error ? { status: null, readError: cs.error.message }
+                         : { status: cs.data?.status ?? null, readError: null };
+  }
+
+  return {
+    stops, breakdown, canceller, caseId: kase?.id ?? null, byRoom, caseFinal,
+    verdict: verdictEmergencyStop(
+      { stops, breakdown, rooms, activeByRoom: byRoom, canceller },
+      { caseLinked: withCase }),
+  };
 }
 
 /** Основний сценарій: N пострілів в ОДИН слот. */
@@ -637,6 +1037,159 @@ async function runRace(db, { room, study, slot, n, cleanupIds }) {
 const DAYS = [7, 8, 9, 10, 11, 12, 13, 14];
 const TIMES = ["10:00", "11:00", "15:00", "16:00"];
 
+/** Пара СУСІДНІХ діб, придатна для сценарію `midnight`: пізній слот доби D,
+    ранній і контрольний — доби D+1.
+
+    ⚠️ Власний пошук, а не `findSlots`: той шукає БУДЬ-ЯКІ придатні слоти й
+    віддав би чотири зручні денні. Тут потрібні три КОНКРЕТНІ часи на двох
+    КОНКРЕТНИХ сусідніх добах — три пробні вставки, і якщо хоч одна не пройшла,
+    ця пара доб не годиться (закритий день, простій, чужий запис поруч) і
+    береться наступна.
+
+    ⚠️ Проби йдуть ПО ЧЕРЗІ й кожна одразу прибирається. Паралельно вони
+    заважали б одна одній (пізня і рання перетинаються за побудовою — у тому й
+    сенс сценарію), і пара доб виглядала б непридатною через нас самих. */
+async function findMidnightDays(db, room, study, { days, cleanupIds }) {
+  const tz = room.clinics?.timezone || "UTC";
+  const tried = [];
+  for (const d of days) {
+    const dayLate = clinicDay(tz, d);
+    const dayEarly = clinicDay(tz, d + 1);
+    const probes = [
+      { day: dayLate, time: MIDNIGHT_LATE_TIME, offSchedule: true },
+      { day: dayEarly, time: MIDNIGHT_EARLY_TIME, offSchedule: false },
+      { day: dayEarly, time: MIDNIGHT_CONTROL_TIME, offSchedule: false },
+    ];
+    let ok = true;
+    for (const p of probes) {
+      const id = randomUUID();
+      const row = buildFixture({
+        id, clinicId: room.clinic_id, roomId: room.id,
+        day: p.day, time: p.time, label: "проба-північ", study, offSchedule: p.offSchedule,
+      });
+      cleanupIds.push(id);          // ДО пострілу: успішна проба інакше лишилась би в слоті
+      const r = await fire(db, row);
+      if (!r.ok) {
+        tried.push(`${p.day} ${p.time}: ${r.sqlstate} ${r.message.slice(0, 60)}`);
+        ok = false; break;
+      }
+      await cleanup(db, [id]);
+    }
+    if (ok) return { dayLate, dayEarly, tried };
+  }
+  throw new Error(
+    `придатної пари сусідніх діб не знайдено (потрібні ${MIDNIGHT_LATE_TIME} доби D, `
+    + `${MIDNIGHT_EARLY_TIME} і ${MIDNIGHT_CONTROL_TIME} доби D+1). Спроби:\n  ${tried.join("\n  ")}`);
+}
+
+/** ПЕРЕДУМОВА сценарію `midnight`: кабінет мусить працювати ЦІЛОДОБОВО і всі
+    сім днів.
+
+    ⚠️ ЧОМУ ЦЕ АСЕРТ, А НЕ «спробуємо й побачимо». Перший прогін 11.09 дав вісім
+    рядків `23514` поспіль і повідомлення «придатної пари сусідніх діб не
+    знайдено» — тобто сценарій виглядав зламаним, хоча зламаною була ПЕРЕДУМОВА.
+    Діагноз коштував окремого зонда в прод. Асерт називає причину одразу.
+
+    ⚠️ ЩО САМЕ вимагає графіка (заміряно з тіла `check_room_schedule`, 0084):
+      • ранній запис 00:00 — `v_slot_start < v_open_min` = BEFORE_OPEN, і це
+        заборона БЕЗ права підтвердження: `off_schedule` її не відкриває.
+        Отже `start` кабінету мусить бути рівно `00:00`;
+      • пізній 23:50 — `v_slot_end = 1450 > v_close_min` завжди (бо
+        `v_close_min ≤ 1440`), тож потрібні І прапорець `off_schedule`, І стеля
+        `v_close_min + 120 ≥ 1450`, тобто `end` не раніше 22:10. Беремо 24:00;
+      • день мусить бути відкритий у `days` — інакше ROOM_CLOSED, теж без права
+        підтвердження. Доби перебираються поспіль, тож потрібні всі сім.
+
+    ⚠️ Читаємо СИРИЙ `rooms.schedule` і розбираємо його тут, а не кличемо
+    `roomScheduleFor` із `lib/schedule.ts`: то TS-модуль застосунку, а харнес —
+    голий Node без збірки. Дзеркалимо лише ту частину, що потрібна для
+    передумови, і кажемо про це вголос. */
+async function assertRoomOpenAroundMidnight(db, room) {
+  const { data, error } = await db.from("rooms").select("schedule").eq("id", room.id).maybeSingle();
+  if (error) throw new Error(`не прочитали графік кабінету: ${error.message}`);
+  if (!data) throw new Error("рядка кабінету не видно — графік невідомий (fail-closed)");
+  const s = data.schedule;
+  const fail = (why) => {
+    throw new Error(
+      `кабінет ${room.name} не годиться для сценарію «північ»: ${why}.\n`
+      + "  Потрібен графік ЦІЛОДОБОВО і всі сім днів — інакше 00:00 відсікає BEFORE_OPEN,\n"
+      + "  а 23:50 не влазить у стелю +120 хв (check_room_schedule, 0084).\n"
+      + "  Для харнесного кабінету смоук-центру це разова правка:\n"
+      + `    update public.rooms set schedule = '{"days":[1,1,1,1,1,1,1],"start":"00:00","end":"24:00",`
+      + `"breaks":[],"perDay":false}'::jsonb where id = '${room.id}';`);
+  };
+  if (!s || typeof s !== "object") fail("графіка немає — працює дефолт 08:00–18:00, неділя закрита");
+  const days = Array.isArray(s.days) ? s.days : null;
+  if (!days || days.length !== 7 || days.some((d) => !d)) fail(`відкриті не всі сім днів (days = ${JSON.stringify(s.days)})`);
+  if (s.perDay) fail("увімкнено perDay — погодинний графік по днях тут не розбирається, вимкніть його");
+  const toMinLocal = (t) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || ""));
+    return m ? Number(m[1]) * 60 + Number(m[2]) : NaN;
+  };
+  const open = toMinLocal(s.start);
+  const close = toMinLocal(s.end);
+  if (open !== 0) fail(`відкриття о ${s.start}, а ранній запис ${MIDNIGHT_EARLY_TIME} потребує рівно 00:00`);
+  /* Стеля грації — константа тригера (c_grace = 120). Дублюємо число тут
+     свідомо і називаємо джерело: харнес до SQL-констант доступу не має. */
+  const lateEnd = 23 * 60 + 50 + FIXTURE_DUR_MIN;
+  if (!(close + 120 >= lateEnd)) fail(`закриття о ${s.end}: ${MIDNIGHT_LATE_TIME} + ${FIXTURE_DUR_MIN} хв виходить за стелю +120 хв`);
+  if (Array.isArray(s.breaks) && s.breaks.length) fail(`у кабінету є перерви (${s.breaks.length}) — check_not_during_break може відсікти пробу`);
+}
+
+/** Контроль сценарію `midnight`: ті самі дві доби, але вікна НЕ перетинаються
+    (23:50 доби D і 03:00 доби D+1).
+
+    ⚠️ Спільного контролю тут НЕ ДОСИТЬ, і причина конкретна. Він ганяє два
+    ДЕННІ слоти однієї доби — тобто доводить паралельність клієнта, але нічого
+    не каже про те, чи взагалі можна записати двох людей на РІЗНІ сусідні доби
+    одночасно. Без цього подвійна відмова в гонці читалась би як «межа доби
+    ламає запис узагалі», а не як дефект тригера. */
+async function runMidnightControl(db, { room, study, dayLate, dayEarly, cleanupIds }) {
+  const rows = [
+    { day: dayLate, time: MIDNIGHT_LATE_TIME, label: "контроль-північ-пізній", offSchedule: true },
+    { day: dayEarly, time: MIDNIGHT_CONTROL_TIME, label: "контроль-північ-ранній", offSchedule: false },
+  ].map((s) => buildFixture({
+    id: randomUUID(), clinicId: room.clinic_id, roomId: room.id,
+    day: s.day, time: s.time, label: s.label, study, offSchedule: s.offSchedule,
+  }));
+  rows.forEach((r) => cleanupIds.push(r.id));
+  const outcomes = await Promise.all(rows.map((r) => fire(db, r)));
+  await cleanup(db, rows.map((r) => r.id));
+  return { outcomes, verdict: verdictControl(outcomes) };
+}
+
+/** Гонка ЧЕРЕЗ МЕЖУ ДОБИ: 23:50 доби D проти 00:00 доби D+1. Рівно ДВА
+    учасники — геометрія в них РІЗНА, тож `--n` тут не має сенсу (третій
+    довелось би ставити на ще одну добу, і це вже інший сценарій). */
+async function runMidnightRace(db, { room, study, dayLate, dayEarly, cleanupIds }) {
+  const rows = [
+    /* ⚠️ Прапорець ЛИШЕ в пізнього, і це не дрібниця. Ранній (00:00 + 20 хв)
+       закінчується всередині доби, тож підтвердження йому не потрібне —
+       поставивши його «за компанію», ми ослабили б фікстуру без потреби і
+       перестали б помічати, якби 00:00 раптом почав вимагати дозволу. */
+    { day: dayLate, time: MIDNIGHT_LATE_TIME, label: "північ-пізній", offSchedule: true },
+    { day: dayEarly, time: MIDNIGHT_EARLY_TIME, label: "північ-ранній", offSchedule: false },
+  ].map((s) => buildFixture({
+    id: randomUUID(), clinicId: room.clinic_id, roomId: room.id,
+    day: s.day, time: s.time, label: s.label, study, offSchedule: s.offSchedule,
+  }));
+  rows.forEach((r) => cleanupIds.push(r.id));
+  const outcomes = await Promise.all(rows.map((r) => fire(db, r)));
+  await cleanup(db, rows.map((r) => r.id));
+  return {
+    outcomes,
+    verdict: verdictMidnightRace(outcomes, {
+      dayLate, timeLate: MIDNIGHT_LATE_TIME,
+      dayEarly, timeEarly: MIDNIGHT_EARLY_TIME,
+      /* Зайнятість = дослідження + буфер, рівно як її рахує тригер 0064
+         (`duration_min + coalesce(buffer_time_min, 5)`). Передаємо, а не
+         зашиваємо у вердикт: інакше зміна фікстури тихо розійшлася б із
+         перевіркою геометрії, яка на цьому числі й тримається. */
+      occMin: FIXTURE_DUR_MIN + FIXTURE_BUF_MIN,
+    }),
+  };
+}
+
 function printOutcomes(title, outcomes) {
   const t0 = Math.min(...outcomes.map((o) => o.startedAt));
   console.log(`  ${title}:`);
@@ -644,6 +1197,23 @@ function printOutcomes(title, outcomes) {
     const verdict = o.ok ? "УДАЧА " : `ВІДМОВА ${o.sqlstate}`;
     console.log(`    +${String(o.startedAt - t0).padStart(4)} мс  ${String(o.finishedAt - o.startedAt).padStart(5)} мс  ${verdict}` +
       (o.ok ? "" : `  ${o.message.slice(0, 70)}`));
+  }
+}
+
+/** Аварійну зупинку друкуємо ІНАКШЕ — з ІМЕНЕМ пострілу.
+
+    ⚠️ Спільний принтер ховає саме те, на чому тримається вердикт. Тут доказ
+    конкуренції — «хто саме чекав на локу», тобто пара «ім'я → тривалість».
+    Без імені три однакові рядки з різними мілісекундами не читаються взагалі.
+    Той самий мотив, що й у `printCasOutcomes`. */
+function printStopOutcomes(title, outcomes) {
+  const t0 = Math.min(...outcomes.map((o) => o.startedAt));
+  console.log(`  ${title}:`);
+  for (const o of outcomes) {
+    const verdict = o.ok ? "УДАЧА " : `ВІДМОВА ${o.sqlstate}`;
+    console.log(`    ${String(o.id).padEnd(14)} +${String(o.startedAt - t0).padStart(4)} мс  `
+      + `${String(o.finishedAt - o.startedAt).padStart(5)} мс  ${verdict}`
+      + (o.ok ? "" : `  ${String(o.message || "").slice(0, 60)}`));
   }
 }
 
@@ -675,17 +1245,21 @@ function userClient(jwt) {
      (`alg: ES256` + `kid`); токен, підписаний ЛЕГАСІ-секретом (`HS256`),
      PostgREST більше не перевіряє. Один рядок нижче відрізняє «токен не той»
      від «харнес зламаний» ДО пострілу, а не після. */
-  try {
-    const h = JSON.parse(Buffer.from(jwt.split(".")[0], "base64url").toString("utf8"));
-    const b = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8"));
-    const left = b.exp ? Math.round((b.exp * 1000 - Date.now()) / 60000) : "?";
-    console.log(`Токен: alg=${h.alg}${h.kid ? " kid=є" : " kid=НЕМАЄ"} · role=${b.role}`
-      + ` · лишилось ~${left} хв`);
-    if (h.alg !== "ES256") {
-      console.log(`  ⚠️ Очікується ES256 (проєкт на асиметричних ключах). ${h.alg}`
-        + " PostgREST відхилить: PGRST301 «No suitable key or wrong key type».");
-    }
-  } catch { console.log("Токен: заголовок не розібрався — це не схоже на JWT"); }
+  /* ⚠️ ГАРД — FAIL-CLOSED, і це правка ЖИВОГО ПРОГОНУ 11.09.2026.
+     Тут стояв `try { … } catch { console.log("це не схоже на JWT") }` — тобто
+     вердикт про придатність токена ІСНУВАВ, друкувався і НІЧОГО не вирішував:
+     далі createClient клав те саме значення в заголовок, і прогін падав за
+     двісті рядків сирим «Cannot convert argument to a ByteString». Діагностика,
+     яка не зупиняє, — це коментар. Тепер причина називається і зупиняє. */
+  const meta = assertUsableJwt(jwt);
+  console.log(`Токен: alg=${meta.alg}${meta.kid ? " kid=є" : " kid=НЕМАЄ"} · role=${meta.role}`
+    + ` · лишилось ~${meta.minLeft ?? "?"} хв`);
+  /* alg НЕ валить прогін: токен формою придатний, і чесніше дати PostgREST
+     сказати своє PGRST301, ніж вгадувати за нього. */
+  if (meta.alg !== "ES256") {
+    console.log(`  ⚠️ Очікується ES256 (проєкт на асиметричних ключах). ${meta.alg}`
+      + " PostgREST відхилить: PGRST301 «No suitable key or wrong key type».");
+  }
   return createClient(url, anon, {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { headers: { Authorization: `Bearer ${jwt}` } },
@@ -793,11 +1367,22 @@ async function cmdCleanup(db, write) {
     .from("patient_cases").select("id, patient_name, status")
     .like("patient_name", `${FIXTURE_NAME}%`);
   if (c.error) throw new Error(`не читаються залишки кейсів: ${c.error.message}`);
+  /* Четверта таблиця — слід сценарію `stop`. Незнятий інцидент коштує дорожче
+     за всі попередні залишки разом: він блокує КАБІНЕТ, а не слот. Шукається
+     за нотаткою: `runEmergencyStopRace` кладе в `note`/`reason_label` той
+     самий маркер `FIXTURE_NAME`, яким живуть решта трьох таблиць. */
+  const inc = await db
+    .from("incidents").select("id, room_id, status, note, started_at")
+    .like("note", `${FIXTURE_NAME}%`).eq("status", "active");
+  if (inc.error) throw new Error(`не читаються залишки інцидентів: ${inc.error.message}`);
 
   const qRows = q.data || [];
   const wRows = w.data || [];
   const cRows = c.data || [];
-  if (!qRows.length && !wRows.length && !cRows.length) { console.log("Залишків фікстур немає."); return; }
+  const iRows = inc.data || [];
+  if (!qRows.length && !wRows.length && !cRows.length && !iRows.length) {
+    console.log("Залишків фікстур немає."); return 0;
+  }
 
   if (qRows.length) {
     console.log(`Черга — ${qRows.length}:`);
@@ -812,7 +1397,18 @@ async function cmdCleanup(db, write) {
     console.log(`Кейси — ${cRows.length}:`);
     cRows.forEach((r) => console.log(`  ${r.id}  ${r.patient_name}  ${r.status}`));
   }
-  if (!write) { console.log("\nБез --run нічого не видалено."); return; }
+  if (iRows.length) {
+    console.log(`⚠️ АКТИВНІ ІНЦИДЕНТИ (кабінети заблоковані!) — ${iRows.length}:`);
+    iRows.forEach((r) => console.log(`  ${r.id}  кабінет ${r.room_id}  від ${r.started_at}`));
+  }
+  /* ⚠️ БЕЗ --run КОМАНДА ТЕЖ МУСИТЬ ВІДДАВАТИ НЕНУЛЬ. Раніше сухий прогін
+     друкував список залишків і виходив нулем — тобто рапортував успіх рівно
+     в тій ситуації, заради якої його запускають. Той самий клас, що знайшло
+     ревʼю А в `--run`-гілці, просто на сусідній гілці. */
+  if (!write) {
+    console.log("\nБез --run нічого не видалено.");
+    return 1;
+  }
 
   const ids = qRows.map((r) => r.id);
   for (const r of wRows) {
@@ -829,6 +1425,21 @@ async function cmdCleanup(db, write) {
     }
   }
   let bad = 0;
+
+  /* ІНЦИДЕНТИ ПЕРШИМИ: доки вони активні, кабінети для центру мертві. */
+  if (iRows.length) {
+    const iIds = iRows.map((r) => r.id);
+    const delI = await cleanupIncidents(db, iIds);
+    if (delI.incidents) { console.log(`⚠️ інциденти НЕ видалено: ${delI.incidents}`); bad = 1; }
+    const leftI = await db.from("incidents").select("id").in("id", iIds).eq("status", "active");
+    const nI = leftI.error ? "?" : (leftI.data?.length ?? "?");
+    console.log(`Інциденти зняті. Лишилось активних: ${nI}.`);
+    if (nI !== 0) {
+      console.log(`⚠️ КАБІНЕТИ ЛИШИЛИСЬ ЗАБЛОКОВАНИМИ — зніміть простій у центрі: ${iRows.map((r) => r.room_id).join(", ")}`);
+      bad = 1;
+    }
+  }
+
   const delQ = await cleanup(db, ids);
   if (delQ.entries) { console.log(`⚠️ записи НЕ видалено: ${delQ.entries}`); bad = 1; }
   if (delQ.markers) { console.log(`⚠️ позначки НЕ знято: ${delQ.markers}. Явний список entity_id: ${ids.join(", ")}`); bad = 1; }
@@ -877,7 +1488,7 @@ async function main() {
   const db = adminClient();
 
   if (cmd === "help" || opts.help) {
-    console.log("race-check.mjs plan | run --run [--n 2..8] [--room <uuid>] | room --run | cas --run | waitlist --run | case --run | cleanup [--run]");
+    console.log("race-check.mjs plan | run --run [--n 2..8] [--room <uuid>] | room --run | cas --run | waitlist --run | case --run | stop --run | midnight --run | cleanup [--run]");
     console.log("  run  — двоє в ОДИН слот (тригер 0064)");
     console.log("  room — двох в ОДИН кабінет (унікальний індекс 0018)");
     console.log("  cas  — двоє міняють статус ОДНОГО запису (for update у 0075).");
@@ -885,13 +1496,33 @@ async function main() {
     console.log("         (умовний UPDATE у schedule_from_waitlist_rpc → 55000 WAITLIST_STALE).");
     console.log("  case — скасування кейса ПРОТИ додавання кроку (for update на кейсі).");
     console.log("         Питання одне: чи може виникнути кейс cancelled з АКТИВНИМ кроком.");
-    console.log("         cas, waitlist і case потребують RADFLOW_USER_JWT — токен живого персоналу.");
+    console.log("         СЕРІЯ раундів (--rounds 2..40, типово 20): з двох упорядкувань лише");
+    console.log("         «скасування → крок» щось перевіряє, тож вердикт ВИМАГАЄ його хоч раз.");
+    console.log("         Другий кабінет: --room2 <uuid>, слоти для нього шукаються окремо.");
+    console.log("  midnight — пізній запис доби D проти раннього доби D+1 (той самий тригер 0064,");
+    console.log("         але вікна перетинаються ЧЕРЕЗ МЕЖУ ДОБИ). Рівно два учасники: --n не діє.");
+    console.log("         Єдиний сценарій, де у фікстур РІЗНА scheduled_date; токен не потрібен.");
+    console.log("  stop — дві АВАРІЙНІ ЗУПИНКИ на одному наборі кабінетів у ПРОТИЛЕЖНОМУ порядку");
+    console.log("         + «поломка» на спільному кабінеті. Питання: чи лишився детермінованим");
+    console.log("         порядок захвату локів (0083/0109), тобто чи не виникає 40P01.");
+    console.log("         ⚠️ ТІЛЬКИ СМОУК-ЦЕНТР. RPC б'є по предикату: знімає з виклику весь день");
+    console.log("         кабінету і вибиває in_progress БУДЬ-ЯКОЇ дати. Гард падає, якщо в");
+    console.log("         кабінетах є хоч один чужий запис.");
+    console.log("         Другий кабінет: --room2 <uuid>. ОБОВʼЯЗКОВИЙ, якщо придатних більше одного —");
+    console.log("         вгадувати не можна: не той кабінет = знятий з виклику чужий день.");
+    console.log("         --with-case — фікстури стають КРОКАМИ одного кейса + ЧЕТВЕРТИЙ постріл");
+    console.log("         cancel_case_rpc. Двох зупинок для інверсії НЕ ВИСТАЧАЄ: обидві лочать");
+    console.log("         `order by q.id`, інверсію (case→queue) дає саме скасування.");
+    console.log("         ⚠️ Це ІНШЕ питання, а не сильніша версія. 40P01 тут — ОГОЛОШЕНЕ вікно");
+    console.log("         (передлок кейсів у RPC бере лише in_progress-кроки) → INCONCLUSIVE, бо");
+    console.log("         двигун називає лише ЖЕРТВУ. Сторож регресії — прогін БЕЗ прапорця.");
+    console.log("         cas, waitlist, case і stop потребують RADFLOW_USER_JWT — токен живого персоналу.");
     console.log("         Сесія у COOKIE (@supabase/ssr), не в localStorage — сніпет у шапці файлу.");
     console.log("         Живе ~годину. Не друкувати, не класти в лог, не слати в переписку.");
     return;
   }
   if (cmd === "cleanup") { process.exit(await cmdCleanup(db, write)); }
-  if (!["plan", "run", "room", "cas", "waitlist", "case"].includes(cmd)) throw new Error(`невідома команда «${cmd}»`);
+  if (!["plan", "run", "room", "cas", "waitlist", "case", "stop", "midnight"].includes(cmd)) throw new Error(`невідома команда «${cmd}»`);
 
   const room = await pickRoom(db, opts.room);
   const study = await pickStudy(db, room);
@@ -905,7 +1536,9 @@ async function main() {
     console.log(`Дні-кандидати: +${DAYS[0]}..+${DAYS[DAYS.length - 1]}, часи: ${TIMES.join(", ")}.`);
     console.log("Пошук слота вимагає пробного запису — тому `plan` його НЕ робить.");
     console.log("Запуск: node scripts/race-check.mjs run --run");
-    console.log("Інші сценарії: room --run (кабінет), cas --run (CAS), waitlist --run (кандидат листа).");
+    console.log("Інші сценарії: room --run (кабінет), cas --run (CAS), waitlist --run (кандидат листа),");
+    console.log(`               case --run (кейс), stop --run (аварійні зупинки), midnight --run`);
+    console.log(`               (перетин через північ: ${MIDNIGHT_LATE_TIME} доби D проти ${MIDNIGHT_EARLY_TIME} доби D+1).`);
     return;
   }
 
@@ -921,12 +1554,31 @@ async function main() {
   // у клініки увімкнено вебхук. Перевіряємо ДО першого запису.
   await assertNoLiveWebhook(db, room.clinic_id);
   if (cmd === "room") await assertRoomFree(db, room.id);
+  /* ПЕРЕДУМОВА «півночі» — ДО першого запису, як і гард `stop`. Без неї прогін
+     давав вісім рядків `23514` і повідомлення «пари діб не знайдено», тобто
+     звинувачував сценарій у тому, що насправді є графіком кабінету. */
+  if (cmd === "midnight") await assertRoomOpenAroundMidnight(db, room);
+
+  /* `stop` бере ДРУГИЙ кабінет і свій гард — обидва ДО першого запису.
+     Гард тут найважливіший у файлі: аварійна зупинка б'є по предикату, тож
+     помилитись центром означає зняти з виклику чужий робочий день. */
+  let stopRoom2 = null;
+  let stopStudy2 = null;
+  const stopRooms = [];
+  if (cmd === "stop") {
+    stopRoom2 = await pickSecondRoom(db, room, opts.room2);
+    stopStudy2 = await pickStudy(db, stopRoom2);
+    console.log(`Другий кабінет: ${stopRoom2.name} [${stopRoom2.modality}] ${stopRoom2.id}`);
+    console.log(`Склад 2: ${stopStudy2.type} / ${stopStudy2.region}`);
+    stopRooms.push(room.id, stopRoom2.id);
+    await assertRoomsUsableForStop(db, stopRooms);
+  }
 
   /* CAS вимагає живого токена персоналу — службова роль до RPC не допущена
      за дизайном. Немає токена — чесний SKIP з інструкцією, а не імітація
      перевірки службовою роллю (вона дала б 42501 і виглядала б як «дефект»). */
   let user = null;
-  if (cmd === "cas" || cmd === "waitlist" || cmd === "case") {
+  if (cmd === "cas" || cmd === "waitlist" || cmd === "case" || cmd === "stop") {
     const jwt = process.env.RADFLOW_USER_JWT;
     if (!jwt) {
       console.log(`\nSKIP: немає RADFLOW_USER_JWT — сценарій ${cmd} не запускався.`);
@@ -934,7 +1586,8 @@ async function main() {
       console.log("  тож без токена живого персоналу перевіряти нічого.");
       console.log("  Токен: сесія у COOKIE `sb-<ref>-auth-token` (@supabase/ssr), НЕ в localStorage.");
       console.log("         Готовий сніпет для консолі браузера — у шапці scripts/race-check.mjs.");
-      console.log(`  Запуск: $env:RADFLOW_USER_JWT="..."; node scripts/race-check.mjs ${cmd} --run --room <uuid>`);
+      console.log(`  Запуск: $env:RADFLOW_USER_JWT="..."; node scripts/race-check.mjs ${cmd} --run --room <uuid>`
+        + (cmd === "stop" ? " --room2 <uuid>" : ""));
       console.log("  ⚠️ --room ОБОВʼЯЗКОВИЙ, якщо центрів кілька: без нього береться перший");
       console.log("     активний кабінет, і він може бути з ЧУЖОГО центру — RPC дасть 42501.");
       console.log("  Токен живе ~годину; у переписку й лог він не потрапляє.");
@@ -974,6 +1627,31 @@ async function main() {
       console.log(`  → ${race.verdict.verdict}: ${race.verdict.reason}`);
       console.log(`  розкид стартів: ${race.verdict.spread} мс`);
       code = race.verdict.verdict === "PASS" ? 0 : (race.verdict.verdict === "FAIL" ? 1 : 2);
+    } else if (cmd === "midnight") {
+      /* ⚠️ ВЛАСНІ ДОБИ, а не `slots` спільного пошуку. Той шукає будь-які
+         придатні слоти й віддає денні — тут потрібні три конкретні часи на
+         двох СУСІДНІХ добах. Спільний контроль вище лишається і робить свою
+         роботу (паралельність клієнта), власний нижче доводить інше: що двоє
+         на різні сусідні доби записуються одночасно без перешкод. */
+      const { dayLate, dayEarly, tried } = await findMidnightDays(db, room, study, {
+        days: DAYS, cleanupIds,
+      });
+      console.log(`Доби переходу: ${dayLate} ${MIDNIGHT_LATE_TIME} → ${dayEarly} ${MIDNIGHT_EARLY_TIME}`
+        + ` (відкинуто проб: ${tried.length}).`);
+      const ctl = await runMidnightControl(db, { room, study, dayLate, dayEarly, cleanupIds });
+      printOutcomes(`КОНТРОЛЬ ПІВНОЧІ (${MIDNIGHT_LATE_TIME} доби D + ${MIDNIGHT_CONTROL_TIME} доби D+1)`, ctl.outcomes);
+      console.log(`  → ${ctl.verdict.verdict}: ${ctl.verdict.reason}\n`);
+      if (ctl.verdict.verdict !== "PASS") {
+        console.log("Гонку НЕ запускаємо: через межу доби не записались навіть ті, чиї вікна");
+        console.log("не перетинаються, — відмова в гонці нічого не довела б про тригер.");
+        code = 2;
+      } else {
+        const race = await runMidnightRace(db, { room, study, dayLate, dayEarly, cleanupIds });
+        printOutcomes(`ГОНКА ЧЕРЕЗ ПІВНІЧ (${dayLate} ${MIDNIGHT_LATE_TIME} проти ${dayEarly} ${MIDNIGHT_EARLY_TIME})`, race.outcomes);
+        console.log(`  → ${race.verdict.verdict}: ${race.verdict.reason}`);
+        console.log(`  розкид стартів: ${race.verdict.spread} мс`);
+        code = race.verdict.verdict === "PASS" ? 0 : (race.verdict.verdict === "FAIL" ? 1 : 2);
+      }
     } else if (cmd === "waitlist") {
       /* ⚠️ ВЛАСНИЙ КОНТРОЛЬ, ПОВЕРХ спільного (знахідка ревʼю Б, с62).
          Спільний контроль вище доводить придатність слотів і паралельність
@@ -1022,45 +1700,120 @@ async function main() {
           : (linkOk ? 0 : 2);
       }
     } else if (cmd === "case") {
-      /* ⛔ СЦЕНАРІЙ НЕ ГОТОВИЙ — і гейт стоїть тут навмисно, щоб він не міг
-         віддати ЗЕЛЕНИЙ результат, який нічого не доводить.
-
-         Ревʼю Б (с62) показало головне: постріл робиться ОДИН раз, а з двох
-         можливих упорядкувань лише ОДНЕ щось перевіряє. Якщо `add` виграє лок
-         першим, правильний і зламаний код дають БАЙТ У БАЙТ той самий
-         результат — щойно крок закомічено, скасування неминуче змете його
-         своїм `for update`. Тобто приблизно половина прогонів — PASS, який не
-         відрізняє справний лок від знятого. Це рівно той клас «зелений, що
-         нічого не значить», проти якого написана вся ця машинерія.
-
-         Що треба доробити (деталі — docs/audit/PLAN-case-scenario-gaps.md):
-           1. ганяти пару БАГАТО разів і вимагати, щоб упорядкування
-              «скасування → крок» справді трапилось хоч раз;
-           2. власний контроль: крок додається НАОДИНЦІ — інакше «22023»
-              неможливо приписати скасуванню (RPC кидає 22023 і на BAD_INPUT
-              ДО локів);
-           3. розрізняти два 22023 за ТЕКСТОМ, а не лише за SQLSTATE;
-           4. слоти для ДРУГОГО кабінету теж пробувати `findSlots` — зараз
-              беруться слоти, перевірені лише для першого;
-           5. стверджувати `cancel.cancelled >= 1` і досяжні кінцеві стани. */
-      console.log("\n⛔ Сценарій `case` НЕ ГОТОВИЙ і навмисно не запускається.");
-      console.log("   Ревʼю показало: ~половина прогонів дала б PASS, не перевіривши гарант.");
-      console.log("   Причини й план доробки — docs/audit/PLAN-case-scenario-gaps.md");
-      code = 2;
-    } else if (cmd === "case_DISABLED_PENDING_REDESIGN") {
-      const room2 = await pickSecondRoom(db, room);
+      /* ⚠️ СЦЕНАРІЙ РОЗБЛОКОВАНО В с63. Блокування с62 стояло через те, що
+         постріл робився ОДИН раз, а з двох упорядкувань лише одне щось
+         перевіряє. Тепер це вимога вердикту, а не сподівання: серія раундів,
+         і хоча б один мусить лягти в «скасування → крок». Деталі — у
+         `verdictCaseRounds` і docs/audit/PLAN-case-scenario-gaps.md. */
+      const room2 = await pickSecondRoom(db, room, opts.room2);
       const study2 = await pickStudy(db, room2);
       console.log(`Другий кабінет: ${room2.name} [${room2.modality}] — ${study2.type} / ${study2.region}`);
-      const race = await runCaseCancelRace(db, user, {
-        room, study, room2, study2, slots, cleanupIds, caseIds,
+
+      /* ⚠️ ДЛЯ ДРУГОГО КАБІНЕТА — СВІЙ `findSlots` (пункт 4 плану доробки).
+         Раніше сюди йшли слоти, перевірені лише для кабінету A: у B свій
+         графік, своя перерва і свої простої, тож слот міг бути непридатний —
+         і крок падав би чужим SQLSTATE, а виглядало б це як зламаний гард. */
+      const found2 = await findSlots(db, room2, study2, {
+        days: DAYS, times: TIMES, count: TIMES.length, cleanupIds,
       });
-      printOutcomes("ГОНКА ЗА КЕЙС (add_case_step_rpc ПРОТИ cancel_case_rpc)", [
-        { ...race.add, id: "add" }, { ...race.cancel, id: "cancel" },
-      ]);
+      /* ⚠️ Слоти двох кабінетів мусять бути на ОДНУ дату і РІЗНИЙ час:
+         `check_case_no_time_overlap` не дасть пацієнтові стояти у двох
+         кабінетах одночасно (23P01), а різні дати зробили б сцену
+         неправдоподібною. Кандидати `findSlots` рознесені на годину. */
+      const slotA = slots.find((s) => found2.slots.some((x) => x.day === s.day && x.time !== s.time));
+      const slotB = slotA ? found2.slots.find((x) => x.day === slotA.day && x.time !== slotA.time) : null;
+      if (!slotA || !slotB) {
+        throw new Error(
+          "не знайшлось пари «та сама дата, різний час» для двох кабінетів.\n"
+          + `  кабінет A: ${slots.map((s) => s.day + " " + s.time).join(", ")}\n`
+          + `  кабінет B: ${found2.slots.map((s) => s.day + " " + s.time).join(", ")}`);
+      }
+      /* ⚠️ ТИПОВЕ ЧИСЛО РАУНДІВ ПІДНЯТО 8 → 20 ЗА ЗАМІРОМ, а не «про запас»
+         (прод-прогін 11.09.2026). Ревʼю с62 припускало, що вирішальне
+         впорядкування «скасування → крок» випадає приблизно в половині
+         випадків. Насправді в тому прогоні воно випало РАЗ ІЗ ВОСЬМИ.
+         При такій частці вісім раундів дають близько третини прогонів БЕЗ
+         жодного вирішального — тобто чесний, але марний INCONCLUSIVE, і
+         сценарій, який третину запусків нічого не каже, швидко перестають
+         запускати. Двадцять раундів знижують цю ймовірність приблизно до 7 %.
+         Ціна — близько 40 с замість 16.
+         ⚠️ Це спостереження ОДНОГО прогону, а не заміряна константа: чому
+         `add` майже завжди перший до лока — не встановлено. Тому число
+         лишається параметром (`--rounds`), а не прибито в коді. */
+      const rounds = Math.max(2, Math.min(40, Number(opts.rounds) || 20));
+      console.log(`Слоти кейса: A ${slotA.day} ${slotA.time} · B ${slotB.day} ${slotB.time}`);
+      console.log(`Раундів: ${rounds} (кожен зі своїм кейсом і прибиранням одразу)`);
+
+      const series = await runCaseSeries(db, user, {
+        room, study, room2, study2, slotA, slotB, rounds, cleanupIds, caseIds,
+      });
+      console.log(`  КОНТРОЛЬ (крок наодинці): ${series.control.verdict.verdict} — ${series.control.verdict.reason}`);
+      if (series.control.left) console.log(`  ⚠️ контроль лишив по собі: ${series.control.left}`);
+      for (const [i, r] of series.rounds.entries()) {
+        const order = r.add.ok ? "крок → скасування" : "скасування → крок";
+        console.log(`  раунд ${i + 1}: ${r.verdict.verdict} · ${order} · знято ${r.cancel.cancelled ?? "?"} кроків`
+          + ` · кейс=${r.final.caseStatus ?? "?"} · розкид ${r.verdict.spread} мс`
+          + (r.add.ok ? "" : ` · ${r.add.sqlstate}`));
+        if (r.verdict.verdict !== "PASS") console.log(`      ${r.verdict.reason}`);
+        if (r.cleanupLeft) console.log(`      ⚠️ прибирання раунду: ${r.cleanupLeft}`);
+      }
+      console.log(`  → ${series.verdict.verdict}: ${series.verdict.reason}`);
+      code = series.verdict.verdict === "PASS" ? 0 : (series.verdict.verdict === "FAIL" ? 1 : 2);
+    } else if (cmd === "stop") {
+      /* ⚠️ ДЛЯ ДРУГОГО КАБІНЕТА — СВІЙ `findSlots`, а не слоти першого. Це
+         пункт 4 з `PLAN-case-scenario-gaps.md`: сценарій `case` брав слоти,
+         перевірені лише для кабінету A, і для B вони могли бути непридатні
+         (свій графік, своя перерва, свій інцидент). Тут ця помилка не
+         повторюється. */
+      const found2 = await findSlots(db, stopRoom2, stopStudy2, {
+        days: DAYS, times: TIMES, count: TIMES.length, cleanupIds,
+      });
+      /* Дата має бути СПІЛЬНА: `p_date` у RPC один на весь набір кабінетів. */
+      const slotA = slots.find((s) => found2.slots.some((x) => x.day === s.day));
+      /* ⚠️ У режимі `--with-case` слот B мусить бути ще й в ІНШИЙ ЧАС: два
+         кроки одного кейса — це ОДИН пацієнт, і `check_case_no_time_overlap`
+         (23P01) не пустить його у два кабінети одночасно. Без цієї умови
+         прогін упав би об власну фікстуру, а не об гонку. */
+      const withCase = opts["with-case"] === true;
+      const slotB = slotA
+        ? found2.slots.find((x) => x.day === slotA.day && (!withCase || x.time !== slotA.time))
+        : null;
+      if (!slotA || !slotB) {
+        throw new Error(
+          "спільної дати для двох кабінетів не знайшлось — аварійна зупинка бере ОДИН p_date.\n"
+          + (withCase ? "  (--with-case вимагає ще й РІЗНИЙ час: кроки одного кейса — один пацієнт)\n" : "")
+          + `  кабінет A: ${slots.map((s) => `${s.day} ${s.time}`).join(", ")}\n`
+          + `  кабінет B: ${found2.slots.map((s) => `${s.day} ${s.time}`).join(", ")}`);
+      }
+      console.log(`Спільна дата зупинки: ${slotA.day} (A ${slotA.time}, B ${slotB.time})`);
+      if (withCase) {
+        console.log("Режим --with-case: кроки ОДНОГО кейса + четвертий постріл cancel_case_rpc.");
+        console.log("  ⚠️ Це НЕ сторож регресії. Сторожем лишається прогін БЕЗ прапорця:");
+        console.log("     там будь-який 40P01 — дефект. Тут 40P01 = оголошене вікно → INCONCLUSIVE.");
+      }
+
+      const race = await runEmergencyStopRace(db, user, {
+        room, room2: stopRoom2, study, study2: stopStudy2, slotA, slotB,
+        cleanupIds, caseIds, withCase,
+      });
+      printStopOutcomes("ГОНКА АВАРІЙНИХ ЗУПИНОК (набір кабінетів у ПРОТИЛЕЖНОМУ порядку + «поломка»"
+        + (withCase ? " + скасування кейса)" : ")"),
+        [...race.stops, race.breakdown, ...(race.canceller ? [race.canceller] : [])]);
+      for (const s of race.stops) {
+        console.log(`  ${s.id}: зупинено кабінетів ${s.rooms.length}/${s.asked.length}`
+          + `, знято з виклику ${s.affected ?? "?"}`);
+      }
+      console.log(`  поломка(B): ${race.breakdown.ok ? "простій створено" : `відмовлено ${race.breakdown.sqlstate}`}`);
+      if (race.canceller) {
+        console.log(`  скасування кейса: ${race.canceller.ok
+          ? `знято кроків ${typeof race.canceller.row === "number" ? race.canceller.row : "?"}`
+          : `відмовлено ${race.canceller.sqlstate}`}`
+          + `, кейс у базі = ${race.caseFinal?.status ?? "?"}`);
+      }
+      console.log(`  активних інцидентів у базі: `
+        + Object.entries(race.byRoom).map(([r, k]) => `${r.slice(0, 8)}→${k}`).join(", "));
       console.log(`  → ${race.verdict.verdict}: ${race.verdict.reason}`);
       console.log(`  розкид стартів: ${race.verdict.spread} мс`);
-      console.log(`  кінцевий стан: кейс=${race.final.caseStatus ?? "?"} · кроки: `
-        + ((race.final.steps || []).map((s) => `#${s.case_step}:${s.status}`).join(", ") || "немає"));
       code = race.verdict.verdict === "PASS" ? 0 : (race.verdict.verdict === "FAIL" ? 1 : 2);
     } else if (cmd === "cas") {
       const race = await runCas(db, user, { room, study, slot: slots[0], n, cleanupIds });
@@ -1087,6 +1840,48 @@ async function main() {
       try { return await fn(); }
       catch (e) { console.log(`⚠️ крок прибирання «${what}» упав: ${e.message}`); code = code || 1; return null; }
     };
+
+    /* ІНЦИДЕНТИ — ПЕРШИМИ, і це не стиль. Активний інцидент блокує РЕАЛЬНИЙ
+       кабінет: доки він висить, кабінет для центру мертвий. Незнята фікстура
+       черги коштує одного слота, незнятий інцидент — цілого кабінету.
+
+       ⚠️ ЧОМУ ТУТ ЧИТАННЯ ПО КАБІНЕТАХ, А НЕ СПИСОК ID ІЗ ВІДПОВІДЕЙ RPC
+       (правило с14 — прибирати за ЯВНИМ списком). Список із відповідей
+       неповний за побудовою: постріл, чия відповідь загубилась у мережі,
+       міг закомітити інцидент, id якого ми не побачили ніколи. Тому список
+       будується ЧИТАННЯМ — і він лишається явним: id спершу вичитуються,
+       друкуються, і лише потім видаляються поіменно.
+
+       Право вважати ці рядки СВОЇМИ дає `assertRoomsUsableForStop`: він
+       упав би ще до пострілу, якби в цих кабінетах був хоч один активний
+       інцидент. Тобто before-image тут — «активних інцидентів 0», і він
+       знятий, а не припущений. */
+    if (stopRooms.length) {
+      const inc = await step("вичитати інциденти зупинки", () => activeIncidentsByRoom(db, stopRooms));
+      if (!inc) {
+        console.log(`⚠️ НЕ вдалося вичитати інциденти — кабінети можуть лишитись ЗАБЛОКОВАНИМИ: ${stopRooms.join(", ")}`);
+        console.log("   Зніміть простій у центрі руками або повторіть: node scripts/race-check.mjs stop --run");
+        code = code || 1;
+      } else if (inc.ids.length) {
+        console.log(`  активних інцидентів до зняття: ${inc.ids.length} — ${inc.ids.join(", ")}`);
+        const d = await step("видалити інциденти", () => cleanupIncidents(db, inc.ids));
+        /* `cleanupIncidents` ПОВЕРТАЄ помилку, а не кидає — `step` її не спіймає. */
+        if (!d || d.incidents) {
+          console.log(`⚠️ інциденти НЕ видалено (${d?.incidents ?? "виняток"}): ${inc.ids.join(", ")}`);
+          code = code || 1;
+        }
+        /* Звіряємо ЗАПИТОМ: «delete не повернув помилки» ≠ «рядків немає». */
+        const after = await step("звірити зняття інцидентів", () => activeIncidentsByRoom(db, stopRooms));
+        const leftInc = after ? after.ids.length : "?";
+        console.log(`Інциденти: знято ${inc.ids.length}. Лишилось активних: ${leftInc}.`);
+        if (leftInc !== 0) {
+          console.log(`⚠️ КАБІНЕТИ ЛИШИЛИСЬ ЗАБЛОКОВАНИМИ: ${stopRooms.join(", ")} — зніміть простій у центрі.`);
+          code = code || 1;
+        }
+      } else {
+        console.log("Інциденти: активних немає (зупинка не відбулась або вже знята).");
+      }
+    }
 
     /* ⚠️ ПОРЯДОК: спершу дочитати звʼязок, і лише потім видаляти. FK
        `scheduled_entry_id` — `ON DELETE SET NULL`, тож видалення черги

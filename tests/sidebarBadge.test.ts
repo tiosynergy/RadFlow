@@ -147,3 +147,57 @@ describe("U-60 — усі ТРИ місця вживання, а не одне �
     expect(sidebar).toMatch(/document\.removeEventListener\("visibilitychange", onVis\);/);
   });
 });
+
+/* ------------------------------------------------ с63: межа, яку U-60 назвав */
+
+const board = read("components/QueueBoard.tsx");
+
+describe("с63 — бейдж ІНЦИДЕНТІВ теж розведений", () => {
+  it("зелена лінія: дошка прочитана і в ній справді є обидва прапорці", () => {
+    /* Без цієї половини наступні піни нефальсифіковані: якби файл читався не
+       той, «не знайшли» збіглося б із очікуванням. */
+    expect(board).toMatch(/const \[incidentsErr, setIncidentsErr\] = useState\(false\);/);
+    expect(board).toMatch(/const \[incidentsLoaded, setIncidentsLoaded\] = useState\(false\);/);
+  });
+
+  it("дошка передає СТАН, а не лише число", () => {
+    expect(board).toMatch(/incidentStatus=\{loadStatusOf\(incidentsLoaded, incidentsErr\)\}/);
+  });
+
+  it("сайдбар малює три стани інцидентів, і falsy-гейта більше немає", () => {
+    expect(sidebar).toMatch(/const incidentBadge = badgeOf\(incidentStatus, incidentCount\);/);
+    expect(sidebar).toMatch(/incidentBadge\.kind === "unknown"/);
+    expect(sidebar).toMatch(/incidentBadge\.kind === "count"/);
+    expect(sidebar, "повернувся старий двостанний гейт по incidentCount")
+      .not.toMatch(/\{incidentCount \? <span className="sb-badge sb-badge-red">/);
+  });
+
+  /* ⚠️ ЦЕНТРАЛЬНА ВЛАСТИВІСТЬ ЦЬОГО БЛОКУ, і вона не про текст, а про
+     поведінку: збій читання простоїв не має виглядати як «жоден кабінет не
+     стоїть». Дефолт пропа при цьому `ready` — інакше на восьми екранах, де
+     простої не читаються взагалі, бейдж поводився б як «вантажиться». */
+  it("збій простоїв ≠ «простоїв немає», а відсутній проп ≠ «вантажиться»", () => {
+    expect(badgeOf("failed", 0)).not.toEqual(badgeOf("ready", 0));
+    expect(sidebar).toMatch(/incidentStatus = "ready",/);
+  });
+});
+
+describe("с63 — маунт більше не читає лист очікування двічі", () => {
+  it("підписки позначені skipInitial — первинне читання робить ефект", () => {
+    /* ⚠️ Дубль був реальний: `useRealtimeRefetch` кличе
+       `callAll({ initial: true })` при створенні каналу, а компонент і без
+       нього читав на маунті. Пін на ОБИДВА боки — інакше зняття одного з них
+       лишило б тест зеленим. */
+    expect(sidebar).toMatch(/skipInitial: true,/);
+    expect(read("lib/useRealtimeRefetch.ts")).toMatch(/callAll\(\{ initial: true \}\);/);
+  });
+
+  it("ефект залежить від СКЛАДУ центрів — інакше дашборд керівника втратив би читання", () => {
+    /* `loadWaitCount` стабільний (`useCallback` з `[]`), а в `CeoDashboard`
+       список центрів приїжджає ПІСЛЯ маунту: `[] → [ids]`. Тоді канал
+       створюється вдруге, його `initial` пропущено — і без цієї залежності
+       проміжок не закрив би ніхто. */
+    expect(sidebar).toMatch(/const clinicKey = clinicIds\.join\(","\);/);
+    expect(sidebar).toMatch(/\}, \[loadWaitCount, clinicKey\]\);/);
+  });
+});

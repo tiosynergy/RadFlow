@@ -6,7 +6,7 @@
    зайнятість кабінету беремо через знеособлений RPC room_busy_slots (без PII;
    для направника обходить RLS-сліпоту), p_exclude прибирає сам редагований запис. */
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { CONTRAST_SURCHARGE, BUFFER_DEFAULT, BUFFER_OPTIONS, normBuffer, normDur, DUR_MAX, CONTRAST_DUR, BOOKABLE_MODALITIES, modalityLabel, modalityShort, modalityKind, modalityCode, fmtUah } from "@/lib/studies";
 import { buildCatalog, overridesToMap, catalogPriceBreakdown, type ServiceLike, type RoomOverrideRow } from "@/lib/catalog";
@@ -16,6 +16,7 @@ import { roomScheduleFor, effectiveRoomBreaks, inBreak, offScheduleKind, offReas
 import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { wallNow, wallMinOfDay, wallDayKey, wallToday0, wallInstant, incidentDurNotice, incidentsUnknown, slotBlockedByFeed, incidentAtInstant, incidentEndLabel, roomIncidentsOf, type IncidentFeed, type IncidentLike } from "@/lib/incidents";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
+import { useScheduleRefetch } from "@/lib/useScheduleRefetch";
 import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { buildSlots } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
@@ -149,12 +150,17 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
   const [schedErr, setSchedErr] = useState(false);
   // Графік/оверрайд кабінету на дату (для меж тривалості й сітки слотів). Зайнятість
   // кабінету — окремо через useRoomBusy (realtime), нижче.
-  useEffect(() => {
-    let cancel = false;
-    (async () => {
+  /* ⚠️ Лічильник поколінь замість прапорця `cancel` із замикання ефекту (с63).
+     Лоадер тепер кличе і `useScheduleRefetch` — ПОЗА будь-яким ефектом, тож
+     `cancel` до такого виклику не має стосунку взагалі, і відповідь по старій
+     даті перетерла б нову. Той самий прийом уже стоїть у `useRoomBusy` (genRef)
+     і в `BookingModal.loadSched` (schedReqRef). */
+  const schedReqRef = useRef(0);
+  const loadSched = useCallback(async () => {
+    const req = ++schedReqRef.current;
+    {
       // Без кабінету або без дати графіка кабінету не існує — читати нічого (див. schedApplies).
-      if (!scheduledDate || !patient.room_id) { if (!cancel) { setSchedLoading(false); setSchedErr(false); } return; }
-      setSchedLoading(true);
+      if (!scheduledDate || !patient.room_id) { setSchedLoading(false); setSchedErr(false); return; }
       try {
         const supabase = createClient();
         if (clinicId) {
@@ -163,7 +169,8 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
              направника, тож пряме читання тут дало б йому 0 рядків. */
           const ov = await supabase.rpc("sched_override_read", { p_clinic: clinicId, p_date: scheduledDate }).maybeSingle();
           if (ov.error) throw ov.error;   // без оверрайда закритий/скорочений день виглядав би звичайним
-          if (!cancel) setOverride((ov.data as unknown as DayOverride) || null);
+          if (req !== schedReqRef.current) return;
+          setOverride((ov.data as unknown as DayOverride) || null);
         }
         const roomRes = await supabase.from("rooms").select("schedule").eq("id", patient.room_id).maybeSingle();
         /* Обидві причини незнання розрізняє `readRoomScheduleRow` (U-13, с49):
@@ -171,20 +178,31 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
            екранів. `known: true` зі `schedule: null` — легітимний дефолт. */
         const sched = readRoomScheduleRow(roomRes);
         if (!sched.known) throw roomScheduleReadError(sched.reason);
-        if (!cancel) setRoomSchedule(sched.schedule);
-        if (!cancel) setSchedErr(false);
+        if (req !== schedReqRef.current) return;
+        setRoomSchedule(sched.schedule);
+        setSchedErr(false);
       } catch {
         /* Транзієнтний збій (оновлення токена / мережа) — вікно не рушимо, але й
            меж не вигадуємо. Прочитане ОБНУЛЯЄМО: інакше при зміні кабінету/дати
            на екрані лишився б графік ПОПЕРЕДНЬОГО дня і банери говорили б про
            нього як про факт (ревʼю пакета, знахідка 1). */
-        if (!cancel) { setOverride(null); setRoomSchedule(null); setSchedErr(true); }
+        if (req === schedReqRef.current) { setOverride(null); setRoomSchedule(null); setSchedErr(true); }
       } finally {
-        if (!cancel) setSchedLoading(false);
+        if (req === schedReqRef.current) setSchedLoading(false);
       }
-    })();
-    return () => { cancel = true; };
+    }
   }, [patient.room_id, scheduledDate, clinicId]);
+
+  /* ⚠️ `setSchedLoading(true)` — ТУТ, а не всередині `loadSched`: хук нижче
+     кличе той самий лоадер фоново (подія realtime / тик 30 с), і межі тривалості
+     не мають блимати «завантаження» на кожному оновленні. Взірець —
+     `BookingModal`. */
+  useEffect(() => { setSchedLoading(true); loadSched(); }, [loadSched]);
+  /* с63: графік кабінету оновлюється, поки вікно відкрите. Доти зайнятість тут
+     ішла через `useRoomBusy` з realtime, а межі дня і перерви читались РІВНО
+     РАЗ — тож дослідження можна було розтягнути за новий (скорочений) кінець
+     дня, і сказав би про це лише сервер після «Зберегти». */
+  useScheduleRefetch({ clinicId, dateStr: scheduledDate, roomId: patient.room_id, scope: "study", onChange: loadSched });
 
   // Зайнятість кабінету на дату запису (realtime) — сам редагований запис виключаємо
   // (p_exclude), щоб його власне вікно не рахувалося «наступним записом».

@@ -5,7 +5,7 @@
    стенд двічі сказав «ЧЕРВОНИЙ НЕ ТОЙ» на правильному сторожі. */
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { finishStand } from "./lib/falsify-verdict.mjs";
+import { finishStand, baselineVerdict } from "./lib/falsify-verdict.mjs";
 
 const LIB = "lib/roomSchedule.ts";
 const BM  = "components/BookingModal.tsx";
@@ -118,6 +118,36 @@ const SPEC = "tests/roomScheduleRead.test.ts tests/roomScheduleReadContract.test
 const lines = ["# Фальсифікація U-13", ""];
 let bad = 0;
 
+/** Один прогін спеку → імена червоних тестів (`null` — звіту немає). */
+function runSpec() {
+  rmSync(".vt.json", { force: true });
+  try {
+    execSync(`npx vitest run ${SPEC} --reporter=json --outputFile=.vt.json`,
+      { stdio: "ignore", timeout: 180000 });
+  } catch { /* ненульовий код = є червоні */ }
+  try {
+    const j = JSON.parse(readFileSync(".vt.json", "utf8"));
+    const red = [];
+    for (const f of j.testResults) for (const a of f.assertionResults) {
+      if (a.status === "failed") red.push(a.fullName);
+    }
+    return red;
+  } catch { return null; }
+}
+
+/* ⚠️ БАЗОВА ЛІНІЯ (с63). Без неї стенд доводив НІЩО на червоному наборі:
+   якщо спек упав ще до мутацій, названий сторож червоний у кожному прогоні,
+   і всі мутації «спрацьовують». Заміряно вживу — один підсаджений провальний
+   тест дав «23/23 адресних, стенд зелений» і код 0. */
+const base = baselineVerdict(runSpec());
+lines.push(base.line, "");
+console.log(base.line);
+if (!base.ok) {
+  writeFileSync("falsify-u13.md", lines.join("\n"), "utf8");
+  finishStand({ ok: false, red: "\n⛔ ВЕРДИКТ: СТЕНД ЧЕРВОНИЙ — базова лінія не зелена." });
+  process.exit(1);
+}
+
 for (const [name, file, expectRe, from, to] of M) {
   const src = orig.get(file);
   if (!src.includes(from)) {
@@ -125,19 +155,8 @@ for (const [name, file, expectRe, from, to] of M) {
   }
   let red = null;
   try {
-    rmSync(".vt.json", { force: true });
     writeFileSync(file, src.replace(from, to));
-    try {
-      execSync(`npx vitest run ${SPEC} --reporter=json --outputFile=.vt.json`,
-        { stdio: "ignore", timeout: 180000 });
-    } catch { /* ненульовий код = є червоні */ }
-    try {
-      const j = JSON.parse(readFileSync(".vt.json", "utf8"));
-      red = [];
-      for (const f of j.testResults) for (const a of f.assertionResults) {
-        if (a.status === "failed") red.push(a.fullName);
-      }
-    } catch { red = null; }
+    red = runSpec();
   } finally {
     writeFileSync(file, src);
   }

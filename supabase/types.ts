@@ -638,6 +638,17 @@ export type Database = {
           clinic_id: string;
           source_entry_id: string | null;
           scheduled_entry_id: string | null;
+          /** ⚠️ МЕРТВА з 0100, позначено міграцією 0186. Механізм claim-токена
+           *  (0089) замінено ОДНІЄЮ транзакцією в `schedule_from_waitlist_rpc`:
+           *  CAS `waiting→scheduled`, вставка запису і `scheduled_entry_id`
+           *  роблять атомарно, проміжного стану ніхто не бачить.
+           *  Заміряно 11.09.2026: 0 рядків зі значенням; колонку НІХТО не читає
+           *  (два SECURITY DEFINER RPC лише пишуть у неї `null`); ані індексу,
+           *  ані політики, ані constraint-а, ані вʼюхи.
+           *  НЕ починайте писати в неї: гонку за кандидата тримає CAS у тілі
+           *  RPC (55000 `WAITLIST_STALE`), а не цей токен. Колонку свідомо НЕ
+           *  дропнуто — DROP вимагав би передруку обох definer-тіл, одне з яких
+           *  і є тим гарантом. Повний розбір — у шапці 0186. */
           claim_token: string | null;
           room_id: string | null;
           patient_name: string;
