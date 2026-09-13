@@ -162,9 +162,55 @@ describe("контракт 0168 — те, що обіцяє міграція, і
    *  пін, який коментар МОЖЕ зламати, — шум. Обидва лікуються одним — читати
    *  КОД, а не текст. Зелений базис нижче не постраждав: 0109 і 0168
    *  перевизначають функцію саме кодом.
+   *
+   *  ⚠️ З с68 ЗРІЗАЄТЬСЯ ЩЕ Й РЯДОК СПИСКУ ДАЙДЖЕСТІВ №19 — той самий клас,
+   *  що вище, на поверх глибше. 0192 додала `emergency_stop_rpc` у СПИСОК
+   *  перевірки №19: рядок
+   *      ('emergency_stop_rpc(…)','ac62900b…','secdef=true;…')
+   *  усередині тіла сторожа. Це не перевизначення функції — це ПІН на її
+   *  тіло, тобто рівно те, чого цей describe і хотів для сусідніх definer-
+   *  функцій. Голе імʼя червоніло на тому, що функцію взяли під дайджест.
+   *
+   *  ⚠️ ДВА НЕПРАВИЛЬНИХ ЛІКУВАННЯ, ОБИДВА ВІДКИНУТІ ЗАМІРОМ. Пишу їх тут,
+   *  бо обидва виглядають очевидними і наступний піде по тих самих граблях.
+   *
+   *  (1) «зрізати ВСІ рядкові літерали» — літерал же ДАНІ, а не код. Зріз
+   *      `/'(?:''|[^'])*'/` дав розсинхрон на **14 із 194** файлів міграцій:
+   *      `--` усередині літерала зʼїдається ПЕРШИМ проходом разом із
+   *      закривальною лапкою, далі пари зсуваються на одну, і зріз починає
+   *      вигризати КОД. Тобто ліки тихо перетворювали сторожа на декорацію.
+   *
+   *  (2) «шукати не імʼя, а ОПЕРАТОР» (`create|drop|alter function`,
+   *      `grant|revoke execute on function`). Виглядало строго кращим — і
+   *      було ВУЖЧИМ за старий детектор саме на домашньому ідіомі цього
+   *      репозиторію. ЗАМІР: `drop function if exists public.emergency_stop_rpc`
+   *      трапляється в `0168_emergency_stop_returns_incident_ids.sql` ДВІЧІ
+   *      (рядки 73 і 331) — тобто у файлі, чий контракт цей пін і стереже, —
+   *      і жодна з тих двох форм під «оператор» не підпадала (`if exists`
+   *      стоїть МІЖ `function` і іменем). Майбутня міграція, яка лише
+   *      ВИДАЛЯЄ функцію, лишала б пін зеленим. Туди ж: `revoke all on
+   *      function`, `grant execute on ROUTINE`, `alter function … rename to`,
+   *      лапковані ідентифікатори і динамічний `format('create … %I')`.
+   *
+   *  ЛІКУВАННЯ, ЩО ЛИШИЛОСЬ — ВУЗЬКЕ ВИКЛЮЧЕННЯ ОДНІЄЇ ФОРМИ. Сітка лишається
+   *  широкою (голе імʼя), а зрізається РІВНО рядок списку дайджестів, який
+   *  розпізнається за формою, неможливою в жодному DDL:
+   *      ('<імʼя>(<аргументи без дужок>)','<32 hex>','<attrs без лапок>')
+   *  Це дешевше і безпечніше за обидва варіанти вище: лапки не парсяться
+   *  (шаблон самообмежений), а все, що ловив старий детектор — `drop function
+   *  if exists`, `revoke all`, `rename to`, динамічний SQL — ловиться далі.
+   *  ⚠️ Ціна названа: якщо у майбутнього підпису в списку зʼявиться ВКЛАДЕНА
+   *  дужка в аргументах, шаблон його не зріже і пін почервоніє. Це ГУЧНА і
+   *  правильна відмова — тоді треба розширити шаблон, а не послаблювати пін.
+   *  ⚠️ Зелений базис перезнято після заміни: детектор і далі знаходить усі
+   *  реальні файли, серед них обидва з базису нижче (0109 і 0168).
    */
   const sqlCode = (txt: string) =>
-    txt.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
+    txt
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/--[^\n]*/g, " ")
+      // рядок списку дайджестів №19 — ДАНІ, не оператор (див. шапку)
+      .replace(/\('[a-z_]+\([^)]*\)','[0-9a-f]{32}','[^']*'\)/g, " ");
   const mentionsAfter = (after: string) =>
     readdirSync(resolve(process.cwd(), MIG_DIR))
       .filter((f) => /^\d{4}_.*\.sql$/.test(f) && f > after)
@@ -196,6 +242,54 @@ describe("контракт 0168 — те, що обіцяє міграція, і
     expect(mentionsAfter(MIG_0168),
       "новіша міграція торкається emergency_stop_rpc — перевірте ключі "
       + "'id'/'roomId' і ACL, і оновіть цей пін свідомо").toEqual([]);
+  });
+
+  it("зріз рядка списку №19 не засліпив детектор на жодній формі DDL", () => {
+    /* ⚠️ СИНТЕТИЧНИЙ КОНТРОЛЬ, доданий у с68 разом зі зрізом рядка списку.
+       Пін вище доводить ВІДСУТНІСТЬ — а відсутність однаково добре доводить
+       і ЗАСЛІПЛЕНИЙ детектор. Базис «до 0109» ганяє пошук на реальних
+       файлах, але НОВОЇ дірки не побачив би: зріз, що звузив сітку, лишив би
+       0109 і 0168 знайденими (у них є звичайний `create function`), а
+       міграцію, яка робить із функцією ЩОСЬ ІНШЕ, проґавив би.
+       ⚠️ КОЖЕН рядок нижче — це форма, на якій попередня редакція цього
+       детектора (позитивний «оператор») РЕАЛЬНО падала, а не вигадка:
+       `drop function if exists` стоїть у 0168 двічі, а `revoke all on
+       function` і `on routine` — домашні ідіоми репозиторію.
+       ⚠️ Тексти синтетичні: імʼя `probe_fn` у схемі не існує (звірено). */
+    const asPin =
+      "      ('emergency_stop_rpc(p_room_ids uuid[], p_date date, p_note text)',"
+      + "'ac62900bdcd7d5cd689f5aa9066d99b9','secdef=true;vol=v'),";
+    const asComment = "-- emergency_stop_rpc досі віддає ПІБ, і це названий борг";
+
+    const seen = (txt: string) => /emergency_stop_rpc/.test(sqlCode(txt));
+
+    // ДАНІ — не мусять бути видимі
+    expect(seen(asPin), "пін у списку №19 — це ДАНІ, не операція").toBe(false);
+    expect(seen(asComment), "чесний коментар про борг — не операція").toBe(false);
+
+    // ОПЕРАЦІЇ — кожна мусить лишатись видимою
+    const mustSee: readonly (readonly [string, string])[] = [
+      ["create or replace", "create or replace function public.emergency_stop_rpc(p uuid[]) returns jsonb language sql as $probe_fn$ select 1 $probe_fn$;"],
+      ["drop if exists (форма 0168)", "drop function if exists public.emergency_stop_rpc(uuid[], date, text);"],
+      ["drop без public", "drop function emergency_stop_rpc(uuid[], date, text);"],
+      ["revoke all on function", "revoke all on function public.emergency_stop_rpc(uuid[], date, text) from anon, public;"],
+      ["revoke execute", "revoke execute on function public.emergency_stop_rpc(uuid[], date, text) from anon;"],
+      ["grant on routine", "grant execute on routine public.emergency_stop_rpc(uuid[], date, text) to authenticated;"],
+      ["alter ... rename to", "alter function public.old_stop_rpc(uuid[]) rename to emergency_stop_rpc;"],
+      ["alter owner", "alter function public.emergency_stop_rpc(uuid[], date, text) owner to postgres;"],
+      ["динамічний SQL", "execute 'create or replace function public.emergency_stop_rpc(p uuid[]) returns jsonb language sql as $q$ select 1 $q$';"],
+    ];
+    for (const [label, sql] of mustSee) {
+      expect(seen(sql), `${label}: ця форма МУСИТЬ лишатись видимою детектору`).toBe(true);
+    }
+
+    /* І головне, і це НЕ тавтологія: перевизначення, що стоїть ПОРУЧ із
+       піном, не маскується ним. Перевіряємо на формі, якої попередня
+       редакція НЕ бачила взагалі, — тобто рядок падає, якщо зріз зʼїв
+       більше, ніж рядок списку. */
+    expect(seen(`${asPin}\n${asComment}\n${mustSee[1][1]}`),
+      "видалення функції поруч із піном маскується — зріз зʼїв зайве")
+      .toBe(true);
   });
 
   it("обидва агрегати впорядковані — відповідь відтворювана", () => {
