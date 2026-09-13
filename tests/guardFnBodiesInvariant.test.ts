@@ -137,6 +137,39 @@ const PINNED: readonly string[] = [
   "auth_can_refer(c uuid)",
   "auth_referrer_visible_rooms()",
   "auth_referrer_clinics()",
+  // 0192 (с68): ПʼЯТЬ рядків із двох рішень власника
+  // (`docs/audit/DECISIONS-2026-09-13-s68.md`, розвилки 2 і 5).
+  //
+  // ТРИ definer-RPC — розвилка 2. Їх не пінило НІЩО: №22 фільтрує
+  // definer-функції по досяжності з `anon`, а в цьому списку їх не було.
+  // ⚠️ ДВІ З ПʼЯТИ НАЗВАНИХ У ПАКЕТІ ФУНКЦІЙ СЮДИ НЕ ВВІЙШЛИ СВІДОМО:
+  //    `check_no_overlap` і `check_not_in_past` — прийнятий риск власника
+  //    письмово. Вони не віддають даних, а забороняють записи; їх немає і в
+  //    списку №17, тобто їх можна не лише переписати, а й ЗНЯТИ, і жоден
+  //    сторож не скаже. Побачить це людина в кабінеті — по подвійній записі.
+  //    Це НЕ пропуск цього тесту, і додавати їх «за компанію» не треба без
+  //    нового рішення: список 38→40 = ще один передрук і ще одна ревізія.
+  // ⚠️ ПІДПИСИ ШИРШІ, НІЖ У ПАКЕТІ РІШЕНЬ, і це заміряно, а не вгадано: пакет
+  //    писав про `emergency_stop_rpc` як про `(p_room_id, p_reason)`. Реальний
+  //    підпис — масив кабінетів, дата і нотатка. Пін по вигаданому підпису
+  //    дав би `missing:` + `extra:` одразу на накаті.
+  "emergency_stop_rpc(p_room_ids uuid[], p_date date, p_note text)",
+  "queue_set_status_rpc(p_id uuid, p_status queue_status, p_expected queue_status, p_allowed queue_status[], p_note text, p_set_note boolean)",
+  "submit_incident_rpc(p_room_id uuid, p_reason text, p_id uuid, p_reason_label text, p_note text, p_started_at timestamp with time zone, p_blocked_until timestamp with time zone, p_auto_unblock boolean)",
+  // ДВА тіла — розвилка 5 (Р3). Весь список із 38 триггерних функцій
+  // розписання власник відхилив: замір с57 — їхні тіла трогають 8 із
+  // останніх 30 міграцій проти 4 із 30 для цього списку, тобто передруки
+  // стали б удвічі частішими НАЗАВЖДИ. Пінуються рівно два названих.
+  // ⚠️ `update_patient_details` — `secdef=false`, тобто НЕ definer. Пакет
+  //    рішень назвав його «definer над PII», і це хибно. Справжня підстава
+  //    сильніша: це ЄДИНИЙ живий захист від U-66 (порядок
+  //    ЗВУЖЕННЯ→ДАНІ→РОЗШИРЕННЯ), і сторож сам називав цю дірку в прозі №21:
+  //    «і він НЕ запінений нічим: у списку перевірки №19 його немає».
+  //    Саме тому в накаті 0192 стоїть окремий червоний базис (е) на
+  //    definer-прапорці: без нього лишалось би недоведеним, що `secdef`
+  //    стережеться і в рядку, який прийшов у список зі `false`.
+  "update_patient_details(p_id uuid, p_data jsonb, p_referrer jsonb)",
+  "tg_change_markers_queue()",
 ];
 
 function latestReprint(): { fn: string; file: string } {
