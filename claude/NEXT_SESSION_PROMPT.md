@@ -355,9 +355,15 @@ removes them ~10.10.
    1, 3, 4, 5, 6, 10, 11, 12, 13, 17). Cheap and worth doing: find which one
    appeared and fix the registry. ⚠️ `docs/ops-cron.md` is a LIVE doc pinned by
    `invariantsCheckedPins` (`LIVE_DOCS`) — it must not lie.
-6c. **A behavioural stand for the acl branch of `room_busy_slots`.** 0190 pins
-   the CURRENT body, not its correctness: had prod already been hollowed out,
-   the pin would have cemented that. There is no `falsify-0190.mjs`.
+6c. ~~**A behavioural stand for the acl branch of `room_busy_slots`.**~~
+   ⛔ **FALSE PREMISE — CLOSED IN s66.** The behavioural instrument existed all
+   along: `supabase/smoke/room_busy_slots_scope_smoke.sql`, branches (a)–(k),
+   and it is the only instrument here that does `set local role`. The claim came
+   from searching `scripts/falsify-*.mjs` and not `supabase/smoke/` — one source,
+   no green baseline. What WAS open is that the smoke ran GREEN while proving
+   nothing in four places; s66 measured it on prod and closed all four
+   (`docs/audit/PR-s66-rbs-scope-smoke.md`). Still genuinely missing: a
+   `falsify-*.mjs` that proves the smoke's branches cannot be silently dropped.
 6d. **`assertNoLiveDelivery` does not cover `cleanup`** — that command runs
    before the guard in `main()`, and DELETE of entries emits
    `integration.appointment.deleted` via 0145. The boundary is named in the code.

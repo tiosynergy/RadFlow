@@ -82,9 +82,17 @@ package with me before writing code.**
    1,3,4,5,6,10,11,12,13,17). Cheap: find which one appeared and fix the
    registry — `docs/ops-cron.md` is the LIVE doc pinned by
    `invariantsCheckedPins` (`LIVE_DOCS`), so it must not lie.
-6. **A behavioural stand for the acl branch of `room_busy_slots`.** The pin
-   fixes the CURRENT body, not its correctness; if prod were already hollowed
-   out, 0190 would have cemented that.
+6. ~~**A behavioural stand for the acl branch of `room_busy_slots`.**~~
+   ⛔ **THE PREMISE WAS FALSE — CLOSED IN s66, read this before re-opening it.**
+   The instrument already existed: `supabase/smoke/room_busy_slots_scope_smoke.sql`
+   (smoke of 0156), branches (a)–(k), with `set local role`. «There is no
+   behavioural stand» came from looking only in `scripts/falsify-*.mjs`.
+   s66 ran it on prod — and it was GREEN while being VACUOUS in four places,
+   which is the part that was really open. Hardened in s66: (e-out) picked the
+   out-of-grant room with `limit 1` and no ordering and hit an EMPTY one
+   (`hidden=0`); (d) checked ONE role; (f) sends service_role WITHOUT `sub`, so
+   the режим-A factor was never falsified; `p_exclude` was never passed at all.
+   Detail: `docs/audit/PR-s66-rbs-scope-smoke.md`.
 7. **`assertNoLiveDelivery` does not cover `cleanup`** — that command runs
    before the guard, and DELETE of entries emits `integration.appointment.deleted`
    via 0145. The boundary is named in the code.
