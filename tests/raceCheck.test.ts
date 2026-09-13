@@ -23,7 +23,7 @@ import {
   verdictCaseRounds, CASE_NOT_OPEN_MESSAGE,
   verdictMidnightRace, MIDNIGHT_LATE_TIME, MIDNIGHT_EARLY_TIME, MIDNIGHT_CONTROL_TIME,
   deliveryGuardVerdict, N8N_EVIDENCE_WINDOW_DAYS, INTEGRATION_PREFIX_MIRROR,
-  N8N_DEFER_NOTE, N8N_FREE_COMMANDS,
+  N8N_DEFER_NOTE, N8N_FREE_COMMANDS, cleanupClinicsToGuard,
 } from "../scripts/race-check-lib.mjs";
 
 /* ⚠️ ЗНАЙДЕНО СТЕНДОМ `falsify-race-check` (с62), і це дефект САМИХ ТЕСТІВ,
@@ -1449,7 +1449,208 @@ describe("гард доставки: гілок outbox дві, а не одна"
 
   it("`stop` НЕ в списку сценаріїв без n8n — інакше гард знімається сам собою", () => {
     expect(N8N_FREE_COMMANDS).not.toContain("stop");
-    expect(N8N_FREE_COMMANDS).toEqual(["run", "room", "cas", "waitlist", "midnight"]);
+    /* с68: +`cleanup`. Підстава — ЗАМІР по `pg_trigger` × `pg_proc`: із
+       чотирьох таблиць, які прибирає команда, у `event_outbox` пише рівно
+       один тригер (`integration_outbox_enqueue` на `queue_entries`) і лише з
+       префіксом `integration.`. Тобто n8n-гілку прибирання не зачіпає. */
+    expect(N8N_FREE_COMMANDS).toEqual(["run", "room", "cas", "waitlist", "midnight", "cleanup"]);
+  });
+
+  describe("прибирання: клініки під гардом доставки (межа с65, закрита в с68)", () => {
+    it("різні клініки зводяться в набір без дублів", () => {
+      const g = cleanupClinicsToGuard([
+        { clinic_id: "b" }, { clinic_id: "a" }, { clinic_id: "b" },
+      ]);
+      expect(g.ok).toBe(true);
+      expect(g.code).toBe("ok");
+      expect(g.clinics).toEqual(["a", "b"]);
+    });
+
+    it("порожній список — ЗАКОННИЙ нуль: видаляти нема чого, емісії не буде", () => {
+      const g = cleanupClinicsToGuard([]);
+      expect(g.ok).toBe(true);
+      expect(g.code).toBe("nothing_to_delete");
+      expect(g.clinics).toEqual([]);
+    });
+
+    /* ⚠️ ДВА «НУЛІ» — РІЗНІ РЕЧІ, і саме на цьому клас помилок. Нижні три
+       позиції — fail-closed: «не знаю, куди пішла б подія» мусить бути
+       ВІДМОВОЮ, а не тихим нулем клінік (той самий клас, що `data == null`
+       без error у гарді вебхуків, знахідка ревʼю А с65). */
+    it("не прочитані рядки — ВІДМОВА, а не нуль клінік", () => {
+      for (const bad of [null, undefined]) {
+        const g = cleanupClinicsToGuard(bad);
+        expect(g.ok).toBe(false);
+        expect(g.code).toBe("rows_unknown");
+        expect(g.clinics).toEqual([]);
+      }
+    });
+
+    it("рядок без clinic_id — ВІДМОВА, і повідомлення називає скільки з скількох", () => {
+      const g = cleanupClinicsToGuard([{ clinic_id: "a" }, { clinic_id: null }]);
+      expect(g.ok).toBe(false);
+      expect(g.code).toBe("clinic_unknown");
+      expect(g.message).toContain("1 з 2");
+    });
+
+    it("порожній рядок clinic_id — теж ВІДМОВА, а не клініка з іменем «»", () => {
+      const g = cleanupClinicsToGuard([{ clinic_id: "" }]);
+      expect(g.ok).toBe(false);
+      expect(g.code).toBe("clinic_unknown");
+    });
+
+    /* ⚠️ Половина піна, без якої він не фальсифікується — рівно як у гарда в
+       `main`: вердикт лишиться під тестами, а ВИКЛИК зникне, і набір буде
+       зеленим, поки `integration.appointment.deleted` їде партнеру.
+       Нижче — виріз, на якому тримаються всі піни цього блоку. */
+    /** ⚠️ ВИРІЗ — ТІЛО ФУНКЦІЇ, а не хвіст файлу, і без коментарів. Перша
+     *  редакція різала `src.slice(indexOf("async function cmdCleanup("))` —
+     *  тобто все до кінця файлу разом із `main`, — і трималась на двох
+     *  випадковостях (знахідка ревʼю): вихідний коментар цитував
+     *  `assertNoLiveDelivery` БЕЗ дужки, тож процитуй його з дужкою — і пін
+     *  зеленів би при відсутньому виклику; а при перейменуванні функції
+     *  `indexOf` дав би −1 і `slice(-1)` — один символ. */
+    const cmdCleanupBody = (): string => {
+      const src = readFileSync(resolve(process.cwd(), "scripts/race-check.mjs"), "utf8");
+      const at = src.indexOf("async function cmdCleanup(");
+      expect(at, "у race-check.mjs немає `async function cmdCleanup(`").toBeGreaterThan(-1);
+      const tail = src.slice(at);
+      const end = tail.indexOf("\n}");
+      expect(end, "тіло cmdCleanup не закрите `}` на нульовій колонці").toBeGreaterThan(-1);
+      const body = tail.slice(0, end).replace(/\/\*[\s\S]*?\*\//g, " ");
+      expect(body.length, "виріз тіла cmdCleanup підозріло короткий").toBeGreaterThan(1000);
+      return body;
+    };
+
+    it("гард ВПАЯНИЙ у cmdCleanup — рівно перед DELETE черги, ПІСЛЯ інцидентів", () => {
+      const fn = cmdCleanupBody();
+      expect(fn).toContain("cleanupClinicsToGuard(");
+      expect(fn).toContain("assertNoLiveDelivery(db, clinicId, {");
+      const guardAt = fn.indexOf("assertNoLiveDelivery(");
+      expect(guardAt).toBeGreaterThan(-1);
+      /* ⚠️ ПОРЯДОК ПЕРЕВЕРНУТО ПІСЛЯ РЕВʼЮ, і це не послаблення. Перша
+         редакція вимагала «гард раніше за ОБА видалення» — і тим самим
+         закріплювала операційну регресію: відмова гарда лишала АКТИВНІ
+         інциденти, які блокують КАБІНЕТ, хоч їх видалення в `event_outbox`
+         не пише нічого. Гард мусить стояти рівно перед тим DELETE, що
+         емітить, — перед `cleanup(db, ids)`, і ПІСЛЯ зняття інцидентів. */
+      expect(guardAt).toBeGreaterThan(fn.indexOf("cleanupIncidents(db,"));
+      expect(guardAt).toBeLessThan(fn.indexOf("cleanup(db, ids)"));
+      /* Значення `scenarioEmitsN8n` привʼязане до СПИСКУ, а не до літерала
+         `false`: прибери `"cleanup"` зі списку — і вираз дасть `true`, тобто
+         прибирання почне вимагати доказу мовчання n8n-гілки. Саме це й
+         фальсифікує M62; хардкод `false` такої привʼязки не має (M58). */
+      expect(fn).toMatch(/scenarioEmitsN8n:\s*!N8N_FREE_COMMANDS\.includes\("cleanup"\)/);
+    });
+
+    /* ⚠️ Три піни нижче — рівно ті місця, де ревʼю знайшло, що гард можна
+       зняти, не торкнувшись жодного рядка, який пін вище перевіряє. */
+    it("гард не під умовою, яку можна звузити (`if (ids.length)` дослівно)", () => {
+      /* Мутація `if (ids.length && !allowN8n)` лишала пакет зеленим, а
+         `--allow-n8n` — прапорець, про який файл тричі обіцяє «вебхук клініки
+         ним НЕ знімається ніколи». */
+      expect(cmdCleanupBody()).toMatch(/if \(ids\.length\) \{\s*\n\s*const cl = await db/);
+    });
+
+    it("відмова вердикту КИДАЄ, а не друкує", () => {
+      /* Заміна `throw` на `console.error` робить обидва fail-closed вердикту
+         (rows_unknown, clinic_unknown) декорацією: `clinics` порожній, цикл не
+         виконується ні разу, DELETE іде. «Діагностика, що не зупиняє, — це
+         коментар» (урок гарда токена в цьому ж файлі). */
+      const fn = cmdCleanupBody();
+      expect(fn).toMatch(/if \(!g\.ok\) throw new Error\(g\.message\)/);
+      expect(fn).not.toMatch(/if \(!g\.ok\) console\./);
+    });
+
+    it("гард обходить УСІ клініки, а не першу", () => {
+      /* `const clinicId = g.clinics[0]` лишав і текст виклику, і порядок
+         цілими. А `cleanup` шукає фікстури по імені-маркеру БЕЗ фільтра
+         центру, тож клінік у списку буває кілька. */
+      expect(cmdCleanupBody()).toMatch(/for \(const clinicId of g\.clinics\)/);
+    });
+
+    it("вибірка клінік рахує усічення (`count: \"exact\"`)", () => {
+      /* PostgREST ріже вибірку по `db-max-rows`; шапка `assertNoLiveDelivery`
+         називає цей прийом дірою за 170 рядків вище, і в першій редакції він
+         повернувся: `.in("id", ids)` без `count`. */
+      const fn = cmdCleanupBody();
+      expect(fn).toMatch(/\.select\("id, clinic_id", \{ count: "exact" \}\)/);
+      expect(fn).toContain("cleanupClinicsToGuard(cl.error ? null : cl.data, ids.length, cl.count)");
+    });
+
+    it("cmdCleanup приймає allow-n8n аргументом, а не читає opts другим шляхом", () => {
+      /* ⚠️ ЧЕСНО ПРО ЦЕЙ ПАРАМЕТР (поправка після ревʼю): СЬОГОДНІ він
+         інертний. `deliveryGuardVerdict` вертає `n8n_not_in_play` раніше за
+         будь-яку гілку з `allowN8n`, а `cleanup` у `N8N_FREE_COMMANDS` — отже
+         прапорець нічого не змінює. Він стане живим того дня, коли рядок зі
+         списку зникне (наприклад, нова міграція навісить на `queue_entries`
+         тригер із подією поза префіксом). Тримаємо саме тому, і саме тому
+         текст відмови в `cmdCleanup` прямо каже, що прапорець тут інертний. */
+      const src = readFileSync(resolve(process.cwd(), "scripts/race-check.mjs"), "utf8");
+      expect(src).toMatch(/async function cmdCleanup\(db, write, allowN8n/);
+      expect(src).toContain('cmdCleanup(db, write, opts["allow-n8n"] === true)');
+    });
+
+    it("вердикт відмовляє на усіченій вибірці, а не вважає її нулем клінік", () => {
+      const g = cleanupClinicsToGuard([{ clinic_id: "a" }], 5, 5);
+      expect(g.ok).toBe(false);
+      expect(g.code).toBe("rows_truncated");
+      expect(g.message).toContain("усічено");
+    });
+
+    /**
+     * ⚠️ ЦЕЙ ПІН ПЕРЕТВОРЮЄ РУЧНИЙ ЗАМІР У СТОРОЖА — знахідка ревʼю с68, і
+     * вона про ЧЕСНІСТЬ: рядок `"cleanup"` у `N8N_FREE_COMMANDS` кодує замір
+     * «тригер емісії висить лише на `queue_entries` і пише лише префікс
+     * `integration.`», а стерегли його доти лише `toEqual` на склад масиву й
+     * мутація M62 — тобто НЕПРИКОСНОВЕННІСТЬ КОНСТАНТИ, а не сам замір.
+     * ⚠️ НАЗВАНА МЕЖА, і вона та сама, що в `opsCronRegistry.test.ts`: тест
+     * читає ФАЙЛ МІГРАЦІЇ, а не `pg_trigger`. Тригер, створений руками в SQL
+     * Editor (а `docs/ops-cron.md` називає цей шлях легальним джерелом
+     * обʼєктів), звідси невидимий. Живий замір лишається ручним і датованим —
+     * він у шапці `N8N_FREE_COMMANDS`. Що ЦЕЙ пін ловить: майбутню МІГРАЦІЮ,
+     * яка навісить emitter на іншу таблицю або подію поза префіксом.
+     */
+    it("замір під `cleanup` пінований джерелом: 0145 емітить лише з queue_entries", () => {
+      const src = readFileSync(
+        resolve(process.cwd(), "supabase/migrations/0145_integration_webhooks.sql"), "utf8",
+      );
+      const triggers = [...src.matchAll(/create trigger\s+(\w+)[\s\S]{0,200}?on\s+public\.(\w+)/gi)]
+        .map((m) => ({ name: m[1], table: m[2] }));
+      /* Антивакуум: якщо парсер нічого не знайшов, «жодного чужого emitter-а»
+         було б зеленою порожнечею. */
+      expect(triggers.length).toBeGreaterThan(0);
+      const emitters = triggers.filter((t) => t.name === "trg_zzz_integration_outbox");
+      expect(emitters.length).toBe(1);
+      expect(emitters[0].table).toBe("queue_entries");
+      /* ⚠️ ПЕРША РЕДАКЦІЯ ЦЬОГО АСЕРТА БУЛА ХИБНА, і впала на першому ж
+         прогоні — вимагала літерал у КОЖНОМУ `insert`, а `event_type` у цьому
+         файлі приходить ДВОМА шляхами: літералом і через змінну `v_event`.
+         Тому пінуємо обидва: кожне присвоєння `v_event` — з префіксом, і
+         кожен insert бере або літерал із префіксом, або саму `v_event`. */
+      const assigns = [...src.matchAll(/v_event\s*:=\s*'([^']+)'/g)].map((m) => m[1]);
+      expect(assigns.length).toBeGreaterThan(3);
+      for (const ev of assigns) {
+        expect(ev.startsWith(INTEGRATION_PREFIX_MIRROR), `подія без префікса: ${ev}`).toBe(true);
+      }
+      const inserts = [...src.matchAll(/insert\s+into\s+public\.event_outbox[\s\S]{0,400}?;/gi)];
+      expect(inserts.length).toBeGreaterThan(0);
+      for (const ins of inserts) {
+        const viaLiteral = ins[0].includes(`'${INTEGRATION_PREFIX_MIRROR}`);
+        const viaVar = /values\s*\(\s*v_event\b/.test(ins[0]);
+        expect(viaLiteral || viaVar, `insert без префікса: ${ins[0].slice(0, 90)}`).toBe(true);
+      }
+    });
+
+    it("зникли між читаннями — це ok, але сказано ВГОЛОС", () => {
+      /* Сервер матчить стільком же, скільком прочитали, але менше, ніж
+         просили: рядки справді зникли, отже емітувати нічого. Тихий зелений
+         тут і був тим місцем, через яке проїхало б усічення. */
+      const g = cleanupClinicsToGuard([{ clinic_id: "a" }], 3, 1);
+      expect(g.ok).toBe(true);
+      expect(g.clinics).toEqual(["a"]);
+      expect(g.message).toContain("зникли між читаннями");
+    });
   });
 
   it("гард ВПАЯНИЙ у main — і список сценаріїв береться з константи, а не з літерала", () => {

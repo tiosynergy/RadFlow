@@ -244,8 +244,103 @@ export const N8N_DEFER_NOTE = "n8n_deferred";
 
     ⚠️ Список саме НЕ-емітентів, а не емітентів, і це fail-closed: нова
     команда за замовчуванням вважається такою, що емітить, і потрапляє під
-    гард. Зворотний список тихо пускав би кожну нову команду повз перевірку. */
-export const N8N_FREE_COMMANDS = ["run", "room", "cas", "waitlist", "midnight"];
+    гард. Зворотний список тихо пускав би кожну нову команду повз перевірку.
+
+    ⚠️ с68: `cleanup` дописано в список, і це ЗАМІР, а не зручність. Серед
+    тригерів чотирьох таблиць, які прибирає команда (`queue_entries`,
+    `waitlist_entries`, `patient_cases`, `incidents`), у `event_outbox` пише
+    РІВНО один — `trg_zzz_integration_outbox` (`integration_outbox_enqueue`)
+    на `queue_entries`, і лише з префіксом `integration.` (звірено по
+    `pg_trigger` × `pg_proc` 13.09.2026). Отже прибирання зачіпає гілку
+    вебхука клініки і НЕ зачіпає n8n. Якби рядок лишили поза списком,
+    `cleanup` вимагав би доказу мовчання n8n-гілки і відмовлявся б у типовому
+    випадку «у вікні немає подій» — тобто оператор не зміг би прибрати
+    фікстури. Це був би fail-closed ціною зламаної команди, а не безпеки. */
+export const N8N_FREE_COMMANDS = ["run", "room", "cas", "waitlist", "midnight", "cleanup"];
+
+/** КЛІНІКИ, ЯКІ ГАРД ДОСТАВКИ МУСИТЬ ПЕРЕВІРИТИ ПЕРЕД ПРИБИРАННЯМ — чистий
+    вердикт, без БД.
+
+    ⚠️ НАЗВАНА МЕЖА, ЯКА СТОЯЛА ВІДКРИТОЮ З с65 ПО с68, і названа вона була в
+    коментарі самого гарда: `cleanup` у `main` виходить РАНІШЕ гарда доставки
+    (`if (cmd === "cleanup")` стоїть до `assertNoLiveDelivery`), а DELETE
+    записів черги емітить `integration.appointment.deleted` через 0145. Тобто
+    команда, що фікстури СТВОРЮЄ, стояла під гардом, а команда, що їх
+    ВИДАЛЯЄ, — ні. Payload тієї події — id і clinic_id без проекції, тож ціна
+    мала, але асиметрія реальна, і саме вона тут закрита.
+
+    ⚠️ ЧОМУ САМЕ КЛІНІКИ РЯДКІВ ЧЕРГИ. Замір (див. `N8N_FREE_COMMANDS` вище):
+    з таблиць, які прибирає команда, тригер емісії висить лише на
+    `queue_entries`. Видалення листа очікування та інцидентів не пише в
+    `event_outbox` нічого.
+    ⚠️ А от «кейси теж нічого не пишуть» — НЕПРАВДА, і ревʼю с68 показало це
+    читанням 0145. FK `queue_entries.case_id` — `on delete set null`, тригер
+    0145 висить і на UPDATE, а `case_id` входить у проекцію — тобто видалення
+    `patient_cases` при ЖИВИХ кроках дало б `integration.appointment.updated`
+    на кожен крок. Шлях закритий ДВОМА механізмами, і обидва треба знати:
+    (а) гейт `nSteps === 0` перед `cleanupCase` (fail-closed: при помилці
+    читання там `"?" !== 0`), (б) кроки кейса завжди попадають в `ids` через
+    читання по `case_id`, тож їхні клініки гард бачить. Приберуть будь-який —
+    шлях відкриється, і саме тому тут написано «поки кроків не лишилось», а не
+    «кейси не емітять».
+
+    ⚠️ FAIL-CLOSED, і межі між ТРЬОМА «нулями» тут головні:
+    • не прочитали (`rows` не масив) — «не знаю, куди пішла б подія» → ВІДМОВА;
+    • прочитали МЕНШЕ, ніж матчить сервер (`count > rows.length`) — це усічення
+      вибірки, і воно тихе: PostgREST ріже по `db-max-rows` (у Supabase 1000).
+      Той самий прийом уже названий дірою в шапці `assertNoLiveDelivery`
+      (с65), і в першій редакції цього вердикту він повернувся → ВІДМОВА;
+    • порожній список — законний нуль: видаляти нема чого, емісії не буде.
+    А от `rows.length < expected` при `count === rows.length` — це рядки, що
+    зникли МІЖ читаннями: вони не існують, отже не емітять, тож це ok — але
+    повідомлення каже про це вголос, бо тихий зелений на «такого не буває» і є
+    те місце, через яке усічення проїхало б.
+
+    ⚠️ `clinic_id` у схемі NOT NULL (звірено по `information_schema` 13.09),
+    тож гілка `clinic_unknown` стереже НЕ живі NULL, а зламане ЧИТАННЯ: забули
+    колонку в `select`, підмінили обʼєкт, повернувся не той рядок.
+
+    @param {Array<{clinic_id?: string | null}> | null | undefined} rows
+    @param {number | null} [expected] скільки id просили (для діагностики усічення)
+    @param {number | null} [count] `count: "exact"` із того самого запиту
+    @returns {{ok: boolean, code: string, clinics: string[], message: string}} */
+export function cleanupClinicsToGuard(rows, expected = null, count = null) {
+  if (!Array.isArray(rows)) {
+    return {
+      ok: false, code: "rows_unknown", clinics: [],
+      message: "не читаються клініки записів під видалення — гард закритий: невідомо, "
+        + "куди пішла б `integration.appointment.deleted`.",
+    };
+  }
+  const unknown = rows.filter((r) => !r || typeof r.clinic_id !== "string" || r.clinic_id === "");
+  if (unknown.length) {
+    return {
+      ok: false, code: "clinic_unknown", clinics: [],
+      message: `у ${unknown.length} з ${rows.length} записів під видалення немає clinic_id — `
+        + "гард закритий: подія пішла б у невідому клініку.",
+    };
+  }
+  if (Number.isFinite(Number(count)) && Number(count) > rows.length) {
+    return {
+      ok: false, code: "rows_truncated", clinics: [],
+      message: `вибірку клінік усічено: сервер матчить ${count} рядків, прочитано ${rows.length} `
+        + "— гард закритий, бо клініки решти рядків невідомі (PostgREST `db-max-rows`).",
+    };
+  }
+  const clinics = [...new Set(rows.map((r) => r.clinic_id))].sort();
+  const vanished = Number.isFinite(Number(expected)) ? Number(expected) - rows.length : 0;
+  return {
+    ok: true,
+    code: clinics.length ? "ok" : "nothing_to_delete",
+    clinics,
+    message: (clinics.length
+      ? `клінік під прибиранням: ${clinics.length}`
+      : "записів черги під видалення немає — емітувати нічого")
+      + (vanished > 0
+        ? ` ⚠️ просили ${expected}, прочитано ${rows.length}: ${vanished} рядків зникли між читаннями`
+        : ""),
+  };
+}
 
 /** ГАРД ДОСТАВКИ ПЕРЕД ПЕРШИМ ЗАПИСОМ У ПРОД — чистий вердикт, без БД.
 

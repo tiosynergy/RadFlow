@@ -84,7 +84,7 @@ import {
   verdictWaitlistRace, verdictCaseCancelRace, verdictCaseRounds, verdictEmergencyStop,
   verdictMidnightRace, assertUsableJwt,
   deliveryGuardVerdict, N8N_EVIDENCE_WINDOW_DAYS, INTEGRATION_PREFIX_MIRROR,
-  N8N_DEFER_NOTE, N8N_FREE_COMMANDS,
+  N8N_DEFER_NOTE, N8N_FREE_COMMANDS, cleanupClinicsToGuard,
 } from "./race-check-lib.mjs";
 
 function adminClient() {
@@ -1327,10 +1327,15 @@ async function assertTokenClinicMatches(user, room) {
     Прибирання черги подій харнес не робить свідомо — видаляти чужі рядки
     outbox небезпечніше, ніж не стріляти зовсім.
 
-    ⚠️ НАЗВАНА МЕЖА: `cleanup` іде до цього гарда (`cmdCleanup` вище у `main`),
-    а DELETE записів теж емітить `integration.appointment.deleted` через 0145.
-    Payload тієї події — id і clinic_id без проекції, тож ціна мала, але
-    асиметрія реальна. */
+    ⚠️ НАЗВАНА МЕЖА — ЗАКРИТА в с68, і рядок лишається тут як історія, бо на
+    нього посилається аудит. Було: `cleanup` виходить у `main` раніше цього
+    гарда (`if (cmd === "cleanup")` стоїть до виклику), а DELETE записів теж
+    емітить `integration.appointment.deleted` через 0145 — тобто команда, що
+    фікстури створює, стояла під гардом, а та, що видаляє, — ні. Payload тієї
+    події — id і clinic_id без проекції, тож ціна мала, але асиметрія була
+    реальна. Тепер `cmdCleanup` кличе цей гард сам — по клініках рядків, які
+    буде видалено, і рівно перед `cleanup(db, ids)`. Деталі і межі — у
+    `docs/audit/PR-s68-cleanup-delivery-guard.md`. */
 async function assertNoLiveDelivery(db, clinicId, { allowN8n, scenarioEmitsN8n }) {
   const hooks = await db.from("integration_webhooks")
     .select("id, enabled").eq("clinic_id", clinicId).eq("enabled", true).limit(50);
@@ -1403,7 +1408,7 @@ async function assertRoomFree(db, roomId) {
     успадковує маркер «ТЕСТ Гонка с38 …». Перестане копіювати — сирота стане
     незнаходжуваною ОБОМА шляхами. Це не гіпотеза: звірено з
     `pg_get_functiondef(add_case_step_rpc)` 10.09.2026. */
-async function cmdCleanup(db, write) {
+async function cmdCleanup(db, write, allowN8n = false) {
   const q = await db
     .from("queue_entries").select("id, patient_name, scheduled_date, scheduled_time")
     .like("patient_name", `${FIXTURE_NAME}%`);
@@ -1489,6 +1494,54 @@ async function cmdCleanup(db, write) {
     if (nI !== 0) {
       console.log(`⚠️ КАБІНЕТИ ЛИШИЛИСЬ ЗАБЛОКОВАНИМИ — зніміть простій у центрі: ${iRows.map((r) => r.room_id).join(", ")}`);
       bad = 1;
+    }
+  }
+
+  /* ⚠️ ГАРД ДОСТАВКИ — РІВНО ПЕРЕД ЄДИНИМ DELETE, ЩО ЕМІТИТЬ (с68, друга
+     редакція, після ревʼю). Межа була названа в коментарі самого
+     `assertNoLiveDelivery` і стояла відкритою з с65: `cleanup` у `main`
+     виходить РАНІШЕ гарда, а DELETE записів черги емітить
+     `integration.appointment.deleted` через 0145. Команда, що фікстури
+     створює, під гардом стояла; команда, що їх видаляє, — ні.
+     ⚠️ ПЕРША РЕДАКЦІЯ СТАВИЛА ГАРД ВИЩЕ — перед блоком інцидентів, тобто перед
+     ПЕРШИМ видаленням узагалі, — і це була операційна регресія, яку знайшло
+     ревʼю, а автор ще й ЗАПІНИВ тестом. Інциденти в `event_outbox` не пишуть
+     нічого (замір `pg_trigger` × `pg_proc` 13.09), зате ціна їх незняття
+     написана за сорок рядків вище: «Незнятий інцидент коштує дорожче за всі
+     попередні залишки разом: він блокує КАБІНЕТ, а не слот». Відмова гарда
+     конвертувала «у клініки увімкнено вебхук» у «кабінети в проді лишились
+     заперті». Тепер інциденти знімаються ЗАВЖДИ, а гард стоїть там, де емісія.
+     ⚠️ Клініки беремо по ПІДСУМКОВОМУ `ids` (у ньому дочитані записи за
+     звʼязком із листа і кроки кейсів) і з `count: "exact"`: PostgREST ріже
+     вибірку по `db-max-rows`, і цей самий прийом уже названий дірою в шапці
+     `assertNoLiveDelivery`. Прочитати менше, ніж матчить сервер, — це «не
+     знаю», а не «нуль клінік»; вердикт на цьому відмовляє. */
+  if (ids.length) {
+    const cl = await db.from("queue_entries")
+      .select("id, clinic_id", { count: "exact" }).in("id", ids);
+    if (cl.error) console.error(`  не читаються клініки записів: ${cl.error.message}`);
+    const g = cleanupClinicsToGuard(cl.error ? null : cl.data, ids.length, cl.count);
+    if (!g.ok) throw new Error(g.message);
+    console.log(`Прибирання: ${g.message}`);
+    for (const clinicId of g.clinics) {
+      try {
+        await assertNoLiveDelivery(db, clinicId, {
+          allowN8n,
+          scenarioEmitsN8n: !N8N_FREE_COMMANDS.includes("cleanup"),
+        });
+      } catch (e) {
+        /* ⚠️ Текст вердикта написаний для шляху СТВОРЕННЯ і на шляху
+           прибирання бреше двічі: радить `--room <uuid>` (у `cleanup` такого
+           прапорця немає) і «на час прогону» (прогону немає). Не переписуємо
+           спільний вердикт — дописуємо те, що знає САМЕ це місце виклику. */
+        throw new Error(`${e.message}\n`
+          + `  Клініка: ${clinicId}\n`
+          + `  Вимкнути вебхук: node scripts/integration-admin.mjs webhook:disable --clinic ${clinicId}\n`
+          + "  ⚠️ Зворотної команди НЕМАЄ: увімкнути можна лише `webhook:set`, а він РОТУЄ секрет\n"
+          + "     партнера — RIS перестане проходити перевірку підпису до ручного обміну секретом.\n"
+          + "  ⚠️ `--room` у `cleanup` не існує, `--allow-n8n` тут інертний (прибирання n8n не зачіпає).\n"
+          + "  Інциденти вже знято — кабінети НЕ заблоковані; у проді лишились записи черги.");
+      }
     }
   }
 
@@ -1586,7 +1639,11 @@ async function main() {
     console.log("         Живе ~годину. Не друкувати, не класти в лог, не слати в переписку.");
     return;
   }
-  if (cmd === "cleanup") { process.exit(await cmdCleanup(db, write)); }
+  /* ⚠️ `--allow-n8n` передається всередину, а не читається там із `opts`:
+     прапорець живе в `main`, і другий шлях його читання розійшовся б із
+     першим. Сам `cleanup` n8n-гілку не зачіпає (замір у `N8N_FREE_COMMANDS`),
+     але гард вебхука клініки він проходить повністю. */
+  if (cmd === "cleanup") { process.exit(await cmdCleanup(db, write, opts["allow-n8n"] === true)); }
   if (!["plan", "run", "room", "cas", "waitlist", "case", "stop", "midnight"].includes(cmd)) throw new Error(`невідома команда «${cmd}»`);
 
   const room = await pickRoom(db, opts.room);
