@@ -243,13 +243,53 @@ describe(`№19 guard_fn_bodies — статичний сторож (${FILE})`, 
     expect(BLOCK19).toMatch(/p\.prosrc \|\| coalesce\(pg_get_function_sqlbody\(p\.oid\)::text, ''\)/);
   });
 
-  it("атрибути несуть НАЗВАНІ поля, разом із власником, мовою і ПРАВАМИ", () => {
-    for (const field of ["secdef=", ";vol=", ";owner=", ";lang=", ";cfg=", ";acl="]) {
-      expect(BLOCK19).toContain(field);
-    }
+  /**
+   * ⚠️ с68, МЕЖА 7 аудиту 0191 — закрита тут. Попередня редакція цього піна
+   *    робила `expect(BLOCK19).toContain(';cfg=')` і задовольнялась САМИМ
+   *    СПИСКОМ: `;cfg=` стоїть у КОЖНОМУ з 33 літералів `expd`. Про вираз у
+   *    `cur`, який ці поля СКЛАДАЄ, пін не казав нічого. Заміряно стендом
+   *    `falsify-0181` (позиції B6/B9): зняття рядка
+   *    `|| ';cfg=' || coalesce(array_to_string(p.proconfig, ','), '')`
+   *    лишало ВЕСЬ цей файл зеленим.
+   *    ⚠️ ЧЕСНО ПРО ЦІНУ, бо спокуса завищити її велика: на ПРОДІ така мутація
+   *    ГОЛОСНА — `c.attrs` втрачає поле, `e.attrs` його має, і всі 33 рядки
+   *    дають `attrs:`. Дірки в ЖИВОМУ сторожі не було. Ціна інша: спіймати це
+   *    можна було лише вже НАКАТИВШИ передрук — тобто в червоному вікні, з
+   *    рядком у леджері. Пін переносить лов у `npm test`, ДО накату.
+   *    Поля пиняться у ВИРІЗАНОМУ `cur`, куди рядки списку не входять, і кожне
+   *    поле має власний названий тест — щоб червоне називало ПОЛЕ.
+   */
+  const CUR = (() => {
+    const open = "), cur as (";
+    const close = "select array_agg(x.txt order by x.txt) into v_tmp";
+    if (BLOCK19.split(open).length - 1 !== 1) throw new Error("якір `), cur as (` у №19 не унікальний");
+    if (BLOCK19.split(close).length - 1 !== 1) throw new Error("термінатор `into v_tmp` у №19 не унікальний");
+    const a = BLOCK19.indexOf(open);
+    return BLOCK19.slice(a + open.length, BLOCK19.indexOf(close, a));
+  })();
+
+  it("виріз cur — це САМ вираз, а не рядки списку (антивакуум)", () => {
+    /* Без цього асерту кожен пін нижче задовольнявся б розширенням вирізу
+       назад на список: тексти полів є і там. Тест мусить уміти сказати, що
+       перевірив НЕ ТЕ (урок с63 №2). */
+    expect(CUR).toContain("from pg_proc p");
+    expect(CUR).not.toMatch(/\('[A-Za-z0-9_]+\([^)]*\)','[0-9a-f]{32}','/);
+  });
+
+  it.each([
+    ["secdef=", /'secdef=' \|\| p\.prosecdef::text/],
+    [";vol=", /\|\| ';vol='\s+\|\| p\.provolatile::text/],
+    [";owner=", /\|\| ';owner=' \|\| pg_get_userbyid\(p\.proowner\)/],
+    [";lang=", /\|\| ';lang='\s+\|\| l\.lanname::text/],
+    [";cfg=", /\|\| ';cfg='\s+\|\| coalesce\(array_to_string\(p\.proconfig, ','\), ''\)/],
+    [";acl=", /\|\| ';acl='\s+\|\| case when p\.proacl is null then '<default>'/],
+  ])("поле %s складається у виразі cur, а не лише в літералах списку", (_f, re) => {
+    expect(CUR).toMatch(re as RegExp);
+  });
+
+  it("мова береться з pg_language, а не з тексту функції", () => {
     // власник — це і є права виконання для SECURITY DEFINER (знахідка ревʼю)
-    expect(BLOCK19).toMatch(/pg_get_userbyid\(p\.proowner\)/);
-    expect(BLOCK19).toMatch(/join pg_language l on l\.oid = p\.prolang/);
+    expect(CUR).toMatch(/join pg_language l on l\.oid = p\.prolang/);
   });
 
   /**
@@ -341,6 +381,54 @@ describe(`№19 guard_fn_bodies — статичний сторож (${FILE})`, 
   it("виняток стає ЧЕРВОНИМ, а не тишею", () => {
     expect(BLOCK19).toMatch(/exception when others then/);
     expect(BLOCK19).toMatch(/guard_fn_bodies_raised:' \|\| sqlstate/);
+  });
+
+  /**
+   * ⚠️ с68, МЕЖА 4 аудиту 0191 — закрита тут. Усі піни вище читають `BLOCK19`,
+   *    який ЗАКІНЧУЄТЬСЯ міткою перевірки, тож ШЛЯХ ЗВІТУ — гейт
+   *    `if v_tmp is not null then` і побудова `v_fail` — не пінив НІХТО.
+   *    Заміряно стендом `falsify-0181` (позиція B7): підміна гейта на
+   *    `if false then` лишала всі 23 перевірки ЗЕЛЕНИМИ і `checked` недоторканим
+   *    — порушники збирались і викидались. І ось це, на відміну від межі 7
+   *    вище, НЕ «голосно на проді»: №19 ставала вихолощеною МОВЧКИ, тобто це
+   *    найдорожча з трьох меж, закритих у с68. Другий бік (B8): підміна
+   *    `to_jsonb(v_tmp)` на порожній масив лишає вердикт червоним, але забирає
+   *    з журналу ІМЕНА — а саме з журналу пишеться наступна міграція.
+   *    ⚠️ ЧОМУ ВИРІЗ САМЕ ТАКИЙ. Гейт `if v_tmp is not null then` ДОСЛІВНО
+   *    однаковий у всіх 23 перевірках, а збирач `into v_tmp` трапляється в тілі
+   *    девʼять разів. Пін по всьому тілу тримав би ЧУЖУ перевірку і лишався б
+   *    зеленим при вихолощеній №19 (клас «чужий сторож», U-80б). Тому виріз —
+   *    від ОСТАННЬОГО обробника винятку ПЕРЕД міткою до першого `end if;`
+   *    ПІСЛЯ неї, і обидва його кінці перевіряються антивакуумом.
+   *    ⚠️ Збирач пиняться окремо і САМЕ по `BLOCK19`: усередині `TAIL19` такий
+   *    асерт був би тавтологією — зріз починається з власного якоря.
+   */
+  const TAIL19 = (() => {
+    const at = CODE.indexOf("'check', 'guard_fn_bodies'");
+    if (at < 0) throw new Error("у передруку немає мітки guard_fn_bodies");
+    const a = CODE.lastIndexOf("exception when others then", at);
+    if (a < 0) throw new Error("перед звітом №19 немає обробника винятку");
+    const b = CODE.indexOf("end if;", at);
+    if (b < 0) throw new Error("звіт №19 не закритий `end if;`");
+    return CODE.slice(a, b + "end if;".length);
+  })();
+
+  it("виріз шляху звіту — саме №19, а не сусідня перевірка (антивакуум)", () => {
+    expect(TAIL19).toContain("guard_fn_bodies_raised:");
+    expect(TAIL19.match(/'check',\s*'[a-z0-9_]+'/g) || []).toHaveLength(1);
+  });
+
+  it.each([
+    ["гейт стоїть на ЗІБРАНИХ порушниках, а не на константі", "\n  if v_tmp is not null then\n"],
+    ["звіт несе САМ масив порушників", "'check', 'guard_fn_bodies', 'offenders', to_jsonb(v_tmp)));"],
+  ])("шлях звіту №19: %s", (_n, frag) => {
+    expect(TAIL19).toContain(frag);
+  });
+
+  it("збирач №19 детермінований і пише саме у v_tmp", () => {
+    /* `order by x.txt` — не косметика: без нього порядок порушників залежить
+       від плану, і дифф журналу між двома прогонами перестає читатись. */
+    expect(BLOCK19).toContain("select array_agg(x.txt order by x.txt) into v_tmp");
   });
 
   it("перевірка рахує себе кроком лічильника", () => {
