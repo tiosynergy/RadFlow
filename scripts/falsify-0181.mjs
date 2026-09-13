@@ -60,17 +60,21 @@ const REPORT = ".falsify-0181.json";
 const MUTATIONS = [
   {
     /* САМА правка пакета 41, половина 1: рядок RPC зник зі списку №19. */
+    /* ⚠️ Якір — ПОВНИЙ рядок списку, тож кожен передрук, який змінює текст
+       рядка, його протухлює. 0191 дописала в `attrs` секцію `;acl=` — md5 тіла
+       не зрушив, зрушив саме рядок. Протухлий якір дає «ЯКІР НЕ УНІКАЛЬНИЙ (0)»
+       і ЧЕРВОНИЙ стенд, а не тихе зеленіння, — і це єдине, що тут рятує. */
     id: "A1", file: "mig", green: false,
     expect: /add_case_step_rpc/,
     what: "рядок add_case_step_rpc прибрано зі списку №19",
-    from: "      ('add_case_step_rpc(p_case_id uuid, p_step jsonb)','aa3cf7cd09b0e0d61d2cd5bfa4a173f8','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp'),\n",
+    from: "      ('add_case_step_rpc(p_case_id uuid, p_step jsonb)','aa3cf7cd09b0e0d61d2cd5bfa4a173f8','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp;acl=authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),\n",
     to: "",
   },
   {
     id: "A2", file: "mig", green: false,
     expect: /case_from_entry_rpc/,
     what: "рядок case_from_entry_rpc прибрано зі списку №19",
-    from: "      ('case_from_entry_rpc(p_entry_id uuid, p_step jsonb)','0f7f9aaa2497164ea3d5abeb0807a991','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp'),\n",
+    from: "      ('case_from_entry_rpc(p_entry_id uuid, p_step jsonb)','0f7f9aaa2497164ea3d5abeb0807a991','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp;acl=authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),\n",
     to: "",
   },
   {
@@ -132,6 +136,77 @@ const MUTATIONS = [
     from: "'check', 'guard_fn_bodies', 'offenders'",
     to: "'check', 'guard_fn_bodies', 'dup', jsonb_build_object('check', 'guard_fn_bodies'), 'offenders'",
   },
+  /* ---------------- B: внесок 0191 — ПРАВА і ЗНАЧЕННЯ search_path ----------
+     ⚠️ Ці чотири позиції додано в с67 РЕВІЗІЄЮ, а не автором 0191. До них
+     ревізія друкувала 37/37 зелених на гілці, весь продуктовий внесок якої
+     не фальсифікувала жодна мутація: три нових піни і поле `;acl=` не
+     згадувались у жодному зі стендів (замірено пошуком із зеленим базисом —
+     `acl=` знаходився, `auth_can_refer` не знаходився ніде). Єдиним доказом,
+     що нові піни ловлять, був разовий зонд усередині накату. Канон проекту:
+     «новий гард без названого червоного тесту і зеленого базису — не
+     зроблений». ---------------------------------------------------------- */
+  {
+    /* Перший із трьох вирішувачів направниківського доступу. Зникнення рядка
+       мусить назвати ПІДПИС, а не лише зрушити лічильник. */
+    id: "B1", file: "mig", green: false,
+    expect: /auth_can_refer/,
+    what: "рядок auth_can_refer прибрано зі списку №19 (новий пін 0191)",
+    from: "      ('auth_can_refer(c uuid)','0a178709faea2ab0bb55fbb098001bf4','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public;acl==X/postgres,anon=X/postgres,authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),\n",
+    to: "",
+  },
+  {
+    /* Другий вирішувач, і ФОРМА ЯКОРЯ тут інша навмисно: префікс до md5
+       переживає передрук, який змінює хвіст `attrs` (саме на цьому в с67
+       протухли чотири якорі A1/A2 та сусідніх стендів). Перейменування
+       замість видалення — щоб довести НАЗВАНИЙ напрямок: підпис у списку
+       більше не той, хоча довжина списку не зрушила. */
+    id: "B2", file: "mig", green: false,
+    expect: /auth_referrer_visible_rooms/,
+    what: "підпис auth_referrer_visible_rooms() перейменовано в списку №19",
+    from: "      ('auth_referrer_visible_rooms()','5f3226aad0599e94feb5b5e1ecfbbbf4',",
+    to: "      ('auth_referrer_visible_rooms_v2()','5f3226aad0599e94feb5b5e1ecfbbbf4',",
+  },
+  {
+    /* ⚠️ САМЕ ТА мутація, яку файл тесту називає прозою на своєму місці, але
+       якої не робив НІХТО: `;acl=` зникає з ОДНОГО літерала, а вираз у `cur`
+       лишається цілим. Список 33 рядки, підписи ті самі, формат не поїхав —
+       зрушує тільки те, що поле є не в КОЖНОМУ рядку. */
+    id: "B3", file: "mig", green: false,
+    expect: /КОЖНОМУ рядку/,
+    what: "`;acl=` прибрано з ОДНОГО літерала (вираз у cur цілий)",
+    from: "      ('auth_referrer_clinics()','ef77618a170ca3065c2d1673a3a13731','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public;acl==X/postgres,anon=X/postgres,authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),",
+    to: "      ('auth_referrer_clinics()','ef77618a170ca3065c2d1673a3a13731','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public'),",
+  },
+  {
+    /* ⚠️ Доводить, що зняття БЛОКОВИХ коментарів у `CODE`
+       (tests/guardFnBodiesInvariant.test.ts) працює. Якби воно не працювало,
+       вираз лишився б «видимим» тесту, і пін на `collate "C"` та дві гілки
+       був би задоволений ЗАКОМЕНТОВАНИМ кодом — тобто брехнею. Урок с65 №7.
+
+       ⚠️⚠️ ТРИ ПОПЕРЕДНІ РЕДАКЦІЇ ЦІЄЇ ПОЗИЦІЇ БУЛИ ХИБНІ, і дві з них
+       виглядали як робочі:
+       1) коментувала ДУБЛЬ рядка, лишаючи оригінал на місці — мутація просто
+          не мутувала (спіймано автором до прогону);
+       2) ставила ЗАКРИВАЧ блокового коментаря МІЖ `end` і ` as attrs` — тоді
+          третій асерт тесту падав від розриву дослівного літерала, а не від
+          зняття коментарів. Заміряно ревʼю: зі ЗНЯТИМ зняттям коментарів
+          стенд лишався 12/12 зеленим, тобто фікс Ф-1 був гардом без
+          червоного тесту;
+       3) цей самий коментар цитував закривач ДОСЛІВНО — і закрив сам себе.
+          `SyntaxError`, стенд помер за 0 с. Пастка названа в AGENTS.md, і я
+          вскочив у неї, поки її ж описував. Тут її не цитують символами.
+       Тепер закривач стоїть ПІСЛЯ `as attrs`: усі ТРИ асерти піна цілком
+       лежать усередині коментаря. Зі зняттям коментарів — червоно; БЕЗ нього
+       — зелено, і стенд скаже «СТОРОЖ НЕ ТРИМАЄ». Саме це й робить позицію
+       фальсифікацією зняття, а не сусідства тексту.
+       Заміряно 13.09 зондом (база / мутант × зняття ON / OFF):
+       база зелена в обидва боки; мутант ЧЕРВОНИЙ лише при ON. */
+    id: "B4", file: "mig", green: false,
+    expect: /ДВІ гілки/,
+    what: "вираз `;acl=` загорнуто в блоковий коментар (пін не має його бачити)",
+    from: "               || ';acl='   || case when p.proacl is null then '<default>'\n                                    else coalesce((select string_agg(t, ',' order by t collate \"C\")\n                                                     from unnest(p.proacl::text[]) t), '<empty>') end as attrs",
+    to: "               /* || ';acl='   || case when p.proacl is null then '<default>'\n                                    else coalesce((select string_agg(t, ',' order by t collate \"C\")\n                                                     from unnest(p.proacl::text[]) t), '<empty>') end as attrs */\n               || '' as attrs",
+  },
   /* ---------------- N: НАЗВАНІ ДІРКИ (тести їх НЕ ловлять) ---------------- */
   {
     /* ⚠️ Це НЕ «безпечна правка». Значення дайджеста стереже ЖИВА БАЗА:
@@ -182,12 +257,15 @@ for (const m of MUTATIONS) {
 /* Кількість адресних мутацій — КОНСТАНТА (урок U-80г). A1/A2 два нові рядки
    case-RPC, A3 сам гард, A4 регресія 0179, A5 другий бік лічильника пінів,
    A6 усічений md5, A7 sqlbody, A8 мітка.
+   B1/B2/B3/B4 — внесок 0191 (с67): рядок `auth_can_refer` знято, підпис
+   `auth_referrer_visible_rooms` перейменовано, `;acl=` знято з ОДНОГО
+   літерала, вираз `;acl=` загорнуто в блоковий коментар.
    ⚠️ Позиції на лічильник `checked` тут НЕМАЄ навмисно, і це ЗАМІР, а не
    недогляд: асерт `(v_x ->> 'checked')::int` живе у СМОУКАХ, а у файлі
    міграції його немає взагалі (перевірено grep-ом) — мутація в `mig` була б
    протухлим якорем. Лічильник стереже `falsify-0166`.
    N1/N2 — НАЗВАНІ дірки (зелені навмисно), T1 — рефакторний контроль. */
-const EXPECTED_RED = 8;
+const EXPECTED_RED = 12;
 const redCount = MUTATIONS.filter((m) => !m.green).length;
 if (redCount !== EXPECTED_RED) {
   console.error(`⛔ ІНВЕНТАР БРЕШЕ: адресних мутацій ${redCount}, а очікується ${EXPECTED_RED}. Стенд НЕ прогнано.`);

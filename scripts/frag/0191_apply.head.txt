@@ -1,0 +1,217 @@
+-- 0191_apply.sql — ЗГЕНЕРОВАНО `node scripts/build-0191-reprint.mjs`.
+-- ⚠️ РУКАМИ НЕ ПРАВИТИ: підстановки тут — ті самі, з яких зібрано файл
+--    міграції, і розбіжність між ними одразу вилізе в асерті md5 нижче.
+--
+-- Канон 0185/0190: тіло сторожа (114 КБ) НЕ пересилається — його редагує сама
+-- БАЗА, а результат звіряється з md5, який порахував збирач ІЗ ФАЙЛА міграції.
+--
+-- Сухий прогін = цей самий блок, у якому замість кроку 8 стоїть
+-- `raise exception 'SMOKE_OK …'` (усе відкочується, числа доходять у тексті).
+do $apply$
+declare
+  v_def   text;
+  v_head  text;
+  v_body  text;
+  v_new   text;
+  v_md5   text;
+  v_len   int;
+  v_hits  int;
+  v_res   jsonb;
+  v_i     int;
+  v_from  constant text[] := array[
+__FROM__
+  ];
+  v_to    constant text[] := array[
+__TO__
+  ];
+  v_lbl   constant text[] := array[
+__LABELS__
+  ];
+begin
+  -- ⚠️ Канон: будь-який grant/revoke на живій базі — лише під lock_timeout.
+  --    ⚠️ Він обмежує ОЧІКУВАННЯ блокування, а не її утримання: узята
+  --    блокування тримається до кінця транзакції в будь-якому разі.
+  perform set_config('lock_timeout', '5s', true);
+  -- ⚠️ Блок робить 7 повних прогонів `invariants_check` + передрук 114 КБ.
+  --    Серверний дефолт цього проєкту — 2min; ставимо свій, щоб обрив прийшов
+  --    від СЕРВЕРА з внятним текстом, а не від пулера на півдорозі.
+  perform set_config('statement_timeout', '5min', true);
+
+  -- ⚠️ НЕНАЗВАНА ПЕРЕДУМОВА (ревʼю Н6): усі 33 піни ACL мають форму
+  --    `…=X/postgres`, тобто грантор — `postgres`. Від іншої ролі `revoke` у
+  --    червоному базисі був би no-op з WARNING, і оператор прочитав би
+  --    «сторож зламано» замість «ти не та роль».
+  if current_user <> 'postgres' then
+    raise exception '0191: накат мусить іти від ролі-грантора postgres, а йде від %', current_user;
+  end if;
+
+  -- 0. ПОПЕРЕДНИК і одноразовість
+  if not exists (select 1 from public.migration_ledger
+                  where name = '0190_room_busy_slots_pinned.sql') then
+    raise exception '0191 потребує 0190 (накатуйте по порядку)';
+  end if;
+  if exists (select 1 from public.migration_ledger
+              where name = '0191_fn_bodies_acl.sql') then
+    raise exception '0191 вже накатана';
+  end if;
+
+  -- ⚠️ Рівно ОДНА функція з таким іменем: `select … into` при двох рядках
+  --    мовчки візьме перший (урок ревʼю В у 0190).
+  if (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace
+        and p.proname = 'invariants_check' and p.prokind = 'f') <> 1 then
+    raise exception '0191: invariants_check не одна — передрук наосліп заборонено';
+  end if;
+
+  select pg_get_functiondef(p.oid), p.prosrc into v_def, v_body
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname = 'invariants_check'
+     and pg_get_function_identity_arguments(p.oid) = 'p_write boolean';
+  if v_body is null then raise exception '0191: invariants_check(p_write boolean) не знайдено'; end if;
+
+  -- 1. ПРЕДСТАН: у проді мусить стояти рівно 0190
+  if md5(replace(v_body, chr(13), '')) is distinct from '__BASE_MD5__' then
+    raise exception '0191: предстан НЕ 0190 (%) — передрук наосліп заборонено',
+      md5(replace(v_body, chr(13), ''));
+  end if;
+  if length(replace(v_body, chr(13), '')) <> __BASE_LEN__ then
+    raise exception '0191: довжина предстану % замість __BASE_LEN__', length(replace(v_body, chr(13), ''));
+  end if;
+  if position(';acl=' in v_body) > 0 then
+    raise exception '0191: у тілі вже є ;acl= — міграцію вже накатано частково?';
+  end if;
+
+  -- 2. УСІ ПІДСТАНОВКИ: кожен якір рівно по разу, інакше стоп
+  -- ⚠️ ОДИН АЛФАВІТ (ревʼю Ф-8): асерт предстану знімає CR, а якорі згенеровано
+  --    без CR — тож і тіло, до якого вони прикладаються, мусить бути без CR.
+  --    Інакше багаторядковий якір не зматчиться жодного разу, і накат упаде на
+  --    умові, яку асерт предстану спеціально маскує. Заміряно 13.09: у проді
+  --    CR = 0, тобто сьогодні це no-op — саме тому і треба, поки воно дешеве.
+  v_body := replace(v_body, chr(13), '');
+  v_new := v_body;
+  for v_i in 1 .. array_length(v_from, 1) loop
+    v_hits := (length(v_new) - length(replace(v_new, v_from[v_i], ''))) / length(v_from[v_i]);
+    if v_hits <> 1 then
+      raise exception '0191: якір «%» трапляється % раз(ів) — підстановку не зроблено', v_lbl[v_i], v_hits;
+    end if;
+    v_new := replace(v_new, v_from[v_i], v_to[v_i]);
+  end loop;
+
+  -- 3. АСЕРТ проти тіла З ФАЙЛА міграції. Не збіглося — накату не було.
+  v_md5 := md5(replace(v_new, chr(13), ''));
+  v_len := length(replace(v_new, chr(13), ''));
+  if v_md5 <> '__NEW_MD5__' or v_len <> __NEW_LEN__ then
+    raise exception '0191: зібране тіло % / % — очікували __NEW_MD5__ / __NEW_LEN__', v_md5, v_len;
+  end if;
+
+  -- 4. Заміна тіла; заголовок беремо з каталогу, а не переписуємо рукою
+  v_head := left(v_def, position('$function$' in v_def) + 9);
+  execute v_head || v_new || '$function$';
+
+  -- 5. Сторож зелений ТУТ, у цій же транзакції, і число перевірок не зрушило
+  v_res := public.invariants_check(false);
+  if coalesce((v_res ->> 'ok')::boolean, false) is not true then
+    raise exception '0191: сторож червоний одразу після передруку: %', v_res ->> 'failed';
+  end if;
+  if (v_res ->> 'checked')::int <> 23 then
+    raise exception '0191: checked = %, а мусить лишитись 23', v_res ->> 'checked';
+  end if;
+
+  -- 6. ДРУГИЙ ЗАМІР — із КАТАЛОГУ, а не зі змінної. «Успіх» не доказ.
+  select md5(replace(p.prosrc, chr(13), '')), length(replace(p.prosrc, chr(13), ''))
+    into v_md5, v_len
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname = 'invariants_check'
+     and pg_get_function_identity_arguments(p.oid) = 'p_write boolean';
+  if v_md5 <> '__NEW_MD5__' or v_len <> __NEW_LEN__ then
+    raise exception '0191: у каталозі % / % — передрук не той', v_md5, v_len;
+  end if;
+
+  -- 7. ПʼЯТЬ ЧЕРВОНИХ БАЗИСІВ, у цій же транзакції: ДВА напрямки прав (а, а2)
+  --    і ТРИ тіла (б, в, г). Без них «зелено» означає лише «пін збігся», а не
+  --    «пін ловить».
+  --    ⚠️ Довго стояло «ТРИ»: заголовок писався до того, як ревʼю Н9 додало
+  --    базис (а2), і не був оновлений разом із кодом нижче. Число, яке відстає
+  --    від власного коду, — це те саме, що число, яке бреше.
+  declare
+    v_bad   jsonb;
+    v_rdef  text;
+    v_rhead text;
+    v_rsrc  text;
+    v_sig   text;
+    v_fn    text;
+  begin
+    -- (а) ПРАВА. Саме те, чого сторож не бачив до цієї міграції.
+    -- ⚠️ Цей revoke НЕ забирає доступ: у `auth_can_refer` є ще й грант PUBLIC
+    --    (`=X/postgres`), тож `authenticated` виконуватиме її як і раніше.
+    --    Через це базис дешевий: каталог змінюється, поведінка — ні.
+    revoke execute on function public.auth_can_refer(uuid) from authenticated;
+    v_bad := public.invariants_check(false);
+    if position('attrs:auth_can_refer(c uuid)->' in coalesce(v_bad ->> 'failed', '')) = 0 then
+      raise exception '0191: ЧЕРВОНИЙ БАЗИС ACL НЕ СПРАЦЮВАВ — ;acl= не ловить revoke: %',
+        v_bad ->> 'failed';
+    end if;
+    grant execute on function public.auth_can_refer(uuid) to authenticated;
+    v_bad := public.invariants_check(false);
+    if coalesce((v_bad ->> 'ok')::boolean, false) is not true then
+      raise exception '0191: після повернення гранта сторож не позеленів: %', v_bad ->> 'failed';
+    end if;
+
+    -- (а2) РОЗШИРЕННЯ ПРАВ — напрямок, якого базис (а) не перевіряє (ревʼю Н9).
+    -- ⚠️ Саме це і є небезпечний хід: definer-функція, що віддає ПІБ, стає
+    --    викличною для `anon`. Базис (а) бив у зворотний бік (звуження), і
+    --    видавати його за доказ «ловить небезпечне» було б перебільшенням.
+    grant execute on function public.room_busy_slots(uuid, date, uuid) to anon;
+    v_bad := public.invariants_check(false);
+    if position('attrs:room_busy_slots(p_room uuid, p_date date, p_exclude uuid)->'
+                in coalesce(v_bad ->> 'failed', '')) = 0 then
+      raise exception '0191: ЧЕРВОНИЙ БАЗИС РОЗШИРЕННЯ НЕ СПРАЦЮВАВ — grant до anon не помічено: %',
+        v_bad ->> 'failed';
+    end if;
+    revoke execute on function public.room_busy_slots(uuid, date, uuid) from anon;
+    v_bad := public.invariants_check(false);
+    if coalesce((v_bad ->> 'ok')::boolean, false) is not true then
+      raise exception '0191: після зняття гранта anon сторож не позеленів: %', v_bad ->> 'failed';
+    end if;
+
+    -- (б)(в)(г) ТІЛА трьох нових пінів — вирішувачів направниківського доступу.
+    foreach v_fn in array array['auth_can_refer', 'auth_referrer_visible_rooms', 'auth_referrer_clinics'] loop
+      if (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace
+            and p.proname = v_fn and p.prokind = 'f') <> 1 then
+        raise exception '0191: % не одна — червоний базис адресував би не ту', v_fn;
+      end if;
+      select pg_get_functiondef(p.oid), p.prosrc,
+             p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')'
+        into v_rdef, v_rsrc, v_sig
+        from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+       where n.nspname = 'public' and p.proname = v_fn;
+      /* ⚠️ Коментар мусить лягти ВСЕРЕДИНУ тіла: дописаний ПІСЛЯ закривального
+         `$function$` він не змінює `prosrc`, і базис був би вакуумним
+         (знахідка ревʼю в 0190). */
+      v_rhead := left(v_rdef, position('$function$' in v_rdef) + 9);
+      execute v_rhead || v_rsrc || E'\n-- 0191 red baseline\n' || '$function$';
+      v_bad := public.invariants_check(false);
+      /* ⚠️ Заміряно 13.09 зондом: тіла всіх трьох ловить ще й №22 `grant_digest`
+         (усі три anon-досяжні, а вона пінить повний сирий md5). Тобто в
+         `failed` буде ДВА діагнози, і ці базиси НЕ доводять, що №19 тут
+         єдиний сторож — вони доводять, що пін №19 підключений і адресує
+         ПОВНУ сигнатуру. Те, чого до 0191 не ловив НІХТО, — це значення
+         `search_path` (заміряно там же), і його стереже `cfg=` в `attrs`. */
+      if position('body:' || v_sig || '->' in coalesce(v_bad ->> 'failed', '')) = 0 then
+        raise exception '0191: ЧЕРВОНИЙ БАЗИС ТІЛА НЕ СПРАЦЮВАВ для % : %', v_sig, v_bad ->> 'failed';
+      end if;
+      execute v_rdef;   -- повертаємо тіло як було
+    end loop;
+
+    v_res := public.invariants_check(false);
+    if coalesce((v_res ->> 'ok')::boolean, false) is not true then
+      raise exception '0191: після відновлення тіл сторож не позеленів: %', v_res ->> 'failed';
+    end if;
+  end;
+
+  -- 8. Самореєстрація
+  insert into public.migration_ledger (name) values ('0191_fn_bodies_acl.sql')
+    on conflict (name) do nothing;
+
+  raise notice '0191 НАКАТАНО: md5 % len % checked 23; пʼять червоних базисів спрацювали (2 права + 3 тіла)', v_md5, v_len;
+end
+$apply$;

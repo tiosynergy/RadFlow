@@ -54,7 +54,11 @@ const MUTATIONS = [
     id: "A1", file: "mig", green: false,
     expect: /guard_invite_issued_at/,
     what: "рядок штампа прибрано зі списку №19 (тіло більше не пінується)",
-    from: "      ('guard_invite_issued_at()','f5f04a4bf959614f4060d97c5220094d','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp'),\n",
+    /* ⚠️ Якір — ПОВНИЙ рядок списку №19, тож передрук, який змінює текст
+       рядка, його протухлює. 0191 дописала `;acl=` (тут форма TRIG — без
+       `authenticated`); md5 тіла не зрушив. Протухлий якір червонить стенд
+       вголос, а не зеленить його мовчки. */
+    from: "      ('guard_invite_issued_at()','f5f04a4bf959614f4060d97c5220094d','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp;acl=postgres=X/postgres,service_role=X/postgres'),\n",
     to: "",
   },
   {
