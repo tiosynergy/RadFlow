@@ -207,6 +207,73 @@ const MUTATIONS = [
     from: "               || ';acl='   || case when p.proacl is null then '<default>'\n                                    else coalesce((select string_agg(t, ',' order by t collate \"C\")\n                                                     from unnest(p.proacl::text[]) t), '<empty>') end as attrs",
     to: "               /* || ';acl='   || case when p.proacl is null then '<default>'\n                                    else coalesce((select string_agg(t, ',' order by t collate \"C\")\n                                                     from unnest(p.proacl::text[]) t), '<empty>') end as attrs */\n               || '' as attrs",
   },
+  /* ---- B5-B9: ТРИ НАЗВАНІ МЕЖІ аудиту 0191, закриті в с68 ----------------
+     Усі три стояли в `docs/audit/PR-s66-0191-fn-bodies-acl.md` як МЕЖІ, тобто
+     як місця, про які прямо сказано «тут сторожа немає». Кожну закриває
+     названий червоний тест, і кожна тут має мутацію, яка його називає. */
+  {
+    /* ⚠️ МЕЖА 6. Третій вирішувач направниківського доступу був єдиним із
+       трьох БЕЗ названого червоного тесту на ПІДПИС: B3 вище править саме цей
+       рядок, але червоніє на ПОЛІ (`;acl=` не в кожному рядку), а не на імені.
+       Тобто зникнення підпису зрушило б лічильник і поле — і жоден тест не
+       сказав би, ХТО зник. Форма — B1, і це навмисно. */
+    id: "B5", file: "mig", green: false,
+    expect: /auth_referrer_clinics/,
+    what: "рядок auth_referrer_clinics прибрано зі списку №19 (межа 6)",
+    from: "      ('auth_referrer_clinics()','ef77618a170ca3065c2d1673a3a13731','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public;acl==X/postgres,anon=X/postgres,authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),\n",
+    to: "",
+  },
+  {
+    /* ⚠️ МЕЖА 7. Замірено в с67: зняти складання `;cfg=` у `cur` — і не
+       червоніє ЖОДЕН тест, хоч це поле і є єдиний сторож ЗНАЧЕННЯ
+       `search_path` (№2 вимагає лише наявності підрядка, №22 `proconfig` не
+       читає), тобто весь сенс 0191. Причина: пін робив `toContain(';cfg=')`
+       по всьому блоку, а `;cfg=` стоїть у кожному з 33 літералів списку.
+       ⚠️ ЧЕСНО: на проді мутація ГОЛОСНА — 33 рядки `attrs:`. Ціна не «дірка
+       в сторожі», а МІСЦЕ ЛОВУ: було після накату (червоне вікно, рядок у
+       леджері), стало в `npm test` до нього. */
+    id: "B6", file: "mig", green: false,
+    expect: /поле ;cfg=/,
+    what: "складання `;cfg=` знято з виразу cur (значення search_path не збирається)",
+    from: "               || ';cfg='   || coalesce(array_to_string(p.proconfig, ','), '')\n",
+    to: "",
+  },
+  {
+    /* Друга форма межі 7, і вона потрібна окремо: ПЕРШЕ поле складається без
+       ведучого `||` (`'secdef=' || …`), тож його регулярка інша, ніж у решти
+       пʼяти. Перейменування замість зняття — щоб SQL лишився валідним і було
+       видно, що пін тримає САМЕ це поле, а не «щось поїхало». */
+    id: "B7", file: "mig", green: false,
+    expect: /поле secdef=/,
+    what: "поле `secdef=` у виразі cur перейменовано на `sdef=`",
+    from: "             'secdef=' || p.prosecdef::text\n",
+    to: "             'sdef=' || p.prosecdef::text\n",
+  },
+  {
+    /* ⚠️ МЕЖА 4, і вона НАЙДОРОЖЧА з трьох: це єдина мутація пакета, яка
+       мовчить і на ПРОДІ. Порушники збираються у `v_tmp` і викидаються —
+       `invariants_check` вертає ok:true, `checked:23`, `failed:[]`. Перевірка
+       №19 стає вихолощеною, і ніхто ніде цього не бачить.
+       ⚠️ Якір несе МІТКУ перевірки, бо сам гейт `if v_tmp is not null then`
+       дослівно однаковий у всіх 23 перевірках: без мітки він був би
+       неунікальним, і стенд відхилив би позицію. */
+    id: "B8", file: "mig", green: false,
+    expect: /гейт стоїть на ЗІБРАНИХ/,
+    what: "гейт звіту №19 підмінено на константу (`if false then`)",
+    from: "  if v_tmp is not null then\n    v_fail := v_fail || jsonb_build_array(jsonb_build_object(\n      'check', 'guard_fn_bodies', 'offenders', to_jsonb(v_tmp)));",
+    to: "  if false then\n    v_fail := v_fail || jsonb_build_array(jsonb_build_object(\n      'check', 'guard_fn_bodies', 'offenders', to_jsonb(v_tmp)));",
+  },
+  {
+    /* Другий бік межі 4: вердикт лишається червоним, а журнал — порожнім. Це
+       не косметика звіту: саме з `offenders` пишеться наступна міграція
+       (рядок `body:<підпис>-><новий md5>`), тобто це єдиний канал, яким
+       сторож каже, ЩО поїхало. Червоне без імені = зупинка без діагнозу. */
+    id: "B9", file: "mig", green: false,
+    expect: /звіт несе САМ масив/,
+    what: "`offenders` отримує порожній масив замість зібраного v_tmp",
+    from: "'check', 'guard_fn_bodies', 'offenders', to_jsonb(v_tmp)));",
+    to: "'check', 'guard_fn_bodies', 'offenders', to_jsonb(array[]::text[])));",
+  },
   /* ---------------- N: НАЗВАНІ ДІРКИ (тести їх НЕ ловлять) ---------------- */
   {
     /* ⚠️ Це НЕ «безпечна правка». Значення дайджеста стереже ЖИВА БАЗА:
@@ -264,8 +331,16 @@ for (const m of MUTATIONS) {
    недогляд: асерт `(v_x ->> 'checked')::int` живе у СМОУКАХ, а у файлі
    міграції його немає взагалі (перевірено grep-ом) — мутація в `mig` була б
    протухлим якорем. Лічильник стереже `falsify-0166`.
+   B5–B9 — ТРИ названі межі аудиту 0191, закриті в с68: межа 6 (підпис
+   `auth_referrer_clinics` не мав названого червоного тесту — B5), межа 7
+   (поля `attrs` пинились `toContain` по ВСЬОМУ блоку і задовольнялись 33
+   літералами списку; дві форми — B6 зняття `;cfg=`, B7 перейменування
+   `secdef=`), межа 4 (шлях звіту не пінив НІХТО — B8 гейт на константі, B9
+   порожній журнал). ⚠️ Із цих пʼяти лише B8 мовчала б і на проді; решта на
+   проді голосні, і їхня ціна — МІСЦЕ ЛОВУ, а не наявність сторожа. Так і
+   написано в тесті, щоб наступна сесія не прочитала тут більше, ніж є.
    N1/N2 — НАЗВАНІ дірки (зелені навмисно), T1 — рефакторний контроль. */
-const EXPECTED_RED = 12;
+const EXPECTED_RED = 17;
 const redCount = MUTATIONS.filter((m) => !m.green).length;
 if (redCount !== EXPECTED_RED) {
   console.error(`⛔ ІНВЕНТАР БРЕШЕ: адресних мутацій ${redCount}, а очікується ${EXPECTED_RED}. Стенд НЕ прогнано.`);
