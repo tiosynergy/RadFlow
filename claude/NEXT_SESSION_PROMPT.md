@@ -1,8 +1,8 @@
-# RadFlow — attachment for the next session (session 65)
+# RadFlow — attachment for the next session (session 68)
 
 > **This file is the ATTACHMENT.** The owner pastes
-> `claude/session65-start-prompt.md` as the first message and attaches this
-> file. Session-specific part rewritten at the end of session 64 (2026-09-12);
+> `claude/session68-start-prompt.md` as the first message and attaches this
+> file. Session-specific part rewritten at the end of session 67 (2026-09-13);
 > the permanent part below is carried unchanged.
 >
 > ⚠️ **The two must come from the same end-of-session edit.** Session 59 opened
@@ -80,7 +80,39 @@ that is what found what neither review round saw.
 
 ---
 
-## ✅ STATE OF PLAY — after s66 (13.09.2026)
+## ✅ STATE OF PLAY — after s67 (13.09.2026)
+
+**0191 is APPLIED, merged and deployed.** Ledger **191/191**, guard body raw
+**`08014663728435627d2e993fa5ffbc77`** / **116213**, list №19 **33** signatures
+with `;acl=` in every row, `invariants_check` `ok:true checked:23`. Toolchain
+tsc 0 / eslint 0 / vitest **3241/3241** (631 suites) / build exit 0. Full stand
+revision **37/37** green (48 min). Deploy stamp **`b281751d112d`**, converged in
+both directions; `/login` 200. **No live feature branch.**
+
+The live two-direction check that matters: in a rolled-back probe on production,
+`alter function public.auth_can_refer(uuid) set search_path = pg_temp, public`
+now makes check №19 go RED by name (`attrs:auth_can_refer(c uuid)->…;cfg=…`),
+and the guard goes green again on restore. Before 0191 that change was invisible
+to ALL 23 checks. That is the package, proven on the live DB.
+
+⚠️ **Four review rounds in s67, and the author was wrong in all four.** The full
+revision on the branch gave 34/37 (four stale anchors of list №19); NOT ONE
+mutation falsified what 0191 adds (measured with a green baseline: `acl=` → 7
+hits across the stands, `auth_can_refer` → 0); B4 was vacuous in two editions,
+the second one invisibly (it reddened from a broken literal, not from
+block-comment stripping — with the Ф-1 fix removed the stand stayed 12/12
+green); and the corrected numbers were written into GENERATED files, so the
+first rebuild would have restored every lie. Detail:
+`docs/audit/PR-s66-0191-fn-bodies-acl.md`.
+
+⚠️ **RED WINDOW — now a named rule in `AGENTS.md`.** From the second a migration
+registers in the ledger until its file is in `main`, every production build
+fails on «НЕМАЄ ФАЙЛА». Close it in one move: branch → `dev` (ff) → `main`
+(`--no-ff -F .commitmsg`) → push → deploy; verify `db:gate:check` on BOTH.
+
+---
+
+## STATE OF PLAY — after s66 (13.09.2026) — history
 
 **Package 1 is in `main`:** `supabase/smoke/room_busy_slots_scope_smoke.sql`
 stopped being vacuous in four places — it had been running GREEN while printing
@@ -167,7 +199,7 @@ npm run db:gate:check
 
 …plus the **deploy stamp** of `/api/build`.
 
-### Expected state (measured 2026-09-12, END OF SESSION 65) — START HERE
+### Expected state (measured 2026-09-13, END OF SESSION 67) — START HERE
 
 ⚠️ **Every body md5 below NAMES ITS RECIPE** (s64 finding: two md5 taken with
 two different recipes sat side by side unlabelled, and the unlabelled one is the
@@ -179,16 +211,16 @@ input to queue item 2). The two recipes are:
 |---|---|
 | `main` / `dev` | take BOTH from `git ls-remote` — s65 merged `dev` → `main` at the end of the session, and the docs commit of this handover lands on `dev` after it. A difference here is not a finding |
 | branches | ⚠️ `dev..main` is large (merge commits of `main`'s own history), so `--ff-only` will NOT work — merge with `--no-ff -F .commitmsg` |
-| prod DB | **`0190_room_busy_slots_pinned.sql`**, ledger **190/190**, unstamped 0 |
-| **next migration** | **0191** — the number comes FROM THE LEDGER, never from the folder |
-| `invariants_check(false)` | `ok:true`, **`checked:23`**, `failed:[]` |
-| guard body | **raw** **`9680c291c01469e19cc8f6f99fd0093f`**, length **112 207**, CR **0**; **normalized** = pin `g` **`2e637a752614c08b587322cc46503377`** |
+| prod DB | **`0191_fn_bodies_acl.sql`**, ledger **191/191**, unstamped 0 |
+| **next migration** | **0192** — the number comes FROM THE LEDGER, never from the folder |
+| `invariants_check(false)` | `ok:true`, **`checked:23`**, `failed:[]` (0191 did NOT move the counter) |
+| guard body | **raw** **`08014663728435627d2e993fa5ffbc77`**, length **116 213**, CR **0** |
 | `room_busy_slots` body | **raw** **`4d7b653117bb1b302666b31e829cc381`** (4883 chars); **normalized** **`83ddb89d6b1cd33ae19c8d314d29b73c`** — the latter is the pin in list №19 |
 | `auth_can_see_slot_details` | **normalized** **`19fe1040308640b29a5d8b1bb7506873`** — pinned by 0190; it is the function that DECIDES PII visibility |
-| list №19 | **30** signatures (was 28), plus the new `extra:` branch for overloads |
-| toolchain | tsc **0**, eslint **0**, vitest **3235/3235** (631 suites), `db:gate` **190/190**, `npm run build` exit **0** |
-| stand revision | `EXPECTED_STANDS` **37**, all 37 green, **3041 s ≈ 51 min** (s65 measurement) |
-| migration files | **192** `.sql` on disk vs **190** in the gate — NOT a hole: `0064_PRECHECK.sql` and `0066_PRECHECK.sql` are excluded by the gate on purpose, and its own code says so |
+| list №19 | **33** signatures (was 30), and `;acl=` in EVERY one of the 33 rows (0191) |
+| toolchain | tsc **0**, eslint **0**, vitest **3241/3241** (631 suites), `db:gate` **191/191**, `npm run build` exit **0** |
+| stand revision | `EXPECTED_STANDS` **37**, all 37 green, **48 min** (s67 measurement) |
+| migration files | **193** `.sql` on disk vs **191** in the gate — NOT a hole: `0064_PRECHECK.sql` and `0066_PRECHECK.sql` are excluded by the gate on purpose, and its own code says so |
 | deploy stamp | compute `sha256(<40-char SHA of main>)[:12]` LOCALLY first, then fetch `GET /api/build`. ⚠️ Build latency measured at **~11 min** in s64, not the "4–9" the older docs claim |
 
 ⚠️ **The guard body grew by 615 chars in 0190** (111 592 → 112 207): two pin
@@ -326,9 +358,46 @@ deleted — `09fe3a92-0e5a-4adb-b719-ec0ed48a6922` and
 19. **One source is not a conclusion** — «`sink-overdue` is nowhere» rested on
     `maintenance_runs`, where that job simply never writes.
 
+### Added by session 67
+
+20. **A green 37/37 revision says the stands hold what they held YESTERDAY.**
+    It says nothing about the package in front of you. s67 restored 37/37 on a
+    branch whose entire product contribution was falsified by no mutation at
+    all. Ask separately: which mutation shoots at what I added TODAY?
+21. **Ask who else writes this file BEFORE editing it.** Three files corrected
+    by hand in s67 turned out to be generated by `build-0191-reprint.mjs`; the
+    first rebuild would have restored every corrected number. Cure and proof in
+    one: after fixing the SOURCE, rebuild and check `git status` is clean — that
+    is the measurement that the tree IS the builder's output.
+22. **A mutation can be red for the wrong reason, and that looks identical.**
+    B4's closer sat between `end` and ` as attrs`, so the test failed on a torn
+    literal instead of on comment-stripping — with the stripping removed the
+    stand stayed 12/12 green. **Probe the guard you claim to falsify with the
+    guard turned OFF**; if the mutation is still red, it proves something else.
+23. **A comment quoting a trap is the trap.** A block comment that quoted the
+    block-comment closer verbatim closed itself: `SyntaxError`, stand dead in
+    0 s. Named in `AGENTS.md` — and walked into while describing it.
+24. **A cheap probe before an expensive run pays every time.** Three stands on a
+    dirty tree: 2 minutes. The full revision: 48. The `SyntaxError` above was
+    caught by the 2-minute one.
+25. **The reprint of a pinned list stales every anchor that quotes a full row.**
+    Loudly — «ЯКІР НЕ УНІКАЛЬНИЙ (0)» and a red stand, never a silent green.
+    That is the one thing that makes the full-revision canon affordable.
+26. **A deduced denominator is not a measured one.** «Exactly four stale
+    anchors» was deduced from «a rejected anchor always reddens a stand» — which
+    has a standing exception (frozen positions). The number was right; the
+    argument was not. The review got it by parsing every `from:` in all 37.
+
 ---
 
-## QUEUE FOR SESSION 66 — a menu, not an order
+## QUEUE — a menu, not an order
+
+⚠️ **The live queue for session 68 is in `claude/session68-start-prompt.md`.**
+The list below is the s66 edition, kept because several items carry measurements
+that are still valid. **Closed since:** 0191 (queue item 1 — `proacl` into the
+`attrs` of check №19) was applied in s67.
+
+## QUEUE FOR SESSION 66 — history
 
 ⚠️ **Ask before coding.** Compose a plan (`TaskCreate`) and **AGREE THE FIRST
 PACKAGE WITH ME BEFORE WRITING CODE.** If a package is product-facing, show me
