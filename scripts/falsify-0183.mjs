@@ -67,7 +67,10 @@ const MUTATIONS = [
     id: "A1", file: "mig", green: false,
     expect: /пінів рівно стільки/,
     what: "рядок RPC прибрано зі списку №19 у МІГРАЦІЇ (тіло більше не пінується)",
-    from: "      ('sched_override_read(p_clinic uuid, p_date date)','ad8632bd4fe14911d08095f579d2325e','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp'),\n",
+    /* ⚠️ Якір — ПОВНИЙ рядок списку №19, тож передрук, який змінює текст
+       рядка, його протухлює. 0191 дописала `;acl=`; md5 тіла не зрушив.
+       Протухлий якір червонить стенд вголос, а не зеленить його мовчки. */
+    from: "      ('sched_override_read(p_clinic uuid, p_date date)','ad8632bd4fe14911d08095f579d2325e','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl=authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),\n",
     to: "",
   },
   {

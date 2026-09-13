@@ -60,17 +60,21 @@ const REPORT = ".falsify-0181.json";
 const MUTATIONS = [
   {
     /* САМА правка пакета 41, половина 1: рядок RPC зник зі списку №19. */
+    /* ⚠️ Якір — ПОВНИЙ рядок списку, тож кожен передрук, який змінює текст
+       рядка, його протухлює. 0191 дописала в `attrs` секцію `;acl=` — md5 тіла
+       не зрушив, зрушив саме рядок. Протухлий якір дає «ЯКІР НЕ УНІКАЛЬНИЙ (0)»
+       і ЧЕРВОНИЙ стенд, а не тихе зеленіння, — і це єдине, що тут рятує. */
     id: "A1", file: "mig", green: false,
     expect: /add_case_step_rpc/,
     what: "рядок add_case_step_rpc прибрано зі списку №19",
-    from: "      ('add_case_step_rpc(p_case_id uuid, p_step jsonb)','aa3cf7cd09b0e0d61d2cd5bfa4a173f8','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp'),\n",
+    from: "      ('add_case_step_rpc(p_case_id uuid, p_step jsonb)','aa3cf7cd09b0e0d61d2cd5bfa4a173f8','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp;acl=authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),\n",
     to: "",
   },
   {
     id: "A2", file: "mig", green: false,
     expect: /case_from_entry_rpc/,
     what: "рядок case_from_entry_rpc прибрано зі списку №19",
-    from: "      ('case_from_entry_rpc(p_entry_id uuid, p_step jsonb)','0f7f9aaa2497164ea3d5abeb0807a991','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp'),\n",
+    from: "      ('case_from_entry_rpc(p_entry_id uuid, p_step jsonb)','0f7f9aaa2497164ea3d5abeb0807a991','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp;acl=authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),\n",
     to: "",
   },
   {
