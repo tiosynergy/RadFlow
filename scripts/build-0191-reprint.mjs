@@ -301,7 +301,7 @@ writeFileSync(FRAG + "0191_apply.sql", applySql, "utf8");
   if (at8 < 0) throw new Error("ЗБІРКА: у накаті немає кроку 8 — сухий прогін не зібрано");
   const dry = applySql.slice(0, at8)
     + "  -- 8. СУХИЙ ПРОГІН: не реєструємо, а падаємо — транзакція відкотиться\n"
-    + "  raise exception 'SMOKE_OK 0191: md5 % len % checked 23; чотири червоні базиси спрацювали', v_md5, v_len;\n"
+    + "  raise exception 'SMOKE_OK 0191: md5 % len % checked 23; пʼять червоних базисів спрацювали (2 права + 3 тіла)', v_md5, v_len;\n"
     + "end\n$apply$;\n";
   writeFileSync(FRAG + "0191_dryrun.sql", dry, "utf8");
 }
