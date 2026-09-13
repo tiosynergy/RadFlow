@@ -80,7 +80,35 @@ that is what found what neither review round saw.
 
 ---
 
-## ✅ STATE OF PLAY — after s65 (12.09.2026)
+## ✅ STATE OF PLAY — after s66 (13.09.2026)
+
+**Package 1 is in `main`:** `supabase/smoke/room_busy_slots_scope_smoke.sql`
+stopped being vacuous in four places — it had been running GREEN while printing
+`e-out(hidden=0)` (the out-of-grant room was picked by `limit 1` with no
+ordering and was EMPTY). Detail: `docs/audit/PR-s66-rbs-scope-smoke.md`.
+
+**Package 2 is on branch `s66/0191-fn-bodies-acl`: built, dry-run GREEN on
+production, NOT APPLIED.** ⚠️ It is on a branch on purpose: the gate is
+symmetric, so a migration file with no ledger row makes `npm run build` red
+(measured). Finish it first — the exact order is in
+`docs/audit/PR-s66-0191-fn-bodies-acl.md`.
+
+⚠️ **Two claims written down by earlier sessions turned out FALSE in s66, both
+by the same mechanism — one source, no cross-check:**
+1. «There is no behavioural stand for the acl branch of `room_busy_slots`» —
+   the smoke existed all along (searched `scripts/`, not `supabase/smoke/`).
+2. «Both referrer-branch deciders are pinned by nothing» — check №22
+   `grant_digest` holds their bodies (read list №19, did not read the
+   neighbouring check in the same file).
+Both were found by the reviews, not by the author. **Validate subagent
+conclusions personally — and then measure.**
+
+⚠️ **Still open, measured:** `alter function … set search_path = pg_temp, public`
+on a SECURITY DEFINER function outside list №19 goes unnoticed by all 23 checks.
+
+---
+
+## STATE OF PLAY — after s65 (12.09.2026)
 
 s65 shipped three packages: the stale root `NEXT_SESSION_PROMPT.md` is gone;
 the race-harness guard now covers BOTH outbox branches (`emergency_stop` goes
