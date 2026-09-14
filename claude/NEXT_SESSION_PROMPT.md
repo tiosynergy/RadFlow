@@ -736,6 +736,20 @@ never started.**
 ⚠️ **Pause between polls: `ping -n 50 127.0.0.1 >nul`** — it stays inside the
 bridge window (~55 s), unlike `timeout /t`. Two `ping`s in one command already
 give "Device did not respond within 60s".
+⚠️⚠️ **`timeout /t N /nobreak` DOES NOT SLEEP AT ALL HERE — and s70 paid for
+re-learning it.** stdin is redirected through the bridge, so `timeout` exits
+INSTANTLY printing «ОШИБКА: перенаправление ввода не поддерживается». **This
+line already stood in this file** («unlike `timeout /t`») and I used `timeout`
+anyway, eight times in a row, reading its error in the output each time. The
+result: I believed I had waited 48 minutes when five had passed, diagnosed a
+healthy 40-stand revision as hung, killed it — and a killed stand does not run
+its `finally`, so it left its mutation inside a LIVE migration file.
+**The rule that is missing from a bare `ping`: the pause must PRINT the time it
+woke up.** `powershell -NoProfile -Command "Start-Sleep -Seconds N;
+Get-Date -Format HH:mm:ss"` — otherwise «did not sleep» stays invisible.
+**And before ever saying «it hangs», take TWO independent clocks:** `Get-Date`
+and the process `CreationDate` from `Win32_Process`. Low CPU proves nothing —
+a parent waiting on a child is supposed to sit at zero.
 ⚠️ **PowerShell `>` writes UTF-16, and `node -e` with Cyrillic output falls
 apart** — a report you need to READ must be written by node itself
 (`writeFileSync(…, "utf8")`) and read with `read_file`.
