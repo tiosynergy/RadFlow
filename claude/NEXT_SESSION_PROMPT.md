@@ -1,8 +1,8 @@
-# RadFlow — attachment for the next session (session 68)
+# RadFlow — attachment for the next session (session 70)
 
 > **This file is the ATTACHMENT.** The owner pastes
-> `claude/session68-start-prompt.md` as the first message and attaches this
-> file. Session-specific part rewritten at the end of session 67 (2026-09-13);
+> `claude/session70-start-prompt.md` as the first message and attaches this
+> file. Session-specific part rewritten at the end of session 69 (2026-09-14);
 > the permanent part below is carried unchanged.
 >
 > ⚠️ **The two must come from the same end-of-session edit.** Session 59 opened
@@ -122,20 +122,66 @@ of steps he watched happen.
 
 ---
 
-## ✅ STATE OF PLAY — after s67 (13.09.2026)
+## ✅ STATE OF PLAY — after s69 (14.09.2026)
 
-**0191 is APPLIED, merged and deployed.** Ledger **191/191**, guard body raw
-**`08014663728435627d2e993fa5ffbc77`** / **116213**, list №19 **33** signatures
-with `;acl=` in every row, `invariants_check` `ok:true checked:23`. Toolchain
-tsc 0 / eslint 0 / vitest **3241/3241** (631 suites) / build exit 0. Full stand
-revision **37/37** green (48 min). Deploy stamp **`b281751d112d`**, converged in
-both directions; `/login` 200. **No live feature branch.**
+**0193 and 0194 are APPLIED, merged and deployed.** Ledger **194/194**, unstamped
+0, guard body raw **`af390d6f00d8ef711a85e8f54e0f987b`** / **126449**, list №19
+**40** signatures with `;acl=` in every row, `invariants_check(false)`
+`ok:true checked:23 failed:[]`. Toolchain tsc 0 / eslint 0 / vitest
+**3367/3367** (108 test files) / `db:gate` 194/194 / build exit 0. Full stand
+revision **40/40** green. `main` = `dev` = **`ca1b560`**; deploy stamp
+**`40a95aa0dbae`** = `sha256(ca1b560…)[:12]`, computed locally BEFORE fetching
+and confirmed by `/api/build`. **No live feature branch.**
 
-The live two-direction check that matters: in a rolled-back probe on production,
+**What the two packages actually bought, each proven on the live DB in both
+directions:**
+
+- **0193 (I-8, High, was LIVE).** The radiologist read one waitlist row through
+  `waitlist_candidates_for_slot` that RLS gave him zero of — DEFINER-read had no
+  room gate at all. Measured: RLS 0 rows, RPC 1 row; after the fix, 0 and 0, and
+  for every other role the selection does not change by a single row.
+- **0194 (I-7).** Check №13 filtered `where g.enabled`, while CHECK
+  `gcal_enabled_invariant_chk` obliges every failure path to clear `enabled`.
+  The Google Calendar mirror — the only independent copy of the queue — was dead
+  **11.5 days** while the guard said `ok:true`. Second branch has NO time
+  threshold (owner's decision Р69-3). ⚠️ The red baseline had to be
+  **CONSTRUCTED** in a rolled-back transaction, because fixing the data removed
+  the ready-made one: a test that leans on production being broken disappears
+  the moment production is fixed.
+
+⚠️ **TWO GUARD-DESIGN RULES, and they are the real product of s69:**
+1. **Ask of every guard: can the field it filters on survive the very failure it
+   watches for?** If the failure clears that field, the guard is blind by
+   construction. Same class as I-8 (a trigger guards writes; reads have no
+   trigger).
+2. **A pin a human must retype after every reprint is stale by construction.**
+   `gcal_pg_cron_smoke.sql` had been unable to pass since **0186** for exactly
+   that reason, and nobody noticed because a dead smoke is silent.
+
+⚠️ **RED WINDOW — a named rule in `AGENTS.md`.** From the second a migration
+registers in the ledger until its file is in `main`, every production build
+fails on «НЕМАЄ ФАЙЛА». Close it in one move: branch → `dev` (ff) → `main`
+(`--no-ff -F .commitmsg`) → push → deploy; verify `db:gate:check` on BOTH.
+
+⚠️ **The audit plan now opens with a measured status table** («СТАТУС НА
+14.09»), because in s69 I reported six already-decided forks to the owner as
+open. Read that table before calling anything open, and grep `DECISIONS-*`.
+Production-gated work lives in `docs/audit/ToDo_Production.md`.
+
+---
+
+## STATE OF PLAY — after s67 (13.09.2026) — history
+
+**0191 is APPLIED, merged and deployed.** Ledger 191/191, guard body raw
+`08014663728435627d2e993fa5ffbc77` / 116213, list №19 **33** signatures with
+`;acl=` in every row. Full stand revision 37/37 green (48 min).
+
+The live two-direction check that mattered: in a rolled-back probe on production,
 `alter function public.auth_can_refer(uuid) set search_path = pg_temp, public`
-now makes check №19 go RED by name (`attrs:auth_can_refer(c uuid)->…;cfg=…`),
-and the guard goes green again on restore. Before 0191 that change was invisible
-to ALL 23 checks. That is the package, proven on the live DB.
+makes check №19 go RED by name (`attrs:auth_can_refer(c uuid)->…;cfg=…`), and the
+guard goes green again on restore. Before 0191 that change was invisible to ALL
+23 checks. ⚠️ **Still open after it:** the same `alter` on a definer function
+**outside** list №19 is invisible to all 23 — that is fork **Р3**.
 
 ⚠️ **Four review rounds in s67, and the author was wrong in all four.** The full
 revision on the branch gave 34/37 (four stale anchors of list №19); NOT ONE
@@ -146,11 +192,6 @@ block-comment stripping — with the Ф-1 fix removed the stand stayed 12/12
 green); and the corrected numbers were written into GENERATED files, so the
 first rebuild would have restored every lie. Detail:
 `docs/audit/PR-s66-0191-fn-bodies-acl.md`.
-
-⚠️ **RED WINDOW — now a named rule in `AGENTS.md`.** From the second a migration
-registers in the ledger until its file is in `main`, every production build
-fails on «НЕМАЄ ФАЙЛА». Close it in one move: branch → `dev` (ff) → `main`
-(`--no-ff -F .commitmsg`) → push → deploy; verify `db:gate:check` on BOTH.
 
 ---
 
@@ -241,7 +282,7 @@ npm run db:gate:check
 
 …plus the **deploy stamp** of `/api/build`.
 
-### Expected state (measured 2026-09-13, END OF SESSION 67) — START HERE
+### Expected state (measured 2026-09-14, END OF SESSION 69) — START HERE
 
 ⚠️ **Every body md5 below NAMES ITS RECIPE** (s64 finding: two md5 taken with
 two different recipes sat side by side unlabelled, and the unlabelled one is the
@@ -251,24 +292,26 @@ input to queue item 2). The two recipes are:
 
 | what | expected |
 |---|---|
-| `main` / `dev` | take BOTH from `git ls-remote` — s65 merged `dev` → `main` at the end of the session, and the docs commit of this handover lands on `dev` after it. A difference here is not a finding |
+| `main` / `dev` | take BOTH from `git ls-remote` — level at **`ca1b560`** at the end of s69. A later docs commit on `dev` alone is not a finding |
 | branches | ⚠️ `dev..main` is large (merge commits of `main`'s own history), so `--ff-only` will NOT work — merge with `--no-ff -F .commitmsg` |
-| prod DB | **`0191_fn_bodies_acl.sql`**, ledger **191/191**, unstamped 0 |
-| **next migration** | **0192** — the number comes FROM THE LEDGER, never from the folder |
-| `invariants_check(false)` | `ok:true`, **`checked:23`**, `failed:[]` (0191 did NOT move the counter) |
-| guard body | **raw** **`08014663728435627d2e993fa5ffbc77`**, length **116 213**, CR **0** |
-| `room_busy_slots` body | **raw** **`4d7b653117bb1b302666b31e829cc381`** (4883 chars); **normalized** **`83ddb89d6b1cd33ae19c8d314d29b73c`** — the latter is the pin in list №19 |
+| prod DB | **`0194_gcal_blind_disable.sql`**, ledger **194/194**, unstamped 0 |
+| **next migration** | **0195** — the number comes FROM THE LEDGER, never from the folder |
+| `invariants_check(false)` | `ok:true`, **`checked:23`**, `failed:[]` (neither 0193 nor 0194 moved the counter — 0194 widened check №13 instead of adding one) |
+| guard body | **raw** **`af390d6f00d8ef711a85e8f54e0f987b`**, length **126 449**, CR **0** |
+| `room_busy_slots` body | **normalized** **`83ddb89d6b1cd33ae19c8d314d29b73c`** is the pin in list №19 (0190). ⚠️ Its **raw** md5 changed in 0189 — do not compare the two recipes |
 | `auth_can_see_slot_details` | **normalized** **`19fe1040308640b29a5d8b1bb7506873`** — pinned by 0190; it is the function that DECIDES PII visibility |
-| list №19 | **33** signatures (was 30), and `;acl=` in EVERY one of the 33 rows (0191) |
-| toolchain | tsc **0**, eslint **0**, vitest **3241/3241** (631 suites), `db:gate` **191/191**, `npm run build` exit **0** |
-| stand revision | `EXPECTED_STANDS` **37**, all 37 green, **48 min** (s67 measurement) |
-| migration files | **193** `.sql` on disk vs **191** in the gate — NOT a hole: `0064_PRECHECK.sql` and `0066_PRECHECK.sql` are excluded by the gate on purpose, and its own code says so |
-| deploy stamp | compute `sha256(<40-char SHA of main>)[:12]` LOCALLY first, then fetch `GET /api/build`. ⚠️ Build latency measured at **~11 min** in s64, not the "4–9" the older docs claim |
+| list №19 | **40** signatures, `;acl=` in EVERY row. 30 (0190) → 33 (0191) → 38 (0192) → 40 (0193). Count it, do not trust this line: `select count(*) from regexp_matches(<check-19 segment of prosrc>, '[0-9a-f]{32}', 'g')` |
+| toolchain | tsc **0**, eslint **0**, vitest **3367/3367** (**649** suites in **108** test files — earlier editions of this table counted suites only, which is why the number jumped), `db:gate` **194/194**, `npm run build` exit **0** |
+| stand revision | `EXPECTED_STANDS` **40**, all 40 green. Budget 50–60 min and treat it as background work |
+| migration files | **196** `.sql` on disk vs **194** in the gate — NOT a hole: `0064_PRECHECK.sql` and `0066_PRECHECK.sql` are excluded by the gate on purpose, and its own code says so |
+| pg_cron | **10** jobs, all `active` (`outbox-deliver` 1 min, `gcal-backup-sync` 2 min, `sink-overdue` and `resolve-expired-incidents` 5 min, `prune-rate-limits` hourly, then 03:20/03:25/03:30/03:40/03:50 UTC). The old queue item «`docs/README.md` says 9, `cron.job` has 10» is **CLOSED** — both `docs/README.md` and `docs/ops-cron.md` say 10, fixed in s68 (`346a887`), re-verified against `cron.job` on 14.09. Do not re-open it |
+| deploy stamp | compute `sha256(<40-char SHA of main>)[:12]` LOCALLY first, then fetch `GET /api/build`. End of s69: **`40a95aa0dbae`**, confirmed live. ⚠️ Build latency measured at **~11 min** in s64, not the "4–9" the older docs claim |
 
-⚠️ **The guard body grew by 615 chars in 0190** (111 592 → 112 207): two pin
-rows plus the `extra:` branch. In s64 the length stayed the same while the md5
-changed (an equal-length md5 substitution) — both shapes are normal, so compare
-BOTH numbers and never infer "nothing changed" from the length alone.
+⚠️ **Compare BOTH the md5 AND the length of the guard body.** It grew 615 chars
+in 0190, then 116 213 → 126 449 across 0191–0194 (0192 alone is most of it); and
+in s64 the length stayed the SAME while the md5 changed (an equal-length
+substitution). Both shapes are normal — never infer "nothing changed" from the
+length alone.
 
 ### How to take the deploy stamp
 
@@ -430,14 +473,48 @@ deleted — `09fe3a92-0e5a-4adb-b719-ec0ed48a6922` and
     has a standing exception (frozen positions). The number was right; the
     argument was not. The review got it by parsing every `from:` in all 37.
 
+### Added by session 69
+
+27. **Can the field a guard filters on survive the failure it watches for?**
+    №13 filtered `where g.enabled` while the schema CHECK obliges every failure
+    to clear that flag — the fault deleted itself from the guard's view, and the
+    mirror was dead 11.5 days at `ok:true`. Sibling shape: a trigger guards
+    writes, and reads have no trigger (I-8). **A guard built on a mechanism that
+    is absent or off at the moment it is needed is not a guard.**
+28. **A pin a human must retype after every reprint is stale by construction.**
+    `gcal_pg_cron_smoke.sql` could not pass since 0186 — and a dead smoke is
+    silent, so nobody found out for eight migrations. Generate it or drop it.
+29. **Fixing production can destroy your red baseline.** The ready-made red for
+    №13 vanished the moment both mirrors were reconnected; the fix had to be
+    proven with a CONSTRUCTED red in a rolled-back transaction. That is more
+    expensive and more honest — a test resting on a live fault would have died
+    with the fault anyway.
+30. **«ЗАМІРЯНО» means the tool's bytes, not your retyping of them.** Twice in
+    s69 a paraphrase of `pg_get_constraintdef` sat under that word (missing the
+    space after the comma, missing `conname`).
+31. **Count, never recall.** Three numbers stated from memory in s69 were wrong:
+    `invariants_check(false)` occurrences (2, not 3 — the third was in a
+    comment, so count on COMMENT-STRIPPED code), probe asserts (9, not 7),
+    `EXPECTED_RED` (22, not 21). The last was masked by a stale anchor: **two
+    errors can cancel and look green.**
+32. **Your own smoke is a suspect too.** Mine set `enabled = true` after nulling
+    calendar/secret/role and died on the very CHECK the package was about.
+33. **Before calling a fork open, grep `DECISIONS-*`.** Six already-answered
+    forks were reported back to the owner as «waiting for you»; he had decided
+    them in writing the day before. The plan is older than the decisions — which
+    is why it now opens with a measured status table.
+
 ---
 
 ## QUEUE — a menu, not an order
 
-⚠️ **The live queue for session 68 is in `claude/session68-start-prompt.md`.**
+⚠️ **The live queue for session 70 is in `claude/session70-start-prompt.md`.**
 The list below is the s66 edition, kept because several items carry measurements
-that are still valid. **Closed since:** 0191 (queue item 1 — `proacl` into the
-`attrs` of check №19) was applied in s67.
+that are still valid. **Closed since it was written:** queue item 1 (`proacl`
+into the `attrs` of №19) by 0191; items 3 and 4's «three definer functions
+pinned by nothing» by 0192 (`check_no_overlap`/`check_not_in_past` are now a
+written ACCEPTED RISK, not a debt); item 6b (cron registry) in s68; item 6d
+(`assertNoLiveDelivery` and `cleanup`) in s68.
 
 ## QUEUE FOR SESSION 66 — history
 
@@ -630,8 +707,9 @@ starting a revision — and remember that the writer is not always a stand.
 ⚠️ **`falsify-all.mjs` REFUSES to start on a dirty tree.** **The order is: gate →
 commit → revision on a clean tree.** Or `--allow-dirty` if you deliberately
 measure the working copy.
-⚠️ **A full revision takes 40–50 min** (s64: 50 min for all 37, `falsify-u72`
-alone 471 s). Plan it as background work, not as a step.
+⚠️ **A full revision takes 40–50 min at 37 stands** (s64: 50 min, `falsify-u72`
+alone 471 s) — **budget 50–60 min now that `EXPECTED_STANDS` is 40**. Plan it as
+background work, not as a step.
 ⚠️ **A stand that is red with an EMPTY facts table "did not finish"** — that is
 not "the guard does not hold". Run that stand separately before believing it.
 ⚠️ **A TOOL TIMEOUT DOES NOT CANCEL THE COMMAND.** `start_process` returning
@@ -706,16 +784,28 @@ it resets to the reset value, which for a placeholder GUC is the empty string.
 
 1. **`AGENTS.md`** — the stable rules. "Конвенції коду" holds the time canon; the
    0122 trap is in the migrations section.
-2. **`claude/radflow-handoff.md`** — the durable state, FRESHEST first. It opens
-   with «СОСТОЯНИЕ НА КОНЕЦ с64»; below it, one block per session in reverse
-   order.
-3. **`claude/plan-s57.md`** — the live queue and the five forks with their
-   measurements.
+2. **`claude/radflow-handoff.md`** — the durable state, FRESHEST first; one
+   block per session in reverse order. Check the date line of its top block
+   before believing it.
+3. **`docs/audit/PLAN-audit-completion-2026-09-13.md`** — the audit plan.
+   ⚠️ **Read its «СТАТУС НА 14.09» table FIRST**; everything below that table is
+   dated 13.09 and lists already-decided forks as open.
+   **`docs/audit/ToDo_Production.md`** — everything gated on the first real
+   centre (key rotation, domain, Google `Testing → In production`, restore
+   rehearsal, leaked-password) plus the accepted risks that expire at launch.
+   **`docs/audit/DECISIONS-2026-09-13-s68.md`** and **`-2026-09-14-s69.md`** —
+   the owner's answers; grep these before calling anything open.
+   `claude/plan-s57.md` — older queue, kept for its measurements.
 4. **`docs/HANDOVER.md`** — the operational handover (access, environments,
    runbooks). ⚠️ Historically it lied in places; §6 "why it is like this" is the
    valuable part. Check its own date line.
-5. **`docs/PRODUCT_OVERVIEW.md`** — the product and the schema evolution. ⚠️ The
-   paragraph marked ⛔ near the top is HISTORY (2026-07-18), not current state.
+5. **`docs/PRODUCT_OVERVIEW.md`** — the product and the schema evolution, level
+   with 0194 (rewritten 14.09: five whole modules and 16 tables were missing from
+   it — Google Calendar mirror, the `/journal` + unread-markers pair, the
+   RIS/PACS integration surface, `/search`, clinic deletion, and the pg_cron
+   layer). ⚠️ The paragraph marked ⛔ near the top is HISTORY (2026-07-18), not
+   current state. ⚠️ Its header and §7 must be edited in ONE edit: the s67
+   edition updated the header to «prod on 0191» while §7 still ended at 0190.
 6. **`docs/audit/RADFLOW_DEEP_TECHNICAL_FUNCTIONAL_AUDIT_2026-08-27.md`** — the
    audit journal. **The verdict is not issued** and cannot go above CONDITIONAL
    GO until the key rotation.
@@ -809,7 +899,7 @@ and the PREMISES of the tasks (`select now()`).
 
 ```
 scripts\full-check.bat                  # the full gate in one background run
-node scripts/falsify-all.mjs            # revision of ALL 37 stands (40-45 min, NOT a gate)
+node scripts/falsify-all.mjs            # revision of ALL 40 stands (50-60 min, NOT a gate)
 node scripts/falsify-all.mjs u70 u72    # only the named ones
 node scripts/falsify-all.mjs --allow-dirty
 node scripts/falsify-<stand>.mjs        # one stand (the list is in falsify-all.mjs)
@@ -826,7 +916,7 @@ select public.invariants_check(false);
 
 `falsify-all` exits 1 if any stand is red, and **2** if the revision never
 started (dirty tree without `--allow-dirty`, broken `git diff`). Inside it:
-`EXPECTED_STANDS = 37`, a 45-min timeout per stand, tree comparison BY CONTENT
+`EXPECTED_STANDS = 40`, a 45-min timeout per stand, tree comparison BY CONTENT
 after every stand, a text parse of each stand's verdict as a backup channel, and
 a floor on the number of addressed mutations — a stand that ran zero, or whose
 summary is unrecognised, is RED.
@@ -857,21 +947,29 @@ allowlist) — use the owner's machine or Claude in Chrome.
    start on a dirty tree) → merge → push → deploy → measure the deploy stamp in
    BOTH directions.
 6. At the end of the session update `claude/radflow-handoff.md`,
-   `docs/PRODUCT_OVERVIEW.md`, `docs/HANDOVER.md`, `AGENTS.md` (if a new
-   invariant appeared), `docs/ops-cron.md` (if the number of checks moved), this
-   file and `claude/session<N+1>-start-prompt.md` — and the copies in Claude
-   Projects.
+   `docs/PRODUCT_OVERVIEW.md` (**header AND §7 in one edit**), `docs/HANDOVER.md`,
+   `AGENTS.md` (if a new invariant appeared), `docs/ops-cron.md` (if the number
+   of checks or jobs moved), `docs/audit/PLAN-audit-completion-2026-09-13.md`
+   (its status table), `docs/audit/ToDo_Production.md` (anything newly gated on
+   the first real centre — mark closed items ✅ with the date and the
+   measurement, never delete the line), this file and
+   `claude/session<N+1>-start-prompt.md` — and the copies in Claude Projects.
+   ⚠️ **This file and the start prompt must come from the SAME edit**, and both
+   only AFTER the last stand has finished — a doc edit during a revision is
+   silently reverted.
 
 ---
 
 ## THE ONE THING TO CARRY FORWARD
 
-Across sessions 50–63 the same mistake repeats in different costumes: **a
+Across sessions 50–69 the same mistake repeats in different costumes: **a
 statement made after reading PART of the picture.** Eight times in session 50, a
 scanner list falsified four times in session 55, a doc's list found stale for the
-eighth time in session 57 — and in session 63 a performance number measured
-honestly on the wrong branch. The mechanism never changes: a plausible claim,
-verified in part, written down as fact.
+eighth time in session 57, a performance number measured honestly on the wrong
+branch in session 63 — and in session 69 three occurrence counts stated from
+memory, a paraphrase filed under the word «ЗАМІРЯНО», and six already-decided
+forks reported back to the owner as open. The mechanism never changes: a
+plausible claim, verified in part, written down as fact.
 
 Three habits that actually catch it, all cheap:
 
