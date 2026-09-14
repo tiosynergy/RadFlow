@@ -41,7 +41,11 @@ quietly patch the doc.
   referrers, while RLS gives them zero. **Latent, not live** — prod has zero
   such rows. The cure is NOT `status = 'active'` (that would break invitation
   acceptance — trap С-5); the PAYLOAD is narrowed by status instead.
-- **0196 — fork Р3 closed: `search_path` is pinned BY VALUE in check №2.**
+- **0196 — `search_path` is pinned BY VALUE in check №2.** ⚠️ **About the name:**
+  s70 called this fork «Р3», because the s70 start prompt did — but `Р3` in the
+  plan's own fork table is a DIFFERENT question («extend №19 to the 38 schedule
+  trigger functions»), and that one is **still OPEN**. Wherever an s70 document
+  says «Р3», read `search_path`.
   34 definer functions moved to the canon `public, pg_temp`. A probe on prod
   proved that what defends is the real schema standing BEFORE `pg_temp` —
   `pg_catalog, pg_temp` and the Supabase recipe `search_path = ''` do **not**
@@ -89,6 +93,12 @@ quietly patch the doc.
 5. **A number in a commit message that nobody counted:** «41 файл стендів» —
    41 is 40 stands **plus the runner** `falsify-all.mjs`, which also matches the
    mask. Corrected in `PR-0196`, not in the pushed commit.
+6. **I used the name «Р3» for a whole session without checking it against the
+   plan's fork table**, where `Р3` means something else that is still open. The
+   name came from the start prompt and I never cross-read it. The plan itself
+   carries a warning about exactly this («два разных `Р3` в одном аудите») —
+   written after the same thing happened with `Р69-*`. **Names from a prompt
+   are inputs, not facts: verify them like any other measurement.**
 
 ## Queue for session 71 — a menu, not an order
 
