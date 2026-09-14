@@ -64,6 +64,15 @@ that is what found what neither review round saw.
   that my headline measurement had been taken on the wrong branch, while the
   access-surface lens came back clean. One lens would have shipped the lie.
 - **Falsifying a guard requires a NAMED red test and a GREEN baseline.**
+- ⚠️ **Ask of every guard: can the field it filters on survive the very failure
+  it watches for?** s69 case (I-7): №13 filtered `where g.enabled`, while the
+  schema CHECK makes `enabled = true` impossible without `status='ready'` — so
+  every failure was OBLIGED to clear that flag and vanish from the guard's view.
+  Same class as I-8 (a trigger guards writes; reads have no trigger). A guard
+  built on a mechanism that is absent or off at the moment it is needed is not a
+  guard. Second half of the same rule: a pin that a human must retype after every
+  reprint goes stale by construction — s69 found `gcal_pg_cron_smoke.sql` unable
+  to pass since 0186 for exactly that reason.
 - **Live production check in BOTH directions, by measurement.** If there is
   nothing to check on, say so plainly instead of faking a check.
 - **Production data only by an explicit list of ids** with before-images.
@@ -71,6 +80,39 @@ that is what found what neither review round saw.
   subagent prompt.
 - **`npm audit fix --force` is FORBIDDEN.** dev and prod are **ONE DB**.
 - **Never ask for passwords.**
+
+### ⚠️ THE PLAN IS OLDER THAN THE DECISIONS — check before you call a fork open
+
+Added after s69 burned on it. `PLAN-audit-completion-2026-09-13.md` lists forks
+as open because it was written **before** the owner answered them; the answers
+live in `docs/audit/DECISIONS-2026-09-13-s68.md` (eleven forks) and
+`DECISIONS-2026-09-14-s69.md` (Р69-*). I reported six already-decided items back
+to the owner as "waiting for you" — he had decided them the day before, in
+writing, and the journal even said so («блок 5 плана закрыт»).
+
+**Rule: before naming anything as "needs your decision", grep the DECISIONS-\*
+files for it.** Same class as the journal rule the plan itself enforces: a
+verdict read off a stale file is a verdict on false input.
+
+⚠️ **And keep numbering apart.** `Р1…Р5` = FORKS of the plan/packet.
+`Р69-1…Р69-3` = decisions of s69. Two different `Р3` in one audit is exactly the
+drift that plan item 0.4 exists to prevent.
+
+### Production-gating work goes to `docs/audit/ToDo_Production.md`
+
+Anything whose revision criterion is "the first real center", or that must be
+done before real patients appear — key rotation, domain, Google OAuth
+`Testing → In production`, recovery drill, leaked-password toggle, accepted
+risks that expire at launch — is collected there in ONE list, not scattered
+across plan blocks 3/5/6 and decision files. When you close such an item, mark
+it ✅ with the date and the measurement, do not delete the line.
+
+### Report short, in plain words
+
+The owner reads the report, not the transcript. Lead with what changed in
+production, then what he must decide, then what is left. Numbers where they
+carry weight (md5, ledger, counts), plain language everywhere else. No retelling
+of steps he watched happen.
 
 ### When to ask the owner anyway
 
