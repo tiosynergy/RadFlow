@@ -19,9 +19,9 @@ feature branch, nothing half-applied.
 A discrepancy with the table below is a **FINDING**: name it out loud, do not
 quietly patch the doc.
 
-| what | expected (measured 2026-09-14, end of s70) |
+| what | expected (measured 2026-09-14/15, end of s70) |
 |---|---|
-| `main` / `dev` | take BOTH from `git ls-remote` — they were LEVEL at the end of s70, with the docs commit on top of merge `a3d00b3`. No live feature branch |
+| `main` / `dev` | take BOTH from `git ls-remote` — they were LEVEL at the end of s70 at **`efec81f`** (docs commit on top of merge `a3d00b3`). No live feature branch |
 | prod DB | **`0196_secdef_search_path_value.sql`**, ledger **196/196**, unstamped 0 → next is **0197, FROM THE LEDGER** |
 | `invariants_check(false)` | `ok:true`, **`checked:23`**, `failed:[]` |
 | guard body | **raw** (`md5(replace(prosrc, chr(13), ''))`) **`ba6474a7b31614bd3c4aacfc7c6e1744`**, length **129 854**, CR **0** |
@@ -30,7 +30,7 @@ quietly patch the doc.
 | policy digest (№16) | **`3e5b95410350`** (was `1303b9136217` — `audit_read_ceo` narrowed) |
 | toolchain | tsc 0, eslint 0, vitest **3370/3370** (**649** suites in **108** test files), `db:gate` **196/196**, build exit 0 |
 | stands | `EXPECTED_STANDS` **40**, full revision **40/40** green |
-| deploy stamp | compute `sha256(<current main SHA>)[:12]` **locally FIRST**, then fetch `/api/build` and compare — a fixed value here would rot with the next commit. Last converged pair of s70: merge `a3d00b3` → **`1afc6913e00e`**, and the previous deploy `21e8a9e` → `3a1f3466b33d` (both directions confirmed) |
+| deploy stamp | compute `sha256(<current main SHA>)[:12]` **locally FIRST**, then fetch `/api/build` and compare — a fixed value here would rot with the next commit. Converged pairs of s70: `a3d00b3` → `1afc6913e00e`, **`efec81f` → `cba61a9702b6`**, and the previous deploy `21e8a9e` → `3a1f3466b33d` |
 | pg_cron | **10** jobs, all active |
 
 ## What s70 did
