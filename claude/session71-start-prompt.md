@@ -21,7 +21,7 @@ quietly patch the doc.
 
 | what | expected (measured 2026-09-14/15, end of s70) |
 |---|---|
-| `main` / `dev` | take BOTH from `git ls-remote` — they were LEVEL at the end of s70 at **`efec81f`** (docs commit on top of merge `a3d00b3`). No live feature branch |
+| `main` / `dev` | take BOTH from `git ls-remote` — they were LEVEL at the end of s70, at **`efec81f` or one of the doc commits on top of it** (merge `a3d00b3` is 0196 itself). ⚠️ A file cannot name the SHA of the commit that contains it, so this row names a FLOOR, not an equality: `ls-remote` is the measurement. No live feature branch |
 | prod DB | **`0196_secdef_search_path_value.sql`**, ledger **196/196**, unstamped 0 → next is **0197, FROM THE LEDGER** |
 | `invariants_check(false)` | `ok:true`, **`checked:23`**, `failed:[]` |
 | guard body | **raw** (`md5(replace(prosrc, chr(13), ''))`) **`ba6474a7b31614bd3c4aacfc7c6e1744`**, length **129 854**, CR **0** |
