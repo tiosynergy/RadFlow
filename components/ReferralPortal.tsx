@@ -92,7 +92,10 @@ type BusySlot = {
 type SearchClinic = { id: string; name: string; city: string | null; modalities: string[] };
 type CenterCardData = {
   name?: string; city?: string | null; policy?: string | null; note?: string | null;
-  admins?: Array<{ full_name?: string | null; phone?: string | null; email?: string | null }>;
+  /* 0195: email адміністратора БД більше не віддає (він у продукті — логін),
+     і контакт приходить рівно один. Поле знято й з типу навмисно: доки воно
+     тут, `tsc` не скаже, що екран читає те, чого в payload немає. */
+  admins?: Array<{ full_name?: string | null; phone?: string | null }>;
   rooms?: RoomOpt[];
 };
 type ApiResult = { ok: boolean; data: any }; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -1384,7 +1387,9 @@ function CenterDetails({ data, loading }: { data?: CenterCardData | null; loadin
   if (!data) return <div style={panel}><div style={{ color: "var(--text-muted)", fontSize: "0.8125rem" }}>Не вдалося завантажити деталі центру.</div></div>;
   const admins = Array.isArray(data.admins) ? data.admins : [];
   const rooms = Array.isArray(data.rooms) ? data.rooms : [];
-  const realEmail = (e?: string | null) => e && !/@referrer\.radflow\.local$/i.test(e);
+  /* 0195: гелпера `realEmail` більше немає — email у payload не приходить.
+     Він відсіювався тут лише через синтетичні `@referrer.radflow.local`;
+     тепер БД його взагалі не віддає, і фільтрувати нема чого. */
   const lbl = { color: "var(--text-muted)", fontSize: "0.71875rem", textTransform: "uppercase" as const, letterSpacing: ".04em", margin: "0 0 8px" };
   return (
     <div style={panel}>
@@ -1402,14 +1407,12 @@ function CenterDetails({ data, loading }: { data?: CenterCardData | null; loadin
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
           {admins.map((a, i) => {
             const phone = a.phone || "";
-            const email = realEmail(a.email) ? a.email : "";
             return (
               <div key={i} style={{ fontSize: "0.8125rem" }}>
                 <div style={{ fontWeight: 600 }}>{a.full_name || "Адміністратор"}</div>
                 <div style={{ color: "var(--text-secondary)", display: "flex", gap: 16, flexWrap: "wrap", marginTop: 3 }}>
                   {phone ? <a href={"tel:" + phone} style={{ color: "var(--blue-text)", textDecoration: "none" }}>📞 {phone}</a> : null}
-                  {email ? <a href={"mailto:" + email} style={{ color: "var(--blue-text)", textDecoration: "none" }}>✉ {email}</a> : null}
-                  {!phone && !email ? <span style={{ color: "var(--text-muted)" }}>контакти не вказані</span> : null}
+                  {!phone ? <span style={{ color: "var(--text-muted)" }}>контакти не вказані</span> : null}
                 </div>
               </div>
             );
