@@ -147,11 +147,21 @@ const MUTATIONS = [
      зроблений». ---------------------------------------------------------- */
   {
     /* Перший із трьох вирішувачів направниківського доступу. Зникнення рядка
-       мусить назвати ПІДПИС, а не лише зрушити лічильник. */
+       мусить назвати ПІДПИС, а не лише зрушити лічильник.
+       ⚠️ ПЕРЕЯКОРЕНО в с70 після 0196: пакет перевів 34 definer-функції на
+          канон `search_path = public, pg_temp`, тож поле `;cfg=` у ДЕВʼЯТИ
+          рядках списку №19 змінилось. Якір тут — ПОВНИЙ рядок (коротким не
+          обійтись: мутація ВИДАЛЯЄ рядок, а префікс лишив би хвіст `attrs`
+          синтаксичним сміттям і зробив би стенд червоним не з тієї причини).
+          Тому він протухає на кожному такому передруку — ГОЛОСНО, через
+          «ЯКІР НЕ УНІКАЛЬНИЙ (0)», а не тихим зеленінням. Лікування —
+          переякорити, а не підганяти прозу під якір. Порівняй із B2 нижче:
+          там мутація ПЕРЕЙМЕНОВУЄ, тож короткий префікс до md5 достатній і
+          передрук його не чіпає. */
     id: "B1", file: "mig", green: false,
     expect: /auth_can_refer/,
     what: "рядок auth_can_refer прибрано зі списку №19 (новий пін 0191)",
-    from: "      ('auth_can_refer(c uuid)','0a178709faea2ab0bb55fbb098001bf4','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public;acl==X/postgres,anon=X/postgres,authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),\n",
+    from: "      ('auth_can_refer(c uuid)','0a178709faea2ab0bb55fbb098001bf4','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl==X/postgres,anon=X/postgres,authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),\n",
     to: "",
   },
   {
@@ -174,8 +184,13 @@ const MUTATIONS = [
     id: "B3", file: "mig", green: false,
     expect: /КОЖНОМУ рядку/,
     what: "`;acl=` прибрано з ОДНОГО літерала (вираз у cur цілий)",
-    from: "      ('auth_referrer_clinics()','ef77618a170ca3065c2d1673a3a13731','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public;acl==X/postgres,anon=X/postgres,authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),",
-    to: "      ('auth_referrer_clinics()','ef77618a170ca3065c2d1673a3a13731','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public'),",
+    /* ⚠️ ПЕРЕЯКОРЕНО в с70 після 0196 — з тієї самої причини, що й B1:
+       поле `;cfg=` у цьому рядку стало `search_path=public, pg_temp`.
+       Обидва боки пари оновлені; `to` мусить лишити рядок БЕЗ `;acl=`, але
+       з НОВИМ `;cfg=`, інакше мутація міняла б два поля замість одного і
+       доводила б не те, що обіцяє. */
+    from: "      ('auth_referrer_clinics()','ef77618a170ca3065c2d1673a3a13731','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl==X/postgres,anon=X/postgres,authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),",
+    to: "      ('auth_referrer_clinics()','ef77618a170ca3065c2d1673a3a13731','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp'),",
   },
   {
     /* ⚠️ Доводить, що зняття БЛОКОВИХ коментарів у `CODE`
