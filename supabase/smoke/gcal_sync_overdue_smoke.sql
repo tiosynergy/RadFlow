@@ -73,7 +73,18 @@ begin
   if (select count(*) from pg_temp._s0194_before) < 1 then
     raise exception 'SMOKE_FAIL: у таблиці зʼєднань нема ні одного рядка — зонд неможливий';
   end if;
-  select clinic_id into v_clinic from pg_temp._s0194_before order by clinic_id limit 1;
+  -- ⚠️ ЗОНДУЄМО ПОВНІСТЮ НАЛАШТОВАНЕ дзеркало, і це вимога секції f6: вона
+  --    вертає рядок в `enabled = true`, а `gcal_enabled_invariant_chk` не
+  --    пускає цього без календаря, секрета й ролі. На недоналаштованому рядку
+  --    смоук упав би посеред прогону сирим `23514` — краще сказати одразу.
+  select clinic_id into v_clinic
+    from pg_temp._s0194_before
+   where calendar_id is not null and refresh_secret_id is not null
+     and access_role is not null
+   order by clinic_id limit 1;
+  if v_clinic is null then
+    raise exception 'SMOKE_FAIL: нема жодного ПОВНІСТЮ налаштованого дзеркала (календар+секрет+роль) — секція f6 неможлива; підключіть Google Calendar хоча б в одному центрі';
+  end if;
   v_c8 := left(v_clinic::text, 8);
 
   -- ── 0194: f3) АВАРІЙНО ВИМКНЕНЕ → offender із МІТКОЮ ГІЛКИ ──
@@ -159,10 +170,21 @@ begin
   --    визначенням), а секції f/f2 чужого смоука, які її колись перевіряли,
   --    сьогодні не виконуються взагалі (див. шапку). Лишався текстовий асерт у
   --    тестах — тобто граматика, не поведінка.
-  update public.google_calendar_connections
+  -- ⚠️ ПОЛЯ ПОВЕРТАЮТЬСЯ З ОБРАЗУ «ДО», і це не акуратність, а НЕОБХІДНІСТЬ:
+  --    секція f5 щойно обнулила календар, секрет і роль (того вимагає
+  --    `gcal_not_connected_empty_chk`), а `gcal_enabled_invariant_chk` не
+  --    пускає `enabled = true` без них. Перша редакція f6 ставила лише
+  --    `enabled/status/last_sync_at` — і смоук упав живим
+  --    `23514 violates check constraint "gcal_enabled_invariant_chk"`.
+  --    Тобто рівно той інваріант, заради якого написаний увесь пакет,
+  --    спіймав мене на моєму ж зонді.
+  update public.google_calendar_connections g
      set enabled = true, status = 'ready', last_error_code = null,
+         calendar_id = b.calendar_id, refresh_secret_id = b.refresh_secret_id,
+         access_role = b.access_role,
          last_sync_at = now() - interval '2 hours'
-   where clinic_id = v_clinic;
+    from pg_temp._s0194_before b
+   where b.clinic_id = g.clinic_id and g.clinic_id = v_clinic;
   v_res := public.invariants_check(false);
   select f->'offenders' into v_off
     from jsonb_array_elements(v_res->'failed') f
