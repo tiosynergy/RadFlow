@@ -149,7 +149,15 @@ begin
      or not has_function_privilege('authenticated', 'public.referral_center_card(uuid)', 'EXECUTE')
      or not has_function_privilege('authenticated', 'public.search_referrers(text)', 'EXECUTE')
      or not has_function_privilege('authenticated', 'public.services_import_rpc(jsonb, uuid)', 'EXECUTE')
-     or not has_function_privilege('authenticated', 'public.sink_overdue_scheduled()', 'EXECUTE')
+     -- ⚠️ 0195 ЗНЯЛА звідси `sink_overdue_scheduled()`, і це не послаблення
+     -- списку, а звуження поверхні. Замір с70: у функції НЕМАЄ ролевого гейта
+     -- (єдина перевірка — `if v_clinic is null then return 0`, її проходить і
+     -- радіолог) і НЕМАЄ жодного виклику в коді (суцільний прохід по 419
+     -- файлах `.ts/.tsx/.js/.mjs`; зелена база — `.rpc("queue_set_status_rpc")`
+     -- дає 2). Роботу робить сестра `sink_overdue_scheduled_all()` під крон-ом
+     -- від `service_role`. Позитивна половина для sink живе тепер у
+     -- `referral_card_scope_smoke.sql` (d3) — там перевіряється, що
+     -- `service_role` грант ЗБЕРІГ, інакше крон помер би тихо.
      or not has_function_privilege('authenticated', 'public.save_schedule_override(date, boolean, text, jsonb, text)', 'EXECUTE')
      -- 0169 (Ф4-8): без цього рядка revoke БЕЗ grant лишив би вимірювач
      -- годинника мертвим для клієнта, і жоден зонд не почервонів би.
