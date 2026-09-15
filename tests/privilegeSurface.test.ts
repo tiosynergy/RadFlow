@@ -246,7 +246,12 @@ describe("сторож СЬОГОДНІ (останній передрук, а �
        Грант на PUBLIC `revoke … from anon` не знімає взагалі. */
     expect(latest.body).toMatch(/left join pg_namespace n on n\.oid = d\.defaclnamespace/);
     expect(latest.body).toMatch(/d\.defaclnamespace = 0 or n\.nspname = 'public'/);
-    expect(latest.body).toMatch(/a\.grantee = 0/);
+    /* ⚠️ 0201: голий `a\.grantee = 0` є тепер і в №26 `role_surface` — «чужий
+       сторож» (U-80б). Ревізія стендів с74 це показала: мутація N20 (PUBLIC
+       випав із гілки (b)) лишала цей тест ЗЕЛЕНИМ за рахунок №26. Тому пін — на
+       ПОВНИЙ предикат гілки (b), а не на підрядок. */
+    expect(latest.body).toContain(
+      "and (a.grantee = 0 or a.grantee::regrole::text in ('anon', 'authenticated'))");
   });
 
   it("зникла таблиця дає offender, а не вбиває всю функцію", () => {
