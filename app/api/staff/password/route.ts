@@ -80,7 +80,25 @@ export async function POST(req: Request) {
 
   const { error: uErr } = await admin.auth.admin.updateUserById(targetId, { password: newPass });
   if (uErr) return NextResponse.json({ error: safeDbError("api/staff/password", uErr) }, { status: 400 });
-  await admin.from("profiles").update({ password_set: passwordSet, invite_token: inviteToken }).eq("id", targetId);
+
+  /* 0197. Помилку цього апдейту КОВТАЛИ, і ціна була не косметична: пароль у
+     auth вже змінено, а `invite_token`/`password_set` — ні. Для `reset` це
+     означає, що роут повертав адміну посилання `/set-password?token=…`, якого
+     в профілі НЕМАЄ (тобто мертве), при `password_set = true`, що вже брехня:
+     старий пароль не працює, новий — випадковий рядок, який ніхто не бачив.
+     Акаунт ставав невідновлюваним тихо. Відкотити зміну пароля не можна (старого
+     хешу в нас немає), тож єдина чесна реакція — не мовчати: 500 із прямою
+     інструкцією повторити скидання. Повтор безпечний: він згенерує новий пароль
+     і новий токен, тобто операція ідемпотентна за наслідком. */
+  const { error: prErr } = await admin
+    .from("profiles").update({ password_set: passwordSet, invite_token: inviteToken }).eq("id", targetId);
+  if (prErr) {
+    safeDbError("api/staff/password.profile", prErr); // деталі — в лог
+    return NextResponse.json(
+      { error: "Пароль у системі входу змінено, але картку профілю оновити не вдалося. Повторіть скидання пароля." },
+      { status: 500 }
+    );
+  }
 
   /* Пакет 39 (с59, ревʼю Б пакета 38): скидання/встановлення пароля — це
      ЄДИНИЙ «гучний» шлях до чужого акаунта, що лишився після RF-09 (адмін
