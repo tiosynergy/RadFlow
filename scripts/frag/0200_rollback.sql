@@ -38,7 +38,9 @@ declare
   --           (ревʼю с74 це спростувало замірами тіл). Решта 18 definer-
   --           функцій, доступних `authenticated` і поза списком, здебільшого
   --           САМІ несуть гейт: у 12 це `auth_is_admin()` чи `auth_is_desk()`,
-  --           ще в 4 — лише `auth.uid()`, дві пошукові гейта не мають.
+  --           у 2 — хелпери направника й радіолога (`auth_can_refer`,
+  --           `auth_referrer_can_book_room`, `auth_radiologist_room_ok`), у 2 —
+  --           лише `auth.uid()`, дві пошукові гейта не мають.
   --           Вихолощення такого гейта МОВЧАЗНЕ. Обсяг «три» заданий
   --           власником; чи пінити решту — окреме рішення власника, як і
   --           місце `integration_apply_status` (недоступна `authenticated`).
@@ -95,14 +97,14 @@ begin
     raise exception '0200-відкат: invariants_check не знайдено';
   end if;
   v_src := replace(v_body, chr(13), '');
-  if md5(v_src) is distinct from '793ebcc08997fc54d36472cc3fd2ff9b' or length(v_src) <> 140125 then
+  if md5(v_src) is distinct from '00146b182c9a366094678ccdb10f35aa' or length(v_src) <> 140268 then
     raise exception '0200-відкат: у проді не 0200 (% / %) — правка наосліп заборонена', md5(v_src), length(v_src);
   end if;
   v_head := substr(v_def, 1, position('AS $function$' in v_def) + 12);
   -- ⚠️ САМОПІН №25 мусить збігатися з тілом ДО правки. Якщо ні — на проді
   --    вже дрейф, і чинити його цим пакетом не можна.
   if obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc')
-     is distinct from 'guard_body_md5=793ebcc08997fc54d36472cc3fd2ff9b;len=140125' then
+     is distinct from 'guard_body_md5=00146b182c9a366094678ccdb10f35aa;len=140268' then
     raise exception '0200-відкат: самопін % не збігається з тілом 0200 — спершу розібратись',
       coalesce(obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc'), '(NULL)');
   end if;

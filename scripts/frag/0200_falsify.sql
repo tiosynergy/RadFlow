@@ -32,7 +32,7 @@ begin
         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
        where n.nspname = 'public' and p.proname = 'invariants_check'
          and pg_get_function_identity_arguments(p.oid) = 'p_write boolean')
-     is distinct from '793ebcc08997fc54d36472cc3fd2ff9b/140125|guard_body_md5=793ebcc08997fc54d36472cc3fd2ff9b;len=140125' then
+     is distinct from '00146b182c9a366094678ccdb10f35aa/140268|guard_body_md5=00146b182c9a366094678ccdb10f35aa;len=140268' then
     raise exception '0200-фальсифікація: у проді не тіло/пін 0200 — спершу розібратись';
   end if;
 
@@ -64,8 +64,8 @@ begin
 end;
 $falsify$;
 
--- ⚠️ ПІСЛЯ — окремим запитом, що прод не змінився ні на байт:
---      select p.proname, md5(p.prosrc), p.proconfig, p.proacl
---        from pg_proc p where p.pronamespace = 'public'::regnamespace
---         and p.proname in ('auth_is_desk','schedule_from_waitlist_rpc','set_waitlist_status_rpc');
---      select public.invariants_check(false);   -- ok:true, checked 25
+-- ⚠️ ПІСЛЯ — окремим запитом, що прод не змінився: сирий md5 тут нічого не
+--    доведе (у списку — нормалізований), тож доказ — сам сторож:
+--      select public.invariants_check(false);
+--      -- очікування: `guard_fn_bodies` ВІДСУТНЯ в failed, checked 25
+--      -- (до `npm run db:gate` у failed лишається лише `ledger_md5`).

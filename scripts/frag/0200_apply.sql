@@ -52,7 +52,9 @@ $p$,
   --           (ревʼю с74 це спростувало замірами тіл). Решта 18 definer-
   --           функцій, доступних `authenticated` і поза списком, здебільшого
   --           САМІ несуть гейт: у 12 це `auth_is_admin()` чи `auth_is_desk()`,
-  --           ще в 4 — лише `auth.uid()`, дві пошукові гейта не мають.
+  --           у 2 — хелпери направника й радіолога (`auth_can_refer`,
+  --           `auth_referrer_can_book_room`, `auth_radiologist_room_ok`), у 2 —
+  --           лише `auth.uid()`, дві пошукові гейта не мають.
   --           Вихолощення такого гейта МОВЧАЗНЕ. Обсяг «три» заданий
   --           власником; чи пінити решту — окреме рішення власника, як і
   --           місце `integration_apply_status` (недоступна `authenticated`).
@@ -166,8 +168,8 @@ begin
     end if;
     v_new := replace(v_new, v_from[i], v_to[i]);
   end loop;
-  if md5(v_new) is distinct from '793ebcc08997fc54d36472cc3fd2ff9b' or length(v_new) <> 140125 then
-    raise exception '0200: підстановка дала % / %, а файл 0200 це 793ebcc08997fc54d36472cc3fd2ff9b / 140125',
+  if md5(v_new) is distinct from '00146b182c9a366094678ccdb10f35aa' or length(v_new) <> 140268 then
+    raise exception '0200: підстановка дала % / %, а файл 0200 це 00146b182c9a366094678ccdb10f35aa / 140268',
       md5(v_new), length(v_new);
   end if;
   execute v_head || v_new || '$function$';
@@ -176,8 +178,8 @@ begin
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and p.proname = 'invariants_check'
      and pg_get_function_identity_arguments(p.oid) = 'p_write boolean';
-  if md5(v_src) is distinct from '793ebcc08997fc54d36472cc3fd2ff9b' or length(v_src) <> 140125 then
-    raise exception '0200: у БД лягло % / % замість 793ebcc08997fc54d36472cc3fd2ff9b / 140125', md5(v_src), length(v_src);
+  if md5(v_src) is distinct from '00146b182c9a366094678ccdb10f35aa' or length(v_src) <> 140268 then
+    raise exception '0200: у БД лягло % / % замість 00146b182c9a366094678ccdb10f35aa / 140268', md5(v_src), length(v_src);
   end if;
 
   -- ── Самопін №25 — у ТІЙ САМІЙ транзакції, інакше сторож червоніє ────────
@@ -185,8 +187,8 @@ begin
   --    генератор: `length()` у Postgres рахує СИМВОЛИ, `.length` у JS —
   --    одиниці UTF-16. Розбіжність ЗУПИНЯЄ накат (урок 0198).
   v_pin_db := 'guard_body_md5=' || md5(v_src) || ';len=' || length(v_src);
-  if v_pin_db is distinct from 'guard_body_md5=793ebcc08997fc54d36472cc3fd2ff9b;len=140125' then
-    raise exception '0200: пін із БД (%) розійшовся з піном із файлу (guard_body_md5=793ebcc08997fc54d36472cc3fd2ff9b;len=140125)', v_pin_db;
+  if v_pin_db is distinct from 'guard_body_md5=00146b182c9a366094678ccdb10f35aa;len=140268' then
+    raise exception '0200: пін із БД (%) розійшовся з піном із файлу (guard_body_md5=00146b182c9a366094678ccdb10f35aa;len=140268)', v_pin_db;
   end if;
   execute format('comment on function public.invariants_check(boolean) is %L', v_pin_db);
   -- Читання НАЗАД: `comment on` мовчазний, «виконалось» — не доказ.
@@ -211,8 +213,8 @@ end;
 $apply$;
 
 -- Читання назад: очікування
---   guard_md5 = 793ebcc08997fc54d36472cc3fd2ff9b, guard_len = 140125,
---   guard_pin = guard_body_md5=793ebcc08997fc54d36472cc3fd2ff9b;len=140125, ledger_rows = 200, ledger_last = 0200_pin_desk_and_waitlist_rpcs.sql
+--   guard_md5 = 00146b182c9a366094678ccdb10f35aa, guard_len = 140268,
+--   guard_pin = guard_body_md5=00146b182c9a366094678ccdb10f35aa;len=140268, ledger_rows = 200, ledger_last = 0200_pin_desk_and_waitlist_rpcs.sql
 select md5(replace(p.prosrc, chr(13), '')) as guard_md5,
        length(replace(p.prosrc, chr(13), '')) as guard_len,
        obj_description(p.oid, 'pg_proc') as guard_pin,
