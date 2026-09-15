@@ -2,7 +2,7 @@
 -- room_busy_slots_scope_smoke.sql — смоук міграції 0156
 -- «room_busy_slots: радіолог бачить лише призначені кабінети, направник — канон
 --  0139, service_role — зайнятість без деталей; тригерні функції без EXECUTE;
---  сторож рахує 24 перевірок (0180)».
+--  сторож рахує 25 перевірок (0180)».
 --
 -- ДВА РЕЖИМИ ЗАПУСКУ:
 --   • DRY-RUN (до накату): текст 0156 БЕЗ його begin;/commit; + цей файл одним
@@ -53,7 +53,7 @@
 --       деталі, роль без деталей (l2) їх не отримує, чужа клініка (l3) лишається
 --       на нулі;
 --   (i) 14 тригерних функцій — без EXECUTE у public/anon/authenticated;
---   (j) invariants_check(false): checked = 24 (0180), room_busy_service_role мовчить;
+--   (j) invariants_check(false): checked = 25 (0180), room_busy_service_role мовчить;
 --   (k) структура рядків admin: 0 ≤ start_min < end_min ≤ 1440,
 --       scheduled_time узгоджений зі start_min (арифметика 0074 не зачеплена).
 -- ============================================================================
@@ -432,14 +432,14 @@ begin
   end if;
   v_done := v_done || ' i';
 
-  -- (j) сторож: 24 перевірок (0180), room_busy_service_role мовчить.
+  -- (j) сторож: 25 перевірок (0180), room_busy_service_role мовчить.
   v_res := public.invariants_check(false);
   -- ⚠️ 0157 підняв 10 → 11 (outbox_emit_failed_26h),
   --    0159 підняв 11 → 12 (outbox_rows_overdue).
   -- ⚠️ 0161 підняв 12 → 13, 0164 — 13 → 14 (ucm_orphan_markers), 0166 — 14 → 15 (priv_drift).
   -- ⚠️ 0170 підняв 15 → 16 (policy_digest), 0171 — 16 → 18 (guard_triggers, server_now).
-  if (v_res ->> 'checked')::int is distinct from 24 then
-    raise exception 'SMOKE_FAIL j: checked=% (очікував 24)', v_res ->> 'checked';
+  if (v_res ->> 'checked')::int is distinct from 25 then
+    raise exception 'SMOKE_FAIL j: checked=% (очікував 25)', v_res ->> 'checked';
   end if;
   select f ->> 'offenders' into v_names
     from jsonb_array_elements(v_res -> 'failed') f

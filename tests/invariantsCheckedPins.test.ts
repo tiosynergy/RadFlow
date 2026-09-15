@@ -28,6 +28,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { createHash } from "node:crypto";
 
 const MIGDIR = resolve(process.cwd(), "supabase/migrations");
 const SMOKEDIR = resolve(process.cwd(), "supabase/smoke");
@@ -290,5 +291,83 @@ describe("число перевірок invariants_check однакове скр
       .toBeGreaterThanOrEqual(8);
     expect(missed, "рядок говорить про кількість перевірок, а жоден канал його не бачить")
       .toEqual([]);
+  });
+});
+
+/* ⚠️ ПʼЯТИЙ КАНАЛ (с72, пакет 0198) — і він про ІНШУ властивість, ніж усі
+ *    чотири вище. Ті стережуть ЧИСЛО перевірок. Цей стереже, що ТІЛО сторожа
+ *    у файлі збігається з ПІНОМ у тому самому файлі.
+ *
+ *    ЧОМУ ЦЕ ПОТРІБНО ОКРЕМО. 0198 завів перевірку №25: у проді тіло сторожа
+ *    звіряється з піном у коментарі до функції. Пін кладе МІГРАЦІЯ. Але сам
+ *    ланцюг тримається лише тоді, коли пін у файлі порахований із тіла В ТОМУ
+ *    Ж ФАЙЛІ:
+ *        файл  →(цей тест)→  пін  →(перевірка №25, щоночі)→  тіло в проді
+ *    Без цієї ланки пакет, який передрукує сторожа і скопіює СТАРИЙ пін,
+ *    пройшов би тести й ліг у прод — а №25 почервоніла б уночі, коли вже пізно.
+ *
+ *    ⚠️ ЩО ЦЕ НЕ ЛОВИТЬ, прямо: тест читає ФАЙЛ, а не прод. Розбіжність
+ *       «файл ↔ прод» тримають інші механізми — гейт міграцій (файл ↔ леджер,
+ *       на кожній збірці) і №25 (пін ↔ тіло в проді, щоночі). Тут — рівно
+ *       перша ланка, і вона доти нічим не трималась.
+ */
+describe("тіло сторожа і пін до нього — з одного файла", () => {
+  const OPEN = "\nas $function$";
+  const CLOSE = "\n$function$;";
+  const PIN_RE =
+    /comment on function public\.invariants_check\(boolean\) is '(guard_body_md5=[0-9a-f]{32};len=\d+)';/;
+
+  /** Останній передрук — ТИМ САМИМ правилом, що й `checksInLatestReprint()`. */
+  function latestReprintFile(): string {
+    const files = readdirSync(MIGDIR).filter((f) => f.endsWith(".sql")).sort();
+    let last = "";
+    for (const f of files) {
+      const txt = readFileSync(resolve(MIGDIR, f), "utf8");
+      if (txt.search(/^create or replace function public\.invariants_check/m) >= 0) last = f;
+    }
+    return last;
+  }
+
+  it("пін у найсвіжішому передруку порахований із тіла того ж передруку", () => {
+    const file = latestReprintFile();
+    expect(file, "жоден файл не передруковує сторожа — тест осліп").not.toBe("");
+
+    const txt = readFileSync(resolve(MIGDIR, file), "utf8").replace(/\r/g, "");
+    const a = txt.indexOf(OPEN);
+    const b = txt.indexOf(CLOSE, a);
+    expect(a >= 0 && b >= 0, `${file}: не знайдено меж тіла сторожа`).toBe(true);
+    /* ⚠️ Межі мусять бути ОДНІ. Дві — і ми порахували б md5 не того тіла,
+       мовчки; саме тому генератор передруку асертить те саме. */
+    expect(txt.indexOf(OPEN, a + 1), `${file}: "as $function$" не один`).toBe(-1);
+    expect(txt.indexOf(CLOSE, b + 1), `${file}: "$function$;" не один`).toBe(-1);
+
+    const body = txt.slice(a + OPEN.length, b + 1);
+    const want = `guard_body_md5=${createHash("md5").update(body, "utf8").digest("hex")};len=${body.length}`;
+
+    const m = txt.match(PIN_RE);
+    expect(
+      m,
+      `${file} передруковує сторожа, але НЕ кладе пін \`comment on function public.invariants_check(boolean)\`. ` +
+        `Це зобовʼязання з 0198: інакше перевірка №25 почервоніє одразу після накату. Очікуваний пін: ${want}`,
+    ).not.toBeNull();
+
+    expect(
+      m![1],
+      `${file}: пін розійшовся з тілом у ТОМУ Ж файлі — швидше за все тіло правили, а пін скопіювали зі старого пакета`,
+    ).toBe(want);
+  });
+
+  /* ⚠️ Сторож на самого себе. Якби `PIN_RE` колись перестала збігатись із
+     формою, яку читає перевірка №25 у проді, тест мовчки перетворився б на
+     «піна немає» → і перший же рядок вище впав би гучно. Але зворотний бік
+     тихіший: форма, ШИРША за прод-регулярку, пропустила б пін, який прод
+     вважає НЕЧИТАНИМ. Тому звіряємо дослівно з тілом сторожа. */
+  it("форма піна в тесті — та сама, що читає перевірка №25 у проді", () => {
+    const file = latestReprintFile();
+    const txt = readFileSync(resolve(MIGDIR, file), "utf8");
+    expect(
+      txt,
+      "перевірка №25 читає пін іншою регуляркою, ніж очікує цей тест — одна з них бреше",
+    ).toContain("'^guard_body_md5=[0-9a-f]{32};len=[0-9]+$'");
   });
 });
