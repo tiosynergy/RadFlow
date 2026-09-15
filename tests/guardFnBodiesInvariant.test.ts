@@ -213,6 +213,37 @@ const PINNED: readonly string[] = [
   "auth_is_desk()",
   "schedule_from_waitlist_rpc(p_waitlist_id uuid, p_booking jsonb)",
   "set_waitlist_status_rpc(p_id uuid, p_status waitlist_status)",
+  // 0201 (с74, рішення власника Р74-1(б), `docs/audit/DECISIONS-2026-09-15-s74.md`):
+  // ШІСТНАДЦЯТЬ — решта definer-функцій, доступних `authenticated` і поза
+  // списком, що НЕСУТЬ ВЛАСНИЙ ГЕЙТ. Ревʼю 0200 спростувало посилку «решта — це
+  // застосовувачі з гучною відмовою»: у SECURITY DEFINER RLS не діє, тож
+  // вихолощений гейт — ТИХА ескалація (у своєму центрі чи по чужому кейсу), а
+  // сторож лишався зеленим.
+  // ⚠️ Поза списком СВІДОМО: `search_cities`, `search_clinics` (гейта в тілі
+  //    немає — вихолощувати нічого) і `integration_apply_status` (недоступна
+  //    `authenticated`). Це межа рішення, а не пропуск цього файла.
+  // ⚠️ ЦІНА та сама, що в абзаці 0200: будь-яка правка цих шістнадцяти — лише
+  //    разом із передруком сторожа, і цей файл забутої правки не побачить.
+  // гейт auth_is_admin() / auth_is_desk()
+  "cancel_case_rpc(p_case_id uuid)",
+  "ceo_kpi_rooms(p_from date, p_to date, p_clinics uuid[])",
+  "ceo_kpi_studies(p_from date, p_to date, p_clinics uuid[])",
+  "ceo_kpi_totals(p_from date, p_to date, p_clinics uuid[])",
+  "delete_clinic_member(target uuid)",
+  "incident_resolve_rpc(p_id uuid)",
+  "queue_apply_delay_plan_rpc(p_room uuid, p_source uuid, p_delay_min integer, p_strategy text, p_plan jsonb, p_expected jsonb, p_reason text)",
+  "queue_confirm_calls_rpc(p_ids uuid[])",
+  "queue_set_call_rpc(p_id uuid, p_call call_status, p_allowed queue_status[])",
+  "save_schedule_override(p_override_date date, p_all_closed boolean, p_label text, p_rooms jsonb, p_expected_updated_at text)",
+  "search_referrers(q text)",
+  "services_import_rpc(p_rows jsonb, p_room_id uuid)",
+  // хелпери направника й радіолога
+  "create_case_rpc(p_case jsonb, p_steps jsonb)",
+  "queue_reschedule_rpc(p_id uuid, p_room_id uuid, p_date date, p_time text, p_duration integer, p_buffer integer, p_call call_status, p_reason text, p_off_schedule boolean, p_studies jsonb)",
+  // лише auth.uid(); `referral_center_card` — ЄДИНА тримає видимість картки
+  // центру направнику, і її тіло міняла 0195
+  "mark_changes_seen(p_ids uuid[])",
+  "referral_center_card(p_access_id uuid)",
 ];
 
 function latestReprint(): { fn: string; file: string } {
