@@ -191,6 +191,28 @@ const PINNED: readonly string[] = [
   //    власника, не агента»).
   "waitlist_candidates_for_slot(p_room uuid, p_date date, p_time_min integer)",
   "waitlist_counts(p_modality text)",
+  // 0200 (с74, пункт 4.2 плану): ТРИ рядки, кожен із названою причиною
+  // (`docs/audit/PHASE3-2026-09-15-definer-pin-gap.md`).
+  // ⚠️ `auth_is_desk()` — РІШАЛЬНИК, а не застосовувач, у двох шарах: пʼять
+  //    політик RLS (`doctors_desk_insert/update`, `incidents_desk_insert/update`,
+  //    `sched_desk_write`; усі — «свій центр І auth_is_desk()») і гейт у восьми
+  //    definer-RPC, три з яких тут уже були (`emergency_stop_rpc`,
+  //    `queue_set_status_rpc`, `submit_incident_rpc`) — їхні піни тримали
+  //    виклик, а не рішення. Тіло на `true` відкривало б запис у три таблиці
+  //    будь-якій ролі свого центру при зеленому сторожі. Замір с74: це ЄДИНИЙ
+  //    `auth_*`, якого не пінило НІЩО — девʼять інших у цьому списку, ще
+  //    чотири досяжні з `anon` і їх тримає №22. Той самий урок, що з
+  //    `auth_can_see_slot_details` у 0190: пінити того, хто ВИРІШУЄ.
+  // ⚠️ Дві waitlist-RPC — тіла переписала 0199, і результат не тримало ніщо.
+  // ⚠️ ЦІНА: рядок №19 пінує md5 тіла і `attrs` разом з `;acl=` — БУДЬ-ЯКА
+  //    правка цих трьох функцій (тіло, grant/revoke, alter function) відтепер
+  //    іде разом із передруком сторожа. Цей файл такої забутої правки НЕ
+  //    побачить: він тримає ПІДПИСИ, а не md5, — червоніє лише прод.
+  // ⚠️ Відкат: прибрати ці три рядки і видалити файл 0200 — ОДНИМ кроком
+  //    (див. секцію ВІДКАТ у файлі міграції).
+  "auth_is_desk()",
+  "schedule_from_waitlist_rpc(p_waitlist_id uuid, p_booking jsonb)",
+  "set_waitlist_status_rpc(p_id uuid, p_status waitlist_status)",
 ];
 
 function latestReprint(): { fn: string; file: string } {
