@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { planGate, readDiskMigrations } from "../scripts/migration-gate-lib.mjs";
+import { planGate, planGuardPin, pinFor, guardBodyOf, readDiskMigrations } from "../scripts/migration-gate-lib.mjs";
 
 type Row = { name: string; md5: string | null };
 
@@ -100,5 +100,137 @@ describe("readDiskMigrations (герметична фікстура)", () => {
     expect(names).toContain("0142_migration_ledger.sql");
     expect(names.some((n) => n.includes("PRECHECK"))).toBe(false);
     expect(badNames).toEqual([]);
+  });
+});
+
+
+/* ПІН ТІЛА СТОРОЖА (пакет 0198, М-4 / Н-1).
+
+   ⚠️ Фікстури, а не живе дерево — і це замір, а не смак. Перша редакція
+      правила жила в `tests/invariantsCheckedPins.test.ts` і читала справжню
+      найсвіжішу міграцію. Повна ревізія показала ціну: `falsify-0180` і
+      `falsify-0181` почервоніли на своїх ПОЗИТИВНИХ контролях («переставлено
+      два рядки», «переписано коментар»), бо сума по ВСЬОМУ тілу стріляє на
+      будь-якій косметиці. Тут правило міряється на СИНТЕТИЧНИХ текстах, тож
+      мутації стендів у справжніх файлах його не чіпають, а саме правило
+      лишається під тестом. */
+describe("planGuardPin — пін сторожа рахується з тіла в тому ж файлі", () => {
+  /** Мінімальний передрук: заголовок, межі тіла, саме тіло. */
+  const reprint = (body: string) =>
+    "-- шапка\ncreate or replace function public.invariants_check(p_write boolean)\n" +
+    "returns jsonb\nas $function$\n" + body + "\n$function$;\n";
+  const BODY = "declare\n  v_n int := 0;\nbegin\n  return null;\nend;";
+  const withPin = (text: string, pin: string) =>
+    text + `\ncomment on function public.invariants_check(boolean) is '${pin}';\n`;
+  /** Тіло так, як його бачить бібліотека. */
+  const bodyOf = (text: string) => guardBodyOf(text) as string;
+  /** Готовий коректний передрук із піном. */
+  const good = (body: string) => {
+    const t = reprint(body);
+    return withPin(t, pinFor(bodyOf(t)));
+  };
+
+  it("пін порахований із тіла → розбіжностей немає", () => {
+    expect(planGuardPin([{ name: "0198_x.sql", text: good(BODY) }])).toEqual([]);
+  });
+
+  it("тіло правили, пін лишили старим → ПІН РОЗІЙШОВСЯ З ТІЛОМ", () => {
+    const stale = pinFor(bodyOf(reprint(BODY)));
+    const changed = withPin(reprint(BODY + "\n-- зайвий коментар"), stale);
+    const f = planGuardPin([{ name: "0199_y.sql", text: changed }]);
+    expect(f).toHaveLength(1);
+    expect(f[0]).toContain("ПІН РОЗІЙШОВСЯ З ТІЛОМ");
+    expect(f[0]).toContain("0199_y.sql");
+  });
+
+  it("передрук БЕЗ піна → ПЕРЕДРУК БЕЗ ПІНА, і названо очікуваний пін", () => {
+    const text = reprint(BODY);
+    const f = planGuardPin([{ name: "0199_y.sql", text }]);
+    expect(f).toHaveLength(1);
+    expect(f[0]).toContain("ПЕРЕДРУК БЕЗ ПІНА");
+    expect(f[0]).toContain(pinFor(bodyOf(text)));
+  });
+
+  it("пін у файлі, що сторожа не передруковує → ПІН БЕЗ ТІЛА", () => {
+    const orphanPin =
+      "-- лише напис, тіла тут немає\n" +
+      "comment on function public.invariants_check(boolean) is " +
+      "'guard_body_md5=00000000000000000000000000000000;len=1';\n";
+    const f = planGuardPin([
+      { name: "0198_x.sql", text: good(BODY) },
+      { name: "0199_only_pin.sql", text: orphanPin },
+    ]);
+    expect(f).toHaveLength(1);
+    expect(f[0]).toContain("ПІН БЕЗ ТІЛА");
+  });
+
+  /* ⚠️ РЕГРЕСІЯ, знайдена прогоном гейта на живому дереві (с72). Перша
+     редакція вимагала, щоб `as $function$` був у файлі ОДИН, — і 0159, 0179,
+     0184, 0187 стали «нечитаними»: вони передруковують сторожа І оголошують
+     інші функції. Гейт червонів би на ЧИСТОМУ дереві, тобто зупиняв би кожну
+     збірку. Межі беруться від ЗАГОЛОВКА передруку. */
+  it("у файлі є ще одна функція (форма 0159/0179/0184/0187) — це нормально", () => {
+    const other =
+      "create or replace function public.helper()\nreturns int\nas $function$\n" +
+      "begin return 1; end;\n$function$;\n";
+    const t = other + reprint(BODY);
+    expect(bodyOf(t)).toBe(bodyOf(reprint(BODY)));
+    expect(planGuardPin([{ name: "0159_hist.sql", text: withPin(t, pinFor(bodyOf(t))) }]))
+      .toEqual([]);
+  });
+
+  it("чужа функція ПІСЛЯ сторожа не з'їдає межі тіла", () => {
+    const other =
+      "\ncreate or replace function public.helper()\nreturns int\nas $function$\n" +
+      "begin return 1; end;\n$function$;\n";
+    const t = reprint(BODY) + other;
+    expect(bodyOf(t)).toBe(bodyOf(reprint(BODY)));
+  });
+
+  /* ⚠️ Два передруки в одному файлі — і md5 порахувався б із ПЕРШОГО, а в прод
+     ліг би другий. Мовчки. */
+  it("два заголовки передруку в одному файлі → ТІЛО СТОРОЖА НЕЧИТАНЕ", () => {
+    const two = reprint(BODY) + reprint(BODY + "\n-- друге");
+    const f = planGuardPin([{ name: "0199_two.sql", text: withPin(two, "guard_body_md5=00000000000000000000000000000000;len=1") }]);
+    expect(f).toHaveLength(1);
+    expect(f[0]).toContain("ТІЛО СТОРОЖА НЕЧИТАНЕ");
+    expect(f[0]).toContain("заголовків передруку 2");
+  });
+
+  /* ⚠️ Питаємо пін лише з НАЙСВІЖІШОГО передруку: 0154–0197 писались до
+     правила, і ретроспективна вимога зробила б гейт червоним на історії,
+     якої вже не переписати (міграції append-only). */
+  it("старіші передруки без піна не винні — питаємо з останнього", () => {
+    expect(planGuardPin([
+      { name: "0190_old.sql", text: reprint(BODY) },
+      { name: "0198_fresh.sql", text: good(BODY + "\n-- новіше") },
+    ])).toEqual([]);
+  });
+
+  it("порядок на вході не важить — «останній» береться за іменем", () => {
+    expect(planGuardPin([
+      { name: "0198_fresh.sql", text: good(BODY + "\n-- новіше") },
+      { name: "0190_old.sql", text: reprint(BODY) },
+    ])).toEqual([]);
+  });
+
+  it("файл без сторожа взагалі — не наша справа", () => {
+    expect(planGuardPin([{ name: "0100_plain.sql", text: "alter table t add column c int;\n" }]))
+      .toEqual([]);
+  });
+
+  /* ⚠️ Згадка сторожа в ЗАКОМЕНТОВАНОМУ відкаті (так робить 0167) — НЕ
+     передрук. Якби якір зʼїхав із початку рядка, гейт вимагав би піна від
+     файлів, які тіла не чіпають. */
+  it("сторож лише згаданий у коментарі — це не передрук", () => {
+    const mention =
+      "-- відкат: create or replace function public.invariants_check(...)\n" +
+      "delete from public.migration_ledger where name = '0199_z.sql';\n";
+    expect(planGuardPin([{ name: "0199_z.sql", text: mention }])).toEqual([]);
+  });
+
+  it("CRLF не міняє піна — межі рахуються після зняття chr(13)", () => {
+    expect(planGuardPin([{ name: "0198_x.sql", text: good(BODY).replace(/\n/g, "\r\n") }]))
+      .toEqual([]);
   });
 });

@@ -8,6 +8,12 @@
 //    • md5 у леджері ≠ md5 диска   → файл правили ПІСЛЯ накату (fail);
 //    • .sql з іменем поза каноном  → fail (файл не сміє випасти з-під гейта);
 //    • md5 у леджері NULL          → проштампувати З ДИСКА ВЛАСНИКА.
+//  І ВСЕРЕДИНІ ФАЙЛА (пакет 0198, М-4/Н-1) — пін тіла сторожа:
+//    • передрук invariants_check без піна          → fail;
+//    • пін ≠ md5 тіла в ТОМУ Ж файлі               → fail;
+//    • пін у файлі, що сторожа не передруковує     → fail.
+//  Це перша ланка ланцюга «файл → пін → тіло в проді»; другу тримає
+//  перевірка №25 щоночі. Деталі й обґрунтування — `planGuardPin` у бібліотеці.
 //
 //  Запуск:
 //      npm run db:gate          # звірити + проштампувати md5 (ЛИШЕ з машини
@@ -34,7 +40,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { gateEnvDecision, planGate, readDiskMigrations } from "./migration-gate-lib.mjs";
+import { gateEnvDecision, planGate, planGuardPin, readDiskMigrations } from "./migration-gate-lib.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MIG_DIR = path.join(ROOT, "supabase", "migrations");
@@ -105,6 +111,18 @@ async function main() {
 
   const { files: disk, badNames } = readDiskMigrations(MIG_DIR);
   const { failures, stamps, ok } = planGate(disk, ledger ?? [], badNames);
+
+  /* Пакет 0198: пін тіла сторожа мусить бути порахований із тіла В ТОМУ Ж
+     ФАЙЛІ. Це та сама сімʼя, що й «md5 файлу ↔ леджер» поруч, — контрольні
+     суми, — тому живе тут, а не в тестах (обґрунтування заміром — у
+     `planGuardPin`). Розбіжності йдуть у ТОЙ САМИЙ список: гейт зупиняється
+     до штампування, бо штампувати при розходженнях не можна. */
+  failures.push(
+    ...planGuardPin(disk.map((d) => ({
+      name: d.name,
+      text: readFileSync(path.join(MIG_DIR, d.name), "utf8"),
+    }))),
+  );
 
   // Спершу — розбіжності. Штампувати при них НЕ МОЖНА (вштампуємо не ту гілку).
   if (failures.length) {
