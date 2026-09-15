@@ -25,6 +25,16 @@ begin
   if not exists (select 1 from public.migration_ledger where name = '0200_pin_desk_and_waitlist_rpcs.sql') then
     raise exception '0200-фальсифікація: 0200 не накатано — фальсифікувати нічого';
   end if;
+  -- Предстан — тіло і пін саме 0200 (ревʼю с74, лінза А): інакше FAIL вказав би
+  -- не на ту причину.
+  if (select md5(replace(p.prosrc, chr(13), '')) || '/' || length(replace(p.prosrc, chr(13), ''))
+             || '|' || coalesce(obj_description(p.oid, 'pg_proc'), '(NULL)')
+        from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+       where n.nspname = 'public' and p.proname = 'invariants_check'
+         and pg_get_function_identity_arguments(p.oid) = 'p_write boolean')
+     is distinct from '793ebcc08997fc54d36472cc3fd2ff9b/140125|guard_body_md5=793ebcc08997fc54d36472cc3fd2ff9b;len=140125' then
+    raise exception '0200-фальсифікація: у проді не тіло/пін 0200 — спершу розібратись';
+  end if;
 
   -- M1: РІШАЛЬНИК вихолощено — рівно та підміна, заради якої пакет. Атрибути
   --     ті самі, тож червоніти мусить лише `body:`.

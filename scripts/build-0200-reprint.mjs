@@ -148,26 +148,35 @@ const ANCHOR_PROSE_END =
 const PROSE_0200 = [
   "  --     ⚠️ 0200 ДОДАЛА ТРИ: `auth_is_desk()`, `schedule_from_waitlist_rpc`,",
   "  --        `set_waitlist_status_rpc`. Список став 43. Розбір —",
-  "  --        `docs/audit/PHASE3-2026-09-15-definer-pin-gap.md`.",
-  "  --        • `auth_is_desk` — не застосовувач, а РІШАЛЬНИК: його кличуть пʼять",
-  "  --          політик RLS (`doctors_desk_insert`, `doctors_desk_update`,",
-  "  --          `incidents_desk_insert`, `incidents_desk_update`,",
-  "  --          `sched_desk_write`). Тіло, переписане на `true`, відкривало б",
-  "  --          ЗАПИС у три таблиці будь-кому залогіненому — при зеленому",
-  "  --          сторожі. Замір с74: це ЄДИНИЙ `auth_*`, якого не пінило НІЩО —",
-  "  --          девʼять інших у цьому списку, ще чотири досяжні з `anon` і їхні",
-  "  --          тіла тримає №22. Урок той самий, що з",
-  "  --          `auth_can_see_slot_details` у 0190: пінити того, хто ВИРІШУЄ;",
+  "  --        `docs/audit/PHASE3-2026-09-15-definer-pin-gap.md` і",
+  "  --        `docs/audit/PR-0200-pin-desk-waitlist.md`.",
+  "  --        • `auth_is_desk` — не застосовувач, а РІШАЛЬНИК, і вирішує він у",
+  "  --          ДВОХ шарах. RLS: пʼять політик (`doctors_desk_insert`,",
+  "  --          `doctors_desk_update`, `incidents_desk_insert`,",
+  "  --          `incidents_desk_update`, `sched_desk_write`), усі у формі",
+  "  --          «свій центр І `auth_is_desk()`» — тіло на `true` відкривало б",
+  "  --          ЗАПИС у три таблиці будь-якій ролі СВОГО центру. І гейт усередині",
+  "  --          восьми definer-RPC, три з яких у цьому списку вже були",
+  "  --          (`emergency_stop_rpc`, `queue_set_status_rpc`,",
+  "  --          `submit_incident_rpc`): їхні піни тримали ВИКЛИК, а не рішення.",
+  "  --          Замір с74: це ЄДИНИЙ `auth_*`, якого не пінило НІЩО — девʼять",
+  "  --          інших у цьому списку, ще чотири досяжні з `anon` і їх тримає №22.",
+  "  --          Урок той самий, що з `auth_can_see_slot_details` у 0190;",
   "  --        • дві waitlist-RPC — їхні тіла переписала 0199 (відсічка",
   "  --          радіолога), і результат не тримало ніщо.",
-  "  --        ⚠️ ЦІНА, названа заздалегідь: рядок пінує md5 тіла РАЗОМ з",
-  "  --           `attrs`, тобто і `;acl=`. Будь-який `grant`, `revoke` чи",
-  "  --           `alter function` на ці три функції тепер іде в одній міграції",
-  "  --           з передруком сторожа.",
-  "  --        ⚠️ МЕЖА: решта 18 definer-функцій, доступних `authenticated` і",
-  "  --           поза цим списком, — застосовувачі рішення з гучною відмовою",
-  "  --           продукту; не пінуються свідомо. `integration_apply_status`",
-  "  --           (недоступна `authenticated`) вирішується окремо.",
+  "  --        ⚠️ ЦІНА: рядок пінує md5 тіла РАЗОМ з `attrs`, тобто і `;acl=`.",
+  "  --           Будь-яка правка цих трьох функцій — тіло (і якірна, як у 0199),",
+  "  --           `grant`, `revoke`, `alter function`, перейменування параметра —",
+  "  --           тепер іде в одній міграції з передруком сторожа. CI цього НЕ",
+  "  --           ловить: `PINNED` тримає підписи, а не md5, — червоніє прод.",
+  "  --        ⚠️ МЕЖА — і вона НЕ «гучна відмова», як назвав решту розбір с73",
+  "  --           (ревʼю с74 це спростувало замірами тіл). Решта 18 definer-",
+  "  --           функцій, доступних `authenticated` і поза списком, здебільшого",
+  "  --           САМІ несуть гейт: у 12 це `auth_is_admin()` чи `auth_is_desk()`,",
+  "  --           ще в 4 — лише `auth.uid()`, дві пошукові гейта не мають.",
+  "  --           Вихолощення такого гейта МОВЧАЗНЕ. Обсяг «три» заданий",
+  "  --           власником; чи пінити решту — окреме рішення власника, як і",
+  "  --           місце `integration_apply_status` (недоступна `authenticated`).",
   "  --        РІШЕННЯ ВЛАСНИКА 15.09 (стартовий промпт с74).",
 ].join("\n") + "\n";
 for (const l of PROSE_0200.split("\n").filter(Boolean)) {
@@ -180,6 +189,10 @@ for (const bad of ["$q$", "$function$", "/*", "*/", "$apply$"]) {
 const PAIRS = [
   [ANCHOR_ADMIN, ANCHOR_ADMIN + ADD, "три рядки в список №19 після auth_is_admin()"],
   [PROSE_COUNT_FROM, PROSE_COUNT_TO, "лічильник у заголовку прози №19: 40 -> 43"],
+  // Історія росту списку — те саме місце, де проза сама записала урок «оновили
+  // сусідній рядок і проминули цей» (знахідка ревʼю с74, лінза Б).
+  ["0193 → 40), а заголовок", "0193 → 40, 0200 → 43), а заголовок",
+    "історія росту списку в прозі №19: + 0200 → 43"],
   [ANCHOR_PROSE_END,
     "  --        РІШЕННЯ ВЛАСНИКА 14.09 (межа прози №19 вимагає саме цього).\n"
     + PROSE_0200 + "  v_n := v_n + 1;\n",
@@ -251,6 +264,7 @@ const CHECKS = [
   ["мітка №19 на місці рівно раз у звіті", count(NEW_CODE, "'check', 'guard_fn_bodies'"), 1],
   ["заголовок прози каже 43", count(NEW_BODY, "ЩО ПІНИМО (сьогодні 43 підписи"), 1],
   ["заголовок прози більше не каже 40", count(NEW_BODY, "сьогодні 40 підписів"), 0],
+  ["історія росту списку дописана", count(NEW_BODY, "0193 → 40, 0200 → 43)"), 1],
   ["рішення власника 15.09 назване в прозі", count(NEW_BODY, "РІШЕННЯ ВЛАСНИКА 15.09"), 1],
   // ⚠️ ГОЛОВНИЙ БАЗИС: у КОДІ (без коментарів) змінилось РІВНО одне — додано
   //    три рядки. Проза сюди не входить за побудовою, а будь-яка випадкова
@@ -324,12 +338,21 @@ if (/--|\/\*|\$/.test(CUR_EXPR)) throw new Error("ВИРАЗ cur містить 
   }
   const migs = readdirSync(MIGDIR).filter((f) => f.endsWith(".sql") && f !== DST_NAME);
   const probes = [];
-  for (const [from, , lbl] of PAIRS) {
+  for (const [from, to, lbl] of PAIRS) {
     if (!NEW_BODY.includes(from)) probes.push([from, `${lbl} (from зник)`]);
+    /* ⚠️ Вікна — навколо ЗМІНЕНОГО ПРОМІЖКУ, а не навколо меж `from` (знахідка
+       ревʼю с74, лінза Б). У пар «вставка всередину якоря» зміна лежить МІЖ
+       межами `from`, і вікна на його краях її не бачили. Проміжок = `from` без
+       спільного з `to` префікса і суфікса. */
+    let p = 0;
+    while (p < from.length && p < to.length && from[p] === to[p]) p++;
+    let s = 0;
+    while (s < from.length - p && s < to.length - p
+      && from[from.length - 1 - s] === to[to.length - 1 - s]) s++;
     const i = S98.body.indexOf(from);
-    for (const edge of [i, i + from.length]) {
+    for (const [edge, side] of [[i + p, "початку"], [i + from.length - s, "кінця"]]) {
       const w = S98.body.slice(Math.max(0, edge - 30), edge + 30);
-      if (!NEW_BODY.includes(w)) probes.push([w, `${lbl} (вікно ${edge === i ? "початку" : "кінця"})`]);
+      if (!NEW_BODY.includes(w)) probes.push([w, `${lbl} (вікно ${side} зміни)`]);
     }
   }
   const stale = [];
@@ -351,7 +374,7 @@ if (/--|\/\*|\$/.test(CUR_EXPR)) throw new Error("ВИРАЗ cur містить 
 // 8. ФРАГМЕНТИ. Долар-лапки: $p$ — рядки підстановок; блоки — $apply$/$back$/
 //    $falsify$. Жоден текст не сміє нести чужий тег.
 // ---------------------------------------------------------------------------
-for (const t of ["$p$", "$apply$", "$back$", "$falsify$", "$m1$"]) {
+for (const t of ["$p$", "$apply$", "$dryrun$", "$back$", "$falsify$", "$m1$"]) {
   for (const [f, to, lbl] of PAIRS) {
     if ((f + to).includes(t)) throw new Error(`пара «${lbl}» містить тег ${t} — змініть долар-лапки`);
   }
@@ -488,7 +511,7 @@ const DECL = (tag, fromXs, toXs, lblXs) => [
   `do $${tag}$`,
   "declare",
   "  v_def text; v_body text; v_src text; v_head text; v_new text;",
-  "  v_hits int; v_res jsonb; v_pin_db text; v_bad text[];",
+  "  v_hits int; v_rows int; v_res jsonb; v_pin_db text; v_bad text[];",
   `  v_from constant text[] := ${arr(fromXs)};`,
   `  v_to   constant text[] := ${arr(toXs)};`,
   `  v_lbl  constant text[] := ${arr(lblXs)};`,
@@ -500,9 +523,28 @@ const BWD = [[...PAIRS].reverse().map((p) => p[1]), [...PAIRS].reverse().map((p)
   [...PAIRS].reverse().map((p) => `назад: ${p[2]}`)];
 
 const LEDGER_INSERT = [
+  "  -- ⚠️ БЕЗ `on conflict do nothing` (ревʼю с74, лінза А): рядок, вставлений",
+  "  --    паралельною сесією між перевіркою і вставкою, мусить ВАЛИТИ накат, а не",
+  "  --    мовчки лишати тіло й пін закоміченими поверх чужого рядка.",
   "  insert into public.migration_ledger (name)",
-  `  values ('${DST_NAME}')`,
-  "  on conflict (name) do nothing;",
+  `  values ('${DST_NAME}');`,
+  "  get diagnostics v_rows = row_count;",
+  "  if v_rows <> 1 then",
+  "    raise exception '0200: рядок леджера не ліг (% рядків)', v_rows;",
+  "  end if;",
+].join("\n");
+
+/** Читання назад ОКРЕМИМ стейтментом того ж запиту: `raise notice` через MCP
+ *  не повертається, тож без цього «успіх» накату був би невидимий (ревʼю с74). */
+const READBACK = [
+  "select md5(replace(p.prosrc, chr(13), '')) as guard_md5,",
+  "       length(replace(p.prosrc, chr(13), '')) as guard_len,",
+  "       obj_description(p.oid, 'pg_proc') as guard_pin,",
+  "       (select count(*) from public.migration_ledger) as ledger_rows,",
+  "       (select max(name) from public.migration_ledger) as ledger_last",
+  "  from pg_proc p join pg_namespace n on n.oid = p.pronamespace",
+  " where n.nspname = 'public' and p.proname = 'invariants_check'",
+  "   and pg_get_function_identity_arguments(p.oid) = 'p_write boolean';",
 ].join("\n");
 
 const BODY_FWD = [
@@ -534,9 +576,16 @@ const APPLY = [
   "end;",
   "$apply$;",
   "",
-  "-- ⚠️ `invariants_check` — ОКРЕМИМ запитом ПІСЛЯ commit (≈9 с; тримати",
-  "--    транзакцію відкритою зайві секунди при statement_timeout = 8s в",
-  "--    authenticated означало б валити запис продукту):",
+  "-- Читання назад: очікування",
+  `--   guard_md5 = ${NEW_MD5}, guard_len = ${NEW_LEN},`,
+  `--   guard_pin = ${PIN}, ledger_rows = 200, ledger_last = ${DST_NAME}`,
+  READBACK,
+  "",
+  "-- ⚠️ `invariants_check` — ОКРЕМИМ запитом ПІСЛЯ commit (≈9–15 с). Не поруч з",
+  "--    іншим деплоєм чи DDL: сторож тримає AccessShare на таблицях, що читає, і",
+  "--    DDL у черзі за ним поставив би в чергу запити продукту (ревʼю с74).",
+  "--    І не в 03:45–04:05 UTC: там крон `invariants` пише результат із",
+  "--    `ledger_md5` червоною, доки `npm run db:gate` не проштампував рядок.",
   "--      select public.invariants_check(false);",
   "--      -- очікування: checked 25; до `npm run db:gate` єдиний ОЧІКУВАНИЙ",
   "--      -- порушник — `ledger_md5` (md5 файла ще не проштамповано).",
@@ -547,7 +596,10 @@ const DRYRUN = [
   "-- APPLY, але транзакція СВІДОМО валиться в кінці.",
   "-- ⚠️ Маркер відкоту ОБОВʼЯЗКОВИЙ: «сухий» прогін без нього — це НАКАТ",
   "--    (урок 0195: execute_sql жене батч однією транзакцією).",
-  DECL("apply", ...FWD),
+  "-- ⚠️ Тег блоку — dryrun, а не apply: перші ~185 рядків тут збігаються з",
+  "--    APPLY, і переплутаний файл закомітив би прод (ревʼю с74, лінза А).",
+  "--    Перед вставкою перевірити, що запит ПОЧИНАЄТЬСЯ з тегу dryrun.",
+  DECL("dryrun", ...FWD),
   BODY_FWD,
   "",
   "  -- Сторожа кличемо ТУТ, бо прогін усе одно відкотиться: треба бачити",
@@ -566,7 +618,7 @@ const DRYRUN = [
   "  raise exception 'DRYRUN_0200_ROLLBACK guard=% len=% pin=% checked=% ok=% failed=%',",
   "    md5(v_src), length(v_src), v_pin_db, v_res->>'checked', v_res->>'ok', v_res->'failed';",
   "end;",
-  "$apply$;",
+  "$dryrun$;",
   "",
   "-- ⚠️ `ledger_md5` у сухому прогоні червона ОЧІКУВАНО: md5 рядка штампує",
   "--    `npm run db:gate` після коміту файла (так само в 0197 і 0198).",
@@ -585,6 +637,14 @@ const ROLLBACK = [
   `  if not exists (select 1 from public.migration_ledger where name = '${DST_NAME}') then`,
   "    raise exception '0200-відкат: рядка 0200 у леджері немає — відкочувати нічого';",
   "  end if;",
+  "  -- ⚠️ 0200 мусить бути ОСТАННІМ рядком (ревʼю с74, обидві лінзи): інакше",
+  "  --    відкат вирізав би рядок із середини історії, а наступник міг на 0200",
+  "  --    спиратися.",
+  "  if (select max(name) from public.migration_ledger) is distinct from",
+  `     '${DST_NAME}' then`,
+  "    raise exception '0200-відкат: після 0200 уже накатано % — спершу відкотити його',",
+  "      (select max(name) from public.migration_ledger);",
+  "  end if;",
   readGuard("0200-відкат", NEW_MD5, NEW_LEN, PIN, "0200"),
   "",
   substitute("0200-відкат", "v_from", "v_to", "v_lbl", PRE_MD5, PRE_LEN, "0198"),
@@ -592,11 +652,20 @@ const ROLLBACK = [
   pinBlock("0200-відкат", PRE_PIN),
   "",
   `  delete from public.migration_ledger where name = '${DST_NAME}';`,
+  "  get diagnostics v_rows = row_count;",
+  "  if v_rows <> 1 then",
+  "    raise exception '0200-відкат: знято % рядків леджера замість 1', v_rows;",
+  "  end if;",
   "",
   "  raise notice 'ROLLBACK_0200_OK guard=% len=% pin=% ledger=%',",
   "    md5(v_src), length(v_src), v_pin_db, (select count(*) from public.migration_ledger);",
   "end;",
   "$back$;",
+  "",
+  "-- Читання назад: очікування",
+  `--   guard_md5 = ${PRE_MD5}, guard_len = ${PRE_LEN},`,
+  `--   guard_pin = ${PRE_PIN}, ledger_rows = 199, ledger_last = ${PREV_LEDGER}`,
+  READBACK,
   "",
   "-- ⚠️ ЦЕЙ ФРАГМЕНТ НЕ ДОВОДИТЬ ВІДКАТУ: усі асерти вище — УСЕРЕДИНІ транзакції.",
   "--    Після commit ОКРЕМИМ запитом:",
@@ -630,6 +699,16 @@ const FALSIFY = [
   PRE.replaceAll("0200:", "0200-фальсифікація:"),
   `  if not exists (select 1 from public.migration_ledger where name = '${DST_NAME}') then`,
   "    raise exception '0200-фальсифікація: 0200 не накатано — фальсифікувати нічого';",
+  "  end if;",
+  "  -- Предстан — тіло і пін саме 0200 (ревʼю с74, лінза А): інакше FAIL вказав би",
+  "  -- не на ту причину.",
+  "  if (select md5(replace(p.prosrc, chr(13), '')) || '/' || length(replace(p.prosrc, chr(13), ''))",
+  "             || '|' || coalesce(obj_description(p.oid, 'pg_proc'), '(NULL)')",
+  "        from pg_proc p join pg_namespace n on n.oid = p.pronamespace",
+  "       where n.nspname = 'public' and p.proname = 'invariants_check'",
+  "         and pg_get_function_identity_arguments(p.oid) = 'p_write boolean')",
+  `     is distinct from '${NEW_MD5}/${NEW_LEN}|${PIN}' then`,
+  "    raise exception '0200-фальсифікація: у проді не тіло/пін 0200 — спершу розібратись';",
   "  end if;",
   "",
   "  -- M1: РІШАЛЬНИК вихолощено — рівно та підміна, заради якої пакет. Атрибути",
@@ -685,11 +764,14 @@ const MIG_HEAD = [
   "--  Замір 15.09: SECURITY DEFINER у `public` — 115; доступних `authenticated` —",
   "--  44; із них недосяжних з `anon` і ПОЗА списком №19 — 21. Пінуються ТРИ:",
   "--",
-  "--  1. `auth_is_desk()` — не застосовувач рішення, а РІШАЛЬНИК. Його кличуть",
-  "--     пʼять політик RLS: doctors_desk_insert, doctors_desk_update,",
-  "--     incidents_desk_insert, incidents_desk_update, sched_desk_write. Тіло,",
-  "--     переписане на `true`, відкривало б ЗАПИС у три таблиці будь-кому",
-  "--     залогіненому з будь-якого центру — при зеленому сторожі.",
+  "--  1. `auth_is_desk()` — не застосовувач рішення, а РІШАЛЬНИК, у двох шарах.",
+  "--     RLS: пʼять політик (doctors_desk_insert, doctors_desk_update,",
+  "--     incidents_desk_insert, incidents_desk_update, sched_desk_write), усі у",
+  "--     формі «свій центр І auth_is_desk()». Тіло на `true` відкривало б ЗАПИС у",
+  "--     три таблиці будь-якій ролі СВОГО центру — при зеленому сторожі. І гейт",
+  "--     усередині восьми definer-RPC; три з них (emergency_stop_rpc,",
+  "--     queue_set_status_rpc, submit_incident_rpc) уже були в №19, але їхні піни",
+  "--     тримали виклик хелпера, а не його рішення.",
   "--     Замір с74: це ЄДИНИЙ `auth_*`, якого не пінило НІЩО. Девʼять інших — у",
   "--     списку №19; ще чотири (`auth_ceo_clinics`, `auth_is_ceo_of`,",
   "--     `auth_radiologist_case_ok`, `auth_referrer_can_book_room`) досяжні з",
@@ -698,14 +780,20 @@ const MIG_HEAD = [
   "--  2-3. `schedule_from_waitlist_rpc`, `set_waitlist_status_rpc` — їхні тіла",
   "--     переписала 0199 (відсічка радіолога), і результат не тримало ніщо.",
   "--",
-  "--  ⚠️ ЧОМУ НЕ ВСІ 21. Решта 18 — застосовувачі рішення (RPC черги, кейсів,",
-  "--     пошуку, KPI): їх підміна дає ГУЧНУ відмову продукту, а кожен рядок №19 —",
-  "--     ще й зобовʼязання. `integration_apply_status` недоступна `authenticated`;",
-  "--     її місце в №19/№22 — окреме рішення, не заодно з цим пакетом.",
+  "--  ⚠️ ЧОМУ НЕ ВСІ 21 — і чесно, бо перша підстава виявилась хибною. Розбір с73",
+  "--     назвав решту 18 «застосовувачами з гучною відмовою». Ревʼю с74 заміряло",
+  "--     тіла: у 12 із 18 власний гейт `auth_is_admin()`/`auth_is_desk()`, ще в 4 —",
+  "--     лише `auth.uid()`, дві пошукові гейта не мають. Вихолощення такого гейта",
+  "--     МОВЧАЗНЕ. Обсяг «три» задав власник 15.09; чи пінити решту — окреме",
+  "--     рішення власника (`docs/audit/PR-0200-pin-desk-waitlist.md`), як і місце",
+  "--     `integration_apply_status` (недоступна `authenticated`) у №19/№22.",
   "--",
   "--  ⚠️ ЦІНА, названа заздалегідь: №19 пінує ПОВНИЙ рядок — md5 тіла + `attrs`",
-  "--     разом із `;acl=`. Будь-який `grant`, `revoke` чи `alter function` на ці",
-  "--     три функції тепер іде в одній міграції з передруком сторожа.",
+  "--     разом із `;acl=`. БУДЬ-ЯКА правка цих трьох функцій — тіло (і якірна, як",
+  "--     у 0199), `grant`, `revoke`, `alter function`, перейменування параметра —",
+  "--     тепер іде в одній міграції з передруком сторожа. ⚠️ CI цього НЕ ловить:",
+  "--     `PINNED` тримає підписи, а не md5, і гейт звіряє пін лише з тілом у тому",
+  "--     ж файлі. Забута правка червонить №19 уже на ПРОДІ.",
   "--",
   "--  ⚠️ ФОРМА — ПОВНИЙ ПЕРЕДРУК, А НЕ ЯКІРНА ПІДМІНА. Тести (`latestReprint()`)",
   "--     розбирають список №19 з ОСТАННЬОГО файла, що передруковує сторожа;",

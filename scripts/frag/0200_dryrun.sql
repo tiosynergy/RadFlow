@@ -2,14 +2,18 @@
 -- APPLY, але транзакція СВІДОМО валиться в кінці.
 -- ⚠️ Маркер відкоту ОБОВʼЯЗКОВИЙ: «сухий» прогін без нього — це НАКАТ
 --    (урок 0195: execute_sql жене батч однією транзакцією).
-do $apply$
+-- ⚠️ Тег блоку — dryrun, а не apply: перші ~185 рядків тут збігаються з
+--    APPLY, і переплутаний файл закомітив би прод (ревʼю с74, лінза А).
+--    Перед вставкою перевірити, що запит ПОЧИНАЄТЬСЯ з тегу dryrun.
+do $dryrun$
 declare
   v_def text; v_body text; v_src text; v_head text; v_new text;
-  v_hits int; v_res jsonb; v_pin_db text; v_bad text[];
+  v_hits int; v_rows int; v_res jsonb; v_pin_db text; v_bad text[];
   v_from constant text[] := array[
     $p$      ('auth_is_admin()','b795042a9dd18520b7a80e466fd231a1','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl==X/postgres,anon=X/postgres,authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),
 $p$,
     $p$ЩО ПІНИМО (сьогодні 40 підписів; ключ$p$,
+    $p$0193 → 40), а заголовок$p$,
     $p$  --        РІШЕННЯ ВЛАСНИКА 14.09 (межа прози №19 вимагає саме цього).
   v_n := v_n + 1;
 $p$
@@ -21,29 +25,39 @@ $p$
       ('set_waitlist_status_rpc(p_id uuid, p_status waitlist_status)','1e04ab4ebb01c08a23d1280b29465d55','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp;acl=authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),
 $p$,
     $p$ЩО ПІНИМО (сьогодні 43 підписи; ключ$p$,
+    $p$0193 → 40, 0200 → 43), а заголовок$p$,
     $p$  --        РІШЕННЯ ВЛАСНИКА 14.09 (межа прози №19 вимагає саме цього).
   --     ⚠️ 0200 ДОДАЛА ТРИ: `auth_is_desk()`, `schedule_from_waitlist_rpc`,
   --        `set_waitlist_status_rpc`. Список став 43. Розбір —
-  --        `docs/audit/PHASE3-2026-09-15-definer-pin-gap.md`.
-  --        • `auth_is_desk` — не застосовувач, а РІШАЛЬНИК: його кличуть пʼять
-  --          політик RLS (`doctors_desk_insert`, `doctors_desk_update`,
-  --          `incidents_desk_insert`, `incidents_desk_update`,
-  --          `sched_desk_write`). Тіло, переписане на `true`, відкривало б
-  --          ЗАПИС у три таблиці будь-кому залогіненому — при зеленому
-  --          сторожі. Замір с74: це ЄДИНИЙ `auth_*`, якого не пінило НІЩО —
-  --          девʼять інших у цьому списку, ще чотири досяжні з `anon` і їхні
-  --          тіла тримає №22. Урок той самий, що з
-  --          `auth_can_see_slot_details` у 0190: пінити того, хто ВИРІШУЄ;
+  --        `docs/audit/PHASE3-2026-09-15-definer-pin-gap.md` і
+  --        `docs/audit/PR-0200-pin-desk-waitlist.md`.
+  --        • `auth_is_desk` — не застосовувач, а РІШАЛЬНИК, і вирішує він у
+  --          ДВОХ шарах. RLS: пʼять політик (`doctors_desk_insert`,
+  --          `doctors_desk_update`, `incidents_desk_insert`,
+  --          `incidents_desk_update`, `sched_desk_write`), усі у формі
+  --          «свій центр І `auth_is_desk()`» — тіло на `true` відкривало б
+  --          ЗАПИС у три таблиці будь-якій ролі СВОГО центру. І гейт усередині
+  --          восьми definer-RPC, три з яких у цьому списку вже були
+  --          (`emergency_stop_rpc`, `queue_set_status_rpc`,
+  --          `submit_incident_rpc`): їхні піни тримали ВИКЛИК, а не рішення.
+  --          Замір с74: це ЄДИНИЙ `auth_*`, якого не пінило НІЩО — девʼять
+  --          інших у цьому списку, ще чотири досяжні з `anon` і їх тримає №22.
+  --          Урок той самий, що з `auth_can_see_slot_details` у 0190;
   --        • дві waitlist-RPC — їхні тіла переписала 0199 (відсічка
   --          радіолога), і результат не тримало ніщо.
-  --        ⚠️ ЦІНА, названа заздалегідь: рядок пінує md5 тіла РАЗОМ з
-  --           `attrs`, тобто і `;acl=`. Будь-який `grant`, `revoke` чи
-  --           `alter function` на ці три функції тепер іде в одній міграції
-  --           з передруком сторожа.
-  --        ⚠️ МЕЖА: решта 18 definer-функцій, доступних `authenticated` і
-  --           поза цим списком, — застосовувачі рішення з гучною відмовою
-  --           продукту; не пінуються свідомо. `integration_apply_status`
-  --           (недоступна `authenticated`) вирішується окремо.
+  --        ⚠️ ЦІНА: рядок пінує md5 тіла РАЗОМ з `attrs`, тобто і `;acl=`.
+  --           Будь-яка правка цих трьох функцій — тіло (і якірна, як у 0199),
+  --           `grant`, `revoke`, `alter function`, перейменування параметра —
+  --           тепер іде в одній міграції з передруком сторожа. CI цього НЕ
+  --           ловить: `PINNED` тримає підписи, а не md5, — червоніє прод.
+  --        ⚠️ МЕЖА — і вона НЕ «гучна відмова», як назвав решту розбір с73
+  --           (ревʼю с74 це спростувало замірами тіл). Решта 18 definer-
+  --           функцій, доступних `authenticated` і поза списком, здебільшого
+  --           САМІ несуть гейт: у 12 це `auth_is_admin()` чи `auth_is_desk()`,
+  --           ще в 4 — лише `auth.uid()`, дві пошукові гейта не мають.
+  --           Вихолощення такого гейта МОВЧАЗНЕ. Обсяг «три» заданий
+  --           власником; чи пінити решту — окреме рішення власника, як і
+  --           місце `integration_apply_status` (недоступна `authenticated`).
   --        РІШЕННЯ ВЛАСНИКА 15.09 (стартовий промпт с74).
   v_n := v_n + 1;
 $p$
@@ -51,6 +65,7 @@ $p$
   v_lbl  constant text[] := array[
     $p$три рядки в список №19 після auth_is_admin()$p$,
     $p$лічильник у заголовку прози №19: 40 -> 43$p$,
+    $p$історія росту списку в прозі №19: + 0200 → 43$p$,
     $p$абзац 0200 у прозі №19 перед кроком лічильника$p$
   ];
 begin
@@ -153,8 +168,8 @@ begin
     end if;
     v_new := replace(v_new, v_from[i], v_to[i]);
   end loop;
-  if md5(v_new) is distinct from '62a1f765f30a5631fbf9aac732f35363' or length(v_new) <> 139393 then
-    raise exception '0200: підстановка дала % / %, а файл 0200 це 62a1f765f30a5631fbf9aac732f35363 / 139393',
+  if md5(v_new) is distinct from '793ebcc08997fc54d36472cc3fd2ff9b' or length(v_new) <> 140125 then
+    raise exception '0200: підстановка дала % / %, а файл 0200 це 793ebcc08997fc54d36472cc3fd2ff9b / 140125',
       md5(v_new), length(v_new);
   end if;
   execute v_head || v_new || '$function$';
@@ -163,8 +178,8 @@ begin
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and p.proname = 'invariants_check'
      and pg_get_function_identity_arguments(p.oid) = 'p_write boolean';
-  if md5(v_src) is distinct from '62a1f765f30a5631fbf9aac732f35363' or length(v_src) <> 139393 then
-    raise exception '0200: у БД лягло % / % замість 62a1f765f30a5631fbf9aac732f35363 / 139393', md5(v_src), length(v_src);
+  if md5(v_src) is distinct from '793ebcc08997fc54d36472cc3fd2ff9b' or length(v_src) <> 140125 then
+    raise exception '0200: у БД лягло % / % замість 793ebcc08997fc54d36472cc3fd2ff9b / 140125', md5(v_src), length(v_src);
   end if;
 
   -- ── Самопін №25 — у ТІЙ САМІЙ транзакції, інакше сторож червоніє ────────
@@ -172,8 +187,8 @@ begin
   --    генератор: `length()` у Postgres рахує СИМВОЛИ, `.length` у JS —
   --    одиниці UTF-16. Розбіжність ЗУПИНЯЄ накат (урок 0198).
   v_pin_db := 'guard_body_md5=' || md5(v_src) || ';len=' || length(v_src);
-  if v_pin_db is distinct from 'guard_body_md5=62a1f765f30a5631fbf9aac732f35363;len=139393' then
-    raise exception '0200: пін із БД (%) розійшовся з піном із файлу (guard_body_md5=62a1f765f30a5631fbf9aac732f35363;len=139393)', v_pin_db;
+  if v_pin_db is distinct from 'guard_body_md5=793ebcc08997fc54d36472cc3fd2ff9b;len=140125' then
+    raise exception '0200: пін із БД (%) розійшовся з піном із файлу (guard_body_md5=793ebcc08997fc54d36472cc3fd2ff9b;len=140125)', v_pin_db;
   end if;
   execute format('comment on function public.invariants_check(boolean) is %L', v_pin_db);
   -- Читання НАЗАД: `comment on` мовчазний, «виконалось» — не доказ.
@@ -182,9 +197,15 @@ begin
       coalesce(obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc'), '(NULL)');
   end if;
 
+  -- ⚠️ БЕЗ `on conflict do nothing` (ревʼю с74, лінза А): рядок, вставлений
+  --    паралельною сесією між перевіркою і вставкою, мусить ВАЛИТИ накат, а не
+  --    мовчки лишати тіло й пін закоміченими поверх чужого рядка.
   insert into public.migration_ledger (name)
-  values ('0200_pin_desk_and_waitlist_rpcs.sql')
-  on conflict (name) do nothing;
+  values ('0200_pin_desk_and_waitlist_rpcs.sql');
+  get diagnostics v_rows = row_count;
+  if v_rows <> 1 then
+    raise exception '0200: рядок леджера не ліг (% рядків)', v_rows;
+  end if;
 
   -- Сторожа кличемо ТУТ, бо прогін усе одно відкотиться: треба бачити
   -- `checked = 25` і зелені №19 та №25 ДО того, як чіпати прод.
@@ -202,7 +223,7 @@ begin
   raise exception 'DRYRUN_0200_ROLLBACK guard=% len=% pin=% checked=% ok=% failed=%',
     md5(v_src), length(v_src), v_pin_db, v_res->>'checked', v_res->>'ok', v_res->'failed';
 end;
-$apply$;
+$dryrun$;
 
 -- ⚠️ `ledger_md5` у сухому прогоні червона ОЧІКУВАНО: md5 рядка штампує
 --    `npm run db:gate` після коміту файла (так само в 0197 і 0198).
