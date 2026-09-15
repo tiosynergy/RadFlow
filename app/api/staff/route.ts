@@ -222,7 +222,25 @@ export async function POST(req: Request) {
     approved: true, password_set: false, invite_token: inviteToken,
   });
   if (pErr) {
-    await admin.auth.admin.deleteUser(uid); // відкат, щоб не лишати «сирітський» auth-акаунт
+    /* 0197. Відкат був тут і до цього пакета — чого не було, так це перевірки,
+       що він СПРАЦЮВАВ. `deleteUser` ходить по мережі до GoTrue і може впасти
+       (таймаут, 5xx, ліміт). Тоді auth-акаунт лишався без профілю, користувач
+       бачив звичайну 400, і про сироту не дізнавався НІХТО — рівно так у проді
+       й осіли пʼять акаунтів 22 і 26 червня. Тепер невдалий відкат називає
+       себе: окремий код 500 із прямою вказівкою, що потрібне ручне прибирання.
+       ⚠️ Події в журнал тут НЕМАЄ свідомо: контракт подій закритий
+       (`GENERAL_EVENT_TYPES`, правило «одна дія — ОДНА подія»), а це не дія
+       над доступом, а збій цілісності. Довготривалий детектор — сторож №24,
+       який ловить сироту старшу за 15 хв незалежно від того, чи хтось
+       прочитав цю 500. */
+    const { error: dErr } = await admin.auth.admin.deleteUser(uid);
+    if (dErr) {
+      safeDbError("api/staff.rollbackDeleteUser", dErr); // деталі — в лог
+      return NextResponse.json(
+        { error: "Акаунт не створено, але й не прибрано повністю. Повідомте адміністратора системи — потрібне ручне прибирання." },
+        { status: 500 }
+      );
+    }
     return NextResponse.json(
       { error: /login/i.test(pErr.message) && /unique|duplicate/i.test(pErr.message) ? "Логін вже зайнятий" : safeDbError("api/staff.profile", pErr) },
       { status: 400 }

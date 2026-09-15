@@ -120,7 +120,18 @@ export async function POST(req: Request) {
       email: effectiveEmail, phone, note, approved: true, password_set: false, invite_token: inviteToken,
     });
     if (pErr) {
-      await admin.auth.admin.deleteUser(ceoId); // відкат
+      /* 0197: відкат мав бути перевірений, а не просто відправлений — див.
+         той самий блок у `/api/staff`. Невдалий `deleteUser` лишав сироту
+         МОВЧКИ; тепер він називає себе окремим кодом 500, а довготривалий
+         детектор — сторож №24. */
+      const { error: dErr } = await admin.auth.admin.deleteUser(ceoId);
+      if (dErr) {
+        safeDbError("api/ceo/grant.rollbackDeleteUser", dErr);
+        return NextResponse.json(
+          { error: "Керівника не створено, але й не прибрано повністю. Повідомте адміністратора системи — потрібне ручне прибирання." },
+          { status: 500 }
+        );
+      }
       return NextResponse.json(
         { error: /login/i.test(pErr.message) && /unique|duplicate/i.test(pErr.message) ? "Логін вже зайнятий" : safeDbError("api/ceo/grant.profile", pErr) },
         { status: 400 }
