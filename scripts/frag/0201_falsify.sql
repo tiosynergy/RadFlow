@@ -22,7 +22,7 @@
 do $falsify$
 declare
   v_res jsonb; v_off19 text[]; v_off26 text[]; v_offpd text[]; v_miss text[]; v_extra text[];
-  v_def text; v_n int := 0; v_other text[]; r record; v_hits int; v_bad text[];
+  v_def text; v_n int := 0; v_other text[]; v_fn record; v_hits int; v_bad text[];
   v_want19 constant text[] := array[
     $p$body:cancel_case_rpc(p_case_id uuid)->$p$,
     $p$body:ceo_kpi_rooms(p_from date, p_to date, p_clinics uuid[])->$p$,
@@ -330,12 +330,12 @@ begin
   --          ті самі (`create or replace` зберігає власника, ACL і SET), тож
   --          червоніти мусить лише `body:`. Коментар — СВІДОМО: нормалізація
   --          №19 коментарів не знімає (закоментований raise — зміна поведінки).
-  for r in select p.oid from pg_proc p
+  for v_fn in select p.oid from pg_proc p
             where p.pronamespace = 'public'::regnamespace
               and p.proname in ('cancel_case_rpc', 'ceo_kpi_rooms', 'ceo_kpi_studies', 'ceo_kpi_totals', 'delete_clinic_member', 'incident_resolve_rpc', 'queue_apply_delay_plan_rpc', 'queue_confirm_calls_rpc', 'queue_set_call_rpc', 'save_schedule_override', 'search_referrers', 'services_import_rpc', 'create_case_rpc', 'queue_reschedule_rpc', 'mark_changes_seen', 'referral_center_card') loop
-    v_def := pg_get_functiondef(r.oid);
+    v_def := pg_get_functiondef(v_fn.oid);
     if (length(v_def) - length(replace(v_def, 'AS $function$', ''))) / length('AS $function$') <> 1 then
-      raise exception '0201-фальсифікація: у визначенні % не рівно одне AS $function$', r.oid::regprocedure;
+      raise exception '0201-фальсифікація: у визначенні % не рівно одне AS $function$', v_fn.oid::regprocedure;
     end if;
     execute replace(v_def, 'AS $function$', 'AS $function$' || chr(10) || '-- falsify 0201' || chr(10));
     v_n := v_n + 1;
