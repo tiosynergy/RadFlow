@@ -227,9 +227,15 @@ async function main() {
   }
   if (!accessToken) throw new Error("refresh повернув порожній access-токен");
 
-  // ── чим Google сам підписує зону календаря ──
+  // ── чим Google сам підписує зону календаря — ДОВІДКОВО, поза вердиктом ──
+  // Перший живий прогін 17.09: HTTP 403 «insufficient authentication scopes».
+  // Токен дзеркала має лише calendar.events + calendarlist.readonly
+  // (lib/googleCalendarClient.ts), а calendars.get вимагає calendar.readonly —
+  // цей рядок не міг пройти НІКОЛИ і до властивості, яку доводить зонд
+  // (вставка з зоною, рівний офсет, відмова хибній, видалення), не належить.
+  // Тому він друкується як довідка, а не рахується у вердикт.
   const cal = await calFetch(accessToken, `/calendars/${encodeURIComponent(calendarId)}`);
-  check("calendars.get", cal.ok, cal.ok ? `timeZone календаря = ${cal.json?.timeZone ?? "(не вказано)"}` : `HTTP ${cal.status}: ${cal.message}`);
+  console.log(`  info  calendars.get — ${cal.ok ? `timeZone календаря = ${cal.json?.timeZone ?? "(не вказано)"}` : `HTTP ${cal.status}: ${cal.message} (поза вердиктом: scope токена дзеркала не покриває calendars.get)`}`);
 
   // ── вставки ──
   /** @type {{kind: string, tz: string, id: string, ins: any}[]} */
