@@ -2145,6 +2145,17 @@ select.inp { cursor: pointer; }
   overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
 }
 
+/* W-2 (с75): кнопка-заголовок рядка (імʼя направника, назва центру) — справжня
+   <button>, щоб рядок відкривався з клавіатури, а не лише мишею; виглядає як
+   текст. Без `all: unset`: у глобального кільця :focus-visible (вище) та сама
+   специфічність (0,1,0), і при рівній вирішує порядок — наше правило нижче,
+   тож `all: unset` зняло б outline. Тому outline тут свідомо НЕ чіпаємо. */
+.rf-rowbtn {
+  background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit;
+  text-align: left; cursor: pointer; display: inline; line-height: inherit;
+}
+.rf-rowbtn:hover { color: var(--blue-text); }
+
 .rf-dot {
   display: inline-flex; align-items: center; justify-content: center;
   vertical-align: middle; flex-shrink: 0;
