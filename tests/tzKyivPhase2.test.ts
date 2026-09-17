@@ -270,6 +270,13 @@ describe("0202 — фрагменти", () => {
     /* заголовки (DEFAULT-и, тип результату) звіряються ДО і ПІСЛЯ — create or replace міняє їх мовчки */
     expect(APPLY.split("h.args is not distinct from pg_get_function_arguments(p.oid)").length - 1).toBe(2);
     expect(APPLY.split("where h.fn = p.proname and p.prokind = 'f'").length - 1).toBe(2);
+    /* `prokind` має тип "char": без `::text` конкатенація падає 42725 «operator is
+       not unique: text || "char"» — зловив ПЕРШИЙ сухий прогін 17.09 (транзакція
+       відкотилась до DDL — прод не змінився). Статика типів не бачить; пін тримає. */
+    for (const txt of [APPLY, DRYRUN, ROLLBACK]) {
+      expect(txt).not.toMatch(/\|\| p\.prokind \|\|/);
+      expect(txt.split("|| ':' || p.prokind::text || '->' ||").length - 1).toBe(2);
+    }
     /* самопін №25 у тій самій транзакції — у накаті, сухому прогоні й відкаті */
     for (const txt of [APPLY, DRYRUN, ROLLBACK]) {
       expect(txt).toContain("execute format('comment on function public.invariants_check(boolean) is %L', v_pin_db);");

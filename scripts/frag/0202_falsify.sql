@@ -55,8 +55,10 @@ begin
   --    аргументи дефолтів не несуть, а `create or replace` міняє їх мовчки.
   --    NULL-безпечно (`not exists … is not distinct from`), без фільтра prokind:
   --    процедура з таким імʼям теж мусить стати порушником, а не випасти з NOT IN.
+  --    `prokind::text` обовʼязково: тип "char" у конкатенації дає 42725
+  --    «operator is not unique: text || "char"» — зловив сухий прогін 17.09.
   select array_agg(x.txt order by x.txt) into v_bad from (
-    select 'head:' || p.proname || ':' || p.prokind || '->' || coalesce(pg_get_function_arguments(p.oid), '<null>')
+    select 'head:' || p.proname || ':' || p.prokind::text || '->' || coalesce(pg_get_function_arguments(p.oid), '<null>')
              || ' => ' || coalesce(pg_get_function_result(p.oid), '<null>') as txt
       from pg_proc p where p.pronamespace = 'public'::regnamespace
        and p.proname in ('check_no_overlap', 'check_not_in_past', 'queue_set_status_rpc', 'emergency_stop_rpc', 'submit_incident_rpc', 'room_busy_slots')
