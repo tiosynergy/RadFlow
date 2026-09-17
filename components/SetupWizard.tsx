@@ -8,6 +8,7 @@ import { useState, useEffect, useLayoutEffect, useRef, type Dispatch, type SetSt
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { normalizeLogin, isValidLogin, LOGIN_HINT } from "@/lib/login";
+import { canonicalTz, canonicalTzList } from "@/lib/tzCanonical";
 import type { Json, TablesInsert, Tables } from "@/supabase/types";
 import CitySelect from "@/components/CitySelect";
 import ServicesEditor from "@/components/ServicesEditor";
@@ -44,7 +45,8 @@ const OPEN_STATUSES = ["scheduled", "waiting", "in_progress", "needs_reschedule"
    запису в минуле (канон wall-as-UTC, міграції 0035/0059). Тому це ЯВНЕ поле, а
    не мовчазний авто-детект браузера при кожному збереженні. */
 function browserTz(): string {
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Kyiv"; }
+  // 0202: старий ICU віддає аліас `Europe/Kiev` — CHECK його більше не пропускає
+  try { return canonicalTz(Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Kyiv"); }
   catch { return "Europe/Kyiv"; }
 }
 /** Повний список зон (сучасні рушії) з фолбеком на короткий перелік. */
@@ -52,7 +54,7 @@ function tzList(): string[] {
   const withValues = Intl as unknown as { supportedValuesOf?: (k: string) => string[] };
   try {
     const all = withValues.supportedValuesOf?.("timeZone");
-    if (all && all.length) return all;
+    if (all && all.length) return canonicalTzList(all);
   } catch { /* старий рушій — фолбек нижче */ }
   return ["Europe/Kyiv", "Europe/Warsaw", "Europe/Berlin", "Europe/Prague", "Europe/Vilnius",
     "Europe/Riga", "Europe/Bucharest", "Europe/Chisinau", "Europe/London", "Europe/Lisbon",
@@ -250,7 +252,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
      усієї клініки: від нього залежать «Запізнення», «Уточнити», гарди виклику й
      заборона запису в минуле. Тепер це явне поле; авто-детект — лише як
      початкове значення для НОВОЇ клініки. */
-  const [timezone, setTimezone] = useState(initial.timezone || browserTz());
+  const [timezone, setTimezone] = useState(canonicalTz(initial.timezone || browserTz()));
 
   const [adminName, setAdminName] = useState(initial.adminName || "");
   // Email лише показуємо: адресу входу міняє служба підтримки, не майстер.
@@ -868,7 +870,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
          писалась зона БРАУЗЕРА оператора: адмін із іншої країни (або з VPN) мовчки
          ламав час усієї клініки — а від нього залежать «Запізнення», «Уточнити»,
          гарди виклику й заборона запису в минуле. Порожню/невалідну зону не пишемо. */
-      const tz = (d.timezone || "").trim();
+      const tz = canonicalTz((d.timezone || "").trim());
       const tzValid = !!tz && (() => {
         try { new Intl.DateTimeFormat("uk-UA", { timeZone: tz }); return true; } catch { return false; }
       })();
