@@ -545,7 +545,7 @@ describe("clinicDay — календар центру, а не арифмети�
     expect(clinicDay("Europe/Kiev", 7, now)).toBe("2026-10-30");
   });
 
-  it("Europe/Kiev (старе написання у clinics.timezone) розпізнається", () => {
+  it("Europe/Kiev (старе написання; у clinics.timezone до 0202, з браузера — і досі) розпізнається", () => {
     const now = new Date("2026-08-23T09:00:00Z");
     expect(clinicDay("Europe/Kiev", 3, now)).toBe(clinicDay("Europe/Kyiv", 3, now));
   });

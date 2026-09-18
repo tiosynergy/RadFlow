@@ -316,7 +316,7 @@ Google) у репетицію не входили, тож «2–4 год» у р
 - **`ceo_access_status`**: `active`, `revoked`.
 - **`incidents.status`** (text): `active`, `planned`, `resolved`.
 - **`google_calendar_connections.status`** (text + CHECK `gcal_status_chk`, §4.15): `not_connected`, `connected_no_calendar`, `ready`, `reauth_required`, `access_lost`. Коды ошибки (`last_error_code`): `reauth_required`, `access_lost`, `rate_limited`, `google_unavailable`, `network`, `partial_snapshot`, `config_missing`, `sync_failed`.
-- **`clinics.timezone`** (text + CHECK `clinics_timezone_chk`, миграция **0192**): `Europe/Kyiv`, `Europe/Kiev`, `UTC`. ⚠️ `Europe/Kiev` — legacy-алиас, он живёт в проде и держит фазу 2 таймзон (см. §8).
+- **`clinics.timezone`** (text + CHECK `clinics_timezone_chk`, миграция **0192**, сужен **0202**): `Europe/Kyiv`, `UTC`. Legacy-алиас `Europe/Kiev` из списка убран 17.09.2026 (0202): прод переведён на `Europe/Kyiv`, чтения (триггеры и RPC) больше не валидируют зону через каталог `pg_timezone_names` — имя стережёт сам CHECK; браузерный алиас нормализует `lib/tzCanonical.ts` перед записью.
 - **`clinics.queue_delay_policy`** (text + CHECK): `manual`, `cascade_shift`, `reschedule_conflicts`; рядом `overlap_threshold_min` (5…120, кратно 5) и `max_cascade_patients` (1…100) — политика задержки очереди (0078–0081).
 - **Позначки непрочитаного** (§4.16): `severity` `info`/`important`/`critical`; десять поверхностей `surface_key`; одиннадцать `field_scope`. **`integration_keys.scopes`** ⊆ `slots:read`, `appointments:read`, `events:write`; `export_mode` `A`/`B` (§4.17).
 
@@ -328,7 +328,7 @@ Google) у репетицію не входили, тож «2–4 год» у р
 
 | Таблица | Назначение |
 |---------|-----------|
-| `clinics` | Tenant: реквизиты, `configured_at`, **`timezone`** (IANA, миграция 0059; с **0192** на колонке CHECK `clinics_timezone_chk` — допустимы `Europe/Kyiv`, `Europe/Kiev`, `UTC`, то есть «универсальная TZ» пока сужена до трёх значений на стороне ЗАПИСИ), политика задержки очереди `queue_delay_policy` + `overlap_threshold_min` + `max_cascade_patients` (0078–0081) |
+| `clinics` | Tenant: реквизиты, `configured_at`, **`timezone`** (IANA, миграция 0059; с **0192** на колонке CHECK `clinics_timezone_chk`, с **0202** — только `Europe/Kyiv`, `UTC`: «универсальная TZ» сужена до двух значений на стороне ЗАПИСИ, новый пояс = миграция + перепечатка №23), политика задержки очереди `queue_delay_policy` + `overlap_threshold_min` + `max_cascade_patients` (0078–0081) |
 | `profiles` | Профиль 1:1 с `auth.users`; `role`, `login` (глоб. уникальный), `approved`, `password_set`; `clinic_id NULL` ⇔ глобальный направитель |
 | `rooms` | Кабинеты/аппараты: модальность, `schedule` (jsonb: часы по дням + `breaks[]` — несколько перерывов, на весь тиждень и/или по дням) |
 | `services` | **Каталог послуг та цін центру** (Stage 2, миграция 0107): `name`, `modality`, `duration_min`, `price`, `contrast_allowed`, `contrast_price` (NULL = глобальний `CONTRAST_SURCHARGE`), `active`, `sort_order`; уникальність `(clinic_id, modality, lower(name))`. Резолвер `lib/catalog.ts buildCatalog` — єдина точка читання у booking-флоу; порожня модальність → фолбэк на статику `lib/studies` |
@@ -369,7 +369,7 @@ Google) у репетицію не входили, тож «2–4 год» у р
 
 **Ключевые ограничения и логика:**
 
-- `check_no_overlap` (триггер + advisory-lock) — запрет двойной брони по времени; занятость слота считается как `duration_min + buffer_time_min` (буфер после исследования); `cancelled/no_show/not_held` освобождают слот. Для записи `in_progress` занятость кабинета считается по **фактическому** окну старта (`in_progress_at + тривалість + буфер`), а не по плановому слоту (миграция 0060 — `room_busy_slots`/`check_no_overlap`; TZ-валидация зоны через `pg_timezone_names`). Проверка простоя (`check_not_during_incident`) буфер НЕ учитывает — по чистой длительности.
+- `check_no_overlap` (триггер + advisory-lock) — запрет двойной брони по времени; занятость слота считается как `duration_min + buffer_time_min` (буфер после исследования); `cancelled/no_show/not_held` освобождают слот. Для записи `in_progress` занятость кабинета считается по **фактическому** окну старта (`in_progress_at + тривалість + буфер`), а не по плановому слоту (миграция 0060 — `room_busy_slots`/`check_no_overlap`; TZ-валидация зоны через `pg_timezone_names` до 0202, с 17.09.2026 зону стережёт CHECK на записи, чтения берут колонку напрямую). Проверка простоя (`check_not_during_incident`) буфер НЕ учитывает — по чистой длительности.
 - Частичный unique-индекс — один `in_progress` на кабинет; один `active`-инцидент на кабинет.
 - `check_not_during_incident` — запрет записи в окно простоя.
 - **Гарды направителя** (миграция 0048, триггеры `guard_call_status_change` / `guard_status_change_referrer`): пользователь `role='referrer'` не может менять `call_status`, а `status` — только `scheduled`/`cancelled` из `scheduled`/`waiting` (перенос/отмена своей записи; нельзя продвигать «В роботі/Виконано/Неявка»). Админ/персонал/service-role не затронуты. Вместе с `guard_priority_change` (0046) и `guard_referrer_doctor` (0036) — защита на уровне БД поверх RLS.
@@ -767,14 +767,14 @@ allowlist-смоука. Единственная миграция сессии.
   фильтрует по `anon` и делегирует тела №19, а №19 на ACL не смотрит — кольцо не
   замкнуто. Лечение (`;acl=` в attrs) меняет все 30 значений, поэтому отдельная
   миграция с отдельным ревью.
-- ⚠️ **`pg_timezone_names` остаётся в горячем пути пяти функций**, из них **две —
-  СТРОЧНЫЕ триггеры** на `queue_entries` (`check_no_overlap`, `check_not_in_past`),
-  то есть каждая запись платит минимум два скана по ~1200 записей tz-базы ОС. Фаза 2
-  заблокирована вопросом владельцу: `Europe/Kiev` — legacy-алиас, и если tzdata его
-  уберёт, триггер-валидатор на `clinics` не спасёт — он защищает ЗАПИСИ, а падать
-  начнут ЧТЕНИЯ (`invalid value for parameter "TimeZone"` вместо тихого отката на
-  UTC). Варианты — §7б
-  [`docs/audit/PERF-2026-09-12-pg-timezone-names.md`](audit/PERF-2026-09-12-pg-timezone-names.md).
+- ✅ **`pg_timezone_names` ушёл из горячего пути (0202, 17.09.2026).** До этого скан
+  стоял в шести функциях, из них **две — СТРОЧНЫЕ триггеры** на `queue_entries`
+  (`check_no_overlap`, `check_not_in_past`): каждая запись платила минимум два скана
+  по ~1200 записей tz-базы ОС (холодный — ~1 с). Решение владельца Р74-3(а): прод
+  переведён на `Europe/Kyiv`, CHECK сужен, чтения берут колонку напрямую; замер на
+  проде — `trg_no_overlap` 964 → 7 мс холодным, 55 → 0,6 мс тёплым. §7в
+  [`docs/audit/PERF-2026-09-12-pg-timezone-names.md`](audit/PERF-2026-09-12-pg-timezone-names.md),
+  [`docs/audit/PR-0202-tz-kyiv-no-catalog-scan.md`](audit/PR-0202-tz-kyiv-no-catalog-scan.md).
 - ⚠️ **`auth_rls_initplan` — 15 политик** с безаргументными вызовами STABLE-функций.
   Отдельно от RF-07 и дёшево в принципе, но выигрыш **не автоматический**: замерено,
   что планировщик и без обёртки сворачивает `auth_clinic_id()` в `Index Cond`.
@@ -808,7 +808,7 @@ allowlist-смоука. Единственная миграция сессии.
 - ⚠️ **Р5 — `user_change_markers` → `REPLICA IDENTITY FULL`.** Обе стороны замерены: сегодня DELETE отметки не доезжает до подписчика НИКОГДА и красная точка гаснет сверкой раз в 60 с; с FULL гаснет за <1 с, но на DELETE `realtime.apply_rls` не считает RLS вообще — содержимое не течёт (payload обрезан до PK), течёт ФАКТ и время. Проверка №21 держит исключение **утверждающе**: в день переключения сторож сам покраснеет и потребует убрать исключение.
 - ⚠️ **leaked-password protection** — состояние по advisors НЕРАЗЛИЧИМО: 07.09 был WARN `auth_leaked_password_protection`, в замерах 13.09 и 14.09 его в списке нет, и это может значить и «включили», и «линт переехал». Пять минут в дашборде Supabase закрывают вопрос; **П-5**.
 - ⚠️ **Восстановление БД (блок 3.2).** 14.09 написан рунбук [`docs/RUNBOOK_RESTORE.md`](RUNBOOK_RESTORE.md) — замеры прода: операционно незаменимое ядро **3 168 kB** (~1000 строк), `archive_mode=on`, `wal_level=logical`, 45 311 заархивированных WAL-сегментов. **Но репетиции не было НИ РАЗУ**, а тариф Supabase и наличие PITR по API не видны вообще — один взгляд в Dashboard → Settings → Add-ons закрывает обе строки. До репетиции RTO — расчёт, а не факт; планировать по худшему (**RPO 24 ч**). **П-4**.
-- ⚠️ **Фаза 2 таймзон** упирается в legacy-алиас `Europe/Kiev`, живущий в проде: триггеры защищают ЗАПИСИ, а падать начнут ЧТЕНИЯ, если tzdata его выбросит. **Н-5**.
+- ✅ **Фаза 2 таймзон закрыта 17.09 (0202, Р74-3(а)):** прод на `Europe/Kyiv`, CHECK без алиаса, скан `pg_timezone_names` убран из шести функций; `trg_no_overlap` 964 → 7 мс холодным (`docs/audit/PR-0202-tz-kyiv-no-catalog-scan.md`). ~~**Н-5**~~.
 - ⚠️ **Производительность — перемерено 14.09** (`docs/audit/PERF-2026-09-14-instance-time.md`), и картина не та, что была в с63. `room_busy_slots` — **19,3 %** времени инстанса (10,03 млн мс, 43 984 вызова), но **главный потребитель — Realtime, 61 %** (5,05 млн вызовов декодирования WAL), и в аудите он не назывался ни разу. ⚠️ Проценты тут вводят в заблуждение: скважность инстанса **0,66 %**, то есть 19 % — это 19 % почти от нуля. Реальный дефект виден в распределении: mean 285 мс при **sd 852 и max 5091 мс** — сетка кабинета иногда открывается пять секунд; гипотеза (не доказана, мешает `track='top'`) — хвост даёт скан `pg_timezone_names` (812 мс), то есть 3.3 и фаза 2 таймзон, вероятно, одна задача. Решение «лимит / кеш / принятый риск» не принято. **Н-4**.
 - ~~**T3-бис — пять auth-аккаунтов без профиля**~~ ✅ **ЗАКРЫТО 15.09 миграцией 0197** (пункт Н-6). Пять аккаунтов удалены (`auth.users` 14 → 9, сирот 0), образы «до» в `audit_log` — РЕДАКТИРОВАННЫЕ (id, даты, флаги; ⚠️ без почты и хеша пароля — осознанный отступ от 0141, который клал `to_jsonb(row)`). Следит проверка **№24** `auth_orphan_accounts` с порогом **15 минут**: без порога она краснела бы на каждом создании персонала, потому что между `createUser` и вставкой профиля аккаунт ЗАКОННО сирота. ⚠️ Зонд под сиротой показал, что RLS держит (все таблицы 0 строк, `auth_role()` = null) — дыра была не в доступе, а в невидимости. Разбор — [`docs/audit/PR-0197-auth-orphan-guard.md`](audit/PR-0197-auth-orphan-guard.md).
 - ⚠️ **WCAG-переаудита не было с с47**, живой проверки с клавиатуры и скринридером — ни разу (блок 4.4 плана).
