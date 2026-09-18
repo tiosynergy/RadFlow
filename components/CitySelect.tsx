@@ -6,7 +6,7 @@
    value/onChange лишаються рядком: назовні віддається готовий підпис (label),
    напр. "м. Київ, Київська обл." — він і зберігається у clinics.city. */
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 interface CityHit {
@@ -48,6 +48,13 @@ export default function CitySelect({
   const boxRef = useRef<HTMLDivElement>(null);
   // Чи відповідає поточний текст обраному зі списку значенню.
   const chosenRef = useRef(value || "");
+  /* W-13 (с75): патерн combobox, як у StudySearchBox — role, aria-expanded,
+     aria-controls на listbox, aria-activedescendant на активну опцію; стан
+     списку («знайдено N» / «нічого не знайдено») — у прихованому live-регіоні.
+     Без цього скрінрідер не чув ні підказки, ні активної опції, а поле
+     обовʼязкове і текст без вибору зі списку — недійсний (SetupWizard). */
+  const listId = useId();
+  const optId = (i: number) => listId + "-o" + i;
 
   // Зовнішня зміна value (напр. префіл форми) — синхронізуємо текст.
   useEffect(() => {
@@ -93,6 +100,13 @@ export default function CitySelect({
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
 
+  // Активна опція — у видимій частині списку (клавіатура; як у StudySearchBox).
+  useEffect(() => {
+    if (!open || active < 0) return;
+    document.getElementById(optId(active))?.scrollIntoView({ block: "nearest" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- скрол лише за активним індексом
+  }, [active, open]);
+
   function pick(h: CityHit) {
     setText(h.label);
     chosenRef.current = h.label;
@@ -120,14 +134,27 @@ export default function CitySelect({
   const has = (text || "").trim() !== "";
   // Некоректно: поле обовʼязкове й порожнє, АБО введено текст без вибору зі списку.
   const invalid = (required && !has) || (has && text.trim() !== chosenRef.current.trim());
+  const listOpen = open && hits.length > 0;
+  const searching = text.trim().length >= 2 && text.trim() !== chosenRef.current.trim();
+  const statusText = !searching ? ""
+    : listOpen ? "знайдено: " + hits.length + " — стрілками оберіть зі списку"
+    : "нічого не знайдено — оберіть населений пункт зі списку";
 
   return (
     <div ref={boxRef} style={{ position: "relative", ...style }}>
+      <div className="rf-vh" role="status" aria-live="polite">{statusText}</div>
       <input
         id={id}
         name={name}
         disabled={disabled}
         autoComplete="off"
+        role="combobox"
+        aria-expanded={listOpen}
+        aria-controls={listId}
+        aria-autocomplete="list"
+        aria-activedescendant={listOpen && active >= 0 ? optId(active) : undefined}
+        aria-required={required || undefined}
+        aria-invalid={invalid && has ? true : undefined}
         className={className + (invalid && has ? " invalid" : "")}
         placeholder={placeholder}
         value={text}
@@ -138,11 +165,12 @@ export default function CitySelect({
         onFocus={() => hits.length > 0 && setOpen(true)}
         onKeyDown={onKeyDown}
       />
-      {open && hits.length > 0 && (
-        <ul className="city-list" role="listbox">
+      {listOpen && (
+        <ul className="city-list" role="listbox" id={listId}>
           {hits.map((h, i) => (
             <li
               key={h.id}
+              id={optId(i)}
               role="option"
               aria-selected={i === active}
               className={"city-opt" + (i === active ? " active" : "")}

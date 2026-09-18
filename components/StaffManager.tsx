@@ -12,6 +12,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
 import Toast from "@/components/Toast";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import BaseDialog from "@/components/BaseDialog";
 import { createClient } from "@/lib/supabase/client";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
@@ -588,22 +589,21 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
       </div>
 
       {pwModal && (
-        <div className="overlay" onClick={() => !pwModal.busy && setPwModal(null)}>
-          <div className="dialog fade-in" style={{ maxWidth: 380 }} onClick={(e) => e.stopPropagation()}>
-            <div className="dlg-head"><div className="dlg-title">Задати пароль</div><button className="icon-btn" aria-label="Закрити" onClick={() => setPwModal(null)}>✕</button></div>
+        /* W-9 (с75): каркас BaseDialog — role="dialog", пастка фокуса, Esc,
+           повернення фокуса на «Задати пароль» після закриття. */
+        <BaseDialog title="Задати пароль" maxWidth={380} busy={pwModal.busy} onClose={() => setPwModal(null)}>
             <div className="dlg-body">
               <label className="fld" style={{ marginBottom: 0 }}><span className="fld-lab">Новий пароль (мінімум 8 символів)</span>
-                <input className="inp" type="password" autoFocus value={pwModal.val}
+                <input className="inp" type="password" autoFocus value={pwModal.val} aria-required={true} autoComplete="new-password"
                   onChange={(e) => setPwModal((m) => (m ? { ...m, val: e.target.value } : m))}
                   onKeyDown={(e) => { if (e.key === "Enter") submitPassword(); }} placeholder="Пароль" />
               </label>
             </div>
             <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button className="btn btn-ghost" onClick={() => setPwModal(null)}>Скасувати</button>
+              <button className="btn btn-ghost" onClick={() => setPwModal(null)} disabled={pwModal.busy}>Скасувати</button>
               <button className="btn btn-primary" disabled={pwModal.busy || pwModal.val.length < 8} onClick={submitPassword}>{pwModal.busy ? "Зберігаємо…" : "Встановити"}</button>
             </div>
-          </div>
-        </div>
+        </BaseDialog>
       )}
       {ask && (
         <ConfirmDialog

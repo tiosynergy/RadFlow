@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import BaseDialog from "@/components/BaseDialog";
 
 /* ===== Небезпечна зона: повне видалення медичного центру =====
 
@@ -75,12 +76,9 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
       )}
 
       {open && (
-        <div className="overlay" onClick={close}>
-          <div className="dialog fade-in" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
-            <div className="dlg-head">
-              <div className="dlg-title">Видалити «{clinicName}»?</div>
-              <button className="icon-btn" aria-label="Закрити" onClick={close} disabled={busy}>✕</button>
-            </div>
+        /* W-9 (с75): BaseDialog — role="dialog", пастка фокуса, Esc, повернення
+           фокуса на кнопку «Видалити медичний центр…» після закриття. */
+        <BaseDialog title={<>Видалити «{clinicName}»?</>} maxWidth={480} busy={busy} onClose={close}>
             <div className="dlg-body">
               <p style={{ marginBottom: 10, lineHeight: 1.5 }}>
                 Це <b>безповоротно</b>. Буде видалено всі дані центру і черга
@@ -117,8 +115,7 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
                 {busy ? "Надсилаємо лист…" : "Надіслати лист підтвердження"}
               </button>
             </div>
-          </div>
-        </div>
+        </BaseDialog>
       )}
     </>
   );

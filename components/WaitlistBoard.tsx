@@ -713,9 +713,8 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
           onClose={() => setBookFor(null)} onSave={saveBooking} />
       )}
 
-      <div role="status" aria-live="polite">
-        <Toast toast={toast} onDismiss={() => setToast(null)} />
-      </div>
+      {/* W-12: без обгортки role="status" — свої live-регіони Toast має сам. */}
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </div>
   );
 }

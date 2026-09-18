@@ -18,6 +18,7 @@ import CeoManager from "@/components/CeoManager";
 import QueuePolicySettings, { type QueuePolicyInitial } from "@/components/QueuePolicySettings";
 import GoogleCalendarBackupSettings from "@/components/GoogleCalendarBackupSettings";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import BaseDialog from "@/components/BaseDialog";
 import DangerZone from "@/components/DangerZone";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
@@ -95,11 +96,15 @@ type WizardInitial = Partial<{
 /* ---------- Toasts ---------- */
 function Toasts({ toasts }: { toasts: Toast[] }) {
   const icons: Record<string, string> = { success: "✓", error: "✕", info: "ℹ", warning: "⚠" };
+  /* W-12 (с75): контейнер — постійний live-регіон (він у DOM завжди, тости
+     лише додаються), інакше «Збережено» і помилки майстра ніхто не озвучував.
+     Один polite-регіон на всі типи: у майстрі повідомлення приходять у
+     відповідь на клік, коли користувач не друкує, тож polite не запізнюється. */
   return (
-    <div className="toast-wrap">
+    <div className="toast-wrap" role="status" aria-live="polite">
       {toasts.map((t) => (
         <div className={"toast " + t.type + (t.out ? " out" : "")} key={t.id}>
-          <span className="ti">{icons[t.type]}</span>
+          <span className="ti" aria-hidden="true">{icons[t.type]}</span>
           <span className="tmsg">{t.msg}</span>
         </div>
       ))}
@@ -1192,17 +1197,16 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
       </div>
 
       {exitAsk && (
-        <div className="overlay" onClick={() => !saving && setExitAsk(false)}>
-          <div className="dialog fade-in" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
-            <div className="dlg-head"><div className="dlg-title">Незбережені зміни</div><button className="icon-btn" aria-label="Закрити" onClick={() => setExitAsk(false)} disabled={saving}>✕</button></div>
+        /* W-9 (с75): BaseDialog — role="dialog", пастка фокуса, Esc, повернення
+           фокуса на «Вийти» після закриття. */
+        <BaseDialog title="Незбережені зміни" maxWidth={420} busy={saving} onClose={() => setExitAsk(false)}>
             <div className="dlg-body">У налаштуваннях є незбережені зміни. Зберегти їх перед виходом?</div>
             <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button className="btn btn-ghost" onClick={() => setExitAsk(false)} disabled={saving}>Скасувати</button>
               <button className="btn btn-secondary" onClick={() => { setExitAsk(false); router.push("/queue"); }} disabled={saving}>Вийти без збереження</button>
               <button className="btn btn-green" onClick={saveAndExit} disabled={saving}>{saving ? "Зберігаємо…" : "Зберегти й вийти"}</button>
             </div>
-          </div>
-        </div>
+        </BaseDialog>
       )}
       {schedWarnAsk != null && (
         <ConfirmDialog

@@ -80,8 +80,18 @@ export default function StudySearchBox({ sources, onPick, clinicNameOf, roomName
     else if (e.key === "Escape") { setQ(""); setOpen(false); }
   }
 
+  /* W-12 (с75): «нічого не знайдено» / «введіть від N символів» / «показані
+     перші N» усередині listbox мають role="presentation" (там можуть бути лише
+     опції), тож скрінрідер їх не чув. Той самий текст — у постійному прихованому
+     live-регіоні поза списком; активну опцію озвучує aria-activedescendant. */
+  const dropOpen = open && q.trim().length > 0;
+  const statusText = !dropOpen ? ""
+    : short ? "введіть від " + STUDY_SEARCH_MIN + " символів…"
+    : hits.length === 0 ? "нічого не знайдено"
+    : "знайдено: " + hits.length + (hits.length >= STUDY_SEARCH_LIMIT ? " — показані перші " + STUDY_SEARCH_LIMIT + ", уточніть запит" : "");
   return (
     <div className="ssb" ref={rootRef}>
+      <div className="rf-vh" role="status" aria-live="polite">{statusText}</div>
       <input
         className="inp"
         type="text"
@@ -97,7 +107,7 @@ export default function StudySearchBox({ sources, onPick, clinicNameOf, roomName
         onFocus={() => setOpen(true)}
         onKeyDown={onKey}
       />
-      {open && q.trim().length > 0 && (
+      {dropOpen && (
         <div className="ssb-drop" role="listbox" id={listId}>
           {short && <div className="ssb-empty" role="presentation">введіть від {STUDY_SEARCH_MIN} символів…</div>}
           {!short && hits.length === 0 && <div className="ssb-empty" role="presentation">нічого не знайдено</div>}

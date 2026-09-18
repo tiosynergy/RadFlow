@@ -292,3 +292,93 @@ describe("W-10 — обовʼязковість і помилки полів п�
     expect(read("components/ScheduleEditModal.tsx").match(/aria-invalid=\{bad \? true : undefined\}/g)?.length).toBe(2);
   });
 });
+
+/* ---- M-C/M-D: модалки поза контрактом (W-9), статуси (W-12), combobox міста (W-13) ---- */
+
+describe("W-9 — кожна модалка йде через useModalA11y (role=dialog, пастка, Esc, повернення фокуса)", () => {
+  it("BaseDialog: хук + role=\"dialog\" aria-modal aria-labelledby на заголовок; busy глушить закриття", () => {
+    const s = read("components/BaseDialog.tsx");
+    expect(s).toMatch(/useModalA11y<HTMLDivElement>\(\(\) => \{ if \(!busy\) onClose\(\); \}\)/);
+    expect(s).toMatch(/role="dialog" aria-modal="true" aria-labelledby=\{titleId\}/);
+    expect(s).toContain('<div className="dlg-title" id={titleId}>{title}</div>');
+    expect(s).toContain('<div className="overlay" onClick={() => { if (!busy) onClose(); }}>');
+  });
+  it.each([
+    ["components/StaffManager.tsx", /<BaseDialog title="Задати пароль" maxWidth=\{380\} busy=\{pwModal\.busy\} onClose=\{\(\) => setPwModal\(null\)\}>/],
+    ["components/CeoManager.tsx", /<BaseDialog title="Задати пароль" maxWidth=\{380\} busy=\{pwModal\.busy\} onClose=\{\(\) => setPwModal\(null\)\}>/],
+    ["components/SetupWizard.tsx", /<BaseDialog title="Незбережені зміни" maxWidth=\{420\} busy=\{saving\} onClose=\{\(\) => setExitAsk\(false\)\}>/],
+    ["components/DangerZone.tsx", /<BaseDialog title=\{<>Видалити «\{clinicName\}»\?<\/>\} maxWidth=\{480\} busy=\{busy\} onClose=\{close\}>/],
+  ])("%s: діалог на BaseDialog", (file, re) => {
+    expect(read(file)).toMatch(re);
+  });
+  it("у components/ немає рукописного <div className=\"overlay\"> у файлі без useModalA11y", () => {
+    const offenders: string[] = [];
+    for (const f of components()) {
+      const s = read("components/" + f);
+      if (/className="overlay/.test(s) && !/useModalA11y\s*(<[^>]*>)?\s*\(/.test(s)) offenders.push(f);
+    }
+    expect(offenders).toEqual([]);
+  });
+  it("кожен .dialog під оверлеєм має role=\"dialog\" (крім вбудованої форми порталу, яка не модалка)", () => {
+    const offenders: string[] = [];
+    for (const f of components()) {
+      const s = read("components/" + f);
+      const re = /<div className="dialog[^"]*"[^>]*>/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(s))) {
+        const tag = s.slice(m.index, s.indexOf(">", m.index) + 1);
+        if (/role="dialog"/.test(tag)) continue;
+        if (f === "ReferralPortal.tsx" && /bk-dialog/.test(tag)) continue;
+        // BaseDialog: role стоїть на наступному рядку того ж тега.
+        if (f === "BaseDialog.tsx" && /role="dialog" aria-modal="true"/.test(s.slice(m.index, m.index + 400))) continue;
+        offenders.push(f + ":" + lineOf(s, m.index));
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe("W-12 — повідомлення про стан озвучуються (постійні live-регіони)", () => {
+  it("Toast: два постійні регіони — status/polite і alert/assertive; роль не міняється на льоту", () => {
+    const s = read("components/Toast.tsx");
+    expect(s).toContain('<div role="status" aria-live="polite" aria-atomic="true" style={REGION_STYLE}>');
+    expect(s).toContain('<div role="alert" aria-live="assertive" aria-atomic="true" style={REGION_STYLE}>');
+    expect(s).toContain("{toast && !isError && <ToastCard");
+    expect(s).toContain("{toast && isError && <ToastCard");
+    expect(s).not.toMatch(/role=\{isError \? "alert" : "status"\}/);
+  });
+  it("SetupWizard: .toast-wrap — live-регіон, гліф прихований", () => {
+    const s = read("components/SetupWizard.tsx");
+    expect(s).toContain('<div className="toast-wrap" role="status" aria-live="polite">');
+    expect(s).toContain('<span className="ti" aria-hidden="true">{icons[t.type]}</span>');
+  });
+  it("WaitlistBoard: Toast без другої обгортки role=\"status\"", () => {
+    const s = read("components/WaitlistBoard.tsx");
+    expect(s).not.toMatch(/<div role="status" aria-live="polite">\s*<Toast/);
+    expect(s).toContain("<Toast toast={toast} onDismiss={() => setToast(null)} />");
+  });
+  it("SearchScreen: стан пошуку — прихований role=\"status\" з усіма пʼятьма станами", () => {
+    const s = read("components/SearchScreen.tsx");
+    const i = s.indexOf('<div className="rf-vh" role="status" aria-live="polite">');
+    expect(i).toBeGreaterThan(-1);
+    const block = s.slice(i, s.indexOf("</div>", i));
+    for (const t of ['"Виконуємо пошук…"', '"Пошук не виконано: " + st.msg', "st.msg", '"Нічого не знайдено"', '"Знайдено записів: " + st.items.length']) expect(block).toContain(t);
+  });
+  it("StudySearchBox: статус списку — прихований live-регіон поза listbox", () => {
+    const s = read("components/StudySearchBox.tsx");
+    expect(s).toContain('<div className="rf-vh" role="status" aria-live="polite">{statusText}</div>');
+    expect(s).toMatch(/const statusText = !dropOpen \? ""\s*: short \? "введіть від " \+ STUDY_SEARCH_MIN \+ " символів…"\s*: hits\.length === 0 \? "нічого не знайдено"/);
+    expect(s.indexOf('role="status"')).toBeLessThan(s.indexOf('role="listbox"'));
+  });
+});
+
+describe("W-13 — CitySelect: патерн combobox, як у StudySearchBox", () => {
+  it("input: role=combobox, aria-expanded, aria-controls на listbox, aria-activedescendant, aria-required/aria-invalid", () => {
+    const s = read("components/CitySelect.tsx");
+    expect(s).toMatch(/role="combobox"\s+aria-expanded=\{listOpen\}\s+aria-controls=\{listId\}\s+aria-autocomplete="list"\s+aria-activedescendant=\{listOpen && active >= 0 \? optId\(active\) : undefined\}\s+aria-required=\{required \|\| undefined\}\s+aria-invalid=\{invalid && has \? true : undefined\}/);
+    expect(s).toContain('<ul className="city-list" role="listbox" id={listId}>');
+    expect(s).toMatch(/<li\s+key=\{h\.id\}\s+id=\{optId\(i\)\}\s+role="option"\s+aria-selected=\{i === active\}/);
+    expect(s).toContain('<div className="rf-vh" role="status" aria-live="polite">{statusText}</div>');
+    expect(s).not.toContain("aria-label={placeholder}");   // імʼя дає обгортка <label> («Місто *»)
+  });
+});
