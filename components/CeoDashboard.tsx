@@ -558,7 +558,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
               </select>
             )}
             <div className="bk-seg">
-              {PERIODS.map((p) => <button key={p.k} className={"bk-seg-btn" + (period === p.k ? " active" : "")} onClick={() => { setPeriod(p.k); setDrill(null); }}>{p.l}</button>)}
+              {PERIODS.map((p) => <button key={p.k} type="button" className={"bk-seg-btn" + (period === p.k ? " active" : "")} aria-pressed={period === p.k} onClick={() => { setPeriod(p.k); setDrill(null); }}>{p.l}</button>)}
             </div>
             <button className="btn btn-secondary" onClick={exportCsv} disabled={exporting} aria-busy={exporting}>
               {exporting ? "Готуємо…" : "↧ Експортувати CSV"}

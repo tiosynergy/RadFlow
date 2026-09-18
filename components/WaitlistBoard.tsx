@@ -550,7 +550,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
             <div className="qctrl">
               <div className="pills">
                 {tabs.map((t) => (
-                  <button key={t.key} className={"pill" + (filter === t.key ? " active" : "")} onClick={() => setFilter(t.key)}>
+                  <button key={t.key} type="button" className={"pill" + (filter === t.key ? " active" : "")} aria-pressed={filter === t.key} onClick={() => setFilter(t.key)}>
                     {t.label}<span className="ct">({t.ct})</span>
                   </button>
                 ))}

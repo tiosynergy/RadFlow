@@ -159,9 +159,9 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
                     </div>
                     <div className="sch-room-ctl">
                       <div className="bk-seg bk-seg-sm">
-                        <button className={"bk-seg-btn" + (st.mode === "open" ? " active" : "")} onClick={() => setRoom(r.id, { mode: "open" })}>Працює</button>
-                        <button className={"bk-seg-btn" + (st.mode === "custom" ? " active" : "")} onClick={() => setRoom(r.id, { mode: "custom" })}>Інші години</button>
-                        <button className={"bk-seg-btn" + (st.mode === "closed" ? " active" : "")} onClick={() => setRoom(r.id, { mode: "closed" })}>Зачинено</button>
+                        <button type="button" className={"bk-seg-btn" + (st.mode === "open" ? " active" : "")} aria-pressed={st.mode === "open"} onClick={() => setRoom(r.id, { mode: "open" })}>Працює</button>
+                        <button type="button" className={"bk-seg-btn" + (st.mode === "custom" ? " active" : "")} aria-pressed={st.mode === "custom"} onClick={() => setRoom(r.id, { mode: "custom" })}>Інші години</button>
+                        <button type="button" className={"bk-seg-btn" + (st.mode === "closed" ? " active" : "")} aria-pressed={st.mode === "closed"} onClick={() => setRoom(r.id, { mode: "closed" })}>Зачинено</button>
                       </div>
                       {st.mode === "custom" && (
                         <div className="sch-hours">
@@ -180,7 +180,7 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
                                 <input className={"inp tabular" + (bad ? " invalid" : "")} type="time" value={b.start} onChange={(e) => setBreak(r.id, i, { start: e.target.value })} />
                                 <span className="sch-dash">–</span>
                                 <input className={"inp tabular" + (bad ? " invalid" : "")} type="time" value={b.end} onChange={(e) => setBreak(r.id, i, { end: e.target.value })} />
-                                <button type="button" className="icon-btn sch-break-del" onClick={() => delBreak(r.id, i)} title="Прибрати перерву">✕</button>
+                                <button type="button" className="icon-btn sch-break-del" onClick={() => delBreak(r.id, i)} title="Прибрати перерву" aria-label={"Прибрати перерву " + (i + 1) + " — " + r.name}><span aria-hidden="true">✕</span></button>
                               </div>
                             );
                           })}

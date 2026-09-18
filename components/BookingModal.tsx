@@ -204,7 +204,7 @@ export function DobField({ value, onChange, invalid }: { value: string; onChange
       <div className="bk-dob-field">
         <input className={"inp bk-dob-input" + (err || invalid ? " bk-dob-inv" : "")} type="text" inputMode="numeric"
           placeholder="дд.мм.рррр" value={text} maxLength={10} onChange={(e) => onType(e.target.value)} />
-        <button type="button" className={"bk-dob-ic-btn" + (open ? " open" : "")} onClick={openCal} title="Обрати в календарі">🗓</button>
+        <button type="button" className={"bk-dob-ic-btn" + (open ? " open" : "")} onClick={openCal} title="Обрати в календарі" aria-label="Обрати дату народження в календарі" aria-expanded={open}><span aria-hidden="true">🗓</span></button>
       </div>
       {err && <span className="bk-dob-err">⚠ {err}</span>}
       {open && (
@@ -213,13 +213,13 @@ export function DobField({ value, onChange, invalid }: { value: string; onChange
           <div className="bk-dob-pop">
             <div className="cal-head">
               <div className="cal-nav">
-                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shiftYear(-1)} title="Попередній рік">«</button>
-                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць">‹</button>
+                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shiftYear(-1)} title="Попередній рік" aria-label="Попередній рік"><span aria-hidden="true">«</span></button>
+                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць" aria-label="Попередній місяць"><span aria-hidden="true">‹</span></button>
               </div>
               <span className="cal-month">{label}</span>
               <div className="cal-nav">
-                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць">›</button>
-                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shiftYear(1)} title="Наступний рік">»</button>
+                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць" aria-label="Наступний місяць"><span aria-hidden="true">›</span></button>
+                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shiftYear(1)} title="Наступний рік" aria-label="Наступний рік"><span aria-hidden="true">»</span></button>
               </div>
             </div>
             <div className="cal-grid">
@@ -265,8 +265,8 @@ export function BookingCalendar({ value, onPick, today }: { value: Date; onPick:
       <div className="cal-head">
         <span className="cal-month">{label}</span>
         <div className="cal-nav">
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць">‹</button>
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць">›</button>
+          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць" aria-label="Попередній місяць"><span aria-hidden="true">‹</span></button>
+          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць" aria-label="Наступний місяць"><span aria-hidden="true">›</span></button>
         </div>
       </div>
       <div className="cal-grid">
@@ -1243,8 +1243,8 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
               <div className="fld" style={{ flex: "0 0 auto" }}>
                 <span className={"fld-lab" + (miss.gender ? " bk-miss-lab" : "")}>Стать {!softPatient && <span className="req">*</span>}</span>
                 <div className="bk-gender-row">
-                  <button className={"bk-gender-btn" + (gender === "М" ? " active" : "")} onClick={() => setGender("М")} title="Чоловіча">♂</button>
-                  <button className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} onClick={() => setGender("Ж")} title="Жіноча">♀</button>
+                  <button type="button" className={"bk-gender-btn" + (gender === "М" ? " active" : "")} aria-pressed={gender === "М"} aria-label="Чоловіча" onClick={() => setGender("М")} title="Чоловіча">♂</button>
+                  <button type="button" className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} aria-pressed={gender === "Ж"} aria-label="Жіноча" onClick={() => setGender("Ж")} title="Жіноча">♀</button>
                 </div>
               </div>
               <div className="fld" style={{ flex: "0 0 52px" }}>
@@ -1286,7 +1286,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                 <span className="fld-lab">Тип <span className="req">*</span></span>
                 <div className="bk-seg" style={{ flexWrap: "wrap" }}>
                   {availableModalities.map((code) => (
-                    <button key={code} className={"bk-seg-btn" + (studyType === code ? " active " + modalityKind(code) : "")} onClick={() => changeType(code)} title={modalityLabel(code)}>{modalityShort(code)}</button>
+                    <button key={code} type="button" className={"bk-seg-btn" + (studyType === code ? " active " + modalityKind(code) : "")} aria-pressed={studyType === code} aria-label={modalityLabel(code)} onClick={() => changeType(code)} title={modalityLabel(code)}>{modalityShort(code)}</button>
                   ))}
                 </div>
               </div>
@@ -1454,7 +1454,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                           <span className="rf-box" />
                         </label>
                         <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
-                        <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
+                        <button type="button" className="st-row-del" title="Прибрати" aria-label={"Прибрати дослідження " + (i + 1)} onClick={() => exRemove(i)}><span aria-hidden="true">✕</span></button>
                       </div>
                     );
                   })}
@@ -1714,9 +1714,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                   {modalityLabel(rm?.modality || "")} · {rm?.name || "—"} · {s.time}–{fmtMin(toMin(s.time) + s.dur)}
                   <button
                     onClick={(e) => { e.stopPropagation(); setCaseSteps((arr) => arr.filter((_, j) => j !== i)); if (editIndex !== null) cancelEdit(); }}
-                    title="Прибрати крок"
+                    title="Прибрати крок" aria-label={"Прибрати крок " + (i + 1)}
                     style={{ cursor: "pointer", background: "none", border: "none", color: "var(--text-muted)", padding: 0, lineHeight: 1 }}
-                  >✕</button>
+                  ><span aria-hidden="true">✕</span></button>
                 </span>
               );
             })}

@@ -69,8 +69,8 @@ export default function MiniCalendar({ selectedDate, onSelectDate, overrides, on
       <div className="cal-head">
         <span className="cal-month">{MON_NOM[mo]} {y}</span>
         <div className="cal-nav">
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць">‹</button>
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць">›</button>
+          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць" aria-label="Попередній місяць"><span aria-hidden="true">‹</span></button>
+          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць" aria-label="Наступний місяць"><span aria-hidden="true">›</span></button>
         </div>
       </div>
       <div className="cal-grid">
@@ -101,6 +101,7 @@ export default function MiniCalendar({ selectedDate, onSelectDate, overrides, on
             <button key={d} className={"cal-day" + (isToday ? " today" : "") + (isSel && !isToday ? " selected" : "") + (markClosed ? " holiday" : "") + (markCustom ? " custom" : "")}
               title={[st?.label || null, unreadLabel].filter(Boolean).join(" · ") || undefined}
               aria-label={labelParts.length > 1 ? labelParts.join(" — ") : undefined}
+              aria-current={isSel ? "date" : undefined}
               onClick={() => onSelectDate(startOfDay(cd))}>
               {d}
               {(markClosed || markCustom) && <span className={"cal-sched " + (markClosed ? "closed" : "custom")} />}

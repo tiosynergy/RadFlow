@@ -144,7 +144,7 @@ function ContactList({ label, items, setItems, type, ph, required }: {
         <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
           <input className={"inp" + ((empty && i === 0) || badPhone ? " invalid" : "")} type={isPhone ? "tel" : "email"} inputMode={isPhone ? "tel" : undefined} placeholder={ph} value={v}
             onChange={(e) => upd(i, isPhone ? formatPhoneUA(e.target.value) : e.target.value)} />
-          <button className="mini-icon" type="button" title={"Видалити " + noun} onClick={() => del(i)}>✕</button>
+          <button className="mini-icon" type="button" title={"Видалити " + noun} aria-label={"Видалити " + noun} onClick={() => del(i)}><span aria-hidden="true">✕</span></button>
         </div>
         );
       })}
@@ -546,7 +546,8 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
             <button className="mini-icon equip-block-del" type="button"
               title={equip.length <= 1 ? "Останній кабінет видалити не можна" : "Видалити обладнання"}
               onClick={() => askDelEq(i)}
-              disabled={equip.length <= 1}>✕</button>
+              aria-label={equip.length <= 1 ? "Останній кабінет видалити не можна" : "Видалити обладнання " + (i + 1)}
+              disabled={equip.length <= 1}><span aria-hidden="true">✕</span></button>
             <div className="equip-info">
               <div className="equip-info-row">
                 <select className="inp equip-type" value={e.type} onChange={(ev) => setEq(i, "type", ev.target.value)}>
@@ -627,7 +628,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                             <span className="eq-dash">–</span>
                             <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.end} onChange={(ev) => setEqBreak(i, bi, "end", ev.target.value)} />
                           </div>
-                          <button className="mini-icon" type="button" title="Прибрати перерву" onClick={() => delEqBreak(i, bi)}>✕</button>
+                          <button className="mini-icon" type="button" title="Прибрати перерву" aria-label={"Прибрати перерву " + (bi + 1)} onClick={() => delEqBreak(i, bi)}><span aria-hidden="true">✕</span></button>
                           {err && <span className="eq-break-err">{err}</span>}
                         </div>
                       );
@@ -664,7 +665,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                                     <span className="eq-dash">–</span>
                                     <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.end} onChange={(ev) => setEqDayBreak(i, di, bi, "end", ev.target.value)} />
                                   </div>
-                                  <button className="mini-icon" type="button" title="Прибрати перерву" onClick={() => delEqDayBreak(i, di, bi)}>✕</button>
+                                  <button className="mini-icon" type="button" title="Прибрати перерву" aria-label={"Прибрати перерву " + (bi + 1)} onClick={() => delEqDayBreak(i, di, bi)}><span aria-hidden="true">✕</span></button>
                                   {err && <span className="eq-break-err">{err}</span>}
                                 </div>
                               );

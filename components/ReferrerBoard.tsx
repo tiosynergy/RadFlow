@@ -221,9 +221,9 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
       {/* Перемикач центрів */}
       {multiCenter && (
         <div className="pills" style={{ marginBottom: 12, flexWrap: "wrap" }}>
-          <button className={"pill" + (centerId === "all" ? " active" : "")} onClick={() => selectCenter("all")}>Всі центри</button>
+          <button type="button" className={"pill" + (centerId === "all" ? " active" : "")} aria-pressed={centerId === "all"} onClick={() => selectCenter("all")}>Всі центри</button>
           {activeCenters.map((c) => (
-            <button key={c.clinicId} className={"pill" + (centerId === c.clinicId ? " active" : "")} onClick={() => selectCenter(c.clinicId)}>{c.name}</button>
+            <button key={c.clinicId} type="button" className={"pill" + (centerId === c.clinicId ? " active" : "")} aria-pressed={centerId === c.clinicId} onClick={() => selectCenter(c.clinicId)}>{c.name}</button>
           ))}
         </div>
       )}
@@ -273,7 +273,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
               const owned = r.created_by === doctorId || r.referrer_id === doctorId;
               return (
                 <div className={"qrow-item " + r.status + (expanded ? " open" : "")} key={r.id}>
-                  <div className="qrow qrow-ref" role="button" tabIndex={0}
+                  <div className="qrow qrow-ref" role="button" tabIndex={0} aria-expanded={expanded}
                     onClick={() => setExpandedId((x) => (x === r.id ? null : r.id))}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId((x) => (x === r.id ? null : r.id)); } }}>
                     <div className="q-time tabular">{r.scheduled_time || "—"}<div className="td">{r.duration_min ? r.duration_min + " хв" : ""}</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{r.scheduled_date}</div></div>
@@ -309,7 +309,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                     </div>
                     <div className="q-status-cell">
                       <span className={"badge " + meta.cls} title={"title" in meta ? meta.title : undefined}>{meta.label}</span>
-                      <span title={"Дзвінок: " + call.label} aria-label={"Статус дзвінка: " + call.label} style={{ fontSize: "0.71875rem", display: "inline-flex", alignItems: "center", gap: 4, color: CALL_COLOR[r.call_status || "not_called"], fontWeight: 600 }}>
+                      <span role="img" title={"Дзвінок: " + call.label} aria-label={"Статус дзвінка: " + call.label} style={{ fontSize: "0.71875rem", display: "inline-flex", alignItems: "center", gap: 4, color: CALL_COLOR[r.call_status || "not_called"], fontWeight: 600 }}>
                         <span aria-hidden="true">{call.icon}</span>{call.label}
                       </span>
                     </div>

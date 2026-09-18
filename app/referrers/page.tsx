@@ -2,6 +2,9 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import ReferrersManager from "@/components/ReferrersManager";
 
+/* W-17 (WCAG 2.4.2): у кожної сторінки своя назва вкладки — до цього всі звались «RadFlow». */
+export const metadata = { title: "Направники — RadFlow" };
+
 export default async function ReferrersPage() {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();

@@ -263,7 +263,7 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
                   <button className="btn btn-secondary btn-sm" title="Задати пароль вручну" onClick={() => setPassword(r.id)}>Задати пароль</button>
                   <button className="btn btn-secondary btn-sm" title="Відкликати доступ до вашого центру" onClick={() => askRevoke(r.id, r.full_name || r.login)}>Відкликати</button>
                   {r.role === "ceo" && (
-                    <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити CEO-акаунт назавжди (лише якщо це єдиний центр)" onClick={() => askDeleteCeo(r.id, r.full_name || r.login)}>🗑</button>
+                    <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити CEO-акаунт назавжди (лише якщо це єдиний центр)" aria-label={"Видалити CEO-акаунт назавжди — " + (r.full_name || r.login)} onClick={() => askDeleteCeo(r.id, r.full_name || r.login)}><span aria-hidden="true">🗑</span></button>
                   )}
                 </div>
                 {(() => {

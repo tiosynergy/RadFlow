@@ -474,7 +474,7 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
                   </button>
                   <button className="btn btn-secondary btn-sm" title="Користувач задасть пароль наново" onClick={() => askResetPassword(r.id, r.full_name || r.login)}>Скинути пароль</button>
                   <button className="btn btn-secondary btn-sm" title="Задати пароль вручну" onClick={() => setPassword(r.id)}>Задати пароль</button>
-                  <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити акаунт назавжди" onClick={() => askDeleteRadiologist(r.id, r.full_name || r.login)}>🗑</button>
+                  <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити акаунт назавжди" aria-label={"Видалити акаунт назавжди — " + (r.full_name || r.login)} onClick={() => askDeleteRadiologist(r.id, r.full_name || r.login)}><span aria-hidden="true">🗑</span></button>
                 </div>
                 {/* Форма редагування — інлайн, а не модалка: поля прості, а
                     модалка тут вимагала б пастки фокуса й Esc (useModalA11y)

@@ -2,6 +2,9 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import JournalScreen from "@/components/JournalScreen";
 
+/* W-17 (WCAG 2.4.2): у кожної сторінки своя назва вкладки — до цього всі звались «RadFlow». */
+export const metadata = { title: "Журнал дій — RadFlow" };
+
 /* «Журнал дій» (ТЗ §11) — лише адміністратор центру.
    Порядок редиректів — той самий, що в /staff і /referrers (не міняти).
    SSR готує ЛИШЕ довідники для фільтрів (персонал, таймзона); область даних

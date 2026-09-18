@@ -141,13 +141,13 @@ function CallRow({ p, roomName, roomModel, expanded, onToggle, onSet, onNote, on
           {p.call_status === "confirmed" ? (
             <>
               <span className="q-done-lab">✓ Готово</span>
-              <button className="mini-icon" title="Скасувати" onClick={() => onSet(p.id, "not_called")}>↩</button>
+              <button className="mini-icon" title="Скасувати" aria-label={"Скасувати підтвердження — " + p.patient_name} onClick={() => onSet(p.id, "not_called")}><span aria-hidden="true">↩</span></button>
             </>
           ) : (
             <>
-              <button className="btn btn-green btn-sm" title="Підтвердити" onClick={() => onSet(p.id, "confirmed")}>✓</button>
-              <button className="mini-icon" title="Не відповідає" style={{ color: "var(--orange)" }} onClick={() => onSet(p.id, "no_answer")}>☏</button>
-              <button className="mini-icon" title="Передзвонити" style={{ color: "var(--blue-text)" }} onClick={() => onSet(p.id, "to_recall")}>↩</button>
+              <button className="btn btn-green btn-sm" title="Підтвердити" aria-label={"Підтвердити — " + p.patient_name} onClick={() => onSet(p.id, "confirmed")}><span aria-hidden="true">✓</span></button>
+              <button className="mini-icon" title="Не відповідає" aria-label={"Не відповідає — " + p.patient_name} style={{ color: "var(--orange)" }} onClick={() => onSet(p.id, "no_answer")}><span aria-hidden="true">☏</span></button>
+              <button className="mini-icon" title="Передзвонити" aria-label={"Передзвонити — " + p.patient_name} style={{ color: "var(--blue-text)" }} onClick={() => onSet(p.id, "to_recall")}><span aria-hidden="true">↩</span></button>
             </>
           )}
         </div>
@@ -942,7 +942,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
                      вантажиться. Картки вище вже маскуються через loading; без цього
                      ж рядки сховані за спінером, а числа поруч і далі описують
                      учорашній обдзвін (ревʼю пакета). */
-                  <button key={t.key} className={"pill" + (filter === t.key ? " active" : "")} onClick={() => setFilter(t.key)}>
+                  <button key={t.key} type="button" className={"pill" + (filter === t.key ? " active" : "")} aria-pressed={filter === t.key} onClick={() => setFilter(t.key)}>
                     {t.label}<span className="ct">({loading ? "—" : t.ct})</span>
                   </button>
                 ))}

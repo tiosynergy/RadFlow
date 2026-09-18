@@ -4,6 +4,9 @@ import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import CallListBoard from "@/components/CallListBoard";
 import RoleNotice from "@/components/RoleNotice";
 
+/* W-17 (WCAG 2.4.2): у кожної сторінки своя назва вкладки — до цього всі звались «RadFlow». */
+export const metadata = { title: "Колл-лист — RadFlow" };
+
 export default async function CallListPage() {
   const supabase = await createClient();
   const {

@@ -932,8 +932,8 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
               <div className="fld" style={{ flex: "0 0 auto" }}>
                 <span className={"fld-lab" + (miss.gender ? " bk-miss-lab" : "")}>Стать <span className="req">*</span></span>
                 <div className="bk-gender-row">
-                  <button className={"bk-gender-btn" + (gender === "М" ? " active" : "")} onClick={() => setGender("М")} title="Чоловіча">♂</button>
-                  <button className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} onClick={() => setGender("Ж")} title="Жіноча">♀</button>
+                  <button type="button" className={"bk-gender-btn" + (gender === "М" ? " active" : "")} aria-pressed={gender === "М"} aria-label="Чоловіча" onClick={() => setGender("М")} title="Чоловіча">♂</button>
+                  <button type="button" className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} aria-pressed={gender === "Ж"} aria-label="Жіноча" onClick={() => setGender("Ж")} title="Жіноча">♀</button>
                 </div>
               </div>
               <div className="fld" style={{ flex: "0 0 52px" }}>
@@ -969,7 +969,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                 <span className="fld-lab">Тип <span className="req">*</span></span>
                 <div className="bk-seg">
                   {availableModalities.map((code) => (
-                    <button key={code} className={"bk-seg-btn" + (studyType === modalityLabel(code) ? " active " + modalityKind(code) : "")} onClick={() => changeType(modalityLabel(code))} title={modalityLabel(code)}>{modalityShort(code)}</button>
+                    <button key={code} type="button" className={"bk-seg-btn" + (studyType === modalityLabel(code) ? " active " + modalityKind(code) : "")} aria-pressed={studyType === modalityLabel(code)} aria-label={modalityLabel(code)} onClick={() => changeType(modalityLabel(code))} title={modalityLabel(code)}>{modalityShort(code)}</button>
                   ))}
                 </div>
               </div>
@@ -1119,7 +1119,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                           <span className="rf-box" />
                         </label>
                         <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
-                        <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
+                        <button type="button" className="st-row-del" title="Прибрати" aria-label={"Прибрати дослідження " + (i + 1)} onClick={() => exRemove(i)}><span aria-hidden="true">✕</span></button>
                       </div>
                     );
                   })}
@@ -1321,8 +1321,8 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
             <span key={i} style={{ fontSize: "0.71875rem", padding: "2px 6px 2px 8px", borderRadius: 999, border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 6 }}>
               <span style={{ fontSize: "0.625rem", opacity: 0.7 }}>{i + 1}</span>
               {s.modality} · {s.roomName} · {s.time}–{fmt(toMin(s.time) + s.dur)}
-              <button onClick={() => { setCaseErr(null); setCaseSteps((arr) => arr.filter((_, j) => j !== i)); }} title="Прибрати крок"
-                style={{ cursor: "pointer", background: "none", border: "none", color: "var(--text-muted)", padding: 0, lineHeight: 1 }}>✕</button>
+              <button onClick={() => { setCaseErr(null); setCaseSteps((arr) => arr.filter((_, j) => j !== i)); }} title="Прибрати крок" aria-label={"Прибрати крок " + (i + 1)}
+                style={{ cursor: "pointer", background: "none", border: "none", color: "var(--text-muted)", padding: 0, lineHeight: 1 }}><span aria-hidden="true">✕</span></button>
             </span>
           ))}
           {roomInCase && (

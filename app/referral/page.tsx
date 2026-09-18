@@ -6,6 +6,9 @@ import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import { safeBackHref } from "@/lib/portalBack";
 import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 
+/* W-17 (WCAG 2.4.2): у кожної сторінки своя назва вкладки — до цього всі звались «RadFlow». */
+export const metadata = { title: "Портал направника — RadFlow" };
+
 // Колонки каталогу для форм направника (services, 0107; RLS services_referrer_read).
 const SERVICE_COLS = "id, clinic_id, name, modality, duration_min, price, contrast_allowed, contrast_price, active, sort_order, room_id"; // 0121: room_id — база + власні послуги кабінетів
 // Переозначення каталогу по кабінетах (service_room_overrides, 0108; RLS читає направник центру).

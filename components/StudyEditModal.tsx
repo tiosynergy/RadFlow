@@ -986,7 +986,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                 <div className="st-row" key={i}>
                   <div className="st-row-head">
                     <span className="st-row-n">Дослідження {i + 1}</span>
-                    {rows.length > 1 && <button className="st-row-del" title="Прибрати" onClick={() => removeRow(i)}>✕</button>}
+                    {rows.length > 1 && <button type="button" className="st-row-del" title="Прибрати" aria-label={"Прибрати дослідження " + (i + 1)} onClick={() => removeRow(i)}><span aria-hidden="true">✕</span></button>}
                   </div>
                   <div className="st-row-body">
                     <div className="st-field st-field-type">
@@ -998,7 +998,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                       ) : (
                         <div className="bk-seg st-seg" style={{ flexWrap: "wrap" }}>
                           {BOOKABLE_MODALITIES.map((code) => (
-                            <button key={code} className={"bk-seg-btn" + (r.type === modalityLabel(code) ? " active " + modalityKind(code) : "")} onClick={() => setType(i, modalityLabel(code))} title={modalityLabel(code)}>{modalityShort(code)}</button>
+                            <button key={code} type="button" className={"bk-seg-btn" + (r.type === modalityLabel(code) ? " active " + modalityKind(code) : "")} aria-pressed={r.type === modalityLabel(code)} aria-label={modalityLabel(code)} onClick={() => setType(i, modalityLabel(code))} title={modalityLabel(code)}>{modalityShort(code)}</button>
                           ))}
                         </div>
                       )}

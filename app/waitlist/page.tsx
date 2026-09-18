@@ -4,6 +4,9 @@ import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import WaitlistBoard from "@/components/WaitlistBoard";
 import RoleNotice from "@/components/RoleNotice";
 
+/* W-17 (WCAG 2.4.2): у кожної сторінки своя назва вкладки — до цього всі звались «RadFlow». */
+export const metadata = { title: "Лист очікування — RadFlow" };
+
 // с22: deep-link зі сторінки «Пошук» — ?tab=waiting|scheduled|removed&entry=<uuid>.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function firstParam(v: string | string[] | undefined): string | null {

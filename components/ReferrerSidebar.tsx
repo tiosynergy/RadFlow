@@ -206,7 +206,7 @@ export default function ReferrerSidebar({ centers, roomsByClinic, rawRoomCountOf
         </div>
         {/* Для адміна уточнюємо, що це ВИХІД ІЗ СИСТЕМИ, а не з порталу:
             поруч стоїть кнопка повернення, і переплутати їх коштує сесії. */}
-        <button className="icon-btn" title={isPreview ? "Вийти з системи (щоб просто закрити портал — «Повернутися»)" : "Вийти"} onClick={onSignOut}>⏻</button>
+        <button className="icon-btn" title={isPreview ? "Вийти з системи (щоб просто закрити портал — «Повернутися»)" : "Вийти"} aria-label="Вийти з системи" onClick={onSignOut}><span aria-hidden="true">⏻</span></button>
       </div>
     </NavDrawer>
   );
