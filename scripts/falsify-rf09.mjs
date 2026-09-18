@@ -236,8 +236,12 @@ const MUTATIONS = [
     id: "B12", file: "refs", green: false,
     expect: /ReferrersManager.tsx: підказку «перевидати» справді МАЛЮЮТЬ/,
     what: "те саме в ReferrersManager: підказка стала тултипом",
-    from: '              return <div style={{ fontSize: "0.75rem", marginTop: 4, color: "var(--text-muted)" }}>{REISSUE_HINT}</div>;',
-    to: '              return <div style={{ fontSize: "0.75rem", marginTop: 4, color: "var(--text-muted)" }} title={REISSUE_HINT} />;',
+    /* с75 (18.09): якір з 14 пробілів на 12 — AccessRowView винесено на модульний
+       рівень (WCAG W-2, 001a38d), рядок підказки змістився на рівень ліворуч.
+       Ревізія 40 стендів на чистому клоні main d4f1eb3 зловила це як «ЯКІР НЕ
+       УНІКАЛЬНИЙ (0)»; сам пін (B12) живий — StaffManager (B11) той самий клас пройшов. */
+    from: '            return <div style={{ fontSize: "0.75rem", marginTop: 4, color: "var(--text-muted)" }}>{REISSUE_HINT}</div>;',
+    to: '            return <div style={{ fontSize: "0.75rem", marginTop: 4, color: "var(--text-muted)" }} title={REISSUE_HINT} />;',
   },
   {
     /* ⚠️ ТРЕТІЙ ШЛЯХ ВИДАЧІ, знайдений ревʼю Б (M-4): «Запросити знову» в
