@@ -171,7 +171,7 @@ function CallRow({ p, roomName, roomModel, expanded, onToggle, onSet, onNote, on
             <button className="btn btn-primary btn-sm" onClick={() => onReschedule(p)}>🗓 Перенести на слот</button>
             <button className="btn btn-secondary btn-sm" style={{ color: "var(--orange)" }} onClick={() => onSet(p.id, "no_answer")}>☏ Не відповідає</button>
             <button className="btn btn-secondary btn-sm" style={{ color: "var(--blue-text)" }} onClick={() => onSet(p.id, "to_recall")}>↩ Передзвонити</button>
-            <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onSet(p.id, "declined")}>✕ Відмова</button>
+            <button className="btn btn-secondary btn-sm" style={{ color: "var(--red-text)" }} onClick={() => onSet(p.id, "declined")}>✕ Відмова</button>
           </div>
         </div>
       )}
@@ -225,7 +225,7 @@ function IncidentCallSection({ incident, roomName, affected, onReschedule, onRec
                     <div className="cld-actions" style={{ marginTop: 8 }}>
                       <button className="btn btn-primary btn-sm" onClick={() => onReschedule(p)}>🗓 Перенести на слот</button>
                       <button className="btn btn-secondary btn-sm" style={{ color: "var(--blue-text)" }} onClick={() => onRecall(p)}>↩ Передзвонити</button>
-                      <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onRefuse(p)}>✕ Відмова</button>
+                      <button className="btn btn-secondary btn-sm" style={{ color: "var(--red-text)" }} onClick={() => onRefuse(p)}>✕ Відмова</button>
                     </div>
                   </div>
                 )}
@@ -275,7 +275,7 @@ function LateCallSection({ late, roomsById, onReschedule, onRecall, onToWaitlist
                     <button className="btn btn-primary btn-sm" onClick={() => onReschedule(p)}>🗓 Перенести на слот</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => onToWaitlist(p)} title="Пацієнт чекатиме на вільне вікно">⏳ В лист очікування</button>
                     <button className="btn btn-secondary btn-sm" style={{ color: "var(--blue-text)" }} onClick={() => onRecall(p)}>↩ Передзвонити</button>
-                    <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onRefuse(p)}>✕ Відмова</button>
+                    <button className="btn btn-secondary btn-sm" style={{ color: "var(--red-text)" }} onClick={() => onRefuse(p)}>✕ Відмова</button>
                   </div>
                 </div>
               )}

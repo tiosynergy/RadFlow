@@ -383,7 +383,7 @@ export default function ImportPriceModal({ onClose, onDone, roomModality, roomId
 
         <div className="dlg-body" style={{ flex: "1 1 auto", minHeight: 0, overflowY: "auto" }}>
           {err && (
-            <div style={{ color: "var(--red)", fontSize: "0.84375rem", border: "1px solid var(--red)", borderRadius: 10, padding: "8px 12px" }} role="alert">
+            <div style={{ color: "var(--red-text)", fontSize: "0.84375rem", border: "1px solid var(--red)", borderRadius: 10, padding: "8px 12px" }} role="alert">
               {err}
             </div>
           )}

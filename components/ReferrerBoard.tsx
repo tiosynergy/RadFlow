@@ -70,7 +70,7 @@ const CALL_META: Record<string, { label: string; icon: string }> = {
   declined: { label: "Відмова", icon: "✕" },
   not_called: { label: "Не дзвонили", icon: "○" },
 };
-const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
+const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red-text)", not_called: "var(--text-muted)" };
 
 /* Фільтри статусів (як окремі stat-картки). «active» = waiting+in_progress. */
 const STATUS_FILTERS = [
@@ -332,17 +332,17 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                               <div className="qd-row"><span className="qd-k">Телефон</span><span className="qd-v">{r.patient_phone || "—"}</span></div>
                               <div className="qd-row"><span className="qd-k">Дзвінок</span><span className="qd-v" style={{ color: CALL_COLOR[r.call_status || "not_called"] }}>{call.label}</span></div>
                               <div className="qd-row" style={{ gridColumn: "1 / -1" }}>
-                                <span className="qd-k">Дослідження{changed && <span style={{ color: "var(--orange)" }}> · змінено {r.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{r.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</span>
+                                <span className="qd-k">Дослідження{changed && <span style={{ color: "var(--orange)" }}> · змінено {r.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{r.contraindications && <span style={{ color: "var(--red-text)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</span>
                                 <span className="qd-v" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                                   {sdiff.map((d, i) => (
-                                    <span key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
+                                    <span key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red-text)" : "var(--text)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
                                       {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
                                     </span>
                                   ))}
                                 </span>
                               </div>
                               {r.indication && <div className="qd-row" style={{ gridColumn: "1 / -1" }}><span className="qd-k">Питання</span><span className="qd-v">{r.indication}</span></div>}
-                              {r.status === "no_show" && r.note && <div className="qd-row" style={{ gridColumn: "1 / -1" }}><span className="qd-k" style={{ color: "var(--red)" }}>Причина</span><span className="qd-v">{r.note}</span></div>}
+                              {r.status === "no_show" && r.note && <div className="qd-row" style={{ gridColumn: "1 / -1" }}><span className="qd-k" style={{ color: "var(--red-text)" }}>Причина</span><span className="qd-v">{r.note}</span></div>}
                             </div>
                           );
                         })()}
@@ -354,7 +354,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                             <button className="btn btn-secondary btn-sm" onClick={() => onEditPatient(r)}>✎ Дані пацієнта</button>
                             {/* 0118: запис без кейса → організувати кейс (крок іншої модальності). */}
                             {!r.case_id && onOrganizeCase && <button className="btn btn-secondary btn-sm" onClick={() => onOrganizeCase(r)} title="Додати крок іншої модальності — записи стануть кейсом">🔗 Організувати кейс</button>}
-                            {canCancel(r) && <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onCancel(r)}>✕ Скасувати</button>}
+                            {canCancel(r) && <button className="btn btn-secondary btn-sm" style={{ color: "var(--red-text)" }} onClick={() => onCancel(r)}>✕ Скасувати</button>}
                           </div>
                         )}
                         {owned && r.status === "in_progress" && (

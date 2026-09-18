@@ -343,8 +343,8 @@ describe("W-12 — повідомлення про стан озвучуютьс
     const s = read("components/Toast.tsx");
     expect(s).toContain('<div role="status" aria-live="polite" aria-atomic="true" style={REGION_STYLE}>');
     expect(s).toContain('<div role="alert" aria-live="assertive" aria-atomic="true" style={REGION_STYLE}>');
-    expect(s).toContain("{toast && !isError && <ToastCard");
-    expect(s).toContain("{toast && isError && <ToastCard");
+    expect(s).toContain("{shown && !isError && <ToastCard");
+    expect(s).toContain("{shown && isError && <ToastCard");
     expect(s).not.toMatch(/role=\{isError \? "alert" : "status"\}/);
   });
   it("SetupWizard: .toast-wrap — live-регіон, гліф прихований", () => {
@@ -380,5 +380,108 @@ describe("W-13 — CitySelect: патерн combobox, як у StudySearchBox", (
     expect(s).toMatch(/<li\s+key=\{h\.id\}\s+id=\{optId\(i\)\}\s+role="option"\s+aria-selected=\{i === active\}/);
     expect(s).toContain('<div className="rf-vh" role="status" aria-live="polite">{statusText}</div>');
     expect(s).not.toContain("aria-label={placeholder}");   // імʼя дає обгортка <label> («Місто *»)
+  });
+});
+
+/* ---- M-E/M-F: контраст червоного (W-4), тост і Ctrl+Z (W-11), сітка слотів (W-5) ---- */
+
+describe("W-4 — червоний як текст лише через --red-text; --danger/--accent визначені", () => {
+  it("токени в :root", () => {
+    const css = read("styles/prototype/radflow.css");
+    expect(css).toMatch(/--red-text: #ff918a;/);
+    expect(css).toMatch(/--danger: #d62f26;/);
+    expect(css).toMatch(/--danger-hover: #c22a21;/);
+    expect(css).toMatch(/--accent: var\(--blue-line\);/);
+  });
+  it(".btn-danger — на --danger (білий 4.89), а не на --red (3.41)", () => {
+    const css = read("styles/prototype/radflow.css");
+    expect(css).toContain(".btn-danger { background: var(--danger); color: #fff; }");
+    expect(css).toContain(".btn-danger:hover { background: var(--danger-hover); }");
+  });
+  it.each([
+    ["styles/prototype/radflow.css", [".fld-lab:has(.req), .sec-label:has(.req), .bk-section-label:has(.req) { color: var(--red-text); }", ".badge.red { background: var(--red-bg); color: var(--red-text); }", ".qd-act-red { color: var(--red-text); }", ".bk-miss-lab { color: var(--red-text) !important; }"]],
+    ["styles/prototype/radflow-wizard.css", [".eq-break-err { flex-basis: 100%; font-size: 0.6875rem; color: var(--red-text);", ".field-err { color: var(--red-text);"]],
+    ["components/register.css", [".reg-root .err { font-size: 0.75rem; color: var(--red-text);"]],
+    ["styles/prototype/radflow-screens.css", [".cl-status.red { color: var(--red-text); }"]],
+  ])("%s: ключові ролі тексту на --red-text", (file, needles) => {
+    const css = read(file);
+    for (const n of needles) expect(css).toContain(n);
+  });
+  it("у CSS немає `color: var(--red)` і літералу #ff8c84 (лінт contrast-audit дублює це в CI)", () => {
+    for (const f of ["styles/prototype/radflow.css", "styles/prototype/radflow-screens.css", "styles/prototype/radflow-wizard.css", "styles/prototype/radiologist.css", "components/register.css"]) {
+      const css = read(f).replace(/\/\*[\s\S]*?\*\//g, "");
+      expect(css, f).not.toMatch(/(?<![-\w])color:\s*var\(--red\)/);
+      expect(css, f).not.toMatch(/#ff8c84/);
+    }
+  });
+  it("TSX: фолбеків var(--danger, #…) / var(--accent, #…) немає; DangerZone і CaseModal — на токенах", () => {
+    for (const f of components()) expect(read("components/" + f), f).not.toMatch(/var\(--(danger|accent),\s*#/);
+    expect(read("components/DangerZone.tsx")).toContain('style={{ background: "var(--danger)", color: "#fff" }}');
+    expect(read("components/DangerZone.tsx")).toContain('borderColor: "var(--red)", color: "var(--red-text)"');
+    expect(read("components/QueueBoard.tsx")).toContain('<span className="rct-sum" style={{ background: "var(--danger)", color: "#fff"');
+  });
+  it("contrast-audit.mjs рахує червоні пари і лінтить color: var(--red) у CSS і TSX", () => {
+    const s = read("scripts/contrast-audit.mjs");
+    expect(s).toContain('const RED_TEXT = "#ff918a";');
+    expect(s).toContain('const DANGER = "#d62f26";');
+    expect(s).toMatch(/check\(`--red-text \$\{RED_TEXT\} на \$\{n\} \$\{s\}`, ratio\(RED_TEXT, s\), 4\.5\)/);
+    expect(s).toMatch(/check\(`#fff на --danger \$\{DANGER\}`, ratio\(WHITE, DANGER\), 4\.5\)/);
+    expect(s).toContain("if (COLOR_RED.test(body)) {");
+    expect(s).toContain("if (redAsColor(clean)) lintFail(");
+    expect(s).toContain("if (TSX_FALLBACK.test(clean)) lintFail(");
+  });
+});
+
+describe("W-11 — відкат не тікає: тост тримається під курсором/фокусом, Ctrl+Z, помилка входу до правки", () => {
+  it("Toast: показує останній тост, поки його тримають; дія/✕ гасять одразу; після відпускання — грація", () => {
+    const s = read("components/Toast.tsx");
+    expect(s).toContain("const shown = toast ?? (held ? last : null);");
+    expect(s).toMatch(/onMouseEnter: hold, onMouseLeave: release,\s*onFocus: hold,/);
+    expect(s).toMatch(/onBlur: \(e: React\.FocusEvent<HTMLDivElement>\) => \{ if \(!e\.currentTarget\.contains\(e\.relatedTarget as Node \| null\)\) release\(\); \}/);
+    expect(s).toContain("const dismiss = () => { setLast(null); setHeld(false); onDismiss?.(); };");
+    expect(s).toContain("const RELEASE_GRACE_MS = 1000;");
+    expect(s).toMatch(/releaseTimer\.current = setTimeout\(\(\) => setHeld\(false\), RELEASE_GRACE_MS\)/);
+    expect(s).toContain('aria-keyshortcuts={toast.action.hotkey ? toast.action.hotkey.replace(/Ctrl/i, "Control") : undefined}');
+    expect(s).toContain("{toast.action.hotkey && <kbd");
+  });
+  it.each([
+    ["components/QueueBoard.tsx", /const UNDO_HOTKEY_MS = 30_000;/],
+    ["components/QueueBoard.tsx", /if \(action\) undoRef\.current = \{ run: action\.onAction, born, until: Date\.now\(\) \+ UNDO_HOTKEY_MS \};/],
+    ["components/QueueBoard.tsx", /hotkey: "Ctrl\+Z", onAction: \(\) => \{ if \(scopeRef\.current !== born\) return; undoRef\.current = null; action\.onAction\(\); \}/],
+    ["components/QueueBoard.tsx", /if \(\(e\.ctrlKey \|\| e\.metaKey\) && !e\.altKey && !e\.shiftKey && e\.code === "KeyZ" && !typing && !anyModalOpen\) \{\s*const u = undoRef\.current;\s*if \(!u \|\| Date\.now\(\) > u\.until \|\| scopeRef\.current !== u\.born\) return;\s*e\.preventDefault\(\);\s*undoRef\.current = null;\s*u\.run\(\);\s*notifyRef\.current\("Відмінено останню дію", "info"\);\s*return;\s*\}/],
+    ["components/WaitlistBoard.tsx", /const UNDO_HOTKEY_MS = 30_000;/],
+    ["components/WaitlistBoard.tsx", /if \(action\) undoRef\.current = \{ run: action\.onAction, until: Date\.now\(\) \+ UNDO_HOTKEY_MS \};/],
+    ["components/WaitlistBoard.tsx", /if \(!\(e\.ctrlKey \|\| e\.metaKey\) \|\| e\.altKey \|\| e\.shiftKey \|\| e\.code !== "KeyZ"\) return;\s*const t = e\.target as HTMLElement \| null;\s*if \(t && \(t\.isContentEditable \|\| \/\^\(INPUT\|TEXTAREA\|SELECT\)\$\/\.test\(t\.tagName\)\)\) return;/],
+  ])("%s: Ctrl+Z поза полем вводу повторює дію з тосту (%s)", (file, re) => {
+    expect(read(file)).toMatch(re);
+  });
+  it("тости з відкатом досі живуть 6 с (таймер не чіпали) — тримає лише Toast", () => {
+    expect(read("components/QueueBoard.tsx")).toContain('toastTimer.current = setTimeout(() => setToast(null), (type === "error" || action) ? 6000 : 3000);');
+    expect(read("components/WaitlistBoard.tsx")).toContain("toastTimer.current = setTimeout(() => setToast(null), action ? 6000 : 3000);");
+  });
+  it("LoginPage: помилка входу без таймера, гасне при правці поля; текст лише поки видно", () => {
+    const s = read("components/LoginPage.tsx");
+    expect(s).not.toMatch(/setTimeout\(\(\) => setToast/);
+    expect(s).toContain("setToast((t) => (t.show ? { ...t, show: false } : t));");
+    expect(s).toContain('{toast.show && <><div className="tt">{toast.title}</div><div className="td">{toast.msg}</div></>}');
+  });
+});
+
+describe("W-5 — сітка слотів: listbox з опціями, roving tabindex, комірки ≥24px", () => {
+  it("SlotPicker: role=option + aria-selected + tabIndex за tabStop; блок — group; стрілки/Home/End", () => {
+    const s = read("components/SlotPicker.tsx");
+    expect(s).toContain('role="option" aria-selected={value === s} tabIndex={s === tabStop ? 0 : -1} data-slot={s}');
+    expect(s).toContain('<div className="slot-blk" key={bl.key} role="group" aria-label={slotFmt(bl.startMin)}>');
+    expect(s).toContain('<div className="slot-blk-cells" role="presentation">');
+    expect(s).toMatch(/role="listbox" aria-label="Вільні слоти \(крок 5 хв\)[^"]*" ref=\{gridRef\} onKeyDown=\{onGridKey\}/);
+    expect(s).toMatch(/const tabStop = \(value && allSubs\.includes\(value\) && focusable\(value\)\) \? value\s*: allSubs\.find\(\(s\) => isFree\(stateOf\(s\)\)\) \?\? allSubs\.find\(focusable\) \?\? "";/);
+    for (const k of ['"ArrowLeft"', '"ArrowRight"', '"ArrowUp"', '"ArrowDown"', '"Home"', '"End"']) expect(s).toContain(k);
+    expect(s).toContain('querySelectorAll<HTMLButtonElement>("button.slot:not([disabled])")');
+  });
+  it("CSS: 2 блоки в рядку і на миші, шрифт комірки 11px (0.6875rem), стеля висоти збережена", () => {
+    const css = read("styles/prototype/radflow.css");
+    expect(css).toMatch(/\.slot-grid4 \{ display: grid; grid-template-columns: repeat\(2, 1fr\); gap: 9px 7px; max-height: max\(340px, min\(470px, 46vh\)\);/);
+    expect(css).toContain(".slot-blk-cells .slot { padding: 5px 0; font-size: 0.6875rem; border-radius: 4px; min-width: 0; }");
+    expect(css).not.toMatch(/\.slot-blk-cells \.slot \{[^}]*font-size: 0\.5625rem/);
   });
 });

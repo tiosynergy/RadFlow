@@ -154,7 +154,7 @@ function BreakdownSection({ roomId, room, existing, others, onSave, onResolve, o
     <div style={{ border: "1px solid var(--red)", borderRadius: 12, padding: 14, background: "var(--red-bg)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
         <span style={{ fontSize: "1rem" }}>🔧</span>
-        <b style={{ color: "var(--red)" }}>Поломка обладнання</b>
+        <b style={{ color: "var(--red-text)" }}>Поломка обладнання</b>
         <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>несправність — потрібен ремонт</span>
       </div>
       {existing && !open ? (
@@ -300,7 +300,7 @@ export default function BreakdownModal({ rooms, incidents, overrides, initialRoo
     <div className="overlay">
       <div className="dialog fade-in" style={{ maxWidth: 600 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Поломка або технічне обслуговування">
         <div className="dlg-head">
-          <div className="dlg-title"><span className="tic" style={{ background: "var(--red-bg)", color: "var(--red)" }}>🔧</span>Поломка / Технічне обслуговування</div>
+          <div className="dlg-title"><span className="tic" style={{ background: "var(--red-bg)", color: "var(--red-text)" }}>🔧</span>Поломка / Технічне обслуговування</div>
           <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -327,7 +327,7 @@ export default function BreakdownModal({ rooms, incidents, overrides, initialRoo
           {!incidentsFailed && emergencyInc && (
             <div style={{ border: "1px solid var(--red)", borderRadius: 12, padding: 14, background: "var(--red-bg)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <span style={{ fontSize: "1rem" }}>🛑</span>
-              <b style={{ color: "var(--red)" }}>Аварійна зупинка</b>
+              <b style={{ color: "var(--red-text)" }}>Аварійна зупинка</b>
               <span style={{ flex: 1, fontSize: "0.8125rem" }}>Активна з <b>{fmtDT(emergencyInc.started_at)}</b> — до зʼясування обставин</span>
               <button className="btn btn-secondary btn-sm" onClick={() => onResolve(emergencyInc.id)}>🔓 Розблокувати</button>
             </div>

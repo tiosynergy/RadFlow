@@ -428,7 +428,7 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                                 <div style={{ fontWeight: 600 }}>
                                   {it.patientName}
                                   {it.caseId && <span role="img" title="Повʼязано з кейсом" aria-label="Повʼязано з кейсом" style={{ marginLeft: 6 }}>🔗</span>}
-                                  {it.priority !== "planned" && <span style={{ marginLeft: 8, color: it.priority === "cito" ? "#ff8c84" : "var(--orange)", fontSize: "0.85em" }}>{PRIO[it.priority]}</span>}
+                                  {it.priority !== "planned" && <span style={{ marginLeft: 8, color: it.priority === "cito" ? "var(--red-text)" : "var(--orange)", fontSize: "0.85em" }}>{PRIO[it.priority]}</span>}
                                 </div>
                                 {showPhone && it.patientPhone && <div style={{ color: "var(--text-muted)", fontSize: "0.9em" }}>{it.patientPhone}</div>}
                               </div>

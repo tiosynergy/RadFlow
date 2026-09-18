@@ -68,7 +68,7 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
       ) : (
         <button
           className="btn btn-sm"
-          style={{ width: "100%", borderColor: "var(--danger, #c0392b)", color: "var(--danger, #c0392b)" }}
+          style={{ width: "100%", borderColor: "var(--red)", color: "var(--red-text)" }}
           onClick={() => setOpen(true)}
         >
           Видалити медичний центр…
@@ -101,13 +101,13 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
                 disabled={busy}
                 autoFocus
               />
-              {err && <p style={{ color: "var(--danger, #c0392b)", marginTop: 8 }}>{err}</p>}
+              {err && <p style={{ color: "var(--red-text)", marginTop: 8 }} role="alert">{err}</p>}
             </div>
             <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button className="btn btn-ghost" onClick={close} disabled={busy}>Скасувати</button>
               <button
                 className="btn"
-                style={{ background: "var(--danger, #c0392b)", color: "#fff" }}
+                style={{ background: "var(--danger)", color: "#fff" }}
                 onClick={submit}
                 disabled={!nameMatches || busy}
                 title={!nameMatches ? "Назва не збігається" : undefined}

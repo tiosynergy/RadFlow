@@ -51,7 +51,7 @@
 .reg-root .field input.invalid { border-color: var(--red); }
 .reg-root .field input.invalid:focus { box-shadow: 0 0 0 3px var(--red-bg); }
 .reg-root .hint { font-size: 0.71875rem; color: var(--text-faint); margin-top: 4px; }
-.reg-root .err { font-size: 0.75rem; color: var(--red); margin-top: 4px; }
+.reg-root .err { font-size: 0.75rem; color: var(--red-text); margin-top: 4px; }
 .reg-root .check { display: flex; align-items: flex-start; gap: 9px; margin: 2px 0 12px; }
 .reg-root .check input { width: 17px; height: 17px; margin-top: 2px; accent-color: var(--blue-line); flex-shrink: 0; cursor: pointer; }
 .reg-root .check label { font-size: 0.8125rem; color: var(--text-secondary); line-height: 1.45; cursor: pointer; }

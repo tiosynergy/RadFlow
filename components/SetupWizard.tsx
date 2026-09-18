@@ -499,7 +499,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
               autoComplete="username" placeholder="напр. ivanov"
               aria-required={true} aria-invalid={loginOk ? undefined : true} aria-describedby="sw-login-hint"
               onChange={(e) => setAdminLogin(e.target.value)} />
-            <span className="fld-hint" id="sw-login-hint">{loginOk ? LOGIN_HINT : <span style={{ color: "var(--red)" }}>{LOGIN_HINT}</span>}</span>
+            <span className="fld-hint" id="sw-login-hint">{loginOk ? LOGIN_HINT : <span style={{ color: "var(--red-text)" }}>{LOGIN_HINT}</span>}</span>
           </label>
           <div className="fld">
             <span className="fld-lab">&nbsp;</span>

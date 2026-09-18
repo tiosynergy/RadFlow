@@ -572,7 +572,10 @@ const CALL_META: Record<string, { label: string; cls: string; icon: string }> = 
   declined:   { label: "Відмова", cls: "red", icon: "✕" },
   not_called: { label: "Не дзвонили", cls: "gray", icon: "○" },
 };
-const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
+/* W-11 (с75): вікно Ctrl+Z після дії з відкатом (тост живе 6 с, але клавіатурі
+   треба більше — і без гонки з таймером тосту). */
+const UNDO_HOTKEY_MS = 30_000;
+const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red-text)", not_called: "var(--text-muted)" };
 // «Перенесено з …» — lib/rescheduleOrigin.ts (одна копія на всі дошки, с42).
 
 const STEP_ORDER = ["scheduled", "waiting", "in_progress", "done"];
@@ -598,7 +601,7 @@ const CALL_SEG_STYLE: Record<string, { color: string; bg: string }> = {
   confirmed:  { color: "var(--green)",     bg: "var(--green-bg)" },
   to_recall:  { color: "var(--blue-text)", bg: "var(--blue-bg)" },
   no_answer:  { color: "var(--orange)",    bg: "var(--orange-bg)" },
-  declined:   { color: "var(--red)",       bg: "var(--red-bg)" },
+  declined:   { color: "var(--red-text)",       bg: "var(--red-bg)" },
 };
 
 interface QueueRowProps {
@@ -739,7 +742,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
-          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient?.(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span><UnreadDot markers={cardUnread} />{p.case_id && <span onClick={(e) => { e.stopPropagation(); if (p.case_id) onOpenCase?.(p.case_id); }} style={{ cursor: "pointer", marginLeft: 6, fontSize: "0.6875rem", fontWeight: 600, color: "var(--accent, #3b82f6)" }} title="Відкрити крос-модальний кейс">🔗 Кейс</span>}</div>
+          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient?.(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span><UnreadDot markers={cardUnread} />{p.case_id && <span onClick={(e) => { e.stopPropagation(); if (p.case_id) onOpenCase?.(p.case_id); }} style={{ cursor: "pointer", marginLeft: 6, fontSize: "0.6875rem", fontWeight: 600, color: "var(--blue-text)" }} title="Відкрити крос-модальний кейс">🔗 Кейс</span>}</div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
             {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}<span className="rf-vh">, </span></span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
@@ -801,10 +804,10 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
               const changed = sdiff.some((d) => d.state !== "kept");
               return (
                 <div>
-                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
+                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red-text)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: "0.8125rem" }}>
                     {sdiff.map((d, i) => (
-                      <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
+                      <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red-text)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
                         {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
                       </div>
                     ))}
@@ -1063,7 +1066,7 @@ function AffectedPanel({ affected, roomsById, onReschedule }: { affected: QEntry
     <div className="rcard">
       <div className="rcard-toggle open" style={{ cursor: "default" }}>
         <span className="rct-title">Обдзвін через простій</span>
-        <span className="rct-sum" style={{ background: "var(--red)", color: "#fff", borderRadius: 10, padding: "1px 8px" }}>{affected.length}</span>
+        <span className="rct-sum" style={{ background: "var(--danger)", color: "#fff", borderRadius: 10, padding: "1px 8px" }}>{affected.length}</span>
       </div>
       <div className="load-body">
         {affected.map((e) => (
@@ -1283,6 +1286,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   });
   const [toast, setToast] = useState<ToastData | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* W-11 (с75): Ctrl+Z — той самий «↩ Відмінити», що в тості, але з клавіатури:
+     до кнопки в кінці DOM за 6 с Tab-ом не дістатись. Дія живе UNDO_HOTKEY_MS
+     від моменту тосту, у своєму зрізі (день/кабінет), і гаситься виконанням
+     або наступною дією з відкатом. Сам відкат на сервері під CAS (expectedFrom),
+     тож повторний або запізнілий Ctrl+Z нічого не зламає. */
+  const undoRef = useRef<{ run: () => void; born: string; until: number } | null>(null);
   // Слот звільнився (скасування/відмова) → підходящі кандидати з листа очікування.
   const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
   // Оголошені тут (а не нижче біля хендлерів), бо їх читає гард хоткеїв anyModalOpen.
@@ -1361,14 +1370,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
        порожнім expectedFrom. Тут дія просто стає no-op поза своїм зрізом. */
     const born = scopeRef.current;
     const guarded: ToastData["action"] = action
-      ? { label: action.label, onAction: () => { if (scopeRef.current !== born) return; action.onAction(); } }
+      ? { label: action.label, hotkey: "Ctrl+Z", onAction: () => { if (scopeRef.current !== born) return; undoRef.current = null; action.onAction(); } }
       : undefined;
+    if (action) undoRef.current = { run: action.onAction, born, until: Date.now() + UNDO_HOTKEY_MS };
     setToast({ msg, type, action: guarded });
     if (toastTimer.current) clearTimeout(toastTimer.current);
     // A-1/аудит v2: помилки живуть довше (5–7 с) — оператор встигає прочитати.
     // Тости з дією (soft-undo) теж 6 с — щоб устигнути натиснути «↩ Відмінити».
     toastTimer.current = setTimeout(() => setToast(null), (type === "error" || action) ? 6000 : 3000);
   }
+  const notifyRef = useRef(notify);
+  notifyRef.current = notify;
 
   /* ПОМИЛКА ЗАВАНТАЖЕННЯ ≠ «ПУСТО» (аудит 2026-07-11).
      Раніше всі лоадери робили `data || []`, тож збій мережі виглядав як «даних
@@ -1703,9 +1715,21 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
-      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      const typing = !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+      /* W-11: Ctrl+Z поза полем вводу — відкат останньої дії з тосту (у полі —
+         нативний undo тексту). Перевіряємо ДО загального «модифікатори — не наші». */
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === "KeyZ" && !typing && !anyModalOpen) {
+        const u = undoRef.current;
+        if (!u || Date.now() > u.until || scopeRef.current !== u.born) return;
+        e.preventDefault();
+        undoRef.current = null;
+        u.run();
+        notifyRef.current("Відмінено останню дію", "info");
+        return;
+      }
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (typing) return;
       if (anyModalOpen) return;
       const code = e.code;
       // «?» (Shift+/) — довідка гарячих клавіш. Перевіряємо ДО «/», бо Shift+/ теж має code="Slash".

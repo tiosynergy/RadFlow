@@ -395,7 +395,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
      лишаються: про несвіжість каже банер, а стирати робочі числа нема за що. */
   const dataFresh = loadedKey === dataKey;
   const utilKnown = dataFresh;
-  const utilColor = util > 70 ? "var(--green)" : util >= 50 ? "var(--orange)" : "var(--red)";
+  const utilColor = util > 70 ? "var(--green)" : util >= 50 ? "var(--orange)" : "var(--red-text)";
 
   /* Дохід — лише по 'done'. БД (RPC 0114) віддає суму ЗБЕРЕЖЕНИХ цін (снапшот) +
      оцінку позицій без ціни ПО КАТАЛОГУ центру (catalog_est_sum, чистий каталог:
@@ -587,7 +587,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
                   <div style={{ fontSize: "2.5rem", fontWeight: 700 }} className="tabular"><Drillable label="Усі записи" onOpen={() => openDrill(null, "Усі записи")}>{dataFresh ? total : "—"}</Drillable></div>
                   <div style={{ display: "flex", gap: 16, marginTop: 14, flexWrap: "wrap" }}>
                     <Drillable label="Виконано" onOpen={() => openDrill(["done"], "Виконано")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--green)" }} className="tabular">{dataFresh ? done : "—"}</b> <span style={{ color: "var(--text-muted)" }}>виконано</span></Drillable>
-                    <Drillable label="Неявка" onOpen={() => openDrill(["no_show"], "Неявка")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--red)" }} className="tabular">{dataFresh ? noShow : "—"}</b> <span style={{ color: "var(--text-muted)" }}>неявка</span></Drillable>
+                    <Drillable label="Неявка" onOpen={() => openDrill(["no_show"], "Неявка")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--red-text)" }} className="tabular">{dataFresh ? noShow : "—"}</b> <span style={{ color: "var(--text-muted)" }}>неявка</span></Drillable>
                     <Drillable label="Не відбулося" onOpen={() => openDrill(["not_held"], "Не відбулося")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--orange)" }} className="tabular">{dataFresh ? notHeld : "—"}</b> <span style={{ color: "var(--text-muted)" }}>не відбулося</span></Drillable>
                     <Drillable label="В процесі" onOpen={() => openDrill(["scheduled", "waiting", "in_progress"], "В процесі")} style={{ fontSize: "0.8125rem" }}><b style={{ color: "var(--blue-text)" }} className="tabular">{dataFresh ? active : "—"}</b> <span style={{ color: "var(--text-muted)" }}>в процесі</span></Drillable>
                   </div>

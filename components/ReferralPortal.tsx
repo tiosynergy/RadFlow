@@ -1755,18 +1755,18 @@ function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m
   }
 
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20, maxWidth: 640, margin: "0 auto" };
-  const reqMark = <span style={{ color: "var(--red)" }}> *</span>;
+  const reqMark = <span style={{ color: "var(--red-text)" }}> *</span>;
   if (loading) return <div className="empty"><div className="et">Завантаження профілю…</div></div>;
   return (
     <div style={card}>
       <div className="bk-section-label" style={{ marginTop: 0 }}>Мій профіль</div>
       <div className="fld-row">
-        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Логін{reqMark}</span><input className="inp" value={form.login} onChange={(e) => setForm((f) => ({ ...f, login: e.target.value }))} /></label>
-        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>ПІБ{reqMark}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))} /></label>
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red-text)" }}>Логін{reqMark}</span><input className="inp" value={form.login} onChange={(e) => setForm((f) => ({ ...f, login: e.target.value }))} /></label>
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red-text)" }}>ПІБ{reqMark}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))} /></label>
       </div>
       <div className="fld-row">
-        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Телефон{reqMark}</span><PhoneInput required value={form.phone} onChange={(v) => setForm((f) => ({ ...f, phone: v }))} /></label>
-        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Email (для відновлення доступу){reqMark}</span><input className="inp" type="email" placeholder="name@example.com" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></label>
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red-text)" }}>Телефон{reqMark}</span><PhoneInput required value={form.phone} onChange={(v) => setForm((f) => ({ ...f, phone: v }))} /></label>
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red-text)" }}>Email (для відновлення доступу){reqMark}</span><input className="inp" type="email" placeholder="name@example.com" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></label>
       </div>
       <div className="fld-row" style={{ alignItems: "flex-start" }}>
         <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Місто</span><CitySelect value={form.city} onChange={(v) => setForm((f) => ({ ...f, city: v }))} /></label>
@@ -1914,7 +1914,7 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
                 <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} title="Редагувати пацієнта/дослідження/вікно" onClick={() => onEdit(p)}>✎ Редагувати</button>
               )}
               {p.status === "waiting"
-                ? <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)", flexShrink: 0 }} onClick={() => onCancel(p)}>✕ Зняти</button>
+                ? <button className="btn btn-secondary btn-sm" style={{ color: "var(--red-text)", flexShrink: 0 }} onClick={() => onCancel(p)}>✕ Зняти</button>
                 : (p.status === "cancelled" || p.status === "expired")
                   ? <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => onRestore(p)}>↩ Повернути</button>
                   : null}

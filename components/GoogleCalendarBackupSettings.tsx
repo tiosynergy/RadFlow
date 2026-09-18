@@ -51,8 +51,8 @@ const STATUS_VIEW: Record<Status["status"], { glyph: string; color: string; text
   connected_no_calendar: { glyph: "◐", color: "var(--orange)", text: "Акаунт підключено. Оберіть календар для резервної копії." },
   no_writable_calendar: { glyph: "◐", color: "var(--orange)", text: "Обраний Google-акаунт не має права запису до доступних календарів." },
   ready: { glyph: "●", color: "var(--green)", text: "Google Calendar підключено. Можна увімкнути резервне копіювання." },
-  reauth_required: { glyph: "▲", color: "var(--red)", text: "Доступ до календаря втрачено. Підключіть Google Calendar повторно." },
-  access_lost: { glyph: "▲", color: "var(--red)", text: "Доступ до календаря втрачено. Відновіть права або оберіть інший календар." },
+  reauth_required: { glyph: "▲", color: "var(--red-text)", text: "Доступ до календаря втрачено. Підключіть Google Calendar повторно." },
+  access_lost: { glyph: "▲", color: "var(--red-text)", text: "Доступ до календаря втрачено. Відновіть права або оберіть інший календар." },
 };
 
 export default function GoogleCalendarBackupSettings() {

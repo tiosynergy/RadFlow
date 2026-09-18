@@ -62,6 +62,9 @@ function addedAgo(iso: string): string {
 
 /* ── Меню дій рядка («⋯»): доступний поповер без бібліотек.
    role=menu/menuitem, закриття по кліку зовні та Escape, фокус — назад на тригер. ── */
+/* W-11 (с75): вікно Ctrl+Z після «Знято з листа» (тост 6 с; клавіатурі — більше). */
+const UNDO_HOTKEY_MS = 30_000;
+
 function RowMenu({ disabled, onEdit, onRemove }: { disabled?: boolean; onEdit: () => void; onRemove: () => void }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -170,8 +173,10 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
      відрізняє «простоїв немає» від «не змогли прочитати», і кабінет на
      ремонті малювався б вільним. */
   const incidentsFeed = incidentFeed(incidents, incidentsErr);
-  const [toast, setToast] = useState<{ msg: string; type: string; action?: { label: string; onAction: () => void } } | null>(null);
+  const [toast, setToast] = useState<{ msg: string; type: string; action?: { label: string; onAction: () => void; hotkey?: string } } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* W-11 (с75): Ctrl+Z повторює «Скасувати» з тосту (див. QueueBoard.undoRef). */
+  const undoRef = useRef<{ run: () => void; until: number } | null>(null);
   // Рядок із запитом «у польоті»: кнопки цього рядка вимкнені (busy-стан).
   const [busyId, setBusyId] = useState<string | null>(null);
   // Вступна підказка ховається назавжди (localStorage), фільтр-банер не чіпаємо.
@@ -214,11 +219,30 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
   const canEditPriority = roleKey === "admin";
 
   function notify(msg: string, type = "success", action?: { label: string; onAction: () => void }) {
-    setToast({ msg, type, action });
+    if (action) undoRef.current = { run: action.onAction, until: Date.now() + UNDO_HOTKEY_MS };
+    setToast({ msg, type, action: action ? { ...action, hotkey: "Ctrl+Z", onAction: () => { undoRef.current = null; action.onAction(); } } : undefined });
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    // Тост із дією (Undo) живе довше, щоб встигнути натиснути.
+    // Тост із дією (Undo) живе довше, щоб встигнути натиснути; при наведенні/фокусі
+    // Toast сам тримає його (W-11), а Ctrl+Z діє UNDO_HOTKEY_MS.
     toastTimer.current = setTimeout(() => setToast(null), action ? 6000 : 3000);
   }
+  const notifyRef = useRef(notify);
+  notifyRef.current = notify;
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.code !== "KeyZ") return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      const u = undoRef.current;
+      if (!u || Date.now() > u.until) return;
+      e.preventDefault();
+      undoRef.current = null;
+      u.run();
+      notifyRef.current("Відмінено останню дію", "info");
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
 
   /* Записати кандидата в чергу можна лише коли ДАНІ ПРО ПРОСТОЇ надійні: сітка
      слотів у BookingModal ховає заблоковані кабінети саме за incidents, і при збої
@@ -482,7 +506,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
 
   const stats = [
     { lab: "В очікуванні", val: counts.waiting, color: "var(--green)" },
-    { lab: "CITO", val: counts.cito, color: "var(--red)" },
+    { lab: "CITO", val: counts.cito, color: "var(--red-text)" },
     { lab: "Терміново", val: counts.urgent, color: "var(--orange)" },
     { lab: "Записано", val: counts.scheduled, color: "var(--blue-text)" },
   ];
@@ -679,7 +703,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
                               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                 <button className="btn btn-green btn-sm" disabled={busy} aria-busy={busy} onClick={() => openBooking(p)}>{busy ? "…" : "Додати в чергу"}</button>
                                 <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setEditFor(p)}><span aria-hidden="true">✎</span> Редагувати</button>
-                                <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} disabled={busy} onClick={() => setConfirmRemove(p)}><span aria-hidden="true">✕</span> Зняти з листа</button>
+                                <button className="btn btn-secondary btn-sm" style={{ color: "var(--red-text)" }} disabled={busy} onClick={() => setConfirmRemove(p)}><span aria-hidden="true">✕</span> Зняти з листа</button>
                               </div>
                             </div>
                           )}

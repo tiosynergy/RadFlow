@@ -398,10 +398,10 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                   const changed = sdiff.some((d) => d.state !== "kept");
                   return (
                     <div style={{ marginBottom: 8 }}>
-                      <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
+                      <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red-text)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: "0.8125rem" }}>
                         {sdiff.map((d, i) => (
-                          <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
+                          <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red-text)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
                             {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
                           </div>
                         ))}
@@ -502,7 +502,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                   </div>
 
                   {p.status === "waiting" && advanceDisabled && startBlockReason && (
-                    <div style={{ fontSize: "0.75rem", color: "var(--red)", padding: "2px 0 6px" }}>⚠ {startBlockReason}</div>
+                    <div style={{ fontSize: "0.75rem", color: "var(--red-text)", padding: "2px 0 6px" }}>⚠ {startBlockReason}</div>
                   )}
 
                   {/* 0078–0081 — радіолог бачить, як затримка цього дослідження впливає

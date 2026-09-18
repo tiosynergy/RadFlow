@@ -38,7 +38,7 @@
 .rq-badge { font-size: 0.6875rem; padding: 3px 8px; }
 .rq-prio { font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: 3px 7px; border-radius: 6px; }
 .rq-prio.orange { background: var(--orange-bg); color: var(--orange); }
-.rq-prio.red { background: var(--red-bg); color: var(--red); }
+.rq-prio.red { background: var(--red-bg); color: var(--red-text); }
 .rq-prio.gray { background: var(--gray-badge-bg); color: var(--text-secondary); }
 
 /* detail column */
@@ -97,7 +97,7 @@
 .ss-btn.active.gray { border-color: var(--text-muted); background: var(--gray-badge-bg); color: var(--text); }
 .ss-btn.active.blue { border-color: var(--blue-line); background: var(--blue-bg); color: var(--blue-text); }
 .ss-btn.active.green { border-color: var(--green); background: var(--green-bg); color: var(--green); }
-.ss-btn.active.red { border-color: var(--red); background: var(--red-bg); color: var(--red); }
+.ss-btn.active.red { border-color: var(--red); background: var(--red-bg); color: var(--red-text); }
 
 .pd-timer-card { margin-top: 14px; background: var(--card); border: 1px solid rgba(10,132,255,0.3); border-radius: var(--r-lg); padding: 16px 18px; }
 
@@ -215,7 +215,7 @@
 .sc-wait { font-size: 0.71875rem; font-weight: 600; padding: 3px 8px; border-radius: 6px; }
 .sc-wait.green { background: var(--green-bg); color: var(--green); }
 .sc-wait.yellow { background: var(--yellow-bg); color: var(--yellow); }
-.sc-wait.red { background: var(--red-bg); color: var(--red); }
+.sc-wait.red { background: var(--red-bg); color: var(--red-text); }
 .sc-wait.neutral { background: var(--gray-badge-bg); color: var(--text-secondary); }
 .sc-contrast { font-size: 0.6875rem; color: var(--text-faint); }
 .sc-actions { display: flex; gap: 7px; margin-top: 11px; }

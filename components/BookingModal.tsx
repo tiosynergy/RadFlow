@@ -1718,8 +1718,8 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                   onClick={() => (editing ? cancelEdit() : loadStepForEdit(i))}
                   title={editing ? "Редагується — натисніть, щоб вийти" : "Редагувати крок (час, дослідження, слот…)"}
                   style={{ cursor: "pointer", fontSize: "0.71875rem", padding: "2px 6px 2px 8px", borderRadius: 999,
-                    border: "1px solid " + (editing ? "var(--accent, #3b82f6)" : "var(--border)"),
-                    background: editing ? "color-mix(in srgb, var(--accent, #3b82f6) 14%, transparent)" : "transparent",
+                    border: "1px solid " + (editing ? "var(--accent)" : "var(--border)"),
+                    background: editing ? "color-mix(in srgb, var(--accent) 14%, transparent)" : "transparent",
                     display: "inline-flex", alignItems: "center", gap: 6 }}
                 >
                   <span style={{ fontSize: "0.625rem", opacity: 0.7 }}>{i + 1}</span>
