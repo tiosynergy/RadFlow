@@ -18,6 +18,8 @@ import CeoManager from "@/components/CeoManager";
 import QueuePolicySettings, { type QueuePolicyInitial } from "@/components/QueuePolicySettings";
 import GoogleCalendarBackupSettings from "@/components/GoogleCalendarBackupSettings";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import BaseDialog from "@/components/BaseDialog";
+import Toast, { type ToastData } from "@/components/Toast";
 import DangerZone from "@/components/DangerZone";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
@@ -66,7 +68,6 @@ function tzNow(tz: string): string {
   catch { return "—"; }
 }
 
-type Toast = { id: number; msg: string; type: string; out?: boolean };
 type DayHours = { start: string; end: string; breaks: Break[] };
 type EquipItem = {
   id: number | string;
@@ -92,30 +93,21 @@ type WizardInitial = Partial<{
   adminName: string; adminEmail: string; adminLogin: string; adminPhone: string; equip: EquipItem[];
 }>;
 
-/* ---------- Toasts ---------- */
-function Toasts({ toasts }: { toasts: Toast[] }) {
-  const icons: Record<string, string> = { success: "✓", error: "✕", info: "ℹ", warning: "⚠" };
-  return (
-    <div className="toast-wrap">
-      {toasts.map((t) => (
-        <div className={"toast " + t.type + (t.out ? " out" : "")} key={t.id}>
-          <span className="ti">{icons[t.type]}</span>
-          <span className="tmsg">{t.msg}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-function useToasts(): [Toast[], (msg: string, type?: string) => void] {
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const seq = useRef(0);
+/* ---------- Toasts ----------
+   W-12/W-11 (с75, ревʼю): спільний <Toast> замість власного стека .toast-wrap —
+   він дає постійні live-регіони (status/alert), утримання під курсором/фокусом,
+   ✕ і 6 с для помилок; власні тости гасли за 3,4 с без озвучення, а помилки
+   майстра бувають на ~200 символів. API push(msg, type) збережено. */
+function useToasts(): [ToastData | null, (msg: string, type?: string) => void, () => void] {
+  const [toast, setToast] = useState<ToastData | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   function push(msg: string, type = "success") {
-    const id = ++seq.current;
-    setToasts((ts) => [...ts, { id, msg, type }]);
-    setTimeout(() => setToasts((ts) => ts.map((t) => (t.id === id ? { ...t, out: true } : t))), 3400);
-    setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 3700);
+    const kind = type === "warning" ? "warn" : type;
+    setToast({ msg, type: kind });
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setToast(null), kind === "error" ? 6000 : 3000);
   }
-  return [toasts, push];
+  return [toast, push, () => setToast(null)];
 }
 
 const Req = () => <span className="req" title="Обов'язкове поле">*</span>;
@@ -143,8 +135,9 @@ function ContactList({ label, items, setItems, type, ph, required }: {
         return (
         <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
           <input className={"inp" + ((empty && i === 0) || badPhone ? " invalid" : "")} type={isPhone ? "tel" : "email"} inputMode={isPhone ? "tel" : undefined} placeholder={ph} value={v}
+            aria-label={label + (items.length > 1 ? " " + (i + 1) : "")} aria-required={required && i === 0 ? true : undefined} aria-invalid={badPhone ? true : undefined}
             onChange={(e) => upd(i, isPhone ? formatPhoneUA(e.target.value) : e.target.value)} />
-          <button className="mini-icon" type="button" title={"Видалити " + noun} onClick={() => del(i)}>✕</button>
+          <button className="mini-icon" type="button" title={"Видалити " + noun} aria-label={"Видалити " + noun} onClick={() => del(i)}><span aria-hidden="true">✕</span></button>
         </div>
         );
       })}
@@ -441,12 +434,14 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
       <div className="form-card reg-card">
         <div className="fld-row">
           <label className="fld"><span className="fld-lab">Назва клініки <Req /></span>
-            <input className={"inp" + (clinic.trim() ? "" : " invalid")} value={clinic} onChange={(e) => setClinic(e.target.value)} /></label>
+            <input className={"inp" + (clinic.trim() ? "" : " invalid")} aria-required={true} value={clinic} onChange={(e) => setClinic(e.target.value)} /></label>
           <span className="fld-spacer" />
         </div>
         <div className="fld-row">
-          <label className="fld"><span className="fld-lab">Місто <Req /></span>
-            <CitySelect value={city} onChange={setCity} required /></label>
+          {/* W-13 (ревʼю с75): не <label> довкола CitySelect — інакше listbox і
+              live-статус усередині стають частиною ІМЕНІ комбобокса. */}
+          <div className="fld"><label className="fld-lab" htmlFor="sw-city">Місто <Req /></label>
+            <CitySelect id="sw-city" value={city} onChange={setCity} required /></div>
           <label className="fld" style={{ flex: 2 }}><span className="fld-lab">Адреса</span>
             <input className="inp" placeholder="вул., будинок, поверх, індекс" value={address} onChange={(e) => setAddress(e.target.value)} /></label>
         </div>
@@ -476,7 +471,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
         <div className="fld-row">
           <label className="fld">
             <span className="fld-lab">ПІБ адміністратора <Req /></span>
-            <input className={"inp" + (adminName.trim() ? "" : " invalid")} placeholder="Прізвище Ім'я По батькові" value={adminName} onChange={(e) => setAdminName(e.target.value)} />
+            <input className={"inp" + (adminName.trim() ? "" : " invalid")} aria-required={true} placeholder="Прізвище Ім'я По батькові" value={adminName} onChange={(e) => setAdminName(e.target.value)} />
           </label>
           <label className="fld">
             <span className="fld-lab">Email для входу <Req /></span>
@@ -487,13 +482,16 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
           </label>
         </div>
         <div className="fld-row">
-          <label className="fld">
-            <span className="fld-lab">Логін для входу <Req /></span>
-            <input className={"inp" + (loginOk ? "" : " invalid")} value={adminLogin}
+          {/* Ревʼю с75: підказка — сусід поля, а не вміст <label>: усередині label
+              вона входила б в імʼя і читалась двічі (імʼя + опис). */}
+          <div className="fld">
+            <label className="fld-lab" htmlFor="sw-login">Логін для входу <Req /></label>
+            <input id="sw-login" className={"inp" + (loginOk ? "" : " invalid")} value={adminLogin}
               autoComplete="username" placeholder="напр. ivanov"
+              aria-required={true} aria-invalid={loginOk ? undefined : true} aria-describedby="sw-login-hint"
               onChange={(e) => setAdminLogin(e.target.value)} />
-            <span className="fld-hint">{loginOk ? LOGIN_HINT : <span style={{ color: "var(--red)" }}>{LOGIN_HINT}</span>}</span>
-          </label>
+            <span className="fld-hint" id="sw-login-hint">{loginOk ? LOGIN_HINT : <span style={{ color: "var(--red-text)" }}>{LOGIN_HINT}</span>}</span>
+          </div>
           <div className="fld">
             <span className="fld-lab">&nbsp;</span>
             {/* Логін зберігається ОКРЕМОЮ кнопкою, а не разом із майстром: його
@@ -546,15 +544,16 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
             <button className="mini-icon equip-block-del" type="button"
               title={equip.length <= 1 ? "Останній кабінет видалити не можна" : "Видалити обладнання"}
               onClick={() => askDelEq(i)}
-              disabled={equip.length <= 1}>✕</button>
+              aria-label={equip.length <= 1 ? "Останній кабінет видалити не можна" : "Видалити обладнання " + (i + 1)}
+              disabled={equip.length <= 1}><span aria-hidden="true">✕</span></button>
             <div className="equip-info">
               <div className="equip-info-row">
                 <select className="inp equip-type" value={e.type} onChange={(ev) => setEq(i, "type", ev.target.value)}>
                   {MODALITIES.map((m) => <option key={m.code} value={m.label}>{m.label}</option>)}
                 </select>
-                <input className="inp equip-room2" placeholder="Кабінет / №" value={e.room} onChange={(ev) => setEq(i, "room", ev.target.value)} />
+                <input className="inp equip-room2" placeholder="Кабінет / №" aria-label={"Кабінет / № — обладнання " + (i + 1)} value={e.room} onChange={(ev) => setEq(i, "room", ev.target.value)} />
               </div>
-              <input className="inp" placeholder="Модель / опис обладнання" value={e.desc} onChange={(ev) => setEq(i, "desc", ev.target.value)} />
+              <input className="inp" placeholder="Модель / опис обладнання" aria-label={"Модель / опис — обладнання " + (i + 1)} value={e.desc} onChange={(ev) => setEq(i, "desc", ev.target.value)} />
 
               {/* 0123 + 0126. Вимкнення — мʼякий і зворотний крок: кабінет перестає
                   приймати нові записи й зникає з робочих екранів, але прайс, інциденти,
@@ -608,27 +607,30 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
 
               {!e.perDay && (() => {
                 const hErr = dayHoursError(e.start, e.end);
+                /* W-10: id тексту помилки → aria-describedby обох полів пари. */
+                const hErrId = "sw-eq" + i + "-h-err";
                 return (
                 <>
                   <div className="eq-hours">
-                    <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" value={e.start} onChange={(ev) => setEq(i, "start", ev.target.value)} />
+                    <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" aria-label={"Початок роботи — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={hErr ? true : undefined} aria-describedby={hErr ? hErrId : undefined} value={e.start} onChange={(ev) => setEq(i, "start", ev.target.value)} />
                     <span className="eq-dash">–</span>
-                    <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" value={e.end} onChange={(ev) => setEq(i, "end", ev.target.value)} />
+                    <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" aria-label={"Кінець роботи — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={hErr ? true : undefined} aria-describedby={hErr ? hErrId : undefined} value={e.end} onChange={(ev) => setEq(i, "end", ev.target.value)} />
                   </div>
-                  {hErr && <span className="eq-break-err">{hErr}</span>}
+                  {hErr && <span className="eq-break-err" id={hErrId}>{hErr}</span>}
                   <div className="eq-breaks">
                     {e.breaks.map((b, bi) => {
                       const err = breakRowError(e.breaks, bi, e.start, e.end);
+                      const errId = "sw-eq" + i + "-b" + bi + "-err";
                       return (
                         <div className={"eq-break-row" + (err ? " has-err" : "")} key={bi}>
                           <span className="eq-break-tag">Перерва</span>
                           <div className="eq-hours">
-                            <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.start} onChange={(ev) => setEqBreak(i, bi, "start", ev.target.value)} />
+                            <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" aria-label={"Перерва " + (bi + 1) + ", початок — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={err ? true : undefined} aria-describedby={err ? errId : undefined} value={b.start} onChange={(ev) => setEqBreak(i, bi, "start", ev.target.value)} />
                             <span className="eq-dash">–</span>
-                            <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.end} onChange={(ev) => setEqBreak(i, bi, "end", ev.target.value)} />
+                            <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" aria-label={"Перерва " + (bi + 1) + ", кінець — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={err ? true : undefined} aria-describedby={err ? errId : undefined} value={b.end} onChange={(ev) => setEqBreak(i, bi, "end", ev.target.value)} />
                           </div>
-                          <button className="mini-icon" type="button" title="Прибрати перерву" onClick={() => delEqBreak(i, bi)}>✕</button>
-                          {err && <span className="eq-break-err">{err}</span>}
+                          <button className="mini-icon" type="button" title="Прибрати перерву" aria-label={"Прибрати перерву " + (bi + 1)} onClick={() => delEqBreak(i, bi)}><span aria-hidden="true">✕</span></button>
+                          {err && <span className="eq-break-err" id={errId}>{err}</span>}
                         </div>
                       );
                     })}
@@ -645,27 +647,28 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                       <div key={d} className="eq-perday-row">
                         <span className="eq-perday-day">{d}</span>
                         <div className="eq-perday-fields">
-                          {(() => { const dhErr = dayHoursError(e.dayHours[di].start, e.dayHours[di].end); return (<>
+                          {(() => { const dhErr = dayHoursError(e.dayHours[di].start, e.dayHours[di].end); const dhErrId = "sw-eq" + i + "-d" + di + "-h-err"; return (<>
                           <div className="eq-hours">
-                            <input className={"inp tabular eq-time" + (dhErr ? " invalid" : "")} type="time" value={e.dayHours[di].start} onChange={(ev) => setEqDay(i, di, "start", ev.target.value)} />
+                            <input className={"inp tabular eq-time" + (dhErr ? " invalid" : "")} type="time" aria-label={"Початок роботи, " + d + " — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={dhErr ? true : undefined} aria-describedby={dhErr ? dhErrId : undefined} value={e.dayHours[di].start} onChange={(ev) => setEqDay(i, di, "start", ev.target.value)} />
                             <span className="eq-dash">–</span>
-                            <input className={"inp tabular eq-time" + (dhErr ? " invalid" : "")} type="time" value={e.dayHours[di].end} onChange={(ev) => setEqDay(i, di, "end", ev.target.value)} />
+                            <input className={"inp tabular eq-time" + (dhErr ? " invalid" : "")} type="time" aria-label={"Кінець роботи, " + d + " — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={dhErr ? true : undefined} aria-describedby={dhErr ? dhErrId : undefined} value={e.dayHours[di].end} onChange={(ev) => setEqDay(i, di, "end", ev.target.value)} />
                           </div>
-                          {dhErr && <span className="eq-break-err">{dhErr}</span>}
+                          {dhErr && <span className="eq-break-err" id={dhErrId}>{dhErr}</span>}
                           </>); })()}
                           <div className="eq-breaks">
                             {e.dayHours[di].breaks.map((b, bi) => {
                               const err = breakRowError(e.dayHours[di].breaks, bi, e.dayHours[di].start, e.dayHours[di].end);
+                              const errId = "sw-eq" + i + "-d" + di + "-b" + bi + "-err";
                               return (
                                 <div className={"eq-break-row" + (err ? " has-err" : "")} key={bi}>
                                   <span className="eq-break-tag">Перерва</span>
                                   <div className="eq-hours">
-                                    <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.start} onChange={(ev) => setEqDayBreak(i, di, bi, "start", ev.target.value)} />
+                                    <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" aria-label={"Перерва " + (bi + 1) + ", початок, " + d + " — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={err ? true : undefined} aria-describedby={err ? errId : undefined} value={b.start} onChange={(ev) => setEqDayBreak(i, di, bi, "start", ev.target.value)} />
                                     <span className="eq-dash">–</span>
-                                    <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.end} onChange={(ev) => setEqDayBreak(i, di, bi, "end", ev.target.value)} />
+                                    <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" aria-label={"Перерва " + (bi + 1) + ", кінець, " + d + " — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={err ? true : undefined} aria-describedby={err ? errId : undefined} value={b.end} onChange={(ev) => setEqDayBreak(i, di, bi, "end", ev.target.value)} />
                                   </div>
-                                  <button className="mini-icon" type="button" title="Прибрати перерву" onClick={() => delEqDayBreak(i, di, bi)}>✕</button>
-                                  {err && <span className="eq-break-err">{err}</span>}
+                                  <button className="mini-icon" type="button" title="Прибрати перерву" aria-label={"Прибрати перерву " + (bi + 1)} onClick={() => delEqDayBreak(i, di, bi)}><span aria-hidden="true">✕</span></button>
+                                  {err && <span className="eq-break-err" id={errId}>{err}</span>}
                                 </div>
                               );
                             })}
@@ -834,7 +837,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
   const [dirty, setDirty] = useState(false);
   const [exitAsk, setExitAsk] = useState(false);
   const [schedWarnAsk, setSchedWarnAsk] = useState<number | null>(null); // N майбутніх записів поза новим графіком
-  const [toasts, push] = useToasts();
+  const [toast, push, dismissToast] = useToasts();
   const dataRef = useRef<WizardData | null>(null);
   /* Канал «батько → форма кабінетів»: після insert повертаємо в state форми
      видані db-id (див. коментар біля useState(equip) у StepRegister). */
@@ -1185,17 +1188,16 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
       </div>
 
       {exitAsk && (
-        <div className="overlay" onClick={() => !saving && setExitAsk(false)}>
-          <div className="dialog fade-in" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
-            <div className="dlg-head"><div className="dlg-title">Незбережені зміни</div><button className="icon-btn" aria-label="Закрити" onClick={() => setExitAsk(false)} disabled={saving}>✕</button></div>
+        /* W-9 (с75): BaseDialog — role="dialog", пастка фокуса, Esc, повернення
+           фокуса на «Вийти» після закриття. */
+        <BaseDialog title="Незбережені зміни" maxWidth={420} busy={saving} onClose={() => setExitAsk(false)}>
             <div className="dlg-body">У налаштуваннях є незбережені зміни. Зберегти їх перед виходом?</div>
             <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button className="btn btn-ghost" onClick={() => setExitAsk(false)} disabled={saving}>Скасувати</button>
               <button className="btn btn-secondary" onClick={() => { setExitAsk(false); router.push("/queue"); }} disabled={saving}>Вийти без збереження</button>
               <button className="btn btn-green" onClick={saveAndExit} disabled={saving}>{saving ? "Зберігаємо…" : "Зберегти й вийти"}</button>
             </div>
-          </div>
-        </div>
+        </BaseDialog>
       )}
       {schedWarnAsk != null && (
         <ConfirmDialog
@@ -1208,7 +1210,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
           onConfirm={() => { setSchedWarnAsk(null); save(true); }}
         />
       )}
-      <Toasts toasts={toasts} />
+      <Toast toast={toast} onDismiss={dismissToast} />
     </div>
   );
 }

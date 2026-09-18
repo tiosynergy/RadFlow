@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import BaseDialog from "@/components/BaseDialog";
 
 /* ===== Небезпечна зона: повне видалення медичного центру =====
 
@@ -17,6 +18,11 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<string | null>(null);
+  /* Ревʼю с75: після успіху кнопка-тригер зникає (замість неї — текст), тож
+     хуку модалки нікуди повертати фокус. Ставимо його на сам текст і озвучуємо
+     його як статус. */
+  const doneRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { if (done) doneRef.current?.focus(); }, [done]);
   const [err, setErr] = useState<string | null>(null);
 
   const nameMatches = typed.trim() === clinicName;
@@ -63,11 +69,11 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
   return (
     <>
       {done ? (
-        <p style={{ color: "var(--text-muted)", fontSize: "0.75rem", lineHeight: 1.5 }}>{done}</p>
+        <p ref={doneRef} tabIndex={-1} role="status" style={{ color: "var(--text-muted)", fontSize: "0.75rem", lineHeight: 1.5 }}>{done}</p>
       ) : (
         <button
           className="btn btn-sm"
-          style={{ width: "100%", borderColor: "var(--danger, #c0392b)", color: "var(--danger, #c0392b)" }}
+          style={{ width: "100%", borderColor: "var(--red)", color: "var(--red-text)" }}
           onClick={() => setOpen(true)}
         >
           Видалити медичний центр…
@@ -75,12 +81,9 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
       )}
 
       {open && (
-        <div className="overlay" onClick={close}>
-          <div className="dialog fade-in" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
-            <div className="dlg-head">
-              <div className="dlg-title">Видалити «{clinicName}»?</div>
-              <button className="icon-btn" aria-label="Закрити" onClick={close} disabled={busy}>✕</button>
-            </div>
+        /* W-9 (с75): BaseDialog — role="dialog", пастка фокуса, Esc, повернення
+           фокуса на кнопку «Видалити медичний центр…» після закриття. */
+        <BaseDialog title={<>Видалити «{clinicName}»?</>} maxWidth={480} busy={busy} onClose={close}>
             <div className="dlg-body">
               <p style={{ marginBottom: 10, lineHeight: 1.5 }}>
                 Це <b>безповоротно</b>. Буде видалено всі дані центру і черга
@@ -91,10 +94,11 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
                 відбудеться лише після переходу за посиланням із нього
                 (посилання діє 60 хвилин).
               </p>
-              <label style={{ display: "block", marginBottom: 6 }}>
+              <label htmlFor="dz-confirm-name" style={{ display: "block", marginBottom: 6 }}>
                 Наберіть назву центру точно як у налаштуваннях:
               </label>
               <input
+                id="dz-confirm-name"
                 className="input"
                 value={typed}
                 onChange={(e) => setTyped(e.target.value)}
@@ -102,13 +106,13 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
                 disabled={busy}
                 autoFocus
               />
-              {err && <p style={{ color: "var(--danger, #c0392b)", marginTop: 8 }}>{err}</p>}
+              {err && <p style={{ color: "var(--red-text)", marginTop: 8 }} role="alert">{err}</p>}
             </div>
             <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button className="btn btn-ghost" onClick={close} disabled={busy}>Скасувати</button>
               <button
                 className="btn"
-                style={{ background: "var(--danger, #c0392b)", color: "#fff" }}
+                style={{ background: "var(--danger)", color: "#fff" }}
                 onClick={submit}
                 disabled={!nameMatches || busy}
                 title={!nameMatches ? "Назва не збігається" : undefined}
@@ -116,8 +120,7 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
                 {busy ? "Надсилаємо лист…" : "Надіслати лист підтвердження"}
               </button>
             </div>
-          </div>
-        </div>
+        </BaseDialog>
       )}
     </>
   );

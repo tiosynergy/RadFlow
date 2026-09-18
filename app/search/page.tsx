@@ -3,6 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import SearchScreen, { type SearchClinicOpt, type SearchRoomOpt } from "@/components/SearchScreen";
 import { grantRoomIds } from "@/lib/rooms";
 
+/* W-17 (WCAG 2.4.2): у кожної сторінки своя назва вкладки — до цього всі звались «RadFlow». */
+export const metadata = { title: "Пошук — RadFlow" };
+
 /* ===== /search — универсальный поиск пациентов и исследований (с22) =====
 
    ОДНА страница для всех пяти ролей; область данных при этом определяет НЕ она,

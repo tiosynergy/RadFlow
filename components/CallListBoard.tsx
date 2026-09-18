@@ -135,19 +135,19 @@ function CallRow({ p, roomName, roomModel, expanded, onToggle, onSet, onNote, on
         <div className="cl-room">{roomName}{roomModel ? <div style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}</div> : null}</div>
         <div className="cl-status-cell"><StatusBadge status={p.call_status} /></div>
         <div className="cl-note-cell">
-          <input key={p.id + ":" + (p.call_note || "")} className="note-input" placeholder="Нотатка…" defaultValue={p.call_note || ""} onBlur={(e) => onNote(p.id, e.target.value)} />
+          <input key={p.id + ":" + (p.call_note || "")} className="note-input" placeholder="Нотатка…" aria-label={"Нотатка до дзвінка — " + p.patient_name} defaultValue={p.call_note || ""} onBlur={(e) => onNote(p.id, e.target.value)} />
         </div>
         <div className="cl-actions">
           {p.call_status === "confirmed" ? (
             <>
               <span className="q-done-lab">✓ Готово</span>
-              <button className="mini-icon" title="Скасувати" onClick={() => onSet(p.id, "not_called")}>↩</button>
+              <button className="mini-icon" title="Скасувати" aria-label={"Скасувати підтвердження — " + p.patient_name} onClick={() => onSet(p.id, "not_called")}><span aria-hidden="true">↩</span></button>
             </>
           ) : (
             <>
-              <button className="btn btn-green btn-sm" title="Підтвердити" onClick={() => onSet(p.id, "confirmed")}>✓</button>
-              <button className="mini-icon" title="Не відповідає" style={{ color: "var(--orange)" }} onClick={() => onSet(p.id, "no_answer")}>☏</button>
-              <button className="mini-icon" title="Передзвонити" style={{ color: "var(--blue-text)" }} onClick={() => onSet(p.id, "to_recall")}>↩</button>
+              <button className="btn btn-green btn-sm" title="Підтвердити" aria-label={"Підтвердити — " + p.patient_name} onClick={() => onSet(p.id, "confirmed")}><span aria-hidden="true">✓</span></button>
+              <button className="mini-icon" title="Не відповідає" aria-label={"Не відповідає — " + p.patient_name} style={{ color: "var(--orange)" }} onClick={() => onSet(p.id, "no_answer")}><span aria-hidden="true">☏</span></button>
+              <button className="mini-icon" title="Передзвонити" aria-label={"Передзвонити — " + p.patient_name} style={{ color: "var(--blue-text)" }} onClick={() => onSet(p.id, "to_recall")}><span aria-hidden="true">↩</span></button>
             </>
           )}
         </div>
@@ -171,7 +171,7 @@ function CallRow({ p, roomName, roomModel, expanded, onToggle, onSet, onNote, on
             <button className="btn btn-primary btn-sm" onClick={() => onReschedule(p)}>🗓 Перенести на слот</button>
             <button className="btn btn-secondary btn-sm" style={{ color: "var(--orange)" }} onClick={() => onSet(p.id, "no_answer")}>☏ Не відповідає</button>
             <button className="btn btn-secondary btn-sm" style={{ color: "var(--blue-text)" }} onClick={() => onSet(p.id, "to_recall")}>↩ Передзвонити</button>
-            <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onSet(p.id, "declined")}>✕ Відмова</button>
+            <button className="btn btn-secondary btn-sm" style={{ color: "var(--red-text)" }} onClick={() => onSet(p.id, "declined")}>✕ Відмова</button>
           </div>
         </div>
       )}
@@ -225,7 +225,7 @@ function IncidentCallSection({ incident, roomName, affected, onReschedule, onRec
                     <div className="cld-actions" style={{ marginTop: 8 }}>
                       <button className="btn btn-primary btn-sm" onClick={() => onReschedule(p)}>🗓 Перенести на слот</button>
                       <button className="btn btn-secondary btn-sm" style={{ color: "var(--blue-text)" }} onClick={() => onRecall(p)}>↩ Передзвонити</button>
-                      <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onRefuse(p)}>✕ Відмова</button>
+                      <button className="btn btn-secondary btn-sm" style={{ color: "var(--red-text)" }} onClick={() => onRefuse(p)}>✕ Відмова</button>
                     </div>
                   </div>
                 )}
@@ -275,7 +275,7 @@ function LateCallSection({ late, roomsById, onReschedule, onRecall, onToWaitlist
                     <button className="btn btn-primary btn-sm" onClick={() => onReschedule(p)}>🗓 Перенести на слот</button>
                     <button className="btn btn-secondary btn-sm" onClick={() => onToWaitlist(p)} title="Пацієнт чекатиме на вільне вікно">⏳ В лист очікування</button>
                     <button className="btn btn-secondary btn-sm" style={{ color: "var(--blue-text)" }} onClick={() => onRecall(p)}>↩ Передзвонити</button>
-                    <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onRefuse(p)}>✕ Відмова</button>
+                    <button className="btn btn-secondary btn-sm" style={{ color: "var(--red-text)" }} onClick={() => onRefuse(p)}>✕ Відмова</button>
                   </div>
                 </div>
               )}
@@ -805,7 +805,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
           </div>
           <div className="tb-right">
             {/* Ручна зміна дня гасить банер сама: оператор бачить, що робить. */}
-            <input className="inp tabular" type="date" value={dayKey} onChange={(e) => { const [y, m, d] = e.target.value.split("-").map(Number); setDate(new Date(y, m - 1, d)); setDayShifted(null); }} style={{ width: 150 }} />
+            <input className="inp tabular" type="date" aria-label="День обдзвону" value={dayKey} onChange={(e) => { const [y, m, d] = e.target.value.split("-").map(Number); setDate(new Date(y, m - 1, d)); setDayShifted(null); }} style={{ width: 150 }} />
             <button className="btn btn-secondary" disabled={loading} onClick={exportCsv} title={loading ? "Зачекайте — список цього дня ще вантажиться" : "Вивантажити видимий день у CSV"}>↧ Експорт</button>
             {/* ⚠️ F2: доки перенесення дня не підтверджено людиною, НЕЗВОРОТНА
                 масова дія недоступна — це пара до банера нижче і прямий аналог
@@ -942,7 +942,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
                      вантажиться. Картки вище вже маскуються через loading; без цього
                      ж рядки сховані за спінером, а числа поруч і далі описують
                      учорашній обдзвін (ревʼю пакета). */
-                  <button key={t.key} className={"pill" + (filter === t.key ? " active" : "")} onClick={() => setFilter(t.key)}>
+                  <button key={t.key} type="button" className={"pill" + (filter === t.key ? " active" : "")} aria-pressed={filter === t.key} onClick={() => setFilter(t.key)}>
                     {t.label}<span className="ct">({loading ? "—" : t.ct})</span>
                   </button>
                 ))}
@@ -950,7 +950,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
                 {/* с22 (ревью HIGH-1): ввід не канонізуємо — цифровий матчинг quickSearchMatch. */}
-                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(e.target.value)} />
+                <input placeholder="Пошук…" aria-label="Пошук у колл-листі" value={query} onChange={(e) => setQuery(e.target.value)} />
               </div>
             </div>
 

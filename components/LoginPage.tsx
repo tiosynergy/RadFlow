@@ -52,7 +52,7 @@ export default function LoginPage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
-  const [toast, setToast] = useState<{ show: boolean; title: string; msg: string }>({ show: false, title: "", msg: "" });
+  const [toast, setToast] = useState<{ show: boolean; title: string; msg: string; seq: number }>({ show: false, title: "", msg: "", seq: 0 });
 
   function validate(name: string, v: string): string {
     if (name === "email") return !v.trim() ? REQUIRED : "";
@@ -63,6 +63,8 @@ export default function LoginPage() {
   function setField(name: string, value: string) {
     setValues((p) => ({ ...p, [name]: value }));
     if (touched[name]) setErrors((p) => ({ ...p, [name]: validate(name, value) }));
+    // W-11: помилка входу живе до першої правки поля, а не 3,6 с (2.2.1).
+    setToast((t) => (t.show ? { ...t, show: false } : t));
   }
 
   function blurField(name: string) {
@@ -71,8 +73,9 @@ export default function LoginPage() {
   }
 
   function showToast(msg: string, title = "Помилка входу") {
-    setToast({ show: true, title, msg });
-    setTimeout(() => setToast((t) => ({ ...t, show: false })), 3600);
+    // seq: та сама помилка вдруге (без правки поля) — новий вузол у role="alert",
+    // інакше DOM не змінюється і ридер мовчить (ревʼю с75).
+    setToast((t) => ({ show: true, title, msg, seq: t.seq + 1 }));
   }
 
   async function onSubmit(e: FormEvent) {
@@ -144,8 +147,8 @@ export default function LoginPage() {
               padding: "10px 12px",
               borderRadius: 8,
               lineHeight: 1.45,
-              border: "1px solid " + (banner.tone === "warn" ? "var(--danger, #c0392b)" : "var(--border, #ccc)"),
-              color: banner.tone === "warn" ? "var(--danger, #c0392b)" : "var(--text, inherit)",
+              border: "1px solid " + (banner.tone === "warn" ? "var(--red)" : "var(--border)"),
+              color: banner.tone === "warn" ? "var(--red-text)" : "var(--text)",
             }}
           >
             {banner.text}
@@ -212,8 +215,9 @@ export default function LoginPage() {
         role="alert"
         style={{ borderLeftColor: "var(--red)" }}
       >
-        <div className="tt">{toast.title}</div>
-        <div className="td">{toast.msg}</div>
+        {/* Текст лише поки видно: прихований opacity:0 він лишався б у дереві
+            доступності, а регіон role="alert" — постійний, тож вставка озвучується. */}
+        {toast.show && <div key={toast.seq}><div className="tt">{toast.title}</div><div className="td">{toast.msg}</div></div>}
       </div>
     </div>
   );

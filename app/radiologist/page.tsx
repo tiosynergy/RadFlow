@@ -5,6 +5,9 @@ import SignOutButton from "@/components/SignOutButton";
 import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import { residualSet, visibleRooms } from "@/lib/rooms";
 
+/* W-17 (WCAG 2.4.2): у кожної сторінки своя назва вкладки — до цього всі звались «RadFlow». */
+export const metadata = { title: "Дошка радіолога — RadFlow" };
+
 function Notice({ title, text }: { title: string; text: string }) {
   return (
     <div style={{ minHeight: "100vh", background: "#1c1c1e", color: "#f5f5f7", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "-apple-system, system-ui, sans-serif" }}>

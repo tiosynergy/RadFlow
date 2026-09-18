@@ -22,9 +22,16 @@
                 Слот КЛІКАБЕЛЬНИЙ, але вибір веде до діалогу підтвердження —
                 тому це «вільний» стан (freeStates), а не .taken;
      past, offhours, closed → .taken (приглушено).
-   Кожна модалка передає власний stateOf() — валідація не змінюється. */
+   Кожна модалка передає власний stateOf() — валідація не змінюється.
 
-import { useState } from "react";
+   W-5 (с75, WCAG 4.1.2 / 2.5.8). Сітка — справжній listbox: блок = role="group"
+   з назвою «08:30», пʼятихвилинки = role="option" + aria-selected; у порядку
+   Tab лише ОДНА комірка (обрана, інакше перша вільна) — roving tabindex, решта
+   стрілками: ←/→ сусідня доступна комірка, ↑/↓ ±30 хв, Home/End. Раніше до
+   «Зберегти» було ~144 табстопи, а ридер чув «список» без опцій. Розмір комірок
+   ≥24px — у CSS (.slot-grid4: 2 блоки в рядку). */
+
+import { useId, useRef, useState } from "react";
 import { groupSlots, slotFmt, slotToMin } from "@/lib/slots";
 
 export type SlotStateFn = (slot: string) => string;
@@ -48,9 +55,37 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
      і був недосяжний. Тап по зайнятому слоту показує той самий текст видимим
      рядком під сіткою; вибір вільних слотів це не змінює. */
   const [hint, setHint] = useState<{ slot: string; text: string } | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const helpId = useId();
   if (!slots.length) return null;
   const isFree = (st: string) => freeStates.includes(st);
   const blocks = groupSlots(slots); // 30-хв блоки в межах графіка
+
+  /* Roving tabindex: у Tab-порядку одна комірка — обрана (якщо вона фокусабельна),
+     інакше перша вільна, інакше перша фокусабельна (зайнята з підказкою). */
+  const focusable = (s: string) => { const st = stateOf(s); return isFree(st) || (!!titleOf && titleOf(s, st) !== s); };
+  const allSubs = blocks.flatMap((bl) => Array.from({ length: 6 }, (_, i) => slotFmt(bl.startMin + i * 5)));
+  const tabStop = (value && allSubs.includes(value) && focusable(value)) ? value
+    : allSubs.find((s) => isFree(stateOf(s))) ?? allSubs.find(focusable) ?? "";
+
+  function onGridKey(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
+    const list = Array.from(gridRef.current?.querySelectorAll<HTMLButtonElement>("button.slot:not([disabled])") ?? []);
+    if (!list.length) return;
+    const cur = document.activeElement as HTMLButtonElement | null;
+    const i = Math.max(0, list.findIndex((b) => b === cur));
+    const minOf = (b: HTMLButtonElement) => slotToMin(b.dataset.slot || "00:00");
+    let n = i;
+    if (e.key === "ArrowRight") n = Math.min(list.length - 1, i + 1);
+    else if (e.key === "ArrowLeft") n = Math.max(0, i - 1);
+    else if (e.key === "Home") n = 0;
+    else if (e.key === "End") n = list.length - 1;
+    else if (e.key === "ArrowDown") { const t = minOf(list[i]) + 30; const j = list.findIndex((b) => minOf(b) >= t); n = j < 0 ? list.length - 1 : j; }
+    else if (e.key === "ArrowUp") { const t = minOf(list[i]) - 30; let j = -1; list.forEach((b, k) => { if (minOf(b) <= t) j = k; }); n = j < 0 ? 0 : j; }
+    e.preventDefault();
+    list[n]?.focus();
+    list[n]?.scrollIntoView({ block: "nearest" });
+  }
 
   // Зелені межі планованого дослідження: перша (початок) і остання (кінець) 5-хв частини.
   const planStart = value || "";
@@ -62,14 +97,16 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
 
   return (
     <div className="slot-picker">
-    <div className="slot-grid4" role="listbox" aria-label="Вільні слоти (крок 5 хв)">
+    {/* Інструкції — описом, не іменем: імʼя читається при кожному вході в список,
+        а гліфи «↑↓» залежать від рівня символів ридера (ревʼю с75). */}
+    <div className="slot-grid4" role="listbox" aria-label="Вільні слоти (крок 5 хв)" aria-describedby={helpId} ref={gridRef} onKeyDown={onGridKey}>
       {blocks.map((bl) => {
         // 6 рівних частин по 5 хв від початку 30-хв блоку.
         const subs = Array.from({ length: 6 }, (_, i) => slotFmt(bl.startMin + i * 5));
         return (
-          <div className="slot-blk" key={bl.key}>
-            <span className="slot-blk-lab">{slotFmt(bl.startMin)}</span>
-            <div className="slot-blk-cells">
+          <div className="slot-blk" key={bl.key} role="group" aria-label={slotFmt(bl.startMin)}>
+            <span className="slot-blk-lab" aria-hidden="true">{slotFmt(bl.startMin)}</span>
+            <div className="slot-blk-cells" role="presentation">
               {subs.map((s) => {
                 const st = stateOf(s);
                 const free = isFree(st);
@@ -95,13 +132,15 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
                       + (st === "buffer" ? " busybuf" : "")
                       + ((st === "busy" || st === "blocked") ? " busy" : "")}
                     disabled={!free && !showHint}
+                    role="option" aria-selected={value === s} tabIndex={s === tabStop ? 0 : -1} data-slot={s}
                     aria-disabled={!free}
                     onClick={() => { if (free) { setHint(null); onChange(s); } else if (showHint) { setHint((h) => (h?.slot === s ? null : { slot: s, text: label })); } }}
                     title={label}
                     /* Стан слота (зайнято/перерва/буфер + інтервал) має бути в
                        ДОСТУПНОМУ імені, а не лише у title= (на тачі тултипа немає,
-                       і скрінрідер title не завжди озвучує). */
-                    aria-label={label}>
+                       і скрінрідер title не завжди озвучує). Видимий текст комірки
+                       («35») мусить бути в імені (2.5.3 Label in Name) — префікс. */
+                    aria-label={label.includes(s) ? label : s + " — " + label}>
                     {s.slice(3)}
                   </button>
                 );
@@ -111,12 +150,14 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
         );
       })}
     </div>
-    {hint && (
-      <div className="slot-hint" role="status" aria-live="polite">
+    <span className="rf-vh" id={helpId}>Стрілки вліво/вправо — сусідня комірка, вгору/вниз — на 30 хвилин, Home/End — початок і кінець. Enter або пробіл — обрати.</span>
+    {/* Регіон постійний: створений уже з текстом він міг би не озвучитись. */}
+    <div className={hint ? "slot-hint" : "rf-vh"} role="status" aria-live="polite">
+      {hint && <>
         <span className="slot-hint-txt">{hint.text}</span>
         <button type="button" className="slot-hint-x" aria-label="Закрити підказку" onClick={() => setHint(null)}>✕</button>
-      </div>
-    )}
+      </>}
+    </div>
     </div>
   );
 }

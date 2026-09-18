@@ -463,8 +463,8 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
             <div className="fld" style={{ flex: "0 0 auto" }}>
               <span className="fld-lab">Стать</span>
               <div className="bk-gender-row">
-                <button className={"bk-gender-btn" + (gender === "М" ? " active" : "")} onClick={() => setGender("М")} title="Чоловіча">♂</button>
-                <button className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} onClick={() => setGender("Ж")} title="Жіноча">♀</button>
+                <button type="button" className={"bk-gender-btn" + (gender === "М" ? " active" : "")} aria-pressed={gender === "М"} aria-label="Чоловіча" onClick={() => setGender("М")} title="Чоловіча">♂</button>
+                <button type="button" className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} aria-pressed={gender === "Ж"} aria-label="Жіноча" onClick={() => setGender("Ж")} title="Жіноча">♀</button>
               </div>
             </div>
             <label className="fld" style={{ flex: "0 0 60px" }}>
@@ -478,9 +478,9 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
           <div className="fld-row" style={{ alignItems: "flex-end" }}>
             <div className="fld" style={{ flex: "0 0 auto" }}>
               <span className="fld-lab">Тип <span className="req">*</span></span>
-              <div className="bk-seg" style={{ flexWrap: "wrap" }}>
+              <div className="bk-seg" style={{ flexWrap: "wrap" }} role="group" aria-label="Тип дослідження (обовʼязково)">
                 {availableModalities.map((code) => (
-                  <button key={code} className={"bk-seg-btn" + (studyType === code ? " active " + modalityKind(code) : "")} onClick={() => changeType(code)} title={modalityLabel(code)}>{modalityShort(code)}</button>
+                  <button key={code} type="button" className={"bk-seg-btn" + (studyType === code ? " active " + modalityKind(code) : "")} aria-pressed={studyType === code} aria-label={modalityLabel(code)} onClick={() => changeType(code)} title={modalityLabel(code)}>{modalityShort(code)}</button>
                 ))}
               </div>
             </div>
@@ -548,12 +548,12 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
                       <div className="bk-seg bk-seg-sm st-seg-locked" title="Тип = тип основного дослідження">
                         <button className={"bk-seg-btn active " + modalityKind(studyType)} disabled>{modalityShort(studyType)}</button>
                       </div>
-                      <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
+                      <select className="inp" aria-label={"Додаткове дослідження " + (i + 1) + " — область"} value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                         <option value="">— Оберіть область —</option>
                         {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}{x.price > 0 ? " · " + fmtUah(x.price) : ""}</option>)}
                       </select>
-                      <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
-                      <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
+                      <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" aria-label={"Додаткове дослідження " + (i + 1) + " — тривалість, хв"} aria-invalid={r.region && (Number(r.dur) || 0) < 5 ? true : undefined} value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
+                      <button type="button" className="st-row-del" title="Прибрати" aria-label={"Прибрати дослідження " + (i + 1)} onClick={() => exRemove(i)}><span aria-hidden="true">✕</span></button>
                     </div>
                   );
                 })}

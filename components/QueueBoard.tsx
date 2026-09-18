@@ -198,7 +198,7 @@ function StatsBar({ counts, filter, setFilter, ready = true }: { counts: Record<
       {STAT_ITEMS.map((s) => (
         <div key={s.key}
           className={"stat clickable" + (filter === s.key ? " active" : "")}
-          role="button" tabIndex={0}
+          role="button" tabIndex={0} aria-pressed={filter === s.key}
           onClick={() => setFilter(s.key)}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setFilter(s.key); } }}>
           <div className="lab">{s.lab}</div>
@@ -572,7 +572,10 @@ const CALL_META: Record<string, { label: string; cls: string; icon: string }> = 
   declined:   { label: "Відмова", cls: "red", icon: "✕" },
   not_called: { label: "Не дзвонили", cls: "gray", icon: "○" },
 };
-const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
+/* W-11 (с75): вікно Ctrl+Z після дії з відкатом (тост живе 6 с, але клавіатурі
+   треба більше — і без гонки з таймером тосту). */
+const UNDO_HOTKEY_MS = 30_000;
+const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red-text)", not_called: "var(--text-muted)" };
 // «Перенесено з …» — lib/rescheduleOrigin.ts (одна копія на всі дошки, с42).
 
 const STEP_ORDER = ["scheduled", "waiting", "in_progress", "done"];
@@ -598,7 +601,7 @@ const CALL_SEG_STYLE: Record<string, { color: string; bg: string }> = {
   confirmed:  { color: "var(--green)",     bg: "var(--green-bg)" },
   to_recall:  { color: "var(--blue-text)", bg: "var(--blue-bg)" },
   no_answer:  { color: "var(--orange)",    bg: "var(--orange-bg)" },
-  declined:   { color: "var(--red)",       bg: "var(--red-bg)" },
+  declined:   { color: "var(--red-text)",       bg: "var(--red-bg)" },
 };
 
 interface QueueRowProps {
@@ -735,13 +738,13 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
 
   return (
     <div className={"qrow-item " + p.status + (expanded ? " open" : "")} data-qrow={p.id}>
-      <div className="qrow" role="button" tabIndex={0} onClick={() => onToggle(p.id)}
+      <div className="qrow" role="button" tabIndex={0} aria-expanded={expanded} onClick={() => onToggle(p.id)}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
-          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient?.(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span><UnreadDot markers={cardUnread} />{p.case_id && <span onClick={(e) => { e.stopPropagation(); if (p.case_id) onOpenCase?.(p.case_id); }} style={{ cursor: "pointer", marginLeft: 6, fontSize: "0.6875rem", fontWeight: 600, color: "var(--accent, #3b82f6)" }} title="Відкрити крос-модальний кейс">🔗 Кейс</span>}</div>
+          <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient?.(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span><UnreadDot markers={cardUnread} />{p.case_id && <span onClick={(e) => { e.stopPropagation(); if (p.case_id) onOpenCase?.(p.case_id); }} style={{ cursor: "pointer", marginLeft: 6, fontSize: "0.6875rem", fontWeight: 600, color: "var(--blue-text)" }} title="Відкрити крос-модальний кейс">🔗 Кейс</span>}</div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
-            {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
+            {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}<span className="rf-vh">, </span></span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
             {(p.referrer?.full_name || p.doctor) && <span>Напр.: {p.referrer?.full_name || p.doctor}</span>}
           </div>
@@ -759,7 +762,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
             return <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "var(--blue-text)" }}>{km}</span>;
           })()}
           <b>{roomName}</b>
-          {roomModel ? <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}</span> : null}
+          {roomModel ? <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}<span className="rf-vh">, </span></span> : null}
         </div>
         <div className="q-status-cell">
           <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{!meta.dot && meta.icon && <span aria-hidden="true" style={{ marginRight: 3 }}>{meta.icon}</span>}{meta.label}</span>
@@ -778,7 +781,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
           {collision?.zone === "drift" && (
             <span className="badge gray" title={`Кабінет відстає від плану на ${collision.driftMin} хв (звільниться о ${collision.freeAt}), але до цього слота ще встигає — буфер поглинає затримку`}>+{collision.driftMin} хв</span>
           )}
-          {(p.status === "scheduled" || p.status === "waiting") ? (() => { const cm = CALL_META[p.call_status || "not_called"]; return <span title={"Дзвінок: " + cm.label} aria-label={"Дзвінок: " + cm.label} style={{ fontSize: "0.9375rem", lineHeight: 1, fontWeight: 700, color: CALL_COLOR[p.call_status || "not_called"] }}>{cm.icon}</span>; })() : null}
+          {(p.status === "scheduled" || p.status === "waiting") ? (() => { const cm = CALL_META[p.call_status || "not_called"]; return <span role="img" title={"Дзвінок: " + cm.label} aria-label={"Дзвінок: " + cm.label} style={{ fontSize: "0.9375rem", lineHeight: 1, fontWeight: 700, color: CALL_COLOR[p.call_status || "not_called"] }}>{cm.icon}</span>; })() : null}
         </div>
         <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
       </div>
@@ -801,10 +804,10 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
               const changed = sdiff.some((d) => d.state !== "kept");
               return (
                 <div>
-                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
+                  <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red-text)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: "0.8125rem" }}>
                     {sdiff.map((d, i) => (
-                      <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
+                      <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red-text)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
                         {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
                       </div>
                     ))}
@@ -883,6 +886,7 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                         return (
                           <div key={key} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 72 }}>
                             <button onClick={stepDisabled ? undefined : act(() => onSetStatus(p, key))} disabled={stepDisabled} title={stepTitle} aria-disabled={stepDisabled}
+                              aria-label={"Крок " + (i + 1) + " — " + m.label + (isDone ? " (виконано)" : "")} aria-current={isCur ? "step" : undefined}
                               style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.8125rem", fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: stepDisabled ? "not-allowed" : "pointer", opacity: stepBlocked ? 0.4 : 1,
                                 background: isDone ? "var(--green)" : (isCur ? m.color : "transparent"),
                                 border: "1.5px solid " + ((isDone || isCur) ? "transparent" : "var(--border-strong)"),
@@ -1043,9 +1047,9 @@ function CallListPanel({ entries, onSetCall, dateLabel }: { entries: QEntry[]; o
               {e.patient_phone && <a href={"tel:" + e.patient_phone.replace(/\s/g, "")} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.78125rem", marginBottom: 6, whiteSpace: "nowrap", color: "var(--blue-text)", textDecoration: "none" }}>☎ {e.patient_phone}</a>}
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                 <span className={"qd-call " + cm.cls} style={{ fontSize: "0.6875rem" }}>{cm.icon} {cm.label}</span>
-                <button className="btn btn-green btn-xs" onClick={() => onSetCall(e, "confirmed")} title="Підтверджено">✓</button>
-                <button className="btn btn-secondary btn-xs" onClick={() => onSetCall(e, "to_recall")} title="Передзвонити">↻</button>
-                <button className="btn btn-secondary btn-xs" onClick={() => onSetCall(e, "no_answer")} title="Не відповідає">…</button>
+                <button className="btn btn-green btn-xs" onClick={() => onSetCall(e, "confirmed")} title="Підтверджено" aria-label={"Підтверджено — " + e.patient_name}><span aria-hidden="true">✓</span></button>
+                <button className="btn btn-secondary btn-xs" onClick={() => onSetCall(e, "to_recall")} title="Передзвонити" aria-label={"Передзвонити — " + e.patient_name}><span aria-hidden="true">↻</span></button>
+                <button className="btn btn-secondary btn-xs" onClick={() => onSetCall(e, "no_answer")} title="Не відповідає" aria-label={"Не відповідає — " + e.patient_name}><span aria-hidden="true">…</span></button>
               </div>
             </div>
           );
@@ -1062,7 +1066,7 @@ function AffectedPanel({ affected, roomsById, onReschedule }: { affected: QEntry
     <div className="rcard">
       <div className="rcard-toggle open" style={{ cursor: "default" }}>
         <span className="rct-title">Обдзвін через простій</span>
-        <span className="rct-sum" style={{ background: "var(--red)", color: "#fff", borderRadius: 10, padding: "1px 8px" }}>{affected.length}</span>
+        <span className="rct-sum" style={{ background: "var(--danger)", color: "#fff", borderRadius: 10, padding: "1px 8px" }}>{affected.length}</span>
       </div>
       <div className="load-body">
         {affected.map((e) => (
@@ -1282,6 +1286,12 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   });
   const [toast, setToast] = useState<ToastData | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* W-11 (с75): Ctrl+Z — той самий «↩ Відмінити», що в тості, але з клавіатури:
+     до кнопки в кінці DOM за 6 с Tab-ом не дістатись. Дія живе UNDO_HOTKEY_MS
+     від моменту тосту, у своєму зрізі (день/кабінет), і гаситься виконанням
+     або наступною дією з відкатом. Сам відкат на сервері під CAS (expectedFrom),
+     тож повторний або запізнілий Ctrl+Z нічого не зламає. */
+  const undoRef = useRef<{ run: () => void; what: string; born: string; until: number } | null>(null);
   // Слот звільнився (скасування/відмова) → підходящі кандидати з листа очікування.
   const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
   // Оголошені тут (а не нижче біля хендлерів), бо їх читає гард хоткеїв anyModalOpen.
@@ -1360,14 +1370,19 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
        порожнім expectedFrom. Тут дія просто стає no-op поза своїм зрізом. */
     const born = scopeRef.current;
     const guarded: ToastData["action"] = action
-      ? { label: action.label, onAction: () => { if (scopeRef.current !== born) return; action.onAction(); } }
+      ? { label: action.label, hotkey: "Ctrl+Z", onAction: () => { if (scopeRef.current !== born) return; undoRef.current = null; action.onAction(); } }
       : undefined;
+    /* Ревʼю с75: Ctrl+Z відкочує лише ОСТАННЮ дію. Будь-який наступний тост
+       (інша дія, помилка) гасить вікно — так само, як зникає кнопка «↩ Відмінити». */
+    undoRef.current = action ? { run: action.onAction, what: msg, born, until: Date.now() + UNDO_HOTKEY_MS } : null;
     setToast({ msg, type, action: guarded });
     if (toastTimer.current) clearTimeout(toastTimer.current);
     // A-1/аудит v2: помилки живуть довше (5–7 с) — оператор встигає прочитати.
     // Тости з дією (soft-undo) теж 6 с — щоб устигнути натиснути «↩ Відмінити».
     toastTimer.current = setTimeout(() => setToast(null), (type === "error" || action) ? 6000 : 3000);
   }
+  const notifyRef = useRef(notify);
+  notifyRef.current = notify;
 
   /* ПОМИЛКА ЗАВАНТАЖЕННЯ ≠ «ПУСТО» (аудит 2026-07-11).
      Раніше всі лоадери робили `data || []`, тож збій мережі виглядав як «даних
@@ -1702,9 +1717,21 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
-      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      const typing = !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+      /* W-11: Ctrl+Z поза полем вводу — відкат останньої дії з тосту (у полі —
+         нативний undo тексту). Перевіряємо ДО загального «модифікатори — не наші». */
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === "KeyZ" && !typing && !anyModalOpen) {
+        const u = undoRef.current;
+        if (!u || Date.now() > u.until || scopeRef.current !== u.born) return;
+        e.preventDefault();
+        undoRef.current = null;
+        u.run();
+        notifyRef.current("Відмінено: " + u.what, "info");
+        return;
+      }
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (typing) return;
       if (anyModalOpen) return;
       const code = e.code;
       // «?» (Shift+/) — довідка гарячих клавіш. Перевіряємо ДО «/», бо Shift+/ теж має code="Slash".
@@ -2097,6 +2124,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      якщо відтоді ніхто нічого не змінив. Якщо змінив — CAS відмовить, і те
      саме повідомлення стане ПРАВДОЮ. */
   async function setStatus(id: string, status: string, expectedOverride?: QueueStatus): Promise<boolean> {
+    // Ревʼю с75: нова дія — старий Ctrl+Z протух (сам відкат теж іде сюди, він уже зняв undoRef).
+    undoRef.current = null;
     // H-2: фиксируем статус, который сейчас видит оператор (до оптимистичного
     // обновления) — как expectedFrom для CAS на сервере.
     /* Джерело — САМ ЗНІМОК, а не відфільтрований по зрізу `entries` (ревʼю р.2).
@@ -2262,6 +2291,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   }
 
   async function setCall(p: QEntry, call_status: string) {
+    undoRef.current = null;   // див. setStatus
     const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
     setEntries((es) => es.map((e) => (e.id === p.id ? { ...e, ...patch } : e)));
     const res = await setQueueEntryCall(p.id, call_status as CallStatus);
@@ -2915,7 +2945,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
               {/* с22 (ревью HIGH-1): ввід НЕ канонізуємо — formatPhoneSearch зрізав
                   ведучі цифри і вбивав пошук за серединою/останніми цифрами номера.
                   Матчинг тепер цифровий (quickSearchMatch), формат вводу не важливий. */}
-              <input ref={searchRef} placeholder="Пошук пацієнта… ( / )" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <input ref={searchRef} placeholder="Пошук пацієнта… ( / )" aria-label="Пошук пацієнта в черзі" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
             {/* P3 discoverability: видима точка входу в довідку хоткеїв (клавіша «?»). */}
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => setHelpOpen(true)} title="Гарячі клавіші (?)" aria-label="Гарячі клавіші" style={{ flexShrink: 0 }}>⌨ ?</button>

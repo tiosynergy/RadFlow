@@ -70,7 +70,7 @@ const CALL_META: Record<string, { label: string; icon: string }> = {
   declined: { label: "Відмова", icon: "✕" },
   not_called: { label: "Не дзвонили", icon: "○" },
 };
-const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
+const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red-text)", not_called: "var(--text-muted)" };
 
 /* Фільтри статусів (як окремі stat-картки). «active» = waiting+in_progress. */
 const STATUS_FILTERS = [
@@ -221,9 +221,9 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
       {/* Перемикач центрів */}
       {multiCenter && (
         <div className="pills" style={{ marginBottom: 12, flexWrap: "wrap" }}>
-          <button className={"pill" + (centerId === "all" ? " active" : "")} onClick={() => selectCenter("all")}>Всі центри</button>
+          <button type="button" className={"pill" + (centerId === "all" ? " active" : "")} aria-pressed={centerId === "all"} onClick={() => selectCenter("all")}>Всі центри</button>
           {activeCenters.map((c) => (
-            <button key={c.clinicId} className={"pill" + (centerId === c.clinicId ? " active" : "")} onClick={() => selectCenter(c.clinicId)}>{c.name}</button>
+            <button key={c.clinicId} type="button" className={"pill" + (centerId === c.clinicId ? " active" : "")} aria-pressed={centerId === c.clinicId} onClick={() => selectCenter(c.clinicId)}>{c.name}</button>
           ))}
         </div>
       )}
@@ -249,7 +249,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
         )}
         <div className="spacer" />
         {/* с22 (ревью HIGH-1): ввід не канонізуємо — цифровий матчинг quickSearchMatch. */}
-        <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
+        <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" aria-label="Пошук пацієнта серед направлених" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       </div>
 
       {filtered.length === 0 ? (
@@ -273,7 +273,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
               const owned = r.created_by === doctorId || r.referrer_id === doctorId;
               return (
                 <div className={"qrow-item " + r.status + (expanded ? " open" : "")} key={r.id}>
-                  <div className="qrow qrow-ref" role="button" tabIndex={0}
+                  <div className="qrow qrow-ref" role="button" tabIndex={0} aria-expanded={expanded}
                     onClick={() => setExpandedId((x) => (x === r.id ? null : r.id))}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId((x) => (x === r.id ? null : r.id)); } }}>
                     <div className="q-time tabular">{r.scheduled_time || "—"}<div className="td">{r.duration_min ? r.duration_min + " хв" : ""}</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{r.scheduled_date}</div></div>
@@ -309,8 +309,11 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                     </div>
                     <div className="q-status-cell">
                       <span className={"badge " + meta.cls} title={"title" in meta ? meta.title : undefined}>{meta.label}</span>
-                      <span title={"Дзвінок: " + call.label} aria-label={"Статус дзвінка: " + call.label} style={{ fontSize: "0.71875rem", display: "inline-flex", alignItems: "center", gap: 4, color: CALL_COLOR[r.call_status || "not_called"], fontWeight: 600 }}>
-                        <span aria-hidden="true">{call.icon}</span>{call.label}
+                      {/* Ревʼю с75: видимий текст лишається ТЕКСТОМ (не role="img" —
+                          інакше його не прочитати посимвольно); контекст — прихованим
+                          префіксом, гліф — поза деревом доступності. */}
+                      <span title={"Дзвінок: " + call.label} style={{ fontSize: "0.71875rem", display: "inline-flex", alignItems: "center", gap: 4, color: CALL_COLOR[r.call_status || "not_called"], fontWeight: 600 }}>
+                        <span aria-hidden="true">{call.icon}</span><span className="rf-vh">Статус дзвінка: </span>{call.label}
                       </span>
                     </div>
                     <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden="true">›</span>
@@ -332,17 +335,17 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                               <div className="qd-row"><span className="qd-k">Телефон</span><span className="qd-v">{r.patient_phone || "—"}</span></div>
                               <div className="qd-row"><span className="qd-k">Дзвінок</span><span className="qd-v" style={{ color: CALL_COLOR[r.call_status || "not_called"] }}>{call.label}</span></div>
                               <div className="qd-row" style={{ gridColumn: "1 / -1" }}>
-                                <span className="qd-k">Дослідження{changed && <span style={{ color: "var(--orange)" }}> · змінено {r.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{r.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</span>
+                                <span className="qd-k">Дослідження{changed && <span style={{ color: "var(--orange)" }}> · змінено {r.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{r.contraindications && <span style={{ color: "var(--red-text)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</span>
                                 <span className="qd-v" style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                                   {sdiff.map((d, i) => (
-                                    <span key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
+                                    <span key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red-text)" : "var(--text)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
                                       {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
                                     </span>
                                   ))}
                                 </span>
                               </div>
                               {r.indication && <div className="qd-row" style={{ gridColumn: "1 / -1" }}><span className="qd-k">Питання</span><span className="qd-v">{r.indication}</span></div>}
-                              {r.status === "no_show" && r.note && <div className="qd-row" style={{ gridColumn: "1 / -1" }}><span className="qd-k" style={{ color: "var(--red)" }}>Причина</span><span className="qd-v">{r.note}</span></div>}
+                              {r.status === "no_show" && r.note && <div className="qd-row" style={{ gridColumn: "1 / -1" }}><span className="qd-k" style={{ color: "var(--red-text)" }}>Причина</span><span className="qd-v">{r.note}</span></div>}
                             </div>
                           );
                         })()}
@@ -354,7 +357,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                             <button className="btn btn-secondary btn-sm" onClick={() => onEditPatient(r)}>✎ Дані пацієнта</button>
                             {/* 0118: запис без кейса → організувати кейс (крок іншої модальності). */}
                             {!r.case_id && onOrganizeCase && <button className="btn btn-secondary btn-sm" onClick={() => onOrganizeCase(r)} title="Додати крок іншої модальності — записи стануть кейсом">🔗 Організувати кейс</button>}
-                            {canCancel(r) && <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)" }} onClick={() => onCancel(r)}>✕ Скасувати</button>}
+                            {canCancel(r) && <button className="btn btn-secondary btn-sm" style={{ color: "var(--red-text)" }} onClick={() => onCancel(r)}>✕ Скасувати</button>}
                           </div>
                         )}
                         {owned && r.status === "in_progress" && (

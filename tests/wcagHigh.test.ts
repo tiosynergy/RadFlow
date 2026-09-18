@@ -94,7 +94,8 @@ describe("W-3 — статус дзвінка в колл-листі: гліф +
     const c = css("styles/prototype/radflow-screens.css");
     expect(c).toContain("grid-template-columns: 28px 50px 1.35fr 116px 1.5fr minmax(96px, 0.75fr) 126px 1.1fr 88px;");
     expect(c).toMatch(/\.cl-status \{[^}]*font-size: 0\.6875rem;[^}]*white-space: normal;/);
-    expect(c).toContain(".cl-status.red { color: #ff8c84; }");
+    // с75 (W-4): літерал #ff8c84 став токеном --red-text (#ff918a, 5,45:1 на --red-bg над --card).
+    expect(c).toContain(".cl-status.red { color: var(--red-text); }");
   });
   /* Жива сесія 18.09 (с75): «Кабінет УЗД / FujiFilm Arietta 750VE» лягав під бейдж
      статусу — колонка 58px і .cl-room з nowrap без обрізання. Пін: колонка має

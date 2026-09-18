@@ -11,6 +11,10 @@
   --blue: #0d6ecf; --blue-hover: #0b5cae; --blue-text: #6db4ff; --blue-line: #0a84ff;
   --blue-bg: rgba(13,110,207,.15); --blue-bg-soft: rgba(13,110,207,.08);
   --green: #30d158; --green-bg: rgba(48,209,88,.15); --red: #ff453a; --red-bg: rgba(255,69,58,.15);
+  /* W-4 (с75, ревʼю): сторінки входу/реєстрації/пароля НЕ вантажать radflow.css,
+     тож токени червоного тексту й деструктивних заливок дублюються тут — інакше
+     `var(--red-text)` у .err був би невизначений і текст успадковував би --text. */
+  --red-text: #ff918a; --danger: #d62f26; --danger-hover: #c22a21; --accent: var(--blue-line);
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", system-ui, sans-serif;
 
   font-family: var(--font); background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased;
@@ -51,7 +55,7 @@
 .reg-root .field input.invalid { border-color: var(--red); }
 .reg-root .field input.invalid:focus { box-shadow: 0 0 0 3px var(--red-bg); }
 .reg-root .hint { font-size: 0.71875rem; color: var(--text-faint); margin-top: 4px; }
-.reg-root .err { font-size: 0.75rem; color: var(--red); margin-top: 4px; }
+.reg-root .err { font-size: 0.75rem; color: var(--red-text); margin-top: 4px; }
 .reg-root .check { display: flex; align-items: flex-start; gap: 9px; margin: 2px 0 12px; }
 .reg-root .check input { width: 17px; height: 17px; margin-top: 2px; accent-color: var(--blue-line); flex-shrink: 0; cursor: pointer; }
 .reg-root .check label { font-size: 0.8125rem; color: var(--text-secondary); line-height: 1.45; cursor: pointer; }

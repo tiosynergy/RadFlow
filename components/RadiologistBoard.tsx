@@ -151,7 +151,7 @@ function StatsBar({ counts, filter, setFilter, ready = true }: { counts: Record<
   return (
     <div className="stats">
       {STAT_ITEMS.map((s) => (
-        <div key={s.key} className={"stat clickable" + (filter === s.key ? " active" : "")} role="button" tabIndex={0}
+        <div key={s.key} className={"stat clickable" + (filter === s.key ? " active" : "")} role="button" tabIndex={0} aria-pressed={filter === s.key}
           onClick={() => setFilter(s.key)}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setFilter(s.key); } }}>
           <div className="lab">{s.lab}</div>
@@ -345,20 +345,21 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
   const act = (fn: (p: RadEntry) => void) => (e: MouseEvent) => { e.stopPropagation(); fn(p); };
   return (
     <div className={"qrow-item " + p.status + (expanded ? " open" : "")} data-qrow={p.id}>
-      <div className="qrow" role="button" tabIndex={0} onClick={() => onToggle(p.id)}
+      <div className="qrow" role="button" tabIndex={0} aria-expanded={expanded} onClick={() => onToggle(p.id)}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
         <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
           <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}{p.patient_name}<UnreadDot markers={cardUnread} /></div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
-            {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}</span>}
+            {p.patient_phone && <span style={{ whiteSpace: "nowrap" }}>Тел. {p.patient_phone}<span className="rf-vh">, </span></span>}
             {(p.patient_age != null || p.patient_weight != null) && <span>{[p.patient_age != null ? p.patient_age + " р." : null, p.patient_weight != null ? p.patient_weight + " кг" : null].filter(Boolean).join(", ")}</span>}
             {p.doctor && <span>Напр.: {p.doctor}</span>}
           </div>
         </div>
         <div className="q-proc">
           <div className="pp">{proc}<UnreadDot markers={studiesUnread} /></div>
-          <div className="du">{roomKind}{regionOf(p) ? " · " + regionOf(p) : ""}</div>
+          {/* W-25: коли область названа як саме дослідження, .du дублює .pp — ридер чув «КТ · Хребет КТ · Хребет». */}
+          <div className="du" aria-hidden={(roomKind + (regionOf(p) ? " · " + regionOf(p) : "")) === proc ? true : undefined}>{roomKind}{regionOf(p) ? " · " + regionOf(p) : ""}</div>
         </div>
         <div className="q-room">
           {(() => {
@@ -369,7 +370,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
             return <span style={{ flexShrink: 0, fontSize: "0.625rem", fontWeight: 700, padding: "2px 6px", borderRadius: 5, lineHeight: 1.4, background: isCt ? "var(--orange-bg)" : "var(--blue-bg)", color: isCt ? "var(--orange)" : "var(--blue-text)" }}>{km}</span>;
           })()}
           <b>{roomName}</b>
-          {roomModel ? <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}</span> : null}
+          {roomModel ? <span style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}<span className="rf-vh">, </span></span> : null}
         </div>
         <div className="q-status-cell">
           <span className={"badge " + meta.cls} title={meta.title}>{meta.dot && <span className="pulse-dot" style={{ width: 6, height: 6 }} />}{!meta.dot && meta.icon && <span aria-hidden="true" style={{ marginRight: 3 }}>{meta.icon}</span>}{meta.label}</span>
@@ -397,10 +398,10 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                   const changed = sdiff.some((d) => d.state !== "kept");
                   return (
                     <div style={{ marginBottom: 8 }}>
-                      <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
+                      <div className="qd-sf-lab" style={{ marginBottom: 6 }}>{(p.studies as unknown[]).length > 1 ? "Дослідження (" + (p.studies as unknown[]).length + ")" : "Дослідження"}{changed && <span style={{ color: "var(--orange)", fontWeight: 400 }}> · змінено {p.studies_changed_by === "referrer" ? "направником" : "клінікою"}</span>}{p.contraindications && <span style={{ color: "var(--red-text)", fontWeight: 600 }}> · ⚠ Протипоказання</span>}</div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: "0.8125rem" }}>
                         {sdiff.map((d, i) => (
-                          <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
+                          <div key={i} style={{ color: d.state === "added" ? "var(--green)" : d.state === "removed" ? "var(--red-text)" : "var(--text-secondary)", textDecoration: d.state === "removed" ? "line-through" : "none" }}>
                             {d.state === "added" ? "＋ " : d.state === "removed" ? "－ " : ""}{studyText(d.s)}
                           </div>
                         ))}
@@ -460,6 +461,7 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                         return (
                           <div key={key} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 72 }}>
                             <button onClick={stepDisabled ? undefined : act(() => onSetStatus(p, key))} disabled={stepDisabled} title={stepTitle} aria-disabled={stepDisabled}
+                              aria-label={"Крок " + (i + 1) + " — " + m.label + (isDone ? " (виконано)" : "")} aria-current={isCur ? "step" : undefined}
                               style={{ width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.8125rem", fontWeight: 700, fontVariantNumeric: "tabular-nums", cursor: stepDisabled ? "not-allowed" : "pointer", opacity: stepBlocked ? 0.4 : 1,
                                 background: isDone ? "var(--green)" : (isCur ? m.color : "transparent"),
                                 border: "1.5px solid " + ((isDone || isCur) ? "transparent" : "var(--border-strong)"),
@@ -494,13 +496,13 @@ function RadQueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onTo
                             cursor: advanceDisabled ? "default" : "pointer", opacity: (advanceDisabled && p.status !== "done") ? 0.55 : 1, background: pb.bg, color: pb.color }}>
                           {pb.icon} {pb.label}
                         </button>
-                        {!terminal && <button className="btn btn-secondary btn-sm" style={{ flex: 1, minWidth: 0 }} onClick={(e) => { e.stopPropagation(); setMoreOpen((o) => !o); }} title="Більше дій">⋯</button>}
+                        {!terminal && <button className="btn btn-secondary btn-sm" style={{ flex: 1, minWidth: 0 }} onClick={(e) => { e.stopPropagation(); setMoreOpen((o) => !o); }} title="Більше дій" aria-label="Більше дій" aria-expanded={moreOpen}><span aria-hidden="true">⋯</span></button>}
                       </>
                     )}
                   </div>
 
                   {p.status === "waiting" && advanceDisabled && startBlockReason && (
-                    <div style={{ fontSize: "0.75rem", color: "var(--red)", padding: "2px 0 6px" }}>⚠ {startBlockReason}</div>
+                    <div style={{ fontSize: "0.75rem", color: "var(--red-text)", padding: "2px 0 6px" }}>⚠ {startBlockReason}</div>
                   )}
 
                   {/* 0078–0081 — радіолог бачить, як затримка цього дослідження впливає
@@ -580,7 +582,7 @@ function MiniCalendar({ selectedDate, onSelectDate, overrides, tz, roomSchedules
           const markCustom = st?.kind === "custom";
           return (
             <button key={d} className={"cal-day" + (isToday ? " today" : "") + (isSel && !isToday ? " selected" : "") + (markClosed ? " holiday" : "") + (markCustom ? " custom" : "")}
-              title={st?.label || undefined} onClick={() => onSelectDate(startOfDay(cd))}>
+              title={st?.label || undefined} aria-current={isSel ? "date" : undefined} onClick={() => onSelectDate(startOfDay(cd))}>
               {d}
               {(markClosed || markCustom) && <span className={"cal-sched " + (markClosed ? "closed" : "custom")} />}
             {unreadForDate(unreadIx, calendarDayKey(cd)).length > 0 && <span className="cal-change" aria-hidden="true" />}
@@ -1521,7 +1523,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
                 {/* с22 (ревью HIGH-1): ввід не канонізуємо — цифровий матчинг quickSearchMatch. */}
-                <input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} />
+                <input placeholder="Пошук пацієнта…" aria-label="Пошук пацієнта в черзі" value={query} onChange={(e) => setQuery(e.target.value)} />
               </div>
             </div>
 

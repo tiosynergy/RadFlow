@@ -4,6 +4,9 @@ import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import QueueBoard from "@/components/QueueBoard";
 import RoleNotice from "@/components/RoleNotice";
 
+/* W-17 (WCAG 2.4.2): у кожної сторінки своя назва вкладки — до цього всі звались «RadFlow». */
+export const metadata = { title: "Дошка черги — RadFlow" };
+
 // с22: deep-link зі сторінки «Пошук» — ?date=YYYY-MM-DD&entry=<uuid>. Валідуємо
 // формат тут (сторінка — межа довіри), PII в URL немає: тільки id та дата.
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;

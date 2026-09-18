@@ -3,6 +3,9 @@ import { createClient } from "@/lib/supabase/server";
 import { residualOffRooms, offRoomIdsOf } from "@/lib/roomsResidual";
 import ServicesManager from "@/components/ServicesManager";
 
+/* W-17 (WCAG 2.4.2): у кожної сторінки своя назва вкладки — до цього всі звались «RadFlow». */
+export const metadata = { title: "Послуги — RadFlow" };
+
 /* Каталог послуг клініки (Stage 2, фаза 1): перелік / ціни / тривалості.
    Редагує ЛИШЕ адмін (RLS services_admin_write, 0073) — інших відводимо. */
 export default async function ServicesPage() {

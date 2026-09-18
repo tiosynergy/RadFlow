@@ -103,7 +103,7 @@ function AccessRowView({ r, children, onClick, expandable, expanded, unreadIx, r
           const list = grantRoomIds(r.room_ids);
           const dead = !!list && (list.length === 0 || sanitizeRooms(r.room_ids).length === 0);
           return (
-            <div style={{ fontSize: "0.75rem", color: dead ? "var(--red)" : "var(--text-secondary)", marginTop: 2 }}>
+            <div style={{ fontSize: "0.75rem", color: dead ? "var(--red-text)" : "var(--text-secondary)", marginTop: 2 }}>
               Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Кабінети: {roomsLabel(r.room_ids)}
               {dead && <span title="Дозволені кабінети видалено — направник не може записувати. Оберіть кабінети заново."> — ⚠ доступ не працює</span>}
             </div>
@@ -538,7 +538,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const history = rows.filter((r) => r.status === "revoked" || r.status === "declined");
 
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20, marginBottom: 16 };
-  const req = <span style={{ color: "var(--red)" }}> *</span>;
+  const req = <span style={{ color: "var(--red-text)" }}> *</span>;
 
 
   return (
@@ -571,7 +571,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
             <div className="bk-section-label" style={{ marginTop: 0 }}>Запросити лікаря-направника</div>
             <div className="fld-row">
               <label className="fld" style={{ flex: 1, position: "relative" }}>
-                <span className="fld-lab" style={{ color: "var(--red)" }}>Логін{req}</span>
+                <span className="fld-lab" style={{ color: "var(--red-text)" }}>Логін{req}</span>
                 <input className="inp" placeholder="логін направника" value={form.login} autoComplete="off"
                   onChange={(e) => { setF("login", e.target.value); setExistingPicked(false); setSugOpen(true); }}
                   onFocus={() => setSugOpen(true)}
@@ -588,14 +588,14 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                   </div>
                 )}
               </label>
-              <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: existingPicked ? "var(--text-muted)" : "var(--red)" }}>ПІБ{existingPicked ? "" : req}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} readOnly={existingPicked} style={existingPicked ? { opacity: 0.6 } : undefined} onChange={(e) => setF("full_name", e.target.value)} /></label>
+              <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: existingPicked ? "var(--text-muted)" : "var(--red-text)" }}>ПІБ{existingPicked ? "" : req}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} readOnly={existingPicked} style={existingPicked ? { opacity: 0.6 } : undefined} onChange={(e) => setF("full_name", e.target.value)} /></label>
             </div>
             {existingPicked && (
               <div className="hint-blue" style={{ marginTop: 0 }}>Лікар <b>@{form.login}</b> уже зареєстрований у RadFlow. ПІБ, телефон і пароль уже є — повторно вводити не треба. Він підтвердить запрошення у вкладці «Мої центри». <span style={{ color: "var(--blue-text)", cursor: "pointer" }} onClick={() => { setExistingPicked(false); setForm((f) => ({ ...f, login: "", full_name: "" })); }}>Скинути</span></div>
             )}
             {!existingPicked && (
               <div className="fld-row">
-                <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Телефон{req}</span><PhoneInput required value={form.phone} onChange={(v) => setF("phone", v)} /></label>
+                <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red-text)" }}>Телефон{req}</span><PhoneInput required value={form.phone} onChange={(v) => setF("phone", v)} /></label>
                 <span className="fld-spacer" style={{ flex: 1 }} />
               </div>
             )}

@@ -269,10 +269,10 @@ export default function CaseModal({ caseId, onClose, onCancelled, rooms, clinicI
           </div>
 
           {opErr && (
-            <div style={{ fontSize: "0.78125rem", color: "var(--danger, #c0392b)" }}>{opErr}</div>
+            <div style={{ fontSize: "0.78125rem", color: "var(--red-text)" }}>{opErr}</div>
           )}
           {err && (
-            <div style={{ fontSize: "0.78125rem", color: "var(--danger, #c0392b)" }}>Не вдалося завантажити кроки кейса — оновіть сторінку.</div>
+            <div style={{ fontSize: "0.78125rem", color: "var(--red-text)" }}>Не вдалося завантажити кроки кейса — оновіть сторінку.</div>
           )}
           {!err && steps === null && (
             <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)" }}>Завантаження…</div>

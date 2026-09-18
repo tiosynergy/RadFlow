@@ -182,6 +182,37 @@ head("Позначки непрочитаних змін (.rf-dot)");
   }
 }
 
+/* ── Червоний (WCAG W-4, с75) ─────────────────────────────────────────────────
+   До с75 скрипт червоний НЕ рахував, і `color: var(--red)` стояв на всіх
+   обовʼязкових підписах, бейджах «⚠ Накладення», помилках форм: 4.09 на --card,
+   3.48 на --red-bg. Тепер червоний ТЕКСТ — лише --red-text, і кожна його пара
+   тут; --red лишився заливкою/межею/крапкою (графіка, ≥3:1). Білий на --red
+   3.41 — тому деструктивні кнопки на --danger. */
+head("1.4.3 · ЧЕРВОНИЙ ЯК КОЛІР ТЕКСТУ — --red-text (поріг 4.5)");
+const RED = "#ff453a";
+const RED_TEXT = "#ff918a";
+const RED_BG_A = 0.15;
+const DANGER = "#d62f26";
+const DANGER_HOVER = "#c22a21";
+console.log(`  ДО: color: var(--red) ${RED} на --card = ${f(ratio(RED, CARD))} ❌, на --red-bg над --card = ${f(ratio(RED, over(RED, RED_BG_A, CARD)))} ❌ (.fld-lab:has(.req), .badge.red, .dlg-err, .bk-dob-err, register .err…)`);
+for (const [n, s] of Object.entries(SURFACES)) check(`--red-text ${RED_TEXT} на ${n} ${s}`, ratio(RED_TEXT, s), 4.5);
+for (const [n, s] of Object.entries(SURFACES)) check(`--red-text на --red-bg над ${n} (бейджі, .ctx-hint.red, .dlg-err)`, ratio(RED_TEXT, over(RED, RED_BG_A, s)), 4.5);
+console.log(`  ·  довідково: на --border-strong ${BORDER_STRONG} було б ${f(ratio(RED_TEXT, BORDER_STRONG))} — червоного тексту там немає (лінт нижче стереже заливку)`);
+
+head("1.4.11 · --red ЯК ГРАФІКА — межа поля, лівий акцент рядка, крапка (поріг 3.0)");
+for (const [n, s] of Object.entries(SURFACES)) check(`--red ${RED} на ${n} ${s}`, ratio(RED, s), 3);
+
+head("1.4.3 · ДЕСТРУКТИВНІ КНОПКИ — білий текст на --danger (поріг 4.5)");
+console.log(`  ДО: #fff на --red ${RED} = ${f(ratio(WHITE, RED))} ❌ (.btn-danger, DangerZone, .rct-sum)`);
+check(`#fff на --danger ${DANGER}`, ratio(WHITE, DANGER), 4.5);
+check(`#fff на --danger-hover ${DANGER_HOVER}`, ratio(WHITE, DANGER_HOVER), 4.5);
+console.log(`  ·  довідково: --danger на --card = ${f(ratio(DANGER, CARD))} — межа кнопки не потрібна, коли її текст ≥4.5 (1.4.11, «boundary not required»)`);
+/* Ревʼю с75: єдине місце з червоним текстом на БІЛОМУ — бейдж «СТОП» у натиснутій
+   аварійній кнопці (.sb-emergency.on .sb-badge-red). --red-text там 2,17 —
+   тому --danger; SURFACES білого не містить, пара стоїть окремо. */
+check(`--danger ${DANGER} на #fff (.sb-emergency.on .sb-badge-red)`, ratio(DANGER, WHITE), 4.5);
+console.log(`  ·  довідково: --red-text на #fff = ${f(ratio(RED_TEXT, WHITE))}, --red на #fff = ${f(ratio(RED, WHITE))} — обидва <4.5, тому на світлому лише --danger`);
+
 /* ── Статичний лінт ролей по самій вёрстці ───────────────────────────────────
    Чисел мало: у с23 ревʼю знайшло провал (.bd-room-kind.mrt), якого числа НЕ
    бачили, бо пари для замірів написані руками. Тому нижче — перевірки, що
@@ -220,6 +251,19 @@ const BG_BLUE = new RegExp(BG_PROP + BLUE_TOKEN);
 const BG_LINE = new RegExp(BG_PROP + String.raw`var\(\s*--blue-line\s*[,)]`);
 const BG_TEXT = new RegExp(BG_PROP + String.raw`var\(\s*--blue-text\s*[,)]`);
 const BG_STRONG = new RegExp(BG_PROP + String.raw`var\(\s*--border-strong\s*[,)]`);
+/* W-4: червоний як текст — лише --red-text. `color:` без префікса (border-color,
+   accent-color, background-color сюди не потрапляють — вони графіка). */
+const COLOR_RED = /(?<![-\w])color\s*:\s*(var\(\s*--red\s*[,)]|#ff453a)/;
+const COLOR_RED_LITERAL = /(?<![-\w])color\s*:\s*#ff8c84/;
+const BG_RED_TEXT = new RegExp(BG_PROP + String.raw`var\(\s*--red-text\s*[,)]`);
+const COLOR_DANGER = /(?<![-\w])color\s*:\s*var\(\s*--danger/;
+/* Білий текст на --red — 3,41; заливка під білий — лише --danger. */
+const WHITE_TEXT = /(?<![-\w])color\s*:\s*(#fff\b|#ffffff\b|white\b)/i;
+const BG_RED = new RegExp(BG_PROP + String.raw`var\(\s*--red\s*[,)]`);
+const BG_WHITE = /background(-color)?\s*:\s*(#fff\b|#ffffff\b|white\b)/i;
+/* Базове правило крапки непрочитаного: тексту в ній НЕМАЄ (гліф прихований), а
+   варіант із числом .rf-dot-num перебиває color на темний (пари вище). */
+const WHITE_ON_RED_OK = new Set([".rf-dot"]);
 /* Контур мусить бути САМЕ контуром: межа, inset-тінь або outline. Свічення
    `box-shadow: 0 0 10px` і `color: var(--blue-line)` контуром не рахуються. */
 const HAS_OUTLINE = new RegExp([
@@ -250,6 +294,24 @@ for (const rel of CSS_FILES) {
     }
     if (BG_STRONG.test(body) && !STRONG_FILL_OK.has(sel)) {
       lintFail(`${rel} · ${sel}: --border-strong як ЗАЛИВКА (#48484a — найсвітліша поверхня). Синій/помаранчевий текст на ній <4.5:1. Перевір текст і додай у STRONG_FILL_OK`);
+    }
+    if (COLOR_RED.test(body)) {
+      lintFail(`${rel} · ${sel}: color: var(--red) — 4.09:1 на --card, 3.48 на --red-bg. Червоний текст — лише var(--red-text)`);
+    }
+    if (COLOR_RED_LITERAL.test(body)) {
+      lintFail(`${rel} · ${sel}: color: #ff8c84 літералом — пиши var(--red-text)`);
+    }
+    if (BG_RED_TEXT.test(body)) {
+      lintFail(`${rel} · ${sel}: --red-text як заливка — це роль тексту, не фону (білий на ньому 2.2:1)`);
+    }
+    if (COLOR_DANGER.test(body) && !BG_WHITE.test(body)) {
+      lintFail(`${rel} · ${sel}: --danger як колір тексту — 2.85:1 на --card; це заливка під білий текст, а текст — var(--red-text) (на білій заливці — навпаки, --danger)`);
+    }
+    if (WHITE_TEXT.test(body) && BG_RED.test(body) && !WHITE_ON_RED_OK.has(sel)) {
+      lintFail(`${rel} · ${sel}: білий текст на заливці --red — 3.41:1. Заливка під білий текст — var(--danger)`);
+    }
+    if (BG_WHITE.test(body) && /(?<![-\w])color\s*:\s*var\(\s*--red(-text)?\s*[,)]/.test(body)) {
+      lintFail(`${rel} · ${sel}: --red/--red-text як текст на білому — 3.41 / 2.17. На білому — var(--danger)`);
     }
   }
 }
@@ -292,7 +354,43 @@ const TSX_BLUE_EXPECTED = {
   }
 }
 
-if (lintFails === 0) console.log("  ✅ ролі не переплутані: заливки з контуром, --blue-line лише під беззмістовними індикаторами, TSX без нових заливок");
+/* W-4, TSX: інлайновий `color: "var(--red)"` — та сама помилка, що в CSS; а
+   `var(--danger, #c0392b)` / `var(--accent, #3b82f6)` — фолбеки невизначених
+   токенів (2.56 і 3.79 на --card). Тепер токени визначені в :root, фолбеків
+   немає, і жоден не має зʼявитись знову. */
+{
+  /* Ключ властивості = останній `ідентифікатор:` перед значенням у тому ж рядку
+     (двокрапка тернарника стоїть після рядка-літерала, не після ідентифікатора),
+     тож `color: ok ? "…" : "var(--red)"` ловиться, а `borderColor: "var(--red)"` — ні. */
+  const redAsColor = (line) => {
+    let from = 0, i;
+    while ((i = line.indexOf('"var(--red)"', from)) >= 0) {
+      const keys = [...line.slice(0, i).matchAll(/\b([A-Za-z_]+)\s*:/g)];
+      if (keys.length && keys[keys.length - 1][1] === "color") return true;
+      from = i + 1;
+    }
+    return false;
+  };
+  const TSX_FALLBACK = /var\(--(danger|accent),\s*#/;
+  const TSX_RED_LITERAL = /"#ff8c84"|"#ff453a"/;
+  const walk2 = (dir) => {
+    for (const e of readdirSync(new URL(`../${dir}/`, import.meta.url), { withFileTypes: true })) {
+      const rel = `${dir}/${e.name}`;
+      if (e.isDirectory()) { if (e.name !== "node_modules" && e.name !== ".next") walk2(rel); continue; }
+      if (!e.name.endsWith(".tsx")) continue;
+      const src = readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
+      src.split("\n").forEach((line, i) => {
+        const clean = line.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/, "");
+        if (redAsColor(clean)) lintFail(`${rel}:${i + 1}: color: "var(--red)" в інлайновому стилі — червоний текст лише var(--red-text)`);
+        if (TSX_FALLBACK.test(clean)) lintFail(`${rel}:${i + 1}: фолбек var(--danger|--accent, #…) — токени визначені в :root, фолбек зайвий і хибний`);
+        if (TSX_RED_LITERAL.test(clean)) lintFail(`${rel}:${i + 1}: червоний літералом — пиши var(--red) (заливка) або var(--red-text) (текст)`);
+      });
+    }
+  };
+  walk2("components"); walk2("app");
+}
+
+if (lintFails === 0) console.log("  ✅ ролі не переплутані: заливки з контуром, --blue-line лише під беззмістовними індикаторами, червоний текст лише --red-text, TSX без нових заливок і фолбеків");
 
 head("ПІДСУМОК");
 console.log(fails === 0 ? "  ✅ усі пари проходять пороги WCAG 2.1 AA" : `  ❌ провалів: ${fails}`);

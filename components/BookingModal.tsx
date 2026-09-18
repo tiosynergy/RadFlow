@@ -4,7 +4,7 @@
    Портовано з queue-app.jsx (NewBookingModal + BookingCalendar + DobField).
    Кабінети беруться з БД (rooms), зайняті слоти — з Supabase (queue_entries). */
 
-import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode, useId } from "react";
 import { createClient } from "@/lib/supabase/client";
 import AddDoctorModal from "@/components/AddDoctorModal";
 import ConfirmDialog from "@/components/ConfirmDialog";
@@ -159,7 +159,10 @@ function parseDob(text: string): ParsedDob {
   return { ok: true, iso: yyyy + "-" + m[2] + "-" + m[1] };
 }
 
-export function DobField({ value, onChange, invalid }: { value: string; onChange: (v: string) => void; invalid?: boolean }) {
+export function DobField({ value, onChange, invalid, required }: { value: string; onChange: (v: string) => void; invalid?: boolean; required?: boolean }) {
+  /* W-7/W-10: імʼя поля — не placeholder «дд.мм.рррр»; помилка звʼязана через
+     aria-describedby, а не лише класом .bk-dob-inv. */
+  const errId = useId();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState(() => dobFmt(value));
   const [err, setErr] = useState("");
@@ -203,23 +206,24 @@ export function DobField({ value, onChange, invalid }: { value: string; onChange
     <div className="bk-dob">
       <div className="bk-dob-field">
         <input className={"inp bk-dob-input" + (err || invalid ? " bk-dob-inv" : "")} type="text" inputMode="numeric"
+          aria-label="Дата народження (дд.мм.рррр)" aria-required={required || undefined} aria-invalid={err ? true : undefined} aria-describedby={err ? errId : undefined}
           placeholder="дд.мм.рррр" value={text} maxLength={10} onChange={(e) => onType(e.target.value)} />
-        <button type="button" className={"bk-dob-ic-btn" + (open ? " open" : "")} onClick={openCal} title="Обрати в календарі">🗓</button>
+        <button type="button" className={"bk-dob-ic-btn" + (open ? " open" : "")} onClick={openCal} title="Обрати в календарі" aria-label="Обрати дату народження в календарі" aria-expanded={open}><span aria-hidden="true">🗓</span></button>
       </div>
-      {err && <span className="bk-dob-err">⚠ {err}</span>}
+      {err && <span className="bk-dob-err" id={errId} role="alert">⚠ {err}</span>}
       {open && (
         <>
           <div className="bk-dob-backdrop" onClick={() => setOpen(false)} />
           <div className="bk-dob-pop">
             <div className="cal-head">
               <div className="cal-nav">
-                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shiftYear(-1)} title="Попередній рік">«</button>
-                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць">‹</button>
+                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shiftYear(-1)} title="Попередній рік" aria-label="Попередній рік"><span aria-hidden="true">«</span></button>
+                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць" aria-label="Попередній місяць"><span aria-hidden="true">‹</span></button>
               </div>
               <span className="cal-month">{label}</span>
               <div className="cal-nav">
-                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць">›</button>
-                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shiftYear(1)} title="Наступний рік">»</button>
+                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць" aria-label="Наступний місяць"><span aria-hidden="true">›</span></button>
+                <button type="button" className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shiftYear(1)} title="Наступний рік" aria-label="Наступний рік"><span aria-hidden="true">»</span></button>
               </div>
             </div>
             <div className="cal-grid">
@@ -265,8 +269,8 @@ export function BookingCalendar({ value, onPick, today }: { value: Date; onPick:
       <div className="cal-head">
         <span className="cal-month">{label}</span>
         <div className="cal-nav">
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць">‹</button>
-          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць">›</button>
+          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(-1)} title="Попередній місяць" aria-label="Попередній місяць"><span aria-hidden="true">‹</span></button>
+          <button className="mini-icon" style={{ width: 24, height: 24 }} onClick={() => shift(1)} title="Наступний місяць" aria-label="Наступний місяць"><span aria-hidden="true">›</span></button>
         </div>
       </div>
       <div className="cal-grid">
@@ -955,6 +959,13 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
   const miss: Record<string, boolean> = { name: !softPatient && !name.trim(), dob: !softPatient && !dob, gender: !softPatient && !gender, phone: !softPatient && !phone.trim(), priority: !moveMode && !priority, region: !region, room: !roomId, time: !time, dur: !!region && dur < 5, exdur: validExtra.some((s) => (Number(s.dur) || 0) < 5), avail: !!availMiss };
   const MISS_LABELS: Record<string, string> = { name: "ПІБ", dob: "Дата народження", gender: "Стать", phone: "Телефон", priority: "Пріоритет", region: "Область дослідження", room: "Кабінет", time: "Слот часу", dur: "Тривалість (хв)", exdur: "Тривалість додаткових досліджень", avail: availMiss || "" };
   const missingList = Object.keys(MISS_LABELS).filter((k) => miss[k]).map((k) => MISS_LABELS[k]);
+  /* W-10 (с75): «Зберегти» вимкнена, доки список не порожній, тож із клавіатури
+     на неї не потрапиш, а в режимі огляду NVDA читає її опис — і саме туди
+     через aria-describedby іде підсумок «Залишилось: …» (коми — .rf-vh, як у
+     W-25, інакше чипи злипаються в одне слово). Підказка тривалості («час не
+     задано — введіть») стоїть УСЕРЕДИНІ <label>, тож уже входить в імʼя поля —
+     окремого describedby їй не треба (ревʼю с75: читалось би двічі). */
+  const missId = useId();
   // 0077: «поза графіком» — теж легальний вибір, тому НЕ timeBad. Але зберегти
   // його можна лише з галочкою підтвердження (offOk) — див. valid нижче.
   // 0106: КРОКИ КЕЙСА — лише в межах графіка (case-RPC пишуть off_schedule=false,
@@ -1232,19 +1243,19 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
 
             <label className="fld">
               <span className={"fld-lab" + (miss.name ? " bk-miss-lab" : "")}>ПІБ {!softPatient && <span className="req">*</span>}</span>
-              <input className="inp" placeholder="Прізвище Ім'я По батькові" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+              <input className="inp" placeholder="Прізвище Ім'я По батькові" aria-required={!softPatient || undefined} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
             </label>
 
             <div className="fld-row">
               <div className="fld" style={{ flex: "0 0 150px" }}>
                 <span className={"fld-lab" + (miss.dob ? " bk-miss-lab" : "")}>Дата народження {!softPatient && <span className="req">*</span>}</span>
-                <DobField value={dob} onChange={setDob} invalid={miss.dob} />
+                <DobField value={dob} onChange={setDob} invalid={miss.dob} required={!softPatient} />
               </div>
               <div className="fld" style={{ flex: "0 0 auto" }}>
                 <span className={"fld-lab" + (miss.gender ? " bk-miss-lab" : "")}>Стать {!softPatient && <span className="req">*</span>}</span>
-                <div className="bk-gender-row">
-                  <button className={"bk-gender-btn" + (gender === "М" ? " active" : "")} onClick={() => setGender("М")} title="Чоловіча">♂</button>
-                  <button className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} onClick={() => setGender("Ж")} title="Жіноча">♀</button>
+                <div className="bk-gender-row" role="group" aria-label={"Стать" + (softPatient ? "" : " (обовʼязково)")}>
+                  <button type="button" className={"bk-gender-btn" + (gender === "М" ? " active" : "")} aria-pressed={gender === "М"} aria-label="Чоловіча" onClick={() => setGender("М")} title="Чоловіча">♂</button>
+                  <button type="button" className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} aria-pressed={gender === "Ж"} aria-label="Жіноча" onClick={() => setGender("Ж")} title="Жіноча">♀</button>
                 </div>
               </div>
               <div className="fld" style={{ flex: "0 0 52px" }}>
@@ -1263,7 +1274,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
             <div className="fld-row">
               <label className="fld">
                 <span className={"fld-lab" + (miss.phone ? " bk-miss-lab" : "")}>Телефон {!softPatient && <span className="req">*</span>}</span>
-                <PhoneInput value={phone} onChange={setPhone} />
+                <PhoneInput value={phone} onChange={setPhone} required={!softPatient} />
               </label>
               <label className="fld">
                 <span className="fld-lab">Email</span>
@@ -1284,9 +1295,9 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
             <div className="bk-head-row">
               <div className="fld">
                 <span className="fld-lab">Тип <span className="req">*</span></span>
-                <div className="bk-seg" style={{ flexWrap: "wrap" }}>
+                <div className="bk-seg" style={{ flexWrap: "wrap" }} role="group" aria-label="Тип дослідження (обовʼязково)">
                   {availableModalities.map((code) => (
-                    <button key={code} className={"bk-seg-btn" + (studyType === code ? " active " + modalityKind(code) : "")} onClick={() => changeType(code)} title={modalityLabel(code)}>{modalityShort(code)}</button>
+                    <button key={code} type="button" className={"bk-seg-btn" + (studyType === code ? " active " + modalityKind(code) : "")} aria-pressed={studyType === code} aria-label={modalityLabel(code)} onClick={() => changeType(code)} title={modalityLabel(code)}>{modalityShort(code)}</button>
                   ))}
                 </div>
               </div>
@@ -1305,7 +1316,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                 пацієнта, де ця перевірка вже врахована в UI. */}
             <div className="fld">
               <span className={"fld-lab" + (miss.priority ? " bk-miss-lab" : "")}>Пріоритет пацієнта {!moveMode && <span className="req">*</span>}</span>
-              <div className="prio-seg" role={moveMode ? "group" : "radiogroup"} aria-label="Пріоритет пацієнта">
+              <div className="prio-seg" role={moveMode ? "group" : "radiogroup"} aria-label="Пріоритет пацієнта" aria-required={moveMode ? undefined : true}>
                 {PRIORITY_OPTIONS.map((pv) => {
                   const m = PRIORITY_META[pv];
                   if (moveMode && pv !== priority) return null;
@@ -1340,7 +1351,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
             <div className="fld-row" style={{ alignItems: "flex-start" }}>
               <label className="fld" style={{ flex: "1 1 auto" }}>
                 <span className={"fld-lab" + (miss.region ? " bk-miss-lab" : "")}>Область дослідження <span className="req">*</span></span>
-                <select className="inp" value={region} onChange={(e) => setRegion(e.target.value)}>
+                <select className="inp" aria-required={true} value={region} onChange={(e) => setRegion(e.target.value)}>
                   <option value="">— Оберіть область —</option>
                   {regions.map((r) => {
                     const pBump = contrast && !contrastFilters ? (r.contrastPrice ?? CONTRAST_SURCHARGE) : 0;
@@ -1372,6 +1383,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                 <span className="fld-lab">Тривалість <span className="req">*</span></span>
                 <div className="bk-dur-row">
                   <input className="inp bk-dur-input" type="number" min="5" step="5" placeholder="—"
+                    aria-required={true} aria-invalid={miss.dur && durEdit !== "" ? true : undefined}
                     value={durEdit} onChange={(e) => setDurEdit(e.target.value.replace(/\D/g, ""))} disabled={!region} />
                   <span className="bk-dur-unit">хв</span>
                 </div>
@@ -1425,7 +1437,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                             !hasRegion (ревʼю р1): опція «(поточне)» тоді
                             відрисована, але не обрана, і селект показував
                             «Оберіть область» на рядку, який уже їде в payload. */}
-                        <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
+                        <select className="inp" aria-label={"Додаткове дослідження " + (i + 1) + " — область"} value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
                           {!hasRegion && r.region && <option value={r.region}>{r.region} (поточне)</option>}
                           {regs.map((x) => {
@@ -1453,8 +1465,8 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                             aria-label={(rowFilters ? "Показати лише послуги з контрастуванням" : `Контраст: +${CONTRAST_DUR} хв і доплата`) + ` — дослідження ${i + 2}${r.region ? ": " + r.region : ""}`} />
                           <span className="rf-box" />
                         </label>
-                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
-                        <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
+                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" aria-label={"Додаткове дослідження " + (i + 1) + " — тривалість, хв"} aria-invalid={r.region && (Number(r.dur) || 0) < 5 ? true : undefined} value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
+                        <button type="button" className="st-row-del" title="Прибрати" aria-label={"Прибрати дослідження " + (i + 1)} onClick={() => exRemove(i)}><span aria-hidden="true">✕</span></button>
                       </div>
                     );
                   })}
@@ -1472,7 +1484,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
             <div className="fld">
               <span className="fld-lab">Лікар-направник</span>
               <div style={{ display: "flex", gap: 8 }}>
-                <select className="inp" value={doctorId} onChange={(e) => setDoctorId(e.target.value)} style={{ flex: 1 }}>
+                <select className="inp" aria-label="Лікар-направник" value={doctorId} onChange={(e) => setDoctorId(e.target.value)} style={{ flex: 1 }}>
                   <option value="">— Без направлення / самозвернення —</option>
                   {docs.map((d) => <option key={d.id} value={d.id}>{d.name}{d.spec ? " · " + d.spec : ""}</option>)}
                 </select>
@@ -1706,17 +1718,17 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                   onClick={() => (editing ? cancelEdit() : loadStepForEdit(i))}
                   title={editing ? "Редагується — натисніть, щоб вийти" : "Редагувати крок (час, дослідження, слот…)"}
                   style={{ cursor: "pointer", fontSize: "0.71875rem", padding: "2px 6px 2px 8px", borderRadius: 999,
-                    border: "1px solid " + (editing ? "var(--accent, #3b82f6)" : "var(--border)"),
-                    background: editing ? "color-mix(in srgb, var(--accent, #3b82f6) 14%, transparent)" : "transparent",
+                    border: "1px solid " + (editing ? "var(--accent)" : "var(--border)"),
+                    background: editing ? "color-mix(in srgb, var(--accent) 14%, transparent)" : "transparent",
                     display: "inline-flex", alignItems: "center", gap: 6 }}
                 >
                   <span style={{ fontSize: "0.625rem", opacity: 0.7 }}>{i + 1}</span>
                   {modalityLabel(rm?.modality || "")} · {rm?.name || "—"} · {s.time}–{fmtMin(toMin(s.time) + s.dur)}
                   <button
                     onClick={(e) => { e.stopPropagation(); setCaseSteps((arr) => arr.filter((_, j) => j !== i)); if (editIndex !== null) cancelEdit(); }}
-                    title="Прибрати крок"
+                    title="Прибрати крок" aria-label={"Прибрати крок " + (i + 1)}
                     style={{ cursor: "pointer", background: "none", border: "none", color: "var(--text-muted)", padding: 0, lineHeight: 1 }}
-                  >✕</button>
+                  ><span aria-hidden="true">✕</span></button>
                 </span>
               );
             })}
@@ -1730,10 +1742,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
               ? (
                 <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
                   <button className="btn btn-ghost btn-sm" disabled={saving} onClick={cancelEdit} title="Вийти з редагування без змін">Скасувати правку</button>
-                  <button className="btn btn-primary btn-sm" disabled={!valid || saving || needsOffConfirm} onClick={addStepToCase} title={needsOffConfirm ? "Кроки кейса — лише в межах графіка кабінету" : "Зберегти зміни в кроці"}>✓ Оновити крок {editIndex + 1}</button>
+                  <button className="btn btn-primary btn-sm" disabled={!valid || saving || needsOffConfirm} aria-describedby={valid ? undefined : missId} onClick={addStepToCase} title={needsOffConfirm ? "Кроки кейса — лише в межах графіка кабінету" : "Зберегти зміни в кроці"}>✓ Оновити крок {editIndex + 1}</button>
                 </span>
               )
-              : <button className="btn btn-ghost btn-sm" disabled={!valid || saving || roomInCase || needsOffConfirm} onClick={addStepToCase} style={{ marginLeft: "auto" }} title={roomInCase ? "Цей кабінет уже у кейсі — оберіть інший кабінет/модальність" : needsOffConfirm ? "Кроки кейса — лише в межах графіка кабінету" : "Додати поточний крок до кейса"}>＋ У кейс</button>}
+              : <button className="btn btn-ghost btn-sm" disabled={!valid || saving || roomInCase || needsOffConfirm} aria-describedby={valid ? undefined : missId} onClick={addStepToCase} style={{ marginLeft: "auto" }} title={roomInCase ? "Цей кабінет уже у кейсі — оберіть інший кабінет/модальність" : needsOffConfirm ? "Кроки кейса — лише в межах графіка кабінету" : "Додати поточний крок до кейса"}>＋ У кейс</button>}
             <button className="btn btn-primary btn-sm" disabled={!!dayStop || saving || (caseSteps.length + (editIndex === null && valid && !roomInCase ? 1 : 0)) < 2} onClick={createCaseNow} title={dayStop ? "Годинник центру уточнено — розберіть перенесення дати над кнопками" : "Кейс — щонайменше два кроки в різних кабінетах"}>
               Створити кейс ({caseSteps.length + (editIndex === null && valid && !roomInCase ? 1 : 0)})
             </button>
@@ -1776,13 +1788,13 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
         <div className="dlg-foot">
           {valid
             ? <span className="bk-summary">{name.split(" ").slice(0, 2).join(" ")} · {allStudies.length > 1 ? allStudies.length + " досл." : primaryKind} · {room ? room.name : ""} · {fmtShort(bookDate)} {time}–{fmtMin(toMin(time) + slotDur)}</span>
-            : <span className="bk-missing">{missingList.map((m, i) => <span className="bk-miss-chip" key={i}>{m}</span>)}</span>}
+            : <span className="bk-missing" id={missId}>{missingList.map((m, i) => <span className="bk-miss-chip" key={i}>{m}{i < missingList.length - 1 && <span className="rf-vh">, </span>}</span>)}</span>}
           <button className="btn btn-ghost" onClick={requestClose} disabled={saving}>Скасувати</button>
           {addMode
-            ? <button className="btn btn-primary" disabled={!valid || saving || roomInCase} onClick={handleAddCaseStep} title={roomInCase ? "Цей кабінет уже у кейсі — оберіть іншу модальність/кабінет" : "Додати крок до кейса"}>
+            ? <button className="btn btn-primary" disabled={!valid || saving || roomInCase} aria-describedby={valid ? undefined : missId} onClick={handleAddCaseStep} title={roomInCase ? "Цей кабінет уже у кейсі — оберіть іншу модальність/кабінет" : "Додати крок до кейса"}>
                 {saving ? "Додавання…" : "Додати крок до кейса"}
               </button>
-            : <button className="btn btn-primary" disabled={!!dayStop || !valid || saving || (moveMode && roomInCase)} onClick={handleSave}
+            : <button className="btn btn-primary" disabled={!!dayStop || !valid || saving || (moveMode && roomInCase)} aria-describedby={valid ? undefined : missId} onClick={handleSave}
                 title={dayStop ? "Годинник центру уточнено — розберіть перенесення дати вище" : moveMode && roomInCase ? "Цей кабінет уже зайнятий іншим кроком кейса — оберіть інший" : undefined}>
                 {saving ? "Збереження…" : moveMode ? "Перенести" : "Зберегти запис"}
               </button>}

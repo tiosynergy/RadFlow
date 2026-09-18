@@ -145,7 +145,7 @@ export default function QueuePolicySettings({ initial }: { initial: QueuePolicyI
           {saving ? "Зберігаємо…" : "Зберегти політику"}
         </button>
         {msg && (
-          <span style={{ fontSize: "0.8125rem", color: msg.ok ? "var(--green)" : "var(--red)" }}>{msg.text}</span>
+          <span style={{ fontSize: "0.8125rem", color: msg.ok ? "var(--green)" : "var(--red-text)" }}>{msg.text}</span>
         )}
       </div>
     </div>

@@ -49,6 +49,11 @@ export default function PhoneInput({
       disabled={disabled}
       autoFocus={autoFocus}
       className={className + (invalid && has ? " invalid" : "")}
+      /* W-10: обовʼязковість і помилка — атрибутами, а не лише класом.
+         aria-invalid лише коли Є введення (APG: порожнє обовʼязкове поле —
+         це aria-required, а не «недійсне»). */
+      aria-required={required || undefined}
+      aria-invalid={invalid && has ? true : undefined}
       placeholder={placeholder}
       value={value}
       style={style}

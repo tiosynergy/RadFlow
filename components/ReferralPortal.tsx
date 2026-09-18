@@ -927,13 +927,13 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
             <div className="fld-row">
               <div className="fld" style={{ flex: "0 0 150px" }}>
                 <span className={"fld-lab" + (miss.dob ? " bk-miss-lab" : "")}>Дата народження <span className="req">*</span></span>
-                <DobField value={dob} onChange={setDob} invalid={miss.dob} />
+                <DobField value={dob} onChange={setDob} invalid={miss.dob} required />
               </div>
               <div className="fld" style={{ flex: "0 0 auto" }}>
                 <span className={"fld-lab" + (miss.gender ? " bk-miss-lab" : "")}>Стать <span className="req">*</span></span>
                 <div className="bk-gender-row">
-                  <button className={"bk-gender-btn" + (gender === "М" ? " active" : "")} onClick={() => setGender("М")} title="Чоловіча">♂</button>
-                  <button className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} onClick={() => setGender("Ж")} title="Жіноча">♀</button>
+                  <button type="button" className={"bk-gender-btn" + (gender === "М" ? " active" : "")} aria-pressed={gender === "М"} aria-label="Чоловіча" onClick={() => setGender("М")} title="Чоловіча">♂</button>
+                  <button type="button" className={"bk-gender-btn" + (gender === "Ж" ? " active" : "")} aria-pressed={gender === "Ж"} aria-label="Жіноча" onClick={() => setGender("Ж")} title="Жіноча">♀</button>
                 </div>
               </div>
               <div className="fld" style={{ flex: "0 0 52px" }}>
@@ -967,9 +967,9 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
             <div className="bk-head-row">
               <div className="fld">
                 <span className="fld-lab">Тип <span className="req">*</span></span>
-                <div className="bk-seg">
+                <div className="bk-seg" role="group" aria-label="Тип дослідження (обовʼязково)">
                   {availableModalities.map((code) => (
-                    <button key={code} className={"bk-seg-btn" + (studyType === modalityLabel(code) ? " active " + modalityKind(code) : "")} onClick={() => changeType(modalityLabel(code))} title={modalityLabel(code)}>{modalityShort(code)}</button>
+                    <button key={code} type="button" className={"bk-seg-btn" + (studyType === modalityLabel(code) ? " active " + modalityKind(code) : "")} aria-pressed={studyType === modalityLabel(code)} aria-label={modalityLabel(code)} onClick={() => changeType(modalityLabel(code))} title={modalityLabel(code)}>{modalityShort(code)}</button>
                   ))}
                 </div>
               </div>
@@ -1094,7 +1094,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                         </div>
                         {/* value — сама область (ревʼю р1): при !hasRegion опція
                             «(поточне)» відрисована, але з "" не була б обрана. */}
-                        <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
+                        <select className="inp" aria-label={"Додаткове дослідження " + (i + 1) + " — область"} value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
                           {!hasRegion && r.region && <option value={r.region}>{r.region} (поточне)</option>}
                           {regs.map((x) => {
@@ -1118,8 +1118,8 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                             aria-label={(rowFilters ? "Показати лише послуги з контрастуванням" : `Контраст: +${CONTRAST_DUR} хв і доплата`) + ` — дослідження ${i + 2}${r.region ? ": " + r.region : ""}`} />
                           <span className="rf-box" />
                         </label>
-                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
-                        <button className="st-row-del" title="Прибрати" onClick={() => exRemove(i)}>✕</button>
+                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" aria-label={"Додаткове дослідження " + (i + 1) + " — тривалість, хв"} aria-invalid={r.region && (Number(r.dur) || 0) < 5 ? true : undefined} value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
+                        <button type="button" className="st-row-del" title="Прибрати" aria-label={"Прибрати дослідження " + (i + 1)} onClick={() => exRemove(i)}><span aria-hidden="true">✕</span></button>
                       </div>
                     );
                   })}
@@ -1321,8 +1321,8 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
             <span key={i} style={{ fontSize: "0.71875rem", padding: "2px 6px 2px 8px", borderRadius: 999, border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", gap: 6 }}>
               <span style={{ fontSize: "0.625rem", opacity: 0.7 }}>{i + 1}</span>
               {s.modality} · {s.roomName} · {s.time}–{fmt(toMin(s.time) + s.dur)}
-              <button onClick={() => { setCaseErr(null); setCaseSteps((arr) => arr.filter((_, j) => j !== i)); }} title="Прибрати крок"
-                style={{ cursor: "pointer", background: "none", border: "none", color: "var(--text-muted)", padding: 0, lineHeight: 1 }}>✕</button>
+              <button onClick={() => { setCaseErr(null); setCaseSteps((arr) => arr.filter((_, j) => j !== i)); }} title="Прибрати крок" aria-label={"Прибрати крок " + (i + 1)}
+                style={{ cursor: "pointer", background: "none", border: "none", color: "var(--text-muted)", padding: 0, lineHeight: 1 }}><span aria-hidden="true">✕</span></button>
             </span>
           ))}
           {roomInCase && (
@@ -1594,7 +1594,7 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
         <div style={card}>
           <div className="bk-section-label" style={{ marginTop: 0 }}>Додати центр</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <input className="inp" placeholder="Почніть вводити назву або місто центру…" value={q} autoComplete="off" onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
+            <input className="inp" placeholder="Почніть вводити назву або місто центру…" aria-label="Пошук центру за назвою або містом" value={q} autoComplete="off" onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
             <button className="btn btn-secondary" onClick={search} disabled={searching || q.trim().length < 2}>{searching ? "Пошук…" : "Знайти"}</button>
           </div>
           {q.trim().length >= 2 && (
@@ -1755,21 +1755,21 @@ function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m
   }
 
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20, maxWidth: 640, margin: "0 auto" };
-  const reqMark = <span style={{ color: "var(--red)" }}> *</span>;
+  const reqMark = <span style={{ color: "var(--red-text)" }}> *</span>;
   if (loading) return <div className="empty"><div className="et">Завантаження профілю…</div></div>;
   return (
     <div style={card}>
       <div className="bk-section-label" style={{ marginTop: 0 }}>Мій профіль</div>
       <div className="fld-row">
-        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Логін{reqMark}</span><input className="inp" value={form.login} onChange={(e) => setForm((f) => ({ ...f, login: e.target.value }))} /></label>
-        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>ПІБ{reqMark}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))} /></label>
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red-text)" }}>Логін{reqMark}</span><input className="inp" value={form.login} onChange={(e) => setForm((f) => ({ ...f, login: e.target.value }))} /></label>
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red-text)" }}>ПІБ{reqMark}</span><input className="inp" placeholder="Прізвище Імʼя По батькові" value={form.full_name} onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))} /></label>
       </div>
       <div className="fld-row">
-        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Телефон{reqMark}</span><PhoneInput required value={form.phone} onChange={(v) => setForm((f) => ({ ...f, phone: v }))} /></label>
-        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red)" }}>Email (для відновлення доступу){reqMark}</span><input className="inp" type="email" placeholder="name@example.com" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></label>
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red-text)" }}>Телефон{reqMark}</span><PhoneInput required value={form.phone} onChange={(v) => setForm((f) => ({ ...f, phone: v }))} /></label>
+        <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red-text)" }}>Email (для відновлення доступу){reqMark}</span><input className="inp" type="email" placeholder="name@example.com" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></label>
       </div>
       <div className="fld-row" style={{ alignItems: "flex-start" }}>
-        <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Місто</span><CitySelect value={form.city} onChange={(v) => setForm((f) => ({ ...f, city: v }))} /></label>
+        <div className="fld" style={{ flex: 1 }}><label className="fld-lab" htmlFor="rp-center-city">Місто</label><CitySelect id="rp-center-city" value={form.city} onChange={(v) => setForm((f) => ({ ...f, city: v }))} /></div>
         <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Примітки</span><AutoTextarea placeholder="напр. спеціалізація (необовʼязково)" value={form.note} onChange={(v) => setForm((f) => ({ ...f, note: v }))} /></label>
       </div>
       <div className="hint-blue">🔒 <b>Email бачите лише ви</b> — він потрібен для відновлення доступу й не видимий центрам. Логін, ПІБ, телефон, місто і примітки видно центрам, до яких ви підключені.</div>
@@ -1914,7 +1914,7 @@ function MyWaitlist({ entries, centersById, onOpenAdd, onEdit, onCancel, onResto
                 <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} title="Редагувати пацієнта/дослідження/вікно" onClick={() => onEdit(p)}>✎ Редагувати</button>
               )}
               {p.status === "waiting"
-                ? <button className="btn btn-secondary btn-sm" style={{ color: "var(--red)", flexShrink: 0 }} onClick={() => onCancel(p)}>✕ Зняти</button>
+                ? <button className="btn btn-secondary btn-sm" style={{ color: "var(--red-text)", flexShrink: 0 }} onClick={() => onCancel(p)}>✕ Зняти</button>
                 : (p.status === "cancelled" || p.status === "expired")
                   ? <button className="btn btn-secondary btn-sm" style={{ flexShrink: 0 }} onClick={() => onRestore(p)}>↩ Повернути</button>
                   : null}

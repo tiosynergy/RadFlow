@@ -383,7 +383,7 @@ export default function JournalScreen({
               </label>
 
               {entityId.trim() && !entityIdValid && (
-                <div className="es" id="jr-id-err" style={{ color: "var(--red)", flexBasis: "100%" }}>
+                <div className="es" id="jr-id-err" style={{ color: "var(--red-text)", flexBasis: "100%" }}>
                   ID має бути повним uuid — інакше фільтр не застосовується
                 </div>
               )}

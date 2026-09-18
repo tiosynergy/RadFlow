@@ -262,14 +262,14 @@ export default function Sidebar({
         <div className="sb-section">
           <div className="sb-label">Кабінети</div>
           <button type="button" onClick={() => onSelectRoom && onSelectRoom("all")}
-            className={"sb-item sb-cab-all" + (activeRoom === "all" ? " active" : "")} style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
+            className={"sb-item sb-cab-all" + (activeRoom === "all" ? " active" : "")} aria-pressed={activeRoom === "all"} style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">▦</span>
             <span className="sb-item-lab">Усі кабінети</span>
             <span className="sb-cab-count">{(rooms || []).length}</span>
           </button>
           {(rooms || []).map((r) => (
             <button type="button" key={r.id} onClick={() => onSelectRoom && onSelectRoom(r.id)}
-              className={"sb-cab" + (activeRoom === r.id ? " active" : "") + (stoppedRoomIds.includes(r.id) ? " stopped" : "")}
+              className={"sb-cab" + (activeRoom === r.id ? " active" : "") + (stoppedRoomIds.includes(r.id) ? " stopped" : "")} aria-pressed={activeRoom === r.id}
               title={stoppedRoomIds.includes(r.id) ? "Кабінет зупинено (простій)" : undefined}
               style={{ width: "100%", textAlign: "left", border: "none", cursor: "pointer" }}>
               <span className={"sb-cab-tile " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
@@ -291,7 +291,7 @@ export default function Sidebar({
               дошка черги — на решті це був клік у нікуди. Тепер — як onSlotsOverview
               /onEmergency: немає хендлера → немає пункту (не показуємо dead actions). */}
           <div className="sb-label">Швидкі дії</div>
-          <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span><UnreadDot markers={navUnread("queue")} withCount /></a>
+          <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")} aria-current={activeNav === "queue" ? "page" : undefined}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span><UnreadDot markers={navUnread("queue")} withCount /></a>
           {isAdmin && onSlotsOverview && <button type="button" onClick={onSlotsOverview} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">◫</span><span className="sb-item-lab">Зайнятість кабінету</span>
           </button>}
@@ -300,9 +300,9 @@ export default function Sidebar({
             <span className="sb-item-lab">Новий запис</span>
           </button>}
           {/* с22: універсальний пошук — історія і майбутні записи всіх ролей. */}
-          <a href="/search" className={"sb-item" + (activeNav === "search" ? " active" : "")}><span className="ic">⌕</span><span className="sb-item-lab">Пошук</span></a>
-          <a href="/call-list" className={"sb-item" + (activeNav === "calls" ? " active" : "")}><span className="ic">☎</span><span className="sb-item-lab">Колл-лист</span></a>
-          <a href="/waitlist" className={"sb-item" + (activeNav === "waitlist" ? " active" : "")}>
+          <a href="/search" className={"sb-item" + (activeNav === "search" ? " active" : "")} aria-current={activeNav === "search" ? "page" : undefined}><span className="ic">⌕</span><span className="sb-item-lab">Пошук</span></a>
+          <a href="/call-list" className={"sb-item" + (activeNav === "calls" ? " active" : "")} aria-current={activeNav === "calls" ? "page" : undefined}><span className="ic">☎</span><span className="sb-item-lab">Колл-лист</span></a>
+          <a href="/waitlist" className={"sb-item" + (activeNav === "waitlist" ? " active" : "")} aria-current={activeNav === "waitlist" ? "page" : undefined}>
             <span className="ic">⏳</span>
             <span className="sb-item-lab">Лист очікування</span>
             <UnreadDot markers={navUnread("waitlist")} withCount />
@@ -313,7 +313,7 @@ export default function Sidebar({
           {/* ?from= — щоб портал знав, куди повернути адміна. Значення звіряється
               зі списком маршрутів на сервері (lib/portalBack), тож підроблений
               параметр в адресному рядку просто дає /queue. */}
-          {isAdmin && <a href={"/referral?from=" + encodeURIComponent(pathname || "/queue")} className={"sb-item" + (activeNav === "ref" ? " active" : "")}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span><UnreadDot markers={navUnread("ref")} withCount /></a>}
+          {isAdmin && <a href={"/referral?from=" + encodeURIComponent(pathname || "/queue")} className={"sb-item" + (activeNav === "ref" ? " active" : "")} aria-current={activeNav === "ref" ? "page" : undefined}><span className="ic">📨</span><span className="sb-item-lab">Портал направлень</span><UnreadDot markers={navUnread("ref")} withCount /></a>}
           {onBreakdown && <button type="button" onClick={() => onBreakdown()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">⚠</span>
             <span className="sb-item-lab">Інциденти</span>
@@ -334,9 +334,9 @@ export default function Sidebar({
       </nav>
 
       <div className="sb-settings">
-        {showCeoLink && <a href="/ceo" className={"sb-item" + (activeNav === "ceo" ? " active" : "")}><span className="ic">📊</span><span className="sb-item-lab">Дашборд CEO</span></a>}
+        {showCeoLink && <a href="/ceo" className={"sb-item" + (activeNav === "ceo" ? " active" : "")} aria-current={activeNav === "ceo" ? "page" : undefined}><span className="ic">📊</span><span className="sb-item-lab">Дашборд CEO</span></a>}
         {/* с25: журнал важливих подій — лише адміністратор (ТЗ §11 / §9). */}
-        {isAdmin && <a href="/journal" className={"sb-item" + (activeNav === "journal" ? " active" : "")}><span className="ic">🗒</span><span className="sb-item-lab">Журнал дій</span></a>}
+        {isAdmin && <a href="/journal" className={"sb-item" + (activeNav === "journal" ? " active" : "")} aria-current={activeNav === "journal" ? "page" : undefined}><span className="ic">🗒</span><span className="sb-item-lab">Журнал дій</span></a>}
         {/* Крапка «centers» (доступи направників) — доріжка адміна до /referrers
             веде через майстер, прямого пункту в панелі немає (с28): без крапки
             тут позначка про зміну доступу була адміну просто невидимою. */}
@@ -352,7 +352,7 @@ export default function Sidebar({
           <div className="nm">{adminName || "Користувач"}</div>
           <div className="rl">{adminRole || "Адміністратор"}</div>
         </div>
-        <button className="icon-btn" title="Вийти" onClick={signOut}>⏻</button>
+        <button className="icon-btn" title="Вийти" aria-label="Вийти з системи" onClick={signOut}><span aria-hidden="true">⏻</span></button>
       </div>
     </NavDrawer>
   );

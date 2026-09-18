@@ -9,6 +9,7 @@
 import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import Toast from "@/components/Toast";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import BaseDialog from "@/components/BaseDialog";
 import { createClient } from "@/lib/supabase/client";
 import { isTechnicalEmail } from "@/lib/login";
 import { EMPTY_TOKENS, REISSUE_HINT, forgetToken, inviteHint, rememberToken, type FreshTokens } from "@/lib/inviteLink";
@@ -158,14 +159,23 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
   function setPassword(id: string) { setPwModal({ id, val: "", busy: false }); }
   async function submitPassword() {
     if (!pwModal || pwModal.val.length < 8) { notify("Пароль мінімум 8 символів", "error"); return; }
+    if (pwModal.busy) return;   // Enter у полі під час запиту — не другий POST
     setPwModal((m) => (m ? { ...m, busy: true } : m));
-    const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: pwModal.id, action: "set", password: pwModal.val }) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { notify(data.error || "Помилка", "error"); setPwModal((m) => (m ? { ...m, busy: false } : m)); return; }
-    setCeos((rs) => rs.map((r) => (r.id === pwModal.id ? { ...r, password_set: true } : r)));
-    setFreshTokens((m) => forgetToken(m, pwModal.id)); // токен погашено сервером — не показувати мертвий
-    notify("Пароль встановлено", "success");
-    setPwModal(null);
+    /* Ревʼю с75: без try/finally реджект fetch лишав busy=true назавжди, а
+       BaseDialog у busy глушить ✕/Esc/оверлей (див. StaffManager.submitPassword). */
+    try {
+      const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: pwModal.id, action: "set", password: pwModal.val }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { notify(data.error || "Помилка", "error"); return; }
+      setCeos((rs) => rs.map((r) => (r.id === pwModal.id ? { ...r, password_set: true } : r)));
+      setFreshTokens((m) => forgetToken(m, pwModal.id)); // токен погашено сервером — не показувати мертвий
+      notify("Пароль встановлено", "success");
+      setPwModal(null);
+    } catch {
+      notify("Не вдалося звʼязатися із сервером. Спробуйте ще раз.", "error");
+    } finally {
+      setPwModal((m) => (m ? { ...m, busy: false } : m));
+    }
   }
   function askRevoke(id: string, label: string | null) {
     setAsk({
@@ -263,7 +273,7 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
                   <button className="btn btn-secondary btn-sm" title="Задати пароль вручну" onClick={() => setPassword(r.id)}>Задати пароль</button>
                   <button className="btn btn-secondary btn-sm" title="Відкликати доступ до вашого центру" onClick={() => askRevoke(r.id, r.full_name || r.login)}>Відкликати</button>
                   {r.role === "ceo" && (
-                    <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити CEO-акаунт назавжди (лише якщо це єдиний центр)" onClick={() => askDeleteCeo(r.id, r.full_name || r.login)}>🗑</button>
+                    <button className="btn btn-secondary btn-sm qd-act-red" title="Видалити CEO-акаунт назавжди (лише якщо це єдиний центр)" aria-label={"Видалити CEO-акаунт назавжди — " + (r.full_name || r.login)} onClick={() => askDeleteCeo(r.id, r.full_name || r.login)}><span aria-hidden="true">🗑</span></button>
                   )}
                 </div>
                 {(() => {
@@ -295,22 +305,21 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
       </div>
 
       {pwModal && (
-        <div className="overlay" onClick={() => !pwModal.busy && setPwModal(null)}>
-          <div className="dialog fade-in" style={{ maxWidth: 380 }} onClick={(e) => e.stopPropagation()}>
-            <div className="dlg-head"><div className="dlg-title">Задати пароль</div><button className="icon-btn" aria-label="Закрити" onClick={() => setPwModal(null)}>✕</button></div>
+        /* W-9 (с75): каркас BaseDialog — role="dialog", пастка фокуса, Esc,
+           повернення фокуса на «Задати пароль» після закриття. */
+        <BaseDialog title="Задати пароль" maxWidth={380} busy={pwModal.busy} onClose={() => setPwModal(null)}>
             <div className="dlg-body">
               <label className="fld" style={{ marginBottom: 0 }}><span className="fld-lab">Новий пароль (мінімум 8 символів)</span>
-                <input className="inp" type="password" autoFocus value={pwModal.val}
+                <input className="inp" type="password" autoFocus value={pwModal.val} aria-required={true} autoComplete="new-password"
                   onChange={(e) => setPwModal((m) => (m ? { ...m, val: e.target.value } : m))}
                   onKeyDown={(e) => { if (e.key === "Enter") submitPassword(); }} placeholder="Пароль" />
               </label>
             </div>
             <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button className="btn btn-ghost" onClick={() => setPwModal(null)}>Скасувати</button>
+              <button className="btn btn-ghost" onClick={() => setPwModal(null)} disabled={pwModal.busy}>Скасувати</button>
               <button className="btn btn-primary" disabled={pwModal.busy || pwModal.val.length < 8} onClick={submitPassword}>{pwModal.busy ? "Зберігаємо…" : "Встановити"}</button>
             </div>
-          </div>
-        </div>
+        </BaseDialog>
       )}
       {ask && (
         <ConfirmDialog

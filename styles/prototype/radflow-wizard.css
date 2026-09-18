@@ -191,7 +191,7 @@
 .eq-break-tag { flex: 0 0 auto; font-size: 0.6875rem; font-weight: 600; color: var(--text-secondary); }
 .eq-break-add { align-self: flex-start; }
 .eq-break-row.has-err { flex-wrap: wrap; }
-.eq-break-err { flex-basis: 100%; font-size: 0.6875rem; color: var(--red); margin: 1px 0 2px; }
+.eq-break-err { flex-basis: 100%; font-size: 0.6875rem; color: var(--red-text); margin: 1px 0 2px; }
 
 /* Перемикач «свій час для кожного дня» */
 .eq-perday-lab { display: flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); cursor: pointer; margin-top: 2px; }
@@ -212,12 +212,12 @@
 }
 
 /* F1 — required fields, validation, disabled CTA */
-.req { color: var(--red); margin-left: 2px; font-weight: 700; }
+.req { color: var(--red-text); margin-left: 2px; font-weight: 700; }
 /* Назви обов'язкових полів — того ж червоного кольору, що й зірочка «*» */
-.fld-lab:has(.req), .sec-label:has(.req) { color: var(--red); }
+.fld-lab:has(.req), .sec-label:has(.req) { color: var(--red-text); }
 .fld-hint { display: block; font-size: 0.71875rem; color: var(--text-faint); margin-top: 5px; }
 .inp.invalid { border-color: var(--red); }
-.field-err { color: var(--red); font-size: 0.78125rem; margin: 4px 0 2px; }
+.field-err { color: var(--red-text); font-size: 0.78125rem; margin: 4px 0 2px; }
 .btn:disabled, .btn-primary:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
 
 /* --- 0078 «Управління чергою»: вибір стратегії при затримці ---
@@ -264,7 +264,7 @@
 .demo-link { font-size: 0.75rem; color: var(--text-faint); }
 .demo-link:hover { color: var(--text-muted); text-decoration: underline; }
 .error-card { border-color: rgba(255,69,58,0.4); }
-.err-ic { font-size: 2.125rem; color: var(--red); }
+.err-ic { font-size: 2.125rem; color: var(--red-text); }
 .err-actions { display: flex; gap: 10px; justify-content: center; margin-top: 16px; }
 
 /* F9 — delete icon on equipment card */

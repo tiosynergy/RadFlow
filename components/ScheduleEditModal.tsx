@@ -159,15 +159,15 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
                     </div>
                     <div className="sch-room-ctl">
                       <div className="bk-seg bk-seg-sm">
-                        <button className={"bk-seg-btn" + (st.mode === "open" ? " active" : "")} onClick={() => setRoom(r.id, { mode: "open" })}>Працює</button>
-                        <button className={"bk-seg-btn" + (st.mode === "custom" ? " active" : "")} onClick={() => setRoom(r.id, { mode: "custom" })}>Інші години</button>
-                        <button className={"bk-seg-btn" + (st.mode === "closed" ? " active" : "")} onClick={() => setRoom(r.id, { mode: "closed" })}>Зачинено</button>
+                        <button type="button" className={"bk-seg-btn" + (st.mode === "open" ? " active" : "")} aria-pressed={st.mode === "open"} onClick={() => setRoom(r.id, { mode: "open" })}>Працює</button>
+                        <button type="button" className={"bk-seg-btn" + (st.mode === "custom" ? " active" : "")} aria-pressed={st.mode === "custom"} onClick={() => setRoom(r.id, { mode: "custom" })}>Інші години</button>
+                        <button type="button" className={"bk-seg-btn" + (st.mode === "closed" ? " active" : "")} aria-pressed={st.mode === "closed"} onClick={() => setRoom(r.id, { mode: "closed" })}>Зачинено</button>
                       </div>
                       {st.mode === "custom" && (
                         <div className="sch-hours">
-                          <input className="inp tabular" type="time" value={st.start} onChange={(e) => setRoom(r.id, { start: e.target.value })} />
+                          <input className="inp tabular" type="time" aria-label={"Початок роботи — " + r.name} value={st.start} onChange={(e) => setRoom(r.id, { start: e.target.value })} />
                           <span className="sch-dash">–</span>
-                          <input className="inp tabular" type="time" value={st.end} onChange={(e) => setRoom(r.id, { end: e.target.value })} />
+                          <input className="inp tabular" type="time" aria-label={"Кінець роботи — " + r.name} value={st.end} onChange={(e) => setRoom(r.id, { end: e.target.value })} />
                         </div>
                       )}
                       {st.mode === "custom" && (
@@ -177,10 +177,10 @@ export default function ScheduleEditModal({ date, rooms, existing, entries, onCl
                             const bad = !(b.start && b.end && b.start < b.end);
                             return (
                               <div className="sch-break-row" key={i}>
-                                <input className={"inp tabular" + (bad ? " invalid" : "")} type="time" value={b.start} onChange={(e) => setBreak(r.id, i, { start: e.target.value })} />
+                                <input className={"inp tabular" + (bad ? " invalid" : "")} type="time" aria-label={"Перерва " + (i + 1) + ", початок — " + r.name} aria-invalid={bad ? true : undefined} value={b.start} onChange={(e) => setBreak(r.id, i, { start: e.target.value })} />
                                 <span className="sch-dash">–</span>
-                                <input className={"inp tabular" + (bad ? " invalid" : "")} type="time" value={b.end} onChange={(e) => setBreak(r.id, i, { end: e.target.value })} />
-                                <button type="button" className="icon-btn sch-break-del" onClick={() => delBreak(r.id, i)} title="Прибрати перерву">✕</button>
+                                <input className={"inp tabular" + (bad ? " invalid" : "")} type="time" aria-label={"Перерва " + (i + 1) + ", кінець — " + r.name} aria-invalid={bad ? true : undefined} value={b.end} onChange={(e) => setBreak(r.id, i, { end: e.target.value })} />
+                                <button type="button" className="icon-btn sch-break-del" onClick={() => delBreak(r.id, i)} title="Прибрати перерву" aria-label={"Прибрати перерву " + (i + 1) + " — " + r.name}><span aria-hidden="true">✕</span></button>
                               </div>
                             );
                           })}

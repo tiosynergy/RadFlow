@@ -373,6 +373,16 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
 
                 {/* Результаты */}
                 <div style={{ marginTop: 14 }}>
+                  {/* W-12 (с75): стан пошуку для скрінрідера — постійний прихований
+                      live-регіон (сам стан малюється блоками нижче, які зʼявляються й
+                      зникають, а такі вставки ридер не озвучує). */}
+                  <div className="rf-vh" role="status" aria-live="polite">
+                    {st.kind === "loading" ? "Виконуємо пошук…"
+                      : st.kind === "error" ? "Пошук не виконано: " + st.msg
+                      : st.kind === "hint" ? st.msg
+                      : st.kind === "ready" ? (st.items.length === 0 ? "Нічого не знайдено" : "Знайдено записів: " + st.items.length + (st.hasMore ? ", є ще" : ""))
+                      : ""}
+                  </div>
                   {st.kind === "idle" && (
                     <div className="empty">
                       <div className="ei" aria-hidden="true">⌕</div>
@@ -417,8 +427,8 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                               <div style={{ flex: "2 1 220px", minWidth: 0 }}>
                                 <div style={{ fontWeight: 600 }}>
                                   {it.patientName}
-                                  {it.caseId && <span title="Повʼязано з кейсом" aria-label="Кейс" style={{ marginLeft: 6 }}>🔗</span>}
-                                  {it.priority !== "planned" && <span style={{ marginLeft: 8, color: it.priority === "cito" ? "#ff8c84" : "var(--orange)", fontSize: "0.85em" }}>{PRIO[it.priority]}</span>}
+                                  {it.caseId && <span role="img" title="Повʼязано з кейсом" aria-label="Повʼязано з кейсом" style={{ marginLeft: 6 }}>🔗</span>}
+                                  {it.priority !== "planned" && <span style={{ marginLeft: 8, color: it.priority === "cito" ? "var(--red-text)" : "var(--orange)", fontSize: "0.85em" }}>{PRIO[it.priority]}</span>}
                                 </div>
                                 {showPhone && it.patientPhone && <div style={{ color: "var(--text-muted)", fontSize: "0.9em" }}>{it.patientPhone}</div>}
                               </div>

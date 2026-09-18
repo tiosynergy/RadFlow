@@ -7,6 +7,9 @@ import { modalityLabel } from "@/lib/studies";
 import type { QueueDelayPolicy } from "@/supabase/types";
 import type { QueuePolicyInitial } from "@/components/QueuePolicySettings";
 
+/* W-17 (WCAG 2.4.2): у кожної сторінки своя назва вкладки — до цього всі звались «RadFlow». */
+export const metadata = { title: "Майстер налаштування — RadFlow" };
+
 export default async function SetupPage() {
   const supabase = await createClient();
   const {

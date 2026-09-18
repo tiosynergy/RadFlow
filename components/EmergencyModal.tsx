@@ -51,7 +51,7 @@ export default function EmergencyModal({ rooms = [], stoppedRoomIds = [], affect
     <div className="overlay">
       <div className="dialog fade-in" style={{ maxWidth: 560 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Аварійна зупинка">
         <div className="dlg-head">
-          <div className="dlg-title"><span className="tic" style={{ background: "var(--red-bg)", color: "var(--red)" }}>🛑</span>Аварійна зупинка</div>
+          <div className="dlg-title"><span className="tic" style={{ background: "var(--red-bg)", color: "var(--red-text)" }}>🛑</span>Аварійна зупинка</div>
           <button className="icon-btn" onClick={onClose} aria-label="Закрити">✕</button>
         </div>
         <div className="dlg-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -67,7 +67,7 @@ export default function EmergencyModal({ rooms = [], stoppedRoomIds = [], affect
                   <button key={r.id} className={"bd-room" + (isResumeSel(r.id) ? " active" : "")} onClick={() => toggleResume(r.id)}
                     aria-pressed={isResumeSel(r.id)} title={"Відновити " + r.name}>
                     <span className={"bd-room-kind " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
-                    <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model" style={{ color: "var(--red)" }}>🛑 зупинено</span></span>
+                    <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model" style={{ color: "var(--red-text)" }}>🛑 зупинено</span></span>
                   </button>
                 ))}
               </div>
