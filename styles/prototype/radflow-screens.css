@@ -28,8 +28,13 @@
 .clhead, .clrow {
   display: grid;
   /* W-3 (с75): колонка «Статус» несе гліф + текст (.cl-status), а не один ☎ —
-     126px замість 102px, різницю віддала колонка процедури (1.9fr → 1.75fr). */
-  grid-template-columns: 28px 50px 1.35fr 116px 1.75fr 58px 126px 1.1fr 88px;
+     126px замість 102px, різницю віддала колонка процедури (1.9fr → 1.75fr).
+     Жива сесія 18.09 (с75, NVDA): колонка «Кабінет» 58px була під короткий код,
+     а .cl-room мав `nowrap` без обрізання — назва кабінету з моделлю апарата
+     («Кабінет УЗД» / «FujiFilm Arietta 750VE») вилазила під бейдж статусу; поки
+     сусідом був один ☎, цього не було видно. Тепер minmax(96px, .75fr) із
+     переносом рядків; різницю віддала процедура (1.75fr → 1.5fr), у неї ellipsis. */
+  grid-template-columns: 28px 50px 1.35fr 116px 1.5fr minmax(96px, 0.75fr) 126px 1.1fr 88px;
   gap: 10px; align-items: center;
 }
 .clhead { padding: 6px 16px; font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); }
@@ -59,7 +64,9 @@
 .tel { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8125rem; color: var(--blue-text); text-decoration: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tel:hover { text-decoration: underline; }
 .cl-proc { font-size: 0.78125rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cl-room { font-size: 0.78125rem; color: var(--text-muted); white-space: nowrap; }
+/* Перенос, а не nowrap: текст лишається в колонці й не лягає під «Статус»
+   (див. коментар до grid-template-columns). Модель апарата — другим рядком. */
+.cl-room { font-size: 0.78125rem; color: var(--text-muted); white-space: normal; overflow-wrap: break-word; line-height: 1.25; }
 .note-input {
   background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 7px;
   padding: 6px 10px; font-size: 0.78125rem; color: var(--text-secondary); width: 100%; min-width: 0;

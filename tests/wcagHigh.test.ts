@@ -92,8 +92,19 @@ describe("W-3 — статус дзвінка в колл-листі: гліф +
   });
   it("колонка «Статус» розширена під текст (126px), бейдж переноситься, червоний читається", () => {
     const c = css("styles/prototype/radflow-screens.css");
-    expect(c).toContain("grid-template-columns: 28px 50px 1.35fr 116px 1.75fr 58px 126px 1.1fr 88px;");
+    expect(c).toContain("grid-template-columns: 28px 50px 1.35fr 116px 1.5fr minmax(96px, 0.75fr) 126px 1.1fr 88px;");
     expect(c).toMatch(/\.cl-status \{[^}]*font-size: 0\.6875rem;[^}]*white-space: normal;/);
     expect(c).toContain(".cl-status.red { color: #ff8c84; }");
+  });
+  /* Жива сесія 18.09 (с75): «Кабінет УЗД / FujiFilm Arietta 750VE» лягав під бейдж
+     статусу — колонка 58px і .cl-room з nowrap без обрізання. Пін: колонка має
+     мінімум, а комірка переносить рядки, а не вилазить за межі. */
+  it("колонка «Кабінет» має мінімальну ширину, а .cl-room переносить текст (не nowrap)", () => {
+    const c = css("styles/prototype/radflow-screens.css");
+    const room = c.match(/\.cl-room \{([^}]*)\}/);
+    expect(room).not.toBeNull();
+    expect(room![1]).toContain("white-space: normal;");
+    expect(room![1]).not.toContain("nowrap");
+    expect(c).not.toMatch(/grid-template-columns:[^;]*\b58px\b[^;]*126px/);
   });
 });
