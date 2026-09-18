@@ -557,7 +557,7 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
               </div>
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
-                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
+                <input placeholder="Пошук…" aria-label="Пошук у листі очікування" value={query} onChange={(e) => setQuery(nextPhoneSearchValue(query, e.target.value))} />
               </div>
             </div>
 

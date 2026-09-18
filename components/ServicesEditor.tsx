@@ -61,7 +61,7 @@ function draftToInput(d: Draft, modality: BookableModality, active = true): Serv
 function DraftFields({ d, setD }: { d: Draft; setD: (f: (p: Draft) => Draft) => void }) {
   return (
     <>
-      <input className="inp" style={{ flex: "1 1 260px", minWidth: 200 }} placeholder="Назва послуги (область дослідження)"
+      <input className="inp" style={{ flex: "1 1 260px", minWidth: 200 }} placeholder="Назва послуги (область дослідження)" aria-label="Назва послуги (область дослідження)"
         value={d.name} onChange={(e) => setD((p) => ({ ...p, name: e.target.value }))} />
       <label className="fld-lab" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
         Тривалість
@@ -530,7 +530,7 @@ export default function ServicesEditor({ services, rooms, roomOverrides, embedde
       <div className="qctrl">
         <div className="spacer" />
         <div className="search"><span className="si">⌕</span>
-          <input placeholder="Пошук послуги…" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <input placeholder="Пошук послуги…" aria-label="Пошук послуги" value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
         <span className="svc-toolbar">
           {scope === "base" && (

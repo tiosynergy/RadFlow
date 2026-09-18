@@ -135,7 +135,7 @@ function CallRow({ p, roomName, roomModel, expanded, onToggle, onSet, onNote, on
         <div className="cl-room">{roomName}{roomModel ? <div style={{ fontSize: "0.6875rem", color: "var(--text-muted)" }}>{roomModel}</div> : null}</div>
         <div className="cl-status-cell"><StatusBadge status={p.call_status} /></div>
         <div className="cl-note-cell">
-          <input key={p.id + ":" + (p.call_note || "")} className="note-input" placeholder="Нотатка…" defaultValue={p.call_note || ""} onBlur={(e) => onNote(p.id, e.target.value)} />
+          <input key={p.id + ":" + (p.call_note || "")} className="note-input" placeholder="Нотатка…" aria-label={"Нотатка до дзвінка — " + p.patient_name} defaultValue={p.call_note || ""} onBlur={(e) => onNote(p.id, e.target.value)} />
         </div>
         <div className="cl-actions">
           {p.call_status === "confirmed" ? (
@@ -805,7 +805,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
           </div>
           <div className="tb-right">
             {/* Ручна зміна дня гасить банер сама: оператор бачить, що робить. */}
-            <input className="inp tabular" type="date" value={dayKey} onChange={(e) => { const [y, m, d] = e.target.value.split("-").map(Number); setDate(new Date(y, m - 1, d)); setDayShifted(null); }} style={{ width: 150 }} />
+            <input className="inp tabular" type="date" aria-label="День обдзвону" value={dayKey} onChange={(e) => { const [y, m, d] = e.target.value.split("-").map(Number); setDate(new Date(y, m - 1, d)); setDayShifted(null); }} style={{ width: 150 }} />
             <button className="btn btn-secondary" disabled={loading} onClick={exportCsv} title={loading ? "Зачекайте — список цього дня ще вантажиться" : "Вивантажити видимий день у CSV"}>↧ Експорт</button>
             {/* ⚠️ F2: доки перенесення дня не підтверджено людиною, НЕЗВОРОТНА
                 масова дія недоступна — це пара до банера нижче і прямий аналог
@@ -950,7 +950,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
                 {/* с22 (ревью HIGH-1): ввід не канонізуємо — цифровий матчинг quickSearchMatch. */}
-                <input placeholder="Пошук…" value={query} onChange={(e) => setQuery(e.target.value)} />
+                <input placeholder="Пошук…" aria-label="Пошук у колл-листі" value={query} onChange={(e) => setQuery(e.target.value)} />
               </div>
             </div>
 

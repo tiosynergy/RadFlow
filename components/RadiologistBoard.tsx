@@ -1523,7 +1523,7 @@ export default function RadiologistBoard({ clinicId, clinicTz, rooms, residualRo
               <div className="spacer" />
               <div className="search"><span className="si">⌕</span>
                 {/* с22 (ревью HIGH-1): ввід не канонізуємо — цифровий матчинг quickSearchMatch. */}
-                <input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} />
+                <input placeholder="Пошук пацієнта…" aria-label="Пошук пацієнта в черзі" value={query} onChange={(e) => setQuery(e.target.value)} />
               </div>
             </div>
 

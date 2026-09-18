@@ -90,6 +90,7 @@ export default function StudySearchBox({ sources, onPick, clinicNameOf, roomName
         aria-controls={listId}
         aria-activedescendant={open && hits[idx] ? listId + "-o" + idx : undefined}
         aria-autocomplete="list"
+        aria-label={placeholder || "Пошук дослідження за назвою…"}
         value={q}
         placeholder={placeholder || "Пошук дослідження за назвою…"}
         onChange={(e) => { setQ(e.target.value); setOpen(true); }}

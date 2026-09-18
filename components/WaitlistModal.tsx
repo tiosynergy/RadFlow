@@ -548,11 +548,11 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
                       <div className="bk-seg bk-seg-sm st-seg-locked" title="Тип = тип основного дослідження">
                         <button className={"bk-seg-btn active " + modalityKind(studyType)} disabled>{modalityShort(studyType)}</button>
                       </div>
-                      <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
+                      <select className="inp" aria-label={"Додаткове дослідження " + (i + 1) + " — область"} value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                         <option value="">— Оберіть область —</option>
                         {regs.map((x) => <option key={x.label} value={x.label}>{x.label} · {x.dur == null ? "—" : x.dur + " хв"}{x.price > 0 ? " · " + fmtUah(x.price) : ""}</option>)}
                       </select>
-                      <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
+                      <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" aria-label={"Додаткове дослідження " + (i + 1) + " — тривалість, хв"} aria-invalid={r.region && (Number(r.dur) || 0) < 5 ? true : undefined} value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
                       <button type="button" className="st-row-del" title="Прибрати" aria-label={"Прибрати дослідження " + (i + 1)} onClick={() => exRemove(i)}><span aria-hidden="true">✕</span></button>
                     </div>
                   );

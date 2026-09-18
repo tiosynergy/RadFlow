@@ -2916,7 +2916,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
               {/* с22 (ревью HIGH-1): ввід НЕ канонізуємо — formatPhoneSearch зрізав
                   ведучі цифри і вбивав пошук за серединою/останніми цифрами номера.
                   Матчинг тепер цифровий (quickSearchMatch), формат вводу не важливий. */}
-              <input ref={searchRef} placeholder="Пошук пацієнта… ( / )" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <input ref={searchRef} placeholder="Пошук пацієнта… ( / )" aria-label="Пошук пацієнта в черзі" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
             {/* P3 discoverability: видима точка входу в довідку хоткеїв (клавіша «?»). */}
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => setHelpOpen(true)} title="Гарячі клавіші (?)" aria-label="Гарячі клавіші" style={{ flexShrink: 0 }}>⌨ ?</button>

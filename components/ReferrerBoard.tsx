@@ -249,7 +249,7 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
         )}
         <div className="spacer" />
         {/* с22 (ревью HIGH-1): ввід не канонізуємо — цифровий матчинг quickSearchMatch. */}
-        <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
+        <div className="search"><span className="si">⌕</span><input placeholder="Пошук пацієнта…" aria-label="Пошук пацієнта серед направлених" value={query} onChange={(e) => setQuery(e.target.value)} /></div>
       </div>
 
       {filtered.length === 0 ? (

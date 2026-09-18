@@ -927,7 +927,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
             <div className="fld-row">
               <div className="fld" style={{ flex: "0 0 150px" }}>
                 <span className={"fld-lab" + (miss.dob ? " bk-miss-lab" : "")}>Дата народження <span className="req">*</span></span>
-                <DobField value={dob} onChange={setDob} invalid={miss.dob} />
+                <DobField value={dob} onChange={setDob} invalid={miss.dob} required />
               </div>
               <div className="fld" style={{ flex: "0 0 auto" }}>
                 <span className={"fld-lab" + (miss.gender ? " bk-miss-lab" : "")}>Стать <span className="req">*</span></span>
@@ -1094,7 +1094,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                         </div>
                         {/* value — сама область (ревʼю р1): при !hasRegion опція
                             «(поточне)» відрисована, але з "" не була б обрана. */}
-                        <select className="inp" value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
+                        <select className="inp" aria-label={"Додаткове дослідження " + (i + 1) + " — область"} value={r.region} onChange={(e) => exSetRegion(i, e.target.value)}>
                           <option value="">— Оберіть область —</option>
                           {!hasRegion && r.region && <option value={r.region}>{r.region} (поточне)</option>}
                           {regs.map((x) => {
@@ -1118,7 +1118,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
                             aria-label={(rowFilters ? "Показати лише послуги з контрастуванням" : `Контраст: +${CONTRAST_DUR} хв і доплата`) + ` — дослідження ${i + 2}${r.region ? ": " + r.region : ""}`} />
                           <span className="rf-box" />
                         </label>
-                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
+                        <div className="bk-study-dur"><input className="inp" type="number" min="5" step="5" aria-label={"Додаткове дослідження " + (i + 1) + " — тривалість, хв"} aria-invalid={r.region && (Number(r.dur) || 0) < 5 ? true : undefined} value={r.region ? (r.dur || "") : ""} placeholder="—" disabled={!r.region} title={r.region ? "" : "Спершу оберіть область"} onChange={(e) => exSetDur(i, e.target.value)} onBlur={() => exBlurDur(i)} /><span className="st-dur-u">хв</span></div>
                         <button type="button" className="st-row-del" title="Прибрати" aria-label={"Прибрати дослідження " + (i + 1)} onClick={() => exRemove(i)}><span aria-hidden="true">✕</span></button>
                       </div>
                     );
@@ -1594,7 +1594,7 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
         <div style={card}>
           <div className="bk-section-label" style={{ marginTop: 0 }}>Додати центр</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <input className="inp" placeholder="Почніть вводити назву або місто центру…" value={q} autoComplete="off" onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
+            <input className="inp" placeholder="Почніть вводити назву або місто центру…" aria-label="Пошук центру за назвою або містом" value={q} autoComplete="off" onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
             <button className="btn btn-secondary" onClick={search} disabled={searching || q.trim().length < 2}>{searching ? "Пошук…" : "Знайти"}</button>
           </div>
           {q.trim().length >= 2 && (

@@ -143,6 +143,7 @@ function ContactList({ label, items, setItems, type, ph, required }: {
         return (
         <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
           <input className={"inp" + ((empty && i === 0) || badPhone ? " invalid" : "")} type={isPhone ? "tel" : "email"} inputMode={isPhone ? "tel" : undefined} placeholder={ph} value={v}
+            aria-label={label + (items.length > 1 ? " " + (i + 1) : "")} aria-required={required && i === 0 ? true : undefined} aria-invalid={badPhone ? true : undefined}
             onChange={(e) => upd(i, isPhone ? formatPhoneUA(e.target.value) : e.target.value)} />
           <button className="mini-icon" type="button" title={"Видалити " + noun} aria-label={"Видалити " + noun} onClick={() => del(i)}><span aria-hidden="true">✕</span></button>
         </div>
@@ -441,7 +442,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
       <div className="form-card reg-card">
         <div className="fld-row">
           <label className="fld"><span className="fld-lab">Назва клініки <Req /></span>
-            <input className={"inp" + (clinic.trim() ? "" : " invalid")} value={clinic} onChange={(e) => setClinic(e.target.value)} /></label>
+            <input className={"inp" + (clinic.trim() ? "" : " invalid")} aria-required={true} value={clinic} onChange={(e) => setClinic(e.target.value)} /></label>
           <span className="fld-spacer" />
         </div>
         <div className="fld-row">
@@ -476,7 +477,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
         <div className="fld-row">
           <label className="fld">
             <span className="fld-lab">ПІБ адміністратора <Req /></span>
-            <input className={"inp" + (adminName.trim() ? "" : " invalid")} placeholder="Прізвище Ім'я По батькові" value={adminName} onChange={(e) => setAdminName(e.target.value)} />
+            <input className={"inp" + (adminName.trim() ? "" : " invalid")} aria-required={true} placeholder="Прізвище Ім'я По батькові" value={adminName} onChange={(e) => setAdminName(e.target.value)} />
           </label>
           <label className="fld">
             <span className="fld-lab">Email для входу <Req /></span>
@@ -491,8 +492,9 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
             <span className="fld-lab">Логін для входу <Req /></span>
             <input className={"inp" + (loginOk ? "" : " invalid")} value={adminLogin}
               autoComplete="username" placeholder="напр. ivanov"
+              aria-required={true} aria-invalid={loginOk ? undefined : true} aria-describedby="sw-login-hint"
               onChange={(e) => setAdminLogin(e.target.value)} />
-            <span className="fld-hint">{loginOk ? LOGIN_HINT : <span style={{ color: "var(--red)" }}>{LOGIN_HINT}</span>}</span>
+            <span className="fld-hint" id="sw-login-hint">{loginOk ? LOGIN_HINT : <span style={{ color: "var(--red)" }}>{LOGIN_HINT}</span>}</span>
           </label>
           <div className="fld">
             <span className="fld-lab">&nbsp;</span>
@@ -553,9 +555,9 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                 <select className="inp equip-type" value={e.type} onChange={(ev) => setEq(i, "type", ev.target.value)}>
                   {MODALITIES.map((m) => <option key={m.code} value={m.label}>{m.label}</option>)}
                 </select>
-                <input className="inp equip-room2" placeholder="Кабінет / №" value={e.room} onChange={(ev) => setEq(i, "room", ev.target.value)} />
+                <input className="inp equip-room2" placeholder="Кабінет / №" aria-label={"Кабінет / № — обладнання " + (i + 1)} value={e.room} onChange={(ev) => setEq(i, "room", ev.target.value)} />
               </div>
-              <input className="inp" placeholder="Модель / опис обладнання" value={e.desc} onChange={(ev) => setEq(i, "desc", ev.target.value)} />
+              <input className="inp" placeholder="Модель / опис обладнання" aria-label={"Модель / опис — обладнання " + (i + 1)} value={e.desc} onChange={(ev) => setEq(i, "desc", ev.target.value)} />
 
               {/* 0123 + 0126. Вимкнення — мʼякий і зворотний крок: кабінет перестає
                   приймати нові записи й зникає з робочих екранів, але прайс, інциденти,
@@ -609,27 +611,30 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
 
               {!e.perDay && (() => {
                 const hErr = dayHoursError(e.start, e.end);
+                /* W-10: id тексту помилки → aria-describedby обох полів пари. */
+                const hErrId = "sw-eq" + i + "-h-err";
                 return (
                 <>
                   <div className="eq-hours">
-                    <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" value={e.start} onChange={(ev) => setEq(i, "start", ev.target.value)} />
+                    <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" aria-label={"Початок роботи — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={hErr ? true : undefined} aria-describedby={hErr ? hErrId : undefined} value={e.start} onChange={(ev) => setEq(i, "start", ev.target.value)} />
                     <span className="eq-dash">–</span>
-                    <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" value={e.end} onChange={(ev) => setEq(i, "end", ev.target.value)} />
+                    <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" aria-label={"Кінець роботи — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={hErr ? true : undefined} aria-describedby={hErr ? hErrId : undefined} value={e.end} onChange={(ev) => setEq(i, "end", ev.target.value)} />
                   </div>
-                  {hErr && <span className="eq-break-err">{hErr}</span>}
+                  {hErr && <span className="eq-break-err" id={hErrId}>{hErr}</span>}
                   <div className="eq-breaks">
                     {e.breaks.map((b, bi) => {
                       const err = breakRowError(e.breaks, bi, e.start, e.end);
+                      const errId = "sw-eq" + i + "-b" + bi + "-err";
                       return (
                         <div className={"eq-break-row" + (err ? " has-err" : "")} key={bi}>
                           <span className="eq-break-tag">Перерва</span>
                           <div className="eq-hours">
-                            <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.start} onChange={(ev) => setEqBreak(i, bi, "start", ev.target.value)} />
+                            <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" aria-label={"Перерва " + (bi + 1) + ", початок — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={err ? true : undefined} aria-describedby={err ? errId : undefined} value={b.start} onChange={(ev) => setEqBreak(i, bi, "start", ev.target.value)} />
                             <span className="eq-dash">–</span>
-                            <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.end} onChange={(ev) => setEqBreak(i, bi, "end", ev.target.value)} />
+                            <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" aria-label={"Перерва " + (bi + 1) + ", кінець — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={err ? true : undefined} aria-describedby={err ? errId : undefined} value={b.end} onChange={(ev) => setEqBreak(i, bi, "end", ev.target.value)} />
                           </div>
                           <button className="mini-icon" type="button" title="Прибрати перерву" aria-label={"Прибрати перерву " + (bi + 1)} onClick={() => delEqBreak(i, bi)}><span aria-hidden="true">✕</span></button>
-                          {err && <span className="eq-break-err">{err}</span>}
+                          {err && <span className="eq-break-err" id={errId}>{err}</span>}
                         </div>
                       );
                     })}
@@ -646,27 +651,28 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                       <div key={d} className="eq-perday-row">
                         <span className="eq-perday-day">{d}</span>
                         <div className="eq-perday-fields">
-                          {(() => { const dhErr = dayHoursError(e.dayHours[di].start, e.dayHours[di].end); return (<>
+                          {(() => { const dhErr = dayHoursError(e.dayHours[di].start, e.dayHours[di].end); const dhErrId = "sw-eq" + i + "-d" + di + "-h-err"; return (<>
                           <div className="eq-hours">
-                            <input className={"inp tabular eq-time" + (dhErr ? " invalid" : "")} type="time" value={e.dayHours[di].start} onChange={(ev) => setEqDay(i, di, "start", ev.target.value)} />
+                            <input className={"inp tabular eq-time" + (dhErr ? " invalid" : "")} type="time" aria-label={"Початок роботи, " + d + " — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={dhErr ? true : undefined} aria-describedby={dhErr ? dhErrId : undefined} value={e.dayHours[di].start} onChange={(ev) => setEqDay(i, di, "start", ev.target.value)} />
                             <span className="eq-dash">–</span>
-                            <input className={"inp tabular eq-time" + (dhErr ? " invalid" : "")} type="time" value={e.dayHours[di].end} onChange={(ev) => setEqDay(i, di, "end", ev.target.value)} />
+                            <input className={"inp tabular eq-time" + (dhErr ? " invalid" : "")} type="time" aria-label={"Кінець роботи, " + d + " — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={dhErr ? true : undefined} aria-describedby={dhErr ? dhErrId : undefined} value={e.dayHours[di].end} onChange={(ev) => setEqDay(i, di, "end", ev.target.value)} />
                           </div>
-                          {dhErr && <span className="eq-break-err">{dhErr}</span>}
+                          {dhErr && <span className="eq-break-err" id={dhErrId}>{dhErr}</span>}
                           </>); })()}
                           <div className="eq-breaks">
                             {e.dayHours[di].breaks.map((b, bi) => {
                               const err = breakRowError(e.dayHours[di].breaks, bi, e.dayHours[di].start, e.dayHours[di].end);
+                              const errId = "sw-eq" + i + "-d" + di + "-b" + bi + "-err";
                               return (
                                 <div className={"eq-break-row" + (err ? " has-err" : "")} key={bi}>
                                   <span className="eq-break-tag">Перерва</span>
                                   <div className="eq-hours">
-                                    <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.start} onChange={(ev) => setEqDayBreak(i, di, bi, "start", ev.target.value)} />
+                                    <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" aria-label={"Перерва " + (bi + 1) + ", початок, " + d + " — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={err ? true : undefined} aria-describedby={err ? errId : undefined} value={b.start} onChange={(ev) => setEqDayBreak(i, di, bi, "start", ev.target.value)} />
                                     <span className="eq-dash">–</span>
-                                    <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" value={b.end} onChange={(ev) => setEqDayBreak(i, di, bi, "end", ev.target.value)} />
+                                    <input className={"inp tabular eq-time" + (err ? " invalid" : "")} type="time" aria-label={"Перерва " + (bi + 1) + ", кінець, " + d + " — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={err ? true : undefined} aria-describedby={err ? errId : undefined} value={b.end} onChange={(ev) => setEqDayBreak(i, di, bi, "end", ev.target.value)} />
                                   </div>
                                   <button className="mini-icon" type="button" title="Прибрати перерву" aria-label={"Прибрати перерву " + (bi + 1)} onClick={() => delEqDayBreak(i, di, bi)}><span aria-hidden="true">✕</span></button>
-                                  {err && <span className="eq-break-err">{err}</span>}
+                                  {err && <span className="eq-break-err" id={errId}>{err}</span>}
                                 </div>
                               );
                             })}

@@ -91,10 +91,11 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
                 відбудеться лише після переходу за посиланням із нього
                 (посилання діє 60 хвилин).
               </p>
-              <label style={{ display: "block", marginBottom: 6 }}>
+              <label htmlFor="dz-confirm-name" style={{ display: "block", marginBottom: 6 }}>
                 Наберіть назву центру точно як у налаштуваннях:
               </label>
               <input
+                id="dz-confirm-name"
                 className="input"
                 value={typed}
                 onChange={(e) => setTyped(e.target.value)}

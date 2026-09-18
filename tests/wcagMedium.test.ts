@@ -147,3 +147,148 @@ describe("W-17 — у кожної сторінки своя назва вкла
     expect(titles.size).toBe(pages.length);
   });
 });
+
+/* ---- M-B: підписи полів (W-7) і помилки форм (W-10) ---- */
+
+/** Усі теги <input …> файлу: текст атрибутів і позиція. Сканує з урахуванням
+    фігурних дужок JSX, бо `onChange={(e) => …}` містить «>», і наївний [^>]*
+    обрізав би тег посередині. */
+function inputTags(raw: string): { attrs: string; index: number }[] {
+  // Блокові коментарі — у порожні рядки тієї ж довжини: «<input type="date">» у
+  // поясненні (RescheduleModal, ScheduleEditModal) — не поле; номери рядків збережено.
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, (c) => c.replace(/[^\n]/g, " "));
+  const out: { attrs: string; index: number }[] = [];
+  const re = /<input\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) {
+    let i = m.index + 6, depth = 0, q: string | null = null;
+    for (; i < src.length; i++) {
+      const c = src[i];
+      if (q) { if (c === q) q = null; continue; }
+      if (c === '"' || c === "'" || c === "`") { q = c; continue; }
+      if (c === "{") depth++;
+      else if (c === "}") depth--;
+      else if (c === ">" && depth === 0) break;
+    }
+    out.push({ attrs: src.slice(m.index + 6, i), index: m.index });
+  }
+  return out;
+}
+const insideLabel = (src: string, idx: number) => {
+  const before = src.slice(0, idx);
+  return (before.match(/<label\b/g) || []).length > (before.match(/<\/label>/g) || []).length;
+};
+const lineOf = (src: string, idx: number) => src.slice(0, idx).split("\n").length;
+
+describe("W-7 — у кожного поля є імʼя (label / aria-label), а не лише placeholder", () => {
+  it("кожен <input type=\"time\"|\"date\"> у components/ має aria-label, id (для htmlFor) або стоїть усередині <label>", () => {
+    const offenders: string[] = [];
+    for (const f of components()) {
+      const s = read("components/" + f);
+      for (const t of inputTags(s)) {
+        if (!/type="(time|date)"/.test(t.attrs)) continue;
+        if (/aria-label/.test(t.attrs) || /\bid=/.test(t.attrs) || insideLabel(s, t.index)) continue;
+        offenders.push(f + ":" + lineOf(s, t.index));
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+  it("жодного <input> лише з placeholder без імені (aria-label / id / <label>)", () => {
+    const offenders: string[] = [];
+    for (const f of components()) {
+      const s = read("components/" + f);
+      for (const t of inputTags(s)) {
+        if (!/placeholder=/.test(t.attrs)) continue;
+        // {...inputProps("email", …)} у сторінках входу розгортає id, на який дивиться <label htmlFor>.
+        if (/aria-label/.test(t.attrs) || /\bid=/.test(t.attrs) || /\.\.\.inputProps\(/.test(t.attrs) || insideLabel(s, t.index)) continue;
+        offenders.push(f + ":" + lineOf(s, t.index));
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+  it.each([
+    ["components/QueueBoard.tsx", 'aria-label="Пошук пацієнта в черзі"'],
+    ["components/RadiologistBoard.tsx", 'aria-label="Пошук пацієнта в черзі"'],
+    ["components/WaitlistBoard.tsx", 'aria-label="Пошук у листі очікування"'],
+    ["components/CallListBoard.tsx", 'aria-label="Пошук у колл-листі"'],
+    ["components/CallListBoard.tsx", 'aria-label="День обдзвону"'],
+    ["components/CallListBoard.tsx", 'className="note-input" placeholder="Нотатка…" aria-label={"Нотатка до дзвінка — " + p.patient_name}'],
+    ["components/BookingModal.tsx", '<select className="inp" aria-label="Лікар-направник"'],
+    ["components/BookingModal.tsx", 'aria-label="Дата народження (дд.мм.рррр)"'],
+  ])("%s: %s", (file, needle) => {
+    expect(read(file)).toContain(needle);
+  });
+  it("SetupWizard: усі 8 полів часу названі з кабінетом/обладнанням (і днем — у режимі «свій час»)", () => {
+    const s = read("components/SetupWizard.tsx");
+    const tags = inputTags(s).filter((t) => /type="time"/.test(t.attrs));
+    expect(tags.length).toBe(8);
+    for (const t of tags) expect(t.attrs, "SetupWizard:" + lineOf(s, t.index)).toMatch(/aria-label=\{"(Початок роботи|Кінець роботи|Перерва " \+ \(bi \+ 1\) \+ ", (початок|кінець))[^}]*\(e\.room \|\| e\.type \|\| "обладнання " \+ \(i \+ 1\)\)\}/);
+    expect(tags.filter((t) => /" \+ d \+ " — "/.test(t.attrs)).length).toBe(4);
+  });
+  it("ScheduleEditModal: чотири поля часу названі з кабінетом", () => {
+    const s = read("components/ScheduleEditModal.tsx");
+    expect(s.match(/aria-label=\{"(Початок роботи|Кінець роботи|Перерва " \+ \(i \+ 1\) \+ ", (початок|кінець)) — " \+ r\.name\}/g)?.length).toBe(4);
+  });
+  it.each(["components/BookingModal.tsx", "components/ReferralPortal.tsx", "components/WaitlistModal.tsx"])("%s: рядки додаткових досліджень — область і тривалість названі з номером", (file) => {
+    const s = read(file);
+    expect(s).toContain('aria-label={"Додаткове дослідження " + (i + 1) + " — область"}');
+    expect(s).toContain('aria-label={"Додаткове дослідження " + (i + 1) + " — тривалість, хв"}');
+  });
+  it("DangerZone: поле підтвердження звʼязане з підписом через htmlFor/id", () => {
+    const s = read("components/DangerZone.tsx");
+    expect(s).toContain('htmlFor="dz-confirm-name"');
+    expect(s).toContain('id="dz-confirm-name"');
+  });
+});
+
+describe("W-10 — обовʼязковість і помилки полів передаються атрибутами", () => {
+  it("BookingModal: обовʼязкові поля — aria-required (ПІБ, дата народження, телефон, пріоритет, область, тривалість)", () => {
+    const s = read("components/BookingModal.tsx");
+    expect(s).toContain('placeholder="Прізвище Ім\'я По батькові" aria-required={!softPatient || undefined}');
+    expect(s).toContain('<DobField value={dob} onChange={setDob} invalid={miss.dob} required={!softPatient} />');
+    expect(s).toContain('<PhoneInput value={phone} onChange={setPhone} required={!softPatient} />');
+    expect(s).toContain('aria-label="Пріоритет пацієнта" aria-required={moveMode ? undefined : true}');
+    expect(s).toContain('<select className="inp" aria-required={true} value={region}');
+    expect(s).toContain('aria-required={true} aria-invalid={miss.dur ? true : undefined} aria-describedby={durHintId}');
+    expect(s).toContain('<div className="bk-gender-row" role="group" aria-label={"Стать" + (softPatient ? "" : " (обовʼязково)")}>');
+  });
+  it("DobField: aria-required із пропа, aria-invalid лише при справжній помилці, текст помилки — id + role=\"alert\" і describedby", () => {
+    const s = read("components/BookingModal.tsx");
+    expect(s).toContain('aria-required={required || undefined} aria-invalid={err ? true : undefined} aria-describedby={err ? errId : undefined}');
+    expect(s).toContain('{err && <span className="bk-dob-err" id={errId} role="alert">⚠ {err}</span>}');
+  });
+  it("PhoneInput: aria-required із пропа; aria-invalid — лише коли є введення", () => {
+    const s = read("components/PhoneInput.tsx");
+    expect(s).toContain("aria-required={required || undefined}");
+    expect(s).toContain("aria-invalid={invalid && has ? true : undefined}");
+  });
+  it("BookingModal: підсумок «Залишилось» має id, чипи розділені прихованими комами, усі 4 кнопки збереження описані ним", () => {
+    const s = read("components/BookingModal.tsx");
+    expect(s).toContain('<span className="bk-missing" id={missId}>{missingList.map((m, i) => <span className="bk-miss-chip" key={i}>{m}{i < missingList.length - 1 && <span className="rf-vh">, </span>}</span>)}</span>');
+    expect(s.match(/aria-describedby=\{valid \? undefined : missId\}/g)?.length).toBe(4);
+  });
+  it.each(["components/BookingModal.tsx", "components/ReferralPortal.tsx", "components/WaitlistModal.tsx"])("%s: тривалість додаткового дослідження < 5 хв — aria-invalid", (file) => {
+    expect(read(file)).toContain('aria-invalid={r.region && (Number(r.dur) || 0) < 5 ? true : undefined}');
+  });
+  it("SetupWizard: кожен текст помилки .eq-break-err має id, і кожне поле пари описує його через aria-describedby", () => {
+    const s = read("components/SetupWizard.tsx");
+    const errSpans = s.match(/<span className="eq-break-err"[^>]*>/g) || [];
+    expect(errSpans.length).toBe(4);
+    for (const sp of errSpans) expect(sp).toMatch(/ id=\{(hErrId|errId|dhErrId)\}/);
+    expect(s.match(/aria-describedby=\{hErr \? hErrId : undefined\}/g)?.length).toBe(2);
+    expect(s.match(/aria-describedby=\{dhErr \? dhErrId : undefined\}/g)?.length).toBe(2);
+    expect(s.match(/aria-describedby=\{err \? errId : undefined\}/g)?.length).toBe(4);
+    expect(s.match(/aria-invalid=\{(hErr|dhErr|err) \? true : undefined\}/g)?.length).toBe(8);
+  });
+  it("SetupWizard: логін — aria-invalid + describedby на підказку; назва клініки й ПІБ адміністратора — aria-required; контакти — імʼя, обовʼязковість, помилка", () => {
+    const s = read("components/SetupWizard.tsx");
+    expect(s).toContain('aria-required={true} aria-invalid={loginOk ? undefined : true} aria-describedby="sw-login-hint"');
+    expect(s).toContain('<span className="fld-hint" id="sw-login-hint">');
+    expect(s).toContain('(clinic.trim() ? "" : " invalid")} aria-required={true}');
+    expect(s).toContain('(adminName.trim() ? "" : " invalid")} aria-required={true}');
+    expect(s).toContain('aria-label={label + (items.length > 1 ? " " + (i + 1) : "")} aria-required={required && i === 0 ? true : undefined} aria-invalid={badPhone ? true : undefined}');
+  });
+  it("ScheduleEditModal: перерви з помилкою — aria-invalid на обох полях", () => {
+    expect(read("components/ScheduleEditModal.tsx").match(/aria-invalid=\{bad \? true : undefined\}/g)?.length).toBe(2);
+  });
+});
