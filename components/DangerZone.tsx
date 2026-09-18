@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import BaseDialog from "@/components/BaseDialog";
 
 /* ===== Небезпечна зона: повне видалення медичного центру =====
@@ -18,6 +18,11 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<string | null>(null);
+  /* Ревʼю с75: після успіху кнопка-тригер зникає (замість неї — текст), тож
+     хуку модалки нікуди повертати фокус. Ставимо його на сам текст і озвучуємо
+     його як статус. */
+  const doneRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { if (done) doneRef.current?.focus(); }, [done]);
   const [err, setErr] = useState<string | null>(null);
 
   const nameMatches = typed.trim() === clinicName;
@@ -64,7 +69,7 @@ export default function DangerZone({ clinicName }: { clinicName: string }) {
   return (
     <>
       {done ? (
-        <p style={{ color: "var(--text-muted)", fontSize: "0.75rem", lineHeight: 1.5 }}>{done}</p>
+        <p ref={doneRef} tabIndex={-1} role="status" style={{ color: "var(--text-muted)", fontSize: "0.75rem", lineHeight: 1.5 }}>{done}</p>
       ) : (
         <button
           className="btn btn-sm"

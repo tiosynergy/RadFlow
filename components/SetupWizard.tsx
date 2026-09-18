@@ -19,6 +19,7 @@ import QueuePolicySettings, { type QueuePolicyInitial } from "@/components/Queue
 import GoogleCalendarBackupSettings from "@/components/GoogleCalendarBackupSettings";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import BaseDialog from "@/components/BaseDialog";
+import Toast, { type ToastData } from "@/components/Toast";
 import DangerZone from "@/components/DangerZone";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
@@ -67,7 +68,6 @@ function tzNow(tz: string): string {
   catch { return "—"; }
 }
 
-type Toast = { id: number; msg: string; type: string; out?: boolean };
 type DayHours = { start: string; end: string; breaks: Break[] };
 type EquipItem = {
   id: number | string;
@@ -93,34 +93,21 @@ type WizardInitial = Partial<{
   adminName: string; adminEmail: string; adminLogin: string; adminPhone: string; equip: EquipItem[];
 }>;
 
-/* ---------- Toasts ---------- */
-function Toasts({ toasts }: { toasts: Toast[] }) {
-  const icons: Record<string, string> = { success: "✓", error: "✕", info: "ℹ", warning: "⚠" };
-  /* W-12 (с75): контейнер — постійний live-регіон (він у DOM завжди, тости
-     лише додаються), інакше «Збережено» і помилки майстра ніхто не озвучував.
-     Один polite-регіон на всі типи: у майстрі повідомлення приходять у
-     відповідь на клік, коли користувач не друкує, тож polite не запізнюється. */
-  return (
-    <div className="toast-wrap" role="status" aria-live="polite">
-      {toasts.map((t) => (
-        <div className={"toast " + t.type + (t.out ? " out" : "")} key={t.id}>
-          <span className="ti" aria-hidden="true">{icons[t.type]}</span>
-          <span className="tmsg">{t.msg}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-function useToasts(): [Toast[], (msg: string, type?: string) => void] {
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const seq = useRef(0);
+/* ---------- Toasts ----------
+   W-12/W-11 (с75, ревʼю): спільний <Toast> замість власного стека .toast-wrap —
+   він дає постійні live-регіони (status/alert), утримання під курсором/фокусом,
+   ✕ і 6 с для помилок; власні тости гасли за 3,4 с без озвучення, а помилки
+   майстра бувають на ~200 символів. API push(msg, type) збережено. */
+function useToasts(): [ToastData | null, (msg: string, type?: string) => void, () => void] {
+  const [toast, setToast] = useState<ToastData | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   function push(msg: string, type = "success") {
-    const id = ++seq.current;
-    setToasts((ts) => [...ts, { id, msg, type }]);
-    setTimeout(() => setToasts((ts) => ts.map((t) => (t.id === id ? { ...t, out: true } : t))), 3400);
-    setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 3700);
+    const kind = type === "warning" ? "warn" : type;
+    setToast({ msg, type: kind });
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setToast(null), kind === "error" ? 6000 : 3000);
   }
-  return [toasts, push];
+  return [toast, push, () => setToast(null)];
 }
 
 const Req = () => <span className="req" title="Обов'язкове поле">*</span>;
@@ -451,8 +438,10 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
           <span className="fld-spacer" />
         </div>
         <div className="fld-row">
-          <label className="fld"><span className="fld-lab">Місто <Req /></span>
-            <CitySelect value={city} onChange={setCity} required /></label>
+          {/* W-13 (ревʼю с75): не <label> довкола CitySelect — інакше listbox і
+              live-статус усередині стають частиною ІМЕНІ комбобокса. */}
+          <div className="fld"><label className="fld-lab" htmlFor="sw-city">Місто <Req /></label>
+            <CitySelect id="sw-city" value={city} onChange={setCity} required /></div>
           <label className="fld" style={{ flex: 2 }}><span className="fld-lab">Адреса</span>
             <input className="inp" placeholder="вул., будинок, поверх, індекс" value={address} onChange={(e) => setAddress(e.target.value)} /></label>
         </div>
@@ -493,14 +482,16 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
           </label>
         </div>
         <div className="fld-row">
-          <label className="fld">
-            <span className="fld-lab">Логін для входу <Req /></span>
-            <input className={"inp" + (loginOk ? "" : " invalid")} value={adminLogin}
+          {/* Ревʼю с75: підказка — сусід поля, а не вміст <label>: усередині label
+              вона входила б в імʼя і читалась двічі (імʼя + опис). */}
+          <div className="fld">
+            <label className="fld-lab" htmlFor="sw-login">Логін для входу <Req /></label>
+            <input id="sw-login" className={"inp" + (loginOk ? "" : " invalid")} value={adminLogin}
               autoComplete="username" placeholder="напр. ivanov"
               aria-required={true} aria-invalid={loginOk ? undefined : true} aria-describedby="sw-login-hint"
               onChange={(e) => setAdminLogin(e.target.value)} />
             <span className="fld-hint" id="sw-login-hint">{loginOk ? LOGIN_HINT : <span style={{ color: "var(--red-text)" }}>{LOGIN_HINT}</span>}</span>
-          </label>
+          </div>
           <div className="fld">
             <span className="fld-lab">&nbsp;</span>
             {/* Логін зберігається ОКРЕМОЮ кнопкою, а не разом із майстром: його
@@ -846,7 +837,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
   const [dirty, setDirty] = useState(false);
   const [exitAsk, setExitAsk] = useState(false);
   const [schedWarnAsk, setSchedWarnAsk] = useState<number | null>(null); // N майбутніх записів поза новим графіком
-  const [toasts, push] = useToasts();
+  const [toast, push, dismissToast] = useToasts();
   const dataRef = useRef<WizardData | null>(null);
   /* Канал «батько → форма кабінетів»: після insert повертаємо в state форми
      видані db-id (див. коментар біля useState(equip) у StepRegister). */
@@ -1219,7 +1210,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
           onConfirm={() => { setSchedWarnAsk(null); save(true); }}
         />
       )}
-      <Toasts toasts={toasts} />
+      <Toast toast={toast} onDismiss={dismissToast} />
     </div>
   );
 }

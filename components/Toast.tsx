@@ -47,17 +47,45 @@ export default function Toast({ toast, onDismiss }: { toast: ToastData | null; o
   const [held, setHeld] = useState(false);
   const [last, setLast] = useState<ToastData | null>(null);
   const releaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  /* Звідки прийшов фокус у тост (Tab із дошки): після «↩ Відмінити»/✕ картка
+     зникає, і без цього фокус падав би в <body> (ревʼю с75, 2.4.3). */
+  const cameFrom = useRef<HTMLElement | null>(null);
+  /* Лічильник тостів: два поспіль ОДНАКОВІ повідомлення («Позначено: неявка» для
+     двох пацієнтів) не міняють DOM — і ридер мовчить. key={seq} перемонтовує
+     картку, тобто робить нову вставку в live-регіон. */
+  const seqRef = useRef(0);
+  const prevToastRef = useRef<ToastData | null>(null);
+  if (toast !== prevToastRef.current) { prevToastRef.current = toast; if (toast) seqRef.current++; }
   useEffect(() => { if (toast) setLast(toast); }, [toast]);
   useEffect(() => () => { if (releaseTimer.current) clearTimeout(releaseTimer.current); }, []);
+  /* Страховка від «залипання»: елемент під фокусом у картці міг зникнути разом із
+     нею (blur при видаленні вузла браузер не шле) — при кожній зміні тосту
+     звіряємо, чи утримання ще справжнє (курсор або фокус усередині). */
+  useEffect(() => {
+    if (!held) return;
+    const c = cardRef.current;
+    if (!c || (!c.matches(":hover") && !c.contains(document.activeElement))) setHeld(false);
+  }, [toast, held]);
   const hold = () => { if (releaseTimer.current) { clearTimeout(releaseTimer.current); releaseTimer.current = null; } setHeld(true); };
   const release = () => { if (releaseTimer.current) clearTimeout(releaseTimer.current); releaseTimer.current = setTimeout(() => setHeld(false), RELEASE_GRACE_MS); };
-  const dismiss = () => { setLast(null); setHeld(false); onDismiss?.(); };
+  const restoreFocus = () => {
+    const c = cardRef.current, from = cameFrom.current;
+    if (c && c.contains(document.activeElement) && from && from.isConnected) from.focus();
+    cameFrom.current = null;
+  };
+  const dismiss = () => { restoreFocus(); setLast(null); setHeld(false); onDismiss?.(); };
   const shown = toast ?? (held ? last : null);
   const kind = shown?.type && shown.type in TONE ? shown.type : "success";
   const isError = kind === "error";
   const holdProps = {
+    ref: cardRef,
     onMouseEnter: hold, onMouseLeave: release,
-    onFocus: hold,
+    onFocus: (e: React.FocusEvent<HTMLDivElement>) => {
+      const from = e.relatedTarget as HTMLElement | null;
+      if (from && !e.currentTarget.contains(from)) cameFrom.current = from;
+      hold();
+    },
     onBlur: (e: React.FocusEvent<HTMLDivElement>) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) release(); },
   };
   // Обидва регіони persistent (не монтуються/демонтуються разом із тостом) —
@@ -65,16 +93,16 @@ export default function Toast({ toast, onDismiss }: { toast: ToastData | null; o
   return (
     <>
       <div role="status" aria-live="polite" aria-atomic="true" style={REGION_STYLE}>
-        {shown && !isError && <ToastCard toast={shown} kind={kind} onDismiss={onDismiss ? dismiss : undefined} holdProps={holdProps} />}
+        {shown && !isError && <ToastCard key={seqRef.current} toast={shown} kind={kind} onDismiss={onDismiss ? dismiss : undefined} holdProps={holdProps} />}
       </div>
       <div role="alert" aria-live="assertive" aria-atomic="true" style={REGION_STYLE}>
-        {shown && isError && <ToastCard toast={shown} kind={kind} onDismiss={onDismiss ? dismiss : undefined} holdProps={holdProps} />}
+        {shown && isError && <ToastCard key={seqRef.current} toast={shown} kind={kind} onDismiss={onDismiss ? dismiss : undefined} holdProps={holdProps} />}
       </div>
     </>
   );
 }
 
-function ToastCard({ toast, kind, onDismiss, holdProps }: { toast: ToastData; kind: string; onDismiss?: () => void; holdProps: React.HTMLAttributes<HTMLDivElement> }) {
+function ToastCard({ toast, kind, onDismiss, holdProps }: { toast: ToastData; kind: string; onDismiss?: () => void; holdProps: React.HTMLAttributes<HTMLDivElement> & { ref: React.RefObject<HTMLDivElement | null> } }) {
   return (
     <div
       {...holdProps}
@@ -94,7 +122,8 @@ function ToastCard({ toast, kind, onDismiss, holdProps }: { toast: ToastData; ki
           style={{ background: "none", border: "none", color: TONE[kind], cursor: "pointer", fontSize: "0.8125rem", fontWeight: 700, textDecoration: "underline", padding: "2px 4px", flexShrink: 0, whiteSpace: "nowrap" }}
         >
           {toast.action.label}
-          {toast.action.hotkey && <kbd style={{ marginLeft: 6, font: "inherit", fontWeight: 500, textDecoration: "none", color: "var(--text-muted)" }}>{toast.action.hotkey}</kbd>}
+          {/* aria-hidden: сполучення вже в aria-keyshortcuts — інакше ридер каже його двічі */}
+          {toast.action.hotkey && <kbd aria-hidden="true" style={{ marginLeft: 6, font: "inherit", fontWeight: 500, textDecoration: "none", color: "var(--text-muted)" }}>{toast.action.hotkey}</kbd>}
         </button>
       )}
       {onDismiss && (

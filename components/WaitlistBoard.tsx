@@ -219,26 +219,30 @@ export default function WaitlistBoard({ clinicId, clinicTz, rooms, residualRoomI
   const canEditPriority = roleKey === "admin";
 
   function notify(msg: string, type = "success", action?: { label: string; onAction: () => void }) {
-    if (action) undoRef.current = { run: action.onAction, until: Date.now() + UNDO_HOTKEY_MS };
+    // Ревʼю с75: лише ОСТАННЯ дія — будь-який наступний тост гасить вікно Ctrl+Z.
+    undoRef.current = action ? { run: action.onAction, until: Date.now() + UNDO_HOTKEY_MS } : null;
     setToast({ msg, type, action: action ? { ...action, hotkey: "Ctrl+Z", onAction: () => { undoRef.current = null; action.onAction(); } } : undefined });
     if (toastTimer.current) clearTimeout(toastTimer.current);
     // Тост із дією (Undo) живе довше, щоб встигнути натиснути; при наведенні/фокусі
     // Toast сам тримає його (W-11), а Ctrl+Z діє UNDO_HOTKEY_MS.
     toastTimer.current = setTimeout(() => setToast(null), action ? 6000 : 3000);
   }
-  const notifyRef = useRef(notify);
-  notifyRef.current = notify;
+  /* Під модалкою (запис у чергу, редагування, підтвердження) Ctrl+Z мовчить —
+     інакше відкат виконувався б за оверлеєм (ревʼю с75). Сам `restore` каже
+     «Повернено в очікування» після відповіді сервера — другий тост не потрібен. */
+  const modalOpenRef = useRef(false);
+  modalOpenRef.current = !!(editFor || bookFor || confirmRemove);
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.code !== "KeyZ") return;
       const t = e.target as HTMLElement | null;
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (modalOpenRef.current) return;
       const u = undoRef.current;
       if (!u || Date.now() > u.until) return;
       e.preventDefault();
       undoRef.current = null;
       u.run();
-      notifyRef.current("Відмінено останню дію", "info");
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);

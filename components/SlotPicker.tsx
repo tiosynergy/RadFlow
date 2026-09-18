@@ -31,7 +31,7 @@
    «Зберегти» було ~144 табстопи, а ридер чув «список» без опцій. Розмір комірок
    ≥24px — у CSS (.slot-grid4: 2 блоки в рядку). */
 
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { groupSlots, slotFmt, slotToMin } from "@/lib/slots";
 
 export type SlotStateFn = (slot: string) => string;
@@ -56,6 +56,7 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
      рядком під сіткою; вибір вільних слотів це не змінює. */
   const [hint, setHint] = useState<{ slot: string; text: string } | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const helpId = useId();
   if (!slots.length) return null;
   const isFree = (st: string) => freeStates.includes(st);
   const blocks = groupSlots(slots); // 30-хв блоки в межах графіка
@@ -96,7 +97,9 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
 
   return (
     <div className="slot-picker">
-    <div className="slot-grid4" role="listbox" aria-label="Вільні слоти (крок 5 хв). Стрілки — між комірками, ↑↓ — на 30 хв" ref={gridRef} onKeyDown={onGridKey}>
+    {/* Інструкції — описом, не іменем: імʼя читається при кожному вході в список,
+        а гліфи «↑↓» залежать від рівня символів ридера (ревʼю с75). */}
+    <div className="slot-grid4" role="listbox" aria-label="Вільні слоти (крок 5 хв)" aria-describedby={helpId} ref={gridRef} onKeyDown={onGridKey}>
       {blocks.map((bl) => {
         // 6 рівних частин по 5 хв від початку 30-хв блоку.
         const subs = Array.from({ length: 6 }, (_, i) => slotFmt(bl.startMin + i * 5));
@@ -135,8 +138,9 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
                     title={label}
                     /* Стан слота (зайнято/перерва/буфер + інтервал) має бути в
                        ДОСТУПНОМУ імені, а не лише у title= (на тачі тултипа немає,
-                       і скрінрідер title не завжди озвучує). */
-                    aria-label={label}>
+                       і скрінрідер title не завжди озвучує). Видимий текст комірки
+                       («35») мусить бути в імені (2.5.3 Label in Name) — префікс. */
+                    aria-label={label.includes(s) ? label : s + " — " + label}>
                     {s.slice(3)}
                   </button>
                 );
@@ -146,12 +150,14 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
         );
       })}
     </div>
-    {hint && (
-      <div className="slot-hint" role="status" aria-live="polite">
+    <span className="rf-vh" id={helpId}>Стрілки вліво/вправо — сусідня комірка, вгору/вниз — на 30 хвилин, Home/End — початок і кінець. Enter або пробіл — обрати.</span>
+    {/* Регіон постійний: створений уже з текстом він міг би не озвучитись. */}
+    <div className={hint ? "slot-hint" : "rf-vh"} role="status" aria-live="polite">
+      {hint && <>
         <span className="slot-hint-txt">{hint.text}</span>
         <button type="button" className="slot-hint-x" aria-label="Закрити підказку" onClick={() => setHint(null)}>✕</button>
-      </div>
-    )}
+      </>}
+    </div>
     </div>
   );
 }

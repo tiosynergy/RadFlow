@@ -52,7 +52,7 @@ export default function LoginPage() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
-  const [toast, setToast] = useState<{ show: boolean; title: string; msg: string }>({ show: false, title: "", msg: "" });
+  const [toast, setToast] = useState<{ show: boolean; title: string; msg: string; seq: number }>({ show: false, title: "", msg: "", seq: 0 });
 
   function validate(name: string, v: string): string {
     if (name === "email") return !v.trim() ? REQUIRED : "";
@@ -73,7 +73,9 @@ export default function LoginPage() {
   }
 
   function showToast(msg: string, title = "Помилка входу") {
-    setToast({ show: true, title, msg });
+    // seq: та сама помилка вдруге (без правки поля) — новий вузол у role="alert",
+    // інакше DOM не змінюється і ридер мовчить (ревʼю с75).
+    setToast((t) => ({ show: true, title, msg, seq: t.seq + 1 }));
   }
 
   async function onSubmit(e: FormEvent) {
@@ -215,7 +217,7 @@ export default function LoginPage() {
       >
         {/* Текст лише поки видно: прихований opacity:0 він лишався б у дереві
             доступності, а регіон role="alert" — постійний, тож вставка озвучується. */}
-        {toast.show && <><div className="tt">{toast.title}</div><div className="td">{toast.msg}</div></>}
+        {toast.show && <div key={toast.seq}><div className="tt">{toast.title}</div><div className="td">{toast.msg}</div></div>}
       </div>
     </div>
   );

@@ -1291,7 +1291,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      від моменту тосту, у своєму зрізі (день/кабінет), і гаситься виконанням
      або наступною дією з відкатом. Сам відкат на сервері під CAS (expectedFrom),
      тож повторний або запізнілий Ctrl+Z нічого не зламає. */
-  const undoRef = useRef<{ run: () => void; born: string; until: number } | null>(null);
+  const undoRef = useRef<{ run: () => void; what: string; born: string; until: number } | null>(null);
   // Слот звільнився (скасування/відмова) → підходящі кандидати з листа очікування.
   const [wlSuggest, setWlSuggest] = useState<{ slot: FreedSlotInfo; candidates: WaitlistEntry[] } | null>(null);
   // Оголошені тут (а не нижче біля хендлерів), бо їх читає гард хоткеїв anyModalOpen.
@@ -1372,7 +1372,9 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     const guarded: ToastData["action"] = action
       ? { label: action.label, hotkey: "Ctrl+Z", onAction: () => { if (scopeRef.current !== born) return; undoRef.current = null; action.onAction(); } }
       : undefined;
-    if (action) undoRef.current = { run: action.onAction, born, until: Date.now() + UNDO_HOTKEY_MS };
+    /* Ревʼю с75: Ctrl+Z відкочує лише ОСТАННЮ дію. Будь-який наступний тост
+       (інша дія, помилка) гасить вікно — так само, як зникає кнопка «↩ Відмінити». */
+    undoRef.current = action ? { run: action.onAction, what: msg, born, until: Date.now() + UNDO_HOTKEY_MS } : null;
     setToast({ msg, type, action: guarded });
     if (toastTimer.current) clearTimeout(toastTimer.current);
     // A-1/аудит v2: помилки живуть довше (5–7 с) — оператор встигає прочитати.
@@ -1725,7 +1727,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         e.preventDefault();
         undoRef.current = null;
         u.run();
-        notifyRef.current("Відмінено останню дію", "info");
+        notifyRef.current("Відмінено: " + u.what, "info");
         return;
       }
       if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -2122,6 +2124,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      якщо відтоді ніхто нічого не змінив. Якщо змінив — CAS відмовить, і те
      саме повідомлення стане ПРАВДОЮ. */
   async function setStatus(id: string, status: string, expectedOverride?: QueueStatus): Promise<boolean> {
+    // Ревʼю с75: нова дія — старий Ctrl+Z протух (сам відкат теж іде сюди, він уже зняв undoRef).
+    undoRef.current = null;
     // H-2: фиксируем статус, который сейчас видит оператор (до оптимистичного
     // обновления) — как expectedFrom для CAS на сервере.
     /* Джерело — САМ ЗНІМОК, а не відфільтрований по зрізу `entries` (ревʼю р.2).
@@ -2287,6 +2291,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   }
 
   async function setCall(p: QEntry, call_status: string) {
+    undoRef.current = null;   // див. setStatus
     const patch = call_status === "declined" ? { call_status, status: "cancelled" } : { call_status };
     setEntries((es) => es.map((e) => (e.id === p.id ? { ...e, ...patch } : e)));
     const res = await setQueueEntryCall(p.id, call_status as CallStatus);

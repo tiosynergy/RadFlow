@@ -295,16 +295,26 @@ export default function StaffManager({ clinicId, rooms, clinicName, adminName, e
   function setPassword(profileId: string) { setPwModal({ id: profileId, val: "", busy: false }); }
   async function submitPassword() {
     if (!pwModal || pwModal.val.length < 8) { notify("Пароль мінімум 8 символів", "error"); return; }
+    if (pwModal.busy) return;   // Enter у полі під час запиту — не другий POST
     setPwModal((m) => (m ? { ...m, busy: true } : m));
-    const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: pwModal.id, action: "set", password: pwModal.val }) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { notify(data.error || "Помилка", "error"); setPwModal((m) => (m ? { ...m, busy: false } : m)); return; }
-    setRadiologists((rs) => rs.map((r) => (r.id === pwModal.id ? { ...r, password_set: true } : r)));
-    /* Пароль задано — токен на сервері погашено. Забуваємо і тут, інакше
-       карта показувала б МЕРТВЕ посилання як живе. */
-    setFreshTokens((m) => forgetToken(m, pwModal.id));
-    notify("Пароль встановлено", "success");
-    setPwModal(null);
+    /* Ревʼю с75: без try/finally реджект fetch (офлайн, обрив) лишав busy=true
+       назавжди, а BaseDialog у busy глушить ✕/Esc/оверлей — вікно ставало
+       невиходним до перезавантаження. */
+    try {
+      const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: pwModal.id, action: "set", password: pwModal.val }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { notify(data.error || "Помилка", "error"); return; }
+      setRadiologists((rs) => rs.map((r) => (r.id === pwModal.id ? { ...r, password_set: true } : r)));
+      /* Пароль задано — токен на сервері погашено. Забуваємо і тут, інакше
+         карта показувала б МЕРТВЕ посилання як живе. */
+      setFreshTokens((m) => forgetToken(m, pwModal.id));
+      notify("Пароль встановлено", "success");
+      setPwModal(null);
+    } catch {
+      notify("Не вдалося звʼязатися із сервером. Спробуйте ще раз.", "error");
+    } finally {
+      setPwModal((m) => (m ? { ...m, busy: false } : m));
+    }
   }
   function askDeleteRadiologist(profileId: string, label: string | null) {
     setAsk({

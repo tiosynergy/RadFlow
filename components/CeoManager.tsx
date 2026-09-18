@@ -159,14 +159,23 @@ export default function CeoManager({ clinicId, clinicName, adminName, embedded =
   function setPassword(id: string) { setPwModal({ id, val: "", busy: false }); }
   async function submitPassword() {
     if (!pwModal || pwModal.val.length < 8) { notify("Пароль мінімум 8 символів", "error"); return; }
+    if (pwModal.busy) return;   // Enter у полі під час запиту — не другий POST
     setPwModal((m) => (m ? { ...m, busy: true } : m));
-    const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: pwModal.id, action: "set", password: pwModal.val }) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) { notify(data.error || "Помилка", "error"); setPwModal((m) => (m ? { ...m, busy: false } : m)); return; }
-    setCeos((rs) => rs.map((r) => (r.id === pwModal.id ? { ...r, password_set: true } : r)));
-    setFreshTokens((m) => forgetToken(m, pwModal.id)); // токен погашено сервером — не показувати мертвий
-    notify("Пароль встановлено", "success");
-    setPwModal(null);
+    /* Ревʼю с75: без try/finally реджект fetch лишав busy=true назавжди, а
+       BaseDialog у busy глушить ✕/Esc/оверлей (див. StaffManager.submitPassword). */
+    try {
+      const res = await fetch("/api/staff/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: pwModal.id, action: "set", password: pwModal.val }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { notify(data.error || "Помилка", "error"); return; }
+      setCeos((rs) => rs.map((r) => (r.id === pwModal.id ? { ...r, password_set: true } : r)));
+      setFreshTokens((m) => forgetToken(m, pwModal.id)); // токен погашено сервером — не показувати мертвий
+      notify("Пароль встановлено", "success");
+      setPwModal(null);
+    } catch {
+      notify("Не вдалося звʼязатися із сервером. Спробуйте ще раз.", "error");
+    } finally {
+      setPwModal((m) => (m ? { ...m, busy: false } : m));
+    }
   }
   function askRevoke(id: string, label: string | null) {
     setAsk({

@@ -478,7 +478,7 @@ export default function WaitlistModal({ centers, rooms, initial, allowedModaliti
           <div className="fld-row" style={{ alignItems: "flex-end" }}>
             <div className="fld" style={{ flex: "0 0 auto" }}>
               <span className="fld-lab">Тип <span className="req">*</span></span>
-              <div className="bk-seg" style={{ flexWrap: "wrap" }}>
+              <div className="bk-seg" style={{ flexWrap: "wrap" }} role="group" aria-label="Тип дослідження (обовʼязково)">
                 {availableModalities.map((code) => (
                   <button key={code} type="button" className={"bk-seg-btn" + (studyType === code ? " active " + modalityKind(code) : "")} aria-pressed={studyType === code} aria-label={modalityLabel(code)} onClick={() => changeType(code)} title={modalityLabel(code)}>{modalityShort(code)}</button>
                 ))}

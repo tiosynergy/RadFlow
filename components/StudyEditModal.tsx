@@ -996,7 +996,7 @@ export default function StudyEditModal({ patient, scheduledDate, rooms, clinicId
                           <button className={"bk-seg-btn active " + modalityKind(roomKind)} disabled>{modalityShort(roomKind)} 🔒</button>
                         </div>
                       ) : (
-                        <div className="bk-seg st-seg" style={{ flexWrap: "wrap" }}>
+                        <div className="bk-seg st-seg" style={{ flexWrap: "wrap" }} role="group" aria-label="Тип дослідження">
                           {BOOKABLE_MODALITIES.map((code) => (
                             <button key={code} type="button" className={"bk-seg-btn" + (r.type === modalityLabel(code) ? " active " + modalityKind(code) : "")} aria-pressed={r.type === modalityLabel(code)} aria-label={modalityLabel(code)} onClick={() => setType(i, modalityLabel(code))} title={modalityLabel(code)}>{modalityShort(code)}</button>
                           ))}

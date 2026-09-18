@@ -113,10 +113,14 @@ describe("W-24 — aria-label на span лише разом із роллю (NVD
   });
   it.each([
     ["components/QueueBoard.tsx", /<span role="img" title=\{"Дзвінок: " \+ cm\.label\} aria-label=\{"Дзвінок: " \+ cm\.label\}/],
-    ["components/ReferrerBoard.tsx", /<span role="img" title=\{"Дзвінок: " \+ call\.label\} aria-label=\{"Статус дзвінка: " \+ call\.label\}/],
     ["components/SearchScreen.tsx", /<span role="img" title="Повʼязано з кейсом" aria-label="Повʼязано з кейсом"/],
   ])("%s: гліф статусу — role=\"img\"", (file, re) => {
     expect(read(file)).toMatch(re);
+  });
+  it("ReferrerBoard: статус дзвінка з видимим текстом — ТЕКСТ (не role=\"img\"), контекст — прихованим префіксом", () => {
+    const s = read("components/ReferrerBoard.tsx");
+    expect(s).toContain('<span aria-hidden="true">{call.icon}</span><span className="rf-vh">Статус дзвінка: </span>{call.label}');
+    expect(s).not.toMatch(/role="img"[^>]*aria-label=\{"Статус дзвінка: "/);
   });
 });
 
@@ -249,8 +253,22 @@ describe("W-10 — обовʼязковість і помилки полів п�
     expect(s).toContain('<PhoneInput value={phone} onChange={setPhone} required={!softPatient} />');
     expect(s).toContain('aria-label="Пріоритет пацієнта" aria-required={moveMode ? undefined : true}');
     expect(s).toContain('<select className="inp" aria-required={true} value={region}');
-    expect(s).toContain('aria-required={true} aria-invalid={miss.dur ? true : undefined} aria-describedby={durHintId}');
+    expect(s).toContain('aria-required={true} aria-invalid={miss.dur && durEdit !== "" ? true : undefined}');
     expect(s).toContain('<div className="bk-gender-row" role="group" aria-label={"Стать" + (softPatient ? "" : " (обовʼязково)")}>');
+    // підказка тривалості стоїть усередині <label> і вже входить в імʼя — describedby читався б двічі (ревʼю с75)
+    expect(s).not.toContain("durHintId");
+  });
+  it.each(["components/BookingModal.tsx", "components/WaitlistModal.tsx", "components/ReferralPortal.tsx"])("%s: сегмент «Тип» — група з іменем «Тип дослідження (обовʼязково)»", (file) => {
+    expect(read(file)).toContain('role="group" aria-label="Тип дослідження (обовʼязково)"');
+  });
+  it("SetupWizard: логін — підказка ПОЗА <label> (сусід поля), label через htmlFor; CitySelect — поза <label> (ревʼю с75)", () => {
+    const s = read("components/SetupWizard.tsx");
+    expect(s).toContain('<label className="fld-lab" htmlFor="sw-login">Логін для входу <Req /></label>');
+    expect(s).toMatch(/<input id="sw-login" className=\{"inp" \+ \(loginOk \? "" : " invalid"\)\}/);
+    expect(s).toContain('<label className="fld-lab" htmlFor="sw-city">Місто <Req /></label>');
+    expect(s).toContain('<CitySelect id="sw-city" value={city} onChange={setCity} required />');
+    expect(s).not.toMatch(/<label[^>]*>[^<]*<span className="fld-lab">Місто/);
+    expect(read("components/ReferralPortal.tsx")).toContain('<label className="fld-lab" htmlFor="rp-center-city">Місто</label><CitySelect id="rp-center-city"');
   });
   it("DobField: aria-required із пропа, aria-invalid лише при справжній помилці, текст помилки — id + role=\"alert\" і describedby", () => {
     const s = read("components/BookingModal.tsx");
@@ -347,10 +365,12 @@ describe("W-12 — повідомлення про стан озвучуютьс
     expect(s).toContain("{shown && isError && <ToastCard");
     expect(s).not.toMatch(/role=\{isError \? "alert" : "status"\}/);
   });
-  it("SetupWizard: .toast-wrap — live-регіон, гліф прихований", () => {
+  it("SetupWizard: спільний <Toast> замість власного стека .toast-wrap (ревʼю с75: утримання, ✕, 6 с для помилок)", () => {
     const s = read("components/SetupWizard.tsx");
-    expect(s).toContain('<div className="toast-wrap" role="status" aria-live="polite">');
-    expect(s).toContain('<span className="ti" aria-hidden="true">{icons[t.type]}</span>');
+    expect(s).toContain('<Toast toast={toast} onDismiss={dismissToast} />');
+    expect(s).toContain('import Toast, { type ToastData } from "@/components/Toast";');
+    expect(s).not.toContain('className="toast-wrap"');
+    expect(s).toMatch(/timer\.current = setTimeout\(\(\) => setToast\(null\), kind === "error" \? 6000 : 3000\);/);
   });
   it("WaitlistBoard: Toast без другої обгортки role=\"status\"", () => {
     const s = read("components/WaitlistBoard.tsx");
@@ -436,9 +456,14 @@ describe("W-11 — відкат не тікає: тост тримається �
   it("Toast: показує останній тост, поки його тримають; дія/✕ гасять одразу; після відпускання — грація", () => {
     const s = read("components/Toast.tsx");
     expect(s).toContain("const shown = toast ?? (held ? last : null);");
-    expect(s).toMatch(/onMouseEnter: hold, onMouseLeave: release,\s*onFocus: hold,/);
+    expect(s).toMatch(/onMouseEnter: hold, onMouseLeave: release,\s*onFocus: \(e: React\.FocusEvent<HTMLDivElement>\) => \{[\s\S]*?hold\(\);\s*\},/);
     expect(s).toMatch(/onBlur: \(e: React\.FocusEvent<HTMLDivElement>\) => \{ if \(!e\.currentTarget\.contains\(e\.relatedTarget as Node \| null\)\) release\(\); \}/);
-    expect(s).toContain("const dismiss = () => { setLast(null); setHeld(false); onDismiss?.(); };");
+    expect(s).toContain("const dismiss = () => { restoreFocus(); setLast(null); setHeld(false); onDismiss?.(); };");
+    // ревʼю с75: фокус повертається туди, звідки прийшов; утримання без курсора/фокуса скидається; однаковий текст двічі — перемонтування
+    expect(s).toMatch(/if \(c && c\.contains\(document\.activeElement\) && from && from\.isConnected\) from\.focus\(\);/);
+    expect(s).toMatch(/if \(!c \|\| \(!c\.matches\(":hover"\) && !c\.contains\(document\.activeElement\)\)\) setHeld\(false\);/);
+    expect(s.match(/<ToastCard key=\{seqRef\.current\}/g)?.length).toBe(2);
+    expect(s).toContain('<kbd aria-hidden="true"');
     expect(s).toContain("const RELEASE_GRACE_MS = 1000;");
     expect(s).toMatch(/releaseTimer\.current = setTimeout\(\(\) => setHeld\(false\), RELEASE_GRACE_MS\)/);
     expect(s).toContain('aria-keyshortcuts={toast.action.hotkey ? toast.action.hotkey.replace(/Ctrl/i, "Control") : undefined}');
@@ -446,11 +471,15 @@ describe("W-11 — відкат не тікає: тост тримається �
   });
   it.each([
     ["components/QueueBoard.tsx", /const UNDO_HOTKEY_MS = 30_000;/],
-    ["components/QueueBoard.tsx", /if \(action\) undoRef\.current = \{ run: action\.onAction, born, until: Date\.now\(\) \+ UNDO_HOTKEY_MS \};/],
+    ["components/QueueBoard.tsx", /undoRef\.current = action \? \{ run: action\.onAction, what: msg, born, until: Date\.now\(\) \+ UNDO_HOTKEY_MS \} : null;/],
+    ["components/QueueBoard.tsx", /async function setStatus\([^)]*\): Promise<boolean> \{\s*\/\/[^\n]*\n\s*undoRef\.current = null;/],
+    ["components/QueueBoard.tsx", /async function setCall\(p: QEntry, call_status: string\) \{\s*undoRef\.current = null;/],
     ["components/QueueBoard.tsx", /hotkey: "Ctrl\+Z", onAction: \(\) => \{ if \(scopeRef\.current !== born\) return; undoRef\.current = null; action\.onAction\(\); \}/],
-    ["components/QueueBoard.tsx", /if \(\(e\.ctrlKey \|\| e\.metaKey\) && !e\.altKey && !e\.shiftKey && e\.code === "KeyZ" && !typing && !anyModalOpen\) \{\s*const u = undoRef\.current;\s*if \(!u \|\| Date\.now\(\) > u\.until \|\| scopeRef\.current !== u\.born\) return;\s*e\.preventDefault\(\);\s*undoRef\.current = null;\s*u\.run\(\);\s*notifyRef\.current\("Відмінено останню дію", "info"\);\s*return;\s*\}/],
+    ["components/QueueBoard.tsx", /if \(\(e\.ctrlKey \|\| e\.metaKey\) && !e\.altKey && !e\.shiftKey && e\.code === "KeyZ" && !typing && !anyModalOpen\) \{\s*const u = undoRef\.current;\s*if \(!u \|\| Date\.now\(\) > u\.until \|\| scopeRef\.current !== u\.born\) return;\s*e\.preventDefault\(\);\s*undoRef\.current = null;\s*u\.run\(\);\s*notifyRef\.current\("Відмінено: " \+ u\.what, "info"\);\s*return;\s*\}/],
     ["components/WaitlistBoard.tsx", /const UNDO_HOTKEY_MS = 30_000;/],
-    ["components/WaitlistBoard.tsx", /if \(action\) undoRef\.current = \{ run: action\.onAction, until: Date\.now\(\) \+ UNDO_HOTKEY_MS \};/],
+    ["components/WaitlistBoard.tsx", /undoRef\.current = action \? \{ run: action\.onAction, until: Date\.now\(\) \+ UNDO_HOTKEY_MS \} : null;/],
+    ["components/WaitlistBoard.tsx", /modalOpenRef\.current = !!\(editFor \|\| bookFor \|\| confirmRemove\);/],
+    ["components/WaitlistBoard.tsx", /if \(modalOpenRef\.current\) return;\s*const u = undoRef\.current;/],
     ["components/WaitlistBoard.tsx", /if \(!\(e\.ctrlKey \|\| e\.metaKey\) \|\| e\.altKey \|\| e\.shiftKey \|\| e\.code !== "KeyZ"\) return;\s*const t = e\.target as HTMLElement \| null;\s*if \(t && \(t\.isContentEditable \|\| \/\^\(INPUT\|TEXTAREA\|SELECT\)\$\/\.test\(t\.tagName\)\)\) return;/],
   ])("%s: Ctrl+Z поза полем вводу повторює дію з тосту (%s)", (file, re) => {
     expect(read(file)).toMatch(re);
@@ -463,7 +492,8 @@ describe("W-11 — відкат не тікає: тост тримається �
     const s = read("components/LoginPage.tsx");
     expect(s).not.toMatch(/setTimeout\(\(\) => setToast/);
     expect(s).toContain("setToast((t) => (t.show ? { ...t, show: false } : t));");
-    expect(s).toContain('{toast.show && <><div className="tt">{toast.title}</div><div className="td">{toast.msg}</div></>}');
+    expect(s).toContain('{toast.show && <div key={toast.seq}><div className="tt">{toast.title}</div><div className="td">{toast.msg}</div></div>}');
+    expect(s).toContain("setToast((t) => ({ show: true, title, msg, seq: t.seq + 1 }));");
   });
 });
 
@@ -473,15 +503,93 @@ describe("W-5 — сітка слотів: listbox з опціями, roving tab
     expect(s).toContain('role="option" aria-selected={value === s} tabIndex={s === tabStop ? 0 : -1} data-slot={s}');
     expect(s).toContain('<div className="slot-blk" key={bl.key} role="group" aria-label={slotFmt(bl.startMin)}>');
     expect(s).toContain('<div className="slot-blk-cells" role="presentation">');
-    expect(s).toMatch(/role="listbox" aria-label="Вільні слоти \(крок 5 хв\)[^"]*" ref=\{gridRef\} onKeyDown=\{onGridKey\}/);
+    expect(s).toMatch(/role="listbox" aria-label="Вільні слоти \(крок 5 хв\)" aria-describedby=\{helpId\} ref=\{gridRef\} onKeyDown=\{onGridKey\}/);
+    expect(s).toContain('aria-label={label.includes(s) ? label : s + " — " + label}');
+    expect(s).toContain('<div className={hint ? "slot-hint" : "rf-vh"} role="status" aria-live="polite">');
     expect(s).toMatch(/const tabStop = \(value && allSubs\.includes\(value\) && focusable\(value\)\) \? value\s*: allSubs\.find\(\(s\) => isFree\(stateOf\(s\)\)\) \?\? allSubs\.find\(focusable\) \?\? "";/);
     for (const k of ['"ArrowLeft"', '"ArrowRight"', '"ArrowUp"', '"ArrowDown"', '"Home"', '"End"']) expect(s).toContain(k);
     expect(s).toContain('querySelectorAll<HTMLButtonElement>("button.slot:not([disabled])")');
   });
-  it("CSS: 2 блоки в рядку і на миші, шрифт комірки 11px (0.6875rem), стеля висоти збережена", () => {
+  it("CSS: блоки по ≥160px (2 у колонці 372, 3 у 620) і на миші, шрифт комірки 11px (0.6875rem), стеля висоти збережена", () => {
     const css = read("styles/prototype/radflow.css");
-    expect(css).toMatch(/\.slot-grid4 \{ display: grid; grid-template-columns: repeat\(2, 1fr\); gap: 9px 7px; max-height: max\(340px, min\(470px, 46vh\)\);/);
+    expect(css).toMatch(/\.slot-grid4 \{ display: grid; grid-template-columns: repeat\(auto-fill, minmax\(160px, 1fr\)\); gap: 9px 7px; max-height: max\(340px, min\(470px, 46vh\)\);/);
     expect(css).toContain(".slot-blk-cells .slot { padding: 5px 0; font-size: 0.6875rem; border-radius: 4px; min-width: 0; }");
     expect(css).not.toMatch(/\.slot-blk-cells \.slot \{[^}]*font-size: 0\.5625rem/);
+  });
+});
+
+/* ---- Ревʼю с75 (дві лінзи: доступність і регресії) — піни на виправлення ---- */
+
+describe("Ревʼю с75 — токени й контраст", () => {
+  it("register.css: кожен var(--x) зі сторінок входу/реєстрації/пароля оголошений у .reg-root (radflow.css там не вантажиться)", () => {
+    const css = read("components/register.css");
+    const block = css.slice(css.indexOf(".reg-root {"), css.indexOf("}", css.indexOf(".reg-root {")));
+    const declared = new Set([...block.matchAll(/--([a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+    const used = new Set<string>();
+    for (const f of ["components/register.css", "components/LoginPage.tsx", "components/RegisterPage.tsx", "components/SetPasswordPage.tsx"]) {
+      for (const m of read(f).matchAll(/var\(--([a-z0-9-]+)/g)) used.add(m[1]);
+    }
+    const missing = [...used].filter((v) => !declared.has(v) && v !== "font");
+    expect(missing).toEqual([]);
+    for (const t of ["red-text", "danger", "danger-hover", "accent"]) expect(declared.has(t), t).toBe(true);
+  });
+  it("білий текст на --red не лишився (заливка під білий — --danger); «СТОП» на білому — --danger", () => {
+    const css = read("styles/prototype/radflow.css").replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const sel = m[1].trim().replace(/\s+/g, " "), body = m[2];
+      if (sel === ".rf-dot") continue;   // тексту в крапці немає; .rf-dot-num перебиває колір
+      if (/(?<![-\w])color\s*:\s*#fff\b/i.test(body)) expect(body, sel).not.toMatch(/background(-color)?\s*:\s*var\(\s*--red\s*\)/);
+    }
+    expect(css).toContain(".sb-emergency.on .sb-badge-red { background: #fff; color: var(--danger); }");
+    expect(css).toContain(".prio-tag.red { color: #fff; background: var(--danger); }");
+  });
+  it("contrast-audit.mjs: лінт «білий на --red», «--red/--red-text на білому», пара --danger на #fff", () => {
+    const s = read("scripts/contrast-audit.mjs");
+    expect(s).toContain("if (WHITE_TEXT.test(body) && BG_RED.test(body) && !WHITE_ON_RED_OK.has(sel)) {");
+    expect(s).toMatch(/check\(`--danger \$\{DANGER\} на #fff \(\.sb-emergency\.on \.sb-badge-red\)`, ratio\(DANGER, WHITE\), 4\.5\)/);
+    expect(s).toContain("if (COLOR_DANGER.test(body) && !BG_WHITE.test(body)) {");
+  });
+});
+
+describe("Ревʼю с75 — поведінка нових елементів", () => {
+  it("BaseDialog: початковий фокус — у перше поле вмісту (ефект ПІСЛЯ хука), інакше ✕", () => {
+    const s = read("components/BaseDialog.tsx");
+    const hook = s.indexOf("useModalA11y<HTMLDivElement>(");
+    const eff = s.indexOf('querySelector<HTMLElement>("input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled])")');
+    expect(hook).toBeGreaterThan(-1);
+    expect(eff).toBeGreaterThan(hook);
+    expect(s).toContain("if (field) field.focus();");
+  });
+  it.each(["components/StaffManager.tsx", "components/CeoManager.tsx"])("%s: submitPassword — гард busy, try/finally скидає busy при обриві мережі", (file) => {
+    const s = read(file);
+    const i = s.indexOf("async function submitPassword()");
+    const body = s.slice(i, s.indexOf("\n  }\n", i));
+    expect(body).toContain("if (pwModal.busy) return;");
+    expect(body).toMatch(/try \{[\s\S]*fetch\("\/api\/staff\/password"[\s\S]*\} catch \{[\s\S]*notify\("Не вдалося звʼязатися із сервером\. Спробуйте ще раз\.", "error"\);[\s\S]*\} finally \{\s*setPwModal\(\(m\) => \(m \? \{ \.\.\.m, busy: false \} : m\)\);\s*\}/);
+  });
+  it("CitySelect: live-статус — за результатом пошуку (idle/pending/done), не за відкритістю списку", () => {
+    const s = read("components/CitySelect.tsx");
+    expect(s).toContain('const [search, setSearch] = useState<"idle" | "pending" | "done">("idle");');
+    expect(s).toMatch(/const statusText = search !== "done" \? ""\s*: hits\.length > 0 \? "знайдено: " \+ hits\.length/);
+    expect(s).toMatch(/setHits\(\(data as CityHit\[\]\) \|\| \[\]\);\s*setSearch\("done"\);/);
+    expect(s).not.toContain("listOpen ? \"знайдено");
+  });
+  it("DangerZone: після успіху текст — role=status, отримує фокус (тригер зник)", () => {
+    const s = read("components/DangerZone.tsx");
+    expect(s).toContain('<p ref={doneRef} tabIndex={-1} role="status"');
+    expect(s).toContain("useEffect(() => { if (done) doneRef.current?.focus(); }, [done]);");
+  });
+});
+
+describe("W-8 (доповнення ревʼю с75) — кнопка з самим прихованим гліфом теж мусить мати імʼя", () => {
+  it("<button …><span aria-hidden=\"true\">✕</span></button> без aria-label — немає", () => {
+    const offenders: string[] = [];
+    for (const f of components()) {
+      const s = read("components/" + f);
+      const re = /<button\b([^>]*)>\s*<span aria-hidden="true">[^<]*<\/span>\s*<\/button>/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(s))) if (!/aria-label/.test(m[1])) offenders.push(f + ":" + lineOf(s, m.index));
+    }
+    expect(offenders).toEqual([]);
   });
 });

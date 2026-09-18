@@ -207,6 +207,11 @@ console.log(`  ДО: #fff на --red ${RED} = ${f(ratio(WHITE, RED))} ❌ (.btn-
 check(`#fff на --danger ${DANGER}`, ratio(WHITE, DANGER), 4.5);
 check(`#fff на --danger-hover ${DANGER_HOVER}`, ratio(WHITE, DANGER_HOVER), 4.5);
 console.log(`  ·  довідково: --danger на --card = ${f(ratio(DANGER, CARD))} — межа кнопки не потрібна, коли її текст ≥4.5 (1.4.11, «boundary not required»)`);
+/* Ревʼю с75: єдине місце з червоним текстом на БІЛОМУ — бейдж «СТОП» у натиснутій
+   аварійній кнопці (.sb-emergency.on .sb-badge-red). --red-text там 2,17 —
+   тому --danger; SURFACES білого не містить, пара стоїть окремо. */
+check(`--danger ${DANGER} на #fff (.sb-emergency.on .sb-badge-red)`, ratio(DANGER, WHITE), 4.5);
+console.log(`  ·  довідково: --red-text на #fff = ${f(ratio(RED_TEXT, WHITE))}, --red на #fff = ${f(ratio(RED, WHITE))} — обидва <4.5, тому на світлому лише --danger`);
 
 /* ── Статичний лінт ролей по самій вёрстці ───────────────────────────────────
    Чисел мало: у с23 ревʼю знайшло провал (.bd-room-kind.mrt), якого числа НЕ
@@ -252,6 +257,13 @@ const COLOR_RED = /(?<![-\w])color\s*:\s*(var\(\s*--red\s*[,)]|#ff453a)/;
 const COLOR_RED_LITERAL = /(?<![-\w])color\s*:\s*#ff8c84/;
 const BG_RED_TEXT = new RegExp(BG_PROP + String.raw`var\(\s*--red-text\s*[,)]`);
 const COLOR_DANGER = /(?<![-\w])color\s*:\s*var\(\s*--danger/;
+/* Білий текст на --red — 3,41; заливка під білий — лише --danger. */
+const WHITE_TEXT = /(?<![-\w])color\s*:\s*(#fff\b|#ffffff\b|white\b)/i;
+const BG_RED = new RegExp(BG_PROP + String.raw`var\(\s*--red\s*[,)]`);
+const BG_WHITE = /background(-color)?\s*:\s*(#fff\b|#ffffff\b|white\b)/i;
+/* Базове правило крапки непрочитаного: тексту в ній НЕМАЄ (гліф прихований), а
+   варіант із числом .rf-dot-num перебиває color на темний (пари вище). */
+const WHITE_ON_RED_OK = new Set([".rf-dot"]);
 /* Контур мусить бути САМЕ контуром: межа, inset-тінь або outline. Свічення
    `box-shadow: 0 0 10px` і `color: var(--blue-line)` контуром не рахуються. */
 const HAS_OUTLINE = new RegExp([
@@ -292,8 +304,14 @@ for (const rel of CSS_FILES) {
     if (BG_RED_TEXT.test(body)) {
       lintFail(`${rel} · ${sel}: --red-text як заливка — це роль тексту, не фону (білий на ньому 2.2:1)`);
     }
-    if (COLOR_DANGER.test(body)) {
-      lintFail(`${rel} · ${sel}: --danger як колір тексту — 2.85:1 на --card; це заливка під білий текст, а текст — var(--red-text)`);
+    if (COLOR_DANGER.test(body) && !BG_WHITE.test(body)) {
+      lintFail(`${rel} · ${sel}: --danger як колір тексту — 2.85:1 на --card; це заливка під білий текст, а текст — var(--red-text) (на білій заливці — навпаки, --danger)`);
+    }
+    if (WHITE_TEXT.test(body) && BG_RED.test(body) && !WHITE_ON_RED_OK.has(sel)) {
+      lintFail(`${rel} · ${sel}: білий текст на заливці --red — 3.41:1. Заливка під білий текст — var(--danger)`);
+    }
+    if (BG_WHITE.test(body) && /(?<![-\w])color\s*:\s*var\(\s*--red(-text)?\s*[,)]/.test(body)) {
+      lintFail(`${rel} · ${sel}: --red/--red-text як текст на білому — 3.41 / 2.17. На білому — var(--danger)`);
     }
   }
 }

@@ -280,7 +280,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .sb-item.active .ic { opacity: 1; }
 .sb-badge {
   margin-left: auto; min-width: 19px; height: 19px; padding: 0 6px;
-  border-radius: 10px; background: var(--red); color: #fff;
+  border-radius: 10px; background: var(--danger); color: #fff;
   font-size: 0.6875rem; font-weight: 700; display: flex; align-items: center; justify-content: center;
 }
 .sb-badge.dim { background: var(--gray-badge-bg); color: var(--text-secondary); }
@@ -1038,7 +1038,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
   border: 1px solid rgba(255,69,58,0.45); border-radius: var(--r-lg);
   padding: 12px 16px; margin-bottom: 16px; }
 .cito-flag { display: inline-flex; align-items: center; gap: 7px; font-size: 0.8125rem; font-weight: 800; letter-spacing: 0.06em;
-  color: #fff; background: var(--red); border-radius: 7px; padding: 5px 11px; flex-shrink: 0; }
+  color: #fff; background: var(--danger); border-radius: 7px; padding: 5px 11px; flex-shrink: 0; }
 .cito-pulse { width: 8px; height: 8px; border-radius: 50%; background: #fff; position: relative; }
 .cito-pulse::after { content: ""; position: absolute; inset: -3px; border-radius: 50%; background: #fff; opacity: .5; animation: pulse 1.6s ease-out infinite; }
 .cito-lab { font-size: 0.8125rem; font-weight: 600; color: var(--red-text); }
@@ -1048,13 +1048,13 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .cito-chip:hover { background: var(--red-bg); }
 .cito-chip-time { color: var(--red-text); font-weight: 700; }
 .cito-chip-room { color: var(--text-muted); font-weight: 500; }
-.cito-tag { display: inline-block; font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.05em; color: #fff; background: var(--red);
+.cito-tag { display: inline-block; font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.05em; color: #fff; background: var(--danger);
   border-radius: 4px; padding: 1px 5px; margin-right: 7px; vertical-align: middle; }
 
 /* ── Пріоритет пацієнта (patient_priority): бейдж + сегментований селектор ── */
 .prio-tag { display: inline-block; font-size: 0.6875rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase;
   border-radius: 4px; padding: 1px 6px; margin-right: 7px; vertical-align: middle; }
-.prio-tag.red { color: #fff; background: var(--red); }
+.prio-tag.red { color: #fff; background: var(--danger); }
 .prio-tag.orange { color: #1c1c1e; background: var(--orange); }
 .prio-tag.muted { color: var(--text-secondary); background: var(--gray-badge-bg); }
 /* У рядку черги: бейдж пріоритету — окремим рядком, ПІБ пацієнта під ним. */
@@ -1678,11 +1678,13 @@ select.inp { cursor: pointer; }
    сітка не виштовхувала підвал із кнопкою «Зберегти» (шапка й підвал
    зафіксовані, прокручується лише середина). Скрол лишається як запобіжник:
    кабінет із цілодобовим графіком не вміститься за жодної стелі. */
-/* W-5 (с75): 2 блоки в рядку і на миші (було 4 → комірка ≈11.6px у правій колонці
-   372px; тепер ≈28px, поріг 2.5.8 — 24px). Сітку й так гортають (max-height),
-   тож висота дешевша за ширину форми (розвилка 3.2, варіант а). Шрифт комірки
-   0.6875rem — «підлога 11px» проєкту, а не 9px. */
-.slot-grid4 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px 7px; max-height: max(340px, min(470px, 46vh)); overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
+/* W-5 (с75): блоків у рядку стільки, скільки вміщається по ≥160px (комірка
+   (160−10)/6 = 25px ≥ 24, поріг 2.5.8): у правій колонці форми запису (372px) — 2
+   (комірка ≈28px; було 4 і ≈11.6px), у ширших модалках (огляд дня, 620px) — 3.
+   Сітку й так гортають (max-height), тож висота дешевша за ширину форми
+   (розвилка 3.2, варіант а; ревʼю с75 — auto-fill замість жорстких 2, щоб
+   широкі контейнери не рідшали). Шрифт комірки 0.6875rem — «підлога 11px». */
+.slot-grid4 { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 9px 7px; max-height: max(340px, min(470px, 46vh)); overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
 /* Підказка зайнятого слота по тапу (тач: hover/title недоступні). Живе ПІД
    сіткою (поза скрол-контейнером), тож завжди видима. */
 .slot-hint { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 8px;
@@ -1741,16 +1743,18 @@ select.inp { cursor: pointer; }
   background: var(--red-bg); color: var(--red-text);
   border: 1px solid var(--red); font-weight: 600;
 }
-.btn-breakdown:hover { background: var(--red); color: #fff; }
+.btn-breakdown:hover { background: var(--danger); color: #fff; }
 
 /* Кнопка-тумблер «Аварійна зупинка» у сайдбарі (як btn-breakdown).
    Відтиснута — червоний контур; натиснута (.on = є активна аварія) — залита. */
 .sb-emergency { margin-top: 6px; color: var(--red-text); font-weight: 600; border: 1px solid var(--red); background: var(--red-bg); }
 .sb-emergency .ic { opacity: 1; }
-.sb-emergency:hover { background: var(--red); color: #fff; }
-.sb-emergency.on { background: var(--red); color: #fff; box-shadow: 0 0 0 2px var(--red-bg), 0 0 0 3px var(--red); }
-.sb-emergency.on:hover { background: var(--red); color: #fff; filter: brightness(1.05); }
-.sb-emergency.on .sb-badge-red { background: #fff; color: var(--red-text); }
+/* W-4 (с75, ревʼю): білий на --red дає 3,41 — заливки під білий текст на --danger
+   (4,89). Бейдж «СТОП» на білому — --danger як текст (4,89; --red-text там 2,17). */
+.sb-emergency:hover { background: var(--danger); color: #fff; }
+.sb-emergency.on { background: var(--danger); color: #fff; box-shadow: 0 0 0 2px var(--red-bg), 0 0 0 3px var(--red); }
+.sb-emergency.on:hover { background: var(--danger); color: #fff; filter: brightness(1.05); }
+.sb-emergency.on .sb-badge-red { background: #fff; color: var(--danger); }
 
 /* Зупинений кабінет (аварія/поломка) у списку сайдбару — червона підсвітка */
 .sb-cab.stopped { background: var(--red-bg); }
@@ -1774,7 +1778,7 @@ select.inp { cursor: pointer; }
 /* Колл-лист простою (права панель) */
 .clp-inc { border: 1px solid var(--red); }
 .hic-red { color: var(--red-text) !important; }
-.clp-badge-red { background: var(--red); color: #fff; }
+.clp-badge-red { background: var(--danger); color: #fff; }
 .clp-inc-sub b { color: var(--red-text); }
 .clp-inc-ctx {
   font-size: 0.71875rem; line-height: 1.5; color: var(--text-secondary);
@@ -1876,7 +1880,7 @@ select.inp { cursor: pointer; }
 .bd-done-hint b { color: var(--text); }
 
 /* --- Синхронізація блокування: бейдж сайдбару, заблокований кабінет, рядок на перезапис --- */
-.sb-badge-red { background: var(--red); color: #fff; }
+.sb-badge-red { background: var(--danger); color: #fff; }
 
 .room-card.blocked-card { border: 1.5px solid var(--red); background: linear-gradient(180deg, var(--red-bg), var(--card)); }
 .rc-blocked-reason { font-size: 0.8125rem; font-weight: 600; color: var(--red-text); margin-top: 4px; }

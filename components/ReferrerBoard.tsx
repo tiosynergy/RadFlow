@@ -309,8 +309,11 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                     </div>
                     <div className="q-status-cell">
                       <span className={"badge " + meta.cls} title={"title" in meta ? meta.title : undefined}>{meta.label}</span>
-                      <span role="img" title={"Дзвінок: " + call.label} aria-label={"Статус дзвінка: " + call.label} style={{ fontSize: "0.71875rem", display: "inline-flex", alignItems: "center", gap: 4, color: CALL_COLOR[r.call_status || "not_called"], fontWeight: 600 }}>
-                        <span aria-hidden="true">{call.icon}</span>{call.label}
+                      {/* Ревʼю с75: видимий текст лишається ТЕКСТОМ (не role="img" —
+                          інакше його не прочитати посимвольно); контекст — прихованим
+                          префіксом, гліф — поза деревом доступності. */}
+                      <span title={"Дзвінок: " + call.label} style={{ fontSize: "0.71875rem", display: "inline-flex", alignItems: "center", gap: 4, color: CALL_COLOR[r.call_status || "not_called"], fontWeight: 600 }}>
+                        <span aria-hidden="true">{call.icon}</span><span className="rf-vh">Статус дзвінка: </span>{call.label}
                       </span>
                     </div>
                     <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden="true">›</span>

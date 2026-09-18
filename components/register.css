@@ -11,6 +11,10 @@
   --blue: #0d6ecf; --blue-hover: #0b5cae; --blue-text: #6db4ff; --blue-line: #0a84ff;
   --blue-bg: rgba(13,110,207,.15); --blue-bg-soft: rgba(13,110,207,.08);
   --green: #30d158; --green-bg: rgba(48,209,88,.15); --red: #ff453a; --red-bg: rgba(255,69,58,.15);
+  /* W-4 (с75, ревʼю): сторінки входу/реєстрації/пароля НЕ вантажать radflow.css,
+     тож токени червоного тексту й деструктивних заливок дублюються тут — інакше
+     `var(--red-text)` у .err був би невизначений і текст успадковував би --text. */
+  --red-text: #ff918a; --danger: #d62f26; --danger-hover: #c22a21; --accent: var(--blue-line);
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", system-ui, sans-serif;
 
   font-family: var(--font); background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased;

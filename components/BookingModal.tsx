@@ -962,10 +962,10 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
   /* W-10 (с75): «Зберегти» вимкнена, доки список не порожній, тож із клавіатури
      на неї не потрапиш, а в режимі огляду NVDA читає її опис — і саме туди
      через aria-describedby іде підсумок «Залишилось: …» (коми — .rf-vh, як у
-     W-25, інакше чипи злипаються в одне слово). Поле тривалості описує
-     свою підказку («час не задано — введіть»). */
+     W-25, інакше чипи злипаються в одне слово). Підказка тривалості («час не
+     задано — введіть») стоїть УСЕРЕДИНІ <label>, тож уже входить в імʼя поля —
+     окремого describedby їй не треба (ревʼю с75: читалось би двічі). */
   const missId = useId();
-  const durHintId = useId();
   // 0077: «поза графіком» — теж легальний вибір, тому НЕ timeBad. Але зберегти
   // його можна лише з галочкою підтвердження (offOk) — див. valid нижче.
   // 0106: КРОКИ КЕЙСА — лише в межах графіка (case-RPC пишуть off_schedule=false,
@@ -1295,7 +1295,7 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
             <div className="bk-head-row">
               <div className="fld">
                 <span className="fld-lab">Тип <span className="req">*</span></span>
-                <div className="bk-seg" style={{ flexWrap: "wrap" }}>
+                <div className="bk-seg" style={{ flexWrap: "wrap" }} role="group" aria-label="Тип дослідження (обовʼязково)">
                   {availableModalities.map((code) => (
                     <button key={code} type="button" className={"bk-seg-btn" + (studyType === code ? " active " + modalityKind(code) : "")} aria-pressed={studyType === code} aria-label={modalityLabel(code)} onClick={() => changeType(code)} title={modalityLabel(code)}>{modalityShort(code)}</button>
                   ))}
@@ -1383,11 +1383,11 @@ export default function BookingModal({ rooms, clinicId, clinicTz, incidents, ser
                 <span className="fld-lab">Тривалість <span className="req">*</span></span>
                 <div className="bk-dur-row">
                   <input className="inp bk-dur-input" type="number" min="5" step="5" placeholder="—"
-                    aria-required={true} aria-invalid={miss.dur ? true : undefined} aria-describedby={durHintId}
+                    aria-required={true} aria-invalid={miss.dur && durEdit !== "" ? true : undefined}
                     value={durEdit} onChange={(e) => setDurEdit(e.target.value.replace(/\D/g, ""))} disabled={!region} />
                   <span className="bk-dur-unit">хв</span>
                 </div>
-                <span className={"bk-time-state " + (durCustom ? "busy" : "none")} id={durHintId}>
+                <span className={"bk-time-state " + (durCustom ? "busy" : "none")}>
                   {!region ? "оберіть область" : durCustom ? `↺ за замовч. ${computedDur} хв` : computedDur > 0 ? "за тривалістю області" : "час не задано — введіть"}
                 </span>
               </label>

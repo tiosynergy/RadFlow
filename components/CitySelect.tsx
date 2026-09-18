@@ -45,6 +45,10 @@ export default function CitySelect({
   const [hits, setHits] = useState<CityHit[]>([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
+  /* Ревʼю с75: live-статус мусить казати про РЕЗУЛЬТАТ пошуку, а не про те, чи
+     відкритий список: до відповіді RPC — мовчати (інакше «нічого не знайдено»
+     звучало до дебаунсу), після Esc — не брехати про порожній результат. */
+  const [search, setSearch] = useState<"idle" | "pending" | "done">("idle");
   const boxRef = useRef<HTMLDivElement>(null);
   // Чи відповідає поточний текст обраному зі списку значенню.
   const chosenRef = useRef(value || "");
@@ -67,9 +71,11 @@ export default function CitySelect({
     const q = text.trim();
     if (q.length < 2 || q === chosenRef.current.trim()) {
       setHits([]);
+      setSearch("idle");
       return;
     }
     let cancelled = false;
+    setSearch("pending");
     const t = setTimeout(async () => {
       try {
         const supabase = createClient();
@@ -77,12 +83,13 @@ export default function CitySelect({
         if (error) throw error;
         if (!cancelled) {
           setHits((data as CityHit[]) || []);
+          setSearch("done");
           setOpen(true);
           setActive(-1);
         }
       } catch {
         // Транзієнтні мережеві помилки (оновлення токена тощо) не валять UI.
-        if (!cancelled) setHits([]);
+        if (!cancelled) { setHits([]); setSearch("idle"); }
       }
     }, 250);
     return () => {
@@ -135,9 +142,8 @@ export default function CitySelect({
   // Некоректно: поле обовʼязкове й порожнє, АБО введено текст без вибору зі списку.
   const invalid = (required && !has) || (has && text.trim() !== chosenRef.current.trim());
   const listOpen = open && hits.length > 0;
-  const searching = text.trim().length >= 2 && text.trim() !== chosenRef.current.trim();
-  const statusText = !searching ? ""
-    : listOpen ? "знайдено: " + hits.length + " — стрілками оберіть зі списку"
+  const statusText = search !== "done" ? ""
+    : hits.length > 0 ? "знайдено: " + hits.length + " — стрілками оберіть зі списку"
     : "нічого не знайдено — оберіть населений пункт зі списку";
 
   return (

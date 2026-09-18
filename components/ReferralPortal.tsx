@@ -967,7 +967,7 @@ function NewReferral({ activeCenters, roomsByClinic, servicesByClinic, roomOverr
             <div className="bk-head-row">
               <div className="fld">
                 <span className="fld-lab">Тип <span className="req">*</span></span>
-                <div className="bk-seg">
+                <div className="bk-seg" role="group" aria-label="Тип дослідження (обовʼязково)">
                   {availableModalities.map((code) => (
                     <button key={code} type="button" className={"bk-seg-btn" + (studyType === modalityLabel(code) ? " active " + modalityKind(code) : "")} aria-pressed={studyType === modalityLabel(code)} aria-label={modalityLabel(code)} onClick={() => changeType(modalityLabel(code))} title={modalityLabel(code)}>{modalityShort(code)}</button>
                   ))}
@@ -1769,7 +1769,7 @@ function MyProfile({ doctorId, notify, onSaved }: { doctorId: string; notify: (m
         <label className="fld" style={{ flex: 1 }}><span className="fld-lab" style={{ color: "var(--red-text)" }}>Email (для відновлення доступу){reqMark}</span><input className="inp" type="email" placeholder="name@example.com" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} /></label>
       </div>
       <div className="fld-row" style={{ alignItems: "flex-start" }}>
-        <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Місто</span><CitySelect value={form.city} onChange={(v) => setForm((f) => ({ ...f, city: v }))} /></label>
+        <div className="fld" style={{ flex: 1 }}><label className="fld-lab" htmlFor="rp-center-city">Місто</label><CitySelect id="rp-center-city" value={form.city} onChange={(v) => setForm((f) => ({ ...f, city: v }))} /></div>
         <label className="fld" style={{ flex: 1 }}><span className="fld-lab">Примітки</span><AutoTextarea placeholder="напр. спеціалізація (необовʼязково)" value={form.note} onChange={(v) => setForm((f) => ({ ...f, note: v }))} /></label>
       </div>
       <div className="hint-blue">🔒 <b>Email бачите лише ви</b> — він потрібен для відновлення доступу й не видимий центрам. Логін, ПІБ, телефон, місто і примітки видно центрам, до яких ви підключені.</div>
