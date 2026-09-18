@@ -20,7 +20,7 @@ import { bookableRooms, isRoomBookable, visibleRooms, ROOM_OFF_LABEL, grantRoomI
 import ConfirmDialog from "@/components/ConfirmDialog";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
-import { unreadForEntity } from "@/lib/unreadChanges";
+import { unreadForEntity, type UnreadIndex } from "@/lib/unreadChanges";
 /* `forgetToken` тут не потрібен: пароль направник задає сам, екран цієї події
    не бачить, а `inviteHint` при `password_set=true` і так повертає `none` —
    мертвий токен у карті не показується. */
@@ -64,6 +64,73 @@ interface ReferrersManagerProps {
   clinicName?: string;
   adminName?: string;
   embedded?: boolean;
+}
+
+/* Рядок направника — компонент МОДУЛЬНОГО рівня, і це умова W-2, а не смак:
+   компонент, оголошений усередині рендера батька, отримує нову ідентичність
+   щокадру → React ремонтує його разом із кнопкою-заголовком, і фокус після
+   Enter падав би на <body> (ревʼю с75; те саме правило — CancelledRow у
+   QueueBoard). Усе, що рядок брав із замикання, тепер іде пропсами. */
+function AccessRowView({ r, children, onClick, expandable, expanded, unreadIx, roomsLabel, sanitizeRooms, freshTokens, copyLink }: {
+  r: AccessRow; children?: ReactNode; onClick?: () => void; expandable?: boolean; expanded?: boolean;
+  unreadIx: UnreadIndex; roomsLabel: (room_ids: string[] | null) => string; sanitizeRooms: (ids: string[] | null | undefined) => string[];
+  freshTokens: FreshTokens; copyLink: (tok: string) => void;
+}) {
+  const m = ACCESS_ST[r.status] || ACCESS_ST.active;
+  const name = r.referrer.full_name || r.referrer.login || "Лікар";
+  /* W-2 (WCAG 2.1.1, с75): рядок відкривався лише мишею (div з onClick), а це —
+     ЄДИНИЙ вхід у правку режиму/кабінетів і в історію. Імʼя тепер справжня
+     <button aria-expanded>; клік по решті рядка лишається для миші
+     (stopPropagation на кнопці — інакше подвійний toggle). */
+  return (
+    <div onClick={onClick} title={expandable ? (expanded ? "Згорнути налаштування" : "Натисніть, щоб змінити налаштування") : undefined} style={{ padding: "14px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
+      {expandable && <span aria-hidden="true" style={{ color: "var(--text-muted)", fontSize: "0.8125rem", width: 12, flexShrink: 0, display: "inline-block", transition: "transform .15s", transform: expanded ? "rotate(90deg)" : "none" }}>▸</span>}
+      <div style={{ flex: 1, minWidth: 180 }}>
+        <div style={{ fontWeight: 600, fontSize: "0.875rem" }}>
+          {onClick
+            ? <button type="button" className="rf-rowbtn" aria-expanded={expandable ? !!expanded : undefined} onClick={(e) => { e.stopPropagation(); onClick(); }}>{name}</button>
+            : name}
+          <UnreadDot markers={unreadForEntity(unreadIx, "referral_access", r.access_id)} />
+        </div>
+        <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{r.referrer.login ? "@" + r.referrer.login : ""}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
+        {r.referrer.note && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: 2 }} title="Примітка лікаря (редагує сам направник)">📝 {r.referrer.note}</div>}
+        {r.note && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
+        {r.status === "active" && (() => {
+          // Грант без жодного живого кабінету: направник фактично не може ані
+          // записувати, ані редагувати свої записи в центрі — це треба бачити.
+          // 0137: сюди ж і ПОРОЖНІЙ масив — під новим каноном це «жодного
+          // кабінету», тобто найнеробочіший грант із можливих.
+          const list = grantRoomIds(r.room_ids);
+          const dead = !!list && (list.length === 0 || sanitizeRooms(r.room_ids).length === 0);
+          return (
+            <div style={{ fontSize: "0.75rem", color: dead ? "var(--red)" : "var(--text-secondary)", marginTop: 2 }}>
+              Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Кабінети: {roomsLabel(r.room_ids)}
+              {dead && <span title="Дозволені кабінети видалено — направник не може записувати. Оберіть кабінети заново."> — ⚠ доступ не працює</span>}
+            </div>
+          );
+        })()}
+        {(() => {
+          /* RF-09: три стани замість двох — див. lib/inviteLink.ts. «Пароль не
+             задано, токена на руках немає» більше не мовчить: адмін бачить,
+             що запрошення висить, і знає, як передати його ще раз. */
+          const hint = inviteHint(r.referrer.password_set, freshTokens, r.referrer_id);
+          if (hint.kind === "none") return null;
+          if (hint.kind === "reissue") {
+            return <div style={{ fontSize: "0.75rem", marginTop: 4, color: "var(--text-muted)" }}>{REISSUE_HINT}</div>;
+          }
+          return (
+            <div style={{ fontSize: "0.75rem", marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для входу:</span>
+              <code style={{ fontSize: "0.71875rem", color: "var(--text-secondary)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
+              <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); copyLink(hint.token); }}>Скопіювати</button>
+            </div>
+          );
+        })()}
+      </div>
+      <span className={"badge " + m.cls}>{m.label}</span>
+      {children}
+    </div>
+  );
 }
 
 export default function ReferrersManager({ clinicId, rooms, clinicName, adminName, embedded = false }: ReferrersManagerProps) {
@@ -473,54 +540,6 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 20, marginBottom: 16 };
   const req = <span style={{ color: "var(--red)" }}> *</span>;
 
-  function Row({ r, children, onClick, expandable, expanded }: { r: AccessRow; children?: ReactNode; onClick?: () => void; expandable?: boolean; expanded?: boolean }) {
-    const m = ACCESS_ST[r.status] || ACCESS_ST.active;
-    const name = r.referrer.full_name || r.referrer.login || "Лікар";
-    return (
-      <div onClick={onClick} title={expandable ? (expanded ? "Згорнути налаштування" : "Натисніть, щоб змінити налаштування") : undefined} style={{ padding: "14px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
-        {expandable && <span style={{ color: "var(--text-muted)", fontSize: "0.8125rem", width: 12, flexShrink: 0, display: "inline-block", transition: "transform .15s", transform: expanded ? "rotate(90deg)" : "none" }}>▸</span>}
-        <div style={{ flex: 1, minWidth: 180 }}>
-          <div style={{ fontWeight: 600, fontSize: "0.875rem" }}>{name}<UnreadDot markers={unreadForEntity(unreadIx, "referral_access", r.access_id)} /></div>
-          <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{r.referrer.login ? "@" + r.referrer.login : ""}{r.referrer.phone ? " · " + r.referrer.phone : ""}</div>
-          {r.referrer.note && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: 2 }} title="Примітка лікаря (редагує сам направник)">📝 {r.referrer.note}</div>}
-          {r.note && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: 2 }}>{r.note}</div>}
-          {r.status === "active" && (() => {
-            // Грант без жодного живого кабінету: направник фактично не може ані
-            // записувати, ані редагувати свої записи в центрі — це треба бачити.
-            // 0137: сюди ж і ПОРОЖНІЙ масив — під новим каноном це «жодного
-            // кабінету», тобто найнеробочіший грант із можливих.
-            const list = grantRoomIds(r.room_ids);
-            const dead = !!list && (list.length === 0 || sanitizeRooms(r.room_ids).length === 0);
-            return (
-              <div style={{ fontSize: "0.75rem", color: dead ? "var(--red)" : "var(--text-secondary)", marginTop: 2 }}>
-                Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"} · Кабінети: {roomsLabel(r.room_ids)}
-                {dead && <span title="Дозволені кабінети видалено — направник не може записувати. Оберіть кабінети заново."> — ⚠ доступ не працює</span>}
-              </div>
-            );
-          })()}
-          {(() => {
-            /* RF-09: три стани замість двох — див. lib/inviteLink.ts. «Пароль не
-               задано, токена на руках немає» більше не мовчить: адмін бачить,
-               що запрошення висить, і знає, як передати його ще раз. */
-            const hint = inviteHint(r.referrer.password_set, freshTokens, r.referrer_id);
-            if (hint.kind === "none") return null;
-            if (hint.kind === "reissue") {
-              return <div style={{ fontSize: "0.75rem", marginTop: 4, color: "var(--text-muted)" }}>{REISSUE_HINT}</div>;
-            }
-            return (
-              <div style={{ fontSize: "0.75rem", marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <span style={{ color: "var(--text-muted)" }}>🔗 Посилання для входу:</span>
-                <code style={{ fontSize: "0.71875rem", color: "var(--text-secondary)", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>/set-password?token=…</code>
-                <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); copyLink(hint.token); }}>Скопіювати</button>
-              </div>
-            );
-          })()}
-        </div>
-        <span className={"badge " + m.cls}>{m.label}</span>
-        {children}
-      </div>
-    );
-  }
 
   return (
     <div className={embedded ? "setup-embed" : "app"}>
@@ -624,10 +643,10 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
             <div style={card}>
               <div className="bk-section-label" style={{ marginTop: 0 }}>Запити на доступ ({requests.length})</div>
               {requests.map((r) => (
-                <Row key={r.access_id} r={r}>
+                <AccessRowView unreadIx={unreadIx} roomsLabel={roomsLabel} sanitizeRooms={sanitizeRooms} freshTokens={freshTokens} copyLink={copyLink} key={r.access_id} r={r}>
                   <button className="btn btn-primary btn-sm" disabled={busyId === r.access_id} onClick={() => decide(r.access_id, "approve")}>Підтвердити</button>
                   <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={() => decide(r.access_id, "decline")}>Відхилити</button>
-                </Row>
+                </AccessRowView>
               ))}
             </div>
           )}
@@ -639,7 +658,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
               : active.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: "0.8125rem" }}>Поки немає активних направників. Запросіть лікаря вище.</div>
               : active.map((r) => (
                 <div key={r.access_id}>
-                  <Row r={r} expandable expanded={editingId === r.access_id} onClick={() => (editingId === r.access_id ? setEditingId(null) : startEdit(r))}>
+                  <AccessRowView unreadIx={unreadIx} roomsLabel={roomsLabel} sanitizeRooms={sanitizeRooms} freshTokens={freshTokens} copyLink={copyLink} r={r} expandable expanded={editingId === r.access_id} onClick={() => (editingId === r.access_id ? setEditingId(null) : startEdit(r))}>
                     {/* ⚠️ Гейт `password_set` знято (BLOCKER ревʼю Б, пакет 37).
                         Він робив кнопку і нову підказку ВЗАЄМОВИКЛЮЧНИМИ:
                         підказка «натисніть „Скинути пароль“» показується саме
@@ -653,7 +672,7 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                       <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); askResetPassword(r); }} title="Скинути пароль — лікар задасть новий за посиланням">Скинути пароль</button>
                     )}
                     <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); setAsk({ title: `Відкликати доступ для «${r.referrer.full_name || r.referrer.login}»?`, text: "Створені ним направлення лишаться. Нові він створювати не зможе.", confirmLabel: "Відкликати", danger: true, run: () => { void decide(r.access_id, "revoke"); } }); }}>Відкликати доступ</button>
-                  </Row>
+                  </AccessRowView>
                   {editingId === r.access_id && (
                     <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: 16, margin: "4px 0 8px" }}>
                       <div className="ctx-hint" style={{ fontSize: "0.75rem", marginBottom: 10 }}>Дані направника (ПІБ, телефон, примітки) лікар редагує сам у своєму профілі. Тут — лише налаштування доступу до вашого центру.</div>
@@ -714,11 +733,11 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                   саме тут підказка «натисніть „Скинути пароль“» мусить мати
                   на що вказувати. */}
               {invited.map((r) => (
-                <Row key={r.access_id} r={r}>
+                <AccessRowView unreadIx={unreadIx} roomsLabel={roomsLabel} sanitizeRooms={sanitizeRooms} freshTokens={freshTokens} copyLink={copyLink} key={r.access_id} r={r}>
                   {r.referrer.id && (
                     <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); askResetPassword(r); }} title="Видати нове посилання — старе перестане діяти">Скинути пароль</button>
                   )}
-                </Row>
+                </AccessRowView>
               ))}
             </div>
           )}
@@ -733,9 +752,9 @@ export default function ReferrersManager({ clinicId, rooms, clinicName, adminNam
                   (той самий клас, що «Історія» порталу направника). */}
               {history.map((r) => (
                 <div key={r.access_id}>
-                  <Row r={r} expandable expanded={viewingId === r.access_id} onClick={() => setViewingId((id) => (id === r.access_id ? null : r.access_id))}>
+                  <AccessRowView unreadIx={unreadIx} roomsLabel={roomsLabel} sanitizeRooms={sanitizeRooms} freshTokens={freshTokens} copyLink={copyLink} r={r} expandable expanded={viewingId === r.access_id} onClick={() => setViewingId((id) => (id === r.access_id ? null : r.access_id))}>
                     <button className="btn btn-secondary btn-sm" disabled={busyId === r.access_id} onClick={(e) => { e.stopPropagation(); reinvite(r); }}>{busyId === r.access_id ? "…" : "Запросити знову"}</button>
-                  </Row>
+                  </AccessRowView>
                   {viewingId === r.access_id && (
                     <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: 14, margin: "4px 0 8px", fontSize: "0.8125rem", color: "var(--text-secondary)" }}>
                       <div>Режим: {r.policy === "confirm" ? "з підтвердженням оператора" : "пряма черга"}</div>

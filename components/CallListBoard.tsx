@@ -81,20 +81,30 @@ function procLabel(e: { studies?: unknown; note?: string | null }) {
   return e.note || "—";
 }
 
+/* Гліфи — ті самі, що в CALL_META дошки черги (QueueBoard): до с75 вони тут не
+   виводились узагалі, а «✗» для «Не відповідає» поруч із «✕» для «Відмова»
+   візуально не розрізнити (ревʼю W-3). */
 const CL_META: Record<string, { label: string; cls: string; icon: string }> = {
   not_called: { label: "Ще не дзвонили", cls: "gray", icon: "○" },
   confirmed: { label: "Підтверджено", cls: "green", icon: "✓" },
-  no_answer: { label: "Не відповідає", cls: "orange", icon: "✗" },
-  to_recall: { label: "Передзвонити", cls: "blue", icon: "↩" },
+  no_answer: { label: "Не відповідає", cls: "orange", icon: "…" },
+  to_recall: { label: "Передзвонити", cls: "blue", icon: "↻" },
   declined: { label: "Відмова", cls: "red", icon: "✕" },
 };
 const CALL_ORDER: Record<string, number> = { not_called: 0, to_recall: 1, no_answer: 2, confirmed: 3, declined: 4 };
-const CALL_COLOR: Record<string, string> = { confirmed: "var(--green)", to_recall: "var(--blue-text)", no_answer: "var(--orange)", declined: "var(--red)", not_called: "var(--text-muted)" };
 
+/* W-3 (WCAG 1.4.1 / 1.1.1; п. 17 аудиту 11.07, закрито с75): статус дзвінка —
+   гліфом І текстом, а не одним ☎, що різниться лише кольором. `title` на span
+   скрінрідер не озвучує; гліф — `aria-hidden`, бо «галочка»/«хрестик» перед
+   словом лише шум. Той самий бейдж, що на дошці черги (`.qd-call`). */
 function StatusBadge({ status }: { status: string | null | undefined }) {
   const key = status || "not_called";
-  const m = CL_META[key];
-  return <span title={m.label} style={{ fontSize: "1.0625rem", lineHeight: 1, color: CALL_COLOR[key] }}>☎</span>;
+  const m = CL_META[key] || CL_META.not_called;
+  return (
+    <span className={"qd-call cl-status " + m.cls} data-call-status={key}>
+      <span aria-hidden="true">{m.icon}</span> {m.label}
+    </span>
+  );
 }
 
 interface CallRowProps {
@@ -151,6 +161,8 @@ function CallRow({ p, roomName, roomModel, expanded, onToggle, onSet, onNote, on
             <div className="cld-item cld-item-full"><span className="cld-lab">Тип дослідження</span><span className="cld-val cld-val-wrap"><span className={"cld-type " + modalityKind(type)}>{type}</span> {procLabel(p)}</span></div>
             <div className="cld-item"><span className="cld-lab">Телефон</span><span className="cld-val"><a className="tel" href={"tel:" + (p.patient_phone || "").replace(/\s/g, "")}>{p.patient_phone}</a></span></div>
             {p.doctor && <div className="cld-item"><span className="cld-lab">Направник</span><span className="cld-val">{p.doctor}</span></div>}
+            {/* W-3: поточний статус і в розгорнутих деталях — поруч із діями, що його міняють. */}
+            <div className="cld-item"><span className="cld-lab">Статус дзвінка</span><span className="cld-val"><StatusBadge status={p.call_status} /></span></div>
           </div>
           <div className="cld-actions">
             <span className="cld-lab">Дія:</span>

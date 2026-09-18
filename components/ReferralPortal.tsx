@@ -23,7 +23,7 @@ import ReferrerBoard from "@/components/ReferrerBoard";
 import UnreadDot from "@/components/UnreadDot";
 import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
 import { badgeOf, loadStatusOf } from "@/lib/sidebarBadge";
-import { unreadForEntity, unreadForSurface, surfaceRefreezeKey } from "@/lib/unreadChanges";
+import { unreadForEntity, unreadForSurface, surfaceRefreezeKey, type UnreadIndex } from "@/lib/unreadChanges";
 import { schedAckKeyOf } from "@/lib/ackVisibility";
 import ReferrerSidebar from "@/components/ReferrerSidebar";
 import { createReferralBooking, rescheduleQueueEntry, cancelQueueEntry, editQueueEntryStudies, createReferralCase, referralCaseFromEntry, type CaseStepInput } from "@/app/queue/actions";
@@ -1445,6 +1445,34 @@ interface MyCentersProps {
   notify: (msg: string, type?: string) => void;
 }
 
+/* Рядок центру — компонент МОДУЛЬНОГО рівня (умова W-2, ревʼю с75): оголошений
+   усередині MyCenters він ремонтувався б щокадру разом із кнопкою-заголовком,
+   і фокус після Enter падав би на <body>. `unreadIx` — пропсом. */
+function CenterRowView({ c, children, onClick, expandable, expanded, unreadIx }: {
+  c: Center; children?: ReactNode; onClick?: () => void; expandable?: boolean; expanded?: boolean; unreadIx: UnreadIndex;
+}) {
+  const m = ACCESS_ST[c.status] || ACCESS_ST.active;
+  /* W-2 (WCAG 2.1.1, с75): картка центру розкривалась лише мишею (div з onClick),
+     а саме розкриття гасить критичну позначку про відкликання. Назва центру —
+     справжня <button aria-expanded>; клік по рядку лишається для миші. */
+  return (
+    <div onClick={onClick} title={expandable ? (expanded ? "Згорнути" : "Натисніть, щоб переглянути деталі центру") : undefined} style={{ padding: "12px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
+      {expandable && <span aria-hidden="true" style={{ color: "var(--text-muted)", fontSize: "0.8125rem", width: 12, flexShrink: 0, display: "inline-block", transition: "transform .15s", transform: expanded ? "rotate(90deg)" : "none" }}>▸</span>}
+      <div style={{ flex: 1, minWidth: 180 }}>
+        <div style={{ fontWeight: 600, fontSize: "0.875rem" }}>
+          {onClick
+            ? <button type="button" className="rf-rowbtn" aria-expanded={expandable ? !!expanded : undefined} onClick={(e) => { e.stopPropagation(); onClick(); }}>{c.name}</button>
+            : c.name}
+          {c.accessId ? <UnreadDot markers={unreadForEntity(unreadIx, "referral_access", c.accessId)} /> : null}
+        </div>
+        <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{c.city || "—"}{c.status === "active" ? " · режим: " + (c.policy === "confirm" ? "з підтвердженням" : "пряма черга") : ""}</div>
+      </div>
+      <span className={"badge " + m.cls}>{m.label}</span>
+      {children}
+    </div>
+  );
+}
+
 function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
   const [q, setQ] = useState("");
   const [results, setResults] = useState<SearchClinic[]>([]);
@@ -1559,20 +1587,6 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
   }
 
   const card = { background: "var(--card)", border: "1px solid var(--border)", borderRadius: "var(--r-lg)", padding: 18, marginBottom: 14 };
-  function Row({ c, children, onClick, expandable, expanded }: { c: Center; children?: ReactNode; onClick?: () => void; expandable?: boolean; expanded?: boolean }) {
-    const m = ACCESS_ST[c.status] || ACCESS_ST.active;
-    return (
-      <div onClick={onClick} title={expandable ? (expanded ? "Згорнути" : "Натисніть, щоб переглянути деталі центру") : undefined} style={{ padding: "12px 0", borderTop: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", cursor: onClick ? "pointer" : "default" }}>
-        {expandable && <span style={{ color: "var(--text-muted)", fontSize: "0.8125rem", width: 12, flexShrink: 0, display: "inline-block", transition: "transform .15s", transform: expanded ? "rotate(90deg)" : "none" }}>▸</span>}
-        <div style={{ flex: 1, minWidth: 180 }}>
-          <div style={{ fontWeight: 600, fontSize: "0.875rem" }}>{c.name}{c.accessId ? <UnreadDot markers={unreadForEntity(unreadIx, "referral_access", c.accessId)} /> : null}</div>
-          <div style={{ fontSize: "0.78125rem", color: "var(--text-muted)" }}>{c.city || "—"}{c.status === "active" ? " · режим: " + (c.policy === "confirm" ? "з підтвердженням" : "пряма черга") : ""}</div>
-        </div>
-        <span className={"badge " + m.cls}>{m.label}</span>
-        {children}
-      </div>
-    );
-  }
 
   return (
     <div style={{ maxWidth: 820, margin: "0 auto" }}>
@@ -1606,10 +1620,10 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
           <div className="bk-section-label" style={{ marginTop: 0 }}>Запрошення центрів ({invites.length})</div>
           {invites.map((c) => (
             <div key={c.accessId}>
-              <Row c={c} expandable expanded={expandedId === c.accessId} onClick={() => toggleExpand(c)}>
+              <CenterRowView unreadIx={unreadIx} c={c} expandable expanded={expandedId === c.accessId} onClick={() => toggleExpand(c)}>
                 <button className="btn btn-primary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); decide(c.accessId!, "approve"); }}>Прийняти</button>
                 <button className="btn btn-secondary btn-sm" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); const id = c.accessId!; setAsk({ title: `Відхилити запрошення центру «${c.name}»?`, text: "Ви зможете надіслати запит на доступ пізніше вручну.", confirmLabel: "Відхилити", run: () => { void decide(id, "decline"); } }); }}>Відхилити</button>
-              </Row>
+              </CenterRowView>
               {expandedId === c.accessId && <CenterDetails data={details[c.accessId!]} loading={loadingId === c.accessId && !details[c.accessId!]} />}
             </div>
           ))}
@@ -1621,9 +1635,9 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
         {active.length === 0 ? <div style={{ color: "var(--text-muted)", padding: 8, fontSize: "0.8125rem" }}>Поки немає активних центрів.</div>
           : active.map((c) => (
             <div key={c.accessId || c.clinicId}>
-              <Row c={c} expandable={!!c.accessId} expanded={expandedId === c.accessId} onClick={c.accessId ? () => toggleExpand(c) : undefined}>
+              <CenterRowView unreadIx={unreadIx} c={c} expandable={!!c.accessId} expanded={expandedId === c.accessId} onClick={c.accessId ? () => toggleExpand(c) : undefined}>
                 {canManage && c.accessId && <button className="btn btn-secondary btn-sm qd-act-red" disabled={busyId === c.accessId} onClick={(e) => { e.stopPropagation(); const id = c.accessId!; setAsk({ title: `Відкликати доступ до «${c.name}»?`, text: "Створені направлення лишаться у центрі, нові ви створювати не зможете.", confirmLabel: "Відкликати", danger: true, run: () => { void decide(id, "revoke"); } }); }}>Відкликати</button>}
-              </Row>
+              </CenterRowView>
               {c.accessId && expandedId === c.accessId && <CenterDetails data={details[c.accessId]} loading={loadingId === c.accessId && !details[c.accessId]} />}
             </div>
           ))}
@@ -1632,7 +1646,7 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
       {awaiting.length > 0 && (
         <div style={card}>
           <div className="bk-section-label" style={{ marginTop: 0 }}>Очікують підтвердження ({awaiting.length})</div>
-          {awaiting.map((c) => <Row key={c.accessId} c={c} />)}
+          {awaiting.map((c) => <CenterRowView unreadIx={unreadIx} key={c.accessId} c={c} />)}
         </div>
       )}
 
@@ -1647,9 +1661,9 @@ function MyCenters({ centers, canManage, onChanged, notify }: MyCentersProps) {
               для відкликаного доступу дані віддає — перевірено на проді с28. */}
           {history.map((c) => (
             <div key={c.accessId}>
-              <Row c={c} expandable={!!c.accessId} expanded={expandedId === c.accessId} onClick={c.accessId ? () => toggleExpand(c) : undefined}>
+              <CenterRowView unreadIx={unreadIx} c={c} expandable={!!c.accessId} expanded={expandedId === c.accessId} onClick={c.accessId ? () => toggleExpand(c) : undefined}>
                 {canManage && <button className="btn btn-secondary btn-sm" disabled={busyId === c.clinicId} onClick={(e) => { e.stopPropagation(); sendRequest(c.clinicId); }}>{busyId === c.clinicId ? "…" : "Надіслати запит знову"}</button>}
-              </Row>
+              </CenterRowView>
               {c.accessId && expandedId === c.accessId && <CenterDetails data={details[c.accessId]} loading={loadingId === c.accessId && !details[c.accessId]} />}
             </div>
           ))}

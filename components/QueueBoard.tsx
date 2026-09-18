@@ -783,7 +783,12 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden>›</span>
       </div>
 
-      <div className="qrow-detail-wrap">
+      {/* W-1 (WCAG 2.4.3/2.4.7/2.4.11/4.1.2, с75): деталі рендеряться для кожного рядка,
+          а згорнутість робив лише CSS (grid-template-rows: 0fr + overflow hidden) —
+          Tab уводив фокус у невидимі кнопки, скрінрідер читав дії всіх рядків.
+          `inert` знімає згорнуту панель з фокуса і з дерева доступності; анімація
+          висоти лишається CSS-ною, як була. */}
+      <div className="qrow-detail-wrap" inert={!expanded}>
         <div className="qrow-detail-inner">
           <div className="qrow-detail">
             {collisionPanel}
@@ -972,6 +977,17 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
                 </div>
               );
             })()}
+            {/* W-2 (WCAG 2.1.1, с75): єдиний шлях до правки ПІБ/телефону на дошці був
+                span з onClick на імені — з клавіатури і скрінрідером недосяжний.
+                Видима кнопка в деталях, як на дошці направника (ReferrerBoard). Span на
+                імені лишається для миші. Кейс: чип «Кейс» у смузі metaStrip (вище в
+                деталях) уже має role=button + Enter/Space, але його немає, коли всі
+                кроки кейса за день скасовані (caseSpan === null) — на такий рядок
+                кнопка кейса потрібна тут (ревʼю с75). */}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "2px 0 6px" }}>
+              <button className="btn btn-secondary btn-sm" onClick={act(onEditPatient)} title="Редагувати ПІБ, телефон, вік, вагу">✎ Дані пацієнта</button>
+              {p.case_id && !caseSpan && onOpenCase && <button className="btn btn-secondary btn-sm" onClick={(e) => { e.stopPropagation(); if (p.case_id) onOpenCase(p.case_id); }} title="Відкрити крос-модальний кейс">🔗 Відкрити кейс</button>}
+            </div>
             {/* Пріоритет пацієнта + Дзвінок-підтвердження — вниз праворуч, в один ряд на одному рівні. */}
             {((canSetPriority && onSetPriority) || showCall) && (
               <div style={{ display: "flex", gap: 18, alignItems: "flex-start", flexWrap: "wrap", justifyContent: "flex-end", marginTop: 4 }}>
