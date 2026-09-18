@@ -130,7 +130,7 @@ declare
 begin
   select id into v_ref from public.profiles where role = 'referrer' order by created_at limit 1;
 
-  for c in select id, coalesce(timezone, 'Europe/Kiev') as tz from public.clinics order by created_at loop
+  for c in select id, coalesce(timezone, 'Europe/Kyiv') as tz from public.clinics order by created_at loop
 
     select id into v_admin from public.profiles
      where clinic_id = c.id and role in ('admin','registrar')
@@ -365,7 +365,7 @@ declare
 begin
   select id into v_ref from public.profiles where role = 'referrer' order by created_at limit 1;
 
-  for c in select id, coalesce(timezone,'Europe/Kiev') as tz from public.clinics order by created_at loop
+  for c in select id, coalesce(timezone,'Europe/Kyiv') as tz from public.clinics order by created_at loop
     select id into v_admin from public.profiles
      where clinic_id = c.id and role in ('admin','registrar')
      order by (role='admin') desc, created_at limit 1;
@@ -437,7 +437,7 @@ declare
   v_sun      date;
   v_json     jsonb;
 begin
-  for c in select id, coalesce(timezone,'Europe/Kiev') as tz from public.clinics order by created_at loop
+  for c in select id, coalesce(timezone,'Europe/Kyiv') as tz from public.clinics order by created_at loop
     v_today := (now() at time zone c.tz)::date;
     select array_agg(id order by created_at) into v_rooms from public.rooms where clinic_id = c.id;
     continue when v_rooms is null;
@@ -492,7 +492,7 @@ declare
   v_now_wall   timestamp;   -- «зараз» у настінному часі клініки (naive)
   v_block_wall timestamp;   -- кінець вікна поломки (настінний)
 begin
-  for c in select id, coalesce(timezone,'Europe/Kiev') as tz from public.clinics order by created_at loop
+  for c in select id, coalesce(timezone,'Europe/Kyiv') as tz from public.clinics order by created_at loop
     v_today := (now() at time zone c.tz)::date;
     select array_agg(id order by created_at) into v_rooms from public.rooms where clinic_id = c.id;
     continue when v_rooms is null or array_length(v_rooms,1) < 2;

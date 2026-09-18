@@ -316,7 +316,12 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                     <span className={"q-chev" + (expanded ? " open" : "")} aria-hidden="true">›</span>
                   </div>
 
-                  <div className="qrow-detail-wrap">
+                  {/* W-1 (WCAG 2.4.3/2.4.7/2.4.11/4.1.2, с75): деталі рендеряться для кожного рядка,
+                      а згорнутість робив лише CSS (grid-template-rows: 0fr + overflow hidden) —
+                      Tab уводив фокус у невидимі кнопки, скрінрідер читав дії всіх рядків.
+                      `inert` знімає згорнуту панель з фокуса і з дерева доступності; анімація
+                      висоти лишається CSS-ною, як була. */}
+                  <div className="qrow-detail-wrap" inert={!expanded}>
                     <div className="qrow-detail-inner">
                       <div className="qrow-detail">
                         {(() => {

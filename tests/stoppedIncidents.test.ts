@@ -239,9 +239,19 @@ describe("контракт 0168 — те, що обіцяє міграція, і
        би ВСІ тести зеленими, а журнал тихо втрачав би кабінети.
        Пастка 0122 — це рівно «пізніша міграція мовчки скасувала рішення
        попередньої»; тут ми робимо її неможливою мовчки. */
+    /* 0202 (фаза 2 таймзон) перевизначає функцію СВІДОМО: єдина зміна коду —
+       `coalesce(c.timezone, 'UTC')` замість підзапиту до `pg_timezone_names`
+       (генератор `scripts/build-0202-reprint.mjs` асертить «старий код з однією
+       підстановкою»); ключі, тип результату й ACL ті самі — піни нижче. */
+    const MIG_0202 = "0202_tz_kyiv_no_catalog_scan.sql";
     expect(mentionsAfter(MIG_0168),
       "новіша міграція торкається emergency_stop_rpc — перевірте ключі "
-      + "'id'/'roomId' і ACL, і оновіть цей пін свідомо").toEqual([]);
+      + "'id'/'roomId' і ACL, і оновіть цей пін свідомо").toEqual([MIG_0202]);
+    const mig0202 = readFileSync(resolve(process.cwd(), MIG_DIR, MIG_0202), "utf8");
+    expect(mig0202).toMatch(/returns table\(stopped int, affected int, stopped_rooms uuid\[\],\s*\n?\s*stopped_incidents jsonb, patients jsonb\)/);
+    expect(mig0202).toMatch(/jsonb_build_object\('id', id, 'roomId', room_id\)/);
+    expect(mig0202).not.toMatch(/grant\s+execute\s+on\s+function\s+public\.emergency_stop_rpc/i);
+    expect(mig0202).toContain("create or replace function public.emergency_stop_rpc(");
   });
 
   it("зріз рядка списку №19 не засліпив детектор на жодній формі DDL", () => {

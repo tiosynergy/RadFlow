@@ -27,7 +27,9 @@
 /* Call list table — 8 columns */
 .clhead, .clrow {
   display: grid;
-  grid-template-columns: 28px 50px 1.35fr 116px 1.9fr 58px 102px 1.1fr 88px;
+  /* W-3 (с75): колонка «Статус» несе гліф + текст (.cl-status), а не один ☎ —
+     126px замість 102px, різницю віддала колонка процедури (1.9fr → 1.75fr). */
+  grid-template-columns: 28px 50px 1.35fr 116px 1.75fr 58px 126px 1.1fr 88px;
   gap: 10px; align-items: center;
 }
 .clhead { padding: 6px 16px; font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); }
@@ -76,6 +78,13 @@
 .cl-chev { font-size: 0.9375rem; line-height: 1; transition: transform .18s; }
 .cl-chev.open { transform: rotate(90deg); }
 .cl-name-btn { background: none; border: none; text-align: left; padding: 0; cursor: pointer; }
+/* W-3: бейдж статусу дзвінка в рядку — щільніший за .qd-call на дошці, щоб
+   уміститись у 126px; «○ Ще не дзвонили» на DejaVu Sans Bold — 133px, тож
+   перенос дозволено (nowrap успадкований від .qd-call вилазив би на «Нотатку»).
+   Червоний текст 11px на --red-bg дає 3,48:1 (W-4, поза scope High) — для цієї
+   головної колонки беремо той самий #ff8c84, що в .ctx-hint.red (5,27:1). */
+.cl-status { font-size: 0.6875rem; padding: 2px 7px; gap: 4px; max-width: 100%; white-space: normal; line-height: 1.25; }
+.cl-status.red { color: #ff8c84; }
 .cl-name-btn:hover { color: var(--blue-text); }
 
 /* Expanded detail panel */
