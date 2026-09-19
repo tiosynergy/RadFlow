@@ -497,7 +497,7 @@ describe("W-11 — відкат не тікає: тост тримається �
   });
 });
 
-describe("W-5 — сітка слотів: listbox з опціями, roving tabindex, комірки ≥24px", () => {
+describe("W-5 — сітка слотів: listbox з опціями, roving tabindex; розмір комірки — рішення власника 19.09", () => {
   it("SlotPicker: role=option + aria-selected + tabIndex за tabStop; блок — group; стрілки/Home/End", () => {
     const s = read("components/SlotPicker.tsx");
     expect(s).toContain('role="option" aria-selected={value === s} tabIndex={s === tabStop ? 0 : -1} data-slot={s}');
@@ -510,11 +510,28 @@ describe("W-5 — сітка слотів: listbox з опціями, roving tab
     for (const k of ['"ArrowLeft"', '"ArrowRight"', '"ArrowUp"', '"ArrowDown"', '"Home"', '"End"']) expect(s).toContain(k);
     expect(s).toContain('querySelectorAll<HTMLButtonElement>("button.slot:not([disabled])")');
   });
-  it("CSS: блоки по ≥160px (2 у колонці 372, 3 у 620) і на миші, шрифт комірки 11px (0.6875rem), стеля висоти збережена", () => {
+  /* Рішення власника 19.09.2026 (с75) ЗАМІСТЬ варіанта W-5 (а): у рядку 4 блоки
+     (2 години), комірка ≈16×19px на миші (замір Chromium: 620px → 16,5×19, було
+     31,9×32). Колонки max-content — рядок не розтягується на ширину модалки;
+     у контейнерах ≤436px (права колонка форми запису, 372) — 3 блоки, бо 4 дають
+     13,8px на 12,5px тексту і цифри злипаються. Дотик лишається ≥32px і 2 блоки.
+     2.5.8 для миші — прийнятий ризик за рішенням власника, не дефект пінів. */
+  it("CSS: 4 блоки max-content у рядку, стеля висоти збережена; ≤436px — 3 блоки; .slot-picker — контейнер", () => {
     const css = read("styles/prototype/radflow.css");
-    expect(css).toMatch(/\.slot-grid4 \{ display: grid; grid-template-columns: repeat\(auto-fill, minmax\(160px, 1fr\)\); gap: 9px 7px; max-height: max\(340px, min\(470px, 46vh\)\);/);
-    expect(css).toContain(".slot-blk-cells .slot { padding: 5px 0; font-size: 0.6875rem; border-radius: 4px; min-width: 0; }");
-    expect(css).not.toMatch(/\.slot-blk-cells \.slot \{[^}]*font-size: 0\.5625rem/);
+    expect(css).toContain(".slot-grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, max-content)); justify-content: start; gap: 8px 6px; max-height: max(340px, min(470px, 46vh)); overflow-y: auto;");
+    expect(css).toContain("@container (max-width: 436px) { .slot-grid4 { grid-template-columns: repeat(3, minmax(0, max-content)); } }");
+    expect(css).toContain(".slot-picker { display: flex; flex-direction: column; gap: 8px; container-type: inline-size; }");
+    expect(css).not.toMatch(/\.slot-grid4 \{[^}]*auto-fill/);
+  });
+  it("CSS: комірка на миші 19px заввишки, шрифт 9px, відступ 2px 1px; на дотику — ≥32px і 2 блоки (правило ПІСЛЯ компактного)", () => {
+    const css = read("styles/prototype/radflow.css");
+    const compact = ".slot-blk-cells .slot { padding: 2px 1px; font-size: 0.5625rem; line-height: 1.2; min-height: 19px; border-radius: 3px; min-width: 0; }";
+    expect(css).toContain(compact);
+    expect(css).toContain(".slot-blk-cells { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1px; }");
+    // блок дотику йде ПІСЛЯ компактного правила (рівна специфічність — виграє пізніше)
+    const after = css.slice(css.indexOf(compact) + compact.length);
+    expect(after).toMatch(/@media \(pointer: coarse\) \{\s*\.slot-grid4 \{ grid-template-columns: repeat\(2, 1fr\); max-height: 60vh; \}/);
+    expect(after).toContain(".slot-blk-cells .slot { min-height: 32px; padding: 8px 0; font-size: 0.75rem; border-radius: 6px; }");
   });
 });
 
