@@ -510,28 +510,33 @@ describe("W-5 — сітка слотів: listbox з опціями, roving tab
     for (const k of ['"ArrowLeft"', '"ArrowRight"', '"ArrowUp"', '"ArrowDown"', '"Home"', '"End"']) expect(s).toContain(k);
     expect(s).toContain('querySelectorAll<HTMLButtonElement>("button.slot:not([disabled])")');
   });
-  /* Рішення власника 19.09.2026 (с75) ЗАМІСТЬ варіанта W-5 (а): у рядку 4 блоки
-     (2 години), комірка ≈16×19px на миші (замір Chromium: 620px → 16,5×19, було
-     31,9×32). Колонки max-content — рядок не розтягується на ширину модалки;
-     у контейнерах ≤436px (права колонка форми запису, 372) — 3 блоки, бо 4 дають
-     13,8px на 12,5px тексту і цифри злипаються. Дотик лишається ≥32px і 2 блоки.
-     2.5.8 для миші — прийнятий ризик за рішенням власника, не дефект пінів. */
-  it("CSS: 4 блоки max-content у рядку, стеля висоти збережена; ≤436px — 3 блоки; .slot-picker — контейнер", () => {
+  /* Рішення власника 19.09.2026 (с75) ЗАМІСТЬ розміру з варіанта W-5 (а):
+     комірка ≈17–19×19px на миші (було 31,9×32), а кількість півгодинних блоків у
+     рядку ДИНАМІЧНА — скільки влізе у ширину діалогу. Жорсткого числа колонок і
+     @container на вузьку колонку більше немає: мінімум блоку 6.5rem (=104px:
+     6 комірок по 16,5 + 5 проміжків по 1) задає кількість, `1fr` розтягує на всю
+     ширину. Замір Chromium (slot-cols.mjs): 372→3 блоки, 520→4, 620→5, 900→7.
+     2.5.8 для миші — прийнятий ризик за рішенням власника, не дефект пінів;
+     на дотику мінімум блоку 10.25rem тримає комірку ≥24px. */
+  it("CSS: кількість блоків динамічна (auto-fill від 6.5rem, 1fr), без жорсткого числа колонок і @container; стеля висоти збережена", () => {
     const css = read("styles/prototype/radflow.css");
-    expect(css).toContain(".slot-grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, max-content)); justify-content: start; gap: 8px 6px; max-height: max(340px, min(470px, 46vh)); overflow-y: auto;");
-    expect(css).toContain("@container (max-width: 436px) { .slot-grid4 { grid-template-columns: repeat(3, minmax(0, max-content)); } }");
-    expect(css).toContain(".slot-picker { display: flex; flex-direction: column; gap: 8px; container-type: inline-size; }");
-    expect(css).not.toMatch(/\.slot-grid4 \{[^}]*auto-fill/);
+    expect(css).toContain(".slot-grid4 { display: grid; grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr)); gap: 8px 6px; max-height: max(340px, min(470px, 46vh)); overflow-y: auto;");
+    const code = css.replace(/\/\*[\s\S]*?\*\//g, "");                     // без коментарів: у них ці слова згадані навмисно
+    expect(code).not.toMatch(/\.slot-grid4 \{[^}]*repeat\(\d/);           // жодного жорсткого числа колонок
+    expect(code).not.toContain("@container");                             // ширину вирішує auto-fill, а не контейнерний запит
+    expect(css).toContain(".slot-picker { display: flex; flex-direction: column; gap: 8px; }");
   });
-  it("CSS: комірка на миші 19px заввишки, шрифт 9px, відступ 2px 1px; на дотику — ≥32px і 2 блоки (правило ПІСЛЯ компактного)", () => {
+  it("CSS: комірка на миші 19px заввишки, шрифт 9px, відступ 2px 1px; на дотику блок ≥10.25rem (комірка ≥24px) і теж auto-fill — ПІСЛЯ компактного", () => {
     const css = read("styles/prototype/radflow.css");
     const compact = ".slot-blk-cells .slot { padding: 2px 1px; font-size: 0.5625rem; line-height: 1.2; min-height: 19px; border-radius: 3px; min-width: 0; }";
     expect(css).toContain(compact);
     expect(css).toContain(".slot-blk-cells { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1px; }");
     // блок дотику йде ПІСЛЯ компактного правила (рівна специфічність — виграє пізніше)
     const after = css.slice(css.indexOf(compact) + compact.length);
-    expect(after).toMatch(/@media \(pointer: coarse\) \{\s*\.slot-grid4 \{ grid-template-columns: repeat\(2, 1fr\); max-height: 60vh; \}/);
+    expect(after).toContain(".slot-grid4 { grid-template-columns: repeat(auto-fill, minmax(10.25rem, 1fr)); max-height: 60vh; }");
     expect(after).toContain(".slot-blk-cells .slot { min-height: 32px; padding: 8px 0; font-size: 0.75rem; border-radius: 6px; }");
+    // 10.25rem = 164px = 6×24 + 5×4: арифметика тач-мішені, з якої взято мінімум
+    expect(6 * 24 + 5 * 4).toBe(10.25 * 16);
   });
 });
 
