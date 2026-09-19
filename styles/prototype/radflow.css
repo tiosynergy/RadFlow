@@ -1368,9 +1368,11 @@ select.inp { cursor: pointer; }
 
 .slot-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 /* A11y тач-мішень слота ≥32px. Базове ~34px, але компактні варіанти
-   (.bk-slot-grid .slot, .slot-blk-cells .slot: padding 5px, шрифт 9–11px) давали
-   ~22–24px — надто дрібно для пальця. min-height каскадує на всі .slot (вони його
-   не перевизначають); flex-центрування тримає текст по центру попри малий padding. */
+   (.bk-slot-grid .slot: padding 5px, шрифт 9–11px) давали ~22–24px — надто дрібно
+   для пальця. min-height каскадує на всі .slot; єдиний виняток — 5-хв сітка
+   `.slot-blk-cells .slot` на миші (рішення власника 19.09, див. нижче), на дотику
+   і вона повертається до ≥32px. flex-центрування тримає текст по центру попри
+   малий padding. */
 .slot { background: var(--card-2); border: 1px solid var(--border-strong); border-radius: 9px; padding: 9px 0; font-size: 0.8125rem; font-weight: 600; text-align: center; transition: all .12s; min-height: 32px; display: flex; align-items: center; justify-content: center; box-sizing: border-box; }
 .slot:hover:not(.taken) { border-color: var(--blue-line); color: var(--blue-text); }
 .slot.sel { background: var(--blue); border-color: var(--blue-line); color: #fff; }
@@ -1670,7 +1672,9 @@ select.inp { cursor: pointer; }
 .bk-slot-grid .slot { padding: 5px 0; font-size: 0.6875rem; border-radius: 6px; }
 
 /* Слоти 5 хв: у рядку 4 півгодинні слоти × 6 частин по 5 хв */
-.slot-picker { display: flex; flex-direction: column; gap: 8px; }
+/* container-type — для @container нижче: у вузькій колонці форми запису сітка
+   переходить на 3 блоки в рядку (див. коментар до .slot-grid4). */
+.slot-picker { display: flex; flex-direction: column; gap: 8px; container-type: inline-size; }
 /* Висота сітки слотів. Стеля була 340px — це ~6 рядків по 4 півгодинні блоки,
    тобто кабінет 08:00–22:00 (28 блоків, 7 рядків) НІКОЛИ не вміщувався, і
    оператор гортав сітку в кожному записі. Календар вище віддав ~110px (знятий
@@ -1678,13 +1682,21 @@ select.inp { cursor: pointer; }
    сітка не виштовхувала підвал із кнопкою «Зберегти» (шапка й підвал
    зафіксовані, прокручується лише середина). Скрол лишається як запобіжник:
    кабінет із цілодобовим графіком не вміститься за жодної стелі. */
-/* W-5 (с75): блоків у рядку стільки, скільки вміщається по ≥160px (комірка
-   (160−10)/6 = 25px ≥ 24, поріг 2.5.8): у правій колонці форми запису (372px) — 2
-   (комірка ≈28px; було 4 і ≈11.6px), у ширших модалках (огляд дня, 620px) — 3.
-   Сітку й так гортають (max-height), тож висота дешевша за ширину форми
-   (розвилка 3.2, варіант а; ревʼю с75 — auto-fill замість жорстких 2, щоб
-   широкі контейнери не рідшали). Шрифт комірки 0.6875rem — «підлога 11px». */
-.slot-grid4 { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 9px 7px; max-height: max(340px, min(470px, 46vh)); overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
+/* Рішення власника 19.09 (с75): у рядку 4 півгодинні блоки = 2 години, а
+   комірка вдвічі вужча й на 40 % нижча за варіант W-5 (≈16×19px замість 32×32 у
+   модалці огляду дня, 620px). Колонки `minmax(0, max-content)` + `justify-content:
+   start`: блок бере рівно стільки, скільки потрібно шести коміркам (≈104px), і
+   рядок НЕ розтягується на всю ширину контейнера. У вузькій правій колонці форми
+   запису (372px) чотири блоки не вміщаються без злипання цифр (замір: комірка
+   13,8px при тексті «00» 12,5px — цифри сусідніх комірок зливаються), тому
+   @container нижче переводить контейнери ≤436px на 3 блоки (1,5 години) в
+   рядку з тією самою коміркою. ⚠️ Це свідомо повертає W-5 (2.5.8, ≥24px) у
+   «прийнятий ризик» для миші; на дотику (`pointer: coarse` нижче) комірки
+   лишаються ≥32px і по 2 блоки в рядку. Розмітка listbox/roving tabindex із W-5
+   не чіпалась. Замір — рендер Chromium (`slot-render.mjs`, с75). */
+.slot-grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, max-content)); justify-content: start; gap: 8px 6px; max-height: max(340px, min(470px, 46vh)); overflow-y: auto; overscroll-behavior: contain; padding-right: 2px; }
+/* 4 блоки по max-content = 4×104 + 3×6 + 2 ≈ 436px; вужче — 3 блоки. */
+@container (max-width: 436px) { .slot-grid4 { grid-template-columns: repeat(3, minmax(0, max-content)); } }
 /* Підказка зайнятого слота по тапу (тач: hover/title недоступні). Живе ПІД
    сіткою (поза скрол-контейнером), тож завжди видима. */
 .slot-hint { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 8px;
@@ -1695,8 +1707,11 @@ select.inp { cursor: pointer; }
 .slot.hinted { outline: 2px solid var(--blue-line); outline-offset: 1px; opacity: 0.6; }
 .slot-blk { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .slot-blk-lab { font-size: 0.65625rem; font-weight: 700; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.slot-blk-cells { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; }
-.slot-blk-cells .slot { padding: 5px 0; font-size: 0.6875rem; border-radius: 4px; min-width: 0; }
+.slot-blk-cells { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1px; }
+/* Компактна комірка (миша): 9px + 2px відступу + рамка = 19px заввишки (min-height
+   перебиває базові 32px з .slot), ≈15px завширшки за max-content тексту «00».
+   line-height задано явно, бо від нього рахується max-content висоти. */
+.slot-blk-cells .slot { padding: 2px 1px; font-size: 0.5625rem; line-height: 1.2; min-height: 19px; border-radius: 3px; min-width: 0; }
 /* Зелені межі планованого дослідження — правило нижче (після .busy/.tight/.brk),
    бо слот-кінець сам по собі майже завжди tight (як стартова позиція нове
    дослідження звідти вже не влазить), а при рівній специфічності з !important

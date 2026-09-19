@@ -81,9 +81,13 @@ RadFlow. Работай непосредственно с локальным п�
   (заливка с белым текстом), `--red` только графика; `.reg-root` в `register.css`
   дублирует токены (страницы входа не грузят `radflow.css`);
   `scripts/contrast-audit.mjs` считает WCAG-контраст и линтит CSS/TSX (`npm run
-  audit:contrast`, пин `tests/contrast.test.ts`). W-5 — сетка слотов `auto-fill
-  minmax(160px)`, `role="listbox"` + `role="group"` по блокам + `role="option"`,
-  roving tabindex, стрелки/Home/End, live-подсказка. W-6 — `aria-pressed` на
+  audit:contrast`, пин `tests/contrast.test.ts`). W-5 — `role="listbox"` + `role="group"` по блокам + `role="option"`,
+  roving tabindex, стрелки/Home/End, live-подсказка; **размер ячейки 19.09
+  переиграл владелец** (компактная сетка: 4 блока = 2 часа в строке колонками
+  `max-content`, ячейка ≈16×19px на мыши, шрифт 9px; в контейнерах ≤436px —
+  форма записи, 372 — 3 блока, иначе цифры сливаются; тач ≥32px; 2.5.8 для
+  мыши — принятый риск; пины W-5 в `wcagMedium.test.ts` переписаны, замер —
+  Chromium). W-6 — `aria-pressed` на
   плитках-фильтрах и сегментах, `aria-expanded` на `.qrow`. W-7/W-10 — подписи,
   `aria-required`/`aria-invalid`/`aria-describedby` (в форме записи кнопки
   «Зберегти» остаются `disabled`, список «Залишилось: …» — в `describedby`).
