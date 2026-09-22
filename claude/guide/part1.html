@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RadFlow — інструкція користувача</title>
+<meta name="description" content="Покрокова інструкція для адміністратора, реєстратора, радіолога, лікаря-направника та керівника центру.">
+<style>
+:root{
+  --ink:#16181d; --ink-2:#4a5160; --ink-3:#6b7280; --line:#e3e6ec; --line-2:#cfd4de;
+  --bg:#ffffff; --bg-2:#f6f7f9; --bg-3:#eef1f6;
+  --blue:#0a63c2; --blue-bg:#e8f1fc; --green:#0b7a3b; --green-bg:#e6f5ec;
+  --amber:#8a5a00; --amber-bg:#fdf3e0; --red:#b3261e; --red-bg:#fceceb;
+  --radius:10px; --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth; scroll-padding-top:16px}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  -webkit-font-smoothing:antialiased}
+.layout{display:grid;grid-template-columns:288px minmax(0,1fr);gap:0;max-width:1280px;margin:0 auto}
+
+/* ── Зміст ── */
+.toc{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;padding:28px 20px 40px 28px;border-right:1px solid var(--line);background:var(--bg-2)}
+.toc .brand{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.toc .brand b{font-size:1.05rem;letter-spacing:-.01em}
+.toc .ver{font-size:.75rem;color:var(--ink-3);margin-bottom:18px}
+.toc a{display:block;padding:5px 10px;margin:1px 0;border-radius:7px;color:var(--ink-2);text-decoration:none;font-size:.875rem;line-height:1.4}
+.toc a:hover{background:var(--bg-3);color:var(--ink)}
+.toc a.lvl1{font-weight:650;color:var(--ink);margin-top:14px}
+.toc a.lvl2{padding-left:20px;font-size:.84rem}
+.toc .roleline{font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);margin:18px 0 4px 10px}
+
+/* ── Контент ── */
+main{padding:38px 46px 90px;min-width:0}
+h1{font-size:2.1rem;line-height:1.2;letter-spacing:-.02em;margin:0 0 10px}
+h2{font-size:1.5rem;line-height:1.25;letter-spacing:-.015em;margin:56px 0 14px;padding-top:14px;border-top:1px solid var(--line)}
+h2:first-of-type{border-top:none;padding-top:0}
+h3{font-size:1.12rem;margin:32px 0 10px;letter-spacing:-.01em}
+h4{font-size:.98rem;margin:22px 0 8px;color:var(--ink-2)}
+p{margin:0 0 14px;max-width:72ch}
+ul,ol{margin:0 0 14px;padding-left:22px;max-width:72ch}
+li{margin:5px 0}
+b,strong{font-weight:650}
+code,kbd{font-family:var(--mono);font-size:.86em}
+code{background:var(--bg-3);padding:1px 6px;border-radius:5px}
+kbd{background:#fff;border:1px solid var(--line-2);border-bottom-width:2px;border-radius:6px;padding:1px 7px;font-size:.8em;white-space:nowrap}
+a{color:var(--blue)}
+.lead{font-size:1.06rem;color:var(--ink-2);max-width:70ch}
+.meta{font-size:.82rem;color:var(--ink-3);margin:0 0 26px}
+
+/* ── Блоки ── */
+.note,.warn,.ok,.tip{border-radius:var(--radius);padding:13px 16px;margin:16px 0;max-width:72ch;font-size:.94rem;border:1px solid}
+.note{background:var(--blue-bg);border-color:#c5ddf7}
+.warn{background:var(--amber-bg);border-color:#f0dcb4}
+.ok{background:var(--green-bg);border-color:#bfe3cd}
+.tip{background:var(--bg-2);border-color:var(--line)}
+.note p:last-child,.warn p:last-child,.ok p:last-child,.tip p:last-child{margin-bottom:0}
+.note>b:first-child,.warn>b:first-child,.ok>b:first-child,.tip>b:first-child{display:block;margin-bottom:3px}
+
+.tw{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%;max-width:100%;margin:14px 0 20px;font-size:.9rem}
+th,td{text-align:left;vertical-align:top;padding:9px 12px;border-bottom:1px solid var(--line)}
+th{background:var(--bg-2);font-weight:650;font-size:.82rem;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-2)}
+tr:last-child td{border-bottom:none}
+td code{white-space:nowrap}
+
+figure{margin:22px 0 26px}
+figure img{display:block;width:100%;height:auto;border:1px solid var(--line-2);border-radius:var(--radius);background:#1c1c1e}
+figcaption{font-size:.84rem;color:var(--ink-3);margin-top:8px}
+.legend{counter-reset:c;list-style:none;padding:0;margin:12px 0 0;max-width:72ch}
+.legend li{position:relative;padding-left:32px;margin:7px 0;font-size:.93rem}
+.legend li::before{counter-increment:c;content:counter(c);position:absolute;left:0;top:1px;width:21px;height:21px;border-radius:50%;background:#0a84ff;color:#fff;font:700 12px/21px var(--mono);text-align:center}
+
+.steps{counter-reset:s;list-style:none;padding:0;max-width:72ch}
+.steps>li{counter-increment:s;position:relative;padding:0 0 2px 40px;margin:0 0 16px}
+.steps>li::before{content:counter(s);position:absolute;left:0;top:-1px;width:27px;height:27px;border-radius:50%;background:var(--blue);color:#fff;font:700 .85rem/27px -apple-system,system-ui,sans-serif;text-align:center}
+.steps>li>b:first-child{display:block;margin-bottom:2px}
+.steps>li>b:first-child+br{display:none}
+
+.role-badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:.72rem;font-weight:650;letter-spacing:.02em;vertical-align:2px;margin-left:8px}
+.r-admin{background:#efe4fb;color:#5b21b6}
+.r-reg{background:var(--blue-bg);color:#0a4d99}
+.r-rad{background:var(--green-bg);color:var(--green)}
+.r-ref{background:#fdeef4;color:#a01a52}
+.r-ceo{background:var(--amber-bg);color:var(--amber)}
+.pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:.78rem;font-weight:600;background:var(--bg-3);color:var(--ink-2)}
+
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;max-width:72ch}
+.card{border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;background:var(--bg-2)}
+.card h4{margin:0 0 6px}
+.card p{font-size:.9rem;margin:0}
+
+.faq{border:1px solid var(--line);border-radius:var(--radius);margin:10px 0;max-width:72ch;background:var(--bg-2)}
+.faq>summary{cursor:pointer;padding:12px 16px;font-weight:600;font-size:.95rem;list-style:none}
+.faq>summary::-webkit-details-marker{display:none}
+.faq>summary::before{content:"▸";margin-right:8px;color:var(--ink-3)}
+.faq[open]>summary::before{content:"▾"}
+.faq>div{padding:0 16px 14px;font-size:.94rem}
+.faq>div p:last-child{margin-bottom:0}
+
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 26px}
+.btn{appearance:none;border:1px solid var(--line-2);background:#fff;color:var(--ink);border-radius:8px;padding:7px 14px;font-size:.87rem;font-weight:600;cursor:pointer;text-decoration:none;display:inline-block}
+.btn:hover{background:var(--bg-2)}
+.hr{height:1px;background:var(--line);margin:34px 0;border:none}
+.small{font-size:.85rem;color:var(--ink-3)}
+
+@media (max-width:980px){
+  .tw table{min-width:440px}
+  .layout{grid-template-columns:1fr}
+  .toc{position:static;height:auto;border-right:none;border-bottom:1px solid var(--line);padding:20px}
+  .toc a{display:inline-block;margin-right:4px}
+  .toc a.lvl2{display:none}
+  main{padding:26px 20px 70px}
+}
+@media print{
+  .toc,.toolbar{display:none}
+  .tw{overflow:visible}
+  .tw table{min-width:0}
+  .layout{display:block;max-width:none}
+  main{padding:0}
+  h2{page-break-after:avoid;border-top:none}
+  figure,table,.note,.warn,.ok,.tip,.faq{page-break-inside:avoid}
+  .faq{border:none;background:none}
+  .faq>div{display:block!important;padding:0}
+  body{font-size:11pt}
+  a{color:inherit;text-decoration:none}
+}
+@media (prefers-color-scheme:dark){
+  :root{--ink:#e9eaee;--ink-2:#b6bcc8;--ink-3:#8d94a3;--line:#2a2e37;--line-2:#3a3f4a;
+    --bg:#15171c;--bg-2:#1b1e24;--bg-3:#23272f;--blue:#6db4ff;--blue-bg:#16283d;
+    --green:#5ed68f;--green-bg:#142a1e;--amber:#e3ab4f;--amber-bg:#2c2313;--red:#ff918a;--red-bg:#2e1a19}
+  .note{border-color:#254867}.warn{border-color:#4a3a18}.ok{border-color:#1f4430}
+  kbd{background:#23272f;border-color:#3a3f4a}
+  .btn{background:#1b1e24;border-color:#3a3f4a;color:#e9eaee}
+  .r-admin{background:#2d2140;color:#c4a9f5}.r-reg{background:#16283d;color:#8cc4ff}
+  .r-rad{background:#142a1e;color:#7fdba5}.r-ref{background:#361723;color:#f3a0c2}
+  .r-ceo{background:#2c2313;color:#e8bd74}
+  figure img{border-color:#3a3f4a}
+}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc">
+  <div class="brand"><b>RadFlow</b></div>
+  <div class="ver">Інструкція користувача · редакція 22.09.2026</div>
+
+  <a class="lvl1" href="#pro">Про цю інструкцію</a>
+  <a class="lvl1" href="#roles">1. Хто що робить у системі</a>
+  <a class="lvl1" href="#start">2. Початок роботи</a>
+  <a class="lvl2" href="#start-reg">2.1 Реєстрація центру</a>
+  <a class="lvl2" href="#start-login">2.2 Вхід у систему</a>
+  <a class="lvl2" href="#start-invite">2.3 Перший вхід за запрошенням</a>
+  <a class="lvl2" href="#start-pwd">2.4 Забули пароль</a>
+  <a class="lvl1" href="#wizard">3. Налаштування центру</a>
+
+  <div class="roleline">Ролі</div>
+  <a class="lvl1" href="#admin">4. Адміністратор</a>
+  <a class="lvl2" href="#admin-staff">4.1 Персонал і доступи</a>
+  <a class="lvl2" href="#admin-ref">4.2 Лікарі-направники</a>
+  <a class="lvl2" href="#admin-ceo">4.3 Керівники (CEO)</a>
+  <a class="lvl2" href="#admin-catalog">4.4 Послуги та прайс</a>
+  <a class="lvl2" href="#admin-journal">4.5 Журнал дій</a>
+  <a class="lvl2" href="#admin-backup">4.6 Резервна копія</a>
+  <a class="lvl1" href="#reg">5. Реєстратор</a>
+  <a class="lvl2" href="#reg-board">5.1 Дошка черги</a>
+  <a class="lvl2" href="#reg-new">5.2 Новий запис</a>
+  <a class="lvl2" href="#reg-flow">5.3 Ведення пацієнта</a>
+  <a class="lvl2" href="#reg-call">5.4 Колл-лист</a>
+  <a class="lvl2" href="#reg-wait">5.5 Лист очікування</a>
+  <a class="lvl2" href="#reg-trouble">5.6 Поломки й затримки</a>
+  <a class="lvl1" href="#rad">6. Радіолог</a>
+  <a class="lvl1" href="#ref">7. Лікар-направник</a>
+  <a class="lvl1" href="#ceo">8. Керівник (CEO)</a>
+
+  <div class="roleline">Для всіх</div>
+  <a class="lvl1" href="#common">9. Спільні інструменти</a>
+  <a class="lvl2" href="#common-search">9.1 Пошук</a>
+  <a class="lvl2" href="#common-dots">9.2 Червоні крапки</a>
+  <a class="lvl2" href="#common-sound">9.3 Звук</a>
+  <a class="lvl2" href="#common-undo">9.4 Тости й скасування</a>
+  <a class="lvl2" href="#common-keys">9.5 Гарячі клавіші</a>
+  <a class="lvl2" href="#common-density">9.6 Щільність інтерфейсу</a>
+  <a class="lvl2" href="#common-a11y">9.7 Клавіатура й доступність</a>
+  <a class="lvl1" href="#faq">10. Що робити, якщо…</a>
+  <a class="lvl1" href="#glossary">11. Словник термінів</a>
+</nav>
+
+<main>
+<h1>RadFlow — інструкція користувача</h1>
+<p class="lead">Як працювати з чергою пацієнтів у центрі променевої діагностики: від реєстрації центру до щоденної роботи реєстратури, радіолога, направника й керівника.</p>
+<p class="meta">Редакція 22.09.2026 · українською · документ автономний: працює без інтернету, його можна роздрукувати або надіслати файлом.</p>
+
+<div class="toolbar">
+  <a class="btn" href="#start">Почати з нуля</a>
+  <a class="btn" href="#reg">Я реєстратор</a>
+  <a class="btn" href="#rad">Я радіолог</a>
+  <a class="btn" href="#ref">Я лікар-направник</a>
+  <button class="btn" onclick="window.print()">Друкувати</button>
+</div>
+
+<h2 id="pro">Про цю інструкцію</h2>
+<p>Кожен розділ написано під конкретну роль: знайдіть свою у змісті ліворуч і читайте лише її — решта вам не знадобиться. Розділи <a href="#start">«Початок роботи»</a> і <a href="#common">«Спільні інструменти»</a> корисні всім.</p>
+<p>Назви кнопок у тексті подано так, як вони виглядають на екрані: <b>«Викликати в кабінет»</b>, <b>«Зберегти»</b>. Клавіші — так: <kbd>N</kbd>, <kbd>Esc</kbd>.</p>
+<div class="note"><b>Зображення екранів</b>
+<p>Усі знімки в цьому документі зроблено справжнім оформленням RadFlow, але з <b>вигаданими</b> пацієнтами — прізвища, телефони й дати не належать реальним людям. Сині кружечки на полях (<span class="pill">1</span>, <span class="pill">2</span>…) — це позначки, яких у програмі немає; вони пояснюють, куди дивитися.</p></div>
+
+<h2 id="roles">1. Хто що робить у системі</h2>
+<p>У RadFlow пʼять ролей. Роль визначає, який екран відкриється одразу після входу і що людина може змінювати.</p>
+
+<table>
+<thead><tr><th>Роль</th><th>Хто це</th><th>Стартовий екран</th><th>Головне, що робить</th></tr></thead>
+<tbody>
+<tr><td><b>Адміністратор</b><span class="role-badge r-admin">admin</span></td><td>Керівник або старший адміністратор центру</td><td>Дошка черги</td><td>Налаштовує центр і кабінети, заводить співробітників і направників, веде прайс, бачить журнал дій. Може все, що може реєстратор.</td></tr>
+<tr><td><b>Реєстратор</b><span class="role-badge r-reg">registrar</span></td><td>Стійка реєстратури</td><td>Дошка черги</td><td>Записує пацієнтів, веде чергу протягом дня, обдзвонює, працює з листом очікування, фіксує поломки. Налаштування центру та прайс — не редагує.</td></tr>
+<tr><td><b>Радіолог</b><span class="role-badge r-rad">radiologist</span></td><td>Лікар біля апарата</td><td>Моя черга</td><td>Бачить лише свої кабінети: викликає наступного, веде процедуру, завершує її, пише нотатку.</td></tr>
+<tr><td><b>Лікар-направник</b><span class="role-badge r-ref">referrer</span></td><td>Зовнішній лікар, який направляє пацієнтів</td><td>Портал направлень</td><td>Створює направлення у дозволені центри й кабінети, бачить свої записи, веде свій лист очікування. Статуси досліджень не змінює.</td></tr>
+<tr><td><b>Керівник</b><span class="role-badge r-ceo">ceo</span></td><td>Власник або керівник мережі</td><td>Дашборд</td><td>Дивиться показники: скільки записів, скільки виконано, завантаженість апаратів, дохід. Нічого не редагує.</td></tr>
+</tbody>
+</table>
+
+<div class="tip"><b>Одна людина — кілька ролей</b>
+<p>Радіолог або адміністратор може додатково отримати доступ керівника до одного чи кількох центрів. Роль при цьому не змінюється — просто в меню зʼявляється пункт <b>«Дашборд CEO»</b>. Так само лікар-направник може працювати з кількома центрами під одним акаунтом.</p></div>
+
+<h2 id="start">2. Початок роботи</h2>
+
+<h3 id="start-reg">2.1 Реєстрація центру <span class="role-badge r-admin">адміністратор</span></h3>
+<p>Центр реєструє одна людина — майбутній адміністратор. Співробітників після цього <b>не треба</b> реєструвати окремо: ви додасте їх усередині системи, і вони отримають персональні посилання.</p>
+
+<ol class="steps">
+<li><b>Відкрийте сторінку реєстрації</b><br>Адреса системи → кнопка <b>«Зареєструвати адміністратора»</b> під формою входу.</li>
+<li><b>Заповніть пʼять полів</b><br><b>Логін</b> (латиницею, напр. <code>ivanov</code> — ним ви входитимете), <b>Email</b>, <b>Номер телефону</b> у форматі <code>+380 XX XXX XX XX</code>, <b>Пароль</b> і його повтор.</li>
+<li><b>Пароль має бути надійним</b><br>Щонайменше 8 символів, одна велика літера й одна цифра. Система не прийме пароль, що вже фігурував у відомих витоках.</li>
+<li><b>Поставте позначку згоди</b> з умовами користування й політикою конфіденційності і натисніть <b>«Зареєструватися»</b>.</li>
+<li><b>Підтвердьте пошту</b>, якщо прийде лист, і увійдіть у систему.</li>
+</ol>
+
+<div class="warn"><b>Спочатку центр називається як ваш логін</b>
+<p>Це нормально: справжню назву, місто, адресу й телефони ви впишете на першому кроці <a href="#wizard">майстра налаштування</a>. До завершення налаштування всі робочі екрани вестимуть саме туди.</p></div>
+
+<h3 id="start-login">2.2 Вхід у систему</h3>
+<p>На сторінці входу — два поля: <b>«Логін або email»</b> і <b>«Пароль»</b>. Працює і логін, і пошта — як зручніше.</p>
+<ul>
+<li>Якщо ви помилилися, система скаже <b>«Невірний логін/email або пароль»</b> — без уточнення, що саме не так (це захист від підбору чужих акаунтів).</li>
+<li>Повідомлення про помилку не зникає само — воно зникне, щойно ви почнете виправляти поле.</li>
+<li>Після входу відкривається екран вашої ролі. Вийти — пункт <b>«Вийти»</b> внизу лівого меню.</li>
+</ul>
+
+<h3 id="start-invite">2.3 Перший вхід за запрошенням <span class="role-badge r-rad">радіолог</span><span class="role-badge r-reg">реєстратор</span><span class="role-badge r-ref">направник</span><span class="role-badge r-ceo">керівник</span></h3>
+<p>Співробітників і направників заводить адміністратор. Пароль він <b>не</b> придумує за вас: ви отримаєте персональне посилання й задасте пароль самостійно.</p>
+<ol class="steps">
+<li><b>Отримайте посилання від адміністратора</b><br>Воно виглядає як адреса системи з довгим кодом і закінчується на <code>/set-password?token=…</code>. Передається як завгодно — месенджером, поштою, усно з екрана.</li>
+<li><b>Відкрийте його у браузері</b><br>Сторінка покаже, для якого логіна встановлюється пароль. Якщо написано «Посилання недійсне» — його вже використали або воно застаріле; попросіть адміністратора надіслати нове.</li>
+<li><b>Двічі введіть новий пароль</b> (8 символів, велика літера, цифра) і натисніть <b>«Встановити пароль»</b>.</li>
+<li><b>Увійдіть</b> за своїм логіном і новим паролем.</li>
+</ol>
+<div class="note"><b>Посилання одноразове</b><p>Після першого використання воно перестає працювати — це захист акаунта. Якщо пароль треба змінити, адміністратор натискає <b>«Скинути пароль»</b> у вашій картці й дає нове посилання.</p></div>
+
+<h3 id="start-pwd">2.4 Забули пароль</h3>
+<p>Зверніться до адміністратора свого центру: у картці співробітника він натискає <b>«Скинути пароль»</b> і передає вам нове одноразове посилання. Старий пароль після цього не діє.</p>
+<p class="small">Лікарям-направникам посилання видає адміністратор того центру, який заводив акаунт; керівникам — адміністратор центру, де видано доступ.</p>
+
+<h2 id="wizard">3. Налаштування центру <span class="role-badge r-admin">адміністратор</span></h2>
+<p>Майстер налаштування — екран <b>«Майстер налаштування»</b> в лівому меню. Поки центр не налаштовано, всі робочі екрани ведуть саме сюди. Кроки можна проходити в будь-якому порядку й повертатися до них пізніше: кнопка <b>«Зберегти»</b> доступна на кожній вкладці.</p>
+
+{{IMG:wizard}}
+<ol class="legend">
+<li>Список кроків: поточний підсвічено, решта видно поруч — перемикайтеся кліком.</li>
+<li>Поля поточного кроку. Тут, наприклад, — назва кабінета, модель апарата, робочі дні, години й перерви; <b>«Зберегти»</b> зберігає саме цей крок.</li>
+<li>Кроки, до яких можна спокійно повернутися пізніше: керування чергою, резервна копія, персонал.</li>
+</ol>
+
+<h4>Крок 1. Профіль клініки</h4>
+<p>Назва центру, <b>місто</b> зі списку (почніть вводити — підкажемо), адреса, телефони, email. Тут же <b>часовий пояс центру</b>: за ним рахуються «Запізнення», «Уточнити» й заборона запису в минуле. Не змінюйте його, якщо самі перебуваєте в іншій країні — пояс має відповідати місту центру.</p>
+
+<h4>Крок 2. Адміністратор</h4>
+<p>ПІБ і логін для входу. Логін можна виправити тут же — кнопкою <b>«Зберегти логін»</b> (окремою від загального збереження).</p>
+
+<h4>Крок 3. Обладнання та кабінети</h4>
+<p>Найважливіший крок: без кабінетів не працюють ні запис, ні черга.</p>
+<ul>
+<li><b>Кабінет / № — обладнання</b>: як кабінет називатимуть люди («Кабінет 1», «МРТ-2»).</li>
+<li><b>Модель / опис</b>: апарат («Siemens Avanto 1.5T»). Видно в черзі та підказках.</li>
+<li><b>Робочі дні</b> й <b>години</b>: початок, кінець і скільки завгодно <b>перерв</b> (обід, профілактика). Можна задати свій час для кожного дня тижня.</li>
+<li><b>«Кабінет працює»</b> — вимикач. Вимкнений кабінет зникає з форм запису, але наявні записи в ньому залишаються: їх ведуть, завершують і переносять як звичайно.</li>
+</ul>
+<div class="warn"><b>Видаляти кабінет — крайній захід</b>
+<p>Якщо в кабінеті вже є записи, система не дасть його видалити: разом із ним записи назавжди втратили б звʼязок з апаратом і зникли б зі звітів. Правильна дія в 99 % випадків — <b>вимкнути</b> кабінет, а не видаляти.</p></div>
+
+<h4>Крок 4. Послуги та прайс</h4>
+<p>Каталог досліджень центру: назва, модальність, тривалість, ціна, доплата за контраст. Докладно — <a href="#admin-catalog">розділ 4.4</a>.</p>
+
+<h4>Крок 5. Управління чергою</h4>
+<p>Політика на випадок затримки: що робити із записами, які «поїхали» через довге дослідження. Значення за замовчуванням підходить більшості центрів.</p>
+
+<h4>Крок 6. Резервне копіювання</h4>
+<p>Підключення закритого Google-календаря як аварійної копії черги. Докладно — <a href="#admin-backup">розділ 4.6</a>.</p>
+
+<h4>Крок 7. Персонал і доступи</h4>
+<p>Три вкладки — <b>Радіологи та реєстратори</b>, <b>Лікарі-направники</b>, <b>Керівники (CEO)</b>. Те саме доступно окремими пунктами меню; див. <a href="#admin-staff">розділ 4.1</a>.</p>
+
+<div class="ok"><b>Готово до роботи, коли:</b>
+<p>заповнено профіль центру, додано щонайменше один кабінет із графіком, у каталозі є послуги потрібних модальностей і заведено акаунти тих, хто працюватиме.</p></div>
