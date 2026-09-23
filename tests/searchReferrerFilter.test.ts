@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildReferrerOptions,
   isCardKey,
+  noReferrerLabel,
   normPersonName,
   referrerChipLabel,
   referrerKeyToRequest,
@@ -44,7 +45,7 @@ describe("ключ селекта → поля запиту", () => {
 describe("нормалізація ПІБ для тексту лікаря (клас інциденту с31)", () => {
   it("подвійні й нерозривні пробіли, краї, регістр", () => {
     expect(normPersonName("  Заставська  Марія ")).toBe("заставська марія");
-    expect(normPersonName("Заставська Марія")).toBe("заставська марія");
+    expect(normPersonName("Заставська\u00A0Марія")).toBe("заставська марія");
     expect(normPersonName("ЗАСТАВСЬКА марія")).toBe("заставська марія");
   });
   it("три написання апострофа — одне", () => {
@@ -81,7 +82,7 @@ describe("опції селекта", () => {
     const o = buildReferrerOptions({ accounts: [{ id: U, name: "Лисенко Анна" }], cards: [{ id: D, name: "Лисенко Анна", clinicId: C1 }] }, {}, false);
     expect(o.accounts).toHaveLength(1);
     expect(o.cards).toHaveLength(1);
-    expect(o.cards[0]).toEqual({ key: "d-" + D, label: "Лисенко Анна" });
+    expect(o.cards[0]).toEqual({ key: "d-" + D, label: "Лисенко Анна", clinicId: C1 });
   });
   it("мультицентрова роль: до картки дописано центр, однофамільців різних центрів можна розрізнити", () => {
     const D2 = "77777777-7777-4777-8777-777777777777";
@@ -92,10 +93,12 @@ describe("опції селекта", () => {
     );
     expect(o.cards.map((x) => x.label)).toEqual(["Лисенко Анна · Центр А", "Лисенко Анна · Центр Б"]);
   });
-  it("підпис chip-а", () => {
+  it("підпис chip-а; «без направника» в листі очікування — чесно «без акаунта»", () => {
     const o = { accounts: [{ key: "r-" + U, label: "Коваль Ігор" }], cards: [] };
     expect(referrerChipLabel(REF_KEY_ALL, o)).toBeNull();
     expect(referrerChipLabel(REF_KEY_NONE, o)).toBe("Без направника");
+    expect(referrerChipLabel(REF_KEY_NONE, o, "waitlist")).toBe("Без акаунта направника");
+    expect(noReferrerLabel("queue")).toBe("Без направника");
     expect(referrerChipLabel("r-" + U, o)).toBe("Напр.: Коваль Ігор");
     expect(referrerChipLabel("d-" + D, null)).toBe("Напр.: обраний");
   });

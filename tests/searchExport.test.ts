@@ -4,6 +4,7 @@ import { describe, it, expect } from "vitest";
 import JSZip from "jszip";
 import {
   buildSearchExportSheets,
+  completenessText,
   exportColumnSpec,
   exportFileName,
   exportParamsRows,
@@ -30,7 +31,7 @@ const filters = (over: Partial<NormalizedSearchFilters> = {}): NormalizedSearchF
 
 const lookup = { clinicName: () => "Центр А", roomName: (id: string | null) => (id ? "МРТ-1" : "") };
 const params = (over: Partial<ExportParams> = {}): ExportParams => ({
-  f: filters(), scope: { showPhone: true, referrerVisible: true }, rows: 1, truncated: false,
+  f: filters(), scope: { showPhone: true, referrerVisible: true }, rows: 1, incomplete: null,
   generatedAt: "23.09.2026, 20:40", referrerLabel: null, lookup, ...over,
 });
 
@@ -66,10 +67,23 @@ describe("рядки і аркуш «Параметри»", () => {
       "Центр А", "МРТ-1", "В черзі", "CITO", "Коваль Ігор", "так", "33333333-3333-4333-8333-333333333333",
     ]);
   });
-  it("обрізаний файл каже «НЕ ВСЕ» словами", () => {
-    const rows = exportParamsRows(params({ truncated: true, rows: 5000 }));
-    const full = rows.find((r) => r[0] === "Повнота");
-    expect(String(full?.[1])).toMatch(/^НЕ ВСЕ: показано перші 5000/);
+  it("обрізаний файл каже «НЕ ВСЕ» словами — і чому саме", () => {
+    const get = (incomplete: ExportParams["incomplete"], rows: number) =>
+      String(exportParamsRows(params({ incomplete, rows })).find((r) => r[0] === "Повнота")?.[1]);
+    expect(get("cap", 5000)).toMatch(/^НЕ ВСЕ: у файлі перші 5000 записів, а збігів більше/);
+    expect(get("time", 1234)).toMatch(/^НЕ ВСЕ: за відведений час/);
+    expect(get("cursor", 21)).toMatch(/^МОЖЛИВО НЕ ВСЕ/);
+    expect(get(null, 7)).toBe("усі записи, що відповідають фільтрам");
+  });
+  it("українська множина в повідомленні про повноту (21 запис, 22 записи, 1234 записи, 5000 записів)", () => {
+    expect(completenessText("cap", 21)).toContain("перші 21 запис,");
+    expect(completenessText("cap", 22)).toContain("перші 22 записи,");
+    expect(completenessText("time", 1234)).toContain("у файлі 1234 записи");
+    expect(completenessText("cap", 5000)).toContain("перші 5000 записів,");
+  });
+  it("порядок сортування названо", () => {
+    const rows = exportParamsRows(params({ f: filters({ sort: "date_asc" }) }));
+    expect(rows.find((r) => r[0] === "Порядок")?.[1]).toBe("спочатку старіші");
   });
   it("CEO: у параметрах сказано, що телефони не вивантажуються", () => {
     const rows = exportParamsRows(params({ scope: { showPhone: false, referrerVisible: true } }));

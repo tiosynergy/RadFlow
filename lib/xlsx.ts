@@ -47,13 +47,13 @@ export const XLSX_MAX_CELL_CHARS = 32767;
 
 /** Значення, яке Excel прочитав би як формулу (або як її початок). */
 export function isFormulaLike(s: string): boolean {
-  return /^[=+\-@\t\r＝＋－＠]/.test(s);
+  return /^[=+\-@\t\r\uFF1D\uFF0B\uFF0D\uFF20]/.test(s);
 }
 
 /** Прибрати символи, недопустимі в XML 1.0, і самотні сурогати. */
 export function xmlSafeText(s: string): string {
   return s
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, "")
     .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
 }
 
@@ -133,12 +133,16 @@ function sheetXml(sh: XlsxSheet): { xml: string; lastRef: string } {
     parts.push('<sheetViews><sheetView workbookViewId="0"/></sheetViews>');
   }
   parts.push('<sheetFormatPr defaultRowHeight="15"/>');
-  parts.push("<cols>");
-  sh.columns.forEach((c, i) => {
-    const w = Math.min(100, Math.max(4, c.width ?? Math.max(10, c.header.length + 2)));
-    parts.push(`<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`);
-  });
-  parts.push("</cols><sheetData>");
+  // Порожній <cols/> схема забороняє (мінімум один <col>) — без колонок його немає.
+  if (sh.columns.length) {
+    parts.push("<cols>");
+    sh.columns.forEach((c, i) => {
+      const w = Math.min(100, Math.max(4, c.width ?? Math.max(10, c.header.length + 2)));
+      parts.push(`<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`);
+    });
+    parts.push("</cols>");
+  }
+  parts.push("<sheetData>");
   parts.push('<row r="1">');
   sh.columns.forEach((c, i) => parts.push(cellXml(`${colLetter(i)}1`, c.header, true)));
   parts.push("</row>");

@@ -56,7 +56,10 @@ export const SearchRequestSchema = z.object({
    *  лише ТЕКСТ `doctor` при `referrer_id = null` (правило — lib/referrerField.ts).
    *  Імʼя за id сервер знаходить сам і лише в межах області ролі. */
   doctorIds: z.array(zUuid).max(20).optional(),
-  /** Записи БЕЗ направника: ні акаунта, ні тексту лікаря (с77). */
+  /** Записи БЕЗ направника (с77): у черзі — ні акаунта, ні тексту лікаря; у
+   *  листі очікування — без АКАУНТА направника (тексту лікаря лист не зберігає:
+   *  перенесений із черги пацієнт лікаря довідника потрапить сюди — UI каже це
+   *  підписом «Без акаунта направника»). */
   noReferrer: z.boolean().optional(),
   sort: z.enum(["relevance", "date_desc", "date_asc"]).optional(),
   cursor: z.string().max(400).optional(),
@@ -184,6 +187,10 @@ export function normalizeSearchRequest(input: unknown, scope: RoleScope, todayKe
       termKind = "id";
     } else if (isPhoneLikeQuery(term)) {
       if (digitsOf(term).length < 3) return { ok: false, code: "term_too_short", error: "Введіть щонайменше 3 цифри номера" };
+      // Роль, якій телефонів НЕ показують (CEO), не може й шукати за ними
+      // (ревʼю с77, A-8): підрядковий збіг по цифрах відновлював номер за
+      // ~100 запитів, хоч жодного номера на екрані й у файлі не було.
+      if (!scope.showPhone) return { ok: false, code: "forbidden_filter", error: "Пошук за номером телефону недоступний для вашої ролі" };
       termKind = "phone";
     } else {
       if (term.length < 2) return { ok: false, code: "term_too_short", error: "Введіть щонайменше 2 символи" };

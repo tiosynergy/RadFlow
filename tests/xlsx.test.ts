@@ -35,7 +35,7 @@ describe("xlsx — дрібні примітиви", () => {
     expect(excelSerialDate("23.09.2026")).toBeNull();
   });
   it("формулоподібні значення — усі префікси, включно з повноширинними", () => {
-    for (const s of ["=1+1", "+380 67 123 45 67", "-2", "@SUM(A1)", "\tx", "\rx", "＝1", "＋1", "－1", "＠x"]) {
+    for (const s of ["=1+1", "+380 67 123 45 67", "-2", "@SUM(A1)", "\tx", "\rx", "\uFF1D1", "\uFF0B1", "\uFF0D1", "\uFF20x"]) {
       expect(isFormulaLike(s), JSON.stringify(s)).toBe(true);
     }
     for (const s of ["Іваненко", "1=1", " =1", "МРТ + КТ"]) expect(isFormulaLike(s), s).toBe(false);
@@ -135,6 +135,12 @@ describe("xlsx — зібраний файл", () => {
     const wb = await read("xl/workbook.xml");
     // імʼя аркуша з апострофом у формулі — у лапках і з подвоєнням
     expect(wb).toContain("'Пошук''ок'!$A$1:$B$4");
+  });
+
+  it("аркуш без колонок — без порожнього <cols> (схема його забороняє)", async () => {
+    const bytes = await buildXlsx([{ name: "S", columns: [], rows: [] }]);
+    const sheet = await (await unzip(bytes)).read("xl/worksheets/sheet1.xml");
+    expect(sheet).not.toContain("<cols>");
   });
 
   it("кілька аркушів — кожен зі своєю частиною і звʼязком", async () => {

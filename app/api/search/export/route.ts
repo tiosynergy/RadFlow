@@ -5,7 +5,7 @@ import { parseBody } from "@/lib/validationHttp";
 import { SearchRequestSchema, type SearchCursor, type SearchResultItem } from "@/lib/searchContract";
 import { decodeSearchCursor, prepareSearch, runSearchPage } from "@/lib/searchEngine.server";
 import { buildXlsx } from "@/lib/xlsx";
-import { buildSearchExportSheets, EXPORT_MAX_ROWS, exportFileName } from "@/lib/searchExport";
+import { buildSearchExportSheets, EXPORT_MAX_ROWS, exportFileName, type ExportIncomplete } from "@/lib/searchExport";
 import { emitImportantEvent } from "@/lib/importantEvents.server";
 import { logError } from "@/lib/serverLog";
 
@@ -16,13 +16,18 @@ import { logError } from "@/lib/serverLog";
    (lib/searchEngine.server.ts): файл не може показати більше, ніж екран.
 
    ⚠️ Новий канал ПІБ і телефонів, тому:
-     • ліміт частоти — 10 файлів за 10 хв на користувача (скриптоване
-       вивантаження всієї бази кроками по 5000 — не «кнопка»);
+     • ліміт частоти — 10 файлів за 10 хв на користувача. Чесно: це ГАЛЬМО, а
+       не замок — 50 тис. рядків за 10 хв порівнянні з тим, що вже дає
+       посторінковий POST /api/search (60 × 100 за хвилину), а лімітер
+       fail-open. Замок — область ролі, а слід — журнал;
      • стеля EXPORT_MAX_ROWS рядків і бюджет часу; якщо не влізло — файл
-       чесно каже «НЕ ВСЕ» на аркуші «Параметри» і в заголовку відповіді;
+       чесно каже «НЕ ВСЕ» (і чому) на аркуші «Параметри» і в заголовку
+       відповіді. «Не все» ставимо лише тоді, коли ДОВЕДЕНО, що є ще збіг, або
+       коли довести не встигли — а не тому, що скан уперся в стелю (ревʼю с77);
      • кожне вивантаження з даними — подія `patient_data.exported` у журнал
-       КОЖНОГО центру, чиї записи пішли у файл (без ПІБ: лише кількість,
-       джерело, «обрізано»);
+       КОЖНОГО центру, чиї записи пішли у файл: лише кількість ЦЬОГО центру,
+       джерело і формат. Ні загальної кількості, ні «обрізано»: журнал центру
+       А не має знати, скільки цей користувач вивантажив із центру Б (ревʼю с77);
      • `no-store`: файл із ПІБ не лягає в жоден кеш. */
 
 export const dynamic = "force-dynamic";
@@ -62,18 +67,24 @@ export async function POST(req: Request) {
 
   const items: SearchResultItem[] = [];
   const seen = new Set<string>();
-  let truncated = false;
+  let incomplete: ExportIncomplete = null;
   if (!prep.empty) {
     const deadline = Date.now() + EXPORT_TIME_BUDGET_MS;
     let cursor: SearchCursor | null = null;
+    let degraded = false;
     for (;;) {
+      // room = 0 — це ПРОБА: «чи є хоч один збіг понад стелю?» (limit 0 →
+      // перший же збіг дає more="match"). Без неї рівно EXPORT_MAX_ROWS збігів,
+      // за якими йдуть лише незбіги, давали б хибне «НЕ ВСЕ».
+      const room = EXPORT_MAX_ROWS - items.length;
       const page = await runSearchPage(ctx, f, cursor, {
-        limit: Math.min(PAGE_LIMIT, EXPORT_MAX_ROWS - items.length),
+        limit: Math.min(PAGE_LIMIT, room),
         maxScan: PAGE_MAX_SCAN,
         batch: PAGE_BATCH,
         deadline,
       });
       if (!page.ok) return NextResponse.json({ error: page.error }, { status: page.status });
+      degraded = degraded || page.degraded;
       // Дедуп між сторінками: деградований keyset (кривий scheduled_time) може
       // повторно переглянути сусідів у межах дати — у файлі дубль недопустимий.
       for (const it of page.items) {
@@ -81,12 +92,17 @@ export async function POST(req: Request) {
         seen.add(it.recordId);
         items.push(it);
       }
-      if (!page.hasMore || !page.nextCursor) break;
-      if (items.length >= EXPORT_MAX_ROWS || Date.now() > deadline) { truncated = true; break; }
-      cursor = decodeSearchCursor(page.nextCursor, f.source, f.sort);
-      if (!cursor) { truncated = true; break; }
+      if (page.more === null) break;                                              // вибірку вичерпано
+      if (page.more === "match" && items.length >= EXPORT_MAX_ROWS) { incomplete = "cap"; break; } // доведено: є ще
+      if (Date.now() > deadline) { incomplete = "time"; break; }                  // не встигли довести
+      cursor = page.nextCursor ? decodeSearchCursor(page.nextCursor, f.source, f.sort) : null;
+      if (!cursor) { incomplete = "time"; break; }
     }
+    // Деградований курсор міг ПРОПУСТИТИ рядки в межах дати — повноту не
+    // гарантуємо і кажемо про це (ревʼю с77; на проді таких рядків 0).
+    if (!incomplete && degraded) incomplete = "cursor";
   }
+  const truncated = incomplete !== null;
 
   // Назви центрів і кабінетів — RLS-клієнтом (роль і так бачить свої довідники).
   const clinicNames = new Map<string, string>();
@@ -111,7 +127,7 @@ export async function POST(req: Request) {
      РЕЗУЛЬТАТІВ (їх уже віддала RLS), а не за id із запиту: інакше експорт
      став би оракулом «ПІБ будь-якого направника за UUID». */
   let referrerLabel: string | null = null;
-  if (f.noReferrer) referrerLabel = "без направника";
+  if (f.noReferrer) referrerLabel = f.source === "waitlist" ? "без акаунта направника" : "без направника";
   else if (f.doctorIds) referrerLabel = (ctx.docNames.join(", ") || "лікар довідника") + " (довідник)";
   else if (f.referrerIds) referrerLabel = items.find((it) => it.referrerName)?.referrerName || "акаунт направника";
 
@@ -119,7 +135,7 @@ export async function POST(req: Request) {
     f,
     scope: { showPhone: ctx.scope.showPhone, referrerVisible: ctx.scope.referrerVisible },
     rows: items.length,
-    truncated,
+    incomplete,
     generatedAt: fmtNow(ctx.tz0),
     referrerLabel,
     lookup,
@@ -140,7 +156,7 @@ export async function POST(req: Request) {
       entityType: "staff",
       entityId: me.id,
       subjectReferrerId,
-      details: { source: f.source, rows, total: items.length, truncated, format: "xlsx" },
+      details: { source: f.source, rows, format: "xlsx" },
     });
   }
 
@@ -152,6 +168,7 @@ export async function POST(req: Request) {
       "Cache-Control": "no-store",
       "X-Export-Rows": String(items.length),
       "X-Export-Truncated": truncated ? "1" : "0",
+      "X-Export-Incomplete": incomplete ?? "",
     },
   });
 }

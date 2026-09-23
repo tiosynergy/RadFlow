@@ -16,3 +16,8 @@ export const SEARCH_WAITLIST_STATUS_LABEL: Record<string, string> = {
 export const SEARCH_PRIORITY_LABEL: Record<string, string> = { cito: "CITO", urgent: "Терміново", planned: "Планово" };
 
 export const SEARCH_SOURCE_LABEL: Record<"queue" | "waitlist", string> = { queue: "Черга", waitlist: "Лист очікування" };
+
+/** Рядок досліджень — однаково на екрані й у файлі (ревʼю с77: дві копії розійшлися б). */
+export function studiesLine(studies: Array<{ type: string | null; region: string | null; contrast: boolean }>): string {
+  return studies.map((s) => (s.type || "—") + (s.region ? " · " + s.region : "") + (s.contrast ? " · контраст" : "")).join(" + ");
+}

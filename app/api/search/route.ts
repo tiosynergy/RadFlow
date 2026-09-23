@@ -23,6 +23,10 @@ import { decodeSearchCursor, prepareSearch, runSearchPage, SEARCH_BATCH, SEARCH_
    studies — JSONB), скан обмежений SEARCH_MAX_SCAN рядками на запит; шлях
    масштабування — docs/SEARCH.md. */
 
+/** Скільки додаткових проходів скану робить один запит, якщо збігів ще немає. */
+const CONTINUE_MAX_PASSES = 5;
+const CONTINUE_BUDGET_MS = 2500;
+
 export async function POST(req: Request) {
   // Любой авторизованный пользователь с профилем; частота — 60 запросов/мин
   // (дебаунс на клиенте 350 мс, но лимит защищает и от скриптованного перебора).
@@ -46,7 +50,19 @@ export async function POST(req: Request) {
   }
 
   const cursor = decodeSearchCursor(parsed.data.cursor, f.source, f.sort);
-  const page = await runSearchPage(ctx, f, cursor, { limit: f.limit, maxScan: SEARCH_MAX_SCAN, batch: SEARCH_BATCH });
+  const opts = { limit: f.limit, maxScan: SEARCH_MAX_SCAN, batch: SEARCH_BATCH };
+  let page = await runSearchPage(ctx, f, cursor, opts);
+  /* Порожня сторінка, упершись у стелю скану, — ще не «нічого не знайдено»
+     (ревʼю с77, B HIGH-1): фільтр за рідкісним лікарем чи рідкісний term
+     могли не трапитись у перших SEARCH_MAX_SCAN рядках. Докручуємо курсор
+     сам, у межах бюджету часу; якщо й так порожньо — клієнт отримує hasMore
+     і показує «Шукати далі», а не хибне «нічого». */
+  const until = Date.now() + CONTINUE_BUDGET_MS;
+  for (let pass = 1; pass < CONTINUE_MAX_PASSES && page.ok && !page.items.length && page.more === "scan" && Date.now() < until; pass++) {
+    const next = decodeSearchCursor(page.nextCursor ?? undefined, f.source, f.sort);
+    if (!next) break;
+    page = await runSearchPage(ctx, f, next, opts);
+  }
   if (!page.ok) return NextResponse.json({ error: page.error }, { status: page.status });
 
   const res: SearchResponse = { items: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore, appliedFilters };

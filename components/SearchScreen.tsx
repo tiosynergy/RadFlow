@@ -25,15 +25,18 @@ import {
   SEARCH_PRIORITY_LABEL as PRIO,
   SEARCH_QUEUE_STATUS_LABEL as ST_QUEUE,
   SEARCH_WAITLIST_STATUS_LABEL as ST_WL,
+  studiesLine,
 } from "@/lib/searchLabels";
 import {
   isCardKey,
+  noReferrerLabel,
   REF_KEY_ALL,
   REF_KEY_NONE,
   referrerChipLabel,
   referrerKeyToRequest,
   type ReferrerOptions,
 } from "@/lib/searchReferrerFilter";
+import { completenessText, type ExportIncomplete } from "@/lib/searchExport";
 
 export type SearchClinicOpt = { id: string; name: string };
 export type SearchRoomOpt = { id: string; name: string; clinic_id: string; modality: string | null; active: boolean | null };
@@ -97,7 +100,11 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
   const [refKey, setRefKey] = useState<string>(REF_KEY_ALL);
   const [refOpts, setRefOpts] = useState<ReferrerOptions | null>(null);
   const [refOptsErr, setRefOptsErr] = useState(false);
-  const [exportSt, setExportSt] = useState<{ kind: "idle" } | { kind: "busy" } | { kind: "done"; msg: string } | { kind: "error"; msg: string }>({ kind: "idle" });
+  const [exportSt, setExportSt] = useState<
+    { kind: "idle" } | { kind: "busy" } | { kind: "done"; msg: string; partial: boolean } | { kind: "error"; msg: string }
+  >({ kind: "idle" });
+  // Фільтр картки знято автоматично (зміна джерела/центру) — кажемо про це, а не мовчимо (ревʼю с77).
+  const [refNotice, setRefNotice] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [st, setSt] = useState<UiState>({ kind: "idle" });
 
@@ -116,7 +123,25 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
   useEffect(() => { setStatus("all"); }, [source]);
   // Лист очікування не зберігає лікаря з довідника — такий фільтр там неможливий
   // (сервер відмовить із поясненням); при зміні джерела знімаємо його одразу.
-  useEffect(() => { if (source === "waitlist" && isCardKey(refKey)) setRefKey(REF_KEY_ALL); }, [source, refKey]);
+  useEffect(() => {
+    if (source === "waitlist" && isCardKey(refKey)) {
+      setRefKey(REF_KEY_ALL);
+      setRefNotice("Фільтр за лікарем із довідника знято: лист очікування лікаря з довідника не зберігає.");
+    }
+  }, [source, refKey]);
+  // Картки довідника належать центру: обрано інший центр — картка чужого центру
+  // вже нічого не знайде, тож знімаємо її (як кабінет вище) і кажемо про це.
+  const cardOpts = useMemo(
+    () => (refOpts ? refOpts.cards.filter((o) => clinicId === "all" || !o.clinicId || o.clinicId === clinicId) : []),
+    [refOpts, clinicId]
+  );
+  useEffect(() => {
+    if (isCardKey(refKey) && refOpts && !cardOpts.some((o) => o.key === refKey)) {
+      setRefKey(REF_KEY_ALL);
+      setRefNotice("Фільтр за лікарем із довідника знято: лікар належить іншому центру.");
+    }
+  }, [cardOpts, refKey, refOpts]);
+  useEffect(() => { if (refKey !== REF_KEY_ALL) setRefNotice(""); }, [refKey]);
   // Опції селекта «Направник» — з сервера, у межах області ролі (с77).
   useEffect(() => {
     if (!referrerVisible || !clinics.length) return;
@@ -261,10 +286,11 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       const rows = Number(res.headers.get("X-Export-Rows") || "0");
+      const why = (res.headers.get("X-Export-Incomplete") || null) as ExportIncomplete;
       setExportSt(
-        res.headers.get("X-Export-Truncated") === "1"
-          ? { kind: "done", msg: `Файл сформовано, але НЕ ВСЕ: перші ${rows} записів — звузьте період або фільтри` }
-          : { kind: "done", msg: `Файл Excel сформовано: записів — ${rows}` }
+        why
+          ? { kind: "done", partial: true, msg: "Файл сформовано. " + completenessText(why, rows) }
+          : { kind: "done", partial: false, msg: `Файл Excel сформовано: ${completenessText(null, rows)} (${rows}).` }
       );
     } catch {
       setExportSt({ kind: "error", msg: "Мережева помилка — файл не сформовано, спробуйте ще раз" });
@@ -292,7 +318,7 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
   mods.forEach((m) => chips.push({ key: "m" + m, lab: MODS.find((x) => x.code === m)?.lab || m, clear: () => setMods((arr) => arr.filter((x) => x !== m)) }));
   if (contrast !== "any") chips.push({ key: "c", lab: contrast === "yes" ? "З контрастом" : "Без контрасту", clear: () => setContrast("any") });
   if (prio !== "all") chips.push({ key: "pr", lab: PRIO[prio] || prio, clear: () => setPrio("all") });
-  const refChip = referrerVisible ? referrerChipLabel(refKey, refOpts) : null;
+  const refChip = referrerVisible ? referrerChipLabel(refKey, refOpts, source) : null;
   if (refChip) chips.push({ key: "ref", lab: refChip, clear: () => setRefKey(REF_KEY_ALL) });
 
   const stMeta = source === "queue" ? ST_QUEUE : ST_WL;
@@ -356,20 +382,23 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                   >
                     {sortDesc ? "↓ новіші" : "↑ старіші"}
                   </button>
-                  {st.kind === "ready" && st.items.length > 0 && (
+                  {/* Експорт — лише коли на екрані результати САМЕ цих умов: у вікні
+                      дебаунсу старий список ще видно, а файл пішов би за новими (ревʼю с77).
+                      Порожня сторінка з «є ще» теж дає експорт: збіги можуть бути далі. */}
+                  {st.kind === "ready" && (st.items.length > 0 || st.hasMore) && reqSigRef.current === JSON.stringify(buildRequest()) && (
                     <button
-                      type="button" className="btn btn-secondary btn-sm rf-spin-host"
+                      type="button" className="btn btn-secondary btn-sm"
                       onClick={exportXlsx} disabled={exportSt.kind === "busy"} aria-busy={exportSt.kind === "busy"}
                       title="Вивантажити в Excel усі записи за поточними умовами пошуку"
-                      aria-label="Експорт у Excel"
                     >
-                      {exportSt.kind === "busy" ? "Формуємо файл…" : "⬇ Excel"}
+                      {exportSt.kind === "busy" ? "Формуємо файл…" : <><span aria-hidden="true">⬇ </span>Експорт у Excel</>}
                     </button>
                   )}
                 </div>
                 {(exportSt.kind === "done" || exportSt.kind === "error") && (
-                  <div className={"ctx-hint" + (exportSt.kind === "error" ? " red" : "")} style={{ marginTop: 8 }}>{exportSt.msg}</div>
+                  <div className={"ctx-hint" + (exportSt.kind === "error" ? " red" : exportSt.partial ? " orange" : "")} style={{ marginTop: 8 }}>{exportSt.msg}</div>
                 )}
+                {refNotice && <div className="ctx-hint orange" style={{ marginTop: 8 }}>{refNotice}</div>}
 
                 {filtersOpen && (
                   <div className="card" style={{ padding: 12, marginTop: 8, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}>
@@ -452,16 +481,16 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                         <span className="cld-lab">Направник</span>
                         <select className="inp" value={refKey} onChange={(e) => setRefKey(e.target.value)}>
                           <option value={REF_KEY_ALL}>Усі направники</option>
-                          <option value={REF_KEY_NONE}>Без направника</option>
+                          <option value={REF_KEY_NONE}>{noReferrerLabel(source)}</option>
                           {refOpts && refOpts.accounts.length > 0 && (
                             <optgroup label="Направники з акаунтом">
                               {refOpts.accounts.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
                             </optgroup>
                           )}
-                          {refOpts && refOpts.cards.length > 0 && (
+                          {cardOpts.length > 0 && (
                             /* Лист очікування тексту лікаря не зберігає — картки там недоступні. */
                             <optgroup label={source === "waitlist" ? "Лікарі з довідника (лише для черги)" : "Лікарі з довідника"}>
-                              {refOpts.cards.map((o) => <option key={o.key} value={o.key} disabled={source === "waitlist"}>{o.label}</option>)}
+                              {cardOpts.map((o) => <option key={o.key} value={o.key} disabled={source === "waitlist"}>{o.label}</option>)}
                             </optgroup>
                           )}
                         </select>
@@ -492,13 +521,13 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                     {st.kind === "loading" ? "Виконуємо пошук…"
                       : st.kind === "error" ? "Пошук не виконано: " + st.msg
                       : st.kind === "hint" ? st.msg
-                      : st.kind === "ready" ? (st.items.length === 0 ? "Нічого не знайдено" : "Знайдено записів: " + st.items.length + (st.hasMore ? ", є ще" : ""))
+                      : st.kind === "ready" ? (st.items.length === 0 ? (st.hasMore ? "Серед переглянутих записів збігів поки немає — можна шукати далі" : "Нічого не знайдено") : "Знайдено записів: " + st.items.length + (st.hasMore ? ", є ще" : ""))
                       : ""}
                   </div>
                   {/* с77: стан експорту — ОКРЕМИЙ постійний live-регіон, ПІСЛЯ регіону
                       пошуку (пін W-12 шукає перший регіон як регіон пошуку). */}
                   <div className="rf-vh" role="status" aria-live="polite">
-                    {exportSt.kind === "busy" ? "Формуємо файл Excel…" : exportSt.kind === "idle" ? "" : exportSt.msg}
+                    {exportSt.kind === "busy" ? "Формуємо файл Excel…" : exportSt.kind === "idle" ? refNotice : exportSt.msg}
                   </div>
                   {st.kind === "idle" && (
                     <div className="empty">
@@ -523,7 +552,19 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                       <button className="btn btn-secondary btn-sm" style={{ marginTop: 10 }} onClick={() => runSearch(false, null)}>↻ Повторити</button>
                     </div>
                   )}
-                  {st.kind === "ready" && st.items.length === 0 && (
+                  {st.kind === "ready" && st.items.length === 0 && st.hasMore && (
+                    /* Сервер уперся в стелю скану, не знайшовши збігу, — це ще не
+                       «нічого» (ревʼю с77, B HIGH-1): збіги можуть бути далі. */
+                    <div className="empty">
+                      <div className="ei" aria-hidden="true">⌕</div>
+                      <div className="et">Серед переглянутих записів збігів поки немає</div>
+                      <div className="es">Записів багато — пошук переглядає їх частинами. Шукайте далі або звузьте період.</div>
+                      <button className="btn btn-secondary btn-sm" style={{ marginTop: 10 }} disabled={st.loadingMore} aria-busy={st.loadingMore} onClick={loadMore}>
+                        {st.loadingMore ? "…" : "Шукати далі"}
+                      </button>
+                    </div>
+                  )}
+                  {st.kind === "ready" && st.items.length === 0 && !st.hasMore && (
                     <div className="empty">
                       <div className="ei" aria-hidden="true">📄</div>
                       <div className="et">Нічого не знайдено</div>
@@ -536,9 +577,7 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                       <div className="qrows" role="list" aria-label="Результати пошуку">
                         {st.items.map((it) => {
                           const room = it.roomId ? roomsById[it.roomId] : null;
-                          const studies = it.studies.length
-                            ? it.studies.map((s) => (s.type || "—") + (s.region ? " · " + s.region : "") + (s.contrast ? " · контраст" : "")).join(" + ")
-                            : "—";
+                          const studies = studiesLine(it.studies) || "—";
                           const inner = (
                             <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", alignItems: "baseline", width: "100%" }}>
                               <div style={{ flex: "2 1 220px", minWidth: 0 }}>

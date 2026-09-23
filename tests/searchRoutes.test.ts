@@ -7,8 +7,11 @@
        центрів і кабінетів: область мусить тримати сервер явними фільтрами, а
        не лише RLS (шапка роуту пошуку, с22);
      • `adm` — service-role: лише довідкові імена (профілі направників, картки
-       довідника, гранти). Даних пацієнтів у ньому немає взагалі — якби рушій
-       пішов по них admin-клієнтом, двійник кинув би «такої таблиці немає». */
+       довідника, гранти). Клієнт обгорнуто: будь-яка таблиця ПОЗА цими трьома
+       КИДАЄ (ревʼю с77: сам двійник на невідому таблицю віддає [], тож без
+       обгортки читання пацієнтів admin-клієнтом лишалося б зеленим).
+   Стеля експорту підмінена на 50 рядків — щоб перевірити «НЕ ВСЕ» і пробу
+   «рівно стеля» без тисяч рядків і без залежності від бюджету часу. */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import JSZip from "jszip";
@@ -40,9 +43,25 @@ const events: Array<Record<string, unknown>> = [];
 vi.mock("@/lib/apiAuth", () => ({
   requireRole: async () => ({ ok: true, supabase: fakeAdminClient(rls), user: { id: who.me.id }, me: who.me }),
 }));
+const ADMIN_TABLES = new Set(["profiles", "doctors", "referral_access"]);
 vi.mock("@/lib/supabase/admin", () => ({
-  createAdminClient: () => fakeAdminClient(adm),
+  createAdminClient: () => {
+    const c = fakeAdminClient(adm);
+    return new Proxy(c, {
+      get(o, prop, recv) {
+        if (prop !== "from") return Reflect.get(o, prop, recv);
+        return (t: string) => {
+          if (!ADMIN_TABLES.has(t)) throw new Error(`service-role читає «${t}» — поза довідковими таблицями`);
+          return o.from(t);
+        };
+      },
+    });
+  },
   isAdminConfigured: () => true,
+}));
+vi.mock("@/lib/searchExport", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/searchExport")>()),
+  EXPORT_MAX_ROWS: 50,
 }));
 vi.mock("@/lib/importantEvents.server", () => ({
   emitImportantEvent: async (ev: Record<string, unknown>) => { events.push(ev); return true; },
@@ -50,6 +69,7 @@ vi.mock("@/lib/importantEvents.server", () => ({
 vi.mock("@/lib/serverLog", () => ({ logError: () => {} }));
 
 const { POST: searchPOST } = await import("@/app/api/search/route");
+const { runSearchPage } = await import("@/lib/searchEngine.server");
 const { POST: exportPOST } = await import("@/app/api/search/export/route");
 const { GET: referrersGET } = await import("@/app/api/search/referrers/route");
 
@@ -277,7 +297,8 @@ describe("експорт у Excel", () => {
     for (const e of events) {
       expect(e.eventType).toBe("patient_data.exported");
       expect(e.actorId).toBe(CEO);
-      expect(Object.keys(e.details as object).sort()).toEqual(["format", "rows", "source", "total", "truncated"]);
+      // Ні загальної кількості, ні «обрізано»: журнал центру А не знає про центр Б (ревʼю с77, A-1).
+      expect(Object.keys(e.details as object).sort()).toEqual(["format", "rows", "source"]);
     }
   });
   it("направник: без колонки «Направник», зі своїми телефонами; subject — він сам", async () => {
@@ -302,22 +323,44 @@ describe("експорт у Excel", () => {
     expect(r.headers.get("x-export-rows")).toBe("0");
     expect(events).toHaveLength(0);
   });
-  it("понад стелю — рівно EXPORT_MAX_ROWS різних записів, «НЕ ВСЕ» у файлі й заголовку", async () => {
-    const many: Row[] = [];
-    for (let i = 0; i < EXPORT_MAX_ROWS + 3; i++) {
+  const bulk = (n: number, matching: (i: number) => boolean) => {
+    const out: Row[] = [];
+    for (let i = 0; i < n; i++) {
       const id = `${String(i).padStart(8, "0")}-0000-4000-8000-000000000000`;
-      many.push(q(id, C1, R1, `2026-09-${String(1 + (i % 28)).padStart(2, "0")}`, `0${i % 10}:${String(i % 60).padStart(2, "0")}`, null, null));
+      // спадний порядок дат: збіги — «новіші», незбіги — далі в скані
+      out.push(q(id, C1, R1, `2026-09-${String(28 - Math.floor(i / 40)).padStart(2, "0")}`, `0${i % 10}:${String(i % 60).padStart(2, "0")}`, matching(i) ? REF1 : REF2, null));
     }
-    rls.tables.queue_entries = many;
+    return out;
+  };
+  it("понад стелю — рівно EXPORT_MAX_ROWS різних записів, «НЕ ВСЕ» (доведено: є ще збіг)", async () => {
+    rls.tables.queue_entries = bulk(EXPORT_MAX_ROWS + 3, () => true);
     const r = await exportFile({});
     expect(r.status).toBe(200);
     expect(r.headers.get("x-export-truncated")).toBe("1");
+    expect(r.headers.get("x-export-incomplete")).toBe("cap");
     expect(r.headers.get("x-export-rows")).toBe(String(EXPORT_MAX_ROWS));
     const rowIds = [...r.sheet!.matchAll(/<t xml:space="preserve">([0-9]{8}-0000-4000-8000-000000000000)<\/t>/g)].map((m) => m[1]);
     expect(rowIds.length).toBe(EXPORT_MAX_ROWS);
     expect(new Set(rowIds).size).toBe(EXPORT_MAX_ROWS);
     expect(r.meta).toContain("НЕ ВСЕ");
-  }, 60_000);
+  });
+  it("РІВНО стеля збігів, а далі лише незбіги — файл ПОВНИЙ (проба, а не «уперлись у скан»)", async () => {
+    rls.tables.queue_entries = bulk(EXPORT_MAX_ROWS + 400, (i) => i < EXPORT_MAX_ROWS);
+    const r = await exportFile({ referrerIds: [REF1] });
+    expect(r.headers.get("x-export-rows")).toBe(String(EXPORT_MAX_ROWS));
+    expect(r.headers.get("x-export-truncated")).toBe("0");
+    expect(r.meta).toContain("усі записи, що відповідають фільтрам");
+  });
+  it("кривий час прийому, але скан пройшов одним батчем — файл повний, без хибної тривоги", async () => {
+    rls.tables.queue_entries = [
+      q(Q.refOnly, C1, R1, "2026-09-10", "9:00 AM", REF1, null),
+      q(Q.refBoth, C1, R2, "2026-09-11", "10:00", REF1, "Коваль Ігор"),
+    ];
+    const r = await exportFile({});
+    expect(r.status).toBe(200);
+    expect(r.headers.get("x-export-rows")).toBe("2");
+    expect(r.headers.get("x-export-incomplete")).toBe("");
+  });
 });
 
 describe("GET /api/search/referrers — довідник селекта", () => {
@@ -330,7 +373,7 @@ describe("GET /api/search/referrers — довідник селекта", () => 
     expect(status).toBe(200);
     expect(body.accounts!.map((a) => a.label)).toEqual(["Бондар Олена", "Коваль Ігор"]);
     expect(body.accounts!.map((a) => a.key).sort()).toEqual(["r-" + REF1, "r-" + REF2].sort());
-    expect(body.cards).toEqual([{ key: "d-" + D1, label: "Заставська Марія" }]);
+    expect(body.cards).toEqual([{ key: "d-" + D1, label: "Заставська Марія", clinicId: C1 }]);
   });
   it("CEO: картки обох центрів із назвою центру; направник — 403", async () => {
     who.me = { id: CEO, clinic_id: null, role: "ceo" };
@@ -339,5 +382,150 @@ describe("GET /api/search/referrers — довідник селекта", () => 
     expect(body.accounts!.map((a) => a.label)).toContain("Сидоренко Петро");
     who.me = { id: REF1, clinic_id: null, role: "referrer" };
     expect((await call()).status).toBe(403);
+  });
+});
+
+describe("ревʼю с77 — закриті знахідки", () => {
+  it("A-2: імʼя направника лише якщо він ПОВʼЯЗАНИЙ із центром запису грантом", async () => {
+    const odd = "0f000000-0000-4000-8000-00000000000f";
+    // REF3 має грант лише в C2 (active) і «declined» у C1 — declined теж звʼязок;
+    // беремо направника без жодного гранту в C1: створимо REF4.
+    const REF4 = "f4000000-0000-4000-8000-000000000004";
+    adm.tables.profiles.push({ id: REF4, full_name: "Чужий Направник", role: "referrer" });
+    adm.tables.referral_access.push({ referrer_id: REF4, clinic_id: C2, status: "active" });
+    rls.tables.queue_entries.push(q(odd, C1, R1, "2026-09-19", "09:00", REF4, null));
+    const { body } = await search({});
+    expect(body.items!.find((i) => i.recordId === odd)!.referrerName).toBeNull();
+    // а направник із грантом у центр запису — з іменем
+    expect(body.items!.find((i) => i.recordId === Q.refOnly)!.referrerName).toBe("Коваль Ігор");
+  });
+  it("A-8: CEO не може шукати за цифрами телефону (номерів він не бачить)", async () => {
+    who.me = { id: CEO, clinic_id: null, role: "ceo" };
+    const { status, body } = await search({ term: "067" });
+    expect(status).toBe(403);
+    expect(body.code).toBe("forbidden_filter");
+    // а персонал — може
+    who.me = { id: ADMIN, clinic_id: C1, role: "admin" };
+    expect((await search({ term: "067" })).status).toBe(200);
+  });
+  it("B HIGH-1: рідкісна картка за сотнями рядків без направника знаходиться одним запитом", async () => {
+    const many: Row[] = [];
+    for (let i = 0; i < 1200; i++) {
+      const id = `${String(i).padStart(8, "0")}-1111-4000-8000-000000000000`;
+      many.push(q(id, C1, R1, "2026-09-20", `1${i % 10}:${String(i % 60).padStart(2, "0")}`, null, i % 2 ? null : "Інший Лікар"));
+    }
+    many.push(q(Q.card2sp, C1, R1, "2026-09-02", "08:00", null, "Заставська  Марія"));
+    rls.tables.queue_entries = many;
+    const { status, body } = await search({ doctorIds: [D1] });
+    expect(status).toBe(200);
+    expect(ids(body.items)).toEqual([Q.card2sp]);
+  });
+  it("B HIGH-1: «без направника» — якщо збігів у межах бюджету нема, відповідь каже «є ще», а не «нічого»", async () => {
+    const many: Row[] = [];
+    for (let i = 0; i < 3000; i++) {
+      const id = `${String(i).padStart(8, "0")}-2222-4000-8000-000000000000`;
+      many.push(q(id, C1, R1, "2026-09-25", `1${i % 10}:${String(i % 60).padStart(2, "0")}`, null, "Інший Лікар"));
+    }
+    many.push(q(Q.none, C1, R1, "2026-09-01", "08:00", null, null));
+    rls.tables.queue_entries = many;
+    let cursor: string | null | undefined;
+    const found: string[] = [];
+    for (let page = 0; page < 10; page++) {
+      const r = await search({ noReferrer: true, ...(cursor ? { cursor } : {}) });
+      expect(r.status).toBe(200);
+      found.push(...(ids(r.body.items) as string[]));
+      if (!r.body.hasMore) break;
+      cursor = r.body.nextCursor;
+    }
+    expect(found).toEqual([Q.none]);
+  });
+  it("B MEDIUM-1: CEO з фільтром «Центр А» і карткою центру Б — законне «нічого», не 403", async () => {
+    who.me = { id: CEO, clinic_id: null, role: "ceo" };
+    const { status, body } = await search({ clinicIds: [C1], doctorIds: [D2] });
+    expect(status).toBe(200);
+    expect(body.items).toEqual([]);
+  });
+  it("направник: у листі очікування — і створені ним, і перенесені персоналом рядки з його referrer_id (зеркало RLS)", async () => {
+    who.me = { id: REF1, clinic_id: null, role: "referrer" };
+    rls.tables.waitlist_entries.push(w("0e000000-0000-4000-8000-00000000000e", C1, REF1, ADMIN, "2026-09-14T08:00:00Z"));
+    rls.tables.waitlist_entries.push(w("0f000000-0000-4000-8000-00000000000f", C1, REF2, ADMIN, "2026-09-15T08:00:00Z"));
+    const { body } = await search({ sources: ["waitlist"] });
+    expect(ids(body.items)).toEqual(["0a000000-0000-4000-8000-00000000000a", "0e000000-0000-4000-8000-00000000000e"].sort());
+  });
+  it("A-5: радіолог без кабінетів — порожній довідник направників", async () => {
+    who.me = { id: RAD, clinic_id: C1, role: "radiologist" };
+    rls.tables.radiologist_rooms = [];
+    const res = await referrersGET();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ accounts: [], cards: [] });
+  });
+  it("лист очікування: пагінація курсором без дублів і пропусків", async () => {
+    const many: Row[] = [];
+    for (let i = 0; i < 60; i++) {
+      many.push(w(`${String(i).padStart(8, "0")}-3333-4000-8000-000000000000`, C1, REF1, REF1, `2026-09-${String(1 + (i % 28)).padStart(2, "0")}T0${i % 10}:00:00Z`));
+    }
+    rls.tables.waitlist_entries = many;
+    const seen: string[] = [];
+    let cursor: string | null | undefined;
+    for (let page = 0; page < 5; page++) {
+      const r = await search({ sources: ["waitlist"], ...(cursor ? { cursor } : {}) });
+      seen.push(...(ids(r.body.items) as string[]));
+      if (!r.body.hasMore) break;
+      cursor = r.body.nextCursor;
+    }
+    expect(seen.length).toBe(60);
+    expect(new Set(seen).size).toBe(60);
+  });
+  it("деградований курсор (кривий час) у продовженні скану — сторінка каже degraded", async () => {
+    rls.tables.queue_entries = [
+      q(Q.refOnly, C1, R1, "2026-09-10", "9:00 AM", REF1, null),
+      q(Q.none, C1, R1, "2026-09-10", "08:00", null, null),
+      q(Q.refBoth, C1, R2, "2026-09-09", "10:00", REF1, "Коваль Ігор"),
+    ];
+    const ctx = {
+      supabase: fakeAdminClient(rls) as never, admin: fakeAdminClient(adm) as never,
+      scope: {
+        role: "admin" as const, userId: ADMIN, clinicIds: [C1], roomIds: null, roomIdsByClinic: null,
+        ownReferrerOnly: false, sources: ["queue" as const, "waitlist" as const], referrerVisible: false, showPhone: true,
+      },
+      tzByClinic: {}, tz0: "Europe/Kyiv", todayKey: "2026-09-23", docKeys: null, docClinics: null, docNames: [],
+    };
+    const f = {
+      term: "", termKind: "none" as const, source: "queue" as const, clinicIds: [C1], roomIds: null,
+      dateFrom: "2026-09-01", dateTo: "2026-09-30", queueStatuses: null, waitlistStatuses: null, modalities: null,
+      studyQuery: "", contrast: null, priorities: null, referrerIds: null, doctorIds: null, noReferrer: false,
+      sort: "date_desc" as const, limit: 25,
+    };
+    const page = await runSearchPage(ctx, f, null, { limit: 25, maxScan: 1000, batch: 1 });
+    if (!page.ok) throw new Error("expected ok");
+    expect(page.degraded).toBe(true);
+    const whole = await runSearchPage(ctx, f, null, { limit: 25, maxScan: 1000, batch: 100 });
+    if (!whole.ok) throw new Error("expected ok");
+    expect(whole.degraded).toBe(false);
+  });
+  it("дедлайн: скан зупиняється ПІСЛЯ першого батча з курсором, а не губить продовження", async () => {
+    const many: Row[] = [];
+    for (let i = 0; i < 30; i++) many.push(q(`${String(i).padStart(8, "0")}-4444-4000-8000-000000000000`, C1, R1, "2026-09-10", `1${i % 10}:00`, null, null));
+    rls.tables.queue_entries = many;
+    const scope = {
+      role: "admin" as const, userId: ADMIN, clinicIds: [C1], roomIds: null, roomIdsByClinic: null,
+      ownReferrerOnly: false, sources: ["queue" as const, "waitlist" as const], referrerVisible: false, showPhone: true,
+    };
+    const ctx = {
+      supabase: fakeAdminClient(rls) as never, admin: fakeAdminClient(adm) as never, scope,
+      tzByClinic: {}, tz0: "Europe/Kyiv", todayKey: "2026-09-23", docKeys: null, docClinics: null, docNames: [],
+    };
+    const f = {
+      term: "Немаєтакого", termKind: "text" as const, source: "queue" as const, clinicIds: [C1], roomIds: null,
+      dateFrom: "2026-09-01", dateTo: "2026-09-30", queueStatuses: null, waitlistStatuses: null, modalities: null,
+      studyQuery: "", contrast: null, priorities: null, referrerIds: null, doctorIds: null, noReferrer: false,
+      sort: "date_desc" as const, limit: 25,
+    };
+    const page = await runSearchPage(ctx, f, null, { limit: 25, maxScan: 1000, batch: 10, deadline: Date.now() - 1 });
+    if (!page.ok) throw new Error("expected ok");
+    expect(page.items).toEqual([]);
+    expect(page.more).toBe("scan");
+    expect(page.nextCursor).not.toBeNull();
+    expect(page.hasMore).toBe(true);
   });
 });

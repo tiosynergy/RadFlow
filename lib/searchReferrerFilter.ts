@@ -61,7 +61,7 @@ export function normPersonName(s: string | null | undefined): string {
   if (!s) return "";
   return s
     .normalize("NFC")
-    .replace(/[ʼ’‘`´]/g, "'")
+    .replace(/[\u02BC\u2019\u2018`\u00B4]/g, "'")
     .replace(/\s+/g, " ")
     .trim()
     .toLocaleLowerCase("uk");
@@ -73,7 +73,9 @@ export type ReferrerDirectory = {
   cards: Array<{ id: string; name: string | null; clinicId: string }>;
 };
 
-export type ReferrerOption = { key: string; label: string };
+/** `clinicId` — лише в картки довідника: UI ховає картки чужого центру, коли
+ *  обрано фільтр центру (ревʼю с77, B MEDIUM-1). */
+export type ReferrerOption = { key: string; label: string; clinicId?: string };
 export type ReferrerOptions = { accounts: ReferrerOption[]; cards: ReferrerOption[] };
 
 const byLabel = (a: ReferrerOption, b: ReferrerOption) => a.label.localeCompare(b.label, "uk");
@@ -105,15 +107,21 @@ export function buildReferrerOptions(
     if (!name || seenC.has(c.id)) continue;
     seenC.add(c.id);
     const where = multiClinic ? clinicNameById[c.clinicId] : "";
-    cards.push({ key: REF_PREFIX_CARD + c.id, label: where ? `${name} · ${where}` : name });
+    cards.push({ key: REF_PREFIX_CARD + c.id, label: where ? `${name} · ${where}` : name, clinicId: c.clinicId });
   }
   return { accounts: accounts.sort(byLabel), cards: cards.sort(byLabel) };
 }
 
+/** Підпис «без направника» для джерела: лист очікування тексту лікаря не
+ *  зберігає, тож там це чесно лише «без АКАУНТА направника» (ревʼю с77). */
+export function noReferrerLabel(source: "queue" | "waitlist"): string {
+  return source === "waitlist" ? "Без акаунта направника" : "Без направника";
+}
+
 /** Підпис обраного фільтра для chip-а (null — фільтра немає або опція зникла). */
-export function referrerChipLabel(key: string, opts: ReferrerOptions | null): string | null {
+export function referrerChipLabel(key: string, opts: ReferrerOptions | null, source: "queue" | "waitlist" = "queue"): string | null {
   if (key === REF_KEY_ALL) return null;
-  if (key === REF_KEY_NONE) return "Без направника";
+  if (key === REF_KEY_NONE) return noReferrerLabel(source);
   const hit = opts ? [...opts.accounts, ...opts.cards].find((o) => o.key === key) : null;
   return hit ? `Напр.: ${hit.label}` : "Напр.: обраний";
 }

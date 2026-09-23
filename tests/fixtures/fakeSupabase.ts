@@ -55,7 +55,10 @@ type Filter = { op: string; col: string; val: unknown };
 class FakeQuery {
   private filters: Filter[] = [];
   private cols: string[] = [];
-  private orExpr: string | null = null;
+  /* Кілька `.or()` — кілька груп, між собою AND (як у PostgREST: кожен виклик
+     дописує окремий параметр `or=`). с77: одна група — власна область
+     направника в листі очікування, друга — keyset-курсор. */
+  private orExprs: string[] = [];
   private wantSingle = false;
   /* с77 (пошук): порядок і ліміт — ПО-СПРАВЖНЬОМУ, бо keyset-пагінація пошуку
      і експорту спирається саме на них: мʼякий `order()` без сортування дав би
@@ -86,7 +89,13 @@ class FakeQuery {
   gt(col: string, val: unknown) { this.filters.push({ op: "gt", col, val }); return this; }
   gte(col: string, val: unknown) { this.filters.push({ op: "gte", col, val }); return this; }
   is(col: string, val: unknown) { this.filters.push({ op: "is", col, val }); return this; }
-  or(expr: string) { this.orExpr = expr; return this; }
+  or(expr: string) { this.orExprs.push(expr); return this; }
+  /** `not(col, "is", null)` — єдина форма, яку вживає код; решта кидає. */
+  not(col: string, op: string, val: unknown) {
+    if (op !== "is") throw new Error(`FakeSupabase: not(${col}, ${op}) не реалізовано — додай у двійник`);
+    this.filters.push({ op: "not.is", col, val });
+    return this;
+  }
   order(col: string, opts?: { ascending?: boolean; nullsFirst?: boolean }) {
     const asc = opts?.ascending ?? true;
     // Дефолт Postgres: ASC → NULLS LAST, DESC → NULLS FIRST.
@@ -116,7 +125,7 @@ class FakeQuery {
     this.db.seen[this.table] = {
       cols: this.cols,
       filters: this.filters.map((f) => `${f.op}:${f.col}`),
-      or: this.orExpr,
+      or: this.orExprs.length ? this.orExprs.join(" AND ") : null,
       wrote: this.inserted ? "insert" : this.patch ? "update" : undefined,
     };
     (this.db.queries ??= []).push({
@@ -162,8 +171,9 @@ class FakeQuery {
       if (f.op === "gt" && !(String(v) > String(f.val))) return false;
       if (f.op === "gte" && !(String(v) >= String(f.val))) return false;
       if (f.op === "is" && !(f.val === null ? v == null : v === f.val)) return false;
+      if (f.op === "not.is" && (f.val === null ? v == null : v === f.val)) return false;
     }
-    return this.orExpr == null || this.matchesOr(r, this.orExpr);
+    return this.orExprs.every((e) => this.matchesOr(r, e));
   }
 
   private cmpRows(a: Row, b: Row): number {

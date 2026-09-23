@@ -23,7 +23,9 @@ export async function GET() {
   const scope = await resolveSearchScope(supabase, me);
   if ("error" in scope) return NextResponse.json({ error: scope.error }, { status: scope.status });
   if (!scope.referrerVisible) return NextResponse.json({ error: "Недостатньо прав" }, { status: 403 });
-  if (!scope.clinicIds.length) {
+  // Радіолог без призначених кабінетів шукає «ніде» — і довідника направників
+  // йому не треба (ревʼю с77, A-5): порожня область = порожній довідник.
+  if (!scope.clinicIds.length || (scope.roomIds !== null && !scope.roomIds.length)) {
     return NextResponse.json({ accounts: [], cards: [] }, { headers: { "Cache-Control": "no-store" } });
   }
 

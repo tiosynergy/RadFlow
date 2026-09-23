@@ -127,6 +127,8 @@ export type SearchCtx = {
   todayKey: string;
   /** Фільтр за карткою довідника: множина `clinic_id|нормалізоване ПІБ`. */
   docKeys: Set<string> | null;
+  /** Центри обраних карток (∩ фільтр центру) — SQL звужує скан саме до них. */
+  docClinics: string[] | null;
   /** Назви обраних карток (для аркуша «Параметри» експорту). */
   docNames: string[];
 };
@@ -162,43 +164,55 @@ export async function prepareSearch(supabase: DB, admin: DB, me: Caller, input: 
   const empty = !f.clinicIds.length || (f.roomIds !== null && !f.roomIds.length && f.source === "queue");
 
   let docKeys: Set<string> | null = null;
+  let docClinics: string[] | null = null;
   let docNames: string[] = [];
+  let emptyByCard = false;
   if (f.doctorIds && !empty) {
-    const r = await resolveDoctorCards(admin, f.doctorIds, f.clinicIds);
+    // Картку перевіряємо проти ВСІЄЇ області ролі, а не проти звуженого
+    // фільтра центру (ревʼю с77, B MEDIUM-1): CEO з фільтром «Центр А» і
+    // карткою центру Б — це законне «нічого», а не чужий фільтр.
+    const r = await resolveDoctorCards(admin, f.doctorIds, scope.clinicIds);
     if (!r.ok) return { ok: false, status: 400, body: { error: r.error } };
     // Жодна з обраних карток не належить області ролі — це не «нічого не
     // знайдено», а чужий фільтр (як clinicIds поза областю в нормалізаторі).
-    if (!r.keys.size) return { ok: false, status: 403, body: { error: "Обраний лікар недоступний", code: "forbidden_filter" } };
-    docKeys = r.keys;
-    docNames = r.names;
+    if (!r.cards.length) return { ok: false, status: 403, body: { error: "Обраний лікар недоступний", code: "forbidden_filter" } };
+    const inFilter = new Set(f.clinicIds.map((c) => c.toLowerCase()));
+    const cards = r.cards.filter((c) => inFilter.has(c.clinicId));
+    docKeys = new Set(cards.map((c) => `${c.clinicId}|${c.norm}`));
+    docClinics = [...new Set(cards.map((c) => c.clinicId))];
+    docNames = r.cards.map((c) => c.name);
+    emptyByCard = cards.length === 0;
   }
 
-  return { ok: true, ctx: { supabase, admin, scope, tzByClinic, tz0, todayKey, docKeys, docNames }, f, empty };
+  return {
+    ok: true,
+    ctx: { supabase, admin, scope, tzByClinic, tz0, todayKey, docKeys, docClinics, docNames },
+    f,
+    empty: empty || emptyByCard,
+  };
 }
 
 /* ---------- Довідкові імена (admin-клієнт, у межах, які дала RLS) ---------- */
 
-/** Картки довідника за id — ЛИШЕ з центрів області. Ключ — `clinic|ПІБ`. */
+/** Картки довідника за id — ЛИШЕ з центрів області ролі. */
 export async function resolveDoctorCards(
   admin: DB,
   doctorIds: string[],
   clinicIds: string[]
-): Promise<{ ok: true; keys: Set<string>; names: string[] } | { ok: false; error: string }> {
+): Promise<{ ok: true; cards: Array<{ clinicId: string; norm: string; name: string }> } | { ok: false; error: string }> {
   const { data, error } = await admin
     .from("doctors")
     .select("id, name, clinic_id")
     .in("id", doctorIds.slice(0, IN_CHUNK))
     .in("clinic_id", clinicIds);
   if (error) return { ok: false, error: safeDbError("api/search.doctors", error) };
-  const keys = new Set<string>();
-  const names: string[] = [];
+  const cards: Array<{ clinicId: string; norm: string; name: string }> = [];
   for (const d of data || []) {
-    const n = normPersonName(d.name);
-    if (!n) continue;
-    keys.add(`${String(d.clinic_id).toLowerCase()}|${n}`);
-    names.push((d.name || "").trim());
+    const norm = normPersonName(d.name);
+    if (!norm) continue;
+    cards.push({ clinicId: String(d.clinic_id).toLowerCase(), norm, name: (d.name || "").trim().replace(/\s+/g, " ") });
   }
-  return { ok: true, keys, names };
+  return { ok: true, cards };
 }
 
 /**
@@ -231,6 +245,50 @@ export async function resolveReferrerNames(admin: DB, ids: string[]): Promise<Ma
     }
   } catch (e) {
     logError({ event: "search.referrer_names_failed", errorCode: "exception", message: e instanceof Error ? e.message : String(e) });
+  }
+  return out;
+}
+
+/**
+ * ПІБ направників для РЯДКІВ результату — лише тих, хто ПОВʼЯЗАНИЙ із центром
+ * рядка грантом `referral_access` (будь-якого статусу). Ревʼю с77 (A-2):
+ * `referrer_id` запису персонал може виставити будь-яким UUID (форма й RPC
+ * перевіряють лише FK на profiles), і без цієї перевірки пошук став би
+ * оракулом «ПІБ направника ЧУЖОГО центру за UUID». До с77 RLS давала тут
+ * NULL навіть адміну — поведінка для незвʼязаних лишається тією ж.
+ * Ключ результату — `referrer|clinic`.
+ */
+export async function resolveLinkedReferrerNames(
+  admin: DB,
+  pairs: Array<{ refId: string; clinicId: string }>
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const refIds = [...new Set(pairs.map((p) => p.refId.toLowerCase()))];
+  const clinics = [...new Set(pairs.map((p) => p.clinicId.toLowerCase()))];
+  if (!refIds.length) return out;
+  const linked = new Set<string>();
+  try {
+    for (let i = 0; i < refIds.length; i += IN_CHUNK) {
+      const { data, error } = await admin
+        .from("referral_access")
+        .select("referrer_id, clinic_id")
+        .in("referrer_id", refIds.slice(i, i + IN_CHUNK))
+        .in("clinic_id", clinics);
+      if (error) {
+        logError({ event: "search.referrer_links_failed", errorCode: error.code ?? "db_error", message: error.message });
+        return out;
+      }
+      for (const r of data || []) linked.add(`${String(r.referrer_id).toLowerCase()}|${String(r.clinic_id).toLowerCase()}`);
+    }
+  } catch (e) {
+    logError({ event: "search.referrer_links_failed", errorCode: "exception", message: e instanceof Error ? e.message : String(e) });
+    return out;
+  }
+  const allowed = [...new Set([...linked].map((k) => k.split("|")[0]))];
+  const names = await resolveReferrerNames(admin, allowed);
+  for (const k of linked) {
+    const n = names.get(k.split("|")[0]);
+    if (n) out.set(k, n);
   }
   return out;
 }
@@ -382,7 +440,9 @@ function cursorTimeParts(t: string | null): { t: string | null; u?: boolean } {
   return /^[0-9:]{1,8}$/.test(t) ? { t: t.slice(0, 8) } : { t: null, u: true };
 }
 
-function queueBatch(supabase: DB, scope: RoleScope, f: NormalizedSearchFilters, cursor: SearchCursor | null, batch: number) {
+function queueBatch(
+  supabase: DB, scope: RoleScope, f: NormalizedSearchFilters, cursor: SearchCursor | null, batch: number, docClinics: string[] | null
+) {
   const asc = f.sort === "date_asc";
   // Текст лікаря потрібен лише ролям, яким видно направника: для фільтра за
   // карткою / «без направника» і для підпису в результаті (с77).
@@ -399,8 +459,12 @@ function queueBatch(supabase: DB, scope: RoleScope, f: NormalizedSearchFilters, 
   if (f.priorities) q = q.in("priority_level", f.priorities);
   if (f.referrerIds) q = q.in("referrer_id", f.referrerIds);
   // Картка довідника і «без направника» — лише записи БЕЗ акаунта; решту
-  // (текст лікаря) добирає passesReferrerFilter.
+  // (нормалізований текст лікаря) добирає passesReferrerFilter.
   if (f.doctorIds || f.noReferrer) q = q.is("referrer_id", null);
+  // Картку ще й звужуємо в SQL до рядків ІЗ текстом лікаря і лише в центрах
+  // карток (ревʼю с77, B HIGH-1): інакше рідкісний лікар тонув у сотнях
+  // рядків без направника, і сторінка скану (maxScan) поверталась порожньою.
+  if (f.doctorIds && docClinics) q = q.not("doctor", "is", null).in("clinic_id", docClinics);
   if (cursor && cursor.s === "queue") q = q.or(queueKeysetOr(cursor, asc));
   return q
     .order("scheduled_date", { ascending: asc })
@@ -458,8 +522,12 @@ function waitlistBatch(supabase: DB, scope: RoleScope, f: NormalizedSearchFilter
     .gte("created_at", shiftKey(f.dateFrom, -1))
     .lte("created_at", shiftKey(f.dateTo, 1) + "T23:59:59.999Z");
   if (f.roomIds) q = q.in("room_id", f.roomIds);
-  // Направник видит в листе ожидания ТОЛЬКО собственные строки (зеркало RLS waitlist_select).
-  if (scope.ownReferrerOnly) q = q.eq("created_by", scope.userId);
+  // Направник видит в листе ожидания ТОЛЬКО собственные строки — зеркало RLS
+  // waitlist_select і вкладки порталу (MyWaitlist): `created_by = я АБО
+  // referrer_id = я`. До с77 тут був лише created_by, і рядок, який персонал
+  // переніс у лист із направлення цього направника, у пошук не потрапляв
+  // (ревʼю с77; на проді такий рядок є). uid — з сесії, алфавіт uuid безпечний для .or().
+  if (scope.ownReferrerOnly) q = q.or(`created_by.eq.${scope.userId},referrer_id.eq.${scope.userId}`);
   if (f.waitlistStatuses) q = q.in("status", f.waitlistStatuses);
   if (f.priorities) q = q.in("priority_level", f.priorities);
   /* Направник (с77). До цього фільтр `referrerIds` лист очікування ІГНОРУВАВ —
@@ -492,7 +560,19 @@ export type PageOpts = {
 };
 
 export type PageResult =
-  | { ok: true; items: SearchResultItem[]; nextCursor: string | null; hasMore: boolean }
+  | {
+      ok: true;
+      items: SearchResultItem[];
+      nextCursor: string | null;
+      hasMore: boolean;
+      /** ЧОМУ є «ще»: `match` — знайдено збіг понад ліміт (є точно);
+       *  `scan` — вичерпано стелю скану або дедлайн (збігів далі може й не бути);
+       *  null — вибірку вичерпано. Експорту потрібна саме ця різниця (ревʼю с77). */
+      more: "match" | "scan" | null;
+      /** Хоч раз застосовано деградований keyset (кривий `scheduled_time`): у
+       *  межах дати рядки могли бути ПРОПУЩЕНІ — повноту гарантувати не можна. */
+      degraded: boolean;
+    }
   | { ok: false; status: number; error: string };
 
 /**
@@ -506,7 +586,13 @@ export async function runSearchPage(
   cursor: SearchCursor | null,
   opts: PageOpts
 ): Promise<PageResult> {
-  const { supabase, admin, scope, tzByClinic, tz0, todayKey, docKeys } = ctx;
+  const { supabase, admin, scope, tzByClinic, tz0, todayKey, docKeys, docClinics } = ctx;
+  // `rows.length < batch` = «вибірку вичерпано» — це правда, лише поки batch не
+  // більший за db-max-rows PostgREST (1000): інакше обрізана відповідь виглядала б кінцем.
+  const batch = Math.min(opts.batch, PGRST_MAX_ROWS);
+  // Деградований keyset шкодить лише тоді, коли з НЬОГО продовжують скан
+  // (наступний батч/сторінка): тоді в межах дати рядки можуть бути пропущені.
+  let degraded = false;
   const items: SearchResultItem[] = [];
   /* Імена направників добираються ПІСЛЯ скану одним запитом на сторінку:
      id — лише з рядків, що повернула RLS (див. шапку файлу). */
@@ -526,10 +612,11 @@ export async function runSearchPage(
       // Дедлайн — лише ПІСЛЯ хоча б одного батча: тоді `lastKeyset` уже є і
       // продовження не губиться (без курсора «є ще» нема чим продовжити).
       if (opts.deadline && scanned > 0 && Date.now() > opts.deadline) { outOfTime = true; break; }
+      if (lastKeyset && lastKeyset.s === "queue" && lastKeyset.u) degraded = true;
       const { data, error } =
         f.source === "queue"
-          ? await queueBatch(supabase, scope, f, lastKeyset, opts.batch)
-          : await waitlistBatch(supabase, scope, f, lastKeyset, opts.batch);
+          ? await queueBatch(supabase, scope, f, lastKeyset, batch, docClinics)
+          : await waitlistBatch(supabase, scope, f, lastKeyset, batch);
       // Ошибка БД — это ОШИБКА, а не «нічого не знайдено» (ТЗ §9).
       if (error) return { ok: false, status: 400, error: safeDbError("api/search." + f.source, error) };
       const rows = (data || []) as unknown as (QueueRow[] | WlRow[]);
@@ -592,7 +679,7 @@ export async function runSearchPage(
         }
         if (scanned >= opts.maxScan) break;
       }
-      if (rows.length < opts.batch && !overflow) exhausted = true;
+      if (rows.length < batch && !overflow) exhausted = true;
     }
   } catch (e) {
     // Таймаут БД / обрыв — тоже ошибка, а не пустой список.
@@ -601,9 +688,12 @@ export async function runSearchPage(
   }
 
   if (pending.length) {
-    const names = await resolveReferrerNames(admin, pending.map((p) => p.refId || "").filter(Boolean));
+    const names = await resolveLinkedReferrerNames(
+      admin,
+      pending.filter((p) => p.refId).map((p) => ({ refId: p.refId!, clinicId: p.item.clinicId }))
+    );
     for (const p of pending) {
-      const account = p.refId ? names.get(p.refId.toLowerCase()) : undefined;
+      const account = p.refId ? names.get(`${p.refId.toLowerCase()}|${p.item.clinicId.toLowerCase()}`) : undefined;
       const text = (p.doctorText || "").trim().replace(/\s+/g, " ");
       p.item.referrerName = account || text || null;
     }
@@ -612,10 +702,12 @@ export async function runSearchPage(
   // Курсор продолжения: после limit+1-го совпадения — с последнего ОТДАННОГО
   // элемента (следующая страница переоткроет «переполнившее» совпадение);
   // после упора в maxScan / дедлайн — с последней ПРОСМОТРЕННОЙ строки.
-  const hasMore = overflow || outOfTime || (!exhausted && scanned >= opts.maxScan);
+  const more: "match" | "scan" | null = overflow ? "match" : outOfTime || (!exhausted && scanned >= opts.maxScan) ? "scan" : null;
   const next = overflow ? lastAcceptedKeyset : lastKeyset;
-  const nextCursor = hasMore && next ? encodeSearchCursor(next) : null;
-  return { ok: true, items, nextCursor, hasMore: hasMore && nextCursor !== null };
+  // Курсор null при more="match" можливий лише для ПРОБИ з limit=0 (експорт
+  // питає «чи є ще хоч один збіг?») — продовжувати її не треба.
+  const nextCursor = more && next ? encodeSearchCursor(next) : null;
+  return { ok: true, items, nextCursor, hasMore: more !== null && nextCursor !== null, more, degraded };
 }
 
 export { decodeSearchCursor };

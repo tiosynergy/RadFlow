@@ -52,6 +52,12 @@
  *   • новий `auth_new_gate()` без піна — червоне в покритті з його іменем;
  *   • рядок `f:auth_radiologist_case_ok` прибрано з передруку — червоне в
  *     покритті з іменем (і в `grantDigestInvariant` — лічильник рядків).
+ *   • після ревʼю с77 (детектор розширено): `alter function public.auth_ceo_clinics
+ *     owner to` БЕЗ дужок, `drop function public.auth_is_ceo_of;`, друга позиція у
+ *     `grant … on function public.zz_x(), public.auth_referrer_can_book_room(uuid)`,
+ *     `alter routine …` — червоні; `rename to auth_is_admin2` — червоне двічі
+ *     (правка №19 і новий непінований auth_*); `create trigger … execute function
+ *     public.fn_audit()` — зелене (виклик, а не правка).
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
@@ -108,14 +114,21 @@ const NAMES = pinnedNames();
  *  Виріз — той самий, що в `grantDigestInvariant.test.ts`: від кроку лічильника
  *  до мітки перевірки, без рядкових коментарів (маркери `/* 0174 *\/` лишаються). */
 function grantDigestFnNames(): string[] {
-  const code = SRC.split("\n").filter((l) => !/^\s*--/.test(l)).join("\n");
+  // Без блочних коментарів теж (ревʼю с77): закоментований `/* ('f:…') */` рядок
+  // не мусить рахуватись піном.
+  const code = SRC.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !/^\s*--/.test(l)).join("\n");
   const at = code.indexOf("'check', 'grant_digest'");
   if (at < 0) throw new Error(`${REPRINT}: у передруку немає мітки grant_digest`);
   const start = code.lastIndexOf("v_n := v_n + 1;", at);
   if (start < 0) throw new Error(`${REPRINT}: перед міткою №22 немає кроку лічильника`);
   const block = code.slice(start, at);
   const names = new Set<string>();
-  for (const m of block.matchAll(/^\s*\('f:([a-z0-9_]+)\([^']*\)','[^']*'\),?$/gm)) names.add(m[1]);
+  const strict = [...block.matchAll(/^\s*\('f:([a-z0-9_]+)\([^']*\)','[^']*'\),?$/gm)];
+  for (const m of strict) names.add(m[1]);
+  // Кожен рядок `('f:` мусить розібратися СУВОРО (ревʼю с77): рядок з іменем у
+  // верхньому регістрі чи зі схемою інакше мовчки випав би з піна.
+  const loose = (block.match(/^\s*\('f:/gm) || []).length;
+  if (loose !== strict.length) throw new Error(`${REPRINT}: у гілці f: №22 ${loose} рядків, а розібрано ${strict.length}`);
   if (names.size < 5) throw new Error(`${REPRINT}: у гілці f: №22 лише ${names.size} рядків — виріз зрушив?`);
   return [...names].sort();
 }
@@ -137,8 +150,14 @@ function liveAuthHelpers(): string[] {
     for (const m of code.matchAll(/create\s+(?:or\s+replace\s+)?function\s+(?:public\.)?(auth_[a-z0-9_]+)\s*\(/g)) {
       ev.push([m.index!, m[1], "create"]);
     }
-    for (const m of code.matchAll(/drop\s+function\s+(?:if\s+exists\s+)?(?:public\.)?(auth_[a-z0-9_]+)\s*\(/g)) {
+    // drop — і без списку аргументів (PG ≥ 10 дозволяє для унікального імені)
+    for (const m of code.matchAll(/drop\s+(?:function|routine)\s+(?:if\s+exists\s+)?(?:public\.)?(auth_[a-z0-9_]+)\b/g)) {
       ev.push([m.index!, m[1], "drop"]);
+    }
+    // rename: старе імʼя зникає, нове (якщо це auth_*) зʼявляється
+    for (const m of code.matchAll(/alter\s+(?:function|routine)\s+(?:public\.)?(auth_[a-z0-9_]+)\b[^;]*?\brename\s+to\s+([a-z0-9_]+)/g)) {
+      ev.push([m.index!, m[1], "drop"]);
+      if (m[2].startsWith("auth_")) ev.push([m.index! + 1, m[2], "create"]);
     }
     ev.sort((a, b) => a[0] - b[0]);
     for (const [, name, kind] of ev) last.set(name, kind);
@@ -154,11 +173,26 @@ const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 function touches(code: string, name: string): string[] {
   const hits: string[] = [];
   const n = esc(name);
-  // create [or replace] / alter / drop [if exists] / grant … on / revoke … on  FUNCTION name(
-  for (const m of code.matchAll(new RegExp(`function\\s+(?:if\\s+exists\\s+)?(?:public\\.)?${n}\\s*\\(`, "g"))) {
+  // create [or replace] / alter / drop [if exists] / grant … on / revoke … on
+  // FUNCTION|ROUTINE|PROCEDURE name — з дужками АБО без (ревʼю с77: `alter function
+  // public.x owner to …` і `drop function public.x;` легальні для унікального імені).
+  // Межа слова після імені: `x_extra` — не `x`.
+  for (const m of code.matchAll(new RegExp(`\\b(?:function|routine|procedure)s?\\s+(?:if\\s+exists\\s+)?(?:public\\.)?${n}\\b`, "g"))) {
     const before = code.slice(Math.max(0, m.index! - 40), m.index!);
-    if (/comment\s+on\s*$/.test(before)) continue; // коментар — не правка
-    hits.push(`function ${name}(…) @${m.index}`);
+    // коментар — не правка; `execute function x()` у `create trigger` — ВИКЛИК x, не правка x
+    if (/(?:comment\s+on|execute)\s*$/.test(before)) continue;
+    hits.push(`function ${name} @${m.index}`);
+  }
+  // СПИСКИ підписів: `drop function a(), b()` і `grant|revoke … on function a(), b() to|from …`
+  // — друга й далі позиції не стоять одразу після ключового слова.
+  const lists = [
+    ...code.matchAll(/\bdrop\s+(?:function|routine|procedure)s?\s+(?:if\s+exists\s+)?([^;]*)/g),
+    ...code.matchAll(/\b(?:grant|revoke)\b[^;]*?\bon\s+(?:function|routine|procedure)s?\s+([^;]*?)\s+(?:to|from)\b/g),
+  ];
+  for (const m of lists) {
+    if (new RegExp(`(?:^|[\\s,])(?:public\\.)?${n}\\b`).test(m[1]) && !hits.some((h) => h.endsWith(`@${m.index}`))) {
+      hits.push(`список: … ${name} … @${m.index}`);
+    }
   }
   // якірна правка через каталог (стиль 0199): proname = 'name' / proname in ('name', …)
   if (new RegExp(`proname\\s*=\\s*'${n}'`).test(code)) hits.push(`proname = '${name}'`);
@@ -232,6 +266,13 @@ describe(`№19 і №22 f: — зворотний бік ратчета: міг
       `drop function if exists public.${name}();`,
       `grant execute on function public.${name}() to authenticated;`,
       `revoke all on function ${name}() from anon;`,
+      // ревʼю с77: без дужок, у списку, через ROUTINE
+      `alter function public.${name} owner to postgres;`,
+      `drop function public.${name};`,
+      `drop function if exists public.zz_other(), public.${name}(uuid);`,
+      `grant execute on function public.zz_other(), public.${name}() to anon;`,
+      `alter routine public.${name}() owner to postgres;`,
+      `revoke execute on routine public.${name}() from anon;`,
       `select pg_get_functiondef(p.oid) from pg_proc p where p.proname = '${name}';`,
       `select 1 from pg_proc p where p.proname in ('x', '${name}');`,
       `select pg_get_functiondef('public.${name}()'::regprocedure);`,
@@ -244,6 +285,13 @@ describe(`№19 і №22 f: — зворотний бік ратчета: міг
       `create policy p on t using (public.${name}() = clinic_id);`,
       `-- create or replace function public.${name}()`,
       `/* alter function public.${name}() owner to x */`,
+      // виклик ПІНОВАНОЇ функції з тіла ІНШОЇ — не правка першої
+      `create or replace function public.zz_other() returns void language plpgsql as $$ begin perform public.${name}(); end $$;`,
+      // тригер, що ВИКЛИКАЄ функцію, — не правка функції
+      `create trigger zz after insert on public.t for each row execute function public.${name}();`,
+      // інша функція з тим самим префіксом імені
+      `alter function public.${name}_zz_extra() owner to postgres;`,
+      `grant execute on function public.${name}_zz_extra() to anon;`,
     ]) expect(touches(codeOf(f), name), f).toEqual([]);
   });
 });
