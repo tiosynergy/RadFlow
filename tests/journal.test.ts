@@ -168,6 +168,16 @@ describe("у заголовку немає значень полів паціє�
     expect(t).toBe("Адміністратор: відмовлено в доступі");
   });
 
+  it("с77: вивантаження даних — з кількістю записів центру, без ПІБ", () => {
+    expect(
+      eventTitle({ eventType: "patient_data.exported", actorRole: "ceo", details: { source: "queue", rows: 8, total: 9, truncated: false, format: "xlsx" } })
+    ).toBe("Керівник вивантажив дані пацієнтів (записів: 8)");
+    // без details — заголовок без хвоста, а не «записів: null»
+    expect(eventTitle({ eventType: "patient_data.exported", actorRole: "admin", details: null })).toBe(
+      "Адміністратор вивантажив дані пацієнтів"
+    );
+  });
+
   it("changedFieldsLabel не показує значень", () => {
     expect(changedFieldsLabel(["patient_name"])).toBe("ПІБ");
     expect(changedFieldsLabel([])).toBe("");

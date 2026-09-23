@@ -21,14 +21,14 @@ const U1 = "55555555-5555-4555-8555-555555555555";
 
 const staffScope: RoleScope = {
   role: "admin", userId: U1, clinicIds: [C1], roomIds: null, roomIdsByClinic: null,
-  ownReferrerOnly: false, sources: ["queue", "waitlist"], showReferrerName: true, showPhone: true,
+  ownReferrerOnly: false, sources: ["queue", "waitlist"], referrerVisible: true, showPhone: true,
 };
 const radScope: RoleScope = {
-  ...staffScope, role: "radiologist", roomIds: [R1], sources: ["queue"], showReferrerName: false,
+  ...staffScope, role: "radiologist", roomIds: [R1], sources: ["queue"], referrerVisible: true,
 };
 const refScope: RoleScope = {
   ...staffScope, role: "referrer", clinicIds: [C1, C2], roomIdsByClinic: { [C1]: [R1], [C2]: null },
-  ownReferrerOnly: true, showReferrerName: false,
+  ownReferrerOnly: true, referrerVisible: false,
 };
 
 describe("SearchRequestSchema — межі вводу", () => {
@@ -93,6 +93,11 @@ describe("normalizeSearchRequest — область і дефолти", () => {
   });
   it("персонал: referrerIds дозволені", () => {
     const r = normalizeSearchRequest({ referrerIds: [U1] }, staffScope, TODAY);
+    if (!r.ok) throw new Error("expected ok");
+    expect(r.filters.referrerIds).toEqual([U1]);
+  });
+  it("радіолог (с77): фільтр за направником дозволений — направника він бачить", () => {
+    const r = normalizeSearchRequest({ referrerIds: [U1] }, radScope, TODAY);
     if (!r.ok) throw new Error("expected ok");
     expect(r.filters.referrerIds).toEqual([U1]);
   });
@@ -180,5 +185,54 @@ describe("normalizeSearchRequest — ID-запит", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.filters.termKind).toBe("phone");
+  });
+});
+
+describe("normalizeSearchRequest — фільтр «Направник» (с77)", () => {
+  const D1 = "66666666-6666-4666-8666-666666666666";
+  it("картка довідника і «без направника» доходять до фільтрів персоналу", () => {
+    const a = normalizeSearchRequest({ doctorIds: [D1, D1] }, staffScope, TODAY);
+    if (!a.ok) throw new Error("expected ok");
+    expect(a.filters.doctorIds).toEqual([D1]);
+    expect(a.filters.noReferrer).toBe(false);
+    const b = normalizeSearchRequest({ noReferrer: true }, staffScope, TODAY);
+    if (!b.ok) throw new Error("expected ok");
+    expect(b.filters.noReferrer).toBe(true);
+    expect(b.filters.referrerIds).toBeNull();
+    expect(b.filters.doctorIds).toBeNull();
+  });
+  it("дві групи в одному запиті — голосна відмова, а не тихе «нічого»", () => {
+    for (const body of [
+      { referrerIds: [U1], doctorIds: [D1] },
+      { referrerIds: [U1], noReferrer: true },
+      { doctorIds: [D1], noReferrer: true },
+    ]) {
+      const r = normalizeSearchRequest(body, staffScope, TODAY);
+      expect(r.ok, JSON.stringify(body)).toBe(false);
+      if (!r.ok) expect(r.code).toBe("bad_request");
+    }
+  });
+  it("картка довідника в листі очікування — відмова з поясненням (там немає тексту лікаря)", () => {
+    const r = normalizeSearchRequest({ sources: ["waitlist"], doctorIds: [D1] }, staffScope, TODAY);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.code).toBe("bad_request");
+      expect(r.error).toMatch(/лише для черги/);
+    }
+    // а акаунт і «без направника» в листі — можна
+    expect(normalizeSearchRequest({ sources: ["waitlist"], referrerIds: [U1] }, staffScope, TODAY).ok).toBe(true);
+    expect(normalizeSearchRequest({ sources: ["waitlist"], noReferrer: true }, staffScope, TODAY).ok).toBe(true);
+  });
+  it("направник: усі три групи відкидаються (фільтр не для цієї ролі), запит не падає", () => {
+    const r = normalizeSearchRequest({ doctorIds: [D1], noReferrer: true, referrerIds: [U1] }, refScope, TODAY);
+    if (!r.ok) throw new Error("expected ok");
+    expect(r.filters.referrerIds).toBeNull();
+    expect(r.filters.doctorIds).toBeNull();
+    expect(r.filters.noReferrer).toBe(false);
+  });
+  it("схема: не-UUID у doctorIds і не-булеве noReferrer не проходять", () => {
+    expect(SearchRequestSchema.safeParse({ doctorIds: ["doctors"] }).success).toBe(false);
+    expect(SearchRequestSchema.safeParse({ doctorIds: Array(21).fill(D1) }).success).toBe(false);
+    expect(SearchRequestSchema.safeParse({ noReferrer: "true" }).success).toBe(false);
   });
 });

@@ -21,6 +21,19 @@ import { wallDayKey } from "@/lib/incidents";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import type { SearchRequest, SearchResponse, SearchResultItem } from "@/lib/searchContract";
+import {
+  SEARCH_PRIORITY_LABEL as PRIO,
+  SEARCH_QUEUE_STATUS_LABEL as ST_QUEUE,
+  SEARCH_WAITLIST_STATUS_LABEL as ST_WL,
+} from "@/lib/searchLabels";
+import {
+  isCardKey,
+  REF_KEY_ALL,
+  REF_KEY_NONE,
+  referrerChipLabel,
+  referrerKeyToRequest,
+  type ReferrerOptions,
+} from "@/lib/searchReferrerFilter";
 
 export type SearchClinicOpt = { id: string; name: string };
 export type SearchRoomOpt = { id: string; name: string; clinic_id: string; modality: string | null; active: boolean | null };
@@ -33,18 +46,15 @@ type Props = {
   sources: Array<"queue" | "waitlist">;
   backHref: string;
   showPhone: boolean;
-  showReferrerCol: boolean;
+  /** Роль бачить направника: фільтр «Направник» і імʼя в результатах (с77). */
+  referrerVisible: boolean;
   /** Зона клиники для дата-пресетов «Сьогодні/±7/±30» (инвариант M-4: день считается
    *  по клинике, не по браузеру). Мультиклиничным ролям приходит зона первой клиники. */
   clinicTz?: string | null;
 };
 
-const ST_QUEUE: Record<string, string> = {
-  scheduled: "В черзі", waiting: "Очікує", in_progress: "В кабінеті", done: "Виконано",
-  no_show: "Неявка", not_held: "Не відбулося", cancelled: "Скасовано", needs_reschedule: "Потребує переносу",
-};
-const ST_WL: Record<string, string> = { waiting: "Очікує", scheduled: "Записано", cancelled: "Знято", expired: "Прострочено" };
-const PRIO: Record<string, string> = { cito: "CITO", urgent: "Терміново", planned: "Планово" };
+/* Підписи статусів і пріоритетів — у lib/searchLabels.ts (с77): ті самі слова
+   пише у файл експорт, і файл не має розходитися з екраном. */
 const MODS = [
   { code: "MRI", lab: "МРТ" }, { code: "CT", lab: "КТ" }, { code: "US", lab: "УЗД" },
   { code: "XRAY", lab: "Рентген" }, { code: "MAMMO", lab: "Мамографія" }, { code: "OTHER", lab: "Інше" },
@@ -70,7 +80,7 @@ type UiState =
   | { kind: "error"; msg: string }
   | { kind: "ready"; items: SearchResultItem[]; nextCursor: string | null; hasMore: boolean; loadingMore: boolean };
 
-export default function SearchScreen({ roleKey, userName, clinics, rooms, sources, backHref, showPhone, showReferrerCol, clinicTz = null }: Props) {
+export default function SearchScreen({ roleKey, userName, clinics, rooms, sources, backHref, showPhone, referrerVisible, clinicTz = null }: Props) {
   const [term, setTerm] = useState("");
   const [source, setSource] = useState<"queue" | "waitlist">(sources[0] || "queue");
   const [clinicId, setClinicId] = useState<string>("all");
@@ -83,6 +93,11 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
   const [contrast, setContrast] = useState<"any" | "yes" | "no">("any");
   const [prio, setPrio] = useState<string>("all");
   const [sortDesc, setSortDesc] = useState(true);
+  // Направник (с77): ключ селекта — `all` / `none` / `r-<id>` / `d-<id>` (lib/searchReferrerFilter.ts).
+  const [refKey, setRefKey] = useState<string>(REF_KEY_ALL);
+  const [refOpts, setRefOpts] = useState<ReferrerOptions | null>(null);
+  const [refOptsErr, setRefOptsErr] = useState(false);
+  const [exportSt, setExportSt] = useState<{ kind: "idle" } | { kind: "busy" } | { kind: "done"; msg: string } | { kind: "error"; msg: string }>({ kind: "idle" });
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [st, setSt] = useState<UiState>({ kind: "idle" });
 
@@ -99,6 +114,25 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
   }, [roomOpts, roomId]);
   // Смена источника: статусные значения у очереди и листа разные.
   useEffect(() => { setStatus("all"); }, [source]);
+  // Лист очікування не зберігає лікаря з довідника — такий фільтр там неможливий
+  // (сервер відмовить із поясненням); при зміні джерела знімаємо його одразу.
+  useEffect(() => { if (source === "waitlist" && isCardKey(refKey)) setRefKey(REF_KEY_ALL); }, [source, refKey]);
+  // Опції селекта «Направник» — з сервера, у межах області ролі (с77).
+  useEffect(() => {
+    if (!referrerVisible || !clinics.length) return;
+    let cancel = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/search/referrers", { cache: "no-store" });
+        if (!res.ok) throw new Error(String(res.status));
+        const data = (await res.json()) as ReferrerOptions;
+        if (!cancel) { setRefOpts({ accounts: data.accounts || [], cards: data.cards || [] }); setRefOptsErr(false); }
+      } catch {
+        if (!cancel) setRefOptsErr(true);
+      }
+    })();
+    return () => { cancel = true; };
+  }, [referrerVisible, clinics.length]);
 
   const buildRequest = useCallback((): SearchRequest => {
     const req: SearchRequest = { sources: [source], sort: sortDesc ? "date_desc" : "date_asc", limit: 25 };
@@ -123,8 +157,9 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
     if (mods.length) req.modalities = mods as NonNullable<SearchRequest["modalities"]>;
     if (contrast !== "any") req.contrast = contrast === "yes";
     if (prio !== "all") req.priorities = [prio as NonNullable<SearchRequest["priorities"]>[number]];
+    if (referrerVisible && refKey !== REF_KEY_ALL) Object.assign(req, referrerKeyToRequest(refKey));
     return req;
-  }, [term, source, clinicId, roomId, period, dateFrom, dateTo, status, mods, contrast, prio, sortDesc, clinicTz]);
+  }, [term, source, clinicId, roomId, period, dateFrom, dateTo, status, mods, contrast, prio, sortDesc, clinicTz, referrerVisible, refKey]);
 
   /* Гонки запросов: считаем поколения; ответ устаревшего поколения игнорируем,
      сам запрос отменяем AbortController-ом. Подпись условий (reqSigRef) защищает
@@ -177,7 +212,7 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
 
   const hasAnyInput =
     term.trim().length > 0 || clinicId !== "all" || roomId !== "all" || period !== "all" ||
-    status !== "all" || mods.length > 0 || contrast !== "any" || prio !== "all";
+    status !== "all" || mods.length > 0 || contrast !== "any" || prio !== "all" || refKey !== REF_KEY_ALL;
 
   // Дебаунс 350 мс на изменение любого условия; без условий — начальная подсказка.
   useEffect(() => {
@@ -189,7 +224,7 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
     const t = setTimeout(() => runSearch(false, null), 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [term, source, clinicId, roomId, period, dateFrom, dateTo, status, mods, contrast, prio, sortDesc]);
+  }, [term, source, clinicId, roomId, period, dateFrom, dateTo, status, mods, contrast, prio, sortDesc, refKey]);
 
   function loadMore() {
     if (st.kind !== "ready" || !st.nextCursor) return;
@@ -197,9 +232,50 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
     runSearch(true, st.nextCursor);
   }
 
+  /* Експорт у Excel (с77): ті самі умови, що на екрані, але ВЕСЬ результат
+     (сервер іде курсором сам, зі стелею рядків). Файл формує сервер — область,
+     скриття (CEO без телефонів) і журнал вивантаження тримає він, а не браузер. */
+  async function exportXlsx() {
+    if (exportSt.kind === "busy") return;
+    setExportSt({ kind: "busy" });
+    try {
+      const { limit: _limit, ...body } = buildRequest();
+      const res = await fetch("/api/search/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => null)) as { error?: string } | null;
+        setExportSt({ kind: "error", msg: j?.error || "Не вдалося сформувати файл" });
+        return;
+      }
+      const blob = await res.blob();
+      const m = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "");
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = m ? m[1] : "radflow-search.xlsx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      const rows = Number(res.headers.get("X-Export-Rows") || "0");
+      setExportSt(
+        res.headers.get("X-Export-Truncated") === "1"
+          ? { kind: "done", msg: `Файл сформовано, але НЕ ВСЕ: перші ${rows} записів — звузьте період або фільтри` }
+          : { kind: "done", msg: `Файл Excel сформовано: записів — ${rows}` }
+      );
+    } catch {
+      setExportSt({ kind: "error", msg: "Мережева помилка — файл не сформовано, спробуйте ще раз" });
+    }
+  }
+  // Умови змінились — повідомлення про попередній файл уже не про ці умови.
+  useEffect(() => { setExportSt((s) => (s.kind === "busy" ? s : { kind: "idle" })); }, [buildRequest]);
+
   function resetFilters() {
     setClinicId("all"); setRoomId("all"); setPeriod("all"); setDateFrom(""); setDateTo("");
-    setStatus("all"); setMods([]); setContrast("any"); setPrio("all");
+    setStatus("all"); setMods([]); setContrast("any"); setPrio("all"); setRefKey(REF_KEY_ALL);
   }
 
   /* Chips активных фильтров: каждый удаляется по ✕. */
@@ -216,6 +292,8 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
   mods.forEach((m) => chips.push({ key: "m" + m, lab: MODS.find((x) => x.code === m)?.lab || m, clear: () => setMods((arr) => arr.filter((x) => x !== m)) }));
   if (contrast !== "any") chips.push({ key: "c", lab: contrast === "yes" ? "З контрастом" : "Без контрасту", clear: () => setContrast("any") });
   if (prio !== "all") chips.push({ key: "pr", lab: PRIO[prio] || prio, clear: () => setPrio("all") });
+  const refChip = referrerVisible ? referrerChipLabel(refKey, refOpts) : null;
+  if (refChip) chips.push({ key: "ref", lab: refChip, clear: () => setRefKey(REF_KEY_ALL) });
 
   const stMeta = source === "queue" ? ST_QUEUE : ST_WL;
 
@@ -278,7 +356,20 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                   >
                     {sortDesc ? "↓ новіші" : "↑ старіші"}
                   </button>
+                  {st.kind === "ready" && st.items.length > 0 && (
+                    <button
+                      type="button" className="btn btn-secondary btn-sm rf-spin-host"
+                      onClick={exportXlsx} disabled={exportSt.kind === "busy"} aria-busy={exportSt.kind === "busy"}
+                      title="Вивантажити в Excel усі записи за поточними умовами пошуку"
+                      aria-label="Експорт у Excel"
+                    >
+                      {exportSt.kind === "busy" ? "Формуємо файл…" : "⬇ Excel"}
+                    </button>
+                  )}
                 </div>
+                {(exportSt.kind === "done" || exportSt.kind === "error") && (
+                  <div className={"ctx-hint" + (exportSt.kind === "error" ? " red" : "")} style={{ marginTop: 8 }}>{exportSt.msg}</div>
+                )}
 
                 {filtersOpen && (
                   <div className="card" style={{ padding: 12, marginTop: 8, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}>
@@ -356,6 +447,27 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                         <option value="planned">Планово</option>
                       </select>
                     </label>
+                    {referrerVisible && (
+                      <label style={{ display: "grid", gap: 4 }}>
+                        <span className="cld-lab">Направник</span>
+                        <select className="inp" value={refKey} onChange={(e) => setRefKey(e.target.value)}>
+                          <option value={REF_KEY_ALL}>Усі направники</option>
+                          <option value={REF_KEY_NONE}>Без направника</option>
+                          {refOpts && refOpts.accounts.length > 0 && (
+                            <optgroup label="Направники з акаунтом">
+                              {refOpts.accounts.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+                            </optgroup>
+                          )}
+                          {refOpts && refOpts.cards.length > 0 && (
+                            /* Лист очікування тексту лікаря не зберігає — картки там недоступні. */
+                            <optgroup label={source === "waitlist" ? "Лікарі з довідника (лише для черги)" : "Лікарі з довідника"}>
+                              {refOpts.cards.map((o) => <option key={o.key} value={o.key} disabled={source === "waitlist"}>{o.label}</option>)}
+                            </optgroup>
+                          )}
+                        </select>
+                        {refOptsErr && <span className="cld-lab" style={{ color: "var(--red-text)" }}>Список направників не завантажився</span>}
+                      </label>
+                    )}
                     <button type="button" className="btn btn-secondary btn-sm" onClick={resetFilters}>Скинути фільтри</button>
                   </div>
                 )}
@@ -382,6 +494,11 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                       : st.kind === "hint" ? st.msg
                       : st.kind === "ready" ? (st.items.length === 0 ? "Нічого не знайдено" : "Знайдено записів: " + st.items.length + (st.hasMore ? ", є ще" : ""))
                       : ""}
+                  </div>
+                  {/* с77: стан експорту — ОКРЕМИЙ постійний live-регіон, ПІСЛЯ регіону
+                      пошуку (пін W-12 шукає перший регіон як регіон пошуку). */}
+                  <div className="rf-vh" role="status" aria-live="polite">
+                    {exportSt.kind === "busy" ? "Формуємо файл Excel…" : exportSt.kind === "idle" ? "" : exportSt.msg}
                   </div>
                   {st.kind === "idle" && (
                     <div className="empty">
@@ -437,7 +554,7 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                                 <div style={{ color: "var(--text-muted)", fontSize: "0.9em" }}>
                                   {clinics.length > 1 ? (clinicsById[it.clinicId] || "—") + " · " : ""}
                                   {room ? room.name : "—"}
-                                  {showReferrerCol && it.referrerName ? " · напр.: " + it.referrerName : ""}
+                                  {referrerVisible && it.referrerName ? " · напр.: " + it.referrerName : ""}
                                 </div>
                               </div>
                               <div style={{ flex: "1 0 150px", textAlign: "right" }}>

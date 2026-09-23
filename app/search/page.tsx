@@ -132,7 +132,10 @@ export default async function SearchPage() {
       sources={sources}
       backHref={backHref}
       showPhone={role !== "ceo"}
-      showReferrerCol={role === "admin" || role === "registrar"}
+      /* с77: направника (фільтр + імʼя) бачать усі ролі, крім самого направника
+         (рішення власника 23.09). Список явний, а не «!== referrer»: нова роль
+         не отримає направника мовчки. Сервер тримає те саме в resolveSearchScope. */
+      referrerVisible={role === "admin" || role === "registrar" || role === "radiologist" || role === "ceo"}
       clinicTz={clinicTz}
     />
   );

@@ -57,6 +57,11 @@ class FakeQuery {
   private cols: string[] = [];
   private orExpr: string | null = null;
   private wantSingle = false;
+  /* с77 (пошук): порядок і ліміт — ПО-СПРАВЖНЬОМУ, бо keyset-пагінація пошуку
+     і експорту спирається саме на них: мʼякий `order()` без сортування дав би
+     «зелений» тест на курсорі, який у PostgREST губить або дублює рядки. */
+  private orders: Array<{ col: string; asc: boolean; nullsFirst: boolean }> = [];
+  private lim: number | null = null;
   /* с59 (пакет 38): запис. `insert` кладе рядок у таблицю фікстури, `update`
      накладає патч на ВІДФІЛЬТРОВАНІ рядки (фільтри після `.update()` діють
      по-справжньому, як у PostgREST). Обидва повертають {data:null,error:null},
@@ -82,6 +87,15 @@ class FakeQuery {
   gte(col: string, val: unknown) { this.filters.push({ op: "gte", col, val }); return this; }
   is(col: string, val: unknown) { this.filters.push({ op: "is", col, val }); return this; }
   or(expr: string) { this.orExpr = expr; return this; }
+  order(col: string, opts?: { ascending?: boolean; nullsFirst?: boolean }) {
+    const asc = opts?.ascending ?? true;
+    // Дефолт Postgres: ASC → NULLS LAST, DESC → NULLS FIRST.
+    this.orders.push({ col, asc, nullsFirst: opts?.nullsFirst ?? !asc });
+    return this;
+  }
+  limit(n: number) { this.lim = n; return this; }
+  /** Скасування запиту двійнику не потрібне — але метод існує в supabase-js. */
+  abortSignal(_s: AbortSignal) { return this; }
   maybeSingle() { this.wantSingle = true; return this; }
   single() { this.wantSingle = true; return this; }
 
@@ -120,7 +134,9 @@ class FakeQuery {
       return { data: null, error: null };
     }
 
-    const out = rows.filter((r) => this.matches(r));
+    let out = rows.filter((r) => this.matches(r));
+    if (this.orders.length) out = [...out].sort((a, b) => this.cmpRows(a, b));
+    if (this.lim !== null) out = out.slice(0, this.lim);
     return this.wantSingle ? { data: out[0] ?? null, error: null } : { data: out, error: null };
   }
 
@@ -150,24 +166,71 @@ class FakeQuery {
     return this.orExpr == null || this.matchesOr(r, this.orExpr);
   }
 
-  /* `or=(a.op.v,b.is.null)` — одна OR-група всередині загального AND.
-     Розбір як у PostgREST: `колонка.оператор.значення`, значення — усе до коми
-     (крапки й двокрапки ISO роздільниками НЕ є). */
-  private matchesOr(r: Row, expr: string): boolean {
-    return expr.split(",").some((part) => {
-      const m = /^([a-z_]+)\.([a-z]+)\.(.+)$/i.exec(part.trim());
-      if (!m) throw new Error(`FakeSupabase: не розібрав or(${part})`);
-      const [, col, op, raw] = m;
-      const v = r[col];
-      if (op === "is") return raw === "null" ? v == null : String(v) === raw;
-      if (op === "eq") return eqVal(v, raw);
-      if (op === "gt") return v != null && String(v) > raw;
-      if (op === "gte") return v != null && String(v) >= raw;
-      if (op === "lt") return v != null && String(v) < raw;
-      if (op === "lte") return v != null && String(v) <= raw;
-      throw new Error(`FakeSupabase: невідомий оператор or(${op})`);
-    });
+  private cmpRows(a: Row, b: Row): number {
+    for (const o of this.orders) {
+      const x = a[o.col], y = b[o.col];
+      if (x == null && y == null) continue;
+      if (x == null) return o.nullsFirst ? -1 : 1;
+      if (y == null) return o.nullsFirst ? 1 : -1;
+      const sx = isUuid(x) ? String(x).toLowerCase() : x;
+      const sy = isUuid(y) ? String(y).toLowerCase() : y;
+      if (sx === sy) continue;
+      const lt = typeof sx === "number" && typeof sy === "number" ? sx < sy : String(sx) < String(sy);
+      return (lt ? -1 : 1) * (o.asc ? 1 : -1);
+    }
+    return 0;
   }
+
+  /* `or=(a.op.v,and(b.op.v,c.is.null))` — одна OR-група всередині загального
+     AND. Розбір як у PostgREST: список через кому на ВЕРХНЬОМУ рівні дужок,
+     елемент — `колонка[.not].оператор.значення` або вкладена група
+     `and(…)`/`or(…)`; значення може бути в лапках ("09:30") — крапки й
+     двокрапки ISO роздільниками НЕ є. с77: вкладені групи потрібні keyset-
+     курсору пошуку. */
+  private matchesOr(r: Row, expr: string): boolean {
+    return splitTop(expr).some((part) => evalCond(r, part));
+  }
+}
+
+/** Розбити список PostgREST на елементи верхнього рівня (дужки й лапки поважаються). */
+function splitTop(expr: string): string[] {
+  const out: string[] = [];
+  let depth = 0, quoted = false, cur = "";
+  for (const ch of expr) {
+    if (ch === '"') quoted = !quoted;
+    if (!quoted && ch === "(") depth++;
+    if (!quoted && ch === ")") depth--;
+    if (!quoted && depth === 0 && ch === ",") { out.push(cur); cur = ""; continue; }
+    cur += ch;
+  }
+  if (depth !== 0 || quoted) throw new Error(`FakeSupabase: незбалансований вираз or(${expr})`);
+  if (cur) out.push(cur);
+  return out.map((x) => x.trim());
+}
+
+const ordKey = (x: unknown) => (isUuid(x) ? String(x).toLowerCase() : String(x));
+
+function evalCond(r: Row, part: string): boolean {
+  const g = /^(and|or)\(([\s\S]*)\)$/.exec(part);
+  if (g) {
+    const items = splitTop(g[2]);
+    return g[1] === "and" ? items.every((p) => evalCond(r, p)) : items.some((p) => evalCond(r, p));
+  }
+  const m = /^([a-z_]+)\.(not\.)?([a-z]+)\.(.+)$/i.exec(part);
+  if (!m) throw new Error(`FakeSupabase: не розібрав or(${part})`);
+  const [, col, not, op, rawQ] = m;
+  const raw = /^".*"$/.test(rawQ) ? rawQ.slice(1, -1) : rawQ;
+  const v = r[col];
+  let res: boolean;
+  if (op === "is") res = raw === "null" ? v == null : String(v) === raw;
+  else if (op === "eq") res = eqVal(v, raw);
+  // uuid порівнюється в нижньому регістрі (як у Postgres), решта — як є.
+  else if (op === "gt") res = v != null && ordKey(v) > ordKey(raw);
+  else if (op === "gte") res = v != null && ordKey(v) >= ordKey(raw);
+  else if (op === "lt") res = v != null && ordKey(v) < ordKey(raw);
+  else if (op === "lte") res = v != null && ordKey(v) <= ordKey(raw);
+  else throw new Error(`FakeSupabase: невідомий оператор or(${op})`);
+  return not ? !res : res;
 }
 
 /* Будь-який метод, якого двійник не реалізує, МУСИТЬ впасти: мовчазний no-op
