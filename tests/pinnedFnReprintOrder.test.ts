@@ -14,6 +14,20 @@
  * ДЖЕРЕЛО СПИСКУ — рядки №19 з тіла ОСТАННЬОГО передруку (не дубль `PINNED`):
  * саме вони і є «список», а рівність дубля з ними доводить сусідній тест.
  *
+ * І ДРУГЕ ДЖЕРЕЛО — гілка `f:` списку №22 `grant_digest` (Н-7, с77). Вона
+ * пінить ПОВНИЙ md5 тіла і власника кожної definer-функції, яку може виконати
+ * `anon`, — і для чотирьох гейтів RLS (`auth_ceo_clinics`, `auth_is_ceo_of`,
+ * `auth_radiologist_case_ok`, `auth_referrer_can_book_room`) це ЄДИНИЙ пін
+ * тіла: у №19 їх немає, бо ревʼю 0180 відхилило перенос як дубль гілки `f:`.
+ * Замір с77 показав, що поза полем зору лишався не пін, а CI: міграція, яка
+ * правила такий гейт без передруку, проходила збірку і червонила №22 лише
+ * вночі, на проді. Тепер правка функції з ОБОХ списків ловиться тут. І окремо
+ * тримається властивість класу: кожен живий хелпер `auth_*` (у міграціях є
+ * `create`, немає пізнішого `drop`) мусить стояти в №19 або в гілці `f:` №22 —
+ * інакше його тіло, яке вирішує, що бачить роль, не пінить НІЩО. Відкликання
+ * `anon` з такого гейта мовчки виніс би його з `f:` — і цей тест покраснів би
+ * з іменем, вимагаючи перенести рядок у №19 тією ж міграцією.
+ *
  * ⚠️ ЧОГО НЕ ДОВОДИТЬ. Читає ТЕКСТ міграцій, а не виконує SQL: правка через
  *    динамічний SQL зі склеєним імʼям (`execute 'alter function ' || v_name`)
  *    повз нього пройде. Це прийнята межа статичного сторожа; живий рубіж —
@@ -26,6 +40,18 @@
  * `alter function public.auth_clinic_id() owner to postgres;` — червоне з
  * іменем файлу і функції; без неї — зелене. Стенд не заводиться: `EXPECTED_STANDS`
  * пінить кількість, а властивість одна і проста.
+ *
+ * ФАЛЬСИФІКОВАНО разово (с77, гілка f: №22 і покриття `auth_*`), файли після
+ * кожної мутації відновлено й звірено md5:
+ *   • `create or replace function public.auth_ceo_clinics()` у пробній 0203 —
+ *     червоне «0203_zz_probe.sql [№22 f:]»; `alter function … auth_is_ceo_of(uuid)
+ *     owner to` і `drop function … auth_is_ceo_of(uuid)` — так само;
+ *   • `comment on function public.auth_ceo_clinics()` — зелене (не правка);
+ *   • та сама пробна 0203 при СТАРІЙ поведінці (імена лише з №19) — перевірка
+ *     «новіша міграція» ЗЕЛЕНА: саме цю дірку CI і закрито;
+ *   • новий `auth_new_gate()` без піна — червоне в покритті з його іменем;
+ *   • рядок `f:auth_radiologist_case_ok` прибрано з передруку — червоне в
+ *     покритті з іменем (і в `grantDigestInvariant` — лічильник рядків).
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
@@ -77,6 +103,49 @@ function pinnedNames(): string[] {
 }
 
 const NAMES = pinnedNames();
+
+/** Імена definer-функцій, чиї ТІЛА пінить гілка `f:` списку №22 (Н-7, с77).
+ *  Виріз — той самий, що в `grantDigestInvariant.test.ts`: від кроку лічильника
+ *  до мітки перевірки, без рядкових коментарів (маркери `/* 0174 *\/` лишаються). */
+function grantDigestFnNames(): string[] {
+  const code = SRC.split("\n").filter((l) => !/^\s*--/.test(l)).join("\n");
+  const at = code.indexOf("'check', 'grant_digest'");
+  if (at < 0) throw new Error(`${REPRINT}: у передруку немає мітки grant_digest`);
+  const start = code.lastIndexOf("v_n := v_n + 1;", at);
+  if (start < 0) throw new Error(`${REPRINT}: перед міткою №22 немає кроку лічильника`);
+  const block = code.slice(start, at);
+  const names = new Set<string>();
+  for (const m of block.matchAll(/^\s*\('f:([a-z0-9_]+)\([^']*\)','[^']*'\),?$/gm)) names.add(m[1]);
+  if (names.size < 5) throw new Error(`${REPRINT}: у гілці f: №22 лише ${names.size} рядків — виріз зрушив?`);
+  return [...names].sort();
+}
+
+const F_NAMES = grantDigestFnNames();
+
+/** Імʼя → у яких списках воно пінується (для діагнозу в повідомленні). */
+const PINNED_BY = new Map<string, string[]>();
+for (const n of NAMES) PINNED_BY.set(n, ["№19"]);
+for (const n of F_NAMES) PINNED_BY.set(n, [...(PINNED_BY.get(n) ?? []), "№22 f:"]);
+
+/** Живі хелпери `auth_*`: останньою подією в історії міграцій є `create`, а не
+ *  `drop`. Порядок — файли за іменем, усередині файлу — за позицією. */
+function liveAuthHelpers(): string[] {
+  const last = new Map<string, "create" | "drop">();
+  for (const f of files) {
+    const code = codeOf(readFileSync(resolve(MIGDIR, f), "utf8"));
+    const ev: Array<[number, string, "create" | "drop"]> = [];
+    for (const m of code.matchAll(/create\s+(?:or\s+replace\s+)?function\s+(?:public\.)?(auth_[a-z0-9_]+)\s*\(/g)) {
+      ev.push([m.index!, m[1], "create"]);
+    }
+    for (const m of code.matchAll(/drop\s+function\s+(?:if\s+exists\s+)?(?:public\.)?(auth_[a-z0-9_]+)\s*\(/g)) {
+      ev.push([m.index!, m[1], "drop"]);
+    }
+    ev.sort((a, b) => a[0] - b[0]);
+    for (const [, name, kind] of ev) last.set(name, kind);
+  }
+  return [...last].filter(([, k]) => k === "create").map(([n]) => n).sort();
+}
+
 const NEWER = files.filter((f) => f > REPRINT);
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -99,11 +168,32 @@ function touches(code: string, name: string): string[] {
   return hits;
 }
 
-describe(`№19 — зворотний бік ратчета: міграції новіші за ${REPRINT} не чіпають функцій зі списку`, () => {
+describe(`№19 і №22 f: — зворотний бік ратчета: міграції новіші за ${REPRINT} не чіпають пінованих функцій`, () => {
   it("список №19 прочитано з останнього передруку", () => {
     expect(NAMES.length).toBeGreaterThanOrEqual(40);
     expect(NAMES).toContain("auth_clinic_id");
     expect(NAMES).toContain("fn_audit");
+  });
+
+  it("гілку f: №22 прочитано з того самого передруку (Н-7, с77)", () => {
+    // Сама кількість рядків f: пінена в grantDigestInvariant.test.ts; тут —
+    // що виріз узагалі щось знайшов і знайшов саме гілку f:, а не t:/s:/c:.
+    expect(F_NAMES.length).toBeGreaterThanOrEqual(5);
+    expect(F_NAMES).toContain("auth_ceo_clinics");
+    for (const n of F_NAMES) expect(n, n).toMatch(/^[a-z0-9_]+$/);
+  });
+
+  it("кожен живий хелпер auth_* пінується в №19 або в гілці f: №22 (Н-7, с77)", () => {
+    const live = liveAuthHelpers();
+    // Нижня межа — щоб порожній скан (зламаний регекс) не зеленів мовчки.
+    expect(live.length).toBeGreaterThanOrEqual(10);
+    const unpinned = live.filter((n) => !PINNED_BY.has(n));
+    expect(
+      unpinned,
+      `Хелпер auth_* вирішує, що бачить роль, але його тіла не пінить ані №19, ані ` +
+        `гілка f: №22. Допишіть рядок у №19 тією ж міграцією, що створила хелпер ` +
+        `або зняла з нього EXECUTE для anon (AGENTS.md, «ЦЕНА РАТЧЕТА №19»):\n  ${unpinned.join("\n  ")}`
+    ).toEqual([]);
   });
 
   it("новіші міграції (після останнього передруку) визначено детерміновано", () => {
@@ -111,7 +201,7 @@ describe(`№19 — зворотний бік ратчета: міграції �
     expect(files.includes(REPRINT)).toBe(true);
   });
 
-  it("жодна новіша міграція не чіпає функцію зі списку №19 без передруку сторожа", () => {
+  it("жодна новіша міграція не чіпає функцію зі списку №19 чи гілки f: №22 без передруку сторожа", () => {
     const offenders: string[] = [];
     for (const f of NEWER) {
       const code = codeOf(readFileSync(resolve(MIGDIR, f), "utf8"));
@@ -119,15 +209,16 @@ describe(`№19 — зворотний бік ратчета: міграції �
       if (/on\s+all\s+functions\s+in\s+schema\s+public/.test(code)) {
         offenders.push(`${f}: grant/revoke on all functions in schema public`);
       }
-      for (const name of NAMES) {
+      for (const [name, lists] of PINNED_BY) {
         const hits = touches(code, name);
-        if (hits.length) offenders.push(`${f}: ${hits.join("; ")}`);
+        if (hits.length) offenders.push(`${f} [${lists.join(", ")}]: ${hits.join("; ")}`);
       }
     }
     expect(
       offenders,
-      `Міграція новіша за ${REPRINT} чіпає функцію зі списку №19 — сторожа треба ` +
-        `передрукувати в ТОМУ Ж файлі (AGENTS.md, «ЦЕНА РАТЧЕТА №19», п. 8):\n  ${offenders.join("\n  ")}`
+      `Міграція новіша за ${REPRINT} чіпає функцію, тіло якої пінить сторож (№19 або ` +
+        `гілка f: №22), — сторожа треба передрукувати в ТОМУ Ж файлі з новим рядком ` +
+        `(AGENTS.md, «ЦЕНА РАТЧЕТА №19», п. 8; «ЦЕНА РАТЧЕТА №22»):\n  ${offenders.join("\n  ")}`
     ).toEqual([]);
   });
 
