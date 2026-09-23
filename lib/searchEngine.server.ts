@@ -223,7 +223,7 @@ export async function resolveDoctorCards(
  * UUID». Збій читання — не збій пошуку: імена деградують до тексту `doctor`,
  * а в лог іде structured-подія.
  */
-export async function resolveReferrerNames(admin: DB, ids: string[]): Promise<Map<string, string>> {
+async function resolveReferrerNames(admin: DB, ids: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   const uniq = [...new Set(ids.filter(Boolean))];
   if (!uniq.length) return out;
@@ -251,7 +251,8 @@ export async function resolveReferrerNames(admin: DB, ids: string[]): Promise<Ma
 
 /**
  * ПІБ направників для РЯДКІВ результату — лише тих, хто ПОВʼЯЗАНИЙ із центром
- * рядка грантом `referral_access` (будь-якого статусу). Ревʼю с77 (A-2):
+ * рядка грантом `referral_access`, що давав РЕАЛЬНИЙ доступ (active або revoked —
+ * те саме коло, що й у довіднику селекта; ревʼю с77, р.2). Ревʼю с77 (A-2):
  * `referrer_id` запису персонал може виставити будь-яким UUID (форма й RPC
  * перевіряють лише FK на profiles), і без цієї перевірки пошук став би
  * оракулом «ПІБ направника ЧУЖОГО центру за UUID». До с77 RLS давала тут
@@ -267,16 +268,23 @@ export async function resolveLinkedReferrerNames(
   const clinics = [...new Set(pairs.map((p) => p.clinicId.toLowerCase()))];
   if (!refIds.length) return out;
   const linked = new Set<string>();
+  // Шматок менший за IN_CHUNK: рядків-грантів = направники × центри, і відповідь
+  // мусить лишитися під db-max-rows (1000), інакше імена мовчки губилися б.
+  const LINK_CHUNK = 25;
   try {
-    for (let i = 0; i < refIds.length; i += IN_CHUNK) {
+    for (let i = 0; i < refIds.length; i += LINK_CHUNK) {
       const { data, error } = await admin
         .from("referral_access")
         .select("referrer_id, clinic_id")
-        .in("referrer_id", refIds.slice(i, i + IN_CHUNK))
-        .in("clinic_id", clinics);
+        .in("referrer_id", refIds.slice(i, i + LINK_CHUNK))
+        .in("clinic_id", clinics)
+        .in("status", ["active", "revoked"]);
       if (error) {
         logError({ event: "search.referrer_links_failed", errorCode: error.code ?? "db_error", message: error.message });
         return out;
+      }
+      if ((data?.length ?? 0) >= PGRST_MAX_ROWS) {
+        logError({ event: "search.referrer_links_capped", errorCode: "max_rows", message: `rows=${data?.length}` });
       }
       for (const r of data || []) linked.add(`${String(r.referrer_id).toLowerCase()}|${String(r.clinic_id).toLowerCase()}`);
     }

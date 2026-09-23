@@ -81,7 +81,7 @@ type UiState =
   | { kind: "hint"; msg: string }
   | { kind: "loading" }
   | { kind: "error"; msg: string }
-  | { kind: "ready"; items: SearchResultItem[]; nextCursor: string | null; hasMore: boolean; loadingMore: boolean };
+  | { kind: "ready"; items: SearchResultItem[]; nextCursor: string | null; hasMore: boolean; loadingMore: boolean; parts: number };
 
 export default function SearchScreen({ roleKey, userName, clinics, rooms, sources, backHref, showPhone, referrerVisible, clinicTz = null }: Props) {
   const [term, setTerm] = useState("");
@@ -141,7 +141,6 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
       setRefNotice("Фільтр за лікарем із довідника знято: лікар належить іншому центру.");
     }
   }, [cardOpts, refKey, refOpts]);
-  useEffect(() => { if (refKey !== REF_KEY_ALL) setRefNotice(""); }, [refKey]);
   // Опції селекта «Направник» — з сервера, у межах області ролі (с77).
   useEffect(() => {
     if (!referrerVisible || !clinics.length) return;
@@ -192,6 +191,9 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
   const seq = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const reqSigRef = useRef("");
+  // Підпис умов, чиї результати ЗАРАЗ на екрані — станом, а не читанням ref у
+  // render (ревʼю с77, р.2): від нього залежить, чи показувати експорт.
+  const [shownSig, setShownSig] = useState("");
 
   const runSearch = useCallback(
     async (append: boolean, cursor: string | null) => {
@@ -215,16 +217,20 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
         if (mySeq !== seq.current) return;
         if (!res.ok) {
           const j = (await res.json().catch(() => null)) as { error?: string; code?: string } | null;
-          if (j?.code === "term_too_short") { setSt({ kind: "hint", msg: j.error || "Уточніть запит" }); return; }
+          // «Закоротко» і «фільтр недоступний ролі» (напр. CEO шукає за номером) —
+          // підказка, а не збій: «↻ Повторити» тут нічого не змінить (ревʼю с77, р.2).
+          if (j?.code === "term_too_short" || j?.code === "forbidden_filter") { setSt({ kind: "hint", msg: j.error || "Уточніть запит" }); return; }
           setSt({ kind: "error", msg: j?.error || "Не вдалося виконати пошук" });
           return;
         }
         const data = (await res.json()) as SearchResponse;
         if (mySeq !== seq.current) return;
         reqSigRef.current = sig;
+        setShownSig(sig);
         setSt((prev) => {
           const base = append && prev.kind === "ready" ? prev.items : [];
-          return { kind: "ready", items: [...base, ...data.items], nextCursor: data.nextCursor, hasMore: data.hasMore, loadingMore: false };
+          const parts = append && prev.kind === "ready" ? prev.parts + 1 : 1;
+          return { kind: "ready", items: [...base, ...data.items], nextCursor: data.nextCursor, hasMore: data.hasMore, loadingMore: false, parts };
         });
       } catch (e) {
         if ((e as Error)?.name === "AbortError") return;
@@ -245,7 +251,9 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
     if (!hasAnyInput) { seq.current++; abortRef.current?.abort(); setSt({ kind: "idle" }); return; }
     // Условия изменились — старый курсор недействителен НЕМЕДЛЕННО (ревью MEDIUM-2):
     // иначе «Показати ще» в окне дебаунса пришивал бы к старому списку чужую страницу.
-    setSt((s) => (s.kind === "ready" ? { ...s, nextCursor: null, hasMore: false } : { kind: "loading" }));
+    // Порожній список зі «є ще» при зміні умов — у «завантаження», а не в хибне
+    // «Нічого не знайдено» на час дебаунсу (ревʼю с77, р.2).
+    setSt((s) => (s.kind === "ready" && s.items.length > 0 ? { ...s, nextCursor: null, hasMore: false } : { kind: "loading" }));
     const t = setTimeout(() => runSearch(false, null), 350);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -298,6 +306,15 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
   }
   // Умови змінились — повідомлення про попередній файл уже не про ці умови.
   useEffect(() => { setExportSt((s) => (s.kind === "busy" ? s : { kind: "idle" })); }, [buildRequest]);
+  // Повідомлення про зняту картку живе до НАСТУПНОЇ зміни умов після самого
+  // зняття (ревʼю с77, р.2): перша зміна — це і є зняття, її запамʼятовуємо.
+  const noticeSigRef = useRef<string | null>(null);
+  useEffect(() => {
+    const sig = JSON.stringify(buildRequest());
+    if (!refNotice) { noticeSigRef.current = null; return; }
+    if (noticeSigRef.current === null) { noticeSigRef.current = sig; return; }
+    if (sig !== noticeSigRef.current) setRefNotice("");
+  }, [buildRequest, refNotice]);
 
   function resetFilters() {
     setClinicId("all"); setRoomId("all"); setPeriod("all"); setDateFrom(""); setDateTo("");
@@ -385,7 +402,7 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                   {/* Експорт — лише коли на екрані результати САМЕ цих умов: у вікні
                       дебаунсу старий список ще видно, а файл пішов би за новими (ревʼю с77).
                       Порожня сторінка з «є ще» теж дає експорт: збіги можуть бути далі. */}
-                  {st.kind === "ready" && (st.items.length > 0 || st.hasMore) && reqSigRef.current === JSON.stringify(buildRequest()) && (
+                  {st.kind === "ready" && (st.items.length > 0 || st.hasMore) && shownSig === JSON.stringify(buildRequest()) && (
                     <button
                       type="button" className="btn btn-secondary btn-sm"
                       onClick={exportXlsx} disabled={exportSt.kind === "busy"} aria-busy={exportSt.kind === "busy"}
@@ -521,19 +538,24 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                     {st.kind === "loading" ? "Виконуємо пошук…"
                       : st.kind === "error" ? "Пошук не виконано: " + st.msg
                       : st.kind === "hint" ? st.msg
-                      : st.kind === "ready" ? (st.items.length === 0 ? (st.hasMore ? "Серед переглянутих записів збігів поки немає — можна шукати далі" : "Нічого не знайдено") : "Знайдено записів: " + st.items.length + (st.hasMore ? ", є ще" : ""))
+                      : st.kind === "ready" ? (st.items.length === 0 ? (st.hasMore ? "Серед переглянутих записів збігів поки немає (переглянуто частин: " + st.parts + ") — можна шукати далі" : "Нічого не знайдено") : "Знайдено записів: " + st.items.length + (st.hasMore ? ", є ще" : ""))
                       : ""}
                   </div>
                   {/* с77: стан експорту — ОКРЕМИЙ постійний live-регіон, ПІСЛЯ регіону
                       пошуку (пін W-12 шукає перший регіон як регіон пошуку). */}
                   <div className="rf-vh" role="status" aria-live="polite">
-                    {exportSt.kind === "busy" ? "Формуємо файл Excel…" : exportSt.kind === "idle" ? refNotice : exportSt.msg}
+                    {exportSt.kind === "busy" ? "Формуємо файл Excel…" : exportSt.kind === "idle" ? "" : exportSt.msg}
                   </div>
+                  <div className="rf-vh" role="status" aria-live="polite">{refNotice}</div>
                   {st.kind === "idle" && (
                     <div className="empty">
                       <div className="ei" aria-hidden="true">⌕</div>
                       <div className="et">Пошук по всій історії та майбутніх записах</div>
-                      <div className="es">Введіть прізвище (повністю або частину), номер телефону (код оператора, середину чи останні цифри), назву дослідження — наприклад «МРТ мозок» — або ID запису з «Журналу дій». Фільтри звужують період, кабінет, статус.</div>
+                      <div className="es">
+                        {showPhone
+                          ? "Введіть прізвище (повністю або частину), номер телефону (код оператора, середину чи останні цифри), назву дослідження — наприклад «МРТ мозок» — або ID запису з «Журналу дій». Фільтри звужують період, кабінет, статус."
+                          : "Введіть прізвище (повністю або частину), назву дослідження — наприклад «МРТ мозок» — або ID запису з «Журналу дій». Фільтри звужують період, кабінет, статус."}
+                      </div>
                     </div>
                   )}
                   {st.kind === "hint" && (
@@ -558,7 +580,7 @@ export default function SearchScreen({ roleKey, userName, clinics, rooms, source
                     <div className="empty">
                       <div className="ei" aria-hidden="true">⌕</div>
                       <div className="et">Серед переглянутих записів збігів поки немає</div>
-                      <div className="es">Записів багато — пошук переглядає їх частинами. Шукайте далі або звузьте період.</div>
+                      <div className="es">Записів багато — пошук переглядає їх частинами (переглянуто: {st.parts}). Шукайте далі або звузьте період.</div>
                       <button className="btn btn-secondary btn-sm" style={{ marginTop: 10 }} disabled={st.loadingMore} aria-busy={st.loadingMore} onClick={loadMore}>
                         {st.loadingMore ? "…" : "Шукати далі"}
                       </button>

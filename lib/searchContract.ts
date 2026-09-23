@@ -182,8 +182,10 @@ export function normalizeSearchRequest(input: unknown, scope: RoleScope, todayKe
   const term = (r.term || "").trim().replace(/\s+/g, " ");
   let termKind: NormalizedSearchFilters["termKind"] = "none";
   if (term) {
-    if (isIdLikeQuery(term)) {
+    if (isIdLikeQuery(term) || (!scope.showPhone && /^\d{6,8}$/.test(term))) {
       // с25: ID запису з «Журналу дій» (короткий 8-значний або повний uuid).
+      // с77: ролі без телефонів (CEO) 6–8 цифр — це ПРЕФІКС ID (короткий ID
+      // буває з самих цифр), а не номер: шукати за номером їй не можна.
       termKind = "id";
     } else if (isPhoneLikeQuery(term)) {
       if (digitsOf(term).length < 3) return { ok: false, code: "term_too_short", error: "Введіть щонайменше 3 цифри номера" };

@@ -13,7 +13,7 @@
    Стеля експорту підмінена на 50 рядків — щоб перевірити «НЕ ВСЕ» і пробу
    «рівно стеля» без тисяч рядків і без залежності від бюджету часу. */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import JSZip from "jszip";
 import { emptyDb, fakeAdminClient, type FakeDb, type Row } from "./fixtures/fakeSupabase";
 import { EXPORT_MAX_ROWS } from "@/lib/searchExport";
@@ -44,6 +44,10 @@ vi.mock("@/lib/apiAuth", () => ({
   requireRole: async () => ({ ok: true, supabase: fakeAdminClient(rls), user: { id: who.me.id }, me: who.me }),
 }));
 const ADMIN_TABLES = new Set(["profiles", "doctors", "referral_access"]);
+/* Порушення записуються, а не лише кидаються (ревʼю с77, р.2): хелпери імен
+   ловлять усі винятки (збій імен не валить пошук), тож кинутий тут виняток
+   проковтнувся б — і тест лишився б зеленим. afterEach перевіряє список. */
+const adminViolations: string[] = [];
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => {
     const c = fakeAdminClient(adm);
@@ -51,7 +55,10 @@ vi.mock("@/lib/supabase/admin", () => ({
       get(o, prop, recv) {
         if (prop !== "from") return Reflect.get(o, prop, recv);
         return (t: string) => {
-          if (!ADMIN_TABLES.has(t)) throw new Error(`service-role читає «${t}» — поза довідковими таблицями`);
+          if (!ADMIN_TABLES.has(t)) {
+            adminViolations.push(t);
+            throw new Error(`service-role читає «${t}» — поза довідковими таблицями`);
+          }
           return o.from(t);
         };
       },
@@ -113,7 +120,12 @@ const Q = {
   refWithCardName: "09000000-0000-4000-8000-000000000009", // REF1 + текст як у D1 — НЕ картка
 };
 
+afterEach(() => {
+  expect(adminViolations, "service-role читав таблиці поза довідковими").toEqual([]);
+});
+
 beforeEach(() => {
+  adminViolations.length = 0;
   events.length = 0;
   who.me = { id: ADMIN, clinic_id: C1, role: "admin" };
   rls.tables = {
@@ -160,6 +172,7 @@ beforeEach(() => {
     ],
   };
   rls.errors = {}; adm.errors = {}; rls.seen = {}; adm.seen = {}; rls.queries = []; adm.queries = [];
+  rls.errorsAfter = {}; adm.errorsAfter = {};
 });
 
 describe("фільтр «Направник» — персонал центру", () => {
@@ -527,5 +540,84 @@ describe("ревʼю с77 — закриті знахідки", () => {
     expect(page.more).toBe("scan");
     expect(page.nextCursor).not.toBeNull();
     expect(page.hasMore).toBe(true);
+  });
+});
+
+describe("ревʼю с77, раунд 2", () => {
+  it("проба після стелі: рівно стеля збігів, а далі ПОНАД стелю скану незбігів — файл повний", async () => {
+    // Збіг — за term (добирається в застосунку), тож SQL віддає і незбіги: перша
+    // сторінка впирається в maxScan (5000), і лише проба доводить «далі нічого».
+    const many: Row[] = [];
+    for (let i = 0; i < EXPORT_MAX_ROWS + 5200; i++) {
+      const id = `${String(i).padStart(8, "0")}-5555-4000-8000-000000000000`;
+      const r = q(id, C1, R1, `2026-09-${String(28 - Math.floor(i / 400)).padStart(2, "0")}`, `0${i % 10}:${String(i % 60).padStart(2, "0")}`, null, null);
+      r.patient_name = i < EXPORT_MAX_ROWS ? "Збіг Тестовий" : "Інший Пацієнт";
+      many.push(r);
+    }
+    rls.tables.queue_entries = many;
+    const r = await exportFile({ term: "Збіг" });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("x-export-rows")).toBe(String(EXPORT_MAX_ROWS));
+    expect(r.headers.get("x-export-truncated")).toBe("0");
+    // і те саме + ОДИН збіг у самому кінці — доведене «НЕ ВСЕ»
+    many[many.length - 1].patient_name = "Збіг Останній";
+    const r2 = await exportFile({ term: "Збіг" });
+    expect(r2.headers.get("x-export-incomplete")).toBe("cap");
+  }, 60_000);
+  it("направник гортає свій лист очікування курсором: лише свої рядки, кожен рівно раз", async () => {
+    who.me = { id: REF1, clinic_id: null, role: "referrer" };
+    const many: Row[] = [];
+    for (let i = 0; i < 90; i++) {
+      const mine = i % 3 !== 0;
+      many.push(w(`${String(i).padStart(8, "0")}-6666-4000-8000-000000000000`, C1, mine ? REF1 : REF2, mine ? (i % 2 ? REF1 : ADMIN) : REF2,
+        `2026-09-${String(1 + (i % 28)).padStart(2, "0")}T0${i % 10}:00:00Z`));
+    }
+    rls.tables.waitlist_entries = many;
+    const seen: string[] = [];
+    let cursor: string | null | undefined;
+    for (let page = 0; page < 6; page++) {
+      const r = await search({ sources: ["waitlist"], ...(cursor ? { cursor } : {}) });
+      seen.push(...(ids(r.body.items) as string[]));
+      if (!r.body.hasMore) break;
+      cursor = r.body.nextCursor;
+    }
+    expect(seen.length).toBe(60);
+    expect(new Set(seen).size).toBe(60);
+  });
+  it("CEO: 6–8 цифр — це префікс ID запису, а не номер телефону", async () => {
+    who.me = { id: CEO, clinic_id: null, role: "ceo" };
+    const r = await search({ term: "01000000" });
+    expect(r.status).toBe(200);
+    expect(ids(r.body.items)).toEqual([Q.refOnly]);
+    expect((await search({ term: "067 000" })).status).toBe(403);
+  });
+  it("додаткові проходи — лише для фільтрів направника; для довільного term — один прохід", async () => {
+    const many: Row[] = [];
+    for (let i = 0; i < 1200; i++) {
+      many.push(q(`${String(i).padStart(8, "0")}-7777-4000-8000-000000000000`, C1, R1, "2026-09-20", `1${i % 10}:${String(i % 60).padStart(2, "0")}`, null, "Інший Лікар"));
+    }
+    rls.tables.queue_entries = many;
+    rls.queries = [];
+    const t = await search({ term: "Немаєтакого" });
+    expect(t.body.hasMore).toBe(true);
+    const termBatches = rls.queries!.filter((x) => x.table === "queue_entries").length;
+    expect(termBatches).toBeLessThanOrEqual(5); // 500 / 100 — один прохід
+    rls.queries = [];
+    const n = await search({ noReferrer: true });
+    expect(n.status).toBe(200);
+    expect(rls.queries!.filter((x) => x.table === "queue_entries").length).toBeGreaterThan(5);
+  });
+  it("збій ДОДАТКОВОГО проходу не псує відповідь: остання вдала сторінка зі «є ще»", async () => {
+    const many: Row[] = [];
+    for (let i = 0; i < 1500; i++) {
+      many.push(q(`${String(i).padStart(8, "0")}-8888-4000-8000-000000000000`, C1, R1, "2026-09-20", `1${i % 10}:${String(i % 60).padStart(2, "0")}`, null, "Інший Лікар"));
+    }
+    rls.tables.queue_entries = many;
+    rls.errorsAfter = { queue_entries: { after: 5, error: { message: "boom" } } }; // перший прохід = 5 батчів
+    const r = await search({ noReferrer: true });
+    expect(r.status).toBe(200);
+    expect(r.body.items).toEqual([]);
+    expect(r.body.hasMore).toBe(true);
+    expect(r.body.nextCursor).toBeTruthy();
   });
 });

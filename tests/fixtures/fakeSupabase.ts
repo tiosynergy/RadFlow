@@ -21,6 +21,9 @@ export interface FakeDb {
   tables: Record<string, Row[]>;
   /** table (або "rpc") → помилка замість даних. */
   errors: Record<string, { message: string } | undefined>;
+  /** с77: помилка лише ПІСЛЯ N успішних читань таблиці — щоб перевірити збій
+      посеред скану (другий прохід пошуку), а не лише з першого запиту. */
+  errorsAfter?: Record<string, { after: number; error: { message: string } } | undefined>;
   /** rpc-ім'я + p_date → рядки зайнятості. */
   rpc: Record<string, Row[]>;
   /** Останні застосовані фільтри по таблиці — для перевірок «а чи питали?». */
@@ -112,6 +115,10 @@ class FakeQuery {
     try {
       return Promise.resolve(this.run()).then(res, rej);
     } catch (e) {
+      /* Виняток двійника («не реалізовано», «таблиці немає») мусить ДІЙТИ до
+         `await`: без виклику `rej` проміс так і не завершувався, і тест висів до
+         тайм-ауту замість чесного падіння (ревʼю с77, р.2). */
+      if (rej) return Promise.resolve(rej(e));
       return Promise.reject(e) as unknown as Promise<T>;
     }
   }
@@ -119,6 +126,11 @@ class FakeQuery {
   private run(): { data: unknown; error: unknown } {
     const err = this.db.errors[this.table];
     if (err) return { data: null, error: err };
+    const late = this.db.errorsAfter?.[this.table];
+    if (late) {
+      const done = (this.db.queries ?? []).filter((q) => q.table === this.table).length;
+      if (done >= late.after) return { data: null, error: late.error };
+    }
 
     const rows = this.db.tables[this.table] ?? [];
     this.assertColumnsExist(rows);

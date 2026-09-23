@@ -93,10 +93,12 @@ export async function POST(req: Request) {
         items.push(it);
       }
       if (page.more === null) break;                                              // вибірку вичерпано
-      if (page.more === "match" && items.length >= EXPORT_MAX_ROWS) { incomplete = "cap"; break; } // доведено: є ще
+      // Доведено: є ще збіг. ⚠️ Але проба з деградованого курсора могла вдруге
+      // побачити рядок, уже взятий у файл, — тоді «є ще» не доведено (ревʼю с77, р.2).
+      if (page.more === "match" && items.length >= EXPORT_MAX_ROWS) { incomplete = degraded ? "cursor" : "cap"; break; }
       if (Date.now() > deadline) { incomplete = "time"; break; }                  // не встигли довести
       cursor = page.nextCursor ? decodeSearchCursor(page.nextCursor, f.source, f.sort) : null;
-      if (!cursor) { incomplete = "time"; break; }
+      if (!cursor) { incomplete = "cursor"; break; }
     }
     // Деградований курсор міг ПРОПУСТИТИ рядки в межах дати — повноту не
     // гарантуємо і кажемо про це (ревʼю с77; на проді таких рядків 0).

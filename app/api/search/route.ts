@@ -52,18 +52,25 @@ export async function POST(req: Request) {
   const cursor = decodeSearchCursor(parsed.data.cursor, f.source, f.sort);
   const opts = { limit: f.limit, maxScan: SEARCH_MAX_SCAN, batch: SEARCH_BATCH };
   let page = await runSearchPage(ctx, f, cursor, opts);
-  /* Порожня сторінка, упершись у стелю скану, — ще не «нічого не знайдено»
-     (ревʼю с77, B HIGH-1): фільтр за рідкісним лікарем чи рідкісний term
-     могли не трапитись у перших SEARCH_MAX_SCAN рядках. Докручуємо курсор
-     сам, у межах бюджету часу; якщо й так порожньо — клієнт отримує hasMore
-     і показує «Шукати далі», а не хибне «нічого». */
-  const until = Date.now() + CONTINUE_BUDGET_MS;
-  for (let pass = 1; pass < CONTINUE_MAX_PASSES && page.ok && !page.items.length && page.more === "scan" && Date.now() < until; pass++) {
-    const next = decodeSearchCursor(page.nextCursor ?? undefined, f.source, f.sort);
-    if (!next) break;
-    page = await runSearchPage(ctx, f, next, opts);
-  }
   if (!page.ok) return NextResponse.json({ error: page.error }, { status: page.status });
+  /* Порожня сторінка, упершись у стелю скану, — ще не «нічого не знайдено»
+     (ревʼю с77, B HIGH-1). Докручуємо курсор сам — але ЛИШЕ для фільтрів
+     направника, які добираються в застосунку (картка довідника, «без
+     направника»): для довільного term це множило б навантаження на БД уп'ятеро
+     на кожен порожній запит (ревʼю с77, р.2). Дедлайн діє і всередині проходу.
+     Збій додаткового проходу не псує вже отриману відповідь: віддаємо останню
+     вдалу сторінку з «є ще», а не помилку. Решту випадків закриває UI —
+     «Шукати далі» замість хибного «нічого». */
+  if (f.doctorIds || f.noReferrer) {
+    const until = Date.now() + CONTINUE_BUDGET_MS;
+    for (let pass = 1; pass < CONTINUE_MAX_PASSES && !page.items.length && page.more === "scan" && Date.now() < until; pass++) {
+      const next = decodeSearchCursor(page.nextCursor ?? undefined, f.source, f.sort);
+      if (!next) break;
+      const more = await runSearchPage(ctx, f, next, { ...opts, deadline: until });
+      if (!more.ok) break;
+      page = more;
+    }
+  }
 
   const res: SearchResponse = { items: page.items, nextCursor: page.nextCursor, hasMore: page.hasMore, appliedFilters };
   return NextResponse.json(res);
