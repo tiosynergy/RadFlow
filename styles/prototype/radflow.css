@@ -364,6 +364,12 @@ html[data-density="spacious"] .fld { gap: 9px; }
   border-bottom: 1px solid var(--border);
   display: flex; align-items: center; gap: 16px;
   padding: 0 22px; background: rgba(28,28,30,0.8); backdrop-filter: blur(20px);
+  /* с78: панелі під шапкою тепер позиціоновані (див. .content) і малюються в
+     тому ж шарі, що й шапка (backdrop-filter = власний контекст накладання),
+     але ПІЗНІШЕ за деревом — тобто поверх неї. Без z-index нижній край кільця
+     фокуса кнопок шапки (outline 2px + відступ 2px виходить за смугу) ховався
+     під непрозорим фоном .rpanel (компактна щільність, «＋ Новий запис»). */
+  position: relative; z-index: 1;
 }
 .tb-title { display: flex; align-items: center; gap: 11px; }
 .tb-title .tic { width: 30px; height: 30px; border-radius: 8px; background: var(--blue-bg); color: var(--blue-text); display: flex; align-items: center; justify-content: center; font-size: 0.875rem; }
@@ -2200,7 +2206,11 @@ select.inp { cursor: pointer; }
    прокрутки, куди може потрапити .rf-vh, має бути position: relative
    (оболонка: .app, .content, .content-full, .rpanel, .sb-nav — с78), інакше
    span виходить з панелі на свою статичну позицію і розпирає документ: на
-   /queue сторінка «їхала» вниз у порожнечу, коли список доходив до кінця. */
+   /queue сторінка «їхала» вниз у порожнечу, коли список доходив до кінця.
+   ⚠️ Те саме з хостом, що обрізає вміст (overflow:hidden, line-clamp,
+   ellipsis): якщо .rf-vh може опинитись в обрізаній частині, найближча
+   обгортка має бути позиціонованою (як .rf-dot, .rf-check) — інакше span
+   оминає обрізання і розпирає панель прокрутки. */
 .rf-vh {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
@@ -2232,6 +2242,12 @@ select.inp { cursor: pointer; }
      Поза ґридом властивість ІГНОРУЄТЬСЯ (не діє ні на inline, ні на flex-item),
      тож правило безпечне для решти місць і страхує наступну дошку. */
   justify-self: start;
+  /* с78: `.rf-vh` усередині (розшифровка для скрінрідера) якориться до САМОЇ
+     крапки. Без цього він вискакував з хоста, що обрізає вміст: у рядку черги
+     крапка стоїть у `.q-proc .pp` з line-clamp:4 + overflow:hidden, і на
+     обрізаному 5-му рядку підпис розпирав панель — у кінці списку
+     зʼявлялась порожня прокрутка (ревʼю с78: 896 → 914 px). */
+  position: relative;
 }
 /* Крапка без числа: сам символ ● не малюємо — його роль виконує форма
    елемента, інакше глиф вилазить за межі 8px кола. */

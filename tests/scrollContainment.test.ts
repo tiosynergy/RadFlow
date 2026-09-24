@@ -27,8 +27,11 @@ const ruleBody = (css: string, sel: string): string => {
 const POSITION_RELATIVE = /(^|;|\s)position:\s*relative\s*;/;
 
 describe("с78 — оболонка не дає absolute-нащадкам розпирати документ", () => {
-  it("radflow.css: .app — position: relative разом з overflow: hidden", () => {
-    const body = ruleBody(read("styles/prototype/radflow.css"), ".app");
+  it.each([
+    ["styles/prototype/radflow.css", ".app"],
+    ["styles/prototype/radflow-wizard.css", ".wiz"],
+  ])("%s %s — оболонка: position: relative разом з overflow: hidden", (file, sel) => {
+    const body = ruleBody(read(file), sel);
     expect(body).toMatch(POSITION_RELATIVE);
     expect(body).toMatch(/overflow:\s*hidden\s*;/);
   });
@@ -38,6 +41,8 @@ describe("с78 — оболонка не дає absolute-нащадкам роз
     ["styles/prototype/radflow.css", ".rpanel"],
     ["styles/prototype/radflow.css", ".sb-nav"],
     ["styles/prototype/radflow-screens.css", ".content-full"],
+    ["styles/prototype/radflow-wizard.css", ".wiz-main"],
+    ["styles/prototype/radflow-wizard.css", ".wiz-steps"],
   ])("%s %s — панель прокрутки: position: relative + overscroll-behavior-y: contain", (file, sel) => {
     const body = ruleBody(read(file), sel);
     expect(body).toMatch(/overflow-y:\s*auto/);
@@ -49,5 +54,15 @@ describe("с78 — оболонка не дає absolute-нащадкам роз
     const css = read("styles/prototype/radflow.css");
     expect(ruleBody(css, ".rf-check input")).toMatch(/position:\s*absolute/);
     expect(ruleBody(css, ".rf-check")).toMatch(POSITION_RELATIVE);
+  });
+
+  it("radflow.css: .rf-dot — position: relative (підпис .rf-vh обрізається разом з хостом, напр. line-clamp у .pp)", () => {
+    expect(ruleBody(read("styles/prototype/radflow.css"), ".rf-dot")).toMatch(POSITION_RELATIVE);
+  });
+
+  it("radflow.css: .topbar — position: relative + z-index: 1 (кільце фокуса кнопок шапки не ховається під позиціонованими панелями)", () => {
+    const body = ruleBody(read("styles/prototype/radflow.css"), ".topbar");
+    expect(body).toMatch(POSITION_RELATIVE);
+    expect(body).toMatch(/(^|;|\s)z-index:\s*1\s*;/);
   });
 });
