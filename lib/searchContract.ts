@@ -50,7 +50,17 @@ export const SearchRequestSchema = z.object({
   studyQuery: z.string().max(SEARCH_TERM_MAX).optional(),
   contrast: z.boolean().optional(),
   priorities: z.array(z.enum(PRIORITIES)).max(PRIORITIES.length).optional(),
+  /** Направники-АКАУНТИ (`queue_entries.referrer_id` / `waitlist_entries.referrer_id`). */
   referrerIds: z.array(zUuid).max(20).optional(),
+  /** Лікарі ДОВІДНИКА `doctors` (с77): акаунта в них немає, у записі черги лежить
+   *  лише ТЕКСТ `doctor` при `referrer_id = null` (правило — lib/referrerField.ts).
+   *  Імʼя за id сервер знаходить сам і лише в межах області ролі. */
+  doctorIds: z.array(zUuid).max(20).optional(),
+  /** Записи БЕЗ направника (с77): у черзі — ні акаунта, ні тексту лікаря; у
+   *  листі очікування — без АКАУНТА направника (тексту лікаря лист не зберігає:
+   *  перенесений із черги пацієнт лікаря довідника потрапить сюди — UI каже це
+   *  підписом «Без акаунта направника»). */
+  noReferrer: z.boolean().optional(),
   sort: z.enum(["relevance", "date_desc", "date_asc"]).optional(),
   cursor: z.string().max(400).optional(),
   limit: z.number().int().min(1).max(SEARCH_LIMIT_MAX).optional(),
@@ -73,8 +83,13 @@ export type RoleScope = {
   ownReferrerOnly: boolean;
   /** Разрешённые источники (радиологу лист ожидания не показываем — ТЗ §5). */
   sources: SearchSource[];
-  /** Поле «направник» в результате видит только персонал центра. */
-  showReferrerName: boolean;
+  /** Роль бачить НАПРАВНИКА запису — і фільтром, і імʼям у видачі та експорті.
+   *  ОДИН прапорець, а не два, свідомо (с77, рішення власника 23.09): фільтр за
+   *  направником розкриває атрибуцію запису рівно так само, як колонка з імʼям —
+   *  перебором опцій, — тож «фільтрувати можна, бачити імʼя — ні» був би
+   *  театром, а не межею. Персонал центру і CEO — так; направник — ні (він і так
+   *  бачить лише ВЛАСНІ записи). */
+  referrerVisible: boolean;
   /** CEO — read-only агрегатные экраны: телефон в выдаче не показываем. */
   showPhone: boolean;
 };
@@ -97,6 +112,10 @@ export type NormalizedSearchFilters = {
   contrast: boolean | null;
   priorities: SearchPriority[] | null;
   referrerIds: string[] | null;
+  /** Картки довідника `doctors` (лише черга: у листі очікування тексту лікаря немає). */
+  doctorIds: string[] | null;
+  /** Лише записи без направника (ні акаунта, ні тексту лікаря). */
+  noReferrer: boolean;
   sort: Exclude<SearchSort, "relevance">;
   limit: number;
 };
@@ -163,11 +182,17 @@ export function normalizeSearchRequest(input: unknown, scope: RoleScope, todayKe
   const term = (r.term || "").trim().replace(/\s+/g, " ");
   let termKind: NormalizedSearchFilters["termKind"] = "none";
   if (term) {
-    if (isIdLikeQuery(term)) {
+    if (isIdLikeQuery(term) || (!scope.showPhone && /^\d{6,8}$/.test(term))) {
       // с25: ID запису з «Журналу дій» (короткий 8-значний або повний uuid).
+      // с77: ролі без телефонів (CEO) 6–8 цифр — це ПРЕФІКС ID (короткий ID
+      // буває з самих цифр), а не номер: шукати за номером їй не можна.
       termKind = "id";
     } else if (isPhoneLikeQuery(term)) {
       if (digitsOf(term).length < 3) return { ok: false, code: "term_too_short", error: "Введіть щонайменше 3 цифри номера" };
+      // Роль, якій телефонів НЕ показують (CEO), не може й шукати за ними
+      // (ревʼю с77, A-8): підрядковий збіг по цифрах відновлював номер за
+      // ~100 запитів, хоч жодного номера на екрані й у файлі не було.
+      if (!scope.showPhone) return { ok: false, code: "forbidden_filter", error: "Пошук за номером телефону недоступний для вашої ролі" };
       termKind = "phone";
     } else {
       if (term.length < 2) return { ok: false, code: "term_too_short", error: "Введіть щонайменше 2 символи" };
@@ -175,9 +200,30 @@ export function normalizeSearchRequest(input: unknown, scope: RoleScope, todayKe
     }
   }
 
-  // --- фильтры, доступные не всем ролям
-  const referrerIds =
-    scope.showReferrerName && r.referrerIds && r.referrerIds.length ? [...new Set(r.referrerIds)] : null;
+  // --- фильтры, доступные не всем ролям.
+  // Направник (с77): ТРИ групи — акаунт, лікар довідника, «без направника» — і
+  // рівно одна на запит. Запис має одного направника, тож перетин груп завжди
+  // порожній, а обʼєднання UI не пропонує: краще голосна відмова, ніж тихе
+  // «нічого не знайдено». Ролі без прапорця фільтр відкидається (як і раніше):
+  // направник бачить лише власні записи, звужувати тут нічого.
+  let referrerIds: string[] | null = null;
+  let doctorIds: string[] | null = null;
+  let noReferrer = false;
+  if (scope.referrerVisible) {
+    referrerIds = r.referrerIds && r.referrerIds.length ? [...new Set(r.referrerIds)] : null;
+    doctorIds = r.doctorIds && r.doctorIds.length ? [...new Set(r.doctorIds)] : null;
+    noReferrer = r.noReferrer === true;
+    const groups = (referrerIds ? 1 : 0) + (doctorIds ? 1 : 0) + (noReferrer ? 1 : 0);
+    if (groups > 1) {
+      return { ok: false, code: "bad_request", error: "Оберіть одного направника: акаунт, лікаря з довідника або «без направника»" };
+    }
+    // Лист очікування НЕ зберігає тексту лікаря (колонки `doctor` у ньому немає):
+    // фільтр за карткою довідника там не може знайти нічого — і мовчки віддати
+    // «порожньо» було б неправдою про дані. Відмова з поясненням.
+    if (doctorIds && source === "waitlist") {
+      return { ok: false, code: "bad_request", error: "Лист очікування не зберігає лікаря з довідника — цей фільтр працює лише для черги" };
+    }
+  }
 
   const sort: NormalizedSearchFilters["sort"] = r.sort === "date_asc" ? "date_asc" : "date_desc";
   // «relevance» зарезервирован контрактом (этап AI); в MVP детерминированно = date_desc.
@@ -199,6 +245,8 @@ export function normalizeSearchRequest(input: unknown, scope: RoleScope, todayKe
       contrast: typeof r.contrast === "boolean" ? r.contrast : null,
       priorities: r.priorities && r.priorities.length ? [...new Set(r.priorities)] : null,
       referrerIds,
+      doctorIds,
+      noReferrer,
       sort,
       limit: r.limit ?? SEARCH_LIMIT_DEFAULT,
     },

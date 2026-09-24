@@ -1,0 +1,721 @@
+/* ===== Універсальний пошук — рушій (с22 → винесено з роуту в с77) =====
+
+   Жив усередині `app/api/search/route.ts`. У с77 зʼявився другий споживач —
+   експорт у Excel (`app/api/search/export/route.ts`), і він ЗОБОВʼЯЗАНИЙ
+   бачити рівно ту саму область, ті самі фільтри й ті самі скриття, що й екран.
+   Два копії циклу розійшлися б першою ж правкою, тому цикл один — тут.
+
+   Слої (як і раніше): область ролі з СЕСІЇ (resolveSearchScope) → нормалізатор
+   контракту → адаптер джерела (queue | waitlist) → Supabase ПІД RLS → елементи.
+
+   ⚠️ ДЕ ТУТ service-role, І ЧОМУ ЛИШЕ ТАМ (с77). Рядки пацієнтів читає ТІЛЬКИ
+      RLS-клієнт сесії — як і було. Але імена направників за RLS бачить лише
+      адмін (`ra_clinic_select` = `auth_is_admin()`, а політика `profiles`
+      для направників стоїть на тому самому `referral_access`): реєстратор,
+      радіолог і CEO отримували `null` — замір с77 (симуляція RLS по ролях).
+      Власник 23.09 вирішив показувати направника всім ролям, крім самого
+      направника. Тому ДОВІДКОВІ імена (ПІБ направника за id, назва картки
+      довідника за id) читає admin-клієнт — і рівно в межах, які вже дала RLS:
+        • імена акаунтів — лише для `referrer_id` з рядків, що RLS УЖЕ віддала
+          цьому користувачу (перелічити чужих направників так не вийде);
+        • картки довідника — лише з `clinic_id` області ролі.
+      Жодних даних пацієнтів admin-клієнт тут не читає.
+      І сам admin-клієнт цей модуль НЕ створює: його дає роут ПІСЛЯ гейта
+      `requireRole` (tests/serverAuthSurface.test.ts тримає service-role поза
+      роутами в названому колі інфраструктури, і пошук у нього не входить). */
+
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Caller } from "@/lib/apiAuth";
+import { safeDbError } from "@/lib/validation";
+import { logError } from "@/lib/serverLog";
+import { wallDayKey } from "@/lib/incidents";
+import { modalityCode } from "@/lib/studies";
+import { entryMatchesTerm, idMatches, normSearchText, phoneMatches, studiesArr, studiesText } from "@/lib/searchText";
+import {
+  decodeSearchCursor,
+  encodeSearchCursor,
+  normalizeSearchRequest,
+  type NormalizedSearchFilters,
+  type RoleScope,
+  type SearchCursor,
+  type SearchRequest,
+  type SearchResultItem,
+} from "@/lib/searchContract";
+import { normPersonName, type ReferrerDirectory } from "@/lib/searchReferrerFilter";
+import type { Database } from "@/supabase/types";
+import { grantRoomIds } from "@/lib/rooms";
+
+export type DB = SupabaseClient<Database>;
+
+/** Типові межі одного HTTP-запиту пошуку на екрані. */
+export const SEARCH_BATCH = 100;      // рядків за один запит до БД
+export const SEARCH_MAX_SCAN = 500;   // стеля переглянутих рядків на один HTTP-запит
+const DB_TIMEOUT_MS = 8000;
+/** PostgREST `in.(…)` йде в URL — довгі списки id ріжемо на шматки. */
+const IN_CHUNK = 100;
+
+/* ---------- Область доступу ролі (з сесії, не від клієнта) ---------- */
+
+export async function resolveSearchScope(supabase: DB, me: Caller): Promise<RoleScope | { error: string; status: number }> {
+  const base = {
+    userId: me.id,
+    role: me.role,
+    roomIds: null as string[] | null,
+    roomIdsByClinic: null as Record<string, string[] | null> | null,
+    ownReferrerOnly: false,
+    referrerVisible: false,
+    showPhone: true,
+  };
+  if (me.role === "admin" || me.role === "registrar") {
+    if (!me.clinic_id) return { error: "Обліковий запис без центру", status: 403 };
+    return { ...base, clinicIds: [me.clinic_id], sources: ["queue", "waitlist"], referrerVisible: true };
+  }
+  if (me.role === "radiologist") {
+    if (!me.clinic_id) return { error: "Обліковий запис без центру", status: 403 };
+    const { data, error } = await supabase.from("radiologist_rooms").select("room_id").eq("profile_id", me.id);
+    if (error) return { error: safeDbError("api/search.scope.rad", error), status: 400 };
+    // Радиолог видит ТОЛЬКО назначенные кабинеты (с 0136 это же держит RLS —
+    // здесь явный фильтр области). Лист ожидания ему не показываем (ТЗ §5).
+    // Направника (с77) — бачить: на своїй дошці він і так бачить «Напр.: …».
+    return { ...base, clinicIds: [me.clinic_id], roomIds: (data || []).map((r) => r.room_id), sources: ["queue"], referrerVisible: true };
+  }
+  if (me.role === "referrer") {
+    const { data, error } = await supabase
+      .from("referral_access")
+      .select("clinic_id, status, room_ids")
+      .eq("referrer_id", me.id)
+      .eq("status", "active");
+    if (error) return { error: safeDbError("api/search.scope.ref", error), status: 400 };
+    const roomIdsByClinic: Record<string, string[] | null> = {};
+    (data || []).forEach((a) => {
+      /* Семантика масиву — в `grantRoomIds` (lib/rooms.ts), дзеркало БД: null =
+         усі кабінети центру, масив = рівно ці, порожній = жодного (0137).
+         ⚠️ Поле поки НЕ звужує вибірку: область направника тримає
+         `ownReferrerOnly` (лише власні направлення), і цього достатньо. Тримаємо
+         його заповненим і чесним, щоб той, хто колись почне ним фільтрувати, не
+         успадкував стару fail-open семантику. */
+      roomIdsByClinic[a.clinic_id] = grantRoomIds(a.room_ids as string[] | null);
+    });
+    // Направник ищет только СОБСТВЕННЫЕ направления/строки листа (доступ не расширяем).
+    return {
+      ...base,
+      clinicIds: (data || []).map((a) => a.clinic_id),
+      roomIdsByClinic,
+      ownReferrerOnly: true,
+      sources: ["queue", "waitlist"],
+    };
+  }
+  if (me.role === "ceo") {
+    const { data, error } = await supabase.from("ceo_access").select("clinic_id").eq("ceo_id", me.id).eq("status", "active");
+    if (error) return { error: safeDbError("api/search.scope.ceo", error), status: 400 };
+    // CEO — read-only: телефоны в выдаче не показываем (его экраны их и не показывают).
+    // Направника (с77) — бачить: рішення власника 23.09.
+    return { ...base, clinicIds: (data || []).map((a) => a.clinic_id), sources: ["queue", "waitlist"], showPhone: false, referrerVisible: true };
+  }
+  return { error: "Недостатньо прав", status: 403 };
+}
+
+/* ---------- Підготовка: область → зони → нормалізатор → фільтр довідника ---------- */
+
+export type SearchCtx = {
+  supabase: DB;
+  /** service-role — ЛИШЕ для довідкових імен (шапка файлу); створює роут після гейта. */
+  admin: DB;
+  scope: RoleScope;
+  tzByClinic: Record<string, string>;
+  tz0: string | undefined;
+  todayKey: string;
+  /** Фільтр за карткою довідника: множина `clinic_id|нормалізоване ПІБ`. */
+  docKeys: Set<string> | null;
+  /** Центри обраних карток (∩ фільтр центру) — SQL звужує скан саме до них. */
+  docClinics: string[] | null;
+  /** Назви обраних карток (для аркуша «Параметри» експорту). */
+  docNames: string[];
+};
+
+export type Prepared =
+  | { ok: true; ctx: SearchCtx; f: NormalizedSearchFilters; empty: boolean }
+  | { ok: false; status: number; body: { error: string; code?: string } };
+
+/**
+ * Спільний вхід обох роутів. `empty` = законно порожня область (немає грантів,
+ * радіолог без кабінетів): відповідь без запиту до БД, а не помилка.
+ */
+export async function prepareSearch(supabase: DB, admin: DB, me: Caller, input: SearchRequest): Promise<Prepared> {
+  const scope = await resolveSearchScope(supabase, me);
+  if ("error" in scope) return { ok: false, status: scope.status, body: { error: scope.error } };
+
+  // Зоны клиник: «сегодня» и признак будущей записи считаем по зоне клиники записи.
+  const tzByClinic: Record<string, string> = {};
+  let tz0: string | undefined;
+  if (scope.clinicIds.length) {
+    const { data: cl, error: clErr } = await supabase.from("clinics").select("id, timezone").in("id", scope.clinicIds);
+    if (clErr) return { ok: false, status: 400, body: { error: safeDbError("api/search.clinics", clErr) } };
+    (cl || []).forEach((c) => { if (c.timezone) tzByClinic[c.id] = c.timezone; });
+    tz0 = cl?.[0]?.timezone || undefined;
+  }
+  const todayKey = wallDayKey(tz0);
+
+  const norm = normalizeSearchRequest(input, scope, todayKey);
+  if (!norm.ok) {
+    return { ok: false, status: norm.code === "forbidden_filter" ? 403 : 400, body: { error: norm.error, code: norm.code } };
+  }
+  const f = norm.filters;
+  const empty = !f.clinicIds.length || (f.roomIds !== null && !f.roomIds.length && f.source === "queue");
+
+  let docKeys: Set<string> | null = null;
+  let docClinics: string[] | null = null;
+  let docNames: string[] = [];
+  let emptyByCard = false;
+  if (f.doctorIds && !empty) {
+    // Картку перевіряємо проти ВСІЄЇ області ролі, а не проти звуженого
+    // фільтра центру (ревʼю с77, B MEDIUM-1): CEO з фільтром «Центр А» і
+    // карткою центру Б — це законне «нічого», а не чужий фільтр.
+    const r = await resolveDoctorCards(admin, f.doctorIds, scope.clinicIds);
+    if (!r.ok) return { ok: false, status: 400, body: { error: r.error } };
+    // Жодна з обраних карток не належить області ролі — це не «нічого не
+    // знайдено», а чужий фільтр (як clinicIds поза областю в нормалізаторі).
+    if (!r.cards.length) return { ok: false, status: 403, body: { error: "Обраний лікар недоступний", code: "forbidden_filter" } };
+    const inFilter = new Set(f.clinicIds.map((c) => c.toLowerCase()));
+    const cards = r.cards.filter((c) => inFilter.has(c.clinicId));
+    docKeys = new Set(cards.map((c) => `${c.clinicId}|${c.norm}`));
+    docClinics = [...new Set(cards.map((c) => c.clinicId))];
+    docNames = r.cards.map((c) => c.name);
+    emptyByCard = cards.length === 0;
+  }
+
+  return {
+    ok: true,
+    ctx: { supabase, admin, scope, tzByClinic, tz0, todayKey, docKeys, docClinics, docNames },
+    f,
+    empty: empty || emptyByCard,
+  };
+}
+
+/* ---------- Довідкові імена (admin-клієнт, у межах, які дала RLS) ---------- */
+
+/** Картки довідника за id — ЛИШЕ з центрів області ролі. */
+export async function resolveDoctorCards(
+  admin: DB,
+  doctorIds: string[],
+  clinicIds: string[]
+): Promise<{ ok: true; cards: Array<{ clinicId: string; norm: string; name: string }> } | { ok: false; error: string }> {
+  const { data, error } = await admin
+    .from("doctors")
+    .select("id, name, clinic_id")
+    .in("id", doctorIds.slice(0, IN_CHUNK))
+    .in("clinic_id", clinicIds);
+  if (error) return { ok: false, error: safeDbError("api/search.doctors", error) };
+  const cards: Array<{ clinicId: string; norm: string; name: string }> = [];
+  for (const d of data || []) {
+    const norm = normPersonName(d.name);
+    if (!norm) continue;
+    cards.push({ clinicId: String(d.clinic_id).toLowerCase(), norm, name: (d.name || "").trim().replace(/\s+/g, " ") });
+  }
+  return { ok: true, cards };
+}
+
+/**
+ * ПІБ направників-акаунтів за id. Викликати ЛИШЕ з id, чия належність області
+ * ролі вже доведена: або з рядків RLS-вибірки цього користувача, або з грантів
+ * `referral_access` центрів його області (довідник селекта). НІКОЛИ — з id,
+ * що прийшли від клієнта: інакше це оракул «ПІБ будь-якого направника за
+ * UUID». Збій читання — не збій пошуку: імена деградують до тексту `doctor`,
+ * а в лог іде structured-подія.
+ */
+async function resolveReferrerNames(admin: DB, ids: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const uniq = [...new Set(ids.filter(Boolean))];
+  if (!uniq.length) return out;
+  try {
+    for (let i = 0; i < uniq.length; i += IN_CHUNK) {
+      const { data, error } = await admin
+        .from("profiles")
+        .select("id, full_name")
+        .in("id", uniq.slice(i, i + IN_CHUNK))
+        .eq("role", "referrer");
+      if (error) {
+        logError({ event: "search.referrer_names_failed", errorCode: error.code ?? "db_error", message: error.message });
+        return out;
+      }
+      for (const p of data || []) {
+        const n = (p.full_name || "").trim().replace(/\s+/g, " ");
+        if (n) out.set(String(p.id).toLowerCase(), n);
+      }
+    }
+  } catch (e) {
+    logError({ event: "search.referrer_names_failed", errorCode: "exception", message: e instanceof Error ? e.message : String(e) });
+  }
+  return out;
+}
+
+/**
+ * ПІБ направників для РЯДКІВ результату — лише тих, хто ПОВʼЯЗАНИЙ із центром
+ * рядка грантом `referral_access`, що давав РЕАЛЬНИЙ доступ (active або revoked —
+ * те саме коло, що й у довіднику селекта; ревʼю с77, р.2). Ревʼю с77 (A-2):
+ * `referrer_id` запису персонал може виставити будь-яким UUID (форма й RPC
+ * перевіряють лише FK на profiles), і без цієї перевірки пошук став би
+ * оракулом «ПІБ направника ЧУЖОГО центру за UUID». До с77 RLS давала тут
+ * NULL навіть адміну — поведінка для незвʼязаних лишається тією ж.
+ * Ключ результату — `referrer|clinic`.
+ */
+export async function resolveLinkedReferrerNames(
+  admin: DB,
+  pairs: Array<{ refId: string; clinicId: string }>
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const refIds = [...new Set(pairs.map((p) => p.refId.toLowerCase()))];
+  const clinics = [...new Set(pairs.map((p) => p.clinicId.toLowerCase()))];
+  if (!refIds.length) return out;
+  const linked = new Set<string>();
+  // Шматок менший за IN_CHUNK: рядків-грантів = направники × центри, і відповідь
+  // мусить лишитися під db-max-rows (1000), інакше імена мовчки губилися б.
+  const LINK_CHUNK = 25;
+  try {
+    for (let i = 0; i < refIds.length; i += LINK_CHUNK) {
+      const { data, error } = await admin
+        .from("referral_access")
+        .select("referrer_id, clinic_id")
+        .in("referrer_id", refIds.slice(i, i + LINK_CHUNK))
+        .in("clinic_id", clinics)
+        .in("status", ["active", "revoked"]);
+      if (error) {
+        logError({ event: "search.referrer_links_failed", errorCode: error.code ?? "db_error", message: error.message });
+        return out;
+      }
+      if ((data?.length ?? 0) >= PGRST_MAX_ROWS) {
+        logError({ event: "search.referrer_links_capped", errorCode: "max_rows", message: `rows=${data?.length}` });
+      }
+      for (const r of data || []) linked.add(`${String(r.referrer_id).toLowerCase()}|${String(r.clinic_id).toLowerCase()}`);
+    }
+  } catch (e) {
+    logError({ event: "search.referrer_links_failed", errorCode: "exception", message: e instanceof Error ? e.message : String(e) });
+    return out;
+  }
+  const allowed = [...new Set([...linked].map((k) => k.split("|")[0]))];
+  const names = await resolveReferrerNames(admin, allowed);
+  for (const k of linked) {
+    const n = names.get(k.split("|")[0]);
+    if (n) out.set(k, n);
+  }
+  return out;
+}
+
+/** PostgREST віддає не більше db-max-rows (1000) рядків — довідник, що вперся
+ *  в стелю, треба помітити, а не мовчки показати обрізаним (урок с57). */
+const PGRST_MAX_ROWS = 1000;
+
+/**
+ * Довідник для селекта «Направник» — у межах центрів області ролі:
+ *   • акаунти, що мали грант у центр (активний АБО відкликаний — у звіті за
+ *     минулий період відкликаний направник потрібен так само);
+ *   • картки довідника `doctors` цих центрів.
+ * Лише імена й id — жодних даних пацієнтів.
+ */
+export async function loadReferrerDirectory(
+  admin: DB,
+  clinicIds: string[]
+): Promise<{ ok: true; dir: ReferrerDirectory } | { ok: false; error: string }> {
+  if (!clinicIds.length) return { ok: true, dir: { accounts: [], cards: [] } };
+  const [ra, docs] = await Promise.all([
+    admin.from("referral_access").select("referrer_id").in("clinic_id", clinicIds).in("status", ["active", "revoked"]),
+    admin.from("doctors").select("id, name, clinic_id").in("clinic_id", clinicIds).order("name"),
+  ]);
+  if (ra.error) return { ok: false, error: safeDbError("api/search.referrers.access", ra.error) };
+  if (docs.error) return { ok: false, error: safeDbError("api/search.referrers.doctors", docs.error) };
+  if ((ra.data?.length ?? 0) >= PGRST_MAX_ROWS || (docs.data?.length ?? 0) >= PGRST_MAX_ROWS) {
+    logError({ event: "search.referrer_directory_capped", errorCode: "max_rows", message: `access=${ra.data?.length} doctors=${docs.data?.length}` });
+  }
+  const ids = [...new Set((ra.data || []).map((r) => String(r.referrer_id).toLowerCase()))];
+  const names = await resolveReferrerNames(admin, ids);
+  return {
+    ok: true,
+    dir: {
+      accounts: ids.filter((id) => names.has(id)).map((id) => ({ id, name: names.get(id)! })),
+      cards: (docs.data || []).map((d) => ({ id: String(d.id), name: d.name, clinicId: String(d.clinic_id) })),
+    },
+  };
+}
+
+/* ---------- Общие пост-фильтры (term / studyQuery / модальность / контраст) ---------- */
+
+type StudyRow = { id: string; patient_name: string | null; patient_phone: string | null; studies: unknown };
+
+function passesStudyFilters(row: StudyRow, f: NormalizedSearchFilters, waitlistModality?: string | null): boolean {
+  if (f.termKind === "id") {
+    // с25: пошук за ID запису (короткий ID з «Журналу дій» = префікс uuid).
+    if (!idMatches(row.id, f.term)) return false;
+  } else if (f.termKind === "phone") {
+    if (!phoneMatches(row.patient_phone, f.term)) return false;
+  } else if (f.termKind === "text") {
+    if (!entryMatchesTerm(row, f.term)) return false;
+  }
+  if (f.studyQuery) {
+    const st = normSearchText(studiesText(row.studies));
+    const qn = normSearchText(f.studyQuery);
+    if (!st || !qn.split(" ").every((w) => st.includes(w))) return false;
+  }
+  if (f.modalities) {
+    const arr = studiesArr(row.studies);
+    const codes = new Set(arr.map((s) => modalityCode(s.type)));
+    if (waitlistModality) codes.add(modalityCode(waitlistModality));
+    if (!f.modalities.some((m) => codes.has(m))) return false;
+  }
+  if (f.contrast !== null) {
+    const any = studiesArr(row.studies).some((s) => !!s.contrast);
+    if (f.contrast !== any) return false;
+  }
+  return true;
+}
+
+/* Направник (с77): SQL уже звузив до `referrer_id is null` для карток і «без
+   направника»; тут — текст лікаря, НОРМАЛІЗОВАНИЙ (клас с31: подвійні пробіли,
+   апострофи, регістр) і в межах ЦЕНТРУ картки. Лише черга: у листі очікування
+   тексту лікаря немає (фільтр за карткою там відхиляє нормалізатор). */
+function passesReferrerFilter(row: QueueRow, f: NormalizedSearchFilters, docKeys: Set<string> | null): boolean {
+  if (f.doctorIds) return !!docKeys && docKeys.has(`${row.clinic_id.toLowerCase()}|${normPersonName(row.doctor)}`);
+  if (f.noReferrer) return normPersonName(row.doctor) === "";
+  return true;
+}
+
+/* ---------- Маршрут открытия результата (существующие экраны, без новых прав) ---------- */
+
+function hrefFor(scope: RoleScope, source: "queue" | "waitlist", row: { id: string; scheduled_date?: string | null; status?: string | null }): string | null {
+  if (scope.role === "ceo") return null; // у CEO нет экрана записи — только read-only список
+  if (source === "queue") {
+    const d = row.scheduled_date ? `date=${row.scheduled_date}&` : "";
+    if (scope.role === "radiologist") return `/radiologist?${d}entry=${row.id}`;
+    if (scope.role === "referrer") return `/referral?tab=mine&${d}entry=${row.id}`;
+    return `/queue?${d}entry=${row.id}`;
+  }
+  if (scope.role === "referrer") return `/referral?tab=waitlist&entry=${row.id}`;
+  const tab = row.status === "waiting" ? "waiting" : row.status === "scheduled" ? "scheduled" : "removed";
+  return `/waitlist?tab=${tab}&entry=${row.id}`;
+}
+
+/* ---------- Адаптер: очередь ---------- */
+
+const QUEUE_COLS =
+  "id, clinic_id, room_id, case_id, scheduled_date, scheduled_time, status, priority_level, cito, patient_name, patient_phone, studies, referrer_id";
+
+type QueueRow = {
+  id: string; clinic_id: string; room_id: string | null; case_id: string | null;
+  scheduled_date: string | null; scheduled_time: string | null; status: string;
+  priority_level: "cito" | "urgent" | "planned"; cito: boolean;
+  patient_name: string | null; patient_phone: string | null; studies: unknown;
+  referrer_id: string | null; doctor?: string | null;
+};
+
+/* Keyset-условие продолжения после (date, time, id) последней просмотренной строки.
+   scheduled_time — nullable text (ревью с22 MEDIUM-4): порядок фиксируем явно —
+   null считается «наименьшим» временем (asc: nulls first, desc: nulls last), и
+   условие раскладывается по веткам is.null / not.is.null. Алфавит значений зажат
+   схемой курсора — синтаксис .or() не ломается. */
+export function queueKeysetOr(c: Extract<SearchCursor, { s: "queue" }>, asc: boolean): string {
+  const op = asc ? "gt" : "lt";
+  const parts: string[] = [`scheduled_date.${op}.${c.d}`];
+  if (c.u) {
+    // «Время ненадёжно» (LOW-A р2): непустой scheduled_time вне безопасного
+    // алфавита нельзя вставить в .or(). Деградируем до (date, id): внутри даты
+    // возможен повторный скан соседей — его гасит дедуп по id в обработчике.
+    parts.push(`and(scheduled_date.eq.${c.d},id.${op}.${c.id})`);
+    return parts.join(",");
+  }
+  if (c.t === null) {
+    if (asc) {
+      parts.push(`and(scheduled_date.eq.${c.d},scheduled_time.is.null,id.gt.${c.id})`);
+      parts.push(`and(scheduled_date.eq.${c.d},scheduled_time.not.is.null)`);
+    } else {
+      parts.push(`and(scheduled_date.eq.${c.d},scheduled_time.is.null,id.lt.${c.id})`);
+    }
+  } else if (asc) {
+    parts.push(`and(scheduled_date.eq.${c.d},scheduled_time.gt."${c.t}")`);
+    parts.push(`and(scheduled_date.eq.${c.d},scheduled_time.eq."${c.t}",id.gt.${c.id})`);
+  } else {
+    parts.push(`and(scheduled_date.eq.${c.d},scheduled_time.lt."${c.t}")`);
+    parts.push(`and(scheduled_date.eq.${c.d},scheduled_time.is.null)`);
+    parts.push(`and(scheduled_date.eq.${c.d},scheduled_time.eq."${c.t}",id.lt.${c.id})`);
+  }
+  return parts.join(",");
+}
+
+/** scheduled_time для курсора: безопасный алфавит → значение; null → null;
+ *  непустое «кривое» значение → null + флаг u (деградация keyset до date+id). */
+function cursorTimeParts(t: string | null): { t: string | null; u?: boolean } {
+  if (t === null) return { t: null };
+  // Пустая строка и значения вне алфавита («9:00 AM») — «ненадёжное» время:
+  // деградация до (date, id). На проде таких строк 0 (замер с22), форма пишет «HH:MM».
+  return /^[0-9:]{1,8}$/.test(t) ? { t: t.slice(0, 8) } : { t: null, u: true };
+}
+
+function queueBatch(
+  supabase: DB, scope: RoleScope, f: NormalizedSearchFilters, cursor: SearchCursor | null, batch: number, docClinics: string[] | null
+) {
+  const asc = f.sort === "date_asc";
+  // Текст лікаря потрібен лише ролям, яким видно направника: для фільтра за
+  // карткою / «без направника» і для підпису в результаті (с77).
+  const cols = scope.referrerVisible ? QUEUE_COLS + ", doctor" : QUEUE_COLS;
+  let q = supabase
+    .from("queue_entries")
+    .select(cols)
+    .in("clinic_id", f.clinicIds)
+    .gte("scheduled_date", f.dateFrom)
+    .lte("scheduled_date", f.dateTo);
+  if (f.roomIds) q = q.in("room_id", f.roomIds);
+  if (scope.ownReferrerOnly) q = q.eq("referrer_id", scope.userId);
+  if (f.queueStatuses) q = q.in("status", f.queueStatuses);
+  if (f.priorities) q = q.in("priority_level", f.priorities);
+  if (f.referrerIds) q = q.in("referrer_id", f.referrerIds);
+  // Картка довідника і «без направника» — лише записи БЕЗ акаунта; решту
+  // (нормалізований текст лікаря) добирає passesReferrerFilter.
+  if (f.doctorIds || f.noReferrer) q = q.is("referrer_id", null);
+  // Картку ще й звужуємо в SQL до рядків ІЗ текстом лікаря і лише в центрах
+  // карток (ревʼю с77, B HIGH-1): інакше рідкісний лікар тонув у сотнях
+  // рядків без направника, і сторінка скану (maxScan) поверталась порожньою.
+  if (f.doctorIds && docClinics) q = q.not("doctor", "is", null).in("clinic_id", docClinics);
+  if (cursor && cursor.s === "queue") q = q.or(queueKeysetOr(cursor, asc));
+  return q
+    .order("scheduled_date", { ascending: asc })
+    // null-время — «наименьшее»: asc → першими, desc → останніми (зеркало queueKeysetOr).
+    .order("scheduled_time", { ascending: asc, nullsFirst: asc })
+    .order("id", { ascending: asc })
+    .limit(batch)
+    .abortSignal(AbortSignal.timeout(DB_TIMEOUT_MS));
+}
+
+/* ---------- Адаптер: лист ожидания ---------- */
+
+const WL_COLS =
+  "id, clinic_id, room_id, status, priority_level, modality, patient_name, patient_phone, studies, created_at, referrer_id, created_by";
+
+type WlRow = {
+  id: string; clinic_id: string; room_id: string | null; status: string;
+  priority_level: "cito" | "urgent" | "planned"; modality: string | null;
+  patient_name: string | null; patient_phone: string | null; studies: unknown;
+  created_at: string; referrer_id: string | null; created_by: string | null;
+};
+
+/** Сдвиг календарного ключа на N дней (UTC-арифметика по ключу, не по «сейчас»). */
+function shiftKey(dateKey: string, days: number): string {
+  return new Date(new Date(dateKey + "T00:00:00Z").getTime() + days * 86400000).toISOString().slice(0, 10);
+}
+
+/* Календарный день timestamptz-момента В ЗОНЕ КЛИНИКИ (ревью с22 MEDIUM-3):
+   строка листа, созданная 06.08 в 01:30 Киева, — это 05.08 по UTC; границы и
+   отображаемая дата обязаны считаться по зоне клиники записи. en-CA даёт YYYY-MM-DD. */
+const dayKeyFmtCache = new Map<string, Intl.DateTimeFormat>();
+function dayKeyInTz(iso: string, tz?: string): string {
+  if (!tz) return iso.slice(0, 10);
+  try {
+    let fmt = dayKeyFmtCache.get(tz);
+    if (!fmt) {
+      fmt = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+      dayKeyFmtCache.set(tz, fmt);
+    }
+    return fmt.format(new Date(iso));
+  } catch {
+    return iso.slice(0, 10);
+  }
+}
+
+function waitlistBatch(supabase: DB, scope: RoleScope, f: NormalizedSearchFilters, cursor: SearchCursor | null, batch: number) {
+  const asc = f.sort === "date_asc";
+  let q = supabase
+    .from("waitlist_entries")
+    .select(WL_COLS)
+    .in("clinic_id", f.clinicIds)
+    // Грубые границы ±1 день (created_at — timestamptz, а фильтр — календарные дни
+    // в зоне клиники): точное попадание в [dateFrom..dateTo] проверяется в обработчике
+    // через dayKeyInTz по зоне клиники записи (ревью с22 MEDIUM-3).
+    .gte("created_at", shiftKey(f.dateFrom, -1))
+    .lte("created_at", shiftKey(f.dateTo, 1) + "T23:59:59.999Z");
+  if (f.roomIds) q = q.in("room_id", f.roomIds);
+  // Направник видит в листе ожидания ТОЛЬКО собственные строки — зеркало RLS
+  // waitlist_select і вкладки порталу (MyWaitlist): `created_by = я АБО
+  // referrer_id = я`. До с77 тут був лише created_by, і рядок, який персонал
+  // переніс у лист із направлення цього направника, у пошук не потрапляв
+  // (ревʼю с77; на проді такий рядок є). uid — з сесії, алфавіт uuid безпечний для .or().
+  if (scope.ownReferrerOnly) q = q.or(`created_by.eq.${scope.userId},referrer_id.eq.${scope.userId}`);
+  if (f.waitlistStatuses) q = q.in("status", f.waitlistStatuses);
+  if (f.priorities) q = q.in("priority_level", f.priorities);
+  /* Направник (с77). До цього фільтр `referrerIds` лист очікування ІГНОРУВАВ —
+     у персоналу два джерела, і фільтр мовчки брехав би в одному з них. */
+  if (f.referrerIds) q = q.in("referrer_id", f.referrerIds);
+  if (f.noReferrer) q = q.is("referrer_id", null);
+  if (cursor && cursor.s === "waitlist") {
+    const { c, id } = cursor;
+    const op = asc ? "gt" : "lt";
+    q = q.or(`created_at.${op}."${c}",and(created_at.eq."${c}",id.${op}.${id})`);
+  }
+  return q
+    .order("created_at", { ascending: asc })
+    .order("id", { ascending: asc })
+    .limit(batch)
+    .abortSignal(AbortSignal.timeout(DB_TIMEOUT_MS));
+}
+
+/* ---------- Сторінка результатів ---------- */
+
+export type PageOpts = {
+  /** Скільки збігів віддати. */
+  limit: number;
+  /** Стеля переглянутих рядків на виклик. */
+  maxScan: number;
+  /** Рядків за один запит до БД. */
+  batch: number;
+  /** Абсолютний дедлайн (Date.now()), після якого скан зупиняється з курсором. */
+  deadline?: number;
+};
+
+export type PageResult =
+  | {
+      ok: true;
+      items: SearchResultItem[];
+      nextCursor: string | null;
+      hasMore: boolean;
+      /** ЧОМУ є «ще»: `match` — знайдено збіг понад ліміт (є точно);
+       *  `scan` — вичерпано стелю скану або дедлайн (збігів далі може й не бути);
+       *  null — вибірку вичерпано. Експорту потрібна саме ця різниця (ревʼю с77). */
+      more: "match" | "scan" | null;
+      /** Хоч раз застосовано деградований keyset (кривий `scheduled_time`): у
+       *  межах дати рядки могли бути ПРОПУЩЕНІ — повноту гарантувати не можна. */
+      degraded: boolean;
+    }
+  | { ok: false; status: number; error: string };
+
+/**
+ * Одна сторінка результатів. Курсор = позиція останнього ПЕРЕГЛЯНУТОГО рядка
+ * (скан обмежений `maxScan`) або останнього ВІДДАНОГО збігу (коли знайдено
+ * limit+1-й) — без дублів і пропусків (с22).
+ */
+export async function runSearchPage(
+  ctx: SearchCtx,
+  f: NormalizedSearchFilters,
+  cursor: SearchCursor | null,
+  opts: PageOpts
+): Promise<PageResult> {
+  const { supabase, admin, scope, tzByClinic, tz0, todayKey, docKeys, docClinics } = ctx;
+  // `rows.length < batch` = «вибірку вичерпано» — це правда, лише поки batch не
+  // більший за db-max-rows PostgREST (1000): інакше обрізана відповідь виглядала б кінцем.
+  const batch = Math.min(opts.batch, PGRST_MAX_ROWS);
+  // Деградований keyset шкодить лише тоді, коли з НЬОГО продовжують скан
+  // (наступний батч/сторінка): тоді в межах дати рядки можуть бути пропущені.
+  let degraded = false;
+  const items: SearchResultItem[] = [];
+  /* Імена направників добираються ПІСЛЯ скану одним запитом на сторінку:
+     id — лише з рядків, що повернула RLS (див. шапку файлу). */
+  const pending: Array<{ item: SearchResultItem; refId: string | null; doctorText: string | null }> = [];
+  // Дедуп в пределах запроса: страхует деградированный keyset (флаг u) от
+  // повторного скана соседей внутри одной даты.
+  const seenIds = new Set<string>();
+  let scanned = 0;
+  let lastKeyset: SearchCursor | null = cursor;
+  let lastAcceptedKeyset: SearchCursor | null = null;
+  let exhausted = false;
+  let overflow = false; // нашли limit+1-е совпадение
+  let outOfTime = false;
+
+  try {
+    while (!exhausted && !overflow && scanned < opts.maxScan) {
+      // Дедлайн — лише ПІСЛЯ хоча б одного батча: тоді `lastKeyset` уже є і
+      // продовження не губиться (без курсора «є ще» нема чим продовжити).
+      if (opts.deadline && scanned > 0 && Date.now() > opts.deadline) { outOfTime = true; break; }
+      if (lastKeyset && lastKeyset.s === "queue" && lastKeyset.u) degraded = true;
+      const { data, error } =
+        f.source === "queue"
+          ? await queueBatch(supabase, scope, f, lastKeyset, batch, docClinics)
+          : await waitlistBatch(supabase, scope, f, lastKeyset, batch);
+      // Ошибка БД — это ОШИБКА, а не «нічого не знайдено» (ТЗ §9).
+      if (error) return { ok: false, status: 400, error: safeDbError("api/search." + f.source, error) };
+      const rows = (data || []) as unknown as (QueueRow[] | WlRow[]);
+      if (!rows.length) { exhausted = true; break; }
+
+      for (const row of rows) {
+        scanned++;
+        lastKeyset =
+          f.source === "queue"
+            ? { s: "queue", o: f.sort, d: (row as QueueRow).scheduled_date || todayKey, ...cursorTimeParts((row as QueueRow).scheduled_time), id: row.id }
+            : { s: "waitlist", o: f.sort, c: (row as WlRow).created_at, id: row.id };
+        // Дедуп ПОСЛЕ обновления keyset: курсор продвигается и по дублю, иначе
+        // батч из одних дублей зациклил бы выборку до упора в maxScan.
+        if (seenIds.has(row.id)) {
+          if (scanned >= opts.maxScan) break;
+          continue;
+        }
+        seenIds.add(row.id);
+
+        // Вейтлист: точное попадание календарного дня В ЗОНЕ КЛИНИКИ записи
+        // (батч выбран с грубыми границами ±1 день — см. waitlistBatch).
+        let wlDay: string | null = null;
+        if (f.source === "waitlist") {
+          wlDay = dayKeyInTz((row as WlRow).created_at, tzByClinic[row.clinic_id] ?? tz0);
+          if (wlDay < f.dateFrom || wlDay > f.dateTo) {
+            if (scanned >= opts.maxScan) break;
+            continue;
+          }
+        }
+
+        const wlMod = f.source === "waitlist" ? (row as WlRow).modality : null;
+        const refOk = f.source === "queue" ? passesReferrerFilter(row as QueueRow, f, docKeys) : true;
+        if (refOk && passesStudyFilters(row as StudyRow, f, wlMod)) {
+          if (items.length >= opts.limit) { overflow = true; break; }
+          const qr = row as QueueRow;
+          const date = f.source === "queue" ? qr.scheduled_date : wlDay;
+          const clinicTz = tzByClinic[row.clinic_id];
+          const item: SearchResultItem = {
+            source: f.source,
+            recordId: row.id,
+            caseId: f.source === "queue" ? qr.case_id : null,
+            clinicId: row.clinic_id,
+            roomId: row.room_id,
+            date,
+            time: f.source === "queue" ? qr.scheduled_time : null,
+            patientName: row.patient_name || "—",
+            patientPhone: scope.showPhone ? row.patient_phone : null,
+            studies: studiesArr(row.studies).map((s) => ({ type: s.type || null, region: s.region || null, contrast: !!s.contrast })),
+            status: row.status,
+            priority: row.priority_level,
+            referrerName: null,
+            isFuture: !!date && date > wallDayKey(clinicTz ?? tz0),
+            href: hrefFor(scope, f.source, { id: row.id, scheduled_date: f.source === "queue" ? qr.scheduled_date : null, status: row.status }),
+          };
+          items.push(item);
+          if (scope.referrerVisible) {
+            pending.push({ item, refId: row.referrer_id, doctorText: f.source === "queue" ? (qr.doctor ?? null) : null });
+          }
+          lastAcceptedKeyset = lastKeyset;
+        }
+        if (scanned >= opts.maxScan) break;
+      }
+      if (rows.length < batch && !overflow) exhausted = true;
+    }
+  } catch (e) {
+    // Таймаут БД / обрыв — тоже ошибка, а не пустой список.
+    const msg = e instanceof Error && e.name === "TimeoutError" ? "Пошук триває занадто довго — звузьте фільтри" : "Помилка пошуку";
+    return { ok: false, status: 504, error: msg };
+  }
+
+  if (pending.length) {
+    const names = await resolveLinkedReferrerNames(
+      admin,
+      pending.filter((p) => p.refId).map((p) => ({ refId: p.refId!, clinicId: p.item.clinicId }))
+    );
+    for (const p of pending) {
+      const account = p.refId ? names.get(`${p.refId.toLowerCase()}|${p.item.clinicId.toLowerCase()}`) : undefined;
+      const text = (p.doctorText || "").trim().replace(/\s+/g, " ");
+      p.item.referrerName = account || text || null;
+    }
+  }
+
+  // Курсор продолжения: после limit+1-го совпадения — с последнего ОТДАННОГО
+  // элемента (следующая страница переоткроет «переполнившее» совпадение);
+  // после упора в maxScan / дедлайн — с последней ПРОСМОТРЕННОЙ строки.
+  const more: "match" | "scan" | null = overflow ? "match" : outOfTime || (!exhausted && scanned >= opts.maxScan) ? "scan" : null;
+  const next = overflow ? lastAcceptedKeyset : lastKeyset;
+  // Курсор null при more="match" можливий лише для ПРОБИ з limit=0 (експорт
+  // питає «чи є ще хоч один збіг?») — продовжувати її не треба.
+  const nextCursor = more && next ? encodeSearchCursor(next) : null;
+  return { ok: true, items, nextCursor, hasMore: more !== null && nextCursor !== null, more, degraded };
+}
+
+export { decodeSearchCursor };
