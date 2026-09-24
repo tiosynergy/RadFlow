@@ -159,7 +159,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 
 /* --- Компактно (максимально щільно; у цьому режимі трохи менший текст) --- */
 html[data-density="compact"] .content { padding: 8px 12px 22px; }
-html[data-density="compact"] .topbar { min-height: 2.875rem; padding: 0 14px; }
+html[data-density="compact"] .topbar { min-height: 2.875rem; padding-left: 14px; padding-right: 14px; } /* Н-12: лише горизонталь, вертикаль 4px — у .topbar */
 html[data-density="compact"] .qrows { gap: 3px; }
 html[data-density="compact"] .qrow,
 html[data-density="compact"] .qhead { padding-top: 6px; padding-bottom: 6px; }
@@ -192,7 +192,7 @@ html[data-density="compact"] .qhead { font-size: 0.75rem; }
 
 /* --- Просторо --- */
 html[data-density="spacious"] .content { padding: 32px 36px 56px; }
-html[data-density="spacious"] .topbar { min-height: 4.5rem; padding: 0 30px; }
+html[data-density="spacious"] .topbar { min-height: 4.5rem; padding-left: 30px; padding-right: 30px; } /* Н-12: див. compact */
 html[data-density="spacious"] .qrows { gap: 12px; }
 html[data-density="spacious"] .qrow,
 html[data-density="spacious"] .qhead { padding-top: 18px; padding-bottom: 18px; }
@@ -360,10 +360,17 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .topbar {
   /* min-height, а не height: при 200% зумі й великому шрифті заголовок і
      кнопки просто не влазять у 60px і вилазять за межі смуги (WCAG 1.4.4). */
-  min-height: 3.75rem; flex-shrink: 0; flex-wrap: wrap; padding-top: 4px; padding-bottom: 4px;
+  min-height: 3.75rem; flex-shrink: 0; flex-wrap: wrap;
   border-bottom: 1px solid var(--border);
   display: flex; align-items: center; gap: 16px;
-  padding: 0 22px; background: rgba(28,28,30,0.8); backdrop-filter: blur(20px);
+  /* Н-12 (с79): вертикальний відступ 4px задано ТУТ і тільки тут — правила
+     щільності (блок «Щільність» вище) міняють лише горизонтальні. До с79 тут
+     стояли окремі padding-top/bottom: 4px, а пізніший у тому ж правилі
+     `padding: 0 22px` їх обнуляв; у compact кнопка «＋ Новий запис» (btn-lg,
+     44px) лягала впритул до верху смуги, і верх її кільця фокуса (outline 2px
+     + відступ 2px) виходив за екран: y = -3.66 (WCAG 2.4.7).
+     Пін — tests/tabletPanel.test.ts. */
+  padding: 4px 22px; background: rgba(28,28,30,0.8); backdrop-filter: blur(20px);
   /* с78: панелі під шапкою тепер позиціоновані (див. .content) і малюються в
      тому ж шарі, що й шапка (backdrop-filter = власний контекст накладання),
      але ПІЗНІШЕ за деревом — тобто поверх неї. Без z-index нижній край кільця
@@ -428,7 +435,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
      на робочій дошці це випадкова втрата незбереженої форми. */
 .content-wrap { flex: 1; display: grid; grid-template-columns: 1fr 320px; overflow: hidden; }
 .content { overflow-y: auto; padding: 20px 22px 40px; position: relative; overscroll-behavior-y: contain; }
-@media (max-width: 1240px) { .content-wrap { grid-template-columns: 1fr; } .rpanel { display: none; } }
+/* ≤1240 px — права панель стає другим рядком: правило стоїть ПІСЛЯ базового .rpanel (Н-11, с79). */
 
 /* board top: calendar/load left rail + stats/cabinets right */
 .board-top { display: grid; grid-template-columns: 264px 1fr; gap: 16px; align-items: start; margin-bottom: 18px; }
@@ -728,6 +735,26 @@ html[data-density="spacious"] .fld { gap: 9px; }
 
 /* ===== Right panel ===== */
 .rpanel { border-left: 1px solid var(--border); overflow-y: auto; padding: 18px 16px 40px; display: flex; flex-direction: column; gap: 16px; background: var(--bg); position: relative; overscroll-behavior-y: contain; } /* с78: див. .content */
+/* Н-11 (с79, рішення власника): на ≤1240 px панель НЕ ховається, а стає другим
+   рядком під списком — календар, завантаженість, обдзвін, переноси і скасовані
+   лишаються на планшеті біля апарата. Список забирає решту висоти
+   (minmax(0, 1fr)); панель — за вмістом, але не вище 40% області
+   (fit-content: списку лишається ≥60%), далі прокручується сама
+   (position і overscroll-behavior — з базового правила, с78). Секції лягають
+   колонками в ширину; min(100%, …) не дає колонці при великому шрифті
+   стати ширшою за панель (1.4.10).
+   ⚠️ Правило мусить стояти ПІСЛЯ базового .rpanel: специфічність та сама. До
+   с79 медіа-правило з `.rpanel { display: none }` стояло ВИЩЕ (біля
+   .content-wrap) і програвало базовому `display: flex` — панель вилазила
+   смугою під списком. Пін — tests/tabletPanel.test.ts. */
+@media (max-width: 1240px) {
+  .content-wrap { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) fit-content(40%); }
+  .rpanel {
+    border-left: 0; border-top: 1px solid var(--border);
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+    align-items: start; align-content: start;
+  }
+}
 .rcard { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 15px; }
 .rcard h3 { font-size: 0.8125rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 13px; display: flex; align-items: center; gap: 8px; }
 .rcard h3 .hic { color: var(--text-muted); font-size: 0.75rem; }
