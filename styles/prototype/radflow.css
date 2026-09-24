@@ -241,11 +241,18 @@ html[data-density="spacious"] .fld { gap: 9px; }
 ::-webkit-scrollbar-thumb:hover { background: #5a5a5e; }
 
 /* ===== App shell ===== */
+/* position: relative — оболонка є containing block для всіх absolute-нащадків.
+   Без нього `.rf-vh` і прихований input у `.rf-check` (position:absolute без
+   позиціонованого предка) якорились до ДОКУМЕНТА: кожен рядок черги з
+   телефоном дописував документу висоту (замір с78: вікно 900 px → документ
+   8970 px), і коли список доходив до кінця, колесо прокручувало всю сторінку
+   в порожнечу. Разом з overflow:hidden документ тепер не вищий за вікно. */
 .app {
   display: grid;
   grid-template-columns: 240px 1fr;
   height: 100%;
   overflow: hidden;
+  position: relative;
 }
 
 .tabular { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
@@ -264,7 +271,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .sb-logo .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--blue-line); box-shadow: 0 0 10px var(--blue-line); }
 .sb-sub { font-size: 0.71875rem; color: var(--text-muted); margin-top: 5px; }
 
-.sb-nav { flex: 1; overflow-y: auto; padding: 6px 12px; }
+.sb-nav { flex: 1; overflow-y: auto; padding: 6px 12px; position: relative; overscroll-behavior-y: contain; } /* с78: див. .content */
 .sb-section { margin-top: 16px; }
 .sb-section:first-child { margin-top: 4px; }
 .sb-label { font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); padding: 6px 10px; }
@@ -357,6 +364,12 @@ html[data-density="spacious"] .fld { gap: 9px; }
   border-bottom: 1px solid var(--border);
   display: flex; align-items: center; gap: 16px;
   padding: 0 22px; background: rgba(28,28,30,0.8); backdrop-filter: blur(20px);
+  /* с78: панелі під шапкою тепер позиціоновані (див. .content) і малюються в
+     тому ж шарі, що й шапка (backdrop-filter = власний контекст накладання),
+     але ПІЗНІШЕ за деревом — тобто поверх неї. Без z-index нижній край кільця
+     фокуса кнопок шапки (outline 2px + відступ 2px виходить за смугу) ховався
+     під непрозорим фоном .rpanel (компактна щільність, «＋ Новий запис»). */
+  position: relative; z-index: 1;
 }
 .tb-title { display: flex; align-items: center; gap: 11px; }
 .tb-title .tic { width: 30px; height: 30px; border-radius: 8px; background: var(--blue-bg); color: var(--blue-text); display: flex; align-items: center; justify-content: center; font-size: 0.875rem; }
@@ -406,8 +419,15 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .btn:disabled:active { transform: none; }
 
 /* content + right panel */
+/* Панелі прокрутки оболонки (.content, .content-full, .rpanel, .sb-nav) — с78:
+   • position: relative — панель сама собі containing block: `.rf-vh` усередині
+     прокручується разом зі своїм рядком і не розпирає ні предка, ні документ;
+   • overscroll-behavior-y: contain — дійшовши до кінця, прокрутка не
+     передається сторінці. Наслідок на сенсорних екранах: свайп униз зверху
+     списку більше не перезавантажує сторінку (pull-to-refresh) — свідомо,
+     на робочій дошці це випадкова втрата незбереженої форми. */
 .content-wrap { flex: 1; display: grid; grid-template-columns: 1fr 320px; overflow: hidden; }
-.content { overflow-y: auto; padding: 20px 22px 40px; }
+.content { overflow-y: auto; padding: 20px 22px 40px; position: relative; overscroll-behavior-y: contain; }
 @media (max-width: 1240px) { .content-wrap { grid-template-columns: 1fr; } .rpanel { display: none; } }
 
 /* board top: calendar/load left rail + stats/cabinets right */
@@ -707,7 +727,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
   background: var(--orange-bg); border: 1px solid rgba(255,159,10,0.35); border-radius: 8px; padding: 6px 10px; margin: 2px 0 0; }
 
 /* ===== Right panel ===== */
-.rpanel { border-left: 1px solid var(--border); overflow-y: auto; padding: 18px 16px 40px; display: flex; flex-direction: column; gap: 16px; background: var(--bg); }
+.rpanel { border-left: 1px solid var(--border); overflow-y: auto; padding: 18px 16px 40px; display: flex; flex-direction: column; gap: 16px; background: var(--bg); position: relative; overscroll-behavior-y: contain; } /* с78: див. .content */
 .rcard { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 15px; }
 .rcard h3 { font-size: 0.8125rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 13px; display: flex; align-items: center; gap: 8px; }
 .rcard h3 .hic { color: var(--text-muted); font-size: 0.75rem; }
@@ -868,7 +888,7 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .bk-doc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
 /* Стильні чекбокси (Контраст / Протипоказання) — у стилі проекту */
 .bk-check-row { display: flex; gap: 8px; flex-wrap: wrap; }
-.rf-check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; font-size: 0.8125rem; color: var(--text); padding: 7px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elevated); transition: border-color .12s, background .12s; height: 34px; }
+.rf-check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; font-size: 0.8125rem; color: var(--text); padding: 7px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elevated); transition: border-color .12s, background .12s; height: 34px; position: relative; } /* с78: прихований input нижче якориться до своєї мітки, а не до документа */
 .rf-check:hover { border-color: var(--border-strong); }
 .rf-check input { position: absolute; opacity: 0; pointer-events: none; }
 .rf-check .rf-box { width: 17px; height: 17px; border-radius: 5px; border: 1.5px solid var(--border-strong); display: inline-flex; align-items: center; justify-content: center; font-size: 0.6875rem; font-weight: 700; color: #fff; flex-shrink: 0; transition: all .12s; }
@@ -2181,7 +2201,16 @@ select.inp { cursor: pointer; }
 
 /* Приховано візуально, доступно скрінрідеру. Саме clip-path + 1px, а не
    display:none і не visibility:hidden — ті прибирають вузол з дерева
-   доступності разом із текстом. */
+   доступності разом із текстом.
+   ⚠️ position:absolute якориться до найближчого ПОЗИЦІОНОВАНОГО предка. Панель
+   прокрутки, куди може потрапити .rf-vh, має бути position: relative
+   (оболонка: .app, .content, .content-full, .rpanel, .sb-nav — с78), інакше
+   span виходить з панелі на свою статичну позицію і розпирає документ: на
+   /queue сторінка «їхала» вниз у порожнечу, коли список доходив до кінця.
+   ⚠️ Те саме з хостом, що обрізає вміст (overflow:hidden, line-clamp,
+   ellipsis): якщо .rf-vh може опинитись в обрізаній частині, найближча
+   обгортка має бути позиціонованою (як .rf-dot, .rf-check) — інакше span
+   оминає обрізання і розпирає панель прокрутки. */
 .rf-vh {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
@@ -2213,6 +2242,12 @@ select.inp { cursor: pointer; }
      Поза ґридом властивість ІГНОРУЄТЬСЯ (не діє ні на inline, ні на flex-item),
      тож правило безпечне для решти місць і страхує наступну дошку. */
   justify-self: start;
+  /* с78: `.rf-vh` усередині (розшифровка для скрінрідера) якориться до САМОЇ
+     крапки. Без цього він вискакував з хоста, що обрізає вміст: у рядку черги
+     крапка стоїть у `.q-proc .pp` з line-clamp:4 + overflow:hidden, і на
+     обрізаному 5-му рядку підпис розпирав панель — у кінці списку
+     зʼявлялась порожня прокрутка (ревʼю с78: 896 → 914 px). */
+  position: relative;
 }
 /* Крапка без числа: сам символ ● не малюємо — його роль виконує форма
    елемента, інакше глиф вилазить за межі 8px кола. */
