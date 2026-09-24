@@ -178,6 +178,25 @@ describe("у заголовку немає значень полів паціє�
     );
   });
 
+  it("с79 (Н-10): CSV дашборда CEO — канал названо, число записів центру лишається", () => {
+    // Рівно той details, що пише роут /api/ceo/export.
+    expect(
+      eventTitle({ eventType: "patient_data.exported", actorRole: "ceo", details: { source: "ceo_dashboard", rows: 3, format: "csv" } })
+    ).toBe("Керівник вивантажив дані пацієнтів з дашборда CEO (записів: 3)");
+    // Адмін бачить дашборд свого центру — і його вивантаження теж підписане.
+    expect(
+      eventTitle({ eventType: "patient_data.exported", actorRole: "admin", details: { source: "ceo_dashboard", rows: 1, format: "csv" } })
+    ).toBe("Адміністратор вивантажив дані пацієнтів з дашборда CEO (записів: 1)");
+    // Пошук (queue/waitlist) — без назви каналу, як і з с77.
+    expect(
+      eventTitle({ eventType: "patient_data.exported", actorRole: "ceo", details: { source: "waitlist", rows: 2, format: "xlsx" } })
+    ).toBe("Керівник вивантажив дані пацієнтів (записів: 2)");
+    // Невідоме джерело не вигадує назви каналу.
+    expect(
+      eventTitle({ eventType: "patient_data.exported", actorRole: "ceo", details: { source: "щось-нове", rows: 2 } })
+    ).toBe("Керівник вивантажив дані пацієнтів (записів: 2)");
+  });
+
   it("changedFieldsLabel не показує значень", () => {
     expect(changedFieldsLabel(["patient_name"])).toBe("ПІБ");
     expect(changedFieldsLabel([])).toBe("");

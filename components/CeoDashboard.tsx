@@ -8,19 +8,36 @@ import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode, type
 import { createClient } from "@/lib/supabase/client";
 import { useRealtimeRefetch } from "@/lib/useRealtimeRefetch";
 import { wallToday0 } from "@/lib/incidents";
-import { modalityLabel, modalityCode, fmtUah } from "@/lib/studies";
+import { modalityLabel, fmtUah } from "@/lib/studies";
 import { quickSearchMatch } from "@/lib/quickSearch";
 import { useModalA11y } from "@/lib/useModalA11y";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
-import { visibleRooms } from "@/lib/rooms";
+import { visibleRooms, pluralZapys } from "@/lib/rooms";
+/* с79 (Н-10): період, дохід і назва процедури — спільні з роутом CSV
+   (app/api/ceo/export): файл і drill-down рахуються ТИМ САМИМ кодом, що й до
+   переїзду CSV на сервер, а зона періоду — тим самим ceoScopeTz, що в роуті. */
+import {
+  addDays,
+  buildCsvCatalog,
+  ceoExportFileName,
+  dateKey,
+  entryRevenue,
+  periodRange,
+  procName,
+  CEO_ENTRY_COLS,
+  CEO_EXPORT_MAX_ROWS,
+  CEO_SERVICE_COLS,
+  type CatalogServiceRow,
+  type CeoPeriod,
+  type RevenueEntry,
+} from "@/lib/ceoExport";
+import { ceoScopeTz } from "@/lib/ceoScope";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
 type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
-type StudyLike = { price?: number; region?: string; contrast?: boolean; type?: string };
-type RevenueEntry = { studies?: unknown; note?: string | null; clinic_id?: string | null; room_id?: string | null };
 
 /* Агрегати з БД (міграція 0071). Раніше дашборд тягнув У БРАУЗЕР усі рядки за
    період по всіх центрах — разом із ПІБ і studies (до ~120k рядків у мережі з
@@ -38,74 +55,12 @@ const MON_GEN = ["січня", "лютого", "березня", "квітня",
    глобальний і може дивитися центр в іншій зоні, де доба вже інша (аудит M-4).
    Для агрегату «Всі центри» єдиної зони не існує — там зона браузера (див. scopeTz). */
 function today0(tz?: string) { return wallToday0(tz); }
-function dateKey(d: Date) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
-function addDays(d: Date, n: number) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
 
-/* Каталог scoped-центрів для CSV: clinic_id → «modalityCode|region» → ціна/контраст.
-   Дзеркалить catalog_est_sum з RPC 0114/0121 (чистий каталог): дохід рахуємо на
-   сервері (агрегат), а для рядкового CSV — тут, тією ж логікою, БЕЗ static-фолбэку.
-   0121 (room-owned): видимі запису послуги = базові (room_id NULL) + власні кабінету
-   запису; власна кабінету має ПРІОРИТЕТ над базовою при дублі імені — дзеркало
-   `order by (sv.room_id is not null) desc, sort_order, id` у ceo_kpi_studies.
-   (Відоме обмеження, як і в RPC: override-и 0108 тут свідомо не враховуються.) */
-type CsvSvc = { price: number; contrastPrice: number | null };
-type CsvCatalog = {
-  base: Map<string, Map<string, CsvSvc>>;                    // clinic → key → послуга
-  room: Map<string, Map<string, Map<string, CsvSvc>>>;       // clinic → room → key → послуга
-};
-function buildCsvCatalog(rows: { clinic_id: string; modality: string; name: string; price: number; contrast_price: number | null; room_id: string | null }[]): CsvCatalog {
-  const cat: CsvCatalog = { base: new Map(), room: new Map() };
-  for (const r of rows) {                       // лише активні, впорядковані sort_order, id
-    const key = r.modality + "|" + r.name;
-    if ((r.room_id ?? null) === null) {
-      let inner = cat.base.get(r.clinic_id);
-      if (!inner) { inner = new Map(); cat.base.set(r.clinic_id, inner); }
-      if (!inner.has(key)) inner.set(key, { price: r.price, contrastPrice: r.contrast_price });  // перша = пріоритетна
-    } else {
-      let byRoom = cat.room.get(r.clinic_id);
-      if (!byRoom) { byRoom = new Map(); cat.room.set(r.clinic_id, byRoom); }
-      let inner = byRoom.get(r.room_id as string);
-      if (!inner) { inner = new Map(); byRoom.set(r.room_id as string, inner); }
-      if (!inner.has(key)) inner.set(key, { price: r.price, contrastPrice: r.contrast_price });
-    }
-  }
-  return cat;
-}
+/* dateKey / addDays / periodRange і оцінка доходу (buildCsvCatalog, entryRevenue,
+   procName) переїхали в lib/ceoExport.ts (с79, Н-10): ними ж рахує CSV роут
+   /api/ceo/export, і друга копія розійшлась би з першою. */
 
-/* Дохід запису: збережена ціна (снапшот) виграє; інакше — ціна КАТАЛОГУ центру
-   (чистий каталог: лише коли послуга видима запису і price > 0), інакше 0.
-   0121: спершу власна послуга кабінету запису, потім базова (пріоритет RPC). */
-function entryRevenue(e: RevenueEntry, cat: CsvCatalog): number {
-  const s: StudyLike[] = Array.isArray(e.studies) ? (e.studies as StudyLike[]) : [];
-  if (!s.length) return 0;
-  const roomInner = e.clinic_id && e.room_id ? cat.room.get(e.clinic_id)?.get(e.room_id) : undefined;
-  const baseInner = e.clinic_id ? cat.base.get(e.clinic_id) : undefined;
-  return s.reduce((sum, x) => {
-    if (typeof x.price === "number") return sum + x.price;
-    const key = modalityCode(x.type) + "|" + (x.region || "");
-    const svc = roomInner?.get(key) ?? baseInner?.get(key);
-    /* Ціна каталогу — БЕЗ доплати за контраст: контрастна позиція прайсу має
-       власну ціну (4900 проти 2200), доплата рахувала б контраст двічі. Записи
-       зі збереженим снапшотом ціни (гілка вище) історію не змінюють. */
-    if (svc && svc.price > 0) return sum + svc.price;
-    return sum;
-  }, 0);
-}
-function procName(e: RevenueEntry): string {
-  const s: StudyLike[] = Array.isArray(e.studies) ? (e.studies as StudyLike[]) : [];
-  if (s.length) return (s[0].type || "") + (s[0].region ? " · " + s[0].region : "");
-  return e.note || "—";
-}
-
-function periodRange(period: string, tz?: string): [Date, Date] {
-  const t = today0(tz);
-  if (period === "today") return [t, t];
-  if (period === "week") { const mon = addDays(t, -((t.getDay() + 6) % 7)); return [mon, addDays(mon, 6)]; }
-  const first = new Date(t.getFullYear(), t.getMonth(), 1);
-  const last = new Date(t.getFullYear(), t.getMonth() + 1, 0);
-  return [first, last];
-}
 function workdaysBetween(a: Date, b: Date): number {
   let n = 0; let d = new Date(a);
   while (d <= b) { if (d.getDay() !== 0) n++; d = addDays(d, 1); }
@@ -175,7 +130,7 @@ interface CeoDashboardProps {
 }
 
 export default function CeoDashboard({ clinics, clinicName, adminName, adminRole, roleKey }: CeoDashboardProps) {
-  const [period, setPeriod] = useState("today");
+  const [period, setPeriod] = useState<CeoPeriod>("today");
   // scope: "all" — агрегат по всіх доступних центрах, або конкретний clinic_id.
   const [scope, setScope] = useState<string>(clinics.length === 1 ? clinics[0].id : "all");
   const [rooms, setRooms] = useState<RoomOpt[]>([]);
@@ -235,11 +190,9 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
      «Всі центри» — ПЕРШОГО доступного. Спільної доби в кількох зонах не існує,
      тож вибір довільний — але він має бути ДЕТЕРМІНОВАНИМ: якщо лишити undefined,
      wallToday0() впаде на singleton setClinicTz(), а там може лежати зона центру
-     з попереднього екрана (клієнтська навігація /queue → /ceo). */
-  const scopeTz = useMemo(() => {
-    const c = scope !== "all" ? clinics.find((x) => x.id === scope) : clinics[0];
-    return c?.timezone || undefined;
-  }, [scope, clinics]);
+     з попереднього екрана (клієнтська навігація /queue → /ceo).
+     с79: правило — lib/ceoScope.ts, ним же роут CSV рахує період файлу. */
+  const scopeTz = useMemo(() => ceoScopeTz(clinics, scope), [scope, clinics]);
 
   const clinicIds = useMemo(
     () => (scope === "all" ? clinics.map((c) => c.id) : [scope]),
@@ -446,59 +399,44 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
 
   const [exporting, setExporting] = useState(false);
 
-  /* CSV — ЄДИНЕ місце, де CEO потрібні рядки з ПІБ. Тому вантажимо їх ЛИШЕ тут,
-     за явним кліком, а не на кожен рефетч дашборда (раніше ПІБ + studies їхали
-     в браузер постійно, разом із realtime-перезавантаженнями). */
+  /* CSV — ЄДИНЕ місце, де CEO потрібні рядки з ПІБ, і вантажаться вони лише за
+     явним кліком. З с79 (Н-10) файл збирає СЕРВЕР — POST /api/ceo/export: він сам
+     обчислює область із сесії (звідси йдуть лише період і обраний зріз, жодних
+     id центрів понад нього), читає рядки під RLS, екранує формули (= + - @ TAB
+     CR LF) і пише подію `patient_data.exported` у журнал кожного центру з файлу.
+     До с79 до 5000 рядків із ПІБ читались тут напряму, і журнал про вивантаження
+     не знав нічого. */
   async function exportCsv() {
     if (exporting) return;
     setExporting(true);
     try {
-      const supabase = createClient();
-      const [f, t] = periodRange(period, scopeTz);   // той самий період, що й у KPI
-      const { data, error } = await supabase
-        .from("queue_entries")
-        .select("status, studies, room_id, scheduled_date, patient_name, note, clinic_id")
-        .in("clinic_id", clinicIds)
-        .neq("status", "cancelled")
-        .gte("scheduled_date", dateKey(f))
-        .lte("scheduled_date", dateKey(t))
-        .order("scheduled_date", { ascending: true })
-        .limit(5000);
-      if (error) { notify("Не вдалося сформувати експорт — спробуйте ще раз", "error"); return; }
-
-      // Каталог scoped-центрів для оцінки позицій без снапшот-ціни (як catalog_est_sum
-      // у RPC 0114). Впорядковано active desc → перша послуга name=region пріоритетна.
-      const { data: svc } = await supabase
-        .from("services")
-        .select("clinic_id, modality, name, price, contrast_price, room_id") // 0121: room_id — пріоритет власної послуги кабінету запису
-        .in("clinic_id", clinicIds)
-        .eq("active", true)                              // лише активний каталог (як RPC 0114 / buildCatalog)
-        .order("sort_order").order("id");
-      const csvCatalog = buildCsvCatalog((svc || []) as { clinic_id: string; modality: string; name: string; price: number; contrast_price: number | null; room_id: string | null }[]);
-
-      const head = ["Дата", "Пацієнт", "Процедура", "Кабінет", "Статус", "Дохід"];
-      const rows = (data || []).map((e) => [
-        e.scheduled_date,
-        e.patient_name,
-        procName(e as RevenueEntry),
-        (e.room_id ? roomsById[e.room_id] : null)?.name || "",
-        e.status,
-        entryRevenue(e as RevenueEntry, csvCatalog),
-      ]);
-      // Захист від CSV-інʼєкції: значення, що починаються з = + - @, екрануємо апострофом.
-      const safe = (c: unknown) => { let v = String(c == null ? "" : c); if (/^[=+\-@]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; };
-      const csv = [head, ...rows].map((r) => r.map(safe).join(";")).join("\n");
-      const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
-      const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "ceo-" + period + ".csv"; a.click(); URL.revokeObjectURL(url);
-      notify("Експортовано у CSV" + ((data?.length ?? 0) >= 5000 ? " (перші 5000 записів)" : ""), "success");
+      const res = await fetch("/api/ceo/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ period, scope }),
+        cache: "no-store",
+      });
+      // 429 — гальмо на 10 файлів за 10 хв (як у експорту пошуку): «спробуйте ще раз» тут збрехало б.
+      if (res.status === 429) { notify("Забагато вивантажень за короткий час — спробуйте за кілька хвилин", "error"); return; }
+      if (!res.ok) { notify("Не вдалося сформувати експорт — спробуйте ще раз", "error"); return; }
+      const blob = await res.blob();
+      // «Обрізано» каже сервер: він читає на рядок більше за стелю, тож рівно 5000 записів — не «перші 5000».
+      const truncated = res.headers.get("X-Export-Truncated") === "1";
+      const shown = Number(res.headers.get("X-Export-Rows")) || CEO_EXPORT_MAX_ROWS;
+      const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = ceoExportFileName(period); a.click(); URL.revokeObjectURL(url);
+      notify("Експортовано у CSV" + (truncated ? ` (перші ${shown} ${pluralZapys(shown)})` : ""), "success");
+    } catch {
+      // Мережа моргнула посеред запиту чи завантаження — той самий шлях, що й відмова сервера.
+      notify("Не вдалося сформувати експорт — спробуйте ще раз", "error");
     } finally {
       setExporting(false);
     }
   }
 
-  /* Drill-down: клік по KPI → список записів за той самий період (переиспользує
-     запит exportCsv + ту саму оцінку доходу). Клієнтський — без нового RPC/міграції.
-     RLS ceo_access вже пускає CEO до цих записів (як і CSV-експорт). */
+  /* Drill-down: клік по KPI → список записів за той самий період — ті самі
+     колонки й та сама оцінка доходу, що й у CSV (lib/ceoExport.ts). Клієнтський —
+     без нового RPC/міграції: RLS ceo_access вже пускає CEO до цих записів.
+     ⚠️ Це ПЕРЕГЛЯД, а не вивантаження: події в журнал тут немає (як і на дошках). */
   async function openDrill(statuses: string[] | null, label: string) {
     setDrill({ statuses, label });
     setDrillRows(null);
@@ -508,7 +446,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       const [f, t] = periodRange(period, scopeTz);
       let q = supabase
         .from("queue_entries")
-        .select("status, studies, room_id, scheduled_date, patient_name, note, clinic_id")
+        .select(CEO_ENTRY_COLS)
         .in("clinic_id", clinicIds)
         .gte("scheduled_date", dateKey(f))
         .lte("scheduled_date", dateKey(t));
@@ -517,9 +455,9 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       if (error) { notify("Не вдалося завантажити список — спробуйте ще раз", "error"); return; }
       const { data: svc } = await supabase
         .from("services")
-        .select("clinic_id, modality, name, price, contrast_price, room_id") // 0121: room_id — пріоритет власної послуги кабінету запису
+        .select(CEO_SERVICE_COLS) // 0121: room_id — пріоритет власної послуги кабінету запису
         .in("clinic_id", clinicIds).eq("active", true).order("sort_order").order("id");
-      const cat = buildCsvCatalog((svc || []) as { clinic_id: string; modality: string; name: string; price: number; contrast_price: number | null; room_id: string | null }[]);
+      const cat = buildCsvCatalog((svc || []) as CatalogServiceRow[]);
       setDrillRows(((data || []) as Array<RevenueEntry & { scheduled_date: string; patient_name: string | null; room_id: string | null; status: string }>).map((e) => ({
         date: e.scheduled_date,
         name: e.patient_name || "—",
@@ -533,7 +471,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
     }
   }
 
-  const PERIODS = [{ k: "today", l: "Сьогодні" }, { k: "week", l: "Цей тиждень" }, { k: "month", l: "Цей місяць" }];
+  const PERIODS: { k: CeoPeriod; l: string }[] = [{ k: "today", l: "Сьогодні" }, { k: "week", l: "Цей тиждень" }, { k: "month", l: "Цей місяць" }];
   const periodLabel = period === "today" ? fmtShort(from) : fmtShort(from) + " – " + fmtShort(to);
 
   return (
