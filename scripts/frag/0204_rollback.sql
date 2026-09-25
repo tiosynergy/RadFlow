@@ -25,7 +25,7 @@ declare
   --           (0184): мітли позначок бережуть досяжність крапок, а не доступ
   --           до ПДн. Її вихолощення ловить №14 (`unreachable:`), а не №19.
 $p$,
-    $p$      ('change_marker_recipients(p_clinic uuid, p_actor uuid, p_scope_kind text, p_room uuid, p_referrer uuid, p_severity text, p_room_relevant boolean)','c479f91a3fb499cd4cabbb325d4c6697','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl=postgres=X/postgres,service_role=X/postgres'),
+    $p$      ('change_marker_recipients(p_clinic uuid, p_actor uuid, p_scope_kind text, p_room uuid, p_referrer uuid, p_severity text, p_room_relevant boolean)','48ecffeeaba0b8e899fa34f37fdf2a2b','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl=postgres=X/postgres,service_role=X/postgres'),
 $p$,
     $p$  --           перевірці невидима — гілки за властивістю 0203 не додає.
   --
@@ -101,41 +101,51 @@ $p$,
     $p$      ('patient_cases','cases_select_referrer','a406bc42d13d'),
 $p$,
     $p$  --     ⚠️ 0204 (с80, Н-14, рішення власника 25.09) ДОДАЛА ГІЛКУ `unreachable:`:
-  --        позначка ЗАПИСУ (`queue_entry`, `waitlist_entry`, `patient_case`),
-  --        чий отримувач не персонал центру позначки (`profiles.clinic_id`
-  --        інший) і не має АКТИВНОГО гранту до нього. З 0204 політики читання
-  --        пускають за `created_by` / `referrer_id` лише з активним грантом,
-  --        отже таку позначку отримувач не погасить НІКОЛИ (ack — лише з
-  --        відрендереного рядка, ретенція чистить тільки прочитані). Це пін
+  --        НЕПРОЧИТАНА позначка ЗАПИСУ (`queue_entry`, `waitlist_entry`,
+  --        `patient_case`), чий отримувач не персонал центру позначки
+  --        (`profiles.clinic_id` інший) і не має АКТИВНОГО гранту до нього. З
+  --        0204 політики читання пускають за `created_by` / `referrer_id` лише
+  --        з активним грантом, отже така позначка — крапка про запис, якого
+  --        отримувач не бачить: `queue_entry` гаситься лише з відрендереного
+  --        рядка (тобто ніколи), `patient_case` ack поки не має, а
+  --        `waitlist_entry` направника гасить поверхня «Лист очікування», але
+  --        до того крапка світить про рядок, якого в списку немає. Прочитані
+  --        НЕ рахуємо свідомо: крапки вони не запалюють, а ретенція прибирає
+  --        їх за 180 днів — інакше переведення персоналу з повністю
+  --        прочитаними позначками червонило б ніч до пів року. Це пін
   --        ВЛАСТИВОСТІ, а не функцій: він червоніє і на вихолощеній мітлі
   --        `tg_ref_entry_markers_prune_on_access()` (її тіла №19 не пінить),
   --        і на відкаті умови гранту в `change_marker_recipients` (гілка
   --        `entry`). Формат — `unreachable:<тип>:<кількість>`, без uuid.
   --        ⚠️ МЕЖІ, названі вголос:
-  --         • гонка «емісія позначки ‖ відкликання гранту» (READ COMMITTED:
-  --           емітер бачить грант ще активним, мітла — позначку ще не
-  --           закоміченою) може лишити позначку. Тоді червоне тут — і ручна
-  --           зачистка ЛИШЕ за явним списком id зі свіжого знімка (правило
-  --           AGENTS.md про видалення даних проду);
+  --         • гонка «емісія позначки ‖ відкликання гранту» (READ COMMITTED):
+  --           вціліти може лише НОВИЙ рядок позначки, вставлений емітером, що
+  --           ще бачив грант активним (мітла його не бачить); UPSERT наявної
+  --           позначки чекає на замок рядка і потрапляє під мітлу. Тоді
+  --           червоне тут — і ручна зачистка ЛИШЕ за явним списком id зі
+  --           свіжого знімка (правило AGENTS.md про видалення даних проду);
   --         • отримувач без профілю (видалений акаунт: `delete_clinic_member`
   --           знімає радіолога разом із профілем, а позначки лишаються) сюди НЕ
   --           потрапляє — join із `profiles`. Це окремий клас «позначка
   --           невідомому отримувачу» (0134), і червоніти на штатному
   --           видаленні радіолога ця гілка не мусить;
   --         • персонал, якого службова роль перевела в інший центр, лишає
-  --           позначки старого центру недосяжними — гілка їх НАЗВЕ, мітла їх
-  --           не знімає (її тригер — на `referral_access`, не на `profiles`).
+  --           НЕПРОЧИТАНІ позначки старого центру недосяжними — гілка їх
+  --           НАЗВЕ, мітла не зніме (її тригер — на `referral_access`, не на
+  --           `profiles`): переводити разом із зачисткою за явним списком id
+  --           (процедура — AGENTS.md).
   --     ⚠️ referral_access НЕ рахуємо свідомо: його DELETE-гілка емітить
 $p$,
     $p$         and not exists (select 1 from public.clinics x where x.id = m.entity_id)
       having count(*) > 0
       union all
-      -- 0204 (Н-14): позначка ЗАПИСУ, якої отримувач не погасить ніколи — він
-      -- не персонал центру позначки і не має АКТИВНОГО гранту до нього
+      -- 0204 (Н-14): НЕПРОЧИТАНА позначка ЗАПИСУ, якого отримувач не бачить —
+      -- він не персонал центру позначки і не має АКТИВНОГО гранту до нього
       select 'unreachable:' || m.entity_type || ':' || count(*)
         from public.user_change_markers m
         join public.profiles p on p.id = m.recipient_id
        where m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')
+         and m.seen_at is null
          and p.clinic_id is distinct from m.clinic_id
          and not exists (select 1 from public.referral_access ra
                           where ra.referrer_id = m.recipient_id
@@ -179,7 +189,7 @@ $p$
   ];
   v_lbl  constant text[] := array[
     $p$назад: проза №19: абзац 0204$p$,
-    $p$назад: №19: change_marker_recipients 259d744f8db5189360b6b3ef2f81b3cc → c479f91a3fb499cd4cabbb325d4c6697$p$,
+    $p$назад: №19: change_marker_recipients 259d744f8db5189360b6b3ef2f81b3cc → 48ecffeeaba0b8e899fa34f37fdf2a2b$p$,
     $p$назад: проза №17: абзац 0204$p$,
     $p$назад: проза №17: пункт про порядок$p$,
     $p$назад: №17: гілка order:$p$,
@@ -215,18 +225,18 @@ begin
     raise exception '0204-відкат: invariants_check не знайдено';
   end if;
   v_src := replace(v_body, chr(13), '');
-  if md5(v_src) is distinct from '843d4a74b4b6b88127989ac017f0281a' or length(v_src) <> 177302 then
+  if md5(v_src) is distinct from '012ff7043a1c030b966ea9eb5e4f4840' or length(v_src) <> 177994 then
     raise exception '0204-відкат: у проді не 0204 (% / %) — правка наосліп заборонена', md5(v_src), length(v_src);
   end if;
   v_head := substr(v_def, 1, position('AS $function$' in v_def) + 12);
   if obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc')
-     is distinct from 'guard_body_md5=843d4a74b4b6b88127989ac017f0281a;len=177302' then
+     is distinct from 'guard_body_md5=012ff7043a1c030b966ea9eb5e4f4840;len=177994' then
     raise exception '0204-відкат: самопін % не збігається з тілом 0204 — спершу розібратись',
       coalesce(obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc'), '(NULL)');
   end if;
   -- ── change_marker_recipients до відкату: рецепт №19 (`cur`, вирізаний із тіла) ──
   with expd(fn, body, attrs) as (values
-      ('change_marker_recipients(p_clinic uuid, p_actor uuid, p_scope_kind text, p_room uuid, p_referrer uuid, p_severity text, p_room_relevant boolean)','c479f91a3fb499cd4cabbb325d4c6697','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl=postgres=X/postgres,service_role=X/postgres')
+      ('change_marker_recipients(p_clinic uuid, p_actor uuid, p_scope_kind text, p_room uuid, p_referrer uuid, p_severity text, p_room_relevant boolean)','48ecffeeaba0b8e899fa34f37fdf2a2b','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl=postgres=X/postgres,service_role=X/postgres')
     ), cur as (
       select p.proname::text || '(' || pg_get_function_identity_arguments(p.oid) || ')' as fn,
              md5(btrim(regexp_replace(
@@ -270,9 +280,9 @@ begin
        and pg_get_userbyid(p.proowner) = 'postgres'
        and p.proconfig = array['search_path=public, pg_temp']
        and p.prorettype = 'trigger'::regtype
-       and md5(replace(p.prosrc, chr(13), '')) = '25b92931235f5c0d846e082509c105ea'
+       and md5(replace(p.prosrc, chr(13), '')) = 'a7d7f8876e46fc9a3b7a0efcf378bbfa'
   ) then
-    raise exception '0204-відкат: tg_ref_entry_markers_prune_on_access() до відкату не та (атрибути або сирий md5 тіла 25b92931235f5c0d846e082509c105ea)';
+    raise exception '0204-відкат: tg_ref_entry_markers_prune_on_access() до відкату не та (атрибути або сирий md5 тіла a7d7f8876e46fc9a3b7a0efcf378bbfa)';
   end if;
   -- ── №16 до відкату: запит вирізано ДОСЛІВНО з тіла ──
   v_tmp := null;

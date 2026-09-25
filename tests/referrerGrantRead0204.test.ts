@@ -7,7 +7,8 @@
  *     `entry`) шле позначку ЗАПИСУ направнику лише з активним грантом; мітла
  *     `tg_ref_entry_markers_prune_on_access()` / `trg_zzz_ref_entry_markers_prune`
  *     знімає його позначки записів, щойно грант перестає бути активним; №14 —
- *     гілка `unreachable:` (позначка, якої отримувач не погасить ніколи);
+ *     гілка `unreachable:` (НЕПРОЧИТАНА позначка запису, якого отримувач не
+ *     бачить; раунд ревʼю 2 — лише непрочитані);
  *   • Н-17 — №17 пінить ПОРЯДОК: гілка `order:` (гард ключів 0203 — останній
  *     BEFORE-тригер рядка на трьох таблицях).
  *
@@ -67,8 +68,8 @@ const byC = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const PRE_MD5 = "8c8e6403db7653949e03d026320c6099";
 const PRE_LEN = 170446;
 const PRE_PIN = `guard_body_md5=${PRE_MD5};len=${PRE_LEN}`;
-const NEW_MD5 = "843d4a74b4b6b88127989ac017f0281a";
-const NEW_LEN = 177302;
+const NEW_MD5 = "012ff7043a1c030b966ea9eb5e4f4840";
+const NEW_LEN = 177994;
 const NEW_PIN = `guard_body_md5=${NEW_MD5};len=${NEW_LEN}`;
 const LEDGER_NAME = MIG_FILE;
 const SENTINEL_CALL = "  v_res := public.invariants_check(false);";
@@ -117,8 +118,8 @@ const CMR_SIG19 = "change_marker_recipients(p_clinic uuid, p_actor uuid, p_scope
 const CMR_ATTRS = `secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl=${ACL}`;
 const CMR_OLD_RAW = "cef6f91b5dd1dcdc35e93fd732cf7162";
 const CMR_OLD_REC19 = "259d744f8db5189360b6b3ef2f81b3cc";
-const CMR_NEW_RAW = "a9e7002f2ead3f05b130255129e6cc50";
-const CMR_NEW_REC19 = "c479f91a3fb499cd4cabbb325d4c6697";
+const CMR_NEW_RAW = "c7a602edb861ecceb598e4d65534345d";
+const CMR_NEW_REC19 = "48ecffeeaba0b8e899fa34f37fdf2a2b";
 const CMR_GRANT_LINES = [
   "       and (p_scope_kind = 'access'",
   "            or exists (select 1 from public.referral_access ra",
@@ -151,7 +152,7 @@ const CMR_ACL_DDL = `revoke all on function ${CMR_REGPROC} from public, anon, au
 // ── Мітла ────────────────────────────────────────────────────────────────────
 const PRUNE = "tg_ref_entry_markers_prune_on_access";
 const PRUNE_TG = "trg_zzz_ref_entry_markers_prune";
-const PRUNE_RAW = "25b92931235f5c0d846e082509c105ea";
+const PRUNE_RAW = "a7d7f8876e46fc9a3b7a0efcf378bbfa";
 const PRUNE_STMT = stmtOf(MIG, `create or replace function public.${PRUNE}()`, "$prune$", MIG_FILE);
 const PRUNE_BODY = bodyBetween(PRUNE_STMT, "$prune$");
 const PRUNE_CODE = codeOf(PRUNE_BODY);
@@ -180,6 +181,7 @@ const B14 = [
   "        from public.user_change_markers m",
   "        join public.profiles p on p.id = m.recipient_id",
   "       where m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')",
+  "         and m.seen_at is null",
   "         and p.clinic_id is distinct from m.clinic_id",
   "         and not exists (select 1 from public.referral_access ra",
   "                          where ra.referrer_id = m.recipient_id",
@@ -462,7 +464,9 @@ describe("0204 — передрук сторожа", () => {
     const back = norm(pre).replace(/\bum\./g, "m.").replace(/\bpf\./g, "p.").replace(/\bg\./g, "ra.")
       .replace("user_change_markers um", "user_change_markers m").replace("profiles pf", "profiles p")
       .replace("referral_access g ", "referral_access ra ");
-    expect(back).toContain(norm(B14.slice(2, 10).join("\n")));
+    expect(back).toContain(norm(B14.slice(2, 11).join("\n")));
+    /* лише НЕПРОЧИТАНІ — і в гілці, і в предстані файлу (ревʼю 2, L-1) */
+    expect(back).toContain("and m.seen_at is null");
     expect(pre).toContain("if v_unreach <> '{}'::jsonb then");
   });
 
@@ -623,7 +627,7 @@ describe("0204 — фрагменти", () => {
       expect(txt).toContain("execute format('comment on function public.invariants_check(boolean) is %L', v_pin_db);");
       expect(txt).toContain(`'${NEW_PIN}'`);
       /* недосяжні позначки вже зараз — стоп (сторож назвав би їх червоними) */
-      expect(txt).toContain("уже є недосяжні позначки записів % — до накату ручна зачистка за явним списком id");
+      expect(txt).toContain("уже є недосяжні НЕПРОЧИТАНІ позначки записів % — до накату ручна зачистка за явним списком id");
     }
   });
 
@@ -661,14 +665,16 @@ describe("0204 — фрагменти", () => {
     expect(FALSIFY).toContain("where e.value->>'check' not in ('gcal_sync_overdue', 'ledger_md5')");
   });
 
-  it("falsify: 20 проб (п'ять необовʼязкових), п'ять мутацій з точними очікуваннями, вердикт вимагає всього", () => {
+  it("falsify: 24 проби (п'ять необовʼязкових), п'ять мутацій з точними очікуваннями, вердикт вимагає всього", () => {
     const labels = FALSIFY.match(/v_ok := v_ok \|\| '[^']+'::text;/g) || [];
-    expect(new Set(labels).size).toBe(20);
+    expect(new Set(labels).size).toBe(24);
     const na = [...FALSIFY.matchAll(/v_na := v_na \|\| '([^']+)'::text;/g)].map((m) => m[1]).sort();
     expect(na).toEqual(["P-move-pair", "P-other-clinic-kept", "R-ceo", "R-colleague-pending", "R-other-clinic-only"].sort());
     for (const p of ["R-granted", "R-staff", "R-ceo", "E-granted", "P-revoke-update", "P-access-kept", "P-other-clinic-kept",
       "E-revoked", "R-revoked", "R-pending_referrer", "R-pending_clinic", "R-declined", "P-inactive-update",
-      "R-other-clinic-only", "R-regrant", "E-regrant", "P-same-pair", "P-delete", "P-move-pair", "R-colleague-pending"]) {
+      "R-other-clinic-only", "R-regrant", "E-regrant", "P-same-pair", "P-delete", "P-move-pair", "R-colleague-pending",
+      /* раунд ревʼю 2: мутанти, що проходили */
+      "P-others-kept", "E-pending_referrer", "E-pending_clinic", "E-declined"]) {
       expect(FALSIFY, `проби ${p} немає`).toContain(`v_ok := v_ok || '${p}'::text;`);
     }
     expect(FALSIFY).toContain("v_want14 constant text[] := array['unreachable:patient_case:1', 'unreachable:queue_entry:1', 'unreachable:waitlist_entry:1']::text[];");
@@ -678,7 +684,7 @@ describe("0204 — фрагменти", () => {
     /* пізній BEFORE-тригер — справді BEFORE ROW і справді за абеткою після гарда */
     expect(FALSIFY).toMatch(/create trigger zzz_falsify_0204_late\s+before update on public\.queue_entries\s+for each row/);
     expect(["zz_guard_read_keys", "zzz_falsify_0204_late"].sort(byC).at(-1)).toBe("zzz_falsify_0204_late");
-    expect(norm(FALSIFY)).toContain(norm(`case when cardinality(v_miss) = 0 and cardinality(v_ok) + cardinality(v_na) = 20
+    expect(norm(FALSIFY)).toContain(norm(`case when cardinality(v_miss) = 0 and cardinality(v_ok) + cardinality(v_na) = 24
               and v_off14 is not distinct from v_want14 and v_b14
               and v_off19 is not distinct from v_want19 and v_b19
               and v_off16 is not distinct from v_want16
@@ -712,7 +718,7 @@ describe("0204 — смоук", () => {
   it("мітки: читання за статусом гранту, позначки, мітла, наслідки; n/a — лише для необовʼязкових даних", () => {
     for (const lbl of ["0", "setup", "r-granted", "r-staff", "r-ceo", "m-granted", "p-revoke", "p-access", "p-other", "r-revoked",
       "m-revoked", "p-inactive", "r-other", "r-regrant", "m-regrant", "p-same", "p-delete", "p-move", "r-colleague", "u0",
-      "side-rad", "side-moved"]) {
+      "side-rad", "side-moved", "p-others", "m-%"]) {
       expect(code, `мітки ${lbl} немає`).toContain(`SMOKE_FAIL(${lbl})`);
     }
     expect(code).toContain("foreach s in array array['pending_referrer', 'pending_clinic', 'declined'] loop");
@@ -723,6 +729,81 @@ describe("0204 — смоук", () => {
     expect(code).toContain("perform set_config('request.jwt.claims', '{}', true);");
     /* унікальність непрочитаних — без clinic_id: позначка того ж запису в іншому центрі — інший field_scope */
     expect(code).toContain("values (v_ref, v_clinic2, 'smoke.probe', 'queue', 'queue_entry', v_q, 'status', null, 'system', 'info');");
+  });
+});
+
+describe("0204 — раунд ревʼю 2: умови провалу пінимо ТЕКСТОМ (мутанти, що вижили)", () => {
+  const smokeCode = codeOf(SMOKE);
+  /** Умова провалу мітки — рівно така (пробіли між умовою і raise — будь-які). */
+  const failsOn = (src: string, cond: string, label: string) =>
+    new RegExp(`${cond.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} then\\s+raise exception 'SMOKE_FAIL\\(${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`).test(src);
+
+  it("D2: u0 і проби мітли падають на `<> 0` / `<> v_n_others`, а не на ослабленій умові", () => {
+    /* мутант ревʼю 2: `if v_n <> 0` → `if v_n < 0` у u0 — смоук лишався зеленим */
+    for (const [cond, label] of [
+      ["if v_n <> 0", "u0"], ["if v_n <> 0", "p-revoke"], ["if v_n <> 0", "m-revoked"], ["if v_n <> 0", "m-%"],
+      ["if v_n <> 0", "p-delete"], ["if v_n <> 0", "p-move"], ["if v_n <> 1", "m-granted"], ["if v_n <> 1", "m-regrant"],
+      ["if v_n <> 1", "p-same"], ["if v_n <> 3", "p-inactive"], ["if v_n <> v_n_others", "p-others"],
+      ["if v_seen is distinct from '0/0/0'", "r-revoked"], ["if v_seen is distinct from '0/0/0'", "r-%"],
+      ["if v_seen is distinct from '1/1/1'", "r-granted"], ["if v_seen is distinct from '1/1/1'", "r-regrant"],
+    ] as const) {
+      expect(failsOn(smokeCode, cond, label), `SMOKE_FAIL(${label}) не на «${cond}»`).toBe(true);
+    }
+    expect(count(smokeCode, "if v_n <> v_n_others then"), "p-others — не після кожного з трьох спрацювань мітли").toBe(3);
+    expect(smokeCode).not.toMatch(/if v_n\s*<\s*0\b/);
+  });
+
+  it("C16: після DDL №16 і №17 у накаті й сухому прогоні — raise exception, не notice", () => {
+    /* мутант ревʼю 2: `raise exception` №17 після DDL → `raise notice` — накат
+       комітив би червоний №17 */
+    for (const [lbl, txt, tag] of [["apply", APPLY, "0204"], ["dryrun", DRYRUN, "0204-суха"]] as const) {
+      const code = codeOf(txt);
+      for (const n of ["16", "17"]) {
+        expect(count(code, `  if v_tmp is not null then\n    raise exception '${tag}: №${n} після DDL червоний: %', v_tmp;`),
+          `${lbl}: №${n} після DDL не валить накат`).toBe(1);
+      }
+      expect(code, `${lbl}: після DDL — notice замість exception`).not.toMatch(/raise\s+(notice|warning|info)\s+'0204[^']*№1[67] після DDL/);
+    }
+  });
+
+  it("шапки: radius_* — замір, не стоп; недосяжні НЕПРОЧИТАНІ позначки — СТОП (L-3)", () => {
+    const dryHead = DRYRUN.slice(0, DRYRUN.indexOf("\ndo $dryrun$"));
+    const migHead = MIG.slice(0, MIG.indexOf("\nbegin;\n"));
+    expect(dryHead).toContain("`radius_*` — ЗАМІР, не стоп");
+    expect(dryHead).toContain("Недосяжні НЕПРОЧИТАНІ позначки записів — СТОП");
+    expect(migHead).toContain("radius_* — ЗАМІР, не стоп");
+    expect(migHead).toContain("недосяжні НЕПРОЧИТАНІ позначки записів — СТОП");
+    for (const h of [dryHead, migHead]) {
+      expect(h, "стара фраза «unreachable — замір»").not.toMatch(/unreachable[`]? і [`]?radius|radius_\*[`]? і [`]?unreachable/);
+    }
+  });
+
+  it("проби ревʼю 1: інші отримувачі, неактивні гранти з емісією, прочитана позначка — у смоуку й фальсифікації", () => {
+    /* (а) позначки ІНШИХ отримувачів — field_scope `studies`, до першого відкликання */
+    expect(SMOKE).toContain("cross join (select v_admin as who union all select v_ref2 where v_ref2 is not null) w;");
+    expect(SMOKE.indexOf("'smoke.probe', e.surf, e.et, e.eid, 'studies'"))
+      .toBeLessThan(SMOKE.indexOf("update public.referral_access set status = 'revoked'"));
+    for (const t of ["queue_entry", "waitlist_entry", "patient_case"]) {
+      expect(FALSIFY).toContain(`values (v_admin, v_clinic, 'falsify.probe', ${t === "queue_entry" ? "'queue'" : t === "waitlist_entry" ? "'waitlist'" : "'cases'"}, '${t}', ${t === "queue_entry" ? "v_q" : t === "waitlist_entry" ? "v_w" : "v_c"},\n            'studies', null, 'system', 'info');`);
+    }
+    expect(count(FALSIFY, "  if (select count(*) from public.user_change_markers m where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2) and m.event_type = 'falsify.probe' and m.field_scope = 'studies') <> v_n_others then"))
+      .toBe(3);
+    /* (б) емісія при неактивних грантах — у кожному з трьох статусів */
+    expect(smokeCode).toContain("raise exception 'SMOKE_FAIL(m-%): направнику з грантом % пішло % позначок записів', s, s, v_n;");
+    /* (в) прочитана позначка — до відкликання, з seen_at */
+    for (const txt of [SMOKE, FALSIFY]) {
+      const i = txt.indexOf("'status', null, 'system', 'info', now());");
+      expect(i, "прочитаної позначки немає").toBeGreaterThan(0);
+      expect(i).toBeLessThan(txt.indexOf("status = 'revoked'", i) > 0 ? txt.indexOf("status = 'revoked'", i) : Infinity);
+    }
+    /* правка персоналу — ПЕРЕМИКАЧ, а не «set 'urgent'» (двічі поспіль нічого б не емітувало) */
+    /* смоук: m-granted, m-revoked, цикл (один текст на три статуси), m-regrant;
+       фальсифікація: E-granted, E-revoked, три E-<статус>, E-regrant, M19b */
+    for (const [lbl, txt, n] of [["smoke", SMOKE, 4], ["falsify", FALSIFY, 7]] as const) {
+      expect(txt, `${lbl}: правка пріоритету без перемикача`).not.toMatch(/set priority_level = '(urgent|planned)' where id = v_q/);
+      expect(count(txt, "set priority_level = case when priority_level = 'urgent' then 'planned'::public.patient_priority"),
+        `${lbl}: перемикачів не ${n}`).toBe(n);
+    }
   });
 });
 
@@ -756,6 +837,17 @@ describe("0204 — суміжні смоуки, документи, правил
     const dots = section("## Контекстные «красные точки»");
     expect(dots).toContain(PRUNE_TG);
     expect(dots).toContain("`unreachable:<тип>:<n>`");
+    /* раунд ревʼю 2: процедура ручного переводу і межа `rads` — поруч; рядки
+       AGENTS.md — російською («граница», а не «межа») */
+    const db = section("## Миграции и БД");
+    expect(db).toContain("Ручной перевод сотрудника в другой центр");
+    expect(db).toContain("Радиолог (граница 0204)");
+    expect(db).toContain("`radiologist_rooms` при переводе не чистятся");
+    for (const sec of [section("## Роли и авторизация"), dots, db]) {
+      for (const line of sec.split("\n").filter((l) => /0204/.test(l))) {
+        expect(line, "у російському рядку AGENTS.md — українське «межа»").not.toMatch(/\bмеж[аі]\b/i);
+      }
+    }
   });
 
   it("UNREAD_CHANGES.md: позначки записів направнику — лише з активним грантом; мітла названа", () => {

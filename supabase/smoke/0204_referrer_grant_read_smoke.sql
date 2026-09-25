@@ -46,13 +46,17 @@
 --   r-ceo       CEO з активним доступом до центру — 1/1/0 (кейсів CEO не читає)
 --   m-granted   правка персоналу → направнику з активним грантом рівно одна
 --               позначка ЗАПИСУ
---   p-revoke    UPDATE active → revoked: позначки ЗАПИСІВ цієї пари знято
+--   p-revoke    UPDATE active → revoked: позначки ЗАПИСІВ цієї пари знято — і
+--               НЕПРОЧИТАНІ, і ПРОЧИТАНА (мітла прибирає і прочитані: гігієна)
 --   p-access    позначка про відкликання (`referral_access`) дійшла — мітла її
 --               не чіпає
 --   p-other     позначка ЗАПИСУ в ІНШОМУ центрі (грант туди активний) лишилась
 --   r-revoked   після відкликання — 0/0/0
 --   m-revoked   правка персоналу після відкликання → позначки направнику НЕМАЄ
---   r-pending_referrer / r-pending_clinic / r-declined — 0/0/0
+--   r-pending_referrer / r-pending_clinic / r-declined — 0/0/0, і
+--   m-pending_referrer / m-pending_clinic / m-declined — правка персоналу при
+--               такому гранті → позначок направнику 0 (матриця питає `active`,
+--               а не «не revoked»)
 --   p-inactive  UPDATE неактивного гранту — позначки лишились (мітла — лише
 --               коли грант ПЕРЕСТАЄ бути активним)
 --   r-other     грант лише до ІНШОГО центру — рядків цього центру не бачить
@@ -61,10 +65,13 @@
 --               лишилась
 --   p-delete    DELETE активного гранту — позначки ЗАПИСІВ знято
 --   p-move      UPDATE активного гранту, що міняє центр, — знято за СТАРОЮ парою
+--   p-others    позначки ІНШИХ отримувачів на ті самі записи (адмін центру,
+--               другий направник) пережили всі три спрацювання мітли
+--               (відкликання, DELETE, зміна пари): мітла знімає лише СТАРУ ПАРУ
 --   r-colleague другий направник з активним грантом до центру чужих рядків не
 --               бачить (0/0/0): грант — кон'юнкт до ключа, а не «будь-хто з
 --               грантом»
---   u0          предикат гілки `unreachable:` перевірки ucm_orphan_markers для
+--   u0          предикат гілки `unreachable:` (лише НЕПРОЧИТАНІ) перевірки ucm_orphan_markers для
 --               направника проби — 0
 --   side-rad    НАЗВАНИЙ НАСЛІДОК 0204: радіолог, що створив запис у своєму
 --               кабінеті, після зняття кабінету цього запису не бачить (до 0204
@@ -80,6 +87,7 @@ declare
   v_room    uuid;  v_mod text;     v_studies jsonb;  v_day date;  v_time text;
   v_q       uuid;  v_w uuid;       v_c uuid;         v_x uuid;
   v_seen    text;  v_n bigint;     v_n0 bigint;      v_msg text;  v_t text;  s text;
+  v_nx      bigint;  v_n_others bigint;
   r record;
   c_times   constant text[] := array['10:00', '11:30', '13:00', '15:30'];
   c_booking constant text[] := array['ROOM_CLOSED', 'BEFORE_OPEN', 'TOO_LATE', 'OFF_SCHEDULE',
@@ -387,8 +395,13 @@ begin
   -- ── m-granted: правка персоналу → направнику з активним грантом позначка ────
   delete from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic;
   perform set_config('request.jwt.claims', json_build_object('sub', v_admin, 'role', 'authenticated')::text, true);
+  -- правка, що ГАРАНТОВАНО міняє пріоритет (перемикач urgent ↔ planned): «set
+  -- 'urgent'» двічі поспіль нічого б не змінив і нічого б не емітував
   begin
-    update public.queue_entries set priority_level = 'urgent' where id = v_q;
+    update public.queue_entries
+       set priority_level = case when priority_level = 'urgent' then 'planned'::public.patient_priority
+                                 else 'urgent'::public.patient_priority end
+     where id = v_q;
   exception when others then
     get stacked diagnostics v_msg = message_text;
     raise exception 'SMOKE_FAIL(m-granted): % %', sqlstate, v_msg;
@@ -412,6 +425,25 @@ begin
   end if;
   select count(*) into v_n0 from public.user_change_markers m
    where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type = 'referral_access';
+  -- позначки ІНШИХ отримувачів на ті самі записи (адмін центру, другий
+  -- направник): мітла мусить знімати лише СТАРУ ПАРУ. field_scope `studies` —
+  -- склад жодна проба не міняє, тож з емісією унікальність не перетнеться
+  insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type,
+                                          entity_id, field_scope, actor_id, actor_role, severity)
+    select w.who, v_clinic, 'smoke.probe', e.surf, e.et, e.eid, 'studies', null, 'system', 'info'
+      from (values ('queue', 'queue_entry', v_q), ('waitlist', 'waitlist_entry', v_w),
+                   ('cases', 'patient_case', v_c)) as e(surf, et, eid)
+      cross join (select v_admin as who union all select v_ref2 where v_ref2 is not null) w;
+  select count(*) into v_n_others from public.user_change_markers m
+   where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2)
+     and m.event_type = 'smoke.probe' and m.field_scope = 'studies';
+  if v_n_others < 3 then
+    raise exception 'SMOKE_FAIL(p-others): не завелись позначки інших отримувачів (%)', v_n_others;
+  end if;
+  -- ПРОЧИТАНА позначка направника: мітла знімає і її (№14 рахує лише непрочитані)
+  insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type,
+                                          entity_id, field_scope, actor_id, actor_role, severity, seen_at)
+    values (v_ref, v_clinic, 'smoke.probe', 'waitlist', 'waitlist_entry', v_w, 'status', null, 'system', 'info', now());
 
   -- ── Відкликання: UPDATE active → revoked ────────────────────────────────────
   begin
@@ -421,12 +453,19 @@ begin
     get stacked diagnostics v_msg = message_text;
     raise exception 'SMOKE_FAIL(p-revoke): % %', sqlstate, v_msg;
   end;
-  select count(*) into v_n from public.user_change_markers m
+  select count(*), count(*) filter (where m.seen_at is not null) into v_n, v_nx
+    from public.user_change_markers m
    where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type = any (c_entry);
   if v_n <> 0 then
-    raise exception 'SMOKE_FAIL(p-revoke): після відкликання лишилось % позначок записів', v_n;
+    raise exception 'SMOKE_FAIL(p-revoke): після відкликання лишилось % позначок записів (прочитаних %)', v_n, v_nx;
   end if;
   v_done := v_done || 'p-revoke ';
+  select count(*) into v_n from public.user_change_markers m
+   where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2)
+     and m.event_type = 'smoke.probe' and m.field_scope = 'studies';
+  if v_n <> v_n_others then
+    raise exception 'SMOKE_FAIL(p-others): після відкликання позначок інших отримувачів % замість %', v_n, v_n_others;
+  end if;
   select count(*) into v_n from public.user_change_markers m
    where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type = 'referral_access';
   if v_n <= v_n0 then
@@ -483,7 +522,10 @@ begin
   -- m-revoked: правка персоналу після відкликання — позначки направнику НЕМАЄ
   perform set_config('request.jwt.claims', json_build_object('sub', v_admin, 'role', 'authenticated')::text, true);
   begin
-    update public.queue_entries set priority_level = 'planned' where id = v_q;
+    update public.queue_entries
+       set priority_level = case when priority_level = 'urgent' then 'planned'::public.patient_priority
+                                 else 'urgent'::public.patient_priority end
+     where id = v_q;
   exception when others then
     get stacked diagnostics v_msg = message_text;
     raise exception 'SMOKE_FAIL(m-revoked): % %', sqlstate, v_msg;
@@ -517,6 +559,24 @@ begin
       raise exception 'SMOKE_FAIL(r-%): бачить % замість 0/0/0', s, v_seen;
     end if;
     v_done := v_done || 'r-' || s || ' ';
+    -- m-<статус>: правка персоналу при неактивному гранті — позначки НЕМАЄ
+    perform set_config('request.jwt.claims', json_build_object('sub', v_admin, 'role', 'authenticated')::text, true);
+    begin
+      update public.queue_entries
+         set priority_level = case when priority_level = 'urgent' then 'planned'::public.patient_priority
+                                   else 'urgent'::public.patient_priority end
+       where id = v_q;
+    exception when others then
+      get stacked diagnostics v_msg = message_text;
+      raise exception 'SMOKE_FAIL(m-%): % %', s, sqlstate, v_msg;
+    end;
+    perform set_config('request.jwt.claims', '{}', true);
+    select count(*) into v_n from public.user_change_markers m
+     where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type = any (c_entry);
+    if v_n <> 0 then
+      raise exception 'SMOKE_FAIL(m-%): направнику з грантом % пішло % позначок записів', s, s, v_n;
+    end if;
+    v_done := v_done || 'm-' || s || ' ';
   end loop;
 
   -- p-inactive: UPDATE неактивного гранту (declined → revoked) мітла не чіпає
@@ -579,7 +639,10 @@ begin
   v_done := v_done || 'r-regrant ';
   perform set_config('request.jwt.claims', json_build_object('sub', v_admin, 'role', 'authenticated')::text, true);
   begin
-    update public.queue_entries set priority_level = 'urgent' where id = v_q;
+    update public.queue_entries
+       set priority_level = case when priority_level = 'urgent' then 'planned'::public.patient_priority
+                                 else 'urgent'::public.patient_priority end
+     where id = v_q;
   exception when others then
     get stacked diagnostics v_msg = message_text;
     raise exception 'SMOKE_FAIL(m-regrant): % %', sqlstate, v_msg;
@@ -610,6 +673,12 @@ begin
     raise exception 'SMOKE_FAIL(p-delete): після DELETE гранту лишилось % позначок записів', v_n;
   end if;
   v_done := v_done || 'p-delete ';
+  select count(*) into v_n from public.user_change_markers m
+   where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2)
+     and m.event_type = 'smoke.probe' and m.field_scope = 'studies';
+  if v_n <> v_n_others then
+    raise exception 'SMOKE_FAIL(p-others): після DELETE гранту позначок інших отримувачів % замість %', v_n, v_n_others;
+  end if;
 
   -- p-move: UPDATE активного гранту, що міняє центр, — мітла за СТАРОЮ парою
   insert into public.referral_access (referrer_id, clinic_id, status) values (v_ref, v_clinic, 'active')
@@ -634,9 +703,16 @@ begin
     if v_n <> 0 then
       raise exception 'SMOKE_FAIL(p-move): після зміни центру гранту лишилось % позначок старої пари', v_n;
     end if;
+    select count(*) into v_n from public.user_change_markers m
+     where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2)
+       and m.event_type = 'smoke.probe' and m.field_scope = 'studies';
+    if v_n <> v_n_others then
+      raise exception 'SMOKE_FAIL(p-others): після зміни пари гранту позначок інших отримувачів % замість %', v_n, v_n_others;
+    end if;
     update public.referral_access set clinic_id = v_clinic where referrer_id = v_ref and clinic_id = v_clinic2;
     v_done := v_done || 'p-move ';
   end if;
+  v_done := v_done || 'p-others ';
 
   -- r-colleague: другий направник з АКТИВНИМ грантом до центру — чужі рядки не
   -- його; якби умова гранту стала диз'юнктом, він побачив би все
@@ -664,19 +740,21 @@ begin
     v_done := v_done || 'r-colleague ';
   end if;
 
-  -- u0: предикат гілки `unreachable:` — для направника проби недосяжних немає
+  -- u0: предикат гілки `unreachable:` (лише НЕПРОЧИТАНІ) — для направника проби
+  -- недосяжних немає
   select count(*) into v_n
     from public.user_change_markers m
     join public.profiles p on p.id = m.recipient_id
    where m.recipient_id = v_ref
      and m.entity_type = any (c_entry)
+     and m.seen_at is null
      and p.clinic_id is distinct from m.clinic_id
      and not exists (select 1 from public.referral_access ra
                       where ra.referrer_id = m.recipient_id
                         and ra.clinic_id = m.clinic_id
                         and ra.status = 'active');
   if v_n <> 0 then
-    raise exception 'SMOKE_FAIL(u0): недосяжних позначок записів направника %', v_n;
+    raise exception 'SMOKE_FAIL(u0): недосяжних непрочитаних позначок записів направника %', v_n;
   end if;
   v_done := v_done || 'u0';
 

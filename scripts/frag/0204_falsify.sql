@@ -6,7 +6,7 @@
 -- ПОРЯДОК (Low-1 ревʼю 0203): ПОВНИЙ сторож — ДО проб і мутацій (база для
 --    base_other_failed, ≈9 с без замків на таблиці); під мутаціями — лише
 --    дослівні запити №14, №16, №17 і №19 (мілісекунди).
--- ПРОБИ (20, з них 5 необовʼязкові) — під імперсонацією (request.jwt.claims +
+-- ПРОБИ (24, з них 5 необовʼязкові) — під імперсонацією (request.jwt.claims +
 --    `set local role authenticated`) на СИНТЕТИЧНИХ рядках черги, листа і кейсів
 --    центру з адміном; гранти фабрикуються в транзакції. Читання — «q/w/c»:
 --   R-granted 1/1/1 (направник із активним грантом читає свої рядки);
@@ -15,11 +15,14 @@
 --   R-other-clinic-only 0/0/0 (грант лише до ІНШОГО центру); R-regrant 1/1/1;
 --   R-colleague-pending 0/0/0 (другий направник, грант pending);
 --   E-granted / E-regrant: правка персоналу → направнику РІВНО одна позначка;
---   E-revoked: після відкликання — жодної;
+--   E-revoked, E-pending_referrer, E-pending_clinic, E-declined: жодної;
 --   P-revoke-update / P-delete / P-move-pair: мітла знімає позначки ЗАПИСІВ старої
---     пари; P-access-kept: позначка про відкликання лишається (і додалась);
---   P-other-clinic-kept: позначка в ІНШОМУ центрі лишається; P-inactive-update,
---     P-same-pair: UPDATE неактивного гранту / без зміни пари — мітла не чіпає.
+--     пари (P-revoke-update — і ПРОЧИТАНУ); P-access-kept: позначка про
+--     відкликання лишається (і додалась); P-others-kept: позначки ІНШИХ
+--     отримувачів (адмін, другий направник) на ті самі записи пережили всі три
+--     спрацювання; P-other-clinic-kept: позначка в ІНШОМУ центрі лишається;
+--   P-inactive-update, P-same-pair: UPDATE неактивного гранту / без зміни пари —
+--     мітла не чіпає.
 --   Необовʼязкові (немає CEO / другого направника / іншого центру) → n/a у звіті;
 --   вердикт вимагає ok + n/a = усі проби і жодного промаху.
 -- МУТАЦІЇ:
@@ -44,6 +47,7 @@ declare
   v_ok text[] := '{}'; v_miss text[] := '{}'; v_na text[] := '{}'; v_msg text; v_seen text; v_t text;
   v_clinic uuid; v_clinic2 uuid; v_admin uuid; v_ref uuid; v_ref2 uuid; v_ceo uuid; v_room uuid; v_mod text;
   v_q uuid; v_w uuid; v_c uuid; v_n_access bigint; v_b14 boolean := false; v_b19 boolean := false;
+  v_n_others bigint; v_others text;
   r record;
   v_want14 constant text[] := array['unreachable:patient_case:1', 'unreachable:queue_entry:1', 'unreachable:waitlist_entry:1']::text[];
   v_want16 constant text[] := array['changed:patient_cases.cases_select_referrer', 'changed:queue_entries.queue_select', 'changed:waitlist_entries.waitlist_select']::text[];
@@ -69,18 +73,18 @@ begin
     raise exception '0204-фальсифікація: invariants_check не знайдено';
   end if;
   v_src := replace(v_body, chr(13), '');
-  if md5(v_src) is distinct from '843d4a74b4b6b88127989ac017f0281a' or length(v_src) <> 177302 then
+  if md5(v_src) is distinct from '012ff7043a1c030b966ea9eb5e4f4840' or length(v_src) <> 177994 then
     raise exception '0204-фальсифікація: у проді не 0204 (% / %) — правка наосліп заборонена', md5(v_src), length(v_src);
   end if;
   v_head := substr(v_def, 1, position('AS $function$' in v_def) + 12);
   if obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc')
-     is distinct from 'guard_body_md5=843d4a74b4b6b88127989ac017f0281a;len=177302' then
+     is distinct from 'guard_body_md5=012ff7043a1c030b966ea9eb5e4f4840;len=177994' then
     raise exception '0204-фальсифікація: самопін % не збігається з тілом 0204 — спершу розібратись',
       coalesce(obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc'), '(NULL)');
   end if;
   -- ── change_marker_recipients (передумова): рецепт №19 (`cur`, вирізаний із тіла) ──
   with expd(fn, body, attrs) as (values
-      ('change_marker_recipients(p_clinic uuid, p_actor uuid, p_scope_kind text, p_room uuid, p_referrer uuid, p_severity text, p_room_relevant boolean)','c479f91a3fb499cd4cabbb325d4c6697','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl=postgres=X/postgres,service_role=X/postgres')
+      ('change_marker_recipients(p_clinic uuid, p_actor uuid, p_scope_kind text, p_room uuid, p_referrer uuid, p_severity text, p_room_relevant boolean)','48ecffeeaba0b8e899fa34f37fdf2a2b','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl=postgres=X/postgres,service_role=X/postgres')
     ), cur as (
       select p.proname::text || '(' || pg_get_function_identity_arguments(p.oid) || ')' as fn,
              md5(btrim(regexp_replace(
@@ -124,9 +128,9 @@ begin
        and pg_get_userbyid(p.proowner) = 'postgres'
        and p.proconfig = array['search_path=public, pg_temp']
        and p.prorettype = 'trigger'::regtype
-       and md5(replace(p.prosrc, chr(13), '')) = '25b92931235f5c0d846e082509c105ea'
+       and md5(replace(p.prosrc, chr(13), '')) = 'a7d7f8876e46fc9a3b7a0efcf378bbfa'
   ) then
-    raise exception '0204-фальсифікація: tg_ref_entry_markers_prune_on_access() (передумова) не та (атрибути або сирий md5 тіла 25b92931235f5c0d846e082509c105ea)';
+    raise exception '0204-фальсифікація: tg_ref_entry_markers_prune_on_access() (передумова) не та (атрибути або сирий md5 тіла a7d7f8876e46fc9a3b7a0efcf378bbfa)';
   end if;
   -- ── №16 (передумова): запит вирізано ДОСЛІВНО з тіла ──
   v_tmp := null;
@@ -346,12 +350,13 @@ begin
          and not exists (select 1 from public.clinics x where x.id = m.entity_id)
       having count(*) > 0
       union all
-      -- 0204 (Н-14): позначка ЗАПИСУ, якої отримувач не погасить ніколи — він
-      -- не персонал центру позначки і не має АКТИВНОГО гранту до нього
+      -- 0204 (Н-14): НЕПРОЧИТАНА позначка ЗАПИСУ, якого отримувач не бачить —
+      -- він не персонал центру позначки і не має АКТИВНОГО гранту до нього
       select 'unreachable:' || m.entity_type || ':' || count(*)
         from public.user_change_markers m
         join public.profiles p on p.id = m.recipient_id
        where m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')
+         and m.seen_at is null
          and p.clinic_id is distinct from m.clinic_id
          and not exists (select 1 from public.referral_access ra
                           where ra.referrer_id = m.recipient_id
@@ -508,7 +513,10 @@ begin
   -- ── E/P: позначки. Правка персоналу з активним грантом → направнику позначка ──
   delete from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic;
   perform set_config('request.jwt.claims', json_build_object('sub', v_admin, 'role', 'authenticated')::text, true);
-  update public.queue_entries set priority_level = 'urgent' where id = v_q;
+  update public.queue_entries
+     set priority_level = case when priority_level = 'urgent' then 'planned'::public.patient_priority
+                               else 'urgent'::public.patient_priority end
+   where id = v_q;
   perform set_config('request.jwt.claims', '{}', true);
   -- E-granted
   begin
@@ -531,11 +539,47 @@ begin
               'status', null, 'system', 'info');
   end if;
   v_n_access := (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type = 'referral_access');
+  -- позначки ІНШИХ отримувачів на ті самі записи — мітла їх не чіпає (P-others-kept)
+  insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
+                                          field_scope, actor_id, actor_role, severity)
+    values (v_admin, v_clinic, 'falsify.probe', 'queue', 'queue_entry', v_q,
+            'studies', null, 'system', 'info');
+  insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
+                                          field_scope, actor_id, actor_role, severity)
+    values (v_admin, v_clinic, 'falsify.probe', 'waitlist', 'waitlist_entry', v_w,
+            'studies', null, 'system', 'info');
+  insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
+                                          field_scope, actor_id, actor_role, severity)
+    values (v_admin, v_clinic, 'falsify.probe', 'cases', 'patient_case', v_c,
+            'studies', null, 'system', 'info');
+  if v_ref2 is not null then
+    insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
+                                            field_scope, actor_id, actor_role, severity)
+      values (v_ref2, v_clinic, 'falsify.probe', 'queue', 'queue_entry', v_q,
+              'studies', null, 'system', 'info');
+    insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
+                                            field_scope, actor_id, actor_role, severity)
+      values (v_ref2, v_clinic, 'falsify.probe', 'waitlist', 'waitlist_entry', v_w,
+              'studies', null, 'system', 'info');
+    insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
+                                            field_scope, actor_id, actor_role, severity)
+      values (v_ref2, v_clinic, 'falsify.probe', 'cases', 'patient_case', v_c,
+              'studies', null, 'system', 'info');
+  end if;
+  v_n_others := (select count(*) from public.user_change_markers m where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2) and m.event_type = 'falsify.probe' and m.field_scope = 'studies');
+  -- ПРОЧИТАНА позначка направника — мітла знімає і її (гігієна; №14 рахує лише непрочитані)
+  insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
+                                          field_scope, actor_id, actor_role, severity, seen_at)
+    values (v_ref, v_clinic, 'falsify.probe', 'waitlist', 'waitlist_entry', v_w,
+            'status', null, 'system', 'info', now());
 
   -- відкликання: UPDATE active → revoked
   perform set_config('request.jwt.claims', '{}', true);
   insert into public.referral_access (referrer_id, clinic_id, status) values (v_ref, v_clinic, 'revoked')
     on conflict (referrer_id, clinic_id) do update set status = excluded.status;
+  if (select count(*) from public.user_change_markers m where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2) and m.event_type = 'falsify.probe' and m.field_scope = 'studies') <> v_n_others then
+    v_others := coalesce(v_others || ', ', '') || 'revoke: ' || (select count(*) from public.user_change_markers m where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2) and m.event_type = 'falsify.probe' and m.field_scope = 'studies') || '/' || v_n_others;
+  end if;
   -- R-revoked
   begin
     perform set_config('request.jwt.claims', json_build_object('sub', v_ref, 'role', 'authenticated')::text, true);
@@ -562,7 +606,7 @@ begin
     if (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')) = 0 then
       v_ok := v_ok || 'P-revoke-update'::text;
     else
-      v_miss := v_miss || ('P-revoke-update: ' || 'позначок записів після відкликання ' || (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')));
+      v_miss := v_miss || ('P-revoke-update: ' || 'позначок записів після відкликання ' || (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')) || ' (прочитаних ' || (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.seen_at is not null) || ')');
     end if;
   exception when others then
     get stacked diagnostics v_msg = message_text;
@@ -596,7 +640,10 @@ begin
   end if;
   -- емісія після відкликання: направнику позначки НЕ йде
   perform set_config('request.jwt.claims', json_build_object('sub', v_admin, 'role', 'authenticated')::text, true);
-  update public.queue_entries set priority_level = 'planned' where id = v_q;
+  update public.queue_entries
+     set priority_level = case when priority_level = 'urgent' then 'planned'::public.patient_priority
+                               else 'urgent'::public.patient_priority end
+   where id = v_q;
   perform set_config('request.jwt.claims', '{}', true);
   -- E-revoked
   begin
@@ -609,7 +656,8 @@ begin
     get stacked diagnostics v_msg = message_text;
     v_miss := v_miss || ('E-revoked: ' || sqlstate || ' ' || left(v_msg, 80));
   end;
-  -- інші неактивні статуси — теж без читання
+  -- інші неактивні статуси — теж без читання і без позначок (мутація матриці
+  -- `status = 'active'` → `<> 'revoked'` пропускала б саме їх)
   perform set_config('request.jwt.claims', '{}', true);
   insert into public.referral_access (referrer_id, clinic_id, status) values (v_ref, v_clinic, 'pending_referrer')
     on conflict (referrer_id, clinic_id) do update set status = excluded.status;
@@ -634,6 +682,23 @@ begin
   end;
   reset role;
   perform set_config('request.jwt.claims', '{}', true);
+  perform set_config('request.jwt.claims', json_build_object('sub', v_admin, 'role', 'authenticated')::text, true);
+  update public.queue_entries
+     set priority_level = case when priority_level = 'urgent' then 'planned'::public.patient_priority
+                               else 'urgent'::public.patient_priority end
+   where id = v_q;
+  perform set_config('request.jwt.claims', '{}', true);
+  -- E-pending_referrer
+  begin
+    if (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')) = 0 then
+      v_ok := v_ok || 'E-pending_referrer'::text;
+    else
+      v_miss := v_miss || ('E-pending_referrer: ' || 'позначок записів ' || (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')));
+    end if;
+  exception when others then
+    get stacked diagnostics v_msg = message_text;
+    v_miss := v_miss || ('E-pending_referrer: ' || sqlstate || ' ' || left(v_msg, 80));
+  end;
   perform set_config('request.jwt.claims', '{}', true);
   insert into public.referral_access (referrer_id, clinic_id, status) values (v_ref, v_clinic, 'pending_clinic')
     on conflict (referrer_id, clinic_id) do update set status = excluded.status;
@@ -658,6 +723,23 @@ begin
   end;
   reset role;
   perform set_config('request.jwt.claims', '{}', true);
+  perform set_config('request.jwt.claims', json_build_object('sub', v_admin, 'role', 'authenticated')::text, true);
+  update public.queue_entries
+     set priority_level = case when priority_level = 'urgent' then 'planned'::public.patient_priority
+                               else 'urgent'::public.patient_priority end
+   where id = v_q;
+  perform set_config('request.jwt.claims', '{}', true);
+  -- E-pending_clinic
+  begin
+    if (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')) = 0 then
+      v_ok := v_ok || 'E-pending_clinic'::text;
+    else
+      v_miss := v_miss || ('E-pending_clinic: ' || 'позначок записів ' || (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')));
+    end if;
+  exception when others then
+    get stacked diagnostics v_msg = message_text;
+    v_miss := v_miss || ('E-pending_clinic: ' || sqlstate || ' ' || left(v_msg, 80));
+  end;
   perform set_config('request.jwt.claims', '{}', true);
   insert into public.referral_access (referrer_id, clinic_id, status) values (v_ref, v_clinic, 'declined')
     on conflict (referrer_id, clinic_id) do update set status = excluded.status;
@@ -682,6 +764,23 @@ begin
   end;
   reset role;
   perform set_config('request.jwt.claims', '{}', true);
+  perform set_config('request.jwt.claims', json_build_object('sub', v_admin, 'role', 'authenticated')::text, true);
+  update public.queue_entries
+     set priority_level = case when priority_level = 'urgent' then 'planned'::public.patient_priority
+                               else 'urgent'::public.patient_priority end
+   where id = v_q;
+  perform set_config('request.jwt.claims', '{}', true);
+  -- E-declined
+  begin
+    if (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')) = 0 then
+      v_ok := v_ok || 'E-declined'::text;
+    else
+      v_miss := v_miss || ('E-declined: ' || 'позначок записів ' || (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')));
+    end if;
+  exception when others then
+    get stacked diagnostics v_msg = message_text;
+    v_miss := v_miss || ('E-declined: ' || sqlstate || ' ' || left(v_msg, 80));
+  end;
   -- UPDATE НЕактивного гранту — мітла нічого не чіпає (фабрикована позначка лишається)
   insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
                                           field_scope, actor_id, actor_role, severity)
@@ -762,7 +861,10 @@ begin
   reset role;
   perform set_config('request.jwt.claims', '{}', true);
   perform set_config('request.jwt.claims', json_build_object('sub', v_admin, 'role', 'authenticated')::text, true);
-  update public.queue_entries set priority_level = 'urgent' where id = v_q;
+  update public.queue_entries
+     set priority_level = case when priority_level = 'urgent' then 'planned'::public.patient_priority
+                               else 'urgent'::public.patient_priority end
+   where id = v_q;
   perform set_config('request.jwt.claims', '{}', true);
   -- E-regrant
   begin
@@ -791,6 +893,9 @@ begin
   update public.referral_access set room_ids = null where referrer_id = v_ref and clinic_id = v_clinic;
   -- DELETE активного гранту — мітла
   delete from public.referral_access where referrer_id = v_ref and clinic_id = v_clinic;
+  if (select count(*) from public.user_change_markers m where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2) and m.event_type = 'falsify.probe' and m.field_scope = 'studies') <> v_n_others then
+    v_others := coalesce(v_others || ', ', '') || 'delete: ' || (select count(*) from public.user_change_markers m where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2) and m.event_type = 'falsify.probe' and m.field_scope = 'studies') || '/' || v_n_others;
+  end if;
   -- P-delete
   begin
     if (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')) = 0 then
@@ -821,6 +926,9 @@ begin
   if v_clinic2 is not null then
     delete from public.referral_access where referrer_id = v_ref and clinic_id = v_clinic2;
     update public.referral_access set clinic_id = v_clinic2 where referrer_id = v_ref and clinic_id = v_clinic;
+    if (select count(*) from public.user_change_markers m where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2) and m.event_type = 'falsify.probe' and m.field_scope = 'studies') <> v_n_others then
+      v_others := coalesce(v_others || ', ', '') || 'move: ' || (select count(*) from public.user_change_markers m where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2) and m.event_type = 'falsify.probe' and m.field_scope = 'studies') || '/' || v_n_others;
+    end if;
   end if;
   if v_clinic2 is null then
     v_na := v_na || 'P-move-pair'::text;
@@ -841,6 +949,20 @@ begin
     update public.referral_access set clinic_id = v_clinic where referrer_id = v_ref and clinic_id = v_clinic2;
   end if;
   delete from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.event_type = 'falsify.probe';
+  -- позначки ІНШИХ отримувачів пережили всі три спрацювання мітли (відкликання, DELETE, зміна пари)
+  -- P-others-kept
+  begin
+    if v_others is null and v_n_others >= 3 then
+      v_ok := v_ok || 'P-others-kept'::text;
+    else
+      v_miss := v_miss || ('P-others-kept: ' || 'змінились після ' || coalesce(v_others, '(нічого)') || '; заведено ' || v_n_others);
+    end if;
+  exception when others then
+    get stacked diagnostics v_msg = message_text;
+    v_miss := v_miss || ('P-others-kept: ' || sqlstate || ' ' || left(v_msg, 80));
+  end;
+  delete from public.user_change_markers m
+   where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2) and m.event_type = 'falsify.probe';
   -- другий направник: pending ніколи не був активним → не читає
   if v_ref2 is not null then
     insert into public.referral_access (referrer_id, clinic_id, status) values (v_ref2, v_clinic, 'active')
@@ -963,12 +1085,13 @@ $fxc$;
          and not exists (select 1 from public.clinics x where x.id = m.entity_id)
       having count(*) > 0
       union all
-      -- 0204 (Н-14): позначка ЗАПИСУ, якої отримувач не погасить ніколи — він
-      -- не персонал центру позначки і не має АКТИВНОГО гранту до нього
+      -- 0204 (Н-14): НЕПРОЧИТАНА позначка ЗАПИСУ, якого отримувач не бачить —
+      -- він не персонал центру позначки і не має АКТИВНОГО гранту до нього
       select 'unreachable:' || m.entity_type || ':' || count(*)
         from public.user_change_markers m
         join public.profiles p on p.id = m.recipient_id
        where m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')
+         and m.seen_at is null
          and p.clinic_id is distinct from m.clinic_id
          and not exists (select 1 from public.referral_access ra
                           where ra.referrer_id = m.recipient_id
@@ -1129,7 +1252,10 @@ $fxc$;
   delete from public.user_change_markers m
    where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.event_type = 'falsify.probe';
   perform set_config('request.jwt.claims', json_build_object('sub', v_admin, 'role', 'authenticated')::text, true);
-  update public.queue_entries set priority_level = 'planned' where id = v_q;
+  update public.queue_entries
+     set priority_level = case when priority_level = 'urgent' then 'planned'::public.patient_priority
+                               else 'urgent'::public.patient_priority end
+   where id = v_q;
   perform set_config('request.jwt.claims', '{}', true);
   v_b19 := (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')) >= 1;
   v_tmp := null;
@@ -1173,7 +1299,7 @@ $fxc$;
       ('auth_role()','512756052984a56357aaa17606904722','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl=authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),
       ('case_from_entry_rpc(p_entry_id uuid, p_step jsonb)','0f7f9aaa2497164ea3d5abeb0807a991','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp;acl=authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),
       ('ceo_list_for_clinic(p_clinic uuid)','4f3ee1ff598634aa8993f04fbad0a77c','secdef=true;vol=s;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp;acl=authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),
-      ('change_marker_recipients(p_clinic uuid, p_actor uuid, p_scope_kind text, p_room uuid, p_referrer uuid, p_severity text, p_room_relevant boolean)','c479f91a3fb499cd4cabbb325d4c6697','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl=postgres=X/postgres,service_role=X/postgres'),
+      ('change_marker_recipients(p_clinic uuid, p_actor uuid, p_scope_kind text, p_room uuid, p_referrer uuid, p_severity text, p_room_relevant boolean)','48ecffeeaba0b8e899fa34f37fdf2a2b','secdef=true;vol=s;owner=postgres;lang=sql;cfg=search_path=public, pg_temp;acl=postgres=X/postgres,service_role=X/postgres'),
       ('check_case_clinic_match()','b73f19a4f985b5f2919d236d4b322734','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp;acl=postgres=X/postgres,service_role=X/postgres'),
       ('cleanup_orphan_clinic()','479ec6dc1da0f94a9e280c8962892354','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp;acl=postgres=X/postgres,service_role=X/postgres'),
       ('emergency_stop_rpc(p_room_ids uuid[], p_date date, p_note text)','4fe9671d3841684f4577af3b8f89baaf','secdef=true;vol=v;owner=postgres;lang=plpgsql;cfg=search_path=public, pg_temp;acl=authenticated=X/postgres,postgres=X/postgres,service_role=X/postgres'),
@@ -1513,13 +1639,13 @@ $fxc$;
   select array_agg(o order by o collate "C") into v_off16 from unnest(v_tmp) o;
 
   raise exception 'FALSIFY_0204_ROLLBACK verdict=% probes_ok=%/% probes_missed=% na=% off14=% b14_kept=% off19=% b19_emits=% off16=% off17a=% off17b=% base_other_failed=%',
-    case when cardinality(v_miss) = 0 and cardinality(v_ok) + cardinality(v_na) = 20
+    case when cardinality(v_miss) = 0 and cardinality(v_ok) + cardinality(v_na) = 24
               and v_off14 is not distinct from v_want14 and v_b14
               and v_off19 is not distinct from v_want19 and v_b19
               and v_off16 is not distinct from v_want16
               and v_off17a is not distinct from v_want17a and v_off17b is not distinct from v_want17b
               and v_base_other is null then 'PASS' else 'FAIL' end,
-    cardinality(v_ok), 20, v_miss, v_na, v_off14, v_b14, v_off19, v_b19, v_off16, v_off17a, v_off17b, v_base_other;
+    cardinality(v_ok), 24, v_miss, v_na, v_off14, v_b14, v_off19, v_b19, v_off16, v_off17a, v_off17b, v_base_other;
 end;
 $falsify$;
 
