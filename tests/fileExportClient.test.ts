@@ -3,8 +3,8 @@
  * мутантів виживали (без `return` після відмови JSON помилки зберігався як файл
  * із тостом «експортовано»). Тепер — чиста функція lib/fileExportClient.ts;
  * fetch, збереження і тост — внедрені. Стан кнопки пінить staleSliceGuard. */
-import { describe, it, expect } from "vitest";
-import { runFileExport, type FileExportDeps, type FileExportRequest } from "@/lib/fileExportClient";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { runFileExport, saveBlobAsFile, type FileExportDeps, type FileExportRequest } from "@/lib/fileExportClient";
 import { callListExportErrorText, callListExportSuccessText, CALL_LIST_EXPORT_ERR } from "@/lib/callListExport";
 
 type Call = { url: string; init: RequestInit };
@@ -112,5 +112,43 @@ describe("runFileExport — збої: не кидає, тост failText, ніч
     h.deps.save = () => { throw new Error("blocked"); };
     await expect(runFileExport(REQ, h.deps)).resolves.toBe(false);
     expect(h.toasts).toEqual([{ msg: CALL_LIST_EXPORT_ERR, kind: "error" }]);
+  });
+});
+
+/* Ревʼю с80 р2, L-3: браузерне збереження теж під тестом — без `download`
+   браузер ВІДКРИВ би blob замість збереження, без `click()` файла немає зовсім
+   (а тост каже «експортовано»), без `revokeObjectURL` — витік памʼяті вкладки. */
+describe("saveBlobAsFile — тимчасове посилання з download", () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  function stubDom(onClick?: () => void) {
+    const anchors: Array<{ href: string; download: string; clicks: number }> = [];
+    vi.stubGlobal("document", {
+      createElement: (tag: string) => {
+        expect(tag).toBe("a");
+        const a = { href: "", download: "", clicks: 0, click() { a.clicks++; onClick?.(); } };
+        anchors.push(a);
+        return a;
+      },
+    });
+    const created = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:fake-1");
+    const revoked = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    return { anchors, created, revoked };
+  }
+
+  it("одне посилання: href = blob-URL, download = імʼя файлу, рівно один click, URL відкликано", () => {
+    const d = stubDom();
+    const blob = new Blob(["x"]);
+    saveBlobAsFile(blob, "call-list-2026-09-26.csv");
+    expect(d.created).toHaveBeenCalledWith(blob);
+    expect(d.anchors).toHaveLength(1);
+    expect(d.anchors[0]).toMatchObject({ href: "blob:fake-1", download: "call-list-2026-09-26.csv", clicks: 1 });
+    expect(d.revoked).toHaveBeenCalledWith("blob:fake-1");
+  });
+
+  it("URL відкликається й тоді, коли click кинув (finally)", () => {
+    const d = stubDom(() => { throw new Error("blocked"); });
+    expect(() => saveBlobAsFile(new Blob(["x"]), "f.csv")).toThrow("blocked");
+    expect(d.revoked).toHaveBeenCalledWith("blob:fake-1");
   });
 });

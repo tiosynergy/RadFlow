@@ -14,7 +14,10 @@ import {
   CALL_LIST_EXPORT_HEAD,
   CALL_LIST_STATUSES,
   CALL_STATUS_LABELS,
+  CALL_LIST_EXPORT_ERR,
+  callListExportErrorText,
   callListExportFileName,
+  callListExportRequest,
   callListExportRows,
   callListExportSuccessText,
   callListProcLabel,
@@ -127,5 +130,22 @@ describe("рядки, порядок, імʼя файлу", () => {
 
   it("імʼя файлу — ASCII з дня", () => {
     expect(callListExportFileName("2026-09-26")).toBe("call-list-2026-09-26.csv");
+  });
+
+  /* Ревʼю с80 р2, L-2: що компонент передає в runFileExport — ОДИН обʼєкт, і тут
+     він перевіряється цілком (до цього жоден мутант цієї звʼязки не вмирав). */
+  it("callListExportRequest: адреса, тіло з днем, імʼя файлу, тексти відмови/збою/успіху", () => {
+    const r = callListExportRequest("2026-09-26");
+    expect(r.url).toBe("/api/call-list/export");
+    expect(r.body).toEqual({ date: "2026-09-26" });
+    expect(r.fileName).toBe("call-list-2026-09-26.csv");
+    expect(r.errorText).toBe(callListExportErrorText);
+    expect(r.failText).toBe(CALL_LIST_EXPORT_ERR);
+    expect(r.failText.trim()).not.toBe("");
+    expect(r.successKind).toBe("info");
+    const res = (rows: string | null) => new Response("x", { headers: rows == null ? {} : { "X-Export-Rows": rows } });
+    expect(r.successText(res("0"))).toMatch(/лише заголовок/);
+    expect(r.successText(res("7"))).toBe("Колл-лист експортовано у CSV");
+    expect(r.successText(res(null))).toBe("Колл-лист експортовано у CSV");
   });
 });

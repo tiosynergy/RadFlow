@@ -28,11 +28,8 @@ import { modalityKind } from "@/lib/studies";
 /* с80 (Н-16): назва процедури, підписи статусу дзвінка і все про CSV — спільні з
    роутом /api/call-list/export: що видно на дошці, те й іде у файл, за побудовою. */
 import {
-  CALL_LIST_EXPORT_ERR,
   CALL_STATUS_LABELS,
-  callListExportErrorText,
-  callListExportFileName,
-  callListExportSuccessText,
+  callListExportRequest,
   callListProcLabel as procLabel,
 } from "@/lib/callListExport";
 import { runFileExport, saveBlobAsFile } from "@/lib/fileExportClient";
@@ -773,18 +770,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
     const day = dayKey;
     setExporting(true);
     try {
-      await runFileExport(
-        {
-          url: "/api/call-list/export",
-          body: { date: day },
-          fileName: callListExportFileName(day),
-          errorText: callListExportErrorText,
-          failText: CALL_LIST_EXPORT_ERR,
-          successText: (res) => callListExportSuccessText(res.headers.get("X-Export-Rows")),
-          successKind: "info",
-        },
-        { fetch: (u, init) => fetch(u, init), save: saveBlobAsFile, notify }
-      );
+      await runFileExport(callListExportRequest(day), { fetch: (u, init) => fetch(u, init), save: saveBlobAsFile, notify });
     } finally {
       setExporting(false);
     }

@@ -13,6 +13,7 @@
    побудовою, а не за збігом двох копій. */
 
 import { isContrastName } from "@/lib/studies";
+import type { FileExportRequest } from "@/lib/fileExportClient";
 
 /** Підписи статусу дзвінка — одне джерело для бейджа дошки й колонки «Статус». */
 export const CALL_STATUS_LABELS = {
@@ -112,6 +113,21 @@ export function callListExportSuccessText(rowsHeader: string | null): string {
 
 /** Загальна фраза збою: деталі — у лозі сервера, не в тості. */
 export const CALL_LIST_EXPORT_ERR = "Не вдалося експортувати колл-лист — спробуйте ще раз";
+
+/** Увесь запит експорту дня — ОДНИМ обʼєктом (ревʼю с80 р2, L-2): що саме
+    компонент передає в `runFileExport` (адреса, тіло, імʼя файлу, тексти
+    відмови/збою/успіху), перевіряється в node, а не регуляркою по TSX. */
+export function callListExportRequest(day: string): FileExportRequest {
+  return {
+    url: "/api/call-list/export",
+    body: { date: day },
+    fileName: callListExportFileName(day),
+    errorText: callListExportErrorText,
+    failText: CALL_LIST_EXPORT_ERR,
+    successText: (res) => callListExportSuccessText(res.headers.get("X-Export-Rows")),
+    successKind: "info",
+  };
+}
 
 /** Текст відмови для тосту. 401 — сесія скінчилась (повтор не допоможе, ревʼю с80
     L-2); 429 — гальмо ліміту; 403 і 400 — безпечна фраза самого роуту (лише
