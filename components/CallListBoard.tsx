@@ -32,8 +32,10 @@ import {
   CALL_STATUS_LABELS,
   callListExportErrorText,
   callListExportFileName,
+  callListExportSuccessText,
   callListProcLabel as procLabel,
 } from "@/lib/callListExport";
+import { runFileExport, saveBlobAsFile } from "@/lib/fileExportClient";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import type { CallStatus, Json } from "@/supabase/types";
 import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
@@ -350,6 +352,9 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
   //   мусить бачити всі оверлеї цього екрана, а вони оголошені далі.
   const [entries, setEntries] = useState<CallEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  /* с80 (Н-16): файл дня у польоті. Входить в `anyBusy` (запит у польоті, як і
+     `loading`); оголошено ТУТ, бо `anyBusy` рахується вище за обробник кнопки. */
+  const [exporting, setExporting] = useState(false);
   /* U-1: зріз, до якого належать рядки НА ЕКРАНІ (клініка + день). Спінер раніше
      вішався тільки на зміну клініки, тож при зміні ДНЯ список минулого дня
      спокійно стояв далі — а при збої читання лишався взагалі назавжди («старий
@@ -406,7 +411,8 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
   scopeRef.current = scopeKey;   // пишемо в рендері — див. коментар біля scopeRef
   incScopeRef.current = clinicId + "|" + todayKey;   // зріз loadIncidents — свій
   /* roomsById — ПОВНИЙ список, включно з вимкненими: за ним резолвиться назва
-     кабінету в рядку обдзвону й у CSV. Ховаємо кабінет зі СПИСКІВ, а не з записів. */
+     кабінету в рядку обдзвону (у CSV — тим самим правилом на сервері, с80).
+     Ховаємо кабінет зі СПИСКІВ, а не з записів. */
   const roomsById = useMemo(() => { const m: Record<string, RoomOpt> = {}; (rooms || []).forEach((r) => { m[r.id] = r; }); return m; }, [rooms]);
 
   /* …а `visRooms` — те, що показуємо у списках: активні + вимкнені із залишками. */
@@ -683,7 +689,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
      ОДИН вираз на всі стани — другий екземпляр «що зараз відкрито» розійшовся б
      із цим на першій же новій модалці, і розійшовся б МОВЧКИ. */
   const anyBusy = loading || confirmAllBusy || confirmAllAsk || declineBusy || !!declineAsk
-    || !!reschedFor || !!editStudiesFor || !!wlSuggest;
+    || !!reschedFor || !!editStudiesFor || !!wlSuggest || exporting;
   /* ⚠️ Перший `from` НЕ затирається (ревʼю В): коливання поправки біля півночі
      дало б другий виклик, і день, який оператор реально обдзвонював, у банері
      вже не назвали б. Коментар СТОЇТЬ НАД викликом, а не всередині: якорі
@@ -748,8 +754,6 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
     reload();
   }
 
-  const [exporting, setExporting] = useState(false);
-
   /* CSV обдзвону (с80, Н-16). До с80 файл збирав БРАУЗЕР зі стану `entries`:
      ПІБ, телефон і нотатка дня ішли у файл без сліду в журналі й без захисту від
      формул. Тепер його збирає СЕРВЕР — POST /api/call-list/export: центр — із
@@ -761,32 +765,26 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
      все одно гаситься, поки день вантажиться (`loading`): файл має описувати
      те, що оператор бачить, а не день, якого на екрані ще немає. Дата лишилась
      КОЛОНКОЮ у файлі (CALL_LIST_EXPORT_HEAD). */
+  /* Сам ланцюжок POST → перевірка → збереження → тост — lib/fileExportClient.ts
+     (чиста функція під тестами в node, ревʼю с80 M-3). Тут — лише стан кнопки:
+     гейт, `exporting` і його зняття у `finally`. */
   async function exportCsv() {
     if (exporting || loading) return;
     const day = dayKey;
     setExporting(true);
     try {
-      const res = await fetch("/api/call-list/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ date: day }),
-        cache: "no-store",
-      });
-      /* Текст відмови — callListExportErrorText: 429 — гальмо ліміту, 403/400 —
-         безпечна фраза роуту, решта — загальне «спробуйте ще раз». */
-      if (!res.ok) {
-        const body = res.status === 403 || res.status === 400 ? await res.json().catch(() => null) : null;
-        notify(callListExportErrorText(res.status, body), "error");
-        return;
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url; a.download = callListExportFileName(day); a.click();
-      URL.revokeObjectURL(url);
-      notify("Колл-лист експортовано у CSV", "info");
-    } catch {
-      // Мережа моргнула посеред запиту чи завантаження — той самий шлях, що й відмова сервера.
-      notify(CALL_LIST_EXPORT_ERR, "error");
+      await runFileExport(
+        {
+          url: "/api/call-list/export",
+          body: { date: day },
+          fileName: callListExportFileName(day),
+          errorText: callListExportErrorText,
+          failText: CALL_LIST_EXPORT_ERR,
+          successText: (res) => callListExportSuccessText(res.headers.get("X-Export-Rows")),
+          successKind: "info",
+        },
+        { fetch: (u, init) => fetch(u, init), save: saveBlobAsFile, notify }
+      );
     } finally {
       setExporting(false);
     }

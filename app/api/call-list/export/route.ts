@@ -49,12 +49,14 @@ import {
        формулою (= + - @ TAB CR LF), переводи рядка всередині клітинки →
        пробіл. Колонки — як були: Дата, Час, Пацієнт, Телефон, Процедура,
        Кабінет, Статус, Нотатка.
-     • ЖУРНАЛ — подія `patient_data.exported` у журнал центру з числом рядків.
-       details — { source: "call_list", rows, format: "csv" }: ключі ті самі,
-       що вже пропускають усі чотири лінії (allowlist, piiViolations, CHECK
-       important_events_no_pii_chk, DETAIL_KEYS /api/journal); нове лише
-       ЗНАЧЕННЯ `call_list`, і заголовок події lib/journalText.ts називає
-       канал. clinic_id події — з РЯДКІВ БД (урок с25). fail-OPEN за
+     • ЖУРНАЛ — подія `patient_data.exported` у журнал центру з числом рядків
+       і ДНЕМ файлу. details — { source: "call_list", rows, format: "csv",
+       scheduledDate }: ключі ті самі, що вже пропускають усі чотири лінії
+       (allowlist, piiViolations, CHECK important_events_no_pii_chk,
+       DETAIL_KEYS /api/journal; `scheduledDate` там із 0128); нове лише
+       ЗНАЧЕННЯ `call_list`, і заголовок події lib/journalText.ts називає канал
+       і день (ревʼю с80, L-3: без дня склад файлу при розборі витоку не
+       відновити — день однозначно задає файл разом із центром). clinic_id події — з РЯДКІВ БД (урок с25). fail-OPEN за
        конвенцією 0128: збій журналу файл не скасовує, але не мовчить —
        logError усередині emitImportantEvent. Порожній файл нічого не
        вивантажив — події немає.
@@ -143,7 +145,7 @@ export async function POST(req: Request) {
       eventType: "patient_data.exported",
       entityType: "staff",
       entityId: me.id,
-      details: { source: "call_list", rows: n, format: "csv" },
+      details: { source: "call_list", rows: n, format: "csv", scheduledDate: date },
     });
   }
 

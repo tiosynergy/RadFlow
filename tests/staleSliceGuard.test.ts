@@ -180,11 +180,14 @@ describe("CallListBoard — рядок не може стверджувати ч
     expect(code).toMatch(/onClick=\{exportCsv\}/);
     // с80 (Н-16): кнопка гасне і поки день вантажиться, і поки файл у польоті.
     expect(code).toMatch(/<button className="btn btn-secondary" disabled=\{loading \|\| exporting\} aria-busy=\{exporting\} onClick=\{exportCsv\}/);
-    // …і сам обробник не стартує посеред завантаження дня (гейт у функції, не лише в DOM).
-    expect(code).toMatch(/async function exportCsv\(\) \{\s*if \(exporting \|\| loading\) return;\s*const day = dayKey;/);
+    // …і сам обробник не стартує посеред завантаження дня (гейт у функції, не лише в DOM);
+    // стан `exporting` ставиться ДО запиту і знімається у `finally` (ревʼю с80, M-3:
+    // без `finally` кнопка лишалась мертвою до перезавантаження).
+    expect(code).toMatch(/async function exportCsv\(\) \{\s*if \(exporting \|\| loading\) return;\s*const day = dayKey;\s*setExporting\(true\);\s*try \{\s*await runFileExport\(/);
+    expect(code).toMatch(/\}\s*finally \{\s*setExporting\(false\);\s*\}\s*\}/);
     // с80: файл збирає СЕРВЕР рівно за днем пікера — імʼя й рядки з ОДНОГО `day`.
-    expect(code).toMatch(/body: JSON\.stringify\(\{ date: day \}\)/);
-    expect(code).toMatch(/a\.download = callListExportFileName\(day\)/);
+    expect(code).toMatch(/url: "\/api\/call-list\/export",\s*body: \{ date: day \},\s*fileName: callListExportFileName\(day\),/);
+    expect(code).toMatch(/\{ fetch: \(u, init\) => fetch\(u, init\), save: saveBlobAsFile, notify \}/);
     // Браузер більше НЕ збирає CSV зі стану `entries` (ПДн без журналу й екранування — Н-16).
     expect(code).not.toMatch(/new Blob\(\[/);
     expect(code).not.toMatch(/entries\.map\(\(e\) => \[e\.scheduled_date/);

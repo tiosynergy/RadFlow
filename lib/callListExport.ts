@@ -41,9 +41,13 @@ export function callListProcLabel(e: { studies?: unknown; note?: string | null }
 export const CALL_LIST_STATUSES = ["scheduled", "waiting"] as const;
 
 /** Колонки запису для файлу. `clinic_id` — для події журналу (центр — із РЯДКА БД,
-    урок с25), `id` — ключ сторінок і дедупу. */
+    урок с25), `id` — ключ сторінок і дедупу.
+    ⚠️ `note` тут НЕМАЄ свідомо (ревʼю с80, L-2): дошка його не вибирає (TD-5), тож
+    у записі без досліджень на екрані «—», і файл мусить казати те саме, а не
+    вільний текст бронювання («скерування, особливі вимоги…» — ПДн). Колонки
+    файлу ⊆ колонок `reload` дошки — пін у tests/callListExport.test.ts. */
 export const CALL_LIST_ENTRY_COLS =
-  "id, clinic_id, scheduled_date, scheduled_time, patient_name, patient_phone, studies, note, room_id, call_status, call_note";
+  "id, clinic_id, scheduled_date, scheduled_time, patient_name, patient_phone, studies, room_id, call_status, call_note";
 
 export type CallListExportEntry = {
   id: string;
@@ -53,7 +57,6 @@ export type CallListExportEntry = {
   patient_name: string | null;
   patient_phone: string | null;
   studies: unknown;
-  note: string | null;
   room_id: string | null;
   call_status: string | null;
   call_note: string | null;
@@ -86,7 +89,8 @@ export function callListExportRows(
     e.scheduled_time || "",
     e.patient_name || "",
     e.patient_phone || "",
-    callListProcLabel(e),
+    // Лише склад — без `note` (див. CALL_LIST_ENTRY_COLS): як на дошці.
+    callListProcLabel({ studies: e.studies }),
     e.room_id ? roomName(e.room_id) : "",
     callStatusLabel(e.call_status),
     e.call_note || "",
@@ -98,13 +102,22 @@ export function callListExportFileName(dayKey: string): string {
   return "call-list-" + dayKey + ".csv";
 }
 
+/** Тост успіху: порожній день — чесно «лише заголовок» (ревʼю с80: файл з
+    однією шапкою раніше звався «експортовано»). Число — із заголовка роуту
+    `X-Export-Rows`; нема заголовка — звичайний текст. */
+export function callListExportSuccessText(rowsHeader: string | null): string {
+  if (rowsHeader === "0") return "У цей день обдзвонювати нікого — у файлі лише заголовок";
+  return "Колл-лист експортовано у CSV";
+}
+
 /** Загальна фраза збою: деталі — у лозі сервера, не в тості. */
 export const CALL_LIST_EXPORT_ERR = "Не вдалося експортувати колл-лист — спробуйте ще раз";
 
-/** Текст відмови для тосту. 429 — гальмо ліміту; 403 і 400 — безпечна фраза
-    самого роуту (лише загальні слова, без внутрощів — правило L-4 с79); решта —
-    загальне «спробуйте ще раз». */
+/** Текст відмови для тосту. 401 — сесія скінчилась (повтор не допоможе, ревʼю с80
+    L-2); 429 — гальмо ліміту; 403 і 400 — безпечна фраза самого роуту (лише
+    загальні слова, без внутрощів — правило L-4 с79); решта — «спробуйте ще раз». */
 export function callListExportErrorText(status: number, body: unknown): string {
+  if (status === 401) return "Сесія завершилась — увійдіть знову";
   if (status === 429) return "Забагато вивантажень за короткий час — спробуйте за кілька хвилин";
   if (status === 403 || status === 400) {
     const e = body && typeof body === "object" ? (body as { error?: unknown }).error : undefined;

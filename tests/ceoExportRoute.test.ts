@@ -483,8 +483,8 @@ describe("файл: заголовки, формат, колонки, дохід
     const r = await exportCsv({ period: "today", scope: C1 });
     expect(r.status).toBe(200);
     const rows = dataRows(r.text);
-    // CR/LF після апострофа стають пробілом (L-1) — апостроф однаково ПЕРШИЙ.
-    expect(rows.slice(0, hostile.length).map((x) => x[1])).toEqual(hostile.map((h) => "'" + h.replace(/[\r\n]+/g, " ")));
+    // CR/LF (L-1 с79) і TAB (L-1 с80) після апострофа стають пробілом — апостроф однаково ПЕРШИЙ.
+    expect(rows.slice(0, hostile.length).map((x) => x[1])).toEqual(hostile.map((h) => "'" + h.replace(/[\r\n\t]+/g, " ")));
     // процедура з нотатки теж клітинка файлу — теж під захистом; лапки — подвоєні й розібрані назад
     expect(rows[hostile.length]).toEqual(["2026-09-24", 'Ла"пки Тест', "'=1+1", "МРТ-1", "done", "0"]);
     expect(r.text).toContain('"Ла""пки Тест"');

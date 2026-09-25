@@ -10,11 +10,13 @@ import { readFileSync } from "fs";
 import { resolve } from "path";
 import { codeOf } from "./helpers/codeOf";
 import {
+  CALL_LIST_ENTRY_COLS,
   CALL_LIST_EXPORT_HEAD,
   CALL_LIST_STATUSES,
   CALL_STATUS_LABELS,
   callListExportFileName,
   callListExportRows,
+  callListExportSuccessText,
   callListProcLabel,
   callStatusLabel,
   compareCallListOrder,
@@ -25,7 +27,7 @@ const board = codeOf(readFileSync(resolve(process.cwd(), "components/CallListBoa
 
 const e = (over: Partial<CallListExportEntry>): CallListExportEntry => ({
   id: "x", clinic_id: "c", scheduled_date: "2026-09-26", scheduled_time: "09:00", patient_name: "П",
-  patient_phone: null, studies: [], note: null, room_id: null, call_status: null, call_note: null, ...over,
+  patient_phone: null, studies: [], room_id: null, call_status: null, call_note: null, ...over,
 });
 
 describe("підписи статусу дзвінка — одне джерело для дошки й файлу", () => {
@@ -95,6 +97,27 @@ describe("рядки, порядок, імʼя файлу", () => {
       e({ id: "y", scheduled_time: null }),
     ];
     expect([...list].sort(compareCallListOrder).map((x) => x.id)).toEqual(["c", "a", "b", "y", "z"]);
+  });
+
+  /* Ревʼю с80, L-2: файл не сміє нести колонку, якої дошка не читає. Так у
+     «Процедуру» потрапляв вільний текст `note` бронювання, якого на екрані
+     немає. Інваріант: колонки файлу ⊆ колонок `reload` дошки (плюс `clinic_id`
+     — ним дошка ФІЛЬТРУЄ, а файл пише центр події журналу). */
+  it("колонки файлу ⊆ колонок reload дошки (+ clinic_id); `note` у файл не йде", () => {
+    const m = board.match(/\.from\("queue_entries"\)\s*\.select\("([^"]+)"\)\s*\.eq\("clinic_id", clinicId\)\s*\.eq\("scheduled_date", dayKey\)/);
+    expect(m, "select у reload дошки не знайдено").not.toBeNull();
+    const boardCols = new Set(m![1].split(",").map((c) => c.trim()));
+    const fileCols = CALL_LIST_ENTRY_COLS.split(",").map((c) => c.trim());
+    for (const c of fileCols) if (c !== "clinic_id") expect(boardCols.has(c), c).toBe(true);
+    expect(fileCols).not.toContain("note");
+    // І рядок файлу процедуру бере лише зі складу: запис без досліджень — «—», як на дошці.
+    expect(callListExportRows([e({ studies: [] })], () => "")[0][4]).toBe("—");
+  });
+
+  it("тост успіху: порожній день — «лише заголовок», інакше — звичайний", () => {
+    expect(callListExportSuccessText("0")).toMatch(/лише заголовок/);
+    expect(callListExportSuccessText("12")).toBe("Колл-лист експортовано у CSV");
+    expect(callListExportSuccessText(null)).toBe("Колл-лист експортовано у CSV");
   });
 
   it("статуси обдзвону — ті самі, що в reload дошки", () => {
