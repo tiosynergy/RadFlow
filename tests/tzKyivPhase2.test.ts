@@ -219,9 +219,11 @@ describe("0202 — CHECK, дані, дайджест k:clinics", () => {
     expect(ROLLBACK).toContain("if (now() at time zone 'Europe/Kiev') is distinct from (now() at time zone 'Europe/Kyiv')");
   });
 
-  it("список №19 у передруку так само 59, checked 26", () => {
+  /* ⚠️ Лічильник ОСТАННЬОГО передруку, а не файлу 0202: оновлюється в ТІЙ
+     САМІЙ правці, що й список (0203 додала `guard_record_read_keys()`, 59 → 60). */
+  it("список №19 у передруку — 60 (0203: + guard_record_read_keys), checked 26", () => {
     const rows = REPRINT_CODE.match(/^ {6}\('[A-Za-z0-9_]+\([^)]*\)','[0-9a-f]{32}','[^']*'\),?$/gm) || [];
-    expect(rows.length).toBe(59);
+    expect(rows.length).toBe(60);
     expect((REPRINT.fn.match(/^  v_n := v_n \+ 1;$/gm) || []).length).toBe(26);
   });
 });

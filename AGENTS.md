@@ -694,6 +694,12 @@
   Обязательны сверка снимка по md5, dry-run через `raise exception` с откатом и — с с18 —
   **проверка, что before-образы легли в `audit_log`**: `fn_audit` глотает собственные ошибки,
   так что молча пустой лог возможен, а без него откатывать нечем.
+  ⚠️ **(с79, 0203) Восстановление строк из before-образов идёт через гард ключей чтения**
+  `zz_guard_read_keys` (`queue_entries`, `waitlist_entries`, `patient_cases`): `referrer_id` и
+  `created_by` без законного доступа к центру записи станут NULL — без ошибки (Р-2), след —
+  только `WARNING READ_KEY_CLEARED` в логе сервера (таблица, ключ, роль; без uuid).
+  Нужен ТОЧНЫЙ образ — `alter table … disable trigger zz_guard_read_keys` в ТОЙ ЖЕ транзакции,
+  восстановление, `enable trigger` до commit; забытое включение №17 покажет как `trigger_off:`.
 - Гард прав НЕЛЬЗЯ вешать на «значение изменилось»: `UPDATE OF col` срабатывает от
   **упоминания** колонки в UPDATE.
 - Новая колонка queue/waitlist → `grant update (col)`. Типы колонок сверяй по БД
