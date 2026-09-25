@@ -40,6 +40,19 @@ export interface FakeDb {
   /** с59: УСІ запити по порядку (ревʼю А: `seen` тримає лише ОСТАННІЙ запит
       по таблиці, тож «брудний» select, зроблений першим, зникав із поля зору). */
   queries?: Array<{ table: string; cols: string[]; wrote?: "insert" | "update" }>;
+  /** с79 (ревʼю Н-10, M-1): імітація `db-max-rows` PostgREST. Сервер віддає НЕ
+      БІЛЬШЕ стількох рядків на запит, хоч би що просили `.limit()`/`.range()`, —
+      і мовчки: ні помилки, ні ознаки обрізання. Без цього двійник віддавав усе,
+      і роут, що читав 5001 рядок одним запитом, був зеленим, а на проді
+      отримував 1000. Не задано — стелі немає (як і раніше). */
+  maxRows?: number;
+  /** с79 (ревʼю Н-10, мутація M01): віддавати ЛИШЕ вибрані колонки, як
+      PostgREST. Без цього двійник повертав рядок цілком, і прибрана з
+      `select()` колонка (напр. `clinic_id`, з якого пишеться журнал) лишалась
+      «на місці» — тест зелений, на проді `undefined`. Вмикається явно: старі
+      набори на це не розраховані. Лише простий перелік колонок — вкладена
+      вибірка, `*` чи аліас при увімкненій проекції КИДАЮТЬ. */
+  project?: boolean;
 }
 
 export const emptyDb = (): FakeDb => ({ tables: {}, errors: {}, rpc: {}, seen: {} });
@@ -68,6 +81,10 @@ class FakeQuery {
      «зелений» тест на курсорі, який у PostgREST губить або дублює рядки. */
   private orders: Array<{ col: string; asc: boolean; nullsFirst: boolean }> = [];
   private lim: number | null = null;
+  /* с79: зсув `.range(from, to)`. Offset-пагінація без ORDER BY у Postgres
+     недетермінована, тож двійник КИДАЄ на `.range()` без `.order()`; і на
+     поєднанні з `.limit()` — supabase-js мовчки лишив би останнє. */
+  private off: number | null = null;
   /* с59 (пакет 38): запис. `insert` кладе рядок у таблицю фікстури, `update`
      накладає патч на ВІДФІЛЬТРОВАНІ рядки (фільтри після `.update()` діють
      по-справжньому, як у PostgREST). Обидва повертають {data:null,error:null},
@@ -105,7 +122,20 @@ class FakeQuery {
     this.orders.push({ col, asc, nullsFirst: opts?.nullsFirst ?? !asc });
     return this;
   }
-  limit(n: number) { this.lim = n; return this; }
+  limit(n: number) {
+    if (this.off !== null) throw new Error("FakeSupabase: limit() після range() — неоднозначно; обери одне");
+    this.lim = n;
+    return this;
+  }
+  range(from: number, to: number) {
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from) {
+      throw new Error(`FakeSupabase: range(${from}, ${to}) — некоректні межі`);
+    }
+    if (this.lim !== null) throw new Error("FakeSupabase: range() після limit() — неоднозначно; обери одне");
+    this.off = from;
+    this.lim = to - from + 1;
+    return this;
+  }
   /** Скасування запиту двійнику не потрібне — але метод існує в supabase-js. */
   abortSignal(_s: AbortSignal) { return this; }
   maybeSingle() { this.wantSingle = true; return this; }
@@ -156,8 +186,21 @@ class FakeQuery {
     }
 
     let out = rows.filter((r) => this.matches(r));
+    if (this.off !== null && !this.orders.length) {
+      throw new Error(`FakeSupabase: ${this.table}.range() без order() — offset у Postgres недетермінований`);
+    }
     if (this.orders.length) out = [...out].sort((a, b) => this.cmpRows(a, b));
+    // Порядок PostgREST: ORDER BY → OFFSET → LIMIT, і лише потім стеля db-max-rows.
+    if (this.off !== null) out = out.slice(this.off);
     if (this.lim !== null) out = out.slice(0, this.lim);
+    if (this.db.maxRows != null && !this.wantSingle) out = out.slice(0, this.db.maxRows);
+    // Проекція — ПІСЛЯ фільтрів і порядку: PostgREST фільтрує й сортує і за невибраними колонками.
+    if (this.db.project && this.cols.length) {
+      const bad = this.cols.filter((c) => !/^[a-z_][a-z0-9_]*$/i.test(c));
+      if (bad.length) throw new Error(`FakeSupabase: проекція не вміє «${bad.join(", ")}» — лише простий перелік колонок`);
+      // Колонка, якої в рядку фікстури немає, — це NULL (як віддав би PostgREST), а не undefined.
+      out = out.map((r) => Object.fromEntries(this.cols.map((c) => [c, r[c] === undefined ? null : r[c]])));
+    }
     return this.wantSingle ? { data: out[0] ?? null, error: null } : { data: out, error: null };
   }
 
@@ -178,10 +221,13 @@ class FakeQuery {
       if (f.op === "eq" && !eqVal(v, f.val)) return false;
       if (f.op === "neq" && eqVal(v, f.val)) return false;
       if (f.op === "in" && !(f.val as unknown[]).some((x) => eqVal(v, x))) return false;
-      if (f.op === "lt" && !(String(v) < String(f.val))) return false;
-      if (f.op === "lte" && !(String(v) <= String(f.val))) return false;
-      if (f.op === "gt" && !(String(v) > String(f.val))) return false;
-      if (f.op === "gte" && !(String(v) >= String(f.val))) return false;
+      /* с79 (ревʼю Н-10 р2, L3): діапазонні порівняння — через ordKey, як `order`
+         і `.or()`: uuid без урахування регістру (шапка це обіцяла, а тут
+         порівнювались сирі рядки). */
+      if (f.op === "lt" && !(ordKey(v) < ordKey(f.val))) return false;
+      if (f.op === "lte" && !(ordKey(v) <= ordKey(f.val))) return false;
+      if (f.op === "gt" && !(ordKey(v) > ordKey(f.val))) return false;
+      if (f.op === "gte" && !(ordKey(v) >= ordKey(f.val))) return false;
       if (f.op === "is" && !(f.val === null ? v == null : v === f.val)) return false;
       if (f.op === "not.is" && (f.val === null ? v == null : v === f.val)) return false;
     }
