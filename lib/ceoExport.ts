@@ -23,12 +23,34 @@ export type CeoPeriod = (typeof CEO_PERIODS)[number];
     каже «перші N» (сервер доводить це пробою +1 рядок, а не «рівно стеля»). */
 export const CEO_EXPORT_MAX_ROWS = 5000;
 
-/** Колонки записів черги — ОДИН перелік для CSV (сервер) і drill-down (клієнт). */
-export const CEO_ENTRY_COLS = "status, studies, room_id, scheduled_date, patient_name, note, clinic_id";
+/** Колонки записів черги — ОДИН перелік для CSV (сервер) і drill-down (клієнт).
+    `id` і `scheduled_time` — для keyset-сторінок і показу за часом (ревʼю с79, M-1). */
+export const CEO_ENTRY_COLS = "id, status, studies, room_id, scheduled_date, scheduled_time, patient_name, note, clinic_id";
 
 /** Колонки каталогу для оцінки доходу. 0121: room_id — пріоритет власної
-    послуги кабінету запису над базовою. */
-export const CEO_SERVICE_COLS = "clinic_id, modality, name, price, contrast_price, room_id";
+    послуги кабінету запису над базовою. `id, sort_order` — сервер читає
+    каталог сторінками за id і сам відновлює пріоритетний порядок
+    (compareCatalogOrder). */
+export const CEO_SERVICE_COLS = "id, clinic_id, modality, name, price, contrast_price, room_id, sort_order";
+
+/** Загальна відмова експорту — і в роуті (500), і в тості клієнта. */
+export const CEO_EXPORT_ERR = "Не вдалося сформувати експорт — спробуйте ще раз";
+
+/** Текст тоста на невдалий експорт (ревʼю с79, L-4).
+    • 429 — гальмо на 10 файлів за 10 хв: «спробуйте ще раз» тут збрехало б;
+    • 403 — БЕЗПЕЧНИЙ текст самого роуту: там лише загальні українські фрази
+      («Недостатньо прав», «Немає доступу до цього центру — оновіть сторінку»,
+      «Спершу завершіть налаштування центру»), без внутрощів; нетекстова або
+      надто довга відповідь (проксі, HTML) — загальне «недостатньо прав»;
+    • решта — колишнє «не вдалося — спробуйте ще раз». */
+export function ceoExportErrorText(status: number, body: unknown): string {
+  if (status === 429) return "Забагато вивантажень за короткий час — спробуйте за кілька хвилин";
+  if (status === 403) {
+    const e = body && typeof body === "object" ? (body as { error?: unknown }).error : undefined;
+    return typeof e === "string" && e.trim() !== "" && e.length <= 160 ? e : "Недостатньо прав для експорту";
+  }
+  return CEO_EXPORT_ERR;
+}
 
 /** Заголовок CSV. Колонки й сенс — як були до переїзду на сервер. */
 export const CEO_EXPORT_HEAD = ["Дата", "Пацієнт", "Процедура", "Кабінет", "Статус", "Дохід"] as const;
@@ -138,6 +160,49 @@ export function procName(e: RevenueEntry): string {
   const s: StudyLike[] = Array.isArray(e.studies) ? (e.studies as StudyLike[]) : [];
   if (s.length) return (s[0].type || "") + (s[0].region ? " · " + s[0].region : "");
   return e.note || "—";
+}
+
+/* ---------- Сторінки й порядок (ревʼю с79, M-1) ----------
+
+   PostgREST віддає не більше db-max-rows (1000) рядків на запит — МОВЧКИ.
+   Тому роут читає і записи, і каталог, і кабінети сторінками, а порядок, який
+   потрібен файлу, відновлює тут — у памʼяті, одним кодом для тестів і роуту. */
+
+const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** Алфавіт, що не ламає синтаксис `or()` PostgREST (там роздільники `,.:()`
+    і лапки). uuid проходить; усе інше — виняток, а не «кривий» фільтр. */
+const SAFE_KEY_RE = /^[0-9A-Za-z_-]{1,64}$/;
+
+/** Keyset-умова «строго після (дата, id)» для порядку scheduled_date ASC,
+    id ASC — у синтаксисі `.or()` PostgREST.
+    ⚠️ Час у ключі свідомо НЕМАЄ: scheduled_time — вільний text, і в `.or()`
+    «кривий» час ламав би синтаксис (пошук заради цього тримає «деградований
+    курсор»). Порядок за часом відновлює compareExportOrder після читання. */
+export function afterDateIdOr(date: string, id: string): string {
+  if (!DATE_KEY_RE.test(date) || !SAFE_KEY_RE.test(id)) throw new Error("keyset: некоректний ключ сторінки");
+  return `scheduled_date.gt.${date},and(scheduled_date.eq.${date},id.gt.${id})`;
+}
+
+const cmpStr = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
+const cmpNullsLast = (x: string | null, y: string | null) =>
+  x === y ? 0 : x === null ? 1 : y === null ? -1 : cmpStr(x, y);
+
+/** Порядок рядків у файлі: дата, час (порожній — наприкінці дня), id. uuid
+    порівнюється в нижньому регістрі — як і в Postgres. */
+export function compareExportOrder(
+  a: { scheduled_date: string | null; scheduled_time: string | null; id: string },
+  b: { scheduled_date: string | null; scheduled_time: string | null; id: string }
+): number {
+  return cmpNullsLast(a.scheduled_date, b.scheduled_date)
+    || cmpNullsLast(a.scheduled_time, b.scheduled_time)
+    || cmpStr(a.id.toLowerCase(), b.id.toLowerCase());
+}
+
+/** Пріоритет каталогу — дзеркало `order by sort_order, id` (перша послуга з
+    тим самим ключем виграє, див. buildCsvCatalog). Сервер читає каталог
+    сторінками за id і відновлює цей порядок тут. */
+export function compareCatalogOrder(a: { sort_order: number; id: string }, b: { sort_order: number; id: string }): number {
+  return (a.sort_order - b.sort_order) || cmpStr(a.id.toLowerCase(), b.id.toLowerCase());
 }
 
 /* ---------- Рядки файлу ---------- */

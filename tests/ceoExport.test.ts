@@ -2,10 +2,13 @@
 
    Тут — усе, що перевіряється без роуту й без БД:
      • lib/csv.ts — писач CSV і захист від формульної інʼєкції (= + - @ TAB CR
-       і LF; предикат спільний із xlsx-експортом пошуку);
+       і LF; предикат спільний із xlsx-експортом пошуку), перевід рядка
+       всередині клітинки → пробіл і NUL геть (ревʼю с79, L-1);
      • lib/ceoExport.ts — період (за настінною добою ЦЕНТРУ), дохід запису,
-       назва процедури, рядки файлу;
-     • lib/ceoScope.ts — хто бачить дашборд і які центри в області.
+       назва процедури, рядки файлу; keyset-ключ сторінки й відновлення
+       порядку в памʼяті (M-1); текст тоста на відмову (L-4);
+     • lib/ceoScope.ts — хто бачить дашборд і які центри в області; зона
+       «всіх центрів» — центру з найменшим id (L-3).
    Поведінку роуту (гейт, область, журнал, стеля) стереже
    tests/ceoExportRoute.test.ts. Імена пацієнтів — вигадані. */
 
@@ -14,13 +17,18 @@ import { buildCsv, csvCell, csvNeedsGuard, CSV_BOM } from "@/lib/csv";
 import { isFormulaLike } from "@/lib/xlsx";
 import {
   addDays,
+  afterDateIdOr,
   buildCsvCatalog,
+  ceoExportErrorText,
   ceoExportFileName,
   ceoExportRows,
+  compareCatalogOrder,
+  compareExportOrder,
   dateKey,
   entryRevenue,
   periodRange,
   procName,
+  CEO_EXPORT_ERR,
   CEO_EXPORT_HEAD,
   CEO_EXPORT_MAX_ROWS,
   CEO_PERIODS,
@@ -44,10 +52,11 @@ describe("CSV: захист від формульної інʼєкції", () =>
     ["TAB", "\t=1+1"],
     ["CR", "\r=1+1"],
     ["LF", "\n=1+1"],
-    ["повноширинний =", "＝1+1"],
+    ["повноширинний =", "\uFF1D1+1"],
   ])("провідний %s → апостроф попереду", (_label, raw) => {
     expect(csvNeedsGuard(raw)).toBe(true);
-    expect(csvCell(raw)).toBe('"\'' + raw + '"');
+    // CR/LF після гарда стають пробілом (L-1), але апостроф уже стоїть ПЕРШИМ.
+    expect(csvCell(raw)).toBe('"\'' + raw.replace(/[\r\n]+/g, " ") + '"');
   });
 
   it("звичайні значення — без апострофа", () => {
@@ -62,7 +71,7 @@ describe("CSV: захист від формульної інʼєкції", () =>
   });
 
   it("предикат CSV — надмножина спільного xlsx-предиката (одне й те саме «це формула»)", () => {
-    const probes = ["=", "+", "-", "@", "\t", "\r", "\n", "＝", "＋", "－", "＠", "a", "1", " ", "'"];
+    const probes = ["=", "+", "-", "@", "\t", "\r", "\n", "\uFF1D", "\uFF0B", "\uFF0D", "\uFF20", "a", "1", " ", "'"];
     for (const p of probes) {
       const s = p + "x";
       if (isFormulaLike(s)) expect(csvNeedsGuard(s), JSON.stringify(s)).toBe(true);
@@ -85,13 +94,33 @@ describe("CSV: захист від формульної інʼєкції", () =>
   it("файл: BOM, роздільник «;», рядки через \\n", () => {
     const csv = buildCsv([["Дата", "Пацієнт"], ["2026-09-24", "Тестенко Олена"]]);
     expect(csv.startsWith(CSV_BOM)).toBe(true);
-    expect(CSV_BOM).toBe("﻿");
+    expect(CSV_BOM).toBe("\uFEFF");
     expect(csv.slice(1)).toBe('"Дата";"Пацієнт"\n"2026-09-24";"Тестенко Олена"');
   });
 
-  it("роздільник і перенос усередині значення не ламають рядок (значення в лапках)", () => {
+  it("роздільник усередині значення не ламає рядок (значення в лапках)", () => {
     expect(csvCell("а;б")).toBe('"а;б"');
-    expect(buildCsv([["x\ny"]]).slice(1)).toBe('"x\ny"');
+  });
+
+  /* Ревʼю с79, L-1 — замір ревʼюера в LibreOffice: відкрита з КОМОЮ як
+     роздільником, клітинка з переводом рядка розпадалась, і друга її половина
+     ставала новим записом — живою формулою. Тепер CR/LF усередині → пробіл. */
+  it("L-1: перевід рядка ВСЕРЕДИНІ клітинки → пробіл; один запис = один фізичний рядок", () => {
+    expect(csvCell("x\ny")).toBe('"x y"');
+    expect(csvCell("a\r\n=b")).toBe('"a =b"');
+    expect(csvCell("a\r\rb\n\nc")).toBe('"a b c"');
+    const payload = 'Консультація\n=HYPERLINK(CONCATENATE(CHAR(104);B2);"x"),';
+    const csv = buildCsv([["Процедура"], [payload], ["Звичайна нотатка"]]);
+    const lines = csv.slice(1).split("\n");
+    expect(lines, "запис розпався на кілька фізичних рядків").toHaveLength(3);
+    expect(lines[1]).toBe('"Консультація =HYPERLINK(CONCATENATE(CHAR(104);B2);""x""),"');
+    expect(csv).not.toMatch(/[\r]/);
+  });
+
+  it("NUL вирізається ДО гарда: «␀=1+1» не проходить повз апостроф", () => {
+    const nul = String.fromCharCode(0);
+    expect(csvCell(nul + "=1+1")).toBe('"\'=1+1"');
+    expect(csvCell("a" + nul + "b")).toBe('"ab"');
   });
 });
 
@@ -233,11 +262,78 @@ describe("хто бачить дашборд CEO і які центри (lib/ceo
       .toEqual({ ok: true, clinics: [{ id: C1, name: "Центр", timezone: "UTC" }] });
   });
 
-  it("зона області: обраного центру, для «всіх» — першого; невідомий центр — undefined", () => {
+  /* Ревʼю с79, L-3: «перший» центр залежав від порядку рядків ceo_access без
+     order by, а сторінка й роут читають їх РІЗНИМИ запитами. Тепер — центр із
+     найменшим id: від порядку не залежить. */
+  it("зона області: обраного центру; для «всіх» — центру з НАЙМЕНШИМ id, у будь-якому порядку", () => {
     const clinics = [{ id: C2, timezone: "UTC" }, { id: C1, timezone: "Europe/Kyiv" }];
     expect(ceoScopeTz(clinics, C1)).toBe("Europe/Kyiv");
-    expect(ceoScopeTz(clinics, "all")).toBe("UTC");
+    expect(ceoScopeTz(clinics, C2)).toBe("UTC");
+    expect(ceoScopeTz(clinics, "all")).toBe("Europe/Kyiv");                  // C1 < C2, хоч і другий
+    expect(ceoScopeTz([...clinics].reverse(), "all")).toBe("Europe/Kyiv");   // порядок не впливає
+    // uuid без урахування регістру: «C1» великими — однаково найменший
+    expect(ceoScopeTz([{ id: C2, timezone: "UTC" }, { id: C1.toUpperCase(), timezone: "Europe/Kyiv" }], "all")).toBe("Europe/Kyiv");
     expect(ceoScopeTz(clinics, "c3c3c3c3-0000-4000-8000-000000000003")).toBeUndefined();
     expect(ceoScopeTz([], "all")).toBeUndefined();
+  });
+});
+
+/* ----------------------------------------- сторінки й порядок (ревʼю с79, M-1) */
+
+describe("сторінки: keyset за (дата, id) і відновлення порядку в памʼяті", () => {
+  const ID = "0f000000-0000-4000-8000-00000000000f";
+
+  it("keyset «строго після (дата, id)» — у синтаксисі or() PostgREST", () => {
+    expect(afterDateIdOr("2026-09-10", ID)).toBe(`scheduled_date.gt.2026-09-10,and(scheduled_date.eq.2026-09-10,id.gt.${ID})`);
+  });
+
+  /* «Ворожий» ключ пробиває САМЕ перевірку алфавіту: коротке значення з
+     роздільником синтаксису or() — не довжина і не формат (урок с25). */
+  it("ключ, що зламав би синтаксис or(), — виняток, а не «кривий» фільтр", () => {
+    expect(() => afterDateIdOr("2026-09-10", "a,id.gt.0")).toThrow();
+    expect(() => afterDateIdOr("2026-09-10", "a)")).toThrow();
+    expect(() => afterDateIdOr("2026-09-10", 'a"')).toThrow();
+    expect(() => afterDateIdOr("2026-09-10,x", ID)).toThrow();
+    expect(() => afterDateIdOr("", ID)).toThrow();
+  });
+
+  it("порядок рядків файлу: дата → час (порожній — наприкінці дня) → id без регістру", () => {
+    const r = (d: string | null, t: string | null, id: string) => ({ scheduled_date: d, scheduled_time: t, id });
+    const rows = [
+      r("2026-09-11", "08:00", "b"),
+      r("2026-09-10", null, "a"),
+      r("2026-09-10", "10:00", "B"),
+      r("2026-09-10", "09:00", "c"),
+      r("2026-09-10", "10:00", "a"),
+    ];
+    expect([...rows].sort(compareExportOrder).map((x) => `${x.scheduled_date} ${x.scheduled_time} ${x.id}`)).toEqual([
+      "2026-09-10 09:00 c", "2026-09-10 10:00 a", "2026-09-10 10:00 B", "2026-09-10 null a", "2026-09-11 08:00 b",
+    ]);
+  });
+
+  it("пріоритет каталогу: sort_order, потім id — дзеркало order by sort_order, id", () => {
+    const s = (sort_order: number, id: string) => ({ sort_order, id });
+    expect([s(3, "aa"), s(0, "zz"), s(0, "BB"), s(10, "a")].sort(compareCatalogOrder).map((x) => x.id)).toEqual(["BB", "zz", "aa", "a"]);
+  });
+});
+
+/* ------------------------------------------- текст відмови на клієнті (L-4) */
+
+describe("текст тоста на невдалий експорт (ревʼю с79, L-4)", () => {
+  it("429 — окреме повідомлення про ліміт", () => {
+    expect(ceoExportErrorText(429, null)).toBe("Забагато вивантажень за короткий час — спробуйте за кілька хвилин");
+  });
+  it("403 — безпечний текст роуту як є; без тексту чи надто довгий — загальне «недостатньо прав»", () => {
+    expect(ceoExportErrorText(403, { error: "Немає доступу до цього центру — оновіть сторінку" })).toBe("Немає доступу до цього центру — оновіть сторінку");
+    expect(ceoExportErrorText(403, null)).toBe("Недостатньо прав для експорту");
+    expect(ceoExportErrorText(403, { error: 42 })).toBe("Недостатньо прав для експорту");
+    expect(ceoExportErrorText(403, { error: "   " })).toBe("Недостатньо прав для експорту");
+    expect(ceoExportErrorText(403, { error: "x".repeat(161) })).toBe("Недостатньо прав для експорту");
+  });
+  it("решта (401, 400, 500) — колишнє «не вдалося — спробуйте ще раз», без тексту відповіді", () => {
+    for (const st of [400, 401, 500, 502]) {
+      expect(ceoExportErrorText(st, { error: "внутрішня деталь" })).toBe(CEO_EXPORT_ERR);
+    }
+    expect(CEO_EXPORT_ERR).toBe("Не вдалося сформувати експорт — спробуйте ще раз");
   });
 });

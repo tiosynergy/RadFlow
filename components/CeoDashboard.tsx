@@ -21,12 +21,14 @@ import { visibleRooms, pluralZapys } from "@/lib/rooms";
 import {
   addDays,
   buildCsvCatalog,
+  ceoExportErrorText,
   ceoExportFileName,
   dateKey,
   entryRevenue,
   periodRange,
   procName,
   CEO_ENTRY_COLS,
+  CEO_EXPORT_ERR,
   CEO_EXPORT_MAX_ROWS,
   CEO_SERVICE_COLS,
   type CatalogServiceRow,
@@ -53,7 +55,7 @@ const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MON_GEN = ["січня", "лютого", "березня", "квітня", "травня", "червня", "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"];
 /* «Сьогодні» — за настінним часом ЦЕНТРУ (tz), а не браузера керівника: CEO
    глобальний і може дивитися центр в іншій зоні, де доба вже інша (аудит M-4).
-   Для агрегату «Всі центри» єдиної зони не існує — там зона браузера (див. scopeTz). */
+   Для агрегату «Всі центри» єдиної зони не існує — там зона центру з найменшим id (див. scopeTz). */
 function today0(tz?: string) { return wallToday0(tz); }
 function fmtShort(d: Date) { return d.getDate() + " " + MON_GEN[d.getMonth()]; }
 
@@ -187,11 +189,13 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
   useEffect(() => { setDrillQuery(""); }, [drill]);
 
   /* Зона, за якою рахується «сьогодні»/«цей тиждень»: обраного центру, а при
-     «Всі центри» — ПЕРШОГО доступного. Спільної доби в кількох зонах не існує,
+     «Всі центри» — центру з НАЙМЕНШИМ id. Спільної доби в кількох зонах не існує,
      тож вибір довільний — але він має бути ДЕТЕРМІНОВАНИМ: якщо лишити undefined,
      wallToday0() впаде на singleton setClinicTz(), а там може лежати зона центру
      з попереднього екрана (клієнтська навігація /queue → /ceo).
-     с79: правило — lib/ceoScope.ts, ним же роут CSV рахує період файлу. */
+     с79: правило — lib/ceoScope.ts, ним же роут CSV рахує період файлу; «перший
+     центр» залежав від порядку рядків БД, а сторінка й роут читають гранти
+     різними запитами (ревʼю с79, L-3). */
   const scopeTz = useMemo(() => ceoScopeTz(clinics, scope), [scope, clinics]);
 
   const clinicIds = useMemo(
@@ -416,9 +420,14 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
         body: JSON.stringify({ period, scope }),
         cache: "no-store",
       });
-      // 429 — гальмо на 10 файлів за 10 хв (як у експорту пошуку): «спробуйте ще раз» тут збрехало б.
-      if (res.status === 429) { notify("Забагато вивантажень за короткий час — спробуйте за кілька хвилин", "error"); return; }
-      if (!res.ok) { notify("Не вдалося сформувати експорт — спробуйте ще раз", "error"); return; }
+      /* Текст відмови — ceoExportErrorText (lib/ceoExport.ts): 429 — гальмо ліміту,
+         403 — безпечний текст самого роуту («Немає доступу до цього центру —
+         оновіть сторінку»…), решта — загальне «спробуйте ще раз» (ревʼю с79, L-4). */
+      if (!res.ok) {
+        const body = res.status === 403 ? await res.json().catch(() => null) : null;
+        notify(ceoExportErrorText(res.status, body), "error");
+        return;
+      }
       const blob = await res.blob();
       // «Обрізано» каже сервер: він читає на рядок більше за стелю, тож рівно 5000 записів — не «перші 5000».
       const truncated = res.headers.get("X-Export-Truncated") === "1";
@@ -427,7 +436,7 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
       notify("Експортовано у CSV" + (truncated ? ` (перші ${shown} ${pluralZapys(shown)})` : ""), "success");
     } catch {
       // Мережа моргнула посеред запиту чи завантаження — той самий шлях, що й відмова сервера.
-      notify("Не вдалося сформувати експорт — спробуйте ще раз", "error");
+      notify(CEO_EXPORT_ERR, "error");
     } finally {
       setExporting(false);
     }

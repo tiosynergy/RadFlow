@@ -8,15 +8,21 @@ import { logError } from "@/lib/serverLog";
 import { ceoDashboardAccess, ceoScopeTz } from "@/lib/ceoScope";
 import {
   CEO_ENTRY_COLS,
+  CEO_EXPORT_ERR,
   CEO_EXPORT_HEAD,
   CEO_EXPORT_MAX_ROWS,
   CEO_PERIODS,
   CEO_SERVICE_COLS,
+  afterDateIdOr,
   buildCsvCatalog,
   ceoExportFileName,
   ceoExportRows,
+  compareCatalogOrder,
+  compareExportOrder,
   dateKey,
   periodRange,
+  type CatalogServiceRow,
+  type CeoExportEntry,
   type CeoExportRow,
 } from "@/lib/ceoExport";
 import { buildCsv } from "@/lib/csv";
@@ -46,8 +52,11 @@ import { buildCsv } from "@/lib/csv";
      • ПЕРІОД — тим самим periodRange і за тією самою зоною (ceoScopeTz), що й
        KPI на екрані: файл описує ті самі дні, що й картки.
      • СТЕЛЯ 5000 і чесне «перші N»: читаємо на рядок більше — «обрізано»
-       лише тоді, коли ДОВЕДЕНО, що є ще рядок (рівно 5000 записів — повний
-       файл). Сигнал — заголовок X-Export-Truncated.
+       лише тоді, коли 5001-й рядок СПРАВДІ прочитано (рівно 5000 записів —
+       повний файл). Сигнал — заголовок X-Export-Truncated.
+       ⚠️ Читаємо СТОРІНКАМИ ≤1000 (ревʼю с79, M-1): db-max-rows PostgREST мовчки
+       різав один запит до 1000 рядків. Записи, каталог і кабінети — keyset-
+       сторінками (readPages); кінець вибірки — лише порожня сторінка.
      • ЖУРНАЛ — подія `patient_data.exported` у журнал КОЖНОГО центру, чиї
        рядки пішли у файл, лише з ЙОГО числом рядків (журнал центру А не має
        знати, скільки вивантажено з центру Б). details — { source, rows,
@@ -68,7 +77,55 @@ import { buildCsv } from "@/lib/csv";
 export const dynamic = "force-dynamic";
 
 const PATH = "/api/ceo/export";
-const EXPORT_ERR = "Не вдалося сформувати експорт — спробуйте ще раз";
+
+/** Сторінка читання. PostgREST віддає не більше db-max-rows (1000) рядків на
+    запит — МОВЧКИ (ревʼю с79, M-1): 5000 записів одним `.limit(5001)` на проді
+    ставали 1000 без жодної ознаки обрізання, а місячний файл одного центру
+    (≈2,9 тис. записів) — неповним. */
+const PAGE = 1000;
+/** Запобіжник від нескінченного циклу (≈60 тис. рядків за стелі 1000). Більше
+    сторінок = зламаний keyset або крихітна стеля сервера → помилка, а не тиша. */
+const MAX_PAGES = 60;
+
+type DbErr = { code?: string; message?: string };
+type PageRes<T> = PromiseLike<{ data: T[] | null; error: DbErr | null }>;
+type EntryRow = CeoExportEntry & { id: string; scheduled_time: string | null; clinic_id: string };
+type ServiceRow = CatalogServiceRow & { id: string; sort_order: number };
+
+/**
+ * Читає вибірку keyset-сторінками до `cap` рядків (або до кінця).
+ * `page(after, want)` будує СВІЖИЙ запит «строго після рядка `after`» (null —
+ * з початку) з тим самим ORDER BY і `.limit(want)`.
+ *   • КІНЕЦЬ — лише ПОРОЖНЯ сторінка. Коротка може бути стелею сервера, а не
+ *     кінцем вибірки; повірити їй — та сама тиха обрізка, від якої лікуємо;
+ *   • «є ще» роут вирішує за РЕАЛЬНО прочитаним рядком понад стелю файлу;
+ *   • keyset, а не offset (`.range`): між сторінками запис можуть скасувати —
+ *     offset тоді зсувається і МОВЧКИ губить сусідній рядок, а keyset
+ *     продовжує від останнього прочитаного ключа.
+ */
+async function readPages<T>(
+  page: (after: T | null, want: number) => PageRes<T>,
+  cap: number
+): Promise<{ rows: T[]; error: DbErr | null }> {
+  const rows: T[] = [];
+  let after: T | null = null;
+  for (let i = 0; i < MAX_PAGES; i++) {
+    let res: { data: T[] | null; error: DbErr | null };
+    try {
+      res = await page(after, Math.min(PAGE, cap - rows.length));
+    } catch (e) {
+      // Напр. некоректний ключ сторінки (afterDateIdOr кидає) — помилка, не «кінець».
+      return { rows, error: { code: "exception", message: e instanceof Error ? e.message : String(e) } };
+    }
+    if (res.error) return { rows, error: res.error };
+    const got = res.data ?? [];
+    if (!got.length) return { rows, error: null };
+    rows.push(...got);
+    if (rows.length >= cap) return { rows, error: null };
+    after = got[got.length - 1];
+  }
+  return { rows, error: { code: "pagination_overflow", message: `pages>${MAX_PAGES}` } };
+}
 
 /** Тіло — лише період і область. strict: клієнт, що шле ще й `clinicIds`,
     помиляється, і про це краще почути 400, ніж «тихо» отримати інший файл. */
@@ -89,13 +146,15 @@ export async function POST(req: Request) {
   const { period, scope } = parsed.data;
 
   /** Збій читання — 500 і структурований слід без PII (текст помилки чистить logError). */
-  const fail = (step: string, err: { code?: string; message?: string } | null) => {
+  const fail = (step: string, err: DbErr | null) => {
     logError({ event: "ceo.export_failed", actorId: me.id, errorCode: err?.code ?? "db_error", message: `step=${step} ${err?.message ?? ""}` });
-    return NextResponse.json({ error: EXPORT_ERR }, { status: 500 });
+    return NextResponse.json({ error: CEO_EXPORT_ERR }, { status: 500 });
   };
 
   /* 1. Хто і які центри — ТИМ САМИМ правилом, що сторінка /ceo, і з тих самих
-        джерел: активні гранти ceo_access + власний центр адміна. */
+        джерел: активні гранти ceo_access + власний центр адміна. Гранти й
+        картки центрів — одним запитом, як і на сторінці: їх стільки, скільки
+        центрів у керівника (одиниці–десятки), до стелі 1000 далеко. */
   const grantsRes = await supabase.from("ceo_access").select("clinic_id").eq("ceo_id", me.id).eq("status", "active");
   if (grantsRes.error) return fail("ceo_access", grantsRes.error);
   const grantIds = (grantsRes.data ?? []).map((g) => g.clinic_id);
@@ -117,7 +176,8 @@ export async function POST(req: Request) {
   if (!access.ok) {
     logError({ event: "access.denied", actorId: me.id, errorCode: access.reason === "setup" ? "clinic_not_configured" : "forbidden", message: `path=${PATH}` });
     return NextResponse.json(
-      { error: access.reason === "setup" ? "Спершу завершіть налаштування центру" : "Недостатньо прав" },
+      // Тексти 403 клієнт показує як є (ревʼю с79, L-4) — лише загальні фрази, без внутрощів.
+      { error: access.reason === "setup" ? "Спершу завершіть налаштування центру" : "Недостатньо прав для експорту" },
       { status: 403 }
     );
   }
@@ -132,7 +192,7 @@ export async function POST(req: Request) {
     const hit = access.clinics.find((c) => c.id.toLowerCase() === scope.toLowerCase());
     if (!hit) {
       logError({ event: "access.denied", actorId: me.id, errorCode: "clinic_out_of_scope", message: `path=${PATH}` });
-      return NextResponse.json({ error: "Немає доступу до цього центру" }, { status: 403 });
+      return NextResponse.json({ error: "Немає доступу до цього центру — оновіть сторінку" }, { status: 403 });
     }
     clinicIds = [hit.id];
     tzScope = hit.id;
@@ -145,36 +205,49 @@ export async function POST(req: Request) {
   let truncated = false;
   const byClinic = new Map<string, number>();
   if (clinicIds.length) {
-    const qRes = await supabase
-      .from("queue_entries")
-      .select(CEO_ENTRY_COLS)
-      .in("clinic_id", clinicIds)
-      .neq("status", "cancelled")
-      .gte("scheduled_date", dateKey(from))
-      .lte("scheduled_date", dateKey(to))
-      // Дата, як і раніше; час і id — лише щоб зріз на стелі був детермінованим.
-      .order("scheduled_date", { ascending: true })
-      .order("scheduled_time", { ascending: true })
-      .order("id", { ascending: true })
-      .limit(CEO_EXPORT_MAX_ROWS + 1);   // +1 — проба «чи є рядок понад стелю»
+    /* Записи — сторінками за (дата, id) до СТЕЛЯ + 1: «обрізано» лише тоді,
+       коли рядок понад стелю СПРАВДІ прочитано (ревʼю с79, M-1). */
+    const qRes = await readPages<EntryRow>((after, want) => {
+      let q = supabase
+        .from("queue_entries")
+        .select(CEO_ENTRY_COLS)
+        .in("clinic_id", clinicIds)
+        .neq("status", "cancelled")
+        .gte("scheduled_date", dateKey(from))
+        .lte("scheduled_date", dateKey(to));
+      if (after) q = q.or(afterDateIdOr(after.scheduled_date ?? "", after.id));
+      return q.order("scheduled_date", { ascending: true }).order("id", { ascending: true }).limit(want);
+    }, CEO_EXPORT_MAX_ROWS + 1);
     if (qRes.error) return fail("queue_entries", qRes.error);
-    const all = qRes.data ?? [];
-    truncated = all.length > CEO_EXPORT_MAX_ROWS;
-    const entries = truncated ? all.slice(0, CEO_EXPORT_MAX_ROWS) : all;
+    truncated = qRes.rows.length > CEO_EXPORT_MAX_ROWS;
+    /* Стеля — за (дата, id): на останньому, неповному дні у файл ідуть записи з
+       меншими id, а не ранішими годинами (час у ключі сторінки свідомо немає —
+       див. afterDateIdOr). Показ — уже за (дата, час, id). */
+    const entries = qRes.rows.slice(0, CEO_EXPORT_MAX_ROWS).sort(compareExportOrder);
 
     if (entries.length) {
       // Каталог — для оцінки позицій без снапшот-ціни (як catalog_est_sum RPC 0114);
       // кабінети — УСІ, включно з вимкненими: це рядки ЗАПИСІВ, а не список кабінетів.
+      // Обидва — теж сторінками: у CEO з багатьма центрами каталог перевалює за 1000.
       const [svRes, rmRes] = await Promise.all([
-        supabase.from("services").select(CEO_SERVICE_COLS).in("clinic_id", clinicIds).eq("active", true).order("sort_order").order("id"),
-        supabase.from("rooms").select("id, name").in("clinic_id", clinicIds),
+        readPages<ServiceRow>((after, want) => {
+          let q = supabase.from("services").select(CEO_SERVICE_COLS).in("clinic_id", clinicIds).eq("active", true);
+          if (after) q = q.gt("id", after.id);
+          return q.order("id", { ascending: true }).limit(want);
+        }, Infinity),
+        readPages<{ id: string; name: string | null }>((after, want) => {
+          let q = supabase.from("rooms").select("id, name").in("clinic_id", clinicIds);
+          if (after) q = q.gt("id", after.id);
+          return q.order("id", { ascending: true }).limit(want);
+        }, Infinity),
       ]);
       /* Збій каталогу — це НЕ «доходу немає»: без нього стовпець «Дохід» мовчки
          занизився б до снапшот-цін (так робив клієнт до с79). Тому — помилка. */
       if (svRes.error) return fail("services", svRes.error);
       if (rmRes.error) return fail("rooms", rmRes.error);
-      const catalog = buildCsvCatalog(svRes.data ?? []);
-      const roomNames = new Map((rmRes.data ?? []).map((r) => [String(r.id).toLowerCase(), r.name || ""]));
+      // Пріоритет дублів каталогу — порядок (sort_order, id): відновлюємо його тут.
+      const catalog = buildCsvCatalog(svRes.rows.sort(compareCatalogOrder));
+      const roomNames = new Map(rmRes.rows.map((r) => [String(r.id).toLowerCase(), r.name || ""]));
       rows = ceoExportRows(entries, catalog, (id) => roomNames.get(id.toLowerCase()) ?? "");
       // clinic_id події — з РЯДКА БД, а не з параметра клієнта (урок с25).
       for (const e of entries) byClinic.set(e.clinic_id, (byClinic.get(e.clinic_id) ?? 0) + 1);

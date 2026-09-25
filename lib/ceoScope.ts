@@ -59,10 +59,19 @@ export function ceoDashboardAccess(input: CeoAccessInput): CeoAccess {
 }
 
 /** Зона, за якою рахується «сьогодні»/«цей тиждень»: обраного центру, а при
-    «Всі центри» — ПЕРШОГО доступного. Спільної доби в кількох зонах не існує,
-    тож вибір довільний — але він мусить бути однаковим на екрані (KPI) і в
-    роуті експорту (CSV), інакше файл описав би не той період, що картки. */
+    «Всі центри» — центру з НАЙМЕНШИМ id. Спільної доби в кількох зонах не
+    існує, тож вибір довільний — але він мусить бути однаковим на екрані (KPI)
+    і в роуті експорту (CSV), інакше файл описав би не той період, що картки.
+    ⚠️ Ревʼю с79 (L-3): до цього бралась «перша» зона, а порядок центрів —
+    це порядок рядків ceo_access БЕЗ order by, і сторінка та роут читають їх
+    РІЗНИМИ запитами. Найменший id від порядку не залежить; порядок у
+    перемикачі центрів (і гейт сторінки) при цьому не змінився. */
 export function ceoScopeTz(clinics: ReadonlyArray<{ id: string; timezone?: string | null }>, scope: string): string | undefined {
-  const c = scope !== "all" ? clinics.find((x) => x.id === scope) : clinics[0];
+  const c = scope !== "all"
+    ? clinics.find((x) => x.id === scope)
+    : clinics.reduce<{ id: string; timezone?: string | null } | undefined>(
+        (min, x) => (!min || x.id.toLowerCase() < min.id.toLowerCase() ? x : min),
+        undefined
+      );
   return c?.timezone || undefined;
 }

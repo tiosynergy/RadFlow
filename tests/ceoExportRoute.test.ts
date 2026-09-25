@@ -13,11 +13,21 @@
        `.from()` service-role — порушення: дані роут читає лише RLS-клієнтом;
      • сторінка /ceo — СПРАВЖНЯ (app/ceo/page.tsx) у диференційному блоці:
        той самий вхід → той самий вердикт і ті самі центри, що в роуту.
+   Ревʼю с79 (раунд 1) додало три речі, без яких тест був зеленим на дефекті:
+     • `rls.maxRows` — стеля db-max-rows PostgREST (M-1): без неї двійник
+       віддавав 5001 рядок одним запитом, а прод — 1000;
+     • журнал «повільний» (L-2): RPC записує виклик лише після паузи, тож
+       емісія без await (fire-and-forget) більше не проходить непоміченою;
+     • `hooks.onFrom` — вклинитись МІЖ сторінками читання (скасування запису
+       посеред експорту): offset-пагінація на ньому губить рядок, keyset — ні;
+     • `rls.project` — двійник віддає ЛИШЕ вибрані колонки, як PostgREST:
+       прибрана з select колонка (`clinic_id`) більше не «лишається на місці».
    Годинник — лише Date (useFakeTimers toFake: Date). Імена — вигадані. */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { emptyDb, fakeAdminClient, type FakeDb, type Row } from "./fixtures/fakeSupabase";
 import { ceoDashboardAccess, type CeoClinic } from "@/lib/ceoScope";
+import { ceoExportErrorText } from "@/lib/ceoExport";
 
 const C1 = "c1c1c1c1-0000-4000-8000-000000000001";   // Київ
 const C2 = "c2c2c2c2-0000-4000-8000-000000000002";   // UTC
@@ -36,6 +46,9 @@ const REG = "ad000000-0000-4000-8000-00000000000c";        // реєстрато
 const RAD = "ad000000-0000-4000-8000-00000000000d";        // радіолог C1, грант лише відкликаний
 const REF = "f1000000-0000-4000-8000-000000000001";        // направник, грантів немає
 const REG_CEO = "ad000000-0000-4000-8000-00000000000e";    // реєстратор C2, «ще й CEO» центру C1
+const ADMIN_NOCLINIC = "ad000000-0000-4000-8000-00000000000f"; // адмін із clinic_id = null
+const REG_NEW = "ad000000-0000-4000-8000-000000000010";     // реєстратор НЕНАСТРОЄНОГО центру C4
+const GHOST = "99990000-0000-4000-8000-000000000001";       // сесія є, профілю немає
 
 /* ---------- двійники ---------- */
 
@@ -54,6 +67,9 @@ const adminViolations: string[] = [];
 const logs: Array<Record<string, unknown>> = [];
 const rl = { allow: true };
 const journal: { error: { message: string; code?: string } | null } = { error: null };
+/** Вклинитись перед N-м `from(table)` роуту — напр. між сторінками читання. */
+const hooks: { onFrom?: (table: string, n: number) => void } = {};
+const fromCount: Record<string, number> = {};
 
 /* Двійник для СТОРІНКИ: вона читає вкладені вибірки (`clinics(…)`), яких
    fakeSupabase не вміє. Запити звіряються ДОСЛІВНО: змінилась вибірка
@@ -101,7 +117,14 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => {
     if (client.kind === "page") return pageClient();
     const c = fakeAdminClient(rls);
-    return { auth: { getUser: async () => ({ data: { user: who.user } }) }, from: (t: string) => c.from(t) };
+    return {
+      auth: { getUser: async () => ({ data: { user: who.user } }) },
+      from: (t: string) => {
+        const n = (fromCount[t] = (fromCount[t] ?? 0) + 1);
+        hooks.onFrom?.(t, n);
+        return c.from(t);
+      },
+    };
   },
 }));
 vi.mock("@/lib/supabase/admin", () => ({
@@ -112,6 +135,10 @@ vi.mock("@/lib/supabase/admin", () => ({
       throw new Error(`service-role читає «${t}» — роут експорту мусить читати RLS-клієнтом сесії`);
     },
     rpc: async (fn: string, args: Record<string, unknown>) => {
+      /* L-2: журнал «повільний», як мережа. Виклик записується ПІСЛЯ паузи —
+         роут, що не дочекався емісії (fire-and-forget), віддасть файл раніше,
+         ніж подія зʼявиться, і тести подій почервоніють. */
+      if (fn === "emit_important_event") await new Promise((r) => setTimeout(r, 20));
       rpcCalls.push({ fn, args: JSON.parse(JSON.stringify(args ?? {})) });
       if (fn === "rl_check") return { data: rl.allow, error: null };
       if (fn === "emit_important_event") return journal.error ? { data: null, error: journal.error } : { data: "ev", error: null };
@@ -128,7 +155,7 @@ const { default: CeoPage } = await import("@/app/ceo/page");
 
 /* ---------- фікстура ---------- */
 
-const q = (id: string, clinic: string, room: string | null, date: string, time: string, status: string, studies: unknown[], name: string, note: string | null = null): Row => ({
+const q = (id: string, clinic: string, room: string | null, date: string, time: string | null, status: string, studies: unknown[], name: string, note: string | null = null): Row => ({
   id, clinic_id: clinic, room_id: room, scheduled_date: date, scheduled_time: time, status, studies, patient_name: name, note,
 });
 const svc = (id: string, clinic: string, name: string, price: number, room: string | null, active: boolean, sort: number): Row => ({
@@ -146,7 +173,10 @@ beforeEach(() => {
   rl.allow = true;
   journal.error = null;
   rpcCalls.length = 0; adminViolations.length = 0; logs.length = 0;
-  rls.errors = {}; rls.seen = {}; rls.queries = [];
+  rls.errors = {}; rls.seen = {}; rls.queries = []; rls.maxRows = undefined;
+  rls.project = true;   // лише вибрані колонки, як PostgREST (мутація ревʼю M01)
+  hooks.onFrom = undefined;
+  for (const k of Object.keys(fromCount)) delete fromCount[k];
   rls.tables = {
     profiles: [
       { id: CEO, clinic_id: null, role: "ceo", full_name: "Керівник Тестовий" },
@@ -157,6 +187,8 @@ beforeEach(() => {
       { id: RAD, clinic_id: C1, role: "radiologist", full_name: "Радіолог Тестовий" },
       { id: REF, clinic_id: null, role: "referrer", full_name: "Направник Тестовий" },
       { id: REG_CEO, clinic_id: C2, role: "registrar", full_name: "Реєстратор Керівник" },
+      { id: ADMIN_NOCLINIC, clinic_id: null, role: "admin", full_name: "Адмін Без Центру" },
+      { id: REG_NEW, clinic_id: C4, role: "registrar", full_name: "Реєстратор Нового Центру" },
     ],
     ceo_access: [
       { ceo_id: CEO, clinic_id: C1, status: "active" },
@@ -172,10 +204,10 @@ beforeEach(() => {
       { id: C4, name: "Новий центр", timezone: "Europe/Kyiv", configured_at: null },
     ],
     rooms: [
-      { id: R1, clinic_id: C1, name: "МРТ-1" },
-      { id: R2, clinic_id: C1, name: "КТ-1" },          // вимкнений — назва в CSV однаково потрібна
-      { id: R3, clinic_id: C2, name: "МРТ-Б" },
-      { id: R4, clinic_id: C3, name: "Чужий кабінет" },
+      { id: R1, clinic_id: C1, name: "МРТ-1", active: true },
+      { id: R2, clinic_id: C1, name: "КТ-1", active: false },   // ВИМКНЕНИЙ — назва в CSV однаково потрібна
+      { id: R3, clinic_id: C2, name: "МРТ-Б", active: true },
+      { id: R4, clinic_id: C3, name: "Чужий кабінет", active: true },
     ],
     services: [
       svc("s0", C1, "Коліно", 9999, R1, false, 0),    // ВИМКНЕНА: без фільтра active виграла б порядком
@@ -246,6 +278,14 @@ const eventCounts = () => {
   return out;
 };
 const readQueue = () => (rls.queries ?? []).some((x) => x.table === "queue_entries");
+/** L-4: 403 роуту — безпечна фраза, яку клієнт покаже ЯК Є (фільтр ceoExportErrorText
+    її не підмінює загальним текстом). */
+const expect403Text = (r: { status: number; text: string }, text: string) => {
+  expect(r.status).toBe(403);
+  const body = JSON.parse(r.text);
+  expect(body.error).toBe(text);
+  expect(ceoExportErrorText(403, body), "клієнт не покаже цей текст як є").toBe(text);
+};
 
 /* =================================================================== */
 
@@ -276,7 +316,7 @@ describe("гейт: сесія, ліміт, роль — fail-closed", () => {
   ])("%s — 403: дашборда він не бачить, файла теж", async (_label, uid) => {
     who.user = { id: uid };
     const r = await exportCsv({ period: "month", scope: "all" });
-    expect(r.status).toBe(403);
+    expect403Text(r, "Недостатньо прав для експорту");
     expect(readQueue(), "до відмови читали записи черги").toBe(false);
     expect(emits()).toEqual([]);
     expect(logs.some((l) => l.event === "access.denied" && l.actorId === uid && l.errorCode === "forbidden")).toBe(true);
@@ -286,7 +326,7 @@ describe("гейт: сесія, ліміт, роль — fail-closed", () => {
     rls.tables.ceo_access.push({ ceo_id: ADMIN_NEW, clinic_id: C1, status: "active" });
     who.user = { id: ADMIN_NEW };
     const r = await exportCsv({ period: "month", scope: "all" });
-    expect(r.status).toBe(403);
+    expect403Text(r, "Спершу завершіть налаштування центру");
     expect(readQueue()).toBe(false);
   });
 
@@ -320,7 +360,7 @@ describe("область: клієнтському id центру не віри
 
   it("ЧУЖИЙ центр (грант відкликано) — 403, а не порожній файл; черга не читалась, подій немає", async () => {
     const r = await exportCsv({ period: "month", scope: C3 });
-    expect(r.status).toBe(403);
+    expect403Text(r, "Немає доступу до цього центру — оновіть сторінку");
     expect(r.text).not.toContain("Чужий Пацієнт");
     expect(readQueue(), "роут пішов у чергу з чужим id центру").toBe(false);
     expect(emits()).toEqual([]);
@@ -376,7 +416,7 @@ describe("період — той самий, що в KPI: за зоною об�
     expect(r.headers.get("content-disposition")).toBe('attachment; filename="ceo-week.csv"');
   });
 
-  it("біля півночі: центр у Києві і центр в UTC живуть у різних добах; «всі» — за ПЕРШИМ центром", async () => {
+  it("біля півночі: центр у Києві і центр в UTC живуть у різних добах; «всі» — за центром із НАЙМЕНШИМ id", async () => {
     vi.setSystemTime(new Date("2026-09-30T22:30:00Z"));   // Київ: 01.10 01:30; UTC: 30.09 22:30
     rls.tables.queue_entries = [
       q("k1", C1, R1, "2026-09-30", "10:00", "done", [], "Київ Тридцяте"),
@@ -387,13 +427,15 @@ describe("період — той самий, що в KPI: за зоною об�
     const names = async (scope: string) => dataRows((await exportCsv({ period: "today", scope })).text).map((x) => x[1]).sort();
     expect(await names(C1)).toEqual(["Київ Перше"]);
     expect(await names(C2)).toEqual(["UTC Тридцяте"]);     // зона процесу тестів — Київ: без tz центру тут було б «Перше»
-    expect(await names("all")).toEqual(["UTC Перше", "Київ Перше"]);   // перший грант — C1 (Київ)
-    // Порядок грантів — порядок, у якому їх віддала БД (як на сторінці): першим став C2 → доба UTC.
+    // «Всі»: найменший id — C1 (Київ). Гранти [C1, C2]: «останній» дав би UTC.
+    expect(await names("all")).toEqual(["UTC Перше", "Київ Перше"]);
+    /* Ревʼю с79, L-3: гранти приходять без order by, і сторінка з роутом читають
+       їх РІЗНИМИ запитами. Порядок [C2, C1]: «перший» дав би UTC — а зона та сама. */
     rls.tables.ceo_access = [
       { ceo_id: CEO, clinic_id: C2, status: "active" },
       { ceo_id: CEO, clinic_id: C1, status: "active" },
     ];
-    expect(await names("all")).toEqual(["UTC Тридцяте", "Київ Тридцяте"]);
+    expect(await names("all")).toEqual(["UTC Перше", "Київ Перше"]);
   });
 });
 
@@ -407,6 +449,18 @@ describe("файл: заголовки, формат, колонки, дохід
     expect(r.headers.get("x-export-truncated")).toBe("0");
     expect([...r.bytes.slice(0, 3)], "файл не починається з UTF-8 BOM").toEqual([0xef, 0xbb, 0xbf]);
     expect(r.text.slice(1).split("\n")[0]).toBe('"Дата";"Пацієнт";"Процедура";"Кабінет";"Статус";"Дохід"');
+  });
+
+  /* Сторінки читаються за (дата, id) — час у ключі свідомо немає, — тож показ
+     за часом відновлюється в памʼяті. Тут id навмисно йдуть ПРОТИ часу. */
+  it("у межах дня — за часом, порожній час наприкінці, хоч id ідуть навпаки", async () => {
+    rls.tables.queue_entries = [
+      q("a-late", C1, R1, "2026-09-24", "18:00", "done", [], "Пізній Прийом"),
+      q("m-none", C1, R1, "2026-09-24", null, "done", [], "Без Часу"),
+      q("z-early", C1, R1, "2026-09-24", "08:00", "done", [], "Ранній Прийом"),
+    ];
+    const r = await exportCsv({ period: "today", scope: C1 });
+    expect(dataRows(r.text).map((x) => x[1])).toEqual(["Ранній Прийом", "Пізній Прийом", "Без Часу"]);
   });
 
   it("рядки: дата → час; дохід — снапшот, інакше АКТИВНА послуга кабінету, інакше 0", async () => {
@@ -428,16 +482,38 @@ describe("файл: заголовки, формат, колонки, дохід
     const r = await exportCsv({ period: "today", scope: C1 });
     expect(r.status).toBe(200);
     const rows = dataRows(r.text);
-    expect(rows.slice(0, hostile.length).map((x) => x[1])).toEqual(hostile.map((h) => "'" + h));
+    // CR/LF після апострофа стають пробілом (L-1) — апостроф однаково ПЕРШИЙ.
+    expect(rows.slice(0, hostile.length).map((x) => x[1])).toEqual(hostile.map((h) => "'" + h.replace(/[\r\n]+/g, " ")));
     // процедура з нотатки теж клітинка файлу — теж під захистом; лапки — подвоєні й розібрані назад
     expect(rows[hostile.length]).toEqual(["2026-09-24", 'Ла"пки Тест', "'=1+1", "МРТ-1", "done", "0"]);
     expect(r.text).toContain('"Ла""пки Тест"');
     expect(rows[hostile.length + 1][1]).toBe("Звичайна Тестова");
   });
+
+  /* Ревʼю с79, L-1 — замір у LibreOffice: файл, відкритий із КОМОЮ як
+     роздільником, губив межі лапок, і друга половина клітинки з переводом
+     рядка ставала НОВИМ записом — живою формулою (HYPERLINK). */
+  it("L-1: перевід рядка в нотатці чи регіоні не розриває запис — фізичних рядків рівно стільки, скільки записів", async () => {
+    rls.tables.queue_entries = [
+      q("n1", C1, R1, "2026-09-24", "09:00", "done", [], "Тестенко Олена", 'Консультація\n=HYPERLINK(CONCATENATE(CHAR(104);B2);"x"),'),
+      q("n2", C1, R1, "2026-09-24", "09:05", "done", [{ type: "МРТ", region: "Коліно\r\n=1+1" }], "Вигаданий Петро"),
+    ];
+    const r = await exportCsv({ period: "today", scope: C1 });
+    expect(r.status).toBe(200);
+    expect(r.text.slice(1).split("\n"), "запис розпався на кілька фізичних рядків").toHaveLength(3);
+    expect(r.text).not.toMatch(/\r/);
+    const rows = dataRows(r.text);
+    expect(rows[0][2]).toBe('Консультація =HYPERLINK(CONCATENATE(CHAR(104);B2);"x"),');
+    expect(rows[1][2]).toBe("МРТ · Коліно =1+1");
+  });
 });
 
-describe("стеля 5000 — чесне «перші N»", () => {
-  /* 4000 записів C1 раніше за датою, решта — C2 пізніше. Порядок — дата, час, id. */
+/* Ревʼю с79, M-1: PostgREST віддає не більше db-max-rows (1000) рядків на
+   запит — мовчки. Перша редакція читала `.limit(5001)` одним запитом: на
+   двійнику без стелі — зелено, на проді — 1000 рядків і «повний» файл. Тут
+   стеля сервера ввімкнена (`rls.maxRows`). */
+describe("стеля 5000 і сторінки: db-max-rows сервера — 1000", () => {
+  /* 4000 записів C1 раніше за датою, решта — C2 пізніше. */
   const bulk = (n: number) => {
     const out: Row[] = [];
     for (let i = 0; i < n; i++) {
@@ -446,8 +522,10 @@ describe("стеля 5000 — чесне «перші N»", () => {
     }
     return out;
   };
+  const queueReads = () => (rls.queries ?? []).filter((x) => x.table === "queue_entries").length;
 
   it("5001 запис — у файлі перші 5000, X-Export-Truncated: 1; журнал — лише число КОЖНОГО центру У ФАЙЛІ", async () => {
+    rls.maxRows = 1000;
     rls.tables.queue_entries = bulk(5001);
     const r = await exportCsv({ period: "month", scope: "all" });
     expect(r.status).toBe(200);
@@ -455,16 +533,82 @@ describe("стеля 5000 — чесне «перші N»", () => {
     expect(r.headers.get("x-export-rows")).toBe("5000");
     const rows = dataRows(r.text);
     expect(rows).toHaveLength(5000);
+    expect(new Set(rows.map((x) => x[1])).size, "рядок задублювався між сторінками").toBe(5000);
     expect(r.text).not.toContain("Масовий 5000");   // останній за порядком — поза стелею
     expect(eventCounts()).toEqual({ [C1]: 4000, [C2]: 1000 });
+    expect(queueReads(), "5 сторінок по 1000 + проба на ОДИН рядок").toBe(6);
   });
 
-  it("РІВНО 5000 — файл повний, «обрізано» не кажемо (проба +1 рядок, а не «уперлись у стелю»)", async () => {
+  it("РІВНО 5000 — файл повний, «обрізано» не кажемо: 5001-го рядка просто немає", async () => {
+    rls.maxRows = 1000;
     rls.tables.queue_entries = bulk(5000);
     const r = await exportCsv({ period: "month", scope: "all" });
     expect(r.headers.get("x-export-truncated")).toBe("0");
     expect(r.headers.get("x-export-rows")).toBe("5000");
+    expect(dataRows(r.text)).toHaveLength(5000);
     expect(eventCounts()).toEqual({ [C1]: 4000, [C2]: 1000 });
+  });
+
+  it("стеля сервера МЕНША за сторінку (300) — коротка сторінка не «кінець»: у файлі всі 2500", async () => {
+    rls.maxRows = 300;
+    rls.tables.queue_entries = bulk(2500);
+    const r = await exportCsv({ period: "month", scope: "all" });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("x-export-truncated")).toBe("0");
+    expect(dataRows(r.text)).toHaveLength(2500);
+    expect(eventCounts()).toEqual({ [C1]: 2500 });
+  });
+
+  /* Чому keyset, а не offset `.range()`: між сторінками запис можуть
+     скасувати. Offset тоді зсувається на один, і рядок на межі сторінки МОВЧКИ
+     випадає з файлу (не скасований — сусідній, живий). */
+  it("запис скасували МІЖ сторінками — жоден інший рядок не загубився", async () => {
+    rls.maxRows = 1000;
+    // 1200 записів 10.09 і 1300 — 11.09: межа першої сторінки всередині дати,
+    // друга сторінка переходить через дату — обидві гілки keyset-умови.
+    rls.tables.queue_entries = Array.from({ length: 2500 }, (_, i) =>
+      q("c" + String(i).padStart(6, "0"), C1, R1, i < 1200 ? "2026-09-10" : "2026-09-11", "09:00", "done", [], "Живий " + i));
+    hooks.onFrom = (t, n) => {
+      if (t !== "queue_entries" || n !== 2) return;   // перед ДРУГОЮ сторінкою
+      const i = rls.tables.queue_entries.findIndex((e) => e.id === "c000000");
+      rls.tables.queue_entries[i] = { ...rls.tables.queue_entries[i], status: "cancelled" };
+    };
+    const r = await exportCsv({ period: "month", scope: C1 });
+    expect(r.status).toBe(200);
+    const names = new Set(dataRows(r.text).map((x) => x[1]));
+    const lost = Array.from({ length: 2499 }, (_, k) => "Живий " + (k + 1)).filter((n) => !names.has(n));
+    expect(lost, "сторінка зсунулась і мовчки загубила живий запис").toEqual([]);
+  });
+
+  it("запобіжник: стеля сервера 10 → сторінок забагато — 500, а не тихо неповний файл", async () => {
+    rls.maxRows = 10;
+    rls.tables.queue_entries = bulk(700);
+    const r = await exportCsv({ period: "month", scope: "all" });
+    expect(r.status).toBe(500);
+    expect(emits()).toEqual([]);
+    expect(logs.some((l) => l.event === "ceo.export_failed" && l.errorCode === "pagination_overflow")).toBe(true);
+  });
+
+  it("каталог і кабінети понад 1000 рядків — дохід і назви не губляться; пріоритет дублів — (sort_order, id)", async () => {
+    rls.maxRows = 1000;
+    const fillers = Array.from({ length: 1200 }, (_, i) => svc("f" + String(i).padStart(4, "0"), C1, "Послуга " + i, 100, null, true, i + 1));
+    rls.tables.services = [
+      svc("aa-lose", C1, "Коліно", 2500, null, true, 3),    // перша за id, але sort_order 3
+      ...fillers,
+      svc("zz-win", C1, "Коліно", 2600, null, true, 0),     // остання за id (інша сторінка), sort_order 0 — виграє
+      svc("p-last", C1, "Плече", 3100, null, true, 5000),   // одним запитом за (sort_order, id) у 1000 рядків не влазить
+    ];
+    rls.tables.rooms = Array.from({ length: 1005 }, (_, i) => ({ id: "r" + String(i).padStart(4, "0"), clinic_id: C1, name: "Кабінет " + i }));
+    rls.tables.queue_entries = [
+      q("e1", C1, "r1004", "2026-09-24", "09:00", "done", KNEE, "Тестенко Олена"),
+      q("e2", C1, "r0000", "2026-09-24", "10:00", "done", [{ type: "МРТ", region: "Плече" }], "Вигаданий Петро"),
+    ];
+    const r = await exportCsv({ period: "today", scope: C1 });
+    expect(r.status).toBe(200);
+    expect(dataRows(r.text)).toEqual([
+      ["2026-09-24", "Тестенко Олена", "МРТ · Коліно", "Кабінет 1004", "done", "2600"],
+      ["2026-09-24", "Вигаданий Петро", "МРТ · Плече", "Кабінет 0", "done", "3100"],
+    ]);
   });
 });
 
@@ -538,9 +682,11 @@ describe("диференційно: сторінка /ceo, правило lib/ce
       client.kind = "route";
     }
   }
-  /** Вхід правила — з тих самих рядків, що їх бачить сторінка. */
+  /** Вхід правила — з тих самих рядків, що їх бачить сторінка. Профілю немає —
+      правило не застосовне (сторінка веде на /login, гейт роуту — 403). */
   function ruleOf(uid: string) {
-    const p = rls.tables.profiles.find((r) => r.id === uid)!;
+    const p = rls.tables.profiles.find((r) => r.id === uid);
+    if (!p) return null;
     const card = (id: unknown) => rls.tables.clinics.find((c) => c.id === id);
     const own = card(p.clinic_id);
     return ceoDashboardAccess({
@@ -567,6 +713,25 @@ describe("диференційно: сторінка /ceo, правило lib/ce
     ["направник без гранту", REF],
     ["реєстратор, що «ще й CEO» іншого центру", REG_CEO],
     ["грант на центр, картки якого не видно", CEO, () => { rls.tables.clinics = rls.tables.clinics.filter((c) => c.id !== C2); }],
+    /* Ревʼю с79, M-2: без цих сценаріїв мутації сторінки «не рахувати гранти
+       радіолога / направника» (M03b/M04b) переживали весь набір. */
+    ["радіолог з АКТИВНИМ грантом (роль при цьому не міняється)", RAD, () => {
+      rls.tables.ceo_access.push({ ceo_id: RAD, clinic_id: C2, status: "active" });
+    }],
+    ["радіолог з активним грантом на СВІЙ центр", RAD, () => {
+      rls.tables.ceo_access.push({ ceo_id: RAD, clinic_id: C1, status: "active" });
+    }],
+    ["направник з АКТИВНИМ грантом", REF, () => {
+      rls.tables.ceo_access.push({ ceo_id: REF, clinic_id: C2, status: "active" });
+    }],
+    ["адмін із clinic_id = null", ADMIN_NOCLINIC],
+    ["адмін із clinic_id = null, але з грантом", ADMIN_NOCLINIC, () => {
+      rls.tables.ceo_access.push({ ceo_id: ADMIN_NOCLINIC, clinic_id: C2, status: "active" });
+    }],
+    ["сесія є, профілю немає", GHOST],
+    ["реєстратор НЕНАСТРОЄНОГО центру з грантом (майстер /setup — лише для адміна)", REG_NEW, () => {
+      rls.tables.ceo_access.push({ ceo_id: REG_NEW, clinic_id: C1, status: "active" });
+    }],
   ];
 
   it.each(SCENARIOS)("%s", async (_label, uid, tweak) => {
@@ -577,14 +742,18 @@ describe("диференційно: сторінка /ceo, правило lib/ce
     const route = await exportCsv({ period: "month", scope: "all" });
 
     if ("redirect" in page) {
-      expect(rule.ok, "сторінка відвела, а правило пускає").toBe(false);
-      if (!rule.ok) expect(rule.reason === "setup").toBe(page.redirect === "/setup");
+      if (!rule) {
+        expect(page.redirect, "без профілю сторінка веде на вхід").toBe("/login");
+      } else {
+        expect(rule.ok, "сторінка відвела, а правило пускає").toBe(false);
+        if (!rule.ok) expect(rule.reason === "setup").toBe(page.redirect === "/setup");
+      }
       expect(route.status, "сторінка відвела, а роут віддав файл").toBe(403);
       expect(readQueue()).toBe(false);
       return;
     }
-    expect(rule.ok, "сторінка пускає, а правило — ні").toBe(true);
-    if (rule.ok) expect(rule.clinics, "центри/порядок/назви/зони розійшлись зі сторінкою").toEqual(page.clinics);
+    expect(rule?.ok, "сторінка пускає, а правило — ні").toBe(true);
+    if (rule?.ok) expect(rule.clinics, "центри/порядок/назви/зони розійшлись зі сторінкою").toEqual(page.clinics);
     expect(route.status).toBe(200);
     // Роут вивантажує рівно з центрів сторінки (у фікстурі в кожного центру є записи місяця).
     const withRows = new Set(rls.tables.queue_entries
