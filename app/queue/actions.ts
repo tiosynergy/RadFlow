@@ -1981,21 +1981,27 @@ export async function createBooking(raw: BookingInput): Promise<QueueActionResul
     scheduled_at: input.scheduledAt,
     status: "scheduled",
     call_status: "not_called",
-  }).select("id").single();
+    /* с80 (Н-15): `referrer_id` — з RETURNING, тобто ЗБЕРЕЖЕНЕ значення після
+       гарда 0203 (`zz_guard_read_keys` мовчки обнуляє направника без активного
+       гранту до центру). Форма може назвати одного, а в рядку не буде нікого. */
+  }).select("id, referrer_id").single();
 
   if (error) return mapBookingError(error.message, error.code ?? "");
   /* 0128: журнал створення. Запис від імені направника (referrerId у формі
      персоналу) — referral.created із subject_referrer_id; без направника —
-     queue.created. У details — лише кабінет і слот, жодних даних пацієнта. */
+     queue.created. У details — лише кабінет і слот, жодних даних пацієнта.
+     с80 (Н-15): сімʼя події і направник — зі ЗБЕРЕЖЕНОГО рядка, а не з форми:
+     направника, якого зняв гард, журнал більше не називає. */
   if (created?.id) {
-    const referral = Boolean(input.referrerId);
+    const savedReferrerId = created.referrer_id ?? null;
+    const referral = Boolean(savedReferrerId);
     await emitImportantEvent({
       clinicId,
       actorId: user.id,
       eventType: queueEventTypeFor("created", referral),
       entityType: "queue_entry",
       entityId: created.id,
-      subjectReferrerId: input.referrerId ?? null,
+      subjectReferrerId: savedReferrerId,
       details: { roomId: input.roomId, scheduledDate: input.scheduledDate, scheduledTime: input.scheduledTime },
     });
   }
@@ -3010,21 +3016,51 @@ export async function createCase(raw: CaseInput): Promise<QueueActionResult> {
   });
   if (error) return mapCaseError(error.message, error.code ?? "");
   const caseId = (data as string) ?? undefined;
-  /* 0128: журнал створення кейса. Кейс із направником (referrerId у p_case) —
-     referral.case_created; у details — лише кількість кроків. */
+  /* 0128: журнал створення кейса. Кейс із направником — referral.case_created;
+     у details — лише кількість кроків.
+     с80 (Н-15): направник — зі ЗБЕРЕЖЕНОГО кейса (гард 0203 міг зняти того,
+     кого назвала форма), див. savedCaseReferrer. */
   if (caseId) {
-    const referral = Boolean(input.referrerId);
+    const savedReferrerId = await savedCaseReferrer(supabase, user.id, caseId, "case.created");
+    const referral = Boolean(savedReferrerId);
     await emitImportantEvent({
       clinicId,
       actorId: user.id,
       eventType: caseEventTypeFor("created", referral),
       entityType: "patient_case",
       entityId: caseId,
-      subjectReferrerId: input.referrerId ?? null,
+      subjectReferrerId: savedReferrerId,
       details: { stepsCount: input.steps.length },
     });
   }
   return { ok: true, id: caseId };
+}
+
+/** с80 (Н-15): направник ЗБЕРЕЖЕНОГО кейса — для атрибуції події журналу.
+    RPC створення кейса повертає лише id, а `referrer_id` у рядку може
+    відрізнятись від переданого: гард 0203 (`zz_guard_read_keys`) мовчки
+    обнуляє направника без активного гранту до центру. Тому читаємо рядок
+    ПІСЛЯ RPC тим самим RLS-клієнтом (персонал бачить кейси свого центру).
+    ⚠️ Незнання дію НЕ зупиняє (U-55: кейс важливіший за рядок журналу), але
+    й направника НЕ вигадує: не прочитали — NULL (подія без атрибуції, сімʼя
+    case.*) і гучний лог. Назвати направника, якого в рядку може не бути, —
+    рівно той дефект, який тут лікуємо. */
+async function savedCaseReferrer(
+  supabase: SupabaseClient<Database>,
+  actorId: string,
+  caseId: string,
+  type: string
+): Promise<string | null> {
+  const r = readRow(await supabase.from("patient_cases").select("referrer_id").eq("id", caseId).maybeSingle());
+  if (!r.known) {
+    logError({
+      event: "important_event.skipped", actorId, entityId: caseId,
+      errorCode: "post_snapshot_unreadable",
+      message: `type=${type} — збережений кейс не прочитано (${r.reason}), направника подія не називає`,
+    });
+    return null;
+  }
+  return r.row.referrer_id ?? null;
 }
 
 export type CaseStepInput = z.infer<typeof sCaseStep>;
@@ -3129,15 +3165,19 @@ export async function caseFromEntry(entryId: string, raw: CaseStepInput): Promis
   if (error) return mapCaseError(error.message, error.code ?? "");
   const caseId = (data as string) ?? undefined;
   // 0128: журнал організації кейса з наявного запису — сутність = створений кейс.
+  /* с80 (Н-15): кейс УСПАДКОВУЄ направника запису, але гард 0203 при вставці
+     кейса міг його зняти (грант відкликано після запису). Сутність події —
+     кейс, тож направник — із ЗБЕРЕЖЕНОГО кейса, а не з вихідного запису. */
   if (caseId) {
-    const referral = Boolean(srcEntry?.referrer_id);
+    const savedReferrerId = await savedCaseReferrer(supabase, user.id, caseId, "case.from_entry");
+    const referral = Boolean(savedReferrerId);
     await emitImportantEvent({
       clinicId: srcEntry?.clinic_id ?? clinicId,
       actorId: user.id,
       eventType: caseEventTypeFor("created", referral),
       entityType: "patient_case",
       entityId: caseId,
-      subjectReferrerId: srcEntry?.referrer_id ?? null,
+      subjectReferrerId: savedReferrerId,
       details: { sourceEntryId: idv.data, stepsCount: 2 },
     });
   }
