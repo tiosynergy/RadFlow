@@ -1055,6 +1055,69 @@ describe("U-37: мітла позначок покриває всі типи с�
   });
 });
 
+/* ─────── №14 — гілка `unreachable:` (0204, Н-14) в ОСТАННЬОМУ передруку ───────
+   ⚠️ Навіщо окремо від `tests/referrerGrantRead0204.test.ts` (ревʼю 2 пакета
+   0204, L-2): той тест читає ФАЙЛ 0204 за іменем — наступний передрук сторожа,
+   що мовчки загубив би гілку, лишав би його зеленим (заміряно: імітація 0205
+   без гілки проходила ВЕСЬ набір). Тут — той самий вибір «останнього
+   передруку», що в U-37 вище: якір на ПОЧАТОК рядка, незакритий передрук — голосно. */
+describe("№14 ucm_orphan_markers — гілка `unreachable:` у останньому передруку (0204)", () => {
+  const dir = resolve(process.cwd(), "supabase/migrations");
+  const latest = (): { fn: string; file: string } => {
+    let best = { fn: "", file: "" };
+    for (const f of readdirSync(dir).filter((x) => x.endsWith(".sql")).sort()) {
+      const txt = readFileSync(resolve(dir, f), "utf8");
+      const at = txt.search(/^create or replace function public\.invariants_check/m);
+      if (at < 0) continue;
+      const end = txt.indexOf("\n$function$;", at);
+      if (end < 0) throw new Error(`${f}: передрук invariants_check не закритий "$function$;"`);
+      best = { fn: txt.slice(at, end), file: f };
+    }
+    return best;
+  };
+  const { fn, file } = latest();
+  const head = "select 'unreachable:' || m.entity_type || ':' || count(*)";
+  const at = fn.indexOf(head);
+  /* гілка — до кінця підзапиту перевірки (`) x;` після неї) */
+  const branch = at < 0 ? "" : fn.slice(at, fn.indexOf("\n    ) x;", at));
+  const code = codeOf(branch).replace(/--[^\n]*/g, " ").replace(/\s+/g, " ");
+
+  it("гілка є рівно одна і стоїть у перевірці №14 ucm_orphan_markers", () => {
+    expect(at, `${file}: гілки unreachable: немає — недосяжні позначки ніхто не називає`).toBeGreaterThan(0);
+    expect(fn.split("select 'unreachable:' ||").length - 1, "гілок unreachable: більше однієї").toBe(1);
+    const own = fn.lastIndexOf("-- 14.", at);
+    const next = fn.indexOf("-- 15.", at);
+    expect(own, "гілка unreachable: не в перевірці №14").toBeGreaterThan(fn.lastIndexOf("-- 13.", at));
+    expect(next, "гілка unreachable: вилізла за межі №14").toBeGreaterThan(at);
+    expect(fn.slice(at, next), "результат гілки нікуди не кладеться")
+      .toContain("'check', 'ucm_orphan_markers', 'offenders', to_jsonb(v_tmp)");
+  });
+
+  it("предикат: join profiles, чужа клініка, НЕМАЄ активного гранту, три типи записів, групування", () => {
+    for (const piece of [
+      "from public.user_change_markers m",
+      "join public.profiles p on p.id = m.recipient_id",
+      "where m.entity_type in ('queue_entry', 'waitlist_entry', 'patient_case')",
+      "and p.clinic_id is distinct from m.clinic_id",
+      "and not exists (select 1 from public.referral_access ra where ra.referrer_id = m.recipient_id and ra.clinic_id = m.clinic_id and ra.status = 'active')",
+      "group by m.entity_type",
+    ]) {
+      expect(code, `у гілці unreachable: немає «${piece}»`).toContain(piece);
+    }
+    /* `is distinct from`, а не `<>`: у направника й CEO `clinic_id` NULL — з `<>`
+       їхні позначки випали б із лічби (NULL-логіка), тобто саме ті, заради
+       яких гілка писалась */
+    expect(code).not.toMatch(/p\.clinic_id\s*<>\s*m\.clinic_id/);
+  });
+
+  it("лише НЕПРОЧИТАНІ: прочитана крапки не запалює, а ретенція прибирає її сама", () => {
+    /* ревʼю 2 пакета 0204, L-1: без цього рядка переведення співробітника з
+       повністю прочитаними позначками червонило б ніч до 180 днів, а
+       предстан накату стояв би на безвредних рядках */
+    expect(code, "гілка рахує і прочитані позначки").toContain("and m.seen_at is null");
+  });
+});
+
 /* ─────────── surfaceListFingerprint: ключ перезаморозки (F4-10) ───────────
    Перевіряємо ВИКЛИКОМ, а не пінами по тексту: від цієї функції залежить,
    коли постійно видима поверхня має право гасити крапки, а компонентних

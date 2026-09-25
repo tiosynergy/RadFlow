@@ -44,9 +44,22 @@ const MIGDIR = resolve(process.cwd(), "supabase/migrations");
  *         BEFORE-тригерів рядка (імʼя `zz_`). Тут стережеться те, що тригер Є,
  *         УВІМКНЕНИЙ і має те саме визначення; тіло `guard_record_read_keys()`
  *         тримає №19 (0203 внесла його туди ж, 59 → 60 — `PINNED` у
- *         `guardFnBodiesInvariant.test.ts`). Порядок спрацювання №17 НЕ
- *         пінить; його і властивості самої функції стереже
- *         `tests/auditPiiReferrerGrant.test.ts`.
+ *         `guardFnBodiesInvariant.test.ts`). Порядок спрацювання 0203 у №17
+ *         НЕ пінила — з 0204 його пінить гілка `order:` (нижче); властивості
+ *         самої функції стереже `tests/auditPiiReferrerGrant.test.ts`.
+ *  ⚠️ 0204 (с80, Н-14 і Н-17, рішення власника 25.09.2026) додала ОДНУ пару
+ *     (30 → 31) і гілку `order:`:
+ *       • `referral_access` / `trg_zzz_ref_entry_markers_prune` — мітла
+ *         позначок ЗАПИСІВ: коли грант перестає бути активним, знімає позначки
+ *         черги, листа і кейсів цього направника в цьому центрі (читати ці
+ *         рядки він із 0204 не може, погасити позначку — теж). Без неї
+ *         позначки стають вічними; зняття чи вимкнення червонить тут, а
+ *         вихолощене тіло — №14 `unreachable:` (тіла мітли №19 не пінить);
+ *       • `order:<таблиця>-><тригер>` — `zz_guard_read_keys` мусить бути
+ *         ОСТАННІМ BEFORE-тригером рядка на INSERT/UPDATE `patient_cases`,
+ *         `queue_entries`, `waitlist_entries`. Пізніший тригер, що правив би
+ *         ключ, обійшов би гард мовчки — раніше це тримали лише асерт накату
+ *         0203 і статичний тест, тепер — щоденний сторож.
  *  Замір, який її довів: у транзакції з відкотом знято `trg_audit_profiles`
  *  (тригерів 1 → 0), сторож віддав `ok:true, checked:19, failed:[]`. Тобто
  *  аудит-слід на таблиці, де міняються РОЛІ, вимикався однією командою при всіх
@@ -84,6 +97,9 @@ const GUARDS: ReadonlyArray<readonly [string, string]> = [
   /* 0203 (Н-9, Р-1): ключі читання черги — `referrer_id` і `created_by`. */
   ["queue_entries", "zz_guard_read_keys"],
   ["referral_access", "trg_audit_referral_access"],
+  /* 0204 (Н-14): мітла позначок ЗАПИСІВ при відкликанні гранту — за C-абеткою
+     перед мітлою графіка 0184 (`ref` < `sched`), рівно як у списку міграції. */
+  ["referral_access", "trg_zzz_ref_entry_markers_prune"],
   /* 0184 (RF-03b), ДВІ нові пари. Обидві — у списку, бо їх зняття не червонить
      нічого іншого:
        • `trg_zzz_sched_markers_prune` — мітла, що знищує непрочитані позначки
@@ -135,7 +151,7 @@ describe("№17 guard_triggers — інвентар гардів у сторож
       .toContain("'check', 'server_now'");
   });
 
-  it("усі 30 пар названі ПАРОЮ (таблиця, тригер) і з повним визначенням", () => {
+  it("інвентар із 31 пари: кожна названа ПАРОЮ (таблиця, тригер) і з повним визначенням", () => {
     /* ⚠️ Пара, а не імʼя (урок 0165): `a01_no_client_delete` живе на трьох
        таблицях, `a00_radiologist_no_write` на двох. Пін по імені звіряв би
        чужі пари, і зняття гарда з ОДНІЄЇ таблиці лишалось би зеленим. */
@@ -159,8 +175,9 @@ describe("№17 guard_triggers — інвентар гардів у сторож
       .toContain("BEFORE INSERT OR UPDATE OF room_id, clinic_id");
   });
 
-  it("три діагнози названі окремо — червоне мусить казати ЩО саме", () => {
-    for (const d of ["'missing:'", "'wrong_def:'", "'trigger_off:'"]) {
+  it("чотири діагнози названі окремо — червоне мусить казати ЩО саме", () => {
+    /* 0204: четвертий — `order:` (Н-17). */
+    for (const d of ["'missing:'", "'wrong_def:'", "'trigger_off:'", "'order:'"]) {
       expect(fn, `діагноз ${d} зник — червоне перестане називати причину`).toContain(d);
     }
   });
@@ -174,6 +191,52 @@ describe("№17 guard_triggers — інвентар гардів у сторож
       .toContain("t.tgenabled not in ('O', 'A')");
     expect(fn, "гілка вимкнення перестала бути безсписковою")
       .toContain("where n.nspname = 'public' and not t.tgisinternal\n         and t.tgenabled not in ('O', 'A')");
+  });
+});
+
+describe("№17 guard_triggers — гілка `order:` (0204, Н-17)", () => {
+  const { fn, file } = latestReprint();
+  const at = fn.indexOf("select 'order:' || c.relname || '->' || x.tgname");
+  const branch = at < 0 ? "" : fn.slice(at, fn.indexOf("    ) x;", at));
+
+  it("гілка є рівно одна і стоїть у перевірці guard_triggers", () => {
+    expect(at, `${file}: гілки order: немає — порядок гарда ключів ніхто не пінить`).toBeGreaterThan(0);
+    expect(fn.split("select 'order:' ||").length - 1, "гілок order: більше однієї").toBe(1);
+    const own = fn.lastIndexOf("-- 17.", at);
+    const next = fn.indexOf("-- 18.", at);
+    expect(own, "гілка order: не в перевірці №17").toBeGreaterThan(0);
+    expect(next, "гілка order: вилізла за межі №17").toBeGreaterThan(at);
+    expect(fn.slice(at, next), "результат гілки нікуди не кладеться")
+      .toContain("'check', 'guard_triggers', 'offenders', to_jsonb(v_tmp)");
+  });
+
+  it("предикат — дослівно асерт накату 0203: BEFORE ROW на INSERT/UPDATE, C-абетка, останній", () => {
+    /* ⚠️ Кожен рядок — окрема властивість. Без `(t.tgtype & 3) = 3` у лічбу
+       потрапили б AFTER- і STATEMENT-тригери: AFTER-тригер з імʼям, що за
+       абеткою після гарда (`zzz_…`), законний — ключ уже записано, — а
+       червонив би даремно; без `collate "C"` порядок залежав би від колації
+       бази, а Postgres палить тригери за байтовим порядком імен; без `not
+       t.tgisinternal` — FK-тригери. `desc limit 1` — «останній», а не «є». */
+    for (const piece of [
+      "where t.tgrelid = c.oid and not t.tgisinternal",
+      "and (t.tgtype & 3) = 3 and (t.tgtype & 20) <> 0",
+      "order by t.tgname collate \"C\" desc limit 1) x",
+      "and x.tgname <> 'zz_guard_read_keys'",
+    ]) {
+      expect(branch, `у гілці order: немає «${piece}»`).toContain(piece);
+    }
+  });
+
+  it("під наглядом рівно три таблиці гарда ключів", () => {
+    for (const t of ["patient_cases", "queue_entries", "waitlist_entries"]) {
+      expect(branch, `таблиця ${t} випала з гілки order:`).toContain(`to_regclass('public.${t}')`);
+    }
+    expect(branch.split("to_regclass(").length - 1, "таблиць у гілці не три").toBe(3);
+  });
+
+  it("гілка НЕ фільтрує tgenabled — вимкнений пізній тригер теж порушник", () => {
+    /* Увімкнути його — одна команда без жодного сліду в каталозі тригерів. */
+    expect(branch, "гілка order: почала дивитись лише на увімкнені тригери").not.toContain("tgenabled");
   });
 });
 

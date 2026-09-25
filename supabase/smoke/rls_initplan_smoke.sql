@@ -78,7 +78,8 @@ begin
       ('profiles',         'profiles_select_self',    'q', '(id = auth.uid())'),
       ('profiles',         'profiles_update_self',    'q', '(id = auth.uid())'),
       ('profiles',         'profiles_update_self',    'w', '(id = auth.uid())'),
-      ('queue_entries',    'queue_select',            'q', '(((clinic_id = auth_clinic_id()) AND ((( SELECT auth_role() AS auth_role) IS DISTINCT FROM ''radiologist''::user_role) OR auth_radiologist_room_ok(room_id))) OR (created_by = auth.uid()) OR (referrer_id = auth.uid()))'),
+      -- 0204 (Н-14): гілка ключа читає лише з АКТИВНИМ грантом до центру запису
+      ('queue_entries',    'queue_select',            'q', '(((clinic_id = auth_clinic_id()) AND ((( SELECT auth_role() AS auth_role) IS DISTINCT FROM ''radiologist''::user_role) OR auth_radiologist_room_ok(room_id))) OR (((created_by = auth.uid()) OR (referrer_id = auth.uid())) AND (clinic_id IN ( SELECT auth_referrer_clinics() AS auth_referrer_clinics))))'),
       ('queue_entries',    'queue_write_referrer',    'q', '(((created_by = auth.uid()) OR (referrer_id = auth.uid())) AND auth_referrer_can_book_room(room_id))'),
       ('queue_entries',    'queue_write_referrer',    'w', '(((created_by = auth.uid()) OR (referrer_id = auth.uid())) AND auth_referrer_can_book_room(room_id))'),
       ('referral_access',  'ra_referrer_select',      'q', '(referrer_id = auth.uid())'),

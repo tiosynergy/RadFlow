@@ -17,7 +17,8 @@
      A. Маршрутизація: актор ВИКЛЮЧЕНИЙ; реєстратор центру отримав;
         чужа клініка НЕ отримала (мультитенантна ізоляція).
      B. Радіолог — лише по призначеному кабінету; нерелевантне не отримує.
-     C. Направник отримує позначку про СВОЄ направлення.
+     C. Направник отримує позначку про СВОЄ направлення (з 0204 — лише з
+        активним грантом до центру; фікстура — такий направник).
      D. Згортання: дві зміни того самого блоку = ОДНА позначка,
         важливість піднімається до максимальної.
      E. Прочитана позначка згортанням не перевикористовується.
@@ -83,9 +84,20 @@ begin
   end if;
 
   select r.id into v_room_a from public.rooms r where r.clinic_id = v_clinic_a limit 1;
-  select p.id into v_ref from public.profiles p where p.role = 'referrer' limit 1;
+  -- ⚠️ 0204 (Н-14): позначку ЗАПИСУ направник отримує лише з АКТИВНИМ грантом
+  --    до центру (гілка `entry` у change_marker_recipients). Перша редакція
+  --    брала «будь-якого направника» `limit 1` без порядку — на проді 25.09
+  --    один із трьох направників має грант `pending_referrer`, і C1 падав би
+  --    від ФІКСТУРИ, а не від регресу. Беремо направника з активним грантом
+  --    до клініки A; такого немає — FAIL (не SKIP, канон шапки).
+  select p.id into v_ref from public.profiles p
+   where p.role = 'referrer'
+     and exists (select 1 from public.referral_access ra
+                  where ra.referrer_id = p.id and ra.clinic_id = v_clinic_a
+                    and ra.status = 'active')
+   order by p.created_at, p.id limit 1;
   if v_ref is null then
-    raise exception 'SMOKE_FAIL F0: у системі немає жодного направника';
+    raise exception 'SMOKE_FAIL F0: у клініці A немає направника з активним грантом — позначку направлення (C1) перевірити нічим';
   end if;
 
   -- ══ A. Маршрутизація і виключення актора ═══════════════════════════════

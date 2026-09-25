@@ -63,15 +63,15 @@ UPDATE queue_entries (та сама транзакція!)
 
 | Джерело (тригер) | event_type | Отримувачі (мінус актор) | surface | entity | field_scope | Гасить |
 |---|---|---|---|---|---|---|
-| queue_entries INSERT | queue/referral.created | admin+registrar; радіологи кабінету; направник запису | queue | queue_entry | record | розгорнутий рядок дошки |
+| queue_entries INSERT | queue/referral.created | admin+registrar; радіологи кабінету; направник запису (**з 0204 — лише з АКТИВНИМ грантом до центру**) | queue | queue_entry | record | розгорнутий рядок дошки |
 | queue UPDATE дата/час/кабінет/тривалість | queue/referral.rescheduled | ті самі + радіологи СТАРОГО кабінету | queue | queue_entry | schedule | розгорнутий рядок |
 | queue UPDATE studies/has_contrast | queue/referral.studies_changed | ті самі | queue | queue_entry | studies | розгорнутий рядок (крапка біля блоку послуг) |
 | queue UPDATE patient_* / contra / doctor / indication | queue/referral.patient_data_changed | ті самі | queue | queue_entry | patient_data | розгорнутий рядок |
 | queue UPDATE priority_level | queue.priority_changed | ті самі (cito → critical) | queue | queue_entry | priority | розгорнутий рядок |
 | queue UPDATE status → cancelled / needs_reschedule / no_show / not_held | queue/referral.cancelled, queue.status_changed | ті самі (critical для cancelled/needs_reschedule) | queue | queue_entry | status | розгорнутий рядок |
-| waitlist INSERT/UPDATE | waitlist.added/scheduled/removed/updated, referral.waitlist_* | admin+registrar; направник рядка; **радіологи — НІ** (0138: `p_room_relevant => false`; листа очікування в нього немає, ТЗ §5) | waitlist | waitlist_entry | record | персонал — розгорнутий рядок листа; **направник — відкриття вкладки «Лист очікування» в порталі** (surface-ack, 0138) |
-| patient_cases INSERT | case.created / referral.case_created | admin+registrar; направник | cases | patient_case | record | (іт.2 — екран кейса) |
-| patient_cases → cancelled (recompute) | case.cancelled / referral.case_cancelled | admin+registrar; направник | cases | patient_case | case_step | (іт.2) |
+| waitlist INSERT/UPDATE | waitlist.added/scheduled/removed/updated, referral.waitlist_* | admin+registrar; направник рядка (**з 0204 — лише з активним грантом**); **радіологи — НІ** (0138: `p_room_relevant => false`; листа очікування в нього немає, ТЗ §5) | waitlist | waitlist_entry | record | персонал — розгорнутий рядок листа; **направник — відкриття вкладки «Лист очікування» в порталі** (surface-ack, 0138) |
+| patient_cases INSERT | case.created / referral.case_created | admin+registrar; направник (**з 0204 — лише з активним грантом**) | cases | patient_case | record | (іт.2 — екран кейса) |
+| patient_cases → cancelled (recompute) | case.cancelled / referral.case_cancelled | admin+registrar; направник (**з 0204 — лише з активним грантом**) | cases | patient_case | case_step | (іт.2) |
 | services / sro будь-яка змістовна зміна | service.* | **лише admin** (0138: екран `/services` відкривається тільки адміну, тож реєстратор і радіолог отримували крапку, яку не могли погасити) | services | **room** (агрегат!) | catalog / room_override | відкриття /services |
 | referral_access INSERT/UPDATE/DELETE | referral.access_* | admin; **направник гранта** (навіть відкликаний) | centers | referral_access | access | розгорнута картка центру |
 | schedule_overrides INSERT/UPDATE/DELETE (**0184**, RF-03b) | schedule.override_changed / schedule.override_cleared | **лише направники центру** з активним ПІДТВЕРДЖЕНИМ грантом, відфільтровані по грантах кабінетів; **персонал, радіолог і CEO — НІ** (у них немає поверхні з ack — та сама причина, що для `catalog` у 0138) | schedule | **room**: `room_id` для зміни по кабінету, `clinic_id` для денної (`all_closed`/`label`) — каталожний якір, який №14 прямо дозволяє | schedule | відкриття вкладки «Нове направлення» в порталі (surface-ack) |
@@ -113,6 +113,27 @@ ack поверхневий, тож відкриття одного дня гас
 крапок». Тепер для графіка дня це «направник дізнається про зміну лише на тику
 `pollWhenSubscribedMs` (30 с)», бо realtime на `schedule_overrides` у нього
 немає з 0183a. Тримати рубильник вимкненим довго — значить тримати цю затримку.
+
+⚠️ **0204 (с80, Н-14, рішення власника 25.09.2026): позначки ЗАПИСІВ направнику —
+лише з АКТИВНИМ грантом.** З 0204 направник читає свій запис (`created_by` /
+`referrer_id`) лише з активним грантом до центру запису, тож позначка про запис,
+якого він не бачить, — крапка ні про що: `queue_entry` гаситься лише з
+відрендереного рядка (для невидимого — ніколи), `patient_case` ack поки не має
+взагалі (див. «Відомі обмеження»), а `waitlist_entry` направника гасить поверхня
+«Лист очікування» (surface-ack, 0138) — але до того крапка на вкладці світить про
+рядок, якого в списку немає. Звідси три речі: (1) гілка `entry` у
+`change_marker_recipients` — лише з активним грантом (`access` — як було:
+повідомлення про відкликання мусить дійти, рядок `referral_access` у матриці не
+змінився); (2) мітла `trg_zzz_ref_entry_markers_prune` (AFTER DELETE OR UPDATE на
+`referral_access`): грант вийшов з `active` — позначки `queue_entry` /
+`waitlist_entry` / `patient_case` цього направника в цьому центрі видаляються, і
+непрочитані, і прочитані (гігієна; за СТАРОЮ парою; `centers` / `referral_access`
+лишаються); (3) №14 `unreachable:<тип>:<к-сть>` називає вцілілу НЕПРОЧИТАНУ (гонка
+«емісія ‖ відкликання») — чистка лише за явним списком id; прочитані №14 не рахує
+(крапки не запалюють, ретенція прибере). Персонал, переведений в інший центр,
+лишає непрочитані позначки старого — №14 їх назве, мітла ні (її тригер — на
+`referral_access`): переводити разом із зачисткою за явним списком id (процедура —
+`AGENTS.md`, «Миграции и БД»).
 
 **Інваріант, який тримає цю таблицю (правило з 0134/0138):** отримувач без
 поверхні з `useAckWhenVisible` у своєму дереві — це вічна непрочитана крапка,

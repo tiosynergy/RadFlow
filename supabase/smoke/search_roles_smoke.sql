@@ -58,16 +58,27 @@ begin
     reset role;
   end if;
 
-  -- ---- 3. Направник: лише власні рядки ----
+  -- ---- 3. Направник: лише власні рядки (`created_by` АБО `referrer_id`) і
+  --         лише в центрах з АКТИВНИМ грантом (0204, Н-14). ----
+  --  ⚠️ 0204: перша редакція рахувала «чужим» лист за одним `created_by`, а
+  --     політика листа читає і за `referrer_id` (запис, який персонал створив
+  --     для направника) — на базі з таким рядком крок червонів хибно. Тепер
+  --     обидві таблиці звіряються з одним правилом: свій ключ І активний грант.
+  --     `is not distinct from` — щоб рядок з NULL-ключем не випадав із лічби.
   if v_ref is not null then
     perform set_config('request.jwt.claims',
       json_build_object('sub', v_ref, 'role', 'authenticated')::text, true);
     set local role authenticated;
     select count(*) into v_leak from queue_entries
-      where referrer_id is distinct from v_ref and created_by is distinct from v_ref;
-    if v_leak > 0 then raise exception 'SMOKE_FAIL: направник бачить чужі записи (%)', v_leak; end if;
-    select count(*) into v_leak from waitlist_entries where created_by is distinct from v_ref;
-    if v_leak > 0 then raise exception 'SMOKE_FAIL: направник бачить чужий вейтліст (%)', v_leak; end if;
+      where not ((referrer_id is not distinct from v_ref or created_by is not distinct from v_ref)
+                 and clinic_id in (select ra.clinic_id from referral_access ra
+                                    where ra.referrer_id = v_ref and ra.status = 'active'));
+    if v_leak > 0 then raise exception 'SMOKE_FAIL: направник бачить чужі записи або записи без активного гранту (%)', v_leak; end if;
+    select count(*) into v_leak from waitlist_entries
+      where not ((referrer_id is not distinct from v_ref or created_by is not distinct from v_ref)
+                 and clinic_id in (select ra.clinic_id from referral_access ra
+                                    where ra.referrer_id = v_ref and ra.status = 'active'));
+    if v_leak > 0 then raise exception 'SMOKE_FAIL: направник бачить чужий вейтліст або лист без активного гранту (%)', v_leak; end if;
     reset role;
   end if;
 
