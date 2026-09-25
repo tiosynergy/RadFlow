@@ -48,8 +48,11 @@
 --
 --  ⚠️ МЕЖІ, НАЗВАНІ І ПОКАЗАНІ:
 --     • гонка «емісія позначки ‖ відкликання гранту» може лишити НОВИЙ рядок
---       позначки (UPSERT наявної чекає на замок і потрапляє під мітлу) —
---       червоне №14 `unreachable:` → ручна зачистка за явним списком id;
+--       позначки за БУДЬ-ЯКОГО порядку commit (емісія закомічена після DELETE
+--       мітли — або UPSERT емітера, що чекав на commit відкликання, вставляє
+--       новий рядок) — червоне №14 `unreachable:` ловить обидва → ручна
+--       зачистка за явним списком id; закрити обидва порядки — `for share` на
+--       рядку гранту в емітерах записів (PR-0204, §12);
 --     • переведення персоналу між центрами (у застосунку шляху немає) лишає
 --       непрочитані позначки старого центру — №14 назве; переводити разом із
 --       зачисткою за явним списком id (AGENTS.md). Переведеному радіологу CTE
@@ -78,7 +81,7 @@
 --      ціни); недосяжні НЕПРОЧИТАНІ позначки записів — СТОП (ручна зачистка
 --      за явним списком id ДО накату).
 --   2. `scripts/frag/0204_apply.sql` — ОДРАЗУ після сухого прогону. Читання назад:
---      guard_md5 = 012ff7043a1c030b966ea9eb5e4f4840, guard_len = 177994, ledger_rows = 204,
+--      guard_md5 = cf1a920d2052a6debaff8b46c450aeff, guard_len = 178426, ledger_rows = 204,
 --      три нові дайджести, prune_fn = true, prune_trigger = 1, zz_last_tables = 3.
 --      Помилка = НІЧОГО не закомічено. Таймаут клієнта = не повторювати
 --      наосліп: спершу select читання назад.
@@ -121,7 +124,7 @@ begin
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and p.proname = 'invariants_check'
      and pg_get_function_identity_arguments(p.oid) = 'p_write boolean';
-  if md5(v_src) not in ('8c8e6403db7653949e03d026320c6099', '012ff7043a1c030b966ea9eb5e4f4840') then
+  if md5(v_src) not in ('8c8e6403db7653949e03d026320c6099', 'cf1a920d2052a6debaff8b46c450aeff') then
     raise exception '0204: тіло сторожа % — ні 0203, ні 0204; правка наосліп заборонена', md5(v_src);
   end if;
   if (select md5(replace(p.prosrc, chr(13), '')) from pg_proc p where p.oid = to_regprocedure('public.change_marker_recipients(uuid, uuid, text, uuid, uuid, text, boolean)'))
@@ -942,12 +945,18 @@ begin
   --        і на відкаті умови гранту в `change_marker_recipients` (гілка
   --        `entry`). Формат — `unreachable:<тип>:<кількість>`, без uuid.
   --        ⚠️ МЕЖІ, названі вголос:
-  --         • гонка «емісія позначки ‖ відкликання гранту» (READ COMMITTED):
-  --           вціліти може лише НОВИЙ рядок позначки, вставлений емітером, що
-  --           ще бачив грант активним (мітла його не бачить); UPSERT наявної
-  --           позначки чекає на замок рядка і потрапляє під мітлу. Тоді
-  --           червоне тут — і ручна зачистка ЛИШЕ за явним списком id зі
-  --           свіжого знімка (правило AGENTS.md про видалення даних проду);
+  --         • гонка «емісія позначки ‖ відкликання гранту» (READ COMMITTED)
+  --           може лишити НОВИЙ рядок позначки за БУДЬ-ЯКОГО порядку commit:
+  --           (а) першою — емісія: рядок, вставлений емітером, закомічено вже
+  --           після DELETE мітли, тож мітла його не бачила (UPSERT НАЯВНОЇ
+  --           позначки в цьому порядку мітла дочекається і видалить);
+  --           (б) першим — відкликання: UPSERT емітера, що ще бачив грант
+  --           активним, чекає на рядок, який видаляє мітла, а після commit
+  --           відкликання конфлікту вже не має і вставляє НОВИЙ рядок.
+  --           №14 ловить обидва порядки; тоді — ручна зачистка ЛИШЕ за явним
+  --           списком id зі свіжого знімка (правило AGENTS.md про видалення
+  --           даних проду). Закрити обидва порядки — `for share` на рядку
+  --           гранту в емітерах записів (PR-0204, §12);
   --         • отримувач без профілю (видалений акаунт: `delete_clinic_member`
   --           знімає радіолога разом із профілем, а позначки лишаються) сюди НЕ
   --           потрапляє — join із `profiles`. Це окремий клас «позначка
@@ -3218,7 +3227,7 @@ begin
 end;
 $function$;
 
-comment on function public.invariants_check(boolean) is 'guard_body_md5=012ff7043a1c030b966ea9eb5e4f4840;len=177994';
+comment on function public.invariants_check(boolean) is 'guard_body_md5=cf1a920d2052a6debaff8b46c450aeff;len=178426';
 
 -- ── 4. ПОВНИЙ сторож ДО DDL на таблицях (≈9 с без замків на таблиці; урок 0196) ─
 do $chk$
@@ -3281,7 +3290,7 @@ begin
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and p.proname = 'invariants_check'
      and pg_get_function_identity_arguments(p.oid) = 'p_write boolean';
-  if md5(v_src) is distinct from '012ff7043a1c030b966ea9eb5e4f4840' or length(v_src) <> 177994
+  if md5(v_src) is distinct from 'cf1a920d2052a6debaff8b46c450aeff' or length(v_src) <> 178426
      or obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc')
         is distinct from 'guard_body_md5=' || md5(v_src) || ';len=' || length(v_src) then
     raise exception '0204: тіло сторожа або самопін не ті: % / %', md5(v_src), length(v_src);

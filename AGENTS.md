@@ -743,7 +743,7 @@
   Нужен ТОЧНЫЙ образ — `alter table … disable trigger zz_guard_read_keys` в ТОЙ ЖЕ транзакции,
   восстановление, `enable trigger` до commit; забытое включение №17 покажет как `trigger_off:`.
 - **Ручной перевод сотрудника в другой центр (с80 / 0204).** В приложении пути нет —
-  только SQL службовой ролью, и тогда в ТОЙ ЖЕ транзакции, что и
+  только SQL служебной ролью, и тогда в ТОЙ ЖЕ транзакции, что и
   `update profiles set clinic_id = …`, удалить его НЕПРОЧИТАННЫЕ пометки ЗАПИСЕЙ
   старого центра по явному списку id из свежего снимка (`select id from
   user_change_markers where recipient_id = … and clinic_id = <старый> and seen_at

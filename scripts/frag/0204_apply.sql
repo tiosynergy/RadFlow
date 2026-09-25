@@ -98,12 +98,18 @@ $p$,
   --        і на відкаті умови гранту в `change_marker_recipients` (гілка
   --        `entry`). Формат — `unreachable:<тип>:<кількість>`, без uuid.
   --        ⚠️ МЕЖІ, названі вголос:
-  --         • гонка «емісія позначки ‖ відкликання гранту» (READ COMMITTED):
-  --           вціліти може лише НОВИЙ рядок позначки, вставлений емітером, що
-  --           ще бачив грант активним (мітла його не бачить); UPSERT наявної
-  --           позначки чекає на замок рядка і потрапляє під мітлу. Тоді
-  --           червоне тут — і ручна зачистка ЛИШЕ за явним списком id зі
-  --           свіжого знімка (правило AGENTS.md про видалення даних проду);
+  --         • гонка «емісія позначки ‖ відкликання гранту» (READ COMMITTED)
+  --           може лишити НОВИЙ рядок позначки за БУДЬ-ЯКОГО порядку commit:
+  --           (а) першою — емісія: рядок, вставлений емітером, закомічено вже
+  --           після DELETE мітли, тож мітла його не бачила (UPSERT НАЯВНОЇ
+  --           позначки в цьому порядку мітла дочекається і видалить);
+  --           (б) першим — відкликання: UPSERT емітера, що ще бачив грант
+  --           активним, чекає на рядок, який видаляє мітла, а після commit
+  --           відкликання конфлікту вже не має і вставляє НОВИЙ рядок.
+  --           №14 ловить обидва порядки; тоді — ручна зачистка ЛИШЕ за явним
+  --           списком id зі свіжого знімка (правило AGENTS.md про видалення
+  --           даних проду). Закрити обидва порядки — `for share` на рядку
+  --           гранту в емітерах записів (PR-0204, §12);
   --         • отримувач без профілю (видалений акаунт: `delete_clinic_member`
   --           знімає радіолога разом із профілем, а позначки лишаються) сюди НЕ
   --           потрапляє — join із `profiles`. Це окремий клас «позначка
@@ -698,8 +704,8 @@ $fxb$;
     end if;
     v_new := replace(v_new, v_from[i], v_to[i]);
   end loop;
-  if md5(v_new) is distinct from '012ff7043a1c030b966ea9eb5e4f4840' or length(v_new) <> 177994 then
-    raise exception '0204: підстановка дала % / %, а файл 0204 це 012ff7043a1c030b966ea9eb5e4f4840 / 177994',
+  if md5(v_new) is distinct from 'cf1a920d2052a6debaff8b46c450aeff' or length(v_new) <> 178426 then
+    raise exception '0204: підстановка дала % / %, а файл 0204 це cf1a920d2052a6debaff8b46c450aeff / 178426',
       md5(v_new), length(v_new);
   end if;
   execute v_head || v_new || '$function$';
@@ -708,14 +714,14 @@ $fxb$;
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
    where n.nspname = 'public' and p.proname = 'invariants_check'
      and pg_get_function_identity_arguments(p.oid) = 'p_write boolean';
-  if md5(v_src) is distinct from '012ff7043a1c030b966ea9eb5e4f4840' or length(v_src) <> 177994 then
-    raise exception '0204: у БД лягло % / % замість 012ff7043a1c030b966ea9eb5e4f4840 / 177994', md5(v_src), length(v_src);
+  if md5(v_src) is distinct from 'cf1a920d2052a6debaff8b46c450aeff' or length(v_src) <> 178426 then
+    raise exception '0204: у БД лягло % / % замість cf1a920d2052a6debaff8b46c450aeff / 178426', md5(v_src), length(v_src);
   end if;
 
   -- ── Самопін №25 — у ТІЙ САМІЙ транзакції ─────────────────────────────────
   v_pin_db := 'guard_body_md5=' || md5(v_src) || ';len=' || length(v_src);
-  if v_pin_db is distinct from 'guard_body_md5=012ff7043a1c030b966ea9eb5e4f4840;len=177994' then
-    raise exception '0204: пін із БД (%) розійшовся з піном із файлу (guard_body_md5=012ff7043a1c030b966ea9eb5e4f4840;len=177994)', v_pin_db;
+  if v_pin_db is distinct from 'guard_body_md5=cf1a920d2052a6debaff8b46c450aeff;len=178426' then
+    raise exception '0204: пін із БД (%) розійшовся з піном із файлу (guard_body_md5=cf1a920d2052a6debaff8b46c450aeff;len=178426)', v_pin_db;
   end if;
   execute format('comment on function public.invariants_check(boolean) is %L', v_pin_db);
   if obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc') is distinct from v_pin_db then
@@ -953,8 +959,8 @@ end;
 $apply$;
 
 -- Читання назад: очікування
---   guard_md5 = 012ff7043a1c030b966ea9eb5e4f4840, guard_len = 177994,
---   guard_pin = guard_body_md5=012ff7043a1c030b966ea9eb5e4f4840;len=177994, ledger_rows = 204, ledger_last = 0204_referrer_grant_read.sql,
+--   guard_md5 = cf1a920d2052a6debaff8b46c450aeff, guard_len = 178426,
+--   guard_pin = guard_body_md5=cf1a920d2052a6debaff8b46c450aeff;len=178426, ledger_rows = 204, ledger_last = 0204_referrer_grant_read.sql,
 --   policies = patient_cases.cases_select_referrer=a406bc42d13d,queue_entries.queue_select=6061c08c210b,waitlist_entries.waitlist_select=0cf225150efe,
 --   cmr_raw_md5 = c7a602edb861ecceb598e4d65534345d, prune_fn = true, prune_fn_acl = postgres=X/postgres,service_role=X/postgres,
 --   prune_trigger = 1, zz_last_tables = 3

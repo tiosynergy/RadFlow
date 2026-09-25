@@ -73,12 +73,12 @@ begin
     raise exception '0204-фальсифікація: invariants_check не знайдено';
   end if;
   v_src := replace(v_body, chr(13), '');
-  if md5(v_src) is distinct from '012ff7043a1c030b966ea9eb5e4f4840' or length(v_src) <> 177994 then
+  if md5(v_src) is distinct from 'cf1a920d2052a6debaff8b46c450aeff' or length(v_src) <> 178426 then
     raise exception '0204-фальсифікація: у проді не 0204 (% / %) — правка наосліп заборонена', md5(v_src), length(v_src);
   end if;
   v_head := substr(v_def, 1, position('AS $function$' in v_def) + 12);
   if obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc')
-     is distinct from 'guard_body_md5=012ff7043a1c030b966ea9eb5e4f4840;len=177994' then
+     is distinct from 'guard_body_md5=cf1a920d2052a6debaff8b46c450aeff;len=178426' then
     raise exception '0204-фальсифікація: самопін % не збігається з тілом 0204 — спершу розібратись',
       coalesce(obj_description('public.invariants_check(boolean)'::regprocedure, 'pg_proc'), '(NULL)');
   end if;
@@ -539,32 +539,33 @@ begin
               'status', null, 'system', 'info');
   end if;
   v_n_access := (select count(*) from public.user_change_markers m where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type = 'referral_access');
-  -- позначки ІНШИХ отримувачів на ті самі записи — мітла їх не чіпає (P-others-kept)
+  -- позначки ІНШИХ отримувачів на ті самі записи — мітла їх не чіпає (P-others-kept);
+  -- subject_referrer_id = направник проби, як у справжньої емісії (мітла за ним — червоне)
   insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
-                                          field_scope, actor_id, actor_role, severity)
+                                          field_scope, actor_id, actor_role, severity, subject_referrer_id)
     values (v_admin, v_clinic, 'falsify.probe', 'queue', 'queue_entry', v_q,
-            'studies', null, 'system', 'info');
+            'studies', null, 'system', 'info', v_ref);
   insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
-                                          field_scope, actor_id, actor_role, severity)
+                                          field_scope, actor_id, actor_role, severity, subject_referrer_id)
     values (v_admin, v_clinic, 'falsify.probe', 'waitlist', 'waitlist_entry', v_w,
-            'studies', null, 'system', 'info');
+            'studies', null, 'system', 'info', v_ref);
   insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
-                                          field_scope, actor_id, actor_role, severity)
+                                          field_scope, actor_id, actor_role, severity, subject_referrer_id)
     values (v_admin, v_clinic, 'falsify.probe', 'cases', 'patient_case', v_c,
-            'studies', null, 'system', 'info');
+            'studies', null, 'system', 'info', v_ref);
   if v_ref2 is not null then
     insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
-                                            field_scope, actor_id, actor_role, severity)
+                                            field_scope, actor_id, actor_role, severity, subject_referrer_id)
       values (v_ref2, v_clinic, 'falsify.probe', 'queue', 'queue_entry', v_q,
-              'studies', null, 'system', 'info');
+              'studies', null, 'system', 'info', v_ref);
     insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
-                                            field_scope, actor_id, actor_role, severity)
+                                            field_scope, actor_id, actor_role, severity, subject_referrer_id)
       values (v_ref2, v_clinic, 'falsify.probe', 'waitlist', 'waitlist_entry', v_w,
-              'studies', null, 'system', 'info');
+              'studies', null, 'system', 'info', v_ref);
     insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type, entity_id,
-                                            field_scope, actor_id, actor_role, severity)
+                                            field_scope, actor_id, actor_role, severity, subject_referrer_id)
       values (v_ref2, v_clinic, 'falsify.probe', 'cases', 'patient_case', v_c,
-              'studies', null, 'system', 'info');
+              'studies', null, 'system', 'info', v_ref);
   end if;
   v_n_others := (select count(*) from public.user_change_markers m where m.clinic_id = v_clinic and m.recipient_id in (v_admin, v_ref2) and m.event_type = 'falsify.probe' and m.field_scope = 'studies');
   -- ПРОЧИТАНА позначка направника — мітла знімає і її (гігієна; №14 рахує лише непрочитані)

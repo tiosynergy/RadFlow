@@ -68,6 +68,7 @@
 --   p-others    позначки ІНШИХ отримувачів на ті самі записи (адмін центру,
 --               другий направник) пережили всі три спрацювання мітли
 --               (відкликання, DELETE, зміна пари): мітла знімає лише СТАРУ ПАРУ
+--               (їхній subject_referrer_id = направник проби, як у справжній емісії)
 --   r-colleague другий направник з активним грантом до центру чужих рядків не
 --               бачить (0/0/0): грант — кон'юнкт до ключа, а не «будь-хто з
 --               грантом»
@@ -427,10 +428,13 @@ begin
    where m.recipient_id = v_ref and m.clinic_id = v_clinic and m.entity_type = 'referral_access';
   -- позначки ІНШИХ отримувачів на ті самі записи (адмін центру, другий
   -- направник): мітла мусить знімати лише СТАРУ ПАРУ. field_scope `studies` —
-  -- склад жодна проба не міняє, тож з емісією унікальність не перетнеться
+  -- склад жодна проба не міняє, тож з емісією унікальність не перетнеться.
+  -- subject_referrer_id = направник проби: справжня емісія пише його в КОЖНУ
+  -- позначку запису, тож мітла, що видаляє ще й за ним, мусить тут червоніти
   insert into public.user_change_markers (recipient_id, clinic_id, event_type, surface_key, entity_type,
-                                          entity_id, field_scope, actor_id, actor_role, severity)
-    select w.who, v_clinic, 'smoke.probe', e.surf, e.et, e.eid, 'studies', null, 'system', 'info'
+                                          entity_id, field_scope, actor_id, actor_role, severity,
+                                          subject_referrer_id)
+    select w.who, v_clinic, 'smoke.probe', e.surf, e.et, e.eid, 'studies', null, 'system', 'info', v_ref
       from (values ('queue', 'queue_entry', v_q), ('waitlist', 'waitlist_entry', v_w),
                    ('cases', 'patient_case', v_c)) as e(surf, et, eid)
       cross join (select v_admin as who union all select v_ref2 where v_ref2 is not null) w;
