@@ -197,6 +197,20 @@ describe("у заголовку немає значень полів паціє�
     ).toBe("Керівник вивантажив дані пацієнтів (записів: 2)");
   });
 
+  it("с80 (Н-16): CSV колл-листа — канал і день названо, число записів лишається", () => {
+    // Рівно той details, що пише роут /api/call-list/export.
+    expect(
+      eventTitle({ eventType: "patient_data.exported", actorRole: "registrar", details: { source: "call_list", rows: 12, format: "csv", scheduledDate: "2026-09-26" } })
+    ).toBe("Реєстратор вивантажив дані пацієнтів з колл-листа за 26.09.2026 (записів: 12)");
+    expect(
+      eventTitle({ eventType: "patient_data.exported", actorRole: "admin", details: { source: "call_list", rows: 1, format: "csv", scheduledDate: "2026-09-27" } })
+    ).toBe("Адміністратор вивантажив дані пацієнтів з колл-листа за 27.09.2026 (записів: 1)");
+    // Без дня (стара подія / кривий details) — без хвоста «за …», а не «за undefined».
+    expect(
+      eventTitle({ eventType: "patient_data.exported", actorRole: "admin", details: { source: "call_list", rows: 1, format: "csv" } })
+    ).toBe("Адміністратор вивантажив дані пацієнтів з колл-листа (записів: 1)");
+  });
+
   it("changedFieldsLabel не показує значень", () => {
     expect(changedFieldsLabel(["patient_name"])).toBe("ПІБ");
     expect(changedFieldsLabel([])).toBe("");

@@ -298,6 +298,15 @@ export function eventTitle(item: {
       if (str(d, "source") === "ceo_dashboard") {
         return say("вивантажив дані пацієнтів з дашборда CEO", "вивантажено дані пацієнтів з дашборда CEO", tail);
       }
+      /* с80 (Н-16): третій канал — CSV колл-листа (ПІБ, телефон, нотатка дзвінка
+         за день). Названо з тієї ж причини, що й дашборд CEO; день файлу —
+         у заголовку (ревʼю с80, L-3): разом із центром він однозначно задає
+         склад файлу. */
+      if (str(d, "source") === "call_list") {
+        const day = fmtDayKey(str(d, "scheduledDate"));
+        const what = "дані пацієнтів з колл-листа" + (day ? ` за ${day}` : "");
+        return say("вивантажив " + what, "вивантажено " + what, tail);
+      }
       return say("вивантажив дані пацієнтів", "вивантажено дані пацієнтів", tail);
     }
     case "staff.role_changed":

@@ -178,10 +178,25 @@ describe("CallListBoard — рядок не може стверджувати ч
   it("лічильники пігулок і CSV не описують чужий день", () => {
     expect(code).toMatch(/<span className="ct">\(\{loading \? "—" : t\.ct\}\)<\/span>/);
     expect(code).toMatch(/onClick=\{exportCsv\}/);
-    expect(code).toMatch(/<button className="btn btn-secondary" disabled=\{loading\} onClick=\{exportCsv\}/);
+    // с80 (Н-16): кнопка гасне і поки день вантажиться, і поки файл у польоті.
+    expect(code).toMatch(/<button className="btn btn-secondary" disabled=\{loading \|\| exporting\} aria-busy=\{exporting\} onClick=\{exportCsv\}/);
+    // …і сам обробник не стартує посеред завантаження дня (гейт у функції, не лише в DOM);
+    // стан `exporting` ставиться ДО запиту і знімається у `finally` (ревʼю с80, M-3:
+    // без `finally` кнопка лишалась мертвою до перезавантаження).
+    /* Обробник цілком: гейт → день → стан → ОДИН запит, зібраний lib-функцією
+       (його вміст — url, тіло, імʼя файлу, тексти — перевіряє callListExport.test
+       у node; ревʼю с80 р2, L-2) → зняття стану у `finally`. */
+    expect(code).toMatch(/async function exportCsv\(\) \{\s*if \(exporting \|\| loading\) return;\s*const day = dayKey;\s*setExporting\(true\);\s*try \{\s*await runFileExport\(callListExportRequest\(day\), \{ fetch: \(u, init\) => fetch\(u, init\), save: saveBlobAsFile, notify \}\);\s*\}\s*finally \{\s*setExporting\(false\);\s*\}\s*\}/);
+    // `exporting` — у `anyBusy` (запит у польоті, як `loading`), і кнопка показує спінер.
+    expect(code).toMatch(/const anyBusy = loading \|\|[^;]*\|\| exporting;/);
+    expect(code).toMatch(/\{exporting \? <><span className="rf-spin" aria-hidden="true" \/> Готуємо…<\/> : "↧ Експорт"\}/);
+    // Браузер більше НЕ збирає CSV зі стану `entries` (ПДн без журналу й екранування — Н-16).
+    expect(code).not.toMatch(/new Blob\(\[/);
+    expect(code).not.toMatch(/entries\.map\(\(e\) => \[e\.scheduled_date/);
     // Дата стоїть КОЛОНКОЮ у файлі — помилку видно в самому CSV, а не лише в імені.
-    expect(code).toMatch(/const head = \["Дата", "Час"/);
-    expect(code).toMatch(/const rows = entries\.map\(\(e\) => \[e\.scheduled_date \|\| ""/);
+    const lib = src("lib/callListExport.ts");
+    expect(lib).toMatch(/CALL_LIST_EXPORT_HEAD = \["Дата", "Час"/);
+    expect(lib).toMatch(/entries\.map\(\(e\) => \[\s*e\.scheduled_date \|\| ""/);
   });
 
   /* Модалка досліджень читає графік/оверрайд/зайнятість по цій даті. */

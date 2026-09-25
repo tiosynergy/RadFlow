@@ -79,7 +79,10 @@ describe("W-3 — статус дзвінка в колл-листі: гліф +
     expect(src).not.toContain("CALL_COLOR");
   });
   it("усі пʼять статусів мають різні гліфи, ті самі, що на дошці черги (✗/✕ не розрізнити — ревʼю с75)", () => {
-    const pick = (txt: string) => Object.fromEntries([...txt.matchAll(/^\s+(not_called|confirmed|no_answer|to_recall|declined):\s*\{ label: "[^"]+", cls: "[a-z]+", icon: "([^"]+)" \},?$/gm)].map((m) => [m[1], m[2]]));
+    /* с80 (Н-16): підпис у колл-листі — з CALL_STATUS_LABELS (lib/callListExport.ts,
+       спільний із CSV), тож у CL_META стоїть посилання, а не літерал. Правило тесту
+       — ГЛІФИ, форма підпису для нього неважлива; сам підпис пінить callListExport.test. */
+    const pick = (txt: string) => Object.fromEntries([...txt.matchAll(/^\s+(not_called|confirmed|no_answer|to_recall|declined):\s*\{ label: (?:"[^"]+"|CALL_STATUS_LABELS\.\1), cls: "[a-z]+", icon: "([^"]+)" \},?$/gm)].map((m) => [m[1], m[2]]));
     const cl = pick(src);
     const qb = pick(code("components/QueueBoard.tsx"));
     expect(Object.keys(cl).sort()).toEqual(["confirmed", "declined", "no_answer", "not_called", "to_recall"]);

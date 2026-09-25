@@ -298,7 +298,8 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
       created_by: caller.userId,
       status: "waiting",
     })
-    .select("id")
+    // с80 (Н-15): referrer_id — ЗБЕРЕЖЕНЕ значення (після гарда 0203) для журналу.
+    .select("id, referrer_id")
     .single();
 
   if (error) return mapWaitlistDbError("addWaitlistEntry", error);
@@ -307,9 +308,10 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
      «waitlist.added» у ТЗ немає (§5), тож подія пишеться лише для направника
      (referral.waitlist_added, §4.6). details — БЕЗ PII: кабінет і пріоритет. */
   {
+    const savedReferrerId = data.referrer_id ?? null;
     const eventType = waitlistEventTypeFor(
       "added",
-      isReferralAction({ entryReferrerId: referrerId, actorRole: caller.role })
+      isReferralAction({ entryReferrerId: savedReferrerId, actorRole: caller.role })
     );
     if (eventType) {
       await emitImportantEvent({
@@ -318,7 +320,7 @@ export async function addWaitlistEntry(raw: WaitlistInput): Promise<WaitlistActi
         eventType,
         entityType: "waitlist_entry",
         entityId: data.id,
-        subjectReferrerId: referrerId,
+        subjectReferrerId: savedReferrerId,
         details: {
           ...(input.roomId ? { roomId: input.roomId } : {}),
           ...(input.priorityLevel ? { priority: normPriority(input.priorityLevel) } : {}),
@@ -413,7 +415,8 @@ export async function addEntryToWaitlist(
       created_by: caller.userId,
       status: "waiting",
     })
-    .select("id")
+    // с80 (Н-15): referrer_id — ЗБЕРЕЖЕНЕ значення (гард 0203 міг зняти успадкованого).
+    .select("id, referrer_id")
     .single();
 
   if (error) {
@@ -424,12 +427,15 @@ export async function addEntryToWaitlist(
     return mapWaitlistDbError("addEntryToWaitlist", error);
   }
 
-  /* 0128: як і в addWaitlistEntry — подія лише для направниковського запису
-     (referrer_id береться з ВИХІДНОГО запису черги), після успішної вставки. */
+  /* 0128: як і в addWaitlistEntry — подія лише для направниковського запису,
+     після успішної вставки. с80 (Н-15): направник — зі ЗБЕРЕЖЕНОГО рядка листа,
+     а не з вихідного запису черги: рядок успадковує `referrer_id`, але гард 0203
+     знімає його, якщо грант направника відкликали після запису. */
   {
+    const savedReferrerId = data.referrer_id ?? null;
     const eventType = waitlistEventTypeFor(
       "added",
-      isReferralAction({ entryReferrerId: entry.referrer_id, actorRole: caller.role })
+      isReferralAction({ entryReferrerId: savedReferrerId, actorRole: caller.role })
     );
     if (eventType) {
       await emitImportantEvent({
@@ -438,7 +444,7 @@ export async function addEntryToWaitlist(
         eventType,
         entityType: "waitlist_entry",
         entityId: data.id,
-        subjectReferrerId: entry.referrer_id ?? null,
+        subjectReferrerId: savedReferrerId,
         details: {
           ...(entry.priority_level ? { priority: entry.priority_level } : {}),
         },
