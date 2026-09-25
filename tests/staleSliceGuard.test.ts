@@ -178,10 +178,20 @@ describe("CallListBoard — рядок не може стверджувати ч
   it("лічильники пігулок і CSV не описують чужий день", () => {
     expect(code).toMatch(/<span className="ct">\(\{loading \? "—" : t\.ct\}\)<\/span>/);
     expect(code).toMatch(/onClick=\{exportCsv\}/);
-    expect(code).toMatch(/<button className="btn btn-secondary" disabled=\{loading\} onClick=\{exportCsv\}/);
+    // с80 (Н-16): кнопка гасне і поки день вантажиться, і поки файл у польоті.
+    expect(code).toMatch(/<button className="btn btn-secondary" disabled=\{loading \|\| exporting\} aria-busy=\{exporting\} onClick=\{exportCsv\}/);
+    // …і сам обробник не стартує посеред завантаження дня (гейт у функції, не лише в DOM).
+    expect(code).toMatch(/async function exportCsv\(\) \{\s*if \(exporting \|\| loading\) return;\s*const day = dayKey;/);
+    // с80: файл збирає СЕРВЕР рівно за днем пікера — імʼя й рядки з ОДНОГО `day`.
+    expect(code).toMatch(/body: JSON\.stringify\(\{ date: day \}\)/);
+    expect(code).toMatch(/a\.download = callListExportFileName\(day\)/);
+    // Браузер більше НЕ збирає CSV зі стану `entries` (ПДн без журналу й екранування — Н-16).
+    expect(code).not.toMatch(/new Blob\(\[/);
+    expect(code).not.toMatch(/entries\.map\(\(e\) => \[e\.scheduled_date/);
     // Дата стоїть КОЛОНКОЮ у файлі — помилку видно в самому CSV, а не лише в імені.
-    expect(code).toMatch(/const head = \["Дата", "Час"/);
-    expect(code).toMatch(/const rows = entries\.map\(\(e\) => \[e\.scheduled_date \|\| ""/);
+    const lib = src("lib/callListExport.ts");
+    expect(lib).toMatch(/CALL_LIST_EXPORT_HEAD = \["Дата", "Час"/);
+    expect(lib).toMatch(/entries\.map\(\(e\) => \[\s*e\.scheduled_date \|\| ""/);
   });
 
   /* Модалка досліджень читає графік/оверрайд/зайнятість по цій даті. */

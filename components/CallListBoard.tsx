@@ -24,7 +24,16 @@ import type { WaitlistEntry } from "@/supabase/types";
 import { cancelQueueEntry, setQueueEntryCall, setCallNote, confirmAllCalls, rescheduleQueueEntry, editQueueEntryStudies, setQueueEntryStatus } from "@/app/queue/actions";
 import { addEntryToWaitlist } from "@/app/waitlist/actions";
 import { isLate } from "@/lib/queueStatus";
-import { modalityKind, isContrastName} from "@/lib/studies";
+import { modalityKind } from "@/lib/studies";
+/* с80 (Н-16): назва процедури, підписи статусу дзвінка і все про CSV — спільні з
+   роутом /api/call-list/export: що видно на дошці, те й іде у файл, за побудовою. */
+import {
+  CALL_LIST_EXPORT_ERR,
+  CALL_STATUS_LABELS,
+  callListExportErrorText,
+  callListExportFileName,
+  callListProcLabel as procLabel,
+} from "@/lib/callListExport";
 import type { ServiceLike, RoomOverrideRow } from "@/lib/catalog";
 import type { CallStatus, Json } from "@/supabase/types";
 import { PRIORITY_META, isActiveStatus, type PatientPriority } from "@/lib/priority";
@@ -75,21 +84,18 @@ function studyKind(e: { studies?: unknown }) {
   const s = arr[0] ? arr[0].type : null;
   return s || "МРТ";
 }
-function procLabel(e: { studies?: unknown; note?: string | null }) {
-  const s = Array.isArray(e.studies) ? (e.studies as Array<{ type?: string; region?: string; contrast?: boolean }>) : [];
-  if (s.length) return s.map((x) => (x.type || "") + (x.region ? " · " + x.region : "") + (x.contrast && !isContrastName(x.region) ? " з контрастом" : "")).join(" + ");
-  return e.note || "—";
-}
+/* procLabel — з lib/callListExport.ts (с80, Н-16): тією самою функцією роут
+   підписує колонку «Процедура» у CSV. */
 
 /* Гліфи — ті самі, що в CALL_META дошки черги (QueueBoard): до с75 вони тут не
    виводились узагалі, а «✗» для «Не відповідає» поруч із «✕» для «Відмова»
    візуально не розрізнити (ревʼю W-3). */
 const CL_META: Record<string, { label: string; cls: string; icon: string }> = {
-  not_called: { label: "Ще не дзвонили", cls: "gray", icon: "○" },
-  confirmed: { label: "Підтверджено", cls: "green", icon: "✓" },
-  no_answer: { label: "Не відповідає", cls: "orange", icon: "…" },
-  to_recall: { label: "Передзвонити", cls: "blue", icon: "↻" },
-  declined: { label: "Відмова", cls: "red", icon: "✕" },
+  not_called: { label: CALL_STATUS_LABELS.not_called, cls: "gray", icon: "○" },
+  confirmed: { label: CALL_STATUS_LABELS.confirmed, cls: "green", icon: "✓" },
+  no_answer: { label: CALL_STATUS_LABELS.no_answer, cls: "orange", icon: "…" },
+  to_recall: { label: CALL_STATUS_LABELS.to_recall, cls: "blue", icon: "↻" },
+  declined: { label: CALL_STATUS_LABELS.declined, cls: "red", icon: "✕" },
 };
 const CALL_ORDER: Record<string, number> = { not_called: 0, to_recall: 1, no_answer: 2, confirmed: 3, declined: 4 };
 
@@ -742,19 +748,48 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
     reload();
   }
 
-  function exportCsv() {
-    /* Ім'я файлу береться з ПІКЕРА, а рядки — зі стану. Поки триває завантаження
-       нового дня, це різні зрізи, і файл «call-list-30.08.csv» поїхав би з
-       пацієнтами 29-го. Кнопка гаситься при loading (як «Підтвердити всіх»), а
-       дата ще й стоїть КОЛОНКОЮ — щоб помилку було видно у самому файлі. */
-    const head = ["Дата", "Час", "Пацієнт", "Телефон", "Процедура", "Кабінет", "Статус", "Нотатка"];
-    const rows = entries.map((e) => [e.scheduled_date || "", e.scheduled_time, e.patient_name, e.patient_phone || "", procLabel(e), (e.room_id ? roomsById[e.room_id] : undefined)?.name || "", (CL_META[e.call_status || "not_called"]).label, (e.call_note || "").replace(/[\n;]/g, " ")]);
-    const csv = [head, ...rows].map((r) => r.map((c) => '"' + String(c ?? "").replace(/"/g, '""') + '"').join(";")).join("\n");
-    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = "call-list-" + dayKey + ".csv"; a.click();
-    URL.revokeObjectURL(url);
-    notify("Колл-лист експортовано у CSV", "info");
+  const [exporting, setExporting] = useState(false);
+
+  /* CSV обдзвону (с80, Н-16). До с80 файл збирав БРАУЗЕР зі стану `entries`:
+     ПІБ, телефон і нотатка дня ішли у файл без сліду в журналі й без захисту від
+     формул. Тепер його збирає СЕРВЕР — POST /api/call-list/export: центр — із
+     сесії, звідси йде лише ДЕНЬ пікера (`dayKey`), рядки — під RLS, екранування
+     (= + - @ TAB CR LF) — спільним писачем lib/csv.ts, подія
+     `patient_data.exported` — у журнал центру.
+     Імʼя файлу й рядки тепер з ОДНОГО дня за побудовою (сервер читає рівно
+     `date`), тож колишня пастка «імʼя з пікера, рядки зі стану» зникла. Кнопка
+     все одно гаситься, поки день вантажиться (`loading`): файл має описувати
+     те, що оператор бачить, а не день, якого на екрані ще немає. Дата лишилась
+     КОЛОНКОЮ у файлі (CALL_LIST_EXPORT_HEAD). */
+  async function exportCsv() {
+    if (exporting || loading) return;
+    const day = dayKey;
+    setExporting(true);
+    try {
+      const res = await fetch("/api/call-list/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date: day }),
+        cache: "no-store",
+      });
+      /* Текст відмови — callListExportErrorText: 429 — гальмо ліміту, 403/400 —
+         безпечна фраза роуту, решта — загальне «спробуйте ще раз». */
+      if (!res.ok) {
+        const body = res.status === 403 || res.status === 400 ? await res.json().catch(() => null) : null;
+        notify(callListExportErrorText(res.status, body), "error");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = callListExportFileName(day); a.click();
+      URL.revokeObjectURL(url);
+      notify("Колл-лист експортовано у CSV", "info");
+    } catch {
+      // Мережа моргнула посеред запиту чи завантаження — той самий шлях, що й відмова сервера.
+      notify(CALL_LIST_EXPORT_ERR, "error");
+    } finally {
+      setExporting(false);
+    }
   }
 
   const counts: Record<string, number> = { total: entries.length, not_called: 0, confirmed: 0, no_answer: 0, to_recall: 0, declined: 0 };
@@ -806,7 +841,7 @@ export default function CallListBoard({ clinicId, clinicTz, rooms, residualRoomI
           <div className="tb-right">
             {/* Ручна зміна дня гасить банер сама: оператор бачить, що робить. */}
             <input className="inp tabular" type="date" aria-label="День обдзвону" value={dayKey} onChange={(e) => { const [y, m, d] = e.target.value.split("-").map(Number); setDate(new Date(y, m - 1, d)); setDayShifted(null); }} style={{ width: 150 }} />
-            <button className="btn btn-secondary" disabled={loading} onClick={exportCsv} title={loading ? "Зачекайте — список цього дня ще вантажиться" : "Вивантажити видимий день у CSV"}>↧ Експорт</button>
+            <button className="btn btn-secondary" disabled={loading || exporting} aria-busy={exporting} onClick={exportCsv} title={loading ? "Зачекайте — список цього дня ще вантажиться" : "Вивантажити видимий день у CSV"}>{exporting ? <><span className="rf-spin" aria-hidden="true" /> Готуємо…</> : "↧ Експорт"}</button>
             {/* ⚠️ F2: доки перенесення дня не підтверджено людиною, НЕЗВОРОТНА
                 масова дія недоступна — це пара до банера нижче і прямий аналог
                 `setTime("")` у трьох формах запису.

@@ -197,6 +197,16 @@ describe("у заголовку немає значень полів паціє�
     ).toBe("Керівник вивантажив дані пацієнтів (записів: 2)");
   });
 
+  it("с80 (Н-16): CSV колл-листа — канал названо, число записів лишається", () => {
+    // Рівно той details, що пише роут /api/call-list/export.
+    expect(
+      eventTitle({ eventType: "patient_data.exported", actorRole: "registrar", details: { source: "call_list", rows: 12, format: "csv" } })
+    ).toBe("Реєстратор вивантажив дані пацієнтів з колл-листа (записів: 12)");
+    expect(
+      eventTitle({ eventType: "patient_data.exported", actorRole: "admin", details: { source: "call_list", rows: 1, format: "csv" } })
+    ).toBe("Адміністратор вивантажив дані пацієнтів з колл-листа (записів: 1)");
+  });
+
   it("changedFieldsLabel не показує значень", () => {
     expect(changedFieldsLabel(["patient_name"])).toBe("ПІБ");
     expect(changedFieldsLabel([])).toBe("");
