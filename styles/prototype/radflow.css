@@ -159,7 +159,7 @@ input, textarea, select { font-family: inherit; color: inherit; }
 
 /* --- Компактно (максимально щільно; у цьому режимі трохи менший текст) --- */
 html[data-density="compact"] .content { padding: 8px 12px 22px; }
-html[data-density="compact"] .topbar { min-height: 2.875rem; padding: 0 14px; }
+html[data-density="compact"] .topbar { min-height: 2.875rem; padding-left: 14px; padding-right: 14px; } /* Н-12: лише горизонталь, вертикаль 4px — у .topbar */
 html[data-density="compact"] .qrows { gap: 3px; }
 html[data-density="compact"] .qrow,
 html[data-density="compact"] .qhead { padding-top: 6px; padding-bottom: 6px; }
@@ -192,7 +192,7 @@ html[data-density="compact"] .qhead { font-size: 0.75rem; }
 
 /* --- Просторо --- */
 html[data-density="spacious"] .content { padding: 32px 36px 56px; }
-html[data-density="spacious"] .topbar { min-height: 4.5rem; padding: 0 30px; }
+html[data-density="spacious"] .topbar { min-height: 4.5rem; padding-left: 30px; padding-right: 30px; } /* Н-12: див. compact */
 html[data-density="spacious"] .qrows { gap: 12px; }
 html[data-density="spacious"] .qrow,
 html[data-density="spacious"] .qhead { padding-top: 18px; padding-bottom: 18px; }
@@ -360,10 +360,17 @@ html[data-density="spacious"] .fld { gap: 9px; }
 .topbar {
   /* min-height, а не height: при 200% зумі й великому шрифті заголовок і
      кнопки просто не влазять у 60px і вилазять за межі смуги (WCAG 1.4.4). */
-  min-height: 3.75rem; flex-shrink: 0; flex-wrap: wrap; padding-top: 4px; padding-bottom: 4px;
+  min-height: 3.75rem; flex-shrink: 0; flex-wrap: wrap;
   border-bottom: 1px solid var(--border);
   display: flex; align-items: center; gap: 16px;
-  padding: 0 22px; background: rgba(28,28,30,0.8); backdrop-filter: blur(20px);
+  /* Н-12 (с79): вертикальний відступ 4px задано ТУТ і тільки тут — правила
+     щільності (блок «Щільність» вище) міняють лише горизонтальні. До с79 тут
+     стояли окремі padding-top/bottom: 4px, а пізніший у тому ж правилі
+     `padding: 0 22px` їх обнуляв; у compact кнопка «＋ Новий запис» (btn-lg,
+     44px) лягала впритул до верху смуги, і верх її кільця фокуса (outline 2px
+     + відступ 2px) виходив за екран: y = -3.66 (WCAG 2.4.7).
+     Пін — tests/tabletPanel.test.ts. */
+  padding: 4px 22px; background: rgba(28,28,30,0.8); backdrop-filter: blur(20px);
   /* с78: панелі під шапкою тепер позиціоновані (див. .content) і малюються в
      тому ж шарі, що й шапка (backdrop-filter = власний контекст накладання),
      але ПІЗНІШЕ за деревом — тобто поверх неї. Без z-index нижній край кільця
@@ -428,7 +435,18 @@ html[data-density="spacious"] .fld { gap: 9px; }
      на робочій дошці це випадкова втрата незбереженої форми. */
 .content-wrap { flex: 1; display: grid; grid-template-columns: 1fr 320px; overflow: hidden; }
 .content { overflow-y: auto; padding: 20px 22px 40px; position: relative; overscroll-behavior-y: contain; }
-@media (max-width: 1240px) { .content-wrap { grid-template-columns: 1fr; } .rpanel { display: none; } }
+/* Кільце фокуса (outline 2px + відступ 2px) виходить за елемент на 4px. Коли
+   Tab прокручує панель до елемента, браузер ставить його ВПРИТУЛ до краю
+   видимої області — і край самої панелі зрізав кільце (ревʼю с79-р2).
+   scroll-padding-block: 6px — елемент стає за 6px від краю, кільце видно
+   цілим. Діє лише на «прокрутку до елемента» (фокус, scrollIntoView,
+   якорі), не на прокрутку мишею чи пальцем.
+   .content-wrap (overflow: hidden) — теж контейнер прокрутки: у крайніх
+   вікнах (320×256, альбомний телефон при шрифті 200%) обидва рядки в нього не
+   вміщуються, і фокус прокручує вже його; без відступу кільце зрізав його
+   край. Пін — tests/tabletPanel.test.ts. */
+.rpanel, .content, .content-full, .sb-nav, .content-wrap { scroll-padding-block: 6px; }
+/* ≤1240 px — права панель стає другим рядком: правило стоїть ПІСЛЯ базового .rpanel (Н-11, с79). */
 
 /* board top: calendar/load left rail + stats/cabinets right */
 .board-top { display: grid; grid-template-columns: 264px 1fr; gap: 16px; align-items: start; margin-bottom: 18px; }
@@ -728,6 +746,51 @@ html[data-density="spacious"] .fld { gap: 9px; }
 
 /* ===== Right panel ===== */
 .rpanel { border-left: 1px solid var(--border); overflow-y: auto; padding: 18px 16px 40px; display: flex; flex-direction: column; gap: 16px; background: var(--bg); position: relative; overscroll-behavior-y: contain; } /* с78: див. .content */
+/* Н-11 (с79, рішення власника): на ≤1240 px панель НЕ ховається, а стає другим
+   рядком під списком — календар, завантаженість, обдзвін, переноси і скасовані
+   лишаються на планшеті біля апарата. Список забирає решту висоти (1fr);
+   панель — за вмістом, але не вище 40% області (fit-content), далі
+   прокручується сама (position і overscroll-behavior — з базового правила,
+   с78). Секції лягають колонками в ширину; min(100%, …) не дає колонці при
+   великому шрифті стати ширшою за панель (1.4.10).
+   ⚠️ Рядок списку — саме `1fr` (= minmax(auto, 1fr)), а не minmax(0, 1fr).
+   У панелі є «підлога» — власні padding + межа (35/59/83 px за щільностями),
+   і мінімум треку fit-content її тримає; з minmax(0, 1fr) на дуже низькій
+   області рядок списку стискався до 0, .content вилазив зі свого треку, а
+   панель малювалась ПОВЕРХ списку (ревʼю с79-р1: 320×256 — списку видно 0 px).
+   З `1fr` мінімум рядка — підлога самого списку: панель на список більше не
+   лягає, у крайньому разі обрізається знизу вона сама (.content-wrap
+   { overflow: hidden }), як і до с79.
+   max-height: 40dvh — страховка для WebKit: якщо відсоток у fit-content там
+   не розвʼяжеться, трек стане max-content, а панель однаково не вища за 40%
+   вікна. У Chromium не діє: 40% області завжди менше 40% вікна.
+   ⚠️ Правило мусить стояти ПІСЛЯ базового .rpanel: специфічність та сама. До
+   с79 медіа-правило з `.rpanel { display: none }` стояло ВИЩЕ (біля
+   .content-wrap) і програвало базовому `display: flex` — панель вилазила
+   смугою під списком. Пін — tests/tabletPanel.test.ts. */
+@media (max-width: 1240px) {
+  .content-wrap { grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr fit-content(40%); }
+  .rpanel {
+    border-left: 0; border-top: 1px solid var(--border);
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr));
+    align-items: start; align-content: start;
+    max-height: 40dvh;
+  }
+  /* Імʼя пацієнта в картці панелі ПЕРЕНОСИТЬСЯ, а не ріжеться трикрапкою
+     (ревʼю с79-р2). У колонці від 15rem імʼя поруч із часом чи бейджем не
+     вміщувалось; до с79 панель тут була на всю ширину й не різала нічого.
+     Імʼя — те, за чим реєстратор дзвонить.
+     Стилі імені ІНЛАЙНОВІ в TSX (NeedsReschedulePanel, AffectedPanel,
+     CallListPanel, CancelledRow: `whiteSpace: "nowrap"` + `textOverflow`), а
+     інлайн перебиває лише !important. Селектор тримається за `text-overflow`
+     в атрибуті style: сервер React пише `text-overflow:ellipsis`, браузер для
+     створеного на клієнті — `text-overflow: ellipsis;`, підрядок той самий.
+     Назва кабінету (RoomLoad, .load-name) — те саме, але класом.
+     overflow-wrap: anywhere — довге слово без пробілу теж переноситься.
+     Пін — tests/tabletPanel.test.ts. */
+  .rpanel .load-body span[style*="text-overflow"] { white-space: normal !important; overflow-wrap: anywhere; }
+  .rpanel .load-name { white-space: normal; overflow-wrap: anywhere; }
+}
 .rcard { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 15px; }
 .rcard h3 { font-size: 0.8125rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 13px; display: flex; align-items: center; gap: 8px; }
 .rcard h3 .hic { color: var(--text-muted); font-size: 0.75rem; }
@@ -2099,8 +2162,28 @@ select.inp { cursor: pointer; }
      шухляди — вона лишається перемикачем і у відкритому стані) і «✕». */
   .sidebar .sb-head { padding-left: 3.5rem; padding-right: 3.25rem; }
 
-  /* Топбар звільняє місце під фіксовану кнопку «☰» */
-  .topbar { padding-left: 3.5rem; padding-right: 0.75rem; column-gap: 10px; }
+  /* Місце під фіксовану «☰» (left 0.375rem + 2.75rem = правий край 3.125rem)
+     звільняє лише РЯДОК ЗАГОЛОВКА, а не вся шапка — Н-13 (с79, ревʼю р2).
+     • Заголовок: 0.75rem шапки + padding-left 2.75rem = текст з 3.5rem, за
+       правим краєм «☰» і її кільцем фокуса (+4px). min-height 2.75rem —
+       рядок заголовка не нижчий за «☰», тож перенесена на другий рядок
+       .tb-right починається під нею (без min-height короткий заголовок —
+       /referral, лише h1 — при шрифті 125–175% пускав кнопки під «☰»).
+     • Бічні відступи шапки — 0.75rem у КОЖНІЙ щільності. Відступи щільності
+       (14 / 30px) — у px і не ростуть зі шрифтом, а «☰» — у rem: при 200% у
+       compact заголовок з 14px + 2.75rem заходив би під її кільце. Правила
+       щільності `html[data-density="…"] .topbar` мають (0,2,1);
+       `html[data-density] .topbar` — та сама (0,2,1), але ПІЗНІШЕ, тож
+       перемагає; `.topbar` у списку — для сторінки без data-density (скрипт
+       у layout не виконався).
+     • До ревʼю р2 резерв 3.5rem мала вся шапка, а з нею й перенесені кнопки
+       .tb-right: при шрифті 200% частина їх виходила за правий край
+       (`.main { overflow: hidden }` ріже), а шапка на 320×256 займала 210 з
+       256 px. Тепер другий рядок має всю ширину від 0.75rem.
+     Пін — tests/tabletPanel.test.ts. */
+  .topbar { column-gap: 10px; }
+  .topbar, html[data-density] .topbar { padding-left: 0.75rem; padding-right: 0.75rem; }
+  .topbar > .tb-title { padding-left: 2.75rem; min-height: 2.75rem; }
   /* Права група топбара була `nowrap`: три кнопки (376px) у 292px не вміщувались,
      і `.main { overflow: hidden }` мовчки ЗРІЗАВ «+ Новий запис» — головну дію
      екрана не можна було ні побачити, ні натиснути. Знайдено живим прогоном
