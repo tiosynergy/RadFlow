@@ -56,7 +56,9 @@ import { buildCsv } from "@/lib/csv";
        повний файл). Сигнал — заголовок X-Export-Truncated.
        ⚠️ Читаємо СТОРІНКАМИ ≤1000 (ревʼю с79, M-1): db-max-rows PostgREST мовчки
        різав один запит до 1000 рядків. Записи, каталог і кабінети — keyset-
-       сторінками (readPages); кінець вибірки — лише порожня сторінка.
+       сторінками (readPages) із дедупом за id; кінець вибірки — лише порожня
+       сторінка. «Перші 5000» — за (дата, час, id): при обрізці останній
+       включений день дочитується цілком (ревʼю р2, L1).
      • ЖУРНАЛ — подія `patient_data.exported` у журнал КОЖНОГО центру, чиї
        рядки пішли у файл, лише з ЙОГО числом рядків (журнал центру А не має
        знати, скільки вивантажено з центру Б). details — { source, rows,
@@ -103,12 +105,18 @@ type ServiceRow = CatalogServiceRow & { id: string; sort_order: number };
  *     offset тоді зсувається і МОВЧКИ губить сусідній рядок, а keyset
  *     продовжує від останнього прочитаного ключа.
  */
-async function readPages<T>(
+async function readPages<T extends { id: string }>(
   page: (after: T | null, want: number) => PageRes<T>,
-  cap: number
+  cap: number,
+  opts: { after?: T | null; seen?: Set<string> } = {}
 ): Promise<{ rows: T[]; error: DbErr | null }> {
   const rows: T[] = [];
-  let after: T | null = null;
+  /* Дедуп за id МІЖ сторінками (ревʼю с79 р2, L2). Снапшоту між запитами
+     немає: запис, перенесений ВПЕРЕД за курсор, прийшов би вдруге — не
+     дублюємо (лишається перша, вже прочитана версія); перенесений НАЗАД за
+     курсор — пропускаємо (його вже не видно; межа без снапшоту). */
+  const seen = opts.seen ?? new Set<string>();
+  let after: T | null = opts.after ?? null;
   for (let i = 0; i < MAX_PAGES; i++) {
     let res: { data: T[] | null; error: DbErr | null };
     try {
@@ -120,9 +128,14 @@ async function readPages<T>(
     if (res.error) return { rows, error: res.error };
     const got = res.data ?? [];
     if (!got.length) return { rows, error: null };
-    rows.push(...got);
+    for (const r of got) {
+      const k = String(r.id).toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      rows.push(r);
+    }
     if (rows.length >= cap) return { rows, error: null };
-    after = got[got.length - 1];
+    after = got[got.length - 1];   // курсор — за порядком СЕРВЕРА, навіть якщо останній був дублем
   }
   return { rows, error: { code: "pagination_overflow", message: `pages>${MAX_PAGES}` } };
 }
@@ -207,6 +220,7 @@ export async function POST(req: Request) {
   if (clinicIds.length) {
     /* Записи — сторінками за (дата, id) до СТЕЛЯ + 1: «обрізано» лише тоді,
        коли рядок понад стелю СПРАВДІ прочитано (ревʼю с79, M-1). */
+    const seen = new Set<string>();   // один на всі читання записів — і на дочитування дня
     const qRes = await readPages<EntryRow>((after, want) => {
       let q = supabase
         .from("queue_entries")
@@ -217,13 +231,35 @@ export async function POST(req: Request) {
         .lte("scheduled_date", dateKey(to));
       if (after) q = q.or(afterDateIdOr(after.scheduled_date ?? "", after.id));
       return q.order("scheduled_date", { ascending: true }).order("id", { ascending: true }).limit(want);
-    }, CEO_EXPORT_MAX_ROWS + 1);
+    }, CEO_EXPORT_MAX_ROWS + 1, { seen });
     if (qRes.error) return fail("queue_entries", qRes.error);
-    truncated = qRes.rows.length > CEO_EXPORT_MAX_ROWS;
-    /* Стеля — за (дата, id): на останньому, неповному дні у файл ідуть записи з
-       меншими id, а не ранішими годинами (час у ключі сторінки свідомо немає —
-       див. afterDateIdOr). Показ — уже за (дата, час, id). */
-    const entries = qRes.rows.slice(0, CEO_EXPORT_MAX_ROWS).sort(compareExportOrder);
+    let read = qRes.rows;
+    truncated = read.length > CEO_EXPORT_MAX_ROWS;
+    if (truncated) {
+      /* «Перші 5000» — перші за (дата, ЧАС, id), як і показ у файлі та як було в
+         5e75ccf (ревʼю с79 р2, L1). Сторінки йдуть за (дата, id) — час у ключі
+         свідомо немає (див. afterDateIdOr), — тож останній включений день
+         прочитано лише частково, і зріз за id брав би випадкову вибірку годин
+         (наскрізна перевірка ревʼюера: 165 із 220 записів дня, 12:20 випало,
+         18:50 потрапило). Дочитуємо РЕШТУ цього дня, далі ріжемо за часом. */
+      const lastDay = read[CEO_EXPORT_MAX_ROWS - 1].scheduled_date;
+      const probe = read[read.length - 1];
+      if (lastDay && probe.scheduled_date === lastDay) {
+        const rest = await readPages<EntryRow>((after, want) => {
+          let q = supabase
+            .from("queue_entries")
+            .select(CEO_ENTRY_COLS)
+            .in("clinic_id", clinicIds)
+            .neq("status", "cancelled")
+            .eq("scheduled_date", lastDay);
+          if (after) q = q.gt("id", after.id);
+          return q.order("id", { ascending: true }).limit(want);
+        }, Infinity, { after: probe, seen });
+        if (rest.error) return fail("queue_entries", rest.error);
+        read = read.concat(rest.rows);
+      }
+    }
+    const entries = read.sort(compareExportOrder).slice(0, CEO_EXPORT_MAX_ROWS);
 
     if (entries.length) {
       // Каталог — для оцінки позицій без снапшот-ціни (як catalog_est_sum RPC 0114);

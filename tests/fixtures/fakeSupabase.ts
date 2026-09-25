@@ -198,7 +198,8 @@ class FakeQuery {
     if (this.db.project && this.cols.length) {
       const bad = this.cols.filter((c) => !/^[a-z_][a-z0-9_]*$/i.test(c));
       if (bad.length) throw new Error(`FakeSupabase: проекція не вміє «${bad.join(", ")}» — лише простий перелік колонок`);
-      out = out.map((r) => Object.fromEntries(this.cols.map((c) => [c, r[c]])));
+      // Колонка, якої в рядку фікстури немає, — це NULL (як віддав би PostgREST), а не undefined.
+      out = out.map((r) => Object.fromEntries(this.cols.map((c) => [c, r[c] === undefined ? null : r[c]])));
     }
     return this.wantSingle ? { data: out[0] ?? null, error: null } : { data: out, error: null };
   }
@@ -220,10 +221,13 @@ class FakeQuery {
       if (f.op === "eq" && !eqVal(v, f.val)) return false;
       if (f.op === "neq" && eqVal(v, f.val)) return false;
       if (f.op === "in" && !(f.val as unknown[]).some((x) => eqVal(v, x))) return false;
-      if (f.op === "lt" && !(String(v) < String(f.val))) return false;
-      if (f.op === "lte" && !(String(v) <= String(f.val))) return false;
-      if (f.op === "gt" && !(String(v) > String(f.val))) return false;
-      if (f.op === "gte" && !(String(v) >= String(f.val))) return false;
+      /* с79 (ревʼю Н-10 р2, L3): діапазонні порівняння — через ordKey, як `order`
+         і `.or()`: uuid без урахування регістру (шапка це обіцяла, а тут
+         порівнювались сирі рядки). */
+      if (f.op === "lt" && !(ordKey(v) < ordKey(f.val))) return false;
+      if (f.op === "lte" && !(ordKey(v) <= ordKey(f.val))) return false;
+      if (f.op === "gt" && !(ordKey(v) > ordKey(f.val))) return false;
+      if (f.op === "gte" && !(ordKey(v) >= ordKey(f.val))) return false;
       if (f.op === "is" && !(f.val === null ? v == null : v === f.val)) return false;
       if (f.op === "not.is" && (f.val === null ? v == null : v === f.val)) return false;
     }

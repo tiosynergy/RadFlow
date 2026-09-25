@@ -173,7 +173,8 @@ beforeEach(() => {
   rl.allow = true;
   journal.error = null;
   rpcCalls.length = 0; adminViolations.length = 0; logs.length = 0;
-  rls.errors = {}; rls.seen = {}; rls.queries = []; rls.maxRows = undefined;
+  rls.errors = {}; rls.errorsAfter = {}; rls.seen = {}; rls.queries = [];
+  rls.maxRows = 1000;   // стеля db-max-rows PostgREST — у КОЖНОМУ тесті, як на проді (ревʼю р2)
   rls.project = true;   // лише вибрані колонки, як PostgREST (мутація ревʼю M01)
   hooks.onFrom = undefined;
   for (const k of Object.keys(fromCount)) delete fromCount[k];
@@ -525,7 +526,6 @@ describe("стеля 5000 і сторінки: db-max-rows сервера — 10
   const queueReads = () => (rls.queries ?? []).filter((x) => x.table === "queue_entries").length;
 
   it("5001 запис — у файлі перші 5000, X-Export-Truncated: 1; журнал — лише число КОЖНОГО центру У ФАЙЛІ", async () => {
-    rls.maxRows = 1000;
     rls.tables.queue_entries = bulk(5001);
     const r = await exportCsv({ period: "month", scope: "all" });
     expect(r.status).toBe(200);
@@ -536,11 +536,11 @@ describe("стеля 5000 і сторінки: db-max-rows сервера — 10
     expect(new Set(rows.map((x) => x[1])).size, "рядок задублювався між сторінками").toBe(5000);
     expect(r.text).not.toContain("Масовий 5000");   // останній за порядком — поза стелею
     expect(eventCounts()).toEqual({ [C1]: 4000, [C2]: 1000 });
-    expect(queueReads(), "5 сторінок по 1000 + проба на ОДИН рядок").toBe(6);
+    // 5 сторінок по 1000 + проба на ОДИН рядок + дочитування решти останнього дня (порожнє)
+    expect(queueReads()).toBe(7);
   });
 
   it("РІВНО 5000 — файл повний, «обрізано» не кажемо: 5001-го рядка просто немає", async () => {
-    rls.maxRows = 1000;
     rls.tables.queue_entries = bulk(5000);
     const r = await exportCsv({ period: "month", scope: "all" });
     expect(r.headers.get("x-export-truncated")).toBe("0");
@@ -563,7 +563,6 @@ describe("стеля 5000 і сторінки: db-max-rows сервера — 10
      скасувати. Offset тоді зсувається на один, і рядок на межі сторінки МОВЧКИ
      випадає з файлу (не скасований — сусідній, живий). */
   it("запис скасували МІЖ сторінками — жоден інший рядок не загубився", async () => {
-    rls.maxRows = 1000;
     // 1200 записів 10.09 і 1300 — 11.09: межа першої сторінки всередині дати,
     // друга сторінка переходить через дату — обидві гілки keyset-умови.
     rls.tables.queue_entries = Array.from({ length: 2500 }, (_, i) =>
@@ -589,8 +588,87 @@ describe("стеля 5000 і сторінки: db-max-rows сервера — 10
     expect(logs.some((l) => l.event === "ceo.export_failed" && l.errorCode === "pagination_overflow")).toBe(true);
   });
 
+  /* Ревʼю с79 р2, M1(а): збій БД на НЕпершій сторінці. Якщо сприйняти його як
+     «кінець», файл вийде частковим із X-Export-Truncated: 0, а журнал — із
+     заниженими числами (мутація E8 лишала весь набір зеленим). */
+  it.each(["queue_entries", "services", "rooms"])("збій на ДРУГІЙ сторінці %s — 500 і жодної події, а не тихо неповний файл", async (table) => {
+    rls.tables.queue_entries = Array.from({ length: 1500 }, (_, i) =>
+      q("q" + String(i).padStart(5, "0"), C1, R1, "2026-09-10", "09:00", "done", KNEE, "Сторінковий " + i));
+    rls.tables.services = [
+      ...rls.tables.services,
+      ...Array.from({ length: 1500 }, (_, i) => svc("f" + String(i).padStart(4, "0"), C1, "Послуга " + i, 100, null, true, i + 10)),
+    ];
+    rls.tables.rooms = [
+      ...rls.tables.rooms,
+      ...Array.from({ length: 1500 }, (_, i) => ({ id: "r" + String(i).padStart(4, "0"), clinic_id: C1, name: "Кабінет " + i, active: true })),
+    ];
+    rls.errorsAfter = { [table]: { after: 1, error: { message: "boom on page 2" } } };   // перша сторінка — ок, друга — збій
+    const r = await exportCsv({ period: "month", scope: C1 });
+    expect(r.status).toBe(500);
+    expect(emits()).toEqual([]);
+    expect(logs.some((l) => l.event === "ceo.export_failed" && String(l.message).startsWith("step=" + table))).toBe(true);
+  });
+
+  /* Ревʼю с79 р2, M1(б): у тестах вище id росли разом із датою, тож «keyset
+     лише за id» (K1), «ORDER BY лише за id» (K2) і «ORDER BY за часом при
+     keyset (дата, id)» (K3) червоніли випадково. Тут id СПАДАЮТЬ із датою, час
+     у межах дня перемішаний, а межа сторінки (1000) — посеред дня (90 на день). */
+  it("id СПАДАЮТЬ із датою, час перемішаний, межа сторінки посеред дня — кожен запис рівно один раз", async () => {
+    rls.tables.queue_entries = Array.from({ length: 2500 }, (_, i) => {
+      const day = 1 + Math.floor(i / 90);                        // 01…28.09
+      const mins = 8 * 60 + ((i * 37) % 600);                   // 08:00…17:59, не в порядку id
+      const t = `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
+      return q("k" + String(99999 - i).padStart(5, "0"), C1, R1, `2026-09-${String(day).padStart(2, "0")}`, t, "done", [], "Запис " + i);
+    });
+    const r = await exportCsv({ period: "month", scope: C1 });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("x-export-truncated")).toBe("0");
+    const names = dataRows(r.text).map((x) => x[1]);
+    expect(names, "запис пропущено або задубльовано на межі сторінки").toHaveLength(2500);
+    expect(new Set(names).size).toBe(2500);
+  });
+
+  /* Ревʼю с79 р2, L1: «перші 5000» — перші за (дата, ЧАС, id). Сторінки йдуть
+     за (дата, id), і в останній день id тут навмисно ПРОТИ часу: зріз за id
+     узяв би найпізніші прийоми дня, а мусить — найраніші. */
+  it("обрізка: останній день дочитано цілком — у файлі найраніші за часом, відкинуто найпізніші", async () => {
+    const before: Row[] = Array.from({ length: 4990 }, (_, i) =>
+      q("a" + String(i).padStart(5, "0"), C1, R1, "2026-09-10", "09:00", "done", [], "Раніше " + i));
+    const hhmm = (k: number) => { const m = 8 * 60 + 30 * k; return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`; };
+    // 20 записів 11.09: 08:00, 08:30 … 17:30; id СПАДАЮТЬ із часом.
+    const lastDay: Row[] = Array.from({ length: 20 }, (_, k) =>
+      q("z" + String(99 - k).padStart(3, "0"), C1, R1, "2026-09-11", hhmm(k), "done", [], "День 11, " + hhmm(k)));
+    rls.tables.queue_entries = [...before, ...lastDay];
+    const r = await exportCsv({ period: "month", scope: C1 });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("x-export-truncated")).toBe("1");
+    const rows = dataRows(r.text);
+    expect(rows).toHaveLength(5000);
+    const kept = rows.filter((x) => x[0] === "2026-09-11").map((x) => x[1]);
+    expect(kept, "з останнього дня взято не найраніші прийоми").toEqual(Array.from({ length: 10 }, (_, k) => "День 11, " + hhmm(k)));
+    for (let k = 10; k < 20; k++) expect(r.text, "у файл потрапив пізніший прийом останнього дня").not.toContain("День 11, " + hhmm(k));
+    expect(eventCounts()).toEqual({ [C1]: 5000 });
+  });
+
+  /* Ревʼю с79 р2, L2: снапшоту між сторінками немає. Запис, уже прочитаний,
+     переносять уперед — за курсор — і без дедупу він приходить удруге. */
+  it("запис ПЕРЕНЕСЛИ вперед посеред експорту — у файлі й у журналі рівно раз", async () => {
+    rls.tables.queue_entries = Array.from({ length: 2500 }, (_, i) =>
+      q("m" + String(i).padStart(5, "0"), C1, R1, `2026-09-${String(1 + Math.floor(i / 100)).padStart(2, "0")}`, "09:00", "done", [], "Живий " + i));
+    hooks.onFrom = (t, n) => {
+      if (t !== "queue_entries" || n !== 2) return;   // перед ДРУГОЮ сторінкою
+      const i = rls.tables.queue_entries.findIndex((e) => e.id === "m00000");
+      rls.tables.queue_entries[i] = { ...rls.tables.queue_entries[i], scheduled_date: "2026-09-28" };
+    };
+    const r = await exportCsv({ period: "month", scope: C1 });
+    expect(r.status).toBe(200);
+    const names = dataRows(r.text).map((x) => x[1]);
+    expect(names.filter((n) => n === "Живий 0"), "перенесений запис задублювався").toHaveLength(1);
+    expect(names).toHaveLength(2500);
+    expect(eventCounts()).toEqual({ [C1]: 2500 });
+  });
+
   it("каталог і кабінети понад 1000 рядків — дохід і назви не губляться; пріоритет дублів — (sort_order, id)", async () => {
-    rls.maxRows = 1000;
     const fillers = Array.from({ length: 1200 }, (_, i) => svc("f" + String(i).padStart(4, "0"), C1, "Послуга " + i, 100, null, true, i + 1));
     rls.tables.services = [
       svc("aa-lose", C1, "Коліно", 2500, null, true, 3),    // перша за id, але sort_order 3
@@ -760,5 +838,24 @@ describe("диференційно: сторінка /ceo, правило lib/ce
       .filter((e) => e.status !== "cancelled" && String(e.scheduled_date).startsWith("2026-09"))
       .map((e) => e.clinic_id as string));
     expect(Object.keys(eventCounts()).sort()).toEqual(page.clinics.map((c) => c.id).filter((id) => withRows.has(id)).sort());
+  });
+});
+
+/* Ревʼю с79 р2, L3: двійник обіцяв «uuid без регістру», але діапазонні
+   фільтри (.gt/.gte/.lt/.lte) порівнювали сирі рядки — на відміну від order і
+   .or(). Keyset-сторінки роуту (.gt("id", …)) спираються саме на них. */
+describe("двійник PostgREST: uuid без урахування регістру — і в діапазонних фільтрах", () => {
+  it(".gt/.gte/.lt/.lte порівнюють uuid так само, як order і .or()", async () => {
+    const db = emptyDb();
+    const A = "aaaaaaaa-0000-4000-8000-000000000001";
+    const B = "bbbbbbbb-0000-4000-8000-000000000002";
+    db.tables.t = [{ id: A }, { id: B.toUpperCase() }];
+    const c = fakeAdminClient(db);
+    // Запит двійника — thenable зі своєю сигнатурою then: чекаємо його як є.
+    const ids = async (qq: unknown) => ((await qq) as { data: Row[] }).data.map((r) => String(r.id).toLowerCase()).sort();
+    expect(await ids(c.from("t").select("id").gt("id", A.toUpperCase()))).toEqual([B]);
+    expect(await ids(c.from("t").select("id").gte("id", B))).toEqual([B]);
+    expect(await ids(c.from("t").select("id").lt("id", B))).toEqual([A]);
+    expect(await ids(c.from("t").select("id").lte("id", A.toUpperCase()))).toEqual([A]);
   });
 });
