@@ -33,6 +33,20 @@ const MIGDIR = resolve(process.cwd(), "supabase/migrations");
  *     запрошення. Число в назві тесту — той самий пін-лічильник, який 0179
  *     назвав міною: він червоніє в момент, коли база вже попереду файлу.
  *     Тому оновлюється В ТІЙ САМІЙ правці, що й список.
+ *  ⚠️ 0203 (с79, рішення власника 24–25.09.2026) додала СІМ (23 → 30):
+ *       • чотири `trg_audit_*` (Р2, варіант б) — `doctors`, `patient_cases`,
+ *         `referrer_private` (ПІІ) і `services` (прайс: правку не відновити
+ *         нічим, привід — RF-03). Функція та сама `fn_audit()`, тіло — №19;
+ *       • три `zz_guard_read_keys` (Н-9, Р-1, Р-2) — `queue_entries`,
+ *         `waitlist_entries`, `patient_cases`: `referrer_id` і `created_by` —
+ *         ключі читання, тож ключ без законного доступу до центру запису гард
+ *         мовчки ставить у NULL. Тригер БЕЗ списку колонок і ОСТАННІЙ серед
+ *         BEFORE-тригерів рядка (імʼя `zz_`). Тут стережеться те, що тригер Є,
+ *         УВІМКНЕНИЙ і має те саме визначення; тіло `guard_record_read_keys()`
+ *         тримає №19 (0203 внесла його туди ж, 59 → 60 — `PINNED` у
+ *         `guardFnBodiesInvariant.test.ts`). Порядок спрацювання №17 НЕ
+ *         пінить; його і властивості самої функції стереже
+ *         `tests/auditPiiReferrerGrant.test.ts`.
  *  Замір, який її довів: у транзакції з відкотом знято `trg_audit_profiles`
  *  (тригерів 1 → 0), сторож віддав `ok:true, checked:19, failed:[]`. Тобто
  *  аудит-слід на таблиці, де міняються РОЛІ, вимикався однією командою при всіх
@@ -44,10 +58,15 @@ const MIGDIR = resolve(process.cwd(), "supabase/migrations");
  *  сховав би підміну пари всередині однакової кількості. */
 const GUARDS: ReadonlyArray<readonly [string, string]> = [
   ["ceo_access", "trg_audit_ceo_access"],
+  /* 0203 (Р2б): аудит довідника лікарів. */
+  ["doctors", "trg_audit_doctors"],
   ["incidents", "a01_no_client_delete"],
   ["incidents", "trg_audit_incidents"],
   ["incidents", "trg_guard_incident_room"],
   ["patient_cases", "a00_radiologist_no_write"],
+  /* 0203: аудит кейсів (Р2б) і гард ключів читання (Н-9, Р-1). */
+  ["patient_cases", "trg_audit_patient_cases"],
+  ["patient_cases", "zz_guard_read_keys"],
   ["profiles", "trg_audit_profiles"],
   ["profiles", "trg_cleanup_orphan_clinic"],
   ["profiles", "trg_guard_profile_privileges"],
@@ -62,6 +81,8 @@ const GUARDS: ReadonlyArray<readonly [string, string]> = [
   ["queue_entries", "trg_guard_queue_room"],
   ["queue_entries", "trg_guard_referrer_doctor"],
   ["queue_entries", "trg_guard_status_referrer"],
+  /* 0203 (Н-9, Р-1): ключі читання черги — `referrer_id` і `created_by`. */
+  ["queue_entries", "zz_guard_read_keys"],
   ["referral_access", "trg_audit_referral_access"],
   /* 0184 (RF-03b), ДВІ нові пари. Обидві — у списку, бо їх зняття не червонить
      нічого іншого:
@@ -74,11 +95,18 @@ const GUARDS: ReadonlyArray<readonly [string, string]> = [
          нього RF-03b просто не існує, і мовчки: жоден інший сторож не помітить,
          що позначки перестали приходити. */
   ["referral_access", "trg_zzz_sched_markers_prune"],
+  /* 0203 (Р2б): ПІІ направника. У таблиці немає ні `id`, ні `clinic_id` —
+     `fn_audit` пише `row_id` і `clinic_id` NULL (названа межа 0203). */
+  ["referrer_private", "trg_audit_referrer_private"],
   ["schedule_overrides", "trg_zz_change_markers"],
+  /* 0203 (Р2б): аудит прайсу. */
+  ["services", "trg_audit_services"],
   ["waitlist_entries", "a00_radiologist_no_write"],
   ["waitlist_entries", "a01_no_client_delete"],
   ["waitlist_entries", "trg_audit_waitlist_entries"],
   ["waitlist_entries", "trg_guard_waitlist_room"],
+  /* 0203 (Н-9, Р-1): те саме правило для листа очікування. */
+  ["waitlist_entries", "zz_guard_read_keys"],
 ];
 
 /** Тіло останнього передрука сторожа. Правило вибору — спільне на три місця. */
@@ -107,7 +135,7 @@ describe("№17 guard_triggers — інвентар гардів у сторож
       .toContain("'check', 'server_now'");
   });
 
-  it("усі 23 пари названі ПАРОЮ (таблиця, тригер) і з повним визначенням", () => {
+  it("усі 30 пар названі ПАРОЮ (таблиця, тригер) і з повним визначенням", () => {
     /* ⚠️ Пара, а не імʼя (урок 0165): `a01_no_client_delete` живе на трьох
        таблицях, `a00_radiologist_no_write` на двох. Пін по імені звіряв би
        чужі пари, і зняття гарда з ОДНІЄЇ таблиці лишалось би зеленим. */

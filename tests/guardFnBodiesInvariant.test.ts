@@ -244,6 +244,18 @@ const PINNED: readonly string[] = [
   // центру направнику, і її тіло міняла 0195
   "mark_changes_seen(p_ids uuid[])",
   "referral_center_card(p_access_id uuid)",
+  // 0203 (с79, Н-9 і Р-1): тіло трьох тригерів `zz_guard_read_keys`
+  // (`queue_entries`, `waitlist_entries`, `patient_cases`). Воно ВИРІШУЄ, чиї
+  // `referrer_id` і `created_by` відкриють читання ПІБ і телефону пацієнта
+  // (політики читання пропускають `created_by = auth.uid() or referrer_id =
+  // auth.uid()` без гранту і центру), — той самий урок, що з `auth_is_desk` у
+  // 0200: пінити того, хто вирішує. №17 бачить лише ВИЗНАЧЕННЯ тригерів, тож
+  // вихолощене тіло (`return new;`) повернуло б обидва канали мовчки. Рішення
+  // оркестратора 24.09 за постановкою Н-9 («міграція + передрук №17/№19»);
+  // прецеденти тригерних функцій тут — `fn_audit()`, `guard_invite_issued_at()`.
+  // Список 59 → 60. Фальсифікація 0203 вимагає від №19 рівно `body:` на
+  // вихолощене тіло (`docs/audit/PR-0203-audit-pii-referrer-grant.md`).
+  "guard_record_read_keys()",
 ];
 
 function latestReprint(): { fn: string; file: string } {
