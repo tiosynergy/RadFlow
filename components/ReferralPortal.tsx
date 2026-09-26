@@ -5,8 +5,8 @@
    Вкладки: «Нове направлення», «Мої направлення», «Мої центри».
    Зайнятість слотів — через знеособлений RPC room_busy_slots (без PII). */
 
-import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
-import { bookableRooms, visibleRooms, residualSet, roomOffLabel, roomsInGrant } from "@/lib/rooms";
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode, type DragEvent } from "react";
+import { bookableRooms, visibleRooms, residualSet, roomOffLabel, roomsInGrant, grantAllowsRoom } from "@/lib/rooms";
 import Toast from "@/components/Toast";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -20,6 +20,9 @@ import PhoneInput from "@/components/PhoneInput";
 import CitySelect from "@/components/CitySelect";
 import RescheduleModal, { type RescheduleStudy } from "@/components/RescheduleModal";
 import ReferrerBoard from "@/components/ReferrerBoard";
+import RoomDayOverviewModal from "@/components/RoomDayOverviewModal";
+import DragSlotDock from "@/components/DragSlotDock";
+import { DRAG_MIME, DRAG_MOVE_REASON, canDragEntry, isNoopDrop, moveErrorText, type DragEntry, type DropTarget } from "@/lib/dragMove";
 import UnreadDot from "@/components/UnreadDot";
 import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
 import { badgeOf, loadStatusOf } from "@/lib/sidebarBadge";
@@ -35,7 +38,7 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import { addWaitlistEntry, setWaitlistStatus, setWaitlistPriority, updateWaitlistEntry } from "@/app/waitlist/actions";
 import { WAITLIST_STATUS_META, desiredWindowText, compareWaitlist } from "@/lib/waitlist";
 import type { WaitlistEntry } from "@/supabase/types";
-import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, dateKeyOf, type DayOverride } from "@/lib/schedule";
+import { roomScheduleFor, effectiveRoomBreaks, inBreak, breakClash, dateKeyOf, overrideFeed, type DayOverride, type OverrideFeed } from "@/lib/schedule";
 import { readRoomScheduleRow, roomScheduleReadError } from "@/lib/roomSchedule";
 import { buildSlots, countFit } from "@/lib/slots";
 import SlotPicker from "@/components/SlotPicker";
@@ -61,7 +64,10 @@ import type { Json } from "@/supabase/types";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 
-type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null };
+/* `schedule` — базовий графік кабінету (rooms.schedule): сторінка його читає
+   (app/referral/page.tsx), а з с81 карта дня і док переносу беруть графік
+   звідси ПРОПОМ, а не читають самі (перепис читачів — tests/roomScheduleRead). */
+type RoomOpt = { id: string; modality: string; name: string; apparatus_model?: string | null; active?: boolean | null; schedule?: unknown };
 type Center = { clinicId: string; name: string; city: string | null; status: string; policy?: string | null; room_ids?: string[] | null; accessId?: string | null; timezone?: string | null };
 type Referral = {
   id: string; clinic_id: string; created_by: string | null; referrer_id: string | null; patient_name: string | null; patient_phone: string | null; patient_age: number | null;
@@ -2413,6 +2419,111 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
     if (gen !== openGen.current) return;
     setEditStudiesFor({ r, incidents });
   }
+  /* ===== с81: перенос перетягуванням у порталі направника =====
+     Те саме, що на дошці черги, але з чужого боку RLS: направник бачить лише
+     свої записи, простої центру читає окремо (`centerIncidents`), особливий
+     графік дня — RPC `sched_override_read` (RF-03). Тягнути можна лише СВІЙ
+     живий запис у центрі з АКТИВНИМ грантом і в кабінеті з гранту — і саме це
+     сервер (`queue_reschedule_rpc`, `auth_referrer_can_book_room`) перевірить
+     ще раз. Поза графіком направник не переносить ніколи (0077). */
+  const [dragRef, setDragRef] = useState<Referral | null>(null);
+  const dragRefRef = useRef<Referral | null>(null);
+  dragRefRef.current = dragRef;
+  /* Фіди для дока: читаються при захопленні; до відповіді док каже
+     «перевіряємо», а не малює день вільним (U-11/U-16). */
+  const [dragCtx, setDragCtx] = useState<{ id: string; incidents: IncidentFeed; overrides: OverrideFeed } | null>(null);
+  const dragGen = useRef(0);
+  async function centerOverrideDay(clinicId: string, dateKey: string): Promise<OverrideFeed> {
+    try {
+      const res = await createClient().rpc("sched_override_read", { p_clinic: clinicId, p_date: dateKey }).maybeSingle();
+      if (res.error) return overrideFeed(null, true);   // PostgREST не кидає — збій ≠ «особливого дня немає» (U-3)
+      const ov = res.data as unknown as DayOverride | null;
+      return overrideFeed(ov ? { [dateKey]: ov } : {}, false);
+    } catch { return overrideFeed(null, true); }
+  }
+  const canDragReferral = (r: Referral): boolean => {
+    const owned = r.created_by === doctorId || r.referrer_id === doctorId;
+    const c = centersById[r.clinic_id];
+    return owned && !!c && c.status === "active" && !!r.room_id && !!r.scheduled_date
+      && grantAllowsRoom(c.room_ids, r.room_id) && canDragEntry(r, "referrer");
+  };
+  async function startDragReferral(r: Referral, e: DragEvent) {
+    e.dataTransfer.setData(DRAG_MIME, r.id);   // лише id — без ПІБ у буфері перетягування
+    e.dataTransfer.effectAllowed = "move";
+    setDragRef(r); setDragCtx(null);
+    const gen = ++dragGen.current;
+    const [incidents, overrides] = await Promise.all([centerIncidents(r.clinic_id), centerOverrideDay(r.clinic_id, r.scheduled_date || "")]);
+    if (gen !== dragGen.current) return;
+    setDragCtx({ id: r.id, incidents, overrides });
+  }
+  const endDragReferral = () => { dragGen.current++; setDragRef(null); setDragCtx(null); };
+  /* Виконавець на обидві цілі (док і карта дня). Повертає текст помилки або null. */
+  async function dropMoveReferral(entry: DragEntry, target: DropTarget): Promise<string | null> {
+    /* Кидок = кінець перетягування (див. `dropMove` на дошці черги: `dragend` на
+       рядку, що зник зі списку, до React не доходить). */
+    endDragReferral();
+    if (isNoopDrop(entry, target)) return "Запис уже стоїть на цьому слоті";
+    const [hh, mm] = target.time.split(":").map(Number);
+    const d = dayOfKey(target.dateKey);
+    const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh || 0, mm || 0).toISOString();
+    const tz = entry.clinic_id ? centersById[entry.clinic_id]?.timezone || undefined : undefined;
+    const res = await rescheduleQueueEntry({
+      id: entry.id, roomId: target.roomId, scheduledDate: target.dateKey, scheduledTime: target.time, scheduledAt: at,
+      durationMin: entry.duration_min || 30, bufferTimeMin: entry.buffer_time_min ?? BUFFER_DEFAULT,
+      reason: DRAG_MOVE_REASON,
+      /* Заявка про годинник — по добі ЦІЛІ (зсув 0), як у карті дня; ту саму
+         дату сервер і одержує (Г1-F). */
+      clock: clockClaimOf({ clinicTz: tz, curKey: target.dateKey }),
+    });
+    if (!res.ok) {
+      if (res.code === "stale") { reload(); return res.error || "Стан запису змінився — список оновлено"; }
+      reload();
+      return moveErrorText(res);
+    }
+    notify("Перенесено на " + fmtShort(dayOfKey(target.dateKey)) + " " + target.time, "success");
+    reload();
+    return null;
+  }
+  async function dockDropReferral(target: DropTarget) {
+    const r = dragRefRef.current;
+    if (!r) return;
+    const err = await dropMoveReferral(r, target);
+    if (err) notify(err, "error");
+  }
+  /* Карта дня центру: з наведення на календар під час перетягування (запис «у
+     руках», кабінет запису) або з кнопки під календарем (без запису). Простої
+     центру читаємо перед відкриттям — тим самим лічильником, що й решта
+     асинхронних відкриттів (`openGen`). */
+  const [dayOverview, setDayOverview] = useState<{ clinicId: string; roomId: string | null; day: string | null; entry: DragEntry | null; incidents: IncidentFeed; fromDrag: boolean } | null>(null);
+  async function openDayOverview(clinicId: string, roomId: string | null, day: string | null, entry: DragEntry | null, fromDrag: boolean) {
+    const gen = ++openGen.current;
+    const incidents = await centerIncidents(clinicId);
+    if (gen !== openGen.current) return;
+    setDayOverview({ clinicId, roomId, day, entry, incidents, fromDrag });
+  }
+  const openOverviewForDrag = (d: Date) => {
+    const r = dragRefRef.current;
+    if (!r || !r.room_id) return;
+    void openDayOverview(r.clinic_id, r.room_id, dateKeyOf(d), r, true);
+  };
+  /* Страховка від «зависання» режиму перетягування: запис зник зі списку
+     (перенесено/скасовано з іншого боку) — `dragend` до React не дійде. */
+  useEffect(() => {
+    if (dragRef && listOk && !referrals.some((x) => x.id === dragRef.id)) { dragGen.current++; setDragRef(null); setDragCtx(null); }
+  }, [dragRef, referrals, listOk]);
+  const dragDock = (() => {
+    const r = dragRef;
+    if (!r || !r.room_id || !r.scheduled_date || dayOverview) return null;
+    const room = (roomsByClinic[r.clinic_id] || []).find((x) => x.id === r.room_id);
+    if (!room) return null;
+    const ctx = dragCtx && dragCtx.id === r.id ? dragCtx : null;
+    return (
+      <DragSlotDock entry={r} room={room} dateKey={r.scheduled_date} dateLabel={fmtShort(dayOfKey(r.scheduled_date))}
+        clinicId={r.clinic_id} clinicTz={centersById[r.clinic_id]?.timezone} overrides={ctx?.overrides ?? null} incidents={ctx?.incidents ?? null}
+        onDrop={dockDropReferral} />
+    );
+  })();
+
   /* Крок іншої модальності до СВОГО запису → referralCaseFromEntry (гілка 0118).
      Помилки гардів (той самий кабінет / перетин часу) повертаємо модалці. */
   async function doOrganize(b: BookingPayload): Promise<string | null> {
@@ -2515,7 +2626,10 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
             <ReferrerBoard referrals={referrals} activeCenters={activeCenters} centersById={centersById} roomsByClinic={roomsByClinic} visRoomsByClinic={visRoomsByClinic} doctorId={doctorId}
               focus={boardFocus} initialDate={initialDate} initialEntry={initialEntry}
               onReschedule={startReschedule} onCancel={(r) => { bumpOpen(); setCancelAsk(r); }} onEditPatient={(r) => { bumpOpen(); setEditPatientFor(r); }} onEditStudies={startEditStudies}
-              onOpenCase={openCaseScreen} onOrganizeCase={startOrganize} />
+              onOpenCase={openCaseScreen} onOrganizeCase={startOrganize}
+              drag={{ canDrag: canDragReferral, draggingId: dragRef?.id ?? null, onStart: startDragReferral, onEnd: endDragReferral,
+                onOpenDay: openOverviewForDrag, dock: dragDock,
+                onOpenOverview: (clinicId, roomId) => { void openDayOverview(clinicId, roomId, null, null, false); } }} />
           </>
         )}
         {/* Лист очікування — інша вкладка, але модалки ті самі сиблінги в DOM:
@@ -2535,6 +2649,18 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
 
       {reschedFor && (
         <RescheduleModal patient={reschedFor.r} rooms={reschedRooms} clinicId={reschedFor.r.clinic_id} clinicTz={centersById[reschedFor.r.clinic_id]?.timezone} incidents={reschedFor.incidents} onClose={() => setReschedFor(null)} onConfirm={doReschedule} />
+      )}
+      {/* с81: карта дня центру для направника — кабінети лише з гранту, графік
+          дня RPC (`overrides="rpc"`), записи дня — свої (RLS). Із перетягування
+          після успіху вікно закриваємо (запис уже на іншому дні, список
+          перечитано); з кнопки — лишаємо для наступних переносів. */}
+      {dayOverview && (
+        <RoomDayOverviewModal rooms={grantedRooms(dayOverview.clinicId)} clinicId={dayOverview.clinicId}
+          clinicTz={centersById[dayOverview.clinicId]?.timezone || undefined} incidents={dayOverview.incidents} overrides="rpc"
+          initialDay={dayOverview.day} initialRoomId={dayOverview.roomId}
+          move={{ role: "referrer", entry: dayOverview.entry, dragActive: !!dragRef, onMove: dropMoveReferral,
+            onMoved: dayOverview.fromDrag ? () => setDayOverview(null) : undefined }}
+          onClose={() => setDayOverview(null)} />
       )}
       {editStudiesFor && (
         <StudyEditModal patient={editStudiesFor.r} scheduledDate={editStudiesFor.r.scheduled_date} rooms={roomsByClinic[editStudiesFor.r.clinic_id] || []} clinicId={editStudiesFor.r.clinic_id} clinicTz={centersById[editStudiesFor.r.clinic_id]?.timezone} services={servicesByClinic[editStudiesFor.r.clinic_id]} roomOverrides={roomOverridesByClinic[editStudiesFor.r.clinic_id]} incidents={editStudiesFor.incidents} offSchedule={!!editStudiesFor.r.off_schedule} allowOffSchedule={false} onClose={() => setEditStudiesFor(null)} onConfirm={doEditStudies} />

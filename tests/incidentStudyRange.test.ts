@@ -134,13 +134,18 @@ describe("studyBlockedByFeed — дзеркало діапазонів check_not
 
 const QB = readFileSync(resolve(process.cwd(), "components/QueueBoard.tsx"), "utf8");
 
-/** Компоненти, що ПИШУТЬ queue_entries (прямо або через дочірню форму). */
+/** Компоненти, що ПИШУТЬ queue_entries (прямо або через дочірню форму).
+ *  с81: `RoomDayOverviewModal` перейшла сюди з READ_NOW — карта дня тепер
+ *  переносить записи (перетягування/чипи), тож питає «чи прийме сервер», а не
+ *  «чи заблоковано зараз»; `DragSlotDock` — док вільних слотів під час
+ *  перетягування, теж ціль запису. */
 const WRITE_FORMS = [
   "BookingModal", "RescheduleModal", "WaitlistCandidatesModal",
   "CollisionPanel", "QuickRescheduleButton", "CaseModal", "StudyEditModal",
+  "RoomDayOverviewModal", "DragSlotDock",
 ];
 /** Читання «чи заблоковано зараз» — фід із викинутими «згаслими». */
-const READ_NOW = ["RoomDayOverviewModal", "BreakdownModal"];
+const READ_NOW = ["BreakdownModal"];
 
 /** Кожне `incidents={X}` у файлі + найближчий тег ВИЩЕ за текстом.
  *  ⚠️ Пробіли всередині дужок ДОЗВОЛЕНІ (ревʼю пакета): перша версія вимагала
@@ -162,7 +167,7 @@ describe("U-33: проводка фідів простоїв у QueueBoard", () 
   const CENSUS: Record<string, number> = {
     BookingModal: 2, RescheduleModal: 1, WaitlistCandidatesModal: 1,
     CollisionPanel: 1, QuickRescheduleButton: 1, CaseModal: 1, StudyEditModal: 1,
-    RoomDayOverviewModal: 1, BreakdownModal: 1,
+    RoomDayOverviewModal: 1, BreakdownModal: 1, DragSlotDock: 1,
   };
 
   it("перепис входів збігається — жоден сайт не зник і не задвоївся", () => {

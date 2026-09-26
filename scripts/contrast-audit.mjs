@@ -182,6 +182,28 @@ head("Позначки непрочитаних змін (.rf-dot)");
   }
 }
 
+/* ── с81: перенос перетягуванням — індикатори цілі ───────────────────────────
+   Кільце цілі під курсором і кільце «є куди кинути» — ГРАФІКА (1.4.11, ≥3:1);
+   текст комірки під курсором і активного чипа — ТЕКСТ (1.4.3, ≥4.5:1). Пари
+   внесені після ревʼю с81 р1: напівпрозоре зелене кільце давало 2.74 на
+   --card-2, а зелене на «сьогодні» (--blue) — 2.50; там кільце біле. */
+head("с81 · перетягування — кільця цілей і чипи");
+{
+  const GREEN = "#30d158";
+  const GREEN_A = 0.28;                  // .slot.drop-over — заливка планового вікна
+  const DROP_TEXT = "#eafff0";
+  for (const [n, s4] of Object.entries({ "--card": CARD, "--card-hover": CARD_HOVER, "--card-2": CARD_2 })) {
+    check(`.cal-day.drag-over / .drop-mode .slot кільце --green на ${n}`, ratio(GREEN, s4), 3);
+  }
+  check(".cal-day.today.drag-over кільце #fff на --blue (сьогодні)", ratio(WHITE, NEW.blue), 3);
+  console.log(`  \u2139\ufe0f  довідка: --green на --blue = ${f(ratio(GREEN, NEW.blue))} (<3) — тому на «сьогодні» кільце біле`);
+  /* Заливка комірки ЗАМІНЮЄТЬСЯ rgba, тож підкладка — поверхня діалога/картки (--card). */
+  check(".slot.drop-over текст #eafff0 на зеленій заливці над --card", ratio(DROP_TEXT, over(GREEN, GREEN_A, CARD)), 4.5);
+  check(".dd-chip.active --blue-text на --card-2", ratio(NEW.text, CARD_2), 4.5);
+  check(".dd-chip текст --text на --card-2", ratio("#f5f5f7", CARD_2), 4.5);
+  check("результат переносу --green як текст на --card", ratio(GREEN, CARD), 4.5);
+}
+
 /* ── Червоний (WCAG W-4, с75) ─────────────────────────────────────────────────
    До с75 скрипт червоний НЕ рахував, і `color: var(--red)` стояв на всіх
    обовʼязкових підписах, бейджах «⚠ Накладення», помилках форм: 4.09 на --card,

@@ -114,8 +114,15 @@ export function useRoomBusy(opts: {
   clinicId: string | null | undefined;
   excludeId?: string | null;
   enabled?: boolean;
+  /* с81: частина ІМЕНІ каналу для викликачів, що можуть жити ОДНОЧАСНО з тим
+     самим кабінетом, датою і `excludeId` (док вільних слотів на дошці і карта
+     дня, відкрита з того ж перетягування). Канал Supabase переиспользується
+     по topic: другий `.on()` після `.subscribe()` першого — рантайм-помилка,
+     а `removeChannel` одного знімає спільний канал у другого. Той самий
+     принцип, що `scope` у `useScheduleRefetch`. Звичайні сітки не передають. */
+  scope?: string;
 }) {
-  const { roomId, dateStr, clinicId, excludeId = null, enabled = true } = opts;
+  const { roomId, dateStr, clinicId, excludeId = null, enabled = true, scope = "" } = opts;
   const [rows, setRows] = useState<BusyRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -179,7 +186,7 @@ export function useRoomBusy(opts: {
        чотири місця виклику клініку мають, тож у житті ця гілка не вмикається —
        вона fail-CLOSED на майбутнє. */
     channelName: enabled && roomId && dateStr && clinicId
-      ? "slots-busy-" + roomId + "-" + dateStr + (excludeId ? "-x" + excludeId : "")
+      ? "slots-busy-" + roomId + "-" + dateStr + (excludeId ? "-x" + excludeId : "") + (scope ? "-" + scope : "")
       : null,
     subscriptions: [
       /* Спільний debounceKey (ревʼю с26 L-4): обидві таблиці ведуть в ОДИН load —

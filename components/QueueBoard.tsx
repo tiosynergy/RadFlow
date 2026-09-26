@@ -2,7 +2,7 @@
 
 /* ===== RadFlow — Дошка черги (повна) ===== */
 
-import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode, type MouseEvent } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode, type MouseEvent, type DragEvent } from "react";
 import { isRoomBookable, ROOM_OFF_LABEL, visibleRooms, residualSet, roomOffLabel, bookableRooms } from "@/lib/rooms";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
@@ -56,6 +56,8 @@ import MiniCalendar from "@/components/MiniCalendar";
 import ScheduleEditModal from "@/components/ScheduleEditModal";
 import HelpTip from "@/components/HelpTip";
 import RoomDayOverviewModal from "@/components/RoomDayOverviewModal";
+import DragSlotDock from "@/components/DragSlotDock";
+import { DRAG_MIME, DRAG_MOVE_REASON, canDragEntry, isNoopDrop, moveDoneText, moveErrorText, type DragEntry, type DropTarget } from "@/lib/dragMove";
 import { overrideFeed, roomScheduleFor, roomScheduleFromFeed, roomBreaksFromFeed, dayStatusFromFeed, offScheduleKind, dateKeyOf, type OverrideFeed, type DayOverride } from "@/lib/schedule";
 import { slotToMin, slotFmt } from "@/lib/slots";
 import { SAFETY_BOOKING_BLOCKED } from "@/lib/availabilityTrust";
@@ -632,8 +634,15 @@ interface QueueRowProps {
   // Крос-модальний кейс: сукупне вікно маршруту (найраніший старт → найпізніший кінець
   // серед усіх кроків із тим самим case_id) + кількість кроків. Рахує батько з entries.
   caseSpan?: { startMin: number; endMin: number; count: number } | null;
+  /* с81: перенос перетягуванням. `dragEnabled` — рядок можна взяти мишкою
+     (статус і кабінет дозволяють, дошка знає про простої/графіки); `dragging` —
+     саме цей рядок зараз у руках. Клавіатурний шлях — «🗓 Перенести» поруч. */
+  dragEnabled?: boolean;
+  dragging?: boolean;
+  onDragStart?: (p: QEntry, e: DragEvent) => void;
+  onDragEnd?: () => void;
 }
-function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel, quickReschedule, schedDrift, onDelayPlan, delayLoading, onOpenCase, onOrganizeCase, caseSpan }: QueueRowProps) {
+function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggle, readOnly, canCall, rescheduling, onArrive, onCall, onComplete, onNoShow, onNotHeld, onUndo, onCancel, onSetStatus, onSetCall, onReschedule, onEditStudies, onEditPatient, onToWaitlist, canSetPriority, onSetPriority, originHint, startBlockReason, collision, collisionPanel, quickReschedule, schedDrift, onDelayPlan, delayLoading, onOpenCase, onOrganizeCase, caseSpan, dragEnabled = false, dragging = false, onDragStart, onDragEnd }: QueueRowProps) {
   // «Запізнення» — derived: пацієнт не прийшов, минуло понад буферний час.
   const late = isLate(p.status, dayDate, p.scheduled_time, p.buffer_time_min);
   const _startMs = (dayDate && p.scheduled_time) ? (() => { const [h, m] = String(p.scheduled_time).split(":").map(Number); return Date.UTC(dayDate.getFullYear(), dayDate.getMonth(), dayDate.getDate(), h || 0, m || 0); })() : null;
@@ -737,10 +746,18 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
   ) : null;
 
   return (
-    <div className={"qrow-item " + p.status + (expanded ? " open" : "")} data-qrow={p.id}>
+    <div className={"qrow-item " + p.status + (expanded ? " open" : "") + (dragEnabled ? " dnd" : "") + (dragging ? " dragging" : "")} data-qrow={p.id}>
+      {/* с81: `draggable` на самому рядку — узяти можна за будь-яке місце, а не
+          лише за ручку; ручка ⠿ — видима підказка, що рядок тягнеться. У буфер
+          перетягування їде лише id запису (без ПІБ). */}
       <div className="qrow" role="button" tabIndex={0} aria-expanded={expanded} onClick={() => onToggle(p.id)}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}>
-        <div className="q-time tabular">{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}
+        draggable={dragEnabled || undefined}
+        onDragStart={dragEnabled && onDragStart ? (e) => onDragStart(p, e) : undefined}
+        /* `onDragEnd` — ЗАВЖДИ: якщо посеред перетягування рядок перестав бути
+           draggable (дошка втратила дані про простої), кінець усе одно має дійти. */
+        onDragEnd={onDragEnd ? () => onDragEnd() : undefined}>
+        <div className="q-time tabular">{dragEnabled && <span className="q-grip" aria-hidden="true" title="Перетягніть на вільний слот у правій панелі або на день у календарі">⠿</span>}{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
           <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient?.(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span><UnreadDot markers={cardUnread} />{p.case_id && <span onClick={(e) => { e.stopPropagation(); if (p.case_id) onOpenCase?.(p.case_id); }} style={{ cursor: "pointer", marginLeft: 6, fontSize: "0.6875rem", fontWeight: 600, color: "var(--blue-text)" }} title="Відкрити крос-модальний кейс">🔗 Кейс</span>}</div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
@@ -1251,7 +1268,16 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   const [modalOpen, setModalOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false); // оверлей гарячих клавіш (P3, клавіша «?»)
   const [openCaseId, setOpenCaseId] = useState<string | null>(null);
-  const [slotsOverviewOpen, setSlotsOverviewOpen] = useState(false);
+  /* с81: карта дня («Зайнятість кабінету») відкривається двома входами —
+     з меню (порожній обʼєкт) і з перетягування (день календаря + кабінет і
+     сам запис). ОДИН стан на обидва: другий гейт того самого оверлея розійшовся
+     б із дизʼюнкцією `anyModalOpen` мовчки (Г1-D). */
+  const [slotsOverview, setSlotsOverview] = useState<{ day?: string; roomId?: string | null; entry?: DragEntry | null; fromDrag?: boolean } | null>(null);
+  /* с81: запис, який зараз тягнуть мишкою (HTML5 drag-and-drop). Поки він є —
+     у правій панелі док вільних слотів, а дні календаря приймають наведення. */
+  const [dragEntry, setDragEntry] = useState<QEntry | null>(null);
+  const dragRef = useRef<QEntry | null>(null);
+  dragRef.current = dragEntry;
   const [completeFor, setCompleteFor] = useState<QEntry | null>(null);
   const [reschedFor, setReschedFor] = useState<QEntry | null>(null);
   // 0078–0081 — план при затримці: preview з сервера + стан застосування.
@@ -1637,7 +1663,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
   // невидима під тим самим оверлеєм. Що змінилось: коли вікно закривається і
   // доба переставляється, дошка про це ГОВОРИТЬ (банер нижче, біля виклику
   // правила). Чому пояснення САМОГО вікна на дошці немає — виміряно там же.
-  const anyModalOpen = modalOpen || helpOpen || slotsOverviewOpen || !!openCaseId || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen || !!wlSuggest || !!delayPreview || emergencyOpen || !!offCallAsk || !!cancelAsk || !!emergencyConfirm || !!stuckFinish;
+  const anyModalOpen = modalOpen || helpOpen || !!slotsOverview || !!openCaseId || !!completeFor || !!reschedFor || !!editStudiesFor || !!editPatientFor || !!caseFromEntryFor || breakdownOpen || schedEditOpen || !!wlSuggest || !!delayPreview || emergencyOpen || !!offCallAsk || !!cancelAsk || !!emergencyConfirm || !!stuckFinish;
 
   /* U-70: «сьогодні» рахується з ВИМІРЯНОГО годинника, тож поправка, що
      перетинає північ клініки, лишила б дошку на попередній добі — вона мовчки
@@ -1985,10 +2011,11 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
      ReferralPortal подають сирий фід, тобто адміністратор і направник давали
      різні відповіді на ОДНОМУ записі. Тепер однакові.
      ⚠️ На `incidentsFeed` свідомо лишились екрани, що питають «чи заблоковано
-     ЗАРАЗ»: картки кабінетів, банери, BreakdownModal (він простої і знімає) та
-     RoomDayOverviewModal (борг U-43: огляд ДНЯ мав би показувати і зняті
-     простої, бо вони зайняли години, — але це читання, і йому потрібна власна
-     жива перевірка). */
+     ЗАРАЗ»: картки кабінетів, банери, BreakdownModal (він простої і знімає).
+     RoomDayOverviewModal з с81 переносить записи (перетягування) і тому
+     переведена на цей фід разом із DragSlotDock — вона тепер питає «чи прийме
+     сервер». Борг U-43 (огляд ДНЯ мав би показувати і зняті простої, бо вони
+     зайняли години) цим не закрито — це окреме читання з власною перевіркою. */
   const writeIncidentsFeed = loadIncidentsFeed;
   // Аварійна зупинка: активні інциденти reason='emergency' → кабінети зупинено.
   const emergencyRooms = Array.from(new Set(liveIncidents.filter((i) => i.reason === "emergency").map((i) => i.room_id)));
@@ -2368,6 +2395,103 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     return null;
   }
 
+  /* ===== с81: перенос перетягуванням =====
+     ОДИН виконавець на три цілі: док «Вільні слоти» у правій панелі (той самий
+     день), карта дня з наведення на календар (інший день) і чипи в самій карті.
+     Той самий `rescheduleQueueEntry`, що й у модалки/кнопки: сервер перевіряє
+     минуле, графік, перетин і простій ще раз — клієнт лише не пропонує того,
+     що сервер відкине. Повертає ТЕКСТ помилки (або null): карта дня показує
+     його в собі (тост під оверлеєм не видно — та сама причина, що в
+     `doReschedule`), док — тостом дошки. Поза графіком — ніколи (`offSchedule:
+     false`): кидок не є згодою персоналу (0077).
+     ⚠️ Заявка про годинник — по ДОБІ ЦІЛІ (`curKey: target.dateKey`, зсув 0):
+     док кидає на день дошки (те саме, що `boardClock()`), карта дня — на день,
+     який людина обрала в календарі. Предикат «дата виведена з сьогодні» той
+     самий, що в `useFollowToday`, тож сервер судить рівно про ту дату, яку
+     йому й везуть (Г1-F). */
+  async function dropMove(entry: DragEntry, target: DropTarget): Promise<string | null> {
+    /* Кидок = кінець перетягування. `dragend` на рядку може НЕ дійти до React:
+       після переносу на інший день рядок зникає зі зрізу, а подія на
+       відʼєднаному вузлі до кореня не спливає — док і календар лишились би в
+       режимі перетягування назавжди. Тому гасимо стан тут, а не лише в
+       `onDragEnd`. */
+    setDragEntry(null);
+    if (safetyErr) return SAFETY_BOOKING_BLOCKED;
+    if (isNoopDrop(entry, target)) return "Запис уже стоїть на цьому слоті";
+    const [hh, mm] = target.time.split(":").map(Number);
+    const d = dayOfKey(target.dateKey);
+    const at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh || 0, mm || 0).toISOString();
+    const res = await rescheduleQueueEntry({
+      id: entry.id, roomId: target.roomId, scheduledDate: target.dateKey, scheduledTime: target.time, scheduledAt: at,
+      durationMin: entry.duration_min || 30, bufferTimeMin: entry.buffer_time_min ?? BUFFER_DEFAULT,
+      reason: DRAG_MOVE_REASON, offSchedule: false,
+      clock: clockClaimOf({ clinicTz, curKey: target.dateKey }),
+    });
+    if (!res.ok) {
+      /* `stale` — переносити вже нічого (запис завершено/скасовано): дошку
+         синхронізуємо, а причину віддаємо тому, хто кинув, — він її і покаже. */
+      if (res.code === "stale") { reload(); loadIncidents(); return res.error || "Стан запису змінився — дошку оновлено"; }
+      reload();   // сітка підтягне свіжу зайнятість
+      return moveErrorText(res);
+    }
+    notify(moveDoneText(target, target.dateKey === dayKey, (k) => fmtShort(dayOfKey(k))), "success");
+    reload();
+    return null;
+  }
+  /* Кидок у док (той самий день): помилку показуємо тостом — док живе лише
+     поки триває перетягування, і після кидка його вже немає. */
+  async function dockDrop(target: DropTarget) {
+    const p = dragRef.current;
+    if (!p) return;
+    const err = await dropMove(asDragEntry(p), target);
+    if (err) notify(err, "error");
+  }
+  /* Рядок дошки не несе дати (дошка вантажить ОДИН день) — доба запису = доба
+     дошки. Саме за нею `isNoopDrop` відрізняє «той самий слот». */
+  const asDragEntry = (p: QEntry): DragEntry => ({ ...p, scheduled_date: dayKey });
+  /* Наведення/кидок на день календаря під час перетягування → карта дня на цей
+     день з кабінетом запису і самим записом «у руках». Гейт той самий, що в
+     `openReschedule`: без прочитаних простоїв/графіків переносити не можна. */
+  function openOverviewForDrag(d: Date) {
+    const p = dragRef.current;
+    if (!p || !p.room_id) return;
+    if (safetyErr) { notify(SAFETY_BOOKING_BLOCKED, "error"); return; }
+    setSlotsOverview({ day: dateKey(d), roomId: p.room_id, entry: asDragEntry(p), fromDrag: true });
+  }
+  /* Рядок узято мишкою: у `dataTransfer` — лише id (без ПІБ), запис — у стані. */
+  const startDrag = (p: QEntry, e: DragEvent) => {
+    e.dataTransfer.setData(DRAG_MIME, p.id);
+    e.dataTransfer.effectAllowed = "move";
+    setDragEntry(p);
+  };
+  const endDrag = () => setDragEntry(null);
+  /* Страховка: запис зник зі зрізу посеред перетягування (інший оператор
+     переніс/скасував, realtime перечитав день) — `dragend` на відʼєднаному
+     вузлі до React не дійде, і док із календарем зависли б у режимі
+     перетягування. Стан гасимо за самим зрізом. */
+  useEffect(() => {
+    if (dragEntry && scopeReady && !loading && !entries.some((e) => e.id === dragEntry.id)) setDragEntry(null);
+  }, [dragEntry, entries, scopeReady, loading]);
+  const dragRoom = dragEntry?.room_id ? roomsById[dragEntry.room_id] : undefined;
+  /* Кабінет запису може бути поза `visRooms` (вимкнений без «залишків» у
+     списках): карта дня має його показати, інакше ціль «той самий кабінет»
+     недосяжна (те саме, що робить RescheduleModal зі своїм списком). */
+  const overviewRooms = slotsOverview?.roomId && !visRooms.some((r) => r.id === slotsOverview.roomId) && roomsById[slotsOverview.roomId]
+    ? [...visRooms, roomsById[slotsOverview.roomId]]
+    : visRooms;
+  /* Тягнути можна живий запис із кабінетом (правило в lib/dragMove.ts), коли
+     дошка знає про простої та графіки (інакше і «🗓 Перенести» заблоковано).
+     0123: у ВИМКНЕНОМУ кабінеті можна лише посунути живий запис по часу;
+     «воскресити» там неявку / «не відбулося» / «потребує переносу» тригер
+     відкине — такий рядок не тягнеться (ревʼю с81 р2), лишається «🗓 Перенести»
+     з переоформленням в інший кабінет. */
+  const canDrag = (p: QEntry) => {
+    if (safetyErr || !canDragEntry(p, "desk")) return false;
+    const rm = p.room_id ? roomsById[p.room_id] : undefined;
+    if (rm && !isRoomBookable(rm) && p.status !== "scheduled" && p.status !== "waiting") return false;
+    return true;
+  };
+
   /* §5.5 — інлайн-перенос у ТОЙ САМИЙ кабінет на найближче вільне вікно (слот уже
      порахувала QuickRescheduleButton через firstFittingSlot). Прямий виклик
      rescheduleQueueEntry (без модалки reschedFor); сервер валідує check_no_overlap —
@@ -2745,7 +2869,8 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         clinicName={clinicName} adminName={adminName} adminRole={adminRole} roleKey={roleKey}
         clinicIds={clinicId ? [clinicId] : []}
         rooms={visRooms} roomNoteOf={offNote} activeRoom={roomView} onSelectRoom={setRoomView} onNew={openBooking}
-        onSlotsOverview={roleKey === "admin" ? () => setSlotsOverviewOpen(true) : undefined}
+        /* с81: карта дня — і реєстратору (він теж формує чергу і переносить записи). */
+        onSlotsOverview={roleKey === "admin" || roleKey === "registrar" ? () => setSlotsOverview({}) : undefined}
         incidentStatus={loadStatusOf(incidentsLoaded, incidentsErr)}
         incidentCount={liveIncidents.length} onBreakdown={() => { setBreakdownRoomId(roomView !== "all" ? roomView : null); setBreakdownOpen(true); }}
         onEmergency={handleEmergencyClick}
@@ -3040,6 +3165,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
                     onOpenCase={setOpenCaseId}
                     onOrganizeCase={openCaseFromEntry}
                     caseSpan={caseSpan}
+                    dragEnabled={canDrag(p)} dragging={dragEntry?.id === p.id} onDragStart={startDrag} onDragEnd={endDrag}
                     collisionPanel={collision?.zone === "clash" && expandedRow === p.id ? (
                       <CollisionPanel
                         entry={p} info={collision} rooms={rooms} clinicId={clinicId} clinicTz={clinicTz}
@@ -3062,7 +3188,18 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
         </div>
 
           <aside className="rpanel">
-            <MiniCalendar selectedDate={selectedDate} onSelectDate={pickDate} overrides={overridesFeed} onEditSchedule={openSchedEdit} tz={clinicTz} roomSchedules={roomSchedules} />
+            {/* с81: док вільних слотів того самого дня — лише поки тягнуть запис
+                і лише на не-минулому дні (у минуле не переносять; інший день —
+                через календар нижче). Фід простоїв — той, що у форм запису. */}
+            {/* Поки відкрита карта дня, док не рендеримо: ціль там, і два хуки
+                зайнятості на один запис/день/кабінет — зайві (канали розведено
+                scope-ом, але й потреби немає). */}
+            {dragEntry && dragRoom && !isPast && !slotsOverview && (
+              <DragSlotDock entry={asDragEntry(dragEntry)} room={dragRoom} dateKey={dayKey} dateLabel={fmtShort(selectedDate)}
+                clinicId={clinicId} clinicTz={clinicTz} overrides={overridesFeed} incidents={writeIncidentsFeed} onDrop={dockDrop} />
+            )}
+            <MiniCalendar selectedDate={selectedDate} onSelectDate={pickDate} overrides={overridesFeed} onEditSchedule={openSchedEdit} tz={clinicTz} roomSchedules={roomSchedules}
+              dragActive={!!dragEntry} onDragOpenDay={openOverviewForDrag} />
             {isToday && visRooms.length > 0 && <RoomLoad rooms={roomLoad} onSelectRoom={setRoomView} ready={scopeReady} />}
             {!isPast && <NeedsReschedulePanel entries={needsResched} roomsById={roomsById} onReschedule={openReschedule} onToWaitlist={toWaitlist} onCancel={(pt) => setCancelAsk({ p: pt, mode: "cancel" })} />}
             {!isPast && <AffectedPanel affected={affected} roomsById={roomsById} onReschedule={openReschedule} />}
@@ -3113,7 +3250,28 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
           onClose={() => setCaseFromEntryFor(null)}
         />
       )}
-      {slotsOverviewOpen && <RoomDayOverviewModal rooms={visRooms} clinicId={clinicId} clinicTz={clinicTz} incidents={incidentsFeed} overrides={overridesFeed} onClose={() => setSlotsOverviewOpen(false)} />}
+      {/* с81: карта дня тепер ПИШЕ (перенос перетягуванням) — тож фід простоїв
+          їй потрібен той самий, що й формам запису: `writeIncidentsFeed`
+          (U-33, «чи прийме сервер»), а не «чи заблоковано зараз». Ціна для
+          читання: простій, що для клієнта вже згас, а для сервера ще діє
+          (вікно до 5 хв до прогону крона), малюється зайнятим — рівно як у
+          формі запису, дзеркалом якої карта й оголошена. Борг U-43 (показувати
+          зняті простої дня) цим не закрито. */}
+      {slotsOverview && (
+        <RoomDayOverviewModal rooms={overviewRooms} clinicId={clinicId} clinicTz={clinicTz} incidents={writeIncidentsFeed} overrides={overridesFeed}
+          initialDay={slotsOverview.day ?? null} initialRoomId={slotsOverview.roomId ?? null}
+          move={{
+            role: "desk",
+            entry: slotsOverview.entry ?? null,
+            dragActive: !!dragEntry,
+            onMove: dropMove,
+            /* З дошки (перетягування) — після переносу вікно закриваємо: запис
+               уже на іншому дні, дошка перечитана, тост сказав куди. З меню —
+               лишаємо відкритим: там переносять кілька записів поспіль. */
+            onMoved: slotsOverview.fromDrag ? () => setSlotsOverview(null) : undefined,
+          }}
+          onClose={() => setSlotsOverview(null)} />
+      )}
 
       {wlSuggest && (
         <WaitlistCandidatesModal clinicId={clinicId} clinicTz={clinicTz} rooms={rooms} incidents={writeIncidentsFeed} services={services} roomOverrides={roomOverrides}

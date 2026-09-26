@@ -31,8 +31,9 @@
    «Зберегти» було ~144 табстопи, а ридер чув «список» без опцій. Розмір комірок
    ≥24px — у CSS (.slot-grid4: 2 блоки в рядку). */
 
-import { useId, useRef, useState } from "react";
+import { useId, useRef, useState, type DragEvent } from "react";
 import { groupSlots, slotFmt, slotToMin } from "@/lib/slots";
+import { isEntryDrag } from "@/lib/dragMove";
 
 export type SlotStateFn = (slot: string) => string;
 export type SlotTitleFn = (slot: string, state: string) => string;
@@ -47,19 +48,39 @@ interface Props {
   spanMin?: number;                // тривалість планованого дослідження (хв) — для зелених меж
   bufferMin?: number;              // буфер після дослідження — малюємо зеленою штриховкою
   resetKey?: string;               // (не використовується — лишено для сумісності пропсів)
+  /* с81, перенос перетягуванням. `dropActive` — над сіткою тягнуть запис:
+     вільні комірки приймають кидок (`onDropSlot`), а комірка під курсором
+     показує те саме зелене превʼю (дослідження + буфер), що й обраний слот.
+     Зайняті комірки кидок НЕ приймають — без `preventDefault` браузер сам
+     малює «не можна». Клавіатурний і одноточковий шлях (WCAG 2.5.7) лишається
+     звичайним `onChange` — цей режим його не підміняє, а доповнює. */
+  dropActive?: boolean;
+  onDropSlot?: (slot: string) => void;
 }
 
-export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, freeStates = ["free"], spanMin = 0, bufferMin = 0 }: Props) {
+export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, freeStates = ["free"], spanMin = 0, bufferMin = 0, dropActive = false, onDropSlot }: Props) {
   /* Підказка зайнятого слота по ТАПу (планшет/тач). На тачі немає hover → стан
      зайнятої п'ятихвилинки (інтервал, ПІБ, статус) жив лише в title=/aria-label
      і був недосяжний. Тап по зайнятому слоту показує той самий текст видимим
      рядком під сіткою; вибір вільних слотів це не змінює. */
   const [hint, setHint] = useState<{ slot: string; text: string } | null>(null);
+  /* Комірка, над якою зараз тягнуть запис (лише в `dropActive`). */
+  const [over, setOver] = useState<string | null>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const helpId = useId();
   if (!slots.length) return null;
   const isFree = (st: string) => freeStates.includes(st);
   const blocks = groupSlots(slots); // 30-хв блоки в межах графіка
+  const dropOn = dropActive && !!onDropSlot;
+  const dragProps = (s: string, free: boolean) => {
+    if (!dropOn || !free) return {};
+    return {
+      onDragEnter: (e: DragEvent<HTMLButtonElement>) => { if (isEntryDrag(e.dataTransfer)) { e.preventDefault(); setOver(s); } },
+      onDragOver: (e: DragEvent<HTMLButtonElement>) => { if (isEntryDrag(e.dataTransfer)) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (over !== s) setOver(s); } },
+      onDragLeave: () => { setOver((o) => (o === s ? null : o)); },
+      onDrop: (e: DragEvent<HTMLButtonElement>) => { if (!isEntryDrag(e.dataTransfer)) return; e.preventDefault(); setOver(null); setHint(null); onDropSlot!(s); },
+    };
+  };
 
   /* Roving tabindex: у Tab-порядку одна комірка — обрана (якщо вона фокусабельна),
      інакше перша вільна, інакше перша фокусабельна (зайнята з підказкою). */
@@ -88,15 +109,17 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
   }
 
   // Зелені межі планованого дослідження: перша (початок) і остання (кінець) 5-хв частини.
-  const planStart = value || "";
-  const startMin = value ? slotToMin(value) : 0;
-  const planEnd = value && spanMin > 0 ? slotFmt(startMin + Math.max(0, spanMin - 5)) : planStart;
+  // У режимі кидка превʼю йде за коміркою під курсором, а не за обраним слотом.
+  const preview = dropOn && over ? over : value;
+  const planStart = preview || "";
+  const startMin = preview ? slotToMin(preview) : 0;
+  const planEnd = preview && spanMin > 0 ? slotFmt(startMin + Math.max(0, spanMin - 5)) : planStart;
   // Буфер планованого дослідження: [start+dur, start+dur+buffer) — кабінет ще зайнятий прибиранням.
   const bufFrom = startMin + spanMin;
   const bufTo = bufFrom + Math.max(0, bufferMin);
 
   return (
-    <div className="slot-picker">
+    <div className={"slot-picker" + (dropOn ? " drop-mode" : "")} onDragLeave={dropOn ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(null); } : undefined}>
     {/* Інструкції — описом, не іменем: імʼя читається при кожному вході в список,
         а гліфи «↑↓» залежать від рівня символів ридера (ревʼю с75). */}
     <div className="slot-grid4" role="listbox" aria-label="Вільні слоти (крок 5 хв)" aria-describedby={helpId} ref={gridRef} onKeyDown={onGridKey}>
@@ -111,8 +134,8 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
                 const st = stateOf(s);
                 const free = isFree(st);
                 const m = slotToMin(s);
-                const plan = !!value && (s === planStart || s === planEnd);
-                const planBuf = !!value && bufferMin > 0 && m >= bufFrom && m < bufTo;
+                const plan = !!preview && (s === planStart || s === planEnd);
+                const planBuf = !!preview && bufferMin > 0 && m >= bufFrom && m < bufTo;
                 const label = titleOf ? titleOf(s, st) : s;
                 // Зайнятий слот показуємо ПІДКАЗКУ (не disabled — інакше тап на тачі
                 // не спрацьовує); aria-disabled лишає його «недоступним» для вибору.
@@ -124,6 +147,7 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
                       + (plan ? " plan" : "")
                       + (!plan && planBuf ? " planbuf" : "")
                       + (!free ? " taken" : "")
+                      + (dropOn && over === s ? " drop-over" : "")
                       + (hint?.slot === s ? " hinted" : "")
                       + (st === "tight" ? " tight" : "")
                       + (st === "casebusy" ? " casebusy" : "")
@@ -134,6 +158,7 @@ export default function SlotPicker({ slots, stateOf, value, onChange, titleOf, f
                     disabled={!free && !showHint}
                     role="option" aria-selected={value === s} tabIndex={s === tabStop ? 0 : -1} data-slot={s}
                     aria-disabled={!free}
+                    {...dragProps(s, free)}
                     onClick={() => { if (free) { setHint(null); onChange(s); } else if (showHint) { setHint((h) => (h?.slot === s ? null : { slot: s, text: label })); } }}
                     title={label}
                     /* Стан слота (зайнято/перерва/буфер + інтервал) має бути в

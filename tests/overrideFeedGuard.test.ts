@@ -49,6 +49,10 @@ const CONSUMERS = [
   "components/CollisionPanel.tsx",
   "components/QuickRescheduleButton.tsx",
   "components/BreakdownModal.tsx",
+  /* с81: док вільних слотів під час перетягування. `null` у типі — «ще не
+     прочитано» (портал направника читає день асинхронно), і хук трактує його
+     як невідомість, а не як порожню мапу. */
+  "components/DragSlotDock.tsx",
 ];
 
 describe("U-16: проп особливих графіків — фід, і він обовʼязковий", () => {
@@ -192,6 +196,38 @@ describe("U-16: батьки передають РЕАЛЬНИЙ прапоре�
        `&&` замість `||` у самій деривації прапорця. */
     expect(code, `${file}: прапорець збою ослаблено на місці`)
       .not.toMatch(/overrideFeed\(overrides,\s*(false|true|overridesErr\s*&&)/);
+  });
+});
+
+/* с81: направник таблицю `schedule_overrides` не читає (RF-03, 0183) — його
+   фід збирається з відповіді RPC `sched_override_read` ПО ДНЯХ. Два такі
+   джерела: портал (док переносу) і сама карта дня (`overrides="rpc"`). Обидва
+   мусять загортати ЗБІЙ у `failed`, а не в порожню мапу — інакше закритий
+   день малювався б робочим рівно так, як до U-16. */
+const RPC_PARENTS = ["components/ReferralPortal.tsx", "components/RoomDayOverviewModal.tsx"];
+
+describe("с81: фід із RPC — збій лишається невідомістю", () => {
+  it("портал направника: помилка RPC → failed, успіх → мапа одного дня", () => {
+    const code = src("components/ReferralPortal.tsx");
+    expect(code, "збій читання дня став «особливого дня немає»")
+      .toMatch(/if \(res\.error\) return overrideFeed\(null, true\);/);
+    expect(code, "успішна відповідь має лягати мапою ДНЯ з failed=false")
+      .toMatch(/return overrideFeed\(ov \? \{ \[dateKey\]: ov \} : \{\}, false\);/);
+    expect(code, "виняток мережі теж має бути невідомістю")
+      .toMatch(/catch \{ return overrideFeed\(null, true\); \}/);
+  });
+  it("карта дня: до відповіді й після збою — невідомість, не порожнеча", () => {
+    const code = src("components/RoomDayOverviewModal.tsx");
+    expect(code, "проп має лишатись обовʼязковим: фід АБО літерал \"rpc\", третього немає").toMatch(/overrides: OverrideFeed \| "rpc";/);
+    expect(code, "збій RPC не обнуляє прочитане і не піднімає прапорець")
+      .toMatch(/setOvDay\(null\); setOvFailedKey\(day\);/);
+    expect(code, "не прочитаний / чужий день має давати failed-фід")
+      .toMatch(/: overrideFeed\(null, true\);/);
+    /* Карта дня, відкрита з порталу, читає день саме RPC (той самий клас, що
+       schedOverrideDoor для решти екранів направника). */
+    expect(code).toMatch(/\.rpc\(\s*["'`]sched_override_read["'`]/);
+    expect(src("components/ReferralPortal.tsx"), "портал має відкривати карту дня в режимі RPC")
+      .toMatch(/<RoomDayOverviewModal[\s\S]*?overrides="rpc"/);
   });
 });
 
@@ -374,7 +410,7 @@ const FEED_API = /\b(OverrideFeed|overrideFeed|overridesUnknown|overrideOn|roomS
 describe("U-16: сторож знає про ВСІХ споживачів фіда", () => {
   it("новий компонент не може підключити фід повз списки", () => {
     const dir = resolve(process.cwd(), "components");
-    const known = new Set([...CONSUMERS, ...CALENDARS, ...PARENTS].map((p) => p.replace("components/", "")));
+    const known = new Set([...CONSUMERS, ...CALENDARS, ...PARENTS, ...RPC_PARENTS].map((p) => p.replace("components/", "")));
     const missing: string[] = [];
     for (const f of readdirSync(dir).filter((n) => n.endsWith(".tsx"))) {
       const imp = /import\s*\{([^}]*)\}\s*from\s*"@\/lib\/schedule"/.exec(codeOf(readFileSync(resolve(dir, f), "utf8")));

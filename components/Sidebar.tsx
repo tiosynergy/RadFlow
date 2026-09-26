@@ -292,7 +292,10 @@ export default function Sidebar({
               /onEmergency: немає хендлера → немає пункту (не показуємо dead actions). */}
           <div className="sb-label">Швидкі дії</div>
           <a href="/queue" className={"sb-item" + (activeNav === "queue" ? " active" : "")} aria-current={activeNav === "queue" ? "page" : undefined}><span className="ic">▦</span><span className="sb-item-lab">Дошка черги</span><UnreadDot markers={navUnread("queue")} withCount /></a>
-          {isAdmin && onSlotsOverview && <button type="button" onClick={onSlotsOverview} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
+          {/* с81: роль вирішує дошка (передає хендлер лише admin/registrar) — тут
+              лише «немає хендлера → немає пункту», як у решти дій. Реєстратор
+              теж формує чергу і переносить записи, тож карта дня йому потрібна. */}
+          {onSlotsOverview && <button type="button" onClick={onSlotsOverview} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>
             <span className="ic">◫</span><span className="sb-item-lab">Зайнятість кабінету</span>
           </button>}
           {onNew && <button type="button" onClick={() => onNew()} className="sb-item" style={{ width: "100%", textAlign: "left", background: "none", cursor: "pointer" }}>

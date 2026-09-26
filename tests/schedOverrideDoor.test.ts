@@ -48,6 +48,9 @@ const REFERRER_SCREENS = [
   "components/ReferralPortal.tsx",
   "components/RescheduleModal.tsx",
   "components/StudyEditModal.tsx",
+  /* с81: карту дня відкриває і направник (перенос перетягуванням) — день вона
+     читає RPC у режимі `overrides="rpc"`. */
+  "components/RoomDayOverviewModal.tsx",
 ] as const;
 
 const RPC_CALL = /\.rpc\(\s*["'`]sched_override_read["'`]/;
@@ -69,6 +72,7 @@ describe("RF-03: направник читає графік дня RPC, а не 
       "components/BookingModal.tsx",
       "components/ReferralPortal.tsx",
       "components/RescheduleModal.tsx",
+      "components/RoomDayOverviewModal.tsx",
       "components/StudyEditModal.tsx",
     ]);
   });
