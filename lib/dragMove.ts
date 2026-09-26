@@ -26,7 +26,7 @@
 export const DRAG_MIME = "application/x-radflow-queue-entry";
 
 /** Скільки тримати курсор над днем календаря, щоб відкрилась карта дня. */
-export const DRAG_HOVER_OPEN_MS = 450;
+export const DRAG_HOVER_OPEN_MS = 600;
 /** Скільки тримати курсор над стрілкою місяця, щоб календар перегорнувся. */
 export const DRAG_HOVER_MONTH_MS = 700;
 
@@ -100,7 +100,7 @@ export function dropVerdict(state: string): DropVerdict {
     case "past": return { ok: false, why: "Час уже минув" };
     case "closed": return { ok: false, why: "Кабінет не працює цього дня" };
     case "offhours": return { ok: false, why: "Кабінет не працює в цей час" };
-    case "offsched": return { ok: false, why: "Поза графіком — лише через «🗓 Перенести» з підтвердженням" };
+    case "offsched": return { ok: false, why: "Поза графіком — лише через форму переносу з підтвердженням" };
     default: return { ok: false, why: "Слот недоступний" };
   }
 }
@@ -116,7 +116,10 @@ export function moveDoneText(target: DropTarget, sameDay: boolean, fmtDay: (date
 export function moveErrorText(res: { code?: string; error?: string }): string {
   if (res.code === "slot_taken" || res.code === "slot_unavailable") return "Слот щойно зайняли — оберіть інший";
   if (res.code === "incident") return "Кабінет у простої (поломка/ТО) у цей час — оберіть інший слот або день";
-  if (res.code === "forbidden") return "Немає доступу до цього запису";
+  /* `forbidden` носить і НЕ-авторизаційні відмови з власним текстом («Кабінет
+     вимкнено…» від `schedTriggerError`, ревʼю с81) — текст сервера вже
+     безпечний, тож віддаємо його, а не глушимо «немає доступу». */
+  if (res.code === "forbidden") return res.error || "Немає доступу до цього запису";
   return res.error || "Не вдалося перенести запис — спробуйте ще раз";
 }
 

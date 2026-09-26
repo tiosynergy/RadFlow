@@ -2506,9 +2506,14 @@ export default function ReferralPortal({ role, centers, roomsByClinic, residualR
     if (!r || !r.room_id) return;
     void openDayOverview(r.clinic_id, r.room_id, dateKeyOf(d), r, true);
   };
+  /* Страховка від «зависання» режиму перетягування: запис зник зі списку
+     (перенесено/скасовано з іншого боку) — `dragend` до React не дійде. */
+  useEffect(() => {
+    if (dragRef && listOk && !referrals.some((x) => x.id === dragRef.id)) { dragGen.current++; setDragRef(null); setDragCtx(null); }
+  }, [dragRef, referrals, listOk]);
   const dragDock = (() => {
     const r = dragRef;
-    if (!r || !r.room_id || !r.scheduled_date) return null;
+    if (!r || !r.room_id || !r.scheduled_date || dayOverview) return null;
     const room = (roomsByClinic[r.clinic_id] || []).find((x) => x.id === r.room_id);
     if (!room) return null;
     const ctx = dragCtx && dragCtx.id === r.id ? dragCtx : null;

@@ -26,7 +26,7 @@
  * значенням, а не текстом.
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { codeOf } from "./helpers/codeOf";
 import { SCHED_POLL_MS } from "../lib/useScheduleRefetch";
@@ -107,6 +107,22 @@ describe("с63 — кожне вікно підписане на зміни гр
     expect(call, `${file}: виклик хука не знайдено`).not.toBeNull();
     expect((call as RegExpExecArray)[0], `${file}: scope не той, що заміряний`)
       .toMatch(new RegExp('scope: "' + scope + '"'));
+  });
+
+  /* с81: четвертий викликач — карта дня (`RoomDayOverviewModal`, режим RPC для
+     направника). Її лоадер іншої форми (`loadOv`/`ovReqRef`), тож у перепис
+     MODALS вона не входить; але scope мусить бути унікальним серед УСІХ
+     викликачів у components/ — це і перевіряємо сканером. */
+  it("scope усіх викликачів у components/ РІЗНІ", () => {
+    const dir = resolve(process.cwd(), "components");
+    const found: string[] = [];
+    for (const f of readdirSync(dir).filter((n) => n.endsWith(".tsx"))) {
+      const code = src("components/" + f);
+      for (const m of code.matchAll(/useScheduleRefetch\(\{[^}]*scope: "(\w+)"[^}]*\}\)/g)) found.push(m[1]);
+    }
+    expect(found.length, "викликачів useScheduleRefetch менше, ніж відомо (3 вікна + карта дня)").toBeGreaterThanOrEqual(4);
+    expect(found).toContain("overview");
+    expect(new Set(found).size, "scope продубльовано між викликачами").toBe(found.length);
   });
 
   it("scope у трьох вікон РІЗНІ", () => {

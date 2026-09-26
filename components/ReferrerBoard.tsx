@@ -295,8 +295,8 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId((x) => (x === r.id ? null : r.id)); } }}
                     draggable={dnd || undefined}
                     onDragStart={dnd && drag ? (e) => drag.onStart(r, e) : undefined}
-                    onDragEnd={dnd && drag ? () => drag.onEnd() : undefined}>
-                    <div className="q-time tabular">{dnd && <span className="q-grip" aria-hidden="true" title="Перетягніть на вільний слот або на день у календарі">⠿</span>}{r.scheduled_time || "—"}<div className="td">{r.duration_min ? r.duration_min + " хв" : ""}</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{r.scheduled_date}</div></div>
+                    onDragEnd={drag ? () => drag.onEnd() : undefined}>
+                    <div className="q-time tabular">{dnd && <span className="q-grip" aria-hidden="true" title="Перетягніть на вільний слот у правій колонці або на день у календарі">⠿</span>}{r.scheduled_time || "—"}<div className="td">{r.duration_min ? r.duration_min + " хв" : ""}</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{r.scheduled_date}</div></div>
                     <div className="q-pat">
                       <div className="nm">
                         {r.priority_level && r.priority_level !== "planned" && r.status !== "done" && r.status !== "cancelled" && <span className={"prio-tag " + PRIORITY_META[r.priority_level].tone}>{PRIORITY_META[r.priority_level].short}</span>}

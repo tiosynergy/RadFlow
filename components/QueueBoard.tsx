@@ -754,8 +754,10 @@ function QueueRow({ p, dayDate, roomName, roomModel, roomKind, expanded, onToggl
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(p.id); } }}
         draggable={dragEnabled || undefined}
         onDragStart={dragEnabled && onDragStart ? (e) => onDragStart(p, e) : undefined}
-        onDragEnd={dragEnabled && onDragEnd ? () => onDragEnd() : undefined}>
-        <div className="q-time tabular">{dragEnabled && <span className="q-grip" aria-hidden="true" title="Перетягніть на вільний слот або на день у календарі">⠿</span>}{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
+        /* `onDragEnd` — ЗАВЖДИ: якщо посеред перетягування рядок перестав бути
+           draggable (дошка втратила дані про простої), кінець усе одно має дійти. */
+        onDragEnd={onDragEnd ? () => onDragEnd() : undefined}>
+        <div className="q-time tabular">{dragEnabled && <span className="q-grip" aria-hidden="true" title="Перетягніть на вільний слот у правій панелі або на день у календарі">⠿</span>}{p.scheduled_time}<div className="td">{p.duration_min} хв</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{dateStr}</div></div>
         <div className="q-pat">
           <div className="nm">{isActiveStatus(p.status) && p.priority_level !== "planned" && <span className={"prio-tag " + PRIORITY_META[p.priority_level].tone}>{PRIORITY_META[p.priority_level].short}</span>}<span onClick={(e) => { e.stopPropagation(); onEditPatient?.(p); }} style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }} title="Редагувати дані пацієнта">{p.patient_name}</span><UnreadDot markers={cardUnread} />{p.case_id && <span onClick={(e) => { e.stopPropagation(); if (p.case_id) onOpenCase?.(p.case_id); }} style={{ cursor: "pointer", marginLeft: 6, fontSize: "0.6875rem", fontWeight: 600, color: "var(--blue-text)" }} title="Відкрити крос-модальний кейс">🔗 Кейс</span>}</div>
           <div className="det" style={{ display: "flex", flexDirection: "column", gap: 1, whiteSpace: "normal" }}>
@@ -2463,7 +2465,20 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     setDragEntry(p);
   };
   const endDrag = () => setDragEntry(null);
+  /* Страховка: запис зник зі зрізу посеред перетягування (інший оператор
+     переніс/скасував, realtime перечитав день) — `dragend` на відʼєднаному
+     вузлі до React не дійде, і док із календарем зависли б у режимі
+     перетягування. Стан гасимо за самим зрізом. */
+  useEffect(() => {
+    if (dragEntry && scopeReady && !loading && !entries.some((e) => e.id === dragEntry.id)) setDragEntry(null);
+  }, [dragEntry, entries, scopeReady, loading]);
   const dragRoom = dragEntry?.room_id ? roomsById[dragEntry.room_id] : undefined;
+  /* Кабінет запису може бути поза `visRooms` (вимкнений без «залишків» у
+     списках): карта дня має його показати, інакше ціль «той самий кабінет»
+     недосяжна (те саме, що робить RescheduleModal зі своїм списком). */
+  const overviewRooms = slotsOverview?.roomId && !visRooms.some((r) => r.id === slotsOverview.roomId) && roomsById[slotsOverview.roomId]
+    ? [...visRooms, roomsById[slotsOverview.roomId]]
+    : visRooms;
   /* Тягнути можна живий запис із кабінетом (правило в lib/dragMove.ts), коли
      дошка знає про простої та графіки (інакше і «🗓 Перенести» заблоковано). */
   const canDrag = (p: QEntry) => !safetyErr && canDragEntry(p, "desk");
@@ -3167,7 +3182,10 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
             {/* с81: док вільних слотів того самого дня — лише поки тягнуть запис
                 і лише на не-минулому дні (у минуле не переносять; інший день —
                 через календар нижче). Фід простоїв — той, що у форм запису. */}
-            {dragEntry && dragRoom && !isPast && (
+            {/* Поки відкрита карта дня, док не рендеримо: ціль там, і два хуки
+                зайнятості на один запис/день/кабінет — зайві (канали розведено
+                scope-ом, але й потреби немає). */}
+            {dragEntry && dragRoom && !isPast && !slotsOverview && (
               <DragSlotDock entry={asDragEntry(dragEntry)} room={dragRoom} dateKey={dayKey} dateLabel={fmtShort(selectedDate)}
                 clinicId={clinicId} clinicTz={clinicTz} overrides={overridesFeed} incidents={writeIncidentsFeed} onDrop={dockDrop} />
             )}
@@ -3231,7 +3249,7 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
           формі запису, дзеркалом якої карта й оголошена. Борг U-43 (показувати
           зняті простої дня) цим не закрито. */}
       {slotsOverview && (
-        <RoomDayOverviewModal rooms={visRooms} clinicId={clinicId} clinicTz={clinicTz} incidents={writeIncidentsFeed} overrides={overridesFeed}
+        <RoomDayOverviewModal rooms={overviewRooms} clinicId={clinicId} clinicTz={clinicTz} incidents={writeIncidentsFeed} overrides={overridesFeed}
           initialDay={slotsOverview.day ?? null} initialRoomId={slotsOverview.roomId ?? null}
           move={{
             role: "desk",

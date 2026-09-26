@@ -15,7 +15,11 @@
    наступним рендером сторінки; особливі графіки дня й зайнятість — живі.
 
    Довіра — тим самим правилом, що у форм (`slotDataTrusted`): невідомий
-   графік, непрочитані простої або зайнятість = жодного «вільно». */
+   графік, непрочитані простої або зайнятість = жодного «вільно».
+   ⚠️ Фід, якого ЩЕ НЕМАЄ (`null`/`undefined` — портал направника читає простої
+   й графік дня асинхронно після захоплення), — це «ще читаємо», а не збій
+   (ревʼю с81, р1): футер каже «перевіряємо», а не «не завантажилось». Довіри
+   в обох випадках немає. */
 
 "use client";
 
@@ -23,7 +27,7 @@ import { useMemo } from "react";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { buildSlots, slotToMin, slotFmt } from "@/lib/slots";
 import { roomScheduleFromFeed, roomBreaksFromFeed, offScheduleKind, inBreak, type OverrideFeed } from "@/lib/schedule";
-import { studyBlockedByFeed, incidentsUnknown, wallNow, wallMinOfDay, wallDayKey, type IncidentFeed } from "@/lib/incidents";
+import { studyBlockedByFeed, incidentsUnknown, roomIncidentsOf, wallNow, wallMinOfDay, wallDayKey, type IncidentFeed } from "@/lib/incidents";
 import { dayOfKey } from "@/lib/useFollowToday";
 import { slotDataTrusted, slotDataFooterText, type SlotDataState } from "@/lib/availabilityTrust";
 import { BUFFER_DEFAULT, normBuffer } from "@/lib/studies";
@@ -43,6 +47,10 @@ export type DropSlots = {
   missText: string | null;
   /** Кабінет цього дня не працює (графік відомий). */
   closed: boolean;
+  /** Для легенди: чи є перерви / простої кабінету цього дня, чи це сьогодні. */
+  hasBreaks: boolean;
+  hasIncidents: boolean;
+  isToday: boolean;
   reload: () => void;
 };
 
@@ -57,21 +65,26 @@ export function useDropSlots(opts: {
   overridesFeed: OverrideFeed | null | undefined;
   incidents: IncidentFeed | null | undefined;
   enabled: boolean;
+  /** Частина імені realtime-каналу: док і карта дня можуть жити одночасно
+      з тим самим кабінетом/днем/записом (див. `useRoomBusy`). */
+  scope: string;
 }): DropSlots {
-  const { entry, roomId, roomSchedule, dateKey, clinicId, clinicTz, overridesFeed: overrides, incidents, enabled } = opts;
+  const { entry, roomId, roomSchedule, dateKey, clinicId, clinicTz, overridesFeed: overrides, incidents, enabled, scope } = opts;
   const on = enabled && !!entry && !!roomId;
   const { spans, loading: busyLoading, error: busyError, reload } = useRoomBusy({
-    roomId: on ? roomId : null, dateStr: dateKey, clinicId, excludeId: entry?.id ?? null, enabled: on,
+    roomId: on ? roomId : null, dateStr: dateKey, clinicId, excludeId: entry?.id ?? null, enabled: on, scope,
   });
 
   const durMin = entry?.duration_min || 30;
   const bufferMin = normBuffer(entry?.buffer_time_min ?? BUFFER_DEFAULT);
   const tz = clinicTz || undefined;
   const date = useMemo(() => dayOfKey(dateKey), [dateKey]);
-  const sched = roomId ? roomScheduleFromFeed(date, roomId, overrides ?? null, roomSchedule) : null;
-  const breaks = roomId ? roomBreaksFromFeed(date, roomId, roomSchedule, overrides ?? null) : null;
-  const schedFailed = !overrides || overrides.failed || sched === null || breaks === null;
-  const incidentsFailed = incidentsUnknown(incidents);
+  /* Фіди, яких ще немає, — «читаємо»; фід є, але збій/невідомість — «не вдалося». */
+  const feedsPending = overrides == null || incidents == null;
+  const sched = roomId && overrides ? roomScheduleFromFeed(date, roomId, overrides, roomSchedule) : null;
+  const breaks = roomId && overrides ? roomBreaksFromFeed(date, roomId, roomSchedule, overrides) : null;
+  const schedFailed = !!overrides && (overrides.failed || sched === null || breaks === null);
+  const incidentsFailed = !!incidents && incidentsUnknown(incidents);
   const closed = !!sched?.closed;
 
   const slots = useMemo(
@@ -81,14 +94,16 @@ export function useDropSlots(opts: {
     [sched?.closed, sched?.start, sched?.end],
   );
 
-  const availState: SlotDataState = { busyFailed: busyError, schedFailed, incidentsFailed, loading: busyLoading };
-  const trusted = on && slotDataTrusted(availState);
+  const loading = on && (busyLoading || feedsPending);
+  const availState: SlotDataState = { busyFailed: busyError, schedFailed, incidentsFailed, loading };
+  const trusted = on && !feedsPending && slotDataTrusted(availState);
   const missText = on ? slotDataFooterText(availState) : null;
 
   const todayKey = wallDayKey(tz);
   const nowMin = wallMinOfDay(wallNow(tz));
   const isToday = dateKey === todayKey;
   const isPastDay = dateKey < todayKey;
+  const roomInc = roomIncidentsOf(incidents ?? null, roomId);
 
   const stateOf = (slot: string): DropSlotState => {
     const a = slotToMin(slot);
@@ -120,5 +135,8 @@ export function useDropSlots(opts: {
     return v.ok ? slot : v.why;
   };
 
-  return { slots, stateOf, titleOf, durMin, bufferMin, loading: on && busyLoading, trusted, missText, closed, reload };
+  return {
+    slots, stateOf, titleOf, durMin, bufferMin, loading, trusted, missText, closed,
+    hasBreaks: !!breaks && breaks.length > 0, hasIncidents: !!roomInc && roomInc.length > 0, isToday, reload,
+  };
 }

@@ -2396,10 +2396,13 @@ select.inp { cursor: pointer; }
    планове вікно (.slot.plan): та сама пара кольорів, що вже пройшла аудит
    контрасту. Стан «у руках» — рамкою і кольором тексту, не opacity (правило
    проєкту: opacity не носій стану). */
-.qrow-item.dnd > .qrow { cursor: grab; }
-.qrow-item.dnd > .qrow:active { cursor: grabbing; }
-.q-grip { color: var(--text-faint); font-size: 0.75rem; font-weight: 400; margin-right: 5px; user-select: none; display: inline-block; vertical-align: 1px; }
-.qrow-item.dragging { outline: 2px dashed var(--blue-line); outline-offset: -2px; }
+/* Ручка — єдине місце з курсором «взяти»: основна дія рядка лишається
+   кліком-розгортанням (ревʼю с81 р1), тягнути ж можна за будь-яке місце. */
+.q-grip { color: var(--text-faint); font-size: 0.625rem; font-weight: 400; margin-right: 3px; user-select: none; display: inline-block; vertical-align: 1px; cursor: grab; }
+.q-grip:active { cursor: grabbing; }
+/* Рамка «у руках» — на самому .qrow, щоб не накривати лівий акцент статусу
+   (border-left .qrow-item, 1.4.1). */
+.qrow-item.dragging > .qrow { outline: 2px dashed var(--blue-line); outline-offset: -2px; }
 .drag-dock { border-color: var(--blue-line); }
 .dd-room { display: flex; align-items: center; gap: 6px; font-size: 0.8125rem; margin-bottom: 8px; min-width: 0; }
 .dd-muted { color: var(--text-muted); font-size: 0.75rem; }
@@ -2413,12 +2416,25 @@ select.inp { cursor: pointer; }
 .dd-chip.active { border-color: var(--blue-line); box-shadow: inset 0 0 0 1px var(--blue-line); color: var(--blue-text); }
 .dd-chip[aria-busy="true"], .dd-chips[aria-busy="true"] .dd-chip { cursor: progress; }
 .dd-tag { font-size: 0.625rem; font-weight: 700; color: var(--blue-text); border: 1px solid var(--blue-line); border-radius: 5px; padding: 0 5px; }
+.dd-chip:focus-visible { outline: 2px solid var(--blue-line); outline-offset: 1px; }
+/* Банер підтвердження «перенести на …?» — нейтральний синій, а не .offsched
+   (фіолетовий = «поза графіком, потрібна згода» — інша семантика). */
+.dd-confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dd-confirm > span { flex: 1 1 auto; min-width: 0; }
 /* Сітка в режимі кидка: вільні комірки — з зеленим внутрішнім кільцем (є куди
-   кинути), комірка під курсором — зеленою заливкою планового вікна. */
-.slot-picker.drop-mode .slot:not(.taken) { box-shadow: inset 0 0 0 1px rgba(48, 209, 88, 0.55); }
+   кинути; суцільний --green, бо напівпрозорий давав 2.7:1 на --card-2),
+   комірка під курсором — зеленою заливкою планового вікна (.slot.plan). */
+.slot-picker.drop-mode .slot:not(.taken) { box-shadow: inset 0 0 0 1px var(--green); }
 .slot.drop-over { border-color: var(--green) !important; background: rgba(48, 209, 88, 0.28) !important; color: #eafff0 !important; }
-/* Календар під час перетягування: дні-цілі окреслено, день під курсором — зелений. */
-.bk-cal.drag-target .cal-day:not(.empty-day) { box-shadow: inset 0 0 0 1px var(--border-strong); }
-.bk-cal.drag-target .cal-day.today { box-shadow: inset 0 0 0 1px var(--blue-line); }
+/* Док компактний: календар під ним має лишатись у полі зору на 768px. */
+.drag-dock .slot-grid4 { max-height: 28vh; }
+/* Календар під час перетягування: день під курсором — зелене кільце; на
+   «сьогодні» (заливка --blue) зелене дає 2.5:1 — там кільце БІЛЕ, як у
+   .cal-change (ревʼю с81 р1). Загальний контур на всіх днях знято: він
+   обіцяв ціль і минулим дням, і бив обране кільце .selected.
+   Дочірні спани дня/стрілок прозорі для вказівника: інакше заїзд на крапку
+   дає dragleave на самому дні, і таймер наведення гине. */
 .cal-day.drag-over { box-shadow: inset 0 0 0 2px var(--green) !important; }
+.cal-day.today.drag-over { box-shadow: inset 0 0 0 2px #fff !important; }
+.bk-cal .cal-day > span, .bk-cal .cal-nav .mini-icon > span { pointer-events: none; }
 .cal-drag-hint { font-size: 0.71875rem; color: var(--text-secondary); margin: -4px 0 8px; }

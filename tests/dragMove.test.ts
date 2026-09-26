@@ -133,7 +133,7 @@ describe("вердикт кидка", () => {
   it("«поза графіком» відсилає до «🗓 Перенести» — там є підтвердження, а кидок не згода", () => {
     const v = dropVerdict("offsched");
     expect(v.ok).toBe(false);
-    if (!v.ok) expect(v.why).toMatch(/Перенести/);
+    if (!v.ok) expect(v.why).toMatch(/підтвердженням/);
   });
 });
 
@@ -147,7 +147,10 @@ describe("тексти", () => {
     expect(moveErrorText({ code: "slot_taken" })).toMatch(/зайняли/);
     expect(moveErrorText({ code: "slot_unavailable" })).toMatch(/зайняли/);
     expect(moveErrorText({ code: "incident" })).toMatch(/простої/);
+    /* `forbidden` носить і не-авторизаційні відмови з власним текстом (0123
+       «Кабінет вимкнено…» через schedTriggerError) — текст сервера не глушимо. */
     expect(moveErrorText({ code: "forbidden" })).toMatch(/доступу/);
+    expect(moveErrorText({ code: "forbidden", error: "Кабінет вимкнено — оберіть інший" })).toBe("Кабінет вимкнено — оберіть інший");
     expect(moveErrorText({ code: "generic", error: "Текст сервера" })).toBe("Текст сервера");
     expect(moveErrorText({})).toMatch(/спробуйте ще раз/);
   });
@@ -173,6 +176,8 @@ describe("проводка: хто тягне і куди", () => {
     const code = src("components/QueueBoard.tsx");
     expect(code).toMatch(/const canDrag = \(p: QEntry\) => !safetyErr && canDragEntry\(p, "desk"\);/);
     expect(code, "рядок має отримувати dragEnabled з canDrag").toMatch(/dragEnabled=\{canDrag\(p\)\}/);
+    /* Карта дня має бачити кабінет запису, навіть коли його немає у visRooms. */
+    expect(code).toMatch(/<RoomDayOverviewModal rooms=\{overviewRooms\}/);
     /* Виконавець: той самий кабінет НЕ форсується тут — ціль несе roomId; але
        поза графіком — ніколи, і заявка про годинник по добі цілі. */
     expect(code).toMatch(/reason: DRAG_MOVE_REASON, offSchedule: false,/);
@@ -207,10 +212,10 @@ describe("проводка: хто тягне і куди", () => {
     expect(code, "ціль — лише кабінет запису").toMatch(/const dropRoomOk = !!moving && moving\.room_id === roomId;/);
     /* Кидок на той самий слот і помилка сервера — не тиша. */
     expect(code).toMatch(/if \(isNoopDrop\(entry, target\)\) \{ setMoveErr\("Запис уже стоїть на цьому слоті"\);/);
-    expect(code).toMatch(/if \(err\) \{ setMoveErr\(err\); return; \}/);
+    expect(code).toMatch(/if \(err\) \{ setMoveErr\(err\); ds\.reload\(\); loadDayEntries\(\); return; \}/);
     /* Одноточковий шлях (WCAG 2.5.7): клік по слоту → підтвердження, а не перенос одразу. */
     expect(code).toMatch(/onChange=\{\(s\) => \{ setPending\(s\); setMoveErr\(null\); setMoveDone\(null\); \}\}/);
-    expect(code).toMatch(/\{moving && pending && dropMode && \(/);
+    expect(code).toMatch(/\{moving && pending && pendingOk && \(/);
     /* Помилка читання записів дня — не «записів немає» (U-3). */
     expect(code).toMatch(/if \(deErr\) \{ setDayEntriesErr\(true\); setDayEntriesLoaded\(true\); return; \}/);
   });
@@ -222,17 +227,69 @@ describe("проводка: хто тягне і куди", () => {
   it("календар: минулий день не є ціллю; наведення відкриває карту з таймером", () => {
     const code = src("components/MiniCalendar.tsx");
     expect(code).toMatch(/if \(!dragOn \|\| cd < today\) return \{\};/);
-    expect(code).toMatch(/DRAG_HOVER_OPEN_MS\)/);
+    expect(code).toMatch(/arm\(key, DRAG_HOVER_OPEN_MS, open\)/);
     expect(code, "таймер має гаснути при розмонтуванні й після кінця перетягування")
       .toMatch(/useEffect\(\(\) => \{ if \(!dragActive\) \{ clearHover\(\); setDragOver\(null\); \} \}, \[dragActive, clearHover\]\);/);
+    /* ⚠️ Blink/WebKit: `dragenter` нової цілі приходить РАНІШЕ за `dragleave`
+       старої (ревʼю с81 р1). Гасити таймер у onDragLeave можна лише для СВОГО
+       ключа, а вхід у дочірній спан дня — не вихід. */
+    expect(code, "onDragLeave гасить чужий таймер — у Chromium карта відкривалась би лише для першого дня")
+      .toMatch(/const leave = \(key: string\) => \{\s*if \(armedKey\.current === key\)/);
+    expect(code, "вхід у дочірній елемент дня має ігноруватись").toMatch(/if \(insideSelf\(e\)\) return; leave\(key\);/);
+    const css = readFileSync(resolve(process.cwd(), "styles/prototype/radflow.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, " ");
+    expect(css, "дочірні спани дня/стрілок мають бути прозорими для вказівника").toMatch(/\.bk-cal \.cal-day > span, \.bk-cal \.cal-nav \.mini-icon > span \{ pointer-events: none; \}/);
+  });
+  it("стан перетягування гаситься на початку виконавця і за самим зрізом — не лише з dragend", () => {
+    /* `dragend` на рядку, що зник зі зрізу (перенесено на інший день; хтось інший
+       скасував), до React не доходить — док і календар зависли б у режимі drag. */
+    const qb = src("components/QueueBoard.tsx");
+    expect(qb).toMatch(/async function dropMove\(entry: DragEntry, target: DropTarget\): Promise<string \| null> \{\s*setDragEntry\(null\);/);
+    expect(qb).toMatch(/if \(dragEntry && scopeReady && !loading && !entries\.some\(\(e\) => e\.id === dragEntry\.id\)\) setDragEntry\(null\);/);
+    expect(qb, "onDragEnd має стояти на рядку ЗАВЖДИ, а не лише поки він draggable").toMatch(/onDragEnd=\{onDragEnd \? \(\) => onDragEnd\(\) : undefined\}/);
+    const rp = src("components/ReferralPortal.tsx");
+    expect(rp).toMatch(/async function dropMoveReferral\(entry: DragEntry, target: DropTarget\): Promise<string \| null> \{\s*endDragReferral\(\);/);
+    expect(rp).toMatch(/if \(dragRef && listOk && !referrals\.some\(\(x\) => x\.id === dragRef\.id\)\)/);
+    /* Док — лише кидок: клік по слоту тут не переносить (див. шапку DragSlotDock). */
+    expect(src("components/DragSlotDock.tsx")).toMatch(/value="" onChange=\{\(\) => \{\}\}/);
+  });
+  it("два хуки зайнятості на один запис/день/кабінет — РІЗНІ канали (scope)", () => {
+    /* Док на дошці й карта дня з того самого перетягування живуть одночасно
+       (карта — з наведення на день дошки). Однакове імʼя каналу = другий `.on()`
+       після `.subscribe()` (рантайм-помилка) і `removeChannel` одного знімає
+       канал у другого (ревʼю с81 р1, обидві лінзи). */
+    expect(src("lib/slotBusy.ts")).toMatch(/\+ \(scope \? "-" \+ scope : ""\)/);
+    const scopes = [
+      /scope: "(\w+)"/.exec(src("components/DragSlotDock.tsx"))?.[1],
+      /scope: "(\w+)"/.exec(src("components/RoomDayOverviewModal.tsx").slice(src("components/RoomDayOverviewModal.tsx").indexOf("useDropSlots({")))?.[1],
+    ];
+    expect(scopes.every(Boolean), "scope не переданий у useDropSlots").toBe(true);
+    expect(new Set(scopes).size, "scope продубльовано").toBe(scopes.length);
+    /* І док не рендериться, поки відкрита карта дня. */
+    expect(src("components/QueueBoard.tsx")).toMatch(/\{dragEntry && dragRoom && !isPast && !slotsOverview && \(/);
+    expect(src("components/ReferralPortal.tsx")).toMatch(/if \(!r \|\| !r\.room_id \|\| !r\.scheduled_date \|\| dayOverview\) return null;/);
+  });
+  it("фід, якого ще немає, — «читаємо», а не «не завантажилось»", () => {
+    const hook = src("lib/useDropSlots.ts");
+    expect(hook).toMatch(/const feedsPending = overrides == null \|\| incidents == null;/);
+    expect(hook).toMatch(/const loading = on && \(busyLoading \|\| feedsPending\);/);
+    expect(hook, "довіри без фідів бути не може").toMatch(/const trusted = on && !feedsPending && slotDataTrusted\(availState\);/);
+  });
+  it("карта дня: підтвердження «✓ Перенести» — лише поки слот досі вільний і даним можна вірити", () => {
+    const code = src("components/RoomDayOverviewModal.tsx");
+    expect(code).toMatch(/const pendingOk = !!pending && dropMode && ds\.trusted && ds\.stateOf\(pending\) === "free";/);
+    expect(code).toMatch(/\{moving && pending && pendingOk && \(/);
+    expect(code, "та сама перевірка перед кидком").toMatch(/if \(!ds\.trusted \|\| ds\.stateOf\(time\) !== "free"\)/);
+    /* aria-disabled, не disabled (пастка фокуса). */
+    expect(code).not.toMatch(/[^-]disabled=\{saving\}/);
+    expect(code).toMatch(/aria-disabled=\{saving\} aria-busy=\{saving\}/);
   });
 });
 
 describe("стан «у руках» — не opacity", () => {
   it("рядок у перетягуванні позначається рамкою, а не прозорістю (правило проєкту)", () => {
     const css = readFileSync(resolve(process.cwd(), "styles/prototype/radflow.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, " ");
-    const rule = /\.qrow-item\.dragging \{([^}]*)\}/.exec(css);
-    expect(rule, ".qrow-item.dragging не знайдено").not.toBeNull();
+    const rule = /\.qrow-item\.dragging > \.qrow \{([^}]*)\}/.exec(css);
+    expect(rule, ".qrow-item.dragging > .qrow не знайдено").not.toBeNull();
     expect((rule as RegExpExecArray)[1]).toMatch(/outline/);
     expect((rule as RegExpExecArray)[1]).not.toMatch(/opacity/);
   });
