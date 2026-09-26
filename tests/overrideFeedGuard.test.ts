@@ -220,7 +220,7 @@ describe("с81: фід із RPC — збій лишається невідомі
     const code = src("components/RoomDayOverviewModal.tsx");
     expect(code, "проп має лишатись обовʼязковим: фід АБО літерал \"rpc\", третього немає").toMatch(/overrides: OverrideFeed \| "rpc";/);
     expect(code, "збій RPC не обнуляє прочитане і не піднімає прапорець")
-      .toMatch(/setOvDay\(null\); setOvFailed\(true\);/);
+      .toMatch(/setOvDay\(null\); setOvFailedKey\(day\);/);
     expect(code, "не прочитаний / чужий день має давати failed-фід")
       .toMatch(/: overrideFeed\(null, true\);/);
     /* Карта дня, відкрита з порталу, читає день саме RPC (той самий клас, що

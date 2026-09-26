@@ -11,6 +11,7 @@ import { wallToday0 } from "@/lib/incidents";
 import { useUnreadChanges } from "@/lib/useUnreadChanges";
 import { calendarDayKey, unreadForDate } from "@/lib/unreadChanges";
 import { isEntryDrag, DRAG_HOVER_OPEN_MS, DRAG_HOVER_MONTH_MS } from "@/lib/dragMove";
+import { createHoverArmer, type HoverArmer, type HoverTarget } from "@/lib/dragHover";
 
 const WK_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const MON_NOM = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
@@ -67,57 +68,42 @@ export default function MiniCalendar({ selectedDate, onSelectDate, overrides, on
   const { index: unreadIx } = useUnreadChanges();
   const [viewMonth, setViewMonth] = useState(() => new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1));
   const shift = (n: number) => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
-  /* Таймер наведення при перетягуванні — один на календар, з КЛЮЧЕМ цілі
-     (`armedKey`). ⚠️ Порядок подій у Blink/WebKit: `dragenter` на НОВІЙ цілі
-     приходить РАНІШЕ за `dragleave` зі старої (ревʼю с81, р1). Безумовне
-     гасіння в `onDragLeave` старого дня вбивало б таймер, щойно заведений для
-     нового, — карта відкривалась би лише для першого дня, на який зайшли з
-     «нічийного» місця. Тому `onDragLeave(A)` гасить таймер, лише якщо він
-     заведений саме для A; перехід у ДОЧІРНІЙ елемент дня (крапка позначки)
-     не вважається виходом (`relatedTarget` усередині) — плюс `pointer-events:
-     none` на цих спанах у CSS. Після спрацювання ключ лишається: повторні
-     `dragover` того самого дня карту вдруге не відкривають; вихід із дня
-     знімає ключ, і повернення заводить таймер заново. */
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const armedKey = useRef<string | null>(null);
+  /* Автомат наведення при перетягуванні — `lib/dragHover.ts` (чиста функція,
+     обидва порядки подій рушіїв — у тестах). Тут лише проводка подій React у
+     нього; `relatedTarget` усередині цілі = вхід у дочірній спан, не вихід
+     (плюс `pointer-events: none` на цих спанах у CSS). Гаситься при
+     розмонтуванні й після кінця перетягування. */
+  const armer = useRef<HoverArmer | null>(null);
+  if (!armer.current) armer.current = createHoverArmer();
   const [dragOver, setDragOver] = useState<string | null>(null);
-  const clearHover = useCallback(() => {
-    if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; }
-    armedKey.current = null;
-  }, []);
+  const clearHover = useCallback(() => { armer.current?.cancel(); }, []);
   useEffect(() => clearHover, [clearHover]);
   useEffect(() => { if (!dragActive) { clearHover(); setDragOver(null); } }, [dragActive, clearHover]);
   const dragOn = dragActive && !!onDragOpenDay;
   const insideSelf = (e: DragEvent<HTMLButtonElement>) => e.currentTarget.contains(e.relatedTarget as Node | null);
-  const arm = (key: string, ms: number, fire: () => void) => {
-    if (hoverTimer.current) clearTimeout(hoverTimer.current);
-    armedKey.current = key;
-    hoverTimer.current = setTimeout(() => { hoverTimer.current = null; fire(); }, ms);
-  };
-  const leave = (key: string) => {
-    if (armedKey.current === key) { if (hoverTimer.current) clearTimeout(hoverTimer.current); hoverTimer.current = null; armedKey.current = null; }
-  };
   const dayDragProps = (cd: Date, key: string) => {
     if (!dragOn || cd < today) return {};
-    const open = () => onDragOpenDay!(startOfDay(cd));
+    const target: HoverTarget = { ms: DRAG_HOVER_OPEN_MS, fire: () => onDragOpenDay!(startOfDay(cd)) };
     return {
-      onDragEnter: (e: DragEvent<HTMLButtonElement>) => { if (!isEntryDrag(e.dataTransfer)) return; e.preventDefault(); setDragOver(key); if (armedKey.current !== key) arm(key, DRAG_HOVER_OPEN_MS, open); },
-      onDragOver: (e: DragEvent<HTMLButtonElement>) => { if (!isEntryDrag(e.dataTransfer)) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (armedKey.current !== key) { setDragOver(key); arm(key, DRAG_HOVER_OPEN_MS, open); } },
-      onDragLeave: (e: DragEvent<HTMLButtonElement>) => { if (insideSelf(e)) return; leave(key); setDragOver((o) => (o === key ? null : o)); },
-      onDrop: (e: DragEvent<HTMLButtonElement>) => { if (!isEntryDrag(e.dataTransfer)) return; e.preventDefault(); clearHover(); setDragOver(null); open(); },
+      onDragEnter: (e: DragEvent<HTMLButtonElement>) => { if (!isEntryDrag(e.dataTransfer)) return; e.preventDefault(); setDragOver(key); armer.current!.enter(key, target); },
+      onDragOver: (e: DragEvent<HTMLButtonElement>) => { if (!isEntryDrag(e.dataTransfer)) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; setDragOver((o) => (o === key ? o : key)); armer.current!.over(key, target); },
+      onDragLeave: (e: DragEvent<HTMLButtonElement>) => { const inside = insideSelf(e); armer.current!.leave(key, inside); if (!inside) setDragOver((o) => (o === key ? null : o)); },
+      onDrop: (e: DragEvent<HTMLButtonElement>) => { if (!isEntryDrag(e.dataTransfer)) return; e.preventDefault(); clearHover(); setDragOver(null); onDragOpenDay!(startOfDay(cd)); },
     };
   };
   /* Стрілки місяця: тримаємо курсор — гортаємо, і далі гортаємо кожні
-     `DRAG_HOVER_MONTH_MS`, поки курсор на стрілці (таймер перезаводиться після
-     спрацювання). */
+     `DRAG_HOVER_MONTH_MS`, поки курсор на стрілці (`repeat`). `preventDefault`
+     і тут — інакше браузер малює над стрілкою курсор «не можна», хоч наведення
+     працює; сам кидок на стрілку нічого не робить. */
   const navDragProps = (n: number) => {
     if (!dragOn) return {};
     const key = "nav:" + n;
-    const flip = () => { shift(n); arm(key, DRAG_HOVER_MONTH_MS, flip); };
+    const target: HoverTarget = { ms: DRAG_HOVER_MONTH_MS, fire: () => shift(n), repeat: true };
     return {
-      onDragEnter: (e: DragEvent<HTMLButtonElement>) => { if (!isEntryDrag(e.dataTransfer)) return; if (armedKey.current !== key) arm(key, DRAG_HOVER_MONTH_MS, flip); },
-      onDragOver: (e: DragEvent<HTMLButtonElement>) => { if (!isEntryDrag(e.dataTransfer)) return; if (armedKey.current !== key) arm(key, DRAG_HOVER_MONTH_MS, flip); },
-      onDragLeave: (e: DragEvent<HTMLButtonElement>) => { if (insideSelf(e)) return; leave(key); },
+      onDragEnter: (e: DragEvent<HTMLButtonElement>) => { if (!isEntryDrag(e.dataTransfer)) return; e.preventDefault(); armer.current!.enter(key, target); },
+      onDragOver: (e: DragEvent<HTMLButtonElement>) => { if (!isEntryDrag(e.dataTransfer)) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; armer.current!.over(key, target); },
+      onDragLeave: (e: DragEvent<HTMLButtonElement>) => { armer.current!.leave(key, insideSelf(e)); },
+      onDrop: (e: DragEvent<HTMLButtonElement>) => { if (!isEntryDrag(e.dataTransfer)) return; e.preventDefault(); },
     };
   };
   const y = viewMonth.getFullYear(), mo = viewMonth.getMonth();

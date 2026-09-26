@@ -174,8 +174,10 @@ describe("проводка: буфер перетягування несе ли�
 describe("проводка: хто тягне і куди", () => {
   it("дошка черги: рядок тягнеться лише за canDragEntry(…, \"desk\") і без safetyErr", () => {
     const code = src("components/QueueBoard.tsx");
-    expect(code).toMatch(/const canDrag = \(p: QEntry\) => !safetyErr && canDragEntry\(p, "desk"\);/);
+    expect(code).toMatch(/const canDrag = \(p: QEntry\) => \{\s*if \(safetyErr \|\| !canDragEntry\(p, "desk"\)\) return false;/);
     expect(code, "рядок має отримувати dragEnabled з canDrag").toMatch(/dragEnabled=\{canDrag\(p\)\}/);
+    /* 0123: у вимкненому кабінеті тягнеться лише живий запис. */
+    expect(code).toMatch(/if \(rm && !isRoomBookable\(rm\) && p\.status !== "scheduled" && p\.status !== "waiting"\) return false;/);
     /* Карта дня має бачити кабінет запису, навіть коли його немає у visRooms. */
     expect(code).toMatch(/<RoomDayOverviewModal rooms=\{overviewRooms\}/);
     /* Виконавець: той самий кабінет НЕ форсується тут — ціль несе roomId; але
@@ -227,15 +229,15 @@ describe("проводка: хто тягне і куди", () => {
   it("календар: минулий день не є ціллю; наведення відкриває карту з таймером", () => {
     const code = src("components/MiniCalendar.tsx");
     expect(code).toMatch(/if \(!dragOn \|\| cd < today\) return \{\};/);
-    expect(code).toMatch(/arm\(key, DRAG_HOVER_OPEN_MS, open\)/);
+    expect(code).toMatch(/const target: HoverTarget = \{ ms: DRAG_HOVER_OPEN_MS, fire: \(\) => onDragOpenDay!\(startOfDay\(cd\)\) \};/);
     expect(code, "таймер має гаснути при розмонтуванні й після кінця перетягування")
       .toMatch(/useEffect\(\(\) => \{ if \(!dragActive\) \{ clearHover\(\); setDragOver\(null\); \} \}, \[dragActive, clearHover\]\);/);
     /* ⚠️ Blink/WebKit: `dragenter` нової цілі приходить РАНІШЕ за `dragleave`
        старої (ревʼю с81 р1). Гасити таймер у onDragLeave можна лише для СВОГО
        ключа, а вхід у дочірній спан дня — не вихід. */
-    expect(code, "onDragLeave гасить чужий таймер — у Chromium карта відкривалась би лише для першого дня")
-      .toMatch(/const leave = \(key: string\) => \{\s*if \(armedKey\.current === key\)/);
-    expect(code, "вхід у дочірній елемент дня має ігноруватись").toMatch(/if \(insideSelf\(e\)\) return; leave\(key\);/);
+    expect(code, "автомат наведення має жити в lib/dragHover (обидва порядки подій — у тестах)")
+      .toMatch(/armer\.current!\.leave\(key, inside\)/);
+    expect(code, "вхід у дочірній елемент дня має передаватись автомату як inside").toMatch(/const inside = insideSelf\(e\); armer\.current!\.leave\(key, inside\);/);
     const css = readFileSync(resolve(process.cwd(), "styles/prototype/radflow.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, " ");
     expect(css, "дочірні спани дня/стрілок мають бути прозорими для вказівника").toMatch(/\.bk-cal \.cal-day > span, \.bk-cal \.cal-nav \.mini-icon > span \{ pointer-events: none; \}/);
   });
@@ -276,7 +278,13 @@ describe("проводка: хто тягне і куди", () => {
   });
   it("карта дня: підтвердження «✓ Перенести» — лише поки слот досі вільний і даним можна вірити", () => {
     const code = src("components/RoomDayOverviewModal.tsx");
-    expect(code).toMatch(/const pendingOk = !!pending && dropMode && ds\.trusted && ds\.stateOf\(pending\) === "free";/);
+    /* Слот-кандидат несе свій зріз: за іншого дня/кабінету гасне мовчки, а
+       «щойно зайняли» кажемо лише в тому самому зрізі (ревʼю с81 р2). */
+    expect(code).toMatch(/const pendingHere = !!pending && pending\.roomId === roomId && pending\.day === day;/);
+    expect(code).toMatch(/const pendingOk = pendingHere && !!pending && dropMode && ds\.trusted && ds\.stateOf\(pending\.slot\) === "free";/);
+    expect(code).toMatch(/if \(pendingHere && moving\) setMoveErr\(\(m\) => m \?\? "Слот щойно зайняли/);
+    /* Узятий чип відпускається лише коли зник зі СВОГО дня й кабінету. */
+    expect(code).toMatch(/if \(moving\.room_id !== roomId \|\| moving\.scheduled_date !== day\) return;/);
     expect(code).toMatch(/\{moving && pending && pendingOk && \(/);
     expect(code, "та сама перевірка перед кидком").toMatch(/if \(!ds\.trusted \|\| ds\.stateOf\(time\) !== "free"\)/);
     /* aria-disabled, не disabled (пастка фокуса). */

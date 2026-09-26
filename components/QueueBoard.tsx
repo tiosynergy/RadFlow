@@ -2480,8 +2480,17 @@ export default function QueueBoard({ clinicId, clinicTz, rooms, residualRoomIds,
     ? [...visRooms, roomsById[slotsOverview.roomId]]
     : visRooms;
   /* Тягнути можна живий запис із кабінетом (правило в lib/dragMove.ts), коли
-     дошка знає про простої та графіки (інакше і «🗓 Перенести» заблоковано). */
-  const canDrag = (p: QEntry) => !safetyErr && canDragEntry(p, "desk");
+     дошка знає про простої та графіки (інакше і «🗓 Перенести» заблоковано).
+     0123: у ВИМКНЕНОМУ кабінеті можна лише посунути живий запис по часу;
+     «воскресити» там неявку / «не відбулося» / «потребує переносу» тригер
+     відкине — такий рядок не тягнеться (ревʼю с81 р2), лишається «🗓 Перенести»
+     з переоформленням в інший кабінет. */
+  const canDrag = (p: QEntry) => {
+    if (safetyErr || !canDragEntry(p, "desk")) return false;
+    const rm = p.room_id ? roomsById[p.room_id] : undefined;
+    if (rm && !isRoomBookable(rm) && p.status !== "scheduled" && p.status !== "waiting") return false;
+    return true;
+  };
 
   /* §5.5 — інлайн-перенос у ТОЙ САМИЙ кабінет на найближче вільне вікно (слот уже
      порахувала QuickRescheduleButton через firstFittingSlot). Прямий виклик

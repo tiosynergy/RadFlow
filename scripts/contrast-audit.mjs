@@ -197,7 +197,8 @@ head("с81 · перетягування — кільця цілей і чипи
   }
   check(".cal-day.today.drag-over кільце #fff на --blue (сьогодні)", ratio(WHITE, NEW.blue), 3);
   console.log(`  \u2139\ufe0f  довідка: --green на --blue = ${f(ratio(GREEN, NEW.blue))} (<3) — тому на «сьогодні» кільце біле`);
-  check(".slot.drop-over текст #eafff0 на зеленій заливці над --card-2", ratio(DROP_TEXT, over(GREEN, GREEN_A, CARD_2)), 4.5);
+  /* Заливка комірки ЗАМІНЮЄТЬСЯ rgba, тож підкладка — поверхня діалога/картки (--card). */
+  check(".slot.drop-over текст #eafff0 на зеленій заливці над --card", ratio(DROP_TEXT, over(GREEN, GREEN_A, CARD)), 4.5);
   check(".dd-chip.active --blue-text на --card-2", ratio(NEW.text, CARD_2), 4.5);
   check(".dd-chip текст --text на --card-2", ratio("#f5f5f7", CARD_2), 4.5);
   check("результат переносу --green як текст на --card", ratio(GREEN, CARD), 4.5);

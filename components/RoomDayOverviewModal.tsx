@@ -19,6 +19,7 @@ import { DRAG_MIME, dragStatusesFor, dragChipLabel, isNoopDrop, type DragEntry, 
 import { fmtShort } from "@/components/BookingModal";
 import { modalityShort, modalityKind } from "@/lib/studies";
 import type { QueueStatus } from "@/supabase/types";
+import { isRoomBookable, ROOM_OFF_LABEL } from "@/lib/rooms";
 
 type Room = {
   id: string;
@@ -26,6 +27,7 @@ type Room = {
   modality: string;
   apparatus_model?: string | null;
   schedule?: unknown;
+  active?: boolean | null;
 };
 type RoomIncident = IncidentLike & { reason_label?: string | null };
 
@@ -93,11 +95,12 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
   const [roomId, setRoomId] = useState(() => (initialRoomId && rooms.some((r) => r.id === initialRoomId) ? initialRoomId : rooms[0]?.id || ""));
   const [day, setDay] = useState(() => initialDay || dateKey(wallToday0(clinicTz)));
   const [selectedSlot, setSelectedSlot] = useState("");
-  /* с81: слот, обраний КЛІКОМ у режимі переносу, — чекає підтвердження. Гасне з
-     будь-якою зміною дня чи кабінету (ефект нижче), включно з поправкою
-     годинника через північ: «перенести на 09:00?» про ЧУЖУ добу — та сама вада,
-     що й обраний слот, лише з кнопкою «Так» поруч. */
-  const [pending, setPending] = useState<string | null>(null);
+  /* с81: слот, обраний КЛІКОМ у режимі переносу, — чекає підтвердження. Несе
+     СВІЙ зріз (кабінет + день): за іншого зрізу він гасне мовчки (ефект
+     нижче; сюди входить і поправка годинника через північ — «перенести на
+     09:00?» про ЧУЖУ добу), а «слот щойно зайняли» кажемо лише коли зріз той
+     самий, а слот перестав бути вільним (ревʼю с81 р2). */
+  const [pending, setPendingRaw] = useState<{ slot: string; roomId: string; day: string } | null>(null);
   /* ⚠️ U-72. `day` зафіксовано ініціалізатором, а `isToday` нижче рахується
      живим `wallToday0`. Після поправки годинника через північ вони розходяться,
      `isToday` стає хибним — і з `stateOf` зникає гілка «час уже минув»: карта
@@ -131,7 +134,7 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
      поле без причини і є та сама тиха вада навиворіт. */
   const dayShiftSay = dayShiftNoticeVerdict(dayShifted, day);
 
-  useEffect(() => { setPending(null); }, [day, roomId]);
+  const setPending = useCallback((slot: string | null) => { setPendingRaw(slot ? { slot, roomId, day } : null); }, [roomId, day]);
 
   const room = rooms.find((r) => r.id === roomId) || null;
   const date = useMemo(() => dateFromKey(day), [day]);
@@ -144,7 +147,10 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
      (для направника фактично лише тик на 30 с: подій по `schedule_overrides`
      він не отримує; сказано в самому хуку). */
   const [ovDay, setOvDay] = useState<{ key: string; ov: DayOverride | null } | null>(null);
-  const [ovFailed, setOvFailed] = useState(false);
+  /* Збій зберігаємо З КЛЮЧЕМ дня: зміна дня після збою — знову «читаємо», а не
+     «не вдалося» на добу, якої ще не читали (ревʼю с81 р2). */
+  const [ovFailedKey, setOvFailedKey] = useState<string | null>(null);
+  const ovFailed = ovFailedKey === day;
   const [ovLoading, setOvLoading] = useState(overridesByRpc);
   const ovReqRef = useRef(0);
   const loadOv = useCallback(async () => {
@@ -157,10 +163,10 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
       if (ovRes.error) throw ovRes.error;
       if (req !== ovReqRef.current) return;
       setOvDay({ key: day, ov: (ovRes.data as unknown as DayOverride) || null });
-      setOvFailed(false);
+      setOvFailedKey(null);
     } catch {
       if (req !== ovReqRef.current) return;
-      setOvDay(null); setOvFailed(true);
+      setOvDay(null); setOvFailedKey(day);
     } finally {
       if (req === ovReqRef.current) setOvLoading(false);
     }
@@ -261,10 +267,13 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
      людині довелось би повертатись на дошку і тягнути заново. */
   const [moving, setMoving] = useState<DragEntry | null>(move?.entry ?? null);
   const extId = move?.entry?.id ?? null;
-  useEffect(() => { if (move?.entry) setMoving(move.entry); }, [extId]); // eslint-disable-line react-hooks/exhaustive-deps
-  /* Запис «з дошки» стоїть окремим чипом, поки він у руках: зі списку записів
-     дня його при цьому прибираємо, щоб не було двох чипів на один запис. */
-  const parked = !!moving && !!extId && moving.id === extId;
+  /* Запис «з дошки» стоїть окремим чипом, поки він у руках З ДОШКИ: зі списку
+     записів дня його при цьому прибираємо, щоб не було двох чипів на один
+     запис. «Відкласти» знімає позначку — узятий потім зі списку, він уже
+     звичайний чип (ревʼю с81 р2). */
+  const [parkedId, setParkedId] = useState<string | null>(move?.entry?.id ?? null);
+  useEffect(() => { if (move?.entry) { setMoving(move.entry); setParkedId(move.entry.id); } }, [extId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const parked = !!moving && !!parkedId && moving.id === parkedId;
   const [saving, setSaving] = useState(false);
   const [moveErr, setMoveErr] = useState<string | null>(null);
   const [moveDone, setMoveDone] = useState<string | null>(null);
@@ -315,24 +324,34 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
   /* Читаємо ПІСЛЯ першої відповіді зайнятості (а не на маунті і ще раз на
      першому відбитку спанів — два однакові запити при відкритті, ревʼю с81 р1). */
   useEffect(() => { if (loading) return; loadDayEntries(); }, [loadDayEntries, spansKey, loading]);
-  /* Запис, узятий чипом, зник із дня (хтось переніс/скасував, або він уже
-     перенесений звідси) — з рук його відпускаємо. Принесений із дошки лишається:
-     він законно може бути з іншого дня. */
+  /* Запис, узятий чипом, зник зі СВОГО дня і кабінету (хтось переніс/скасував)
+     — з рук його відпускаємо і кажемо про це. Лише коли завантажений список —
+     той, що ЗОБОВʼЯЗАНИЙ його містити: узятий чип законно переносять на інший
+     день у полі «Дата», і список чужої доби його не має (ревʼю с81 р2). Запис
+     із дошки не чіпаємо взагалі. */
   useEffect(() => {
     if (!moving || parked || !dayEntriesLoaded || dayEntriesErr) return;
-    if (!dayEntries.some((e) => e.id === moving.id)) setMoving(null);
-  }, [moving, parked, dayEntries, dayEntriesLoaded, dayEntriesErr]);
+    if (moving.room_id !== roomId || moving.scheduled_date !== day) return;
+    if (!dayEntries.some((e) => e.id === moving.id)) {
+      setMoving(null);
+      setMoveErr((m) => m ?? "Запис, який ви взяли, уже змінено або перенесено — список дня оновлено");
+    }
+  }, [moving, parked, dayEntries, dayEntriesLoaded, dayEntriesErr, roomId, day]);
 
   const roomOfMoving = moving ? rooms.find((r) => r.id === moving.room_id) : null;
   /* Слот, обраний кліком, лишається ціллю, лише поки даним можна вірити І він
      досі вільний — дзеркало `valid`/`stillFree` у RescheduleModal (ревʼю с81 р1):
      інакше «✓ Перенести» вело б на сервер по застарілій сітці. */
-  const pendingOk = !!pending && dropMode && ds.trusted && ds.stateOf(pending) === "free";
+  const pendingHere = !!pending && pending.roomId === roomId && pending.day === day;
+  const pendingOk = pendingHere && !!pending && dropMode && ds.trusted && ds.stateOf(pending.slot) === "free";
   useEffect(() => {
     if (!pending || pendingOk || saving) return;
-    setPending(null);
-    setMoveErr("Слот щойно зайняли або дані про день оновились — оберіть слот заново");
-  }, [pending, pendingOk, saving]);
+    setPendingRaw(null);
+    /* Інший зріз (день/кабінет змінили, запис відпустили) — гасимо мовчки; той
+       самий зріз, а слот уже не вільний — кажемо, не перекриваючи точнішого
+       тексту сервера, якщо він уже є. */
+    if (pendingHere && moving) setMoveErr((m) => m ?? "Слот щойно зайняли або дані про день оновились — оберіть слот заново");
+  }, [pending, pendingOk, pendingHere, moving, saving]);
   async function doMove(entry: DragEntry, time: string) {
     if (!move || saving) return;
     const target: DropTarget = { roomId, dateKey: day, time };
@@ -357,7 +376,7 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
   }
   const pickEntry = (e: DragEntry) => {
     if (saving) return;
-    setMoveErr(null); setMoveDone(null); setPending(null); setSelectedSlot("");
+    setMoveErr(null); setMoveDone(null); setPending(null); setSelectedSlot(""); setParkedId(null);
     setMoving((m) => (m?.id === e.id ? null : e));
   };
   /* Чип — `div role="button"`, а не `<button>`: старт перетягування з кнопок
@@ -372,6 +391,7 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
       ev.dataTransfer.setData(DRAG_MIME, e.id);
       ev.dataTransfer.effectAllowed = "move";
       setMoveErr(null); setMoveDone(null); setPending(null); setMoving(e);
+      if (e.id !== parkedId) setParkedId(null);
     },
   });
   /* Зовнішнє перетягування ще триває (рядок дошки над картою) — підказка інша:
@@ -400,7 +420,7 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
                 <button key={r.id} type="button" className={"bd-room" + (r.id === roomId ? " active" : "")} aria-pressed={r.id === roomId}
                   onClick={() => { setRoomId(r.id); setSelectedSlot(""); setMoveErr(null); }} title={r.apparatus_model ? `${r.name} · ${r.apparatus_model}` : r.name}>
                   <span className={"bd-room-kind " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
-                  <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
+                  <span className="bd-room-meta"><span className="bd-room-name">{r.name}{!isRoomBookable(r) ? " · " + ROOM_OFF_LABEL : ""}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
                 </button>
               ))}
             </div>
@@ -520,7 +540,7 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
                     {ds.loading ? "⏳ Перевіряємо, куди вміщується запис…" : "⚠ " + (ds.missText ?? "Дані про день не завантажились") + ` — перенести звідси не можна. Скористайтесь ${reschedBtn}.`}
                   </div>
                 ) : dropMode && moving ? (
-                  <SlotPicker slots={ds.slots} stateOf={ds.stateOf} value={pending || ""} onChange={(s) => { setPending(s); setMoveErr(null); setMoveDone(null); }} titleOf={ds.titleOf}
+                  <SlotPicker slots={ds.slots} stateOf={ds.stateOf} value={pendingHere && pending ? pending.slot : ""} onChange={(s) => { setPending(s); setMoveErr(null); setMoveDone(null); }} titleOf={ds.titleOf}
                     freeStates={["free"]} spanMin={ds.durMin} bufferMin={ds.bufferMin} dropActive={dropMode} onDropSlot={(s) => { void doMove(moving, s); }} />
                 ) : (
                   <SlotPicker slots={slots} stateOf={stateOf} value={selectedSlot} onChange={setSelectedSlot} titleOf={titleOf} freeStates={["free"]} />
@@ -542,8 +562,8 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
                   disabled викидає фокус у <body> (правило проєкту, lib/useModalA11y). */}
               {moving && pending && pendingOk && (
                 <div className="ctx-hint blue dd-confirm" style={{ marginTop: 10 }}>
-                  <span>Перенести <b>{movingLabel}</b> на <b>{fmtShort(dayOfKey(day))} {pending}</b>{room ? ` · ${room.name}` : ""}?</span>
-                  <button type="button" className="btn btn-primary btn-sm" aria-disabled={saving} aria-busy={saving} onClick={() => { if (!saving) void doMove(moving, pending); }}>{saving ? <><span className="rf-spin" aria-hidden="true" /> Переносимо…</> : "✓ Перенести"}</button>
+                  <span>Перенести <b>{movingLabel}</b> на <b>{fmtShort(dayOfKey(day))} {pending.slot}</b>{room ? ` · ${room.name}` : ""}?</span>
+                  <button type="button" className="btn btn-primary btn-sm" aria-disabled={saving} aria-busy={saving} onClick={() => { if (!saving) void doMove(moving, pending.slot); }}>{saving ? <><span className="rf-spin" aria-hidden="true" /> Переносимо…</> : "✓ Перенести"}</button>
                   <button type="button" className="btn btn-ghost btn-sm" aria-disabled={saving} onClick={() => { if (!saving) setPending(null); }}>Скасувати</button>
                 </div>
               )}
