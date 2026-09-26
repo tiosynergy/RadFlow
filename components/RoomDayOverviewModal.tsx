@@ -1,19 +1,24 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import SlotPicker from "@/components/SlotPicker";
 import { useModalA11y } from "@/lib/useModalA11y";
 import { useRoomBusy, busyAt, busyTooltip } from "@/lib/slotBusy";
 import { buildSlots, slotToMin } from "@/lib/slots";
-import { inBreak, overrideOn, roomBreaksFromFeed, roomScheduleFromFeed, dateKeyOf, type OverrideFeed } from "@/lib/schedule";
+import { inBreak, overrideOn, overrideFeed, roomBreaksFromFeed, roomScheduleFromFeed, dateKeyOf, type OverrideFeed, type DayOverride } from "@/lib/schedule";
 import { incidentEffectiveEnd, roomIncidentsOf, wallNow, wallToday0, wallMinOfDay, type IncidentLike, type IncidentFeed } from "@/lib/incidents";
 import { useFollowTodayKey, dayOfKey, dayShiftNoticeOf, dayShiftNoticeVerdict, type DayShiftNotice } from "@/lib/useFollowToday";
+import { useScheduleRefetch } from "@/lib/useScheduleRefetch";
+import { useDropSlots } from "@/lib/useDropSlots";
+import { createClient } from "@/lib/supabase/client";
+import { DRAG_MIME, dragStatusesFor, dragChipLabel, isNoopDrop, type DragEntry, type DragRole, type DropTarget } from "@/lib/dragMove";
 /* Формат дати — ТОЙ САМИЙ, що в банерах форм запису (`fmtShort`, «1 вересня»).
    Карта дня оголошена дзеркалом форми, тож і про перенесення вона мусить
    говорити тими самими словами; своя копія форматера розійшлася б із ними
    мовчки, як уже розходились три інші дублі правил у цьому проєкті. */
 import { fmtShort } from "@/components/BookingModal";
 import { modalityShort, modalityKind } from "@/lib/studies";
+import type { QueueStatus } from "@/supabase/types";
 
 type Room = {
   id: string;
@@ -24,15 +29,45 @@ type Room = {
 };
 type RoomIncident = IncidentLike & { reason_label?: string | null };
 
+/* с81: режим переносу. Карта дня перестає бути лише читанням — у ній можна
+   взяти запис (чип «Записи дня» або запис, принесений із дошки перетягуванням)
+   і покласти на вільний слот ТОГО САМОГО кабінету. Хто саме може переносити,
+   вирішує батько (він і передає `move`): дошка черги — admin/registrar,
+   портал — направник із активним грантом. Сервер перевіряє все ще раз. */
+export type MoveProps = {
+  role: DragRole;
+  /** Запис, узятий на дошці: зовнішнє перетягування або кидок на день календаря. */
+  entry?: DragEntry | null;
+  /** Зовнішнє перетягування ще триває (сітка приймає кидок із дошки). */
+  dragActive?: boolean;
+  /** Повертає ТЕКСТ помилки або null (успіх) — як `onConfirm` у RescheduleModal. */
+  onMove: (entry: DragEntry, target: DropTarget) => Promise<string | null>;
+  /** Після успішного переносу — батько оновлює дошку і вирішує, чи закривати вікно. */
+  onMoved?: (entry: DragEntry, target: DropTarget) => void;
+};
+
 type Props = {
   rooms: Room[];
   /** ⚠️ U-65: потрібен НЕ для запитів, а для ФІЛЬТРА realtime-підписки —
    *  `clinic_id=eq.` на `queue_entries` (див. `lib/slotBusy.ts`). Без нього
    *  підписки не буде зовсім: краще без realtime, ніж крос-тенантний оракул. */
   clinicId: string | null | undefined;
-  clinicTz: string;
+  /* с81: необовʼязкова — портал направника передає зону ОБРАНОГО центру
+     (мультицентровий екран; singleton там не виставляється), як і решта його
+     модалок; без значення — singleton дошки персоналу. */
+  clinicTz?: string;
   incidents: IncidentFeed<RoomIncident>;   // U-11: фід (rows+failed), не голий масив
-  overrides: OverrideFeed;                 // U-16: фід (мапа+failed), не гола мапа
+  /* U-16: фід (мапа+failed), не гола мапа. Персонал передає ВСЮ мапу центру
+     (дошка читає `schedule_overrides` таблицею — `sched_staff_read`).
+     с81: направник таблицю не читає (RF-03, 0183) — для нього карта дня читає
+     день сама через RPC `sched_override_read`: викликач каже це літералом
+     `"rpc"`. Проп лишається ОБОВʼЯЗКОВИМ (U-16: повноту викликів перелічує
+     tsc), і третього значення немає — фід або RPC. */
+  overrides: OverrideFeed | "rpc";
+  /** с81: з якого дня і кабінету відкрити (кидок на день календаря; запис із дошки). */
+  initialDay?: string | null;
+  initialRoomId?: string | null;
+  move?: MoveProps;
   onClose: () => void;
 };
 
@@ -47,15 +82,22 @@ const dateFromKey = (v: string) => {
   return new Date(y || 1970, (m || 1) - 1, d || 1);
 };
 /**
- * Read-only карта дня для администратора. Она намеренно использует те же
- * room_busy_slots + SlotPicker, что и перенос: визуальный ответ на вопрос
- * «кабинет свободен?» не должен расходиться с формой записи.
+ * Карта дня для адміністратора (з с81 — і для реєстратора та направника). Вона
+ * намеренно використовує ті самі room_busy_slots + SlotPicker, що й перенос:
+ * візуальна відповідь на питання «кабінет вільний?» не має розходитись із
+ * формою запису. У режимі `move` тут ще й переносять — див. `MoveProps`.
  */
-export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incidents, overrides, onClose }: Props) {
+export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incidents, overrides, initialDay = null, initialRoomId = null, move, onClose }: Props) {
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
-  const [roomId, setRoomId] = useState(() => rooms[0]?.id || "");
-  const [day, setDay] = useState(() => dateKey(wallToday0(clinicTz)));
+  const overridesByRpc = overrides === "rpc";
+  const [roomId, setRoomId] = useState(() => (initialRoomId && rooms.some((r) => r.id === initialRoomId) ? initialRoomId : rooms[0]?.id || ""));
+  const [day, setDay] = useState(() => initialDay || dateKey(wallToday0(clinicTz)));
   const [selectedSlot, setSelectedSlot] = useState("");
+  /* с81: слот, обраний КЛІКОМ у режимі переносу, — чекає підтвердження. Гасне з
+     будь-якою зміною дня чи кабінету (ефект нижче), включно з поправкою
+     годинника через північ: «перенести на 09:00?» про ЧУЖУ добу — та сама вада,
+     що й обраний слот, лише з кнопкою «Так» поруч. */
+  const [pending, setPending] = useState<string | null>(null);
   /* ⚠️ U-72. `day` зафіксовано ініціалізатором, а `isToday` нижче рахується
      живим `wallToday0`. Після поправки годинника через північ вони розходяться,
      `isToday` стає хибним — і з `stateOf` зникає гілка «час уже минув»: карта
@@ -76,21 +118,68 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
   /* ⚠️ Г1-G (с53): стан у КЛЮЧАХ доби, а рукописна пара умов замінена спільним
      правилом із `lib/useFollowToday.ts` — своя копія була і тут. */
   const [dayShifted, setDayShifted] = useState<DayShiftNotice | null>(null);
-  useFollowTodayKey({ clinicTz, value: day, setKey: setDay,
-    onShift: (d, prev) => { setSelectedSlot(""); setDayShifted((s) => dayShiftNoticeOf(s, prev, d)); } });
+  /* с81: кидок на день календаря відкриває карту одразу на ОБРАНОМУ дні
+     (`initialDay`). `pinnedKey` для нього НЕ ставимо свідомо (урок F3, с55:
+     пін на навігаційній даті глушить правило рівно на «сьогодні»): чужу дату
+     правило й так не чіпає (`derivedFromToday`), а якщо кинули на «сьогодні» і
+     поправка годинника перейшла північ — карта переставиться і СКАЖЕ про це
+     банером нижче, скинувши обраний слот і очікуване підтвердження. */
+  useFollowTodayKey({ clinicTz, value: day, setKey: setDay, onShift: (d, prev) => { setSelectedSlot(""); setDayShifted((s) => dayShiftNoticeOf(s, prev, d)); } });
   /* ⚠️ Г1-G: ОДИН вердикт на банер — другий екземпляр умови розійшовся б мовчки.
      ТРИЗНАЧНИЙ (ревʼю А по Г1-G): «туди-назад» — не тиша, `setSelectedSlot("")`
      відпрацював двічі. До Г1-G тут стояло «і це видно» — не аргумент: порожнє
      поле без причини і є та сама тиха вада навиворіт. */
   const dayShiftSay = dayShiftNoticeVerdict(dayShifted, day);
 
+  useEffect(() => { setPending(null); }, [day, roomId]);
+
   const room = rooms.find((r) => r.id === roomId) || null;
   const date = useMemo(() => dateFromKey(day), [day]);
+
+  /* ===== с81: особливі графіки для направника — по днях, через RPC (RF-03) =====
+     Той самий читач і той самий гейт, що в `RescheduleModal.loadSched`:
+     помилку RPC піднімаємо (PostgREST не кидає — U-3), відповідь чужого дня
+     відкидає лічильник поколінь, збій обнуляє прочитане і піднімає `failed`
+     (фід ↔ `overridesFailed` нижче). Живі оновлення — `useScheduleRefetch`
+     (для направника фактично лише тик на 30 с: подій по `schedule_overrides`
+     він не отримує; сказано в самому хуку). */
+  const [ovDay, setOvDay] = useState<{ key: string; ov: DayOverride | null } | null>(null);
+  const [ovFailed, setOvFailed] = useState(false);
+  const [ovLoading, setOvLoading] = useState(overridesByRpc);
+  const ovReqRef = useRef(0);
+  const loadOv = useCallback(async () => {
+    if (!overridesByRpc) return;
+    const req = ++ovReqRef.current;
+    try {
+      if (!clinicId) throw new Error("no clinic");
+      const supabase = createClient();
+      const ovRes = await supabase.rpc("sched_override_read", { p_clinic: clinicId, p_date: day }).maybeSingle();
+      if (ovRes.error) throw ovRes.error;
+      if (req !== ovReqRef.current) return;
+      setOvDay({ key: day, ov: (ovRes.data as unknown as DayOverride) || null });
+      setOvFailed(false);
+    } catch {
+      if (req !== ovReqRef.current) return;
+      setOvDay(null); setOvFailed(true);
+    } finally {
+      if (req === ovReqRef.current) setOvLoading(false);
+    }
+  }, [overridesByRpc, clinicId, day]);
+  useEffect(() => { if (overridesByRpc) { setOvLoading(true); loadOv(); } }, [overridesByRpc, loadOv]);
+  useScheduleRefetch({ clinicId, dateStr: day, roomId, scope: "overview", onChange: loadOv, enabled: overridesByRpc });
+  /* Фід для решти екрана: персоналу — проп, направнику — прочитаний день.
+     Ще не прочитаний день = невідомість (`failed`), не порожнеча — інакше
+     кадр до відповіді малював би закритий день робочим. */
+  const rpcFeed: OverrideFeed = ovDay && ovDay.key === day && !ovFailed
+    ? overrideFeed({ ...(ovDay.ov ? { [day]: ovDay.ov } : {}) }, false)
+    : overrideFeed(null, true);
+  const ovFeed: OverrideFeed = overridesByRpc ? rpcFeed : (overrides as OverrideFeed);
+
   /* U-16: `null` = особливі графіки дня не прочитались. Порожня мапа на місці
      збою означала б «особливих днів немає», і день, закритий ЛИШЕ через
      override, малювався б повною сіткою вільних слотів — на екрані, який
      МУСИТЬ збігатися з формою запису. Той самий клас, що U-11, інший канал. */
-  const schedule = roomScheduleFromFeed(date, roomId, overrides, room?.schedule ?? null);
+  const schedule = roomScheduleFromFeed(date, roomId, ovFeed, room?.schedule ?? null);
   const overridesFailed = schedule === null;
   /* ⚠️ `|| []` тут — ЄДИНЕ місце в пакеті, де невідомість стає порожнечею, і
      безпечне воно лише композиційно: при `overridesFailed` гілка-банер нижче
@@ -98,7 +187,7 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
      («невідомо → blocked»). Тобто ні `inBreak`, ні `breaks.map`, ні
      `breaks.length` до цього масиву не доходять. Виносиш розрахунок сітки
      з-під тієї гілки — спершу поверни сюди `null` (ревʼю р1 F4 / р2 F7). */
-  const breaks = roomBreaksFromFeed(date, roomId, room?.schedule ?? null, overrides) || [];
+  const breaks = roomBreaksFromFeed(date, roomId, room?.schedule ?? null, ovFeed) || [];
   const { spans, loading, error, reload } = useRoomBusy({ roomId, dateStr: day, clinicId, enabled: !!roomId });
   /* Примітиви в депсах: сам `schedule` — новий обʼєкт на кожен рендер.
      Невідомий графік дає порожню сітку так само, як зачинений день: показувати
@@ -160,6 +249,99 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
 
   const occupiedMin = spans.reduce((sum, s) => sum + (s.e - s.s), 0);
 
+  /* ===== с81: режим переносу ===== */
+  const canMove = !!move;
+  /* Запис «у руках»: принесений із дошки (проп) або взятий чипом тут. Живе,
+     доки не перенесли, не зняли хрестиком чи не закрили вікно: кінець
+     ЗОВНІШНЬОГО перетягування (кидок мимо цілі) його НЕ знімає — інакше
+     людині довелось би повертатись на дошку і тягнути заново. */
+  const [moving, setMoving] = useState<DragEntry | null>(move?.entry ?? null);
+  const extId = move?.entry?.id ?? null;
+  useEffect(() => { if (move?.entry) setMoving(move.entry); }, [extId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [saving, setSaving] = useState(false);
+  const [moveErr, setMoveErr] = useState<string | null>(null);
+  const [moveDone, setMoveDone] = useState<string | null>(null);
+  /* Ціль — лише кабінет самого запису (межа с81, див. lib/dragMove.ts). */
+  const dropRoomOk = !!moving && moving.room_id === roomId;
+  const ds = useDropSlots({
+    entry: moving, roomId, roomSchedule: room?.schedule ?? null, dateKey: day, clinicId, clinicTz,
+    overridesFeed: ovFeed, incidents, enabled: canMove && dropRoomOk,
+  });
+  const dropMode = canMove && dropRoomOk;
+
+  /* «Записи дня» кабінету — щоб узяти запис прямо тут. Читання під RLS: персонал
+     бачить усі записи центру, направник — лише свої з активним грантом (0204).
+     Помилка читання — не «записів немає» (U-3): чипів тоді немає, є причина.
+     Перечитуємо разом із зайнятістю (відбиток спанів): realtime по
+     `queue_entries` уже веде в `useRoomBusy`, другу підписку не заводимо. */
+  const [dayEntries, setDayEntries] = useState<DragEntry[]>([]);
+  const [dayEntriesErr, setDayEntriesErr] = useState(false);
+  const [dayEntriesLoaded, setDayEntriesLoaded] = useState(false);
+  const deReqRef = useRef(0);
+  const statuses = useMemo(() => dragStatusesFor(move?.role ?? "desk"), [move?.role]);
+  const spansKey = spans.map((s) => s.s + "-" + s.e).join(",");
+  const loadDayEntries = useCallback(async () => {
+    if (!canMove || !roomId) { setDayEntries([]); setDayEntriesLoaded(true); return; }
+    const req = ++deReqRef.current;
+    try {
+      const supabase = createClient();
+      const { data, error: deErr } = await supabase
+        .from("queue_entries")
+        .select("id, room_id, clinic_id, scheduled_date, scheduled_time, duration_min, buffer_time_min, status, patient_name")
+        .eq("room_id", roomId).eq("scheduled_date", day)
+        .in("status", statuses as QueueStatus[])
+        .order("scheduled_time", { ascending: true });
+      if (req !== deReqRef.current) return;
+      if (deErr) { setDayEntriesErr(true); setDayEntriesLoaded(true); return; }
+      setDayEntries((data || []) as DragEntry[]);
+      setDayEntriesErr(false);
+      setDayEntriesLoaded(true);
+    } catch {
+      if (req !== deReqRef.current) return;
+      setDayEntriesErr(true); setDayEntriesLoaded(true);
+    }
+  }, [canMove, roomId, day, statuses]);
+  useEffect(() => { deReqRef.current++; setDayEntriesLoaded(false); setDayEntries([]); }, [roomId, day]);
+  useEffect(() => { loadDayEntries(); }, [loadDayEntries, spansKey]);
+
+  const roomOfMoving = moving ? rooms.find((r) => r.id === moving.room_id) : null;
+  async function doMove(entry: DragEntry, time: string) {
+    if (!move || saving) return;
+    const target: DropTarget = { roomId, dateKey: day, time };
+    setMoveDone(null);
+    if (!dropRoomOk) { setMoveErr(`Перенести можна лише в межах кабінету ${roomOfMoving?.name || "запису"} — оберіть його вище`); return; }
+    if (isNoopDrop(entry, target)) { setMoveErr("Запис уже стоїть на цьому слоті"); setPending(null); return; }
+    setSaving(true); setMoveErr(null);
+    try {
+      const err = await move.onMove(entry, target);
+      if (err) { setMoveErr(err); return; }
+      setMoving(null); setPending(null); setSelectedSlot("");
+      setMoveDone(`✓ Перенесено на ${fmtShort(dayOfKey(day))} ${time}`);
+      reload(); loadDayEntries();
+      move.onMoved?.(entry, target);
+    } catch {
+      setMoveErr("Не вдалося перенести запис — спробуйте ще раз");
+    } finally {
+      setSaving(false);
+    }
+  }
+  const pickEntry = (e: DragEntry) => {
+    setMoveErr(null); setMoveDone(null); setPending(null); setSelectedSlot("");
+    setMoving((m) => (m?.id === e.id ? null : e));
+  };
+  const chipDrag = (e: DragEntry) => ({
+    draggable: !saving,
+    onDragStart: (ev: DragEvent<HTMLButtonElement>) => {
+      ev.dataTransfer.setData(DRAG_MIME, e.id);
+      ev.dataTransfer.effectAllowed = "move";
+      setMoveErr(null); setMoveDone(null); setPending(null); setMoving(e);
+    },
+  });
+  /* Зовнішнє перетягування ще триває (рядок дошки над картою) — підказка інша:
+     не «натисніть слот», а «відпустіть на слоті». */
+  const extDrag = !!move?.dragActive;
+  const movingLabel = moving ? dragChipLabel(moving) : "";
+
   return (
     <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="dialog fade-in" style={{ maxWidth: 620 }} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Зайнятість кабінету">
@@ -169,15 +351,17 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
         </div>
         <div className="dlg-body">
           <div className="ctx-hint blue" style={{ fontSize: "0.8125rem" }}>
-            Карта дня оновлюється автоматично. Зайнятий час включає дослідження та буфер прибирання.
+            {canMove
+              ? "Карта дня оновлюється автоматично. Щоб перенести запис — перетягніть його на вільний слот або натисніть запис, а потім слот."
+              : "Карта дня оновлюється автоматично. Зайнятий час включає дослідження та буфер прибирання."}
           </div>
 
           <div className="fld" style={{ marginTop: 14 }}>
             <span className="fld-lab">Кабінет</span>
             <div className="bd-rooms">
               {rooms.map((r) => (
-                <button key={r.id} type="button" className={"bd-room" + (r.id === roomId ? " active" : "")}
-                  onClick={() => { setRoomId(r.id); setSelectedSlot(""); }} title={r.apparatus_model ? `${r.name} · ${r.apparatus_model}` : r.name}>
+                <button key={r.id} type="button" className={"bd-room" + (r.id === roomId ? " active" : "")} aria-pressed={r.id === roomId}
+                  onClick={() => { setRoomId(r.id); setSelectedSlot(""); setMoveErr(null); }} title={r.apparatus_model ? `${r.name} · ${r.apparatus_model}` : r.name}>
                   <span className={"bd-room-kind " + modalityKind(r.modality)}>{modalityShort(r.modality)}</span>
                   <span className="bd-room-meta"><span className="bd-room-name">{r.name}</span><span className="bd-room-model">{r.apparatus_model || ""}</span></span>
                 </button>
@@ -229,14 +413,51 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
             </div>
           )}
 
+          {/* с81: записи дня кабінету — щоб узяти запис тут. Чип = кнопка: натиснути
+              (клавіатура, тач) або перетягнути. Принесений із дошки запис стоїть
+              першим і має позначку. */}
+          {canMove && (
+            <div className="fld" style={{ marginTop: 12 }}>
+              <span className="fld-lab">Записи дня · натисніть або перетягніть на вільний слот</span>
+              <div className="dd-chips" aria-busy={saving}>
+                {moving && !dayEntries.some((e) => e.id === moving.id) && (
+                  <button type="button" className="dd-chip active" aria-pressed="true" title="Запис із дошки — у руках"
+                    onClick={() => { setMoving(null); setPending(null); setMoveErr(null); }} {...chipDrag(moving)}>
+                    <span aria-hidden="true">⇅</span>{movingLabel}<span className="dd-tag">з дошки</span>
+                    <span className="rf-vh"> — натисніть, щоб відкласти</span>
+                  </button>
+                )}
+                {dayEntries.map((e) => (
+                  <button key={e.id} type="button" className={"dd-chip" + (moving?.id === e.id ? " active" : "")} aria-pressed={moving?.id === e.id}
+                    title={moving?.id === e.id ? "У руках — оберіть вільний слот або натисніть ще раз, щоб відкласти" : "Узяти запис для переносу"}
+                    onClick={() => pickEntry(e)} {...chipDrag(e)}>
+                    <span aria-hidden="true">⇅</span>{dragChipLabel(e)}
+                  </button>
+                ))}
+                {!dayEntriesLoaded && !dayEntriesErr && <span className="dd-muted" role="status">⏳ Читаємо записи дня…</span>}
+                {dayEntriesErr && <span className="ctx-hint red" style={{ fontSize: "0.75rem" }} role="status">⚠ Не вдалося прочитати записи дня — оновіть сторінку.</span>}
+                {dayEntriesLoaded && !dayEntriesErr && dayEntries.length === 0 && !moving && <span className="dd-muted">Записів, які можна перенести, цього дня немає.</span>}
+              </div>
+              {moving && !dropRoomOk && (
+                <div className="ctx-hint" style={{ fontSize: "0.75rem", marginTop: 6 }} role="status">
+                  ℹ Перетягуванням запис переноситься в межах кабінету <b>{roomOfMoving?.name || "запису"}</b> — оберіть його вище. В інший кабінет — через «🗓 Перенести».
+                </div>
+              )}
+            </div>
+          )}
+
           {/* U-16: гілка невідомості — ПЕРША. Раніше першим стояв `schedule.closed`,
               а він порахований із мапи, якої могло не бути: при збої читання
               екран спокійно казав «не працює» або малював повну сітку вільних
-              слотів. Порядок тут — частина правила, а не оформлення. */}
-          {overridesFailed ? (
+              слотів. Порядок тут — частина правила, а не оформлення.
+              с81: ще раніше — «читаємо день» (направник читає графік RPC): доки
+              відповіді немає, це не збій і не знання. */}
+          {ovLoading ? (
+            <div className="ctx-hint" style={{ padding: "22px 0", textAlign: "center", color: "var(--text-muted)" }}>⏳ Читаємо графік дня…</div>
+          ) : overridesFailed ? (
             <div className="ctx-hint red">⚠ Не вдалося завантажити особливі графіки дня — режим роботи кабінету невідомий. Вільний час не показано. Оновіть сторінку.</div>
           ) : schedule.closed ? (
-            <div className="ctx-hint red">🚫 {room?.name || "Кабінет"} не працює цього дня{overrideOn(overrides, day)?.label ? ` · ${overrideOn(overrides, day)?.label}` : ""}.</div>
+            <div className="ctx-hint red">🚫 {room?.name || "Кабінет"} не працює цього дня{overrideOn(ovFeed, day)?.label ? ` · ${overrideOn(ovFeed, day)?.label}` : ""}.</div>
           ) : (error || incidentsFailed) ? (
             /* U-11: збій простоїв ховає сітку так само, як збій зайнятості —
                інакше карта показала б «вільно» там, де кабінет на ремонті. */
@@ -255,22 +476,46 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
                 {breaks.map((b) => <span className="bk-busy-chip" key={`${b.start}-${b.end}`}>перерва {b.start}–{b.end}</span>)}
               </div>
               <div className="fld" style={{ marginTop: 12 }}>
-                <span className="fld-lab">Сітка дня · крок 5 хв</span>
-                <SlotPicker slots={slots} stateOf={stateOf} value={selectedSlot} onChange={setSelectedSlot} titleOf={titleOf} freeStates={["free"]} />
+                <span className="fld-lab">{dropMode && moving ? `${extDrag ? "Відпустіть на вільному слоті" : "Куди перенести"} · блок ${ds.durMin} хв${ds.bufferMin > 0 ? ` + ${ds.bufferMin} буфер` : ""} · крок 5 хв` : "Сітка дня · крок 5 хв"}</span>
+                {/* с81: із записом «у руках» сітка рахується для НЬОГО (дослідження
+                    + буфер, без самого запису — `p_exclude`), і лише коли цим даним
+                    можна вірити; інакше — звичайна карта і причина поруч. */}
+                {dropMode && moving && !ds.trusted ? (
+                  <div className={"ctx-hint" + (ds.loading ? "" : " red")} style={{ fontSize: "0.78125rem" }} role="status">
+                    {ds.loading ? "⏳ Перевіряємо, куди вміщується запис…" : "⚠ " + (ds.missText ?? "Дані про день не завантажились") + " — перенести звідси не можна. Скористайтесь «🗓 Перенести»."}
+                  </div>
+                ) : dropMode && moving ? (
+                  <SlotPicker slots={ds.slots} stateOf={ds.stateOf} value={pending || ""} onChange={(s) => { setPending(s); setMoveErr(null); setMoveDone(null); }} titleOf={ds.titleOf}
+                    freeStates={["free"]} spanMin={ds.durMin} bufferMin={ds.bufferMin} dropActive={dropMode} onDropSlot={(s) => { void doMove(moving, s); }} />
+                ) : (
+                  <SlotPicker slots={slots} stateOf={stateOf} value={selectedSlot} onChange={setSelectedSlot} titleOf={titleOf} freeStates={["free"]} />
+                )}
               </div>
               <div className="bk-slot-legend">
                 <span><span className="lg-dot free" />вільно</span>
+                {dropMode && moving && <span><span className="lg-dot tight" />не вміщується</span>}
                 <span><span className="lg-dot busy" />дослідження</span>
                 <span><span className="lg-dot busybuf" />буфер</span>
                 {breaks.length > 0 && <span><span className="lg-dot brk" />перерва</span>}
                 {(roomIncidents || []).length > 0 && <span><span className="lg-dot busy" />простій / ТО</span>}
                 {isToday && <span><span className="lg-dot tight" />час минув</span>}
               </div>
-              {selectedSlot && <div className="ctx-hint blue" style={{ marginTop: 10 }}>Обрано {selectedSlot} · {titleOf(selectedSlot, stateOf(selectedSlot))}</div>}
+              {!moving && selectedSlot && <div className="ctx-hint blue" style={{ marginTop: 10 }}>Обрано {selectedSlot} · {titleOf(selectedSlot, stateOf(selectedSlot))}</div>}
+              {/* с81: слот обрано КЛІКОМ — перенос лише за явним «Так». Кидок мишкою
+                  підтвердження не питає: сам кидок і є намір. */}
+              {moving && pending && dropMode && (
+                <div className="info-banner offsched" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }} role="status">
+                  <span className="ib-txt">Перенести <b>{movingLabel}</b> на <b>{fmtShort(dayOfKey(day))} {pending}</b>{room ? ` · ${room.name}` : ""}?</span>
+                  <button type="button" className="btn btn-primary btn-sm" disabled={saving} aria-busy={saving} onClick={() => { void doMove(moving, pending); }}>{saving ? <><span className="rf-spin" aria-hidden="true" /> Переносимо…</> : "✓ Перенести"}</button>
+                  <button type="button" className="btn btn-ghost btn-sm" disabled={saving} onClick={() => setPending(null)}>Скасувати</button>
+                </div>
+              )}
             </>
           )}
+          {moveErr && <div className="dlg-err" role="alert" style={{ marginTop: 10 }}>⚠ {moveErr}</div>}
+          {moveDone && !moveErr && <div className="ctx-hint" role="status" style={{ marginTop: 10, color: "var(--green)" }}>{moveDone}</div>}
         </div>
-        <div className="dlg-foot"><span style={{ fontSize: "0.75rem", color: "var(--text-faint)", marginRight: "auto" }}>Дані оновлюються при зміні черги або інциденту.</span><button className="btn btn-primary" onClick={onClose}>Готово</button></div>
+        <div className="dlg-foot"><span style={{ fontSize: "0.75rem", color: "var(--text-faint)", marginRight: "auto" }}>{canMove ? "Перенос перевіряє сервер: минуле, графік, простої та перетини." : "Дані оновлюються при зміні черги або інциденту."}</span><button className="btn btn-primary" onClick={onClose}>Готово</button></div>
       </div>
     </div>
   );

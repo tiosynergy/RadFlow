@@ -11,7 +11,7 @@
        редагування даних пацієнта (наступні зрізи — дослідження, пріоритет, примітки).
    Захист на рівні БД: міграція 0048 (call_status read-only, status лише scheduled/cancelled). */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type DragEvent, type ReactNode } from "react";
 import UnreadDot from "@/components/UnreadDot";
 import { useUnreadChanges, useAckWhenVisible } from "@/lib/useUnreadChanges";
 import { unreadForEntity } from "@/lib/unreadChanges";
@@ -119,9 +119,23 @@ interface Props {
   initialDate?: string | null;
   /** с22: id направлення, яке розгорнути одразу. */
   initialEntry?: string | null;
+  /* с81: перенос перетягуванням — стан і дії живуть у порталі (там дані центрів,
+     простої і сам перенос), дошка лише малює: рядок береться мишкою, у боковій
+     колонці на час перетягування стоїть док вільних слотів (`dock`), дні
+     календаря приймають наведення (`onOpenDay` → карта дня). `onOpenOverview` —
+     явна кнопка «Зайнятість кабінету» для обраного центру (без перетягування). */
+  drag?: {
+    canDrag: (r: BoardReferral) => boolean;
+    draggingId: string | null;
+    onStart: (r: BoardReferral, e: DragEvent) => void;
+    onEnd: () => void;
+    onOpenDay: (d: Date) => void;
+    dock: ReactNode;
+    onOpenOverview?: (clinicId: string, roomId: string | null) => void;
+  };
 }
 
-export default function ReferrerBoard({ referrals, activeCenters, centersById, roomsByClinic, visRoomsByClinic, doctorId, onReschedule, onEditStudies, onCancel, onEditPatient, onOpenCase, onOrganizeCase, focus, initialDate = null, initialEntry = null }: Props) {
+export default function ReferrerBoard({ referrals, activeCenters, centersById, roomsByClinic, visRoomsByClinic, doctorId, onReschedule, onEditStudies, onCancel, onEditPatient, onOpenCase, onOrganizeCase, focus, initialDate = null, initialEntry = null, drag }: Props) {
   const [centerId, setCenterId] = useState<string>("all"); // "all" = Всі центри
   const [roomId, setRoomId] = useState<string>("all");
   // с22: deep-link «Пошук» → дошка відкривається з фільтром на даті знайденого запису.
@@ -271,12 +285,18 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
               // Направник керує записом у ДВОХ випадках: він автор (created_by)
               // АБО його призначив центр направником запису (referrer_id).
               const owned = r.created_by === doctorId || r.referrer_id === doctorId;
+              /* с81: тягнути можна лише свій живий запис у центрі з активним
+                 грантом і в кабінеті з гранту — правило в порталі (canDrag). */
+              const dnd = !!drag && drag.canDrag(r);
               return (
-                <div className={"qrow-item " + r.status + (expanded ? " open" : "")} key={r.id}>
+                <div className={"qrow-item " + r.status + (expanded ? " open" : "") + (dnd ? " dnd" : "") + (drag?.draggingId === r.id ? " dragging" : "")} key={r.id}>
                   <div className="qrow qrow-ref" role="button" tabIndex={0} aria-expanded={expanded}
                     onClick={() => setExpandedId((x) => (x === r.id ? null : r.id))}
-                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId((x) => (x === r.id ? null : r.id)); } }}>
-                    <div className="q-time tabular">{r.scheduled_time || "—"}<div className="td">{r.duration_min ? r.duration_min + " хв" : ""}</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{r.scheduled_date}</div></div>
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setExpandedId((x) => (x === r.id ? null : r.id)); } }}
+                    draggable={dnd || undefined}
+                    onDragStart={dnd && drag ? (e) => drag.onStart(r, e) : undefined}
+                    onDragEnd={dnd && drag ? () => drag.onEnd() : undefined}>
+                    <div className="q-time tabular">{dnd && <span className="q-grip" aria-hidden="true" title="Перетягніть на вільний слот або на день у календарі">⠿</span>}{r.scheduled_time || "—"}<div className="td">{r.duration_min ? r.duration_min + " хв" : ""}</div><div className="td" style={{ marginTop: 2, color: "var(--text-muted)" }}>{r.scheduled_date}</div></div>
                     <div className="q-pat">
                       <div className="nm">
                         {r.priority_level && r.priority_level !== "planned" && r.status !== "done" && r.status !== "cancelled" && <span className={"prio-tag " + PRIORITY_META[r.priority_level].tone}>{PRIORITY_META[r.priority_level].short}</span>}
@@ -377,12 +397,21 @@ export default function ReferrerBoard({ referrals, activeCenters, centersById, r
       )}
       </div>
       <aside style={{ position: "sticky", top: 8 }}>
+        {/* с81: док вільних слотів дня запису — лише поки тягнуть рядок. */}
+        {drag?.draggingId ? drag.dock : null}
         <MiniCalendar selectedDate={calDate} onSelectDate={(d) => setDateFilter(dk(d))} highlightSelected={!!dateFilter} tz={calTz}
               /* «Всі центри» → фільтра немає; обраний центр → лише його крапки,
                  інакше крапка чужого центру світилась би тут і не гасла. */
-              clinicId={centerId === "all" ? null : centerId} />
+              clinicId={centerId === "all" ? null : centerId}
+              dragActive={!!drag?.draggingId} onDragOpenDay={drag?.onOpenDay} />
         {dateFilter && (
           <button className="btn btn-secondary btn-sm" style={{ width: "100%", marginTop: 8, justifyContent: "center" }} onClick={() => setDateFilter("")}>Всі дати</button>
+        )}
+        {/* с81: карта дня центру — без перетягування: обрати запис чипом і слот
+            кліком. Лише для обраного АКТИВНОГО центру з кабінетами в гранті. */}
+        {drag?.onOpenOverview && centerId !== "all" && centersById[centerId]?.status === "active" && rooms.length > 0 && (
+          <button type="button" className="btn btn-secondary btn-sm" style={{ width: "100%", marginTop: 8, justifyContent: "center" }}
+            onClick={() => drag.onOpenOverview!(centerId, roomId === "all" ? null : roomId)}>◫ Зайнятість кабінету</button>
         )}
       </aside>
     </div>

@@ -2388,3 +2388,37 @@ select.inp { cursor: pointer; }
 .ssb-meta { font-size: 0.71875rem; color: var(--text-faint); }
 .ssb-item.on .ssb-meta { color: var(--text-secondary); }
 .ssb-empty { padding: 8px 10px; font-size: 0.75rem; color: var(--text-faint); }
+
+/* ===== с81: перенос запису перетягуванням (drag-and-drop) =====
+   Рядок дошки береться мишкою (.qrow.dnd), у правій панелі на час перетягування
+   стоїть док вільних слотів (.drag-dock), у карті дня — чипи записів (.dd-chip).
+   Ціль під курсором (.slot.drop-over / .cal-day.drag-over) — ЗЕЛЕНА, як
+   планове вікно (.slot.plan): та сама пара кольорів, що вже пройшла аудит
+   контрасту. Стан «у руках» — рамкою і кольором тексту, не opacity (правило
+   проєкту: opacity не носій стану). */
+.qrow-item.dnd > .qrow { cursor: grab; }
+.qrow-item.dnd > .qrow:active { cursor: grabbing; }
+.q-grip { color: var(--text-faint); font-size: 0.75rem; font-weight: 400; margin-right: 5px; user-select: none; display: inline-block; vertical-align: 1px; }
+.qrow-item.dragging { outline: 2px dashed var(--blue-line); outline-offset: -2px; }
+.drag-dock { border-color: var(--blue-line); }
+.dd-room { display: flex; align-items: center; gap: 6px; font-size: 0.8125rem; margin-bottom: 8px; min-width: 0; }
+.dd-muted { color: var(--text-muted); font-size: 0.75rem; }
+.dd-hint { font-size: 0.75rem; color: var(--text-secondary); margin: 6px 0 8px; }
+.dd-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
+.dd-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 600; color: var(--text);
+  background: var(--card-2); border: 1px solid var(--border-strong); border-radius: 8px; padding: 4px 9px; cursor: grab;
+  font-family: inherit; font-variant-numeric: tabular-nums; line-height: 1.3; text-align: left; }
+.dd-chip:hover { border-color: var(--text-muted); }
+.dd-chip:active { cursor: grabbing; }
+.dd-chip.active { border-color: var(--blue-line); box-shadow: inset 0 0 0 1px var(--blue-line); color: var(--blue-text); }
+.dd-chip[aria-busy="true"], .dd-chips[aria-busy="true"] .dd-chip { cursor: progress; }
+.dd-tag { font-size: 0.625rem; font-weight: 700; color: var(--blue-text); border: 1px solid var(--blue-line); border-radius: 5px; padding: 0 5px; }
+/* Сітка в режимі кидка: вільні комірки — з зеленим внутрішнім кільцем (є куди
+   кинути), комірка під курсором — зеленою заливкою планового вікна. */
+.slot-picker.drop-mode .slot:not(.taken) { box-shadow: inset 0 0 0 1px rgba(48, 209, 88, 0.55); }
+.slot.drop-over { border-color: var(--green) !important; background: rgba(48, 209, 88, 0.28) !important; color: #eafff0 !important; }
+/* Календар під час перетягування: дні-цілі окреслено, день під курсором — зелений. */
+.bk-cal.drag-target .cal-day:not(.empty-day) { box-shadow: inset 0 0 0 1px var(--border-strong); }
+.bk-cal.drag-target .cal-day.today { box-shadow: inset 0 0 0 1px var(--blue-line); }
+.cal-day.drag-over { box-shadow: inset 0 0 0 2px var(--green) !important; }
+.cal-drag-hint { font-size: 0.71875rem; color: var(--text-secondary); margin: -4px 0 8px; }
