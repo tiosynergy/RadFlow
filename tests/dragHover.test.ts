@@ -48,6 +48,14 @@ describe("наведення на день", () => {
     expect(log).toEqual(["A", "A"]);       // вихід і повернення заводять заново
   });
 
+  it("повторний enter тієї ж цілі (дочірній елемент без pointer-events) НЕ перезаводить таймер", () => {
+    const t = fakeTimers(); const log: string[] = [];
+    const a = createHoverArmer(t.timers);
+    a.enter("A", target(log, "A")); t.tick(500);
+    a.enter("A", target(log, "A"));        // dragenter на дитині спливає на ту ж ціль
+    t.tick(100); expect(log).toEqual(["A"]); // 600 від ПЕРШОГО входу, а не від другого
+  });
+
   it("Blink/WebKit: enter(B) → leave(A) → over(B) — таймер B ЖИВЕ", () => {
     const t = fakeTimers(); const log: string[] = [];
     const a = createHoverArmer(t.timers);

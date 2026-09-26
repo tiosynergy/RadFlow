@@ -374,9 +374,13 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
       setSaving(false);
     }
   }
+  /* Позначку «з дошки» знімає лише клік по САМОМУ паркованому чипу («відкласти»);
+     вибір іншого чипа її не чіпає — інакше запис із чужого дня зник би з чипів
+     мовчки (ревʼю с81 р3). */
   const pickEntry = (e: DragEntry) => {
     if (saving) return;
-    setMoveErr(null); setMoveDone(null); setPending(null); setSelectedSlot(""); setParkedId(null);
+    setMoveErr(null); setMoveDone(null); setPending(null); setSelectedSlot("");
+    if (e.id === parkedId) setParkedId(null);
     setMoving((m) => (m?.id === e.id ? null : e));
   };
   /* Чип — `div role="button"`, а не `<button>`: старт перетягування з кнопок
@@ -391,7 +395,6 @@ export default function RoomDayOverviewModal({ rooms, clinicId, clinicTz, incide
       ev.dataTransfer.setData(DRAG_MIME, e.id);
       ev.dataTransfer.effectAllowed = "move";
       setMoveErr(null); setMoveDone(null); setPending(null); setMoving(e);
-      if (e.id !== parkedId) setParkedId(null);
     },
   });
   /* Зовнішнє перетягування ще триває (рядок дошки над картою) — підказка інша:
