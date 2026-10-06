@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "@/supabase/types";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
+import { createClient } from "@/lib/supabase/server";
 import { clientIp, rateLimitOk } from "@/lib/rateLimit";
 import { parseBody } from "@/lib/validationHttp";
 import { safeDbError, zPassword } from "@/lib/validation";
 import { inviteState } from "@/lib/inviteTtl";
+import { logError } from "@/lib/serverLog";
 
 const INVALID = "Посилання недійсне або вже використане. Зверніться до адміністратора.";
 /* RF-02 (пакет 43): протухле посилання відрізняємо від недійсного НАВМИСНО.
@@ -135,5 +139,75 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: safeDbError("api/account/set-password", uErr) }, { status: 400 });
   }
 
-  return NextResponse.json({ ok: true });
+  /* с82: пароль задано — людина вже довела володіння акаунтом (одноразовий токен)
+     і щойно ввела пароль. Просити її ввести логін і цей самий пароль ще раз на
+     /login — зайвий крок, який ми прибираємо: відкриваємо сесію тут же. Поруч —
+     контекст для привітання (роль, центр, скільки кабінетів/центрів відкрито),
+     щоб екран пояснив, куди людина потрапила. Усе це — best-effort: пароль уже
+     стоїть, і жодний збій нижче не має перетворити успіх на 4xx. */
+  const welcome = await welcomeAfterSetPassword(admin, claimed.id as string, password);
+  return NextResponse.json({ ok: true, ...welcome });
+}
+
+/* ---------- Автовхід і контекст привітання (с82) ---------- */
+
+type WelcomePayload = {
+  /** Сесію відкрито в cookie відповіді — клієнт може йти на стартовий екран ролі. */
+  signedIn: boolean;
+  role: string | null;
+  full_name: string | null;
+  /** Центр персоналу (registrar/radiologist/admin); у глобальних ролей — null. */
+  clinic_name: string | null;
+  /** Радіолог: кабінетів призначено. null — не рахували / не вдалося. */
+  rooms_count: number | null;
+  /** Направник / керівник: центрів з активним доступом. null — не рахували / не вдалося. */
+  centers_count: number | null;
+};
+
+/* ⚠️ Клієнт НЕ отримує звідси шлях редіректу — лише роль; шлях він обчислює сам
+   (lib/quickStart.startPathForRole). Так у відповіді немає значення, яке можна
+   було б підставити під редірект. */
+async function welcomeAfterSetPassword(admin: SupabaseClient<Database>, userId: string, password: string): Promise<WelcomePayload> {
+  const out: WelcomePayload = { signedIn: false, role: null, full_name: null, clinic_name: null, rooms_count: null, centers_count: null };
+  try {
+    const { data: prof } = await admin
+      .from("profiles")
+      .select("role, full_name, clinic_id, clinics(name)")
+      .eq("id", userId)
+      .maybeSingle();
+    if (prof) {
+      out.role = prof.role;
+      out.full_name = prof.full_name ?? null;
+      const clinic = (Array.isArray(prof.clinics) ? prof.clinics[0] : prof.clinics) as { name?: string | null } | null | undefined;
+      out.clinic_name = clinic?.name ?? null;
+      /* Лічильники — `head: true`, рядки не читаємо: екрану потрібне лише число. */
+      if (prof.role === "radiologist") {
+        const { count } = await admin.from("radiologist_rooms").select("id", { count: "exact", head: true }).eq("profile_id", userId);
+        out.rooms_count = count ?? null;
+      } else if (prof.role === "referrer") {
+        const { count } = await admin.from("referral_access").select("id", { count: "exact", head: true }).eq("referrer_id", userId).eq("status", "active");
+        out.centers_count = count ?? null;
+      } else if (prof.role === "ceo") {
+        const { count } = await admin.from("ceo_access").select("id", { count: "exact", head: true }).eq("ceo_id", userId).eq("status", "active");
+        out.centers_count = count ?? null;
+      }
+    }
+
+    /* Адреса входу — з auth.users (єдине джерело істини для signInWithPassword;
+       у радіолога вона службова й випадкова, profiles.email — лише копія).
+       Сесію відкриває КЛІЄНТ СЕСІЇ (cookie), а не service-role: cookie лягають у
+       відповідь цього ж Route Handler, як після звичайного /api/auth/login. */
+    const { data: au } = await admin.auth.admin.getUserById(userId);
+    const email = au?.user?.email;
+    if (email) {
+      const session = await createClient();
+      const { error: sErr } = await session.auth.signInWithPassword({ email, password });
+      out.signedIn = !sErr;
+      if (sErr) logError({ event: "set_password.autologin_failed", actorId: userId, errorCode: "sign_in", message: sErr.message });
+    }
+  } catch (e) {
+    /* Пароль уже стоїть — збій тут не перетворюємо на помилку, лише лишаємо слід. */
+    logError({ event: "set_password.welcome_failed", actorId: userId, errorCode: "welcome", message: (e as { message?: string })?.message ?? String(e) });
+  }
+  return out;
 }

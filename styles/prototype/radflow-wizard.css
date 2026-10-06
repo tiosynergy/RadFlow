@@ -350,3 +350,50 @@
   .invite-role { flex: 1 1 100%; }
   .equip-info .equip-type { flex: 1 1 100%; }
 }
+
+/* ===================================================================
+   Швидкий старт (с82): /setup для центру без configured_at —
+   три кроки «Центр → Кабінети → Готово» замість хаба з девʼяти секцій.
+   Класи .wstep, .wiz-prog-bar, .check-list, .golive — з прототипу майстра,
+   тут лише те, чого там не було. (Без «*» у назвах: зірочка з косою рискою
+   закриває коментар — рівно так перший варіант цього блоку зʼїв сам себе.)
+   =================================================================== */
+/* Кроки — <ol>: маркери списку не потрібні, крок сам несе номер у .wstep-num. */
+.qs-steps { list-style: none; margin: 0; }
+/* Крок у швидкому старті — не кнопка цілком (назад веде лише назва завершеного
+   кроку), тож курсор і ховер успадкованого .wstep тут хибні. */
+.qs-step { cursor: default; }
+.qs-step:hover { background: none; }
+/* Назва завершеного кроку — кнопка «назад»; виглядає як текст, але це посилання. */
+.qs-step-btn { background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+.qs-step-btn:hover { color: var(--blue-text); text-decoration-color: currentColor; }
+/* Заголовок кроку отримує програмний фокус (tabIndex -1) — кільце тут зайве:
+   фокус не для дії, а для оголошення; 2.4.7 стосується фокусованих елементів
+   керування, якими заголовок не є. */
+.qs-h:focus { outline: none; }
+.qs-h:focus-visible { outline: none; }
+/* Часовий пояс згорнуто: значення + «Змінити» в одному рядку, як поле. */
+.qs-tz { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 2.5rem; padding: 0 0 0 12px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--r-md); }
+.qs-tz-val { font-size: 0.875rem; color: var(--text-secondary); }
+.qs-tz-val b { color: var(--text); font-weight: 600; }
+/* Підказка «Залишилось: …» біля кнопки «Далі»/«Запустити». */
+.qs-missing { margin: 0; text-align: right; max-width: 24rem; }
+.qs-signout { margin-top: 12px; display: flex; justify-content: flex-end; }
+/* Чеклист «Готово»: пункти-посилання в хаб — як картки, без підкреслення. */
+.qs-check-list { margin-top: 22px; }
+.qs-check-link { text-decoration: none; color: inherit; }
+.qs-check-link:hover { border-color: var(--border-strong); background: var(--card-hover); }
+.qs-check-link .check-title { color: var(--blue-text); }
+.qs-done-actions { display: flex; justify-content: center; gap: 10px; margin-top: 26px; }
+/* Ракета гойдається — але не для тих, хто просив менше руху (2.3.3). */
+@media (prefers-reduced-motion: reduce) {
+  .rocket { animation: none; }
+  .wiz-prog-fill { transition: none; }
+}
+/* Рядок кнопок переноситься: на вузькому екрані підказка стає окремим рядком
+   над кнопкою, а не ховається — вимкнена кнопка без пояснення читається як зламана. */
+.qs-bar-right { flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 480px) {
+  .qs-missing { flex: 1 1 100%; max-width: none; }
+  .qs-done-actions .btn { width: 100%; }
+}

@@ -8,7 +8,7 @@ import { useState, useEffect, useLayoutEffect, useRef, type Dispatch, type SetSt
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { normalizeLogin, isValidLogin, LOGIN_HINT } from "@/lib/login";
-import { canonicalTz, canonicalTzList } from "@/lib/tzCanonical";
+import { canonicalTz, clinicTzOrDefault, isClinicTz, CLINIC_TIMEZONES, DEFAULT_CLINIC_TZ } from "@/lib/tzCanonical";
 import type { Json, TablesInsert, Tables } from "@/supabase/types";
 import CitySelect from "@/components/CitySelect";
 import ServicesEditor from "@/components/ServicesEditor";
@@ -21,6 +21,7 @@ import ConfirmDialog from "@/components/ConfirmDialog";
 import BaseDialog from "@/components/BaseDialog";
 import Toast, { type ToastData } from "@/components/Toast";
 import DangerZone from "@/components/DangerZone";
+import SignOutButton from "@/components/SignOutButton";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
 import { unreadForSurface, type SurfaceKey } from "@/lib/unreadChanges";
@@ -34,6 +35,7 @@ import { MODALITIES, modalityCode } from "@/lib/studies";
 import { wallDayKey } from "@/lib/incidents";
 import { roomDeleteBlockReason } from "@/lib/rooms";
 import { applyAssignedRoomIds, savedSnapshot, dirtyAfterSave } from "@/lib/setupWizard";
+import { QS_STEPS, qsStepIndex, qsProgress, qsCenterMissing, qsRoomsMissing, missingText, sectionFromSearch, type QsStep } from "@/lib/quickStart";
 
 /* Статуси «живого» запису: пацієнт іще чекає на кабінет. needs_reschedule — теж
    живий (запис без слота, реєстратура має передзвонити).
@@ -46,22 +48,17 @@ const OPEN_STATUSES = ["scheduled", "waiting", "in_progress", "needs_reschedule"
    Від неї залежать «Запізнення», «Уточнити», гарди виклику в кабінет і заборона
    запису в минуле (канон wall-as-UTC, міграції 0035/0059). Тому це ЯВНЕ поле, а
    не мовчазний авто-детект браузера при кожному збереженні. */
-function browserTz(): string {
+function browserTzRaw(): string {
   // 0202: старий ICU віддає аліас `Europe/Kiev` — CHECK його більше не пропускає
-  try { return canonicalTz(Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Kyiv"); }
-  catch { return "Europe/Kyiv"; }
+  try { return canonicalTz(Intl.DateTimeFormat().resolvedOptions().timeZone || DEFAULT_CLINIC_TZ); }
+  catch { return DEFAULT_CLINIC_TZ; }
 }
-/** Повний список зон (сучасні рушії) з фолбеком на короткий перелік. */
-function tzList(): string[] {
-  const withValues = Intl as unknown as { supportedValuesOf?: (k: string) => string[] };
-  try {
-    const all = withValues.supportedValuesOf?.("timeZone");
-    if (all && all.length) return canonicalTzList(all);
-  } catch { /* старий рушій — фолбек нижче */ }
-  return ["Europe/Kyiv", "Europe/Warsaw", "Europe/Berlin", "Europe/Prague", "Europe/Vilnius",
-    "Europe/Riga", "Europe/Bucharest", "Europe/Chisinau", "Europe/London", "Europe/Lisbon",
-    "Europe/Madrid", "Europe/Rome", "Europe/Istanbul", "Asia/Tbilisi", "UTC"];
-}
+/** Зона для НОВОГО центру: браузерна, якщо CHECK її приймає, інакше канон ринку
+    (с82: до цього «Europe/Berlin» з VPN ішов у дефолт і падав на записі). */
+function browserTz(): string { return clinicTzOrDefault(browserTzRaw()); }
+/** Список для select — РІВНО те, що приймає CHECK `clinics_timezone_chk` (0202).
+    с82: раніше тут були всі ~400 зон рушія, і кожна, крім двох, падала на записі. */
+function tzList(): string[] { return [...CLINIC_TIMEZONES]; }
 /** «Europe/Kyiv · 15:42» — щоб адмін одразу бачив, чи час центру збігається з реальним. */
 function tzNow(tz: string): string {
   try { return new Intl.DateTimeFormat("uk-UA", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date()); }
@@ -232,9 +229,32 @@ const WIZ_NAV: { label: string; desc: string; anchor?: string; href?: string; su
 ];
 // Секції, що належать майстру первинного налаштування (з кнопкою «Запустити кабінет»).
 const FORM_SECTIONS = ["sec-clinic", "sec-admin", "sec-equip", "sec-price"];
+/* Секції хаба, на які можна прийти глибоким посиланням `/setup?section=…`
+   (чеклист «Готово» швидкого старту, с82). Перелік — з WIZ_NAV, не руками. */
+const SECTION_ANCHORS: readonly string[] = WIZ_NAV.map((s) => s.anchor as string);
+
+/* ---------- Швидкий старт (с82): ті самі поля, інший порядок показу ----------
+   `active` форми у швидкому старті приймає два службові значення: «qs-center»
+   малює профіль центру і адміністратора РАЗОМ (назва, місто, часовий пояс, ПІБ,
+   телефон — усе обовʼязкове на одному екрані), «qs-rooms» — кабінети в компактному
+   вигляді (без перерв, графіка по днях, моделі апарата й вимикача — це все є в
+   хабі після запуску). Форма ОДНА й та сама: стан, валідація і save() спільні,
+   тож швидкий старт не може зберегти те, чого потім не прийняв би хаб. */
+const QS_CENTER = "qs-center", QS_ROOMS = "qs-rooms";
 
 /* ---------- Крок 1: Профіль клініки ---------- */
 function StepRegister({ report, onData, initial, active, clinicId, services, rooms, roomOverrides, notify, assignRoomIds }: { report: (k: number, ok: boolean) => void; onData: (d: WizardData) => void; initial: WizardInitial; active: string; clinicId: string; services: ServiceRow[]; rooms: SetupRoom[]; roomOverrides: SroRow[]; notify: (msg: string, type?: string) => void; assignRoomIds: MutableRefObject<((a: Array<{ localId: number | string; roomId: string }>) => void) | null> }) {
+  const quickCenter = active === QS_CENTER;   // швидкий старт, крок «Центр»
+  const quickRooms = active === QS_ROOMS;     // швидкий старт, крок «Кабінети»
+  /* Часовий пояс у швидкому старті — рядком «Europe/Kyiv · зараз 16:42» з кнопкою
+     «Змінити»: авто-визначення майже завжди вірне, а список на ~400 зон відтягує
+     увагу від трьох полів, які справді треба заповнити. У хабі — select як був. */
+  const [tzOpen, setTzOpen] = useState(false);
+  const tzSelectRef = useRef<HTMLSelectElement | null>(null);
+  /* Після «Змінити» кнопка зникає, а на її місці зʼявляється select — фокус
+     переводимо туди, інакше він упаде на <body> (пастки тут немає, але людина
+     з клавіатури втратила б місце). */
+  useEffect(() => { if (tzOpen) tzSelectRef.current?.focus(); }, [tzOpen]);
   const [clinic, setClinic] = useState(initial.clinic || "");
   const [city, setCity] = useState(initial.city || "");
   const [address, setAddress] = useState(initial.address || "");
@@ -421,7 +441,13 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
 
   return (
     <div className="fade-in">
-      {active === "sec-clinic" && (<>
+      {(active === "sec-clinic" || quickCenter) && (<>
+      {quickCenter ? (<>
+        {/* tabIndex -1: батько переводить сюди фокус при зміні кроку, щоб
+            скрінрідер оголосив новий крок (контент міняється без навігації). */}
+        <h1 className="wiz-h qs-h" tabIndex={-1}>Ваш центр</h1>
+        <p className="wiz-hsub">Назва, місто й часовий пояс — усе, що потрібно дошці черги. Адресу та контакти центру додасте пізніше в налаштуваннях.</p>
+      </>) : (<>
       <h1 className="wiz-h">Профіль клініки</h1>
       <p className="wiz-hsub">Базові дані центру.</p>
 
@@ -429,12 +455,13 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
         <span className="ib-ic" style={{ color: "var(--green)" }}>✓</span>
         <span className="ib-txt"><b>Email підтверджено.</b> Обліковий запис активовано.</span>
       </div>
+      </>)}
 
       <div className="sec-label" style={{ marginTop: 16 }}>Медичний центр</div>
       <div className="form-card reg-card">
         <div className="fld-row">
           <label className="fld"><span className="fld-lab">Назва клініки <Req /></span>
-            <input className={"inp" + (clinic.trim() ? "" : " invalid")} aria-required={true} value={clinic} onChange={(e) => setClinic(e.target.value)} /></label>
+            <input className={"inp" + (clinic.trim() ? "" : " invalid")} aria-required={true} value={clinic} onChange={(e) => setClinic(e.target.value)} placeholder={quickCenter ? "напр. Медичний центр «Здоровʼя»" : undefined} /></label>
           <span className="fld-spacer" />
         </div>
         <div className="fld-row">
@@ -442,37 +469,75 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
               live-статус усередині стають частиною ІМЕНІ комбобокса. */}
           <div className="fld"><label className="fld-lab" htmlFor="sw-city">Місто <Req /></label>
             <CitySelect id="sw-city" value={city} onChange={setCity} required /></div>
+          {quickCenter ? <span className="fld-spacer" /> : (
           <label className="fld" style={{ flex: 2 }}><span className="fld-lab">Адреса</span>
             <input className="inp" placeholder="вул., будинок, поверх, індекс" value={address} onChange={(e) => setAddress(e.target.value)} /></label>
+          )}
         </div>
         <div className="fld-row">
-          <label className="fld"><span className="fld-lab">Часовий пояс центру <Req /></span>
-            <select className="inp" value={timezone} onChange={(e) => setTimezone(e.target.value)}>
-              {(tzList().includes(timezone) ? tzList() : [timezone, ...tzList()]).map((z) => (
-                <option key={z} value={z}>{z}</option>
-              ))}
-            </select>
-            <span className="fld-hint">Зараз у центрі: {tzNow(timezone)}. За цим часом рахуються «Запізнення», «Уточнити» та заборона запису в минуле — не змінюйте, якщо ви в іншій країні за центр.</span>
-          </label>
+          {/* <div>, а не <label> довкола select: у швидкому старті тут стоїть іще
+              й кнопка «Змінити», а кнопка всередині label — це дві різні дії під
+              одним кліком. Імʼя полю дає htmlFor; у згорнутому вигляді підпис —
+              звичайний текст (підписувати нема чого, окрім кнопки зі своїм іменем). */}
+          <div className="fld">
+            {quickCenter && !tzOpen ? (<>
+              <span className="fld-lab">Часовий пояс центру <Req /></span>
+              <div className="qs-tz">
+                <span className="qs-tz-val"><b>{timezone}</b> · зараз у центрі {tzNow(timezone)}</span>
+                <button type="button" className="btn btn-ghost btn-sm" aria-label="Змінити часовий пояс центру" onClick={() => setTzOpen(true)}>Змінити</button>
+              </div>
+            </>) : (<>
+              <label className="fld-lab" htmlFor="sw-tz">Часовий пояс центру <Req /></label>
+              <select id="sw-tz" className="inp" value={timezone} ref={tzSelectRef} onChange={(e) => setTimezone(e.target.value)}>
+                {(tzList().includes(timezone) ? tzList() : [timezone, ...tzList()]).map((z) => (
+                  <option key={z} value={z}>{z}</option>
+                ))}
+              </select>
+            </>)}
+            <span className="fld-hint">{quickCenter && !tzOpen ? "Визначено за вашим браузером. " : `Зараз у центрі: ${tzNow(timezone)}. `}За цим часом рахуються «Запізнення», «Уточнити» та заборона запису в минуле — не змінюйте, якщо ви в іншій країні за центр.</span>
+          </div>
           <span className="fld-spacer" />
         </div>
+        {!quickCenter && (
         <div className="contacts-grid">
           <ContactList label="Телефони" items={phones} setItems={setPhones} ph="+38 0__ ___ __ __" />
           <ContactList label="Email-и" items={emails} setItems={setEmails} type="email" ph="name@clinic.ua" />
         </div>
+        )}
       </div>
 
       </>)}
 
-      {active === "sec-admin" && (<>
+      {(active === "sec-admin" || quickCenter) && (<>
+      {quickCenter ? (
+        <div className="sec-label" style={{ marginTop: 22 }}>Адміністратор — ви</div>
+      ) : (<>
       <h1 className="wiz-h">Адміністратор</h1>
       <p className="wiz-hsub">Обліковий запис адміністратора центру.</p>
-      <div className="form-card reg-card" style={{ marginTop: 16 }}>
+      </>)}
+      <div className="form-card reg-card" style={{ marginTop: quickCenter ? 0 : 16 }}>
         <div className="fld-row">
           <label className="fld">
             <span className="fld-lab">ПІБ адміністратора <Req /></span>
             <input className={"inp" + (adminName.trim() ? "" : " invalid")} aria-required={true} placeholder="Прізвище Ім'я По батькові" value={adminName} onChange={(e) => setAdminName(e.target.value)} />
           </label>
+          {quickCenter ? (() => {
+            /* Один телефон замість списку ContactList: у швидкому старті він
+               уже є (прийшов із реєстрації), людина лише звіряє. Невалідний
+               номер тут зупиняє «Далі» (qsCenterMissing), тому й aria-invalid. */
+            const p = aPhones[0] ?? "";
+            const bad = p.trim() !== "" && !isValidPhoneUA(p);
+            return (
+              <div className="fld">
+                <label className="fld-lab" htmlFor="qs-phone">Телефон <Req /></label>
+                <input id="qs-phone" className={"inp" + (p.trim() && !bad ? "" : " invalid")} type="tel" inputMode="tel" autoComplete="tel"
+                  placeholder="+380 XX XXX XX XX" value={p} aria-required={true} aria-invalid={bad ? true : undefined}
+                  aria-describedby={bad ? "qs-phone-err" : undefined}
+                  onChange={(e) => setAPhones((a) => [formatPhoneUA(e.target.value), ...a.slice(1)])} />
+                {bad && <span className="field-err" id="qs-phone-err">Введіть номер у форматі +380 XX XXX XX XX</span>}
+              </div>
+            );
+          })() : (
           <label className="fld">
             <span className="fld-lab">Email для входу <Req /></span>
             <input className="inp" type="email" value={adminEmail} readOnly />
@@ -480,7 +545,9 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                 логіном те, що ним не є, а справжній логін ніде не показувався. */}
             <span className="fld-hint">Роль: Адміністратор. Змінюється у службі підтримки.</span>
           </label>
+          )}
         </div>
+        {!quickCenter && (<>
         <div className="fld-row">
           {/* Ревʼю с75: підказка — сусід поля, а не вміст <label>: усередині label
               вона входила б в імʼя і читалась двічі (імʼя + опис). */}
@@ -531,29 +598,42 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
           <ContactList label="Телефони" items={aPhones} setItems={setAPhones} ph="+38 0__ ___ __ __" required />
           <ContactList label="Email-и" items={aEmails} setItems={setAEmails} type="email" ph="name@example.com" />
         </div>
+        </>)}
       </div>
 
       </>)}
 
-      {active === "sec-equip" && (<>
+      {(active === "sec-equip" || quickRooms) && (<>
+      {quickRooms ? (<>
+        <h1 className="wiz-h qs-h" tabIndex={-1}>Кабінети</h1>
+        <p className="wiz-hsub">Апарат, назва кабінету й години роботи — цього достатньо для сітки записів. Перерви, окремий графік на кожен день, модель апарата і прайс — пізніше, в налаштуваннях.</p>
+      </>) : (<>
       <h1 className="wiz-h">Обладнання та кабінети <Req /></h1>
       <p className="wiz-hsub">Апарати центру та їхній графік роботи.</p>
+      </>)}
       <div className="form-card" style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 16 }}>
         {equip.map((e, i) => (
           <div key={e.id} className={"equip-block" + (e.active === false ? " equip-off" : "")}>
+            {/* Швидкий старт: ✕ лише в рядка, якого ще немає в базі. Збережений
+                кабінет (повторний вхід після збою) видаляють через хаб — із
+                діалогом про історію та вимикачем, яких тут немає. */}
+            {(!quickRooms || !e.roomId) && (
             <button className="mini-icon equip-block-del" type="button"
               title={equip.length <= 1 ? "Останній кабінет видалити не можна" : "Видалити обладнання"}
               onClick={() => askDelEq(i)}
               aria-label={equip.length <= 1 ? "Останній кабінет видалити не можна" : "Видалити обладнання " + (i + 1)}
               disabled={equip.length <= 1}><span aria-hidden="true">✕</span></button>
+            )}
             <div className="equip-info">
               <div className="equip-info-row">
-                <select className="inp equip-type" value={e.type} onChange={(ev) => setEq(i, "type", ev.target.value)}>
+                <select className="inp equip-type" aria-label={"Апарат — обладнання " + (i + 1)} value={e.type} onChange={(ev) => setEq(i, "type", ev.target.value)}>
                   {MODALITIES.map((m) => <option key={m.code} value={m.label}>{m.label}</option>)}
                 </select>
                 <input className="inp equip-room2" placeholder="Кабінет / №" aria-label={"Кабінет / № — обладнання " + (i + 1)} value={e.room} onChange={(ev) => setEq(i, "room", ev.target.value)} />
               </div>
+              {!quickRooms && (
               <input className="inp" placeholder="Модель / опис обладнання" aria-label={"Модель / опис — обладнання " + (i + 1)} value={e.desc} onChange={(ev) => setEq(i, "desc", ev.target.value)} />
+              )}
 
               {/* 0123 + 0126. Вимкнення — мʼякий і зворотний крок: кабінет перестає
                   приймати нові записи й зникає з робочих екранів, але прайс, інциденти,
@@ -568,12 +648,16 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                   Це саме чекбокс, а не кнопка-перемикач: стан несе `checked`, і
                   скрінрідер читає «Кабінет працює, прапорець знято» без суперечності,
                   яку давала пара «мінлива мітка + aria-pressed». */}
+              {/* Швидкий старт: вимикача немає — новий кабінет завжди працює, а
+                  вимикати ще нічого. */}
+              {!quickRooms && (
               <label className="eq-active-lab">
                 <input type="checkbox" checked={e.active !== false}
                   onChange={(ev) => toggleEqActive(i, ev.target.checked)} />
                 Кабінет працює
               </label>
-              {e.active === false && (
+              )}
+              {!quickRooms && e.active === false && (
                 <div className="ctx-hint orange eq-off-warn" role="status" aria-live="polite">
                   <b>⚠ Кабінет буде вимкнено.</b> Після збереження в нього не можна буде
                   ні записати пацієнта, ні перенести запис, ні забронювати місце в листі
@@ -600,10 +684,12 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                 ))}
               </div>
 
+              {!quickRooms && (
               <label className="eq-perday-lab">
                 <input type="checkbox" checked={e.perDay} onChange={(ev) => toggleEqPerDay(i, ev.target.checked)} />
                 Свій час для кожного дня
               </label>
+              )}
 
               {!e.perDay && (() => {
                 const hErr = dayHoursError(e.start, e.end);
@@ -617,6 +703,10 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                     <input className={"inp tabular eq-time" + (hErr ? " invalid" : "")} type="time" aria-label={"Кінець роботи — " + (e.room || e.type || "обладнання " + (i + 1))} aria-invalid={hErr ? true : undefined} aria-describedby={hErr ? hErrId : undefined} value={e.end} onChange={(ev) => setEq(i, "end", ev.target.value)} />
                   </div>
                   {hErr && <span className="eq-break-err" id={hErrId}>{hErr}</span>}
+                  {/* Швидкий старт: перерв не пропонуємо (вони є в хабі), але якщо в
+                      збереженого кабінету вони вже є — показуємо, інакше помилка
+                      перерви блокувала б «Запустити» невидимо. */}
+                  {(!quickRooms || e.breaks.length > 0) && (
                   <div className="eq-breaks">
                     {e.breaks.map((b, bi) => {
                       const err = breakRowError(e.breaks, bi, e.start, e.end);
@@ -636,6 +726,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                     })}
                     <button className="btn btn-ghost btn-sm eq-break-add" type="button" onClick={() => addEqBreak(i)}>＋ Перерва</button>
                   </div>
+                  )}
                 </>
                 );
               })()}
@@ -788,9 +879,24 @@ type SetupRoom = { id: string; modality: string; name: string; apparatus_model?:
 type ServiceRow = Tables<"services">;
 type SroRow = Tables<"service_room_overrides">;
 
-export default function SetupWizard({ clinicId, userId, initial, rooms = [], services = [], roomOverrides = [], clinicName, adminName, queuePolicy }: { clinicId: string; userId: string; initial: WizardInitial; rooms?: SetupRoom[]; services?: ServiceRow[]; roomOverrides?: SroRow[]; clinicName?: string; adminName?: string; queuePolicy: QueuePolicyInitial }) {
+export default function SetupWizard({ clinicId, userId, initial, rooms = [], services = [], roomOverrides = [], clinicName, adminName, queuePolicy, firstRun = false }: { clinicId: string; userId: string; initial: WizardInitial; rooms?: SetupRoom[]; services?: ServiceRow[]; roomOverrides?: SroRow[]; clinicName?: string; adminName?: string; queuePolicy: QueuePolicyInitial; firstRun?: boolean }) {
   const router = useRouter();
   const [activeSection, setActiveSection] = useState("sec-clinic");
+
+  /* ---------- Швидкий старт (с82) ----------
+     `firstRun` = центр ще не налаштовано (`clinics.configured_at` порожній): замість
+     хаба з девʼяти секцій — три кроки «Центр → Кабінети → Готово». Режим фіксується
+     ПРИ МОНТУВАННІ: після «Запустити» save() ставить configured_at, router.refresh()
+     приносить firstRun=false — а екран «Готово» має лишитись на місці, інакше людина
+     бачила б, як її «Готово» перетворюється на хаб. Повне перезавантаження /setup
+     після запуску вже чесно відкриває хаб. */
+  const [quickMode] = useState(firstRun);
+  const [qsStep, setQsStep] = useState<QsStep>("center");
+  /* Чого не вистачає на поточних кроках — для кнопок «Далі»/«Запустити» та підказки
+     під ними. Рахується в onData чистими функціями lib/quickStart (ті самі правила,
+     що й valid[1], але по кроках і з текстом). */
+  const [qsMissing, setQsMissing] = useState<{ center: string[]; rooms: string[] }>({ center: ["назва центру"], rooms: [] });
+  const qsHeadRef = useRef<HTMLDivElement | null>(null);
 
   /* 0160: повернення з Google OAuth редіректить на /setup?gcal=<код> —
      людина має опинитись САМЕ в секції резервного копіювання, а не на
@@ -799,12 +905,31 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
      useEffect вирізає ?gcal= із URL (щоб F5 не повторював повідомлення) —
      звичайний useEffect батька читав би вже почищений URL і секція не
      перемикалась. Layout-ефекти всього дерева гарантовано йдуть РАНІШЕ
-     будь-яких passive-ефектів — батько встигає прочитати параметр. */
+     будь-яких passive-ефектів — батько встигає прочитати параметр.
+     с82: `?section=<anchor>` — глибоке посилання з чеклиста «Готово» швидкого
+     старту; значення приймається лише з переліку WIZ_NAV (sectionFromSearch). */
   useLayoutEffect(() => {
     if (new URLSearchParams(window.location.search).has("gcal")) {
       setActiveSection("sec-gcal");
+      return;
     }
+    const sec = sectionFromSearch(window.location.search, SECTION_ANCHORS);
+    if (sec) setActiveSection(sec);
   }, []);
+
+  /* Зміна кроку швидкого старту — це зміна вмісту без навігації: переводимо фокус
+     на заголовок кроку (tabIndex -1), щоб скрінрідер оголосив, де людина опинилась,
+     а з клавіатури не довелось шукати початок форми. На першому рендері не чіпаємо —
+     фокус на заголовку при відкритті сторінки лише заважає. */
+  const qsFirstRender = useRef(true);
+  useEffect(() => {
+    if (!quickMode) return;
+    if (qsFirstRender.current) { qsFirstRender.current = false; return; }
+    /* Після запуску форма схована (display:none) разом зі своїм h1 — тому
+       селектор залежить від кроку, а не «перший h1, що трапиться». */
+    const h = qsHeadRef.current?.querySelector<HTMLElement>(qsStep === "done" ? "h1.golive-h" : "h1.qs-h");
+    h?.focus({ preventScroll: false });
+  }, [quickMode, qsStep]);
 
   /* Контекстні позначки в майстрі (с28): store монтується ТУТ, бо на /setup
      штатного Sidebar немає — без маунта крапки й ack мовчки не працювали
@@ -847,6 +972,11 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
   function report(k: number, ok: boolean) { setValid((v) => (v[k] === ok ? v : { ...v, [k]: ok })); }
   function onData(d: WizardData) {
     dataRef.current = d;
+    if (quickMode) {
+      const center = qsCenterMissing(d, isValidPhoneUA);
+      const roomsMissing = qsRoomsMissing(d.equip.length, equipHoursValid(d.equip), equipBreaksValid(d.equip));
+      setQsMissing((cur) => (cur.center.join("|") === center.join("|") && cur.rooms.join("|") === roomsMissing.join("|") ? cur : { center, rooms: roomsMissing }));
+    }
     const snap = JSON.stringify(d);
     if (savedRef.current === null) { savedRef.current = snap; return; } // базовий знімок при першому завантаженні
     setDirty(snap !== savedRef.current);
@@ -879,6 +1009,14 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
       })();
       if (tz && !tzValid) {
         push("Некоректний часовий пояс центру", "error");
+        setSaving(false);
+        return false;
+      }
+      /* с82: CHECK `clinics_timezone_chk` приймає лише CLINIC_TIMEZONES — кажемо це
+         ДО запису людською мовою, а не сирим check_violation після (так воно
+         падало з будь-якою зоною, крім двох, бо select пропонував усі ~400). */
+      if (tz && !isClinicTz(tz)) {
+        push("Часовий пояс центру має бути одним із: " + CLINIC_TIMEZONES.join(", "), "error");
         setSaving(false);
         return false;
       }
@@ -984,20 +1122,15 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
         }
       }
 
-      const { error: ce } = await supabase
-        .from("clinics")
-        .update({
-          name: d.clinic.trim(),
-          city: d.city.trim() || null,
-          address: d.address.trim() || null,
-          phones: clean(d.phones),
-          emails: clean(d.emails),
-          ...(tzValid ? { timezone: tz } : {}),
-          configured_at: new Date().toISOString(),
-        })
-        .eq("id", clinicId);
-      if (ce) throw ce;
-
+      /* ПОРЯДОК ЗАПИСІВ (с82): профіль → кабінети → клініка з `configured_at`
+         ОСТАННЬОЮ. Транзакції тут немає (три таблиці через PostgREST), і до с82
+         клініка писалась ПЕРШОЮ: збій на вставці кабінету (мережа, тригер) лишав
+         центр «налаштованим» без жодного кабінету — /queue відкривав порожню
+         дошку, а /setup уже не повертав до майстра. Тепер configured_at ставиться
+         лише коли все інше вже в базі; при збої людина лишається у майстрі, а
+         повторне «Зберегти» оновить уже вставлені кабінети за id (їх віддав
+         router.refresh / assignRoomIds), а не продублює. Записи кабінетів від
+         полів клініки не залежать (clinic_id — із пропа), тож порядок вільний. */
       const { error: pe } = await supabase
         .from("profiles")
         .update({
@@ -1039,6 +1172,22 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
         if (de) throw de;
       }
 
+      /* Клініка — ОСТАННЬОЮ (див. «ПОРЯДОК ЗАПИСІВ» вище): configured_at означає
+         «центр готовий до роботи», і ставити його раніше за кабінети не можна. */
+      const { error: ce } = await supabase
+        .from("clinics")
+        .update({
+          name: d.clinic.trim(),
+          city: d.city.trim() || null,
+          address: d.address.trim() || null,
+          phones: clean(d.phones),
+          emails: clean(d.emails),
+          ...(tzValid ? { timezone: tz } : {}),
+          configured_at: new Date().toISOString(),
+        })
+        .eq("id", clinicId);
+      if (ce) throw ce;
+
       /* Знімок несе ЗБЕРЕЖЕНЕ (`d`) плюс id, які реально поїхали у форму, а
          dirty ПЕРЕРАХОВУЄТЬСЯ проти живих даних, а не гаситься. Обидва «чому»
          — у шапці `lib/setupWizard.ts`: коротко, setEquip вище застосується
@@ -1070,6 +1219,164 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
     const ok = await save();
     setExitAsk(false);
     if (ok) router.push("/queue");
+  }
+
+  /* Швидкий старт: «Запустити» = той самий save(), і лише після успіху — крок
+     «Готово». `skipSchedWarn` — для підтвердження діалогу «записи поза графіком»
+     (на свіжому центрі він не спрацює, але шлях один для обох режимів). */
+  async function launch(skipSchedWarn = false) {
+    const ok = await save(skipSchedWarn);
+    if (ok) setQsStep("done");
+    return ok;
+  }
+
+  if (quickMode) {
+    const stepIx = qsStepIndex(qsStep);
+    const d = dataRef.current;
+    const launched = qsStep === "done";
+    const formActive = qsStep === "rooms" ? QS_ROOMS : QS_CENTER;
+    const centerOk = qsMissing.center.length === 0;
+    const roomsOk = qsMissing.rooms.length === 0;
+    return (
+      <div className="wiz">
+        <UnreadChangesMount />
+        <aside className="wiz-side">
+          <div className="wiz-head">
+            <span className="wiz-logo"><span className="dot" />RadFlow</span>
+            <div className="wiz-sub">Швидкий старт{clinicName ? ` · ${clinicName}` : ""}</div>
+          </div>
+          {/* Кроки — список із aria-current на поточному; назад — кнопкою, уперед —
+              лише через «Далі» (валідація). Завершені кроки після запуску не
+              відкриваються: дані вже в базі, правити їх — у хабі. */}
+          <ol className="wiz-steps qs-steps" aria-label="Кроки швидкого старту">
+            {QS_STEPS.map((s, i) => {
+              const state = i < stepIx ? "done" : i === stepIx ? "active" : "locked";
+              const canGo = state === "done" && !launched && !saving;
+              return (
+                <li key={s.key} className={"wstep qs-step " + state} aria-current={state === "active" ? "step" : undefined}>
+                  {i < QS_STEPS.length - 1 && <span className={"wstep-line" + (state === "done" ? " done" : "")} aria-hidden="true" />}
+                  <span className="wstep-num" aria-hidden="true">{state === "done" ? "✓" : i + 1}</span>
+                  <span className="wstep-txt">
+                    {canGo
+                      ? <button type="button" className="wstep-title qs-step-btn" onClick={() => setQsStep(s.key)}>{s.title}</button>
+                      : <span className="wstep-title">{s.title}<span className="rf-vh">{state === "done" ? " — виконано" : state === "active" ? " — поточний крок" : ""}</span></span>}
+                    <span className="wstep-desc">{s.desc}</span>
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+          <div className="wiz-foot">
+            <div className="wiz-prog-bar" role="progressbar" aria-label="Поступ швидкого старту" aria-valuemin={0} aria-valuemax={100} aria-valuenow={qsProgress(qsStep)}>
+              <div className="wiz-prog-fill" style={{ width: qsProgress(qsStep) + "%" }} />
+            </div>
+            <div className="wiz-prog-lab">
+              <span>Крок {Math.min(stepIx + 1, QS_STEPS.length)} з {QS_STEPS.length}</span>
+              <a href="mailto:support@radflow.ua?subject=Допомога%20з%20налаштуванням" title="Написати в підтримку">Підтримка</a>
+            </div>
+            {/* «Вийти» тут — з акаунта, а не на дошку: ненастроєний /queue повернув
+                би назад сюди (петля, Ф6-5). Потрібно тому, хто реєструвався на
+                чужому компʼютері й хоче продовжити зі свого. */}
+            {!launched && <div className="qs-signout"><SignOutButton /></div>}
+          </div>
+        </aside>
+
+        <div className="wiz-main">
+          <div className="wiz-main-inner" ref={qsHeadRef}>
+            {/* Форма ЖИВЕ весь час (стан полів — у ній); після запуску ховаємо, щоб
+                «Готово» не мішалось із полями. */}
+            <div style={{ display: launched ? "none" : "block" }}>
+              <StepRegister report={report} onData={onData} initial={initial} active={formActive} assignRoomIds={assignRoomIdsRef}
+                clinicId={clinicId} services={services} rooms={rooms} roomOverrides={roomOverrides} notify={push} />
+            </div>
+
+            {launched && d && (
+              <div className="fade-in">
+                <div className="golive">
+                  <div className="rocket" aria-hidden="true">🚀</div>
+                  <h1 className="golive-h qs-h" tabIndex={-1}>Центр запущено</h1>
+                  <p className="golive-sub">Дошка черги готова приймати записи. Усе інше — персонал, прайс, направники — можна додати будь-коли в налаштуваннях.</p>
+                </div>
+                <div className="check-list qs-check-list">
+                  <div className="check-item">
+                    <span className="check-ic done" aria-hidden="true">✓</span>
+                    <span className="check-txt">
+                      <span className="check-title">Центр «{d.clinic.trim()}»</span>
+                      <span className="check-sub">{d.city.trim()} · {d.timezone}</span>
+                    </span>
+                  </div>
+                  <div className="check-item">
+                    <span className="check-ic done" aria-hidden="true">✓</span>
+                    <span className="check-txt">
+                      <span className="check-title">{d.equip.length} {d.equip.length === 1 ? "кабінет" : d.equip.length < 5 ? "кабінети" : "кабінетів"}</span>
+                      <span className="check-sub">{d.equip.map((e) => `${e.type} · ${(e.room || e.type).trim()}`).join("; ")}</span>
+                    </span>
+                  </div>
+                  {([
+                    ["sec-staff", "Реєстратори та радіологи", "Створіть акаунти персоналу — кожен отримає одноразове посилання для входу"],
+                    ["sec-price", "Послуги та прайс", "Без прайса працює базовий перелік досліджень за модальністю"],
+                    ["sec-referrers", "Лікарі-направники", "Запросіть лікарів, які направляють пацієнтів у центр"],
+                    ["sec-gcal", "Резервна копія в Google Calendar", "Аварійне дзеркало черги на випадок недоступності RadFlow"],
+                  ] as const).map(([anchor, title, sub]) => (
+                    <a key={anchor} className="check-item qs-check-link" href={`/setup?section=${anchor}`}>
+                      <span className="check-ic pending" aria-hidden="true">→</span>
+                      <span className="check-txt">
+                        <span className="check-title">{title}</span>
+                        <span className="check-sub">{sub}</span>
+                      </span>
+                    </a>
+                  ))}
+                </div>
+                <div className="qs-done-actions">
+                  <a className="btn btn-green btn-launch" href="/queue">Перейти до дошки черги</a>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {!launched && (
+          <div className="wiz-bar">
+            <div className="wiz-bar-inner">
+              <div>
+                {qsStep === "rooms" && (
+                  <button type="button" className="btn btn-ghost" onClick={() => setQsStep("center")} disabled={saving}>← Назад</button>
+                )}
+              </div>
+              <div className="wiz-bar-right qs-bar-right">
+                {/* Підказка — сусід кнопки і її опис: вимкнена кнопка без пояснення
+                    читається як «зламано». role=status — щоб зміна списку озвучилась. */}
+                <span className="fld-hint qs-missing" id="qs-missing" role="status" aria-live="polite">
+                  {qsStep === "center" ? missingText(qsMissing.center) : missingText(qsMissing.rooms)}
+                </span>
+                {qsStep === "center" ? (
+                  <button type="button" className="btn btn-green btn-launch" aria-describedby={centerOk ? undefined : "qs-missing"}
+                    disabled={!centerOk} onClick={() => setQsStep("rooms")}>Далі →</button>
+                ) : (
+                  <button type="button" className="btn btn-green btn-launch" aria-describedby={roomsOk ? undefined : "qs-missing"}
+                    disabled={!roomsOk || !centerOk || saving} aria-busy={saving} onClick={() => launch()}>
+                    {saving ? "Запускаємо…" : "Запустити центр"}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+          )}
+        </div>
+
+        {schedWarnAsk != null && (
+          <ConfirmDialog
+            title="Записи поза новим графіком"
+            text={<>Майбутніх записів пацієнтів, що не вкладаються в графік, який ви зберігаєте (кабінет закритий цього дня, поза годинами роботи або в перерву): <b>{schedWarnAsk}</b>. На дошці черги їх буде підсвічено «⚠ Не за графіком». Зберегти графік усе одно?</>}
+            confirmLabel="Зберегти графік"
+            cancelLabel="Скасувати"
+            busy={saving}
+            onClose={() => setSchedWarnAsk(null)}
+            onConfirm={() => { setSchedWarnAsk(null); launch(true); }}
+          />
+        )}
+        <Toast toast={toast} onDismiss={dismissToast} />
+      </div>
+    );
   }
 
   return (
