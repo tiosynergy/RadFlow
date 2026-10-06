@@ -239,13 +239,21 @@ describe("0202 — канон назви зони в UI (lib/tzCanonical)", () =
       .toEqual(["UTC", "Europe/Kyiv", "Europe/Warsaw"]);
   });
 
-  it("майстер налаштувань нормалізує зону і в дефолті, і в списку, і перед записом", () => {
+  /* с82: список select більше НЕ береться з `Intl.supportedValuesOf` (там ~400 зон,
+     а CHECK приймає дві) — він дорівнює CLINIC_TIMEZONES із lib/tzCanonical, тож
+     нормалізувати в ньому нічого; пін «у списку» замінено піном «список = CHECK»
+     (він у tests/quickStart.test.ts читає сам CHECK з 0202). Нормалізація дефолту
+     і запису — на місці. */
+  it("майстер налаштувань нормалізує зону в дефолті й перед записом; список — лише зони CHECK", () => {
     const wiz = readFileSync("components/SetupWizard.tsx", "utf8");
-    expect(wiz).toContain('import { canonicalTz, canonicalTzList } from "@/lib/tzCanonical";');
+    expect(wiz).toContain('import { canonicalTz, clinicTzOrDefault, isClinicTz, CLINIC_TIMEZONES, DEFAULT_CLINIC_TZ } from "@/lib/tzCanonical";');
     expect(wiz).toContain("return canonicalTz(Intl.DateTimeFormat().resolvedOptions().timeZone");
-    expect(wiz).toContain("if (all && all.length) return canonicalTzList(all);");
+    expect(wiz).toContain("function browserTz(): string { return clinicTzOrDefault(browserTzRaw()); }");
+    expect(wiz).toContain("function tzList(): string[] { return [...CLINIC_TIMEZONES]; }");
+    expect(wiz).not.toContain("supportedValuesOf");
     expect(wiz).toContain("useState(canonicalTz(initial.timezone || browserTz()))");
     expect(wiz).toContain('const tz = canonicalTz((d.timezone || "").trim());');
+    expect(wiz).toContain("if (tz && !isClinicTz(tz)) {");
   });
 });
 

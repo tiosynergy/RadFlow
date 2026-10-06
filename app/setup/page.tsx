@@ -19,7 +19,7 @@ export default async function SetupPage() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("clinic_id, full_name, role, phone, login, clinics(name, city, address, phones, emails, timezone, queue_delay_policy, overlap_threshold_min, max_cascade_patients, allow_after_hours_shift)")
+    .select("clinic_id, full_name, role, phone, login, clinics(name, city, address, phones, emails, timezone, configured_at, queue_delay_policy, overlap_threshold_min, max_cascade_patients, allow_after_hours_shift)")
     .eq("id", user.id)
     .single();
 
@@ -53,11 +53,16 @@ export default async function SetupPage() {
   const clinic = (Array.isArray(profile.clinics) ? profile.clinics[0] : profile.clinics) as
     | {
         name?: string; city?: string; address?: string; phones?: string[]; emails?: string[]; timezone?: string | null;
+        configured_at?: string | null;
         queue_delay_policy?: QueueDelayPolicy; overlap_threshold_min?: number;
         max_cascade_patients?: number; allow_after_hours_shift?: boolean;
       }
     | null
     | undefined;
+  /* с82: центр ще не налаштовано (та сама ознака, за якою робочі екрани ведуть
+     сюди) → майстер відкривається швидким стартом «Центр → Кабінети → Готово»,
+     а не хабом із девʼяти секцій. Після запуску (configured_at стоїть) — хаб. */
+  const firstRun = !!clinic && !clinic.configured_at;
 
   /* 0078 — політика черги при затримці. Дефолти дублюють DEFAULT у БД: якщо
      міграцію ще не накатили (або клініка старша за неї), майстер має відкритись,
@@ -96,8 +101,13 @@ export default async function SetupPage() {
     address: clinic?.address ?? "",
     phones: clinic?.phones ?? [],
     emails: clinic?.emails ?? [],
-    // Пусто → майстер підставить зону браузера як ПОЧАТКОВЕ значення (нова клініка).
-    timezone: clinic?.timezone ?? "",
+    /* Пусто → майстер підставить зону браузера (якщо вона у списку CHECK, інакше
+       Europe/Kyiv) як ПОЧАТКОВЕ значення. ⚠️ с82: колонка має DEFAULT 'UTC' (0059),
+       тож у НОВОЇ клініки тут ніколи не було порожньо — авто-визначення не
+       спрацьовувало жодного разу, і центр мовчки стартував у UTC (−3 год для
+       «Запізнення»/«Уточнити»/заборони запису в минуле). Поки центр не
+       налаштований, збережене значення — це дефолт колонки, а не вибір людини. */
+    timezone: firstRun ? "" : (clinic?.timezone ?? ""),
     adminName: profile.full_name ?? "",
     adminEmail: user.email ?? "",
     adminLogin: (profile.login as string) ?? "",   // 0124: друга форма входу, редагована
@@ -133,6 +143,7 @@ export default async function SetupPage() {
       clinicName={clinic?.name ?? ""}
       adminName={profile.full_name ?? (user.email ?? "")}
       queuePolicy={queuePolicy}
+      firstRun={firstRun}
     />
   );
 }

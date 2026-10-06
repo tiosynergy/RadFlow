@@ -11,14 +11,27 @@ import "./register.css";
 
 const REQUIRED = "Це поле обов'язкове";
 
-const FIELDS = ["login", "email", "phone", "password", "password2"];
+/* с82: + назва центру і ПІБ. Обоє читає тригер handle_new_user (0124) з metadata —
+   до цього він підставляв у НАЗВУ КЛІНІКИ і в ПІБ адміністратора ЛОГІН, і людина
+   першим же кроком майстра стирала «ivanov» із двох полів. Міграцій не потрібно. */
+const FIELDS = ["clinic", "fullName", "login", "email", "phone", "password", "password2"];
 
-type RegValues = { login: string; email: string; phone: string; password: string; password2: string; terms: boolean };
-type RegisterResult = { ok: boolean; message?: string; field?: string };
+/* Межі — ті самі, що в zName (lib/validation) і в майстрі налаштувань; тут лише
+   щоб не відправити в metadata кілометровий рядок. */
+const NAME_MAX = 200;
+
+type RegValues = { clinic: string; fullName: string; login: string; email: string; phone: string; password: string; password2: string; terms: boolean };
+/* `session` — чи видав Supabase сесію одразу (підтвердження email вимкнене):
+   тоді людина вже увійшла і повторний вхід їй не потрібен. */
+type RegisterResult = { ok: boolean; message?: string; field?: string; session?: boolean };
 
 function validateField(name: string, values: Record<string, string | boolean>): string {
   const v = String(values[name] ?? "");
   switch (name) {
+    case "clinic":
+      return !v.trim() ? REQUIRED : v.trim().length > NAME_MAX ? `Не більше ${NAME_MAX} символів` : "";
+    case "fullName":
+      return !v.trim() ? REQUIRED : v.trim().length > NAME_MAX ? `Не більше ${NAME_MAX} символів` : "";
     case "login":
       // 0124: той самий формат, що в CHECK profiles_login_format_chk і в zLogin.
       // Раніше клієнт вимагав ≥3 символів, а сервер приймав 1 — і логін із «@»
@@ -68,15 +81,17 @@ async function registerUser(values: RegValues): Promise<RegisterResult> {
     } catch { /* мережа недоступна — реєструємо далі */ }
 
     const supabase = createClient();
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email: values.email.trim(),
       password: values.password,
       options: {
         // Метадані для тригера handle_new_user (створює клініку + профіль).
+        // Пробіли всередині схлопуємо так само, як це робить zName на сервері.
         data: {
           login: normalizeLogin(values.login),
           phone: normalizePhoneUA(values.phone),
-          clinic_name: normalizeLogin(values.login),
+          clinic_name: values.clinic.trim().replace(/\s+/g, " "),
+          full_name: values.fullName.trim().replace(/\s+/g, " "),
         },
         emailRedirectTo:
           typeof window !== "undefined"
@@ -92,7 +107,7 @@ async function registerUser(values: RegValues): Promise<RegisterResult> {
       }
       return { ok: false, message: "Помилка: " + msg };
     }
-    return { ok: true };
+    return { ok: true, session: !!data?.session };
   } catch {
     return { ok: false, message: "Не вдалося звʼязатися із сервером. Спробуйте ще раз." };
   }
@@ -109,11 +124,13 @@ const XIcon = () => (
 );
 
 export default function RegisterPage() {
-  const [values, setValues] = useState<RegValues>({ login: "", email: "", phone: "", password: "", password2: "", terms: false });
+  const [values, setValues] = useState<RegValues>({ clinic: "", fullName: "", login: "", email: "", phone: "", password: "", password2: "", terms: false });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
-  const [success, setSuccess] = useState(false);
+  /* null — ще не зареєстровано; true — сесія вже є (одразу до майстра);
+     false — підтвердження email увімкнене, треба увійти після листа. */
+  const [success, setSuccess] = useState<boolean | null>(null);
   const [toast, setToast] = useState<{ show: boolean; type: string; title: string; msg: string }>({ show: false, type: "error", title: "", msg: "" });
 
   function setField(name: string, value: string | boolean) {
@@ -160,7 +177,7 @@ export default function RegisterPage() {
     setSubmitting(true);
     const res = await registerUser(values);
     if (res.ok) {
-      setSuccess(true);
+      setSuccess(!!res.session);
       return;
     }
     setSubmitting(false);
@@ -191,12 +208,21 @@ export default function RegisterPage() {
       </div>
 
       <div className="card">
-        {success ? (
+        {success !== null ? (
           <div className="success fade">
             <div className="ic">✅</div>
-            <h2>Акаунт адміністратора створено!</h2>
-            <div className="sub">Якщо увімкнено підтвердження email — підтвердьте пошту, потім увійдіть. Радіологів і лікарів-направників ви додасте вже всередині, у розділах «Радіологи» та «Лікарі-направники».</div>
-            <a className="btn" href="/login">Перейти до входу</a>
+            <h2>Центр зареєстровано!</h2>
+            {success ? (<>
+              {/* Сесія вже є — ведемо ОДРАЗУ в майстер швидкого старту (три кроки:
+                  центр, кабінети, готово). Повторний вхід логіном і паролем, які
+                  людина щойно ввела, був зайвим кроком. Звичайне посилання, а не
+                  router.push: нова сесія має доїхати в cookie повним переходом. */}
+              <div className="sub">Залишилось два кроки — місто й кабінети, і дошка черги готова. Персонал і направників ви додасте вже всередині.</div>
+              <a className="btn" href="/setup">Налаштувати центр <span aria-hidden="true">→</span></a>
+            </>) : (<>
+              <div className="sub">Підтвердьте пошту за листом, потім увійдіть — і майстер проведе через два кроки налаштування. Персонал і направників ви додасте вже всередині.</div>
+              <a className="btn" href="/login">Перейти до входу</a>
+            </>)}
           </div>
         ) : (
           <>
@@ -215,6 +241,16 @@ export default function RegisterPage() {
             <div className="divider">Або зареєструватися через email</div>
 
             <form onSubmit={onSubmit} noValidate>
+              <div className="field">
+                <label htmlFor="clinic">Назва центру</label>
+                <input {...inputProps("clinic", "text", { placeholder: "напр. Медичний центр «Здоровʼя»", autoComplete: "organization", maxLength: NAME_MAX })} />
+                {touched.clinic && errors.clinic && <div className="err" role="alert">{errors.clinic}</div>}
+              </div>
+              <div className="field">
+                <label htmlFor="fullName">Ваше ПІБ</label>
+                <input {...inputProps("fullName", "text", { placeholder: "Прізвище Ім'я По батькові", autoComplete: "name", maxLength: NAME_MAX })} />
+                {touched.fullName && errors.fullName && <div className="err" role="alert">{errors.fullName}</div>}
+              </div>
               <div className="field">
                 <label htmlFor="login">Логін</label>
                 <input {...inputProps("login", "text", { placeholder: "Ваш логін", autoComplete: "username" })} />

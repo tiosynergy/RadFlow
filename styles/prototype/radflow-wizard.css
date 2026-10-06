@@ -350,3 +350,79 @@
   .invite-role { flex: 1 1 100%; }
   .equip-info .equip-type { flex: 1 1 100%; }
 }
+
+/* ===================================================================
+   Швидкий старт (с82): /setup для центру без configured_at —
+   три кроки «Центр → Кабінети → Готово» замість хаба з девʼяти секцій.
+   Класи .wstep, .wiz-prog-bar, .check-list, .golive — з прототипу майстра,
+   тут лише те, чого там не було. (Без «*» у назвах: зірочка з косою рискою
+   закриває коментар — рівно так перший варіант цього блоку зʼїв сам себе.)
+   =================================================================== */
+/* Кроки — <ol>: маркери списку не потрібні, крок сам несе номер у .wstep-num. */
+.qs-steps { list-style: none; margin: 0; }
+/* Крок у швидкому старті — не кнопка цілком (назад веде лише назва завершеного
+   кроку), тож курсор і ховер успадкованого .wstep тут хибні. */
+.qs-step { cursor: default; }
+.qs-step:hover { background: none; }
+/* Заблокований крок — ПРИГЛУШЕНИЙ КОЛЬОРОМ, не opacity (AGENTS «opacity НЕ носитель
+   состояния»): прототипне `.wstep.locked { opacity: .55 }` давало 2.4–2.7:1 на
+   назві й описі (ревʼю с82, лінза B). --text-muted 5.55:1, --text-faint 4.62:1. */
+.qs-step.locked { opacity: 1; }
+.qs-step.locked .wstep-title { color: var(--text-muted); }
+.qs-step.locked .wstep-desc { color: var(--text-faint); }
+.qs-step.locked .wstep-num { border-style: dashed; }
+/* Назва завершеного кроку — кнопка «назад»; виглядає як текст, але це посилання.
+   Шрифт НЕ скидаємо шорткатом `font` — він перебив би розмір/вагу .wstep-title
+   (і мобільні .6875rem); лише сімейство. Підкреслення — --text-muted (5.55:1),
+   бо --border-strong на --card = 1.5:1 і підказки «це кнопка» не давало. */
+.qs-step-btn { background: none; border: 0; padding: 2px 0; font-family: inherit; text-align: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: var(--text-muted); text-underline-offset: 3px; }
+.qs-step-btn:hover { color: var(--blue-text); text-decoration-color: currentColor; }
+/* Заголовок кроку отримує програмний фокус (tabIndex -1) — кільце тут зайве:
+   фокус не для дії, а для оголошення; 2.4.7 стосується фокусованих елементів
+   керування, якими заголовок не є. */
+.qs-h:focus { outline: none; }
+.qs-h:focus-visible { outline: none; }
+/* Часовий пояс згорнуто: значення + «Змінити» в одному рядку, як поле. */
+.qs-tz { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 2.5rem; padding: 0 0 0 12px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--r-md); }
+.qs-tz-val { font-size: 0.875rem; color: var(--text-secondary); }
+.qs-tz-val b { color: var(--text); font-weight: 600; }
+/* Підказка «Залишилось: …» біля кнопки «Далі»/«Запустити». */
+.qs-missing { margin: 0; text-align: right; max-width: 24rem; }
+.qs-signout { margin-top: 12px; display: flex; justify-content: flex-end; }
+/* Чеклист «Готово»: пункти-посилання в хаб — як картки, без підкреслення. */
+.qs-check-list { margin-top: 22px; }
+.qs-check-link { text-decoration: none; color: inherit; }
+.qs-check-link:hover { border-color: var(--border-strong); background: var(--card-hover); }
+.qs-check-link .check-title { color: var(--blue-text); }
+.qs-done-actions { display: flex; justify-content: center; gap: 10px; margin-top: 26px; }
+/* Ракета гойдається — але не для тих, хто просив менше руху (2.3.3). */
+@media (prefers-reduced-motion: reduce) {
+  .rocket { animation: none; }
+  .wiz-prog-fill { transition: none; }
+}
+/* Рядок кнопок переноситься: на вузькому екрані підказка стає окремим рядком
+   над кнопкою, а не ховається — вимкнена кнопка без пояснення читається як зламана. */
+.qs-bar-right { flex-wrap: wrap; justify-content: flex-end; }
+/* Згорнутий пояс: значення стискається й переноситься по словах (flex-basis, не
+   max-content — інакше wrap виштовхував кнопку на другий рядок і на широкому
+   екрані), кнопка лишається в рядку, поки є місце, а перенесена — притиснута
+   праворуч (ревʼю с82 р2, лінза B, L-1). */
+.qs-tz { flex-wrap: wrap; row-gap: 4px; padding-top: 4px; padding-bottom: 4px; }
+.qs-tz-val { flex: 1 1 10rem; min-width: 0; }
+.qs-tz .btn { margin-left: auto; }
+/* Поля профілю центру/адміністратора — в стовпець на вузькому екрані: два поля в
+   ряд давали по 119 px на 320 px і 73–81 px у смузі 481–600 (телефон у ландшафті),
+   де головна колонка .wiz лишає 177–296 px. Поріг 680 — той самий, що у
+   .contacts-grid/.equip-block вище. Стосується і хаба — картка .reg-card одна
+   (ревʼю с82, лінза B, M-2 і L-5). */
+@media (max-width: 680px) {
+  .reg-card .fld-row { flex-direction: column; }
+  .reg-card .fld-spacer { display: none; }
+  /* Порожній підпис, що вирівнював кнопку «Зберегти логін» з полем у РЯДУ, у
+     стовпці — зайвий порожній рядок над кнопкою. */
+  .reg-card .fld-lab-ghost { display: none; }
+}
+@media (max-width: 480px) {
+  .qs-missing { flex: 1 1 100%; max-width: none; }
+  .qs-done-actions .btn { width: 100%; }
+}

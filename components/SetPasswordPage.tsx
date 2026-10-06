@@ -5,19 +5,27 @@
    Працює лише поки пароль не встановлено (далі — скидання адміністратором). */
 
 import { useState, useEffect, type ChangeEvent, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
+import { welcomeFor, type Welcome } from "@/lib/quickStart";
+import { signOutAndRedirect } from "@/lib/auth";
 import "./register.css";
 
 const REQUIRED = "Це поле обов'язкове";
 
 export default function SetPasswordPage() {
+  const router = useRouter();
   const [values, setValues] = useState<Record<string, string>>({ password: "", password2: "" });
+  const [signingOut, setSigningOut] = useState(false);
   const [token, setToken] = useState<string | null>(null); // одноразовий токен із ?token=
   const [identity, setIdentity] = useState<{ login: string | null; full_name: string | null } | null>(null);
   const [tokenInvalid, setTokenInvalid] = useState(false); // токен є, але недійсний/використаний
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [submitting, setSubmitting] = useState(false);
-  const [success, setSuccess] = useState(false);
+  /* с82: після успіху роут відкриває сесію (автовхід) і віддає контекст ролі —
+     екран каже, хто ввійшов і куди йти, замість «тепер увійдіть ще раз».
+     `signedIn=false` (сесію відкрити не вдалося) — чесний фолбек на /login. */
+  const [success, setSuccess] = useState<{ signedIn: boolean; otherSession: boolean; welcome: Welcome } | null>(null);
   const [toast, setToast] = useState<{ show: boolean; title: string; msg: string }>({ show: false, title: "", msg: "" });
 
   // Беремо одноразовий токен із посилання ?token=… (адмін передає його особисто)
@@ -89,7 +97,19 @@ export default function SetPasswordPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { setSubmitting(false); showToast(data.error || "Не вдалося встановити пароль."); return; }
-      setSuccess(true);
+      /* Шлях переходу рахується ТУТ із ролі (startPathForRole усередині
+         welcomeFor), а не береться з відповіді — у відповіді шляху нема. */
+      setSuccess({
+        signedIn: data?.signedIn === true,
+        otherSession: data?.reason === "other_session",
+        welcome: welcomeFor({
+          role: typeof data?.role === "string" ? data.role : null,
+          fullName: typeof data?.full_name === "string" ? data.full_name : identity?.full_name ?? null,
+          clinicName: typeof data?.clinic_name === "string" ? data.clinic_name : null,
+          roomsCount: typeof data?.rooms_count === "number" ? data.rooms_count : null,
+          centersCount: typeof data?.centers_count === "number" ? data.centers_count : null,
+        }),
+      });
     } catch {
       setSubmitting(false);
       showToast("Не вдалося звʼязатися із сервером. Спробуйте ще раз.");
@@ -114,9 +134,31 @@ export default function SetPasswordPage() {
         {success ? (
           <div className="success fade">
             <div className="ic">✅</div>
-            <h2>Пароль встановлено!</h2>
-            <div className="sub">Тепер увійдіть за своїм логіном і паролем.</div>
-            <a className="btn" href="/login">Перейти до входу</a>
+            <h2>{success.signedIn ? success.welcome.title : "Пароль встановлено!"}</h2>
+            {success.signedIn ? (<>
+              <div className="sub">Пароль встановлено, ви увійшли як {success.welcome.who}.</div>
+              {/* «Що далі» — по рядку на речення; список, а не абзац, бо рядків 1–2 і
+                  другий часто про те, чого ЩЕ немає (кабінети/центри не призначено). */}
+              <ul className="next" aria-label="Що далі">
+                {success.welcome.next.map((line, i) => <li key={i}>{line}</li>)}
+              </ul>
+              {/* Звичайне посилання, не router.push: сесія щойно лягла в cookie
+                  відповіді, і повний перехід гарантовано несе її в middleware. */}
+              <a className="btn" href={success.welcome.path}>{success.welcome.cta}</a>
+            </>) : success.otherSession ? (<>
+              {/* Посилання на /login тут НЕ підходить: при живій чужій сесії middleware
+                  (AUTH_PAGES) відвів би на /queue ТОГО акаунта — кнопка робила б
+                  протилежне своєму тексту (ревʼю с82 р2, обидві лінзи). Тому —
+                  явний вихід із чужого акаунта по кліку, і лише тоді форма входу. */}
+              <div className="sub">У цьому браузері ви вже увійшли в інший акаунт, тому автоматичний вхід пропущено. Вийдіть із нього кнопкою нижче або відкрийте сторінку входу в приватному вікні.</div>
+              <button className="btn" type="button" disabled={signingOut} aria-busy={signingOut}
+                onClick={async () => { setSigningOut(true); try { await signOutAndRedirect(router); } catch { setSigningOut(false); showToast("Не вдалося вийти з іншого акаунта. Відкрийте вхід у приватному вікні."); } }}>
+                {signingOut ? <><span className="spinner" />Виходимо…</> : "Вийти з іншого акаунта та увійти"}
+              </button>
+            </>) : (<>
+              <div className="sub">Тепер увійдіть за своїм логіном і паролем.</div>
+              <a className="btn" href="/login">Перейти до входу</a>
+            </>)}
           </div>
         ) : (
           <>
