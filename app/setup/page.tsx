@@ -101,8 +101,13 @@ export default async function SetupPage() {
     address: clinic?.address ?? "",
     phones: clinic?.phones ?? [],
     emails: clinic?.emails ?? [],
-    // Пусто → майстер підставить зону браузера як ПОЧАТКОВЕ значення (нова клініка).
-    timezone: clinic?.timezone ?? "",
+    /* Пусто → майстер підставить зону браузера (якщо вона у списку CHECK, інакше
+       Europe/Kyiv) як ПОЧАТКОВЕ значення. ⚠️ с82: колонка має DEFAULT 'UTC' (0059),
+       тож у НОВОЇ клініки тут ніколи не було порожньо — авто-визначення не
+       спрацьовувало жодного разу, і центр мовчки стартував у UTC (−3 год для
+       «Запізнення»/«Уточнити»/заборони запису в минуле). Поки центр не
+       налаштований, збережене значення — це дефолт колонки, а не вибір людини. */
+    timezone: firstRun ? "" : (clinic?.timezone ?? ""),
     adminName: profile.full_name ?? "",
     adminEmail: user.email ?? "",
     adminLogin: (profile.login as string) ?? "",   // 0124: друга форма входу, редагована

@@ -364,8 +364,18 @@
    кроку), тож курсор і ховер успадкованого .wstep тут хибні. */
 .qs-step { cursor: default; }
 .qs-step:hover { background: none; }
-/* Назва завершеного кроку — кнопка «назад»; виглядає як текст, але це посилання. */
-.qs-step-btn { background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+/* Заблокований крок — ПРИГЛУШЕНИЙ КОЛЬОРОМ, не opacity (AGENTS «opacity НЕ носитель
+   состояния»): прототипне `.wstep.locked { opacity: .55 }` давало 2.4–2.7:1 на
+   назві й описі (ревʼю с82, лінза B). --text-muted 5.55:1, --text-faint 4.62:1. */
+.qs-step.locked { opacity: 1; }
+.qs-step.locked .wstep-title { color: var(--text-muted); }
+.qs-step.locked .wstep-desc { color: var(--text-faint); }
+.qs-step.locked .wstep-num { border-style: dashed; }
+/* Назва завершеного кроку — кнопка «назад»; виглядає як текст, але це посилання.
+   Шрифт НЕ скидаємо шорткатом `font` — він перебив би розмір/вагу .wstep-title
+   (і мобільні .6875rem); лише сімейство. Підкреслення — --text-muted (5.55:1),
+   бо --border-strong на --card = 1.5:1 і підказки «це кнопка» не давало. */
+.qs-step-btn { background: none; border: 0; padding: 2px 0; font-family: inherit; text-align: inherit; cursor: pointer; text-decoration: underline; text-decoration-color: var(--text-muted); text-underline-offset: 3px; }
 .qs-step-btn:hover { color: var(--blue-text); text-decoration-color: currentColor; }
 /* Заголовок кроку отримує програмний фокус (tabIndex -1) — кільце тут зайве:
    фокус не для дії, а для оголошення; 2.4.7 стосується фокусованих елементів
@@ -393,7 +403,14 @@
 /* Рядок кнопок переноситься: на вузькому екрані підказка стає окремим рядком
    над кнопкою, а не ховається — вимкнена кнопка без пояснення читається як зламана. */
 .qs-bar-right { flex-wrap: wrap; justify-content: flex-end; }
+/* Згорнутий пояс: значення й кнопка переносяться, а не вилазять за рамку. */
+.qs-tz { flex-wrap: wrap; row-gap: 4px; padding-top: 4px; padding-bottom: 4px; }
 @media (max-width: 480px) {
   .qs-missing { flex: 1 1 100%; max-width: none; }
   .qs-done-actions .btn { width: 100%; }
+  /* Поля профілю центру/адміністратора — в стовпець: два поля в ряд давали по
+     119 px на 320 px («Медичний цен…», телефон на 17 знаків у 119 px). Стосується
+     і хаба — там та сама картка .reg-card (ревʼю с82, лінза B, M-2). */
+  .reg-card .fld-row { flex-direction: column; }
+  .reg-card .fld-spacer { display: none; }
 }

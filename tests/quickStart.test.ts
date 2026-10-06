@@ -197,7 +197,7 @@ describe("RegisterPage — назва центру і ПІБ їдуть у metad
   it("«Налаштувати центр →» веде в /setup ЛИШЕ коли signUp видав сесію; інакше — вхід", () => {
     expect(s).toMatch(/return \{ ok: true, session: !!data\?\.session \};/);
     expect(s).toMatch(/setSuccess\(!!res\.session\);/);
-    expect(s).toMatch(/\{success \? \(<> [^]*?<a className="btn" href="\/setup">Налаштувати центр →<\/a> <\/>\) : \(<> [^]*?<a className="btn" href="\/login">Перейти до входу<\/a>/);
+    expect(s).toMatch(/\{success \? \(<> [^]*?<a className="btn" href="\/setup">Налаштувати центр <span aria-hidden="true">→<\/span><\/a> <\/>\) : \(<> [^]*?<a className="btn" href="\/login">Перейти до входу<\/a>/);
   });
 });
 
@@ -213,7 +213,7 @@ describe("SetupWizard — режим швидкого старту", () => {
     return code.slice(a, b);
   };
   it("правила — з lib/quickStart, а не оголошені локально", () => {
-    expect(s).toMatch(/import \{ QS_STEPS, qsStepIndex, qsProgress, qsCenterMissing, qsRoomsMissing, missingText, sectionFromSearch, type QsStep \} from "@\/lib\/quickStart";/);
+    expect(s).toMatch(/import \{ QS_STEPS, qsStepIndex, qsProgress, qsCenterMissing, qsRoomsMissing, missingText, sectionFromSearch, pluralUk, type QsStep \} from "@\/lib\/quickStart";/);
     expect(s).toMatch(/const center = qsCenterMissing\(d, isValidPhoneUA\);/);
     expect(s).toMatch(/qsRoomsMissing\(d\.equip\.length, equipHoursValid\(d\.equip\), equipBreaksValid\(d\.equip\)\)/);
   });
@@ -232,8 +232,31 @@ describe("SetupWizard — режим швидкого старту", () => {
     expect(iConfigured).toBeGreaterThan(iClinic);
     expect(s.match(/configured_at: new Date\(\)\.toISOString\(\),/g)?.length, "configured_at пишеться рівно в одному місці").toBe(1);
   });
+  it("збій посеред циклу кабінетів віддає у форму id вже вставлених (ревʼю А, M-3) — обидві гілки, ДО throw", () => {
+    expect(s).toMatch(/const handBackPartial = \(\) => \{ if \(assigned\.length\) assignRoomIdsRef\.current\?\.\(assigned\); \};/);
+    expect(s).toMatch(/if \(ue\) \{ handBackPartial\(\); throw ue; \}/);
+    expect(s).toMatch(/if \(ie\) \{ handBackPartial\(\); throw ie; \}/);
+    // і при цьому ланцюг «insert → форма → знімок» з tests/setupWizard лишається: повний handOver після циклу
+    expect(s).toMatch(/const handOver = assigned\.length \? assignRoomIdsRef\.current : null; handOver\?\.\(assigned\);/);
+  });
+  it("стан кроку для скрінрідера: завершений — «виконано, повернутися» в кнопці, заблокований — «наступний крок», активний — лише aria-current", () => {
+    expect(s).toMatch(/onClick=\{\(\) => setQsStep\(s\.key\)\}>\{s\.title\}<span className="rf-vh"> — виконано, повернутися<\/span><\/button>/);
+    expect(s).toMatch(/state === "done" \? " — виконано" : state === "locked" \? " — наступний крок" : ""/);
+    expect(s).toMatch(/aria-current=\{state === "active" \? "step" : undefined\}/);
+    expect(s).not.toMatch(/поточний крок/);
+  });
+  it("телефон адміністратора: у формі — з пробілами (formatPhoneUA), у базу — E.164 (normalizePhoneUA)", () => {
+    expect(s).toMatch(/useState<string\[\]>\(\[formatPhoneUA\(initial\.adminPhone \|\| ""\)\]\)/);
+    expect(s).toMatch(/phone: normalizePhoneUA\(d\.aPhones\.find\(\(p\) => p\.trim\(\)\) \|\| ""\) \|\| null,/);
+  });
+  it("«Готово»: число кабінетів — через pluralUk, стани пунктів чеклиста названі для AT", () => {
+    expect(s).toMatch(/pluralUk\(d\.equip\.length, "кабінет", "кабінети", "кабінетів"\)/);
+    expect(s.match(/<span className="rf-vh">Виконано: <\/span>/g)?.length).toBe(2);
+    expect(s).toMatch(/<span className="rf-vh">Далі: <\/span>\{title\}/);
+    expect(s).not.toMatch(/d\.equip\.length < 5 \?/);
+  });
   it("«Готово» — лише після успішного save(); «Запустити» і діалог графіка йдуть через launch()", () => {
-    expect(s).toMatch(/async function launch\(skipSchedWarn = false\) \{ const ok = await save\(skipSchedWarn\); if \(ok\) setQsStep\("done"\); return ok; \}/);
+    expect(s).toMatch(/async function launch\(skipSchedWarn = false\) \{ const ok = await save\(skipSchedWarn\); if \(ok\) \{ dismissToast\(\); setQsStep\("done"\); \} return ok; \}/);
     expect(s).toMatch(/onClick=\{\(\) => launch\(\)\}/);
     // у швидкому режимі підтвердження «Записи поза новим графіком» теж веде через launch(true), не save(true)
     const quick = quickShell(s);
@@ -242,7 +265,7 @@ describe("SetupWizard — режим швидкого старту", () => {
     expect(quick).not.toMatch(/save\(true\)/);
   });
   it("кнопки «Далі»/«Запустити» вимкнені рівно за qsMissing і описані підказкою «Залишилось»", () => {
-    expect(s).toMatch(/disabled=\{!centerOk\} onClick=\{\(\) => setQsStep\("rooms"\)\}>Далі →<\/button>/);
+    expect(s).toMatch(/disabled=\{!centerOk\} onClick=\{\(\) => setQsStep\("rooms"\)\}>Далі <span aria-hidden="true">→<\/span><\/button>/);
     expect(s).toMatch(/disabled=\{!roomsOk \|\| !centerOk \|\| saving\} aria-busy=\{saving\} onClick=\{\(\) => launch\(\)\}>/);
     expect(s).toMatch(/<span className="fld-hint qs-missing" id="qs-missing" role="status" aria-live="polite">/);
     expect(s.match(/aria-describedby=\{(centerOk|roomsOk) \? undefined : "qs-missing"\}/g)?.length).toBe(2);
@@ -283,6 +306,11 @@ describe("app/setup/page.tsx — firstRun з тієї самої ознаки, �
     expect(s).toMatch(/const firstRun = !!clinic && !clinic\.configured_at;/);
     expect(s).toMatch(/firstRun=\{firstRun\}/);
   });
+  it("часовий пояс нового центру — НЕ дефолт колонки 'UTC' (0059): до запуску майстер отримує порожнє і сам обирає зону (ревʼю B, H-1)", () => {
+    expect(s).toMatch(/timezone: firstRun \? "" : \(clinic\?\.timezone \?\? ""\),/);
+    const mig = read("supabase/migrations/0059_clinic_timezone.sql");
+    expect(mig, "передумова піна: колонка з DEFAULT 'UTC' — якщо дефолт змінили міграцією, перегляньте і цей фолбек").toMatch(/timezone text not null default 'UTC'/);
+  });
 });
 
 describe("/api/account/set-password — автовхід ПІСЛЯ зміни пароля, без шляху у відповіді", () => {
@@ -298,13 +326,21 @@ describe("/api/account/set-password — автовхід ПІСЛЯ зміни �
     expect(iUErr).toBeGreaterThan(iPw); expect(iUErr).toBeLessThan(iWelcome);
   });
   it("сесію відкриває клієнт СЕСІЇ (cookie), адреса — з auth.users; service-role сесій не видає", () => {
-    expect(s).toMatch(/const session = await createClient\(\); const \{ error: sErr \} = await session\.auth\.signInWithPassword\(\{ email, password \}\);/);
+    expect(s).toMatch(/const session = await createClient\(\); const \{ data: cur \} = await session\.auth\.getUser\(\); if \(cur\?\.user\) \{ out\.reason = "other_session"; \} else \{ const \{ error: sErr \} = await session\.auth\.signInWithPassword\(\{ email, password \}\);/);
     expect(s).toMatch(/await admin\.auth\.admin\.getUserById\(userId\)/);
     expect(s).not.toMatch(/admin\.auth\.signInWithPassword/);
   });
+  it("чужа жива сесія в браузері НЕ підміняється автовходом (ревʼю А, M-2): getUser() ДО signInWithPassword, інакше reason=other_session", () => {
+    const iGet = s.indexOf("await session.auth.getUser()");
+    const iSign = s.indexOf("await session.auth.signInWithPassword({ email, password })");
+    expect(iGet).toBeGreaterThan(-1); expect(iSign).toBeGreaterThan(iGet);
+    expect(raw).toMatch(/reason: "other_session" \| null;/);
+  });
   it("у відповіді — роль і лічильники, але НЕ шлях/редірект (клієнт рахує шлях сам)", () => {
-    expect(raw).toMatch(/type WelcomePayload = \{[^}]*signedIn: boolean;[^}]*role: string \| null;[^}]*clinic_name: string \| null;[^}]*rooms_count: number \| null;[^}]*centers_count: number \| null;[^}]*\};/s);
-    expect(raw).not.toMatch(/type WelcomePayload = \{[^}]*(path|redirect|start|url)\b/s);
+    expect(raw).toMatch(/type WelcomePayload = \{[^}]*signedIn: boolean;[^}]*role: string \| null;[^}]*clinic_name: string \| null;[^}]*rooms_count: number \| null;[^}]*centers_count: number \| null;[^}]*\};/);
+    // без прапорця /s: tsconfig target ES2017 (TS1501) — [^}] і так крокує через переноси рядків;
+    // по коду без коментарів (s), бо коментар до signedIn законно згадує /login?redirect=
+    expect(s).not.toMatch(/type WelcomePayload = \{[^}]*(path|redirect|start|url)\b/);
     expect(s).toMatch(/return NextResponse\.json\(\{ ok: true, \.\.\.welcome \}\);/);
   });
   it("усе best-effort: збій привітання/автовходу не ламає успіх (try/catch + logError), лічильники — head:true", () => {
@@ -326,14 +362,16 @@ describe("SetPasswordPage — шлях лише з ролі; без сесії �
     expect(s).not.toMatch(/data\??\.(path|start|redirect|url)\b/);
     expect(s).toMatch(/<a className="btn" href=\{success\.welcome\.path\}>\{success\.welcome\.cta\}<\/a>/);
   });
-  it("signedIn — лише строге === true; без сесії — «Перейти до входу»", () => {
+  it("signedIn — лише строге === true; без сесії — «Перейти до входу»; при чужій сесії — пояснення чому", () => {
     expect(s).toMatch(/signedIn: data\?\.signedIn === true,/);
-    expect(s).toMatch(/<div className="sub">Тепер увійдіть за своїм логіном і паролем\.<\/div> <a className="btn" href="\/login">Перейти до входу<\/a>/);
+    expect(s).toMatch(/otherSession: data\?\.reason === "other_session",/);
+    expect(s).toMatch(/\{success\.otherSession \? "У цьому браузері вже відкрито інший акаунт[^"]*" : "Тепер увійдіть за своїм логіном і паролем\."\}<\/div> <a className="btn" href="\/login">Перейти до входу<\/a>/);
   });
   it("register.css: нові класи не тягнуть незадекларованих токенів (пін wcagMedium «var(--x) оголошено в .reg-root» діє на них теж)", () => {
     const css = read("components/register.css");
     expect(css).toMatch(/\.reg-root \.success \.next \{/);
-    expect(css).toMatch(/\.reg-root \.success \.next li::before \{ content: "→";/);
+    // `content: "→" / ""` — порожній альтернативний текст: стрілку не читає скрінрідер (ревʼю B, L-5)
+    expect(css).toMatch(/\.reg-root \.success \.next li::before \{ content: "→" \/ "";/);
   });
 });
 
@@ -343,6 +381,15 @@ describe("radflow-wizard.css — блок швидкого старту", () => 
     for (const c of [".qs-steps", ".qs-step", ".qs-step-btn", ".qs-tz", ".qs-missing", ".qs-bar-right", ".qs-check-link", ".qs-done-actions"]) {
       expect(css, `немає правила ${c}`).toContain(c + " {");
     }
+    // ревʼю B: заблокований крок приглушується КОЛЬОРОМ, прототипне opacity .55 перебите; кнопка-крок не скидає шрифт шорткатом
+    expect(css).toContain(".qs-step.locked { opacity: 1; }");
+    expect(css).toContain(".qs-step.locked .wstep-title { color: var(--text-muted); }");
+    expect(css).not.toMatch(/\.qs-step-btn \{[^}]*\bfont: inherit/);
+    expect(css).toMatch(/\.qs-step-btn \{[^}]*font-family: inherit/);
+    // ≤480: поля картки профілю — у стовпець (два поля в ряд давали 119 px на 320 px)
+    const mobile = css.slice(css.lastIndexOf("@media (max-width: 480px)"));
+    expect(mobile).toContain(".reg-card .fld-row { flex-direction: column; }");
+    expect(mobile).toContain(".reg-card .fld-spacer { display: none; }");
     const rm = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
     expect(rm).toMatch(/\.rocket \{ animation: none; \}/);
     expect(rm).toMatch(/\.wiz-prog-fill \{ transition: none; \}/);

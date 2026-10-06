@@ -25,7 +25,7 @@ import SignOutButton from "@/components/SignOutButton";
 import UnreadDot from "@/components/UnreadDot";
 import { UnreadChangesMount, useUnreadChanges } from "@/lib/useUnreadChanges";
 import { unreadForSurface, type SurfaceKey } from "@/lib/unreadChanges";
-import { formatPhoneUA, isValidPhoneUA } from "@/lib/phone";
+import { formatPhoneUA, isValidPhoneUA, normalizePhoneUA } from "@/lib/phone";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
 import "@/styles/prototype/radflow-wizard.css";
@@ -35,7 +35,7 @@ import { MODALITIES, modalityCode } from "@/lib/studies";
 import { wallDayKey } from "@/lib/incidents";
 import { roomDeleteBlockReason } from "@/lib/rooms";
 import { applyAssignedRoomIds, savedSnapshot, dirtyAfterSave } from "@/lib/setupWizard";
-import { QS_STEPS, qsStepIndex, qsProgress, qsCenterMissing, qsRoomsMissing, missingText, sectionFromSearch, type QsStep } from "@/lib/quickStart";
+import { QS_STEPS, qsStepIndex, qsProgress, qsCenterMissing, qsRoomsMissing, missingText, sectionFromSearch, pluralUk, type QsStep } from "@/lib/quickStart";
 
 /* Статуси «живого» запису: пацієнт іще чекає на кабінет. needs_reschedule — теж
    живий (запис без слота, реєстратура має передзвонити).
@@ -279,7 +279,10 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
   const loginNorm = normalizeLogin(adminLogin);
   const loginOk = isValidLogin(loginNorm);
   const loginDirty = loginNorm !== loginSaved;
-  const [aPhones, setAPhones] = useState<string[]>([initial.adminPhone || ""]);
+  /* Телефон у базі — E.164 (+380501234567, так пише реєстрація); у полі показуємо
+     його в тому ж вигляді, якого просить плейсхолдер і валідатор (+380 50 123 45 67).
+     Назад у базу save() повертає E.164 (normalizePhoneUA). */
+  const [aPhones, setAPhones] = useState<string[]>([formatPhoneUA(initial.adminPhone || "")]);
   const [aEmails, setAEmails] = useState<string[]>([""]);
 
   const [equip, setEquip] = useState<EquipItem[]>(
@@ -460,7 +463,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
       <div className="sec-label" style={{ marginTop: 16 }}>Медичний центр</div>
       <div className="form-card reg-card">
         <div className="fld-row">
-          <label className="fld"><span className="fld-lab">Назва клініки <Req /></span>
+          <label className="fld"><span className="fld-lab">{quickCenter ? "Назва центру" : "Назва клініки"} <Req /></span>
             <input className={"inp" + (clinic.trim() ? "" : " invalid")} aria-required={true} value={clinic} onChange={(e) => setClinic(e.target.value)} placeholder={quickCenter ? "напр. Медичний центр «Здоровʼя»" : undefined} /></label>
           <span className="fld-spacer" />
         </div>
@@ -494,7 +497,10 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
                 ))}
               </select>
             </>)}
-            <span className="fld-hint">{quickCenter && !tzOpen ? "Визначено за вашим браузером. " : `Зараз у центрі: ${tzNow(timezone)}. `}За цим часом рахуються «Запізнення», «Уточнити» та заборона запису в минуле — не змінюйте, якщо ви в іншій країні за центр.</span>
+            {/* Без «визначено за браузером»: дефолт — зона браузера ЛИШЕ коли вона у списку
+                CHECK, інакше канон ринку (clinicTzOrDefault), і стверджувати походження
+                не можна. Перевірка в людини одна — годинник центру. */}
+            <span className="fld-hint">{quickCenter && !tzOpen ? "Типово для центрів в Україні — Europe/Kyiv; перевірте, що «зараз у центрі» збігається з годинником у центрі. " : `Зараз у центрі: ${tzNow(timezone)}. `}За цим часом рахуються «Запізнення», «Уточнити» та заборона запису в минуле — не змінюйте, якщо ви перебуваєте в іншій країні, ніж центр.</span>
           </div>
           <span className="fld-spacer" />
         </div>
@@ -1135,21 +1141,29 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
         .from("profiles")
         .update({
           full_name: d.adminName.trim() || null,
-          phone: (d.aPhones.find((p) => p.trim()) || "").trim() || null,
+          // E.164 у базу — як пише реєстрація; у формі номер показаний із пробілами.
+          phone: normalizePhoneUA(d.aPhones.find((p) => p.trim()) || "") || null,
         })
         .eq("id", userId);
       if (pe) throw pe;
 
       const keepIds: string[] = [];
       const assigned: Array<{ localId: number | string; roomId: string }> = [];
+      /* с82 (ревʼю А, M-3): id кабінетів, вставлених ДО збою, віддаємо у форму
+         ЗАРАЗ ЖЕ, а не лише після успішного проходу всього циклу. Інакше збій на
+         другому insert (мережа, 5xx) лишав перший кабінет у базі без id у формі, і
+         повторне «Зберегти»/«Запустити» вставляло його вдруге — у швидкому старті це
+         ще й нічим не виправити до запуску (✕ у збереженого рядка схований).
+         `applyAssignedRoomIds` приймає частковий список і не чіпає рядки з id. */
+      const handBackPartial = () => { if (assigned.length) assignRoomIdsRef.current?.(assigned); };
       for (const e of d.equip) {
         if (e.roomId) {
           const { error: ue } = await supabase.from("rooms").update(roomFields(e)).eq("id", e.roomId);
-          if (ue) throw ue;
+          if (ue) { handBackPartial(); throw ue; }
           keepIds.push(e.roomId);
         } else {
           const { data: ins, error: ie } = await supabase.from("rooms").insert(roomFields(e)).select("id").single();
-          if (ie) throw ie;
+          if (ie) { handBackPartial(); throw ie; }
           if (ins) { keepIds.push(ins.id); assigned.push({ localId: e.id, roomId: ins.id }); }
         }
       }
@@ -1226,7 +1240,9 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
      (на свіжому центрі він не спрацює, але шлях один для обох режимів). */
   async function launch(skipSchedWarn = false) {
     const ok = await save(skipSchedWarn);
-    if (ok) setQsStep("done");
+    /* Екран «Готово» і сам каже, що все збережено — тост «Зміни збережено» поверх
+       нього був би другим повідомленням про одну подію (два живі регіони разом). */
+    if (ok) { dismissToast(); setQsStep("done"); }
     return ok;
   }
 
@@ -1257,9 +1273,12 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
                   {i < QS_STEPS.length - 1 && <span className={"wstep-line" + (state === "done" ? " done" : "")} aria-hidden="true" />}
                   <span className="wstep-num" aria-hidden="true">{state === "done" ? "✓" : i + 1}</span>
                   <span className="wstep-txt">
+                    {/* Стан кроку для скрінрідера: активний несе aria-current на <li> (без
+                        дубля в тексті), завершений — «виконано, повернутися» в самій кнопці,
+                        заблокований — «наступний крок»; глифи ✓/номер приховані. */}
                     {canGo
-                      ? <button type="button" className="wstep-title qs-step-btn" onClick={() => setQsStep(s.key)}>{s.title}</button>
-                      : <span className="wstep-title">{s.title}<span className="rf-vh">{state === "done" ? " — виконано" : state === "active" ? " — поточний крок" : ""}</span></span>}
+                      ? <button type="button" className="wstep-title qs-step-btn" onClick={() => setQsStep(s.key)}>{s.title}<span className="rf-vh"> — виконано, повернутися</span></button>
+                      : <span className="wstep-title">{s.title}<span className="rf-vh">{state === "done" ? " — виконано" : state === "locked" ? " — наступний крок" : ""}</span></span>}
                     <span className="wstep-desc">{s.desc}</span>
                   </span>
                 </li>
@@ -1301,14 +1320,14 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
                   <div className="check-item">
                     <span className="check-ic done" aria-hidden="true">✓</span>
                     <span className="check-txt">
-                      <span className="check-title">Центр «{d.clinic.trim()}»</span>
+                      <span className="check-title"><span className="rf-vh">Виконано: </span>Центр «{d.clinic.trim()}»</span>
                       <span className="check-sub">{d.city.trim()} · {d.timezone}</span>
                     </span>
                   </div>
                   <div className="check-item">
                     <span className="check-ic done" aria-hidden="true">✓</span>
                     <span className="check-txt">
-                      <span className="check-title">{d.equip.length} {d.equip.length === 1 ? "кабінет" : d.equip.length < 5 ? "кабінети" : "кабінетів"}</span>
+                      <span className="check-title"><span className="rf-vh">Виконано: </span>{d.equip.length} {pluralUk(d.equip.length, "кабінет", "кабінети", "кабінетів")}</span>
                       <span className="check-sub">{d.equip.map((e) => `${e.type} · ${(e.room || e.type).trim()}`).join("; ")}</span>
                     </span>
                   </div>
@@ -1321,7 +1340,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
                     <a key={anchor} className="check-item qs-check-link" href={`/setup?section=${anchor}`}>
                       <span className="check-ic pending" aria-hidden="true">→</span>
                       <span className="check-txt">
-                        <span className="check-title">{title}</span>
+                        <span className="check-title"><span className="rf-vh">Далі: </span>{title}</span>
                         <span className="check-sub">{sub}</span>
                       </span>
                     </a>
@@ -1339,7 +1358,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
             <div className="wiz-bar-inner">
               <div>
                 {qsStep === "rooms" && (
-                  <button type="button" className="btn btn-ghost" onClick={() => setQsStep("center")} disabled={saving}>← Назад</button>
+                  <button type="button" className="btn btn-ghost" onClick={() => setQsStep("center")} disabled={saving}><span aria-hidden="true">←</span> Назад</button>
                 )}
               </div>
               <div className="wiz-bar-right qs-bar-right">
@@ -1350,7 +1369,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
                 </span>
                 {qsStep === "center" ? (
                   <button type="button" className="btn btn-green btn-launch" aria-describedby={centerOk ? undefined : "qs-missing"}
-                    disabled={!centerOk} onClick={() => setQsStep("rooms")}>Далі →</button>
+                    disabled={!centerOk} onClick={() => setQsStep("rooms")}>Далі <span aria-hidden="true">→</span></button>
                 ) : (
                   <button type="button" className="btn btn-green btn-launch" aria-describedby={roomsOk ? undefined : "qs-missing"}
                     disabled={!roomsOk || !centerOk || saving} aria-busy={saving} onClick={() => launch()}>

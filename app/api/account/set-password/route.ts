@@ -152,8 +152,15 @@ export async function POST(req: Request) {
 /* ---------- Автовхід і контекст привітання (с82) ---------- */
 
 type WelcomePayload = {
-  /** Сесію відкрито в cookie відповіді — клієнт може йти на стартовий екран ролі. */
+  /** Сесію відкрито в cookie відповіді — клієнт може йти на стартовий екран ролі.
+      ⚠️ Це відповідь GoTrue на signInWithPassword, а не доказ, що cookie лягла:
+      `setAll` у lib/supabase/server.ts глушить виняток (для Server Components);
+      у Route Handler `cookies().set()` працює — той самий шлях, що /api/auth/login.
+      Якби колись не лягла — людина впаде в /login?redirect=…, тобто деградація мʼяка. */
   signedIn: boolean;
+  /** Чому автовходу не було: `other_session` — у цьому браузері вже відкрито інший
+      акаунт (ревʼю А, M-2: автовхід не має мовчки підміняти чужу сесію). */
+  reason: "other_session" | null;
   role: string | null;
   full_name: string | null;
   /** Центр персоналу (registrar/radiologist/admin); у глобальних ролей — null. */
@@ -168,7 +175,7 @@ type WelcomePayload = {
    (lib/quickStart.startPathForRole). Так у відповіді немає значення, яке можна
    було б підставити під редірект. */
 async function welcomeAfterSetPassword(admin: SupabaseClient<Database>, userId: string, password: string): Promise<WelcomePayload> {
-  const out: WelcomePayload = { signedIn: false, role: null, full_name: null, clinic_name: null, rooms_count: null, centers_count: null };
+  const out: WelcomePayload = { signedIn: false, reason: null, role: null, full_name: null, clinic_name: null, rooms_count: null, centers_count: null };
   try {
     const { data: prof } = await admin
       .from("profiles")
@@ -201,9 +208,21 @@ async function welcomeAfterSetPassword(admin: SupabaseClient<Database>, userId: 
     const email = au?.user?.email;
     if (email) {
       const session = await createClient();
-      const { error: sErr } = await session.auth.signInWithPassword({ email, password });
-      out.signedIn = !sErr;
-      if (sErr) logError({ event: "set_password.autologin_failed", actorId: userId, errorCode: "sign_in", message: sErr.message });
+      /* ⚠️ Чужу живу сесію НЕ підміняємо (ревʼю А, M-2). /set-password не в PROTECTED
+         і не в AUTH_PAGES, тож сторінку може відкрити залогінений: адмін, що «перевіряє»
+         посилання реєстратора у своєму браузері, або жертва login-CSRF, якій
+         прислали чуже посилання. До с82 обох рятував /login (вводили СВІЙ логін);
+         автовхід мовчки зробив би браузер адміна сесією реєстратора, а записи
+         жертви пішли б у чужий центр. Є сесія будь-якого акаунта — автовходу немає,
+         екран чесно каже «увійдіть», а решта відповіді лишається. */
+      const { data: cur } = await session.auth.getUser();
+      if (cur?.user) {
+        out.reason = "other_session";
+      } else {
+        const { error: sErr } = await session.auth.signInWithPassword({ email, password });
+        out.signedIn = !sErr;
+        if (sErr) logError({ event: "set_password.autologin_failed", actorId: userId, errorCode: "sign_in", message: sErr.message });
+      }
     }
   } catch (e) {
     /* Пароль уже стоїть — збій тут не перетворюємо на помилку, лише лишаємо слід. */

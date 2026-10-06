@@ -89,4 +89,4 @@
 /* с82: «що далі» після встановлення пароля — короткий список під привітанням. */
 .reg-root .success .next { list-style: none; margin: 14px auto 0; max-width: 360px; text-align: left; display: flex; flex-direction: column; gap: 8px; }
 .reg-root .success .next li { position: relative; padding-left: 18px; font-size: 0.8125rem; color: var(--text-secondary); line-height: 1.45; }
-.reg-root .success .next li::before { content: "→"; position: absolute; left: 0; color: var(--blue-text); }
+.reg-root .success .next li::before { content: "→" / ""; position: absolute; left: 0; color: var(--blue-text); }

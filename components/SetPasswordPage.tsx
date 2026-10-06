@@ -21,7 +21,7 @@ export default function SetPasswordPage() {
   /* с82: після успіху роут відкриває сесію (автовхід) і віддає контекст ролі —
      екран каже, хто ввійшов і куди йти, замість «тепер увійдіть ще раз».
      `signedIn=false` (сесію відкрити не вдалося) — чесний фолбек на /login. */
-  const [success, setSuccess] = useState<{ signedIn: boolean; welcome: Welcome } | null>(null);
+  const [success, setSuccess] = useState<{ signedIn: boolean; otherSession: boolean; welcome: Welcome } | null>(null);
   const [toast, setToast] = useState<{ show: boolean; title: string; msg: string }>({ show: false, title: "", msg: "" });
 
   // Беремо одноразовий токен із посилання ?token=… (адмін передає його особисто)
@@ -97,6 +97,7 @@ export default function SetPasswordPage() {
          welcomeFor), а не береться з відповіді — у відповіді шляху нема. */
       setSuccess({
         signedIn: data?.signedIn === true,
+        otherSession: data?.reason === "other_session",
         welcome: welcomeFor({
           role: typeof data?.role === "string" ? data.role : null,
           fullName: typeof data?.full_name === "string" ? data.full_name : identity?.full_name ?? null,
@@ -141,7 +142,9 @@ export default function SetPasswordPage() {
                   відповіді, і повний перехід гарантовано несе її в middleware. */}
               <a className="btn" href={success.welcome.path}>{success.welcome.cta}</a>
             </>) : (<>
-              <div className="sub">Тепер увійдіть за своїм логіном і паролем.</div>
+              <div className="sub">{success.otherSession
+                ? "У цьому браузері вже відкрито інший акаунт, тому автоматичного входу не було. Вийдіть із нього або відкрийте вхід у приватному вікні — і увійдіть за своїм логіном і паролем."
+                : "Тепер увійдіть за своїм логіном і паролем."}</div>
               <a className="btn" href="/login">Перейти до входу</a>
             </>)}
           </div>
