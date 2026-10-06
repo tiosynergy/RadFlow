@@ -5,13 +5,17 @@
    Працює лише поки пароль не встановлено (далі — скидання адміністратором). */
 
 import { useState, useEffect, type ChangeEvent, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 import { welcomeFor, type Welcome } from "@/lib/quickStart";
+import { signOutAndRedirect } from "@/lib/auth";
 import "./register.css";
 
 const REQUIRED = "Це поле обов'язкове";
 
 export default function SetPasswordPage() {
+  const router = useRouter();
   const [values, setValues] = useState<Record<string, string>>({ password: "", password2: "" });
+  const [signingOut, setSigningOut] = useState(false);
   const [token, setToken] = useState<string | null>(null); // одноразовий токен із ?token=
   const [identity, setIdentity] = useState<{ login: string | null; full_name: string | null } | null>(null);
   const [tokenInvalid, setTokenInvalid] = useState(false); // токен є, але недійсний/використаний
@@ -141,10 +145,18 @@ export default function SetPasswordPage() {
               {/* Звичайне посилання, не router.push: сесія щойно лягла в cookie
                   відповіді, і повний перехід гарантовано несе її в middleware. */}
               <a className="btn" href={success.welcome.path}>{success.welcome.cta}</a>
+            </>) : success.otherSession ? (<>
+              {/* Посилання на /login тут НЕ підходить: при живій чужій сесії middleware
+                  (AUTH_PAGES) відвів би на /queue ТОГО акаунта — кнопка робила б
+                  протилежне своєму тексту (ревʼю с82 р2, обидві лінзи). Тому —
+                  явний вихід із чужого акаунта по кліку, і лише тоді форма входу. */}
+              <div className="sub">У цьому браузері ви вже увійшли в інший акаунт, тому автоматичний вхід пропущено. Вийдіть із нього кнопкою нижче або відкрийте сторінку входу в приватному вікні.</div>
+              <button className="btn" type="button" disabled={signingOut} aria-busy={signingOut}
+                onClick={async () => { setSigningOut(true); try { await signOutAndRedirect(router); } catch { setSigningOut(false); showToast("Не вдалося вийти з іншого акаунта. Відкрийте вхід у приватному вікні."); } }}>
+                {signingOut ? <><span className="spinner" />Виходимо…</> : "Вийти з іншого акаунта та увійти"}
+              </button>
             </>) : (<>
-              <div className="sub">{success.otherSession
-                ? "У цьому браузері вже відкрито інший акаунт, тому автоматичного входу не було. Вийдіть із нього або відкрийте вхід у приватному вікні — і увійдіть за своїм логіном і паролем."
-                : "Тепер увійдіть за своїм логіном і паролем."}</div>
+              <div className="sub">Тепер увійдіть за своїм логіном і паролем.</div>
               <a className="btn" href="/login">Перейти до входу</a>
             </>)}
           </div>

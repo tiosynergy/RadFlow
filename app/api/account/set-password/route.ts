@@ -216,7 +216,12 @@ async function welcomeAfterSetPassword(admin: SupabaseClient<Database>, userId: 
          жертви пішли б у чужий центр. Є сесія будь-якого акаунта — автовходу немає,
          екран чесно каже «увійдіть», а решта відповіді лишається. */
       const { data: cur } = await session.auth.getUser();
-      if (cur?.user) {
+      if (cur?.user?.id === userId) {
+        /* Та сама людина вже увійшла (адмін скинув пароль, а сесія жива — GoTrue
+           admin-зміна пароля сесій не відкликає): входити вдруге нема потреби, і
+           «інший акаунт» тут був би неправдою (ревʼю с82 р2, лінза A, L-2). */
+        out.signedIn = true;
+      } else if (cur?.user) {
         out.reason = "other_session";
       } else {
         const { error: sErr } = await session.auth.signInWithPassword({ email, password });

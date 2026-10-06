@@ -282,7 +282,13 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
   /* Телефон у базі — E.164 (+380501234567, так пише реєстрація); у полі показуємо
      його в тому ж вигляді, якого просить плейсхолдер і валідатор (+380 50 123 45 67).
      Назад у базу save() повертає E.164 (normalizePhoneUA). */
-  const [aPhones, setAPhones] = useState<string[]>([formatPhoneUA(initial.adminPhone || "")]);
+  const [aPhones, setAPhones] = useState<string[]>([(() => {
+    const p = initial.adminPhone || "";
+    /* formatPhoneUA не ідемпотентна для НЕ-українських номерів (бере перші 9 цифр і
+       ліпить +380…) — легасі-значення показуємо як є, інакше хаб переписав би його
+       на фіктивний UA-номер першим же «Зберегти» (ревʼю с82 р2, лінза A, L-3). */
+    return isValidPhoneUA(p) ? formatPhoneUA(p) : p;
+  })()]);
   const [aEmails, setAEmails] = useState<string[]>([""]);
 
   const [equip, setEquip] = useState<EquipItem[]>(
@@ -566,7 +572,7 @@ function StepRegister({ report, onData, initial, active, clinicId, services, roo
             <span className="fld-hint" id="sw-login-hint">{loginOk ? LOGIN_HINT : <span style={{ color: "var(--red-text)" }}>{LOGIN_HINT}</span>}</span>
           </div>
           <div className="fld">
-            <span className="fld-lab">&nbsp;</span>
+            <span className="fld-lab fld-lab-ghost" aria-hidden="true">&nbsp;</span>
             {/* Логін зберігається ОКРЕМОЮ кнопкою, а не разом із майстром: його
                 міняє службовий роут під service-role (тригер 0064 не пускає
                 зміну login з клієнта), і відмова «логін зайнятий» має прийти
@@ -1278,7 +1284,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
                         заблокований — «наступний крок»; глифи ✓/номер приховані. */}
                     {canGo
                       ? <button type="button" className="wstep-title qs-step-btn" onClick={() => setQsStep(s.key)}>{s.title}<span className="rf-vh"> — виконано, повернутися</span></button>
-                      : <span className="wstep-title">{s.title}<span className="rf-vh">{state === "done" ? " — виконано" : state === "locked" ? " — наступний крок" : ""}</span></span>}
+                      : <span className="wstep-title">{s.title}<span className="rf-vh">{state === "done" ? " — виконано" : state === "locked" ? (i === stepIx + 1 ? " — наступний крок" : " — попереду") : ""}</span></span>}
                     <span className="wstep-desc">{s.desc}</span>
                   </span>
                 </li>

@@ -241,12 +241,14 @@ describe("SetupWizard — режим швидкого старту", () => {
   });
   it("стан кроку для скрінрідера: завершений — «виконано, повернутися» в кнопці, заблокований — «наступний крок», активний — лише aria-current", () => {
     expect(s).toMatch(/onClick=\{\(\) => setQsStep\(s\.key\)\}>\{s\.title\}<span className="rf-vh"> — виконано, повернутися<\/span><\/button>/);
-    expect(s).toMatch(/state === "done" \? " — виконано" : state === "locked" \? " — наступний крок" : ""/);
+    // «наступний крок» — лише для кроку одразу за поточним; дальший — «попереду» (ревʼю р2, L-3)
+    expect(s).toMatch(/state === "done" \? " — виконано" : state === "locked" \? \(i === stepIx \+ 1 \? " — наступний крок" : " — попереду"\) : ""/);
     expect(s).toMatch(/aria-current=\{state === "active" \? "step" : undefined\}/);
     expect(s).not.toMatch(/поточний крок/);
   });
   it("телефон адміністратора: у формі — з пробілами (formatPhoneUA), у базу — E.164 (normalizePhoneUA)", () => {
-    expect(s).toMatch(/useState<string\[\]>\(\[formatPhoneUA\(initial\.adminPhone \|\| ""\)\]\)/);
+    // форматуємо лише ВАЛІДНИЙ UA-номер: formatPhoneUA не ідемпотентна для інших (ревʼю р2, A L-3)
+    expect(s).toMatch(/return isValidPhoneUA\(p\) \? formatPhoneUA\(p\) : p;/);
     expect(s).toMatch(/phone: normalizePhoneUA\(d\.aPhones\.find\(\(p\) => p\.trim\(\)\) \|\| ""\) \|\| null,/);
   });
   it("«Готово»: число кабінетів — через pluralUk, стани пунктів чеклиста названі для AT", () => {
@@ -326,7 +328,7 @@ describe("/api/account/set-password — автовхід ПІСЛЯ зміни �
     expect(iUErr).toBeGreaterThan(iPw); expect(iUErr).toBeLessThan(iWelcome);
   });
   it("сесію відкриває клієнт СЕСІЇ (cookie), адреса — з auth.users; service-role сесій не видає", () => {
-    expect(s).toMatch(/const session = await createClient\(\); const \{ data: cur \} = await session\.auth\.getUser\(\); if \(cur\?\.user\) \{ out\.reason = "other_session"; \} else \{ const \{ error: sErr \} = await session\.auth\.signInWithPassword\(\{ email, password \}\);/);
+    expect(s).toMatch(/const session = await createClient\(\); const \{ data: cur \} = await session\.auth\.getUser\(\); if \(cur\?\.user\?\.id === userId\) \{ out\.signedIn = true; \} else if \(cur\?\.user\) \{ out\.reason = "other_session"; \} else \{ const \{ error: sErr \} = await session\.auth\.signInWithPassword\(\{ email, password \}\);/);
     expect(s).toMatch(/await admin\.auth\.admin\.getUserById\(userId\)/);
     expect(s).not.toMatch(/admin\.auth\.signInWithPassword/);
   });
@@ -362,16 +364,21 @@ describe("SetPasswordPage — шлях лише з ролі; без сесії �
     expect(s).not.toMatch(/data\??\.(path|start|redirect|url)\b/);
     expect(s).toMatch(/<a className="btn" href=\{success\.welcome\.path\}>\{success\.welcome\.cta\}<\/a>/);
   });
-  it("signedIn — лише строге === true; без сесії — «Перейти до входу»; при чужій сесії — пояснення чому", () => {
+  it("signedIn — лише строге === true; без сесії — «Перейти до входу»; при чужій сесії — явний вихід, а не посилання на /login", () => {
     expect(s).toMatch(/signedIn: data\?\.signedIn === true,/);
     expect(s).toMatch(/otherSession: data\?\.reason === "other_session",/);
-    expect(s).toMatch(/\{success\.otherSession \? "У цьому браузері вже відкрито інший акаунт[^"]*" : "Тепер увійдіть за своїм логіном і паролем\."\}<\/div> <a className="btn" href="\/login">Перейти до входу<\/a>/);
+    /* /login при живій чужій сесії middleware (AUTH_PAGES) відвів би на /queue ТОГО акаунта —
+       тому кнопка виходу (signOutAndRedirect), і лише потім форма входу (ревʼю р2, обидві лінзи). */
+    expect(s).toMatch(/import \{ signOutAndRedirect \} from "@\/lib\/auth";/);
+    // `(?:\{ \} )?` — слід JSX-коментаря після codeOf
+    expect(s).toMatch(/success\.otherSession \? \(<> (?:\{ \} )?<div className="sub">У цьому браузері ви вже увійшли в інший акаунт[^<]*<\/div> <button className="btn" type="button" disabled=\{signingOut\} aria-busy=\{signingOut\} onClick=\{async \(\) => \{ setSigningOut\(true\); try \{ await signOutAndRedirect\(router\); \}/);
+    expect(s).toMatch(/<div className="sub">Тепер увійдіть за своїм логіном і паролем\.<\/div> <a className="btn" href="\/login">Перейти до входу<\/a>/);
   });
   it("register.css: нові класи не тягнуть незадекларованих токенів (пін wcagMedium «var(--x) оголошено в .reg-root» діє на них теж)", () => {
     const css = read("components/register.css");
     expect(css).toMatch(/\.reg-root \.success \.next \{/);
-    // `content: "→" / ""` — порожній альтернативний текст: стрілку не читає скрінрідер (ревʼю B, L-5)
-    expect(css).toMatch(/\.reg-root \.success \.next li::before \{ content: "→" \/ "";/);
+    // `content: "→" / ""` — порожній альтернативний текст (стрілку не читає скрінрідер), перед ним фолбек для старих рушіїв
+    expect(css).toMatch(/\.reg-root \.success \.next li::before \{ content: "→"; content: "→" \/ "";/);
   });
 });
 
@@ -386,10 +393,15 @@ describe("radflow-wizard.css — блок швидкого старту", () => 
     expect(css).toContain(".qs-step.locked .wstep-title { color: var(--text-muted); }");
     expect(css).not.toMatch(/\.qs-step-btn \{[^}]*\bfont: inherit/);
     expect(css).toMatch(/\.qs-step-btn \{[^}]*font-family: inherit/);
-    // ≤480: поля картки профілю — у стовпець (два поля в ряд давали 119 px на 320 px)
-    const mobile = css.slice(css.lastIndexOf("@media (max-width: 480px)"));
-    expect(mobile).toContain(".reg-card .fld-row { flex-direction: column; }");
-    expect(mobile).toContain(".reg-card .fld-spacer { display: none; }");
+    // ≤680: поля картки профілю — у стовпець (два поля в ряд давали 119 px на 320 px і 73–81 px у смузі 481–600)
+    const i680 = css.lastIndexOf("@media (max-width: 680px)");
+    const narrow = css.slice(i680, css.indexOf("}\n}", i680) + 3);
+    expect(narrow).toContain(".reg-card .fld-row { flex-direction: column; }");
+    expect(narrow).toContain(".reg-card .fld-spacer { display: none; }");
+    expect(narrow).toContain(".reg-card .fld-lab-ghost { display: none; }");
+    // згорнутий пояс: значення стискається, кнопка притиснута праворуч (р2, L-1)
+    expect(css).toContain(".qs-tz-val { flex: 1 1 10rem; min-width: 0; }");
+    expect(css).toContain(".qs-tz .btn { margin-left: auto; }");
     const rm = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
     expect(rm).toMatch(/\.rocket \{ animation: none; \}/);
     expect(rm).toMatch(/\.wiz-prog-fill \{ transition: none; \}/);
