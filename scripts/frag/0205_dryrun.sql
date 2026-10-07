@@ -462,8 +462,8 @@ $fxa$;
     raise exception 'dryrun: сторож після передруку червоний: % — %', v_failed, v_res->'failed';
   end if;
 
-  -- ── Поведінка тригера: три рядки auth.users без `managed` — тригер сам створює
-  --    центр і профіль; читаємо, що лягло. Усе відкочується (raise/rollback ззовні) ──
+  -- ── Поведінка тригера: три рядки auth.users (дві реєстрації і один `managed`) — тригер
+  --    сам створює центр і профіль; читаємо, що лягло. Усе відкочується (raise ззовні) ──
   v_u1 := gen_random_uuid(); v_u2 := gen_random_uuid(); v_u3 := gen_random_uuid();
   v_sfx := replace(gen_random_uuid()::text, '-', '');
   insert into auth.users (id, email, encrypted_password, email_confirmed_at, aud, role, raw_user_meta_data) values
@@ -472,7 +472,8 @@ $fxa$;
        'clinic_name', E'   Центр \t  «Проба»  \n  ' || repeat('щ', 250),
        'full_name', E'  Іван  \n\t Петренко   ', 'phone', '+380501234567')),
     (v_u2, 'probe2.' || v_sfx || '@radflow.test', 'x', now(), 'authenticated', 'authenticated',
-     jsonb_build_object('login', 'probe2' || left(v_sfx, 8), 'clinic_name', '   ', 'full_name', E'\t \n')),
+     jsonb_build_object('login', 'probe2' || left(v_sfx, 8), 'clinic_name', '   ',
+       'full_name', repeat('ж', 199) || ' ' || repeat('з', 50))),
     (v_u3, 'probe3.' || v_sfx || '@radflow.test', 'x', now(), 'authenticated', 'authenticated',
      jsonb_build_object('managed', 'true', 'clinic_name', 'НЕ МАЄ З''ЯВИТИСЬ', 'full_name', 'НЕ МАЄ'));
   select c.name, p.full_name, p.login into v_cn, v_fn, v_lg
@@ -488,8 +489,10 @@ $fxa$;
   end if;
   select c.name, p.full_name, p.login into v_cn, v_fn, v_lg
     from public.profiles p join public.clinics c on c.id = p.clinic_id where p.id = v_u2;
-  if v_cn is distinct from v_lg or v_fn is distinct from v_lg then
-    raise exception 'dryrun: проба 2 — порожнє після обрізки мало дати логін (%), а дало «%» / «%»', v_lg, v_cn, v_fn;
+  -- проба 2: порожня назва → логін; ПІБ зі зрізом на пробілі (199 + пробіл + хвіст) →
+  --   рівно 199 без хвостового пробілу — це ловить втрату ДРУГОГО btrim (ревʼю с83, лінза C)
+  if v_cn is distinct from v_lg or v_fn is distinct from repeat('ж', 199) then
+    raise exception 'dryrun: проба 2 — порожнє мало дати логін (%), зріз на пробілі — 199 без хвоста; дало «%» / довжина % (хвіст-пробіл: %)', v_lg, v_cn, length(v_fn), v_fn ~ '\s$';
   end if;
   if exists (select 1 from public.profiles where id = v_u3) or exists (select 1 from public.clinics where name = 'НЕ МАЄ З''ЯВИТИСЬ') then
     raise exception 'dryrun: проба 3 — managed-акаунт отримав профіль/центр від тригера';
@@ -502,9 +505,11 @@ $fxa$;
     raise exception 'dryrun: рядок леджера не ліг (% рядків)', v_rows;
   end if;
 
-  raise exception 'DRYRUN_0205_ROLLBACK guard=% len=% pin=% hnu_raw=% hnu_rec19_ok=true probes=3/3 ledger_last=%',
+  raise exception 'DRYRUN_0205_ROLLBACK guard=% len=% pin=% hnu_raw=% hnu_rec19_ok=% probes=3/3 ledger_last=%',
     md5(v_src), length(v_src), v_pin_db,
     (select md5(replace(f.prosrc, chr(13), '')) from pg_proc f where f.oid = to_regprocedure('public.handle_new_user()')),
+    (select md5(btrim(regexp_replace(f.prosrc || coalesce(pg_get_function_sqlbody(f.oid)::text, ''), '\s+', ' ', 'g'))) = 'e20e3c8342970918eb6eb1e339196a8e'
+       from pg_proc f where f.oid = to_regprocedure('public.handle_new_user()')),
     (select max(name) from public.migration_ledger);
 end
 $dryrun$;

@@ -215,7 +215,9 @@ describe("0205 — handle_new_user: обрізка clinic_name / full_name (Н-2
     expect(FORM).toContain('full_name: values.fullName.trim().replace(/\\s+/g, " "),');
     expect(FORM).toMatch(/v\.trim\(\)\.length > NAME_MAX \? `Не більше \$\{NAME_MAX\} символів`/);
     expect(count(HNU_NEW_BODY, `, ${NAME_MAX})), '')`)).toBe(2);
-    expect(HNU_NEW_BODY).not.toMatch(/left\([^)]*,\s*(?!200\))\d+\)/);
+    /* Обидві стелі — рівно NAME_MAX (розбір, а не регулярка «до першої дужки»). */
+    expect([...HNU_NEW_BODY.matchAll(/\), (\d+)\)\), ''\)/g)].map((m) => m[1])).toEqual([String(NAME_MAX), String(NAME_MAX)]);
+    expect(count(HNU_NEW_BODY, "left(")).toBe(2);
   });
 
   it("md5 тіла (сирий з провідним переносом, як у prosrc, і рецепт №19) — з тексту файлу; 0124 — старі", () => {
@@ -286,7 +288,9 @@ describe("0205 — handle_new_user: обрізка clinic_name / full_name (Н-2
       expect(frag).toContain("'managed', 'true'");
       expect(frag).toContain("if length(v_cn) <> 200 or v_cn not like 'Центр «Проба» щщщ%' or v_cn ~ '\\s\\s' or v_cn ~ '^\\s|\\s$' then");
       expect(frag).toContain("if v_fn is distinct from 'Іван Петренко' then");
-      expect(frag).toContain("if v_cn is distinct from v_lg or v_fn is distinct from v_lg then");
+      /* Проба 2: порожня назва → логін І зріз ПІБ на пробілі → 199 без хвоста (втрата другого btrim — ревʼю с83, лінза C). */
+      expect(frag).toContain("'full_name', repeat('ж', 199) || ' ' || repeat('з', 50))),");
+      expect(frag).toContain("if v_cn is distinct from v_lg or v_fn is distinct from repeat('ж', 199) then");
       expect(frag).toContain("@radflow.test");
       expect(frag).not.toMatch(/\bcommit\b/i);
     }
@@ -424,12 +428,34 @@ describe("0205 — фрагменти", () => {
       expect(frag).toContain("perform set_config('search_path', 'public, pg_temp', true);");
       for (const t of ["$pre$", "$chk$", "$post$"]) expect(frag).not.toContain(t);
     }
-    expect(DRYRUN).toContain("raise exception 'DRYRUN_0205_ROLLBACK guard=% len=% pin=% hnu_raw=% hnu_rec19_ok=true probes=3/3 ledger_last=%',");
+    expect(DRYRUN).toContain("raise exception 'DRYRUN_0205_ROLLBACK guard=% len=% pin=% hnu_raw=% hnu_rec19_ok=% probes=3/3 ledger_last=%',");
+    expect(DRYRUN).toContain(`    (select md5(btrim(regexp_replace(f.prosrc || coalesce(pg_get_function_sqlbody(f.oid)::text, ''), '\\s+', ' ', 'g'))) = '${HNU_NEW_REC19}'`);
     expect(FALSIFY).toContain("raise exception 'FALSIFY_0205 verdict=PASS probes=A,B,C,D guard=% hnu_raw=%', md5(v_src),");
     expect(count(APPLY, "raise exception 'DRYRUN")).toBe(0);
     expect(count(APPLY, "do $")).toBe(1);
     expect(count(DRYRUN, "do $")).toBe(1);
     expect(count(ROLLBACK, "do $")).toBe(1);
+  });
+
+  it("гучність: кожна відмова — raise exception (жодного notice), тексти провалу сторожа — дослівно, число raise — пін", () => {
+    /* Ревʼю с83 (лінза C): пін наявності сторожа не ловить `raise exception → raise notice`. */
+    for (const [frag, n] of [[APPLY, 31], [DRYRUN, 37], [ROLLBACK, 24], [FALSIFY, 20], [SMOKE, 21]] as const) {
+      expect(count(frag, "raise notice")).toBe(0);
+      expect(count(frag, "raise warning")).toBe(0);
+      expect(count(frag, "raise exception")).toBe(n);
+    }
+    expect(count(MIG.replace(RP_NEW, ""), "raise notice")).toBe(0);
+    expect(count(MIG.replace(RP_NEW, ""), "raise exception")).toBe(16);
+    expect(APPLY).toContain("    raise exception 'apply: сторож після передруку червоний: % — %', v_failed, v_res->'failed';");
+    expect(DRYRUN).toContain("    raise exception 'dryrun: сторож після передруку червоний: % — %', v_failed, v_res->'failed';");
+    expect(ROLLBACK).toContain("    raise exception 'back: сторож після відкату червоний: % — %', v_failed, v_res->'failed';");
+    expect(FALSIFY).toContain("    raise exception 'falsify: сторож до проб червоний: % — %', v_failed, v_res->'failed';");
+    expect(MIG).toContain("  if v_failed is not null then\n    raise exception '0205: після передруку сторож червоний: % — %', v_failed, v_res->'failed';\n  end if;");
+    for (const [frag, tag] of [[APPLY, "apply"], [DRYRUN, "dryrun"]] as const) {
+      expect(frag).toContain(`    raise exception '${tag}: №19 після передруку червоний: %', v_tmp;`);
+      expect(frag).toContain(`    raise exception '${tag}: у БД лягло % / % замість ${NEW_MD5} / ${NEW_LEN}', md5(v_src), length(v_src);`);
+      expect(frag).toContain(`    raise exception '${tag}: handle_new_user після заміни не та: %', v_bad;`);
+    }
   });
 
   it("apply і dryrun: суворий предстан (леджер рівно на 0204), повний сторож ПІСЛЯ передруку, леджер останнім", () => {
