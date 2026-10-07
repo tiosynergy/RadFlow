@@ -1448,7 +1448,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
               екрана. clinicName порожній лише в мить першого налаштування —
               тоді видаляти ще нічого. */}
           {clinicName ? (
-            <div style={{ marginTop: 12 }}>
+            <div className="wiz-danger" style={{ marginTop: 12 }}>
               <DangerZone clinicName={clinicName} />
             </div>
           ) : null}

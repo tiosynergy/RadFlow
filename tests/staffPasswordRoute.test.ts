@@ -141,47 +141,78 @@ describe("/api/staff/password — подія в журналі на скидан
   });
 
   /* с83: направник. Активний грант — як і було; НЕПРИЙНЯТЕ запрошення цього центру —
-     дозволено лише поки лікар ні з ким не працює (знахідка власника 07.10: картка
-     «Запрошені» малює «Скинути пароль», роут відповідав 403). */
+     лише `reset` і лише поки ЖОДЕН інший центр (ні сам лікар) рядка доступу не має:
+     перша редакція («немає активних ні з ким») пускала захоплення лікаря, якого чекає
+     інший центр (ревʼю лінза C, H-1). Знахідка власника 07.10: картка «Запрошені»
+     малює «Скинути пароль», роут відповідав 403. У фікстурах — сторонній направник
+     з активним грантом (ревʼю A, M-2 / C, T-1): без нього запит без `.eq("referrer_id")`
+     лишався зеленим, а на проді pending-шлях був би мертвим. */
+  const OTHER_REF = "aaaaaaaa-1111-4222-8333-444444444444";
   const REF_ACCESS = (over: Row = {}): Row => ({ id: "ra1", referrer_id: TARGET, clinic_id: CLINIC, status: "active", ...over });
+  const STRANGER_ACTIVE: Row = { id: "ra9", referrer_id: OTHER_REF, clinic_id: OTHER_CLINIC, status: "active" };
+  const STRANGER_ACTIVE_HERE: Row = { id: "ra8", referrer_id: OTHER_REF, clinic_id: CLINIC, status: "active" };
   const refProfile = () => [profile({ role: "referrer", clinic_id: null }), bystander()];
+  const untouchedStrangers = () => expect(db.tables.referral_access.filter((r) => r.referrer_id === OTHER_REF)).toEqual([STRANGER_ACTIVE, STRANGER_ACTIVE_HERE]);
 
-  it("направник з активним грантом на центр адміна → 200, подія з targetRole referrer", async () => {
+  it("направник з активним грантом на центр адміна → 200 (reset і set), подія з targetRole referrer", async () => {
     db.tables.profiles = refProfile();
-    db.tables.referral_access = [REF_ACCESS()];
+    db.tables.referral_access = [REF_ACCESS(), STRANGER_ACTIVE, STRANGER_ACTIVE_HERE];
     const { status, body } = await call({ userId: TARGET, action: "reset" });
     expect(status).toBe(200);
     expect(typeof body.invite_token).toBe("string");
     const ev = emitted.mock.calls[0][0] as Record<string, unknown>;
     expect(ev).toMatchObject({ clinicId: CLINIC, entityId: TARGET });
     expect(ev.details).toEqual({ action: "password_reset", targetRole: "referrer" });
-    untouchedBystander();
+    const set = await call({ userId: TARGET, action: "set", password: "Correct-Horse-9" });
+    expect(set.status).toBe(200);
+    untouchedBystander(); untouchedStrangers();
   });
 
-  it.each([
-    ["лікар ні з ким не повʼязаний", []],
-    ["інший центр теж лише запросив", [{ id: "ra2", referrer_id: TARGET, clinic_id: OTHER_CLINIC, status: "pending_referrer" }]],
-    ["грант іншого центру відкликано", [{ id: "ra2", referrer_id: TARGET, clinic_id: OTHER_CLINIC, status: "revoked" }]],
-    ["лікар сам просив доступ до іншого центру, той ще не вирішив", [{ id: "ra2", referrer_id: TARGET, clinic_id: OTHER_CLINIC, status: "pending_clinic" }]],
-  ])("запрошення цього центру не прийняте, %s → 200 (посилання можна видати заново)", async (_n, others) => {
+  it("запрошення цього центру не прийняте, інших рядків у лікаря немає → reset 200 (посилання можна видати заново)", async () => {
     db.tables.profiles = refProfile();
-    db.tables.referral_access = [REF_ACCESS({ status: "pending_referrer" }), ...(others as Row[])];
+    db.tables.referral_access = [REF_ACCESS({ status: "pending_referrer" }), STRANGER_ACTIVE, STRANGER_ACTIVE_HERE];
     const { status, body } = await call({ userId: TARGET, action: "reset" });
     expect(status).toBe(200);
     expect(db.tables.profiles[0].invite_token).toBe(body.invite_token);
+    expect(db.tables.profiles[0].password_set).toBe(false);
     expect(emitted).toHaveBeenCalledTimes(1);
+    untouchedBystander(); untouchedStrangers();
+  });
+
+  it("запрошення не прийняте: `set` (відомий пароль без сліду) → 403, лише reset", async () => {
+    db.tables.profiles = refProfile();
+    db.tables.referral_access = [REF_ACCESS({ status: "pending_referrer" })];
+    const { status } = await call({ userId: TARGET, action: "set", password: "Correct-Horse-9" });
+    expect(status).toBe(403);
+    expect(db.authCalls).toEqual([]);
+    expect(emitted).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["лікар уже АКТИВНИЙ в іншому центрі (захоплення чужого акаунта)", [{ id: "ra2", referrer_id: TARGET, clinic_id: OTHER_CLINIC, status: "active" }]],
+    ["інший центр теж запросив — лікаря ЧЕКАЮТЬ, нападник прийняв би запрошення від його імені", [{ id: "ra2", referrer_id: TARGET, clinic_id: OTHER_CLINIC, status: "pending_referrer" }]],
+    ["лікар сам просив доступ до іншого центру (pending_clinic) — акаунт живий, це не наш", [{ id: "ra2", referrer_id: TARGET, clinic_id: OTHER_CLINIC, status: "pending_clinic" }]],
+    ["грант іншого центру відкликано — історія в тому центрі (повторний грант повертає читання)", [{ id: "ra2", referrer_id: TARGET, clinic_id: OTHER_CLINIC, status: "revoked" }]],
+    ["інший центр лікар відхилив", [{ id: "ra2", referrer_id: TARGET, clinic_id: OTHER_CLINIC, status: "declined" }]],
+  ])("запрошення не прийняте, але %s → 403", async (_n, others) => {
+    db.tables.profiles = refProfile();
+    db.tables.referral_access = [REF_ACCESS({ status: "pending_referrer" }), ...(others as Row[]), STRANGER_ACTIVE];
+    const { status } = await call({ userId: TARGET, action: "reset" });
+    expect(status).toBe(403);
+    expect(db.authCalls).toEqual([]);
+    expect((db.queries ?? []).filter((q) => q.wrote)).toEqual([]);
+    expect(emitted).not.toHaveBeenCalled();
     untouchedBystander();
   });
 
   it.each([
-    ["запрошення не прийняте, але лікар уже АКТИВНИЙ в іншому центрі (захоплення чужого акаунта)",
-      [REF_ACCESS({ status: "pending_referrer" }), { id: "ra2", referrer_id: TARGET, clinic_id: OTHER_CLINIC, status: "active" }]],
     ["лікар сам просить доступ (pending_clinic) — центр ще нічого не вирішив", [REF_ACCESS({ status: "pending_clinic" })]],
     ["грант відкликано", [REF_ACCESS({ status: "revoked" })]],
     ["запрошення відхилено лікарем", [REF_ACCESS({ status: "declined" })]],
     ["запрошення лише від ЧУЖОГО центру", [{ id: "ra2", referrer_id: TARGET, clinic_id: OTHER_CLINIC, status: "pending_referrer" }]],
     ["активний грант лише на ЧУЖИЙ центр", [REF_ACCESS({ clinic_id: OTHER_CLINIC })]],
     ["жодного рядка доступу", []],
+    ["лише чужі рядки (інший направник активний тут і деінде)", [STRANGER_ACTIVE, STRANGER_ACTIVE_HERE]],
   ])("направник: %s → 403, жодного запису й жодної події", async (_n, grants) => {
     db.tables.profiles = refProfile();
     db.tables.referral_access = grants as Row[];
@@ -193,16 +224,23 @@ describe("/api/staff/password — подія в журналі на скидан
     untouchedBystander();
   });
 
-  it("направник: збій другого запиту (гранти деінде) → 403, не 200 (fail-closed)", async () => {
+  it("направник: збій читання referral_access → 403, не 200 (fail-closed), навіть при активному гранті", async () => {
     db.tables.profiles = refProfile();
-    db.tables.referral_access = [REF_ACCESS({ status: "pending_referrer" })];
-    // перший select із referral_access (рядок цього центру) проходить, другий (активні деінде) падає
-    db.errorsAfter = { referral_access: { after: 1, error: { message: "boom" } } };
+    db.tables.referral_access = [REF_ACCESS()];
+    db.errors = { referral_access: { message: "boom" } };
     const { status } = await call({ userId: TARGET, action: "reset" });
     expect(status).toBe(403);
     expect(db.authCalls).toEqual([]);
     expect(emitted).not.toHaveBeenCalled();
-    db.errorsAfter = undefined;
+  });
+
+  it("направник: рядки читаються ОДНИМ запитом по referrer_id (без гонки між двома читаннями)", async () => {
+    db.tables.profiles = refProfile();
+    db.tables.referral_access = [REF_ACCESS({ status: "pending_referrer" }), STRANGER_ACTIVE];
+    await call({ userId: TARGET, action: "reset" });
+    const reads = (db.queries ?? []).filter((q) => q.table === "referral_access");
+    expect(reads).toHaveLength(1);
+    expect(db.seen.referral_access?.filters).toEqual(["eq:referrer_id"]);
   });
 
   it("персонал ЧУЖОГО центру → 403, жодного запису й жодної події", async () => {

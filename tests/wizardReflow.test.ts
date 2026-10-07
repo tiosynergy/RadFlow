@@ -69,8 +69,8 @@ describe("radflow-wizard.css — .wiz-main-inner має явну ширину (�
     expect(css).not.toMatch(/\.wiz-main-inner[^{]*\{[^}]*width: (auto|fit-content|max-content|min-content)/);
     expect(css).not.toMatch(/\.wiz-main[^{]*\{[^}]*min-width: [1-9]/);
   });
-  it(".wiz-main: scroll-padding-bottom під липку .wiz-bar (2.4.11 Focus Not Obscured)", () => {
-    expect(css).toMatch(/\.wiz-main \{[^}]*scroll-padding-bottom: 7\.5rem;/);
+  it(".wiz-main: scroll-padding-bottom під липку .wiz-bar (2.4.11 Focus Not Obscured) — у БАЗОВОМУ правилі, не лише в мобільному", () => {
+    expect(css).toMatch(/\.wiz-main \{ overflow-y: auto; height: 100%;[^}]*scroll-padding-bottom: 7\.5rem;/);
     expect(css).toMatch(/\.wiz-bar \{ position: sticky; bottom: 0;/);
   });
 });
@@ -95,6 +95,7 @@ describe("radflow-wizard.css — стрічка кроків із 680 px, не �
     // ряд «апарат ‖ назва» переноситься, бо select тут на всю ширину
     expect(body).toContain(".equip-info .equip-type { flex: 1 1 100%; }");
     expect(body).toContain(".equip-info-row { flex-wrap: wrap; }");
+    expect(css).not.toMatch(/\.equip-info-row \{[^}]*nowrap/);
   });
   it("поріг стрічки у SetupWizard (доскрол активної плитки) = поріг блоку в CSS", () => {
     expect(reflow[0].query).toBe(`(max-width: ${STRIP_BP}px)`);
@@ -102,12 +103,17 @@ describe("radflow-wizard.css — стрічка кроків із 680 px, не �
     expect(tsx).not.toMatch(/matchMedia\("\(max-width: (?!680px)\d+px\)"\)/);
   });
   it("короткий вʼюпорт у смузі (телефон у ландшафті) — шапка/підвал/панель стиснуті, прокрутка лишається в панелях", () => {
-    const short = byQuery(`(max-width: ${STRIP_BP}px) and (max-height: 520px)`);
+    const short = byQuery(`(max-width: ${STRIP_BP}px) and (max-height: 600px)`);
     expect(short).toHaveLength(1);
     const body = norm(short[0].body);
     expect(body).toContain(".wiz-head { display: none; }");
-    expect(body).toContain(".wiz-prog-bar, .wiz-prog-lab { display: none; }");
+    // прогрес і підпис «Крок N з 3» сховані, посилання «Підтримка» (<a> у тому ж рядку) — ні
+    expect(body).toContain(".wiz-prog-bar, .wiz-prog-lab > span { display: none; }");
+    expect(body).not.toMatch(/\.wiz-prog-lab \{[^}]*display: none/);
     expect(body).not.toMatch(/\.qs-signout \{[^}]*display: none/); // «Вийти» — єдиний вихід зі швидкого старту
+    expect(body).toContain(".wiz-danger { display: none; }");
+    expect(tsx).toContain('<div className="wiz-danger" style={{ marginTop: 12 }}>');
+    expect(body).not.toMatch(/\.wiz-steps \{[^}]*overflow-x: hidden/);
     expect(body).toContain(".wiz-main-inner, html[data-density] .wiz-main-inner { padding: 12px 14px 80px; }");
     expect(body).toContain(".wiz-bar { padding: 8px 14px; }");
     expect(body).not.toMatch(/overflow: visible|height: auto/); // с78: сторінка не прокручується
