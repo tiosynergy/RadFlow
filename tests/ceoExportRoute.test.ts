@@ -27,7 +27,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { emptyDb, fakeAdminClient, type FakeDb, type Row } from "./fixtures/fakeSupabase";
 import { ceoDashboardAccess, type CeoClinic } from "@/lib/ceoScope";
-import { ceoExportErrorText } from "@/lib/ceoExport";
+import { ceoExportErrorText, ceoExportRequest } from "@/lib/ceoExport";
 
 const C1 = "c1c1c1c1-0000-4000-8000-000000000001";   // Київ
 const C2 = "c2c2c2c2-0000-4000-8000-000000000002";   // UTC
@@ -242,7 +242,7 @@ async function exportCsv(body: unknown) {
   /* ⚠️ Не res.text(): декодер Fetch ЗРІЗАЄ BOM, і перевірка BOM була б сліпою.
      Клієнт бере blob() — байти як є, — тож і тут читаємо байти. */
   const bytes = new Uint8Array(await res.arrayBuffer());
-  return { status: res.status, headers: res.headers, bytes, text: new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes) };
+  return { status: res.status, headers: res.headers, res, bytes, text: new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes) };
 }
 
 /** Мінімальний розбір CSV: лапки, подвоєні лапки, `;` і перенос усередині клітинки. */
@@ -538,6 +538,8 @@ describe("стеля 5000 і сторінки: db-max-rows сервера — 10
     expect(eventCounts()).toEqual({ [C1]: 4000, [C2]: 1000 });
     // 5 сторінок по 1000 + проба на ОДИН рядок + дочитування решти останнього дня (порожнє)
     expect(queueReads()).toBe(7);
+    // с83 (ревʼю р1 A, L-3): тост клієнта — з ЖИВОЇ відповіді роуту, а не з підробки заголовків
+    expect(ceoExportRequest("month", "all").successText(r.res)).toBe("Експортовано у CSV (перші 5000 записів)");
   });
 
   it("РІВНО 5000 — файл повний, «обрізано» не кажемо: 5001-го рядка просто немає", async () => {
@@ -547,6 +549,7 @@ describe("стеля 5000 і сторінки: db-max-rows сервера — 10
     expect(r.headers.get("x-export-rows")).toBe("5000");
     expect(dataRows(r.text)).toHaveLength(5000);
     expect(eventCounts()).toEqual({ [C1]: 4000, [C2]: 1000 });
+    expect(ceoExportRequest("month", "all").successText(r.res)).toBe("Експортовано у CSV");
   });
 
   it("стеля сервера МЕНША за сторінку (300) — коротка сторінка не «кінець»: у файлі всі 2500", async () => {

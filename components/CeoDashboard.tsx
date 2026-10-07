@@ -488,8 +488,9 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
             <div className="bk-seg">
               {PERIODS.map((p) => <button key={p.k} type="button" className={"bk-seg-btn" + (period === p.k ? " active" : "")} aria-pressed={period === p.k} onClick={() => { setPeriod(p.k); setDrill(null); }}>{p.l}</button>)}
             </div>
+            {/* Pending — .rf-spin + aria-busy + гейт у exportCsv (AGENTS «UI-інваріанти»; с83, ревʼю р1 A, L-5: спінера тут бракувало з с79). */}
             <button className="btn btn-secondary" onClick={exportCsv} disabled={exporting} aria-busy={exporting}>
-              {exporting ? "Готуємо…" : "↧ Експортувати CSV"}
+              {exporting ? <><span className="rf-spin" aria-hidden="true" /> Готуємо…</> : "↧ Експортувати CSV"}
             </button>
           </div>
         </header>

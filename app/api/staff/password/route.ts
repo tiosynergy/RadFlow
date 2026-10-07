@@ -32,9 +32,10 @@ export async function POST(req: Request) {
   const { data: target } = await admin.from("profiles").select("clinic_id, role").eq("id", targetId).single();
   if (!target) return NextResponse.json({ error: "Профіль не знайдено" }, { status: 404 });
 
-  // Авторизація: радіолог свого центру АБО CEO/направник з активним грантом до
-  // центру адміна. Глобальні акаунти (CEO/referrer) мають clinic_id IS NULL,
-  // тож звіряємося через ceo_access / referral_access.
+  // Авторизація: персонал свого центру АБО CEO з активним грантом до центру
+  // адміна АБО направник з активним грантом чи (с83) з непринятим запрошенням
+  // цього центру, поки він ні з ким не працює. Глобальні акаунти (CEO/referrer)
+  // мають clinic_id IS NULL, тож звіряємося через ceo_access / referral_access.
   let authorized = false;
   /* Персонал ЦЕНТРУ — радіолог і реєстратор. Реєстратора тут бракувало: картка
      в StaffManager малює йому «Скинути пароль», а роут відповідав 403, тож
@@ -52,14 +53,37 @@ export async function POST(req: Request) {
       .maybeSingle();
     if (link) authorized = true;
   } else if (target.role === "referrer") {
+    /* Направник — глобальний акаунт; відношення з центром — рядок referral_access
+       (унікальний на пару направник+центр). Активний грант — керувати можна, як
+       і раніше. с83: ЗАПРОШЕННЯ, якого лікар ще не прийняв (`pending_referrer`),
+       — теж, але ЛИШЕ поки в лікаря немає жодного активного гранту з будь-яким
+       центром. Невикористане запрошення — найчастіша причина скидання
+       («посилання загублено», «пароль задав, а запрошення не прийняв»), і картка
+       в «Запрошені» малює кнопку саме для цього — а роут відповідав 403
+       («Немає прав керувати паролем цього акаунта»; знахідка власника 07.10).
+       Межа свідома: лікар, який уже працює з іншим центром, не повинен втрачати
+       пароль від запрошення центру, якого він не приймав, — це захоплення чужого
+       акаунта тим самим шляхом, що RF-09, тож тоді лишається 403. Запит самого
+       лікаря (`pending_clinic`), відкликане чи відхилене — не підстава. Помилка
+       другого запиту = не дозволено (fail-closed). */
     const { data: link } = await admin
       .from("referral_access")
-      .select("id")
+      .select("id, status")
       .eq("referrer_id", targetId)
       .eq("clinic_id", me.clinic_id as string)
-      .eq("status", "active")
+      .in("status", ["active", "pending_referrer"])
       .maybeSingle();
-    if (link) authorized = true;
+    if (link?.status === "active") {
+      authorized = true;
+    } else if (link?.status === "pending_referrer") {
+      const { data: elsewhere } = await admin
+        .from("referral_access")
+        .select("id")
+        .eq("referrer_id", targetId)
+        .eq("status", "active")
+        .limit(1);
+      authorized = Array.isArray(elsewhere) && elsewhere.length === 0;
+    }
   }
   if (!authorized) {
     return NextResponse.json({ error: "Немає прав керувати паролем цього акаунта" }, { status: 403 });

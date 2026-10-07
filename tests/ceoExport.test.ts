@@ -10,7 +10,11 @@
      • lib/ceoScope.ts — хто бачить дашборд і які центри в області; зона
        «всіх центрів» — центру з найменшим id (L-3).
    Поведінку роуту (гейт, область, журнал, стеля) стереже
-   tests/ceoExportRoute.test.ts. Імена пацієнтів — вигадані. */
+   tests/ceoExportRoute.test.ts. Імена пацієнтів — вигадані.
+   с83 (Н-20(а)): + запит експорту одним обʼєктом (ceoExportRequest,
+   ceoExportSuccessText) — наскрізь через runFileExport у node, і структурний
+   пін на components/CeoDashboard.tsx (обробник = гейт → стан → runFileExport →
+   finally; власного fetch/blob/<a download> немає; спінер pending). */
 
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { buildCsv, csvCell, csvNeedsGuard, CSV_BOM } from "@/lib/csv";
@@ -38,6 +42,7 @@ import {
 } from "@/lib/ceoExport";
 import { ceoDashboardAccess, ceoScopeTz } from "@/lib/ceoScope";
 import { runFileExport } from "@/lib/fileExportClient";
+import { callListExportErrorText } from "@/lib/callListExport";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { codeOf } from "./helpers/codeOf";
@@ -368,6 +373,9 @@ describe("текст тоста на невдалий експорт (ревʼю
   it("401 — сесія скінчилась, повтор не допоможе (с83, Н-20(а); текст той самий, що в колл-листі)", () => {
     expect(ceoExportErrorText(401, null)).toBe("Сесія завершилась — увійдіть знову");
     expect(ceoExportErrorText(401, { error: "внутрішня деталь" })).toBe("Сесія завершилась — увійдіть знову");
+    // один продукт — одна фраза: перепишуть у колл-листі — має покраснішати й тут (ревʼю р1 A, L-2)
+    expect(ceoExportErrorText(401, null)).toBe(callListExportErrorText(401, null));
+    expect(ceoExportErrorText(429, null)).toBe(callListExportErrorText(429, null));
   });
   it("решта (400, 500) — колишнє «не вдалося — спробуйте ще раз», без тексту відповіді", () => {
     for (const st of [400, 500, 502]) {
@@ -405,7 +413,7 @@ describe("ceoExportRequest — що саме CeoDashboard передає в runF
     expect(r.fileName).toBe("ceo-week.csv");
     expect(r.errorText).toBe(ceoExportErrorText);
     expect(r.failText).toBe(CEO_EXPORT_ERR);
-    expect(r.successKind).toBeUndefined(); // success — зелений, як і до с83 (колл-лист — info, бо день може бути порожнім)
+    expect(r.successKind ?? "success").toBe("success"); // зелений, як і до с83 (колл-лист — info, бо день може бути порожнім)
     expect(r.successText({ headers: headers({ "X-Export-Rows": "7", "X-Export-Truncated": "1" }) } as Response)).toBe("Експортовано у CSV (перші 7 записів)");
     expect(r.successText({ headers: headers({ "X-Export-Rows": "7", "X-Export-Truncated": "0" }) } as Response)).toBe("Експортовано у CSV");
   });
@@ -454,7 +462,7 @@ describe("CeoDashboard — експорт лише через runFileExport (с8
     expect(code).not.toMatch(/ceoExportErrorText|ceoExportFileName|CEO_EXPORT_ERR|CEO_EXPORT_MAX_ROWS/);
     expect(code).toMatch(/import \{ runFileExport, saveBlobAsFile \} from "@\/lib\/fileExportClient";/);
   });
-  it("кнопка: гейт подвійного кліку, aria-busy, той самий обробник", () => {
-    expect(code).toMatch(/<button className="btn btn-secondary" onClick=\{exportCsv\} disabled=\{exporting\} aria-busy=\{exporting\}>/);
+  it("кнопка: гейт подвійного кліку, aria-busy, спінер pending, той самий обробник", () => {
+    expect(code).toMatch(/<button className="btn btn-secondary" onClick=\{exportCsv\} disabled=\{exporting\} aria-busy=\{exporting\}>\s*\{exporting \? <><span className="rf-spin" aria-hidden="true" \/> Готуємо…<\/> : "↧ Експортувати CSV"\}/);
   });
 });
