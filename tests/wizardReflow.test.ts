@@ -114,6 +114,7 @@ describe("radflow-wizard.css — стрічка кроків із 680 px, не �
     expect(body).toContain(".wiz-danger { display: none; }");
     expect(tsx).toContain('<div className="wiz-danger" style={{ marginTop: 12 }}>');
     expect(body).not.toMatch(/\.wiz-steps \{[^}]*overflow-x: hidden/);
+    expect(body).toContain(".wiz-steps { padding: 4px 12px 4px; }"); // 4px зверху — кільце фокуса плитки не ріжеться
     expect(body).toContain(".wiz-main-inner, html[data-density] .wiz-main-inner { padding: 12px 14px 80px; }");
     expect(body).toContain(".wiz-bar { padding: 8px 14px; }");
     expect(body).not.toMatch(/overflow: visible|height: auto/); // с78: сторінка не прокручується
