@@ -957,15 +957,18 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
      направника нижче (embedded ReferrersManager, ack по розгортанню). */
   const { index: wizUnreadIx } = useUnreadChanges();
 
-  /* Нижче 480px список кроків — горизонтальна стрічка (WCAG 1.4.10), і активний
-     крок легко опиняється за її правим краєм: користувач відкриває майстер на
-     кроці 6 і бачить кроки 1–3 без жодної позначки, де він. Доскролюємо його в
-     центр — лише в drawer-режимі й з повагою до prefers-reduced-motion. */
+  /* До 680px (с83; до того 480) список кроків — горизонтальна стрічка (WCAG 1.4.10),
+     і активний крок легко опиняється за її правим краєм: користувач відкриває
+     майстер на кроці 6 і бачить кроки 1–3 без жодної позначки, де він. Доскролюємо
+     його в центр — лише в режимі стрічки й з повагою до prefers-reduced-motion.
+     ⚠️ Поріг тут = поріг блоку стрічки в radflow-wizard.css; їх зводить
+     tests/wizardReflow.test.ts (ревʼю с83 р1 B, H-3: поріг у CSS підняли, а тут
+     лишився 480 — на 481–680 активна плитка хаба лишалась за краєм). */
   const activeStepRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     const el = activeStepRef.current;
     if (!el) return;
-    if (!window.matchMedia("(max-width: 480px)").matches) return;
+    if (!window.matchMedia("(max-width: 680px)").matches) return;
     const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     el.scrollIntoView({ inline: "center", block: "nearest", behavior: smooth ? "smooth" : "auto" });
   }, [activeSection]);
@@ -1445,7 +1448,7 @@ export default function SetupWizard({ clinicId, userId, initial, rooms = [], ser
               екрана. clinicName порожній лише в мить першого налаштування —
               тоді видаляти ще нічого. */}
           {clinicName ? (
-            <div style={{ marginTop: 12 }}>
+            <div className="wiz-danger" style={{ marginTop: 12 }}>
               <DangerZone clinicName={clinicName} />
             </div>
           ) : null}

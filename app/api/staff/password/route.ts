@@ -32,9 +32,11 @@ export async function POST(req: Request) {
   const { data: target } = await admin.from("profiles").select("clinic_id, role").eq("id", targetId).single();
   if (!target) return NextResponse.json({ error: "Профіль не знайдено" }, { status: 404 });
 
-  // Авторизація: радіолог свого центру АБО CEO/направник з активним грантом до
-  // центру адміна. Глобальні акаунти (CEO/referrer) мають clinic_id IS NULL,
-  // тож звіряємося через ceo_access / referral_access.
+  // Авторизація: персонал свого центру АБО CEO з активним грантом до центру
+  // адміна АБО направник з активним грантом чи (с83) з непринятим запрошенням
+  // цього центру — лише reset і лише поки жоден інший центр його не торкався.
+  // Глобальні акаунти (CEO/referrer) мають clinic_id IS NULL, тож звіряємося
+  // через ceo_access / referral_access.
   let authorized = false;
   /* Персонал ЦЕНТРУ — радіолог і реєстратор. Реєстратора тут бракувало: картка
      в StaffManager малює йому «Скинути пароль», а роут відповідав 403, тож
@@ -52,14 +54,44 @@ export async function POST(req: Request) {
       .maybeSingle();
     if (link) authorized = true;
   } else if (target.role === "referrer") {
-    const { data: link } = await admin
+    /* Направник — глобальний акаунт; відношення з центром — рядок referral_access
+       (унікальний на пару направник+центр). Активний грант — керувати можна, як
+       і раніше (лікар сам прийняв центр, decide). с83: НЕПРИЙНЯТЕ запрошення цього
+       центру (`pending_referrer`) — теж, але лише (а) для `reset` (перевидати
+       посилання; відомий пароль без сліду `password_set=false` тут не ставимо) і
+       (б) поки в лікаря НЕМАЄ ЖОДНОГО рядка referral_access з іншим центром у
+       будь-якому статусі. Акаунт направника створюється лише роутом invite разом
+       із першим рядком доступу, тож «усі рядки — наші» ≈ «акаунт створив цей
+       центр, і лікар не має звʼязку з жодним іншим» (винятки без живої третьої
+       сторони: профіль-сирота, коли insert рядка доступу в invite впав, і каскад
+       самовидалення центру): перевидача посилання нікому третьому не шкодить і не
+       дає центру нічого понад те, що він мав при створенні. Саме цей випадок і
+       малює картка «Запрошені» («посилання загублено», «пароль задав, а запрошення
+       не прийняв»; знахідка власника 07.10 — роут відповідав 403). Ширше не можна:
+       умова «немає активних грантів ні з ким» (перша редакція с83, ревʼю лінза C,
+       H-1) пускала захоплення лікаря, якого ЧЕКАЄ інший центр (його pending) або
+       який з ним працював (revoked/declined): логіни перелічує search_referrers,
+       після скидання нападник приймає чуже запрошення від імені лікаря. Запит
+       самого лікаря (`pending_clinic`), відкликане чи відхилене — не підстава.
+       ОДИН запит (без гонки між двома читаннями); помилка = відмова (fail-closed);
+       сторінка PostgREST (db-max-rows) може лише ВІДКИНУТИ рядки — тоді нашої серед
+       них немає або є чужа, і це теж відмова. Текст 403 не називає причину; сам
+       факт 403 для центру, що вже тримає pending, — залишковий 1-бітний оракул
+       «лікар має інші центри» (існування лікаря і так віддає search_referrers). */
+    const { data: grants } = await admin
       .from("referral_access")
-      .select("id")
-      .eq("referrer_id", targetId)
-      .eq("clinic_id", me.clinic_id as string)
-      .eq("status", "active")
-      .maybeSingle();
-    if (link) authorized = true;
+      .select("clinic_id, status")
+      .eq("referrer_id", targetId);
+    if (Array.isArray(grants)) {
+      const mineId = String(me.clinic_id).toLowerCase();
+      const isMine = (g: { clinic_id: unknown }) => String(g.clinic_id).toLowerCase() === mineId;
+      const mine = grants.find(isMine);
+      if (mine?.status === "active") {
+        authorized = true;
+      } else if (mine?.status === "pending_referrer" && parsed.data.action === "reset") {
+        authorized = grants.every(isMine);
+      }
+    }
   }
   if (!authorized) {
     return NextResponse.json({ error: "Немає прав керувати паролем цього акаунта" }, { status: 403 });
