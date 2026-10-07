@@ -382,7 +382,7 @@ describe("0205 — порядок у файлі міграції", () => {
 
   it("предстан ідемпотентний: 0204 обовʼязкова, останній рядок — 0204 або 0205; тіла — 0204/0205 і 0124/0205", () => {
     const pre = MIG.slice(MIG.indexOf("do $pre$"), MIG.indexOf("$pre$;"));
-    expect(pre).toContain("if current_user <> 'postgres' then");
+    expect(pre).toContain("begin\n  perform set_config('search_path', 'public, pg_temp', true);\n  if current_user <> 'postgres' then");
     expect(pre).toContain("if not exists (select 1 from public.migration_ledger where name = '0204_referrer_grant_read.sql') then");
     expect(pre).toContain("('0204_referrer_grant_read.sql', '0205_new_user_name_trim.sql') then");
     expect(pre).toContain(`if md5(v_src) not in ('${PRE_MD5}', '${NEW_MD5}') then`);
@@ -484,6 +484,16 @@ describe("0205 — фрагменти", () => {
     expect(ROLLBACK).toContain(`  delete from public.migration_ledger where name = '${LEDGER_NAME}';\n  get diagnostics v_rows = row_count;\n  if v_rows <> 1 then`);
     expect(ROLLBACK).toContain(`  revoke all on function ${HNU_REGPROC} from public, anon, authenticated;\n  grant execute on function ${HNU_REGPROC} to service_role;\n`);
     expect(count(ROLLBACK, "insert into auth.users")).toBe(0);
+    /* Ревʼю с83 (лінза A, High): відкат живе у вікні «накат → db:gate», коли md5 рядка
+       0205 ще NULL і №7 `ledger_md5` з ним червоний. Тому рядок леджера знімається ДО
+       повного сторожа (строгого — без терпимості), і сторож бачить кінцевий стан. */
+    const delAt = ROLLBACK.indexOf("  delete from public.migration_ledger where name = '0205_new_user_name_trim.sql';");
+    const guardAt = ROLLBACK.indexOf("  v_res := public.invariants_check(false);");
+    expect(delAt).toBeGreaterThan(0);
+    expect(guardAt).toBeGreaterThan(delAt);
+    expect(count(ROLLBACK, "invariants_check(false)")).toBe(1);
+    expect(ROLLBACK).toContain("   where e.value->>'check' not in ('gcal_sync_overdue');\n  if v_failed is not null then\n    raise exception 'back: сторож після відкату червоний: % — %', v_failed, v_res->'failed';");
+    expect(ROLLBACK.indexOf("raise exception 'back: №19 після відкату червоний: %', v_tmp;")).toBeLessThan(delAt);
   });
 
   it("falsify: предстан — леджер на 0205 і тіло 0205; порядок проб A → B → C → D; після кожної мутації — відновлення", () => {

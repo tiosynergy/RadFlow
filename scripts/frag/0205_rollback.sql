@@ -366,6 +366,16 @@ $fxa$;
     raise exception 'back: №19 після відкату червоний: %', v_tmp;
   end if;
 
+  -- ── Рядок леджера — ДО повного сторожа (ревʼю с83, лінза A, High): відкат
+  --    передбачено для вікна «накат → db:gate», коли md5 рядка 0205 ще NULL, і №7
+  --    `ledger_md5` з ним у леджері був би червоним. Після зняття рядка сторож
+  --    перевіряє вже КІНЦЕВИЙ стан — той, що лишиться після commit. ──
+  delete from public.migration_ledger where name = '0205_new_user_name_trim.sql';
+  get diagnostics v_rows = row_count;
+  if v_rows <> 1 then
+    raise exception 'back: рядок леджера не знято (% рядків)', v_rows;
+  end if;
+
   -- ── ПОВНИЙ сторож після відкату (≈9 с; DDL на таблицях у пакеті немає) ──
   v_res := public.invariants_check(false);
   if (v_res->>'checked')::int <> 26 then
@@ -376,12 +386,6 @@ $fxa$;
    where e.value->>'check' not in ('gcal_sync_overdue');
   if v_failed is not null then
     raise exception 'back: сторож після відкату червоний: % — %', v_failed, v_res->'failed';
-  end if;
-
-  delete from public.migration_ledger where name = '0205_new_user_name_trim.sql';
-  get diagnostics v_rows = row_count;
-  if v_rows <> 1 then
-    raise exception 'back: рядок леджера не знято (% рядків)', v_rows;
   end if;
 end
 $back$;

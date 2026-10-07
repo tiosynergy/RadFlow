@@ -52,6 +52,7 @@ begin;
 do $pre$
 declare v_src text; v_hnu text; v_atg text;
 begin
+  perform set_config('search_path', 'public, pg_temp', true);
   if current_user <> 'postgres' then
     raise exception '0205: мусить іти від ролі postgres, а йде від %', current_user;
   end if;
