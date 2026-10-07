@@ -14,6 +14,8 @@
 
 import { wallToday0 } from "@/lib/incidents";
 import { modalityCode } from "@/lib/studies";
+import { pluralZapys } from "@/lib/rooms";
+import type { FileExportRequest } from "@/lib/fileExportClient";
 
 /** Періоди дашборда — ті самі три кнопки «Сьогодні / Цей тиждень / Цей місяць». */
 export const CEO_PERIODS = ["today", "week", "month"] as const;
@@ -37,13 +39,17 @@ export const CEO_SERVICE_COLS = "id, clinic_id, modality, name, price, contrast_
 export const CEO_EXPORT_ERR = "Не вдалося сформувати експорт — спробуйте ще раз";
 
 /** Текст тоста на невдалий експорт (ревʼю с79, L-4).
+    • 401 — сесія скінчилась: «спробуйте ще раз» збрехало б, повтор не допоможе
+      (с83, Н-20(а); той самий текст, що в колл-листі);
     • 429 — гальмо на 10 файлів за 10 хв: «спробуйте ще раз» тут збрехало б;
     • 403 — БЕЗПЕЧНИЙ текст самого роуту: там лише загальні українські фрази
       («Недостатньо прав», «Немає доступу до цього центру — оновіть сторінку»,
       «Спершу завершіть налаштування центру»), без внутрощів; нетекстова або
       надто довга відповідь (проксі, HTML) — загальне «недостатньо прав»;
-    • решта — колишнє «не вдалося — спробуйте ще раз». */
+    • решта (400 — лише зламаний клієнт, 5xx) — колишнє «не вдалося — спробуйте
+      ще раз», тіло відповіді не показується. */
 export function ceoExportErrorText(status: number, body: unknown): string {
+  if (status === 401) return "Сесія завершилась — увійдіть знову";
   if (status === 429) return "Забагато вивантажень за короткий час — спробуйте за кілька хвилин";
   if (status === 403) {
     const e = body && typeof body === "object" ? (body as { error?: unknown }).error : undefined;
@@ -58,6 +64,30 @@ export const CEO_EXPORT_HEAD = ["Дата", "Пацієнт", "Процедур�
 /** Імʼя файлу — лише ASCII (заголовок Content-Disposition), як і раніше: ceo-<період>.csv. */
 export function ceoExportFileName(period: CeoPeriod): string {
   return "ceo-" + period + ".csv";
+}
+
+/** Тост успіху. «Обрізано» каже СЕРВЕР (`X-Export-Truncated`: він читає на рядок
+    більше за стелю, тож рівно 5000 записів — не «перші 5000»); число — з
+    `X-Export-Rows`, без заголовка — стеля (як і до с83). */
+export function ceoExportSuccessText(rowsHeader: string | null, truncatedHeader: string | null): string {
+  const truncated = truncatedHeader === "1";
+  const shown = Number(rowsHeader) || CEO_EXPORT_MAX_ROWS;
+  return "Експортовано у CSV" + (truncated ? ` (перші ${shown} ${pluralZapys(shown)})` : "");
+}
+
+/** Увесь запит експорту — ОДНИМ обʼєктом для `runFileExport` (с83, Н-20(а); той
+    самий устрій, що `callListExportRequest`): адреса, тіло (лише період і зріз —
+    область рахує сервер із сесії), імʼя файлу, тексти відмови/збою/успіху
+    перевіряються в node, а компонент тримає лише стан кнопки. */
+export function ceoExportRequest(period: CeoPeriod, scope: string): FileExportRequest {
+  return {
+    url: "/api/ceo/export",
+    body: { period, scope },
+    fileName: ceoExportFileName(period),
+    errorText: ceoExportErrorText,
+    failText: CEO_EXPORT_ERR,
+    successText: (res) => ceoExportSuccessText(res.headers.get("X-Export-Rows"), res.headers.get("X-Export-Truncated")),
+  };
 }
 
 /* ---------- Дати: календарні дні ЦЕНТРУ ---------- */

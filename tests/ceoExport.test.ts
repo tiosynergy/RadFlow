@@ -21,7 +21,9 @@ import {
   buildCsvCatalog,
   ceoExportErrorText,
   ceoExportFileName,
+  ceoExportRequest,
   ceoExportRows,
+  ceoExportSuccessText,
   compareCatalogOrder,
   compareExportOrder,
   dateKey,
@@ -35,6 +37,10 @@ import {
   type CatalogServiceRow,
 } from "@/lib/ceoExport";
 import { ceoDashboardAccess, ceoScopeTz } from "@/lib/ceoScope";
+import { runFileExport } from "@/lib/fileExportClient";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { codeOf } from "./helpers/codeOf";
 
 afterEach(() => { vi.useRealTimers(); });
 
@@ -359,10 +365,96 @@ describe("текст тоста на невдалий експорт (ревʼю
     expect(ceoExportErrorText(403, { error: "   " })).toBe("Недостатньо прав для експорту");
     expect(ceoExportErrorText(403, { error: "x".repeat(161) })).toBe("Недостатньо прав для експорту");
   });
-  it("решта (401, 400, 500) — колишнє «не вдалося — спробуйте ще раз», без тексту відповіді", () => {
-    for (const st of [400, 401, 500, 502]) {
+  it("401 — сесія скінчилась, повтор не допоможе (с83, Н-20(а); текст той самий, що в колл-листі)", () => {
+    expect(ceoExportErrorText(401, null)).toBe("Сесія завершилась — увійдіть знову");
+    expect(ceoExportErrorText(401, { error: "внутрішня деталь" })).toBe("Сесія завершилась — увійдіть знову");
+  });
+  it("решта (400, 500) — колишнє «не вдалося — спробуйте ще раз», без тексту відповіді", () => {
+    for (const st of [400, 500, 502]) {
       expect(ceoExportErrorText(st, { error: "внутрішня деталь" })).toBe(CEO_EXPORT_ERR);
     }
     expect(CEO_EXPORT_ERR).toBe("Не вдалося сформувати експорт — спробуйте ще раз");
+  });
+});
+
+/* ------------------------------ запит експорту одним обʼєктом (с83, Н-20(а)) */
+
+describe("ceoExportSuccessText — «обрізано» каже сервер, число — із заголовка", () => {
+  it("без X-Export-Truncated=1 — просто «Експортовано у CSV», хоч би скільки рядків", () => {
+    expect(ceoExportSuccessText("5000", "0")).toBe("Експортовано у CSV");
+    expect(ceoExportSuccessText("12", null)).toBe("Експортовано у CSV");
+    expect(ceoExportSuccessText(null, null)).toBe("Експортовано у CSV");
+  });
+  it("обрізано — «перші N записів» із правильною множиною", () => {
+    expect(ceoExportSuccessText("5000", "1")).toBe("Експортовано у CSV (перші 5000 записів)");
+    expect(ceoExportSuccessText("21", "1")).toBe("Експортовано у CSV (перші 21 запис)");
+    expect(ceoExportSuccessText("3", "1")).toBe("Експортовано у CSV (перші 3 записи)");
+  });
+  it("обрізано без числа або з нечислом — стеля, як і до с83", () => {
+    expect(ceoExportSuccessText(null, "1")).toBe(`Експортовано у CSV (перші ${CEO_EXPORT_MAX_ROWS} записів)`);
+    expect(ceoExportSuccessText("abc", "1")).toBe(`Експортовано у CSV (перші ${CEO_EXPORT_MAX_ROWS} записів)`);
+  });
+});
+
+describe("ceoExportRequest — що саме CeoDashboard передає в runFileExport", () => {
+  const headers = (h: Record<string, string>) => ({ get: (k: string) => h[k] ?? null }) as unknown as Headers;
+  it("адреса, тіло (лише період і зріз), імʼя файлу, тексти — усе з lib, нічого з компонента", () => {
+    const r = ceoExportRequest("week", "all");
+    expect(r.url).toBe("/api/ceo/export");
+    expect(r.body).toEqual({ period: "week", scope: "all" });
+    expect(r.fileName).toBe("ceo-week.csv");
+    expect(r.errorText).toBe(ceoExportErrorText);
+    expect(r.failText).toBe(CEO_EXPORT_ERR);
+    expect(r.successKind).toBeUndefined(); // success — зелений, як і до с83 (колл-лист — info, бо день може бути порожнім)
+    expect(r.successText({ headers: headers({ "X-Export-Rows": "7", "X-Export-Truncated": "1" }) } as Response)).toBe("Експортовано у CSV (перші 7 записів)");
+    expect(r.successText({ headers: headers({ "X-Export-Rows": "7", "X-Export-Truncated": "0" }) } as Response)).toBe("Експортовано у CSV");
+  });
+  it("зріз — конкретний центр — іде як є; область усе одно рахує сервер", () => {
+    const r = ceoExportRequest("today", "11111111-2222-4333-8444-555555555555");
+    expect(r.body).toEqual({ period: "today", scope: "11111111-2222-4333-8444-555555555555" });
+    expect(r.fileName).toBe("ceo-today.csv");
+  });
+  it("наскрізь через runFileExport: 401 — тост «увійдіть знову», файл НЕ збережено, false", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const toasts: Array<{ msg: string; kind: string }> = [];
+    let saved = 0;
+    const ok = await runFileExport(ceoExportRequest("month", "all"), {
+      fetch: async (url, init) => { calls.push({ url, init }); return { ok: false, status: 401, json: async () => ({ error: "x" }) } as unknown as Response; },
+      save: () => { saved++; },
+      notify: (msg, kind) => { toasts.push({ msg, kind }); },
+    });
+    expect(ok).toBe(false);
+    expect(saved).toBe(0);
+    expect(calls[0].url).toBe("/api/ceo/export");
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ period: "month", scope: "all" });
+    expect(toasts).toEqual([{ msg: "Сесія завершилась — увійдіть знову", kind: "error" }]);
+  });
+  it("наскрізь: 200 з X-Export-Truncated — файл збережено під ceo-<період>.csv, тост «перші N»", async () => {
+    const toasts: Array<{ msg: string; kind: string }> = [];
+    const saved: string[] = [];
+    const ok = await runFileExport(ceoExportRequest("month", "all"), {
+      fetch: async () => ({ ok: true, status: 200, headers: headers({ "X-Export-Rows": "5000", "X-Export-Truncated": "1" }), blob: async () => new Blob(["\uFEFFДата"]) } as unknown as Response),
+      save: (_b, name) => { saved.push(name); },
+      notify: (msg, kind) => { toasts.push({ msg, kind }); },
+    });
+    expect(ok).toBe(true);
+    expect(saved).toEqual(["ceo-month.csv"]);
+    expect(toasts).toEqual([{ msg: "Експортовано у CSV (перші 5000 записів)", kind: "success" }]);
+  });
+});
+
+describe("CeoDashboard — експорт лише через runFileExport (с83, Н-20(а))", () => {
+  const code = codeOf(readFileSync(resolve(process.cwd(), "components/CeoDashboard.tsx"), "utf8"));
+  it("обробник цілком: гейт → стан → ОДИН запит із lib → зняття стану у finally", () => {
+    expect(code).toMatch(/async function exportCsv\(\) \{\s*if \(exporting\) return;\s*setExporting\(true\);\s*try \{\s*await runFileExport\(ceoExportRequest\(period, scope\), \{ fetch: \(u, init\) => fetch\(u, init\), save: saveBlobAsFile, notify \}\);\s*\}\s*finally \{\s*setExporting\(false\);\s*\}\s*\}/);
+  });
+  it("власного ланцюжка fetch → blob → <a download> у компоненті більше немає", () => {
+    expect(code).not.toMatch(/fetch\("\/api\/ceo\/export"/);
+    expect(code).not.toMatch(/createObjectURL/);
+    expect(code).not.toMatch(/ceoExportErrorText|ceoExportFileName|CEO_EXPORT_ERR|CEO_EXPORT_MAX_ROWS/);
+    expect(code).toMatch(/import \{ runFileExport, saveBlobAsFile \} from "@\/lib\/fileExportClient";/);
+  });
+  it("кнопка: гейт подвійного кліку, aria-busy, той самий обробник", () => {
+    expect(code).toMatch(/<button className="btn btn-secondary" onClick=\{exportCsv\} disabled=\{exporting\} aria-busy=\{exporting\}>/);
   });
 });

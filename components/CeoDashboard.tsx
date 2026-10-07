@@ -14,27 +14,25 @@ import { useModalA11y } from "@/lib/useModalA11y";
 import Sidebar from "@/components/Sidebar";
 import LiveClock from "@/components/LiveClock";
 import Toast from "@/components/Toast";
-import { visibleRooms, pluralZapys } from "@/lib/rooms";
+import { visibleRooms } from "@/lib/rooms";
 /* с79 (Н-10): період, дохід і назва процедури — спільні з роутом CSV
    (app/api/ceo/export): файл і drill-down рахуються ТИМ САМИМ кодом, що й до
    переїзду CSV на сервер, а зона періоду — тим самим ceoScopeTz, що в роуті. */
 import {
   addDays,
   buildCsvCatalog,
-  ceoExportErrorText,
-  ceoExportFileName,
+  ceoExportRequest,
   dateKey,
   entryRevenue,
   periodRange,
   procName,
   CEO_ENTRY_COLS,
-  CEO_EXPORT_ERR,
-  CEO_EXPORT_MAX_ROWS,
   CEO_SERVICE_COLS,
   type CatalogServiceRow,
   type CeoPeriod,
   type RevenueEntry,
 } from "@/lib/ceoExport";
+import { runFileExport, saveBlobAsFile } from "@/lib/fileExportClient";
 import { ceoScopeTz } from "@/lib/ceoScope";
 import "@/styles/prototype/radflow.css";
 import "@/styles/prototype/radflow-screens.css";
@@ -410,33 +408,16 @@ export default function CeoDashboard({ clinics, clinicName, adminName, adminRole
      CR LF) і пише подію `patient_data.exported` у журнал кожного центру з файлу.
      До с79 до 5000 рядків із ПІБ читались тут напряму, і журнал про вивантаження
      не знав нічого. */
+  /* с83 (Н-20(а)): ланцюжок «POST → перевірити → зберегти → сказати» — спільний
+     runFileExport (lib/fileExportClient.ts), як у колл-листі з с80; що саме
+     шлеться і які тексти показуються — ceoExportRequest (lib/ceoExport.ts),
+     перевіряється в node. Тут лишається тільки стан кнопки: гейт на повторний
+     клік, `exporting` до запиту і зняття у `finally`. */
   async function exportCsv() {
     if (exporting) return;
     setExporting(true);
     try {
-      const res = await fetch("/api/ceo/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ period, scope }),
-        cache: "no-store",
-      });
-      /* Текст відмови — ceoExportErrorText (lib/ceoExport.ts): 429 — гальмо ліміту,
-         403 — безпечний текст самого роуту («Немає доступу до цього центру —
-         оновіть сторінку»…), решта — загальне «спробуйте ще раз» (ревʼю с79, L-4). */
-      if (!res.ok) {
-        const body = res.status === 403 ? await res.json().catch(() => null) : null;
-        notify(ceoExportErrorText(res.status, body), "error");
-        return;
-      }
-      const blob = await res.blob();
-      // «Обрізано» каже сервер: він читає на рядок більше за стелю, тож рівно 5000 записів — не «перші 5000».
-      const truncated = res.headers.get("X-Export-Truncated") === "1";
-      const shown = Number(res.headers.get("X-Export-Rows")) || CEO_EXPORT_MAX_ROWS;
-      const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = ceoExportFileName(period); a.click(); URL.revokeObjectURL(url);
-      notify("Експортовано у CSV" + (truncated ? ` (перші ${shown} ${pluralZapys(shown)})` : ""), "success");
-    } catch {
-      // Мережа моргнула посеред запиту чи завантаження — той самий шлях, що й відмова сервера.
-      notify(CEO_EXPORT_ERR, "error");
+      await runFileExport(ceoExportRequest(period, scope), { fetch: (u, init) => fetch(u, init), save: saveBlobAsFile, notify });
     } finally {
       setExporting(false);
     }

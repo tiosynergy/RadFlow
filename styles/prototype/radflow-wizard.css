@@ -1,5 +1,9 @@
 /* ===== RadFlow — Setup Wizard styles ===== */
 .wiz { display: grid; grid-template-columns: 304px 1fr; height: 100%; overflow: hidden; position: relative; } /* с78: як .app у radflow.css */
+/* `1fr` тут УЖЕ = `minmax(0, 1fr)`: .wiz-main — scroll container (overflow-y: auto), а в
+   нього автоматичний мінімум гріда дорівнює 0, тож колонка ніколи не розпирається за вʼюпорт
+   (замір с83, Н-22(б): `minmax(0, 1fr)` не змінив жодного числа на 13 екранах × 17 ширин).
+   Те, що «хаб ширший за вʼюпорт» (с82), жило не в гріді, а в .wiz-main-inner — див. нижче. */
 
 /* Wizard sidebar */
 .wiz-side { background: var(--card); border-right: 1px solid var(--border); display: flex; flex-direction: column; height: 100%; overflow: hidden; }
@@ -33,7 +37,13 @@
 
 /* Wizard main */
 .wiz-main { overflow-y: auto; height: 100%; display: flex; flex-direction: column; position: relative; overscroll-behavior-y: contain; } /* с78: див. .content у radflow.css */
-.wiz-main-inner { max-width: 720px; margin: 0 auto; padding: 40px 40px 120px; flex: 1 0 auto; }
+/* `width: 100%` ОБОВʼЯЗКОВА (с83, Н-22(б)). .wiz-main — колонковий flex, а `margin: 0 auto` по
+   поперечній осі вимикає stretch: ширина елемента стає fit-content = max(min-content, …), тож
+   коли колонці бракує місця, внутрішня частина РОЗПИРАЄТЬСЯ до min-content вмісту (ряд
+   кабінету «апарат + назва» ≈ 360 px, дні тижня 214 px) і вилазить за .wiz-main — на 744 px
+   хаб «Обладнання» був 636 px при колонці 440 (замір с83). З явною шириною 100 % елемент
+   дорівнює колонці (до max-width), а вміст уже стискається своїми min-width: 0 / flex: 1. */
+.wiz-main-inner { width: 100%; max-width: 720px; margin: 0 auto; padding: 40px 40px 120px; flex: 1 0 auto; }
 .wiz-h { font-size: 1.6875rem; font-weight: 700; letter-spacing: -0.02em; }
 .wiz-hsub { font-size: 0.875rem; color: var(--text-secondary); margin-top: 8px; line-height: 1.5; }
 .wiz-bar { position: sticky; bottom: 0; background: linear-gradient(transparent, var(--bg) 40%); padding: 24px 40px; }
@@ -205,7 +215,12 @@
 .eq-perday-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .eq-perday-empty { font-size: 0.75rem; color: var(--text-faint); padding: 4px 0; }
 
-@media (max-width: 680px) {
+/* Поріг 980, а не 680 (с83, Н-22(б)): між 681 і 980 px бічна колонка кроків (304 px) уже
+   на місці, і головна колонка має 297–596 px, а ряд «апарат+назва ‖ розклад 320 px» потребує
+   ≈600 — розклад фіксований, тож стискалась ліва половина: на 744–860 px поле назви кабінету
+   було 0 px, на 681 — ряд вилазив за колонку на 61 px (замір с83 у Chromium). Стовпець тут
+   до ширини, з якої обом половинам вистачає місця. */
+@media (max-width: 980px) {
   .equip-block { flex-direction: column; }
   .equip-info { padding-right: 0; }
   .equip-sched { flex: 1; border-left: 0; padding-left: 0; border-top: 1px solid var(--border); padding-top: 10px; }
@@ -290,12 +305,20 @@
    ===================================================================
    `.wiz` був `304px 1fr` + `overflow: hidden`: на 320px від форми лишалось
    16px, і сховати їх було нічим — контейнер обрізав, а не прокручував.
-   Нижче 480px бічна колонка кроків стає горизонтальною стрічкою над
+   Нижче порога бічна колонка кроків стає горизонтальною стрічкою над
    формою (класичний мобільний патерн майстра), форма — на всю ширину.
    Стрічка кроків прокручується всередині себе; це самодостатній віджет,
-   а не сторінка, тож двовимірної прокрутки сторінки не виникає. */
+   а не сторінка, тож двовимірної прокрутки сторінки не виникає.
+   Поріг — 680 px, а не 480 (с83, Н-22(б)): у смузі 481–680 (телефон у
+   ландшафті, 7-дюймовий планшет, пів екрана ноутбука) бічна колонка 304 px
+   лишала формі 97–296 px — поле «Назва» 97 px, кнопка «Запустити центр»
+   (168 px) не вміщалась у панель, дні тижня (214 px) вилазили за край.
+   Замір у безголовому Chromium на справжньому CSS і DOM SetupWizard
+   (13 екранів): зі стрічкою форма отримує 453–652 px, переповнення .wiz-main
+   у смузі — 0 з 600 px (на 481–560 лишається лише таблиця прайсу). 680 — той
+   самий поріг, що у .contacts-grid / .equip-block / .reg-card нижче. */
 
-@media (max-width: 480px) {
+@media (max-width: 680px) {
   /* minmax(0,…), а не 1fr: `1fr` = `minmax(auto,1fr)`, і auto-мінімум тягнеться
      за min-content стрічки кроків — колонка розпиралась до 660px на 320px екрані. */
   .wiz {
@@ -412,9 +435,10 @@
 .qs-tz .btn { margin-left: auto; }
 /* Поля профілю центру/адміністратора — в стовпець на вузькому екрані: два поля в
    ряд давали по 119 px на 320 px і 73–81 px у смузі 481–600 (телефон у ландшафті),
-   де головна колонка .wiz лишає 177–296 px. Поріг 680 — той самий, що у
+   де головна колонка .wiz лишала 177–296 px. Поріг 680 — той самий, що у
    .contacts-grid/.equip-block вище. Стосується і хаба — картка .reg-card одна
-   (ревʼю с82, лінза B, M-2 і L-5). */
+   (ревʼю с82, лінза B, M-2 і L-5). с83: з 680 бічна колонка — стрічка і форма на
+   всю ширину; стовпець лишається — на 481 px два поля в ряд дали б по ≈220 px. */
 @media (max-width: 680px) {
   .reg-card .fld-row { flex-direction: column; }
   .reg-card .fld-spacer { display: none; }
