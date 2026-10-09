@@ -17,6 +17,7 @@ import { signOutAndRedirect } from "@/lib/auth";
 import Toast, { type ToastData } from "@/components/Toast";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import BaseDialog from "@/components/BaseDialog";
+import { passwordTooLong, PASSWORD_LIMIT_HINT } from "@/lib/passwordRules";
 import {
   CLINIC_STATUSES, CLINIC_STATUS_LABEL, PLAN_MAX, STATUS_REASON_MAX, ACCOUNT_NOTES_MAX,
   statusNeedsReason, platformLogText,
@@ -663,9 +664,6 @@ function OperatorsView({ meId, notify }: { meId: string; notify: (m: string, t?:
    GoTrue завершує. Паролі не зберігаються ніде поза полями цього вікна.
    Кнопка «Змінити» не стає `disabled` (AGENTS.md: у пастці фокуса — лише
    aria-disabled): що не так, каже повідомлення після натискання. */
-const PASSWORD_MAX_BYTES = 72;
-const byteLen = (s: string) => new TextEncoder().encode(s).length;
-
 function OwnPasswordDialog({ email, onClose, onDone }: { email: string; onClose: () => void; onDone: () => void }) {
   const [cur, setCur] = useState("");
   const [next, setNext] = useState("");
@@ -685,7 +683,7 @@ function OwnPasswordDialog({ email, onClose, onDone }: { email: string; onClose:
   function problem(): string | null {
     if (!cur) return "Вкажіть поточний пароль";
     if (next.length < 8) return "Новий пароль — мінімум 8 символів";
-    if (byteLen(next) > PASSWORD_MAX_BYTES) return "Новий пароль задовгий: до 72 байт (≈72 латинських або ≈36 кириличних символів)";
+    if (passwordTooLong(next)) return `Новий пароль задовгий: ${PASSWORD_LIMIT_HINT}`;
     if (next !== again) return "Паролі не збігаються";
     if (next === cur) return "Новий пароль збігається з поточним";
     return null;

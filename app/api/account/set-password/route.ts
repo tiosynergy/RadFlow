@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/server";
 import { clientIp, rateLimitOk } from "@/lib/rateLimit";
 import { isJsonRequest, parseBody } from "@/lib/validationHttp";
 import { safeDbError, zPassword } from "@/lib/validation";
+import { passwordTooLong, PASSWORD_TOO_LONG } from "@/lib/passwordRules";
 import { inviteState } from "@/lib/inviteTtl";
 import { logError } from "@/lib/serverLog";
 import { loginVerdict } from "@/lib/platformAuth";
@@ -78,6 +79,13 @@ export async function POST(req: Request) {
   const parsed = await parseBody("api/account/set-password", req, sSetPassword, "Пароль мінімум 8 символів, посилання має бути дійсним");
   if (!parsed.ok) return parsed.res;
   const { token, password } = parsed.data;
+  /* с85 (Н-27(з)): межа сервера входу — 72 БАЙТИ (bcrypt), а не 200 символів схеми.
+     ДО ліміту, читання і клейму: раніше довгий пароль гасив токен, GoTrue відмовляв
+     (`validation_failed`), роут відкочував клейм — і людина бачила загальне «не
+     вдалося», не знаючи чому. Відповідь не залежить від токена — оракула немає. */
+  if (passwordTooLong(password)) {
+    return NextResponse.json({ error: PASSWORD_TOO_LONG }, { status: 400 });
+  }
 
   // Rate-limit за IP — захист від перебору токенів.
   const ip = clientIp(req);

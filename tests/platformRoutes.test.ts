@@ -697,7 +697,7 @@ describe("POST /api/platform/me/password — свій пароль на свій
     ["current_password_invalid", new AuthApiError("Current password required when setting new password.", 400, "current_password_invalid"), 400, "Поточний пароль невірний", "current"],
     ["current_password_required", new AuthApiError("Current password required", 400, "current_password_required"), 400, "Поточний пароль невірний", "current"],
     ["reauthentication_needed", new AuthApiError("Password update requires reauthentication", 400, "reauthentication_needed"), 400, "Для зміни пароля вийдіть, увійдіть знову й повторіть", undefined],
-    ["validation_failed", new AuthApiError("Password cannot be longer than 72 characters", 400, "validation_failed"), 400, "Сервер входу не прийняв цей пароль — оберіть інший (до 72 байт, без незвичних символів)", "new"],
+    ["validation_failed", new AuthApiError("Password cannot be longer than 72 characters", 400, "validation_failed"), 400, "Сервер входу не прийняв цей пароль — оберіть інший (до 72 байтів, без незвичних символів)", "new"],
     ["ліміт GoTrue (429)", new AuthApiError("Request rate limit reached", 429, "over_request_rate_limit"), 429, "Сервіс входу тимчасово обмежив запити — спробуйте за кілька хвилин (пароль не змінено)", undefined],
     ["невдале оновлення токена", new AuthApiError("Invalid Refresh Token: Refresh Token Not Found", 400, "refresh_token_not_found"), 401, "Сесія завершилась — увійдіть знову", undefined],
     ["session missing", new AuthSessionMissingError(), 401, "Сесія завершилась — увійдіть знову", undefined],
@@ -909,6 +909,31 @@ describe("/api/account/set-password — той самий захист від lo
     expect(touched().size).toBe(0);
     expect(db.authCalls ?? []).toEqual([]);
     expect(authCalls).toEqual([]);
+  });
+  /* с85 (Н-27(з)): межа сервера входу — 72 БАЙТИ (bcrypt). До с85 довгий пароль гасив
+     токен, GoTrue відмовляв, роут відкочував клейм — людина бачила загальне «не вдалося». */
+  it("пароль довший за 72 БАЙТИ — 400 з поясненням ДО ліміту, читання, клейму і GoTrue", async () => {
+    const res = await setPassword(new Request("https://x.test/api/account/set-password", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "a".repeat(64), password: "Я".repeat(36) + "1" }), // 73 байти
+    }));
+    expect(res.status).toBe(400);
+    expect((await body(res)).error).toMatch(/до 72 байт/);
+    expect(touched().size, "роут читав БД до відмови за довжиною").toBe(0);
+    expect(rl.calls, "довгий пароль витратив спробу ліміту").toEqual([]);
+    expect(db.authCalls ?? []).toEqual([]);
+    expect(authCalls).toEqual([]);
+  });
+  it("рівно 72 байти — межа довжини пропускає (далі звичайна перевірка токена)", async () => {
+    /* Чужий токен у фікстурі: запит мусить дійти до ліміту й читання і впасти на «недійсне». */
+    db.tables.profiles = [...(db.tables.profiles ?? []), { id: "zz", invite_token: "b".repeat(64), invite_issued_at: new Date().toISOString(), password_set: false }];
+    const res = await setPassword(new Request("https://x.test/api/account/set-password", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "a".repeat(64), password: "Я".repeat(35) + "1a" }), // 72 байти
+    }));
+    expect(res.status).toBe(400);
+    expect((await body(res)).error).toMatch(/^Посилання недійсне/);
+    expect(rl.calls.length, "до ліміту запит не дійшов — межа зсунута на байт").toBeGreaterThan(0);
   });
   it("POST без application/json — 415 до розбору тіла; автовхід зважає на loginVerdict", () => {
     const s = src("app/api/account/set-password/route.ts");

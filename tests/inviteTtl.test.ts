@@ -118,4 +118,19 @@ describe("rateLimitOk — поведінка при ВЛАСНІЙ відмов�
     for (let i = 0; i < 50; i++) await mod.rateLimitOk("login:ip:4", 5, 60, "open");
     expect(logged).toHaveLength(1);
   });
+
+  /* с85 (Н-27(к)): у роутів платформи ОДИН префікс `platform`, а рішення різні —
+     «Створити оператора» fail-open, «Змінити пароль» fail-closed. Throttle за самим
+     префіксом лишав у лозі `decision=open`, поки людина отримувала 429. */
+  it("той самий префікс, різні рішення — слід кожного рішення, а не першого", async () => {
+    const { mod, logged } = await load(false);
+    await mod.rateLimitOk("platform:op_create:x", 10, 3600, "open");
+    await mod.rateLimitOk("platform:own_pwd:y", 5, 900, "closed");
+    await mod.rateLimitOk("platform:own_pwd:z", 5, 900, "closed");
+    expect(logged).toHaveLength(2);
+    expect(logged.map((l) => (l as { message: string }).message)).toEqual([
+      "prefix=platform decision=open",
+      "prefix=platform decision=closed",
+    ]);
+  });
 });

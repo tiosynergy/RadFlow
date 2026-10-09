@@ -4,7 +4,9 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireRole } from "@/lib/apiAuth";
 import { parseBody } from "@/lib/validationHttp";
 import { safeDbError, zUuid, zPassword } from "@/lib/validation";
+import { passwordTooLong, PASSWORD_TOO_LONG } from "@/lib/passwordRules";
 import { emitImportantEvent } from "@/lib/importantEvents.server";
+import { logError } from "@/lib/serverLog";
 
 /* M-12. action="set" вимагає пароль (мін. 8) — раніше це перевірялось окремим if
    уже після звернень до БД; тепер контракт «set ⇒ є пароль» тримає схема. */
@@ -27,9 +29,28 @@ export async function POST(req: Request) {
   const parsed = await parseBody("api/staff/password", req, sPassword, "Некоректний запит (перевірте пароль: мінімум 8 символів)");
   if (!parsed.ok) return parsed.res;
   const targetId = parsed.data.userId;
+  /* с85 (Н-27(з)): межа сервера входу — 72 БАЙТИ (bcrypt). ДО читань: відповідь не
+     залежить від цілі (оракула немає), а GoTrue інакше відмовив би вже після
+     перевірки прав загальним «не вдалося — спробуйте ще раз». */
+  if (parsed.data.action === "set" && passwordTooLong(parsed.data.password)) {
+    return NextResponse.json({ error: PASSWORD_TOO_LONG }, { status: 400 });
+  }
+
+  /* с85 (Н-23(б)): збій читання в авторизації лишається ВІДМОВОЮ (fail-closed,
+     відповіді ті самі — 404/403), але більше не мовчить: без сліду 403 від
+     впалої бази невідрізняльний від законного «немає прав», і адмін із
+     підтримкою шукали б причину в грантах. Деталі — лише в лог сервера. */
+  const authzReadFailed = (what: string, err: { code?: string; message?: string }) =>
+    logError({
+      event: "staff_password.authz_read_failed",
+      actorId: user.id, clinicId: me.clinic_id, entityId: targetId,
+      errorCode: `${what}:${err.code || "?"}`, message: err.message ?? null,
+    });
 
   const admin = createAdminClient();
-  const { data: target } = await admin.from("profiles").select("clinic_id, role").eq("id", targetId).single();
+  const { data: target, error: tErr } = await admin.from("profiles").select("clinic_id, role").eq("id", targetId).single();
+  /* PGRST116 — «рядків 0» у `.single()`: це і є законне «не знайдено», не збій. */
+  if (tErr && tErr.code !== "PGRST116") authzReadFailed("profiles", tErr);
   if (!target) return NextResponse.json({ error: "Профіль не знайдено" }, { status: 404 });
 
   // Авторизація: персонал свого центру АБО CEO з активним грантом до центру
@@ -45,13 +66,14 @@ export async function POST(req: Request) {
       && target.clinic_id === me.clinic_id) {
     authorized = true;
   } else if (target.role === "ceo") {
-    const { data: link } = await admin
+    const { data: link, error: lErr } = await admin
       .from("ceo_access")
       .select("id")
       .eq("ceo_id", targetId)
       .eq("clinic_id", me.clinic_id as string)
       .eq("status", "active")
       .maybeSingle();
+    if (lErr) authzReadFailed("ceo_access", lErr);
     if (link) authorized = true;
   } else if (target.role === "referrer") {
     /* Направник — глобальний акаунт; відношення з центром — рядок referral_access
@@ -78,10 +100,11 @@ export async function POST(req: Request) {
        них немає або є чужа, і це теж відмова. Текст 403 не називає причину; сам
        факт 403 для центру, що вже тримає pending, — залишковий 1-бітний оракул
        «лікар має інші центри» (існування лікаря і так віддає search_referrers). */
-    const { data: grants } = await admin
+    const { data: grants, error: gErr } = await admin
       .from("referral_access")
       .select("clinic_id, status")
       .eq("referrer_id", targetId);
+    if (gErr) authzReadFailed("referral_access", gErr);
     if (Array.isArray(grants)) {
       const mineId = String(me.clinic_id).toLowerCase();
       const isMine = (g: { clinic_id: unknown }) => String(g.clinic_id).toLowerCase() === mineId;

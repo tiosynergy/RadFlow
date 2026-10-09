@@ -7,6 +7,7 @@ import { useState, type ChangeEvent, type FormEvent, type InputHTMLAttributes } 
 import { createClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { normalizeLogin, isValidLogin, LOGIN_HINT } from "@/lib/login";
 import { formatPhoneUA, isValidPhoneUA, normalizePhoneUA } from "@/lib/phone";
+import { passwordFieldError } from "@/lib/passwordRules";
 import "./register.css";
 
 const REQUIRED = "Це поле обов'язкове";
@@ -43,7 +44,10 @@ function validateField(name: string, values: Record<string, string | boolean>): 
     case "phone":
       return !v.trim() ? REQUIRED : !isValidPhoneUA(v) ? "Введіть номер у форматі +380 XX XXX XX XX" : "";
     case "password":
-      return !v ? REQUIRED : (v.length < 8 || !/[A-ZА-ЯЇІЄ]/.test(v) || !/\d/.test(v)) ? "Мінімум 8 символів, одна велика буква, одна цифра" : "";
+      /* с85 (Н-27(з)): реєстрація ставить пароль НАПРЯМУ в GoTrue (signUp) — серверного
+         роуту, який би перевірив довжину в байтах, тут немає; без цієї гілки людина
+         бачила б англійське «Password cannot be longer than 72 characters». */
+      return !v ? REQUIRED : passwordFieldError(v);
     case "password2":
       return !v ? REQUIRED : v !== values.password ? "Паролі не співпадають" : "";
     case "terms":

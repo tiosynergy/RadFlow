@@ -8,6 +8,7 @@ import { useState, useEffect, type ChangeEvent, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { welcomeFor, type Welcome } from "@/lib/quickStart";
 import { signOutAndRedirect } from "@/lib/auth";
+import { passwordFieldError } from "@/lib/passwordRules";
 import "./register.css";
 
 const REQUIRED = "Це поле обов'язкове";
@@ -54,7 +55,9 @@ export default function SetPasswordPage() {
 
   function validate(name: string, vals: Record<string, string>): string {
     const v = vals[name] || "";
-    if (name === "password") return !v ? REQUIRED : (v.length < 8 || !/[A-ZА-ЯЇІЄ]/.test(v) || !/\d/.test(v)) ? "Мінімум 8 символів, одна велика буква, одна цифра" : "";
+    /* с85 (Н-27(з)): межа сервера входу — 72 БАЙТИ; роут перевіряє теж, тут — щоб
+       людина дізналась до відправки, а не після. */
+    if (name === "password") return !v ? REQUIRED : passwordFieldError(v);
     if (name === "password2") return !v ? REQUIRED : v !== vals.password ? "Паролі не співпадають" : "";
     return "";
   }

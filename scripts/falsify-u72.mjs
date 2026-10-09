@@ -92,9 +92,11 @@ const CALL_WM = `  useFollowTodayKey({
   });`;
 /* Те саме для карти дня (Г1-B): виклик став дворядковим. Беремо ОБИДВА рядки
    цілком — якір на один лишив би висячий літерал, і мутація ламала б збірку
-   замість того, щоб червонити сторожа (той самий урок, що з M17 у с51). */
-const CALL_RD = `  useFollowTodayKey({ clinicTz, value: day, setKey: setDay,
-    onShift: (d, prev) => { setSelectedSlot(""); setDayShifted((s) => dayShiftNoticeOf(s, prev, d)); } });`;
+   замість того, щоб червонити сторожа (той самий урок, що з M17 у с51).
+   ⚠️ ПЕРЕЯКОРЕНО в с85 (Н-24(б)): у с81 (`5f4f016`, перетягування) виклик знову
+   зібрали в ОДИН рядок — M19 і M24 з того дня давали «ЯКІР НЕ УНІКАЛЬНИЙ (0)»,
+   тобто «карта дня мовчки показує цілий день вільним» не доводилось нічим. */
+const CALL_RD = `  useFollowTodayKey({ clinicTz, value: day, setKey: setDay, onShift: (d, prev) => { setSelectedSlot(""); setDayShifted((s) => dayShiftNoticeOf(s, prev, d)); } });`;
 /* ⚠️ ЯКОРІ ДОШОК ОНОВЛЕНО в с53 разом із Г1-E: у виклик приїхав `onShift`.
    Стара форма дала б 0 входжень і завалила прогін — саме так якір і мусить
    протухати: голосно. Це вчетверте за три пакети, і це нормальна ціна того, що
@@ -746,19 +748,23 @@ const MUTATIONS = [
      дірку, яку це пропускало: `openCaseId` (CaseModal) не входив у
      `anyModalOpen` дошки черги — під відкритим кейсом хоткеї стріляли в дошку
      позаду, а поправка годинника переставляла добу під набором кроків. */
+  /* ⚠️ ПЕРЕЯКОРЕНО в с85 (Н-24(б)): у с81 прапорець огляду слотів став
+     обʼєктом (`slotsOverviewOpen` → `!!slotsOverview`), а в с80 у `anyBusy`
+     обдзвону приїхав `exporting` — M81, M82, M88 і T7 з того часу давали
+     «ЯКІР НЕ УНІКАЛЬНИЙ (0)», і родина Г1-D «склад busy» не доводилась нічим. */
   {
     id: "M81", file: "qb", spec: SPEC.follow,
     expect: /перелічує оверлеї в busy/,
     what: "Г1-D: CaseModal знову випав зі складу anyModalOpen — рівно знайдений дефект",
-    from: "slotsOverviewOpen || !!openCaseId || !!completeFor",
-    to: "slotsOverviewOpen || !!completeFor",
+    from: "!!slotsOverview || !!openCaseId || !!completeFor",
+    to: "!!slotsOverview || !!completeFor",
   },
   {
     id: "M82", file: "cl", spec: SPEC.follow,
     expect: /перелічує оверлеї в busy/,
     what: "Г1-D: з anyBusy дошки обдзвону випав оверлей підбору з листа",
-    from: " || !!reschedFor || !!editStudiesFor || !!wlSuggest;",
-    to: " || !!reschedFor || !!editStudiesFor;",
+    from: " || !!reschedFor || !!editStudiesFor || !!wlSuggest || exporting;",
+    to: " || !!reschedFor || !!editStudiesFor || exporting;",
   },
   {
     id: "M83", file: "rb", spec: SPEC.follow,
@@ -801,7 +807,7 @@ const MUTATIONS = [
     edits: [
       { from: "{openCaseId && <CaseModal", to: "{openCaseId ? <CaseModal" },
       { from: "onCancelled={reload} />}", to: "onCancelled={reload} /> : null}" },
-      { from: "slotsOverviewOpen || !!openCaseId || !!completeFor", to: "slotsOverviewOpen || !!completeFor" },
+      { from: "!!slotsOverview || !!openCaseId || !!completeFor", to: "!!slotsOverview || !!completeFor" },
     ],
   },
   {
@@ -1356,8 +1362,8 @@ const MUTATIONS = [
        зеленою; інакше це був би пін розкладки під виглядом сторожа. */
     id: "T7", file: "qb", green: true,
     what: "Г1-D: операнди anyModalOpen переставлено місцями — набір той самий",
-    from: "modalOpen || helpOpen || slotsOverviewOpen || !!openCaseId ||",
-    to: "modalOpen || slotsOverviewOpen || helpOpen || !!openCaseId ||",
+    from: "modalOpen || helpOpen || !!slotsOverview || !!openCaseId ||",
+    to: "modalOpen || !!slotsOverview || helpOpen || !!openCaseId ||",
   },
   {
     id: "T8", file: "rb", green: true,
