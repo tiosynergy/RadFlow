@@ -94,8 +94,9 @@ GOOGLE_OAUTH_REDIRECT_URI=https://rad-flow-tau.vercel.app/api/integrations/googl
 GOOGLE_CALENDAR_BACKUP_AVAILABLE=true
 ```
 
-Redeploy. До цього моменту фіча спить: секція в /setup чесно каже «не
-активовано на платформі», sync відповідає `disabled`.
+Redeploy. До цього моменту фіча спить: секція в /setup чесно каже «Резервне
+копіювання в Google Calendar ще не активовано на платформі», sync відповідає
+`disabled`.
 
 ### 3. Google-акаунт клініки (робить адмін клініки)
 
