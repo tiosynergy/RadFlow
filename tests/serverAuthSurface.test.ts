@@ -48,17 +48,22 @@ function walk(dir: string, acc: string[], pred: (n: string) => boolean): string[
 const ROUTES = walk("app", [], (n) => n === "route.ts" || n === "route.tsx").sort();
 const pathOf = (f: string) => f.replace(/^app/, "").replace(/\/route\.tsx?$/, "") || "/";
 
-/* Три гейти — і всі три реальні в дереві. Четвертого немає: якщо зʼявиться,
-   роут спершу почервоніє тут, і його доведеться НАЗВАТИ, а не додати мовчки. */
+/* Чотири гейти — і всі чотири реальні в дереві. Пʼятого немає: якщо зʼявиться,
+   роут спершу почервоніє тут, і його доведеться НАЗВАТИ, а не додати мовчки.
+   ⚠️ Четвертий — `requirePlatformOperator` (0206, с84): контур оператора
+   платформи. Гейт ІНШОЇ природи, ніж `requireRole`: право дає не роль профілю,
+   а рядок `platform_operators` (deny-all RLS, читає лише service-role) за id
+   ПЕРЕВІРЕНОЇ сесії. Його властивості — у describe «самі гейти» нижче. */
 const gated = (s: string) =>
-  /requireRole\(/.test(s) || /requireIntegrationKey\(|requireFhirKey\(/.test(s) || /CRON_SECRET/.test(s);
+  /requireRole\(/.test(s) || /requireIntegrationKey\(|requireFhirKey\(/.test(s) || /CRON_SECRET/.test(s)
+  || /requirePlatformOperator\(/.test(s);
 
 /* ===== PRE-AUTH: роути, де сесії ще НЕМАЄ за побудовою =====
    Кожен прочитаний очима в с55; причина — не «схоже на службовий», а що саме
    його стереже замість ролі. Виняток без причини — місце, куди тихо додають
    новий незахищений роут. */
 const PRE_AUTH: Record<string, string> = {
-  "/api/auth/login": "вхід: сесії ще немає. Стереже rate-limit по IP (15/5хв) і по ідентифікатору (8/5хв); service-role потрібен, щоб знайти email за логіном ДО автентифікації",
+  "/api/auth/login": "вхід: сесії ще немає. Стереже rate-limit по IP (15/5хв) і по ідентифікатору (8/5хв); service-role потрібен, щоб знайти email за логіном ДО автентифікації, а з 0206 — ПІСЛЯ неї прочитати за id щойно відкритої сесії, хто увійшов (оператор платформи → kind=platform) і чи центр не призупинений (suspended/archived → 403). Cookie сесії потрапляють у відповідь лише через commit() відкладеного клієнта ПІСЛЯ вердикту — відмова не залежить від signOut()",
   "/api/auth/login-available": "перевірка вільності логіна у формі реєстрації: сесії немає; rate-limit по IP і по логіну",
   "/api/account/set-password": "встановлення пароля за ОДНОРАЗОВИМ invite-токеном: сесії немає за побудовою. Стереже форма токена (hex 32-80) плюс rate-limit по IP. с82: після клейму токена й зміни пароля роут ще й ВІДКРИВАЄ сесію клієнтом сесії (автовхід) — лише якщо в браузері немає іншої живої сесії",
   "/api/clinic/delete-confirm": "підтвердження видалення центру за посиланням з листа: сесії немає. Стереже пара rid(uuid) плюс token(hex 48) з листа",
@@ -82,6 +87,10 @@ const ADMIN_IMPORTERS = [
   "lib/importantEvents.server.ts",
   "lib/integrationAuth.ts",
   "lib/outbox.ts",
+  /* 0206: гейт і сервісний шар контуру платформи — рядок оператора живе в
+     deny-all таблиці, яку читає лише service-role; сторінка /platform бере
+     сесію через platformSession() звідси, а не імпортує admin сама. */
+  "lib/platformAuth.ts",
   "lib/rateLimit.ts",
 ];
 
@@ -125,12 +134,34 @@ describe("серверна поверхня авторизації — роут�
       const s = src(f);
       const adm = s.indexOf("createAdminClient(");
       if (adm < 0) continue;
-      const pos = ["requireRole(", "requireIntegrationKey(", "requireFhirKey(", "CRON_SECRET"]
+      const pos = ["requireRole(", "requireIntegrationKey(", "requireFhirKey(", "CRON_SECRET", "requirePlatformOperator("]
         .map((g) => s.indexOf(g)).filter((i) => i >= 0);
       if (!pos.length) continue; // pre-auth — покрито тестом вище
       if (Math.min(...pos) > adm) late.push(pathOf(f));
     }
     expect(late, "у роуті service-role береться РАНІШЕ за гейт — перевірка ролі перестала бути умовою доступу до даних").toEqual([]);
+  });
+
+  /* 0206 (ревʼю с84, лінза C): /api/auth/login ВІДМОВЛЯЄ після того, як GoTrue
+     вже відкрив сесію (вимкнений оператор, призупинений центр). Відмова не має
+     триматись на signOut() — він ходить у мережу і при збої НЕ знімає локальну
+     сесію (403 поїхав би з живими cookie). Тому сесія — на відкладеному клієнті:
+     cookie потрапляють у відповідь РІВНО одним commit(), і він стоїть після
+     вердикту; звичайний createClient() у роуті не зʼявляється. */
+  it("/api/auth/login: cookie сесії комітяться один раз і лише після вердикту", () => {
+    const s = src("app/api/auth/login/route.ts");
+    expect(s, "вхід більше не на відкладеному клієнті").toMatch(/const \{ supabase, commit \} = await createDeferredClient\(\);/);
+    expect(s, "у /api/auth/login зʼявився звичайний createClient() — cookie лягли б до вердикту").not.toMatch(/createClient\(/);
+    const commits = s.match(/\bcommit\(\);/g) || [];
+    expect(commits.length, "commit() має бути рівно один").toBe(1);
+    const verdict = s.indexOf("await loginVerdict(admin, uid)");
+    expect(verdict, "вердикт входу зник").toBeGreaterThan(-1);
+    expect(s.indexOf("commit();"), "commit() стоїть ДО вердикту").toBeGreaterThan(verdict);
+    expect(s.indexOf("commit();"), "commit() стоїть ДО відмов").toBeGreaterThan(s.lastIndexOf("return refuse("));
+    /* Відкладений клієнт: setAll лише збирає, commit пише. */
+    const srv = src("lib/supabase/server.ts");
+    expect(srv).toMatch(/setAll\(cookiesToSet: Parameters<SetAllCookies>\[0\]\) \{ pending\.push\(\.\.\.cookiesToSet\); \}/);
+    expect(srv).toMatch(/commit\(\): void \{ for \(const \{ name, value, options \} of pending\) cookieStore\.set\(name, value, options\); pending\.length = 0; \}/);
   });
 });
 
@@ -207,5 +238,46 @@ describe("серверна поверхня авторизації — самі 
     expect(oks.length, "у requireIntegrationKey більше одного виходу «успіх»").toBe(1);
     expect(s.lastIndexOf("return { ok: true,"), "успіх повертається ДО перевірки скоупа")
       .toBeGreaterThan(s.indexOf("key.scopes.includes(scope)"));
+  });
+
+  /* 0206: гейт оператора платформи. На нього покладаються ВСІ роути
+     /api/platform/** (крім bootstrap під CRON_SECRET), і кожен із них бере
+     service-role — тож порядок кроків і єдиний вихід успіху стережуться так само,
+     як у requireRole. Рядок оператора — ТІЛЬКИ за id сесії (ніколи з тіла). */
+  it("requirePlatformOperator: порядок кроків і єдиний вихід успіху", () => {
+    const s = src("lib/platformAuth.ts");
+    const fn = s.indexOf("export async function requirePlatformOperator(");
+    expect(fn, "у lib/platformAuth.ts зник requirePlatformOperator").toBeGreaterThan(-1);
+    const body = s.slice(fn, s.indexOf("export async function platformSession(", fn));
+    const at = (needle: string) => {
+      const i = body.indexOf(needle);
+      expect(i, `у requirePlatformOperator зник крок «${needle}»`).toBeGreaterThan(-1);
+      return i;
+    };
+    const cfg = at("isAdminConfigured()");
+    const user = at("auth.getUser()");
+    const row = at("platformOperatorOf(admin, user.id)");
+    const active = at("!operator.active");
+    const rl = at("opts?.rateLimit");
+    expect(cfg < user && user < row && row < active && active < rl, "порядок кроків гейта оператора змінився").toBe(true);
+    const oks = body.match(/return \{ ok: true/g) || [];
+    expect(oks.length, "у requirePlatformOperator більше одного виходу «успіх»").toBe(1);
+    expect(body.lastIndexOf("return { ok: true"), "успіх повертається ДО перевірок").toBeGreaterThan(rl);
+    expect(body, "зникла відмова 401 для незалогіненого")
+      .toMatch(/if \(!user\) \{(?:(?!return )[\s\S]){0,400}return err\("Не авторизовано", 401\);/);
+    expect(body, "зникла відмова 403 для акаунта без рядка оператора")
+      .toMatch(/if \(!operator\) \{(?:(?!return )[\s\S]){0,600}return err\("Недостатньо прав", 403\);/);
+    expect(body, "зникла відмова 403 для вимкненого оператора")
+      .toMatch(/if \(!operator\.active\) \{(?:(?!return )[\s\S]){0,400}return err\("Доступ оператора вимкнено", 403\);/);
+    /* Збій читання рядка — не «немає прав», а «не знаємо»: 503, і теж до успіху
+       (ревʼю с84, лінза B: з одним null збій БД виглядав як втрата прав). */
+    expect(body, "зникла відмова 503 для збою читання рядка оператора")
+      .toMatch(/if \(!read\.ok\) \{(?:(?!return )[\s\S]){0,400}return err\("Тимчасова помилка перевірки прав\. Спробуйте за хвилину\.", 503\);/);
+    expect(body.indexOf("if (!read.ok) {"), "перевірка збою читання стоїть не між читанням і !operator")
+      .toBeGreaterThan(row);
+    expect(body.indexOf("if (!read.ok) {")).toBeLessThan(body.indexOf("if (!operator) {"));
+    /* Читання рядка — за id сесії, не за параметром запиту. */
+    expect(s, "platformOperatorOf фільтрує не за переданим id")
+      .toMatch(/\.from\("platform_operators"\)\s*\.select\("id, email, full_name, active"\)\s*\.eq\("id", userId\)\s*\.maybeSingle\(\)/);
   });
 });

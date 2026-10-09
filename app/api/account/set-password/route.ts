@@ -5,10 +5,11 @@ import type { Database } from "@/supabase/types";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { clientIp, rateLimitOk } from "@/lib/rateLimit";
-import { parseBody } from "@/lib/validationHttp";
+import { isJsonRequest, parseBody } from "@/lib/validationHttp";
 import { safeDbError, zPassword } from "@/lib/validation";
 import { inviteState } from "@/lib/inviteTtl";
 import { logError } from "@/lib/serverLog";
+import { loginVerdict } from "@/lib/platformAuth";
 
 const INVALID = "Посилання недійсне або вже використане. Зверніться до адміністратора.";
 /* RF-02 (пакет 43): протухле посилання відрізняємо від недійсного НАВМИСНО.
@@ -66,6 +67,12 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   if (!isAdminConfigured()) {
     return NextResponse.json({ error: "Сервер не налаштовано (SUPABASE_SERVICE_ROLE_KEY)" }, { status: 500 });
+  }
+  /* login-CSRF (ревʼю с84, лінза C, L-4): роут відкриває сесію (автовхід с82) —
+     власний токен атакувальника з чужої HTML-форми залогінив би жертву в його
+     акаунт. Лише JSON-запит (isJsonRequest). */
+  if (!isJsonRequest(req)) {
+    return NextResponse.json({ error: "Непідтримуваний формат запиту" }, { status: 415 });
   }
 
   const parsed = await parseBody("api/account/set-password", req, sSetPassword, "Пароль мінімум 8 символів, посилання має бути дійсним");
@@ -161,6 +168,10 @@ type WelcomePayload = {
   /** Чому автовходу не було: `other_session` — у цьому браузері вже відкрито інший
       акаунт (ревʼю А, M-2: автовхід не має мовчки підміняти чужу сесію). */
   reason: "other_session" | null;
+  /** 0206: центр зі статусом suspended / archived — пароль встановлено, автовходу
+      немає (той самий вердикт, що й у /api/auth/login: статус центру діє при
+      ВІДКРИТТІ сесії, і запрошення — не обхід). */
+  clinic_blocked: boolean;
   role: string | null;
   full_name: string | null;
   /** Центр персоналу (registrar/radiologist/admin); у глобальних ролей — null. */
@@ -175,7 +186,7 @@ type WelcomePayload = {
    (lib/quickStart.startPathForRole). Так у відповіді немає значення, яке можна
    було б підставити під редірект. */
 async function welcomeAfterSetPassword(admin: SupabaseClient<Database>, userId: string, password: string): Promise<WelcomePayload> {
-  const out: WelcomePayload = { signedIn: false, reason: null, role: null, full_name: null, clinic_name: null, rooms_count: null, centers_count: null };
+  const out: WelcomePayload = { signedIn: false, reason: null, clinic_blocked: false, role: null, full_name: null, clinic_name: null, rooms_count: null, centers_count: null };
   try {
     const { data: prof } = await admin
       .from("profiles")
@@ -206,7 +217,15 @@ async function welcomeAfterSetPassword(admin: SupabaseClient<Database>, userId: 
        відповідь цього ж Route Handler, як після звичайного /api/auth/login. */
     const { data: au } = await admin.auth.admin.getUserById(userId);
     const email = au?.user?.email;
-    if (email) {
+    /* 0206 (с84): статус центру застосовується при ВІДКРИТТІ сесії — і тут теж,
+       інакше персонал призупиненого центру входив би через запрошення повз
+       /api/auth/login. Пароль уже стоїть (знадобиться, коли центр повернуть);
+       автовходу немає, екран каже чому. Збій читання вердикт не блокує (лог). */
+    const verdict = await loginVerdict(admin, userId);
+    if (verdict.kind === "clinic" && verdict.blocked) {
+      out.clinic_blocked = true;
+      logError({ event: "login.clinic_blocked", actorId: userId, clinicId: verdict.clinicId, errorCode: verdict.blocked });
+    } else if (email) {
       const session = await createClient();
       /* ⚠️ Чужу живу сесію НЕ підміняємо (ревʼю А, M-2). /set-password не в PROTECTED
          і не в AUTH_PAGES, тож сторінку може відкрити залогінений: адмін, що «перевіряє»

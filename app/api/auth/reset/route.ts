@@ -15,10 +15,19 @@ import { createClient } from "@/lib/supabase/server";
    не може — йому заборонено писати cookie; Route Handler — може.
 
    Тому сторінки з `!profile` редіректять СЮДИ: сесія гаситься, людина
-   потрапляє на /login з поясненням, а не на «Сторінка недоступна». */
+   потрапляє на /login з поясненням, а не на «Сторінка недоступна».
+
+   0206 (с84): той самий тупик є і в контурі платформи — акаунт із прапорцем
+   оператора в app_metadata, але без рядка `platform_operators` (middleware за
+   прапорцем вів би його з /queue назад на /platform). Сторінка /platform
+   редіректить сюди з `?reason=platform_missing`; причина — лише з переліку
+   (значення параметра в розмітку не потрапляє, /login зіставляє його з
+   фіксованими текстами). */
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const REASONS = new Set(["profile_missing", "platform_missing"]);
 
 export async function GET(req: Request) {
   const supabase = await createClient();
@@ -29,7 +38,9 @@ export async function GET(req: Request) {
        signOut уже спробував зняти, а падати тут означало б лишити людину в
        петлі, від якої цей роут і рятує. */
   }
-  const url = new URL("/login", new URL(req.url).origin);
-  url.searchParams.set("reason", "profile_missing");
+  const reqUrl = new URL(req.url);
+  const want = reqUrl.searchParams.get("reason");
+  const url = new URL("/login", reqUrl.origin);
+  url.searchParams.set("reason", want && REASONS.has(want) ? want : "profile_missing");
   return NextResponse.redirect(url);
 }

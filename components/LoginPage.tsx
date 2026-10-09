@@ -6,6 +6,7 @@
 import { useState, type ChangeEvent, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { isSupabaseConfigured } from "@/lib/supabase/client";
+import { safeRedirectPath } from "@/lib/safeRedirect";
 import "./register.css";
 
 const REQUIRED = "Це поле обов'язкове";
@@ -13,9 +14,10 @@ const REQUIRED = "Це поле обов'язкове";
 export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const rawRedirect = searchParams.get("redirect") || "/queue";
-  // Лише внутрішні шляхи (захист від open-redirect): один "/", без "//" чи "/\".
-  const redirectTo = /^\/(?![/\\])/.test(rawRedirect) ? rawRedirect : "/queue";
+  /* Лише внутрішні шляхи (захист від open-redirect). Вираз `^\/(?![/\\])` до с84
+     пропускав `/\t//evil.com`: парсер URL вирізає табуляцію ПЕРЕД розбором
+     (ревʼю с84, лінза C, M-2) — тепер шлях перевіряє сам парсер (lib/safeRedirect). */
+  const redirectTo = safeRedirectPath(searchParams.get("redirect"), "/queue");
 
   /* Службові банери за параметрами URL. Значення параметрів у розмітку НЕ
      підставляються — лише зіставляються з відомими кодами, тексти фіксовані. */
@@ -27,6 +29,16 @@ export default function LoginPage() {
           "Ваш профіль у системі більше не існує (доступ відкликано або центр " +
           "видалено), тому сесію завершено. Якщо це помилка — зверніться до " +
           "адміністратора вашого центру.",
+      };
+    }
+    /* 0206: акаунт із прапорцем оператора платформи, але без рядка оператора —
+       сесію згасив /api/auth/reset?reason=platform_missing (сторінка /platform). */
+    if (searchParams.get("reason") === "platform_missing") {
+      return {
+        tone: "warn" as const,
+        text:
+          "Ваш обліковий запис оператора платформи не знайдено, тому сесію " +
+          "завершено. Якщо це помилка — зверніться до RadFlow.",
       };
     }
     const del = searchParams.get("deletion");
@@ -106,7 +118,11 @@ export default function LoginPage() {
         showToast(data.error || "Невірний логін/email або пароль.");
         return;
       }
-      router.push(redirectTo);
+      /* 0206: оператор платформи — у консоль. ?redirect= береться лише коли він
+         і сам веде в консоль (глибоке посилання /platform?clinic=…); клінічний
+         шлях для оператора — тупик (профілю немає). */
+      const platformDeepLink = /^\/platform(?:[/?#]|$)/.test(redirectTo);
+      router.push(data.kind === "platform" ? (platformDeepLink ? redirectTo : "/platform") : redirectTo);
       router.refresh();
     } catch {
       setSubmitting(false);

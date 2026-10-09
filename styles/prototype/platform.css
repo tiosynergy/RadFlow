@@ -1,0 +1,132 @@
+/* ===== RadFlow — консоль оператора платформи (0206, с84) =====
+   Оболонка окрема від клінічної (`.app` / `.sidebar`): в оператора немає ні
+   кабінетів, ні дошки, ні бейджів непрочитаного. Токени, кнопки, поля, бейджі —
+   з radflow.css (ролі синього — див. блок «Синій акцент» там же: заливка
+   лише з контуром --blue-line, текст --blue-text, межі --blue-line). */
+
+.pf-app {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+}
+
+.pf-nav {
+  background: var(--card);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.pf-nav-head { padding: 18px 18px 12px; }
+.pf-logo { font-size: 1.3125rem; font-weight: 700; letter-spacing: -0.02em; color: var(--blue-text); display: flex; align-items: center; gap: 8px; }
+.pf-logo .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--blue-line); box-shadow: 0 0 10px var(--blue-line); }
+.pf-sub { font-size: 0.71875rem; color: var(--text-muted); margin-top: 5px; }
+.pf-nav-list { flex: 1; overflow-y: auto; padding: 6px 12px; display: flex; flex-direction: column; gap: 2px; }
+.pf-nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 10px; border-radius: 9px; border: 1px solid transparent;
+  background: none; color: var(--text-secondary); font: inherit; font-size: 0.8125rem; text-align: left;
+  cursor: pointer; width: 100%; min-height: 40px;
+}
+.pf-nav-item:hover { background: var(--card-hover); color: var(--text); }
+.pf-nav-item.active { background: var(--blue-bg); color: var(--blue-text); font-weight: 500; }
+.pf-nav-item .ic { width: 17px; text-align: center; flex-shrink: 0; }
+.pf-nav-foot { padding: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+.pf-me { font-size: 0.78125rem; color: var(--text-secondary); min-width: 0; }
+.pf-me .nm { font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pf-me .em { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.pf-main { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.pf-topbar {
+  min-height: 3.75rem; flex-shrink: 0; flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 16px; padding: 8px 22px;
+  background: rgba(28,28,30,0.8); backdrop-filter: blur(20px);
+  position: relative; z-index: 1;
+}
+.pf-topbar h1 { font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+.pf-topbar .pf-crumb { font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; }
+.pf-topbar .pf-right { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pf-content { overflow-y: auto; padding: 20px 22px 48px; position: relative; overscroll-behavior-y: contain; }
+.pf-page { max-width: 1100px; margin: 0 auto; width: 100%; }
+
+/* ── Таблиця центрів / операторів ── */
+.pf-table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.pf-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+.pf-table th {
+  text-align: left; color: var(--text-muted); font-weight: 600; font-size: 0.6875rem;
+  text-transform: uppercase; letter-spacing: 0.06em; padding: 10px 12px; border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.pf-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.pf-table tr:last-child td { border-bottom: none; }
+.pf-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.pf-table .muted { color: var(--text-muted); }
+.pf-rowbtn {
+  background: none; border: none; padding: 0; font: inherit; color: var(--blue-text); cursor: pointer; text-align: left;
+  font-weight: 600; text-decoration: underline; text-decoration-color: transparent; min-height: 24px;
+}
+.pf-rowbtn:hover { text-decoration-color: currentColor; }
+
+/* ── Картка ── */
+.pf-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 18px 20px; margin-bottom: 16px; }
+.pf-card h2 { font-size: 0.9375rem; font-weight: 650; margin: 0 0 12px; }
+/* Рядок заголовка картки: <h2> лише з назвою, поруч — бейдж / кнопка (поза
+   заголовком, щоб імʼя заголовка для ридера не містило кнопку). */
+.pf-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 12px; }
+.pf-card-head h2 { margin: 0; }
+.pf-card-head .spacer { flex: 1; }
+.pf-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.pf-kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; font-size: 0.8125rem; margin: 0; }
+.pf-kv dt { color: var(--text-muted); }
+.pf-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.pf-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.pf-stat { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--r-md); padding: 10px 12px; }
+.pf-stat .v { font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.pf-stat .l { font-size: 0.6875rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; }
+.pf-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.pf-list li { padding: 8px 0; border-top: 1px solid var(--border); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 0.8125rem; }
+.pf-list li:first-child { border-top: none; }
+.pf-list .grow { flex: 1; min-width: 160px; }
+.pf-list .sub { color: var(--text-muted); font-size: 0.75rem; }
+.pf-form { display: flex; flex-direction: column; gap: 12px; }
+.pf-form .pf-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.pf-form textarea.inp { min-height: 88px; resize: vertical; font: inherit; }
+.pf-form select.inp { font: inherit; }
+.pf-empty { text-align: center; padding: 40px 20px; color: var(--text-muted); }
+.pf-secret {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px 12px; margin-top: 10px;
+  border: 1px solid var(--orange); border-radius: var(--r-md); background: var(--orange-bg); font-size: 0.8125rem;
+}
+.pf-secret code { font-family: var(--mono); font-size: 0.875rem; color: var(--text); overflow-wrap: anywhere; }
+.pf-hint { font-size: 0.75rem; color: var(--text-muted); line-height: 1.45; }
+/* Спінер async-кнопок (канон `.rf-spin` живе в radflow-screens.css, якого дерево
+   /platform НЕ імпортує — ревʼю с84 р2, L-4: «Створюємо…» крутилось без спінера).
+   Копія під .pf-app з власним іменем keyframes, щоб не перетинатися з каноном. */
+.pf-app .rf-spin { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-top-color: transparent; animation: pf-spin .7s linear infinite; vertical-align: -1px; }
+@keyframes pf-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .pf-app .rf-spin { animation: none; } }
+/* На помаранчевій підкладці (--orange-bg над --card) --text-muted дає 4.17:1 —
+   тут підпис іде --text-secondary (4.73:1; пара в scripts/contrast-audit.mjs). */
+.pf-secret .pf-hint { color: var(--text-secondary); }
+.pf-err { color: var(--red-text); font-size: 0.8125rem; }
+.pf-badges { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.pf-log-time { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 0.75rem; }
+
+/* ── Вузькі екрани: навігація рядком зверху, таблиці скролять ── */
+@media (max-width: 860px) {
+  .pf-app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .pf-nav { border-right: none; border-bottom: 1px solid var(--border); flex-direction: row; align-items: center; flex-wrap: wrap; }
+  .pf-nav-head { padding: 10px 14px; }
+  .pf-nav-list { flex-direction: row; padding: 6px 8px; overflow-x: auto; overflow-y: hidden; }
+  .pf-nav-item { width: auto; white-space: nowrap; }
+  .pf-nav-foot { border-top: none; margin-left: auto; flex-direction: row; align-items: center; padding: 8px 12px; }
+  .pf-me { display: none; }
+  .pf-grid-2 { grid-template-columns: 1fr; }
+  .pf-content { padding: 14px 16px 40px; }
+}

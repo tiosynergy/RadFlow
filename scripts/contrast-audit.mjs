@@ -204,6 +204,23 @@ head("с81 · перетягування — кільця цілей і чипи
   check("результат переносу --green як текст на --card", ratio(GREEN, CARD), 4.5);
 }
 
+/* ── с84 · консоль платформи — блок тимчасового пароля (.pf-secret) ───────────
+   Підкладка --orange-bg (помаранчевий 0.15 над --card) світліша за --card, і
+   --text-muted на ній дає 4.17 (ревʼю с84, лінза B) — підпис там іде
+   --text-secondary. Пари: підпис, сам пароль (--text), межа (--orange, графіка). */
+head("с84 · консоль платформи — .pf-secret на --orange-bg над --card");
+{
+  const ORANGE = "#ff9f0a";
+  const ORANGE_A = 0.15;
+  const MUTED = "#a3a3a8";
+  const SECONDARY = "#aeaeb2";
+  const onOrange = over(ORANGE, ORANGE_A, CARD);
+  console.log(`  ДО: .pf-hint --text-muted ${MUTED} на --orange-bg над --card = ${f(ratio(MUTED, onOrange))} ❌`);
+  check(".pf-secret .pf-hint --text-secondary на --orange-bg над --card", ratio(SECONDARY, onOrange), 4.5);
+  check(".pf-secret code --text на --orange-bg над --card", ratio("#f5f5f7", onOrange), 4.5);
+  check(".pf-secret межа --orange на --card", ratio(ORANGE, CARD), 3);
+}
+
 /* ── Червоний (WCAG W-4, с75) ─────────────────────────────────────────────────
    До с75 скрипт червоний НЕ рахував, і `color: var(--red)` стояв на всіх
    обовʼязкових підписах, бейджах «⚠ Накладення», помилках форм: 4.09 на --card,
@@ -246,6 +263,7 @@ const CSS_FILES = [
   "styles/prototype/radflow-screens.css",
   "styles/prototype/radflow-wizard.css",
   "styles/prototype/radiologist.css",
+  "styles/prototype/platform.css",
   "components/register.css",
 ];
 
@@ -255,7 +273,7 @@ const CSS_FILES = [
 const LINE_FILL_OK = new Set([
   ".tl-dot.blue", ".ss-dot.blue", ".kc-dot.blue", ".qd-seg-dot.blue",
   ".clp-dot.blue", ".cal-day .cdot", ".pulse-dot", ".pulse-dot::after",
-  ".sb-logo .dot", ".wiz-logo .dot", ".reg-root .logo .dot",
+  ".sb-logo .dot", ".wiz-logo .dot", ".reg-root .logo .dot", ".pf-logo .dot",
   ".imp-prog-fill", ".wiz-prog-fill",
   ".density-slider::-webkit-slider-thumb", ".density-slider::-moz-range-thumb",
 ]);

@@ -1,5 +1,6 @@
 import { createServerClient, type SetAllCookies } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isOperatorByClaim, PLATFORM_HOME } from "@/lib/platformClaim";
 
 /* Routes that require authentication.
 
@@ -22,7 +23,16 @@ const PROTECTED = [
   "/services",
   "/search",
   "/journal",
+  "/platform",
 ];
+
+/* 0206 (с84): консоль оператора платформи. Оператор — акаунт БЕЗ профілю і без
+   `user_role`; куди його вести, middleware читає з `app_metadata.platform`
+   (ставить лише сервер — lib/platformClaim.ts). Це МАРШРУТИЗАЦІЯ: права дає
+   рядок `platform_operators` на сервері (сторінка і кожен роут перевіряють самі).
+   Оператор на клінічній сторінці → /platform (інакше сторінка без профілю вела б
+   на /api/auth/reset і гасила б сесію); персонал центру на /platform → /queue. */
+const PLATFORM = ["/platform"];
 
 // Auth pages: a logged-in user is redirected to the dashboard.
 const AUTH_PAGES = ["/login", "/register"];
@@ -75,7 +85,7 @@ export async function updateSession(request: NextRequest) {
      тобто 500 отримує ВЕСЬ сайт, включно з /login: користувач не може навіть
      перезайти. Ловимо і деградуємо fail-closed: вважаємо, що сесії немає
      (захищені сторінки → /login), публічні сторінки працюють. */
-  let user: { id: string } | null = null;
+  let user: { id: string; app_metadata?: Record<string, unknown> | null } | null = null;
   try {
     const { data } = await supabase.auth.getUser();
     user = data.user ?? null;
@@ -84,12 +94,15 @@ export async function updateSession(request: NextRequest) {
   }
 
   const path = request.nextUrl.pathname;
+  const operator = isOperatorByClaim(user);
+  const home = operator ? PLATFORM_HOME : "/queue";
 
   // Корінь сайту: ведемо на дошку (увійшов) або на вхід. /queue сам
-  // перенаправляє за роллю (радіолог → /radiologist, направник → /referral).
+  // перенаправляє за роллю (радіолог → /radiologist, направник → /referral);
+  // оператор платформи (0206) — одразу в консоль.
   if (path === "/") {
     const url = request.nextUrl.clone();
-    url.pathname = user ? "/queue" : "/login";
+    url.pathname = user ? home : "/login";
     return NextResponse.redirect(url);
   }
 
@@ -101,6 +114,19 @@ export async function updateSession(request: NextRequest) {
   }
 
   if (user && matches(path, AUTH_PAGES)) {
+    const url = request.nextUrl.clone();
+    url.pathname = home;
+    return NextResponse.redirect(url);
+  }
+
+  /* 0206: оператор і персонал центру живуть у різних контурах — чужий контур
+     веде у свій дім. Обидві гілки лише маршрутизують; відмову дає сервер. */
+  if (user && operator && matches(path, PROTECTED) && !matches(path, PLATFORM)) {
+    const url = request.nextUrl.clone();
+    url.pathname = PLATFORM_HOME;
+    return NextResponse.redirect(url);
+  }
+  if (user && !operator && matches(path, PLATFORM)) {
     const url = request.nextUrl.clone();
     url.pathname = "/queue";
     return NextResponse.redirect(url);
