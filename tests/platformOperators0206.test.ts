@@ -325,7 +325,8 @@ describe("0206 — контракт і код контуру", () => {
     /* Кожну дію з контракту роути справді пишуть — інакше мітка в журналі мертва. */
     const routes = ["app/api/platform/bootstrap/route.ts", "app/api/platform/operators/route.ts",
       "app/api/platform/operators/[id]/active/route.ts", "app/api/platform/operators/[id]/password/route.ts",
-      "app/api/platform/clinics/[id]/status/route.ts", "app/api/platform/clinics/[id]/account/route.ts"].map(read).join("\n");
+      "app/api/platform/clinics/[id]/status/route.ts", "app/api/platform/clinics/[id]/account/route.ts",
+      "app/api/platform/me/password/route.ts"].map(read).join("\n");
     for (const a of PLATFORM_ACTIONS) expect(routes, `дію ${a} ніхто не пише`).toContain(`"${a}"`);
   });
   it("claim-модуль — без імпортів (edge-рантайм middleware), прапорець лише маршрутизує", () => {
@@ -343,6 +344,29 @@ describe("0206 — контракт і код контуру", () => {
     const urls = [...ui.matchAll(/api<[^>]*>\(\s*`?["'`]?(\/api\/[a-z/${}._-]+)/g)].map((m) => m[1]);
     expect(urls.length).toBeGreaterThan(5);
     for (const u of urls) expect(u.startsWith("/api/platform/"), u).toBe(true);
+  });
+  it("с84: свій пароль — лише «Змінити» (на свій, з поточним); «Скинути» собі консоль не пропонує; пароль не зникає зі збоєм перечитування", () => {
+    const ui = codeOf(read("components/PlatformConsole.tsx")).replace(/\s+/g, " ");
+    /* На своєму рядку — «Змінити пароль»; «Скинути» — лише чужим активним. */
+    expect(ui).toMatch(/\{r\.id === meId \? <button [^>]*onClick=\{\(\) => setOwnPwd\(true\)\}>Змінити пароль<\/button> : r\.active && <button [^>]*onClick=\{\(\) => setConfirm\(\{ kind: "password", row: r \}\)\}>Скинути пароль<\/button>\}/);
+    expect(ui).toContain('api<{ ok: true }>("/api/platform/me/password", { method: "POST", body: JSON.stringify({ current_password: cur, new_password: next }) })');
+    /* Картка помилки — лише без переліку; збій ПЕРЕчитування не ховає SecretBox. */
+    const ops = ui.slice(ui.indexOf("function OperatorsView("), ui.indexOf("function OwnPasswordDialog("));
+    expect(ops.length).toBeGreaterThan(1000);
+    expect(ops).toContain("if (err && !rows && !secret) return");
+    expect(ops, "перелік операторів знову ховає сторінку (і SecretBox) на будь-якій помилці").not.toMatch(/if \(err\) return/);
+    /* 401 — один зрозумілий текст, а не серверне «Не авторизовано». */
+    expect(ui).toContain('if (res.status === 401) return { ok: false, error: SESSION_GONE, status: 401 };');
+    /* Сервер: собі не скидають; свій — через власну сесію (updateUser), не admin. */
+    const reset = codeOf(read("app/api/platform/operators/[id]/password/route.ts")).replace(/\s+/g, " ");
+    expect(reset).toContain("if (targetId.toLowerCase() === operator.id.toLowerCase()) {");
+    expect(reset.indexOf("if (targetId.toLowerCase() === operator.id.toLowerCase()) {")).toBeLessThan(reset.indexOf('.from("platform_operators")'));
+    const own = codeOf(read("app/api/platform/me/password/route.ts")).replace(/\s+/g, " ");
+    expect(own).toContain("await supabase.auth.updateUser({ password: new_password, current_password })");
+    expect(own).not.toMatch(/updateUserById|auth\.admin/);
+    expect(own).toContain("await checkCurrentPassword(user.email, current_password, user.id)");
+    expect(own.indexOf("await checkCurrentPassword(user.email, current_password, user.id)")).toBeLessThan(own.indexOf("auth.updateUser("));
+    expect(own).toContain('rateLimit: { key: "platform:own_pwd", max: 5, windowSeconds: 900, onFailure: "closed" }');
   });
   it("types.ts знає три таблиці й функцію; сторінка /platform має свою назву вкладки", () => {
     for (const t of TABLES) expect(TYPES).toContain(`      ${t}: {`);

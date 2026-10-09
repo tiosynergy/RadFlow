@@ -37,6 +37,7 @@ export const PLATFORM_ACTIONS = [
   "operator.enabled",
   "operator.disabled",
   "operator.password_reset",
+  "operator.password_changed",
   "clinic.status_changed",
   "clinic.account_updated",
 ] as const;
@@ -48,6 +49,7 @@ export const PLATFORM_ACTION_LABEL: Record<PlatformAction, string> = {
   "operator.enabled": "увімкнув оператора",
   "operator.disabled": "вимкнув оператора",
   "operator.password_reset": "скинув пароль оператора",
+  "operator.password_changed": "змінив свій пароль",
   "clinic.status_changed": "змінив статус центру",
   "clinic.account_updated": "оновив облік центру",
 };

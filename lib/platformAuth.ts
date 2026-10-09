@@ -30,7 +30,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/supabase/types";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient, isAdminConfigured } from "@/lib/supabase/admin";
-import { rateLimitOk } from "@/lib/rateLimit";
+import { rateLimitOk, type RlFailure } from "@/lib/rateLimit";
 import { logError } from "@/lib/serverLog";
 import { isOperatorByClaim } from "@/lib/platformClaim";
 import {
@@ -56,7 +56,9 @@ const err = (message: string, status: number): { ok: false; res: NextResponse } 
   res: NextResponse.json({ error: message }, { status }),
 });
 
-type RateLimitOpt = { key: string; max: number; windowSeconds: number };
+/** `onFailure` — що робити, коли сам лімітер недоступний (за замовчуванням "open").
+    Шляхи, де ліміт — захист від перебору пароля, передають "closed" (с84, ревʼю). */
+type RateLimitOpt = { key: string; max: number; windowSeconds: number; onFailure?: RlFailure };
 
 /** Результат читання рядка оператора: прочитано (рядок або його немає) чи збій. */
 export type OperatorRead = { ok: true; operator: PlatformOperator | null } | { ok: false };
@@ -118,8 +120,8 @@ export async function requirePlatformOperator(
   }
 
   if (opts?.rateLimit) {
-    const { key, max, windowSeconds } = opts.rateLimit;
-    const ok = await rateLimitOk(`${key}:${user.id}`, max, windowSeconds);
+    const { key, max, windowSeconds, onFailure } = opts.rateLimit;
+    const ok = await rateLimitOk(`${key}:${user.id}`, max, windowSeconds, onFailure ?? "open");
     if (!ok) return err("Забагато запитів. Спробуйте за кілька хвилин.", 429);
   }
 

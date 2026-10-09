@@ -22,6 +22,10 @@
  *   • /operators: створення (createUser + рядок + слід), компенсація deleteUser,
  *     службова адреса відхиляється; себе не вимкнути; останнього не вимкнути;
  *     вимкнення знімає прапорець маршрутизації; пароль вимкненому не скидають;
+ *     СОБІ пароль не скидають (с84: admin-зміна пароля завершує всі сесії);
+ *   • /me/password (с84): свій пароль на свій — лише JSON, поточний пароль
+ *     перевіряється для email ПЕРЕВІРЕНОЇ сесії, зміна йде через власну сесію
+ *     (updateUser), а не admin; помилки GoTrue → зрозумілі тексти; слід без паролів;
  *   • /bootstrap: CRON_SECRET, лише поки таблиця порожня, слід без актора;
  *   • /api/auth/login: оператор → kind=platform; вимкнений оператор → 403 БЕЗ
  *     commit() cookie; персонал призупиненого центру → 403 без commit(); активний
@@ -33,28 +37,37 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { AuthApiError, AuthRetryableFetchError, AuthSessionMissingError, AuthWeakPasswordError } from "@supabase/supabase-js";
 import { emptyDb, fakeAdminClient, type FakeDb } from "./fixtures/fakeSupabase";
 import { codeOf } from "./helpers/codeOf";
 
 const src = (p: string) => codeOf(readFileSync(resolve(process.cwd(), p), "utf8")).replace(/\s+/g, " ");
 
 const db: FakeDb = emptyDb();
-const who: { user: { id: string; app_metadata?: Record<string, unknown> } | null } = { user: null };
+const who: { user: { id: string; email?: string; app_metadata?: Record<string, unknown> } | null } = { user: null };
 const logs: Array<{ event: string; errorCode?: string | null }> = [];
 const authCalls: string[] = [];
 const signIn: { result: { data: { user: { id: string; app_metadata?: Record<string, unknown> } | null }; error: { message: string } | null } } = {
   result: { data: { user: null }, error: null },
 };
-const rl = { allow: true };
+const rl: { allow: boolean; calls: unknown[][] } = { allow: true, calls: [] };
+/* с84: «Змінити пароль» — перевірка поточного (одноразовий клієнт) і зміна через
+   власну сесію. Двійник пише виклики, щоб тест сказав, ЩО і КОМУ перевірялось. */
+const pwCheck: { result: "ok" | "invalid" | "error"; calls: Array<[string, string, string]> } = { result: "ok", calls: [] };
+const userUpdate: { error: Error | null; calls: unknown[] } = { error: null, calls: [] };
+/* Черга відповідей getUser: гейт і роут питають сесію окремо — тест може дати їм
+   РІЗНІ відповіді (сесія змінилась між викликами). Порожня — береться who.user. */
+const getUserQueue: Array<{ id: string; email?: string } | null> = [];
 
 vi.mock("@/lib/supabase/admin", () => ({
   isAdminConfigured: () => true,
   createAdminClient: () => fakeAdminClient(db),
 }));
 const sessionAuth = {
-  getUser: async () => ({ data: { user: who.user } }),
+  getUser: async () => ({ data: { user: getUserQueue.length ? getUserQueue.shift()! : who.user } }),
   signInWithPassword: async () => signIn.result,
   signOut: async (opts?: { scope?: string }) => { authCalls.push(`signOut:${opts?.scope ?? "global"}`); return { error: null }; },
+  updateUser: async (attrs: unknown) => { authCalls.push("updateUser"); userUpdate.calls.push(attrs); return { data: { user: who.user }, error: userUpdate.error }; },
 };
 vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => ({
@@ -72,9 +85,12 @@ vi.mock("@/lib/supabase/server", () => ({
     commit: () => { authCalls.push("commit"); },
   }),
 }));
+vi.mock("@/lib/supabase/passwordCheck", () => ({
+  checkCurrentPassword: async (email: string, password: string, expectedUserId: string) => { pwCheck.calls.push([email, password, expectedUserId]); return pwCheck.result; },
+}));
 vi.mock("@/lib/serverLog", () => ({ logError: (e: { event: string; errorCode?: string | null }) => { logs.push(e); } }));
 vi.mock("@/lib/rateLimit", () => ({
-  rateLimitOk: async () => rl.allow,
+  rateLimitOk: async (...args: unknown[]) => { rl.calls.push(args); return rl.allow; },
   rlKey: (p: string, r: string) => `${p}:${r}`,
   clientIp: () => "203.0.113.7",
 }));
@@ -86,6 +102,7 @@ const REF = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const C1 = "c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1";
 const C2 = "c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2";
 const NEW = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const OP3 = "33333333-3333-4333-8333-333333333333";
 
 const operatorRow = (id: string, over: Record<string, unknown> = {}) => ({
   id, email: `op.${id.slice(0, 2)}@example.org`, full_name: `Оператор ${id.slice(0, 2)}`, active: true,
@@ -138,7 +155,13 @@ beforeEach(() => {
   logs.length = 0;
   authCalls.length = 0;
   rl.allow = true;
+  rl.calls = [];
+  getUserQueue.length = 0;
   signIn.result = { data: { user: null }, error: null };
+  pwCheck.result = "ok";
+  pwCheck.calls = [];
+  userUpdate.error = null;
+  userUpdate.calls = [];
 });
 
 const { GET: listClinics } = await import("@/app/api/platform/clinics/route");
@@ -148,6 +171,7 @@ const { POST: setAccount } = await import("@/app/api/platform/clinics/[id]/accou
 const { GET: listOps, POST: createOp } = await import("@/app/api/platform/operators/route");
 const { POST: setActive } = await import("@/app/api/platform/operators/[id]/active/route");
 const { POST: resetPwd } = await import("@/app/api/platform/operators/[id]/password/route");
+const { POST: ownPwd } = await import("@/app/api/platform/me/password/route");
 const { POST: bootstrap } = await import("@/app/api/platform/bootstrap/route");
 const { GET: readLog } = await import("@/app/api/platform/log/route");
 const { POST: login } = await import("@/app/api/auth/login/route");
@@ -203,6 +227,7 @@ describe("гейт requirePlatformOperator", () => {
     ["POST /operators", () => createOp(json("/api/platform/operators", { email: "a@example.org" }))],
     ["POST /operators/[id]/active", () => setActive(json(`/api/platform/operators/${OP2}/active`, { active: true }), ctx(OP2))],
     ["POST /operators/[id]/password", () => resetPwd(json(`/api/platform/operators/${OP2}/password`, {}), ctx(OP2))],
+    ["POST /me/password", () => ownPwd(json("/api/platform/me/password", { current_password: "old-pass-1", new_password: "new-pass-2" }))],
     ["GET /log", () => readLog(get("/api/platform/log"))],
   ];
   describe.each(HANDLERS)("%s", (_name, call) => {
@@ -212,6 +237,8 @@ describe("гейт requirePlatformOperator", () => {
       expect((await call()).status).toBe(401);
       expect(touched().size).toBe(0);
       expect(db.authCalls ?? []).toEqual([]);
+      expect(pwCheck.calls).toEqual([]);
+      expect(userUpdate.calls).toEqual([]);
     });
     it("сесія без рядка оператора (навіть із прапорцем) — 403, читався лише platform_operators", async () => {
       who.user = { id: ADMIN, app_metadata: { platform: "operator" } };
@@ -545,16 +572,159 @@ describe("оператори", () => {
     expect((await setActive(json(`/api/platform/operators/x/active`, { active: false }), ctx("x"))).status).toBe(400);
     expect((await setActive(json(`/api/platform/operators/${OP2}/active`, { active: "yes" }), ctx(OP2))).status).toBe(400);
   });
-  it("скидання пароля: updateUserById + слід; вимкненому — 409", async () => {
-    const res = await resetPwd(json(`/api/platform/operators/${OP1}/password`, {}), ctx(OP1));
+  it("скидання пароля ІНШОМУ: updateUserById + слід; вимкненому — 409", async () => {
+    db.tables.platform_operators.push(operatorRow(OP3));
+    const res = await resetPwd(json(`/api/platform/operators/${OP3}/password`, {}), ctx(OP3));
     expect(res.status).toBe(200);
     const d = await body(res);
     expect(d.temp_password).toMatch(/^Rf-[0-9a-f]{20}$/);
-    expect(db.authCalls).toEqual([`updateUserById:${OP1}`]);
-    expect(db.authArgs?.[0]).toEqual({ method: "updateUserById", id: OP1, attrs: { password: d.temp_password } });
+    expect(db.authCalls).toEqual([`updateUserById:${OP3}`]);
+    expect(db.authArgs?.[0]).toEqual({ method: "updateUserById", id: OP3, attrs: { password: d.temp_password } });
     expect(JSON.stringify(db.tables.platform_log)).not.toContain(d.temp_password);
-    expect(db.tables.platform_log[0]).toMatchObject({ action: "operator.password_reset", target_operator_id: OP1 });
+    expect(db.tables.platform_log[0]).toMatchObject({ action: "operator.password_reset", operator_id: OP1, target_operator_id: OP3 });
     expect((await resetPwd(json(`/api/platform/operators/${OP2}/password`, {}), ctx(OP2))).status).toBe(409);
+  });
+  it("СОБІ пароль не скидають (с84): 400 до будь-якого читання й виклику Auth — admin-зміна завершила б власну сесію", async () => {
+    const res = await resetPwd(json(`/api/platform/operators/${OP1}/password`, {}), ctx(OP1));
+    expect(res.status).toBe(400);
+    expect((await body(res)).error).toMatch(/Змінити пароль/);
+    expect(db.authCalls ?? []).toEqual([]);
+    expect(db.tables.platform_log).toHaveLength(0);
+    /* Читався лише рядок оператора-сесії (гейт) — ціль уже не читалась. */
+    expect((db.queries ?? []).filter((q) => q.table === "platform_operators")).toHaveLength(1);
+    expect([...touched()]).toEqual(["platform_operators"]);
+    /* uuid у ВЕРХНЬОМУ регістрі — той самий акаунт (Postgres порівнює uuid без
+       регістру); відмова не має обходитись зміною регістру в URL. */
+    const upper = await resetPwd(json(`/api/platform/operators/${OP1.toUpperCase()}/password`, {}), ctx(OP1.toUpperCase()));
+    expect(upper.status).toBe(400);
+    expect(db.authCalls ?? []).toEqual([]);
+  });
+});
+
+describe("POST /api/platform/me/password — свій пароль на свій (с84)", () => {
+  /* Email сесії навмисно ІНШИЙ, ніж у рядку оператора: тест розрізняє, звідки роут
+     бере адресу для перевірки (має — із перевіреної сесії). */
+  const EMAIL = "session.op1@example.org";
+  const call = (payload: unknown, contentType = "application/json") =>
+    ownPwd(new Request("https://x.test/api/platform/me/password", { method: "POST", headers: { "Content-Type": contentType }, body: JSON.stringify(payload) }));
+  const GOOD = { current_password: "old-pass-1", new_password: "new-pass-2" };
+  beforeEach(() => { who.user = { id: OP1, email: EMAIL, app_metadata: { platform: "operator" } }; });
+
+  it("успіх: поточний перевіряється для email і id СЕСІЇ, зміна — через власну сесію (updateUser + current_password), не admin; слід без паролів", async () => {
+    const res = await call(GOOD);
+    expect(res.status).toBe(200);
+    expect(await body(res)).toEqual({ ok: true });
+    expect(pwCheck.calls).toEqual([[EMAIL, "old-pass-1", OP1]]);
+    expect(userUpdate.calls).toEqual([{ password: "new-pass-2", current_password: "old-pass-1" }]);
+    expect(db.authCalls ?? [], "service-role auth тут не потрібен — admin-зміна завершила б сесію").toEqual([]);
+    expect(db.tables.platform_log).toHaveLength(1);
+    expect(db.tables.platform_log[0]).toMatchObject({ action: "operator.password_changed", operator_id: OP1, target_operator_id: null });
+    const trail = JSON.stringify(db.tables.platform_log) + JSON.stringify(logs);
+    expect(trail).not.toContain("old-pass-1");
+    expect(trail).not.toContain("new-pass-2");
+  });
+  it("ліміт гейта: 5 за 900 с на оператора, fail-CLOSED (захист від перебору пароля)", async () => {
+    await call(GOOD);
+    const own = rl.calls.filter((a) => String(a[0]).startsWith("platform:own_pwd:"));
+    expect(own).toEqual([[`platform:own_pwd:${OP1}`, 5, 900, "closed"]]);
+  });
+  it("не-JSON — 415 ще до гейта: жодного читання, жодної перевірки", async () => {
+    const res = await call(GOOD, "text/plain");
+    expect(res.status).toBe(415);
+    expect(touched().size).toBe(0);
+    expect(pwCheck.calls).toEqual([]);
+    expect(userUpdate.calls).toEqual([]);
+  });
+  it("тіло: без поточного або новий коротший за 8 — 400; той самий пароль — 400; GoTrue не викликається", async () => {
+    expect((await call({ new_password: "new-pass-2" })).status).toBe(400);
+    expect((await call({ current_password: "", new_password: "new-pass-2" })).status).toBe(400);
+    expect((await call({ current_password: "old-pass-1", new_password: "short" })).status).toBe(400);
+    const same = await call({ current_password: "same-pass-1", new_password: "same-pass-1" });
+    expect(same.status).toBe(400);
+    expect((await body(same)).error).toBe("Новий пароль збігається з поточним");
+    expect(pwCheck.calls).toEqual([]);
+    expect(userUpdate.calls).toEqual([]);
+  });
+  it("новий пароль довший за 72 БАЙТИ (bcrypt) — 400 з поясненням ще до GoTrue; 72 байти рівно — проходить", async () => {
+    const cyr40 = "пароль".repeat(6) + "абвг"; // 40 кириличних літер = 80 байт
+    const res = await call({ current_password: "old-pass-1", new_password: cyr40 });
+    expect(res.status).toBe(400);
+    expect((await body(res)).error).toMatch(/до 72 байт/);
+    expect(pwCheck.calls).toEqual([]);
+    const over73 = "я".repeat(36) + "a"; // 73 байти — межа на один байт
+    expect((await call({ current_password: "old-pass-1", new_password: over73 })).status).toBe(400);
+    expect(pwCheck.calls).toEqual([]);
+    const ok72 = "я".repeat(36); // 72 байти
+    expect((await call({ current_password: "old-pass-1", new_password: ok72 })).status).toBe(200);
+  });
+  it("сесія змінилась між гейтом і роутом (інший id) — 401, перевірки немає", async () => {
+    getUserQueue.push({ id: OP1, email: EMAIL }, { id: OP3, email: "op3@example.org" });
+    expect((await call(GOOD)).status).toBe(401);
+    expect(pwCheck.calls).toEqual([]);
+    expect(userUpdate.calls).toEqual([]);
+  });
+  it("в акаунта сесії немає email — 409, перевірки немає", async () => {
+    who.user = { id: OP1, app_metadata: { platform: "operator" } };
+    const res = await call(GOOD);
+    expect(res.status).toBe(409);
+    expect(pwCheck.calls).toEqual([]);
+    expect(userUpdate.calls).toEqual([]);
+  });
+  it("невірний поточний — 400 «Поточний пароль невірний», без зміни і без сліду в журналі; подія в лозі", async () => {
+    pwCheck.result = "invalid";
+    const res = await call(GOOD);
+    expect(res.status).toBe(400);
+    expect((await body(res)).error).toBe("Поточний пароль невірний");
+    expect(userUpdate.calls).toEqual([]);
+    expect(db.tables.platform_log).toHaveLength(0);
+    expect(logs.some((l) => l.event === "platform.own_password_wrong")).toBe(true);
+  });
+  it("перевірка не вдалась (мережа, ліміт GoTrue) — 503, а не «невірний пароль»", async () => {
+    pwCheck.result = "error";
+    const res = await call(GOOD);
+    expect(res.status).toBe(503);
+    expect((await body(res)).error).toMatch(/перевірити поточний пароль/);
+    expect(userUpdate.calls).toEqual([]);
+  });
+  /* Помилки — СПРАВЖНІ класи auth-js (ревʼю с84, лінза B: session_not_found
+     приходить як AuthSessionMissingError без коду, а не як {code}). */
+  const UNKNOWN = "Не вдалося підтвердити зміну пароля. Спробуйте увійти з НОВИМ паролем, а якщо не вийде — зі старим.";
+  it.each([
+    ["same_password", new AuthApiError("New password should be different from the old password.", 422, "same_password"), 400, "Новий пароль збігається з поточним", "new"],
+    ["weak (pwned)", new AuthWeakPasswordError("Password is known to be weak and easy to guess", 422, ["pwned"]), 400, "Цей пароль є у відомих витоках — оберіть інший", "new"],
+    ["weak (length)", new AuthWeakPasswordError("Password should be at least 12 characters.", 422, ["length"]), 400, "Пароль надто простий — оберіть довший або складніший", "new"],
+    /* Код на дроті — current_password_invalid (Go-константа зветься …Mismatch). */
+    ["current_password_invalid", new AuthApiError("Current password required when setting new password.", 400, "current_password_invalid"), 400, "Поточний пароль невірний", "current"],
+    ["current_password_required", new AuthApiError("Current password required", 400, "current_password_required"), 400, "Поточний пароль невірний", "current"],
+    ["reauthentication_needed", new AuthApiError("Password update requires reauthentication", 400, "reauthentication_needed"), 400, "Для зміни пароля вийдіть, увійдіть знову й повторіть", undefined],
+    ["validation_failed", new AuthApiError("Password cannot be longer than 72 characters", 400, "validation_failed"), 400, "Сервер входу не прийняв цей пароль — оберіть інший (до 72 байт, без незвичних символів)", "new"],
+    ["ліміт GoTrue (429)", new AuthApiError("Request rate limit reached", 429, "over_request_rate_limit"), 429, "Сервіс входу тимчасово обмежив запити — спробуйте за кілька хвилин (пароль не змінено)", undefined],
+    ["невдале оновлення токена", new AuthApiError("Invalid Refresh Token: Refresh Token Not Found", 400, "refresh_token_not_found"), 401, "Сесія завершилась — увійдіть знову", undefined],
+    ["session missing", new AuthSessionMissingError(), 401, "Сесія завершилась — увійдіть знову", undefined],
+    ["network (retryable)", new AuthRetryableFetchError("fetch failed", 0), 503, UNKNOWN, undefined],
+    /* Так auth-js подає GoTrue 500–504: retryable, а не AuthApiError. */
+    ["GoTrue 500", new AuthRetryableFetchError("{}", 500), 503, UNKNOWN, undefined],
+    ["інший 5xx (запасна гілка)", new AuthApiError("HTTP Version Not Supported", 505, undefined), 503, UNKNOWN, undefined],
+  ])("помилка GoTrue: %s", async (_name, err, status, text, field) => {
+    userUpdate.error = err;
+    const res = await call(GOOD);
+    expect(res.status).toBe(status);
+    const d = await body(res);
+    expect(d.error).toBe(text);
+    expect(d.field).toBe(field);
+    expect(db.tables.platform_log).toHaveLength(0);
+    expect(logs.some((l) => l.event === "platform.own_password_update_failed")).toBe(true);
+  });
+  it("ліміт гейта вичерпано — 429 до перевірки пароля", async () => {
+    rl.allow = false;
+    expect((await call(GOOD)).status).toBe(429);
+    expect(pwCheck.calls).toEqual([]);
+    expect(userUpdate.calls).toEqual([]);
+  });
+  it("вимкнений оператор — 403 (гейт), пароль не перевіряється", async () => {
+    who.user = { id: OP2, email: "op.22@example.org" };
+    expect((await call(GOOD)).status).toBe(403);
+    expect(pwCheck.calls).toEqual([]);
   });
 });
 

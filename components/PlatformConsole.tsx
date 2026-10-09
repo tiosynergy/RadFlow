@@ -11,11 +11,12 @@
    за посиланням і повернутись назад кнопкою браузера. Оболонка своя
    (styles/prototype/platform.css): кабінетів, дошки й бейджів у оператора немає. */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { signOutAndRedirect } from "@/lib/auth";
 import Toast, { type ToastData } from "@/components/Toast";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import BaseDialog from "@/components/BaseDialog";
 import {
   CLINIC_STATUSES, CLINIC_STATUS_LABEL, PLAN_MAX, STATUS_REASON_MAX, ACCOUNT_NOTES_MAX,
   statusNeedsReason, platformLogText,
@@ -81,11 +82,16 @@ function paidBadge(paidUntil: string | null): { cls: string; text: string } | nu
   return { cls: "green", text: `до ${fmtDate(paidUntil)}` };
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: string; status: number }> {
+const SESSION_GONE = "Сесія завершилась — увійдіть знову";
+
+async function api<T>(path: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: string; status: number; field?: string }> {
   try {
     const res = await fetch(path, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) }, cache: "no-store" });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) return { ok: false, error: (data && data.error) || (res.status === 401 ? "Сесія завершилась — увійдіть знову" : "Помилка запиту"), status: res.status };
+    /* 401 = сесії немає (вийшла, сплила, її завершили): кажемо це прямо, а не
+       серверне «Не авторизовано» — людині треба знати, що робити далі. */
+    if (res.status === 401) return { ok: false, error: SESSION_GONE, status: 401 };
+    if (!res.ok) return { ok: false, error: (data && data.error) || "Помилка запиту", status: res.status, field: typeof data?.field === "string" ? data.field : undefined };
     return { ok: true, data: data as T };
   } catch {
     return { ok: false, error: "Не вдалося звʼязатися із сервером", status: 0 };
@@ -110,7 +116,7 @@ function SecretBox({ secret, label, onCopied }: { secret: string; label: string;
       <span><span aria-hidden="true">🔑</span> {label}:</span>
       <code>{secret}</code>
       <button type="button" className="btn btn-secondary btn-sm" onClick={copy}>Скопіювати</button>
-      <span className="pf-hint">Показано один раз — передайте людині поза системою; потім вона може скинути пароль сама через іншого оператора.</span>
+      <span className="pf-hint">Показано один раз — передайте людині поза системою; після входу вона змінить його на свій кнопкою «Змінити пароль».</span>
     </div>
   );
 }
@@ -504,6 +510,7 @@ function OperatorsView({ meId, notify }: { meId: string; notify: (m: string, t?:
   const [secret, setSecret] = useState<{ label: string; value: string } | null>(null);
   const [confirm, setConfirm] = useState<{ kind: "active" | "password"; row: PlatformOperatorRow; active?: boolean } | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  const [ownPwd, setOwnPwd] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -559,7 +566,10 @@ function OperatorsView({ meId, notify }: { meId: string; notify: (m: string, t?:
     setGen((g) => g + 1);
   }
 
-  if (err) return <div className="pf-page"><div className="pf-card"><div className="pf-err">{err}</div></div></div>;
+  /* Картка помилки — лише коли переліку ще немає. Якщо збій стався на
+     ПЕРЕчитуванні (напр. після дії), сторінка лишається: блок із щойно виданим
+     паролем не має зникати разом зі списком (с84 — саме так пропав пароль). */
+  if (err && !rows && !secret) return <div className="pf-page"><div className="pf-card"><div className="pf-err" role="alert">{err}</div></div></div>;
 
   return (
     <div className="pf-page">
@@ -592,7 +602,8 @@ function OperatorsView({ meId, notify }: { meId: string; notify: (m: string, t?:
 
       <div className="pf-card">
         <h2>Оператори платформи</h2>
-        {!rows ? <div role="status" className="pf-hint">Завантаження…</div> : (
+        {err && <div className="pf-err" role="alert">{err}</div>}
+        {!rows ? (err ? null : <div role="status" className="pf-hint">Завантаження…</div>) : (
           <ul className="pf-list">
             {rows.map((r) => (
               <li key={r.id}>
@@ -601,7 +612,12 @@ function OperatorsView({ meId, notify }: { meId: string; notify: (m: string, t?:
                   <div className="sub">{r.email} · з {fmtDate(r.created_at)}{r.note ? ` · ${r.note}` : ""}</div>
                 </div>
                 <span className={"badge " + (r.active ? "green" : "gray")}>{r.active ? "активний" : `вимкнено ${fmtDate(r.disabled_at)}`}</span>
-                {r.active && <button type="button" className="btn btn-secondary btn-sm" aria-label={`Скинути пароль — ${r.email}`} onClick={() => setConfirm({ kind: "password", row: r })}>Скинути пароль</button>}
+                {/* Свій пароль — лише «Змінити» (на свій, з поточним). «Скинути» собі
+                    сервер не дає: admin-зміна пароля завершує ВСІ сесії, і оператор
+                    вилітав із консолі разом із новим паролем (с84). */}
+                {r.id === meId
+                  ? <button type="button" className="btn btn-secondary btn-sm" onClick={() => setOwnPwd(true)}>Змінити пароль</button>
+                  : r.active && <button type="button" className="btn btn-secondary btn-sm" aria-label={`Скинути пароль — ${r.email}`} onClick={() => setConfirm({ kind: "password", row: r })}>Скинути пароль</button>}
                 {r.id !== meId && (
                   <button type="button" className={"btn btn-secondary btn-sm" + (r.active ? " qd-act-red" : "")} aria-label={`${r.active ? "Вимкнути" : "Увімкнути"} — ${r.email}`} onClick={() => setConfirm({ kind: "active", row: r, active: !r.active })}>
                     {r.active ? "Вимкнути" : "Увімкнути"}
@@ -617,7 +633,7 @@ function OperatorsView({ meId, notify }: { meId: string; notify: (m: string, t?:
         <ConfirmDialog
           title={confirm.kind === "password" ? "Скинути пароль оператора?" : confirm.active ? "Увімкнути оператора?" : "Вимкнути оператора?"}
           text={confirm.kind === "password"
-            ? <>Поточний пароль <b>{confirm.row.email}</b> перестане діяти; новий тимчасовий покажеться один раз.</>
+            ? <>Поточний пароль <b>{confirm.row.email}</b> перестане діяти, а відкриті сесії цього оператора завершаться; новий тимчасовий покажеться один раз.</>
             : confirm.active
               ? <>Оператор <b>{confirm.row.email}</b> знову зможе входити в консоль.</>
               : <>Оператор <b>{confirm.row.email}</b> втратить доступ з наступного запиту. Слід у журналі лишиться.</>}
@@ -629,7 +645,100 @@ function OperatorsView({ meId, notify }: { meId: string; notify: (m: string, t?:
           onClose={() => { if (!confirmBusy) setConfirm(null); }}
         />
       )}
+      {ownPwd && (
+        <OwnPasswordDialog
+          email={rows?.find((r) => r.id === meId)?.email ?? ""}
+          onClose={() => setOwnPwd(false)}
+          onDone={() => { setOwnPwd(false); notify("Пароль змінено", "success"); }}
+        />
+      )}
     </div>
+  );
+}
+
+/* «Змінити пароль» — свій пароль на СВІЙ (с84, прохання власника). Поточний
+   пароль обовʼязковий — це захист самого роуту (межа безпеки акаунта — налаштування
+   GoTrue «Require current password», ToDo Н-28). Сервер — /api/platform/me/password:
+   зміна йде через власну сесію, тож ви лишаєтесь у консолі, а інші ваші сесії
+   GoTrue завершує. Паролі не зберігаються ніде поза полями цього вікна.
+   Кнопка «Змінити» не стає `disabled` (AGENTS.md: у пастці фокуса — лише
+   aria-disabled): що не так, каже повідомлення після натискання. */
+const PASSWORD_MAX_BYTES = 72;
+const byteLen = (s: string) => new TextEncoder().encode(s).length;
+
+function OwnPasswordDialog({ email, onClose, onDone }: { email: string; onClose: () => void; onDone: () => void }) {
+  const [cur, setCur] = useState("");
+  const [next, setNext] = useState("");
+  const [again, setAgain] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const curRef = useRef<HTMLInputElement>(null);
+  const newRef = useRef<HTMLInputElement>(null);
+  const matchId = useId();
+  /* Та сама помилка вдруге не змінює DOM — скринридер її не повторить. Тому
+     спершу чистимо, а текст ставимо наступним тиком. */
+  const say = (text: string) => { setError(null); setTimeout(() => setError(text), 30); };
+
+  /* «Не збігаються» — лише коли повтор уже не коротший за новий (а не з першої літери). */
+  const mismatch = again.length > 0 && again.length >= next.length && next !== again;
+
+  function problem(): string | null {
+    if (!cur) return "Вкажіть поточний пароль";
+    if (next.length < 8) return "Новий пароль — мінімум 8 символів";
+    if (byteLen(next) > PASSWORD_MAX_BYTES) return "Новий пароль задовгий: до 72 байт (≈72 латинських або ≈36 кириличних символів)";
+    if (next !== again) return "Паролі не збігаються";
+    if (next === cur) return "Новий пароль збігається з поточним";
+    return null;
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    const p = problem();
+    if (p) { say(p); return; }
+    setBusy(true);
+    setError(null);
+    const r = await api<{ ok: true }>("/api/platform/me/password", { method: "POST", body: JSON.stringify({ current_password: cur, new_password: next }) });
+    setBusy(false);
+    if (!r.ok) {
+      say(r.error);
+      /* Фокус — у поле, про яке помилка (сервер каже `field`); інакше — у поточний. */
+      (r.field === "new" ? newRef : curRef).current?.focus();
+      return;
+    }
+    onDone();
+  }
+
+  return (
+    <BaseDialog title="Змінити свій пароль" maxWidth={420} busy={busy} onClose={onClose}>
+      <form onSubmit={submit} noValidate>
+        <div className="dlg-body">
+          <label className="fld">
+            <span className="fld-lab">Поточний пароль</span>
+            <input ref={curRef} className="inp" type="password" value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" aria-required="true" />
+          </label>
+          <label className="fld">
+            <span className="fld-lab">Новий пароль (мінімум 8 символів)</span>
+            <input ref={newRef} className="inp" type="password" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" aria-required="true" />
+          </label>
+          <label className="fld">
+            <span className="fld-lab">Новий пароль ще раз</span>
+            <input className="inp" type="password" value={again} onChange={(e) => setAgain(e.target.value)} autoComplete="new-password" aria-required="true" aria-invalid={mismatch || undefined} aria-describedby={matchId} />
+          </label>
+          {/* Живі області — постійні вузли (вставлений role=status скринридер може не оголосити). */}
+          <div id={matchId} className="pf-hint" aria-live="polite">{mismatch ? "Паролі не збігаються" : ""}</div>
+          <div className="pf-err" role="alert">{error ?? ""}</div>
+          <div className="pf-hint">Ви лишаєтесь у консолі; інші ваші сесії (в інших браузерах і на інших пристроях) буде завершено.</div>
+          {/* Для менеджера паролів: оновити запис саме цього акаунта. Після полів —
+              BaseDialog фокусує ПЕРШЕ поле, і воно має бути «Поточний пароль». */}
+          <input type="text" name="username" autoComplete="username" value={email} readOnly hidden />
+        </div>
+        <div className="dlg-foot" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button type="button" className="btn btn-ghost" onClick={() => { if (!busy) onClose(); }} aria-disabled={busy || undefined}>Скасувати</button>
+          <button type="submit" className="btn btn-primary" aria-disabled={busy || undefined} aria-busy={busy || undefined}>{busy ? "Зберігаємо…" : "Змінити"}</button>
+        </div>
+      </form>
+    </BaseDialog>
   );
 }
 

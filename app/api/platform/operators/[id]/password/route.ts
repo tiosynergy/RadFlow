@@ -3,10 +3,13 @@ import { requirePlatformOperator, platformLog, tempOperatorPassword } from "@/li
 import { safeDbError, zUuid } from "@/lib/validation";
 
 /* ===== POST /api/platform/operators/[id]/password — скинути пароль (0206) =====
-   Новий тимчасовий пароль оператора (у т.ч. собі) — показується РІВНО один раз
-   у відповіді; далі людина входить ним через /login і за потреби скидає ще раз.
-   Пароль не логується ніде. Вимкненому оператору пароль не скидають (спершу
-   увімкнути — так слід у журналі показує обидві дії). */
+   Новий тимчасовий пароль ІНШОГО оператора — показується РІВНО один раз у
+   відповіді; далі людина входить ним через /login і міняє на свій кнопкою
+   «Змінити пароль» (/api/platform/me/password). GoTrue при цьому завершує всі
+   відкриті сесії цього оператора — консоль попереджає про це в підтвердженні.
+   Собі пароль не скидають (с84, нижче). Пароль не логується ніде. Вимкненому
+   оператору пароль не скидають (спершу увімкнути — так слід у журналі показує
+   обидві дії). */
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +24,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const idp = zUuid.safeParse(rawId);
   if (!idp.success) return NextResponse.json({ error: "Некоректний ідентифікатор" }, { status: 400 });
   const targetId = idp.data;
+  /* Свій пароль тут не скидають (с84): admin-зміна пароля в GoTrue завершує ВСІ
+     сесії людини — оператор вилітав із консолі в ту ж секунду, а новий пароль
+     зникав разом зі сторінкою (09.10, логи Auth: PUT /admin/users → 200, GET /user →
+     403 session_not_found). Свій пароль — лише через /api/platform/me/password. */
+  if (targetId.toLowerCase() === operator.id.toLowerCase()) {
+    return NextResponse.json({ error: "Свій пароль змінюйте кнопкою «Змінити пароль» — скидання завершило б вашу сесію" }, { status: 400 });
+  }
 
   const { data: target, error: tErr } = await admin
     .from("platform_operators")
